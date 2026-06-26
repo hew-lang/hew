@@ -901,6 +901,14 @@ run_accept_expect_status "supervisor_dynamic_child_init" 37
 # leaked; a trap/garbage length would mean an aliasing UAF.
 run_accept_expect_status "supervisor_owned_child_init_restart" 10
 
+# Config supervisor with literal-only child init args (no config-field reads).
+# Exercises the S1 fix: when no child reads config.field, the config buffer is
+# skipped entirely at codegen time so there is no malloc-without-adopt leak.
+# Exit 0 proves the supervisor and its children start cleanly. The paired e2e
+# oracle (supervisor_literal_only_config_param_no_leak) asserts zero leaks under
+# `leaks --atExit` on macOS.
+run_accept_expect_status "supervisor_literal_only_config_param" 0
+
 # F-04 fungible reference: a supervised-child handle re-resolves to the CURRENT
 # child at each send/ask, so a handle BOUND before a crash and held ACROSS the
 # restart reaches the FRESH child. Binds `let w = sup.w1` before crashing, then

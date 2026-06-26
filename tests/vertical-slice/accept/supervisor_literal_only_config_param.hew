@@ -1,0 +1,35 @@
+// Proving fixture: a config supervisor whose children use literal init args —
+// NOT config-field args — must not leak the config buffer.
+//
+// The supervisor declares a config param but every child init arg is a literal
+// (no child reads `config.field`). Before the S1 fix, codegen would malloc a
+// config buffer at bootstrap time (because `config_param.is_some()`) but never
+// adopt it into the runtime (no child calls `set_child_init_fn`), leaking
+// sizeof(AppConfig) per supervisor start.
+//
+// The actors are stateless so no state-template malloc fires — only the config
+// buffer would leak if the guard were absent. `leaks --atExit` must report 0.
+//
+// Teeth: exits 0.  Verified no-leak under `leaks --atExit` + the poisoned-
+// allocator triple by the paired e2e oracle
+// `supervisor_literal_only_config_param_no_leak`.
+record AppConfig { threshold: i64 }
+
+actor Ping {
+    receive fn ping() {}
+}
+
+supervisor App(config: AppConfig) {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    // Stateless children with no init args — no config.field reads.
+    child a: Ping();
+    child b: Ping();
+}
+
+fn main() -> i64 {
+    let cfg = AppConfig { threshold: 10 };
+    spawn App(config: cfg);
+    0
+}

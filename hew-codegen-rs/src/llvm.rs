@@ -6402,7 +6402,25 @@ fn emit_supervisor_bootstrap_body<'ctx>(
     //
     // `None` → a no-config supervisor; no buffer, every child takes the literal
     // template path (init_fn null), unchanged from C1-C3.
+    //
+    // GUARD: only materialise the buffer when at least one child actually reads a
+    // config field (has a ConfigField init arg). A config supervisor whose children
+    // ALL use literal-only init args never calls set_child_init_fn, so no child
+    // adopts the buffer — malloc-without-adopt leaks sizeof(config) per supervisor
+    // start. When no ConfigField is present, skip the buffer entirely and let all
+    // children take the literal-template path.
+    let any_child_reads_config_field = layout.children.iter().any(|child| {
+        child
+            .init_state_fields
+            .iter()
+            .any(|(_, arg)| matches!(arg, ChildInitArg::ConfigField { .. }))
+    });
     let config_buf: Option<(PointerValue<'ctx>, IntValue<'ctx>)> = match &layout.config_param {
+        Some(_) if !any_child_reads_config_field => {
+            // Config param declared but no child reads it — skip the buffer.
+            // All children take the literal-template path (init_fn null).
+            None
+        }
         Some(config_param) => {
             // Resolve the config struct's LLVM type for the size + spill.
             let config_struct_ty = *record_layouts

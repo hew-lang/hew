@@ -20652,16 +20652,33 @@ impl Builder {
             }
         }
 
-        // Native `sleep_ms(d)` blocks the worker in `hew_sleep_ms`
-        // (`std::thread::sleep`); in an execution-context caller it SUSPENDS on
-        // a timer-wheel deadline. `sleep_ms` is a `RuntimeFfiShim` with no
-        // `RuntimeCallFamily`, so it is identified by its resolved callee name
-        // (the FFI-shim boundary) rather than a builtin family.
-        if callee_symbol == "sleep_ms" || callee_symbol == "hew_sleep_ms" {
-            if let [duration_ms] = arg_places {
+        // `sleep(d)` suspends in an execution-context caller on a timer-wheel
+        // deadline; in a free-fn / `fn main` it calls `hew_sleep_ns` (blocking).
+        // Identified by callee symbol — `sleep` is a `RuntimeFfiShim` with no
+        // `RuntimeCallFamily`.
+        if callee_symbol == "sleep" || callee_symbol == "hew_sleep_ns" {
+            if let [duration_ns] = arg_places {
                 let next = self.alloc_block();
                 self.record_suspend_kind(SuspendKind::Sleep {
-                    duration_ms: *duration_ms,
+                    duration_ns: *duration_ns,
+                });
+                self.finish_current_block(Terminator::Suspend {
+                    resume: next,
+                    cleanup: next,
+                    is_final: false,
+                });
+                self.start_block(next);
+                return ControlFlow::Break(dest);
+            }
+        }
+
+        // `sleep_until(i)` suspends until the given `instant` in an
+        // execution-context caller; calls `hew_sleep_until_ns` on the blocking path.
+        if callee_symbol == "sleep_until" || callee_symbol == "hew_sleep_until_ns" {
+            if let [instant_ns] = arg_places {
+                let next = self.alloc_block();
+                self.record_suspend_kind(SuspendKind::SleepUntil {
+                    instant_ns: *instant_ns,
                 });
                 self.finish_current_block(Terminator::Suspend {
                     resume: next,
@@ -28744,8 +28761,10 @@ pub fn suspend_kind_source_places(kind: &SuspendKind) -> Vec<Place> {
         // `sup_place` (the supervisor PID) is the restart-observer registration
         // source; `result_dest` is a resume-edge write (re-fetched handle).
         SuspendKind::RestartWait { sup_place, .. } => vec![*sup_place],
-        // `duration_ms` is the deadline source; the resume edge binds nothing.
-        SuspendKind::Sleep { duration_ms } => vec![*duration_ms],
+        // `duration_ns` is the deadline source (nanoseconds); the resume edge binds nothing.
+        SuspendKind::Sleep { duration_ns } => vec![*duration_ns],
+        // `instant_ns` is the wakeup time source; the resume edge binds nothing.
+        SuspendKind::SleepUntil { instant_ns } => vec![*instant_ns],
     }
 }
 
@@ -29028,7 +29047,8 @@ fn suspend_kind_yield_escapes(kind: &SuspendKind, local: u32) -> bool {
         // `await_restart` reads the supervisor PID and binds the re-fetched
         // handle on resume; it moves no yielded value across the suspend.
         | SuspendKind::RestartWait { .. }
-        | SuspendKind::Sleep { .. } => false,
+        | SuspendKind::Sleep { .. }
+        | SuspendKind::SleepUntil { .. } => false,
     }
 }
 
@@ -32905,7 +32925,8 @@ fn suspend_kind_escape_places(kind: &SuspendKind) -> Vec<Place> {
         // `await_restart` reads the borrowed supervisor PID and re-fetches the
         // child handle on resume — no owned value escapes into a sink.
         | SuspendKind::RestartWait { .. }
-        | SuspendKind::Sleep { .. } => Vec::new(),
+        | SuspendKind::Sleep { .. }
+        | SuspendKind::SleepUntil { .. } => Vec::new(),
     }
 }
 

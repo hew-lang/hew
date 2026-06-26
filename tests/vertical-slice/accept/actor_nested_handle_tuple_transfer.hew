@@ -27,6 +27,6 @@ fn main() {
     let w = spawn Worker;
     // Transfer rx through a tuple. After this send `rx` must not be used.
     w.deliver((rx, "payload"));
-    sleep_ms(200);
+    sleep(200ms);
     println("done");
 }

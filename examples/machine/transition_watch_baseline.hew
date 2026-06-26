@@ -39,5 +39,5 @@ actor Combined {
 fn main() {
     let c = spawn Combined;
     c.run();
-    sleep_ms(200);
+    sleep(200ms);
 }

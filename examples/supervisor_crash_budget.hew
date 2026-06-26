@@ -38,14 +38,14 @@ supervisor FragilePool {
 
 fn main() {
     let sup = spawn FragilePool;
-    sleep_ms(30);
+    sleep(30ms);
     var f1 = sup.f1;
     let f2 = sup.f2;
     // Both workers operational
     f1.work();
-    sleep_ms(10);
+    sleep(10ms);
     f2.work();
-    sleep_ms(30);
+    sleep(30ms);
 
     // Crash f1 — first restart.
     // First crash: restart_delay_ms starts at 0 (immediate restart, no backoff).
@@ -53,10 +53,10 @@ fn main() {
     println("");
     println("--- crash 1 ---");
     f1.break_it();
-    sleep_ms(500);
+    sleep(500ms);
     f1 = sup.f1;
     f1.work();
-    sleep_ms(20);
+    sleep(20ms);
 
     // Crash again — second restart.
     // Second crash: apply_restart_backoff doubles restart_delay_ms to 200 ms,
@@ -64,21 +64,21 @@ fn main() {
     println("");
     println("--- crash 2 ---");
     f1.break_it();
-    sleep_ms(1000);
+    sleep(1000ms);
     f1 = sup.f1;
     f1.work();
-    sleep_ms(20);
+    sleep(20ms);
 
     // Crash again — third restart (at the budget limit)
     println("");
     println("--- crash 3 (budget exhausted) ---");
     f1.break_it();
-    sleep_ms(200);
+    sleep(200ms);
 
     // f2 should still work — supervision budget is per-supervisor but
     // f2 never crashed
     f2.work();
-    sleep_ms(50);
+    sleep(50ms);
     println("");
     println("Restart budget prevented infinite crash loop.");
 }

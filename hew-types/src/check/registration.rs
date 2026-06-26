@@ -621,8 +621,16 @@ impl Checker {
         // I/O and system
         self.register_builtin_fn("read_file", vec![Ty::String], Ty::String);
         self.register_builtin_fn("write_file", vec![Ty::String, Ty::String], Ty::Unit);
-        self.register_builtin_fn("sleep_ms", vec![Ty::I64], Ty::Unit);
-        self.register_builtin_fn("sleep", vec![Ty::I64], Ty::Unit);
+        self.register_builtin_fn("sleep", vec![Ty::Duration], Ty::Unit);
+        self.register_builtin_fn(
+            "sleep_until",
+            vec![Ty::Named {
+                name: "instant".to_string(),
+                args: vec![],
+                builtin: Some(BuiltinType::Instant),
+            }],
+            Ty::Unit,
+        );
         self.register_builtin_fn("stop", vec![Ty::Var(TypeVar::fresh())], Ty::Unit);
         let close_t = TypeVar::fresh();
         self.register_builtin_fn(

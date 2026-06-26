@@ -1,6 +1,7 @@
 //! File I/O, sleep, clock, and I/O poller for the Hew runtime.
 //!
-//! Provides `hew_read_file`, `hew_sleep_ms`, `hew_now_ms`, duration helpers,
+//! Provides `hew_read_file`, `hew_sleep_ms`, `hew_sleep_ns`, `hew_sleep_until_ns`,
+//! `hew_now_ms`, duration helpers,
 //! and a platform I/O poller (epoll on Linux, kqueue on FreeBSD/macOS, stub
 //! elsewhere).
 #![allow(
@@ -64,6 +65,46 @@ pub unsafe extern "C" fn hew_sleep_ms(ms: i64) {
         // SAFETY: ms > 0 checked above, so cast is lossless.
         #[expect(clippy::cast_sign_loss, reason = "guarded by ms > 0")]
         let dur = std::time::Duration::from_millis(ms as u64);
+        std::thread::sleep(dur);
+    }
+}
+
+/// Sleep for `ns` nanoseconds (the `sleep(duration)` ABI).
+///
+/// Called by the blocking (free-fn) path. Suspending actor callers are
+/// intercepted at the MIR lowering stage and arm the timer wheel directly.
+///
+/// # Safety
+///
+/// No preconditions — delegates to the OS.
+#[no_mangle]
+pub unsafe extern "C" fn hew_sleep_ns(ns: i64) {
+    if ns > 0 {
+        // SAFETY: ns > 0 checked above, so cast is lossless.
+        #[expect(clippy::cast_sign_loss, reason = "guarded by ns > 0")]
+        let dur = std::time::Duration::from_nanos(ns as u64);
+        std::thread::sleep(dur);
+    }
+}
+
+/// Sleep until `instant_ns` (nanosecond monotonic timestamp).
+///
+/// Computes remaining = `instant_ns - now`; if positive, sleeps that duration.
+/// Called by the blocking (free-fn) path. Suspending actor callers are
+/// intercepted at MIR lowering and arm the timer wheel for the remaining ms.
+///
+/// # Safety
+///
+/// No preconditions.
+#[no_mangle]
+pub unsafe extern "C" fn hew_sleep_until_ns(instant_ns: i64) {
+    // SAFETY: hew_instant_now has no preconditions.
+    let now_ns = unsafe { hew_instant_now() };
+    let remaining_ns = instant_ns.saturating_sub(now_ns);
+    if remaining_ns > 0 {
+        // SAFETY: remaining_ns > 0 checked above.
+        #[expect(clippy::cast_sign_loss, reason = "guarded by remaining_ns > 0")]
+        let dur = std::time::Duration::from_nanos(remaining_ns as u64);
         std::thread::sleep(dur);
     }
 }

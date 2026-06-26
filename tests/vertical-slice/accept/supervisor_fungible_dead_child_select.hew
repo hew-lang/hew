@@ -41,9 +41,9 @@ fn main() -> i64 {
     // processing the final terminal crash.
     for _ in 0 .. 5 {
         w.crash_me();
-        sleep_ms(80);
+        sleep(80ms);
     }
-    sleep_ms(200);
+    sleep(200ms);
 
     // Single-shot ask to a permanently-dead child: recoverable Err, NOT a trap.
     let ask_code = match await w.get_value() {

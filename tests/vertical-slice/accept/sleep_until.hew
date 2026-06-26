@@ -1,0 +1,5 @@
+fn main() -> i64 {
+    let deadline = instant::now();
+    sleep_until(deadline);
+    0
+}

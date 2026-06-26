@@ -10,5 +10,5 @@ fn main() {
     xs.push(1);
     let bad = actor |n: i64| { println(f"{xs.len() + n}"); };
     bad(1);
-    sleep_ms(100);
+    sleep(100ms);
 }

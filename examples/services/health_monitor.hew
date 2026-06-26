@@ -108,12 +108,12 @@ fn main() {
     monitor.register("auth", auth);
     monitor.register("api", api);
     monitor.register("cache", cache);
-    sleep_ms(30);
+    sleep(30ms);
 
     // ── All healthy ──
     println("--- All services healthy ---");
     await monitor.check_all();
-    sleep_ms(30);
+    sleep(30ms);
     await monitor.report();
 
     // ── Normal traffic ──
@@ -127,9 +127,9 @@ fn main() {
     println("");
     println("--- Cache goes down ---");
     cache.set_unhealthy();
-    sleep_ms(30);
+    sleep(30ms);
     await monitor.check_all();
-    sleep_ms(600);
+    sleep(600ms);
     await monitor.report();
 
     // ── Remaining services still serve traffic ──

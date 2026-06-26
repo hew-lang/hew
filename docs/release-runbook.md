@@ -339,7 +339,7 @@ rows fail the gate.
   as of 2026-04. Keep the nightly signal and carry release exceptions only via
   `release-sanitizer-waiver.toml`; re-evaluate when upstream resolves.
 - **WASM capability gaps**: Channels and I/O streams are rejected at compile
-  time when targeting wasm32-wasi.  Timers (`sleep_ms`/`sleep`) now have
+  time when targeting wasm32-wasi.  Timers (`sleep`/`sleep_until`) now have
   cooperative semantics on WASM (actor parks at message boundary) and emit a
   warning rather than an error.  See
   [`docs/wasm-capability-matrix.md`](wasm-capability-matrix.md) for the full

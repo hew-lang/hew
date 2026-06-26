@@ -11,7 +11,7 @@ actor SlowWorker {
         print("SlowWorker ");
         print(id);
         println(f": processing {value}");
-        sleep_ms(50);
+        sleep(50ms);
     }
 }
 
@@ -22,6 +22,6 @@ fn main() {
     for i in 0 .. 8 {
         worker.process(i);
     }
-    sleep_ms(500);
+    sleep(500ms);
     println("=== Done ===");
 }

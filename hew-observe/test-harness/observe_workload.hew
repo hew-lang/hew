@@ -65,11 +65,11 @@ fn main() {
         r1.forward(5);
         r2.forward(3);
         r3.forward(7);
-        sleep_ms(200);
+        sleep(200ms);
 
         // Check counts periodically
         monitor.check();
-        sleep_ms(300);
+        sleep(300ms);
 
         round += 1;
     }

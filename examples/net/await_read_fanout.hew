@@ -19,7 +19,7 @@ actor Reader {
     let port: string;
 
     receive fn go(unused: i64) {
-        sleep_ms(150);
+        sleep(150ms);
         let conn = net.connect(f"127.0.0.1:{port}");
         let body = await conn.read_string();
         println(f"reader-{id}-got: {body}");
@@ -41,6 +41,6 @@ fn main() {
         let _ = client.write_string(f"payload-{accepted}");
         accepted = accepted + 1;
     }
-    sleep_ms(800);
+    sleep(800ms);
     println("server-done");
 }

@@ -47,7 +47,7 @@ actor SlowProcessor {
     var processed: i32;
     receive fn process(item: i32) {
         processed = processed + 1;
-        sleep_ms(100);
+        sleep(100ms);
     }
     receive fn stats() -> i32 {
         processed
@@ -93,7 +93,7 @@ fn main() {
     let slow2 = spawn SlowProcessor(id: 2, processed: 0);
     let logger = spawn Logger(entries: 0);
     let acc = spawn Accumulator(total: 0);
-    sleep_ms(100);
+    sleep(100ms);
 
     // Register a named actor in the cluster registry.
     Node::register("main_counter", c1);
@@ -139,7 +139,7 @@ fn main() {
 
         // Wait 1 second between rounds. The profiler samples once per
         // second, so each round produces one sparkline data point.
-        sleep_ms(1000);
+        sleep(1000ms);
         round = round + 1;
     }
     // Print final stats.

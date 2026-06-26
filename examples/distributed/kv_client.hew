@@ -55,12 +55,12 @@ fn main() -> i64 {
     Node::set_transport("tcp");
     Node::start("0.0.0.0:0");
     println("[kv-client] local node started");
-    sleep_ms(500);
+    sleep(500ms);
     Node::connect(remote_addr);
     println(f"[kv-client] connected to {remote_addr}");
     // Wait for the connection handshake to complete and registry gossip to arrive.
     // hew_node_connect is non-blocking; gossip propagates asynchronously.
-    sleep_ms(2000);
+    sleep(2000ms);
     let found: Result<RemotePid<KeyValue>, LookupError> = Node::lookup("kv");
     match found {
         Err(_) => {
@@ -91,7 +91,7 @@ fn main() -> i64 {
             }
             println("[kv-client] put('hello','world') and put('count','42') dispatched");
             // Give the server time to process the tell messages before asking.
-            sleep_ms(500);
+            sleep(500ms);
 
             // Scenario 3: get("hello") — blocking remote ask, exercises await-over-wire.
             let ask1 = kv.ask(KvReq::GetKey("hello"), 5000);

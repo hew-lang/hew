@@ -54,7 +54,7 @@ fn main() {
     println("=== Supervised Worker Pool ===");
     println("");
     let sup = spawn Pool;
-    sleep_ms(30);
+    sleep(30ms);
     let w0 = sup.w0;
     let w1 = sup.w1;
     let w2 = sup.w2;
@@ -85,7 +85,7 @@ fn main() {
     println("");
     println("--- Worker 2 crashes ---");
     w2.crash_test();
-    sleep_ms(200);
+    sleep(200ms);
 
     // Supervisor has already restarted worker 2 — get the fresh handle
     let w2_new = sup.w2;

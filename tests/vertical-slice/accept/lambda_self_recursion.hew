@@ -17,5 +17,5 @@ fn main() {
         }
     };
     count(10);
-    sleep_ms(400);
+    sleep(400ms);
 }

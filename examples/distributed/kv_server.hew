@@ -74,7 +74,7 @@ fn main() {
     // Budget: ~90 s cold-compile for the client (under load) + 0.5 s connect sleep
     // + 2.5 s for the ask/tell round-trips + 5 s headroom = 98 s.  Use 120 s to be
     // safe; the harness kills the server after the client exits anyway.
-    sleep_ms(120000);
+    sleep(120000ms);
     let n = await kv.count();
     match n {
         Ok(cnt) => println(f"[kv-server] entries stored: {cnt}"),

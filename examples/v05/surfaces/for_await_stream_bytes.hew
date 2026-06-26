@@ -23,5 +23,5 @@ actor DrainBytes {
 fn main() {
     let worker = spawn DrainBytes(frames: 3);
     worker.run(0);
-    sleep_ms(500);
+    sleep(500ms);
 }

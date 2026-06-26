@@ -26,5 +26,5 @@ fn main() {
         println(f"[{level}] code={code}");
     };
     log("warn", 7);
-    sleep_ms(200);
+    sleep(200ms);
 }

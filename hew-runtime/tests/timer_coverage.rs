@@ -17,7 +17,10 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Mutex;
 
 use hew_runtime::deterministic::{hew_simtime_advance_ms, hew_simtime_disable, hew_simtime_enable};
-use hew_runtime::io_time::{hew_milliseconds, hew_now_ms, hew_seconds, hew_sleep_ms};
+use hew_runtime::io_time::{
+    hew_instant_now, hew_milliseconds, hew_now_ms, hew_seconds, hew_sleep_ms, hew_sleep_ns,
+    hew_sleep_until_ns,
+};
 use hew_runtime::timer_wheel::{
     hew_timer_wheel_cancel, hew_timer_wheel_free, hew_timer_wheel_new,
     hew_timer_wheel_next_deadline_ms, hew_timer_wheel_schedule, hew_timer_wheel_schedule_handle,
@@ -159,6 +162,53 @@ fn sleep_ms_short_duration() {
     assert!(
         elapsed.as_millis() >= 5,
         "hew_sleep_ms(10) should sleep for at least a few milliseconds"
+    );
+}
+
+#[test]
+fn sleep_ns_zero_returns_immediately() {
+    unsafe { hew_sleep_ns(0) };
+}
+
+#[test]
+fn sleep_ns_negative_returns_immediately() {
+    unsafe { hew_sleep_ns(-1) };
+}
+
+#[test]
+fn sleep_ns_short_duration_waits() {
+    let before = std::time::Instant::now();
+    unsafe { hew_sleep_ns(10_000_000) }; // 10ms in nanoseconds
+    let elapsed = before.elapsed();
+    assert!(
+        elapsed.as_millis() >= 5,
+        "hew_sleep_ns(10_000_000) should sleep for at least a few milliseconds"
+    );
+}
+
+#[test]
+fn sleep_until_ns_past_returns_immediately() {
+    let past_ns = unsafe { hew_instant_now() } - 1_000_000; // 1ms in the past
+    let before = std::time::Instant::now();
+    unsafe { hew_sleep_until_ns(past_ns) };
+    let elapsed = before.elapsed();
+    assert!(
+        elapsed.as_millis() < 50,
+        "hew_sleep_until_ns with past instant should return immediately, took {}ms",
+        elapsed.as_millis()
+    );
+}
+
+#[test]
+fn sleep_until_ns_near_future_waits() {
+    let target_ns = unsafe { hew_instant_now() } + 10_000_000; // 10ms ahead
+    let before = std::time::Instant::now();
+    unsafe { hew_sleep_until_ns(target_ns) };
+    let elapsed = before.elapsed();
+    assert!(
+        elapsed.as_millis() >= 5,
+        "hew_sleep_until_ns should wait at least ~10ms, waited {}ms",
+        elapsed.as_millis()
     );
 }
 

@@ -34,7 +34,7 @@ actor Worker {
 }
 
 fn nap_unit() {
-    sleep_ms(15);
+    sleep(15ms);
 }
 
 #[test]

@@ -112,24 +112,47 @@ fn builtins_exit_declares_runtime_symbol() {
 }
 
 #[test]
-fn builtins_sleep_ms_declares_i64_runtime_symbol() {
+fn builtins_sleep_declares_duration_runtime_symbol() {
     let ll = emit_ll(
         r#"
         fn main() -> i64 {
-            sleep_ms(0);
+            sleep(0ns);
             0
         }
         "#,
-        "sleep_ms",
+        "sleep",
     );
 
     assert!(
-        ll.contains("declare void @hew_sleep_ms(i64)"),
-        "sleep_ms(i64) must declare hew_sleep_ms with the catalog ABI:\n{ll}"
+        ll.contains("declare void @hew_sleep_ns(i64)"),
+        "sleep(duration) must declare hew_sleep_ns with the catalog ABI:\n{ll}"
     );
     assert!(
-        ll.contains("call void @hew_sleep_ms(i64 "),
-        "sleep_ms(0) must call hew_sleep_ms:\n{ll}"
+        ll.contains("call void @hew_sleep_ns(i64 "),
+        "sleep(0ns) must call hew_sleep_ns:\n{ll}"
+    );
+}
+
+#[test]
+fn builtins_sleep_until_declares_instant_runtime_symbol() {
+    let ll = emit_ll(
+        r#"
+        fn main() -> i64 {
+            let t = instant::now();
+            sleep_until(t);
+            0
+        }
+        "#,
+        "sleep_until",
+    );
+
+    assert!(
+        ll.contains("declare void @hew_sleep_until_ns(i64)"),
+        "sleep_until(instant) must declare hew_sleep_until_ns with the catalog ABI:\n{ll}"
+    );
+    assert!(
+        ll.contains("call void @hew_sleep_until_ns(i64 "),
+        "sleep_until(t) must call hew_sleep_until_ns:\n{ll}"
     );
 }
 

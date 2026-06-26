@@ -77,11 +77,11 @@ actor Deadliner {
 }
 
 fn nap_long() {
-    sleep_ms(100);
+    sleep(100ms);
 }
 
 fn nap_short() {
-    sleep_ms(10);
+    sleep(10ms);
 }
 
 #[test]

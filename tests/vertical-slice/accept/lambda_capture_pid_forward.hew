@@ -21,7 +21,7 @@ fn main() -> i64 {
     let forward = actor |by: i64| { counter.increment(by); };
     forward(10);
     forward(32);
-    sleep_ms(300);
+    sleep(300ms);
     match await counter.total() {
         Ok(v) => v,
         Err(_e) => 0,

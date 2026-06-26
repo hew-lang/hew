@@ -17,7 +17,7 @@ actor Reader {
     let addr: string;
 
     receive fn go(unused: i64) {
-        sleep_ms(200);
+        sleep(200ms);
         let conn = net.connect(addr);
         let read_twice = || {
             let first = await conn.read_string();
@@ -39,8 +39,8 @@ fn main() {
     reader.go(0);
     let client = listener.accept();
     let _ = client.write_string("payload");
-    sleep_ms(300);
+    sleep(300ms);
     let _ = client.close();
-    sleep_ms(300);
+    sleep(300ms);
     println("server-done");
 }

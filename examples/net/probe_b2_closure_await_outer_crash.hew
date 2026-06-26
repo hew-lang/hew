@@ -26,7 +26,7 @@ extern "C" {
 actor Reader {
     let addr: string;
     receive fn go(trigger: i64) -> i64 {
-        sleep_ms(200);
+        sleep(200ms);
         let conn = net.connect(addr);
         let read_once = || {
             if trigger >= 0 {

@@ -202,9 +202,21 @@ pub(crate) struct SuspendingRestartWaitEmit {
 }
 
 /// Carrier for [`emit_suspending_sleep_terminator`] — the suspending
-/// `sleep_ms(d)` ramp (`Terminator::SuspendingSleep`).
+/// `sleep(d)` ramp (`Terminator::SuspendingSleep`).
 pub(crate) struct SuspendingSleepEmit {
-    pub(crate) duration_ms: Place,
+    /// Place holding the `duration` value (i64 nanoseconds).
+    /// Codegen converts to milliseconds before arming the timer wheel.
+    pub(crate) duration_ns: Place,
+    pub(crate) resume: u32,
+    pub(crate) cleanup: u32,
+}
+
+/// Carrier for [`emit_suspending_sleep_until_terminator`] — the suspending
+/// `sleep_until(i)` ramp (`Terminator::SuspendingSleepUntil`).
+pub(crate) struct SuspendingSleepUntilEmit {
+    /// Place holding the `instant` value (i64 nanoseconds, monotonic).
+    /// Codegen computes `max(0, instant − now) / 1_000_000` then arms the wheel.
+    pub(crate) instant_ns: Place,
     pub(crate) resume: u32,
     pub(crate) cleanup: u32,
 }
@@ -3395,6 +3407,7 @@ pub(crate) fn emit_suspending_sleep_terminator<'ctx>(
     }
 
     let i32_ty = fn_ctx.ctx.i32_type();
+    let i64_ty = fn_ctx.ctx.i64_type();
     let actor_self_fn = intern_runtime_decl(
         fn_ctx.ctx,
         fn_ctx.llvm_mod,
@@ -3409,7 +3422,29 @@ pub(crate) fn emit_suspending_sleep_terminator<'ctx>(
         .basic()
         .ok_or_else(|| CodegenError::FailClosed("hew_actor_self returned void".into()))?
         .into_pointer_value();
-    let duration = load_place_as_basic(fn_ctx, term.duration_ms, "suspending_sleep_duration")?
+    // `duration_ns` carries nanoseconds; `hew_await_cancel_schedule_deadline_ms`
+    // expects milliseconds — divide by 1_000_000 (saturate to 0 on negative).
+    let duration_ns =
+        load_place_as_basic(fn_ctx, term.duration_ns, "suspending_sleep_dur_ns")?.into_int_value();
+    let ns_per_ms = i64_ty.const_int(1_000_000, false);
+    let dur_ms_raw = fn_ctx
+        .builder
+        .build_int_signed_div(duration_ns, ns_per_ms, "suspending_sleep_dur_ms_raw")
+        .llvm_ctx("sleep dur ns→ms sdiv")?;
+    let zero_i64 = i64_ty.const_zero();
+    let is_neg = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::SLT,
+            dur_ms_raw,
+            zero_i64,
+            "suspending_sleep_dur_neg",
+        )
+        .llvm_ctx("sleep dur neg cmp")?;
+    let duration = fn_ctx
+        .builder
+        .build_select(is_neg, zero_i64, dur_ms_raw, "suspending_sleep_dur_ms")
+        .llvm_ctx("sleep dur clamp")?
         .into_int_value();
 
     let null_ptr = fn_ctx
@@ -3564,6 +3599,245 @@ pub(crate) fn emit_suspending_sleep_terminator<'ctx>(
                 .builder
                 .build_unconditional_branch(resume_bb)
                 .llvm_ctx("suspending sleep bind -> resume br")?;
+            Ok(())
+        },
+    )
+}
+
+/// Emit the caller-side cooperative `sleep_until(i)` (`Terminator::SuspendingSleepUntil`).
+///
+/// Identical structure to [`emit_suspending_sleep_terminator`] except that the
+/// deadline is computed as `max(0, instant_ns − now_ns) / 1_000_000` milliseconds
+/// rather than being supplied directly as a duration.
+pub(crate) fn emit_suspending_sleep_until_terminator<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    term: SuspendingSleepUntilEmit,
+) -> CodegenResult<()> {
+    let coro = fn_ctx.coro.ok_or_else(|| {
+        CodegenError::FailClosed(
+            "Terminator::SuspendingSleepUntil reached codegen but the function carries \
+             no coro prologue state"
+                .into(),
+        )
+    })?;
+    let resume_bb = *fn_ctx.blocks.get(&term.resume).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "SuspendingSleepUntil resume target bb{} not found",
+            term.resume
+        ))
+    })?;
+    if !fn_ctx.blocks.contains_key(&term.cleanup) {
+        return Err(CodegenError::FailClosed(format!(
+            "SuspendingSleepUntil cleanup target bb{} not found",
+            term.cleanup
+        )));
+    }
+
+    let i32_ty = fn_ctx.ctx.i32_type();
+    let i64_ty = fn_ctx.ctx.i64_type();
+
+    let actor_self_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_actor_self",
+    )?;
+    let self_actor = fn_ctx
+        .builder
+        .build_call(actor_self_fn, &[], "sleep_until_self")
+        .llvm_ctx("hew_actor_self call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_actor_self returned void".into()))?
+        .into_pointer_value();
+
+    // Compute remaining = max(0, instant_ns − now_ns) / 1_000_000 ms.
+    let instant_ns =
+        load_place_as_basic(fn_ctx, term.instant_ns, "sleep_until_instant_ns")?.into_int_value();
+    let now_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_instant_now",
+    )?;
+    let now_ns = fn_ctx
+        .builder
+        .build_call(now_fn, &[], "sleep_until_now_ns")
+        .llvm_ctx("hew_instant_now call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_instant_now returned void".into()))?
+        .into_int_value();
+    let remaining_ns = fn_ctx
+        .builder
+        .build_int_sub(instant_ns, now_ns, "sleep_until_remaining_ns")
+        .llvm_ctx("sleep_until remaining_ns sub")?;
+    let zero_i64 = i64_ty.const_zero();
+    let is_past = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::SLE,
+            remaining_ns,
+            zero_i64,
+            "sleep_until_is_past",
+        )
+        .llvm_ctx("sleep_until past cmp")?;
+    let remaining_clamped = fn_ctx
+        .builder
+        .build_select(
+            is_past,
+            zero_i64,
+            remaining_ns,
+            "sleep_until_remaining_clamped",
+        )
+        .llvm_ctx("sleep_until clamp")?
+        .into_int_value();
+    let ns_per_ms = i64_ty.const_int(1_000_000, false);
+    let delay_ms = fn_ctx
+        .builder
+        .build_int_signed_div(remaining_clamped, ns_per_ms, "sleep_until_delay_ms")
+        .llvm_ctx("sleep_until ns→ms sdiv")?;
+
+    let null_ptr = fn_ctx
+        .ctx
+        .ptr_type(inkwell::AddressSpace::default())
+        .const_null();
+    let cancel_new = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_await_cancel_new",
+    )?;
+    let reg = fn_ctx
+        .builder
+        .build_call(
+            cancel_new,
+            &[self_actor.into(), null_ptr.into(), null_ptr.into()],
+            "sleep_until_reg",
+        )
+        .llvm_ctx("hew_await_cancel_new call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_await_cancel_new returned void".into()))?
+        .into_pointer_value();
+
+    let tw_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_global_timer_wheel",
+    )?;
+    let tw = fn_ctx
+        .builder
+        .build_call(tw_fn, &[], "sleep_until_tw")
+        .llvm_ctx("hew_global_timer_wheel call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_global_timer_wheel returned void".into()))?
+        .into_pointer_value();
+    let schedule = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_await_cancel_schedule_deadline_ms",
+    )?;
+    let sched_rc = fn_ctx
+        .builder
+        .build_call(
+            schedule,
+            &[reg.into(), tw.into(), delay_ms.into()],
+            "sleep_until_schedule",
+        )
+        .llvm_ctx("hew_await_cancel_schedule_deadline_ms call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| {
+            CodegenError::FailClosed("hew_await_cancel_schedule_deadline_ms returned void".into())
+        })?
+        .into_int_value();
+
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| {
+            CodegenError::Llvm("suspending sleep_until block has no parent function".into())
+        })?;
+    let do_suspend_bb = fn_ctx.ctx.append_basic_block(parent, "sleep_until_suspend");
+    let bind_bb = fn_ctx.ctx.append_basic_block(parent, "sleep_until_bind");
+
+    let armed = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            sched_rc,
+            sched_rc.get_type().const_zero(),
+            "sleep_until_armed",
+        )
+        .llvm_ctx("sleep_until armed compare")?;
+    fn_ctx
+        .builder
+        .build_conditional_branch(armed, do_suspend_bb, bind_bb)
+        .llvm_ctx("sleep_until arm branch")?;
+
+    let reg_complete = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_await_cancel_complete",
+    )?;
+    let reg_cancel = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_await_cancel_cancel",
+    )?;
+    let reg_free = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_await_cancel_free",
+    )?;
+
+    fn_ctx.builder.position_at_end(do_suspend_bb);
+    emit_suspend_point(
+        fn_ctx,
+        coro,
+        parent,
+        bind_bb,
+        "sleep_until",
+        "sleep_until_abandon_cleanup",
+        "sleep_until abandon -> shared cleanup br",
+        || {
+            let cancelled_status = i32_ty.const_int(2, false); // Cancelled
+            let no_wake = i32_ty.const_zero();
+            fn_ctx
+                .builder
+                .build_call(
+                    reg_cancel,
+                    &[reg.into(), cancelled_status.into(), no_wake.into()],
+                    "sleep_until_abandon_cancel",
+                )
+                .llvm_ctx("hew_await_cancel_cancel (sleep_until abandon) call")?;
+            fn_ctx
+                .builder
+                .build_call(reg_free, &[reg.into()], "sleep_until_abandon_free")
+                .llvm_ctx("hew_await_cancel_free (sleep_until abandon) call")?;
+            Ok(())
+        },
+        || {
+            fn_ctx
+                .builder
+                .build_call(reg_complete, &[reg.into()], "sleep_until_complete")
+                .llvm_ctx("hew_await_cancel_complete call")?;
+            fn_ctx
+                .builder
+                .build_call(reg_free, &[reg.into()], "sleep_until_bind_free")
+                .llvm_ctx("hew_await_cancel_free (sleep_until bind) call")?;
+            fn_ctx
+                .builder
+                .build_unconditional_branch(resume_bb)
+                .llvm_ctx("sleep_until bind -> resume br")?;
             Ok(())
         },
     )

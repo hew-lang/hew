@@ -82,12 +82,12 @@ fn main() {
     println("=== Nested Supervisor Tree ===");
     println("");
     let app = spawn AppSupervisor;
-    sleep_ms(100);
+    sleep(100ms);
 
     // Get inner supervisors
     let workers_sup = app.workers;
     let cache_mgr = app.cache_mgr;
-    sleep_ms(50);
+    sleep(50ms);
 
     // Get individual workers and cache
     let w1 = workers_sup.w1;
@@ -96,26 +96,26 @@ fn main() {
     // Normal operation
     println("--- Normal Operation ---");
     w1.process(100);
-    sleep_ms(20);
+    sleep(20ms);
     w2.process(200);
-    sleep_ms(20);
+    sleep(20ms);
     cache.store(42);
-    sleep_ms(30);
+    sleep(30ms);
 
     // Worker crashes — inner supervisor restarts it
     println("");
     println("--- Worker Crash (handled by WorkerPool) ---");
     w1.fail();
-    sleep_ms(500);
+    sleep(500ms);
 
     // Fresh worker is operational
     let w1b = workers_sup.w1;
     w1b.process(101);
-    sleep_ms(20);
+    sleep(20ms);
 
     // Cache is unaffected (different subtree)
     cache.store(99);
-    sleep_ms(30);
+    sleep(30ms);
     println("");
     println("Tree structure preserved. Crash isolation works across subtrees.");
 }

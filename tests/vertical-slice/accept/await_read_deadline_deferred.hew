@@ -17,7 +17,7 @@ extern "C" {
 actor Reader {
     let port: i32;
     receive fn go() {
-        sleep_ms(100);
+        sleep(100ms);
         let conn = net.connect(f"127.0.0.1:{port}");
         let code = match await conn.read() | after 60ms {
             Ok(_body) => 42,
@@ -40,7 +40,7 @@ fn main() {
     let reader = spawn Reader(port: port);
     reader.go();
     let client = listener.accept();
-    sleep_ms(500);
+    sleep(500ms);
     let _ = client.close();
     exit(99);
 }

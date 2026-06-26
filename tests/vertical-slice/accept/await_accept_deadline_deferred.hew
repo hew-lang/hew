@@ -21,6 +21,6 @@ actor Server {
 fn main() {
     let s = spawn Server;
     s.go();
-    sleep_ms(500);
+    sleep(500ms);
     exit(99);
 }

@@ -28,5 +28,5 @@ actor Driver {
 
 fn main() {
     let _d = spawn Driver;
-    sleep_ms(20);
+    sleep(20ms);
 }

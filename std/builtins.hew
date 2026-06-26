@@ -869,11 +869,34 @@ pub fn write_file(path: string, content: string) {}
 // ---------------------------------------------------------------------------
 // Program control
 // ---------------------------------------------------------------------------
-/// Pause execution for the given number of milliseconds.
-pub fn sleep_ms(ms: i64) {}
+/// Pause execution for the given duration.
+///
+/// The caller suspends cooperatively (inside an actor handler) or blocks the
+/// thread (in `fn main` / free functions).
+///
+/// # Examples
+///
+/// ```
+/// sleep(10ms);   // sleep for 10 milliseconds
+/// sleep(2s);     // sleep for 2 seconds
+/// sleep(500ms);  // sleep for 500 milliseconds
+/// ```
+pub fn sleep(d: duration) {}
 
-/// Pause execution for the given number of seconds.
-pub fn sleep(seconds: i64) {}
+/// Pause execution until the given monotonic `instant`.
+///
+/// If `target` is already in the past, returns immediately. Equivalent to
+/// `sleep(target.duration_since(instant::now()))` but with precision scheduling
+/// directly to the target point.
+///
+/// # Examples
+///
+/// ```
+/// let deadline = instant::now();
+/// // ... do work ...
+/// sleep_until(deadline);   // wait until the deadline if not yet reached
+/// ```
+pub fn sleep_until(target: instant) {}
 
 /// Stop an actor gracefully.
 pub fn stop(target: dyn Display) {}

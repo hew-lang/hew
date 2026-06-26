@@ -905,7 +905,9 @@ fn wasm_excluded_suspend_kind_symbol(kind: &SuspendKind) -> Option<&'static str>
         // with the structured `WasmUnsupportedSubstrate` rather than a wasm-ld
         // dangling reference.
         SuspendKind::RestartWait { .. } => Some("hew_supervisor_restart_await_suspend"),
-        SuspendKind::Sleep { .. } => Some("hew_await_cancel_schedule_deadline_ms"),
+        SuspendKind::Sleep { .. } | SuspendKind::SleepUntil { .. } => {
+            Some("hew_await_cancel_schedule_deadline_ms")
+        }
         SuspendKind::Ask { .. }
         | SuspendKind::Read { .. }
         | SuspendKind::Accept { .. }
@@ -26080,14 +26082,24 @@ fn dispatch_collapsed_suspend<'ctx>(
                 cleanup,
             },
         ),
-        SuspendKind::Sleep { duration_ms } => crate::suspend::emit_suspending_sleep_terminator(
+        SuspendKind::Sleep { duration_ns } => crate::suspend::emit_suspending_sleep_terminator(
             fn_ctx,
             crate::suspend::SuspendingSleepEmit {
-                duration_ms: *duration_ms,
+                duration_ns: *duration_ns,
                 resume,
                 cleanup,
             },
         ),
+        SuspendKind::SleepUntil { instant_ns } => {
+            crate::suspend::emit_suspending_sleep_until_terminator(
+                fn_ctx,
+                crate::suspend::SuspendingSleepUntilEmit {
+                    instant_ns: *instant_ns,
+                    resume,
+                    cleanup,
+                },
+            )
+        }
     }
 }
 
@@ -42344,7 +42356,7 @@ mod tests {
             suspend_kinds: std::collections::HashMap::from([(
                 0,
                 SuspendKind::Sleep {
-                    duration_ms: Place::Local(0),
+                    duration_ns: Place::Local(0),
                 },
             )]),
             lambda_actor_user_param_locals: Vec::new(),

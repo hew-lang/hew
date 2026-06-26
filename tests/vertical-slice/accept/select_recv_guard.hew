@@ -26,5 +26,5 @@ actor Worker {
 
 fn main() {
     let _w = spawn Worker;
-    sleep_ms(50);
+    sleep(50ms);
 }

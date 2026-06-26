@@ -24,6 +24,6 @@ actor Reader {
 fn main() {
     let r = spawn Reader;
     r.go(0);
-    sleep_ms(300);
+    sleep(300ms);
     println("done");
 }

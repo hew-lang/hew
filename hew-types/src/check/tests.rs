@@ -20466,34 +20466,19 @@ mod wasm_rejects {
             .any(|w| w.kind == TypeErrorKind::PlatformLimitation && w.message.contains(fragment))
     }
 
-    // ── sleep_ms ─────────────────────────────────────────────────────────────
+    // ── sleep / sleep_until ──────────────────────────────────────────────────
 
     #[test]
-    fn wasm_rejects_sleep_ms() {
-        let output = check_wasm("fn main() { sleep_ms(100); }");
+    fn wasm_warns_sleep_duration() {
+        let output = check_wasm("fn main() { sleep(100ms); }");
         assert!(
             has_platform_limitation_warning(&output),
-            "sleep_ms should emit a PlatformLimitation warning on WASM; got warnings: {:?}",
+            "sleep(duration) should emit a PlatformLimitation warning on WASM; got warnings: {:?}",
             output.warnings
         );
         assert!(
             platform_warning_contains(&output, "Timer"),
             "warning message should mention Timer feature; got: {:?}",
-            output.warnings
-        );
-        assert!(
-            !has_platform_limitation_error(&output),
-            "sleep_ms should NOT be a compile-time error on WASM (cooperative semantics); got errors: {:?}",
-            output.errors
-        );
-    }
-
-    #[test]
-    fn wasm_rejects_sleep() {
-        let output = check_wasm("fn main() { sleep(1); }");
-        assert!(
-            has_platform_limitation_warning(&output),
-            "sleep should emit a PlatformLimitation warning on WASM; got warnings: {:?}",
             output.warnings
         );
         assert!(
@@ -20504,11 +20489,26 @@ mod wasm_rejects {
     }
 
     #[test]
-    fn native_sleep_ms_no_platform_error() {
-        let output = check_native("fn main() { sleep_ms(100); }");
+    fn wasm_warns_sleep_until() {
+        let output = check_wasm("fn main() { let t = instant::now(); sleep_until(t); }");
+        assert!(
+            has_platform_limitation_warning(&output),
+            "sleep_until should emit a PlatformLimitation warning on WASM; got warnings: {:?}",
+            output.warnings
+        );
         assert!(
             !has_platform_limitation_error(&output),
-            "sleep_ms should not emit PlatformLimitation on native target; got: {:?}",
+            "sleep_until should NOT be a compile-time error on WASM; got errors: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn native_sleep_no_platform_error() {
+        let output = check_native("fn main() { sleep(100ms); }");
+        assert!(
+            !has_platform_limitation_error(&output),
+            "sleep should not emit PlatformLimitation on native target; got: {:?}",
             output.errors
         );
     }
@@ -21347,7 +21347,7 @@ fn main() {
     fn wasm_reject_deduplicates_same_span() {
         // Two consecutive calls at different call sites should produce two
         // warnings, not one (each span is unique).
-        let output = check_wasm("fn main() { sleep_ms(100); sleep_ms(200); }");
+        let output = check_wasm("fn main() { sleep(100ms); sleep(200ms); }");
         let count = output
             .warnings
             .iter()
@@ -21355,7 +21355,7 @@ fn main() {
             .count();
         assert_eq!(
             count, 2,
-            "two distinct sleep_ms call sites should produce two warnings; got: {:?}",
+            "two distinct sleep call sites should produce two warnings; got: {:?}",
             output.warnings
         );
     }
@@ -25720,8 +25720,8 @@ mod assoc_types_slice2 {
     /// A classified `extern "rt"` symbol must not produce an error.
     #[test]
     fn extern_rt_classified_symbol_accepted() {
-        // hew_sleep_ms is in the stable list.
-        let extern_item = make_extern_rt_block(&["hew_sleep_ms"]);
+        // hew_sleep_ns is in the stable list.
+        let extern_item = make_extern_rt_block(&["hew_sleep_ns"]);
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&Program {
             items: vec![(extern_item, 0..30)],
@@ -25735,7 +25735,7 @@ mod assoc_types_slice2 {
             .collect();
         assert!(
             rt_errors.is_empty(),
-            "classified symbol hew_sleep_ms must not produce ExternRtSymbolUnclassified; \
+            "classified symbol hew_sleep_ns must not produce ExternRtSymbolUnclassified; \
              got: {rt_errors:?}"
         );
     }

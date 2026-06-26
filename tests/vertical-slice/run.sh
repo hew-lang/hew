@@ -414,7 +414,8 @@ expect_check_fail_contains \
 
 run_accept_expect_status "assert_eq" 0
 run_accept_expect_status "assert_ne" 0
-run_accept_expect_status "sleep_ms" 0
+run_accept_expect_status "sleep_duration" 0
+run_accept_expect_status "sleep_until" 0
 
 # Static trait dispatch through supertrait bounds:
 # - reject missing concrete dispatch target at checker time, before MIR;

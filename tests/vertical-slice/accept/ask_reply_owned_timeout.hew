@@ -16,7 +16,7 @@ actor SlowWorker {
     receive fn label() -> string {
 
         // Reply arrives well after the 10 ms deadline → cancel leg.
-        sleep_ms(50);
+        sleep(50ms);
         "late-owned-reply".to_uppercase()
     }
 }

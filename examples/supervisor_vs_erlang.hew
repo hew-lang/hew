@@ -98,31 +98,31 @@ fn main() {
     println("─── Connection Pool Demo ───");
     println("");
     let sup = spawn ConnectionPool;
-    sleep_ms(30);
+    sleep(30ms);
     let reader = sup.reader;
     let writer = sup.writer;
     // Normal operation
     reader.handle(1);
-    sleep_ms(10);
+    sleep(10ms);
     writer.handle(2);
-    sleep_ms(10);
+    sleep(10ms);
     reader.handle(3);
-    sleep_ms(30);
+    sleep(30ms);
 
     // Reader crashes — writer keeps running
     println("");
     println("Reader connection drops:");
     reader.fail();
-    sleep_ms(300);
+    sleep(300ms);
 
     // New reader is already running (supervisor restarted it)
     println("");
     println("After automatic restart:");
     let reader2 = sup.reader;
     reader2.handle(4);
-    sleep_ms(10);
+    sleep(10ms);
     writer.handle(5);
-    sleep_ms(30);
+    sleep(30ms);
     println("");
     println("Zero downtime. Zero manual recovery. That's supervision.");
 }

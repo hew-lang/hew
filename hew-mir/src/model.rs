@@ -1846,8 +1846,17 @@ pub enum SuspendKind {
         result_dest: Place,
         deadline_result_dest: Option<Place>,
     },
-    /// Non-blocking `sleep_ms(d)` / `sleep(d)` (`SuspendingSleep`).
-    Sleep { duration_ms: Place },
+    /// `sleep(d)` — suspends for the given `duration` (`SuspendingSleep`).
+    ///
+    /// `duration_ns` is a `Place` holding a `duration` value (i64 nanoseconds).
+    /// Codegen converts to milliseconds before arming the timer wheel.
+    Sleep { duration_ns: Place },
+    /// `sleep_until(i)` — suspends until the given `instant` (`SuspendingSleepUntil`).
+    ///
+    /// `instant_ns` is a `Place` holding an `instant` value (i64 nanoseconds,
+    /// the same ABI as `duration`). Codegen computes `max(0, instant − now) / 1_000_000`
+    /// and arms the timer wheel for that many milliseconds.
+    SleepUntil { instant_ns: Place },
 }
 
 /// A lexical scope's facts for gdb `-g` `DILexicalBlock` emission, threaded from

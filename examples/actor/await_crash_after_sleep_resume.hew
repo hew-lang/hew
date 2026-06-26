@@ -18,8 +18,8 @@
 // not statically unreachable ahead of the suspends.
 actor Reader {
     receive fn go(trigger: i64) -> i64 {
-        sleep_ms(50);
-        sleep_ms(50);
+        sleep(50ms);
+        sleep(50ms);
         if trigger >= 0 {
             panic("reader crashed after sleep resume");
         }

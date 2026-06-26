@@ -117,7 +117,7 @@ fn main() {
     // (`pool` is a reserved word in Hew, so the handle is named `workers`.)
     let workers = spawn WorkerPool;
     let stack = spawn ServiceStack;
-    sleep_ms(100);
+    sleep(100ms);
 
     // Typed handles to the supervised children. The compiler knows the field
     // types from the supervisor declaration.
@@ -142,7 +142,7 @@ fn main() {
         cache.handle();
         i = i + 1;
     }
-    sleep_ms(200);
+    sleep(200ms);
 
     // ── Crash + restart ──
     // Crash `alpha` once. Under one_for_one only `alpha` restarts; beta and
@@ -150,14 +150,14 @@ fn main() {
     // Supervisors tab shows `alpha (restarts: 1)`.
     println("--- crashing worker 'alpha' (one_for_one restart) ---");
     alpha.crash();
-    sleep_ms(300);
+    sleep(300ms);
 
     // Re-fetch the restarted child's handle and resume work. Its `processed`
     // counter is reset to the default (0) because the restart spawns a fresh
     // actor — visible if you compare it against its still-running siblings.
     let alpha2 = workers.alpha;
     alpha2.process(999);
-    sleep_ms(100);
+    sleep(100ms);
     println("Worker restarted. Supervision tree is intact.");
     println("Running steady workload for ~60 seconds so you can watch...");
     println("");
@@ -177,7 +177,7 @@ fn main() {
         }
         api.handle();
         cache.handle();
-        sleep_ms(1000);
+        sleep(1000ms);
         round = round + 1;
     }
     // Final tallies — proves the restarted worker kept processing and the

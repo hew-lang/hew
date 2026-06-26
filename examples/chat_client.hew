@@ -69,5 +69,5 @@ fn main() {
             let _ = conn.write_string(outbound);
         }
     }
-    sleep_ms(50);
+    sleep(50ms);
 }

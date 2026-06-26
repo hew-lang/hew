@@ -105,10 +105,10 @@ fn main() {
     let s = spawn Server(addr: "127.0.0.1:18234", requests: 2);
     let c = spawn Client(addr: "127.0.0.1:18234", host: "127.0.0.1");
     s.serve(0);
-    sleep_ms(300);
+    sleep(300ms);
     c.fetch("/hello");
-    sleep_ms(400);
+    sleep(400ms);
     c.fetch("/health");
-    sleep_ms(600);
+    sleep(600ms);
     println("done");
 }

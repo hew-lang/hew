@@ -47,7 +47,7 @@ fn self_send_drives_bounded_recursion_to_exact_terminal() {
     c.go();
     // The self-sends drain through the mailbox; the ask serialises behind them.
     // sleep gives the bounded self-send chain time to complete before observing.
-    sleep_ms(100);
+    sleep(100ms);
     match await c.total() {
         Ok(n) => testing.assert_eq(n, 3),
         Err(_) => testing.assert_true(false),
@@ -58,7 +58,7 @@ fn self_send_drives_bounded_recursion_to_exact_terminal() {
 fn self_send_with_higher_bound_reaches_that_bound() {
     let p = spawn Pump();
     p.go();
-    sleep_ms(100);
+    sleep(100ms);
     match await p.total() {
         Ok(n) => testing.assert_eq(n, 7),
         Err(_) => testing.assert_true(false),

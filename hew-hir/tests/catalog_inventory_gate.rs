@@ -154,8 +154,12 @@ fn stable_symbol_parser_is_non_empty() {
         "hew_duplex_send missing from stable"
     );
     assert!(
-        stable.contains("hew_sleep_ms"),
-        "hew_sleep_ms missing from stable"
+        stable.contains("hew_sleep_ns"),
+        "hew_sleep_ns missing from stable"
+    );
+    assert!(
+        stable.contains("hew_sleep_until_ns"),
+        "hew_sleep_until_ns missing from stable"
     );
 }
 

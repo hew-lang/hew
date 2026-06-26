@@ -75,7 +75,9 @@ use hew_mir::{
     RawMirFunction, RecordLayout, RegexLiteral, StateFieldCloneKind, SupervisorChildLayout,
     SupervisorLayout, SuspendKind, Terminator, TrapKind,
 };
-use hew_types::{BuiltinType, NumericWidth, ResolvedTy, WireCodecDirection, WireLayoutTable};
+use hew_types::{
+    BuiltinType, NumericWidth, ResolvedTy, WireCodecDirection, WireLayoutTable, WireTextFormat,
+};
 // Single source of truth for the trap discriminants codegen emits. Importing
 // these from the runtime makes a renumber on either side a build error rather
 // than a silently-desynced hand-copied literal (the `codegen-offset-mirror-drift`
@@ -15653,18 +15655,430 @@ fn lower_wire_codec_instr<'ctx>(
                 .llvm_ctx("wire decode free value")?;
             Ok(())
         }
-        // The text-format directions are lowered through the CBOR↔text bridge
-        // (`lower_wire_text_codec_instr`), wired by Stage 3 of the codec lane.
-        // Until that arm lands, fail closed rather than miscompile a
-        // `to_json`/`from_json` call.
+        // The text-format directions are lowered through the CBOR↔text bridge:
+        // the existing CBOR thunk builds/consumes the value tree, and a generic
+        // runtime transcode maps it to/from JSON/YAML using the per-type
+        // descriptor global.
         WireCodecDirection::ToJson
         | WireCodecDirection::FromJson
         | WireCodecDirection::ToYaml
-        | WireCodecDirection::FromYaml => Err(CodegenError::FailClosed(format!(
-            "wire text codec direction {direction:?} not yet lowered \
-             (text-format bridge pending)"
-        ))),
+        | WireCodecDirection::FromYaml => {
+            lower_wire_text_codec_instr(fn_ctx, dest, operand, direction, value_ty, &key)
+        }
     }
+}
+
+/// LLVM constants matching the runtime `wire_text` `FORMAT_*` selectors.
+const WIRE_TEXT_FORMAT_JSON: u64 = 0;
+const WIRE_TEXT_FORMAT_YAML: u64 = 1;
+
+/// Lower a text-format wire codec call (`to_json`/`from_json`/`to_yaml`/
+/// `from_yaml`) through the CBOR↔text bridge.
+///
+/// SERIALIZE (`to_json`/`to_yaml`): call the existing `__hew_cbor_serialize_<key>`
+/// thunk to build the CBOR value tree, hand it to `hew_wire_cbor_to_text` with the
+/// type's descriptor global, free the CBOR buffer, and store the returned text
+/// `string` into `dest`.
+///
+/// DESERIALIZE (`from_json`/`from_yaml`): call `hew_wire_text_to_cbor` to parse
+/// the input text into CBOR bytes (or an error message). On parse/transcode
+/// failure, construct `Err(message)` into the `Result<T, string>` `dest` — never
+/// a trap. On success, feed the CBOR bytes to `__hew_cbor_deserialize_<key>`; a
+/// null return (the CBOR walk's own fail-closed gate for a shape/range mismatch)
+/// constructs `Err(...)`, and a non-null reconstruction constructs `Ok(value)`.
+fn lower_wire_text_codec_instr<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    dest: Place,
+    operand: Place,
+    direction: WireCodecDirection,
+    value_ty: &ResolvedTy,
+    key: &str,
+) -> CodegenResult<()> {
+    let format = match direction.text_format() {
+        Some(WireTextFormat::Json) => WIRE_TEXT_FORMAT_JSON,
+        Some(WireTextFormat::Yaml) => WIRE_TEXT_FORMAT_YAML,
+        None => {
+            return Err(CodegenError::FailClosed(
+                "lower_wire_text_codec_instr called with a non-text direction".into(),
+            ));
+        }
+    };
+    let text_format = direction.text_format().expect("checked Some above");
+    let desc_name = wire_desc_global_name(key, text_format);
+    if direction.is_serialize() {
+        lower_wire_text_serialize(fn_ctx, dest, operand, key, format, &desc_name)
+    } else {
+        lower_wire_text_deserialize(fn_ctx, dest, operand, value_ty, key, format, &desc_name)
+    }
+}
+
+/// SERIALIZE half of [`lower_wire_text_codec_instr`].
+fn lower_wire_text_serialize<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    dest: Place,
+    operand: Place,
+    key: &str,
+    format: u64,
+    desc_name: &str,
+) -> CodegenResult<()> {
+    let ctx = fn_ctx.ctx;
+    let builder = &fn_ctx.builder;
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i32_ty = ctx.i32_type();
+    let size_ty = runtime_size_ty(ctx, fn_ctx.llvm_mod);
+
+    // Build the CBOR value tree from the receiver value via the existing thunk.
+    let (value_ptr, _slot_ty) = place_pointer(fn_ctx, operand)?;
+    let out_len = builder
+        .build_alloca(size_ty, "wire_text_ser_len")
+        .llvm_ctx("wire text ser len alloca")?;
+    let ser_fn = get_or_declare_cbor_serialize_thunk(ctx, fn_ctx.llvm_mod, key);
+    let cbor_ptr = builder
+        .build_call(
+            ser_fn,
+            &[value_ptr.into(), out_len.into()],
+            "wire_text_ser_cbor",
+        )
+        .llvm_ctx("wire text ser cbor call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("cbor serialize thunk returned void".into()))?
+        .into_pointer_value();
+    let cbor_len = builder
+        .build_load(size_ty, out_len, "wire_text_ser_cbor_len")
+        .llvm_ctx("wire text ser cbor len load")?
+        .into_int_value();
+
+    // Transcode the CBOR tree to text via the bridge + descriptor global.
+    let desc_ptr = build_const_string_ptr_in_fn(fn_ctx, desc_name)?;
+    let to_text = declare_codec_prim(
+        ctx,
+        fn_ctx.llvm_mod,
+        "hew_wire_cbor_to_text",
+        ptr_ty.fn_type(
+            &[ptr_ty.into(), size_ty.into(), ptr_ty.into(), i32_ty.into()],
+            false,
+        ),
+    );
+    let format_const = i32_ty.const_int(format, false);
+    let text_ptr = builder
+        .build_call(
+            to_text,
+            &[
+                cbor_ptr.into(),
+                cbor_len.into(),
+                desc_ptr.into(),
+                format_const.into(),
+            ],
+            "wire_text_ser_text",
+        )
+        .llvm_ctx("wire text ser to_text call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_wire_cbor_to_text returned void".into()))?
+        .into_pointer_value();
+
+    // Free the intermediate CBOR buffer (libc::malloc'd by the serialize thunk).
+    let free_buf = declare_codec_prim(
+        ctx,
+        fn_ctx.llvm_mod,
+        "hew_ser_free_bytes",
+        ctx.void_type().fn_type(&[ptr_ty.into()], false),
+    );
+    builder
+        .build_call(free_buf, &[cbor_ptr.into()], "wire_text_ser_free_cbor")
+        .llvm_ctx("wire text ser free cbor")?;
+
+    // A null text result means the descriptor or value tree was malformed (a
+    // codegen bug, never user input on this direction). Fail closed with a trap
+    // rather than store a null `string`.
+    let parent_fn = builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| CodegenError::Llvm("wire text ser block has no parent".into()))?;
+    let is_null = builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            text_ptr,
+            ptr_ty.const_null(),
+            "wire_text_ser_is_null",
+        )
+        .llvm_ctx("wire text ser null cmp")?;
+    let fail_bb = ctx.append_basic_block(parent_fn, "wire_text_ser_fail");
+    let ok_bb = ctx.append_basic_block(parent_fn, "wire_text_ser_ok");
+    builder
+        .build_conditional_branch(is_null, fail_bb, ok_bb)
+        .llvm_ctx("wire text ser null branch")?;
+    builder.position_at_end(fail_bb);
+    emit_trap_with_code(
+        fn_ctx,
+        HEW_TRAP_WIRE_DECODE_FAILED as u64,
+        "wire_text_ser_fail",
+    )?;
+    builder.position_at_end(ok_bb);
+
+    // Store the text `string` (a `ptr`) into the dest slot.
+    let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest)?;
+    builder
+        .build_store(dest_ptr, text_ptr)
+        .llvm_ctx("wire text ser store dest")?;
+    Ok(())
+}
+
+/// DESERIALIZE half of [`lower_wire_text_codec_instr`]. Builds a
+/// `Result<value_ty, string>` into `dest`, failing closed (an `Err` arm) on any
+/// malformed input rather than trapping.
+fn lower_wire_text_deserialize<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    dest: Place,
+    operand: Place,
+    value_ty: &ResolvedTy,
+    key: &str,
+    format: u64,
+    desc_name: &str,
+) -> CodegenResult<()> {
+    let ctx = fn_ctx.ctx;
+    let builder = &fn_ctx.builder;
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i32_ty = ctx.i32_type();
+    let size_ty = runtime_size_ty(ctx, fn_ctx.llvm_mod);
+    let dest_local = composite_dest_local(dest, "wire text deserialize")?;
+
+    // The operand is the input text `string` (a `ptr`).
+    let (text_slot_ptr, _ty) = place_pointer(fn_ctx, operand)?;
+    let text_ptr = builder
+        .build_load(ptr_ty, text_slot_ptr, "wire_text_de_text")
+        .llvm_ctx("wire text de text load")?
+        .into_pointer_value();
+
+    // Parse the text into CBOR bytes via the bridge. `out_err` receives a
+    // malloc'd error message string on failure.
+    let out_len = builder
+        .build_alloca(size_ty, "wire_text_de_len")
+        .llvm_ctx("wire text de len alloca")?;
+    let out_err = builder
+        .build_alloca(ptr_ty, "wire_text_de_err")
+        .llvm_ctx("wire text de err alloca")?;
+    builder
+        .build_store(out_err, ptr_ty.const_null())
+        .llvm_ctx("wire text de err init")?;
+    let desc_ptr = build_const_string_ptr_in_fn(fn_ctx, desc_name)?;
+    let to_cbor = declare_codec_prim(
+        ctx,
+        fn_ctx.llvm_mod,
+        "hew_wire_text_to_cbor",
+        ptr_ty.fn_type(
+            &[
+                ptr_ty.into(),
+                ptr_ty.into(),
+                i32_ty.into(),
+                ptr_ty.into(),
+                ptr_ty.into(),
+            ],
+            false,
+        ),
+    );
+    let format_const = i32_ty.const_int(format, false);
+    let cbor_ptr = builder
+        .build_call(
+            to_cbor,
+            &[
+                text_ptr.into(),
+                desc_ptr.into(),
+                format_const.into(),
+                out_len.into(),
+                out_err.into(),
+            ],
+            "wire_text_de_cbor",
+        )
+        .llvm_ctx("wire text de to_cbor call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_wire_text_to_cbor returned void".into()))?
+        .into_pointer_value();
+
+    let parent_fn = builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| CodegenError::Llvm("wire text de block has no parent".into()))?;
+
+    // Branch: parse failed (cbor_ptr null) → Err(out_err); else decode.
+    let parse_failed = builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            cbor_ptr,
+            ptr_ty.const_null(),
+            "wire_text_de_parse_failed",
+        )
+        .llvm_ctx("wire text de parse null cmp")?;
+    let parse_err_bb = ctx.append_basic_block(parent_fn, "wire_text_de_parse_err");
+    let decode_bb = ctx.append_basic_block(parent_fn, "wire_text_de_decode");
+    let join_bb = ctx.append_basic_block(parent_fn, "wire_text_de_join");
+    builder
+        .build_conditional_branch(parse_failed, parse_err_bb, decode_bb)
+        .llvm_ctx("wire text de parse branch")?;
+
+    // Parse-error arm: Err(out_err string).
+    builder.position_at_end(parse_err_bb);
+    let err_str = builder
+        .build_load(ptr_ty, out_err, "wire_text_de_err_str")
+        .llvm_ctx("wire text de err load")?
+        .into_pointer_value();
+    store_composite_tag(fn_ctx, dest_local, 1, "wire text deserialize parse-err")?;
+    store_into_variant_field_ptr(fn_ctx, dest_local, 1, 0, err_str.into())?;
+    builder
+        .build_unconditional_branch(join_bb)
+        .llvm_ctx("wire text de parse-err join")?;
+
+    // Decode arm: feed the CBOR bytes to the binary decode thunk.
+    builder.position_at_end(decode_bb);
+    let out_size = builder
+        .build_alloca(size_ty, "wire_text_de_struct_size")
+        .llvm_ctx("wire text de struct size alloca")?;
+    let cbor_len = builder
+        .build_load(size_ty, out_len, "wire_text_de_cbor_len")
+        .llvm_ctx("wire text de cbor len load")?
+        .into_int_value();
+    let de_fn = get_or_declare_cbor_deserialize_thunk(ctx, fn_ctx.llvm_mod, key);
+    let value_out = builder
+        .build_call(
+            de_fn,
+            &[cbor_ptr.into(), cbor_len.into(), out_size.into()],
+            "wire_text_de_value",
+        )
+        .llvm_ctx("wire text de deserialize call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("cbor deserialize thunk returned void".into()))?
+        .into_pointer_value();
+    // Free the intermediate CBOR buffer (libc::malloc'd by the bridge).
+    let free_buf = declare_codec_prim(
+        ctx,
+        fn_ctx.llvm_mod,
+        "hew_ser_free_bytes",
+        ctx.void_type().fn_type(&[ptr_ty.into()], false),
+    );
+    builder
+        .build_call(free_buf, &[cbor_ptr.into()], "wire_text_de_free_cbor")
+        .llvm_ctx("wire text de free cbor")?;
+
+    // Branch: decode failed (value_out null) → Err(message); else Ok(value).
+    let decode_failed = builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            value_out,
+            ptr_ty.const_null(),
+            "wire_text_de_decode_failed",
+        )
+        .llvm_ctx("wire text de decode null cmp")?;
+    let decode_err_bb = ctx.append_basic_block(parent_fn, "wire_text_de_decode_err");
+    let decode_ok_bb = ctx.append_basic_block(parent_fn, "wire_text_de_decode_ok");
+    builder
+        .build_conditional_branch(decode_failed, decode_err_bb, decode_ok_bb)
+        .llvm_ctx("wire text de decode branch")?;
+
+    // Decode-error arm: the CBOR bytes were well-formed JSON/YAML but did not
+    // match the type's shape/range (the binary decode walk's own fail-closed
+    // gate). Build Err with a fixed diagnostic. The message is a STATIC string
+    // global — a valid Hew `string` the Result's string-drop skips via the
+    // `is_static_string` guard (no allocation needed).
+    builder.position_at_end(decode_err_bb);
+    let msg = "wire value does not match the target type";
+    let msg_ptr = build_const_string_ptr(
+        ctx,
+        fn_ctx.llvm_mod,
+        msg,
+        &format!("__hew_wire_text_msg_{}", sanitize_symbol_fragment(msg)),
+    )?;
+    store_composite_tag(fn_ctx, dest_local, 1, "wire text deserialize decode-err")?;
+    store_into_variant_field_ptr(fn_ctx, dest_local, 1, 0, msg_ptr.into())?;
+    builder
+        .build_unconditional_branch(join_bb)
+        .llvm_ctx("wire text de decode-err join")?;
+
+    // Decode-ok arm: load the reconstructed value into the Ok variant field, then
+    // free the malloc'd value shell (mirrors the binary Decode arm).
+    builder.position_at_end(decode_ok_bb);
+    let (ok_field_ptr, ok_field_ty) = place_pointer(
+        fn_ctx,
+        Place::MachineVariant {
+            local: dest_local,
+            variant_idx: 0,
+            field_idx: 0,
+        },
+    )?;
+    let loaded = builder
+        .build_load(ok_field_ty, value_out, "wire_text_de_value_load")
+        .llvm_ctx("wire text de value load")?;
+    store_composite_tag(fn_ctx, dest_local, 0, "wire text deserialize ok")?;
+    builder
+        .build_store(ok_field_ptr, loaded)
+        .llvm_ctx("wire text de value store")?;
+    let free_fn = get_or_declare_libc_free(ctx, fn_ctx.llvm_mod);
+    builder
+        .build_call(free_fn, &[value_out.into()], "wire_text_de_free_value")
+        .llvm_ctx("wire text de free value")?;
+    builder
+        .build_unconditional_branch(join_bb)
+        .llvm_ctx("wire text de ok join")?;
+
+    builder.position_at_end(join_bb);
+    let _ = value_ty;
+    Ok(())
+}
+
+/// Look up a descriptor (or other) string global by name and materialise its
+/// pointer in the current function. The global is emitted up front by
+/// `emit_wire_text_descriptor_globals`; a missing global is a codegen wiring bug.
+fn build_const_string_ptr_in_fn<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    name: &str,
+) -> CodegenResult<PointerValue<'ctx>> {
+    fn_ctx
+        .llvm_mod
+        .get_global(name)
+        .map(|g| g.as_pointer_value())
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "wire text codec: descriptor global `{name}` was not emitted before its use \
+                 (emit_wire_text_descriptor_globals must run for every text-direction type)"
+            ))
+        })
+}
+
+/// Store an already-computed `ptr` value into a tagged-union variant payload
+/// field (the value-already-in-hand counterpart to `copy_into_variant_field`,
+/// which copies from another Place). Used for the bridge's text-codec Result
+/// construction where the payload (an error string or the loaded value) is an
+/// SSA value, not a Place.
+fn store_into_variant_field_ptr<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    dest_local: u32,
+    variant_idx: u32,
+    field_idx: u32,
+    value: BasicValueEnum<'ctx>,
+) -> CodegenResult<()> {
+    let (dst_ptr, _dst_ty) = place_pointer(
+        fn_ctx,
+        Place::MachineVariant {
+            local: dest_local,
+            variant_idx,
+            field_idx,
+        },
+    )?;
+    fn_ctx
+        .builder
+        .build_store(dst_ptr, value)
+        .llvm_ctx("wire text codec variant field store")?;
+    Ok(())
+}
+
+/// Derive a stable, symbol-safe fragment from a literal for the message global's
+/// name (so identical messages share one global).
+fn sanitize_symbol_fragment(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
 }
 
 /// The canonical `BytesTriple { ptr, i32, i32 }` LLVM struct shape — must
@@ -33332,6 +33746,19 @@ fn build_module_for_target<'ctx>(
         Some(&target_data),
     )?;
     let const_globals = emit_const_globals(ctx, &llvm_mod, &pipeline.user_consts, &record_layouts)?;
+    // Emit the per-type text-codec descriptor globals BEFORE body lowering: the
+    // `to_json`/`from_json` lowering (`lower_wire_text_codec_instr`) references
+    // them by name at each call site, so they must exist when bodies are lowered.
+    // (The CBOR thunks themselves are only declared during body lowering and
+    // defined afterward, but a global-string constant cannot be forward-declared
+    // the same way.)
+    emit_all_wire_text_descriptor_globals(
+        ctx,
+        &llvm_mod,
+        pipeline,
+        &pipeline.record_layouts,
+        &pipeline.enum_layouts,
+    )?;
     let mut fn_symbols: FnSymbolMap<'ctx> = HashMap::new();
     predeclare_stdlib_catalog(ctx, &llvm_mod, &mut fn_symbols, &record_layouts)?;
     predeclare_extern_decls(
@@ -35743,6 +36170,321 @@ fn cbor_variant_tag(
     variant_idx as u64
 }
 
+/// Resolve a wire struct field's JSON/YAML key name. An explicit `json_name` /
+/// `yaml_name` override wins; otherwise the source field name is folded through
+/// the type-level `json_case` / `yaml_case` policy (if any); otherwise the source
+/// name is used verbatim. The DECODE side reads the same descriptor, so the key
+/// the encoder writes is exactly the key the decoder looks for.
+fn wire_text_field_name(
+    field: &hew_types::WireFieldLayout,
+    case: Option<hew_parser::ast::NamingCase>,
+    format: WireTextFormat,
+) -> String {
+    let explicit = match format {
+        WireTextFormat::Json => field.json_name.as_deref(),
+        WireTextFormat::Yaml => field.yaml_name.as_deref(),
+    };
+    if let Some(name) = explicit {
+        return name.to_string();
+    }
+    match case {
+        Some(c) => apply_naming_case(&field.name, c),
+        None => field.name.clone(),
+    }
+}
+
+/// Apply a [`hew_parser::ast::NamingCase`] to a snake_case-or-mixed source
+/// identifier, producing the cased key string. Words are split on `_` and on
+/// lower→upper boundaries so both `user_id` and `userId` normalise consistently.
+fn apply_naming_case(name: &str, case: hew_parser::ast::NamingCase) -> String {
+    use hew_parser::ast::NamingCase;
+    let words = split_identifier_words(name);
+    if words.is_empty() {
+        return name.to_string();
+    }
+    match case {
+        NamingCase::SnakeCase => words.join("_"),
+        NamingCase::ScreamingSnake => words
+            .iter()
+            .map(|w| w.to_uppercase())
+            .collect::<Vec<_>>()
+            .join("_"),
+        NamingCase::KebabCase => words.join("-"),
+        NamingCase::CamelCase => {
+            let mut out = String::new();
+            for (i, w) in words.iter().enumerate() {
+                if i == 0 {
+                    out.push_str(w);
+                } else {
+                    out.push_str(&capitalize(w));
+                }
+            }
+            out
+        }
+        NamingCase::PascalCase => words.iter().map(|w| capitalize(w)).collect(),
+    }
+}
+
+/// Split a source identifier into lowercase words on `_`/`-` separators and on
+/// lower→upper case boundaries.
+fn split_identifier_words(name: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut prev_lower = false;
+    for ch in name.chars() {
+        if ch == '_' || ch == '-' {
+            if !current.is_empty() {
+                words.push(std::mem::take(&mut current));
+            }
+            prev_lower = false;
+            continue;
+        }
+        if ch.is_uppercase() && prev_lower && !current.is_empty() {
+            words.push(std::mem::take(&mut current));
+        }
+        for lc in ch.to_lowercase() {
+            current.push(lc);
+        }
+        prev_lower = ch.is_lowercase() || ch.is_ascii_digit();
+    }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    words
+}
+
+/// Capitalize the first character of a lowercase word.
+fn capitalize(word: &str) -> String {
+    let mut chars = word.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+/// Build the per-type text-codec DESCRIPTOR: a compact JSON schema string that
+/// maps each wire tag (`@N`) to its JSON/YAML key name, recursively for nested
+/// wire structs/enums, vectors, and options. The runtime `wire_text` bridge
+/// parses this to drive the CBOR↔text transcode. The schema mirrors EXACTLY the
+/// shapes the binary CBOR codec walk produces (struct = tag-keyed map, enum =
+/// integer tag / map-of-one), so the two stay in lockstep.
+///
+/// `format` selects the JSON or YAML key naming (the override + case policy may
+/// differ between the two). A type outside the supported wire-body floor emits an
+/// `{"k":"opaque"}` node, which the bridge fails closed on — never a fabricated
+/// transcode.
+fn build_text_descriptor(
+    ty: &ResolvedTy,
+    format: WireTextFormat,
+    wire_layouts: &WireLayoutTable,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> String {
+    let mut visiting: std::collections::HashSet<String> = std::collections::HashSet::new();
+    build_text_descriptor_node(
+        ty,
+        format,
+        wire_layouts,
+        pipeline_records,
+        enum_layouts,
+        &mut visiting,
+    )
+}
+
+/// Recursive descriptor-node builder. `visiting` breaks layout cycles (a
+/// recursive record/enum) by emitting `opaque` on a back-edge — the wire-body
+/// floor does not include recursive text types, so this fails closed rather than
+/// looping forever.
+fn build_text_descriptor_node(
+    ty: &ResolvedTy,
+    format: WireTextFormat,
+    wire_layouts: &WireLayoutTable,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    visiting: &mut std::collections::HashSet<String>,
+) -> String {
+    match ty {
+        ResolvedTy::I8
+        | ResolvedTy::I16
+        | ResolvedTy::I32
+        | ResolvedTy::I64
+        | ResolvedTy::Isize
+        | ResolvedTy::Duration => r#"{"k":"i64"}"#.to_string(),
+        ResolvedTy::U8
+        | ResolvedTy::U16
+        | ResolvedTy::U32
+        | ResolvedTy::U64
+        | ResolvedTy::Usize
+        | ResolvedTy::Char => r#"{"k":"u64"}"#.to_string(),
+        ResolvedTy::F32 | ResolvedTy::F64 => r#"{"k":"f64"}"#.to_string(),
+        ResolvedTy::Bool => r#"{"k":"bool"}"#.to_string(),
+        ResolvedTy::String => r#"{"k":"str"}"#.to_string(),
+        ResolvedTy::Bytes => r#"{"k":"bytes"}"#.to_string(),
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+            ..
+        } => match builtin {
+            Some(BuiltinType::Vec) => {
+                let elem = args.first().map_or_else(
+                    || r#"{"k":"opaque"}"#.to_string(),
+                    |e| {
+                        build_text_descriptor_node(
+                            e,
+                            format,
+                            wire_layouts,
+                            pipeline_records,
+                            enum_layouts,
+                            visiting,
+                        )
+                    },
+                );
+                format!(r#"{{"k":"vec","e":{elem}}}"#)
+            }
+            Some(BuiltinType::Option) => {
+                let elem = args.first().map_or_else(
+                    || r#"{"k":"opaque"}"#.to_string(),
+                    |e| {
+                        build_text_descriptor_node(
+                            e,
+                            format,
+                            wire_layouts,
+                            pipeline_records,
+                            enum_layouts,
+                            visiting,
+                        )
+                    },
+                );
+                format!(r#"{{"k":"opt","e":{elem}}}"#)
+            }
+            _ => build_text_descriptor_named(
+                name,
+                args,
+                format,
+                wire_layouts,
+                pipeline_records,
+                enum_layouts,
+                visiting,
+            ),
+        },
+        _ => r#"{"k":"opaque"}"#.to_string(),
+    }
+}
+
+/// Build the descriptor for a `Named` record or enum: a struct node (tag-keyed
+/// field list) or an enum node (variant list), mirroring the CBOR codec's
+/// record/enum resolution (`xnode_registry_key` + `cbor_field_key` /
+/// `cbor_variant_tag`).
+fn build_text_descriptor_named(
+    name: &str,
+    args: &[ResolvedTy],
+    format: WireTextFormat,
+    wire_layouts: &WireLayoutTable,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    visiting: &mut std::collections::HashSet<String>,
+) -> String {
+    let key = xnode_registry_key(name, args, pipeline_records, enum_layouts);
+    if !visiting.insert(key.clone()) {
+        // Recursive back-edge: a recursive text type is outside the floor.
+        return r#"{"k":"opaque"}"#.to_string();
+    }
+    let case = wire_layouts.get(&key).and_then(|e| match format {
+        WireTextFormat::Json => e.json_case,
+        WireTextFormat::Yaml => e.yaml_case,
+    });
+    let result = if let Some(el) = enum_layouts.iter().find(|e| e.name == key) {
+        // Enum: list each variant's tag, source name, and payload descriptors.
+        let variants: Vec<String> = el
+            .variants
+            .iter()
+            .enumerate()
+            .map(|(idx, variant)| {
+                let tag = cbor_variant_tag(wire_layouts, &key, &variant.name, idx);
+                let payload: Vec<String> = variant
+                    .field_tys
+                    .iter()
+                    .map(|fty| {
+                        build_text_descriptor_node(
+                            fty,
+                            format,
+                            wire_layouts,
+                            pipeline_records,
+                            enum_layouts,
+                            visiting,
+                        )
+                    })
+                    .collect();
+                format!(
+                    r#"{{"t":{tag},"n":{name},"p":[{payload}]}}"#,
+                    name = json_string_literal(&variant.name),
+                    payload = payload.join(",")
+                )
+            })
+            .collect();
+        format!(r#"{{"k":"enum","v":[{}]}}"#, variants.join(","))
+    } else if let Some(rl) = pipeline_records.iter().find(|r| r.name == key) {
+        // Struct: list each field's tag, JSON/YAML key name, and field descriptor.
+        let fields: Vec<String> = rl
+            .field_tys
+            .iter()
+            .enumerate()
+            .map(|(idx, fty)| {
+                let field_name = rl.field_names.get(idx).map_or("", String::as_str);
+                let tag = cbor_field_key(wire_layouts, &key, field_name, idx);
+                // Resolve the text key name from the wire layout (override + case).
+                let text_name = wire_layouts
+                    .get(&key)
+                    .and_then(|e| e.fields.iter().find(|f| f.name == field_name))
+                    .map_or_else(
+                        || field_name.to_string(),
+                        |f| wire_text_field_name(f, case, format),
+                    );
+                let desc = build_text_descriptor_node(
+                    fty,
+                    format,
+                    wire_layouts,
+                    pipeline_records,
+                    enum_layouts,
+                    visiting,
+                );
+                format!(
+                    r#"{{"t":{tag},"n":{name},"d":{desc}}}"#,
+                    name = json_string_literal(&text_name)
+                )
+            })
+            .collect();
+        format!(r#"{{"k":"struct","f":[{}]}}"#, fields.join(","))
+    } else {
+        // Not a registered record or enum: outside the text floor.
+        r#"{"k":"opaque"}"#.to_string()
+    };
+    visiting.remove(&key);
+    result
+}
+
+/// Serialize a string as a JSON string literal (quoted, with the JSON escapes the
+/// descriptor parser expects). Used for field/variant key names embedded in the
+/// descriptor schema.
+fn json_string_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
 /// Standalone heap-ownership probe for a CBOR Vec element type, using only the
 /// pipeline record/enum layouts the thunk emitter has on hand (no `FnCtx`).
 /// Returns true when `ty` is — or transitively contains — a heap-owning leaf
@@ -37271,25 +38013,114 @@ fn emit_wire_codec_call_thunks<'ctx>(
         for block in &func.blocks {
             for instr in &block.instructions {
                 if let Instr::WireCodec { value_ty, .. } = instr {
-                    if seen.contains(value_ty) {
-                        continue;
+                    if !seen.contains(value_ty) {
+                        seen.push(value_ty.clone());
+                        emit_cbor_codec_thunks(
+                            ctx,
+                            llvm_mod,
+                            value_ty,
+                            &pipeline.wire_layouts,
+                            record_layouts,
+                            machine_layouts,
+                            pipeline_records,
+                            enum_layouts,
+                        )?;
                     }
-                    seen.push(value_ty.clone());
-                    emit_cbor_codec_thunks(
-                        ctx,
-                        llvm_mod,
-                        value_ty,
-                        &pipeline.wire_layouts,
-                        record_layouts,
-                        machine_layouts,
-                        pipeline_records,
-                        enum_layouts,
-                    )?;
                 }
             }
         }
     }
     Ok(())
+}
+
+/// Emit the JSON/YAML text-codec descriptor globals for every wire type that a
+/// text-direction (`to_json`/`from_json`/`to_yaml`/`from_yaml`) call references.
+/// Runs BEFORE function-body lowering so the descriptor globals exist when
+/// `lower_wire_text_codec_instr` resolves them by name at each call site.
+fn emit_all_wire_text_descriptor_globals<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    pipeline: &IrPipeline,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> CodegenResult<()> {
+    let mut text_seen: Vec<ResolvedTy> = Vec::new();
+    for func in &pipeline.raw_mir {
+        for block in &func.blocks {
+            for instr in &block.instructions {
+                if let Instr::WireCodec {
+                    value_ty,
+                    direction,
+                    ..
+                } = instr
+                {
+                    if direction.is_text() && !text_seen.contains(value_ty) {
+                        text_seen.push(value_ty.clone());
+                        emit_wire_text_descriptor_globals(
+                            ctx,
+                            llvm_mod,
+                            value_ty,
+                            &pipeline.wire_layouts,
+                            pipeline_records,
+                            enum_layouts,
+                        )?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Emit the JSON and YAML descriptor string globals for a wire `value_ty`. The
+/// globals are named `__hew_wire_desc_{json,yaml}_<key>` (deterministic, keyed by
+/// `xnode_codec_key` like the CBOR thunks) so `lower_wire_text_codec_instr` can
+/// look them up by name at each call site. Idempotent: `build_const_string_ptr`
+/// no-ops if a global of that name already exists.
+fn emit_wire_text_descriptor_globals<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    value_ty: &ResolvedTy,
+    wire_layouts: &WireLayoutTable,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> CodegenResult<()> {
+    let key = xnode_codec_key(value_ty);
+    let json_desc = build_text_descriptor(
+        value_ty,
+        WireTextFormat::Json,
+        wire_layouts,
+        pipeline_records,
+        enum_layouts,
+    );
+    let yaml_desc = build_text_descriptor(
+        value_ty,
+        WireTextFormat::Yaml,
+        wire_layouts,
+        pipeline_records,
+        enum_layouts,
+    );
+    build_const_string_ptr(
+        ctx,
+        llvm_mod,
+        &json_desc,
+        &wire_desc_global_name(&key, WireTextFormat::Json),
+    )?;
+    build_const_string_ptr(
+        ctx,
+        llvm_mod,
+        &yaml_desc,
+        &wire_desc_global_name(&key, WireTextFormat::Yaml),
+    )?;
+    Ok(())
+}
+
+/// The deterministic global-symbol name for a wire type's text descriptor.
+fn wire_desc_global_name(key: &str, format: WireTextFormat) -> String {
+    match format {
+        WireTextFormat::Json => format!("__hew_wire_desc_json_{key}"),
+        WireTextFormat::Yaml => format!("__hew_wire_desc_yaml_{key}"),
+    }
 }
 
 /// Emit the cross-node codec module-init: for every actor receive handler,

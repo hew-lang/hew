@@ -1484,10 +1484,10 @@ pub enum MethodCallRewrite {
     /// path uses, so every site referencing one wire type shares a single CBOR
     /// thunk pair.
     ///
-    /// The text-format wire methods (`to_json`/`to_yaml`/`from_json`/
-    /// `from_yaml`/`to_toml`/`from_toml`) are intentionally NOT covered here:
-    /// no text-format thunk exists yet, so they remain fail-closed
-    /// (`MethodCallNoRewrite`) until a later change adds the serializers.
+    /// The binary directions (`Encode`/`Decode`) drive the CBOR codec; the text
+    /// directions (`ToJson`/`FromJson`/`ToYaml`/`FromYaml`) drive the CBOR↔text
+    /// bridge (reuse the binary walk + a generic transcode). `to_toml`/
+    /// `from_toml` remain fail-closed (`MethodCallNoRewrite`) until TOML lands.
     WireCodec {
         direction: WireCodecDirection,
         value_ty: crate::resolved_ty::ResolvedTy,

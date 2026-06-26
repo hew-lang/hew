@@ -55,7 +55,7 @@ actor Server {
                 _ => http_async_server.response_text(404, "nope"),
             };
         }
-        conn.write_string(reply);
+        let _ = conn.write_string(reply);
         let _ = conn.close();
         let _ = listener.close();
     }
@@ -69,7 +69,7 @@ actor Client {
         let parts = http_async_client.split_address(url);
         let host = http_async_client.host_of(url);
         let conn = net.connect(parts.0);
-        conn.write_string(http_async_client.build_get(host, parts.1));
+        let _ = conn.write_string(http_async_client.build_get(host, parts.1));
         var raw = "";
         var reads = 0;
         var done = false;

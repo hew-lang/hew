@@ -59,7 +59,7 @@ actor Server {
                     _ => http_async_server.response_text(404, "not found"),
                 };
             }
-            conn.write_string(reply);
+            let _ = conn.write_string(reply);
             let _ = conn.close();
         }
         let _ = listener.close();
@@ -72,7 +72,7 @@ actor Client {
 
     receive fn fetch(path: string) {
         let conn = net.connect(addr);
-        conn.write_string(http_async_client.build_get(host, path));
+        let _ = conn.write_string(http_async_client.build_get(host, path));
         var raw = "";
         var reads = 0;
         var done = false;

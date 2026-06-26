@@ -1,0 +1,62 @@
+// Accept fixture (IO-C1): TCP write-side backpressure surfaces as a typed
+// `Result<(), WriteError>`.
+//
+// A producer connects to a peer that NEVER reads. With a short write timeout
+// set, a write large enough to overflow the OS send buffer cannot complete
+// within the deadline, so the kernel returns EAGAIN/EWOULDBLOCK (or a write
+// timeout on Windows) and `conn.write(...)` resolves to
+// `Err(WriteError::BackpressureExceeded(_))`. This proves the backpressure
+// signal is observable AND correctly classified at the Hew call site.
+//
+// Exit-code contract (each code is distinct so the assertion proves the exact
+// arm reached, not just non-zero):
+//   42 -> small write succeeded (Ok) AND the large write returned
+//         Err(BackpressureExceeded): the full happy + backpressure path.
+//    7 -> large write returned Err, but NOT BackpressureExceeded (wrong variant)
+//    5 -> large write returned Ok (no backpressure observed — signal missing)
+//    3 -> small write itself failed (setup wrong)
+//   99 -> control flow never reached the producer (main fallback)
+import std::net::{Listener};
+
+extern "C" {
+    fn hew_tcp_listener_local_port(listener: Listener) -> i32;
+}
+
+fn main() {
+    let listener = net.listen("127.0.0.1:0");
+    let port = unsafe {
+        hew_tcp_listener_local_port(listener)
+    };
+    // Producer side: connect, then accept the peer but never read from it.
+    let conn = net.connect(f"127.0.0.1:{port}");
+    let peer = listener.accept();
+    // Bound the wait so a full send buffer fails fast instead of blocking.
+    let _ = conn.set_write_timeout(100);
+    // A small write fits in the send buffer and succeeds immediately.
+    let small_ok = match conn.write_string("ping") {
+        Ok(_) => true,
+        Err(_) => false,
+    };
+    if !small_ok {
+        // Keep the peer alive until exit so the fd is not reclaimed mid-test.
+        let _ = peer.close();
+        exit(3);
+    }
+    // Build a 16 MiB payload — comfortably larger than the autotuned send +
+    // receive buffer capacity on a loopback socket on every supported platform.
+    // The peer never drains, so once the kernel buffers fill, the write blocks
+    // until the 100ms timeout and then fails with a backpressure errno.
+    let big = "0123456789abcdef".repeat(1024 * 1024);
+    let code = match conn.write_string(big) {
+        Ok(_) => 5,
+        Err(e) => {
+            match e {
+                WriteError::BackpressureExceeded(_) => 42,
+                _ => 7,
+            }
+        },
+    };
+    let _ = peer.close();
+    let _ = conn.close();
+    exit(code);
+}

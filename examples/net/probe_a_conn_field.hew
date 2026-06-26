@@ -22,7 +22,7 @@ fn main() {
     let session = spawn Session(conn: conn);
     session.pump(0);
     let client = listener.accept();
-    client.write_string("hello");
+    let _ = client.write_string("hello");
     sleep_ms(300);
     let _ = client.close();
     println("server-done");

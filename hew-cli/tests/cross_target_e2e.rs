@@ -5,7 +5,7 @@ use std::process::Command;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::sync::OnceLock;
 
-use object::{Architecture, BinaryFormat, Object};
+use object::{Architecture, BinaryFormat, Object, ObjectSection};
 #[cfg(target_os = "macos")]
 use support::require_codegen;
 use support::{hew_binary, repo_root};
@@ -330,6 +330,121 @@ fn emit_obj_reports_expected_metadata_for_cross_target_matrix() {
             "wrong object architecture for {}",
             case.triple
         );
+    }
+}
+
+/// A Hew program with a Serializable actor message registers its cross-node
+/// codec from a program-start constructor (`hew_module_init_actor_codecs`). That
+/// constructor only runs if it lands in the section the target's startup
+/// mechanism actually walks: ELF `.init_array`, Mach-O `__mod_init_func`.
+///
+/// The bug this guards: hew's `TargetMachine` is built through the LLVM-C API,
+/// whose `UseInitArray` option defaults to `false` with no C setter (clang/llc
+/// set it `true`). With `UseInitArray == false` the `AsmPrinter` lowers
+/// `@llvm.global_ctors` into the LEGACY ELF `.ctors` section, which modern
+/// glibc/musl startup does not walk and `--gc-sections` strips — so on Linux the
+/// codec registration never ran and every cross-node send failed closed with
+/// "no serialization codec registered". macOS was unaffected (Mach-O has only
+/// `__mod_init_func`). The fix emits the ctor pointers directly into
+/// `.init_array` + `@llvm.used` on ELF.
+///
+/// Teeth: assert the ELF object carries an EXACTLY-named `.init_array` section
+/// (not the legacy `.ctors`, and not the `,.init_array` an inkwell host-cfg
+/// quirk produces when cross-building from macOS), and the Mach-O object carries
+/// `__mod_init_func`. Section presence, not `count > 0`.
+#[test]
+fn serializable_actor_emits_target_walked_ctor_section() {
+    struct Case {
+        triple: &'static str,
+        output_suffix: &'static str,
+        // The section name the target's startup mechanism walks for ctors.
+        expected_ctor_section: &'static str,
+    }
+
+    let cases = [
+        Case {
+            triple: "arm64-apple-darwin",
+            output_suffix: ".o",
+            expected_ctor_section: "__mod_init_func",
+        },
+        Case {
+            triple: "x86_64-unknown-linux-gnu",
+            output_suffix: ".o",
+            expected_ctor_section: ".init_array",
+        },
+    ];
+
+    // Minimal program that forces a cross-node codec ctor: a Serializable record
+    // message + an actor with a receive handler taking it. The codec module-init
+    // pass seeds a codec for the handler's message type, emitting the ctor.
+    let src = "\
+record Ping { seq: i64 }
+actor Echo {
+    receive fn handle(msg: Ping) -> i64 { msg.seq }
+}
+fn main() {}
+";
+
+    for case in cases {
+        let dir = workspace();
+        let source = dir.path().join("ctor_section.hew");
+        std::fs::write(&source, src).expect("write source");
+        let object_path = dir
+            .path()
+            .join(format!("ctor_section{}", case.output_suffix));
+
+        let output = Command::new(hew_binary())
+            .args([
+                "build",
+                source.to_str().expect("source path"),
+                "--target",
+                case.triple,
+                "--emit-obj",
+            ])
+            .current_dir(dir.path())
+            .output()
+            .expect("run hew build");
+
+        assert!(
+            output.status.success(),
+            "hew build --target {} --emit-obj failed\nstdout:\n{}\nstderr:\n{}",
+            case.triple,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+
+        let bytes = std::fs::read(&object_path).expect("read object");
+        let file = object::File::parse(&*bytes).expect("parse object");
+        let section_names: Vec<String> = file
+            .sections()
+            .map(|s| String::from_utf8_lossy(s.name_bytes().unwrap_or_default()).into_owned())
+            .collect();
+
+        assert!(
+            section_names
+                .iter()
+                .any(|n| n == case.expected_ctor_section),
+            "{}: expected a ctor section named exactly `{}`; got sections: {:?}",
+            case.triple,
+            case.expected_ctor_section,
+            section_names,
+        );
+
+        if case.triple.contains("linux") {
+            // Negative guards: the legacy/mangled section names that mean the
+            // constructor would NOT run on Linux must not appear.
+            assert!(
+                !section_names.iter().any(|n| n == ".ctors"),
+                "linux object must not use the legacy `.ctors` section (it is not \
+                 walked by modern startup and is GC-stripped); sections: {section_names:?}"
+            );
+            assert!(
+                !section_names.iter().any(|n| n.contains(',')),
+                "linux object must not carry a comma-mangled section name (the \
+                 inkwell macOS-host `set_section` quirk would turn `.init_array` \
+                 into `,.init_array`); sections: {section_names:?}"
+            );
+        }
     }
 }
 

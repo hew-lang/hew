@@ -178,10 +178,10 @@ fn pool_child_access_rejected_at_hir() {
     );
 }
 
-// ── Negative case: nested supervisor accessor ────────────────────────────────
+// ── Nested supervisor accessor: now implemented (no longer gated) ────────────
 
 #[test]
-fn nested_supervisor_accessor_rejected_at_hir() {
+fn nested_supervisor_accessor_lowers_without_gate() {
     let output = lower(
         r"
         actor Worker {
@@ -203,6 +203,8 @@ fn nested_supervisor_accessor_rejected_at_hir() {
         }
         ",
     );
+    // A nested-supervisor accessor now lowers through `hew_supervisor_nested_get`
+    // (MIR `lower_supervisor_nested_get`), so the HIR gate must NOT fire.
     let nested_diag = output.diagnostics.iter().find(|d| {
         matches!(
             d.kind,
@@ -210,31 +212,19 @@ fn nested_supervisor_accessor_rejected_at_hir() {
         )
     });
     assert!(
-        nested_diag.is_some(),
-        "nested supervisor accessor must emit NestedSupervisorAccessorUnsupported; \
-         diagnostics: {:#?}",
+        nested_diag.is_none(),
+        "nested supervisor accessor must lower cleanly, not emit \
+         NestedSupervisorAccessorUnsupported; diagnostics: {:#?}",
         output.diagnostics
     );
-    if let Some(d) = nested_diag {
-        if let HirDiagnosticKind::NestedSupervisorAccessorUnsupported {
-            supervisor,
-            child,
-            nested_supervisor,
-        } = &d.kind
-        {
-            assert_eq!(supervisor, "RootSupervisor");
-            assert_eq!(child, "sub");
-            assert_eq!(nested_supervisor, "SubSupervisor");
-        }
-    }
     assert!(
-        output.into_result().is_err(),
-        "nested supervisor accessor diagnostic must be fatal (into_result() Err)"
+        output.into_result().is_ok(),
+        "nested supervisor accessor must no longer be a fatal error"
     );
 }
 
 #[test]
-fn nested_supervisor_chained_accessor_rejected_at_first_hop() {
+fn nested_supervisor_chained_accessor_lowers_without_gate() {
     let output = lower(
         r"
         actor Worker {
@@ -256,7 +246,8 @@ fn nested_supervisor_chained_accessor_rejected_at_first_hop() {
         }
         ",
     );
-    // The first hop `root.sub` is a nested-supervisor access and MUST fire.
+    // The chained `root.sub.worker` resolves the nested supervisor on the first
+    // hop and the leaf actor on the second; neither hop is gated any longer.
     let nested_diag = output.diagnostics.iter().find(|d| {
         matches!(
             d.kind,
@@ -264,14 +255,13 @@ fn nested_supervisor_chained_accessor_rejected_at_first_hop() {
         )
     });
     assert!(
-        nested_diag.is_some(),
-        "chained `root.sub.worker` must trigger nested-supervisor gate on the \
-         first hop; diagnostics: {:#?}",
+        nested_diag.is_none(),
+        "chained `root.sub.worker` must lower cleanly; diagnostics: {:#?}",
         output.diagnostics
     );
     assert!(
-        output.into_result().is_err(),
-        "chained nested-supervisor access must be fatal"
+        output.into_result().is_ok(),
+        "chained nested-supervisor access must no longer be fatal"
     );
 }
 
@@ -345,9 +335,9 @@ fn pool_child_accessor_disambiguated_with_two_same_type_children() {
 }
 
 #[test]
-fn nested_supervisor_accessor_disambiguated_with_two_same_type_subs() {
-    // Two nested-supervisor children of the same supervisor type. Accessing
-    // `sub_a` must name `sub_a`, not `sub_b`.
+fn nested_supervisor_accessor_two_same_type_subs_lowers_without_gate() {
+    // Two nested-supervisor children of the same supervisor type. Both accessors
+    // now lower through `hew_supervisor_nested_get`; neither is gated.
     let output = lower(
         r"
         actor Worker {
@@ -373,30 +363,20 @@ fn nested_supervisor_accessor_disambiguated_with_two_same_type_subs() {
     let nested_diags: Vec<_> = output
         .diagnostics
         .iter()
-        .filter_map(|d| match &d.kind {
-            HirDiagnosticKind::NestedSupervisorAccessorUnsupported {
-                supervisor,
-                child,
-                nested_supervisor,
-            } => Some((supervisor.clone(), child.clone(), nested_supervisor.clone())),
-            _ => None,
+        .filter(|d| {
+            matches!(
+                d.kind,
+                HirDiagnosticKind::NestedSupervisorAccessorUnsupported { .. }
+            )
         })
         .collect();
-    assert_eq!(
-        nested_diags.len(),
-        1,
-        "exactly one nested gate diagnostic expected; got: {nested_diags:?}"
-    );
-    let (sup, child, nested) = &nested_diags[0];
-    assert_eq!(sup, "RootSupervisor");
-    assert_eq!(
-        child, "sub_a",
-        "diagnostic must name the accessed child `sub_a`, NOT the sibling \
-         `sub_b`; reverse-by-type lookup would mis-attribute"
-    );
-    assert_eq!(nested, "SubSupervisor");
     assert!(
-        output.into_result().is_err(),
-        "nested supervisor accessor diagnostic must be fatal"
+        nested_diags.is_empty(),
+        "nested supervisor accessors must lower cleanly with no gate diagnostic; \
+         got: {nested_diags:#?}"
+    );
+    assert!(
+        output.into_result().is_ok(),
+        "nested supervisor accessor must no longer be fatal"
     );
 }

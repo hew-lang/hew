@@ -839,6 +839,13 @@ run_accept_expect_status "supervisor_basic" 42
 # Exercises the { i64, i64 } ABI fix for hew_supervisor_child_get.
 run_accept_expect_status "supervised_ingest_race" 42
 
+# Nested-supervisor accessor: spawn Root → hew_supervisor_nested_get resolves
+# the child supervisor (root.sub) → hew_supervisor_child_get on the nested
+# supervisor (inner.leaf) → ask the leaf → echo 42 back as exit code. Root mixes
+# an actor child (direct) with a nested supervisor (sub), so this also proves the
+# kind-partitioned slot indices and the add_child_supervisor_with_init seam.
+run_accept_expect_status "supervisor_nested_accessor" 42
+
 # Supervisor graceful stop: spawn AppSupervisor → supervisor_stop(sup) lowers to
 # hew_supervisor_stop; main returns 0. Exercises the user-name → C-ABI bridge and
 # the void-return (dest: None) MIR + codegen path.

@@ -2265,7 +2265,7 @@ pub fn lower_program_with_mono_cap(
     // backing ABI calls (`hew_supervisor_pool_route`, `hew_supervisor_nested_get`)
     // are scheduled for v0.6. Gate runs unconditionally on every target
     // because the underlying ABI gap is target-independent.
-    check_supervisor_child_accessor_gates(&mut ctx, program, type_check_output);
+    check_supervisor_child_accessor_gates(&mut ctx, type_check_output);
 
     // FC-P1-D: HIR pre-pass binary-operator gates. Dispatched HERE (after
     // diagnostics.clear above) so the gate's diagnostics survive into the
@@ -24117,45 +24117,22 @@ fn check_coroutine_gate(ctx: &mut LowerCtx, program: &Program) {
 /// Check for unsupported supervisor child accessor patterns (P1-C).
 ///
 /// Reads the checker side-table `supervisor_child_slots` (keyed by the
-/// `SpanKey` of the `sup.child_name` field-access expression) and emits
-/// fail-closed diagnostics for two unsupported v0.5 forms:
+/// `SpanKey` of the `sup.child_name` field-access expression) and emits a
+/// fail-closed diagnostic for the one remaining unsupported form:
 ///
-/// 1. **Pool child accessor** — `slot.kind == ChildKind::Pool`. Routing pool
-///    slots requires the `hew_supervisor_pool_route` ABI call (v0.6).
-///    Currently fail-closed at `hew-mir/src/lower.rs:4413` as
-///    `NotYetImplemented`.
+/// - **Pool child accessor** — `slot.kind == ChildKind::Pool`. Routing pool
+///   slots requires a dynamic member index the bare `sup.pool` accessor does
+///   not express, so it stays fail-closed here.
 ///
-/// 2. **Nested supervisor accessor** — `slot.kind == ChildKind::Static` AND
-///    the declared child type is itself a supervisor (i.e. the result type
-///    is `LocalPid<Supervisor>`). Multi-segment supervisor dotted access
-///    requires the `hew_supervisor_nested_get` ABI call (v0.6). Currently
-///    fail-closed at `hew-mir/src/lower.rs:4443` as `NotYetImplemented`.
-///
-/// The set of supervisor names is built by scanning `program.items` for
-/// `Item::Supervisor` declarations — this is the cheapest source of truth
-/// available at this dispatch point and matches the precedent set by other
-/// HIR pre-passes that scan `program.items` directly rather than requiring
-/// the checker to publish a new side-table.
+/// A `ChildKind::Static` child whose declared type is itself a supervisor
+/// (`child api: AuthSupervisor;`) is a NESTED supervisor accessor; it now
+/// lowers through the `hew_supervisor_nested_get` ABI call (MIR
+/// `lower_supervisor_nested_get`) and is no longer gated.
 ///
 /// LESSONS P0 `boundary-fail-closed` / slepp A222: surface the gap as a
 /// compile-time diagnostic rather than letting the program reach a MIR
 /// `NotYetImplemented` trap (or worse, a runtime panic).
-fn check_supervisor_child_accessor_gates(
-    ctx: &mut LowerCtx,
-    program: &Program,
-    tc_output: &TypeCheckOutput,
-) {
-    // Build the set of supervisor names from program items. Cheap one-pass
-    // scan; no need to depend on a new TypeCheckOutput side-table.
-    let supervisor_names: std::collections::HashSet<&str> = program
-        .items
-        .iter()
-        .filter_map(|(item, _)| match item {
-            Item::Supervisor(decl) => Some(decl.name.as_str()),
-            _ => None,
-        })
-        .collect();
-
+fn check_supervisor_child_accessor_gates(ctx: &mut LowerCtx, tc_output: &TypeCheckOutput) {
     // Iterate checker side-table. ChildSlot now carries authoritative
     // `supervisor` and `child_name` set by the checker at construction —
     // no reverse lookup, no string-identifier fragility (A39 invariant),
@@ -24185,29 +24162,12 @@ fn check_supervisor_child_accessor_gates(
             }
             ChildKind::Static => {
                 // Nested supervisor: the declared child type is itself a
-                // supervisor. The result of the field access is
-                // `LocalPid<NestedSupervisor>`, which the MIR lowering
-                // currently rejects as `NotYetImplemented` because the
-                // multi-hop ABI call (`hew_supervisor_nested_get`) is not
-                // yet implemented.
-                if supervisor_names.contains(slot.child_ty.as_str()) {
-                    ctx.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::NestedSupervisorAccessorUnsupported {
-                            supervisor: sup_name.to_string(),
-                            child: child_name.to_string(),
-                            nested_supervisor: slot.child_ty.clone(),
-                        },
-                        span,
-                        format!(
-                            "nested supervisor accessor `{sup_name}.{child_name}` \
-                             (result type `LocalPid<{nested}>`) is not yet \
-                             implemented: multi-segment supervisor dotted access \
-                             requires the `hew_supervisor_nested_get` ABI call \
-                             which lands in v0.6.",
-                            nested = slot.child_ty,
-                        ),
-                    ));
-                }
+                // supervisor, so the result of the field access is
+                // `LocalPid<NestedSupervisor>`. This lowers through the
+                // `hew_supervisor_nested_get` ABI call (MIR
+                // `lower_supervisor_nested_get`), so it is no longer gated
+                // here. A plain actor child (the common case) also routes
+                // through this `Static` arm and needs no gate.
             }
         }
     }

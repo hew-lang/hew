@@ -2604,6 +2604,17 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // Returns 0 on success or -1 on null/OOM; the bootstrap currently
         // discards the result — restart/diagnostic wiring lands in a follow-on.
         "hew_supervisor_add_child_spec" => i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // hew_supervisor_add_child_supervisor_with_init(
+        //     parent: *mut HewSupervisor, child: *mut HewSupervisor,
+        //     init_fn: SupervisorInitFn) -> c_int
+        // (`hew-runtime/src/supervisor.rs:3664`). Attaches an already-started
+        // child supervisor (returned by its own bootstrap) to `parent` and
+        // records the bootstrap as the restart init_fn for subtree escalation.
+        // Sets the child's parent back-pointer and unregisters it from the
+        // top-level shutdown list. Returns 0 on success, -1 on null/self.
+        "hew_supervisor_add_child_supervisor_with_init" => {
+            i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false)
+        }
         // hew_supervisor_set_child_state_clone(sup: *mut HewSupervisor,
         //                                      child_index: c_int,
         //                                      state_clone_fn: HewStateCloneFn) -> void
@@ -6324,23 +6335,59 @@ fn emit_supervisor_bootstrap_body<'ctx>(
         &mut runtime_decls,
         "hew_supervisor_set_child_lifecycle",
     )?;
-    for (idx, child) in layout.children.iter().enumerate() {
-        emit_supervisor_child_spec_and_register(
-            ctx,
-            llvm_mod,
-            &builder,
-            &child_spec_ty,
-            sup,
-            add_child_spec,
-            set_child_state_drop,
-            set_child_state_clone,
-            set_child_lifecycle,
-            idx,
-            child,
-            &layout.name,
-            actor_layouts,
-            record_layouts,
-        )?;
+    // A nested-supervisor child (`child api: AuthSupervisor;`) registers through
+    // a different runtime seam than an actor child: call the child supervisor's
+    // own bootstrap function (which builds and starts the child supervisor and
+    // returns its `*mut HewSupervisor`), then register it with the parent via
+    // `hew_supervisor_add_child_supervisor_with_init`, passing the same
+    // bootstrap as the restart init_fn. Interned once outside the loop so all
+    // nested children share the same FunctionValue.
+    let add_child_supervisor_with_init = intern_runtime_decl(
+        ctx,
+        llvm_mod,
+        &mut runtime_decls,
+        "hew_supervisor_add_child_supervisor_with_init",
+    )?;
+    // Actor children and nested supervisors are registered into two separate
+    // runtime tables, each 0-based. `hew_supervisor_add_child_spec` pushes actor
+    // children sequentially into `children[]`, so an actor child's runtime index
+    // is its position among ACTOR children only — NOT the combined loop index.
+    // The per-child setters (`set_child_state_drop/clone/lifecycle`) key by that
+    // runtime index, so passing the combined loop index would target the wrong
+    // slot whenever a nested supervisor precedes an actor child. Track an
+    // actor-only counter that advances only for actor children, mirroring the
+    // accessor's `partitioned_static_slot_index`.
+    let mut actor_child_index = 0usize;
+    for child in &layout.children {
+        if let Some(nested_bootstrap) = &child.nested_bootstrap_symbol {
+            emit_nested_supervisor_register(
+                llvm_mod,
+                &builder,
+                sup,
+                add_child_supervisor_with_init,
+                nested_bootstrap,
+                child,
+                &layout.name,
+            )?;
+        } else {
+            emit_supervisor_child_spec_and_register(
+                ctx,
+                llvm_mod,
+                &builder,
+                &child_spec_ty,
+                sup,
+                add_child_spec,
+                set_child_state_drop,
+                set_child_state_clone,
+                set_child_lifecycle,
+                actor_child_index,
+                child,
+                &layout.name,
+                actor_layouts,
+                record_layouts,
+            )?;
+            actor_child_index += 1;
+        }
     }
 
     // ── %rc = call hew_supervisor_start(%sup); trap on non-zero ─────────
@@ -6383,6 +6430,72 @@ fn emit_supervisor_bootstrap_body<'ctx>(
     builder
         .build_return(Some(&sup))
         .llvm_ctx("sup bootstrap ret")?;
+    Ok(())
+}
+
+/// Register a nested-supervisor child with its parent.
+///
+/// Unlike an actor child (which lowers to a `HewChildSpec` + dispatch
+/// trampoline), a nested supervisor is brought up by its own bootstrap
+/// function — the same function `spawn ChildSupervisor` would call. That
+/// bootstrap builds the child supervisor, registers its children, starts it,
+/// and returns its `*mut HewSupervisor`. We then attach it to the parent via
+/// `hew_supervisor_add_child_supervisor_with_init`, passing the same bootstrap
+/// as the restart `init_fn` so the parent can rebuild the subtree on
+/// escalation.
+///
+/// The child's bootstrap is a real MIR function declared ahead of supervisor
+/// body emission; fail closed if it is missing — a null child supervisor would
+/// SIGSEGV at the first nested accessor.
+fn emit_nested_supervisor_register<'ctx>(
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &Builder<'ctx>,
+    sup: PointerValue<'ctx>,
+    add_child_supervisor_with_init: FunctionValue<'ctx>,
+    nested_bootstrap: &str,
+    child: &SupervisorChildLayout,
+    sup_name: &str,
+) -> CodegenResult<()> {
+    let bootstrap_fn = llvm_mod.get_function(nested_bootstrap).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "supervisor `{sup_name}` nested child `{}` requires the child supervisor \
+             bootstrap function `{nested_bootstrap}`, which was not declared before \
+             body emission",
+            child.name
+        ))
+    })?;
+
+    // %child_sup = call <nested_bootstrap>()
+    let child_sup = builder
+        .build_call(
+            bootstrap_fn,
+            &[],
+            &format!("nested_sup_{}_bootstrap", child.name),
+        )
+        .llvm_ctx("nested supervisor bootstrap call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "nested supervisor `{}` bootstrap `{nested_bootstrap}` returned void; \
+                 expected a *mut HewSupervisor",
+                child.name
+            ))
+        })?
+        .into_pointer_value();
+
+    // call hew_supervisor_add_child_supervisor_with_init(%parent, %child_sup,
+    //                                                    <nested_bootstrap>)
+    // The bootstrap doubles as the restart init_fn (() -> *mut HewSupervisor).
+    let init_fn_ptr = bootstrap_fn.as_global_value().as_pointer_value();
+    builder
+        .build_call(
+            add_child_supervisor_with_init,
+            &[sup.into(), child_sup.into(), init_fn_ptr.into()],
+            &format!("nested_sup_{}_register", child.name),
+        )
+        .llvm_ctx("hew_supervisor_add_child_supervisor_with_init call")?;
+
     Ok(())
 }
 
@@ -6563,9 +6676,23 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
                         ))
                     })?;
 
+                // Materialise each init arg at the field's exact width. LLVM
+                // integer types are sign-agnostic — the const's bit pattern
+                // carries the value — so the unsigned variants share the same
+                // `iN` type as their signed siblings; `build_store` then writes
+                // exactly N/8 bytes into the field slot. The signed widths
+                // sign-extend the literal into the const (`true`); the unsigned
+                // widths zero-extend (`false`), so a value that uses the high
+                // bit (e.g. `u8` 200) keeps its bit pattern.
                 let field_val: BasicValueEnum<'ctx> = match init_arg {
-                    ChildInitArg::I64(n) => i64_ty.const_int(*n as u64, true).into(),
+                    ChildInitArg::I8(n) => ctx.i8_type().const_int(*n as u64, true).into(),
+                    ChildInitArg::I16(n) => ctx.i16_type().const_int(*n as u64, true).into(),
                     ChildInitArg::I32(n) => i32_ty.const_int(*n as u64, true).into(),
+                    ChildInitArg::I64(n) => i64_ty.const_int(*n as u64, true).into(),
+                    ChildInitArg::U8(n) => ctx.i8_type().const_int(u64::from(*n), false).into(),
+                    ChildInitArg::U16(n) => ctx.i16_type().const_int(u64::from(*n), false).into(),
+                    ChildInitArg::U32(n) => i32_ty.const_int(u64::from(*n), false).into(),
+                    ChildInitArg::U64(n) => i64_ty.const_int(*n, false).into(),
                     ChildInitArg::Bool(b) => ctx
                         .bool_type()
                         .const_int(if *b { 1 } else { 0 }, false)

@@ -1561,13 +1561,31 @@ pub fn lower_hir_module_with_facts(
     let actor_layout_map = actor_layout_map;
 
     // Post-loop pass: populate on_crash_symbol, max_heap_bytes, cycle_capable,
-    // and init_state_fields on each SupervisorChildLayout using the now-complete
-    // actor_layout_map.
+    // init_state_fields, and nested_bootstrap_symbol on each
+    // SupervisorChildLayout using the now-complete actor_layout_map.
     // build_supervisor_layout runs inside the single-pass item loop, so actor
     // declarations that follow a supervisor in source order would not have been
     // visible yet. Deferring the lookup here makes ordering irrelevant.
+    //
+    // The set of declared supervisor names lets the loop distinguish a
+    // nested-supervisor child (`child api: AuthSupervisor;`) from an actor
+    // child: a child whose declared type names another supervisor is registered
+    // through the child-supervisor seam, not the actor `HewChildSpec` path.
+    let supervisor_names: std::collections::HashSet<String> =
+        supervisor_layouts.iter().map(|l| l.name.clone()).collect();
     for sup_layout in &mut supervisor_layouts {
         for child in &mut sup_layout.children {
+            // A nested-supervisor child carries the child supervisor's bootstrap
+            // symbol; codegen routes it through
+            // `hew_supervisor_add_child_supervisor_with_init` instead of the
+            // actor `HewChildSpec` path. Mark it before the actor-layout lookups
+            // below — those all resolve to None/empty for a supervisor type, so
+            // the remaining per-child fields stay correctly null for a nested
+            // child.
+            if supervisor_names.contains(&child.actor_name) {
+                child.nested_bootstrap_symbol =
+                    Some(mangle_supervisor_bootstrap(&child.actor_name));
+            }
             let al = actor_layout_map.get(&child.actor_name);
             child.on_crash_symbol = al.and_then(|al| al.on_crash_symbol.clone());
             // Lifecycle wrapper: emit a wrapper symbol only when the actor has
@@ -1689,61 +1707,117 @@ pub fn lower_hir_module_with_facts(
                         // adjacent field and writes past the end of the struct.
                         let init_arg = match &source_expr.kind {
                             HirExprKind::Literal(HirLiteral::Integer(n)) => {
+                                // Materialise the literal at the declared field's
+                                // exact width. Each integer width gets its own
+                                // `ChildInitArg` variant so codegen emits a store
+                                // of exactly `sizeof(field_ty)` bytes — a wider
+                                // store would clobber the adjacent field and run
+                                // past the end of the state template. The literal
+                                // is range-checked against the field's bounds so an
+                                // out-of-range constant is a compile error rather
+                                // than a silent truncation. An unresolved field type
+                                // (`None`) falls back to I64, preserving the prior
+                                // behaviour when the field type is unavailable.
+                                //
+                                // The literal carrier is `i64`, so a negative value
+                                // can never satisfy an unsigned field's `try_from`,
+                                // and a value beyond `i64::MAX` cannot be expressed
+                                // as a literal at all; `u64` therefore widens from
+                                // the non-negative `i64` range only.
+                                let overflow = |target: &str| MirDiagnostic {
+                                    kind: MirDiagnosticKind::NotYetImplemented {
+                                        construct: format!(
+                                            "supervisor `{}` child `{}` field `{field_name}` \
+                                             value {n} does not fit in `{target}`",
+                                            sup_layout.name, child.name
+                                        ),
+                                        site: source_expr.site,
+                                    },
+                                    note: "integer literal must fit in the declared field type"
+                                        .to_string(),
+                                };
                                 match field_ty {
-                                    // 32-bit signed: use I32 so codegen emits a
-                                    // 4-byte store that doesn't clobber the
-                                    // adjacent field.  Range-check the literal so
-                                    // an out-of-range constant is a compile error
-                                    // rather than a silent truncation.
+                                    Some(ResolvedTy::I8) => {
+                                        let Ok(v) = i8::try_from(*n) else {
+                                            diagnostics.push(overflow("i8"));
+                                            all_ok = false;
+                                            continue 'fields;
+                                        };
+                                        crate::model::ChildInitArg::I8(v)
+                                    }
+                                    Some(ResolvedTy::I16) => {
+                                        let Ok(v) = i16::try_from(*n) else {
+                                            diagnostics.push(overflow("i16"));
+                                            all_ok = false;
+                                            continue 'fields;
+                                        };
+                                        crate::model::ChildInitArg::I16(v)
+                                    }
                                     Some(ResolvedTy::I32) => {
                                         let Ok(v) = i32::try_from(*n) else {
-                                            diagnostics.push(MirDiagnostic {
-                                                kind: MirDiagnosticKind::NotYetImplemented {
-                                                    construct: format!(
-                                                        "supervisor `{}` child `{}` field \
-                                                         `{field_name}` value {n} overflows i32",
-                                                        sup_layout.name, child.name
-                                                    ),
-                                                    site: source_expr.site,
-                                                },
-                                                note: "integer literal must fit in the declared \
-                                                       field type"
-                                                    .to_string(),
-                                            });
+                                            diagnostics.push(overflow("i32"));
                                             all_ok = false;
                                             continue 'fields;
                                         };
                                         crate::model::ChildInitArg::I32(v)
                                     }
-                                    // 64-bit signed (or unresolved — fail-open to
+                                    Some(ResolvedTy::U8) => {
+                                        let Ok(v) = u8::try_from(*n) else {
+                                            diagnostics.push(overflow("u8"));
+                                            all_ok = false;
+                                            continue 'fields;
+                                        };
+                                        crate::model::ChildInitArg::U8(v)
+                                    }
+                                    Some(ResolvedTy::U16) => {
+                                        let Ok(v) = u16::try_from(*n) else {
+                                            diagnostics.push(overflow("u16"));
+                                            all_ok = false;
+                                            continue 'fields;
+                                        };
+                                        crate::model::ChildInitArg::U16(v)
+                                    }
+                                    Some(ResolvedTy::U32) => {
+                                        let Ok(v) = u32::try_from(*n) else {
+                                            diagnostics.push(overflow("u32"));
+                                            all_ok = false;
+                                            continue 'fields;
+                                        };
+                                        crate::model::ChildInitArg::U32(v)
+                                    }
+                                    Some(ResolvedTy::U64) => {
+                                        let Ok(v) = u64::try_from(*n) else {
+                                            diagnostics.push(overflow("u64"));
+                                            all_ok = false;
+                                            continue 'fields;
+                                        };
+                                        crate::model::ChildInitArg::U64(v)
+                                    }
+                                    // 64-bit signed (or unresolved — fall back to
                                     // I64 preserving the original behaviour when
                                     // the field type is unavailable).
                                     Some(ResolvedTy::I64) | None => {
                                         crate::model::ChildInitArg::I64(*n)
                                     }
-                                    // Sub-i32 widths and unsigned integers are not
-                                    // yet represented in ChildInitArg.  Emit NYI
-                                    // rather than silently widening to I64, which
-                                    // would clobber adjacent fields.
-                                    //
-                                    // WHY: ChildInitArg lacks I8/I16/U* variants.
-                                    // WHEN: obsolete once those variants are added.
-                                    // WHAT: add ChildInitArg::I8/I16/U8/U16/U32/U64
-                                    //       and matching codegen arms.
+                                    // Non-integer field types are handled by the
+                                    // bool/float arms below or rejected by the
+                                    // checker before reaching MIR; an integer
+                                    // literal against a non-integer field is a
+                                    // type error the checker already caught, so
+                                    // fail closed here.
                                     Some(other_ty) => {
                                         diagnostics.push(MirDiagnostic {
                                             kind: MirDiagnosticKind::NotYetImplemented {
                                                 construct: format!(
                                                     "supervisor `{}` child `{}` field \
-                                                     `{field_name}` has type `{other_ty}` which \
-                                                     is not yet supported as a child init arg \
-                                                     (only i32 and i64 are supported in this slice)",
+                                                     `{field_name}` has integer literal value \
+                                                     {n} for non-integer type `{other_ty}`",
                                                     sup_layout.name, child.name
                                                 ),
                                                 site: source_expr.site,
                                             },
-                                            note: "add ChildInitArg variants for the required \
-                                                   integer width"
+                                            note: "integer literal supplied for a non-integer \
+                                                   child init field"
                                                 .to_string(),
                                         });
                                         all_ok = false;
@@ -3940,6 +4014,10 @@ fn build_supervisor_layout(
             cycle_capable: false,
             // Populated in the post-loop pass along with actor layout fields.
             init_state_fields: Vec::new(),
+            // Populated in the post-loop pass, where the full set of declared
+            // supervisor names is known. `Some` when this child's type is itself
+            // a supervisor (nested supervision tree); `None` for actor children.
+            nested_bootstrap_symbol: None,
             // accepted-only: the per-child `shutdown:` directive
             // (HirSupervisorChild.shutdown) is parsed, checked, and round-trips
             // through the formatter, but is NOT lowered into the runtime ABI in
@@ -4057,11 +4135,19 @@ fn lower_supervisor_bootstrap(
     // diagnostic if so).
     let ordered = supervisor_children_in_spawn_order(sup)?;
 
-    // Verify every child names an actor we know about. Unknown actor
-    // -> NotYetImplemented, skip emission. The checker validates child
-    // types but a stale stdlib/registry could in principle desync; this
-    // is the MIR-side fail-closed boundary.
+    // Verify every child names an actor we know about — UNLESS the child's
+    // declared type is itself a supervisor (a nested supervision subtree). A
+    // nested-supervisor child is brought up by codegen's bootstrap emitter
+    // (which calls the child supervisor's own bootstrap and registers it via
+    // `hew_supervisor_add_child_supervisor_with_init`), not by this synthetic
+    // `spawn ChildActor` stub, so it has no actor layout and must be skipped
+    // here. For a genuine actor child, an unknown actor is still a fail-closed
+    // boundary (the checker is the user-facing gate; a stale registry desync
+    // lands here).
     for child in &ordered {
+        if supervisor_layouts.contains_key(&child.ty) {
+            continue;
+        }
         if !actor_layouts.contains_key(&child.ty) {
             diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
@@ -4125,6 +4211,16 @@ fn lower_supervisor_bootstrap(
 
     let mut statements: Vec<HirStmt> = Vec::with_capacity(ordered.len());
     for child in &ordered {
+        // Nested-supervisor children are registered by codegen's bootstrap
+        // emitter (it calls the child's own bootstrap and attaches it via
+        // `hew_supervisor_add_child_supervisor_with_init`). They have no
+        // `spawn ChildActor` statement in this synthetic stub — skip them so
+        // the stub does not synthesise a `spawn Supervisor` (which would route
+        // through the actor-spawn path the supervisor type does not have).
+        if supervisor_layouts.contains_key(&child.ty) {
+            continue;
+        }
+
         let handle_ty = local_pid_of(&child.ty);
 
         // Build the spawn's args vec from the wired_to map. We iterate
@@ -11438,12 +11534,15 @@ impl Builder {
                         ChildKind::Static => {
                             // Nested-supervisor result: when the RESULT of the
                             // field access (`expr.ty`) is `LocalPid<T>` where T
-                            // is itself a supervisor with declared children, we
-                            // would need `hew_supervisor_nested_get` (v0.6).
-                            // This is distinct from the common case where the
-                            // LHS is a supervisor and the result is an actor PID.
-                            // We detect nesting on `expr.ty`, not `object.ty`
-                            // (which is always `LocalPid<ParentSupervisor>`).
+                            // is itself a supervisor with declared children, the
+                            // child slot resolves through `hew_supervisor_nested_get`
+                            // (over the parent's `child_supervisors` table) rather
+                            // than `hew_supervisor_child_get` (over its actor
+                            // `children`). This is distinct from the common case
+                            // where the LHS is a supervisor and the result is an
+                            // actor PID. We detect nesting on `expr.ty`, not
+                            // `object.ty` (which is always
+                            // `LocalPid<ParentSupervisor>`).
                             let is_nested = matches!(&expr.ty,
                                 ResolvedTy::Named { name, args, .. }
                                 if name == "LocalPid"
@@ -11452,23 +11551,39 @@ impl Builder {
                                         ResolvedTy::Named { name: inner, .. }
                                         if self.supervisor_layout_map.contains_key(inner.as_str()))
                             );
+
+                            // The checker's `slot.index` is the child's position in
+                            // the COMBINED static list (actor children + nested
+                            // supervisors, in source order). The runtime keeps two
+                            // separate tables — actor children in `children[]`
+                            // (indexed by `hew_supervisor_child_get`) and nested
+                            // supervisors in `child_supervisors[]` (indexed by
+                            // `hew_supervisor_nested_get`) — each 0-based within its
+                            // own kind. Translate the combined index to the
+                            // kind-partitioned runtime index so both accessors hit
+                            // the right slot even when actor and nested children are
+                            // interleaved. MIR owns the runtime-index translation;
+                            // codegen registers each kind into its own table in the
+                            // same source order, so the partitioned index agrees.
+                            let runtime_index = self.partitioned_static_slot_index(
+                                &slot.supervisor,
+                                &slot.child_name,
+                                is_nested,
+                            );
+
                             if is_nested {
-                                let _ = self.lower_value(object);
-                                self.diagnostics.push(MirDiagnostic {
-                                    kind: MirDiagnosticKind::NotYetImplemented {
-                                        construct: "nested supervisor child accessor (v0.6)"
-                                            .to_string(),
-                                        site: expr.site,
-                                    },
-                                    note: "multi-segment supervisor dotted access requires \
-                                           `hew_supervisor_nested_get`, which lands in v0.6"
-                                        .to_string(),
-                                });
-                                return None;
+                                return self.lower_supervisor_nested_get(
+                                    object,
+                                    runtime_index,
+                                    &expr.ty,
+                                );
                             }
 
                             return self.lower_supervisor_child_get(
-                                object, slot.index, &expr.ty, expr.site,
+                                object,
+                                runtime_index,
+                                &expr.ty,
+                                expr.site,
                             );
                         }
                     }
@@ -21538,6 +21653,127 @@ impl Builder {
         // The `instr_places` function in lower.rs surfaces `handle_place` to the
         // dataflow seed pass, maintaining the same bookkeeping invariant as
         // `lower_spawn_actor`.
+
+        Some(handle_place)
+    }
+
+    /// Translate a supervisor child's combined-static checker index into its
+    /// kind-partitioned runtime slot index.
+    ///
+    /// The runtime keeps actor children and nested supervisors in two separate
+    /// 0-based tables. Codegen registers each kind into its own table while
+    /// iterating `SupervisorLayout.children` (topological spawn order), so a
+    /// child's runtime index is its position among same-kind children in that
+    /// same iteration order. Count the same-kind children that precede this one
+    /// in the layout to recover that index.
+    ///
+    /// Falls back to a 0 index if the supervisor or child is not found in the
+    /// layout map (an upstream diagnostic already covers the unknown-supervisor
+    /// case); the accessor's runtime null-guard then fail-closes the lookup.
+    fn partitioned_static_slot_index(
+        &self,
+        supervisor: &str,
+        child_name: &str,
+        want_nested: bool,
+    ) -> u32 {
+        let Some(layout) = self.supervisor_layout_map.get(supervisor) else {
+            return 0;
+        };
+        let mut index = 0u32;
+        for child in &layout.children {
+            if child.is_pool {
+                continue;
+            }
+            let child_is_nested = child.nested_bootstrap_symbol.is_some();
+            if child_is_nested != want_nested {
+                continue;
+            }
+            if child.name == child_name {
+                return index;
+            }
+            index += 1;
+        }
+        // Child not found among same-kind siblings — return the running count as
+        // a best-effort index; an upstream diagnostic covers the genuine
+        // unknown-child case.
+        index
+    }
+
+    /// Lower a nested-supervisor child accessor (`app.api` where `api` is itself
+    /// a supervisor) to a `hew_supervisor_nested_get(sup, slot)` call.
+    ///
+    /// Distinct from `lower_supervisor_child_get`: the parent resolves a nested
+    /// child through its `child_supervisors` table (not its actor `children`
+    /// table), so the runtime symbol is `hew_supervisor_nested_get`. The runtime
+    /// returns the child supervisor pointer in field 1 of the same
+    /// `__HewChildLookupResult` struct; the result type is
+    /// `LocalPid<NestedSupervisor>`, so a subsequent dotted segment
+    /// (`app.api.auth`) routes back through this intercept against the nested
+    /// supervisor pointer.
+    ///
+    /// The handle is a plain `*mut HewSupervisor` reinterpreted as a PID — it is
+    /// NOT registered as a fungible child ref. A fungible ref drives per-send
+    /// re-resolution of an *actor* handle; a supervisor handle is only ever used
+    /// as the receiver of a further child-get, which itself re-resolves the leaf
+    /// actor at the moment of the send. Resolving the nested supervisor once per
+    /// accessor expression is sufficient: the child supervisor's identity is
+    /// stable across its own children's restarts, and a nested-supervisor
+    /// escalation restart is re-resolved on the next `app.api` access.
+    fn lower_supervisor_nested_get(
+        &mut self,
+        object: &HirExpr,
+        slot_index: u32,
+        result_ty: &ResolvedTy,
+    ) -> Option<Place> {
+        let sup_place = self.lower_value(object)?;
+
+        // Allocate the handle typed as the checker-authority
+        // `LocalPid<NestedSupervisor>` result type for this site.
+        let handle_local = self.alloc_local(result_ty.clone());
+        let Place::Local(handle_id) = handle_local else {
+            unreachable!("alloc_local always returns Place::Local");
+        };
+        let handle_place = Place::ActorHandle(handle_id);
+
+        // Emit a constant for the static nested slot index.
+        let idx_place = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::ConstI64 {
+            dest: idx_place,
+            value: i64::from(slot_index),
+        });
+
+        // Allocate a local typed as the opaque `__HewChildLookupResult` record.
+        // Codegen recognises this type name and emits a struct-return LLVM call.
+        let result_place = self.alloc_local(ResolvedTy::Named {
+            name: CHILD_LOOKUP_RESULT_TY_NAME.to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: false,
+        });
+
+        // Emit the nested-get runtime call. The dest carries the 16-byte struct.
+        self.push_instr(Instr::CallRuntimeAbi(
+            crate::model::RuntimeCall::new(
+                "hew_supervisor_nested_get",
+                vec![sup_place, idx_place],
+                Some(result_place),
+            )
+            .expect("hew_supervisor_nested_get is an allowlisted runtime symbol"),
+        ));
+
+        // Extract the child supervisor pointer (field 1, i64 at MIR level).
+        let raw_handle = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::RecordFieldLoad {
+            record: result_place,
+            field_offset: FieldOffset(1),
+            dest: raw_handle,
+        });
+
+        // Move the i64 wire value into the typed supervisor handle slot.
+        self.push_instr(Instr::Move {
+            dest: handle_place,
+            src: raw_handle,
+        });
 
         Some(handle_place)
     }

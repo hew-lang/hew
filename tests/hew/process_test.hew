@@ -29,7 +29,7 @@ fn read_pid_with_retry(pid_path: string) -> string {
         if fs.exists(pid_path) {
             return string.trim(fs.read(pid_path));
         }
-        sleep_ms(100);
+        sleep(100ms);
         attempts = attempts + 1;
     }
     panic("expected child to write its pid file");
@@ -110,7 +110,7 @@ fn test_child_drop_reaps_running_process() {
             reaped = true;
             break;
         }
-        sleep_ms(100);
+        sleep(100ms);
         attempts = attempts + 1;
     }
     cleanup_file(pid_path);

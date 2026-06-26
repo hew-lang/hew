@@ -100,7 +100,7 @@ fn collection_overwrite_source(frames: usize) -> String {
          \x20       c.refresh(i);\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
-         \x20   sleep_ms(2000);\n\
+         \x20   sleep(2000ms);\n\
          \x20   match await c.size() {{\n\
          \x20       Ok(v) => v,\n\
          \x20       Err(_) => -1,\n\
@@ -160,7 +160,7 @@ fn record_functional_update_source(frames: usize) -> String {
          \x20       k.bump();\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
-         \x20   sleep_ms(2000);\n\
+         \x20   sleep(2000ms);\n\
          \x20   match await k.count() {{\n\
          \x20       Ok(v) => v,\n\
          \x20       Err(_) => -1,\n\
@@ -207,7 +207,7 @@ fn enum_overwrite_source(frames: usize) -> String {
          \x20       t.advance(i);\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
-         \x20   sleep_ms(2000);\n\
+         \x20   sleep(2000ms);\n\
          \x20   match await t.code() {{\n\
          \x20       Ok(v) => v,\n\
          \x20       Err(_) => -1,\n\
@@ -247,7 +247,7 @@ fn main() -> i64 {
         k.refresh();
         i = i + 1;
     }
-    sleep_ms(1000);
+    sleep(1000ms);
     match await k.name_len() {
         Ok(v) => v,
         Err(_) => -1,
@@ -286,7 +286,7 @@ fn main() -> i64 {
         s.swap();
         i = i + 1;
     }
-    sleep_ms(1000);
+    sleep(1000ms);
     match await s.len_a() {
         Ok(v) => v,
         Err(_) => -1,

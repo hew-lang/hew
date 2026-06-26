@@ -35,5 +35,5 @@ actor Inbox {
 fn main() {
     let i = spawn Inbox;
     i.run(0);
-    sleep_ms(200);
+    sleep(200ms);
 }

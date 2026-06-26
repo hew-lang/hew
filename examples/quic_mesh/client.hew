@@ -39,7 +39,7 @@ fn main() {
     println("[client] sent 3 increments to remote counter");
 
     // Allow messages to be delivered.
-    sleep_ms(500);
+    sleep(500ms);
     Node::shutdown();
     println("[client] shut down");
 }

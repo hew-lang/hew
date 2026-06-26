@@ -29,7 +29,7 @@ actor SlowWorker {
     receive fn compute(query: i64) -> i64 {
 
         // Park this thread for 50 ms so FastWorker replies first.
-        sleep_ms(50);
+        sleep(50ms);
         query
     }
 }

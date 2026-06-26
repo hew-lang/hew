@@ -43,9 +43,9 @@ fn main() -> i64 {
     // supervisor finish processing the final terminal crash.
     for _ in 0 .. 5 {
         w.crash_me();
-        sleep_ms(80);
+        sleep(80ms);
     }
-    sleep_ms(200);
+    sleep(200ms);
     // Tell to a permanently-dead child: dropped recoverably, NOT a trap.
     w.tick();
     // Ask a permanently-dead child: recoverable Err, NOT a trap.

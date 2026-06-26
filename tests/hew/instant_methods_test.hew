@@ -9,7 +9,7 @@
 //! `now()` reads a monotonic clock, so the values are not fixed — these tests
 //! assert the load-bearing INVARIANTS (non-negative elapsed, strictly-positive
 //! span after a real sleep, interop with the `duration` methods), not a fixed
-//! number. The strict `> 0` after `sleep_ms` is the test with teeth: it would
+//! number. The strict `> 0` after `sleep` is the test with teeth: it would
 //! fail if the call lowered to a garbage path returning 0 / uninitialised.
 
 import std::testing;
@@ -37,7 +37,7 @@ fn test_instant_duration_since_self_is_zero() {
 #[test]
 fn test_instant_duration_since_is_positive_after_sleep() {
     let earlier = instant::now();
-    sleep_ms(5);
+    sleep(5ms);
     let later = instant::now();
     let span: duration = later.duration_since(earlier);
     testing.assert_true(span.nanos() > 0);
@@ -48,7 +48,7 @@ fn test_instant_duration_since_is_positive_after_sleep() {
 #[test]
 fn test_instant_elapsed_advances_after_sleep() {
     let start = instant::now();
-    sleep_ms(5);
+    sleep(5ms);
     let waited: duration = start.elapsed();
     testing.assert_true(waited.millis() >= 5);
 }
@@ -58,7 +58,7 @@ fn test_instant_elapsed_advances_after_sleep() {
 #[test]
 fn test_instant_result_interops_with_duration_methods() {
     let earlier = instant::now();
-    sleep_ms(5);
+    sleep(5ms);
     let later = instant::now();
     let span: duration = later.duration_since(earlier);
     // Every `duration` accessor accepts the instant-derived span.

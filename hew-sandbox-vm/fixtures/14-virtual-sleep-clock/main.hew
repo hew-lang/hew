@@ -1,4 +1,4 @@
 fn main() {
-    sleep_ms(25);
+    sleep(25ms);
     println("awake");
 }

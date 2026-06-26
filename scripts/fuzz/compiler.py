@@ -3132,7 +3132,7 @@ def fuzz_random_well_typed(ctx: FuzzContext, n: int = 100) -> None:
                 avar = f"ar{len(int_vars)}"
                 main_stmts.append(f"let {avar} = spawn {aname};")
                 main_stmts.append(f"{avar}.{recv_fn}({random.randint(1, 50)});")
-                main_stmts.append(f"sleep_ms(50);")
+                main_stmts.append(f"sleep(50ms);")
 
             else:
                 # fallback: print literal
@@ -3438,7 +3438,7 @@ def fuzz_oracle_exec(ctx: FuzzContext) -> None:
                 "  let c = spawn Counter;\n"
                 "  c.inc(5);\n"
                 "  c.inc(3);\n"
-                "  sleep_ms(200);\n"
+                "  sleep(200ms);\n"
                 "}"
             ),
             "5\n8",
@@ -3457,7 +3457,7 @@ def fuzz_oracle_exec(ctx: FuzzContext) -> None:
                 "  a.add(20);\n"
                 "  let v = a.get();\n"
                 "  println(v);\n"
-                "  sleep_ms(100);\n"
+                "  sleep(100ms);\n"
                 "}"
             ),
             "30",
@@ -3568,7 +3568,7 @@ def fuzz_dump_mir(ctx: FuzzContext, n: int = 100) -> None:
                 "  receive fn inc(n: i32) { self.v = self.v + n; }\n"
                 "  receive fn get() -> i32 { self.v }\n"
                 "}\n"
-                "fn main() { let c = spawn Cnt; c.inc(1); sleep_ms(50); }"
+                "fn main() { let c = spawn Cnt; c.inc(1); sleep(50ms); }"
             ),
         ),
         ("bool_logic", "fn main() { println(true && false || true); }"),

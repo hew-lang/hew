@@ -75,29 +75,29 @@ supervisor ServiceStack {
 fn main() {
     println("=== Service Stack ===");
     let svc = spawn ServiceStack;
-    sleep_ms(50);
+    sleep(50ms);
     let cache = svc.cache;
     let db = svc.db;
     let api = svc.api;
     cache.store(42);
-    sleep_ms(10);
+    sleep(10ms);
     db.query(42);
-    sleep_ms(10);
+    sleep(10ms);
     api.request(42);
-    sleep_ms(30);
+    sleep(30ms);
     println("");
     println("--- cache crashes ---");
     cache.corrupt();
-    sleep_ms(200);
+    sleep(200ms);
     let cache2 = svc.cache;
     let db2 = svc.db;
     let api2 = svc.api;
     cache2.store(99);
-    sleep_ms(20);
+    sleep(20ms);
     db2.query(99);
-    sleep_ms(20);
+    sleep(20ms);
     api2.request(99);
-    sleep_ms(50);
+    sleep(50ms);
     println("");
     println("Service stack is resilient.");
 }

@@ -8,7 +8,7 @@ actor Reader {
     let addr: string;
 
     receive fn go(unused: i64) {
-        sleep_ms(200);
+        sleep(200ms);
         let conn = net.connect(addr);
         let read_once = || {
             conn.read_string()
@@ -28,7 +28,7 @@ fn main() {
     reader.go(0);
     let client = listener.accept();
     let _ = client.write_string("hello-from-server");
-    sleep_ms(500);
+    sleep(500ms);
     let _ = client.close();
     println("server-done");
 }

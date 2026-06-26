@@ -48,6 +48,6 @@ actor Pipeline {
 fn main() {
     let p = spawn Pipeline(frames: 3);
     p.run(0);
-    sleep_ms(500);
+    sleep(500ms);
     println("done");
 }

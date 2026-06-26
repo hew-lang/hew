@@ -13,7 +13,6 @@ source_filename = "r4_suspend"
 @str_actor_handler_name_Adder_1_add = private unnamed_addr constant [11 x i8] c"Adder::add\00", align 1
 @llvm.global_ctors = appending global [1 x { i32, ptr, ptr }] [{ i32, ptr, ptr } { i32 65535, ptr @hew_module_init_xnode_codecs, ptr null }]
 
-declare void @hew_sleep_ms(i64)
 
 declare void @hew_exit(i64)
 

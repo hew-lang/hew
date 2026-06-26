@@ -84,7 +84,7 @@ fn main() {
     broker.subscribe("metrics", carol);
     broker.subscribe("alerts", alice);
     broker.subscribe("alerts", carol);
-    sleep_ms(30);
+    sleep(30ms);
 
     // ── Publish messages ──
     println("");
@@ -92,21 +92,21 @@ fn main() {
 
     // Orders — alice and bob receive
     broker.publish("orders", "order #1001 created");
-    sleep_ms(20);
+    sleep(20ms);
     broker.publish("orders", "order #1002 shipped");
-    sleep_ms(20);
+    sleep(20ms);
 
     // Metrics — bob and carol receive
     broker.publish("metrics", "cpu=42% mem=68%");
-    sleep_ms(20);
+    sleep(20ms);
 
     // Alerts — alice and carol receive
     broker.publish("alerts", "disk usage above 90%");
-    sleep_ms(20);
+    sleep(20ms);
 
     // Unknown topic — no subscribers, zero deliveries
     broker.publish("unknown", "this goes nowhere");
-    sleep_ms(50);
+    sleep(50ms);
 
     // ── Collect stats ──
     println("");

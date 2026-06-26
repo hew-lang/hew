@@ -1,7 +1,6 @@
 ; ModuleID = 'r4_arith'
 source_filename = "r4_arith"
 
-declare void @hew_sleep_ms(i64)
 
 declare void @hew_exit(i64)
 

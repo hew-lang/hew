@@ -8,7 +8,7 @@
 // Expected diagnostic substring: "blocking caller"
 actor Slow {
     receive fn fetch() -> i64 {
-        sleep_ms(500);
+        sleep(500ms);
         42
     }
 }

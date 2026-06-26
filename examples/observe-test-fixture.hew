@@ -38,5 +38,5 @@ fn main() {
     };
     println(f"observe fixture sent={sent} total={total}");
     let _barrier = observe.barrier();
-    sleep_ms(15000);
+    sleep(15s);
 }

@@ -32,6 +32,6 @@ fn main() {
     for i in 0 .. 10 {
         w3.work(i + 200);
     }
-    sleep_ms(50);
+    sleep(50ms);
     println("PASS: supervision tree defined, actors process messages");
 }

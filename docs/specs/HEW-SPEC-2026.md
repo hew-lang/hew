@@ -3611,7 +3611,7 @@ When a child supervisor's restart budget is exhausted, it escalates to its paren
 ```hew
 fn main() {
     let pool = spawn MyPool;
-    sleep_ms(50);
+    sleep(50ms);
 
     // Access children by declared name
     let w = pool.worker1;              // Typed: compiler knows w is a Worker

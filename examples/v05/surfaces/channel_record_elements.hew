@@ -36,7 +36,7 @@ actor DrainRecords {
 fn main() {
     let worker = spawn DrainRecords;
     worker.run(0);
-    sleep_ms(500);
+    sleep(500ms);
 
     // Non-blocking sibling: try_recv moves one queued record out; the match
     // owns the payload and drops it at arm scope exit.

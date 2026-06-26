@@ -37,5 +37,5 @@ actor DrainStrings {
 fn main() {
     let worker = spawn DrainStrings(frames: 4);
     worker.run(0);
-    sleep_ms(500);
+    sleep(500ms);
 }

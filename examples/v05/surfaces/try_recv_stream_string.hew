@@ -53,6 +53,6 @@ actor TryRecvStrings {
 fn main() {
     let t = spawn TryRecvStrings;
     t.run(0);
-    sleep_ms(500);
+    sleep(500ms);
     println("done");
 }

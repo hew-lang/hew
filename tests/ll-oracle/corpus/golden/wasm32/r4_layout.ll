@@ -13,7 +13,6 @@ source_filename = "r4_layout"
 @str_lit = private unnamed_addr constant [7 x i8] c"origin\00", align 1
 @str_lit.1 = private unnamed_addr constant [7 x i8] c"origin\00", align 1
 
-declare void @hew_sleep_ms(i64)
 
 declare void @hew_exit(i64)
 

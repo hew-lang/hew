@@ -23,7 +23,7 @@ fn main() {
     session.pump(0);
     let client = listener.accept();
     let _ = client.write_string("hello");
-    sleep_ms(300);
+    sleep(300ms);
     let _ = client.close();
     println("server-done");
 }

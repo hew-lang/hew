@@ -89,7 +89,7 @@ The **Checker disposition** column documents what the type checker emits when
 | **`Receiver<T>::recv`, `for await item in rx` over `Receiver<T>`** | 🚫 Error (`BlockingChannelRecv`) | `unreachable!()` trap | WASM-TODO |
 | **`semaphore.new`, `Semaphore::try_acquire/release/count/free`** | ✅ Pass | Non-blocking semaphore subset only | — |
 | **`Semaphore::acquire`, `Semaphore::acquire_timeout`** | 🚫 Error (`BlockingSemaphoreAcquire`) | No cooperative blocking wait implementation | WASM-TODO |
-| **`sleep_ms`, `sleep`** | ⚠️ Warn (`Timers`) | Cooperative park at message boundary | Implemented |
+| **`sleep`, `sleep_until`** | ⚠️ Warn (`Timers`) | Cooperative park at message boundary | Implemented |
 | **`#[every(duration)]` periodic handlers** | ⚠️ Warn (`Timers`) | Cooperative periodic dispatch via host-driven timer queue | Implemented |
 | **`stream.*` constructors, `Stream<T>::*` methods** | 🚫 Error (`Streams`) | Module not compiled | WASM-TODO |
 | **`std::net::http::http_client.*`, `http_client.Response.*`** | 🚫 Error (`HttpClient`) | Native-only wrapper module | WASM-TODO |
@@ -117,11 +117,11 @@ runtime implementation.
 These exist as warnings (not errors) to allow gradual migration: a program can
 be partially WASM-compatible and still get useful analysis feedback.
 
-This group includes `sleep_ms`/`sleep` and `#[every(duration)]`, which now
-have cooperative semantics on WASM: `sleep_ms` parks the actor at the
+This group includes `sleep`/`sleep_until` and `#[every(duration)]`, which now
+have cooperative semantics on WASM: `sleep` parks the actor at the
 **message boundary** (not mid-handler), while periodic handlers are delivered
 when the host advances the timer queue.  The warning reminds callers that code
-after `sleep_ms` in the same receive handler still executes before the actor
+after `sleep` in the same receive handler still executes before the actor
 parks, and that periodic dispatch depends on `hew_wasm_timer_tick` /
 `hew_wasm_sched_tick` driving the queue.
 
@@ -158,12 +158,12 @@ would otherwise end in a trap or linker failure:
   the non-blocking semaphore subset (`new`, `try_acquire`, `release`, `count`,
   `free`).
 
-- **Timers** (`sleep_ms`, `sleep`, `#[every(duration)]`): The runtime now
+- **Timers** (`sleep`, `sleep_until`, `#[every(duration)]`): The runtime now
   parks sleeping actors at the message boundary, re-enqueues them once the
   deadline passes, and delivers periodic handler messages through the same
   host-driven timer loop.  The checker emits a **warning** (not an error) to
   inform callers of the cooperative semantics difference.  Code after
-  `sleep_ms` in the same receive handler still executes before the park, and
+  `sleep` in the same receive handler still executes before the park, and
   periodic dispatch depends on `hew_wasm_timer_tick(now_ms)` /
   `hew_wasm_sched_tick(...)` advancing the timer queue.
 
@@ -250,7 +250,7 @@ reject_wasm_feature   → Severity::Error    → self.errors
 ```
 
 **Warn group** is wired in:
-- `hew-types/src/check/calls.rs :: reject_if_wasm_incompatible_call` (`sleep_ms`/`sleep` → `Timers` warning arm)
+- `hew-types/src/check/calls.rs :: reject_if_wasm_incompatible_call` (`sleep`/`sleep_until` → `Timers` warning arm)
 
 **Reject group** is wired in:
 - `hew-types/src/check/expressions.rs :: reject_if_wasm_incompatible_expr` (scope/tasks)

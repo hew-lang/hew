@@ -101,7 +101,7 @@ fn main -> ()
   drop_plans:
     send[bb0  -> bb1] ->
       (none)
-    call[bb1 sleep_ms -> bb2] ->
+    call[bb1 sleep -> bb2] ->
       (none)
     return[bb2] ->
       drop actor2 ty=LocalPid<Echo> kind=resource

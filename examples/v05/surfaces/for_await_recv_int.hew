@@ -19,5 +19,5 @@ actor DrainInts {
 fn main() {
     let worker = spawn DrainInts;
     worker.run(0);
-    sleep_ms(500);
+    sleep(500ms);
 }

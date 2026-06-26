@@ -14,7 +14,7 @@
 // Slow reply.
 actor Slow {
     receive fn compute(n: i64) -> i64 {
-        sleep_ms(200);
+        sleep(200ms);
         n
     }
 }

@@ -50,6 +50,6 @@ actor StringPipeline {
 fn main() {
     let p = spawn StringPipeline;
     p.run(0);
-    sleep_ms(500);
+    sleep(500ms);
     println("done");
 }

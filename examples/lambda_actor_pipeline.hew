@@ -29,12 +29,12 @@ fn main() {
     // Start the pipeline
     println("Starting pipeline with input: 10");
     adder.send(10); // 10 + 5 = 15, then 15 * 2 = 30
-    sleep_ms(100);
+    sleep(100ms);
 
     // Another pipeline run
     println("Starting pipeline with input: 3");
     adder.send(3); // 3 + 5 = 8, then 8 * 2 = 16
-    sleep_ms(100);
+    sleep(100ms);
 
     // More complex pipeline - 3 stage transformation
     let formatter = actor |x: i32| {
@@ -50,6 +50,6 @@ fn main() {
     println("Complex pipeline: increment -> square -> format");
     incrementer.send(4); // 4+1=5, 5*5=25, format 25
     incrementer.send(9); // 9+1=10, 10*10=100, format 100
-    sleep_ms(100);
+    sleep(100ms);
     println("=== Pipeline Done ===");
 }

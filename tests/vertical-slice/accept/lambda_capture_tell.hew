@@ -8,6 +8,6 @@ fn main() {
     let log = actor |n: i64| { println(f"sum={base + n}"); };
     log(1);
     log(2);
-    sleep_ms(300);
+    sleep(300ms);
     println("done");
 }

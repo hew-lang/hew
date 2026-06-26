@@ -55,7 +55,7 @@ supervisor WorkerPool {
 
 fn main() {
     let sup = spawn WorkerPool;
-    sleep_ms(30);
+    sleep(30ms);
 
     // Get worker handles (typed — the compiler knows these are Worker actors)
     let w1 = sup.w1;
@@ -65,14 +65,14 @@ fn main() {
     w1.process(100);
     w2.process(200);
     w3.process(300);
-    sleep_ms(30);
+    sleep(30ms);
     w1.process(101);
     w2.process(201);
-    sleep_ms(30);
+    sleep(30ms);
     println("");
     println("--- worker 2 crashes on bad input ---");
     w2.crash_on(666);
-    sleep_ms(200);
+    sleep(200ms);
 
     // Workers 1 and 3 are unaffected.
     // Worker 2 has been restarted with fresh state (processed=0).
@@ -81,7 +81,7 @@ fn main() {
     w1.process(102);
     w2_new.process(202);
     w3.process(301);
-    sleep_ms(50);
+    sleep(50ms);
     println("");
     println("Pool survived the crash. That's supervision.");
 }

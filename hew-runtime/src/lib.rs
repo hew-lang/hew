@@ -534,32 +534,45 @@ pub mod wasm_stubs {
 
     // ── Sleep ────────────────────────────────────────────────────────────────
 
-    /// WASM sleep: park the current actor until `ms` milliseconds have elapsed.
+    /// WASM sleep (nanosecond ABI): park until `ns` nanoseconds have elapsed.
     ///
-    /// Records the wakeup deadline and returns immediately.  After the current
-    /// message dispatch completes, [`crate::scheduler_wasm`] parks the actor in
-    /// the sleep queue.  The host re-enqueues it once the deadline passes by
-    /// calling [`crate::scheduler_wasm::hew_wasm_timer_tick`] with the current
-    /// time, or via the implicit drain inside [`crate::scheduler_wasm::hew_wasm_sched_tick`].
-    ///
-    /// This replaces the former intentional no-op.  The semantics are
-    /// cooperative: `sleep_ms` takes effect at the *message boundary* — code
-    /// running after `sleep_ms` in the same handler still executes before the
-    /// park happens.
+    /// Converts to milliseconds and delegates to the ms-granularity sleep queue.
     ///
     /// # Safety
     ///
-    /// No preconditions — may be called from any context.
+    /// No preconditions.
     #[no_mangle]
-    pub unsafe extern "C" fn hew_sleep_ms(ms: i64) {
-        if ms <= 0 {
+    pub unsafe extern "C" fn hew_sleep_ns(ns: i64) {
+        if ns <= 0 {
             return;
         }
-        // Compute the absolute deadline from the current clock.
+        let ms = (ns / 1_000_000).max(1);
         // SAFETY: hew_now_ms has no preconditions.
         let now = unsafe { hew_now_ms() };
         #[expect(clippy::cast_sign_loss, reason = "guarded by ms > 0")]
         let deadline_ms = now.saturating_add(ms as u64);
+        crate::scheduler_wasm::request_sleep(deadline_ms);
+    }
+
+    /// WASM sleep_until: park until the given nanosecond `instant`.
+    ///
+    /// Computes remaining ns from `now`, converts to ms, and parks.
+    ///
+    /// # Safety
+    ///
+    /// No preconditions.
+    #[no_mangle]
+    pub unsafe extern "C" fn hew_sleep_until_ns(instant_ns: i64) {
+        // SAFETY: hew_now_ms has no preconditions.
+        let now_ms = unsafe { hew_now_ms() };
+        let now_ns = (now_ms as i64).saturating_mul(1_000_000);
+        let remaining_ns = instant_ns.saturating_sub(now_ns);
+        if remaining_ns <= 0 {
+            return;
+        }
+        let delay_ms = (remaining_ns / 1_000_000).max(1);
+        #[expect(clippy::cast_sign_loss, reason = "guarded by delay_ms > 0")]
+        let deadline_ms = now_ms.saturating_add(delay_ms as u64);
         crate::scheduler_wasm::request_sleep(deadline_ms);
     }
 

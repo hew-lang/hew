@@ -12,10 +12,10 @@ fn FastWorker__recv__compute(i64) -> i64 [conv=actor_handler]
 fn SlowWorker__recv__compute(i64) -> i64 [conv=actor_handler]
   locals:
     _0: i64
-    _1: i64
+    _1: duration
   bb0:
     enter_context
-    _1 = const.i64 50
+    _1 = const.duration 50000000ns
     suspend [sleep] is_final=false -> resume=bb1 cleanup=bb1
   bb1:
     stmt: eval site=SiteId(1) ty=()

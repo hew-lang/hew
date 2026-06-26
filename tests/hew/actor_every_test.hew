@@ -28,7 +28,7 @@ actor Pulse {
 #[test]
 fn periodic_handler_ticks_after_spawn() {
     let p = spawn Pulse(count: 0);
-    sleep_ms(500);
+    sleep(500ms);
     let r = await p.total();
     match r {
         Ok(n) => testing.assert_true(n >= 3),
@@ -42,9 +42,9 @@ fn two_instances_tick_independently() {
     // must stay strictly ahead of `b` — proving the timers are per-instance,
     // not shared across the actor type.
     let a = spawn Pulse(count: 0);
-    sleep_ms(250);
+    sleep(250ms);
     let b = spawn Pulse(count: 0);
-    sleep_ms(250);
+    sleep(250ms);
     let ra = await a.total();
     let rb = await b.total();
     match ra {

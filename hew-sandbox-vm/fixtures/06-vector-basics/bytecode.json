@@ -613,7 +613,7 @@
           "mutable": false,
           "name": "v",
           "span": "span:159-160",
-          "type": "type:unit"
+          "type": "type:i64"
         },
         {
           "id": "local:main.19",
@@ -675,7 +675,26 @@
   "hew_version": "0.5.6",
   "layouts": {
     "actors": [],
-    "enums": [],
+    "enums": [
+      {
+        "id": "type:Option.type.i64",
+        "name": "Option",
+        "variants": [
+          {
+            "name": "Some",
+            "payload": [
+              "type:i64"
+            ],
+            "tag": 0
+          },
+          {
+            "name": "None",
+            "payload": [],
+            "tag": 1
+          }
+        ]
+      }
+    ],
     "machines": [],
     "records": [],
     "supervisors": [],
@@ -686,17 +705,19 @@
         "name": "AskError"
       },
       {
+        "id": "type:HashMapIter",
+        "kind": "record",
+        "name": "HashMapIter"
+      },
+      {
         "id": "type:LocalPid",
         "kind": "record",
         "name": "LocalPid"
       },
       {
         "id": "type:Option.type.i64",
-        "kind": "record",
-        "name": "Option",
-        "parameters": [
-          "type:i64"
-        ]
+        "kind": "enum",
+        "name": "Option"
       },
       {
         "id": "type:RemotePid",
@@ -792,7 +813,7 @@
       }
     ]
   },
-  "package_id": "pkg:54088d524674cc71",
+  "package_id": "pkg:9d5c73f67988dd0b",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {

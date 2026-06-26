@@ -44,7 +44,7 @@ fn main() {
         collector.tick();
     }
     // Give time for all messages to be processed
-    sleep_ms(500);
+    sleep(500ms);
     collector.report();
     println("PASS: scheduler handles 50 actors x 20 messages");
 }

@@ -598,13 +598,13 @@ impl Checker {
             "supervisor_child" | "supervisor_stop" => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::SupervisionTrees);
             }
-            // sleep_ms / sleep: the wasm32 scheduler now parks the calling actor
+            // sleep / sleep_until: the wasm32 scheduler parks the calling actor
             // at the message boundary and re-enqueues it once the deadline passes
             // (see hew-runtime/src/scheduler_wasm.rs :: park_actor_sleep).
-            // Semantics are cooperative: code after sleep_ms in the same handler
+            // Semantics are cooperative: code after sleep in the same handler
             // runs before the park takes effect.  Warn rather than reject so
             // WASM programs can use timers with the degraded-semantics caveat.
-            "sleep_ms" | "sleep" => {
+            "sleep" | "sleep_until" => {
                 self.warn_wasm_limitation(span, WasmUnsupportedFeature::Timers);
             }
             // crypto.random_bytes depends on a secure native-only entropy source

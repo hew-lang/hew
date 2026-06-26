@@ -869,11 +869,62 @@ pub fn write_file(path: string, content: string) {}
 // ---------------------------------------------------------------------------
 // Program control
 // ---------------------------------------------------------------------------
-/// Pause execution for the given number of milliseconds.
-pub fn sleep_ms(ms: i64) {}
+/// Pause execution for the given duration.
+///
+/// The caller suspends cooperatively (inside an actor handler) or blocks the
+/// thread (in `fn main` / free functions).
+///
+/// ## Sub-millisecond semantics (context-dependent)
+///
+/// Sub-millisecond values behave differently depending on the execution context:
+///
+/// - **Actor handlers (cooperative suspend):** the duration is converted to
+///   milliseconds (floor). A sub-ms value (e.g. `500ns`) becomes `0ms`, which
+///   arms a zero-deadline timer wheel entry and still suspends and resumes the
+///   actor at the next scheduler tick. The actor is never truly sleeping for
+///   the nanosecond count.
+/// - **`fn main` / free functions (blocking):** the OS sleep is requested at
+///   full nanosecond precision. `sleep(500ns)` sleeps for approximately 500 ns
+///   (subject to OS timer granularity, typically ≥1 µs on Linux/macOS).
+/// - **WASM target:** the duration is converted to milliseconds and rounded up
+///   to a minimum of 1 ms. `sleep(500ns)` becomes `sleep(1ms)` on WASM.
+///
+/// # Examples
+///
+/// ```
+/// sleep(10ms);   // sleep for 10 milliseconds
+/// sleep(2s);     // sleep for 2 seconds
+/// sleep(500ms);  // sleep for 500 milliseconds
+/// ```
+pub fn sleep(d: duration) {}
 
-/// Pause execution for the given number of seconds.
-pub fn sleep(seconds: i64) {}
+/// Pause execution until the given monotonic `instant`.
+///
+/// If `target` is already in the past, returns immediately. Use
+/// `instant + duration` to construct a future `instant`:
+///
+/// ```
+/// let deadline = instant::now() + 10ms;
+/// sleep_until(deadline);   // wait until 10 ms from now
+/// ```
+///
+/// The `instant + duration` operation adds a duration offset to a monotonic
+/// timestamp, returning a new `instant`. The commutative form
+/// (`duration + instant`) also works.
+///
+/// # Examples
+///
+/// ```
+/// let deadline = instant::now();
+/// // ... do work ...
+/// sleep_until(deadline);   // wait until the deadline if not yet reached
+///
+/// // Sleep for exactly 50 ms from a fixed reference point:
+/// let t0 = instant::now();
+/// // ... do work ...
+/// sleep_until(t0 + 50ms);  // accounts for time already spent
+/// ```
+pub fn sleep_until(target: instant) {}
 
 /// Stop an actor gracefully.
 pub fn stop(target: dyn Display) {}

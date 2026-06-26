@@ -46,11 +46,11 @@ actor Worker {
 }
 
 fn nap_long() {
-    sleep_ms(500);
+    sleep(500ms);
 }
 
 fn nap_short() {
-    sleep_ms(10);
+    sleep(10ms);
 }
 
 fn main() {

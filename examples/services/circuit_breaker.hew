@@ -112,7 +112,7 @@ fn main() {
     println("");
     println("--- Backend goes down ---");
     backend.set_healthy(0);
-    sleep_ms(20);
+    sleep(20ms);
 
     // Three failures trip the breaker (max_failures=3)
     await breaker.request(4);
@@ -131,11 +131,11 @@ fn main() {
     println("");
     println("--- Backend recovers ---");
     backend.set_healthy(1);
-    sleep_ms(20);
+    sleep(20ms);
 
     // Trigger half-open probe, then send a request
     breaker.probe();
-    sleep_ms(20);
+    sleep(20ms);
     let probe_result = await breaker.request(9);
     println(f"Probe request result: {probe_result}");
 

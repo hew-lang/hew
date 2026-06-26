@@ -1,9 +1,7 @@
-//! Cooperative `sleep_ms` inside an actor handler suspends the coroutine
+//! Cooperative `sleep(duration)` inside an actor handler suspends the coroutine
 //! instead of blocking the M:N worker.
 //!
-//! Before this fix `sleep_ms` in an actor receive-fn called
-//! `std::thread::sleep` and pinned the OS worker for the whole duration. The
-//! `SuspendingSleep` carrier reroutes an execution-context `sleep_ms` onto the
+//! The `SuspendingSleep` carrier reroutes an execution-context `sleep` onto the
 //! coro suspend point + the global timer wheel, freeing the worker. A free-fn /
 //! `fn main` keeps the blocking call (no parkable coroutine).
 //!
@@ -19,15 +17,15 @@ import std::testing;
 
 actor Sleeper {
     var done: i64 = 0;
-    receive fn nap(ms: i64) -> i64 {
-        sleep_ms(ms);
+    receive fn nap(d: duration) -> i64 {
+        sleep(d);
         done = done + 1;
         return done;
     }
-    receive fn nap_twice(ms: i64) -> i64 {
-        sleep_ms(ms);
+    receive fn nap_twice(d: duration) -> i64 {
+        sleep(d);
         done = done + 1;
-        sleep_ms(ms);
+        sleep(d);
         done = done + 10;
         return done;
     }
@@ -38,7 +36,7 @@ fn sleep_returns_after_duration_in_handler() {
     let s = spawn Sleeper(done: 0);
     // The handler sleeps 20ms then increments; the value proves the handler
     // resumed correctly after the timer fired (exact value 1, not >= 1).
-    match await s.nap(20) {
+    match await s.nap(20ms) {
         Ok(n) => testing.assert_eq(n, 1),
         Err(_) => testing.assert_true(false),
     }
@@ -51,7 +49,7 @@ fn two_sleeps_in_one_handler_resume_in_order() {
     // does +1, sleeps again, does +10. The exact result (11) proves BOTH
     // suspend points resumed in order through one persistent frame — a
     // multi-suspend frame correctness check, not just a single-suspend pass.
-    match await s.nap_twice(15) {
+    match await s.nap_twice(15ms) {
         Ok(n) => testing.assert_eq(n, 11),
         Err(_) => testing.assert_true(false),
     }
@@ -65,9 +63,9 @@ fn many_handlers_each_sleep_then_resume() {
     let a = spawn Sleeper(done: 0);
     let b = spawn Sleeper(done: 0);
     let c = spawn Sleeper(done: 0);
-    let ra = await a.nap(10);
-    let rb = await b.nap(10);
-    let rc = await c.nap(10);
+    let ra = await a.nap(10ms);
+    let rb = await b.nap(10ms);
+    let rc = await c.nap(10ms);
     match ra {
         Ok(na) => testing.assert_eq(na, 1),
         Err(_) => testing.assert_true(false),

@@ -88,11 +88,11 @@ actor ApiWorker {
 
 actor RefillTimer {
     let limiter: LocalPid<RateLimiter>;
-    let interval_ms: i64;
+    let interval: duration;
     let cycles: i64;
     receive fn start() {
         for i in 0 .. cycles {
-            sleep_ms(interval_ms);
+            sleep(interval);
             limiter.refill();
         }
         println("[timer] refill cycles complete");
@@ -105,7 +105,7 @@ fn main() {
     let limiter = spawn RateLimiter(tokens: 5, max_tokens: 5, refill_amount: 3);
     let w1 = spawn ApiWorker(id: 1, limiter: limiter, accepted: 0, rejected: 0);
     let w2 = spawn ApiWorker(id: 2, limiter: limiter, accepted: 0, rejected: 0);
-    let timer = spawn RefillTimer(limiter: limiter, interval_ms: 200, cycles: 3);
+    let timer = spawn RefillTimer(limiter: limiter, interval: 200ms, cycles: 3);
     timer.start();
     println("--- Burst: 8 requests, 5 tokens ---");
     w1.handle_request(0);
@@ -116,7 +116,7 @@ fn main() {
     w2.handle_request(5);
     w1.handle_request(6);
     w2.handle_request(7);
-    sleep_ms(100);
+    sleep(100ms);
     let remaining_r = await limiter.available();
     match remaining_r {
         Ok(n) => println(f"Tokens remaining after burst: {n}"),
@@ -124,7 +124,7 @@ fn main() {
     }
     println("");
     println("--- After refill ---");
-    sleep_ms(250);
+    sleep(250ms);
     let after_refill_r = await limiter.available();
     match after_refill_r {
         Ok(n) => println(f"Tokens after refill: {n}"),
@@ -133,7 +133,7 @@ fn main() {
     w1.handle_request(100);
     w2.handle_request(101);
     w1.handle_request(102);
-    sleep_ms(100);
+    sleep(100ms);
     println("");
     println("--- Worker stats ---");
     await w1.stats();

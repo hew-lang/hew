@@ -33,6 +33,6 @@ fn main() {
     let fib10 = fibonacci(10);
     printer.print_message(fib5);
     printer.print_message(fib10);
-    sleep_ms(50);
+    sleep(50ms);
     println("=== Done ===");
 }

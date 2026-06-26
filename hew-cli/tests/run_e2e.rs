@@ -4658,7 +4658,7 @@ fn run_supervisor_two_same_named_module_actor_children_restart_routes() {
          }\n\
          fn main() {\n\
          \x20   let p = spawn Pair;\n\
-         \x20   sleep_ms(50);\n\
+         \x20   sleep(50ms);\n\
          \x20   let b = p.b;\n\
          \x20   let s = p.s;\n\
          \x20   match await b.who() {\n\
@@ -4670,7 +4670,7 @@ fn run_supervisor_two_same_named_module_actor_children_restart_routes() {
          \x20       Err(_) => println(\"e\"),\n\
          \x20   }\n\
          \x20   b.boom();\n\
-         \x20   sleep_ms(200);\n\
+         \x20   sleep(200ms);\n\
          \x20   let b2 = p.b;\n\
          \x20   match await b2.who() {\n\
          \x20       Ok(v) => println(f\"b2={v}\"),\n\

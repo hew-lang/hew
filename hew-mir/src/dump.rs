@@ -263,6 +263,7 @@ fn render_suspend_kind_tag(kind: Option<&SuspendKind>) -> String {
             format!("[restart_wait] slot={slot_index}")
         }
         SuspendKind::Sleep { .. } => "[sleep]".to_string(),
+        SuspendKind::SleepUntil { .. } => "[sleep_until]".to_string(),
     }
 }
 

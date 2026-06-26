@@ -28,7 +28,7 @@ fn main() {
     println("[server] registered 'counter' actor, waiting for clients...");
 
     // Keep alive to serve remote messages.
-    sleep_ms(5000);
+    sleep(5s);
     let final_count = await counter.get_count();
     match final_count {
         Ok(n) => println(f"[server] final count: {n}"),

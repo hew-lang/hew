@@ -79,5 +79,5 @@ fn main() {
     obs.watch(rx);
     let owner = spawn Owner;
     owner.drive(tx);
-    sleep_ms(300);
+    sleep(300ms);
 }

@@ -195,6 +195,10 @@ pub enum BuiltinTy {
     /// `*mut u8`.  Typecheck of `mem.*` calls is driven by the floor module's
     /// surface declarations, not by these params.
     Pointer,
+    /// `duration` — i64 nanoseconds at the ABI, distinct from bare `i64`.
+    Duration,
+    /// `instant` — i64 nanosecond monotonic timestamp; ABI-identical to `i64`.
+    Instant,
 }
 
 impl BuiltinTy {
@@ -204,7 +208,8 @@ impl BuiltinTy {
             BuiltinTy::I8 => ResolvedTy::I8,
             BuiltinTy::I16 => ResolvedTy::I16,
             BuiltinTy::I32 => ResolvedTy::I32,
-            BuiltinTy::I64 => ResolvedTy::I64,
+            // `instant` is an i64 nanosecond timestamp at the ABI boundary.
+            BuiltinTy::I64 | BuiltinTy::Instant => ResolvedTy::I64,
             BuiltinTy::U8 => ResolvedTy::U8,
             BuiltinTy::U16 => ResolvedTy::U16,
             BuiltinTy::U32 => ResolvedTy::U32,
@@ -239,6 +244,7 @@ impl BuiltinTy {
                 is_mutable: true,
                 pointee: Box::new(ResolvedTy::U8),
             },
+            BuiltinTy::Duration => ResolvedTy::Duration,
         }
     }
 }
@@ -268,6 +274,8 @@ const STRING: &[BuiltinTy] = &[BuiltinTy::String];
 const BYTES_U8: &[BuiltinTy] = &[BuiltinTy::Bytes, BuiltinTy::U8];
 const BYTES_I64: &[BuiltinTy] = &[BuiltinTy::Bytes, BuiltinTy::I64];
 const U8_U8: &[BuiltinTy] = &[BuiltinTy::U8, BuiltinTy::U8];
+const DURATION: &[BuiltinTy] = &[BuiltinTy::Duration];
+const INSTANT: &[BuiltinTy] = &[BuiltinTy::Instant];
 const BYTES: &[BuiltinTy] = &[BuiltinTy::Bytes];
 const VEC_ANY: &[BuiltinTy] = &[BuiltinTy::VecAny];
 const VEC_ANY_BOOL: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::Bool];
@@ -414,12 +422,21 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     direct(
-        "sleep_ms",
+        "sleep",
         BuiltinClass::ClassA,
-        I64,
+        DURATION,
         BuiltinTy::Unit,
         BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_sleep_ms",
+            symbol: "hew_sleep_ns",
+        },
+    ),
+    direct(
+        "sleep_until",
+        BuiltinClass::ClassA,
+        INSTANT,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_sleep_until_ns",
         },
     ),
     direct(

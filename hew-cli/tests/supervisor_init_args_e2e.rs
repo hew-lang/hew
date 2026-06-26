@@ -33,10 +33,10 @@ supervisor Pool {
 }
 fn main() {
     let sup = spawn Pool;
-    sleep_ms(30);
+    sleep(30ms);
     let w = sup.w1;
     w.report();
-    sleep_ms(50);
+    sleep(50ms);
 }
 "#;
 
@@ -89,10 +89,10 @@ supervisor Pool {
 }
 fn main() {
     let sup = spawn Pool;
-    sleep_ms(30);
+    sleep(30ms);
     let w = sup.w;
     w.report();
-    sleep_ms(50);
+    sleep(50ms);
 }
 "#;
 
@@ -108,10 +108,10 @@ supervisor Pool {
 }
 fn main() {
     let sup = spawn Pool;
-    sleep_ms(30);
+    sleep(30ms);
     let w = sup.w;
     w.report();
-    sleep_ms(50);
+    sleep(50ms);
 }
 "#;
 
@@ -167,10 +167,10 @@ supervisor Pool {
 }
 fn main() {
     let sup = spawn Pool;
-    sleep_ms(30);
+    sleep(30ms);
     let w = sup.w;
     w.report();
-    sleep_ms(50);
+    sleep(50ms);
 }
 "#;
 
@@ -241,10 +241,10 @@ supervisor Pool {
 }
 fn main() {
     let sup = spawn Pool;
-    sleep_ms(30);
+    sleep(30ms);
     let w = sup.w;
     w.report();
-    sleep_ms(50);
+    sleep(50ms);
 }
 "#;
 
@@ -288,10 +288,10 @@ supervisor Pool {
 }
 fn main() {
     let sup = spawn Pool;
-    sleep_ms(30);
+    sleep(30ms);
     let w = sup.w;
     w.report();
-    sleep_ms(50);
+    sleep(50ms);
 }
 "#;
 
@@ -337,10 +337,10 @@ supervisor Pool {
 }
 fn main() {
     let sup = spawn Pool;
-    sleep_ms(30);
+    sleep(30ms);
     let w = sup.w1;
     w.report();
-    sleep_ms(50);
+    sleep(50ms);
 }
 "#;
 
@@ -394,10 +394,10 @@ supervisor Pool {
 }
 fn main() {
     let sup = spawn Pool;
-    sleep_ms(30);
+    sleep(30ms);
     let w = sup.w;
     w.report();
-    sleep_ms(50);
+    sleep(50ms);
 }
 "#;
 
@@ -442,10 +442,10 @@ supervisor Pool {
 }
 fn main() {
     let sup = spawn Pool;
-    sleep_ms(30);
+    sleep(30ms);
     let w = sup.w;
     w.report();
-    sleep_ms(50);
+    sleep(50ms);
 }
 "#;
 
@@ -491,10 +491,10 @@ supervisor Pool {
 }
 fn main() {
     let sup = spawn Pool;
-    sleep_ms(30);
+    sleep(30ms);
     let w = sup.w;
     w.report();
-    sleep_ms(50);
+    sleep(50ms);
 }
 "#;
 
@@ -544,10 +544,10 @@ supervisor Pool {
 }
 fn main() {
     let sup = spawn Pool;
-    sleep_ms(30);
+    sleep(30ms);
     let w = sup.w;
     w.report();
-    sleep_ms(50);
+    sleep(50ms);
 }
 "#;
 
@@ -593,10 +593,10 @@ supervisor Pool {
 }
 fn main() {
     let sup = spawn Pool;
-    sleep_ms(30);
+    sleep(30ms);
     let w = sup.w;
     w.report();
-    sleep_ms(50);
+    sleep(50ms);
 }
 "#;
 
@@ -653,7 +653,7 @@ fn main() {
     let sup = spawn CounterGroup;
     sup.c1.increment();
     sup.c2.increment();
-    sleep_ms(50);
+    sleep(50ms);
     supervisor_stop(sup);
     println("Stopped");
 }

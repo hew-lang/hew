@@ -39,6 +39,6 @@ fn main() {
     let p = spawn Pinger(echo: e);
     p.ping();
     // Let the ping -> hear -> ack chain drain before main prints and exits.
-    sleep_ms(200);
+    sleep(200ms);
     println("done");
 }

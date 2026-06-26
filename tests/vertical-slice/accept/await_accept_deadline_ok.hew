@@ -18,9 +18,9 @@ extern "C" {
 
 actor Connector {
     receive fn go(port: i32) {
-        sleep_ms(100);
+        sleep(100ms);
         let _c = net.connect(f"127.0.0.1:{port}");
-        sleep_ms(300);
+        sleep(300ms);
     }
 }
 

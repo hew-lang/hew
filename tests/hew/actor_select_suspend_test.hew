@@ -29,7 +29,7 @@ actor Fast {
 
 actor Slow {
     receive fn compute(n: i64) -> i64 {
-        sleep_ms(60);
+        sleep(60ms);
         return n;
     }
 }

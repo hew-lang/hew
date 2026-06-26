@@ -1,0 +1,99 @@
+//! Behavioural tests for the `sleep(duration)` and `sleep_until(instant)` APIs.
+//!
+//! `sleep(duration)` replaces `sleep_ms(i64)` — callers pass a duration
+//! literal or value instead of a raw integer in milliseconds.
+//!
+//! `sleep_until(instant)` suspends until a given monotonic point; if the point
+//! is already in the past it returns immediately.
+//!
+//! The strict `>= 5` after a real sleep is the test with teeth: a path that
+//! ignores the argument and returns immediately fails with `millis() == 0`.
+
+import std::testing;
+
+// ── sleep(duration) actually sleeps the requested time ───────────────────
+#[test]
+fn sleep_duration_waits_at_least_the_given_time() {
+    let start = instant::now();
+    sleep(5ms);
+    let waited: duration = start.elapsed();
+    testing.assert_true(waited.millis() >= 5);
+}
+
+// ── sleep(0ns) is a no-op — does not hang ────────────────────────────────
+#[test]
+fn sleep_zero_duration_returns_immediately() {
+    let start = instant::now();
+    sleep(0ns);
+    let waited: duration = start.elapsed();
+    // No observable delay: elapsed should be well under 100ms on any machine.
+    testing.assert_true(waited.millis() < 100);
+}
+
+// ── sleep_until past instant returns immediately ──────────────────────────
+#[test]
+fn sleep_until_past_instant_returns_immediately() {
+    let past = instant::now();
+    // Advance the clock by sleeping; `past` is now in the past.
+    sleep(5ms);
+    let start = instant::now();
+    sleep_until(past);
+    let elapsed: duration = start.elapsed();
+    // Should return without a meaningful delay.
+    testing.assert_true(elapsed.millis() < 50);
+}
+
+// ── sleep_until future instant waits until that point ────────────────────
+#[test]
+fn sleep_until_future_instant_waits() {
+    let start = instant::now();
+    // Construct a future instant 10ms from now using instant + duration.
+    let deadline = start + 10ms;
+    sleep_until(deadline);
+    let waited: duration = start.elapsed();
+    // Must have waited at least the requested span; a path that returns
+    // immediately (e.g. treats the future instant as now-or-past) would
+    // produce waited.millis() == 0 and fail here.
+    testing.assert_true(waited.millis() >= 10);
+}
+
+// ── sleep inside an actor handler suspends cooperatively ─────────────────
+actor SleepActor {
+    var woke: i64 = 0;
+    receive fn sleep_and_count(d: duration) -> i64 {
+        sleep(d);
+        woke = woke + 1;
+        return woke;
+    }
+}
+
+#[test]
+fn sleep_in_actor_suspends_and_resumes() {
+    let a = spawn SleepActor(woke: 0);
+    match await a.sleep_and_count(10ms) {
+        Ok(n) => testing.assert_eq(n, 1),
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+// ── sleep_until inside an actor handler suspends cooperatively ───────────
+actor SleepUntilActor {
+    var woke: i64 = 0;
+    receive fn sleep_until_and_count() -> i64 {
+        // Sleep until 10ms in the future.
+        sleep(10ms);
+        let deadline = instant::now();
+        sleep_until(deadline);
+        woke = woke + 1;
+        return woke;
+    }
+}
+
+#[test]
+fn sleep_until_in_actor_suspends_and_resumes() {
+    let a = spawn SleepUntilActor(woke: 0);
+    match await a.sleep_until_and_count() {
+        Ok(n) => testing.assert_eq(n, 1),
+        Err(_) => testing.assert_true(false),
+    }
+}

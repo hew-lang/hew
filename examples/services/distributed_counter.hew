@@ -100,7 +100,7 @@ fn main() {
     coord.register_replica("node-1");
     coord.register_replica("node-2");
     coord.register_replica("node-3");
-    sleep_ms(30);
+    sleep(30ms);
 
     // ── Local writes (fast, uncoordinated) ──
     println("--- Local increments (no coordination) ---");
@@ -109,17 +109,17 @@ fn main() {
     r2.increment(10);
     r3.increment(7);
     r3.increment(2);
-    sleep_ms(30);
+    sleep(30ms);
 
     // ── Sync to coordinator ──
     println("");
     println("--- Sync replicas to coordinator ---");
     r1.sync_to_coordinator();
-    sleep_ms(10);
+    sleep(10ms);
     r2.sync_to_coordinator();
-    sleep_ms(10);
+    sleep(10ms);
     r3.sync_to_coordinator();
-    sleep_ms(30);
+    sleep(30ms);
 
     // ── Read global total ──
     let global = await coord.get_global();
@@ -131,13 +131,13 @@ fn main() {
     println("--- More writes + re-sync ---");
     r1.increment(100);
     r2.increment(200);
-    sleep_ms(20);
+    sleep(20ms);
     r1.sync_to_coordinator();
-    sleep_ms(10);
+    sleep(10ms);
     r2.sync_to_coordinator();
-    sleep_ms(10);
+    sleep(10ms);
     r3.sync_to_coordinator();
-    sleep_ms(30);
+    sleep(30ms);
     let global2 = await coord.get_global();
     println(f"Global counter after update: {global2}");
     // Expected: 108 + 210 + 9 = 327

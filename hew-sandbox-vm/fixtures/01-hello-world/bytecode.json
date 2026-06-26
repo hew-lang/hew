@@ -114,6 +114,11 @@
         "name": "AskError"
       },
       {
+        "id": "type:HashMapIter",
+        "kind": "record",
+        "name": "HashMapIter"
+      },
+      {
         "id": "type:LocalPid",
         "kind": "record",
         "name": "LocalPid"
@@ -204,7 +209,7 @@
       }
     ]
   },
-  "package_id": "pkg:cacb09e40fc2f8d9",
+  "package_id": "pkg:b2ced3c8da2e3947",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {

@@ -15653,6 +15653,17 @@ fn lower_wire_codec_instr<'ctx>(
                 .llvm_ctx("wire decode free value")?;
             Ok(())
         }
+        // The text-format directions are lowered through the CBOR↔text bridge
+        // (`lower_wire_text_codec_instr`), wired by Stage 3 of the codec lane.
+        // Until that arm lands, fail closed rather than miscompile a
+        // `to_json`/`from_json` call.
+        WireCodecDirection::ToJson
+        | WireCodecDirection::FromJson
+        | WireCodecDirection::ToYaml
+        | WireCodecDirection::FromYaml => Err(CodegenError::FailClosed(format!(
+            "wire text codec direction {direction:?} not yet lowered \
+             (text-format bridge pending)"
+        ))),
     }
 }
 

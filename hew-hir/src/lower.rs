@@ -8926,6 +8926,20 @@ impl LowerCtx {
             SupervisorStrategy::SimpleOneForOne => HirSupervisorStrategy::SimpleOneForOne,
         });
 
+        // Bind the construction-time config params in a fresh scope so the child
+        // init-arg exprs lowered below can reference them (`config.field`). Mirror
+        // the function/actor param-binding shape. The scope is popped after the
+        // children are lowered.
+        self.push_scope();
+        let params: Vec<HirBinding> = decl
+            .params
+            .iter()
+            .map(|param| {
+                let ty = self.lower_type(&param.ty);
+                self.bind(param.name.clone(), ty, param.is_mutable, param.ty.1.clone())
+            })
+            .collect();
+
         // Assign slot indices by partitioning children into static and pool spaces.
         // Each partition uses its own 0-based counter so the indices are disjoint,
         // matching the runtime layout (children[] for static, pool_slots[] for pool).
@@ -8974,10 +8988,14 @@ impl LowerCtx {
             })
             .collect();
 
+        // Pop the param scope now that every child's init-arg expr is lowered.
+        self.pop_scope();
+
         HirSupervisorDecl {
             id: self.ids.item(),
             node: self.ids.node(),
             name: decl.name.clone(),
+            params,
             strategy,
             // Decompose the fused `intensity` AST field into the two HIR fields
             // (max_restarts + window) the MIR/codegen/runtime path already uses.

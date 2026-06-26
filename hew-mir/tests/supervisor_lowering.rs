@@ -460,7 +460,7 @@ fn supervisor_child_with_on_crash_hook_surfaces_symbol_on_layout() {
 
 /// An OWNED config field (`config.name: string`) is walled off at the checker
 /// (still scalar-only) and, as defence-in-depth, fails closed at MIR if it ever
-/// reaches lowering — the owned-clone init thunk is the continuation of this lane.
+/// reaches lowering — the owned-clone init thunk is follow-up work.
 #[test]
 fn owned_config_field_init_arg_is_walled_at_checker() {
     // The checker rejects the owned `string` init param before MIR, so the

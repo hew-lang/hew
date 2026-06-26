@@ -1873,11 +1873,11 @@ pub fn lower_hir_module_with_facts(
                                     let owned = child_init_field_is_owned(&source_expr.ty);
                                     // Owned config-field init is sound under the
                                     // init-closure model, but its per-field
-                                    // owned-clone-in-thunk codegen is the
-                                    // continuation of this lane. Fail CLOSED for
-                                    // now (the checker also walls owned init args,
-                                    // so this is defence-in-depth) rather than
-                                    // emit a ConfigField codegen cannot deep-clone.
+                                    // owned-clone-in-thunk codegen is follow-up
+                                    // work. Fail CLOSED for now (the checker also
+                                    // walls owned init args, so this is
+                                    // defence-in-depth) rather than emit a
+                                    // ConfigField codegen cannot deep-clone.
                                     if owned {
                                         diagnostics.push(MirDiagnostic {
                                             kind: MirDiagnosticKind::NotYetImplemented {
@@ -1885,8 +1885,8 @@ pub fn lower_hir_module_with_facts(
                                                     "supervisor `{}` child `{}` field \
                                                      `{field_name}` reads owned config field \
                                                      `{config_param_name}.{field}` (type {:?}); \
-                                                     the owned-clone init thunk is the \
-                                                     continuation of this lane",
+                                                     the owned-clone init thunk is follow-up \
+                                                     work",
                                                     sup_layout.name, child.name, source_expr.ty
                                                 ),
                                                 site: source_expr.site,

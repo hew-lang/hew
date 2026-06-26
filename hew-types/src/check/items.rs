@@ -131,15 +131,14 @@ impl Checker {
     /// Reject supervised child init args unless the actor init-parameter type is
     /// provably one of the checker's `BitCopy` scalar primitives.
     ///
-    /// The v0.6 init-closure restart model (this lane) makes the SCALAR config
-    /// path sound and dynamic — a `child cache: Cache(capacity: config.size)`
-    /// where `capacity` is a scalar is re-produced by the init thunk on every
-    /// restart. OWNED init args (`string`/`Vec`/...) are also sound under the
-    /// init-closure model in principle (the thunk re-clones them per
-    /// incarnation), but their per-field owned-clone-in-thunk codegen is the
-    /// continuation of this lane; until it lands, owned init args stay walled
-    /// here so the system fails CLOSED rather than accepting a surface codegen
-    /// cannot yet emit.
+    /// The v0.6 init-closure restart model makes the SCALAR config path sound
+    /// and dynamic — a `child cache: Cache(capacity: config.size)` where
+    /// `capacity` is a scalar is re-produced by the init thunk on every restart.
+    /// OWNED init args (`string`/`Vec`/...) are also sound under the init-closure
+    /// model in principle (the thunk re-clones them per incarnation), but their
+    /// per-field owned-clone-in-thunk codegen is follow-up work; until it lands,
+    /// owned init args stay walled here so the system fails CLOSED rather than
+    /// accepting a surface codegen cannot yet emit.
     ///
     /// WHEN-OBSOLETE: when the init thunk emits per-field owned deep-clones for
     /// `string`/`Vec`/... config init args; flip this predicate to
@@ -148,8 +147,8 @@ impl Checker {
     fn check_supervisor_init_args_bitcopy(&mut self, sd: &SupervisorDecl, _span: &Span) {
         for child in &sd.children {
             // Pool children are spawned dynamically — their init args route
-            // through the per-member thunk too, but are validated in the pool
-            // lane; exempt here.
+            // through the per-member thunk too, but are validated separately;
+            // exempt here.
             if child.is_pool {
                 continue;
             }
@@ -181,8 +180,8 @@ impl Checker {
                             "E_SUPERVISOR_INIT_ARG_NON_BITCOPY: supervisor `{}` child `{}` \
                              (actor `{}`) passes init arg `{}` of type `{}`; supervised actor \
                              init args are re-produced by the init-closure restart model on \
-                             every restart, and the per-field owned-clone path is the \
-                             continuation of this lane, so for now only scalar BitCopy \
+                             every restart, and the per-field owned-clone path is follow-up \
+                             work, so for now only scalar BitCopy \
                              primitives (`i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, \
                              `f32`, `f64`, `bool`, `char`) are admitted. Owned, generic, alias, \
                              user-defined, and handle types are rejected until the owned init \

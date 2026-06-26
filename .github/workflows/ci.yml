@@ -450,6 +450,17 @@ jobs:
       # pregenerated assembly objects, so the test-time hew-lib bootstrap links
       # without a NASM toolchain. (Parity with release-gate.yml / release.yml.)
       AWS_LC_SYS_PREBUILT_NASM: "1"
+      # Cap concurrent rustc invocations on the Windows runner to avoid OOM.
+      # hew-codegen-rs/llvm.rs (~33k lines) consumes ~2-3 GB of RSS per rustc
+      # process under the LLVM backend; with the default job count equal to the
+      # runner's CPU count (4), peak concurrent RSS exceeds the runner's 16 GB
+      # and the kernel kills rustc (STATUS_STACK_BUFFER_OVERRUN / 0xc0000409).
+      # Two concurrent jobs fit comfortably (2 × 3 GB = 6 GB peak for codegen,
+      # leaving headroom for the OS, LLVM headers, and the linker pass).
+      # Linux and macOS runners have more headroom at their default parallelism
+      # and are unaffected. Revisit when hew-codegen-rs/llvm.rs is split into
+      # smaller modules, or when the Windows runner gains more memory.
+      CARGO_BUILD_JOBS: "2"
     steps:
       - name: No-op for docs-only changes
         if: env.RUN_CODE_PATH != 'true'

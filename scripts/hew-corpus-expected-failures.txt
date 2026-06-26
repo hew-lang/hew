@@ -1,0 +1,448 @@
+# hew-corpus-expected-failures.txt — Known failures for the hew-corpus-check gate.
+#
+# Each entry is a repo-root-relative path to a tracked .hew file that currently
+# fails `hew check`. The gate exits 1 on any UNEXPECTED failure (not in this
+# list) or UNEXPECTED PASS (listed here but now compiles — delete the entry).
+#
+# Classification categories:
+#   deferred-nyi    — Feature not yet implemented in the compiler (sleep
+#                     duration literals, select/channel, link_monitor MIR,
+#                     hashmap/hashset for-in, lambdas with await, await_restart
+#                     syntax, clone on generic types, etc.). The fixture is
+#                     correctly written Hew; the compiler just hasn't landed
+#                     the feature yet.
+#   stale-syntax    — File uses pre-v0.5 syntax that was removed (e.g.
+#                     `struct` → `type`, `event` → `events { }` block,
+#                     `let x = channel()` → new channel API). Needs migrating
+#                     forward rather than bending the compiler back.
+#   sandbox-intentional-error — Sandbox fixture explicitly demonstrates a
+#                     compile error to the sandbox VM; intentionally invalid.
+#   fmt-corpus-incomplete — Formatter roundtrip corpus file that tests AST
+#                     round-trip but references undefined helpers (e.g. `empty()`)
+#                     because it is not intended to compile standalone.
+#   requires-package-resolver — File imports a `hew::` package that must be
+#                     resolved by `adze install` first; `hew check` alone
+#                     cannot resolve the dependency. Covered by test-pkg-import.
+#   repro-wip       — Reproduction case tracking a specific open bug; compiles
+#                     partially but fails on a known issue being fixed.
+#   downstream-wip  — Downstream / tools fixture not yet updated to current
+#                     associated-type requirements.
+#
+# To add an entry: run the failure through `hew check` to confirm the class,
+# add the path + category comment here, and re-run `make hew-check-all`.
+# To remove an entry: delete the line once the file compiles clean.
+#
+# Gate: make hew-check-all (scripts/hew-corpus-check.sh)
+
+# ── examples/ ────────────────────────────────────────────────────────────────
+
+# deferred-nyi: sleep duration literals (50ms / 0ns) not yet accepted
+examples/actor/await_crash_after_sleep_resume.hew
+examples/actor/scope_deadline_suspend.hew
+examples/actor/select_suspend_deadline.hew
+examples/actor/select_suspend_race.hew
+
+# deferred-nyi: channel/select syntax not yet lowered
+examples/backpressure_test.hew
+examples/benchmark_demo.hew
+examples/channel/await_recv_actor.hew
+examples/channel/select_recv.hew
+examples/chat_client.hew
+examples/chat_server.hew
+
+# deferred-nyi: distributed / net NYI features
+examples/distributed/kv_client.hew
+examples/distributed/kv_server.hew
+
+# deferred-nyi: lambda actor syntax not yet supported
+examples/lambda_actor_factory.hew
+examples/lambda_actor_pipeline.hew
+examples/lambda_actors.hew
+
+# deferred-nyi: machine select/transition watch NYI
+examples/machine/bounded_resource.hew
+examples/machine/select_on_transition.hew
+examples/machine/transition_watch_baseline.hew
+
+# deferred-nyi: module_generic_boundaries multi-file typecheck NYI
+examples/module_generic_boundaries/main.hew
+
+# deferred-nyi: MQTT broker NYI features
+examples/mqtt_broker.hew
+
+# deferred-nyi: multifile compilation NYI (requires multi-file resolve)
+examples/multifile/01_shapes/main.hew
+examples/multifile/02_geometry/geo/area.hew
+examples/multifile/02_geometry/geo/distance.hew
+examples/multifile/02_geometry/main.hew
+
+# deferred-nyi: net/await NYI
+examples/net/await_http_roundtrip.hew
+examples/net/await_read_fanout.hew
+examples/net/await_read_hup.hew
+examples/net/await_read.hew
+examples/net/http_await_service.hew
+examples/net/probe_a_conn_field.hew
+examples/net/probe_b2_closure_await_outer_crash.hew
+examples/net/probe_b2_closure_capture_await.hew
+examples/net/probe_b2_closure_multi_await.hew
+examples/net/probe_b2_closure_unit_await.hew
+examples/net/probe_b3_closure_capture_noawait.hew
+examples/net/probe_opaque_actor_state.hew
+examples/network_file_reader.hew
+
+# deferred-nyi: observe-related NYI
+examples/observe_showcase.hew
+examples/observe_supervisor_showcase.hew
+examples/observe-test-fixture.hew
+
+# deferred-nyi: profiler NYI
+examples/profiler_demo.hew
+
+# deferred-nyi: QUIC / advanced net NYI
+examples/quic_mesh/client.hew
+examples/quic_mesh/selector_smoke.hew
+examples/quic_mesh/server.hew
+examples/quic_service/client.hew
+examples/quic_service/server.hew
+
+# deferred-nyi: regex NYI in codegen
+examples/regex_demo.hew
+
+# deferred-nyi: advanced actor patterns NYI
+examples/sensor_mesh.hew
+examples/services/circuit_breaker.hew
+examples/services/distributed_counter.hew
+examples/services/health_monitor.hew
+examples/services/pub_sub.hew
+examples/services/rate_limiter.hew
+examples/services/worker_pool.hew
+examples/stress_scheduler.hew
+examples/stress_supervision.hew
+examples/supervisor_crash_budget.hew
+examples/supervisor_nested_tree.hew
+examples/supervisor_service_stack.hew
+examples/supervisor_showcase.hew
+examples/supervisor_vs_erlang.hew
+examples/supervisor_worker_pool.hew
+examples/test_actors_messaging.hew
+
+# deferred-nyi: v05 examples using NYI features
+examples/v05/actor_ask_race.hew
+examples/v05/cancellation_is_cancelled_observation.hew
+examples/v05/channel_vec_element_fails.hew
+
+# deferred-nyi: checked-mir v05 examples using NYI features
+examples/v05/checked-mir/actor_ask_race.hew
+examples/v05/checked-mir/actor_link_monitor.hew
+examples/v05/checked-mir/channel_recv_select.hew
+examples/v05/checked-mir/regex_match_literal.hew
+examples/v05/checked-mir/stream_pipe_send_recv.hew
+examples/v05/checked-mir/stream_string_pipe_send.hew
+examples/v05/checked-mir/supervisor_await_restart.hew
+examples/v05/checked-mir/supervisor_config_init.hew
+
+# deferred-nyi: f64 key/annotation expected-fail test fixtures
+examples/v05/hashmap_f64_annotation_fails.hew
+examples/v05/hashmap_f64_key_fails.hew
+examples/v05/hashmap_f64_key_is_empty_fails.hew
+examples/v05/hashset_f64_annotation_fails.hew
+examples/v05/hashset_f64_clear_fails.hew
+
+# deferred-nyi: channel/stream surfaces NYI
+examples/v05/surfaces/channel_record_elements.hew
+examples/v05/surfaces/for_await_recv_f64.hew
+examples/v05/surfaces/for_await_recv_int.hew
+examples/v05/surfaces/for_await_recv_string.hew
+examples/v05/surfaces/for_await_stream_bytes.hew
+examples/v05/surfaces/for_await_stream_string.hew
+examples/v05/surfaces/try_recv_stream_string.hew
+examples/v05/surfaces/typed_streams_string.hew
+examples/v05/surfaces/typed_streams.hew
+
+# deferred-nyi: vec layout and method NYI
+examples/v05/vec_layout_noncopy_fails.hew
+examples/v05/vec_unsupported_method_fails.hew
+
+# ── hew-lsp/ ─────────────────────────────────────────────────────────────────
+
+# deferred-nyi: LSP test fixtures covering NYI language features
+hew-lsp/tests/fixtures/v05_async_await.hew
+hew-lsp/tests/fixtures/v05_await_deadline.hew
+hew-lsp/tests/fixtures/v05_closures.hew
+hew-lsp/tests/fixtures/v05_cross_module_machine_main.hew
+hew-lsp/tests/fixtures/v05_index_trait.hew
+hew-lsp/tests/fixtures/v05_link_monitor.hew
+hew-lsp/tests/fixtures/v05_machine_generics.hew
+hew-lsp/tests/fixtures/v05_machine_methods.hew
+hew-lsp/tests/fixtures/v05_machine_states.hew
+hew-lsp/tests/fixtures/v05_machine_substrate.hew
+hew-lsp/tests/fixtures/v05_record_tuple_literal.hew
+hew-lsp/tests/fixtures/v05_regex_literal.hew
+hew-lsp/tests/fixtures/v05_scope_fork.hew
+hew-lsp/tests/fixtures/v05_std_channels.hew
+
+# ── hew-mir/ ─────────────────────────────────────────────────────────────────
+
+# deferred-nyi: MIR test fixture for link_monitor spawn binding (NYI)
+hew-mir/tests/fixtures/link_monitor_spawn_binding.hew
+
+# ── hew-observe/ ─────────────────────────────────────────────────────────────
+
+# deferred-nyi: observe workload fixture uses NYI actor/channel features
+hew-observe/test-harness/observe_workload.hew
+
+# ── hew-parser/ ──────────────────────────────────────────────────────────────
+
+# stale-syntax: fuzz corpus seed files use pre-v0.5 machine event syntax
+hew-parser/fuzz/corpus/fuzz_machine_decls/seed.hew
+hew-parser/fuzz/corpus/fuzz_mir/regression-link-monitor-spawn.hew
+hew-parser/fuzz/corpus/fuzz_record_types/seed.hew
+hew-parser/fuzz/corpus/fuzz_supervisor_decls/seed.hew
+
+# fmt-corpus-incomplete: formatter roundtrip corpus files reference undefined
+# helpers (e.g. `empty()`) — these test AST round-trip only, not compilation
+hew-parser/tests/fmt_roundtrip_corpus/assoc_types/generic_projection_where.hew
+hew-parser/tests/fmt_roundtrip_corpus/assoc_types/impl_assoc_ordering.hew
+hew-parser/tests/fmt_roundtrip_corpus/assoc_types/impl_assoc_vec_binding.hew
+hew-parser/tests/fmt_roundtrip_corpus/assoc_types/self_projection_signatures.hew
+
+# ── hew-sandbox-vm/ ──────────────────────────────────────────────────────────
+
+# sandbox-intentional-error: fixture 09 is explicitly a "compile type error"
+# demonstration for the sandbox VM — it is designed to fail hew check
+hew-sandbox-vm/fixtures/09-compile-type-error/main.hew
+
+# deferred-nyi: sandbox fixtures using NYI features (sleep duration, actor
+# ask/reply, channel select, supervisor, machine events, stdin, random)
+hew-sandbox-vm/fixtures/14-virtual-sleep-clock/main.hew
+hew-sandbox-vm/fixtures/15-actor-counter/main.hew
+hew-sandbox-vm/fixtures/16-actor-ask-reply/main.hew
+hew-sandbox-vm/fixtures/17-channel-select/main.hew
+hew-sandbox-vm/fixtures/18-task-await/main.hew
+hew-sandbox-vm/fixtures/19-supervisor-restart/main.hew
+hew-sandbox-vm/fixtures/20-machine-traffic-light/main.hew
+hew-sandbox-vm/fixtures/21-replay-stdin/main.hew
+hew-sandbox-vm/fixtures/22-deterministic-random/main.hew
+hew-sandbox-vm/fixtures/24-actor-pipeline/main.hew
+hew-sandbox-vm/fixtures/25-actor-crash/main.hew
+hew-sandbox-vm/fixtures/26-i64-bigint/main.hew
+hew-sandbox-vm/fixtures/27-actor-crash-restart-ignored/main.hew
+hew-sandbox-vm/fixtures/28-actor-state-arity-trap/main.hew
+hew-sandbox-vm/fixtures/29-mixed-scalar-compare-trap/main.hew
+
+# ── hew-types/ ───────────────────────────────────────────────────────────────
+
+# deferred-nyi: net parameter surfaces typecheck fixture uses NYI net types
+hew-types/tests/fixtures/net_parameter_surfaces_typecheck.hew
+
+# ── repros/ ───────────────────────────────────────────────────────────────────
+
+# repro-wip: open bug reproduction cases (Option<T> Display, method value)
+repros/03_hashmap_string_vec_value.hew
+repros/p0a_hashmap_string_vec_value.hew
+repros/p0c_method_value_failclosed.hew
+
+# ── tests/corpus/ ────────────────────────────────────────────────────────────
+
+# stale-syntax: v05-value-model corpus uses pre-v0.5 `struct` keyword and
+# other old syntax; needs migrating forward to current type/record syntax
+tests/corpus/v05-value-model/01_bitcopy_simple.hew
+tests/corpus/v05-value-model/03_cowvalue_mutation_after_share.hew
+tests/corpus/v05-value-model/04_persistent_share_placeholder.hew
+tests/corpus/v05-value-model/05_affine_resource_consume.hew
+tests/corpus/v05-value-model/07_view_field_slice_alias.hew
+tests/corpus/v05-value-model/08_actor_send_transfer.hew
+tests/corpus/v05-value-model/09_actor_send_share.hew
+tests/corpus/v05-value-model/10_actor_send_materialize.hew
+tests/corpus/v05-value-model/12_closure_capture_let_read.hew
+tests/corpus/v05-value-model/13_closure_capture_var_mutate.hew
+tests/corpus/v05-value-model/14_closure_capture_var_consume.hew
+tests/corpus/v05-value-model/15_generator_yield_immutable_read.hew
+tests/corpus/v05-value-model/17_to_string_display_read_receiver.hew
+tests/corpus/v05-value-model/18_record_update_syntax.hew
+tests/corpus/v05-value-model/19_actor_scope.hew
+
+# ── tests/hew/ ───────────────────────────────────────────────────────────────
+
+# deferred-nyi: hew test suite files using NYI features (sleep duration,
+# actor select/suspend, generic clone, hashmap clone, instant methods, process,
+# generic vec iter, this-send)
+tests/hew/actor_every_test.hew
+tests/hew/actor_scope_deadline_body_test.hew
+tests/hew/actor_select_suspend_test.hew
+tests/hew/actor_sleep_suspend_test.hew
+tests/hew/actor_this_self_send_test.hew
+tests/hew/actor_unit_task_await_suspend_test.hew
+tests/hew/generic_enum_clone_test.hew
+tests/hew/generic_param_clone_test.hew
+tests/hew/generic_record_of_vec_clone_test.hew
+tests/hew/generic_vec_iter_surface_test.hew
+tests/hew/hashmap_clone_test.hew
+tests/hew/instant_methods_test.hew
+tests/hew/process_test.hew
+tests/hew/sleep_duration_test.hew
+
+# ── tests/ll-oracle/ ─────────────────────────────────────────────────────────
+
+# deferred-nyi: LL oracle corpus file uses NYI runtime ABI features
+tests/ll-oracle/corpus/r4_runtime_abi.hew
+
+# ── tests/pkg-import/ ────────────────────────────────────────────────────────
+#
+# All files in tests/pkg-import/ (non-reject) fail standalone `hew check`
+# because they import `hew::` packages that require `adze install` to resolve
+# into .adze/packages/ first. These are covered by make test-pkg-import which
+# runs the full package-import oracle with the resolver active.
+
+# requires-package-resolver: import alias tests
+tests/pkg-import/alias_import_does_not_conflate_with_same_named_export.hew
+tests/pkg-import/alias_import_resolves_bare_binding_to_source_identity.hew
+tests/pkg-import/aliased_import_enum_payload_member.hew
+tests/pkg-import/aliased_import_enum_variant.hew
+tests/pkg-import/aliased_import_machine_state_member.hew
+tests/pkg-import/aliased_import_member_depth2.hew
+tests/pkg-import/aliased_import_qualified_field_control.hew
+tests/pkg-import/aliased_import_record_field_member.hew
+tests/pkg-import/aliased_import_type_annotation.hew
+tests/pkg-import/aliased_multimethod_trait_collision_accept.hew
+tests/pkg-import/aliased_subtrait_inline_supermethod_accept.hew
+tests/pkg-import/aliased_trait_sig.hew
+tests/pkg-import/aliased_trait_source_name_collision_accept.hew
+tests/pkg-import/generic_freefn_direct_call.hew
+tests/pkg-import/generic_freefn_lambda_wrap.hew
+tests/pkg-import/generic_freefn_owned_element.hew
+tests/pkg-import/imported_actor_ask_i32.hew
+tests/pkg-import/imported_actor_ask_i64.hew
+tests/pkg-import/imported_actor_ask_record.hew
+tests/pkg-import/imported_actor_ask_string.hew
+tests/pkg-import/imported_deep_chain_inline_supermethods_accept.hew
+tests/pkg-import/imported_diamond_inline_supermethods_accept.hew
+tests/pkg-import/imported_redeclared_super_separate_impl_accept.hew
+tests/pkg-import/imported_subtrait_inline_supermethod_accept.hew
+tests/pkg-import/imported_trait_method.hew
+tests/pkg-import/local_actor_ask_guard.hew
+tests/pkg-import/local_trait_shadows_imported_collision_accept.hew
+tests/pkg-import/local_type_shadows_import_alias_member.hew
+tests/pkg-import/local_type_shadows_import_alias.hew
+tests/pkg-import/missing_assoc_type_collision_accept.hew
+tests/pkg-import/mixed_import_impl_collision.hew
+tests/pkg-import/nested_qualified_payload.hew
+tests/pkg-import/package_module_type_alias.hew
+
+# requires-package-resolver: sub-packages (each depends on sibling packages)
+tests/pkg-import/pkgs/aliasmember/aliasmember.hew
+tests/pkg-import/pkgs/assocemptyuse/assocemptyuse.hew
+tests/pkg-import/pkgs/assocreqimplbad/assocreqimplbad.hew
+tests/pkg-import/pkgs/assocreqimplok/assocreqimplok.hew
+tests/pkg-import/pkgs/deepalias/deepalias.hew
+tests/pkg-import/pkgs/nestrelay/nestrelay.hew
+tests/pkg-import/pkgs/reexchaina/reexchaina.hew
+tests/pkg-import/pkgs/reexmid/reexmid.hew
+tests/pkg-import/pkgs/reexsub/reexsub.hew
+tests/pkg-import/pkgs/reexsubalias/reexsubalias.hew
+tests/pkg-import/pkgs/replynonsend/replynonsend.hew
+
+# requires-package-resolver: more accept/trait tests
+tests/pkg-import/postmono_qualified_layout.hew
+tests/pkg-import/published_bare_no_poison.hew
+tests/pkg-import/published_bare_two_optin_ambiguous.hew
+tests/pkg-import/qualified_construct_layout.hew
+tests/pkg-import/qualified_trait_sig.hew
+tests/pkg-import/reexport_aliased_super_inline_supermethod_accept.hew
+tests/pkg-import/reexport_chain_inline_supermethods_accept.hew
+tests/pkg-import/reexport_super_inline_supermethod_accept.hew
+tests/pkg-import/samename_type_layout.hew
+
+# ── tests/vertical-slice/accept/ ─────────────────────────────────────────────
+#
+# These are accept/ fixtures (should compile) that currently fail because the
+# relevant compiler feature is deferred or a NYI MIR path is hit.
+
+# deferred-nyi: actor ask race / select / supervisor features
+tests/vertical-slice/accept/actor_ask_race.hew
+tests/vertical-slice/accept/actor_nested_handle_tuple_transfer.hew
+tests/vertical-slice/accept/actor_single_arg_pid_payload.hew
+tests/vertical-slice/accept/ask_reply_owned_select_loser.hew
+tests/vertical-slice/accept/ask_reply_owned_timeout.hew
+
+# deferred-nyi: await deadline NYI
+tests/vertical-slice/accept/await_accept_deadline_deferred.hew
+tests/vertical-slice/accept/await_accept_deadline_ok.hew
+tests/vertical-slice/accept/await_accept_deadline_timeout.hew
+tests/vertical-slice/accept/await_read_deadline_deferred.hew
+tests/vertical-slice/accept/await_read_deadline_ok.hew
+tests/vertical-slice/accept/await_read_string_deadline_ok.hew
+tests/vertical-slice/accept/await_read_string_deadline_timeout.hew
+
+# deferred-nyi: actor crash context diagnostic NYI
+tests/vertical-slice/accept/crash_actor_context_diagnostic.hew
+
+# deferred-nyi: hashmap/hashset for-in NYI
+tests/vertical-slice/accept/hashmap_for_in_call.hew
+tests/vertical-slice/accept/hashmap_for_in_field.hew
+tests/vertical-slice/accept/hashmap_for_in_owned.hew
+tests/vertical-slice/accept/hashmap_for_in_string_key.hew
+tests/vertical-slice/accept/hashmap_for_in_sum.hew
+tests/vertical-slice/accept/hashmap_managed_key_drop.hew
+tests/vertical-slice/accept/hashmap_managed_record_key.hew
+tests/vertical-slice/accept/hashset_for_in_call.hew
+tests/vertical-slice/accept/hashset_for_in_field_owned.hew
+tests/vertical-slice/accept/hashset_for_in_field.hew
+tests/vertical-slice/accept/hashset_for_in_owned.hew
+tests/vertical-slice/accept/hashset_for_in_sum.hew
+tests/vertical-slice/accept/hashset_managed_record_elem.hew
+
+# deferred-nyi: lambda capture NYI
+tests/vertical-slice/accept/lambda_capture_pid_forward.hew
+tests/vertical-slice/accept/lambda_capture_tell.hew
+tests/vertical-slice/accept/lambda_multi_param.hew
+tests/vertical-slice/accept/lambda_self_recursion.hew
+
+# deferred-nyi: link_monitor MIR NYI
+tests/vertical-slice/accept/link_monitor_value_monitor_in_actor.hew
+tests/vertical-slice/accept/link_monitor_value_monitor.hew
+tests/vertical-slice/accept/link_monitor_value_result.hew
+
+# deferred-nyi: local fn msg actor method
+tests/vertical-slice/accept/local_fn_msg_actor_method_allowed.hew
+
+# deferred-nyi: regex match arm NYI
+tests/vertical-slice/accept/regex_match_arm.hew
+
+# deferred-nyi: select recv guard NYI
+tests/vertical-slice/accept/select_recv_guard.hew
+
+# deferred-nyi: sleep duration literal NYI
+tests/vertical-slice/accept/sleep_duration.hew
+tests/vertical-slice/accept/sleep_until.hew
+
+# deferred-nyi: supervisor NYI features
+tests/vertical-slice/accept/supervisor_await_restart.hew
+tests/vertical-slice/accept/supervisor_dynamic_child_init.hew
+tests/vertical-slice/accept/supervisor_fungible_dead_child_select.hew
+tests/vertical-slice/accept/supervisor_fungible_dead_child.hew
+tests/vertical-slice/accept/supervisor_literal_only_config_param.hew
+tests/vertical-slice/accept/supervisor_nested_accessor.hew
+tests/vertical-slice/accept/supervisor_owned_child_init_restart.hew
+
+# deferred-nyi: vec into_iter typeck NYI
+tests/vertical-slice/accept/vec_into_iter_typeck.hew
+
+# deferred-nyi: wire JSON/YAML NYI
+tests/vertical-slice/accept/wire_json_enum_payload_roundtrip.hew
+tests/vertical-slice/accept/wire_json_enum_unit_roundtrip.hew
+tests/vertical-slice/accept/wire_json_malformed_is_err.hew
+tests/vertical-slice/accept/wire_json_missing_field_is_err.hew
+tests/vertical-slice/accept/wire_json_nested_roundtrip.hew
+tests/vertical-slice/accept/wire_json_over_range_is_err.hew
+tests/vertical-slice/accept/wire_json_struct_roundtrip.hew
+tests/vertical-slice/accept/wire_json_vec_option_roundtrip.hew
+tests/vertical-slice/accept/wire_json_wrong_shape_is_err.hew
+tests/vertical-slice/accept/wire_yaml_roundtrip.hew
+
+# ── tools/ ───────────────────────────────────────────────────────────────────
+
+# downstream-wip: downstream syntax fixture not yet updated to associated-type
+# requirements (impl must define Canvas)
+tools/downstream/syntax-fixtures/syntax_test.hew

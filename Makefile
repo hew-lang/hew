@@ -76,6 +76,7 @@
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
 .PHONY: fuzz-corpus fuzz-smoke fuzz-oracle fuzz-oracle-selftest
 .PHONY: ll-diff ll-golden ll-identity-selftest
+.PHONY: hew-check-all
 
 # ── Configuration ───────────────────────────────────────────────────────────
 
@@ -1025,6 +1026,15 @@ hew-fmt-check: hew
 	    | xargs -0 $(DEBUG_DIR)/hew fmt --check \
 	    && echo "hew-fmt-check passed: all .hew sources are formatted." \
 	    || { echo "error: unformatted .hew sources found — run 'find std examples -name \"*.hew\" -print0 | xargs -0 hew fmt' to fix." >&2; exit 1; }
+
+# Repo-wide hew check sweep over all tracked .hew files (excluding intentional
+# reject fixtures).  Ratchets against scripts/hew-corpus-expected-failures.txt.
+# Catches the class of bug where a symbol rename or type change lands in the
+# compiler but fixture files across crates/tests/examples are silently missed.
+# See scripts/hew-corpus-check.sh for the allowlist format and classification guide.
+hew-check-all: hew
+	@echo "==> hew-check-all: compiling full .hew corpus"
+	scripts/hew-corpus-check.sh
 
 # Smoke-test the release binary with `hew run` to catch process-exit aborts
 # (e.g. libc++ ABI mismatch at locale destructor — issue #1606).

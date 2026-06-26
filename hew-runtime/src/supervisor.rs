@@ -1996,11 +1996,19 @@ unsafe fn restart_with_budget_and_strategy(sup: &mut HewSupervisor, failed_index
             }
         }
         STRATEGY_SIMPLE_ONE_FOR_ONE => {
-            // Pool dynamics — pool children restart via the per-pool path on
-            // `HewSupervisor.pool_*`, not via this child-restart helper. The
-            // codegen-side bootstrap that emits this strategy + the per-pool
-            // restart machinery land together in S-E. Keeping the arm
-            // explicit (not a wildcard) so `exhaustive-coverage` holds.
+            // Static-backed pool: each pool member is an independent static child
+            // in `children[]` (registered via `pool_member_add_static`), so the
+            // crashed member restarts per-member exactly like ONE_FOR_ONE — the
+            // members are fungible and independent, never a one-for-all group.
+            // `restart_child_from_spec` re-runs the member's init thunk (fresh
+            // config-derived state per incarnation) and `store_child_slot` re-fills
+            // `children[failed_index]`; the pool accessor
+            // (`hew_supervisor_pool_child_get`) resolves member i through that LIVE
+            // static slot, so the restarted member is re-resolved automatically
+            // with no stale PID cached (LESSONS
+            // `replaceable-resource-handle-is-fungible-reference`).
+            // SAFETY: index is valid (bounds-checked at the top of this fn).
+            unsafe { restart_child_from_spec(sup, failed_index) };
         }
         unknown => {
             // Fail-closed: any non-listed strategy is a codegen/runtime ABI
@@ -6143,8 +6151,9 @@ mod pool_slot_tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::{
-        actor, restart_child_from_spec, take_child_slot, ChildSlotReason, HewChildInitResult,
-        HewChildSpec, HewSupervisor, OVERFLOW_DROP_NEW, RESTART_PERMANENT,
+        actor, restart_child_from_spec, restart_with_budget_and_strategy, take_child_slot,
+        ChildSlotReason, HewChildInitResult, HewChildSpec, HewSupervisor, OVERFLOW_DROP_NEW,
+        RESTART_PERMANENT,
     };
     use crate::supervisor::{
         hew_supervisor_add_child_spec, hew_supervisor_new, hew_supervisor_pool_add_slot,
@@ -6843,6 +6852,60 @@ mod pool_slot_tests {
         // Member 0 is untouched by the SIMPLE_ONE_FOR_ONE per-member restart.
         let member0 = unsafe { hew_supervisor_pool_child_get(sup, 0, 0) };
         assert!(member0.is_live(), "member 0 stayed live");
+
+        unsafe { hew_supervisor_stop(sup) };
+        assert_eq!(INIT_CLOSURE_LIVE_OWNED.load(Ordering::SeqCst), 0);
+    }
+
+    /// Driving the `SIMPLE_ONE_FOR_ONE` strategy arm (not the helper directly)
+    /// restarts the crashed pool member per-member and the pool re-resolves it.
+    /// This proves the arm is wired (it was previously an empty no-op).
+    #[test]
+    fn simple_one_for_one_arm_restarts_crashed_pool_member() {
+        let _rt = crate::runtime_test_guard();
+        INIT_CLOSURE_LIVE_OWNED.store(0, Ordering::SeqCst);
+        INIT_CLOSURE_THUNK_CALLS.store(0, Ordering::SeqCst);
+        INIT_CLOSURE_FAIL_NEXT.store(false, Ordering::SeqCst);
+
+        let sup = unsafe { hew_supervisor_new(STRATEGY_SIMPLE_ONE_FOR_ONE, 5, 60) };
+        let (cfg, cfg_size) = make_config_buf(13);
+        for _ in 0..2 {
+            let spec = init_closure_spec(cfg, cfg_size);
+            assert_eq!(
+                unsafe { hew_supervisor_add_child_spec(sup, &raw const spec) },
+                0
+            );
+        }
+        for idx in 0..2 {
+            unsafe { hew_supervisor_set_child_state_drop(sup, idx, init_closure_drop) };
+        }
+        let name = std::ffi::CString::new("workers").unwrap();
+        unsafe { hew_supervisor_pool_add_slot(sup, name.as_ptr(), ROUND_ROBIN, 0) };
+        for idx in 0..2u32 {
+            unsafe { hew_supervisor_pool_member_add_static(sup, 0, idx) };
+        }
+        unsafe { (*sup).running.store(1, Ordering::Release) };
+
+        let thunks_before = INIT_CLOSURE_THUNK_CALLS.load(Ordering::SeqCst);
+        // Crash member 0: free its slot, then drive the strategy arm (which now
+        // routes SIMPLE_ONE_FOR_ONE → restart_child_from_spec for the member).
+        unsafe {
+            let old = take_child_slot(&mut *sup, 0);
+            actor::hew_actor_free(old);
+        }
+        unsafe { restart_with_budget_and_strategy(&mut *sup, 0) };
+
+        assert_eq!(
+            INIT_CLOSURE_THUNK_CALLS.load(Ordering::SeqCst),
+            thunks_before + 1,
+            "the SIMPLE_ONE_FOR_ONE arm restarted the member (re-ran its thunk)"
+        );
+        let after = unsafe { hew_supervisor_pool_child_get(sup, 0, 0) };
+        assert!(
+            after.is_live(),
+            "member 0 is Live again after the arm restart"
+        );
+        assert_eq!(after.handle, unsafe { (&(*sup).children)[0] });
 
         unsafe { hew_supervisor_stop(sup) };
         assert_eq!(INIT_CLOSURE_LIVE_OWNED.load(Ordering::SeqCst), 0);

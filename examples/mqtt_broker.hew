@@ -377,6 +377,6 @@ fn main() {
     let listener = spawn Listener(router: router);
     listener.start();
     loop {
-        sleep(1000ms);
+        sleep(1s);
     }
 }

@@ -60,7 +60,7 @@ fn main() -> i64 {
     println(f"[kv-client] connected to {remote_addr}");
     // Wait for the connection handshake to complete and registry gossip to arrive.
     // hew_node_connect is non-blocking; gossip propagates asynchronously.
-    sleep(2000ms);
+    sleep(2s);
     let found: Result<RemotePid<KeyValue>, LookupError> = Node::lookup("kv");
     match found {
         Err(_) => {

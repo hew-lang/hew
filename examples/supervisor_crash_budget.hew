@@ -64,7 +64,7 @@ fn main() {
     println("");
     println("--- crash 2 ---");
     f1.break_it();
-    sleep(1000ms);
+    sleep(1s);
     f1 = sup.f1;
     f1.work();
     sleep(20ms);

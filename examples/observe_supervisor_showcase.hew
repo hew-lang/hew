@@ -177,7 +177,7 @@ fn main() {
         }
         api.handle();
         cache.handle();
-        sleep(1000ms);
+        sleep(1s);
         round = round + 1;
     }
     // Final tallies — proves the restarted worker kept processing and the

@@ -139,7 +139,7 @@ fn main() {
 
         // Wait 1 second between rounds. The profiler samples once per
         // second, so each round produces one sparkline data point.
-        sleep(1000ms);
+        sleep(1s);
         round = round + 1;
     }
     // Print final stats.

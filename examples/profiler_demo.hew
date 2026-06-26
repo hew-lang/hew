@@ -31,7 +31,7 @@ fn main() {
         counter.tick();
     }
     // Give actors time to process.
-    sleep(2000ms);
+    sleep(2s);
     counter.report();
     println("=== Done ===");
 }

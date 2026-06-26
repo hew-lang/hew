@@ -933,6 +933,8 @@ codegen-stable = [
   "hew_task_scope_set_current",
   "hew_tcp_read_raw",
   "hew_wasm_register_actor_meta",
+  "hew_wire_cbor_to_text",
+  "hew_wire_text_to_cbor",
   "hew_xnode_register_codec",
   "hew_xnode_register_reply_codec",
 ]

@@ -85,7 +85,7 @@ fn lookup_with_retry(name: string) -> Result<RemotePid<KeyValue>, LookupError> {
                 if attempts >= 50 {
                     return Err(e);
                 }
-                sleep_ms(100);
+                sleep(100ms);
             },
         }
     }
@@ -106,7 +106,7 @@ fn run_server(port: string) {
     // Stay alive long enough for the client to connect, run its scenario, and
     // exit. The harness kills the server as soon as the client returns, so this
     // upper bound is only a safety ceiling, never the happy-path wait.
-    sleep_ms(120000);
+    sleep(2m);
     Node::shutdown();
 }
 
@@ -134,7 +134,7 @@ fn scenario_remote_ask(kv: RemotePid<KeyValue>) -> i64 {
     }
     // Brief settle so the fire-and-forget tells are applied before the ask.
     // (tell is async; the ask below is the synchronization point we assert on.)
-    sleep_ms(200);
+    sleep(200ms);
     let ask1 = kv.ask(KvReq::GetKey("hello"), 5000);
     match ask1 {
         Result::Err(_) => {

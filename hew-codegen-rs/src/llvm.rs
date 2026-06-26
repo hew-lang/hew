@@ -34271,8 +34271,10 @@ fn build_module_for_target<'ctx>(
         &pipeline.record_layouts,
         &pipeline.enum_layouts,
     )?;
-    // Materialise the single @llvm.global_ctors from all collected module inits.
-    emit_global_ctors(ctx, &llvm_mod, &module_init_ctors)?;
+    // Materialise the program-start constructor registration from all collected
+    // module inits, in the form the target's startup mechanism actually walks
+    // (ELF `.init_array`, Mach-O `__mod_init_func`, COFF `.CRT$XCU`).
+    emit_global_ctors(ctx, &llvm_mod, &module_init_ctors, &module_triple)?;
     // Synthesize one erased method thunk per `(vtable_id, method_index)`
     // pair in `pipeline.dyn_vtable_registry`. The thunk has signature
     // `fn(ptr_erased_self, <receiver-skipped params>) -> ret`; its body
@@ -38116,21 +38118,144 @@ fn emit_cbor_codec_thunks<'ctx>(
     Ok((ser_sym, de_sym))
 }
 
-/// module-init constructor functions (priority 65535 each, run before `main`).
+/// Materialise the program-start registration of all collected module-init
+/// constructor functions (priority 65535 each, run before any user entrypoint).
 ///
-/// LLVM permits only one `@llvm.global_ctors` symbol per module, so all module
-/// inits (regex, cross-node codec) register their init fn into a shared list and
-/// this helper materialises the single global. No-op for an empty list. inkwell
-/// 0.9 cannot read back an existing const-array initialiser element-wise, so the
-/// list-then-emit-once shape avoids ever needing to.
+/// ## Why this is target-format-split, not one `@llvm.global_ctors`
+///
+/// The natural IR is `@llvm.global_ctors` (one per module; all inits append into
+/// it). Its *lowering* differs by object format, and on ELF the lowering depends
+/// on `TargetOptions.UseInitArray` — which clang/llc set to `true` but the
+/// LLVM-C API (`LLVMCreateTargetMachine`, the entry point inkwell/`llvm-sys`
+/// wrap) leaves at its struct default of `false`, with NO C setter to flip it
+/// (llvm-sys 221 has no `LLVMTargetMachineOptionsSetUseInitArray`). With
+/// `UseInitArray == false` the AsmPrinter emits `@llvm.global_ctors` into the
+/// *legacy* `.ctors` section, which modern glibc/musl startup does not walk and
+/// which `--gc-sections` strips (nothing references it). The constructor then
+/// NEVER RUNS on Linux — the symptom this split fixes: the cross-node codec
+/// registration (`hew_module_init_actor_codecs`) silently never executes, so
+/// `encode_payload` finds no codec and every cross-node send fails closed with
+/// "no serialization codec registered". macOS is immune because Mach-O has only
+/// `__mod_init_func` (no `UseInitArray` axis), so the same IR worked there.
+///
+/// So: on ELF, emit the constructor pointers DIRECTLY into a `.init_array`
+/// section (the modern ELF constructor mechanism glibc/musl actually walk),
+/// anchored by `@llvm.used` so `--gc-sections` retains it (the entry gains
+/// `SHF_GNU_RETAIN`) — byte-for-byte the section clang produces. On Mach-O and
+/// COFF, `@llvm.global_ctors` lowers correctly (`__mod_init_func` / `.CRT$XCU`)
+/// with no `UseInitArray` dependency, so keep it there.
+///
+/// No-op for an empty list.
 fn emit_global_ctors<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
     init_fns: &[FunctionValue<'ctx>],
+    module_triple: &str,
 ) -> CodegenResult<()> {
     if init_fns.is_empty() {
         return Ok(());
     }
+    if triple_is_elf(module_triple) {
+        emit_init_array_ctors(ctx, llvm_mod, init_fns)
+    } else {
+        emit_llvm_global_ctors(ctx, llvm_mod, init_fns)
+    }
+}
+
+/// `true` when `triple` names an ELF target (Linux, FreeBSD, and other Unixes),
+/// i.e. a target where program-start constructors live in `.init_array`.
+///
+/// Mirrors the object-format mapping in `hew-cli::target` at the triple-string
+/// level (codegen has no `TargetSpec`): ELF is everything that is not Mach-O
+/// (apple/darwin), not COFF (windows), and not wasm. The same substring style is
+/// already used for the CodeView module-flag decision above.
+fn triple_is_elf(triple: &str) -> bool {
+    let t = triple;
+    let is_macho = t.contains("apple") || t.contains("darwin") || t.contains("macos");
+    let is_coff = t.contains("windows");
+    let is_wasm = t.contains("wasm");
+    !is_macho && !is_coff && !is_wasm
+}
+
+/// ELF path: emit the constructor pointers into `.init_array` + anchor with
+/// `@llvm.used`. See `emit_global_ctors` for why this bypasses
+/// `@llvm.global_ctors` on ELF.
+fn emit_init_array_ctors<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    init_fns: &[FunctionValue<'ctx>],
+) -> CodegenResult<()> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+
+    // `[N x ptr]` of the ctor function pointers, placed in `.init_array`. The
+    // linker concatenates same-named `.init_array` input sections by section
+    // name (not symbol linkage), so a `Private` symbol is correct and keeps the
+    // entry out of the dynamic symbol table. All current module inits are
+    // default priority, so a single un-suffixed `.init_array` is sufficient (a
+    // `.init_array.<prio>` suffix would be needed only for ordered priorities).
+    let fn_ptrs: Vec<inkwell::values::PointerValue<'ctx>> = init_fns
+        .iter()
+        .map(|f| f.as_global_value().as_pointer_value())
+        .collect();
+    let init_arr = ptr_ty.const_array(&fn_ptrs);
+    let init_array_global = llvm_mod.add_global(
+        ptr_ty.array_type(fn_ptrs.len() as u32),
+        None,
+        "__hew_init_array",
+    );
+    init_array_global.set_initializer(&init_arr);
+    init_array_global.set_linkage(Linkage::Private);
+    init_array_global.set_constant(true);
+    // Set the section name via the raw LLVM-C API rather than inkwell's
+    // `GlobalValue::set_section`. inkwell 0.9's wrapper is gated on the *build
+    // host* (`#[cfg(target_os = "macos")]`) and, on a macOS host, rewrites any
+    // comma-less section into Mach-O `segment,section` form by PREPENDING `,`.
+    // That turns `.init_array` into `,.init_array` for an ELF *target* when hew
+    // is cross-compiling from macOS — LLVM then emits a generic `SHT_PROGBITS`
+    // section literally named `,.init_array` that no ELF startup walks, silently
+    // re-breaking the constructor on every macOS→Linux cross build. Targeting
+    // the C entry point directly sets the exact bytes regardless of build host.
+    set_section_raw(init_array_global, ".init_array");
+
+    // `@llvm.used` keeps the `.init_array` global alive under `--gc-sections`
+    // (it acquires `SHF_GNU_RETAIN`); without it the section is unreferenced and
+    // collected, re-opening the never-runs bug. There is exactly one
+    // `@llvm.used` per module and codegen emits none elsewhere, so create it.
+    // Same host-cfg comma hazard applies to its `llvm.metadata` section.
+    let used_arr = ptr_ty.const_array(&[init_array_global.as_pointer_value()]);
+    let used_global = llvm_mod.add_global(ptr_ty.array_type(1), None, "llvm.used");
+    used_global.set_initializer(&used_arr);
+    used_global.set_linkage(Linkage::Appending);
+    set_section_raw(used_global, "llvm.metadata");
+    Ok(())
+}
+
+/// Set a global's section name to the EXACT string via the LLVM-C API,
+/// sidestepping inkwell 0.9's host-`#[cfg(target_os = "macos")]` rewrite that
+/// prepends `,` to comma-less section names (correct for a Mach-O target, wrong
+/// for an ELF target cross-built from macOS). See `emit_init_array_ctors`.
+fn set_section_raw(global: inkwell::values::GlobalValue<'_>, section: &str) {
+    use inkwell::values::AsValueRef;
+    let c_section = std::ffi::CString::new(section)
+        .expect("section name is a static ASCII literal with no interior NUL");
+    // SAFETY: `global` is a live inkwell global bound to the module; `c_section`
+    // outlives the call (LLVMSetSection copies the bytes). The pointer comes
+    // from an inkwell wrapper, matching the existing `as_value_ref()` FFI use in
+    // this module.
+    unsafe {
+        inkwell::llvm_sys::core::LLVMSetSection(global.as_value_ref(), c_section.as_ptr());
+    }
+}
+
+/// Mach-O / COFF path: the single `@llvm.global_ctors`. LLVM permits only one
+/// per module, so all module inits (regex, cross-node codec) share this global.
+/// inkwell 0.9 cannot read back an existing const-array initialiser
+/// element-wise, so the list-then-emit-once shape avoids ever needing to.
+fn emit_llvm_global_ctors<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    init_fns: &[FunctionValue<'ctx>],
+) -> CodegenResult<()> {
     let i32_ty = ctx.i32_type();
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let entry_ty = ctx.struct_type(&[i32_ty.into(), ptr_ty.into(), ptr_ty.into()], false);

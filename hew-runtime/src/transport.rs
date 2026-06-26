@@ -1637,6 +1637,10 @@ pub unsafe extern "C" fn hew_tcp_write(
         return 0;
     }
     let Some(mut stream) = tcp_clone_stream(conn) else {
+        hew_cabi::sink::set_last_error_with_errno(
+            "hew_tcp_write: invalid connection handle".into(),
+            9, // EBADF: Bad file descriptor
+        );
         return -1;
     };
     // SAFETY: `data.ptr + data.offset` is valid for `data.len` bytes per the
@@ -1645,6 +1649,28 @@ pub unsafe extern "C" fn hew_tcp_write(
         unsafe { std::slice::from_raw_parts(data.ptr.add(data.offset as usize), len as usize) };
     if let Err(e) = stream.write_all(payload) {
         record_tcp_error_kind(e.kind());
+        // Surface the OS errno so the Hew side can classify the failure as
+        // backpressure (EAGAIN/EWOULDBLOCK or a write-timeout ETIMEDOUT —
+        // the send buffer is full and not draining within the deadline),
+        // disconnect (ECONNRESET/EPIPE/ENOTCONN), or other.
+        //
+        // PARTIAL-WRITE CAUTION: with SO_SNDTIMEO set, `write_all` may have
+        // committed a prefix of the payload to the kernel before the timeout
+        // fired and returned BackpressureExceeded. A whole-payload retry is
+        // therefore UNSAFE — it would duplicate the already-sent prefix. The
+        // correct recovery for BackpressureExceeded is to drop or close the
+        // connection and rely on application-level message framing; retrying
+        // the same payload bytes is only safe if the application knows the
+        // stream position is at a frame boundary (e.g., the error occurred
+        // before any bytes were sent).
+        //
+        // `record_tcp_error_kind` deliberately does NOT count WouldBlock /
+        // Interrupted / TimedOut as transport errors — backpressure is an
+        // expected flow-control outcome, not a fault.
+        hew_cabi::sink::set_last_error_with_errno(
+            format!("hew_tcp_write: {e}"),
+            e.raw_os_error().unwrap_or(0),
+        );
         return -1;
     }
     tcp_counters()
@@ -1968,6 +1994,139 @@ mod tests {
                 // SAFETY: `bytes` owns a refcount-1 buffer allocated above.
                 unsafe { crate::bytes::hew_bytes_drop(bytes.ptr) };
                 remove_stream(handle);
+            },
+        );
+    }
+
+    #[test]
+    fn tcp_write_surfaces_backpressure_errno_when_send_buffer_full() {
+        run_in_isolated_test_process(
+            "transport::tests::tcp_write_surfaces_backpressure_errno_when_send_buffer_full",
+            "HEW_RUNTIME_TCP_WRITE_BACKPRESSURE",
+            || {
+                let _guard = crate::runtime_test_guard();
+                // A connected pair where the peer NEVER reads. Writing past the
+                // combined send+receive buffer capacity blocks; a short write
+                // timeout converts that block into an EAGAIN/EWOULDBLOCK (Unix)
+                // or WSAETIMEDOUT (Windows) error — the backpressure signal.
+                let (server, _client) = connected_streams();
+                let handle = register_stream(server);
+                // Bound the wait: without a timeout a full buffer blocks forever.
+                assert_eq!(
+                    hew_tcp_set_write_timeout(handle, 100),
+                    0,
+                    "set_write_timeout should succeed on a valid handle"
+                );
+
+                // Drain any stale thread-local errno from earlier setup so the
+                // value we read after the failing write is the write's own.
+                let _ = hew_cabi::sink::take_last_errno();
+
+                // 16 MiB payload: reliably exceeds the combined loopback send +
+                // receive buffer on Linux and macOS (default ~144 KiB send +
+                // ~399 KiB receive; payloads ≥ 2 MiB block within the 100 ms
+                // timeout on those platforms).
+                //
+                // Windows is excluded below: Windows' TCP loopback autotuning
+                // can absorb payloads well beyond 16 MiB within 100 ms because
+                // the kernel continuously drains the send buffer into the receive
+                // buffer via a zero-copy loopback path, bypassing SO_SNDBUF
+                // limits regardless of buffer size settings. A small SO_SNDBUF
+                // similarly does not force backpressure on macOS loopback (macOS
+                // uses an analogous fast path for small send buffers, causing the
+                // kernel to complete writes faster than the SO_SNDTIMEO can fire).
+                // Cross-platform coverage of the write-side backpressure path on
+                // Windows is provided by the e2e fixture
+                // `tests/vertical-slice/accept/tcp_write_backpressure.hew`, which
+                // connects to a peer that accepts but never drains and asserts
+                // `WriteError::BackpressureExceeded` is observed.
+                //
+                // WHY: the loopback-fast-path is an OS-internal optimisation that
+                // cannot be disabled via socket options; a reliable loopback-based
+                // backpressure unit test on Windows would require a kernel-mode
+                // shim or a non-loopback NIC. The e2e fixture is the right seam
+                // for that coverage.
+                // WHEN OBSOLETE: when the runtime gains a non-loopback integration
+                // test harness that can reliably exhaust the Windows TCP send
+                // window.
+                let payload = vec![b'x'; 16 * 1024 * 1024];
+                // SAFETY: `payload` is valid for `payload.len()` bytes.
+                let bytes = unsafe {
+                    crate::bytes::hew_bytes_from_static(
+                        payload.as_ptr(),
+                        u32::try_from(payload.len()).expect("payload length fits in u32"),
+                    )
+                };
+
+                let errors_before = tcp_counters_snapshot().error_count;
+                // SAFETY: `bytes` is a valid caller-owned BytesTriple.
+                let written = unsafe { hew_tcp_write(handle, std::ptr::addr_of!(bytes)) };
+                let errors_after = tcp_counters_snapshot().error_count;
+
+                // Windows loopback absorbs the full payload without triggering
+                // backpressure regardless of SO_SNDBUF settings (see comment
+                // above). The errno and error-counter assertions are gated to
+                // platforms where the loopback overwhelm approach is reliable.
+                #[cfg(not(windows))]
+                {
+                    assert_eq!(
+                        written, -1,
+                        "a write that cannot complete within the timeout must report failure, \
+                         not silently succeed"
+                    );
+
+                    // The surfaced errno must map to a backpressure outcome: EAGAIN
+                    // (Linux 11 / macOS 35), EWOULDBLOCK (== EAGAIN), or a write
+                    // timeout (Linux ETIMEDOUT 110 / macOS 60).
+                    let errno = hew_cabi::sink::take_last_errno();
+                    assert!(
+                        matches!(errno, 11 | 35 | 60 | 110),
+                        "write-timeout failure must surface a backpressure errno \
+                         (EAGAIN/EWOULDBLOCK/ETIMEDOUT), got {errno}"
+                    );
+
+                    // Backpressure is flow control, not a transport fault: the error
+                    // counter must NOT increment for WouldBlock/TimedOut.
+                    assert_eq!(
+                        errors_after, errors_before,
+                        "backpressure (WouldBlock/TimedOut) must not count as a TCP error"
+                    );
+                }
+
+                // SAFETY: `bytes` owns a refcount-1 buffer allocated above.
+                unsafe { crate::bytes::hew_bytes_drop(bytes.ptr) };
+                remove_stream(handle);
+            },
+        );
+    }
+
+    #[test]
+    fn tcp_write_invalid_handle_surfaces_ebadf() {
+        run_in_isolated_test_process(
+            "transport::tests::tcp_write_invalid_handle_surfaces_ebadf",
+            "HEW_RUNTIME_TCP_WRITE_EBADF",
+            || {
+                let _guard = crate::runtime_test_guard();
+                let _ = hew_cabi::sink::take_last_errno();
+                let payload = b"x";
+                // SAFETY: `payload` is valid for `payload.len()` bytes.
+                let bytes = unsafe {
+                    crate::bytes::hew_bytes_from_static(
+                        payload.as_ptr(),
+                        u32::try_from(payload.len()).expect("payload length fits in u32"),
+                    )
+                };
+                // 9999 is not a registered connection handle.
+                // SAFETY: `bytes` is a valid caller-owned BytesTriple.
+                let written = unsafe { hew_tcp_write(9999, std::ptr::addr_of!(bytes)) };
+                assert_eq!(written, -1, "write to an invalid handle must fail");
+                assert_eq!(
+                    hew_cabi::sink::take_last_errno(),
+                    9,
+                    "an invalid connection handle must surface EBADF (9)"
+                );
+                // SAFETY: `bytes` owns a refcount-1 buffer allocated above.
+                unsafe { crate::bytes::hew_bytes_drop(bytes.ptr) };
             },
         );
     }

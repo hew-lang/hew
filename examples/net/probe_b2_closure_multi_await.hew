@@ -38,7 +38,7 @@ fn main() {
     let reader = spawn Reader(addr: f"127.0.0.1:{port}");
     reader.go(0);
     let client = listener.accept();
-    client.write_string("payload");
+    let _ = client.write_string("payload");
     sleep_ms(300);
     let _ = client.close();
     sleep_ms(300);

@@ -51,7 +51,7 @@ actor ClientHandler {
     let name: string;
     let room: LocalPid<ChatRoom>;
     receive fn start(unused: i32) {
-        conn.write_string(f"[server] welcome {name}");
+        let _ = conn.write_string(f"[server] welcome {name}");
         var running = true;
         while running {
             let data = conn.read_string();
@@ -67,7 +67,9 @@ actor ClientHandler {
         }
     }
     receive fn deliver(msg: string) {
-        conn.write_string(msg);
+        // A slow or disconnected client surfaces as Err here; this demo drops
+        // the message rather than applying per-client flow control.
+        let _ = conn.write_string(msg);
     }
 }
 

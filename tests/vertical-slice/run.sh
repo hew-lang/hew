@@ -2713,6 +2713,27 @@ if [[ "${read_ok_status}" -ne 42 ]]; then
   exit 1
 fi
 
+# Accept (TCP write-side backpressure): a producer with a short write timeout
+# writes a 16 MiB payload to a peer that never reads. The send buffer fills, the
+# write cannot complete within the deadline, and conn.write() returns
+# Err(WriteError::BackpressureExceeded) -> exit 42. A small write Ok'd first;
+# exit 5 (large write Ok'd) / 7 (wrong Err variant) / 3 (small write failed)
+# would prove the backpressure signal is missing or misclassified.
+compile_accept "tcp_write_backpressure"
+write_bp_bin="${ROOT}/.tmp/compile-out/tcp_write_backpressure"
+write_bp_status=0
+if "${TIMEOUT}" --kill-after=5s 30s env HEW_WORKERS=1 "${write_bp_bin}" \
+    >"${stdout_output}" 2>"${stderr_output}"; then
+  write_bp_status=0
+else
+  write_bp_status=$?
+fi
+if [[ "${write_bp_status}" -ne 42 ]]; then
+  echo "expected tcp_write_backpressure (HEW_WORKERS=1) to exit 42, got ${write_bp_status}" >&2
+  cat "${accept_output}" "${stdout_output}" "${stderr_output}" >&2
+  exit 1
+fi
+
 # Accept (read_string worker-free timeout oracle): `await conn.read_string() | after 60ms`
 # where the peer stays silent. Under HEW_WORKERS=1 the read parks worker-free and
 # the deadline timer resumes the actor with Err(NetError::TimedOut) -> exit 7.

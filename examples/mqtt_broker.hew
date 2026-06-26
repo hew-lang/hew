@@ -178,7 +178,7 @@ actor ClientHandler {
                         let payload_off: i64 = var_off + proto_name_len + 6;
                         client_id = read_mqtt_str(buf, payload_off);
                         println(f"[mqtt] CONNECT client_id={client_id}");
-                        conn.write(build_connack(0, 0));
+                        let _ = conn.write(build_connack(0, 0));
                     },
                     3 => {
                         // PUBLISH
@@ -190,7 +190,7 @@ actor ClientHandler {
                         if qos > 0 {
                             packet_id = read_u16(buf, pid_off);
                             pid_off = pid_off + 2;
-                            conn.write(build_puback(packet_id));
+                            let _ = conn.write(build_puback(packet_id));
                         }
                         let payload_bytes = bytes_slice(buf, pid_off, var_off + remaining_len);
                         println(f"[mqtt] PUBLISH topic={topic} qos={qos}");
@@ -215,7 +215,7 @@ actor ClientHandler {
                             return_codes.push(granted);
                             topic_off = topic_off + tw + 1;
                         }
-                        conn.write(build_suback(sub_packet_id, return_codes));
+                        let _ = conn.write(build_suback(sub_packet_id, return_codes));
                         println("[mqtt] SUBSCRIBE processed");
                     },
                     10 => {
@@ -229,12 +229,12 @@ actor ClientHandler {
                             router.unsubscribe(utopic, conn);
                             topic_off = topic_off + tw;
                         }
-                        conn.write(build_unsuback(unsub_packet_id));
+                        let _ = conn.write(build_unsuback(unsub_packet_id));
                         println(f"[mqtt] UNSUBSCRIBE {client_id}");
                     },
                     12 => {
                         // PINGREQ
-                        conn.write(build_pingresp());
+                        let _ = conn.write(build_pingresp());
                     },
                     14 => {
                         // DISCONNECT
@@ -258,7 +258,7 @@ actor ClientHandler {
         println(f"[mqtt] connection closed for {client_id}");
     }
     receive fn deliver(packet: bytes) {
-        conn.write(packet);
+        let _ = conn.write(packet);
     }
 }
 

@@ -6395,7 +6395,36 @@ fn emit_supervisor_bootstrap_body<'ctx>(
     // accessor's `partitioned_static_slot_index`.
     let mut actor_child_index = 0usize;
     for child in &layout.children {
+        // Pool children (`pool name: Type`) live in the runtime's disjoint
+        // `pool_slots[]` space, NOT the static `children[]` table. They must be
+        // skipped here so they neither occupy a static slot nor advance
+        // `actor_child_index` — exactly as the accessor's
+        // `partitioned_static_slot_index` skips them (the shared truth is
+        // `SupervisorChildLayout::occupies_static_child_slot`). Without this, a
+        // static `sup.child` declared AFTER a pool registers at a runtime index
+        // that INCLUDED the pool while the accessor computes one that EXCLUDED it
+        // → silent mis-route (the #2227 pool-axis divergence).
+        //
+        // Pool SLOT registration + member population is the deferred B1-3 scope
+        // (`simple_one_for_one` pools are dynamic and have no member-spawn
+        // surface yet); until that lands, a pool declaration registers nothing
+        // at bootstrap rather than spawning an orphan static member that no
+        // accessor can reach.
+        if child.is_pool {
+            debug_assert!(
+                !child.occupies_static_child_slot(),
+                "codegen bootstrap: pool child `{}` must not occupy a static child slot",
+                child.name
+            );
+            continue;
+        }
         if let Some(nested_bootstrap) = &child.nested_bootstrap_symbol {
+            debug_assert!(
+                !child.occupies_static_child_slot(),
+                "codegen bootstrap: nested-supervisor child `{}` must not occupy a \
+                 static child slot",
+                child.name
+            );
             emit_nested_supervisor_register(
                 llvm_mod,
                 &builder,
@@ -6406,6 +6435,14 @@ fn emit_supervisor_bootstrap_body<'ctx>(
                 &layout.name,
             )?;
         } else {
+            // A plain actor child: occupies the static slot at `actor_child_index`
+            // and advances it. The shared helper agrees with the accessor side.
+            debug_assert!(
+                child.occupies_static_child_slot(),
+                "codegen bootstrap: actor child `{}` must occupy a static child slot \
+                 — diverged from the accessor's partitioned index",
+                child.name
+            );
             emit_supervisor_child_spec_and_register(
                 ctx,
                 llvm_mod,

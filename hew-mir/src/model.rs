@@ -924,6 +924,28 @@ pub struct SupervisorChildLayout {
     pub nested_bootstrap_symbol: Option<String>,
 }
 
+impl SupervisorChildLayout {
+    /// Whether this child occupies a slot in the runtime's STATIC actor-child
+    /// table (`HewSupervisor.children[]`) and therefore advances the partitioned
+    /// static-slot index.
+    ///
+    /// This is the SINGLE shared truth tying the two iterations that walk
+    /// `SupervisorLayout.children`: MIR `partitioned_static_slot_index` (the
+    /// accessor's slot lookup) and the codegen bootstrap registration loop. Both
+    /// MUST agree, or a static `sup.child` accessor declared after a pool or a
+    /// nested supervisor mis-routes to the wrong runtime slot.
+    ///
+    /// A child advances the static index iff it is NEITHER a nested supervisor
+    /// (those live in `child_supervisors[]`, a disjoint table) NOR a pool (those
+    /// live in `pool_slots[]`, also disjoint — the pool axis the B1 spine left
+    /// latent). Nested children and pool children each occupy their own 0-based
+    /// space; only plain actor children occupy `children[]`.
+    #[must_use]
+    pub fn occupies_static_child_slot(&self) -> bool {
+        !self.is_pool && self.nested_bootstrap_symbol.is_none()
+    }
+}
+
 /// A self-contained literal value for a supervisor child init arg.
 ///
 /// Kept separate from MIR instructions so codegen can read these directly

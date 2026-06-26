@@ -21821,6 +21821,11 @@ impl Builder {
         };
         let mut index = 0u32;
         for child in &layout.children {
+            // Pools live in a disjoint `pool_slots[]` space and occupy NEITHER
+            // the static actor-child table nor the nested-supervisor table — skip
+            // them on BOTH axes. This is the shared truth `occupies_static_child_slot`
+            // encodes for the actor axis; the codegen bootstrap loop must skip
+            // pools identically or a post-pool static accessor mis-routes.
             if child.is_pool {
                 continue;
             }
@@ -21829,6 +21834,15 @@ impl Builder {
                 continue;
             }
             if child.name == child_name {
+                // Invariant: a non-pool actor child (want_nested == false) is
+                // exactly what `occupies_static_child_slot` admits; keep the two
+                // iterations provably in lock-step.
+                debug_assert!(
+                    want_nested || child.occupies_static_child_slot(),
+                    "partitioned_static_slot_index: actor-axis child `{child_name}` of \
+                     supervisor `{supervisor}` must occupy a static child slot — the \
+                     codegen bootstrap loop and this accessor lookup have diverged"
+                );
                 return index;
             }
             index += 1;

@@ -264,6 +264,22 @@ pub fn link_executable(
         cmd.arg("-g");
     }
 
+    // ── Windows CodeView PDB (target-driven via NativeLinkPlan) ───────
+    // On ELF/Mach-O, `-g` carries debug info inside the object/executable. On
+    // Windows the CodeView channel is written to a standalone `.pdb` that
+    // lld-link only produces when asked: `-g` alone leaves the CodeView records
+    // (emitted by codegen for windows-msvc) on the floor and no PDB is written.
+    // `/DEBUG:FULL` writes complete line+local info (not the `/DEBUG:GHASH`
+    // fast-link variant) and `/PDB:<output>.pdb` names the sidecar next to the
+    // `.exe` so cdb/WinDbg/Visual Studio find it. The flags pass through the
+    // clang driver to lld-link as `-Wl,/DEBUG:FULL -Wl,/PDB:<path>`, mirroring
+    // the CRT-fixup `-Wl,/...` spellings below. Only attached on a debug build.
+    if debug && plan.needs_pdb_debug {
+        let pdb_path = pdb_output_path(&safe_output);
+        cmd.arg("-Wl,/DEBUG:FULL");
+        cmd.arg(format!("-Wl,/PDB:{pdb_path}"));
+    }
+
     // ── Dead-code elimination (target-driven via NativeLinkPlan) ──────
     // Under coverage instrumentation, skip GC and symbol stripping so the
     // `__llvm_prf_*`/`__llvm_cov*` sections and their symbol records survive
@@ -376,6 +392,20 @@ fn run_dsymutil_for_darwin(binary_path: &str) {
     run_dsymutil(binary_path);
     #[cfg(not(target_os = "macos"))]
     let _ = binary_path;
+}
+
+/// Derive the PDB sidecar path for a Windows debug link from the executable
+/// output path: replace a trailing `.exe` with `.pdb`, otherwise append `.pdb`.
+///
+/// `lld-link`'s `/PDB:<path>` names the standalone `CodeView` database. Placing
+/// it next to the `.exe` (same stem) is what cdb/WinDbg/Visual Studio expect: the
+/// executable's debug directory records the PDB path the linker wrote here, and
+/// a sibling-stem PDB is found even if the recorded absolute path moves.
+fn pdb_output_path(output: &str) -> String {
+    match output.strip_suffix(".exe") {
+        Some(stem) => format!("{stem}.pdb"),
+        None => format!("{output}.pdb"),
+    }
 }
 
 /// Run `dsymutil` on a linked binary to produce a `.dSYM` bundle.
@@ -1308,6 +1338,25 @@ mod tests {
     #[test]
     fn extract_symbol_no_match_empty_string() {
         assert_eq!(extract_undefined_hew_symbol(""), None);
+    }
+
+    // ── pdb_output_path ───────────────────────────────────────────────
+
+    #[test]
+    fn pdb_path_replaces_exe_suffix() {
+        // The common case: a `.exe` output gets a sibling-stem `.pdb`.
+        assert_eq!(pdb_output_path("app.exe"), "app.pdb");
+        assert_eq!(
+            pdb_output_path(r"C:\build\shadow.exe"),
+            r"C:\build\shadow.pdb"
+        );
+    }
+
+    #[test]
+    fn pdb_path_appends_when_no_exe_suffix() {
+        // A suffixless output (cross-link with no `.exe`) appends `.pdb` so the
+        // PDB is still a distinct sibling file, never overwriting the binary.
+        assert_eq!(pdb_output_path("app"), "app.pdb");
     }
 
     // ── symbol_to_feature_hint ────────────────────────────────────────

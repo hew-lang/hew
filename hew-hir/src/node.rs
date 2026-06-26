@@ -757,7 +757,19 @@ pub struct HirSupervisorChild {
     /// Empty when no `(...)` clause appears on the child declaration.
     /// MIR lowering reads these to build `SupervisorChildLayout.init_state_fields`
     /// so codegen can construct the per-child state template.
+    ///
+    /// For a pool child (`is_pool = true`), the reserved `count:` arg is split
+    /// out into [`Self::pool_count`] during HIR lowering and does NOT appear
+    /// here — `init_args` carries only the per-member init template, shared by
+    /// all N fungible members.
     pub init_args: Vec<(String, HirExpr)>,
+    /// Reserved pool-size expression, lowered from the `count:` named arg on a
+    /// `pool name: Type(count: N, ...)` declaration. `None` for a static child
+    /// or a pool child that omitted `count:` (which the checker rejects). The
+    /// expression yields the number of fungible members the bootstrap spawns
+    /// into the pool slot. `count` is a reserved arg name on pool declarations,
+    /// not a per-member init field, so it is removed from `init_args`.
+    pub pool_count: Option<HirExpr>,
     /// Per-child graceful-stop directive from the `shutdown:` clause.
     /// `None` means the supervisor default applies.
     pub shutdown: Option<HirShutdownDirective>,

@@ -8971,14 +8971,33 @@ impl LowerCtx {
                     slot_index,
                     // Lower named init args from AST `(field, expr)` pairs.
                     // These were previously silently dropped at this boundary.
+                    //
+                    // For a pool child the reserved `count:` arg designates the
+                    // pool size, not a per-member init field; split it out into
+                    // `pool_count` so `init_args` carries only the per-member
+                    // init template. `count` is reserved only on pool decls — a
+                    // static child keeps any `count:` arg as an ordinary init
+                    // field (e.g. `spawn Counter(count: 0)` stays a state field).
                     init_args: child
                         .args
                         .iter()
+                        .filter(|(field_name, _)| !(child.is_pool && field_name == "count"))
                         .map(|(field_name, spanned_expr)| {
                             let hir_expr = self.lower_expr(spanned_expr, IntentKind::Read);
                             (field_name.clone(), hir_expr)
                         })
                         .collect(),
+                    pool_count: if child.is_pool {
+                        child
+                            .args
+                            .iter()
+                            .find(|(field_name, _)| field_name == "count")
+                            .map(|(_, spanned_expr)| {
+                                self.lower_expr(spanned_expr, IntentKind::Read)
+                            })
+                    } else {
+                        None
+                    },
                     shutdown: child.shutdown.as_ref().map(|s| match s {
                         ShutdownDirective::Timeout(d) => HirShutdownDirective::Timeout(d.clone()),
                         ShutdownDirective::BrutalKill => HirShutdownDirective::BrutalKill,

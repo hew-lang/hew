@@ -82,6 +82,98 @@ fn pool_child_gets_pool_slot_index_zero() {
     assert_eq!(worker.slot_index, 0, "pool child slot index is 0");
 }
 
+/// A `pool worker: Worker(count: 3)` declaration splits the reserved `count`
+/// arg into `pool_count` (the pool size) and leaves it OUT of `init_args` (the
+/// per-member init template). The discriminator carries the count expr so the
+/// checker and codegen can read it (verify-ast-carries-discriminator).
+#[test]
+fn pool_count_arg_is_extracted_into_pool_count() {
+    let output = lower(
+        r"
+        actor Worker { receive fn ping() {} }
+
+        supervisor Pool {
+            strategy: simple_one_for_one,
+            pool worker: Worker(count: 3)
+        }
+        ",
+    );
+    let sup = find_supervisor(&output, "Pool");
+    let worker = find_child(sup, "worker");
+
+    assert!(worker.is_pool);
+    assert!(
+        worker.pool_count.is_some(),
+        "pool count expr must be carried in pool_count"
+    );
+    assert!(
+        !worker.init_args.iter().any(|(name, _)| name == "count"),
+        "the reserved `count` arg must NOT appear in the per-member init template"
+    );
+}
+
+/// A pool with `count:` plus a per-member init arg keeps the init arg in
+/// `init_args` while the count goes to `pool_count`.
+#[test]
+fn pool_count_and_member_init_arg_are_separated() {
+    let output = lower(
+        r"
+        actor Worker {
+            var id: i64;
+            receive fn ping() {}
+        }
+
+        supervisor Pool {
+            strategy: simple_one_for_one,
+            pool worker: Worker(count: 4, id: 7)
+        }
+        ",
+    );
+    let sup = find_supervisor(&output, "Pool");
+    let worker = find_child(sup, "worker");
+
+    assert!(worker.pool_count.is_some(), "count → pool_count");
+    assert_eq!(
+        worker.init_args.len(),
+        1,
+        "only the per-member `id` arg remains in init_args"
+    );
+    assert_eq!(worker.init_args[0].0, "id");
+}
+
+/// A static child keeps a `count:` arg as an ordinary init field — `count` is
+/// reserved only on POOL declarations (so `spawn Counter(count: 0)` stays a
+/// state field).
+#[test]
+fn static_child_keeps_count_as_init_field() {
+    let output = lower(
+        r"
+        actor Counter {
+            var count: i64;
+            receive fn tick() {}
+        }
+
+        supervisor App {
+            child counter: Counter(count: 0)
+        }
+        ",
+    );
+    let sup = find_supervisor(&output, "App");
+    let counter = find_child(sup, "counter");
+
+    assert!(!counter.is_pool);
+    assert!(
+        counter.pool_count.is_none(),
+        "static child has no pool_count"
+    );
+    assert_eq!(
+        counter.init_args.len(),
+        1,
+        "the `count` arg stays a per-child init field on a static child"
+    );
+    assert_eq!(counter.init_args[0].0, "count");
+}
+
 /// Mixed supervisor: static and pool indices are disjoint -- both start at 0
 /// in their own space.
 #[test]

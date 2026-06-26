@@ -966,6 +966,33 @@ pub enum ChildInitArg {
     U64(u64),
     Bool(bool),
     F64(f64),
+    /// A non-literal init value read from the supervisor's construction-time
+    /// config inside the codegen-emitted init thunk — the v0.6 init-closure
+    /// restart model. The thunk loads `config.<field_name>` (a load for a
+    /// scalar `BitCopy` field; a per-type owned deep-clone for `string`/`Vec`)
+    /// and stores it into the fresh actor state. Re-run on every restart, this
+    /// produces fresh, unaliased owned values per incarnation.
+    ///
+    /// Carries codegen-emittable data (no MIR `FnCtx`): the config param's type
+    /// name (to look up its `record_layout`), the config field name + the
+    /// resolved field type (to pick the load width / clone path), and the
+    /// `owned` flag (true → emit a deep-clone, false → a plain load).
+    ConfigField {
+        /// The supervisor config param binding name (e.g. `config`) — matches
+        /// the bootstrap fn's config parameter.
+        config_param_name: String,
+        /// The config struct's type name (e.g. `AppConfig`) for `record_layouts`.
+        config_ty_name: String,
+        /// The field read out of the config struct (e.g. `cache_size`).
+        field_name: String,
+        /// The resolved type of the config field, choosing the load width
+        /// (scalar) or the clone path (owned).
+        field_ty: ResolvedTy,
+        /// `true` when the field is owned (`string`/`Vec`) and the thunk must
+        /// deep-clone it into the fresh state; `false` for a `BitCopy` scalar
+        /// loaded directly.
+        owned: bool,
+    },
 }
 
 /// Layout descriptor for one state variant in a `machine` declaration.

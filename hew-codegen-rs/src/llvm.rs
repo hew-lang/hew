@@ -6773,6 +6773,29 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
                         .const_int(if *b { 1 } else { 0 }, false)
                         .into(),
                     ChildInitArg::F64(f) => ctx.f64_type().const_float(*f).into(),
+                    // The v0.6 init-closure restart model carries config-derived
+                    // init args as `ConfigField`. Emitting them requires the
+                    // codegen init thunk + the construction-time config buffer the
+                    // bootstrap captures and passes to the thunk on every spawn /
+                    // restart — the continuation of this lane. Fail CLOSED here so
+                    // a config-field init arg can never be silently mis-emitted
+                    // into a const template; the runtime ABI + MIR representation
+                    // are already in place (`HewChildSpec.init_fn` /
+                    // `ChildInitArg::ConfigField`).
+                    ChildInitArg::ConfigField {
+                        config_param_name,
+                        field_name: cfg_field,
+                        ..
+                    } => {
+                        return Err(CodegenError::FailClosed(format!(
+                            "supervisor `{sup_name}` child `{}`: init arg reads config field \
+                             `{config_param_name}.{cfg_field}`; the init-closure config thunk \
+                             (bootstrap config capture + per-child init thunk) is the \
+                             continuation of this lane — the runtime ABI (HewChildSpec.init_fn) \
+                             and MIR representation (ChildInitArg::ConfigField) are landed",
+                            child.name
+                        )));
+                    }
                 };
 
                 let field_gep = builder

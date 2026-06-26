@@ -1831,20 +1831,113 @@ pub fn lower_hir_module_with_facts(
                             HirExprKind::Literal(HirLiteral::Float(f)) => {
                                 crate::model::ChildInitArg::F64(*f)
                             }
+                            // The v0.6 init-closure restart model: a child init
+                            // arg may read the supervisor's construction-time
+                            // config (`config.<field>`). The codegen-emitted init
+                            // thunk loads (scalar) or deep-clones (owned) the
+                            // config field into the fresh actor state, re-run on
+                            // every restart. Match `FieldAccess` on a config-param
+                            // binding and record a `ConfigField` ChildInitArg.
+                            HirExprKind::FieldAccess { object, field } => {
+                                if let HirExprKind::BindingRef {
+                                    name: config_param_name,
+                                    ..
+                                } = &object.kind
+                                {
+                                    // The object's resolved type names the config
+                                    // struct (for record-layout lookup at codegen).
+                                    let ResolvedTy::Named {
+                                        name: config_ty_name,
+                                        ..
+                                    } = &object.ty
+                                    else {
+                                        diagnostics.push(MirDiagnostic {
+                                            kind: MirDiagnosticKind::NotYetImplemented {
+                                                construct: format!(
+                                                    "supervisor `{}` child `{}` field \
+                                                     `{field_name}` reads `{config_param_name}.\
+                                                     {field}` but the config binding is not a \
+                                                     named struct type ({:?})",
+                                                    sup_layout.name, child.name, object.ty
+                                                ),
+                                                site: source_expr.site,
+                                            },
+                                            note: "supervisor config init args read a field \
+                                                   of a named config struct parameter"
+                                                .to_string(),
+                                        });
+                                        all_ok = false;
+                                        continue 'fields;
+                                    };
+                                    let config_ty_name = config_ty_name.clone();
+                                    let owned = child_init_field_is_owned(&source_expr.ty);
+                                    // Owned config-field init is sound under the
+                                    // init-closure model, but its per-field
+                                    // owned-clone-in-thunk codegen is the
+                                    // continuation of this lane. Fail CLOSED for
+                                    // now (the checker also walls owned init args,
+                                    // so this is defence-in-depth) rather than
+                                    // emit a ConfigField codegen cannot deep-clone.
+                                    if owned {
+                                        diagnostics.push(MirDiagnostic {
+                                            kind: MirDiagnosticKind::NotYetImplemented {
+                                                construct: format!(
+                                                    "supervisor `{}` child `{}` field \
+                                                     `{field_name}` reads owned config field \
+                                                     `{config_param_name}.{field}` (type {:?}); \
+                                                     the owned-clone init thunk is the \
+                                                     continuation of this lane",
+                                                    sup_layout.name, child.name, source_expr.ty
+                                                ),
+                                                site: source_expr.site,
+                                            },
+                                            note: "scalar config-field init args are supported; \
+                                                   owned (string/Vec) config init lands with the \
+                                                   per-field owned-clone init thunk"
+                                                .to_string(),
+                                        });
+                                        all_ok = false;
+                                        continue 'fields;
+                                    }
+                                    crate::model::ChildInitArg::ConfigField {
+                                        config_param_name: config_param_name.clone(),
+                                        config_ty_name,
+                                        field_name: field.clone(),
+                                        field_ty: source_expr.ty.clone(),
+                                        owned,
+                                    }
+                                } else {
+                                    diagnostics.push(MirDiagnostic {
+                                        kind: MirDiagnosticKind::NotYetImplemented {
+                                            construct: format!(
+                                                "supervisor `{}` child `{}` field `{field_name}` \
+                                                 reads a field of a non-binding expression; only \
+                                                 `config.<field>` config reads are supported",
+                                                sup_layout.name, child.name
+                                            ),
+                                            site: source_expr.site,
+                                        },
+                                        note: "supervisor config init args read a field of a \
+                                               config struct parameter (`config.field`)"
+                                            .to_string(),
+                                    });
+                                    all_ok = false;
+                                    continue 'fields;
+                                }
+                            }
                             other => {
                                 diagnostics.push(MirDiagnostic {
                                     kind: MirDiagnosticKind::NotYetImplemented {
                                         construct: format!(
                                             "supervisor `{}` child `{}` field `{field_name}` \
                                              resolves to a non-literal expression ({other:?}); \
-                                             only integer, bool, and float literals are \
-                                             supported as child init values in this slice",
+                                             supported child init values are literals and \
+                                             config-field reads (`config.<field>`)",
                                             sup_layout.name, child.name
                                         ),
                                         site: source_expr.site,
                                     },
-                                    note: "const-expr and sibling-ref child args are a \
-                                           follow-up slice"
+                                    note: "use a literal or a config-field read (`config.field`)"
                                         .to_string(),
                                 });
                                 all_ok = false;
@@ -3896,6 +3989,25 @@ fn lower_machine_lifecycle_block(
 /// MIR means either the checker was bypassed or has a bug; MIR refuses
 /// to emit a bootstrap function in that case rather than infinite-loop
 /// on the dep graph.
+/// Classify a supervisor child init field type as owned (needs a deep clone in
+/// the init thunk) vs `BitCopy` scalar (a plain load). Owned types carry heap
+/// ownership (`string`/`Bytes`/`Vec`/`List`/`Set`/`Map`) that must be re-cloned
+/// per incarnation so each restart gets unaliased heap. Anything else is treated
+/// as a scalar load; genuinely-unsupported types are walled off at the checker
+/// (`ty_is_supervisor_init_reproducible`) before reaching MIR.
+fn child_init_field_is_owned(ty: &ResolvedTy) -> bool {
+    match ty {
+        ResolvedTy::String | ResolvedTy::Bytes => true,
+        ResolvedTy::Named { name, .. } => {
+            matches!(
+                name.as_str(),
+                "Vec" | "List" | "Set" | "Map" | "HashMap" | "String"
+            )
+        }
+        _ => false,
+    }
+}
+
 fn supervisor_children_in_spawn_order(sup: &HirSupervisorDecl) -> Option<Vec<&HirSupervisorChild>> {
     use std::collections::VecDeque;
 
@@ -39902,5 +40014,51 @@ mod actor_send_aliasing_collapse {
             Some(ActorSendAliasing::Alias),
             "root-level Alias sends must be unaffected by the collapse"
         );
+    }
+}
+
+#[cfg(test)]
+mod child_init_owned_classification {
+    //! The init-closure restart model classifies a supervisor child config-init
+    //! field as owned (needs a deep-clone in the thunk) vs scalar (a plain load).
+    //! This classification is load-bearing: the MIR lowering fail-closes on owned
+    //! config fields until the per-field owned-clone init thunk lands, so a wrong
+    //! "scalar" verdict for an owned type would let an unaliasable field through.
+    use super::child_init_field_is_owned;
+    use hew_types::ResolvedTy;
+
+    fn named(name: &str) -> ResolvedTy {
+        ResolvedTy::Named {
+            name: name.to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: false,
+        }
+    }
+
+    #[test]
+    fn scalars_are_not_owned() {
+        for ty in [
+            ResolvedTy::I64,
+            ResolvedTy::I32,
+            ResolvedTy::U8,
+            ResolvedTy::F64,
+            ResolvedTy::Bool,
+            ResolvedTy::Char,
+        ] {
+            assert!(!child_init_field_is_owned(&ty), "{ty:?} is a scalar load");
+        }
+    }
+
+    #[test]
+    fn owned_heap_types_are_owned() {
+        assert!(child_init_field_is_owned(&ResolvedTy::String));
+        assert!(child_init_field_is_owned(&ResolvedTy::Bytes));
+        for name in ["Vec", "List", "Set", "Map", "HashMap", "String"] {
+            assert!(
+                child_init_field_is_owned(&named(name)),
+                "{name} carries heap ownership and must be classified owned"
+            );
+        }
     }
 }

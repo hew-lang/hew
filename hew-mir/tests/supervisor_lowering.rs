@@ -457,3 +457,45 @@ fn supervisor_child_with_on_crash_hook_surfaces_symbol_on_layout() {
         "on(crash) MIR function must use ActorHandler calling convention"
     );
 }
+
+/// An OWNED config field (`config.name: string`) is walled off at the checker
+/// (still scalar-only) and, as defence-in-depth, fails closed at MIR if it ever
+/// reaches lowering — the owned-clone init thunk is the continuation of this lane.
+#[test]
+fn owned_config_field_init_arg_is_walled_at_checker() {
+    // The checker rejects the owned `string` init param before MIR, so the
+    // program never lowers cleanly. Assert the checker error fires.
+    let parsed = hew_parser::parse(
+        r"
+        record AppConfig { label: string }
+
+        actor Tagged {
+            let name: string;
+            init(name: string) {
+                name = name;
+            }
+            receive fn read() {}
+        }
+
+        supervisor App(config: AppConfig) {
+            child t: Tagged(name: config.label)
+        }
+        ",
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    assert!(
+        tc_output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_INIT_ARG_NON_BITCOPY")),
+        "owned `string` init arg must be walled at the checker until the owned init thunk lands; \
+         errors: {:#?}",
+        tc_output.errors
+    );
+}

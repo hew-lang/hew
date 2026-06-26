@@ -129,37 +129,32 @@ impl Checker {
     }
 
     /// Reject supervised child init args unless the actor init-parameter type is
-    /// provably one of the checker's `BitCopy` scalar primitives: `i8`, `i16`,
-    /// `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32`, `f64`, `bool`, `char`.
+    /// provably one of the checker's `BitCopy` scalar primitives.
     ///
-    /// WHY: the supervisor bootstrap emits a byte-copy state template for each
-    /// child.  Both the initial spawn and every restart byte-copy that template
-    /// into the new actor's state.  Anything except a scalar `BitCopy` primitive
-    /// might carry ownership, handles, aliases, generic layout, or other
-    /// untracked invariants that cannot be safely duplicated by byte-copy.
+    /// The v0.6 init-closure restart model (this lane) makes the SCALAR config
+    /// path sound and dynamic — a `child cache: Cache(capacity: config.size)`
+    /// where `capacity` is a scalar is re-produced by the init thunk on every
+    /// restart. OWNED init args (`string`/`Vec`/...) are also sound under the
+    /// init-closure model in principle (the thunk re-clones them per
+    /// incarnation), but their per-field owned-clone-in-thunk codegen is the
+    /// continuation of this lane; until it lands, owned init args stay walled
+    /// here so the system fails CLOSED rather than accepting a surface codegen
+    /// cannot yet emit.
     ///
-    /// The longer-term fix is an init-closure restart model (v0.6) where the
-    /// supervisor re-runs user code to construct fresh owned state for each
-    /// restart.  This wall is the stepping stone: it makes the limitation
-    /// explicit at compile time rather than silently emitting unsound code.
-    ///
-    /// WHEN-OBSOLETE: when the supervisor restart path uses an init-closure
-    /// (`state_clone_fn` + per-child restart fn) to produce a fresh, independently-
-    /// owned state for each new actor instance instead of byte-copying the template.
-    ///
-    /// WHAT: introduce a `restart_fn` slot in `HewChildSpec` that the codegen
-    /// populates with an actor-specific closure.  The runtime calls it instead of
-    /// memcpy-ing `init_state` on restart.  Once that path lands, remove this
-    /// check and flip its reject fixtures to accept.
+    /// WHEN-OBSOLETE: when the init thunk emits per-field owned deep-clones for
+    /// `string`/`Vec`/... config init args; flip this predicate to
+    /// `ty_is_supervisor_init_reproducible` (scalar OR Clone-able owned, minus
+    /// `#[resource]` handles) and flip the owned reject fixtures to accept.
     fn check_supervisor_init_args_bitcopy(&mut self, sd: &SupervisorDecl, _span: &Span) {
         for child in &sd.children {
-            // Pool children are spawned dynamically — their init args are not
-            // stored in a fixed state template — so they are exempt.
+            // Pool children are spawned dynamically — their init args route
+            // through the per-member thunk too, but are validated in the pool
+            // lane; exempt here.
             if child.is_pool {
                 continue;
             }
 
-            // Only children with explicit init args have the byte-copy problem.
+            // Only children with explicit init args carry init-arg types.
             if child.args.is_empty() {
                 continue;
             }
@@ -185,12 +180,13 @@ impl Checker {
                         format!(
                             "E_SUPERVISOR_INIT_ARG_NON_BITCOPY: supervisor `{}` child `{}` \
                              (actor `{}`) passes init arg `{}` of type `{}`; supervised actor \
-                             init args are byte-copied into the state template and replayed on \
-                             every restart, so only scalar BitCopy primitives (`i8`, `i16`, \
-                             `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32`, `f64`, `bool`, \
-                             `char`) are admitted. Owned, generic, alias, user-defined, handle, \
-                             and otherwise unrecognized types are rejected until the v0.6 \
-                             init-closure restart model",
+                             init args are re-produced by the init-closure restart model on \
+                             every restart, and the per-field owned-clone path is the \
+                             continuation of this lane, so for now only scalar BitCopy \
+                             primitives (`i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, \
+                             `f32`, `f64`, `bool`, `char`) are admitted. Owned, generic, alias, \
+                             user-defined, and handle types are rejected until the owned init \
+                             thunk lands",
                             sd.name,
                             child.name,
                             child.actor_type,

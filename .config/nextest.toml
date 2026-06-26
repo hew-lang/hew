@@ -224,23 +224,6 @@ slow-timeout = { period = "30s", terminate-after = 3 }
 filter = "test(tcp_stream_backing_records_error_on_reset)"
 slow-timeout = { period = "120s", terminate-after = 6 }
 
-[[profile.ci.overrides]]
-# supervisor_literal_only_config_param_no_leak is a macOS-only leak-oracle test
-# (Linux/Windows skip via `cfg!(target_os = "macos")` guard).  It (1) invokes
-# `hew compile` to AOT-compile a fixture to a native binary, then (2) runs that
-# binary under `leaks --atExit` with MallocScribble/MallocPreScribble/
-# MallocGuardEdges.  The compile+codegen+link+leaks-attach pipeline is slow on
-# the constrained 3-core macos-14 GitHub runner; the default 300s window (3 ×
-# 100s) was too narrow even when no test is genuinely stuck.  This override
-# matches the exec/e2e budget (4 × 120s = 480s) that already covers similar
-# compile+run tests.  The subprocess-intensive group cap ensures this test does
-# not starve sibling compile tests on the shared 3-core runner.
-# Correctness invariant: the test's own leaks-count assertion remains strict
-# (assert_eq!(n, 0)) — this budget only prevents a false KILL, not a leak.
-filter = "test(supervisor_literal_only_config_param_no_leak)"
-test-group = "subprocess-intensive"
-slow-timeout = { period = "120s", terminate-after = 4 }
-
 [profile.ci.junit]
 path = "junit.xml"
 

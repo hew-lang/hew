@@ -36,6 +36,7 @@ command_timeout_floor() {
         "make test-doc-examples") echo 45 ;;
         "make sandbox-parity") echo 150 ;;
         "make checked-mir-verify") echo 45 ;;
+        "make hew-check-all") echo 300 ;;
         *) echo 0 ;;
     esac
 }
@@ -86,6 +87,7 @@ CI_REQUIRED_CHECKS=(
     "Sandbox parity (ci.yml: make sandbox-parity)	make sandbox-parity"
     "Checked-MIR golden corpus (ci.yml: make checked-mir-verify)	make checked-mir-verify"
     "Doc-fence typecheck ratchet (ci.yml: make test-doc-examples)	make test-doc-examples"
+    "Repo-wide hew corpus sweep (ci.yml: make hew-check-all)	make hew-check-all"
 )
 
 usage() {
@@ -476,6 +478,7 @@ has_wasm=0
 needs_codegen_release_smoke=0
 needs_stdlib_lint=0
 needs_hew_suite=0
+needs_hew_corpus=0
 needs_sandbox_fixture_check=0
 needs_sandbox_parity=0
 needs_trap_fixtures=0
@@ -499,6 +502,17 @@ for path in "${CHANGED_FILES[@]}"; do
                     fi
                     ;;
             esac
+            ;;
+    esac
+
+    # Parallel side-channel: any tracked .hew file change triggers needs_hew_corpus
+    # so that the repo-wide corpus sweep runs on every lane where a .hew file
+    # changed.  This mirrors the needs_hew_suite / needs_stdlib_lint pattern.
+    # The flag is a no-op when the lane already includes make hew-check-all
+    # (the fallback lane) — checked in the append block below.
+    case "$path" in
+        *.hew)
+            needs_hew_corpus=1
             ;;
     esac
 
@@ -776,6 +790,7 @@ case "$LANE" in
         add_command "make test-doc-examples"
         add_command "make sandbox-parity"
         add_command "make checked-mir-verify"
+        add_command "make hew-check-all"
         ;;
     *)
         die "unhandled lane: $LANE"
@@ -801,6 +816,15 @@ if (( needs_hew_suite == 1 )) && [[ "$LANE" != "fallback" && "$LANE" != "hew-tes
     # Skip when LANE is fallback or hew-tests: both already include the ratchets.
     add_command "make test-hew-ratchet"
     add_command "make test-stdlib-ratchet"
+fi
+
+if (( needs_hew_corpus == 1 )) && [[ "$LANE" != "fallback" ]]; then
+    # A tracked .hew file changed.  Run the repo-wide corpus sweep so any new
+    # "undefined symbol" or type mismatch introduced by the diff surfaces
+    # before push.  Skip when LANE is fallback: it already covers the whole
+    # test suite (including hew-check-all's constituency) via make test +
+    # make test-hew-ratchet.
+    add_command "make hew-check-all"
 fi
 
 if (( needs_sandbox_fixture_check == 1 )); then

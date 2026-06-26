@@ -417,6 +417,17 @@ jobs:
         # corpus (make checked-mir-golden) or a non-determinism bug crept
         # into dump_mir.  The hew binary is already built by this point.
         run: make checked-mir-verify
+
+      - name: Run repo-wide hew check corpus sweep (ratcheted)
+        # Runs `hew check` over every tracked .hew file (excluding intentional
+        # reject fixtures already covered by test-vertical-slice/test-pkg-import
+        # /fuzz-oracle).  Known failures tracked in
+        # scripts/hew-corpus-expected-failures.txt; any unexpected failure (new
+        # regression) OR unexpected pass (entry fixed — remove it from the list)
+        # exits 1.  Catches the migrate-forward-miss class: a symbol rename or
+        # type change landed in the compiler but a fixture file silently left
+        # behind with the old call-site.
+        run: make hew-check-all
       # <<< CI-PARITY-STEPS
 
       - name: Run hew observe functional harness

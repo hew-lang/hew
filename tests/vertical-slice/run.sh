@@ -872,6 +872,17 @@ run_accept_expect_status "supervised_actor_init_block" 42
 # (No WASM check needed: same reason as above.)
 run_accept_expect_status "supervisor_child_after_restart" 7
 
+# await_restart keyword (issue #2124): the language-primitive restart barrier.
+# Replaces the extern hew_supervisor_wait_restart + manual re-fetch with
+# `let w2 = await_restart sup.w`, which suspends (or blocks, in main) until the
+# supervised child's slot is Live again, then re-fetches the now-Live handle.
+# Crashes the worker, await_restarts it, then asks the restarted child — exit 7
+# proves a Live re-fetch through the deep-clone restart path (a Transient slot
+# would trap with code 206 → exit 133). The cooperative observer
+# (hew_supervisor_restart_await_suspend) handles the actor-handler path; main
+# uses the blocking contextless path (hew_supervisor_restart_await_blocking).
+run_accept_expect_status "supervisor_await_restart" 7
+
 # F-04 fungible reference: a supervised-child handle re-resolves to the CURRENT
 # child at each send/ask, so a handle BOUND before a crash and held ACROSS the
 # restart reaches the FRESH child. Binds `let w = sup.w1` before crashing, then

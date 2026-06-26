@@ -1,0 +1,72 @@
+// Proving fixture: the `await_restart` keyword (issue #2124).
+//
+// `await_restart sup.child` is a dedicated prefix keyword that suspends the
+// current execution context until the named static supervised child's slot is
+// Live again (it restarted), then resumes with the re-fetched live handle. It
+// replaces the awkward `extern hew_supervisor_wait_restart` + manual re-fetch
+// barrier in supervisor_child_after_restart.hew with a language primitive that
+// rides the cooperative SuspendKind::RestartWait machinery (NOT the
+// thread-blocking hew_supervisor_wait_restart, which would deadlock the
+// single scheduler).
+//
+// Flow (deterministic — no sleep_ms; the keyword IS the barrier):
+//   1. Supervisor spawns Worker(value: 7); sup.w is Live immediately.
+//   2. w.crash_me() panics inside the actor (fire-and-forget tell); the
+//      supervisor processes the crash and restarts the child.
+//   3. `let w2 = await_restart sup.w` parks the actor on the supervisor
+//      restart observer if the slot is mid-restart (Transient), and resumes
+//      re-fetching the now-Live handle once notify_restart fires. If the
+//      restart already completed (the slot is Live), the pre-park check
+//      returns READY and the re-fetch binds immediately — correct either way.
+//   4. `await w2.get_value()` returns 7: the restarted actor's state was
+//      deep-cloned from HewChildSpec.init_state through the restart path.
+//
+// Exit code 7 proves:
+//   - await_restart resumed with a Live handle (a Transient/null slot would
+//      trap with hew_trap_with_code(206) → SIGTRAP / exit 133).
+//   - The re-fetched handle answers with the restarted actor's deep-cloned
+//      state (the value-only-the-live-actor-can-produce sentinel — teeth).
+actor Worker {
+    var value: i64;
+    receive fn get_value() -> i64 {
+        value
+    }
+    receive fn crash_me() {
+        panic("test crash — supervisor should restart this child");
+    }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child w: Worker(value: 7);
+}
+
+fn main() -> i64 {
+    let sup = spawn App;
+    let w = sup.w;
+    // Confirm the initial value before the crash (proves init_state applied).
+    match await w.get_value() {
+        Err(_) => {
+            return 0;
+        },
+        Ok(v) => {
+            if v != 7 {
+                return 0;
+            }
+        },
+    }
+    // Crash the worker (fire-and-forget tell). The supervisor restarts it.
+    w.crash_me();
+    // Suspend until the supervised child is Live again, then re-fetch it.
+    // This is the cooperative restart barrier — the whole point of the keyword.
+    let w2 = await_restart sup.w;
+    // The restarted child carries the original init value through the
+    // deep-clone restart path. A Transient slot would have trapped at the
+    // re-fetch; reaching here with 7 proves a Live re-fetch.
+    match await w2.get_value() {
+        Ok(v) => v,
+        Err(_) => 0,
+    }
+}

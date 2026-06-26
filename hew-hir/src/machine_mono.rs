@@ -1171,6 +1171,19 @@ fn walk_expr(
                 cap_diag_emitted,
             );
         }
+        HirExprKind::AwaitRestart { child } => {
+            walk_expr(
+                child,
+                subst,
+                machine_decls,
+                residual_domain,
+                seen,
+                order,
+                cap,
+                diagnostics,
+                cap_diag_emitted,
+            );
+        }
         HirExprKind::ListenerAwaitAccept { listener, .. } => {
             walk_expr(
                 listener,

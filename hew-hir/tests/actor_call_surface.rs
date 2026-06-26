@@ -60,6 +60,9 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
         HirExprKind::ConnAwaitRead { conn, .. } => {
             visit_expr(conn, out);
         }
+        HirExprKind::AwaitRestart { child } => {
+            visit_expr(child, out);
+        }
         HirExprKind::ListenerAwaitAccept { listener, .. } => {
             visit_expr(listener, out);
         }

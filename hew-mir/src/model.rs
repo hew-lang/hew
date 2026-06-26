@@ -1805,6 +1805,25 @@ pub enum SuspendKind {
         task: Place,
         result_dest: Option<Place>,
     },
+    /// Non-blocking `await_restart sup.child` — park the current actor on the
+    /// supervisor restart observer until the static child at `slot_index`
+    /// becomes Live again (it restarted), then resume re-fetching the now-Live
+    /// `LocalPid<ChildType>` into `result_dest`. The supervisor analogue of
+    /// `TaskAwait`: lowered through the SAME cooperative-suspension machinery,
+    /// parking against the supervisor's `restart_notify` (NOT the thread-blocking
+    /// `hew_supervisor_wait_restart`). A permanently-Dead child fails closed
+    /// (resumes immediately) rather than hanging forever.
+    ///
+    /// `deadline_result_dest` is RESERVED for the future bounded form
+    /// (`await_restart sup.w within: 5.seconds → Option<LocalPid<T>>`), mirroring
+    /// the deadline slot on `Read`/`Accept`/`StreamNext`; the bare form leaves
+    /// it `None`.
+    RestartWait {
+        sup_place: Place,
+        slot_index: u32,
+        result_dest: Place,
+        deadline_result_dest: Option<Place>,
+    },
     /// Non-blocking `sleep_ms(d)` / `sleep(d)` (`SuspendingSleep`).
     Sleep { duration_ms: Place },
 }

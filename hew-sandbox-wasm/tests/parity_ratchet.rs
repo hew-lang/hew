@@ -967,6 +967,10 @@ mod ast_surface {
             Expr::PostfixTry(_) => Some("postfix-try (`?`)"),
             Expr::Range { .. } => Some("recursive call + expr-if + range-for + interpolation"),
             Expr::Await(_) => Some("actor ask via await + Ok/Err reply match"),
+            // `await_restart` suspends on the native supervisor restart observer
+            // — a reserved_runtime_feature in the sandbox VM (see profile.rs); no
+            // parity corpus entry.
+            Expr::AwaitRestart(_) => None,
             Expr::RegexLiteral(_) => Some("regex compile + is_match"),
             Expr::ByteStringLiteral(_) => Some("closure / lambda value"), // value form: reserved_runtime_feature.
             Expr::ByteArrayLiteral(_) => Some("closure / lambda value"), // value form: reserved_runtime_feature.

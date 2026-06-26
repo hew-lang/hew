@@ -70,6 +70,100 @@ fn simple_one_for_one_with_pool_accepted() {
     );
 }
 
+// ── await_restart keyword ────────────────────────────────────────────────────
+
+/// `await_restart sup.child` on a STATIC supervised child type-checks cleanly:
+/// the operand is a static child accessor, so the keyword is well-formed and the
+/// re-fetched handle keeps the child's `LocalPid<ChildType>` type.
+#[test]
+fn await_restart_on_static_child_accepted() {
+    let output = typecheck(
+        r"
+        actor Worker {
+            receive fn ping() {}
+        }
+
+        supervisor App {
+            strategy: one_for_one
+            intensity: 3 within 60s
+
+            child w: Worker
+        }
+
+        fn main() {
+            let sup = spawn App;
+            let _w = await_restart sup.w;
+        }
+        ",
+    );
+    let relevant: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("await_restart"))
+        .collect();
+    assert!(
+        relevant.is_empty(),
+        "`await_restart sup.w` on a static child must type-check cleanly: {relevant:#?}"
+    );
+}
+
+/// `await_restart` on a POOL member is rejected: a pool member has no per-slot
+/// restart signal (the `restart_notify` is per-supervisor, and pool dynamics
+/// recover via the pool path, not a static child slot).
+#[test]
+fn await_restart_on_pool_member_rejected() {
+    let output = typecheck(
+        r"
+        actor Worker {
+            receive fn ping() {}
+        }
+
+        supervisor Pool {
+            strategy: simple_one_for_one
+            intensity: 10 within 60s
+
+            pool worker: Worker
+        }
+
+        fn main() {
+            let sup = spawn Pool;
+            let _w = await_restart sup.worker;
+        }
+        ",
+    );
+    let rejected = output.errors.iter().any(|e| {
+        e.message.contains("await_restart") && e.message.contains("static supervised child")
+    });
+    assert!(
+        rejected,
+        "`await_restart` on a pool member must be rejected with a static-child diagnostic; \
+         got: {:#?}",
+        output.errors
+    );
+}
+
+/// `await_restart` on a non-supervisor-child operand is rejected with a clear
+/// diagnostic — the operand must name a supervisor child slot.
+#[test]
+fn await_restart_on_non_child_operand_rejected() {
+    let output = typecheck(
+        r"
+        fn main() {
+            let x = 5;
+            let _y = await_restart x;
+        }
+        ",
+    );
+    let rejected = output.errors.iter().any(|e| {
+        e.message.contains("await_restart") && e.message.contains("supervisor child slot")
+    });
+    assert!(
+        rejected,
+        "`await_restart` on a non-supervised-child operand must be rejected; got: {:#?}",
+        output.errors
+    );
+}
+
 // ── Reject: wired_to unknown sibling ─────────────────────────────────────────
 
 /// `wired_to` referencing a name that is not a declared sibling is rejected.

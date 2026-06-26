@@ -752,6 +752,10 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             )
             .expect("write to string");
         }
+        HirExprKind::AwaitRestart { child } => {
+            writeln!(out, "{pad}  await-restart").expect("write to string");
+            dump_expr(out, child, indent + 2);
+        }
         HirExprKind::ConnAwaitRead {
             conn,
             to_string,

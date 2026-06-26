@@ -1314,6 +1314,40 @@ pub(crate) fn lower_call_runtime_abi(
             }
             let _ = (i32_ty, i64_ty);
         }
+        // hew_supervisor_restart_await_blocking(sup: *mut HewSupervisor, key: u32)
+        // -> void (`hew-runtime/src/supervisor.rs`). The contextless
+        // `await_restart` path: blocks until the child slot is Live or
+        // permanently Dead. The producer supplies [sup, key] and dest: None.
+        F::SupervisorRestartAwaitBlocking => {
+            if args.len() != 2 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_supervisor_restart_await_blocking): \
+                     expected 2 args (sup, key), got {}",
+                    args.len()
+                )));
+            }
+            let sup_ptr = load_duplex_handle(fn_ctx, args[0], "restart_await_blocking_sup")?;
+            let key = load_place_as_basic(fn_ctx, args[1], "restart_await_blocking_key")?
+                .into_int_value();
+            // The MIR producer emits the key as an i64 const; the ABI is u32.
+            let key_u32 = fn_ctx
+                .builder
+                .build_int_truncate(key, i32_ty, "restart_await_blocking_key_u32")
+                .llvm_ctx("restart-await-blocking key truncate")?;
+            fn_ctx.call_runtime_void(
+                symbol,
+                &[sup_ptr.into(), key_u32.into()],
+                "hew_supervisor_restart_await_blocking_call",
+                "hew_supervisor_restart_await_blocking call",
+            )?;
+            if let Some(d) = dest {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_supervisor_restart_await_blocking is void; producer must \
+                     not supply dest={d:?}"
+                )));
+            }
+            let _ = i64_ty;
+        }
         // `hew_duplex_close` is only called from the Drop ritual
         // (`lower_drop`); reaching it via `Instr::CallRuntimeAbi`
         // means a producer mis-routed a destructor through the

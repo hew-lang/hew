@@ -414,6 +414,15 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     // over child_supervisors; the handle field carries a *mut HewSupervisor
     // bit-pattern for multi-segment dotted access (`app.api.auth`).
     "hew_supervisor_nested_get",
+    // `hew_supervisor_restart_await_blocking(sup: *mut HewSupervisor, key: u32) -> void`
+    // (`hew-runtime/src/supervisor.rs`). The CONTEXTLESS `await_restart` path:
+    // blocks the calling thread on the supervisor restart Condvar until the
+    // static child slot is Live or permanently Dead, then returns. Used only by
+    // a `Default`-callconv caller (`main` / free fn); an actor handler uses the
+    // suspending `hew_supervisor_restart_await_suspend` observer instead (a
+    // codegen-interned suspend-ramp symbol, not an `Instr::CallRuntimeAbi`).
+    // (Sorted before `_stop`: `restart` < `stop` — the list is binary-searched.)
+    "hew_supervisor_restart_await_blocking",
     // `hew_supervisor_stop(sup: *mut HewSupervisor) -> void`
     // (`hew-runtime/src/supervisor.rs:1944`). Graceful shutdown: requests
     // shutdown of all children and initiates teardown. Void return — the

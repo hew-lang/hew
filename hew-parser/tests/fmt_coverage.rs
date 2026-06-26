@@ -1021,6 +1021,53 @@ fn main() {
     assert!(out.contains("await f"), "output: {out}");
 }
 
+#[test]
+fn fmt_await_restart_keyword_roundtrips() {
+    // `await_restart <child>` is a dedicated prefix keyword and formats with a
+    // single trailing space, exactly like `await`. Idempotent + exact.
+    exact_roundtrip("fn main() {\n    let w = await_restart sup.worker;\n}\n");
+}
+
+#[test]
+fn fmt_await_restart_parses_as_distinct_node() {
+    // The keyword lowers to `Expr::AwaitRestart`, NOT `Expr::Await` — they are
+    // separate prefix operators. Distinguishing them is the whole point of the
+    // dedicated keyword.
+    let r =
+        parse("fn main() {\n    let w = await_restart sup.worker;\n    let v = await task;\n}\n");
+    assert!(r.errors.is_empty(), "parse failed: {:?}", r.errors);
+    let body = match &r.program.items[0].0 {
+        Item::Function(f) => &f.body,
+        other => panic!("expected function, got {other:?}"),
+    };
+    let restart_is_distinct = body.stmts.iter().any(|s| {
+        matches!(
+            &s.0,
+            Stmt::Let {
+                value: Some((Expr::AwaitRestart(_), _)),
+                ..
+            }
+        )
+    });
+    let plain_await_unchanged = body.stmts.iter().any(|s| {
+        matches!(
+            &s.0,
+            Stmt::Let {
+                value: Some((Expr::Await(_), _)),
+                ..
+            }
+        )
+    });
+    assert!(
+        restart_is_distinct,
+        "`await_restart sup.worker` must parse as Expr::AwaitRestart"
+    );
+    assert!(
+        plain_await_unchanged,
+        "`await task` must still parse as Expr::Await (keyword adds, does not replace)"
+    );
+}
+
 // -----------------------------------------------------------------------
 // Comments preservation
 // -----------------------------------------------------------------------

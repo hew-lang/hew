@@ -303,6 +303,9 @@ fn walk_expr_for_suspend(expr: &HirExpr, found: &mut bool) {
         // `await stream.recv() | after d` suspends the handler on stream-readiness
         // with a deadline (L4 phase 2).
         | HirExprKind::StreamRecvAwait { .. }
+        // `await_restart sup.child` parks the actor on the supervisor restart
+        // observer — a direct cooperative suspend point.
+        | HirExprKind::AwaitRestart { .. }
         | HirExprKind::ActorSend { .. } => {
             *found = true;
         }

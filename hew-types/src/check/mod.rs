@@ -1447,7 +1447,7 @@ impl Checker {
                     );
                 }
             }
-            Expr::Await(inner) => {
+            Expr::Await(inner) | Expr::AwaitRestart(inner) => {
                 self.classify_escapes_in_expr(&inner.0, &inner.1, in_fork, AnonContext::Other);
             }
             Expr::InterpolatedString(parts) => {
@@ -1870,7 +1870,9 @@ fn collect_lambda_spans_in_expr(
                 collect_lambda_spans_in_expr(&boxed.0, &boxed.1, out);
             }
         }
-        Expr::Await(inner) => collect_lambda_spans_in_expr(&inner.0, &inner.1, out),
+        Expr::Await(inner) | Expr::AwaitRestart(inner) => {
+            collect_lambda_spans_in_expr(&inner.0, &inner.1, out);
+        }
         Expr::InterpolatedString(parts) => {
             for part in parts {
                 if let StringPart::Expr((e, s)) = part {

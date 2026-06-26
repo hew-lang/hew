@@ -235,7 +235,7 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
         Expr::Unary { operand, .. } | Expr::Clone(operand) => {
             collect_calls_in_expr(operand.as_ref(), calls);
         }
-        Expr::Await(a) => {
+        Expr::Await(a) | Expr::AwaitRestart(a) => {
             collect_calls_in_expr(a.as_ref(), calls);
         }
         Expr::PostfixTry(p) => {

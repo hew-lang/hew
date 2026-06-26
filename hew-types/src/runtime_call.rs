@@ -423,6 +423,10 @@ pub enum RuntimeCallFamily {
     SupervisorChildGet,
     SupervisorNestedGet,
     SupervisorStop,
+    /// `hew_supervisor_restart_await_blocking(sup, key) -> void` — the
+    /// contextless `await_restart` path (`main` / free fn). Blocks the calling
+    /// thread until the child slot is Live or permanently Dead.
+    SupervisorRestartAwaitBlocking,
 
     // --- TCP attach (network actor binding) --------------------------------
     // Pre-staged: `conn.attach(handler)` dispatches via the
@@ -650,6 +654,7 @@ impl RuntimeCallFamily {
             Self::SupervisorChildGet => "hew_supervisor_child_get",
             Self::SupervisorNestedGet => "hew_supervisor_nested_get",
             Self::SupervisorStop => "hew_supervisor_stop",
+            Self::SupervisorRestartAwaitBlocking => "hew_supervisor_restart_await_blocking",
             // TCP attach (pre-staged)
             Self::TcpAttachLocal => "hew_tcp_attach_local",
             // Task
@@ -889,6 +894,7 @@ impl RuntimeCallFamily {
             "hew_supervisor_child_get" => Self::SupervisorChildGet,
             "hew_supervisor_nested_get" => Self::SupervisorNestedGet,
             "hew_supervisor_stop" => Self::SupervisorStop,
+            "hew_supervisor_restart_await_blocking" => Self::SupervisorRestartAwaitBlocking,
             // TCP attach
             "hew_tcp_attach_local" => Self::TcpAttachLocal,
             // Task
@@ -1125,6 +1131,7 @@ impl RuntimeCallFamily {
             | F::SupervisorChildGet
             | F::SupervisorNestedGet
             | F::SupervisorStop
+            | F::SupervisorRestartAwaitBlocking
             | F::TcpAttachLocal
             | F::TaskAwaitBlocking
             | F::TaskCompleteThreaded

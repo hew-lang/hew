@@ -900,6 +900,11 @@ fn wasm_excluded_suspend_kind_symbol(kind: &SuspendKind) -> Option<&'static str>
         SuspendKind::StreamNext { .. } => Some("hew_stream_await_next"),
         SuspendKind::ChannelRecv { .. } => Some("hew_channel_await_recv"),
         SuspendKind::TaskAwait { .. } => Some("hew_task_await_suspend"),
+        // `await_restart` parks on the native supervisor restart observer — a
+        // cooperative-scheduler primitive with no wasm32 analogue. Fail closed
+        // with the structured `WasmUnsupportedSubstrate` rather than a wasm-ld
+        // dangling reference.
+        SuspendKind::RestartWait { .. } => Some("hew_supervisor_restart_await_suspend"),
         SuspendKind::Sleep { .. } => Some("hew_await_cancel_schedule_deadline_ms"),
         SuspendKind::Ask { .. }
         | SuspendKind::Read { .. }
@@ -969,6 +974,7 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::SupervisorChildGet
         | F::SupervisorNestedGet
         | F::SupervisorStop
+        | F::SupervisorRestartAwaitBlocking
         // Structured-concurrency task scopes are native-only
         // (hew-runtime/src/lib.rs:466). WASM-TODO(#1451).
         | F::TaskScopeCancelAfterNs
@@ -2663,6 +2669,13 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // the supervisor and all its children. Void return; the Hew builtin
         // `supervisor_stop(sup)` discards the result.
         "hew_supervisor_stop" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        // hew_supervisor_restart_await_blocking(sup: *mut HewSupervisor, key: u32)
+        // -> void (`hew-runtime/src/supervisor.rs`). The contextless
+        // `await_restart` path: blocks the calling thread until the child slot is
+        // Live or permanently Dead.
+        "hew_supervisor_restart_await_blocking" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), i32_ty.into()], false),
         // hew_supervisor_child_get(sup: *mut HewSupervisor, key: u32)
         //     -> ChildLookupResult
         // (`hew-runtime/src/supervisor.rs:2795`). Returns the live actor handle
@@ -2811,6 +2824,27 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         "hew_task_detach_await" => ctx
             .void_type()
             .fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false),
+        // hew_supervisor_restart_await_suspend(sup: *mut HewSupervisor, key: u32,
+        //                                      actor: *mut HewActor,
+        //                                      slot: *mut HewReadSlot) -> i32
+        // (`hew-runtime/src/supervisor.rs`). The cooperative `await_restart`
+        // observer: pre-park state check (Live/Dead → READY 1; Transient →
+        // park + SUSPEND 0) and registers the parked continuation against the
+        // supervisor restart-await waiter list. `notify_restart` wakes it via
+        // `enqueue_resume`. The supervisor-restart analogue of
+        // `hew_task_await_suspend`.
+        "hew_supervisor_restart_await_suspend" => i32_ty.fn_type(
+            &[ptr_ty.into(), i32_ty.into(), ptr_ty.into(), ptr_ty.into()],
+            false,
+        ),
+        // hew_supervisor_restart_await_detach(sup: *mut HewSupervisor,
+        //                                     slot: *mut HewReadSlot) -> void
+        // (`hew-runtime/src/supervisor.rs`). The abandon edge: removes the
+        // waiter registered by `hew_supervisor_restart_await_suspend` so a
+        // racing `notify_restart` drops its wake against a freed continuation.
+        "hew_supervisor_restart_await_detach" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
         // hew_task_free(task: *mut HewTask) -> void
         // (`hew-runtime/src/task_scope.rs:237`). Frees the Box-allocated
         // HewTask and its result buffer. Called by the scope teardown path
@@ -25989,6 +26023,21 @@ fn dispatch_collapsed_suspend<'ctx>(
             crate::suspend::SuspendingTaskAwaitEmit {
                 scope: *scope,
                 task: *task,
+                result_dest: *result_dest,
+                resume,
+                cleanup,
+            },
+        ),
+        SuspendKind::RestartWait {
+            sup_place,
+            slot_index,
+            result_dest,
+            deadline_result_dest: _,
+        } => crate::suspend::emit_suspending_restart_wait_terminator(
+            fn_ctx,
+            crate::suspend::SuspendingRestartWaitEmit {
+                sup_place: *sup_place,
+                slot_index: *slot_index,
                 result_dest: *result_dest,
                 resume,
                 cleanup,

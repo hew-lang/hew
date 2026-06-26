@@ -4001,6 +4001,9 @@ fn collect_call_sites_in_expr(
         HirExprKind::ConnAwaitRead { conn, .. } => {
             collect_call_sites_in_expr(conn, out, trait_out);
         }
+        HirExprKind::AwaitRestart { child } => {
+            collect_call_sites_in_expr(child, out, trait_out);
+        }
         HirExprKind::ListenerAwaitAccept { listener, .. } => {
             collect_call_sites_in_expr(listener, out, trait_out);
         }
@@ -7099,7 +7102,8 @@ impl LowerCtx {
                 receiver: object, ..
             }
             | HirExprKind::RecordCloneCall { src: object, .. }
-            | HirExprKind::ConnAwaitRead { conn: object, .. } => {
+            | HirExprKind::ConnAwaitRead { conn: object, .. }
+            | HirExprKind::AwaitRestart { child: object } => {
                 self.wrap_var_self_explicit_expr_returns(object, receiver, abi_return_ty);
             }
             HirExprKind::ListenerAwaitAccept { listener, .. } => {
@@ -12857,6 +12861,27 @@ impl LowerCtx {
                         ResolvedTy::Unit,
                     )
                 }
+            }
+            Expr::AwaitRestart(inner) => {
+                // `await_restart sup.child` — suspend until the static supervised
+                // child restarts, then resume with the re-fetched live handle.
+                // Lower the inner supervised-child accessor (a `FieldAccess`);
+                // its `site` keys `supervisor_child_slots` with the (supervisor,
+                // slot) discriminator MIR re-reads to emit `SuspendKind::RestartWait`.
+                // The result type is the child's `LocalPid<ChildType>` (the checker
+                // assigned this expr the same re-fetched-live type as the accessor).
+                let child = self.lower_expr(inner, IntentKind::Read);
+                let result_ty = self
+                    .expr_types
+                    .get(&self.mk_key(&span))
+                    .and_then(|t| ResolvedTy::from_ty(t).ok())
+                    .unwrap_or_else(|| child.ty.clone());
+                (
+                    HirExprKind::AwaitRestart {
+                        child: Box::new(child),
+                    },
+                    result_ty,
+                )
             }
             Expr::Await(inner) => {
                 // NEW-1: `await conn.read()` / `await conn.read_string()` — the
@@ -22742,6 +22767,9 @@ fn collect_captures_walk(
         HirExprKind::ConnAwaitRead { conn, .. } => {
             collect_captures_walk(conn, param_ids, seen, captures, self_id);
         }
+        HirExprKind::AwaitRestart { child } => {
+            collect_captures_walk(child, param_ids, seen, captures, self_id);
+        }
         HirExprKind::ListenerAwaitAccept { listener, .. } => {
             collect_captures_walk(listener, param_ids, seen, captures, self_id);
         }
@@ -23046,6 +23074,9 @@ fn collect_general_closure_captures_walk(
         }
         HirExprKind::ConnAwaitRead { conn, .. } => {
             collect_general_closure_captures_walk(conn, outer_bindings, seen, captures);
+        }
+        HirExprKind::AwaitRestart { child } => {
+            collect_general_closure_captures_walk(child, outer_bindings, seen, captures);
         }
         HirExprKind::ListenerAwaitAccept { listener, .. } => {
             collect_general_closure_captures_walk(listener, outer_bindings, seen, captures);
@@ -23815,6 +23846,9 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
         }
         HirExprKind::ConnAwaitRead { conn, .. } => {
             collect_hir_emitted_events_walk(conn, event_names, out);
+        }
+        HirExprKind::AwaitRestart { child } => {
+            collect_hir_emitted_events_walk(child, event_names, out);
         }
         HirExprKind::ListenerAwaitAccept { listener, .. } => {
             collect_hir_emitted_events_walk(listener, event_names, out);
@@ -26202,6 +26236,9 @@ fn scan_expr_for_call_shape(
         }
         HirExprKind::ConnAwaitRead { conn, .. } => {
             scan_expr_for_call_shape(conn, callable, diagnostics);
+        }
+        HirExprKind::AwaitRestart { child } => {
+            scan_expr_for_call_shape(child, callable, diagnostics);
         }
         HirExprKind::ListenerAwaitAccept { listener, .. } => {
             scan_expr_for_call_shape(listener, callable, diagnostics);

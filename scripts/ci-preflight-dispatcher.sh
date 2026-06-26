@@ -353,6 +353,11 @@ is_scripts_config_path() {
         Makefile|.gitignore|scripts/*|.config/nextest.toml|.github/workflows/*|Cargo.toml|Cargo.lock|.cargo/*|rust-toolchain*)
             return 0
             ;;
+        # License and attribution files: THIRD-PARTY-LICENSES, NOTICE,
+        # about.toml, about.hbs, deny.toml — all build/policy config.
+        THIRD-PARTY-LICENSES|NOTICE|about.toml|about.hbs|deny.toml|LICENSE-*|LICENSE)
+            return 0
+            ;;
     esac
     return 1
 }

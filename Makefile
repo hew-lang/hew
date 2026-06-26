@@ -35,6 +35,8 @@
 #   make sandbox-parity            — native hew run ↔ sandbox VM parity harness
 #   make playground-check          — manifest freshness + full hew-wasm test suite + build hew-wasm
 #   make playground-wasi-check     — focused curated manifest WASI runtime preflight
+#   make licenses                  — regenerate THIRD-PARTY-LICENSES from current Cargo.lock
+#   make licenses-check            — verify THIRD-PARTY-LICENSES is current (used in CI)
 #   make ci-preflight              — dispatch a conservative local preflight from the current diff
 #   make ci-preflight-smoke        — fast smoke tier: fmt + in-process tests (<5 min)
 #   make ci-preflight-strict       — run the local preflight superset that mirrors merge-queue gates
@@ -67,7 +69,7 @@
 #   make clean        — remove build/, target/
 # ============================================================================
 
-.PHONY: all build bootstrap install-hooks hew hew-native adze observe observe-functional-test runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh
+.PHONY: all build bootstrap install-hooks hew hew-native adze observe observe-functional-test runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
 .PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-runtime-net test-runtime-unit test-real-timing test-lane test-lane-all test-fast test-stdlib test-hew test-hew-ratchet test-o2-differential test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo leak-scan hew-fmt-check grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
@@ -183,6 +185,16 @@ sandbox-fixtures:
 
 sandbox-fixtures-check:
 	cargo run -p xtask -- sandbox-fixtures --check
+
+# Regenerate THIRD-PARTY-LICENSES from the current dependency tree.
+# Requires cargo-about: cargo install cargo-about --locked
+licenses:
+	cargo about generate about.hbs --workspace > THIRD-PARTY-LICENSES
+
+# Verify THIRD-PARTY-LICENSES is current relative to Cargo.lock and about.hbs.
+# Exits non-zero if the file is stale; run 'make licenses' to regenerate.
+licenses-check:
+	scripts/check-licenses-fresh.sh
 
 sandbox-parity: hew stdlib
 	@set -e; \

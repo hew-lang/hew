@@ -198,12 +198,13 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────────
   # License gate — enforce the deny.toml allow-list so no copyleft or unknown
-  # dep silently enters the shipping graph. Runs on every push/PR; fast (~5 s).
+  # dep silently enters the shipping graph, and assert THIRD-PARTY-LICENSES is
+  # current relative to Cargo.lock. Runs on every push/PR; fast (~30 s).
   # ─────────────────────────────────────────────────────────────────────────
   license-check:
-    name: License policy (cargo deny)
+    name: License policy (cargo deny + THIRD-PARTY-LICENSES freshness)
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
@@ -219,6 +220,12 @@ jobs:
 
       - name: Check bans and sources
         run: cargo deny check bans sources
+
+      - name: Install cargo-about
+        run: cargo install cargo-about --locked --version 0.9.0 --features cli
+
+      - name: Verify THIRD-PARTY-LICENSES is current
+        run: scripts/check-licenses-fresh.sh --quiet
 
   # ─────────────────────────────────────────────────────────────────────────
   # Browser/playground smoke — repo-local browser tooling coverage only.

@@ -3,8 +3,8 @@ use std::{collections::HashMap, sync::Arc};
 use hew_parser::ast::{BinaryOp, OverflowPolicy, Span, UnaryOp};
 use hew_types::{stdlib::VecElementToken, NumericMethodFamily};
 use hew_types::{
-    ChildSlot, ExecutionContextReader, ImplId, MethodTargetFamily, ResolvedTy, Ty, TyPattern,
-    VariantMatch, WireLayoutTable,
+    ChildSlot, ExecutionContextReader, ImplId, MethodTargetFamily, PoolAccessor, ResolvedTy, Ty,
+    TyPattern, VariantMatch, WireLayoutTable,
 };
 use hew_types::{NumericMethodOp, NumericSignedness, NumericWidth, WireCodecDirection};
 
@@ -149,6 +149,11 @@ pub struct HirModule {
     ///
     /// LESSONS: `checker-authority` (P0), `end-to-end-before-layer-thickening` (P1).
     pub supervisor_child_slots: HashMap<SiteId, ChildSlot>,
+    /// Resolved static-pool accessor sites (`sup.pool[i]` / `.get(i)` /
+    /// `.len()`), keyed by the `SiteId` of the `Index`/`MethodCall` expression.
+    /// MIR lowering reads this to emit `hew_supervisor_pool_child_get` /
+    /// `hew_supervisor_pool_len`.
+    pub pool_accessor_sites: HashMap<SiteId, PoolAccessor>,
     /// Module-level regex literal table. Each distinct compiled pattern
     /// observed in match arms (keyed by normalized pattern string — no flags
     /// in v0.5) is allocated one entry here, deduplicated by string equality.

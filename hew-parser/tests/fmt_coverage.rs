@@ -1999,6 +1999,16 @@ fn fmt_supervisor_pool_keyword_roundtrip() {
 }
 
 #[test]
+fn fmt_supervisor_static_pool_count_roundtrip() {
+    // The static-pool `count:` arg (A212) must round-trip exactly — it rides the
+    // same named-arg slot as per-member init args, so the formatter must not drop
+    // or reorder it (the C4/C5 B3 formatter-drops-new-syntax lesson).
+    exact_roundtrip(
+        "supervisor Pool {\n    strategy: simple_one_for_one;\n    intensity: 5 within 60s;\n\n    pool workers: Worker(count: 3, value: 7);\n}\n",
+    );
+}
+
+#[test]
 fn fmt_duration_literals_roundtrip() {
     exact_roundtrip(
         "fn main() {\n    let short = 100ms;\n    let medium = 5s;\n    let long = 1m;\n}\n",

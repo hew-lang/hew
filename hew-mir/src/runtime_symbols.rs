@@ -414,6 +414,17 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     // over child_supervisors; the handle field carries a *mut HewSupervisor
     // bit-pattern for multi-segment dotted access (`app.api.auth`).
     "hew_supervisor_nested_get",
+    // `hew_supervisor_pool_child_get(sup: *mut HewSupervisor, pool_key: u32,
+    //  index: u32) -> ChildLookupResult` (`hew-runtime/src/supervisor.rs`).
+    // Resolves static-pool member `index` through its live static slot; same
+    // 16-byte by-value result as `hew_supervisor_child_get`. The MIR static-pool
+    // accessor (`sup.pool[i]` / `.get(i)`) emits this. (Sorted: `pool_c` <
+    // `pool_l` < `restart`.)
+    "hew_supervisor_pool_child_get",
+    // `hew_supervisor_pool_len(sup: *mut HewSupervisor, pool_key: u32) -> i64`
+    // (`hew-runtime/src/supervisor.rs`). The static-pool member count;
+    // `sup.pool.len()` emits this.
+    "hew_supervisor_pool_len",
     // `hew_supervisor_restart_await_blocking(sup: *mut HewSupervisor, key: u32) -> void`
     // (`hew-runtime/src/supervisor.rs`). The CONTEXTLESS `await_restart` path:
     // blocks the calling thread on the supervisor restart Condvar until the

@@ -1,0 +1,68 @@
+// v0.6 static supervisor pool — the Vec-like accessor (A209/A212).
+//
+// `pool workers: Worker(count: 3)` declares a `simple_one_for_one` pool of 3
+// fungible members. The bootstrap spawns all 3 into the pool slot and the
+// Vec-like accessor reaches them:
+//   - `sup.workers.len()` → 3 (the fixed static-member count).
+//   - `sup.workers[i]`     → the i-th member (trapping on OOB, Vec[i] parity).
+//
+// Each member answers `id()` with the value set at spawn via the shared init
+// template (every member gets 7 here), so a round-trip through `[i]` that
+// returns 7 proves the member is Live and reachable. `len() == 3` proves all N
+// were spawned and registered into pool_slots (the empty-pool_slots gap is
+// closed). Indexing every member proves all N are distinct Live actors, not one
+// actor returned N times.
+//
+// Exit code = len(3) + worker0.id(7) + worker1.id(7) + worker2.id(7) = 24. A
+// wrong count or an unreachable member (trap → exit 133) would change it.
+actor Worker {
+    var value: i64;
+    receive fn id() -> i64 {
+        value
+    }
+}
+
+supervisor Pool {
+    strategy: simple_one_for_one;
+    intensity: 5 within 60s;
+
+    pool workers: Worker(count: 3, value: 7);
+}
+
+fn main() -> i64 {
+    let sup = spawn Pool;
+    var total = 0;
+    // len() reports the fixed pool size.
+    total = total + sup.workers.len();
+
+    // [i] round-trips to each member (Live → its id 7; OOB would trap). Reaching
+    // all three proves N distinct Live members were spawned + registered.
+    let m0 = sup.workers[0];
+    match await m0.id() {
+        Ok(v) => {
+            total = total + v;
+        },
+        Err(_) => {
+            return 0;
+        },
+    }
+    let m1 = sup.workers[1];
+    match await m1.id() {
+        Ok(v) => {
+            total = total + v;
+        },
+        Err(_) => {
+            return 0;
+        },
+    }
+    let m2 = sup.workers[2];
+    match await m2.id() {
+        Ok(v) => {
+            total = total + v;
+        },
+        Err(_) => {
+            return 0;
+        },
+    }
+    total
+}

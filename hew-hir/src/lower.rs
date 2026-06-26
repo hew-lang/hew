@@ -3516,6 +3516,7 @@ pub fn lower_program_with_mono_cap(
     let mut record_layouts = ctx.record_layout_registry.into_vec();
     let mut enum_layouts = ctx.enum_layout_registry.into_vec();
     let supervisor_child_slots = ctx.supervisor_child_slots;
+    let pool_accessor_sites = ctx.pool_accessor_sites;
 
     // Closure under substitution: walk every monomorphisation's origin
     // body, find inner generic-fn call sites, substitute their recorded
@@ -3600,6 +3601,7 @@ pub fn lower_program_with_mono_cap(
             enum_layouts,
             machine_instantiations,
             supervisor_child_slots,
+            pool_accessor_sites,
             regex_literals: ctx.regex_literals,
         },
         diagnostics: ctx.diagnostics,
@@ -4770,6 +4772,14 @@ struct LowerCtx {
     /// span. Drained into `HirModule.supervisor_child_slots` at the end of
     /// `lower_program` (mirrors the `call_site_type_args` pattern).
     supervisor_child_slots: HashMap<SiteId, ChildSlot>,
+    /// Checker-side static-pool accessor table (`sup.pool[i]` / `.get(i)` /
+    /// `.len()`), keyed by the OUTER expr `SpanKey`. Cloned from
+    /// `tc_output.pool_accessor_sites` at construction.
+    pool_accessor_sites_checker: HashMap<SpanKey, hew_types::PoolAccessor>,
+    /// Per-accessor `SiteId` → `PoolAccessor` accumulator. Populated during
+    /// `Index` / `MethodCall` lowering whenever `pool_accessor_sites_checker`
+    /// has an entry. Drained into `HirModule.pool_accessor_sites`.
+    pool_accessor_sites: HashMap<SiteId, hew_types::PoolAccessor>,
     /// Module-level regex literal table. Accumulates distinct compiled
     /// patterns observed in match arms (and standalone `re"..."` expressions).
     /// Deduplicated by raw pattern string equality (no flags in v0.5).
@@ -5045,6 +5055,8 @@ impl LowerCtx {
             intrinsic_declarations: tc_output.intrinsic_declarations.clone(),
             supervisor_child_slots_checker: tc_output.supervisor_child_slots.clone(),
             supervisor_child_slots: HashMap::new(),
+            pool_accessor_sites_checker: tc_output.pool_accessor_sites.clone(),
+            pool_accessor_sites: HashMap::new(),
             regex_literals: Vec::new(),
             regex_literal_index: HashMap::new(),
             current_machine_events: None,
@@ -14061,6 +14073,14 @@ impl LowerCtx {
             kind,
             span: span.clone(),
         };
+        // Checker-authority: if the checker recorded a static-pool accessor for
+        // this expression span (`sup.pool[i]` / `.get(i)` / `.len()`), propagate
+        // it into the SiteId-keyed accumulator. MIR reads
+        // `HirModule.pool_accessor_sites` to emit the pool ABI call.
+        let pool_accessor_key = self.mk_key(&span);
+        if let Some(accessor) = self.pool_accessor_sites_checker.get(&pool_accessor_key) {
+            self.pool_accessor_sites.insert(site, accessor.clone());
+        }
         // Checker-authority coercion: if the just-lowered expression sits at
         // a `T → dyn Trait` coercion site (recorded by the type checker at
         // the *argument* expression span), wrap the result in
@@ -18877,6 +18897,56 @@ impl LowerCtx {
         span: Span,
         site: SiteId,
     ) -> (HirExprKind, ResolvedTy) {
+        // Static-pool accessor method: `sup.pool.get(i)` / `sup.pool.len()`.
+        // The checker recorded the resolved accessor for this method-call span;
+        // lower to a `Call` whose args carry the `sup.pool` receiver (and the
+        // index for `get`). MIR intercepts by site (`pool_accessor_sites`) and
+        // emits the pool ABI — the synthetic callee is never resolved.
+        let pool_key = self.mk_key(&span);
+        if let Some(accessor) = self.pool_accessor_sites_checker.get(&pool_key).cloned() {
+            let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+            let result_ty = ResolvedTy::from_ty(
+                self.expr_types
+                    .get(&pool_key)
+                    .unwrap_or(&hew_types::Ty::Error),
+            )
+            .unwrap_or(ResolvedTy::I64);
+            let mut call_args = vec![lowered_receiver];
+            for arg in args {
+                let (expr, sp) = arg.expr();
+                call_args.push(self.lower_expr(&(expr.clone(), sp.clone()), IntentKind::Read));
+            }
+            // The callee names the pool runtime symbol so the HIR call-shape
+            // gate (`build_callable_set` includes these names) accepts it. MIR
+            // routes by SITE (`pool_accessor_sites`), never by this callee, so
+            // the name only has to be a recognised callable — the args carry the
+            // real `sup.pool` receiver + index. The `Item` ref keeps the verifier
+            // (which rejects only `Unresolved` BindingRefs) happy.
+            let callee_symbol = match accessor.kind {
+                hew_types::PoolAccessorKind::Len => "hew_supervisor_pool_len",
+                _ => "hew_supervisor_pool_child_get",
+            };
+            let callee = HirExpr {
+                node: self.ids.node(),
+                site: self.ids.site(),
+                ty: ResolvedTy::Unit,
+                value_class: ValueClass::BitCopy,
+                intent: IntentKind::Read,
+                kind: HirExprKind::BindingRef {
+                    name: callee_symbol.to_string(),
+                    resolved: ResolvedRef::Item(crate::ids::ItemId(u32::MAX)),
+                },
+                span: span.clone(),
+            };
+            return (
+                HirExprKind::Call {
+                    callee: Box::new(callee),
+                    args: call_args,
+                },
+                result_ty,
+            );
+        }
+
         // Intercept `.clone()` before any side-table lookup — but only when the
         // type checker has NOT already resolved the call to a user-defined method
         // (e.g. a user-declared `trait Clone { fn clone(val: Self) -> Self; }`).
@@ -25963,6 +26033,13 @@ fn build_callable_set(
     set.insert("monitor".to_string());
     set.insert("unlink".to_string());
     set.insert("duplex_pair".to_string());
+    // Static-pool accessor symbols: the HIR pool-method intercept lowers
+    // `sup.pool.get(i)` / `.len()` to a `Call` naming these runtime symbols so
+    // the call-shape gate accepts them; MIR routes by site (`pool_accessor_sites`)
+    // and emits the pool ABI. `sup.pool[i]` lowers as an `Index` and never hits
+    // this gate.
+    set.insert("hew_supervisor_pool_child_get".to_string());
+    set.insert("hew_supervisor_pool_len".to_string());
     for name in [
         "hew_duplex_send",
         "hew_duplex_try_send",

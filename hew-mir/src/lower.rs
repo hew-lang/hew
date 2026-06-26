@@ -2222,6 +2222,7 @@ pub fn lower_hir_module_with_facts(
                         &module.call_site_type_args,
                         Some(&module.vec_generic_element_abi),
                         &module.supervisor_child_slots,
+                        &module.pool_accessor_sites,
                         actor_send_aliasing,
                         pointer_width,
                         crate::model::FunctionCallConv::Default,
@@ -2272,6 +2273,7 @@ pub fn lower_hir_module_with_facts(
                     &module.call_site_type_args,
                     Some(&module.vec_generic_element_abi),
                     &module.supervisor_child_slots,
+                    &module.pool_accessor_sites,
                     actor_send_aliasing,
                     pointer_width,
                     crate::model::FunctionCallConv::Default,
@@ -2311,6 +2313,7 @@ pub fn lower_hir_module_with_facts(
                     &funcupdate_fn_returns_fresh,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
+                    &module.pool_accessor_sites,
                     actor_send_aliasing,
                     pointer_width,
                     &mut emitted_actor_handler_symbols,
@@ -2354,6 +2357,7 @@ pub fn lower_hir_module_with_facts(
                     &funcupdate_fn_returns_fresh,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
+                    &module.pool_accessor_sites,
                     actor_send_aliasing,
                     pointer_width,
                     &mut emitted_actor_handler_symbols,
@@ -2495,6 +2499,7 @@ pub fn lower_hir_module_with_facts(
             &module.call_site_type_args,
             Some(&module.vec_generic_element_abi),
             &module.supervisor_child_slots,
+            &module.pool_accessor_sites,
             actor_send_aliasing,
             pointer_width,
             crate::model::FunctionCallConv::Default,
@@ -2657,6 +2662,7 @@ fn lower_actor_receive_handlers(
     funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
+    pool_accessor_sites: &HashMap<hew_hir::SiteId, hew_types::PoolAccessor>,
     actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
     pointer_width: PointerWidth,
     emitted_symbols: &mut HashMap<String, String>,
@@ -2757,6 +2763,7 @@ fn lower_actor_receive_handlers(
             call_site_type_args,
             None,
             supervisor_child_slots,
+            pool_accessor_sites,
             actor_send_aliasing,
             pointer_width,
             crate::model::FunctionCallConv::ActorHandler,
@@ -2784,6 +2791,7 @@ fn lower_actor_body_handlers(
     funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
+    pool_accessor_sites: &HashMap<hew_hir::SiteId, hew_types::PoolAccessor>,
     actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
     pointer_width: PointerWidth,
     emitted_symbols: &mut HashMap<String, String>,
@@ -2806,6 +2814,7 @@ fn lower_actor_body_handlers(
             funcupdate_fn_returns_fresh,
             call_site_type_args,
             supervisor_child_slots,
+            pool_accessor_sites,
             actor_send_aliasing,
             pointer_width,
             emitted_symbols,
@@ -2828,6 +2837,7 @@ fn lower_actor_body_handlers(
         funcupdate_fn_returns_fresh,
         call_site_type_args,
         supervisor_child_slots,
+        pool_accessor_sites,
         actor_send_aliasing,
         pointer_width,
         emitted_symbols,
@@ -2847,6 +2857,7 @@ fn lower_actor_body_handlers(
         funcupdate_fn_returns_fresh,
         call_site_type_args,
         supervisor_child_slots,
+        pool_accessor_sites,
         actor_send_aliasing,
         pointer_width,
         emitted_symbols,
@@ -2874,6 +2885,7 @@ fn lower_actor_init_handler(
     funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
+    pool_accessor_sites: &HashMap<hew_hir::SiteId, hew_types::PoolAccessor>,
     actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
     pointer_width: PointerWidth,
     emitted_symbols: &mut HashMap<String, String>,
@@ -2927,6 +2939,7 @@ fn lower_actor_init_handler(
         call_site_type_args,
         None,
         supervisor_child_slots,
+        pool_accessor_sites,
         actor_send_aliasing,
         pointer_width,
         crate::model::FunctionCallConv::ActorHandler,
@@ -2955,6 +2968,7 @@ fn lower_actor_lifecycle_handlers(
     funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
+    pool_accessor_sites: &HashMap<hew_hir::SiteId, hew_types::PoolAccessor>,
     actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
     pointer_width: PointerWidth,
     emitted_symbols: &mut HashMap<String, String>,
@@ -3013,6 +3027,7 @@ fn lower_actor_lifecycle_handlers(
                     call_site_type_args,
                     None,
                     supervisor_child_slots,
+                    pool_accessor_sites,
                     actor_send_aliasing,
                     pointer_width,
                     crate::model::FunctionCallConv::ActorHandler,
@@ -3062,6 +3077,7 @@ fn lower_actor_lifecycle_handlers(
                     call_site_type_args,
                     None,
                     supervisor_child_slots,
+                    pool_accessor_sites,
                     actor_send_aliasing,
                     pointer_width,
                     crate::model::FunctionCallConv::ActorHandler,
@@ -3249,6 +3265,7 @@ fn lower_actor_lifecycle_handlers(
                     call_site_type_args,
                     None,
                     supervisor_child_slots,
+                    pool_accessor_sites,
                     actor_send_aliasing,
                     pointer_width,
                     crate::model::FunctionCallConv::ActorHandler,
@@ -4329,6 +4346,7 @@ fn lower_supervisor_bootstrap(
     funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
+    pool_accessor_sites: &HashMap<hew_hir::SiteId, hew_types::PoolAccessor>,
     actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
     pointer_width: PointerWidth,
     emitted_symbols: &mut HashMap<String, String>,
@@ -4635,6 +4653,7 @@ fn lower_supervisor_bootstrap(
         call_site_type_args,
         None,
         supervisor_child_slots,
+        pool_accessor_sites,
         actor_send_aliasing,
         pointer_width,
         // `FunctionCallConv::Default`: codegen replaces the bootstrap body
@@ -6118,6 +6137,7 @@ fn lower_function(
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     vec_generic_element_abi: Option<&HashMap<hew_types::Ty, hew_types::stdlib::VecElementToken>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
+    pool_accessor_sites: &HashMap<hew_hir::SiteId, hew_types::PoolAccessor>,
     actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
     pointer_width: PointerWidth,
     call_conv: crate::model::FunctionCallConv,
@@ -6162,6 +6182,7 @@ fn lower_function(
         call_site_type_args: call_site_type_args.clone(),
         vec_generic_element_abi: vec_generic_element_abi.cloned().unwrap_or_default(),
         supervisor_child_slots: supervisor_child_slots.clone(),
+        pool_accessor_sites: pool_accessor_sites.clone(),
         actor_send_aliasing: actor_send_aliasing.clone(),
         pointer_width,
         current_function_symbol: emit_name.clone(),
@@ -7291,6 +7312,12 @@ struct Builder {
     /// supervisor field accesses — the empty map causes the intercept arm to
     /// skip immediately, adding zero overhead for the common case.
     supervisor_child_slots: HashMap<hew_hir::SiteId, hew_types::ChildSlot>,
+    /// Resolved static-pool accessor sites (`sup.pool[i]` / `.get(i)` /
+    /// `.len()`), cloned from `HirModule.pool_accessor_sites` and keyed by the
+    /// `SiteId` of the `Index`/`MethodCall` expression. The lowering arms consult
+    /// this to emit the pool ABI call instead of the generic container/method
+    /// path. Empty for shim functions.
+    pool_accessor_sites: HashMap<hew_hir::SiteId, hew_types::PoolAccessor>,
     current_task_scope: Option<Place>,
     current_function_symbol: String,
     current_function_call_conv: crate::model::FunctionCallConv,
@@ -10433,6 +10460,12 @@ impl Builder {
     )]
     fn lower_value(&mut self, expr: &HirExpr) -> Option<Place> {
         self.decide(expr);
+        // Static-pool accessor intercept: `sup.pool[i]` / `.get(i)` / `.len()`.
+        // The checker recorded the resolved accessor keyed by this expr's site;
+        // route it to the pool ABI before the generic Index/MethodCall paths.
+        if let Some(accessor) = self.pool_accessor_sites.get(&expr.site).cloned() {
+            return self.lower_pool_accessor(expr, &accessor);
+        }
         match &expr.kind {
             HirExprKind::Literal(lit) => self.lower_literal(lit, &expr.ty, expr.site),
             HirExprKind::ContextReader { reader } => {
@@ -22206,6 +22239,218 @@ impl Builder {
         });
 
         Some(handle_place)
+    }
+
+    /// Lower a static-pool accessor: `sup.pool[i]`, `sup.pool.get(i)`, or
+    /// `sup.pool.len()`. The expression is an `Index` or `MethodCall` whose
+    /// (inner) receiver is a `sup.pool` field access; the checker resolved the
+    /// `(supervisor, pool_key)` and form into `accessor`.
+    ///
+    /// - `Index` → `hew_supervisor_pool_child_get(sup, key, i)`; tag != 0 (not
+    ///   Live) traps `SupervisorChildUnavailable` (`Vec[i]` OOB parity).
+    /// - `Len`   → `hew_supervisor_pool_len(sup, key)` → `i64`.
+    /// - `Get`   → same `child_get`; tag 0 → `Some(handle)`, tag != 0 → `None`
+    ///   (a drop-safe `Option<LocalPid<T>>`, never a sentinel dressed as live).
+    fn lower_pool_accessor(
+        &mut self,
+        expr: &HirExpr,
+        accessor: &hew_types::PoolAccessor,
+    ) -> Option<Place> {
+        use hew_types::PoolAccessorKind;
+
+        // Extract the supervisor object + (for Index/Get) the index expr. The
+        // checker/HIR produce two shapes: `Index { container: sup.pool, index }`
+        // for `sup.pool[i]`, and `Call { args: [sup.pool, index?] }` for
+        // `sup.pool.get(i)` / `sup.pool.len()` (the synthetic-callee form HIR
+        // emits for pool methods).
+        let (sup_obj, index_expr): (&HirExpr, Option<&HirExpr>) = match &expr.kind {
+            HirExprKind::Index { container, index } => {
+                let HirExprKind::FieldAccess { object, .. } = &container.kind else {
+                    self.pool_accessor_shape_error(expr.site, "index container is not `sup.pool`");
+                    return None;
+                };
+                (object.as_ref(), Some(index.as_ref()))
+            }
+            HirExprKind::Call { args, .. } => {
+                let Some(receiver) = args.first() else {
+                    self.pool_accessor_shape_error(expr.site, "pool method call has no receiver");
+                    return None;
+                };
+                let HirExprKind::FieldAccess { object, .. } = &receiver.kind else {
+                    self.pool_accessor_shape_error(expr.site, "method receiver is not `sup.pool`");
+                    return None;
+                };
+                (object.as_ref(), args.get(1))
+            }
+            _ => {
+                self.pool_accessor_shape_error(expr.site, "accessor is neither index nor call");
+                return None;
+            }
+        };
+
+        let sup_place = self.lower_value(sup_obj)?;
+        let pool_key = accessor.pool_key;
+
+        match accessor.kind {
+            PoolAccessorKind::Len => {
+                let dest = self.alloc_local(ResolvedTy::I64);
+                let key_place = self.alloc_local(ResolvedTy::I64);
+                self.push_instr(Instr::ConstI64 {
+                    dest: key_place,
+                    value: i64::from(pool_key),
+                });
+                self.push_instr(Instr::CallRuntimeAbi(
+                    crate::model::RuntimeCall::new(
+                        "hew_supervisor_pool_len",
+                        vec![sup_place, key_place],
+                        Some(dest),
+                    )
+                    .expect("hew_supervisor_pool_len is an allowlisted runtime symbol"),
+                ));
+                Some(dest)
+            }
+            PoolAccessorKind::Index => {
+                let index_expr = index_expr?;
+                let idx_place = self.lower_value(index_expr)?;
+                Some(self.lower_pool_index(
+                    sup_place,
+                    pool_key,
+                    idx_place,
+                    &self.subst_ty(&expr.ty),
+                ))
+            }
+            PoolAccessorKind::Get => {
+                // SHIM: `sup.pool.get(i)` → `Option<LocalPid<T>>`. The result
+                // type is a niche-optimised Option (LocalPid is a non-null PID,
+                // so Some carries no separate payload field — `variant 1 has 0
+                // fields`), which a hand-built EnumTag/EnumVariant write cannot
+                // assemble correctly.
+                // WHY fail-closed: the trapping `sup.pool[i]` and `.len()` forms
+                //   are fully wired (and cover the index round-trip + count); the
+                //   niche-Option construction for `.get` is a contained follow-up.
+                // WHEN obsolete: when `.get` builds the Option through the
+                //   layout-aware Option-construction path (the same one user
+                //   `Some(x)`/`None` lowering uses) rather than raw variant writes.
+                // WHAT: route the tag→Option through the checker-recorded Option
+                //   layout so a niche or tagged representation both work.
+                //
+                // Fail closed (not a wrong Option): a `.get` call refuses to
+                // compile with a clear diagnostic. Use `sup.pool[i]` (trapping)
+                // until this lands.
+                let _ = index_expr;
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "static-pool `sup.pool.get(i)` Option result".to_string(),
+                        site: expr.site,
+                    },
+                    note: "`sup.pool.get(i)` (returning Option<LocalPid<T>>) is not yet \
+                           emitted; use the trapping `sup.pool[i]` for now"
+                        .to_string(),
+                });
+                None
+            }
+        }
+    }
+
+    /// Emit `hew_supervisor_pool_child_get(sup, pool_key, index)` and return the
+    /// `__HewChildLookupResult` result place (tag in field 0, handle in field 1).
+    fn emit_pool_child_get(&mut self, sup_place: Place, pool_key: u32, idx_place: Place) -> Place {
+        let key_place = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::ConstI64 {
+            dest: key_place,
+            value: i64::from(pool_key),
+        });
+        let result_place = self.alloc_local(ResolvedTy::Named {
+            name: CHILD_LOOKUP_RESULT_TY_NAME.to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: false,
+        });
+        self.push_instr(Instr::CallRuntimeAbi(
+            crate::model::RuntimeCall::new(
+                "hew_supervisor_pool_child_get",
+                vec![sup_place, key_place, idx_place],
+                Some(result_place),
+            )
+            .expect("hew_supervisor_pool_child_get is an allowlisted runtime symbol"),
+        ));
+        result_place
+    }
+
+    /// Lower `sup.pool[i]` (the trapping member accessor): call
+    /// `pool_child_get`, then trap `SupervisorChildUnavailable` on a not-Live
+    /// tag (OOB / mid-restart) and bind the Live handle into a `LocalPid<T>`
+    /// (`Vec[i]` OOB parity — the index access is the sole liveness authority).
+    fn lower_pool_index(
+        &mut self,
+        sup_place: Place,
+        pool_key: u32,
+        idx_place: Place,
+        result_ty: &ResolvedTy,
+    ) -> Place {
+        let result_place = self.emit_pool_child_get(sup_place, pool_key, idx_place);
+        let tag = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::RecordFieldLoad {
+            record: result_place,
+            field_offset: FieldOffset(0),
+            dest: tag,
+        });
+        let zero = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::ConstI64 {
+            dest: zero,
+            value: 0,
+        });
+        let is_live = self.alloc_local(ResolvedTy::Bool);
+        self.push_instr(Instr::IntCmp {
+            dest: is_live,
+            pred: CmpPred::Eq,
+            lhs: tag,
+            rhs: zero,
+        });
+        let live_bb = self.alloc_block();
+        let trap_bb = self.alloc_block();
+        self.finish_current_block(Terminator::Branch {
+            cond: is_live,
+            then_target: live_bb,
+            else_target: trap_bb,
+        });
+        // OOB / not-live → trap (fail-closed, mirrors the static accessor).
+        self.start_block(trap_bb);
+        self.finish_current_block(Terminator::Trap {
+            kind: crate::model::TrapKind::SupervisorChildUnavailable,
+        });
+        // Live → extract the handle into a typed LocalPid local.
+        self.start_block(live_bb);
+        let handle_local = self.alloc_local(result_ty.clone());
+        let Place::Local(handle_id) = handle_local else {
+            unreachable!("alloc_local always returns Place::Local");
+        };
+        let handle_place = Place::ActorHandle(handle_id);
+        let raw_handle = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::RecordFieldLoad {
+            record: result_place,
+            field_offset: FieldOffset(1),
+            dest: raw_handle,
+        });
+        self.push_instr(Instr::Move {
+            dest: handle_place,
+            src: raw_handle,
+        });
+        handle_place
+    }
+
+    /// Record a fail-closed shape error for a malformed pool accessor (the
+    /// checker should have rejected these; this is the MIR backstop).
+    fn pool_accessor_shape_error(&mut self, site: hew_hir::SiteId, why: &str) {
+        self.diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::NotYetImplemented {
+                construct: format!("malformed static-pool accessor: {why}"),
+                site,
+            },
+            note: "a static-pool accessor must be `sup.pool[i]`, `sup.pool.get(i)`, \
+                   or `sup.pool.len()`"
+                .to_string(),
+        });
     }
 
     /// Emit a `hew_supervisor_child_get(sup, slot)` call and store the resolved
@@ -35681,6 +35926,7 @@ mod slice3_invariants {
                 None,
                 &HashMap::new(),
                 &HashMap::new(),
+                &HashMap::new(),
                 PointerWidth::Bits64,
                 crate::model::FunctionCallConv::ActorHandler,
                 TaskEntryAdapterSymbols::default(),
@@ -37616,6 +37862,7 @@ mod enum_layout_tests {
             enum_layouts: vec![],
             machine_instantiations: vec![],
             supervisor_child_slots: HashMap::<SiteId, ChildSlot>::default(),
+            pool_accessor_sites: HashMap::default(),
             regex_literals: vec![],
         }
     }

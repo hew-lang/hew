@@ -975,6 +975,8 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         // scheduler. WASM-TODO(#1475).
         | F::SupervisorChildGet
         | F::SupervisorNestedGet
+        | F::SupervisorPoolChildGet
+        | F::SupervisorPoolLen
         | F::SupervisorStop
         | F::SupervisorRestartAwaitBlocking
         // Structured-concurrency task scopes are native-only

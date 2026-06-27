@@ -124,6 +124,36 @@ run_accept_expect_status_and_stdout() {
   diff -u "${ROOT}/tests/vertical-slice/accept/${fixture}.expected" "${stdout_output}"
 }
 
+# Run a fixture that is expected to call panic() — verifies exit 101 (hew_panic's
+# clean-exit contract) and that the panic message appears on stderr.
+run_accept_expect_panic() {
+  local fixture="$1"
+  local expected_stderr_substr="$2"
+  echo "RUN ${fixture}"
+  compile_accept "${fixture}"
+  local bin="${ROOT}/.tmp/compile-out/${fixture}"
+  local status=0
+  # shellcheck disable=SC2016  # $1/$2/$3 are positional args to inner bash -c; single quotes deliberate.
+  if "${TIMEOUT}" --kill-after=5s 30s bash -c '"$1" >"$2" 2>"$3"' _ "${bin}" "${stdout_output}" "${stderr_output}" 2>/dev/null; then
+    status=0
+  else
+    status=$?
+  fi
+  if [[ "${status}" -ne 101 ]]; then
+    echo "expected ${fixture} to exit 101 (panic), got ${status}" >&2
+    cat "${accept_output}" >&2
+    cat "${stdout_output}" >&2
+    cat "${stderr_output}" >&2
+    exit 1
+  fi
+  if ! grep -qF -- "${expected_stderr_substr}" "${stderr_output}"; then
+    echo "expected ${fixture} stderr to contain: ${expected_stderr_substr}" >&2
+    cat "${stderr_output}" >&2
+    exit 1
+  fi
+  echo "PASS ${fixture}"
+}
+
 run_check_run_expect_stdout() {
   local fixture="$1"
   echo "RUN ${fixture}"
@@ -2316,7 +2346,8 @@ expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/p0c_method_value_failclosed.hew" \
   "undefined variable \`Option\`" \
   "Option/Result method values are not a callable fallback around the checker intercept"
-run_accept_expect_trap "option_unwrap_none_aborts"
+run_accept_expect_panic "option_unwrap_none_aborts" "called 'unwrap()' on a 'None' value"
+run_accept_expect_panic "result_unwrap_err_aborts" "called 'unwrap()' on an 'Err' value"
 
 # WASM parity (W4.042): the bare-`None` builtin Option<i64> path must also lower
 # under wasm32-unknown-unknown. The fix is pure checker-boundary type recording

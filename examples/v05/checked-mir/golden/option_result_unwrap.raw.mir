@@ -9,154 +9,172 @@ fn main() -> i64 [conv=default]
     _6: i64
     _7: bool
     _8: i64
-    _9: Option<f64>
+    _9: bool
     _10: i64
-    _11: f64
+    _11: string
     _12: Option<f64>
-    _13: f64
-    _14: i64
-    _15: i64
-    _16: bool
-    _17: f64
-    _18: Option<i32>
-    _19: i64
-    _20: i32
-    _21: Option<i32>
-    _22: i32
-    _23: i64
-    _24: i64
-    _25: bool
+    _13: i64
+    _14: f64
+    _15: Option<f64>
+    _16: f64
+    _17: i64
+    _18: i64
+    _19: bool
+    _20: i64
+    _21: bool
+    _22: f64
+    _23: string
+    _24: Option<i32>
+    _25: i64
     _26: i32
-    _27: i32
-    _28: Option<i64>
+    _27: Option<i32>
+    _28: i32
     _29: i64
     _30: i64
-    _31: Option<i64>
+    _31: bool
     _32: i64
-    _33: i64
-    _34: i64
-    _35: bool
-    _36: i64
-    _37: bool
+    _33: bool
+    _34: i32
+    _35: string
+    _36: i32
+    _37: Option<i64>
     _38: i64
     _39: i64
-    _40: Option<f64>
+    _40: Option<i64>
     _41: i64
-    _42: f64
-    _43: Option<f64>
-    _44: f64
+    _42: i64
+    _43: i64
+    _44: bool
     _45: i64
-    _46: i64
-    _47: bool
+    _46: bool
+    _47: i64
     _48: i64
-    _49: bool
-    _50: f64
+    _49: Option<f64>
+    _50: i64
     _51: f64
-    _52: Option<i32>
-    _53: i64
-    _54: i32
-    _55: Option<i32>
-    _56: i32
+    _52: Option<f64>
+    _53: f64
+    _54: i64
+    _55: i64
+    _56: bool
     _57: i64
-    _58: i64
-    _59: bool
-    _60: i64
-    _61: bool
-    _62: i32
+    _58: bool
+    _59: f64
+    _60: f64
+    _61: Option<i32>
+    _62: i64
     _63: i32
-    _64: i32
-    _65: Result<i64, string>
+    _64: Option<i32>
+    _65: i32
     _66: i64
     _67: i64
-    _68: Result<i64, string>
+    _68: bool
     _69: i64
-    _70: i64
-    _71: i64
-    _72: bool
-    _73: i64
-    _74: Result<f64, string>
+    _70: bool
+    _71: i32
+    _72: i32
+    _73: i32
+    _74: Result<i64, string>
     _75: i64
-    _76: f64
-    _77: Result<f64, string>
-    _78: f64
+    _76: i64
+    _77: Result<i64, string>
+    _78: i64
     _79: i64
     _80: i64
     _81: bool
-    _82: f64
-    _83: Result<i32, string>
+    _82: i64
+    _83: bool
     _84: i64
-    _85: i32
-    _86: Result<i32, string>
-    _87: i32
-    _88: i64
-    _89: i64
-    _90: bool
-    _91: i32
-    _92: i32
-    _93: Result<i64, string>
+    _85: string
+    _86: Result<f64, string>
+    _87: i64
+    _88: f64
+    _89: Result<f64, string>
+    _90: f64
+    _91: i64
+    _92: i64
+    _93: bool
     _94: i64
-    _95: i64
-    _96: Result<i64, string>
-    _97: i64
-    _98: i64
+    _95: bool
+    _96: f64
+    _97: string
+    _98: Result<i32, string>
     _99: i64
-    _100: bool
-    _101: i64
-    _102: bool
+    _100: i32
+    _101: Result<i32, string>
+    _102: i32
     _103: i64
     _104: i64
-    _105: Result<i32, string>
+    _105: bool
     _106: i64
-    _107: i32
-    _108: Result<i32, string>
-    _109: i32
-    _110: i64
-    _111: i64
-    _112: bool
+    _107: bool
+    _108: i32
+    _109: string
+    _110: i32
+    _111: Result<i64, string>
+    _112: i64
     _113: i64
-    _114: bool
-    _115: i32
-    _116: i32
-    _117: i32
-    _118: Result<i64, string>
+    _114: Result<i64, string>
+    _115: i64
+    _116: i64
+    _117: i64
+    _118: bool
     _119: i64
-    _120: i64
-    _121: Result<i64, string>
-    _122: bool
-    _123: i64
+    _120: bool
+    _121: i64
+    _122: i64
+    _123: Result<i32, string>
     _124: i64
-    _125: bool
-    _126: i64
-    _127: bool
-    _128: bool
-    _129: bool
+    _125: i32
+    _126: Result<i32, string>
+    _127: i32
+    _128: i64
+    _129: i64
     _130: bool
-    _131: bool
-    _132: i64
-    _133: i64
-    _134: bool
-    _135: i64
-    _136: bool
-    _137: bool
-    _138: bool
-    _139: bool
-    _140: string
-    _141: string
-    _142: string
-    _143: string
-    _144: string
-    _145: i64
-    _146: i64
-    _147: i64
+    _131: i64
+    _132: bool
+    _133: i32
+    _134: i32
+    _135: i32
+    _136: Result<i64, string>
+    _137: i64
+    _138: i64
+    _139: Result<i64, string>
+    _140: bool
+    _141: i64
+    _142: i64
+    _143: bool
+    _144: i64
+    _145: bool
+    _146: bool
+    _147: bool
     _148: bool
-    _149: i64
+    _149: bool
     _150: i64
-    _151: bool
-    _152: i64
+    _151: i64
+    _152: bool
     _153: i64
     _154: bool
-    _155: i64
-    _156: i64
+    _155: bool
+    _156: bool
+    _157: bool
+    _158: string
+    _159: string
+    _160: string
+    _161: string
+    _162: string
+    _163: i64
+    _164: i64
+    _165: i64
+    _166: bool
+    _167: i64
+    _168: i64
+    _169: bool
+    _170: i64
+    _171: i64
+    _172: bool
+    _173: i64
+    _174: i64
   bb0:
     stmt: bind BindingId(0) a site=SiteId(0) ty=Option<i64>
     stmt: use BindingId(0) a site=SiteId(4) ty=Option<i64> intent=Consume
@@ -168,381 +186,435 @@ fn main() -> i64 [conv=default]
     _5 = move etag3
     _6 = const.i64 0
     _7 = icmp.eq _5 _6
-    branch _7 ? bb2 : bb3
+    branch _7 ? bb2 : bb5
   bb1:
-    call println_i64(_4) -> bb4
+    call println_i64(_4) -> bb7
   bb2:
-    stmt: bind BindingId(1) __option_unwrap_value site=SiteId(5) ty=i64
-    stmt: use BindingId(1) __option_unwrap_value site=SiteId(5) ty=i64 intent=Read
-    _8 = move mvar3.0.0
-    _4 = move _8
+    stmt: bind BindingId(1) __option_unwrap_value site=SiteId(8) ty=i64
+    stmt: use BindingId(1) __option_unwrap_value site=SiteId(8) ty=i64 intent=Read
+    _10 = move mvar3.0.0
+    _4 = move _10
     goto bb1
   bb3:
-    trap(ExhaustivenessFallthrough)
+    _11 = string_lit "called 'unwrap()' on a 'None' value"
+    call panic(_11) -> bb6
   bb4:
-    stmt: eval site=SiteId(2) ty=()
-    stmt: bind BindingId(2) b site=SiteId(7) ty=Option<f64>
-    stmt: use BindingId(2) b site=SiteId(11) ty=Option<f64> intent=Consume
-    _10 = const.i64 0
-    mtag9 = move _10
-    _11 = const.f64 0x3ff8000000000000
-    mvar9.0.0 = move _11
-    _12 = move _9
-    _14 = move etag12
-    _15 = const.i64 0
-    _16 = icmp.eq _14 _15
-    branch _16 ? bb6 : bb7
-  bb5:
-    call println_f64(_13) -> bb8
-  bb6:
-    stmt: bind BindingId(3) __option_unwrap_value site=SiteId(12) ty=f64
-    stmt: use BindingId(3) __option_unwrap_value site=SiteId(12) ty=f64 intent=Read
-    _17 = move mvar12.0.0
-    _13 = move _17
-    goto bb5
-  bb7:
     trap(ExhaustivenessFallthrough)
+  bb5:
+    _8 = const.i64 1
+    _9 = icmp.eq _5 _8
+    branch _9 ? bb3 : bb4
+  bb6:
+    goto bb1
+  bb7:
+    stmt: eval site=SiteId(2) ty=()
+    stmt: bind BindingId(2) b site=SiteId(10) ty=Option<f64>
+    stmt: use BindingId(2) b site=SiteId(14) ty=Option<f64> intent=Consume
+    _13 = const.i64 0
+    mtag12 = move _13
+    _14 = const.f64 0x3ff8000000000000
+    mvar12.0.0 = move _14
+    _15 = move _12
+    _17 = move etag15
+    _18 = const.i64 0
+    _19 = icmp.eq _17 _18
+    branch _19 ? bb9 : bb12
   bb8:
-    stmt: eval site=SiteId(9) ty=()
-    stmt: bind BindingId(4) c site=SiteId(14) ty=Option<i32>
-    stmt: use BindingId(4) c site=SiteId(17) ty=Option<i32> intent=Consume
-    _19 = const.i64 0
-    mtag18 = move _19
-    _20 = const.i64 3
-    mvar18.0.0 = move _20
-    _21 = move _18
-    _23 = move etag21
-    _24 = const.i64 0
-    _25 = icmp.eq _23 _24
-    branch _25 ? bb10 : bb11
+    call println_f64(_16) -> bb14
   bb9:
-    stmt: bind BindingId(6) cv site=SiteId(16) ty=i32
-    stmt: bind BindingId(7) d site=SiteId(19) ty=Option<i64>
-    stmt: use BindingId(7) d site=SiteId(23) ty=Option<i64> intent=Consume
-    _27 = move _22
-    _29 = const.i64 0
-    mtag28 = move _29
-    _30 = const.i64 9
-    mvar28.0.0 = move _30
-    _31 = move _28
-    _33 = move etag31
-    _34 = const.i64 0
-    _35 = icmp.eq _33 _34
-    branch _35 ? bb13 : bb16
+    stmt: bind BindingId(3) __option_unwrap_value site=SiteId(18) ty=f64
+    stmt: use BindingId(3) __option_unwrap_value site=SiteId(18) ty=f64 intent=Read
+    _22 = move mvar15.0.0
+    _16 = move _22
+    goto bb8
   bb10:
-    stmt: bind BindingId(5) __option_unwrap_value site=SiteId(18) ty=i32
-    stmt: use BindingId(5) __option_unwrap_value site=SiteId(18) ty=i32 intent=Read
-    _26 = move mvar21.0.0
-    _22 = move _26
-    goto bb9
+    _23 = string_lit "called 'unwrap()' on a 'None' value"
+    call panic(_23) -> bb13
   bb11:
     trap(ExhaustivenessFallthrough)
   bb12:
-    call println_i64(_32) -> bb17
+    _20 = const.i64 1
+    _21 = icmp.eq _17 _20
+    branch _21 ? bb10 : bb11
   bb13:
-    stmt: bind BindingId(8) __option_unwrap_or_value site=SiteId(25) ty=i64
-    stmt: use BindingId(8) __option_unwrap_or_value site=SiteId(25) ty=i64 intent=Read
-    _38 = move mvar31.0.0
-    _32 = move _38
-    goto bb12
+    goto bb8
   bb14:
-    _39 = const.i64 0
-    _32 = move _39
-    goto bb12
+    stmt: eval site=SiteId(12) ty=()
+    stmt: bind BindingId(4) c site=SiteId(20) ty=Option<i32>
+    stmt: use BindingId(4) c site=SiteId(23) ty=Option<i32> intent=Consume
+    _25 = const.i64 0
+    mtag24 = move _25
+    _26 = const.i64 3
+    mvar24.0.0 = move _26
+    _27 = move _24
+    _29 = move etag27
+    _30 = const.i64 0
+    _31 = icmp.eq _29 _30
+    branch _31 ? bb16 : bb19
   bb15:
-    trap(ExhaustivenessFallthrough)
+    stmt: bind BindingId(6) cv site=SiteId(22) ty=i32
+    stmt: bind BindingId(7) d site=SiteId(28) ty=Option<i64>
+    stmt: use BindingId(7) d site=SiteId(32) ty=Option<i64> intent=Consume
+    _36 = move _28
+    _38 = const.i64 0
+    mtag37 = move _38
+    _39 = const.i64 9
+    mvar37.0.0 = move _39
+    _40 = move _37
+    _42 = move etag40
+    _43 = const.i64 0
+    _44 = icmp.eq _42 _43
+    branch _44 ? bb22 : bb25
   bb16:
-    _36 = const.i64 1
-    _37 = icmp.eq _33 _36
-    branch _37 ? bb14 : bb15
+    stmt: bind BindingId(5) __option_unwrap_value site=SiteId(27) ty=i32
+    stmt: use BindingId(5) __option_unwrap_value site=SiteId(27) ty=i32 intent=Read
+    _34 = move mvar27.0.0
+    _28 = move _34
+    goto bb15
   bb17:
-    stmt: eval site=SiteId(21) ty=()
-    stmt: bind BindingId(9) e site=SiteId(27) ty=Option<f64>
-    stmt: use BindingId(9) e site=SiteId(31) ty=Option<f64> intent=Consume
-    _41 = const.i64 0
-    mtag40 = move _41
-    _42 = const.f64 0x4004000000000000
-    mvar40.0.0 = move _42
-    _43 = move _40
-    _45 = move etag43
-    _46 = const.i64 0
-    _47 = icmp.eq _45 _46
-    branch _47 ? bb19 : bb22
+    _35 = string_lit "called 'unwrap()' on a 'None' value"
+    call panic(_35) -> bb20
   bb18:
-    call println_f64(_44) -> bb23
+    trap(ExhaustivenessFallthrough)
   bb19:
-    stmt: bind BindingId(10) __option_unwrap_or_value site=SiteId(33) ty=f64
-    stmt: use BindingId(10) __option_unwrap_or_value site=SiteId(33) ty=f64 intent=Read
-    _50 = move mvar43.0.0
-    _44 = move _50
-    goto bb18
+    _32 = const.i64 1
+    _33 = icmp.eq _29 _32
+    branch _33 ? bb17 : bb18
   bb20:
-    _51 = const.f64 0x0000000000000000
-    _44 = move _51
-    goto bb18
+    goto bb15
   bb21:
-    trap(ExhaustivenessFallthrough)
+    call println_i64(_41) -> bb26
   bb22:
-    _48 = const.i64 1
-    _49 = icmp.eq _45 _48
-    branch _49 ? bb20 : bb21
+    stmt: bind BindingId(8) __option_unwrap_or_value site=SiteId(34) ty=i64
+    stmt: use BindingId(8) __option_unwrap_or_value site=SiteId(34) ty=i64 intent=Read
+    _47 = move mvar40.0.0
+    _41 = move _47
+    goto bb21
   bb23:
-    stmt: eval site=SiteId(29) ty=()
-    stmt: bind BindingId(11) g site=SiteId(35) ty=Option<i32>
-    stmt: use BindingId(11) g site=SiteId(38) ty=Option<i32> intent=Consume
-    _53 = const.i64 0
-    mtag52 = move _53
-    _54 = const.i64 4
-    mvar52.0.0 = move _54
-    _55 = move _52
-    _57 = move etag55
-    _58 = const.i64 0
-    _59 = icmp.eq _57 _58
-    branch _59 ? bb25 : bb28
+    _48 = const.i64 0
+    _41 = move _48
+    goto bb21
   bb24:
-    stmt: bind BindingId(13) gv site=SiteId(37) ty=i32
-    stmt: bind BindingId(14) r site=SiteId(41) ty=Result<i64, string>
-    stmt: use BindingId(14) r site=SiteId(45) ty=Result<i64, string> intent=Consume
-    _64 = move _56
-    _66 = const.i64 0
-    mtag65 = move _66
-    _67 = const.i64 7
-    mvar65.0.0 = move _67
-    _68 = move _65
-    _70 = move etag68
-    _71 = const.i64 0
-    _72 = icmp.eq _70 _71
-    branch _72 ? bb30 : bb31
+    trap(ExhaustivenessFallthrough)
   bb25:
-    stmt: bind BindingId(12) __option_unwrap_or_value site=SiteId(40) ty=i32
-    stmt: use BindingId(12) __option_unwrap_or_value site=SiteId(40) ty=i32 intent=Read
-    _62 = move mvar55.0.0
-    _56 = move _62
-    goto bb24
+    _45 = const.i64 1
+    _46 = icmp.eq _42 _45
+    branch _46 ? bb23 : bb24
   bb26:
-    _63 = const.i64 7
-    _56 = move _63
-    goto bb24
+    stmt: eval site=SiteId(30) ty=()
+    stmt: bind BindingId(9) e site=SiteId(36) ty=Option<f64>
+    stmt: use BindingId(9) e site=SiteId(40) ty=Option<f64> intent=Consume
+    _50 = const.i64 0
+    mtag49 = move _50
+    _51 = const.f64 0x4004000000000000
+    mvar49.0.0 = move _51
+    _52 = move _49
+    _54 = move etag52
+    _55 = const.i64 0
+    _56 = icmp.eq _54 _55
+    branch _56 ? bb28 : bb31
   bb27:
-    trap(ExhaustivenessFallthrough)
+    call println_f64(_53) -> bb32
   bb28:
-    _60 = const.i64 1
-    _61 = icmp.eq _57 _60
-    branch _61 ? bb26 : bb27
+    stmt: bind BindingId(10) __option_unwrap_or_value site=SiteId(42) ty=f64
+    stmt: use BindingId(10) __option_unwrap_or_value site=SiteId(42) ty=f64 intent=Read
+    _59 = move mvar52.0.0
+    _53 = move _59
+    goto bb27
   bb29:
-    call println_i64(_69) -> bb32
+    _60 = const.f64 0x0000000000000000
+    _53 = move _60
+    goto bb27
   bb30:
-    stmt: bind BindingId(15) __result_unwrap_value site=SiteId(46) ty=i64
-    stmt: use BindingId(15) __result_unwrap_value site=SiteId(46) ty=i64 intent=Read
-    _73 = move mvar68.0.0
-    _69 = move _73
-    goto bb29
-  bb31:
     trap(ExhaustivenessFallthrough)
+  bb31:
+    _57 = const.i64 1
+    _58 = icmp.eq _54 _57
+    branch _58 ? bb29 : bb30
   bb32:
-    stmt: eval site=SiteId(43) ty=()
-    stmt: bind BindingId(16) rf site=SiteId(48) ty=Result<f64, string>
-    stmt: use BindingId(16) rf site=SiteId(52) ty=Result<f64, string> intent=Consume
+    stmt: eval site=SiteId(38) ty=()
+    stmt: bind BindingId(11) g site=SiteId(44) ty=Option<i32>
+    stmt: use BindingId(11) g site=SiteId(47) ty=Option<i32> intent=Consume
+    _62 = const.i64 0
+    mtag61 = move _62
+    _63 = const.i64 4
+    mvar61.0.0 = move _63
+    _64 = move _61
+    _66 = move etag64
+    _67 = const.i64 0
+    _68 = icmp.eq _66 _67
+    branch _68 ? bb34 : bb37
+  bb33:
+    stmt: bind BindingId(13) gv site=SiteId(46) ty=i32
+    stmt: bind BindingId(14) r site=SiteId(50) ty=Result<i64, string>
+    stmt: use BindingId(14) r site=SiteId(54) ty=Result<i64, string> intent=Consume
+    _73 = move _65
     _75 = const.i64 0
     mtag74 = move _75
-    _76 = const.f64 0x3ff0000000000000
+    _76 = const.i64 7
     mvar74.0.0 = move _76
     _77 = move _74
     _79 = move etag77
     _80 = const.i64 0
     _81 = icmp.eq _79 _80
-    branch _81 ? bb34 : bb35
-  bb33:
-    call println_f64(_78) -> bb36
+    branch _81 ? bb39 : bb42
   bb34:
-    stmt: bind BindingId(17) __result_unwrap_value site=SiteId(53) ty=f64
-    stmt: use BindingId(17) __result_unwrap_value site=SiteId(53) ty=f64 intent=Read
-    _82 = move mvar77.0.0
-    _78 = move _82
+    stmt: bind BindingId(12) __option_unwrap_or_value site=SiteId(49) ty=i32
+    stmt: use BindingId(12) __option_unwrap_or_value site=SiteId(49) ty=i32 intent=Read
+    _71 = move mvar64.0.0
+    _65 = move _71
     goto bb33
   bb35:
-    trap(ExhaustivenessFallthrough)
+    _72 = const.i64 7
+    _65 = move _72
+    goto bb33
   bb36:
-    stmt: eval site=SiteId(50) ty=()
-    stmt: bind BindingId(18) ri site=SiteId(55) ty=Result<i32, string>
-    stmt: use BindingId(18) ri site=SiteId(58) ty=Result<i32, string> intent=Consume
-    _84 = const.i64 0
-    mtag83 = move _84
-    _85 = const.i64 2
-    mvar83.0.0 = move _85
-    _86 = move _83
-    _88 = move etag86
-    _89 = const.i64 0
-    _90 = icmp.eq _88 _89
-    branch _90 ? bb38 : bb39
+    trap(ExhaustivenessFallthrough)
   bb37:
-    stmt: bind BindingId(20) riv site=SiteId(57) ty=i32
-    stmt: bind BindingId(21) ru site=SiteId(60) ty=Result<i64, string>
-    stmt: use BindingId(21) ru site=SiteId(64) ty=Result<i64, string> intent=Consume
-    _92 = move _87
-    _94 = const.i64 0
-    mtag93 = move _94
-    _95 = const.i64 8
-    mvar93.0.0 = move _95
-    _96 = move _93
-    _98 = move etag96
-    _99 = const.i64 0
-    _100 = icmp.eq _98 _99
-    branch _100 ? bb41 : bb44
+    _69 = const.i64 1
+    _70 = icmp.eq _66 _69
+    branch _70 ? bb35 : bb36
   bb38:
-    stmt: bind BindingId(19) __result_unwrap_value site=SiteId(59) ty=i32
-    stmt: use BindingId(19) __result_unwrap_value site=SiteId(59) ty=i32 intent=Read
-    _91 = move mvar86.0.0
-    _87 = move _91
-    goto bb37
+    call println_i64(_78) -> bb44
   bb39:
-    trap(ExhaustivenessFallthrough)
+    stmt: bind BindingId(15) __result_unwrap_value site=SiteId(58) ty=i64
+    stmt: use BindingId(15) __result_unwrap_value site=SiteId(58) ty=i64 intent=Read
+    _84 = move mvar77.0.0
+    _78 = move _84
+    goto bb38
   bb40:
-    call println_i64(_97) -> bb45
+    _85 = string_lit "called 'unwrap()' on an 'Err' value"
+    call panic(_85) -> bb43
   bb41:
-    stmt: bind BindingId(22) __result_unwrap_or_value site=SiteId(66) ty=i64
-    stmt: use BindingId(22) __result_unwrap_or_value site=SiteId(66) ty=i64 intent=Read
-    _103 = move mvar96.0.0
-    _97 = move _103
-    goto bb40
+    trap(ExhaustivenessFallthrough)
   bb42:
-    _104 = const.i64 0
-    _97 = move _104
-    goto bb40
+    _82 = const.i64 1
+    _83 = icmp.eq _79 _82
+    branch _83 ? bb40 : bb41
   bb43:
-    trap(ExhaustivenessFallthrough)
+    goto bb38
   bb44:
-    _101 = const.i64 1
-    _102 = icmp.eq _98 _101
-    branch _102 ? bb42 : bb43
+    stmt: eval site=SiteId(52) ty=()
+    stmt: bind BindingId(16) rf site=SiteId(60) ty=Result<f64, string>
+    stmt: use BindingId(16) rf site=SiteId(64) ty=Result<f64, string> intent=Consume
+    _87 = const.i64 0
+    mtag86 = move _87
+    _88 = const.f64 0x3ff0000000000000
+    mvar86.0.0 = move _88
+    _89 = move _86
+    _91 = move etag89
+    _92 = const.i64 0
+    _93 = icmp.eq _91 _92
+    branch _93 ? bb46 : bb49
   bb45:
-    stmt: eval site=SiteId(62) ty=()
-    stmt: bind BindingId(23) rv site=SiteId(68) ty=Result<i32, string>
-    stmt: use BindingId(23) rv site=SiteId(71) ty=Result<i32, string> intent=Consume
-    _106 = const.i64 0
-    mtag105 = move _106
-    _107 = const.i64 8
-    mvar105.0.0 = move _107
-    _108 = move _105
-    _110 = move etag108
-    _111 = const.i64 0
-    _112 = icmp.eq _110 _111
-    branch _112 ? bb47 : bb50
+    call println_f64(_90) -> bb51
   bb46:
-    stmt: bind BindingId(25) rvv site=SiteId(70) ty=i32
-    stmt: bind BindingId(26) p site=SiteId(74) ty=Result<i64, string>
-    stmt: use BindingId(26) p site=SiteId(77) ty=Result<i64, string> intent=Read
-    _117 = move _109
-    _119 = const.i64 0
-    mtag118 = move _119
-    _120 = const.i64 7
-    mvar118.0.0 = move _120
-    _121 = move _118
-    _123 = move etag121
-    _124 = const.i64 0
-    _125 = icmp.eq _123 _124
-    branch _125 ? bb52 : bb55
+    stmt: bind BindingId(17) __result_unwrap_value site=SiteId(68) ty=f64
+    stmt: use BindingId(17) __result_unwrap_value site=SiteId(68) ty=f64 intent=Read
+    _96 = move mvar89.0.0
+    _90 = move _96
+    goto bb45
   bb47:
-    stmt: bind BindingId(24) __result_unwrap_or_value site=SiteId(73) ty=i32
-    stmt: use BindingId(24) __result_unwrap_or_value site=SiteId(73) ty=i32 intent=Read
-    _115 = move mvar108.0.0
-    _109 = move _115
-    goto bb46
+    _97 = string_lit "called 'unwrap()' on an 'Err' value"
+    call panic(_97) -> bb50
   bb48:
-    _116 = const.i64 0
-    _109 = move _116
-    goto bb46
+    trap(ExhaustivenessFallthrough)
   bb49:
-    trap(ExhaustivenessFallthrough)
+    _94 = const.i64 1
+    _95 = icmp.eq _91 _94
+    branch _95 ? bb47 : bb48
   bb50:
-    _113 = const.i64 1
-    _114 = icmp.eq _110 _113
-    branch _114 ? bb48 : bb49
+    goto bb45
   bb51:
-    stmt: bind BindingId(27) ok site=SiteId(76) ty=bool
-    stmt: use BindingId(26) p site=SiteId(81) ty=Result<i64, string> intent=Read
-    _130 = move _122
-    _132 = move etag121
-    _133 = const.i64 0
-    _134 = icmp.eq _132 _133
-    branch _134 ? bb57 : bb60
+    stmt: eval site=SiteId(62) ty=()
+    stmt: bind BindingId(18) ri site=SiteId(70) ty=Result<i32, string>
+    stmt: use BindingId(18) ri site=SiteId(73) ty=Result<i32, string> intent=Consume
+    _99 = const.i64 0
+    mtag98 = move _99
+    _100 = const.i64 2
+    mvar98.0.0 = move _100
+    _101 = move _98
+    _103 = move etag101
+    _104 = const.i64 0
+    _105 = icmp.eq _103 _104
+    branch _105 ? bb53 : bb56
   bb52:
-    _128 = const.i64 1
-    _122 = move _128
-    goto bb51
+    stmt: bind BindingId(20) riv site=SiteId(72) ty=i32
+    stmt: bind BindingId(21) ru site=SiteId(78) ty=Result<i64, string>
+    stmt: use BindingId(21) ru site=SiteId(82) ty=Result<i64, string> intent=Consume
+    _110 = move _102
+    _112 = const.i64 0
+    mtag111 = move _112
+    _113 = const.i64 8
+    mvar111.0.0 = move _113
+    _114 = move _111
+    _116 = move etag114
+    _117 = const.i64 0
+    _118 = icmp.eq _116 _117
+    branch _118 ? bb59 : bb62
   bb53:
-    _129 = const.i64 0
-    _122 = move _129
-    goto bb51
+    stmt: bind BindingId(19) __result_unwrap_value site=SiteId(77) ty=i32
+    stmt: use BindingId(19) __result_unwrap_value site=SiteId(77) ty=i32 intent=Read
+    _108 = move mvar101.0.0
+    _102 = move _108
+    goto bb52
   bb54:
-    trap(ExhaustivenessFallthrough)
+    _109 = string_lit "called 'unwrap()' on an 'Err' value"
+    call panic(_109) -> bb57
   bb55:
-    _126 = const.i64 1
-    _127 = icmp.eq _123 _126
-    branch _127 ? bb53 : bb54
-  bb56:
-    stmt: bind BindingId(28) err site=SiteId(80) ty=bool
-    stmt: use BindingId(27) ok site=SiteId(86) ty=bool intent=Read
-    _139 = move _131
-    _140 = call to_string_bool(_130) -> bb61
-  bb57:
-    _137 = const.i64 0
-    _131 = move _137
-    goto bb56
-  bb58:
-    _138 = const.i64 1
-    _131 = move _138
-    goto bb56
-  bb59:
     trap(ExhaustivenessFallthrough)
+  bb56:
+    _106 = const.i64 1
+    _107 = icmp.eq _103 _106
+    branch _107 ? bb54 : bb55
+  bb57:
+    goto bb52
+  bb58:
+    call println_i64(_115) -> bb63
+  bb59:
+    stmt: bind BindingId(22) __result_unwrap_or_value site=SiteId(84) ty=i64
+    stmt: use BindingId(22) __result_unwrap_or_value site=SiteId(84) ty=i64 intent=Read
+    _121 = move mvar114.0.0
+    _115 = move _121
+    goto bb58
   bb60:
-    _135 = const.i64 1
-    _136 = icmp.eq _132 _135
-    branch _136 ? bb58 : bb59
+    _122 = const.i64 0
+    _115 = move _122
+    goto bb58
   bb61:
-    _141 = string_lit " "
-    _142 = call string_concat(_140, _141) -> bb62
+    trap(ExhaustivenessFallthrough)
   bb62:
-    stmt: use BindingId(28) err site=SiteId(90) ty=bool intent=Read
-    _143 = call to_string_bool(_139) -> bb63
+    _119 = const.i64 1
+    _120 = icmp.eq _116 _119
+    branch _120 ? bb60 : bb61
   bb63:
-    _144 = call string_concat(_142, _143) -> bb64
+    stmt: eval site=SiteId(80) ty=()
+    stmt: bind BindingId(23) rv site=SiteId(86) ty=Result<i32, string>
+    stmt: use BindingId(23) rv site=SiteId(89) ty=Result<i32, string> intent=Consume
+    _124 = const.i64 0
+    mtag123 = move _124
+    _125 = const.i64 8
+    mvar123.0.0 = move _125
+    _126 = move _123
+    _128 = move etag126
+    _129 = const.i64 0
+    _130 = icmp.eq _128 _129
+    branch _130 ? bb65 : bb68
   bb64:
-    call println_str(_144) -> bb65
+    stmt: bind BindingId(25) rvv site=SiteId(88) ty=i32
+    stmt: bind BindingId(26) p site=SiteId(92) ty=Result<i64, string>
+    stmt: use BindingId(26) p site=SiteId(95) ty=Result<i64, string> intent=Read
+    _135 = move _127
+    _137 = const.i64 0
+    mtag136 = move _137
+    _138 = const.i64 7
+    mvar136.0.0 = move _138
+    _139 = move _136
+    _141 = move etag139
+    _142 = const.i64 0
+    _143 = icmp.eq _141 _142
+    branch _143 ? bb70 : bb73
   bb65:
-    stmt: eval site=SiteId(84) ty=()
-    stmt: use BindingId(6) cv site=SiteId(102) ty=i32 intent=Read
-    stmt: use BindingId(13) gv site=SiteId(104) ty=i32 intent=Read
-    _145 = cast _27 i32 -> i64
-    _146 = cast _64 i32 -> i64
-    _147 ovf=_148 = add.checked.s _145 _146
-    branch _148 ? bb66 : bb67
+    stmt: bind BindingId(24) __result_unwrap_or_value site=SiteId(91) ty=i32
+    stmt: use BindingId(24) __result_unwrap_or_value site=SiteId(91) ty=i32 intent=Read
+    _133 = move mvar126.0.0
+    _127 = move _133
+    goto bb64
   bb66:
-    trap(IntegerOverflow)
+    _134 = const.i64 0
+    _127 = move _134
+    goto bb64
   bb67:
-    stmt: use BindingId(20) riv site=SiteId(106) ty=i32 intent=Read
-    _149 = cast _92 i32 -> i64
-    _150 ovf=_151 = add.checked.s _147 _149
-    branch _151 ? bb68 : bb69
+    trap(ExhaustivenessFallthrough)
   bb68:
-    trap(IntegerOverflow)
+    _131 = const.i64 1
+    _132 = icmp.eq _128 _131
+    branch _132 ? bb66 : bb67
   bb69:
-    stmt: use BindingId(25) rvv site=SiteId(108) ty=i32 intent=Read
-    _152 = cast _117 i32 -> i64
-    _153 ovf=_154 = add.checked.s _150 _152
-    branch _154 ? bb70 : bb71
+    stmt: bind BindingId(27) ok site=SiteId(94) ty=bool
+    stmt: use BindingId(26) p site=SiteId(99) ty=Result<i64, string> intent=Read
+    _148 = move _140
+    _150 = move etag139
+    _151 = const.i64 0
+    _152 = icmp.eq _150 _151
+    branch _152 ? bb75 : bb78
   bb70:
-    trap(IntegerOverflow)
+    _146 = const.i64 1
+    _140 = move _146
+    goto bb69
   bb71:
-    stmt: bind BindingId(29) keep site=SiteId(98) ty=i64
-    stmt: use BindingId(29) keep site=SiteId(110) ty=i64 intent=Read
-    _155 = move _153
-    call println_i64(_155) -> bb72
+    _147 = const.i64 0
+    _140 = move _147
+    goto bb69
   bb72:
-    stmt: eval site=SiteId(109) ty=()
-    stmt: return site=Some(SiteId(112)) ty=i64
-    _156 = const.i64 0
-    ret = move _156
+    trap(ExhaustivenessFallthrough)
+  bb73:
+    _144 = const.i64 1
+    _145 = icmp.eq _141 _144
+    branch _145 ? bb71 : bb72
+  bb74:
+    stmt: bind BindingId(28) err site=SiteId(98) ty=bool
+    stmt: use BindingId(27) ok site=SiteId(104) ty=bool intent=Read
+    _157 = move _149
+    _158 = call to_string_bool(_148) -> bb79
+  bb75:
+    _155 = const.i64 0
+    _149 = move _155
+    goto bb74
+  bb76:
+    _156 = const.i64 1
+    _149 = move _156
+    goto bb74
+  bb77:
+    trap(ExhaustivenessFallthrough)
+  bb78:
+    _153 = const.i64 1
+    _154 = icmp.eq _150 _153
+    branch _154 ? bb76 : bb77
+  bb79:
+    _159 = string_lit " "
+    _160 = call string_concat(_158, _159) -> bb80
+  bb80:
+    stmt: use BindingId(28) err site=SiteId(108) ty=bool intent=Read
+    _161 = call to_string_bool(_157) -> bb81
+  bb81:
+    _162 = call string_concat(_160, _161) -> bb82
+  bb82:
+    call println_str(_162) -> bb83
+  bb83:
+    stmt: eval site=SiteId(102) ty=()
+    stmt: use BindingId(6) cv site=SiteId(120) ty=i32 intent=Read
+    stmt: use BindingId(13) gv site=SiteId(122) ty=i32 intent=Read
+    _163 = cast _36 i32 -> i64
+    _164 = cast _73 i32 -> i64
+    _165 ovf=_166 = add.checked.s _163 _164
+    branch _166 ? bb84 : bb85
+  bb84:
+    trap(IntegerOverflow)
+  bb85:
+    stmt: use BindingId(20) riv site=SiteId(124) ty=i32 intent=Read
+    _167 = cast _110 i32 -> i64
+    _168 ovf=_169 = add.checked.s _165 _167
+    branch _169 ? bb86 : bb87
+  bb86:
+    trap(IntegerOverflow)
+  bb87:
+    stmt: use BindingId(25) rvv site=SiteId(126) ty=i32 intent=Read
+    _170 = cast _135 i32 -> i64
+    _171 ovf=_172 = add.checked.s _168 _170
+    branch _172 ? bb88 : bb89
+  bb88:
+    trap(IntegerOverflow)
+  bb89:
+    stmt: bind BindingId(29) keep site=SiteId(116) ty=i64
+    stmt: use BindingId(29) keep site=SiteId(128) ty=i64 intent=Read
+    _173 = move _171
+    call println_i64(_173) -> bb90
+  bb90:
+    stmt: eval site=SiteId(127) ty=()
+    stmt: return site=Some(SiteId(130)) ty=i64
+    _174 = const.i64 0
+    ret = move _174
     return
 
 fn i8::fmt(i8) -> string [conv=default]
@@ -551,11 +623,11 @@ fn i8::fmt(i8) -> string [conv=default]
     _1: i32
     _2: string
   bb0:
-    stmt: use BindingId(36) val site=SiteId(175) ty=i8 intent=Read
+    stmt: use BindingId(36) val site=SiteId(193) ty=i8 intent=Read
     _1 = cast _0 i8 -> i32
     _2 = call to_string_i32(_1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(173)) ty=string
+    stmt: return site=Some(SiteId(191)) ty=string
     ret = move _2
     return
 
@@ -565,11 +637,11 @@ fn i16::fmt(i16) -> string [conv=default]
     _1: i32
     _2: string
   bb0:
-    stmt: use BindingId(37) val site=SiteId(179) ty=i16 intent=Read
+    stmt: use BindingId(37) val site=SiteId(197) ty=i16 intent=Read
     _1 = cast _0 i16 -> i32
     _2 = call to_string_i32(_1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(177)) ty=string
+    stmt: return site=Some(SiteId(195)) ty=string
     ret = move _2
     return
 
@@ -578,10 +650,10 @@ fn i32::fmt(i32) -> string [conv=default]
     _0: i32
     _1: string
   bb0:
-    stmt: use BindingId(38) val site=SiteId(182) ty=i32 intent=Read
+    stmt: use BindingId(38) val site=SiteId(200) ty=i32 intent=Read
     _1 = call to_string_i32(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(181)) ty=string
+    stmt: return site=Some(SiteId(199)) ty=string
     ret = move _1
     return
 
@@ -590,10 +662,10 @@ fn i64::fmt(i64) -> string [conv=default]
     _0: i64
     _1: string
   bb0:
-    stmt: use BindingId(39) val site=SiteId(185) ty=i64 intent=Read
+    stmt: use BindingId(39) val site=SiteId(203) ty=i64 intent=Read
     _1 = call to_string_i64(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(184)) ty=string
+    stmt: return site=Some(SiteId(202)) ty=string
     ret = move _1
     return
 
@@ -602,10 +674,10 @@ fn u8::fmt(u8) -> string [conv=default]
     _0: u8
     _1: string
   bb0:
-    stmt: use BindingId(40) val site=SiteId(188) ty=u8 intent=Read
+    stmt: use BindingId(40) val site=SiteId(206) ty=u8 intent=Read
     _1 = call to_string_u8(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(187)) ty=string
+    stmt: return site=Some(SiteId(205)) ty=string
     ret = move _1
     return
 
@@ -614,10 +686,10 @@ fn u16::fmt(u16) -> string [conv=default]
     _0: u16
     _1: string
   bb0:
-    stmt: use BindingId(41) val site=SiteId(191) ty=u16 intent=Read
+    stmt: use BindingId(41) val site=SiteId(209) ty=u16 intent=Read
     _1 = call to_string_u16(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(190)) ty=string
+    stmt: return site=Some(SiteId(208)) ty=string
     ret = move _1
     return
 
@@ -626,10 +698,10 @@ fn u32::fmt(u32) -> string [conv=default]
     _0: u32
     _1: string
   bb0:
-    stmt: use BindingId(42) val site=SiteId(194) ty=u32 intent=Read
+    stmt: use BindingId(42) val site=SiteId(212) ty=u32 intent=Read
     _1 = call to_string_u32(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(193)) ty=string
+    stmt: return site=Some(SiteId(211)) ty=string
     ret = move _1
     return
 
@@ -638,10 +710,10 @@ fn u64::fmt(u64) -> string [conv=default]
     _0: u64
     _1: string
   bb0:
-    stmt: use BindingId(43) val site=SiteId(197) ty=u64 intent=Read
+    stmt: use BindingId(43) val site=SiteId(215) ty=u64 intent=Read
     _1 = call to_string_u64(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(196)) ty=string
+    stmt: return site=Some(SiteId(214)) ty=string
     ret = move _1
     return
 
@@ -651,11 +723,11 @@ fn isize::fmt(isize) -> string [conv=default]
     _1: i64
     _2: string
   bb0:
-    stmt: use BindingId(44) val site=SiteId(201) ty=isize intent=Read
+    stmt: use BindingId(44) val site=SiteId(219) ty=isize intent=Read
     _1 = cast _0 isize -> i64
     _2 = call to_string_i64(_1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(199)) ty=string
+    stmt: return site=Some(SiteId(217)) ty=string
     ret = move _2
     return
 
@@ -665,11 +737,11 @@ fn usize::fmt(usize) -> string [conv=default]
     _1: u64
     _2: string
   bb0:
-    stmt: use BindingId(45) val site=SiteId(205) ty=usize intent=Read
+    stmt: use BindingId(45) val site=SiteId(223) ty=usize intent=Read
     _1 = cast _0 usize -> u64
     _2 = call to_string_u64(_1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(203)) ty=string
+    stmt: return site=Some(SiteId(221)) ty=string
     ret = move _2
     return
 
@@ -678,10 +750,10 @@ fn bool::fmt(bool) -> string [conv=default]
     _0: bool
     _1: string
   bb0:
-    stmt: use BindingId(46) val site=SiteId(208) ty=bool intent=Read
+    stmt: use BindingId(46) val site=SiteId(226) ty=bool intent=Read
     _1 = call to_string_bool(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(207)) ty=string
+    stmt: return site=Some(SiteId(225)) ty=string
     ret = move _1
     return
 
@@ -690,10 +762,10 @@ fn char::fmt(char) -> string [conv=default]
     _0: char
     _1: string
   bb0:
-    stmt: use BindingId(47) val site=SiteId(211) ty=char intent=Read
+    stmt: use BindingId(47) val site=SiteId(229) ty=char intent=Read
     _1 = call to_string_char(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(210)) ty=string
+    stmt: return site=Some(SiteId(228)) ty=string
     ret = move _1
     return
 
@@ -702,10 +774,10 @@ fn f64::fmt(f64) -> string [conv=default]
     _0: f64
     _1: string
   bb0:
-    stmt: use BindingId(48) val site=SiteId(214) ty=f64 intent=Read
+    stmt: use BindingId(48) val site=SiteId(232) ty=f64 intent=Read
     _1 = call to_string_f64(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(213)) ty=string
+    stmt: return site=Some(SiteId(231)) ty=string
     ret = move _1
     return
 
@@ -715,11 +787,11 @@ fn f32::fmt(f32) -> string [conv=default]
     _1: f64
     _2: string
   bb0:
-    stmt: use BindingId(49) val site=SiteId(218) ty=f32 intent=Read
+    stmt: use BindingId(49) val site=SiteId(236) ty=f32 intent=Read
     _1 = cast _0 f32 -> f64
     _2 = call to_string_f64(_1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(216)) ty=string
+    stmt: return site=Some(SiteId(234)) ty=string
     ret = move _2
     return
 
@@ -727,8 +799,8 @@ fn string::fmt(string) -> string [conv=default]
   locals:
     _0: string
   bb0:
-    stmt: use BindingId(50) val site=SiteId(220) ty=string intent=Read
-    stmt: return site=Some(SiteId(220)) ty=string
+    stmt: use BindingId(50) val site=SiteId(238) ty=string intent=Read
+    stmt: return site=Some(SiteId(238)) ty=string
     ret = move _0
     return
 

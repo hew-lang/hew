@@ -151,6 +151,37 @@ pub unsafe extern "C" fn hew_routing_lookup(table: *mut HewRoutingTable, target_
         .unwrap_or(HEW_ROUTE_LOCAL_OR_MISSING)
 }
 
+/// Resolve a remote `node_id` directly to its transport connection handle.
+///
+/// Unlike [`hew_routing_lookup`] (which keys on a PID), this keys on the raw
+/// node ID. Returns `-1` when `node_id` is the local node or has no route.
+///
+/// Used by the SWIM-DEAD partition fan-out to find the connection a dead peer's
+/// pending asks were registered against, so they can be failed with
+/// `AskError::Partition`.
+///
+/// # Safety
+///
+/// `table` must be a valid pointer returned by [`hew_routing_table_new`].
+pub(crate) unsafe fn hew_routing_conn_for_node(
+    table: *const HewRoutingTable,
+    node_id: u16,
+) -> c_int {
+    if table.is_null() {
+        return HEW_ROUTE_LOCAL_OR_MISSING;
+    }
+    // SAFETY: caller guarantees `table` is valid.
+    let table = unsafe { &*table };
+    if node_id == table.local_node_id {
+        return HEW_ROUTE_LOCAL_OR_MISSING;
+    }
+    let routes = table.routes.read_or_recover();
+    routes
+        .get(&node_id)
+        .copied()
+        .unwrap_or(HEW_ROUTE_LOCAL_OR_MISSING)
+}
+
 /// Check whether a destination PID is local to this node.
 ///
 /// Returns 1 if local, 0 otherwise.

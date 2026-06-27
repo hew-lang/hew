@@ -393,6 +393,64 @@ fn remote_monitor_down_on_connection_drop() {
     );
 }
 
+/// DIST-7 partition gate: a remote ask whose target peer is gone must resolve
+/// fail-closed with a typed cause WITHOUT hanging, rather than blocking to the
+/// client ceiling or fabricating a value. The harness kills the server after the
+/// client signals `READY_DROP`; the client then asks the now-unreachable actor.
+///
+/// The EXACT fail-closed cause is timing-dependent — a two-process SIGKILL races
+/// three correct fail paths: `RoutingFailed` (route torn down before the ask was
+/// set up — dominates under CI load), `ConnectionDropped` (socket-drop failed the
+/// pending ask — common on a quiet host), and `Partition` (the SWIM-DEAD verdict
+/// fanned out to the pending ask). Pinning a single variant is the bug that flaked
+/// this gate under load (the fixture's catch-all rejected `RoutingFailed`); the
+/// invariant is no-hang + typed-fail-closed, not a specific variant. So the gate
+/// asserts on any `PASS partition_ask` line and forbids any `FAIL`.
+///
+/// Teeth that keep this meaningful: (a) a `PASS partition_ask reason=<cause>` line
+/// — the fixture only emits one when an `Err` came back BEFORE the ask's own
+/// deadline (a proactive fail-closed verdict), never on a `Result::Ok` (which is
+/// rejected as `never-partitioned`); (b) the run finishes well under the 40 s
+/// client ceiling — `run_conn_drop_scenario`'s drain cap is the no-hang guard,
+/// and a hang-to-deadline would blow it; (c) no `FAIL` line — in particular no
+/// `reason=timeout`, which the fixture emits when the ask waited its WHOLE
+/// deadline because no proactive fail-closed path fired (the hang this gate
+/// exists to catch), and no `never-partitioned`, which would mean the ask
+/// wrongly succeeded against a killed peer.
+///
+/// The deterministic SWIM-DEAD-while-socket-open → Partition path (the specific
+/// fail-open that `swim_dead_wakes_pending_remote_ask_with_partition` closes) is
+/// proven exactly in-process by that runtime unit test; this two-process fixture
+/// pins the broader cross-wire no-hang invariant under real teardown races.
+#[test]
+fn remote_ask_under_partition_fails_closed_not_hang() {
+    let stdout = run_conn_drop_scenario("partition_ask");
+
+    // Any typed fail-closed cause is correct; the fixture emits this line only for
+    // an `Err` that resolved BEFORE the ask's own deadline (a proactive verdict).
+    assert!(
+        stdout.contains("PASS partition_ask reason="),
+        "expected a typed fail-closed PASS (the ask must resolve to a typed \
+         AskError before its deadline, not hang); client stdout:\n{stdout}"
+    );
+    // A timeout is the hang-to-deadline failure this gate exists to catch: the ask
+    // waited its whole deadline because no proactive fail-closed path fired.
+    assert!(
+        !stdout.contains("FAIL partition_ask reason=timeout"),
+        "remote ask under partition timed out instead of failing closed \
+         (no proactive fail-closed path fired); client stdout:\n{stdout}"
+    );
+    // A success against a killed peer would be a wrong answer, not a partition.
+    assert!(
+        !stdout.contains("FAIL partition_ask never-partitioned"),
+        "remote ask wrongly succeeded against a killed peer; client stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("FAIL "),
+        "client reported a FAIL on the partition-ask scenario; client stdout:\n{stdout}"
+    );
+}
+
 /// The linchpin assertion: a real two-process remote-ask round-trip over a
 /// loopback socket returns the exact values stored on the remote actor.
 #[test]

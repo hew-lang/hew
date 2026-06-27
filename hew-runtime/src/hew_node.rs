@@ -651,8 +651,12 @@ impl ReplyRoutingTable {
         Self::fail_pending_with_reason(pending, AskError::ConnectionDropped);
     }
 
-    /// Fail every pending reply tied to the given connection.
-    fn fail_connection(&self, connection: ConnectionKey) {
+    /// Fail every pending reply tied to the given connection with `ask_error`.
+    ///
+    /// Drains the matching entries under the table lock (so a second failure
+    /// path — e.g. a SWIM-DEAD verdict racing a socket drop — finds nothing and
+    /// the ask is resolved exactly once), then fails each outside the lock.
+    fn fail_connection_with_reason(&self, connection: ConnectionKey, ask_error: AskError) {
         let pending = {
             let mut map = self
                 .pending
@@ -670,8 +674,14 @@ impl ReplyRoutingTable {
                 .collect::<Vec<_>>()
         };
         for pending in pending {
-            Self::fail_pending(&pending);
+            Self::fail_pending_with_reason(&pending, ask_error);
         }
+    }
+
+    /// Fail every pending reply tied to the given connection with
+    /// [`AskError::ConnectionDropped`] (the socket-drop cause).
+    fn fail_connection(&self, connection: ConnectionKey) {
+        self.fail_connection_with_reason(connection, AskError::ConnectionDropped);
     }
 
     /// Fail every pending reply and wake all blocked waiters.
@@ -744,6 +754,14 @@ fn ask_error_from_code(code: i32) -> Option<AskError> {
         x if x == AskError::OrphanedAsk as i32 => Some(AskError::OrphanedAsk),
         x if x == AskError::NoRunnableWork as i32 => Some(AskError::NoRunnableWork),
         x if x == AskError::DecodeFailure as i32 => Some(AskError::DecodeFailure),
+        x if x == AskError::Partition as i32 => Some(AskError::Partition),
+        x if x == AskError::StaleRef as i32 => Some(AskError::StaleRef),
+        x if x == AskError::Cancelled as i32 => Some(AskError::Cancelled),
+        x if x == AskError::LocalShutdown as i32 => Some(AskError::LocalShutdown),
+        x if x == AskError::VersionMismatch as i32 => Some(AskError::VersionMismatch),
+        x if x == AskError::Unauthorized as i32 => Some(AskError::Unauthorized),
+        x if x == AskError::Backpressure as i32 => Some(AskError::Backpressure),
+        x if x == AskError::MonitorLost as i32 => Some(AskError::MonitorLost),
         _ => None,
     }
 }
@@ -2819,6 +2837,51 @@ pub(crate) fn fan_out_monitor_lost_for_node(dead_node_id: u16) {
     let _ = rt
         .dist_monitors
         .deliver_to_node(dead_node_id, crate::dist_monitor::MONITOR_REASON_LOST);
+}
+
+/// Fail every pending remote ask routed to a SWIM-declared-DEAD node with
+/// [`AskError::Partition`].
+///
+/// The cluster's recv-queue partition fan-out (`PartitionRegistry::on_member_dead`,
+/// `cluster.rs`) wakes a blocked `recv` to `PartitionDetected`, but it does not
+/// touch the reply table — so a pending remote *ask* to a peer the failure
+/// detector has declared dead (while its TCP socket may still be nominally open)
+/// would otherwise hang to the caller's own deadline. This is the request/reply
+/// analog of that recv-side seam: it resolves those pending asks IMMEDIATELY
+/// with the typed `Partition` cause instead of a silent wait-to-timeout.
+///
+/// The reply table is keyed by `(conn_mgr, conn_id)`; a remote ask registers
+/// under the connection the routing table resolves for the target node. We look
+/// up the dead node's connection the same way and fail every pending ask on it.
+///
+/// Exactly-once vs the connection-drop path: `fail_connection_with_reason`
+/// drains the matching entries under the table lock before failing them, so if
+/// the socket also drops (or already dropped), whichever verdict lands first
+/// resolves the ask and the second finds an empty map — no double wake. A node
+/// with no route to the dead peer (no pending asks) is a no-op.
+pub(crate) fn fail_remote_asks_for_node(dead_node_id: u16) {
+    with_current_node_read(|guard| {
+        let node_ptr = *guard as *const HewNode;
+        if node_ptr.is_null() {
+            return;
+        }
+        // SAFETY: the read lock pins CURRENT_NODE for the duration of this call.
+        let node = unsafe { &*node_ptr };
+        if node.routing_table.is_null() || node.conn_mgr.is_null() {
+            return;
+        }
+        // SAFETY: routing_table is valid while the node is installed.
+        let conn_id =
+            unsafe { crate::routing::hew_routing_conn_for_node(node.routing_table, dead_node_id) };
+        if conn_id < 0 {
+            // No route to the dead peer on this node — no pending asks to fail.
+            return;
+        }
+        let connection = ConnectionKey::new(node.conn_mgr.cast_const(), conn_id);
+        if let Some(table) = reply_table_opt() {
+            table.fail_connection_with_reason(connection, AskError::Partition);
+        }
+    });
 }
 
 /// Connect to a remote node and register routing for its node ID.
@@ -5215,6 +5278,46 @@ mod tests {
         );
     }
 
+    /// `fail_connection_with_reason` resolves matching pending asks with the
+    /// supplied cause (`Partition` for the SWIM-DEAD fan-out) and removes the
+    /// entry, distinct from the default `ConnectionDropped`.
+    #[test]
+    fn reply_table_fail_connection_with_partition_sets_partition_status() {
+        let _guard = crate::runtime_test_guard();
+
+        let key = ConnectionKey {
+            conn_mgr: 88,
+            conn_id: 12,
+        };
+        let (id, pending) = reply_table().register(key);
+
+        reply_table().fail_connection_with_reason(key, AskError::Partition);
+
+        let guard = pending
+            .outcome
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let outcome = guard
+            .as_ref()
+            .expect("outcome should be set after partition fan-out");
+        assert_eq!(outcome.status, ReplyStatus::Failed);
+        assert_eq!(
+            outcome.ask_error,
+            AskError::Partition,
+            "SWIM-DEAD fan-out must carry the Partition cause, not ConnectionDropped"
+        );
+        drop(guard);
+
+        let map = reply_table()
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            !map.contains_key(&id),
+            "partition fan-out must remove the entry"
+        );
+    }
+
     /// `fail_all` wakes every pending reply with `Failed` status.
     #[test]
     fn reply_table_fail_all_wakes_all_pending() {
@@ -7251,6 +7354,146 @@ mod tests {
             disconnect_started.elapsed() < Duration::from_millis(TEST_REMOTE_ASK_TIMEOUT_MS / 2),
             "pending remote ask should wake well before the full remote ask timeout"
         );
+
+        // SAFETY: the actor and nodes were allocated in this test and remain valid here.
+        unsafe {
+            let _ = crate::actor::hew_actor_free(blocked_actor);
+            assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+            assert_eq!(hew_node_stop(node2.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    /// DIST-7 core gap: a SWIM-declared-DEAD peer (socket still nominally open)
+    /// must resolve a pending remote ask IMMEDIATELY with `AskError::Partition`,
+    /// not hang to the caller's deadline. The connection-drop test above proves
+    /// the socket-drop cause; this proves the SWIM-DEAD cause through the
+    /// node-side fan-out (`fail_remote_asks_for_node`), with the socket left
+    /// open so the only thing that resolves the ask is the failure-detector
+    /// verdict — distinct from `ConnectionDropped`.
+    #[test]
+    fn swim_dead_wakes_pending_remote_ask_with_partition() {
+        let _guard = crate::runtime_test_guard();
+        let _real_sched;
+        crate::registry::hew_registry_clear();
+
+        let node1_bind = CString::new("127.0.0.1:0").unwrap();
+
+        // SAFETY: bind addresses are valid C strings for the duration of this test.
+        let node1 = unsafe { TestNode::new(330, &node1_bind) };
+        assert!(!node1.as_ptr().is_null());
+
+        // SAFETY: node1 comes from TestNode::new and is valid for start-up here.
+        unsafe {
+            assert_eq!(hew_node_start(node1.as_ptr()), 0);
+        }
+        thread::sleep(Duration::from_millis(50));
+        let (node2, node2_port) = start_tcp_test_listener_node(331);
+
+        _real_sched = init_real_scheduler();
+
+        crate::pid::hew_pid_set_local_node(331);
+        // SAFETY: null state and size-0 are valid; the dispatch function pointer is valid.
+        let blocked_actor = unsafe {
+            crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(blocked_ask_probe_dispatch))
+        };
+        crate::pid::hew_pid_set_local_node(330);
+        assert!(!blocked_actor.is_null(), "actor spawn failed");
+        // SAFETY: the actor was just spawned successfully and remains valid here.
+        let actor_id = unsafe { (*blocked_actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 331);
+
+        let connect_addr = CString::new(format!("331@127.0.0.1:{node2_port}")).unwrap();
+        // SAFETY: node1 and the connect address are valid for this connection attempt.
+        unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
+        // SAFETY: both node pointers remain valid until the end of the test.
+        unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
+
+        // SAFETY: both nodes are running and their connection managers are valid here.
+        let outbound_conn_id =
+            unsafe { connection::hew_connmgr_conn_id_for_node((*node1.as_ptr()).conn_mgr, 331) };
+        assert!(
+            outbound_conn_id >= 0,
+            "initiator outbound connection missing"
+        );
+        // SAFETY: node1 remains valid here and its connection manager stays alive until teardown.
+        let outbound_key = ConnectionKey::new(
+            unsafe { (*node1.as_ptr()).conn_mgr.cast_const() },
+            outbound_conn_id,
+        );
+
+        // SAFETY: the actor pid and null payload are valid for this remote ask probe.
+        let ask_handle = thread::spawn(move || unsafe {
+            let ptr = hew_node_api_ask(
+                actor_id,
+                test_dispatch(),
+                1,
+                ptr::null_mut(),
+                0,
+                TEST_REMOTE_ASK_TIMEOUT_MS,
+                std::mem::size_of::<u32>(),
+            );
+            let err = hew_node_ask_take_last_error();
+            (ptr as usize, err)
+        });
+
+        let pending_seen = (0..100).any(|_| {
+            let guard = reply_table()
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let seen = guard
+                .values()
+                .any(|pending| pending.connection == outbound_key);
+            drop(guard);
+            if !seen {
+                thread::sleep(Duration::from_millis(10));
+            }
+            seen
+        });
+        assert!(
+            pending_seen,
+            "remote ask never registered against the outbound connection"
+        );
+
+        // Declare node 331 DEAD via the node-side partition fan-out WITHOUT
+        // touching the socket — the SWIM/phi-accrual verdict, not a TCP drop.
+        let dead_declared = std::time::Instant::now();
+        fail_remote_asks_for_node(331);
+
+        let (reply_raw, ask_err) = ask_handle.join().expect("ask thread panicked");
+        let reply_ptr = reply_raw as *mut c_void;
+        assert!(
+            reply_ptr.is_null(),
+            "SWIM-DEAD must fail the pending remote ask (no fabricated reply)"
+        );
+        // The teeth: the exact Partition discriminant (14), distinct from
+        // ConnectionDropped (6) and Timeout (5).
+        assert_eq!(
+            ask_err,
+            AskError::Partition as i32,
+            "SWIM-DEAD should report Partition, not ConnectionDropped or Timeout"
+        );
+        // Bounded-time: a hang would blow the full ask timeout. The fan-out is
+        // synchronous, so resolution is effectively immediate.
+        assert!(
+            dead_declared.elapsed() < Duration::from_millis(TEST_REMOTE_ASK_TIMEOUT_MS / 2),
+            "pending remote ask should resolve well before the full ask timeout"
+        );
+        // Exactly-once: the entry was drained on the first fan-out, so a second
+        // verdict (or a racing socket drop) finds nothing — assert the map is
+        // empty for this connection and a repeat fan-out is a no-op.
+        {
+            let map = reply_table()
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert!(
+                !map.values().any(|p| p.connection == outbound_key),
+                "partition fan-out must remove the pending entry (no leak, exactly-once)"
+            );
+        }
+        fail_remote_asks_for_node(331); // second verdict: no panic, no double-wake.
 
         // SAFETY: the actor and nodes were allocated in this test and remain valid here.
         unsafe {

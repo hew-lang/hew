@@ -1190,21 +1190,23 @@ fn link_req_payload_round_trips_with_cddl_shape() {
         target_serial: 99,
         linker_serial: 55,
         policy_tag: 3,
+        reciprocate: 1,
     };
     let bytes = encode_link_req_payload(&original).expect("link req should encode");
     let decoded = decode_link_req_payload(&bytes).expect("link req should decode");
     assert_eq!(decoded, original);
 
-    // CDDL shape: definite map keyed {1,2,3,4,5} with exact integer values.
+    // CDDL shape: definite map keyed {1,2,3,4,5,6} with exact integer values.
     let value = decode_value(&bytes);
     let entries = map_entries(&value);
-    assert_eq!(entries.len(), 5);
-    assert_integer_keys_and_order(entries, &[1, 2, 3, 4, 5]);
+    assert_eq!(entries.len(), 6);
+    assert_integer_keys_and_order(entries, &[1, 2, 3, 4, 5, 6]);
     assert_integer_value(find_field(entries, 1), 7);
     assert_integer_value(find_field(entries, 2), 4242);
     assert_integer_value(find_field(entries, 3), 99);
     assert_integer_value(find_field(entries, 4), 55);
     assert_integer_value(find_field(entries, 5), 3);
+    assert_integer_value(find_field(entries, 6), 1);
 }
 
 #[test]
@@ -1229,7 +1231,7 @@ fn link_down_payload_reuses_monitor_down_shape() {
 
 #[test]
 fn link_req_payload_codec_rejects_malformed_payloads() {
-    // Unknown key beyond the {1..5} set: a fabricated link request with an extra
+    // Unknown key beyond the {1..6} set: a fabricated link request with an extra
     // key must be rejected — a HIGHER-stakes bar than monitor because a forged
     // link can later crash a real actor.
     let unknown_key = Value::Map(vec![
@@ -1238,11 +1240,12 @@ fn link_req_payload_codec_rejects_malformed_payloads() {
         (int(3u64), int(3u64)),
         (int(4u64), int(4u64)),
         (int(5u64), int(3u64)),
-        (int(6u64), int(9u64)),
+        (int(6u64), int(1u64)),
+        (int(7u64), int(9u64)),
     ]);
     assert!(matches!(
         decode_link_req_payload(&value_to_cbor(&unknown_key)),
-        Err(MonitorPayloadError::UnknownKey { key: 6 })
+        Err(MonitorPayloadError::UnknownKey { key: 7 })
     ));
 
     // Missing required key 4 (linker_serial): the reverse-link half cannot be
@@ -1253,6 +1256,7 @@ fn link_req_payload_codec_rejects_malformed_payloads() {
         (int(2u64), int(2u64)),
         (int(3u64), int(3u64)),
         (int(5u64), int(3u64)),
+        (int(6u64), int(1u64)),
     ]);
     assert!(matches!(
         decode_link_req_payload(&value_to_cbor(&missing)),
@@ -1266,6 +1270,7 @@ fn link_req_payload_codec_rejects_malformed_payloads() {
         (int(3u64), int(3u64)),
         (int(4u64), int(4u64)),
         (int(5u64), int(9000u64)),
+        (int(6u64), int(1u64)),
     ]);
     assert!(matches!(
         decode_link_req_payload(&value_to_cbor(&oob_policy)),
@@ -1291,6 +1296,7 @@ fn link_req_payload_truncated_cbor_returns_error() {
         target_serial: 11,
         linker_serial: 22,
         policy_tag: 3,
+        reciprocate: 1,
     };
     let bytes = encode_link_req_payload(&req).expect("link req should encode");
     for cut in 1..bytes.len() {

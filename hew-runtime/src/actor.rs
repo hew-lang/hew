@@ -5017,6 +5017,29 @@ pub extern "C" fn hew_actor_self() -> *mut HewActor {
     unsafe { (*ctx).actor }
 }
 
+/// Return the current actor's id, or -1 outside a dispatch context.
+///
+/// Test-introspection probe (DIST-9): a linker actor reports its own id so a
+/// two-process link fixture can poll its terminal state after a cross-node
+/// link-down. Not part of the user surface; the compiler emits no calls to this
+/// symbol. Callable from `.hew` via
+/// `extern "C" { fn hew_actor_self_id() -> i64; }`.
+#[no_mangle]
+pub extern "C" fn hew_actor_self_id() -> i64 {
+    let actor = hew_actor_self();
+    if actor.is_null() {
+        return -1;
+    }
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "actor ids are a monotonic counter far below i64::MAX; the Hew side reads i64"
+    )]
+    // SAFETY: hew_actor_self returned a non-null live actor pointer.
+    unsafe {
+        (*actor).id as i64
+    }
+}
+
 /// Stamp the WASM actor panic sentinel on the current actor, when present.
 #[cfg(any(target_arch = "wasm32", test))]
 pub(crate) fn stamp_wasm_actor_panic() -> bool {

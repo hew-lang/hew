@@ -179,13 +179,15 @@ extern "C" {
 }
 
 actor Linker {
-    let peer: RemotePid<KeyValue>;
     // 0 = CrashLinked (the linked actor crashes); 1 = MonitorLost (non-fatal).
     let policy_sel: i64;
     // Establish the cross-node link from inside this actor's own handler so the
-    // implicit `self` subject of `link_remote` is THIS actor. Returns its own
-    // actor id (or -1 on a registration failure) so `main` can poll its state.
-    receive fn link_go() -> i64 {
+    // implicit `self` subject of `link_remote` is THIS actor. The remote peer is
+    // passed as a message argument (a RemotePid is an opaque i64 pid; storing it
+    // in actor state is not a supported clone-layout shape, so it rides the
+    // message instead). Returns its own actor id (or -1 on a registration
+    // failure) so `main` can poll its terminal state.
+    receive fn link_go(peer: RemotePid<KeyValue>) -> i64 {
         let status = if policy_sel == 0 {
             link_remote(peer, PartitionPolicy::CrashLinked)
         } else {
@@ -195,10 +197,14 @@ actor Linker {
             Result::Ok(_) => true,
             Result::Err(_) => false,
         };
+        // Return this actor's id on success, 0 on failure. The id is a packed pid
+        // (node<<48 | serial) and can be NEGATIVE as an i64 when the node id is
+        // large, so the caller must test `== 0`, never `< 0`. The probe casts to
+        // u64, so a negative-as-i64 id round-trips correctly.
         if ok {
             unsafe { hew_actor_self_id() }
         } else {
-            -1
+            0
         }
     }
     // Liveness probe: a surviving linker answers; a crashed one cannot.
@@ -690,10 +696,10 @@ fn scenario_client_watcher_node_death(kv: RemotePid<KeyValue>) -> i64 {
 // the cross-node link-down landed in its mailbox as a SYS_MSG_EXIT and crashed
 // it. `policy_sel` 0 = CrashLinked. `drive` selects how the remote dies.
 fn link_cascade_common(kv: RemotePid<KeyValue>, scenario: string, drive: string) -> i64 {
-    let linker = spawn Linker(peer: kv, policy_sel: 0);
+    let linker = spawn Linker(policy_sel: 0);
     // Establish the link from inside the linker's own handler; the reply is its
     // actor id (or -1 on a registration failure).
-    let linker_id = await linker.link_go();
+    let linker_id = await linker.link_go(kv);
     let lid = match linker_id {
         Result::Ok(id) => id,
         Result::Err(_) => {
@@ -701,7 +707,7 @@ fn link_cascade_common(kv: RemotePid<KeyValue>, scenario: string, drive: string)
             return 2;
         },
     };
-    if lid < 0 {
+    if lid == 0 {
         println(f"FAIL {scenario} link-register-failed");
         return 3;
     }
@@ -774,8 +780,8 @@ fn scenario_link_remote_partition(kv: RemotePid<KeyValue>) -> i64 {
 // linker must STILL answer a liveness ask — proving the policy discriminator has
 // teeth and a non-CrashLinked link does not synthesize a fatal EXIT.
 fn scenario_link_remote_non_crashlinked(kv: RemotePid<KeyValue>) -> i64 {
-    let linker = spawn Linker(peer: kv, policy_sel: 1);
-    let linker_id = await linker.link_go();
+    let linker = spawn Linker(policy_sel: 1);
+    let linker_id = await linker.link_go(kv);
     let lid = match linker_id {
         Result::Ok(id) => id,
         Result::Err(_) => {
@@ -783,7 +789,7 @@ fn scenario_link_remote_non_crashlinked(kv: RemotePid<KeyValue>) -> i64 {
             return 2;
         },
     };
-    if lid < 0 {
+    if lid == 0 {
         println("FAIL link_remote_non_crashlinked link-register-failed");
         return 3;
     }

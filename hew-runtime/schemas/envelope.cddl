@@ -97,6 +97,8 @@ link-req-payload = {
     target_serial:  3 => uint,     ; linked actor's serial on the owning node
     linker_serial:  4 => uint,     ; linking actor's serial on the linker node
     policy_tag:     5 => uint,     ; PartitionPolicy discriminant (0..4)
+    reciprocate:    6 => uint,     ; 1 = original request, 0 = reverse (bounds the
+                                   ; bidirectional handshake to one round trip)
 }
 
 ; ── Envelope frame ───────────────────────────────────────────────────────────

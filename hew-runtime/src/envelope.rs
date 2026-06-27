@@ -350,6 +350,11 @@ pub struct MonitorDownPayload {
 ///   local linked actor dies (the OTP bidirectional half).
 /// - `policy_tag` is the `PartitionPolicy` discriminant governing the link
 ///   (`CrashLinked` == 3 crashes the linked actor on the peer's death).
+/// - `reciprocate` is 1 for the ORIGINAL request (the receiver registers the
+///   reverse half and sends a `reciprocate = 0` reverse request back) and 0 for
+///   that reverse request (the original linker completes its target-side
+///   registration and does NOT reply again — bounding the handshake to one round
+///   trip, never an infinite reciprocation).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkReqPayload {
     /// Linking node's id (DOWN destination + reverse-link target node).
@@ -362,6 +367,8 @@ pub struct LinkReqPayload {
     pub linker_serial: u64,
     /// `PartitionPolicy` discriminant governing the link.
     pub policy_tag: u8,
+    /// 1 = original request (receiver reciprocates); 0 = the reverse request.
+    pub reciprocate: u8,
 }
 
 struct PayloadBytes<'a>(&'a [u8]);
@@ -1315,6 +1322,10 @@ pub fn encode_link_req_payload(payload: &LinkReqPayload) -> Result<Vec<u8>, Moni
             Value::Integer(Integer::from(5u64)),
             Value::Integer(Integer::from(payload.policy_tag)),
         ),
+        (
+            Value::Integer(Integer::from(6u64)),
+            Value::Integer(Integer::from(payload.reciprocate)),
+        ),
     ]);
     let mut bytes = Vec::new();
     ciborium::ser::into_writer(&value, &mut bytes).map_err(MonitorPayloadError::CborEncode)?;
@@ -1344,13 +1355,14 @@ pub fn decode_link_req_payload(bytes: &[u8]) -> Result<LinkReqPayload, MonitorPa
     }
     let value: Value = ciborium::de::from_reader(bytes).map_err(MonitorPayloadError::CborDecode)?;
     let map = collect_map(&value)?;
-    ensure_exact_keys(&map, &[1, 2, 3, 4, 5])?;
+    ensure_exact_keys(&map, &[1, 2, 3, 4, 5, 6])?;
     Ok(LinkReqPayload {
         linker_node_id: value_to_u16(required(&map, 1)?, 1)?,
         ref_id: value_to_u64(required(&map, 2)?, 2)?,
         target_serial: value_to_u64(required(&map, 3)?, 3)?,
         linker_serial: value_to_u64(required(&map, 4)?, 4)?,
         policy_tag: value_to_u8(required(&map, 5)?, 5)?,
+        reciprocate: value_to_u8(required(&map, 6)?, 6)?,
     })
 }
 

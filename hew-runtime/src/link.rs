@@ -291,6 +291,61 @@ pub(crate) fn propagate_exit_to_links(actor_id: u64, reason: i32) {
         remove_link_by_target(linked_id, actor_id);
         send_exit_signal(linked_id, linked_actor, actor_id, reason);
     }
+
+    // Test-only crash ledger (DIST-9 probe): record the terminal reason so a
+    // two-process link fixture can confirm a LOCAL linked actor actually crashed
+    // (terminal Crashed) after a cross-node link-down, surviving the actor's
+    // free. Gated by HEW_LINK_PROBE so production pays nothing.
+    record_link_probe_terminal(actor_id, reason);
+}
+
+/// `PartitionPolicy::CrashLinked` discriminant (mirrors
+/// `std/link_monitor.hew::PartitionPolicy` / `execution_context::PartitionPolicy`,
+/// where `CrashLinked == 3`). A cross-node link with this policy crashes the
+/// LOCAL linked actor when its remote peer dies; any other policy is non-fatal.
+pub(crate) const POLICY_TAG_CRASH_LINKED: u8 = 3;
+
+/// Fire a cross-node link-down into a LOCAL linked actor (DIST-9).
+///
+/// This is the cross-node mirror of [`send_exit_signal`]: when a remote linked
+/// peer reaches a terminal state, a `CrashLinked` link must synthesize a
+/// `SYS_MSG_EXIT` into the LOCAL linked actor's MAILBOX and crash it — the OTP
+/// fail-together semantic. Unlike the local link table (keyed by `*mut HewActor`
+/// pointers), the cross-node entry stores only the local actor id, so we resolve
+/// the live pointer by id before reusing the same EXIT-synthesis path.
+///
+/// `crashed_remote_serial` is the dead remote peer's serial (carried into the
+/// `ExitMessage` for the typed `#[on(exit)]` consumer). `reason` is the terminal
+/// reason (a `HewActorState` value, or a partition sentinel).
+///
+/// Non-`CrashLinked` policies are non-fatal: the link is recorded but the
+/// remote's death does not crash the local actor (it survives). This is the
+/// policy discriminator that the negative two-process fixture pins.
+///
+/// Returns true if a fatal EXIT was synthesized (`CrashLinked` + a live local
+/// actor); false if the policy was non-fatal or the local actor is already gone.
+pub(crate) fn deliver_cross_node_link_exit(
+    local_actor_id: u64,
+    crashed_remote_serial: u64,
+    reason: i32,
+    policy_tag: u8,
+) -> bool {
+    if policy_tag != POLICY_TAG_CRASH_LINKED {
+        // Non-CrashLinked link: the remote's death is non-fatal to the local
+        // actor (it survives). Recorded for completeness; no EXIT synthesized.
+        return false;
+    }
+    // Resolve the live local actor by id; if it is already terminal/freed, there
+    // is nothing to crash (idempotent / fail-closed — no fabricated EXIT).
+    let Some(actor_ptr) = crate::lifetime::live_actors::get_actor_ptr_by_id(local_actor_id) else {
+        return false;
+    };
+    // Reuse the proven local EXIT-synthesis path (same SYS_MSG_EXIT + CrashKind
+    // projection + Idle→Runnable wake), so supervision / exit-trapping behaves
+    // identically to a local link EXIT. `with_live_actor_by_id` inside
+    // `send_exit_signal` re-validates liveness under the registry lock.
+    send_exit_signal(local_actor_id, actor_ptr, crashed_remote_serial, reason);
+    true
 }
 
 #[cfg(test)]
@@ -406,6 +461,60 @@ struct ExitMessage {
     /// The M-6 `CrashKind` tag projected from `reason` (Crashed=0,
     /// HeapExceeded=1, PartitionDetected=2). Maps to `CrashNotification.kind`.
     crash_kind: i32,
+}
+
+// ── Test-only crash ledger + probe FFI (DIST-9 link cascade observability) ────
+//
+// The cross-node link fixtures need to confirm a LOCAL linked actor actually
+// CRASHED (terminal Crashed) after a cross-node link-down — proving the link-down
+// landed in the mailbox as a SYS_MSG_EXIT and crashed the actor, not in a monitor
+// recv slot. A crashed actor is freed, so the death must be recorded somewhere it
+// survives the free. This ledger does that, gated by HEW_LINK_PROBE so production
+// pays nothing (the env is read once into a LazyLock).
+
+/// Sentinel returned by `hew_link_probe_terminal_state` when the actor has not
+/// (yet) reached a terminal state recorded in the probe ledger.
+const LINK_PROBE_NOT_TERMINAL: i64 = -999;
+
+/// Whether the probe ledger is active (`HEW_LINK_PROBE` set). Read once.
+static LINK_PROBE_ENABLED: LazyLock<bool> =
+    LazyLock::new(|| std::env::var_os("HEW_LINK_PROBE").is_some());
+
+/// `actor_id -> terminal reason`, populated by `propagate_exit_to_links` when the
+/// probe is enabled. Survives the actor's free so a fixture can poll it.
+static LINK_PROBE_LEDGER: LazyLock<std::sync::Mutex<HashMap<u64, i32>>> =
+    LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// Record an actor's terminal reason in the probe ledger (no-op unless enabled).
+fn record_link_probe_terminal(actor_id: u64, reason: i32) {
+    if !*LINK_PROBE_ENABLED {
+        return;
+    }
+    let mut ledger = LINK_PROBE_LEDGER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ledger.insert(actor_id, reason);
+}
+
+/// Test-introspection probe: report the recorded terminal reason for `actor_id`,
+/// or [`LINK_PROBE_NOT_TERMINAL`] if it has not reached a terminal state. Used by
+/// the two-process link fixtures to assert the LOCAL linked actor crashed
+/// (reason == `HewActorState::Crashed` == 5). Not user-callable; the compiler emits
+/// no calls to this symbol. Callable from `.hew` via
+/// `extern "C" { fn hew_link_probe_terminal_state(actor_id: i64) -> i64; }`.
+#[no_mangle]
+pub extern "C" fn hew_link_probe_terminal_state(actor_id: i64) -> i64 {
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "actor_id originates from a u64 actor counter reinterpreted as i64 on the Hew side"
+    )]
+    let actor_id = actor_id as u64;
+    let ledger = LINK_PROBE_LEDGER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ledger
+        .get(&actor_id)
+        .map_or(LINK_PROBE_NOT_TERMINAL, |&reason| i64::from(reason))
 }
 
 /// Returns true if any link entries reference the given actor address.

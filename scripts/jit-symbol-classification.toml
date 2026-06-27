@@ -358,6 +358,7 @@ stable = [
   "hew_node_connect",
   "hew_node_demonitor",
   "hew_node_free",
+  "hew_node_link_remote",
   "hew_node_lookup",
   "hew_node_monitor",
   "hew_node_monitor_recv",
@@ -980,6 +981,15 @@ internal = [
   # target-side monitor table. Used by two-process fixtures to assert bounded
   # table growth after a watcher node dies. Not user-callable; not JIT-reachable.
   "hew_dist_monitor_remote_watcher_count",
+  # Test-introspection probe: returns the current actor's id (-1 outside a
+  # dispatch). A linker actor reports its id so a two-process link fixture can
+  # poll its terminal state. Not user-callable; not JIT-reachable.
+  "hew_actor_self_id",
+  # Test-introspection probe: returns the recorded terminal reason for an actor
+  # id (or a sentinel while live), from the HEW_LINK_PROBE-gated crash ledger.
+  # Used by two-process link fixtures to confirm a local linked actor crashed
+  # via the mailbox EXIT cascade. Not user-callable; not JIT-reachable.
+  "hew_link_probe_terminal_state",
   "hew_fault_clear",
   "hew_fault_clear_all",
   "hew_fault_count",

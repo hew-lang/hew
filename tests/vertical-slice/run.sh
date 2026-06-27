@@ -1988,13 +1988,15 @@ run_accept_expect_status "match_bool_true_false_exhaustive" 0
 # Regex literal match-arm patterns
 # ---------------------------------------------------------------------------
 
-# Typechecker-accept: `re"..."` in match-arm predicate position validates regex
-# syntax, then `hew check` fails closed at codegen-front until regex literal
-# handles are threaded through the pipeline.
-expect_check_fail_contains \
-  "${ROOT}/tests/vertical-slice/accept/regex_match_arm.hew" \
-  "hew_regex_match: @hew_regex_handles global not found" \
-  "regex_match_arm"
+# End-to-end: `re"..."` in match-arm predicate position compiles and runs.
+# Each literal is compiled once at module init into the regex-handle global
+# array; the match-arm predicate dispatches through the compiled handle.
+run_accept_expect_stdout "regex_match_arm"
+
+# End-to-end: a `re"..."` literal bound in value position is a first-class
+# `regex.Pattern` handle, usable through the stdlib regex API and passable to
+# a function.
+run_accept_expect_stdout "regex_literal_value"
 
 # Reject: malformed regex literal in match-arm position (E_INVALID_REGEX_LITERAL).
 # The type checker validates regex syntax before HIR lowering.

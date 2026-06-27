@@ -1089,6 +1089,7 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::RegexCapture
         | F::RegexCompile
         | F::RegexFreeCapture
+        | F::RegexHandle
         | F::RegexMatch
         | F::RemotePidTell
         | F::ReplyChannelCancel
@@ -4706,6 +4707,22 @@ pub(crate) fn primitive_to_llvm<'ctx>(
             // to the D10 fail-closed arm below rather than be silently lowered to
             // an opaque pointer. LESSONS: exhaustive-traversal-and-lowering,
             // boundary-fail-closed, checker-authority.
+            Ok(ctx.ptr_type(AddressSpace::default()).into())
+        }
+        // A `regex.Pattern` value-position binding (`let pat = re"..."`) holds the
+        // compiled `*mut HewRegex` handle. The handle is the SAME `Box<HewRegex>`
+        // pointer that `hew_regex_new`/`hew_regex_compile` return and every
+        // `PatternMethods` FFI entry (`hew_regex_is_match`, …) consumes, so the
+        // slot is a bare opaque `ptr` like every other runtime handle (Duplex,
+        // Vec, HewTask). `regex.Pattern` is `#[opaque]` and classifies as
+        // `ResourceMarker::BitCopy` (no implicit drop — the literal handle is a
+        // module-static slot owned by `@hew_regex_handles`, never freed by the
+        // binding going out of scope). The producer is the `RegexLiteralRef`
+        // value-position arm in `hew-mir/src/lower.rs`, which GEP-loads the
+        // handle from `@hew_regex_handles[literal_id]` into this slot.
+        // Matched on the qualified `regex.Pattern` identity; a bare `Pattern`
+        // never reaches here (the checker stamps the qualified stdlib name).
+        ResolvedTy::Named { name, .. } if name == "regex.Pattern" => {
             Ok(ctx.ptr_type(AddressSpace::default()).into())
         }
         ResolvedTy::Named { name, .. } => Err(CodegenError::FailClosed(format!(
@@ -34929,6 +34946,23 @@ fn build_module_for_target<'ctx>(
         &pipeline.record_layouts,
         &pipeline.enum_layouts,
     )?;
+    // Emit the regex module-init infrastructure BEFORE body lowering, for the
+    // same reason as the wire-text descriptor globals above: the `hew_regex_match`
+    // / `hew_regex_capture` lowering (and the `RegexLiteralRef` value-position
+    // lowering) loads the compiled handle by GEP into `@hew_regex_handles`, so
+    // that global must exist when bodies are lowered. The init function declared
+    // here references only the `@hew_regex_handles` / `@hew_regex_pattern_<i>`
+    // globals it creates internally — it has no dependency on any function body,
+    // so declaring it early is order-safe. The collected ctor is registered into
+    // `@llvm.global_ctors` by `emit_global_ctors` below; the constructor's RUN
+    // order is fixed by its priority (65535), not its definition order, so it
+    // still runs before `main` regardless of where it is emitted.
+    let mut module_init_ctors: Vec<FunctionValue<'ctx>> = Vec::new();
+    if !pipeline.regex_literals.is_empty() {
+        if let Some(f) = emit_regex_module_init(ctx, &llvm_mod, &pipeline.regex_literals)? {
+            module_init_ctors.push(f);
+        }
+    }
     let mut fn_symbols: FnSymbolMap<'ctx> = HashMap::new();
     predeclare_stdlib_catalog(ctx, &llvm_mod, &mut fn_symbols, &record_layouts)?;
     predeclare_extern_decls(
@@ -35254,16 +35288,6 @@ fn build_module_for_target<'ctx>(
             module_uses_runtime,
             fn_debug_ctx.as_ref(),
         )?;
-    }
-    // Emit regex module-init infrastructure if the module uses any regex literals.
-    // This must come AFTER all function bodies are lowered (the init function
-    // references globals declared here) and BEFORE llvm_mod.verify() so the
-    // verifier can check the emitted IR.
-    let mut module_init_ctors: Vec<FunctionValue<'ctx>> = Vec::new();
-    if !pipeline.regex_literals.is_empty() {
-        if let Some(f) = emit_regex_module_init(ctx, &llvm_mod, &pipeline.regex_literals)? {
-            module_init_ctors.push(f);
-        }
     }
     // Emit the cross-node payload codec thunks + registration constructor so a
     // Serializable actor message survives a process hop. The cross-node codec is

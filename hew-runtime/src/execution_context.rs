@@ -34,6 +34,98 @@ pub const EXECUTION_CONTEXT_NOT_INSTALLED_AT_SPAWN: &str =
 #[derive(Debug)]
 pub enum HewActorStateLockState {}
 
+/// Policy governing how a remote `send`/`ask` resolves when the route to the
+/// peer is unavailable or the peer is declared dead by the cluster.
+///
+/// Mirrors the stdlib `PartitionPolicy` enum (`std/link_monitor.hew`) variant
+/// order so a discriminant can round-trip between the two without a translation
+/// table. The carrier is the per-dispatch
+/// [`HewExecutionContext::partition_policy`] slot, encoded **as a small
+/// repr-stable integer tag stored inside the pointer-width slot** — never a heap
+/// pointer. A null slot reads as [`PartitionPolicy::FailFast`] (the default), so
+/// the context-layout offset mirror is unchanged by this lane and no allocation
+/// or drop obligation is attached to the hot dispatch path.
+///
+/// DIST-7 consumes this on the send/ask failure path; DIST-9's `link_remote`
+/// writes a non-default policy into the slot.
+#[repr(usize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PartitionPolicy {
+    /// Return `Partition` immediately when the route is unavailable or suspect.
+    /// The fail-closed default for every remote ask that does not name a policy.
+    #[default]
+    FailFast = 0,
+    /// Retry until the caller deadline, then return `Timeout` or `Partition`.
+    Deadline = 1,
+    /// Resolve monitor and supervision partitions as `MonitorLost`.
+    MonitorLost = 2,
+    /// Cross-node link/supervision fail-together behaviour. **Link-only**: not a
+    /// valid `send`/`ask` policy — DIST-9's `link_remote` owns it. A send/ask
+    /// failure path that observes this tag fails closed rather than silently
+    /// degrading to `FailFast` (no-silent-no-op-stubs).
+    CrashLinked = 3,
+    /// Stop sending to a suspect or dead peer until a fresh incarnation appears.
+    /// DIST-7 admits the variant but treats it as `FailFast` for send/ask
+    /// resolution; incarnation tracking is DIST-8.
+    Quarantine = 4,
+}
+
+impl PartitionPolicy {
+    /// Decode a partition policy from the raw pointer-width slot value.
+    ///
+    /// A null/zero slot is the absence of an explicit policy and reads as the
+    /// `FailFast` default. An unrecognised non-zero tag fails closed to
+    /// `FailFast` rather than fabricating a policy — but such a value can only
+    /// arise from memory corruption, since every writer uses [`Self::to_slot`].
+    #[must_use]
+    pub fn from_slot(slot: *const c_void) -> Self {
+        match slot as usize {
+            1 => Self::Deadline,
+            2 => Self::MonitorLost,
+            3 => Self::CrashLinked,
+            4 => Self::Quarantine,
+            // Tag 0 is the absence of an explicit policy (the FailFast default);
+            // any other value is unreachable via `to_slot` and fails closed to
+            // the same default rather than fabricating a policy.
+            _ => Self::FailFast,
+        }
+    }
+
+    /// Encode this policy as the raw pointer-width slot value (an integer tag,
+    /// not a heap pointer).
+    #[must_use]
+    pub fn to_slot(self) -> *mut c_void {
+        (self as usize) as *mut c_void
+    }
+
+    /// Whether this policy is a valid choice for a remote `send`/`ask` call.
+    ///
+    /// `CrashLinked` is link-only (DIST-9); it is never a send/ask policy. A
+    /// send/ask path that reads `CrashLinked` must fail closed.
+    #[must_use]
+    pub fn is_valid_for_send_ask(self) -> bool {
+        !matches!(self, Self::CrashLinked)
+    }
+}
+
+/// Read the partition policy in effect for the current dispatch.
+///
+/// Returns [`PartitionPolicy::FailFast`] when no execution context is installed
+/// or the policy slot is null (the default). Used by the remote send/ask failure
+/// path to select the partition outcome.
+#[must_use]
+pub fn current_partition_policy() -> PartitionPolicy {
+    let ctx = current_context();
+    if ctx.is_null() {
+        return PartitionPolicy::FailFast;
+    }
+    // SAFETY: `current_context` returns either null (handled above) or a live
+    // canonical context installed by the scheduler for this dispatch. The
+    // `partition_policy` field is a plain pointer-width integer tag.
+    let slot = unsafe { (*ctx).partition_policy };
+    PartitionPolicy::from_slot(slot.cast_const())
+}
+
 /// Target-architecture-aware byte size of [`HewExecutionContext`].
 ///
 /// Derived from `size_of` rather than a literal so the value is correct on
@@ -125,7 +217,12 @@ pub struct HewExecutionContext {
     pub arena: *mut HewArena,
     /// Trace context active for this dispatch.
     pub trace: HewTraceContext,
-    /// Reserved Q29 partition-policy lane; always null before Q29.
+    /// Partition policy governing remote `send`/`ask` resolution for this
+    /// dispatch, encoded as a small repr-stable integer tag in the
+    /// pointer-width slot (see [`PartitionPolicy`]). Null reads as the
+    /// `FailFast` default. DIST-7 reads it on the send/ask failure path;
+    /// DIST-9's `link_remote` writes a non-default policy here. Never a heap
+    /// pointer — no allocation or drop on the hot dispatch path.
     pub partition_policy: *mut c_void,
     /// Previous canonical context for nested dispatch restoration.
     pub prev_context: *mut HewExecutionContext,
@@ -625,6 +722,82 @@ mod tests {
         // this assertion holds on all targets (128 on native 64-bit, 96 on
         // wasm32) without needing per-target conditional compilation.
         assert_eq!(std::mem::size_of::<HewExecutionContext>(), HEW_CTX_SIZE);
+    }
+
+    /// Every `PartitionPolicy` variant round-trips through the pointer-width
+    /// slot, and a null slot reads as the `FailFast` default.
+    #[test]
+    fn partition_policy_round_trips_through_slot() {
+        for policy in [
+            PartitionPolicy::FailFast,
+            PartitionPolicy::Deadline,
+            PartitionPolicy::MonitorLost,
+            PartitionPolicy::CrashLinked,
+            PartitionPolicy::Quarantine,
+        ] {
+            let slot = policy.to_slot();
+            assert_eq!(
+                PartitionPolicy::from_slot(slot.cast_const()),
+                policy,
+                "policy {policy:?} did not round-trip through the slot"
+            );
+        }
+        // A null slot is the absence of a policy → FailFast default.
+        assert_eq!(
+            PartitionPolicy::from_slot(ptr::null()),
+            PartitionPolicy::FailFast,
+            "null slot must read as the FailFast default"
+        );
+        // An out-of-range tag fails closed to FailFast (only reachable via
+        // memory corruption; every writer uses to_slot).
+        assert_eq!(
+            PartitionPolicy::from_slot(99usize as *const c_void),
+            PartitionPolicy::FailFast,
+            "unrecognised tag must fail closed to FailFast"
+        );
+    }
+
+    /// `CrashLinked` is rejected as a send/ask policy (link-only, DIST-9); every
+    /// other variant DIST-7 admits on send/ask is accepted.
+    #[test]
+    fn crash_linked_is_not_valid_for_send_ask() {
+        assert!(!PartitionPolicy::CrashLinked.is_valid_for_send_ask());
+        for policy in [
+            PartitionPolicy::FailFast,
+            PartitionPolicy::Deadline,
+            PartitionPolicy::MonitorLost,
+            PartitionPolicy::Quarantine,
+        ] {
+            assert!(
+                policy.is_valid_for_send_ask(),
+                "{policy:?} must be a valid send/ask policy"
+            );
+        }
+    }
+
+    /// With no execution context installed, the policy reader returns the
+    /// `FailFast` default rather than dereferencing a null context.
+    #[test]
+    fn current_partition_policy_defaults_to_fail_fast_without_context() {
+        let _context_guard = ContextResetGuard::new();
+        let _ = set_current_context(ptr::null_mut());
+        assert_eq!(current_partition_policy(), PartitionPolicy::FailFast);
+    }
+
+    /// The policy reader projects the installed context's slot tag.
+    #[test]
+    fn current_partition_policy_reads_installed_slot() {
+        let _runtime_guard = crate::runtime_test_guard();
+        let _context_guard = ContextResetGuard::new();
+
+        let mut ctx = HewExecutionContext {
+            partition_policy: PartitionPolicy::Deadline.to_slot(),
+            ..HewExecutionContext::default()
+        };
+        let installed = &raw mut ctx;
+        let prev = set_current_context(installed);
+        assert_eq!(current_partition_policy(), PartitionPolicy::Deadline);
+        let _ = set_current_context(prev);
     }
 
     /// SEC-1 regression: a scoped reply-channel swap must transfer BOTH the

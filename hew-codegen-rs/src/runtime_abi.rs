@@ -2893,6 +2893,71 @@ pub(crate) fn lower_call_runtime_abi(
                 .llvm_ctx("hew_regex_capture store")?;
         }
 
+        // hew_regex_handle(literal_id: i64) -> *HewRegex
+        //
+        // Value-position regex literal (`let pat = re"..."`). Synthetic: there is
+        // no runtime call — the compiled handle is GEP-loaded from
+        // `@hew_regex_handles[literal_id]` (the same load the match/capture arms
+        // perform before THEIR runtime call) and stored straight into the
+        // destination `regex.Pattern` local, which `primitive_to_llvm` materialises
+        // as an opaque `ptr`. The loaded handle is the same `*mut HewRegex` that
+        // `PatternMethods` FFI entries (`hew_regex_is_match`, …) accept, so the
+        // value is immediately usable through the stdlib regex API.
+        //
+        // args[0]: literal_id (ConstI64 local; GEP index into @hew_regex_handles)
+        // dest:    regex.Pattern local (opaque ptr; receives the handle pointer)
+        F::RegexHandle => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_regex_handle): expected 1 arg \
+                     (literal_id), got {}",
+                    args.len()
+                )));
+            }
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_regex_handle: producer must supply a dest place for the handle ptr"
+                        .into(),
+                )
+            })?;
+            // arg0: literal_id — ConstI64 → GEP index into @hew_regex_handles.
+            let lit_id = load_int_arg(fn_ctx, args[0], i64_ty, "hew_regex_handle lit_id")?;
+            let handle_arr_global =
+                fn_ctx
+                    .llvm_mod
+                    .get_global("hew_regex_handles")
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "hew_regex_handle: @hew_regex_handles global not found — \
+                             regex_literals must be non-empty in the pipeline to emit the global"
+                                .into(),
+                        )
+                    })?;
+            let handle_arr_ty = handle_arr_global.get_value_type().into_array_type();
+            let slot_ptr = unsafe {
+                fn_ctx
+                    .builder
+                    .build_gep(
+                        handle_arr_ty,
+                        handle_arr_global.as_pointer_value(),
+                        &[i64_ty.const_zero(), lit_id],
+                        "regex_handle_slot",
+                    )
+                    .llvm_ctx("hew_regex_handle GEP")?
+            };
+            let handle = fn_ctx
+                .builder
+                .build_load(ptr_ty, slot_ptr, "regex_handle")
+                .llvm_ctx("hew_regex_handle load")?
+                .into_pointer_value();
+            // Store the handle pointer into the regex.Pattern destination local.
+            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, handle)
+                .llvm_ctx("hew_regex_handle store")?;
+        }
+
         // hew_regex_free_capture(ptr: *mut c_char) -> void
         //
         // args[0]: the i64 capture place (pointer bit-pattern stored as i64 via ptrtoint).

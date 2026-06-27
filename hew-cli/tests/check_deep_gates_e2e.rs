@@ -84,10 +84,21 @@ fn check_fails_on_hir_gate_before_ok() {
 
 #[test]
 fn check_fails_on_mir_gate_before_ok() {
+    // A functional-update override that aliases the consumed base
+    // (`VHolder { items: s.items, ..s }`) is a fail-closed MIR gate: the base's
+    // overridden owned field is released at the construction site, so the new
+    // record would alias freed memory. This is an intentional, durable MIR
+    // `NotYetImplemented` (the COW value model that would keep the base live is
+    // not built), so it is a stable trigger for "hew check fails at the MIR
+    // gate with a clean, source-attributed diagnostic".
     let (_dir, path) = write_fixture(
-        "fn main() -> i64 {\n\
-         \x20\x20\x20\x20let _r = re\"hello\";\n\
-         \x20\x20\x20\x20return 0;\n\
+        "record VHolder { items: Vec<i64>, tag: string }\n\
+         fn main() {\n\
+         \x20\x20\x20\x20let init: Vec<i64> = Vec::new();\n\
+         \x20\x20\x20\x20init.push(7);\n\
+         \x20\x20\x20\x20let s = VHolder { items: init, tag: \"base\" };\n\
+         \x20\x20\x20\x20let s2 = VHolder { items: s.items, ..s };\n\
+         \x20\x20\x20\x20println(s2.items.len());\n\
          }\n",
     );
 
@@ -104,11 +115,14 @@ fn check_fails_on_mir_gate_before_ok() {
         "MIR gate diagnostic should be rendered; got:\n{stderr}",
     );
     assert!(
-        stderr.contains("main.hew:2:"),
+        stderr.contains("main.hew:6:"),
         "MIR gate diagnostic should be source-attributed; got:\n{stderr}",
     );
     assert!(
-        stderr.contains("MIR lowering for HirExprKind::RegexLiteralRef is not implemented yet"),
+        stderr.contains(
+            "MIR lowering for functional-update override aliasing the consumed base \
+             is not implemented yet"
+        ),
         "MIR diagnostic should use a user-readable message; got:\n{stderr}",
     );
     assert!(
@@ -227,10 +241,17 @@ fn check_werror_still_promotes_frontend_warnings() {
 
 #[test]
 fn check_no_typecheck_skips_hir_mir_gates() {
+    // The self-aliasing functional-update is a MIR gate failure under a full
+    // check (see `check_fails_on_mir_gate_before_ok`); under `--no-typecheck`
+    // the gate is skipped, so the same fixture passes.
     let (_dir, path) = write_fixture(
-        "fn main() -> i64 {\n\
-         \x20\x20\x20\x20let _r = re\"hello\";\n\
-         \x20\x20\x20\x20return 0;\n\
+        "record VHolder { items: Vec<i64>, tag: string }\n\
+         fn main() {\n\
+         \x20\x20\x20\x20let init: Vec<i64> = Vec::new();\n\
+         \x20\x20\x20\x20init.push(7);\n\
+         \x20\x20\x20\x20let s = VHolder { items: init, tag: \"base\" };\n\
+         \x20\x20\x20\x20let s2 = VHolder { items: s.items, ..s };\n\
+         \x20\x20\x20\x20println(s2.items.len());\n\
          }\n",
     );
 

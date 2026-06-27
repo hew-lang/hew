@@ -334,6 +334,24 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     //   returns or trap paths would leak. Real fix requires scope-exit cleanup
     //   primitives in MIR (v0.6 substrate lane).
     "hew_regex_free_capture",
+    // `hew_regex_handle(literal_id: i64) -> *HewRegex` — synthetic emitter symbol
+    //   for the value-position regex literal (`let pat = re"..."`). It is NOT a
+    //   real runtime extern: codegen's `RuntimeCallFamily::RegexHandle` arm
+    //   resolves it entirely by GEP-loading the compiled handle from
+    //   `@hew_regex_handles[literal_id]` into the destination local — the same
+    //   load `hew_regex_match` / `hew_regex_capture` perform before their actual
+    //   runtime call — so no `hew_regex_handle` function is ever declared or
+    //   called. Allowlisted because the MIR producer (`lower_value`'s
+    //   `RegexLiteralRef` arm) emits it via `Instr::CallRuntimeAbi` and
+    //   `RuntimeCall::new` validates the symbol against this list.
+    //   WHY a synthetic CallRuntimeAbi symbol not a new MIR `Place`: the handle
+    //   is a borrowed `*const HewRegex` into a module-static slot with no drop
+    //   semantics (`regex.Pattern` is `#[opaque]`/`BitCopy`), so it needs no
+    //   drop-elaboration surface; reusing the existing GEP-load avoids a new
+    //   `Place` variant the drop elaborator, dataflow, and verify passes would
+    //   each have to grow an arm for. WHAT: the GEP-load arm in
+    //   `hew-codegen-rs/src/runtime_abi.rs` (`F::RegexHandle`).
+    "hew_regex_handle",
     // `hew_regex_match(scrutinee: *const u8, literal_id: i64) -> i32` — returns
     //   1 if the pattern for `literal_id` matches, 0 otherwise. `literal_id`
     //   is the 0-based index into the module's regex-literal global array; the

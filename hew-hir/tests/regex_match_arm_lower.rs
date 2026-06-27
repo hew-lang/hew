@@ -4,9 +4,10 @@
 /// `lower_match_expr` when a `PatternKind::Regex { captures }` arm is
 /// resolved by the type checker and presented to HIR lowering.
 ///
-/// Gate: slice 3 — verifies `HirMatchArmPredicate`, `HirRegexLiteral` table,
-/// and `HirExprKind::RegexLiteralRef`. Slice 4 (MIR lowering) is NOT wired;
-/// any attempt to compile these programs through MIR will `todo!()`.
+/// Verifies the HIR shape — `HirMatchArmPredicate`, the `HirRegexLiteral`
+/// table, and `HirExprKind::RegexLiteralRef`. MIR lowering and codegen for both
+/// the match-arm and value positions are wired; the end-to-end behaviour is
+/// proven by the vertical-slice regex fixtures.
 use hew_hir::{
     lower_program, HirExprKind, HirItem, HirMatchArmPredicate, HirStmtKind, ResolutionCtx,
 };

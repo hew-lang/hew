@@ -21,6 +21,21 @@ fn write_fixture(source: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     (dir, path)
 }
 
+/// A program that fails closed at the MIR gate with a `NotYetImplemented`
+/// diagnostic: a functional-update override that aliases the consumed base.
+/// The base's overridden owned field is released at the construction site, so
+/// the new record would alias freed memory — an intentional, durable MIR gate
+/// (the COW value model that would keep the base live is not built). The error
+/// is source-attributed at line 6 (the construction expression).
+const MIR_NYI_FIXTURE: &str = "record VHolder { items: Vec<i64>, tag: string }\n\
+     fn main() {\n\
+     \x20\x20\x20\x20let init: Vec<i64> = Vec::new();\n\
+     \x20\x20\x20\x20init.push(7);\n\
+     \x20\x20\x20\x20let s = VHolder { items: init, tag: \"base\" };\n\
+     \x20\x20\x20\x20let s2 = VHolder { items: s.items, ..s };\n\
+     \x20\x20\x20\x20println(s2.items.len());\n\
+     }\n";
+
 fn run(args: &[&str]) -> std::process::Output {
     Command::new(hew_binary())
         .args(args)
@@ -118,9 +133,7 @@ fn check_clean_program_emits_empty_array_and_exits_0() {
 /// Debug payload and no `0x` hex — it reads as a human limitation.
 #[test]
 fn check_not_yet_implemented_json_has_no_debug_payload() {
-    // A standalone regex literal triggers a MIR `NotYetImplemented` gate.
-    let (_dir, path) =
-        write_fixture("fn main() -> i64 {\n    let _r = re\"hello\";\n    return 0;\n}\n");
+    let (_dir, path) = write_fixture(MIR_NYI_FIXTURE);
     let output = run(&["check", "--format=json", path.to_str().unwrap()]);
 
     assert_eq!(
@@ -154,8 +167,7 @@ fn check_not_yet_implemented_json_has_no_debug_payload() {
 /// Rust Debug struct payloads. This is the strongest guard for the leak fix.
 #[test]
 fn check_json_payload_is_free_of_debug_structs() {
-    let (_dir, path) =
-        write_fixture("fn main() -> i64 {\n    let _r = re\"hello\";\n    return 0;\n}\n");
+    let (_dir, path) = write_fixture(MIR_NYI_FIXTURE);
     let output = run(&["check", "--format=json", path.to_str().unwrap()]);
     let stdout = String::from_utf8_lossy(&output.stdout);
 
@@ -243,8 +255,7 @@ fn check_default_text_format_is_unchanged() {
 /// fix, observed from the compile path the audit pinpointed).
 #[test]
 fn compile_mir_gate_failure_json_has_no_debug_payload() {
-    let (_dir, path) =
-        write_fixture("fn main() -> i64 {\n    let _r = re\"hello\";\n    return 0;\n}\n");
+    let (_dir, path) = write_fixture(MIR_NYI_FIXTURE);
     let output = run(&["compile", "--format=json", path.to_str().unwrap()]);
 
     assert_eq!(
@@ -269,8 +280,7 @@ fn compile_mir_gate_failure_json_has_no_debug_payload() {
 /// Debug payload — this is the before/after guard for the `main.rs` leak site.
 #[test]
 fn compile_mir_gate_failure_text_has_no_debug_payload() {
-    let (_dir, path) =
-        write_fixture("fn main() -> i64 {\n    let _r = re\"hello\";\n    return 0;\n}\n");
+    let (_dir, path) = write_fixture(MIR_NYI_FIXTURE);
     let output = run(&["compile", path.to_str().unwrap()]);
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
 
@@ -286,7 +296,7 @@ fn compile_mir_gate_failure_text_has_no_debug_payload() {
         "compile should render the user-readable MIR message; got:\n{stderr}",
     );
     assert!(
-        stderr.contains("main.hew:2:"),
+        stderr.contains("main.hew:6:"),
         "compile MIR diagnostic should be source-attributed; got:\n{stderr}",
     );
 }

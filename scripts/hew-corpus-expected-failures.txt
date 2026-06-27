@@ -72,9 +72,6 @@ examples/quic_mesh/selector_smoke.hew
 examples/quic_service/client.hew
 examples/quic_service/server.hew
 
-# deferred-nyi: regex NYI in codegen
-examples/regex_demo.hew
-
 # deferred-nyi: advanced actor patterns NYI
 examples/services/circuit_breaker.hew
 examples/services/distributed_counter.hew
@@ -87,7 +84,6 @@ examples/v05/channel_vec_element_fails.hew
 
 # deferred-nyi: checked-mir v05 examples using NYI features
 examples/v05/checked-mir/actor_link_monitor.hew
-examples/v05/checked-mir/regex_match_literal.hew
 
 # deferred-nyi: f64 key/annotation expected-fail test fixtures
 examples/v05/hashmap_f64_annotation_fails.hew
@@ -115,7 +111,6 @@ hew-lsp/tests/fixtures/v05_machine_methods.hew
 hew-lsp/tests/fixtures/v05_machine_states.hew
 hew-lsp/tests/fixtures/v05_machine_substrate.hew
 hew-lsp/tests/fixtures/v05_record_tuple_literal.hew
-hew-lsp/tests/fixtures/v05_regex_literal.hew
 hew-lsp/tests/fixtures/v05_scope_fork.hew
 hew-lsp/tests/fixtures/v05_std_channels.hew
 
@@ -296,9 +291,6 @@ tests/pkg-import/samename_type_layout.hew
 
 # deferred-nyi: local fn msg actor method
 tests/vertical-slice/accept/local_fn_msg_actor_method_allowed.hew
-
-# deferred-nyi: regex match arm NYI
-tests/vertical-slice/accept/regex_match_arm.hew
 
 # deferred-nyi: select recv guard NYI
 

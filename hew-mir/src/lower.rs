@@ -13660,33 +13660,47 @@ impl Builder {
                 self.start_dead_block(dead);
                 None
             }
-            HirExprKind::RegexLiteralRef { .. } => {
-                // Standalone regex literal expressions (as opposed to match-arm
-                // patterns) require a module-level global slot for the compiled
-                // `*HewRegex` handle. There is no first-class HIR producer that
-                // emits `RegexLiteralRef` in a value-expression position today —
-                // match-arm regex is lowered via `HirMatchArmPredicate::Regex`
-                // not through `lower_value`. Fail closed: emit a diagnostic so
-                // any future producer that accidentally routes here is caught at
-                // MIR construction, not silently at codegen.
+            HirExprKind::RegexLiteralRef { literal_id, .. } => {
+                // Standalone regex literal in value position (`let pat = re"..."`,
+                // or passing `re"..."` to a function). The pattern was compiled
+                // once at module init into `@hew_regex_handles[literal_id]`; here
+                // we materialise the compiled `*HewRegex` handle into a fresh
+                // `regex.Pattern` local so the value is usable through the stdlib
+                // regex API (`pat.is_match(text)` etc.).
                 //
-                // WHY NotYetImplemented (not wired in slice 4): slice 4 wires
-                // match-arm regex predicate dispatch; standalone regex-as-value
-                // semantics (passing a compiled regex to a function, storing it
-                // in a let binding, etc.) require a `Place::RegexGlobal` primitive
-                // and module-init global allocation that land in slice 5.
-                // WHEN-OBSOLETE: when a HIR producer emits `RegexLiteralRef` in
-                // a value position and slice 5 wires the global-slot place.
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::NotYetImplemented {
-                        construct: "HirExprKind::RegexLiteralRef".to_string(),
-                        site: expr.site,
-                    },
-                    note: "standalone regex literal expression lowering — not yet wired; \
-                           match-arm regex patterns are lowered via HirMatchArmPredicate::Regex"
-                        .to_string(),
+                // Reuses the same id-keyed indirection the match-arm path uses:
+                // a `ConstI64(literal_id)` local feeds a `CallRuntimeAbi` whose
+                // codegen arm GEP-loads the handle from the global array. The
+                // synthetic `hew_regex_handle` family performs ONLY the GEP-load
+                // (no runtime call) and stores the handle into `dest`. The handle
+                // is a borrowed pointer into the module-static slot — `regex.Pattern`
+                // is `#[opaque]`/`BitCopy` with no drop, so no cleanup is emitted.
+                let lit_local = self.alloc_local(ResolvedTy::I64);
+                self.push_instr(Instr::ConstI64 {
+                    dest: lit_local,
+                    value: i64::from(*literal_id),
                 });
-                None
+                let handle_local = self.alloc_local(self.subst_ty(&expr.ty));
+                match crate::model::RuntimeCall::new(
+                    "hew_regex_handle",
+                    vec![lit_local],
+                    Some(handle_local),
+                ) {
+                    Ok(call) => self.push_instr(Instr::CallRuntimeAbi(call)),
+                    Err(e) => {
+                        // The symbol is in the allowlist; reaching here is a code
+                        // invariant violation, not a user error.
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct: format!("hew_regex_handle runtime call: {e}"),
+                                site: expr.site,
+                            },
+                            note: "hew_regex_handle must be in the runtime allowlist".to_string(),
+                        });
+                        return None;
+                    }
+                }
+                Some(handle_local)
             }
             HirExprKind::GenBlock {
                 body,

@@ -149,6 +149,13 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     "hew_regex_capture",
     "hew_regex_compile",
     "hew_regex_free_capture",
+    // -- Synthetic codegen-only family: `hew_regex_handle` names the
+    //    value-position regex literal materialisation (`let pat = re"..."`).
+    //    It carries no runtime symbol — codegen GEP-loads the compiled handle
+    //    from `@hew_regex_handles[literal_id]` — and is exercised by the
+    //    vertical-slice `regex_literal_value` fixture, not the golden
+    //    checked-mir corpus, so it pins as uncovered here.
+    "hew_regex_handle",
     "hew_string_char_count",
     // -- `string.get` lowers to a `Terminator::Call` whose callee codegen
     //    intercepts to build `Option<char>`; the call carries the callee as a

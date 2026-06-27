@@ -371,6 +371,14 @@ pub enum RuntimeCallFamily {
     RegexCapture,
     RegexCompile,
     RegexFreeCapture,
+    /// Value-position regex literal handle materialisation (`let pat = re"..."`).
+    /// Not a real runtime symbol: codegen resolves this entirely by GEP-loading
+    /// the compiled `*HewRegex` handle from `@hew_regex_handles[literal_id]` into
+    /// the destination local (the same load `RegexMatch`/`RegexCapture` perform
+    /// before their actual runtime call). The C-symbol spelling `hew_regex_handle`
+    /// names the synthetic family for the round-trip bijection only; no extern of
+    /// that name is ever declared or called.
+    RegexHandle,
     RegexMatch,
 
     // --- RemotePid<T>::tell intercept --------------------------------------
@@ -647,6 +655,7 @@ impl RuntimeCallFamily {
             Self::RegexCapture => "hew_regex_capture",
             Self::RegexCompile => "hew_regex_compile",
             Self::RegexFreeCapture => "hew_regex_free_capture",
+            Self::RegexHandle => "hew_regex_handle",
             Self::RegexMatch => "hew_regex_match",
             // RemotePid<T>::tell intercept
             Self::RemotePidTell => "hew_remote_pid_tell",
@@ -893,6 +902,7 @@ impl RuntimeCallFamily {
             "hew_regex_capture" => Self::RegexCapture,
             "hew_regex_compile" => Self::RegexCompile,
             "hew_regex_free_capture" => Self::RegexFreeCapture,
+            "hew_regex_handle" => Self::RegexHandle,
             "hew_regex_match" => Self::RegexMatch,
             // RemotePid<T>::tell intercept
             "hew_remote_pid_tell" => Self::RemotePidTell,
@@ -1152,6 +1162,7 @@ impl RuntimeCallFamily {
             | F::RegexCapture
             | F::RegexCompile
             | F::RegexFreeCapture
+            | F::RegexHandle
             | F::RegexMatch
             | F::RemotePidTell
             | F::ReplyChannelCancel

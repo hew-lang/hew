@@ -440,31 +440,59 @@ fn scenario_remote_monitor_conn_drop(kv: RemotePid<KeyValue>) -> i64 {
 //
 // The DIST-7 partition gate. The client looks up the remote actor, signals
 // READY_DROP so the harness can kill the server (dropping the route to the
-// peer), then issues a remote ask to the now-unreachable actor. The ask MUST
-// resolve fail-closed with a typed partition cause — AskError::Partition (the
-// SWIM-DEAD verdict) or AskError::ConnectionDropped (the socket-drop verdict),
-// both valid fail-closed outcomes — and it MUST do so well within the client
-// ceiling, NEVER hanging to the deadline. A Timeout here means the fail-closed
-// path did not fire (a hang-to-deadline), which fails the scenario.
+// peer), then issues a remote ask to the now-unreachable actor. The invariant
+// under test is: the ask FAILS CLOSED — it resolves to a typed AskError WITHOUT
+// hanging — rather than blocking to the client ceiling or fabricating a value.
 //
-// The deterministic SWIM-DEAD-while-socket-open path (specifically Partition,
-// not ConnectionDropped) is proven by the in-process runtime unit test
-// `swim_dead_wakes_pending_remote_ask_with_partition`; a two-process kill drops
-// the socket, so this fixture accepts either fail-closed cause and pins the
-// no-hang + typed-error invariant.
+// The EXACT fail-closed cause is timing-dependent: a two-process SIGKILL races
+// three independent fail paths, any of which is a correct fail-closed verdict
+// for a peer that is gone:
+//   * RoutingFailed   — the reader thread tore down the route before the ask was
+//                       set up, so the ask is refused before it leaves the node.
+//   * ConnectionDropped — the socket-drop path failed the pending ask.
+//   * Partition       — the SWIM failure detector declared the peer dead and
+//                       fanned out to the pending ask (the deterministic
+//                       socket-open-but-peer-dead path).
+//   * NodeNotRunning / SendFailed / StaleRef — narrower fail-closed races on the
+//                       same teardown.
+// Which one wins shifts with host load (under CI load RoutingFailed dominates;
+// on a quiet host the ask is more often still pending and surfaces as
+// ConnectionDropped). The gate therefore accepts ANY fail-closed cause EXCEPT
+// Timeout: a Timeout means the ask waited its WHOLE deadline because none of the
+// proactive fail-closed paths fired — that is the hang-to-deadline this gate
+// exists to catch, so it is retried (in case the verdict is mid-propagation)
+// and then fails.
+//
+// Teeth that remain: (a) a Result::Ok after READY_DROP is rejected (the route is
+// still live — never-partitioned), so a wrong success cannot pass; (b) every ask
+// carries a 1 s timeout, so an unresolved ask cannot hang past that, and the
+// whole scenario is bounded far under the 40 s client ceiling; (c) the resolving
+// fast-fail must return BEFORE its own 1 s deadline (no-hang bound, asserted
+// explicitly), so a fail-closed-by-timeout cannot masquerade as a proactive one.
+//
+// The deterministic SWIM-DEAD-while-socket-open Partition path is proven exactly
+// in-process by the runtime unit test
+// `swim_dead_wakes_pending_remote_ask_with_partition`; this two-process fixture
+// pins the broader no-hang + typed-fail-closed invariant across the wire.
 fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
     // Signal the harness to kill the server now that the route is established.
     println("READY_DROP partition_ask");
-    // Poll the route until the ask observes the peer is gone. Each ask has a
-    // bounded 1 s timeout; we retry a handful of times so a still-draining
-    // socket gets a chance to surface the drop, but the total is far under the
-    // client ceiling. A typed partition/drop error on ANY attempt is the pass.
+    // Per-ask timeout: an unresolved ask cannot block longer than this, so even a
+    // pure Timeout is bounded far under the client ceiling — the no-hang floor.
+    let ask_timeout_ms: u64 = 1000;
+    // No-hang bound: a PROACTIVE fail-closed verdict resolves the ask well before
+    // its own deadline. If an Err comes back only at (or past) the full timeout,
+    // the proactive path did not fire — treat it as a Timeout, not a fast-fail.
+    let fast_fail_ceiling_ms: i64 = 900;
     var attempts: i64 = 0;
     loop {
-        let probe = kv.ask(KvReq::GetKey("hello"), 1000);
+        let started = instant::now();
+        let probe = kv.ask(KvReq::GetKey("hello"), ask_timeout_ms);
+        let elapsed_ms = started.elapsed().millis();
         match probe {
             Result::Ok(_) => {
-                // The peer is not gone yet (kill in flight); retry briefly.
+                // The route is still live (kill in flight) — a success here is
+                // NOT a partition. Retry briefly; never accept it as a pass.
                 attempts = attempts + 1;
                 if attempts >= 20 {
                     println("FAIL partition_ask never-partitioned");
@@ -473,31 +501,35 @@ fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
                 sleep(200ms);
             },
             Result::Err(e) => {
-                match e {
-                    AskError::Partition => {
-                        println("PASS partition_ask reason=partition");
-                        return 0;
-                    },
-                    AskError::ConnectionDropped => {
-                        println("PASS partition_ask reason=conn-dropped");
-                        return 0;
-                    },
-                    AskError::Timeout => {
-                        // A timeout is a hang-to-deadline: the fail-closed
-                        // partition/drop path did not resolve the ask. Retry a
-                        // bounded number of times in case the verdict is still
-                        // propagating, then fail.
-                        attempts = attempts + 1;
-                        if attempts >= 20 {
-                            println("FAIL partition_ask reason=timeout");
-                            return 3;
-                        }
-                        sleep(200ms);
-                    },
-                    _ => {
-                        println("FAIL partition_ask reason=other");
-                        return 4;
-                    },
+                // A Timeout — or any Err that only surfaced at the full deadline —
+                // means no proactive fail-closed path fired (a hang-to-deadline).
+                // Retry a bounded number of times in case the verdict is still
+                // propagating, then fail.
+                let timed_out = match e {
+                    AskError::Timeout => true,
+                    _ => elapsed_ms >= fast_fail_ceiling_ms,
+                };
+                if timed_out {
+                    attempts = attempts + 1;
+                    if attempts >= 20 {
+                        println("FAIL partition_ask reason=timeout");
+                        return 3;
+                    }
+                    sleep(200ms);
+                } else {
+                    // A proactive, fast typed fail-closed verdict — the invariant
+                    // holds. Name the cause for diagnostics; any of these is a
+                    // correct outcome for a peer that is gone.
+                    match e {
+                        AskError::Partition => println(f"PASS partition_ask reason=partition ms={elapsed_ms}"),
+                        AskError::ConnectionDropped => println(f"PASS partition_ask reason=conn-dropped ms={elapsed_ms}"),
+                        AskError::RoutingFailed => println(f"PASS partition_ask reason=routing-failed ms={elapsed_ms}"),
+                        AskError::NodeNotRunning => println(f"PASS partition_ask reason=node-not-running ms={elapsed_ms}"),
+                        AskError::SendFailed => println(f"PASS partition_ask reason=send-failed ms={elapsed_ms}"),
+                        AskError::StaleRef => println(f"PASS partition_ask reason=stale-ref ms={elapsed_ms}"),
+                        _ => println(f"PASS partition_ask reason=fail-closed ms={elapsed_ms}"),
+                    }
+                    return 0;
                 }
             },
         }

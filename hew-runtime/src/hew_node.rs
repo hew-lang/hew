@@ -2548,6 +2548,198 @@ pub unsafe extern "C" fn hew_node_send(
     rc
 }
 
+// ── Cross-node monitor (DIST-6) ──────────────────────────────────────────────
+
+/// Encode a `CTRL_MONITOR_*` control frame and send it on the connection routing
+/// to `target_pid`'s node. Returns 0 on a successful send, -1 otherwise (no
+/// route, no manager, encode failure). Never panics; logs via `set_last_error`.
+///
+/// # Safety
+///
+/// `node` must be a valid running `HewNode` pointer.
+unsafe fn send_monitor_control_frame(
+    node: &HewNode,
+    target_pid: u64,
+    ctrl_kind: u64,
+    payload: Vec<u8>,
+) -> c_int {
+    if node.conn_mgr.is_null() || node.routing_table.is_null() {
+        set_last_error("cross-node monitor: node has no connection manager / routing table");
+        return -1;
+    }
+    // SAFETY: routing table pointer is valid while the node is running.
+    let conn_id = unsafe { routing::hew_routing_lookup(node.routing_table, target_pid) };
+    if conn_id < 0 {
+        set_last_error("cross-node monitor: no route to target node");
+        return -1;
+    }
+    let frame = crate::envelope::ControlFrame {
+        version: crate::envelope::WIRE_VERSION,
+        ctrl_kind,
+        payload,
+    };
+    let bytes = match crate::envelope::encode_control_frame(&frame) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            set_last_error(format!(
+                "cross-node monitor control frame encode failure: {err}"
+            ));
+            return -1;
+        }
+    };
+    // SAFETY: conn_mgr validated above; bytes is a complete encoded frame.
+    unsafe {
+        connection::hew_connmgr_send_preencoded(node.conn_mgr, conn_id, bytes.as_ptr(), bytes.len())
+    }
+}
+
+/// `monitor(RemotePid<T>)` → register a cross-node monitor and return its
+/// `ref_id`.
+///
+/// Resolves the current node, records a watcher-side entry keyed by a fresh
+/// `ref_id`, and sends a `CTRL_MONITOR_REQ` to the node owning `target_pid` so
+/// that node will fan a `CTRL_MONITOR_DOWN` back when the target reaches a
+/// terminal state. The returned `ref_id` is assembled into the `MonitorRef`
+/// value and is the key `hew_node_monitor_recv` blocks on.
+///
+/// Fail-closed: returns 0 (an invalid `ref_id`) when there is no current node,
+/// the target is local (cross-node monitor requires a remote target), or no
+/// route exists. The watcher entry is still recorded on a send failure so a
+/// later connection-drop fan-out can still deliver `MonitorLost` (the route may
+/// recover, or the drop itself is the terminal signal).
+#[no_mangle]
+pub extern "C" fn hew_node_monitor(target_pid: u64) -> u64 {
+    let Some(rt) = crate::runtime::rt_current_opt() else {
+        set_last_error("hew_node_monitor: no runtime installed");
+        return 0;
+    };
+    let remote_node_id = crate::pid::hew_pid_node(target_pid);
+    let target_serial = crate::pid::hew_pid_serial(target_pid);
+    if remote_node_id == 0 || remote_node_id == rt.node.local_node_id() {
+        // Not a remote target — the cross-node route does not apply. The checker
+        // routes only RemotePid receivers here, but guard fail-closed anyway.
+        set_last_error("hew_node_monitor: target is not on a remote node");
+        return 0;
+    }
+
+    // Record the watcher entry first so the connection-drop / SWIM-DEAD fan-out
+    // can deliver even if the request send races a drop.
+    let ref_id = rt
+        .dist_monitors
+        .register_watcher(remote_node_id, target_serial);
+
+    let payload =
+        match crate::envelope::encode_monitor_req_payload(&crate::envelope::MonitorReqPayload {
+            watcher_node_id: rt.node.local_node_id(),
+            ref_id,
+            target_serial,
+        }) {
+            Ok(payload) => payload,
+            Err(err) => {
+                set_last_error(format!(
+                    "hew_node_monitor: req payload encode failure: {err}"
+                ));
+                return ref_id;
+            }
+        };
+
+    with_current_node_read(|guard| {
+        if *guard == 0 {
+            set_last_error("hew_node_monitor: no current node");
+            return;
+        }
+        let node = *guard as *const HewNode;
+        // SAFETY: read lock pins the current node pointer for this call.
+        let node_ref = unsafe { &*node };
+        // SAFETY: node_ref is valid for this call.
+        let _ = unsafe {
+            send_monitor_control_frame(
+                node_ref,
+                target_pid,
+                crate::envelope::CTRL_MONITOR_REQ,
+                payload,
+            )
+        };
+    });
+    ref_id
+}
+
+/// `hew_node_monitor_recv(ref_id, timeout_ms)` → block for the cross-node
+/// monitor's terminal signal, returning the carried reason.
+///
+/// Returns the down-reason (a `HewActorState` value for a clean exit / crash,
+/// or `MONITOR_REASON_LOST` for a connection-drop / partition) exactly once;
+/// further calls, an unknown `ref_id`, or a deadline that elapses first return
+/// `MONITOR_REASON_TIMEOUT`. A negative `timeout_ms` is treated as zero (a
+/// non-blocking poll).
+#[no_mangle]
+pub extern "C" fn hew_node_monitor_recv(ref_id: i64, timeout_ms: i64) -> i64 {
+    let Some(rt) = crate::runtime::rt_current_opt() else {
+        return i64::from(crate::dist_monitor::MONITOR_REASON_TIMEOUT);
+    };
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "ref_id originates from a u64 register_watcher counter reinterpreted as i64 on the Hew side"
+    )]
+    let ref_id = ref_id as u64;
+    let timeout = std::time::Duration::from_millis(timeout_ms.max(0).unsigned_abs());
+    i64::from(rt.dist_monitors.recv_down(ref_id, timeout))
+}
+
+/// `MonitorRef::close` on a cross-node monitor → tear down the watcher entry and
+/// send a `CTRL_DEMONITOR` to the peer. Idempotent / silent on an unknown
+/// `ref_id` (mirrors `hew_actor_demonitor`).
+///
+/// Note: the std `MonitorRef::close` lowers to `hew_actor_demonitor` today, which
+/// is a local-table no-op for a cross-node ref. This function is the cross-node
+/// teardown the demonitor/drop path will route to once the locality split lands
+/// on the drop side; for now it is exposed so a program can explicitly retract a
+/// cross-node monitor.
+#[no_mangle]
+pub extern "C" fn hew_node_demonitor(ref_id: i64) {
+    let Some(rt) = crate::runtime::rt_current_opt() else {
+        return;
+    };
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "ref_id originates from a u64 register_watcher counter reinterpreted as i64 on the Hew side"
+    )]
+    let ref_id = ref_id as u64;
+    let Some((remote_node_id, target_serial)) = rt.dist_monitors.remove_watcher(ref_id) else {
+        return;
+    };
+    let target_pid = crate::pid::hew_pid_make(remote_node_id, target_serial);
+    let payload =
+        match crate::envelope::encode_monitor_req_payload(&crate::envelope::MonitorReqPayload {
+            watcher_node_id: rt.node.local_node_id(),
+            ref_id,
+            target_serial,
+        }) {
+            Ok(payload) => payload,
+            Err(err) => {
+                set_last_error(format!("hew_node_demonitor: payload encode failure: {err}"));
+                return;
+            }
+        };
+    with_current_node_read(|guard| {
+        if *guard == 0 {
+            return;
+        }
+        let node = *guard as *const HewNode;
+        // SAFETY: read lock pins the current node pointer for this call.
+        let node_ref = unsafe { &*node };
+        // SAFETY: node_ref is valid for this call.
+        let _ = unsafe {
+            send_monitor_control_frame(
+                node_ref,
+                target_pid,
+                crate::envelope::CTRL_DEMONITOR,
+                payload,
+            )
+        };
+    });
+}
+
 /// Connect to a remote node and register routing for its node ID.
 ///
 /// Supports `"<node_id>@<addr>"` format for explicit peer node IDs. If no

@@ -1,6 +1,6 @@
 //! File I/O, sleep, clock, and I/O poller for the Hew runtime.
 //!
-//! Provides `hew_read_file`, `hew_sleep_ms`, `hew_sleep_ns`, `hew_sleep_until_ns`,
+//! Provides `hew_read_file`, `hew_sleep_ns`, `hew_sleep_until_ns`,
 //! `hew_now_ms`, duration helpers,
 //! and a platform I/O poller (epoll on Linux, kqueue on FreeBSD/macOS, stub
 //! elsewhere).

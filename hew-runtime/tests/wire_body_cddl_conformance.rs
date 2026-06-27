@@ -28,10 +28,10 @@ use std::ffi::CString;
 use std::path::PathBuf;
 
 use hew_runtime::cbor_serial::{
-    hew_cbor_de_enum_begin, hew_cbor_de_free, hew_cbor_de_new, hew_cbor_ser_begin_array,
-    hew_cbor_ser_begin_map, hew_cbor_ser_end_array, hew_cbor_ser_end_map, hew_cbor_ser_finish,
-    hew_cbor_ser_i64, hew_cbor_ser_key_u64, hew_cbor_ser_new, hew_cbor_ser_string,
-    hew_cbor_ser_u64,
+    hew_cbor_de_enum_begin, hew_cbor_de_failed, hew_cbor_de_free, hew_cbor_de_new,
+    hew_cbor_ser_begin_array, hew_cbor_ser_begin_map, hew_cbor_ser_end_array, hew_cbor_ser_end_map,
+    hew_cbor_ser_finish, hew_cbor_ser_i64, hew_cbor_ser_key_u64, hew_cbor_ser_new,
+    hew_cbor_ser_string, hew_cbor_ser_u64,
 };
 use hew_runtime::xnode_serial::hew_ser_free_bytes;
 
@@ -235,10 +235,17 @@ fn multi_entry_enum_body_is_rejected_by_cddl() {
 
 /// The runtime decoder fails CLOSED on the same malformed enum bodies the CDDL
 /// rejects: a multi-entry map and a single entry whose value is not an array
-/// both make `hew_cbor_de_enum_begin` return 0 (tag 0) and set the reader's
-/// failed flag — it never fabricates a variant. This is the load-bearing
-/// guarantee: the CDDL check is additive, the runtime reader is the trust
-/// boundary, and they agree on what is malformed.
+/// both make `hew_cbor_de_enum_begin` set the reader's `failed` flag and return
+/// 0 — it never fabricates a variant. This is the load-bearing guarantee: the
+/// CDDL check is additive, the runtime reader is the trust boundary, and they
+/// agree on what is malformed.
+///
+/// The `failed` flag (`hew_cbor_de_failed == 1`) is the structural sentinel that
+/// distinguishes "decoder failed closed" from "decoded a real tag-0 unit variant
+/// (e.g. `Ping`)": a clean tag-0 decode leaves `failed == 0`; these malformed
+/// inputs latch `failed == 1`. Asserting the flag (not just `tag == 0`) ensures
+/// this test has real teeth — it would catch a decoder that silently decoded a
+/// well-formed variant-0 body instead of failing closed.
 #[test]
 fn malformed_enum_body_fails_closed_at_runtime_decoder() {
     // Multi-entry map: `{1: [], 2: []}` — not a map-of-one.
@@ -261,9 +268,19 @@ fn malformed_enum_body_fails_closed_at_runtime_decoder() {
     // borrows it only for the duration of parsing.
     let reader = unsafe { hew_cbor_de_new(multi.as_ptr(), multi.len()) };
     assert!(!reader.is_null(), "decoder handle for multi-entry body");
-    // SAFETY: `reader` is the live handle just created.
+    // SAFETY: `reader` is the live handle just created; `hew_cbor_de_enum_begin`
+    // and `hew_cbor_de_failed` each take a live handle for the reader's lifetime.
     let tag = unsafe { hew_cbor_de_enum_begin(reader) };
     assert_eq!(tag, 0, "multi-entry enum body must fail closed to tag 0");
+    // The `failed` flag distinguishes "failed closed" from "decoded a real tag-0
+    // variant": a malformed body MUST latch failed == 1.
+    // SAFETY: `reader` is a live handle for the same decoder object just used
+    // for `hew_cbor_de_enum_begin` above; it has not been freed yet.
+    let failed = unsafe { hew_cbor_de_failed(reader) };
+    assert_eq!(
+        failed, 1,
+        "multi-entry enum body must set the failed flag (not just return tag 0)"
+    );
     // SAFETY: `reader` is the same handle, freed exactly once.
     unsafe { hew_cbor_de_free(reader) };
 
@@ -285,6 +302,14 @@ fn malformed_enum_body_fails_closed_at_runtime_decoder() {
     assert_eq!(
         tag2, 0,
         "single-entry-non-array enum body must fail closed to tag 0"
+    );
+    // Again, the structural sentinel is the `failed` flag, not the sentinel tag value.
+    // SAFETY: `reader2` is a live handle for the same decoder object just used
+    // for `hew_cbor_de_enum_begin` above; it has not been freed yet.
+    let failed2 = unsafe { hew_cbor_de_failed(reader2) };
+    assert_eq!(
+        failed2, 1,
+        "single-entry-non-array enum body must set the failed flag"
     );
     // SAFETY: `reader2` is the same handle, freed exactly once.
     unsafe { hew_cbor_de_free(reader2) };

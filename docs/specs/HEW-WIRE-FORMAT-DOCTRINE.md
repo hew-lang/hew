@@ -89,6 +89,26 @@ The body shapes (the `wire-body` rule and its parts):
   type outside this floor fails closed at codegen ("unsupported value type …
   outside the supported wire-body floor") and never reaches the wire.
 
+### Tag-stability asymmetry — explicit `@N` vs ordinal
+
+Struct fields and enum variants carry their wire tag differently, and this
+creates an **important stability asymmetry**:
+
+- **`#[wire]` struct fields** use the **explicit `@N` tag** from the wire
+  layout (`cbor_field_key` picks the declared tag, not the field's
+  declaration position). Reordering struct fields in source is
+  **wire-safe**: the tag is the `@N` annotation, not the position.
+- **`#[wire]` enum variants** use the **declaration ordinal** as their tag
+  (`cbor_variant_tag` falls back to `variant_idx` when no explicit tag is
+  present). Reordering enum variants in source **changes their ordinals**
+  and is a **breaking wire change**: a sender's `Ping` at ordinal 0 is
+  no longer the receiver's `Ping` at ordinal 1.
+
+In short: reordering `#[wire]` struct fields is safe; reordering `#[wire]`
+enum variants is a breaking change. If you need reorder-stable enum variants,
+assign an explicit tag annotation — the `@N` mechanism is available on enum
+variants for exactly this reason.
+
 The CDDL is an **additive description**, not a second decoder: a body that
 does not match `wire-body.cddl` still fails closed at the runtime reader
 (`xnode_serial.rs::decode_payload` returns null; the codec thunks trap on

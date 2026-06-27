@@ -112,3 +112,11 @@ wire-optional = null / wire-value
 
 ; `Vec<T>` → a CBOR array of element encodings.
 wire-vector = [* wire-value]
+
+; ── Body-shape disambiguation note ───────────────────────────────────────────
+;
+; A single-field struct whose field is a Vec encodes as `{ N: [...] }` —
+; byte-identical to an enum payload variant (`wire-enum-payload`). The runtime
+; decoder disambiguates by static type, not by inspecting the bytes; this is not
+; schema drift. The `wire-body` rule admits both alternatives and both are valid
+; encodings of their respective types.

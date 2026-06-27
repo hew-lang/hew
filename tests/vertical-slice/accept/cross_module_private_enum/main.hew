@@ -1,0 +1,12 @@
+// Verifies that a private enum returned from a cross-module pub fn compiles
+// and runs correctly.  The consumer matches against the enum's variants
+// without needing a pub qualifier on the enum itself.
+import errors;
+
+fn main() {
+    let e = errors.make_error();
+    match e {
+        AppErr::NotFound => println("not found"),
+        AppErr::Forbidden => println("forbidden"),
+    }
+}

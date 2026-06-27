@@ -1,0 +1,25 @@
+// #2269: a `#[on(start)]` lifecycle hook that suspends (sleep/await) must run to
+// completion across the suspension point — code AND state writes after the
+// suspend must survive. Before the fix the spawn site discarded the hook's
+// coroutine handle, so everything after `sleep` was silently dropped (the actor
+// reported value=0). The hook now parks against the actor and the scheduler's
+// resume re-entry drives it, exactly as a suspending `receive` handler is driven.
+actor Delayed {
+  var value: i64 = 0;
+  #[on(start)] fn init() {
+    println("before");
+    sleep(50ms);
+    println("after");
+    value = 99;
+  }
+  receive fn get() -> i64 { value }
+}
+
+fn main() {
+  let d = spawn Delayed;
+  sleep(200ms);
+  match await d.get() {
+    Ok(v) => println(v),
+    Err(_) => println("ask failed"),
+  }
+}

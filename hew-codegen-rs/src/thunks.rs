@@ -2034,6 +2034,24 @@ pub(crate) fn emit_actor_terminate_trampoline<'ctx>(
             ))
         })?;
         let (fn_val, _, _) = entry.real(sym, "terminate trampoline")?;
+        // Fail-closed: a suspending `#[on(stop)]` hook (one containing a `sleep`/
+        // `await`, lowered as a coroutine ramp) cannot be driven to completion at
+        // teardown. Terminate runs when the actor is already in its terminal state
+        // (`call_terminate_fn`), so there is no scheduler activation to park and
+        // resume the continuation into — the hook would suspend and never resume,
+        // silently truncating teardown work. Refuse at compile time rather than
+        // emit a discard-the-handle trampoline that drops everything after the
+        // suspension (#2269 doctrine: fail closed, never silent wrong-answer).
+        if crate::llvm::lifecycle_hook_is_coroutine(fn_val) {
+            return Err(CodegenError::FailClosed(format!(
+                "actor `{}`: an `#[on(stop)]` hook (`{sym}`) that suspends (it contains a \
+                 `sleep`/`await`) is not supported — teardown runs after the actor has \
+                 reached its terminal state, so a suspended stop hook cannot be resumed and \
+                 the work after the suspension point would be silently lost. Keep `#[on(stop)]` \
+                 non-suspending.",
+                layout.name
+            )));
+        }
         on_stop_fns.push(fn_val);
     }
 

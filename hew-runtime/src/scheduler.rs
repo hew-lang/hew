@@ -1115,6 +1115,115 @@ unsafe fn park_suspended_activation(actor: *mut HewActor, cont: *mut c_void) -> 
     true
 }
 
+/// Park a SUSPENDED lifecycle-hook continuation against a freshly spawned actor.
+///
+/// A `#[on(start)]` (or suspending `init()`) hook that contains a `sleep`/await
+/// lowers as a `presplitcoroutine`: calling its ramp runs the body to its first
+/// `coro.suspend` and returns the `coro.begin` handle. The spawn site
+/// (`emit_actor_spawn_lifecycle` / the supervised `emit_actor_lifecycle_wrapper`)
+/// runs that hook SYNCHRONOUSLY on the spawning thread — NOT inside a scheduler
+/// `activate_actor` frame — so it cannot use [`park_suspended_activation`] (which
+/// CASes `Running → Suspended`). The actor is `Idle` here: unreachable to any
+/// sender (its handle/slot is stored only AFTER lifecycle completes), so the
+/// `Idle → Suspended` transition is uncontended for the spawn path.
+///
+/// This is the lifecycle counterpart of the dispatch suspend edge. After the
+/// handle is parked the scheduler's existing resume re-entry
+/// ([`resume_suspended_activation`], reached via `activate_actor` ->
+/// `has_live_parked_cont`) drives the hook across every suspension to completion
+/// — the same machinery that drives a suspended `receive` handler. The hook's
+/// suspend codegen armed its readiness source (the sleep timer) against
+/// `hew_actor_self()` BEFORE returning the handle; the spawn site installs the
+/// actor's execution context as the current context across the ramp call so that
+/// `hew_actor_self()` resolves to THIS actor, and the timer's `enqueue_resume`
+/// therefore wakes it.
+///
+/// Returns `true` when the handle was parked (the actor is now `Suspended` or was
+/// re-enqueued for an immediate wake); `false` when the park was refused (the
+/// actor left `Idle` underneath us — e.g. a concurrent stop), in which case the
+/// handle is destroyed exactly once here so the coro frame is not leaked. The
+/// caller must NOT continue running later lifecycle hooks on a `false` return.
+///
+/// # Safety
+///
+/// `actor` must be a live `HewActor` in the `Idle` spawn window (lifecycle hooks
+/// run before the actor is made reachable). `cont` is the live, suspended
+/// continuation handle the lifecycle ramp produced; the caller must have released
+/// the actor state lock before this call (a suspended actor must not hold its lock
+/// against senders — FG2 / R2 P0), exactly as the dispatch suspend edge requires.
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_park_lifecycle_cont(
+    actor: *mut HewActor,
+    cont: *mut c_void,
+) -> bool {
+    if actor.is_null() {
+        // No actor to park against: destroy the orphan frame rather than leak it.
+        // SAFETY: `cont` (if non-null) is the live, not-yet-parked frame; no other
+        // owner exists. `hew_cont_destroy` is null-safe.
+        unsafe { crate::cont::hew_cont_destroy(cont) };
+        return false;
+    }
+    // SAFETY: caller guarantees `actor` is the live, Idle, freshly-spawned actor.
+    let a = unsafe { &*actor };
+
+    // FG3 phase 1: publish the park intent before storing the handle, so a timer
+    // wake firing in the park window is recorded rather than lost.
+    if !crate::coro_exec::begin_park(a).is_ok() {
+        // The tag was not Empty/Resuming (a corrupt or already-parked tag). We
+        // still OWN `cont` (never stored), so destroy it here rather than leak the
+        // frame + any frame-owned heap values.
+        // SAFETY: `cont` is the live, not-yet-parked, not-yet-destroyed frame this
+        // lifecycle ramp produced; no other owner exists.
+        unsafe { crate::cont::hew_cont_destroy(cont) };
+        return false;
+    }
+    // FG3 phase 2: store the handle.
+    // SAFETY: `cont` is a live suspended continuation per the fn contract.
+    unsafe { crate::coro_exec::finish_park(a, cont) };
+
+    // Publish `Suspended` so the timer wake can find us. CAS from Idle (the spawn
+    // window state); if it fails the actor was concurrently stopped — undo the
+    // park by destroying the frame exactly once.
+    if a.actor_state
+        .compare_exchange(
+            HewActorState::Idle as i32,
+            HewActorState::Suspended as i32,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        // SAFETY: we still own the parked handle (no concurrent resume could have
+        // started — the actor never reached Suspended).
+        let _ = unsafe { crate::coro_exec::destroy_parked(a) };
+        return false;
+    }
+
+    // FG3: drain a wake that fired in the park window. The sleep timer's
+    // `enqueue_resume` saw a null `suspended_cont` (or a not-yet-`Suspended`
+    // actor) and `mark_pending_wake`d; deliver it now by re-enqueuing so the
+    // resume re-entry runs. Without this drain a sub-park-window timer would be
+    // lost and the hook would never resume.
+    if crate::coro_exec::take_pending_wake(a)
+        && a.actor_state
+            .compare_exchange(
+                HewActorState::Suspended as i32,
+                HewActorState::Runnable as i32,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    {
+        sched_enqueue(actor);
+    }
+    crate::observe::record_coroutine_suspend();
+    crate::observe::hew_observe_probe_suspend(
+        a.dispatch
+            .map_or(std::ptr::null(), |f| f as *const std::ffi::c_void),
+    );
+    true
+}
+
 /// The RESUME re-entry: drive the actor's parked continuation to its next
 /// suspend (or completion) and settle the activation.
 ///

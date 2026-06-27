@@ -840,6 +840,7 @@ stable-stdlib = [
 # enforces this). JIT hosts must expose these in the same symbol map as `stable`.
 codegen-stable = [
   "hew_actor_cooperate",
+  "hew_actor_park_lifecycle_cont",
   "hew_actor_state_lock_acquire",
   "hew_actor_state_lock_release",
   "hew_alloc",
@@ -904,8 +905,10 @@ codegen-stable = [
   "hew_cont_frame_free",
   "hew_cont_poll",
   "hew_cont_resume",
+  "hew_context_install",
   "hew_context_reply_channel_swap_pop",
   "hew_context_reply_channel_swap_push",
+  "hew_context_restore",
   "hew_observe_hot_tier_enabled",
   "hew_observe_probe_suspend",
   "hew_observe_probe_turn",

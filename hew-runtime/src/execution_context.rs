@@ -274,6 +274,35 @@ pub(crate) fn require_current_context() -> *mut HewExecutionContext {
     ctx
 }
 
+/// Install a codegen-built execution context as the current canonical context,
+/// returning the previously installed one for the caller to restore.
+///
+/// The direct-spawn and supervised lifecycle sites run `init()` / `#[on(start)]`
+/// SYNCHRONOUSLY on the spawning thread, outside any scheduler dispatch frame.
+/// A suspending hook reads `hew_actor_self()` (the current context's actor) to
+/// arm its sleep/await readiness source; without an installed context that read
+/// returns the wrong actor (or null) and the timer wakes the wrong actor — the
+/// hook would never resume. The spawn site installs its lifecycle context across
+/// the hook ramp call via this verb and restores the previous context with
+/// [`hew_context_restore`] afterward, exactly as the scheduler brackets each
+/// dispatch with `set_current_context`.
+///
+/// `ctx` is the codegen-built context carrier (the 128-byte stack array whose
+/// `actor`/`actor_id` fields the lifecycle site populated). Reinterpreted as a
+/// `*mut HewExecutionContext`; only the fields the hook body reads
+/// (`actor` via `hew_actor_self`) are load-bearing across the install.
+#[no_mangle]
+pub extern "C" fn hew_context_install(ctx: *mut c_void) -> *mut c_void {
+    set_current_context(ctx.cast::<HewExecutionContext>()).cast::<c_void>()
+}
+
+/// Restore a previously installed execution context (the value
+/// [`hew_context_install`] returned). Pairs 1:1 with each install.
+#[no_mangle]
+pub extern "C" fn hew_context_restore(prev: *mut c_void) {
+    let _ = set_current_context(prev.cast::<HewExecutionContext>());
+}
+
 // ── Reply-channel readers (ctx-backed, target-neutral) ─────────────────
 //
 // R17 sole-authority: the reply channel for the currently-dispatched message

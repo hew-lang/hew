@@ -801,17 +801,41 @@ impl HewCluster {
     }
 
     /// Add or update a member in the membership list.
+    ///
+    /// `gossip_announced` is `true` when `incarnation` comes from a peer's own
+    /// SWIM frame (ping/ack/gossip) — i.e. the peer announced this incarnation.
+    /// It is `false` for a locally-synthesized incarnation bump (a TCP reconnect
+    /// raising a SUSPECT peer back to ALIVE). Only a genuinely peer-announced,
+    /// strictly higher incarnation may readmit a DEAD/LEFT node: a local reconnect
+    /// is not proof the buried peer is back, so it can never resurrect it.
     fn stage_member_transition_locked(
         members: &mut Vec<ClusterMember>,
         node_id: u16,
         state: i32,
         incarnation: u64,
         addr: &[u8],
+        gossip_announced: bool,
     ) -> Option<MemberTransition> {
         if let Some(existing) = members.iter_mut().find(|m| m.node_id == node_id) {
-            if existing.state == MEMBER_DEAD && state == MEMBER_ALIVE {
-                eprintln!("[cluster] ignoring ALIVE for dead node {node_id}");
-                return None;
+            let existing_terminal = existing.state == MEMBER_DEAD || existing.state == MEMBER_LEFT;
+            if existing_terminal && state == MEMBER_ALIVE {
+                // Readmission is monotonic and fail-closed: a dead or gracefully
+                // left node returns ONLY when a peer announces a strictly higher
+                // incarnation. A <=-incarnation ALIVE is stale gossip about the
+                // buried identity and is refused — it can never resurrect the node.
+                // A locally-synthesized bump (a reconnect) is likewise refused; it
+                // is not proof the peer restarted with a fresh identity.
+                if !gossip_announced || incarnation <= existing.incarnation {
+                    return None;
+                }
+                // strictly higher, peer-announced -> fall through to the LWW admit
+                // below. The transition it returns carries old_state = terminal,
+                // which the dispatch keys the quarantine eviction on.
+                eprintln!(
+                    "[cluster] readmitting node {node_id} at incarnation {incarnation} \
+                     (was {} at {})",
+                    existing.state, existing.incarnation
+                );
             }
             if incarnation > existing.incarnation
                 || (incarnation == existing.incarnation && state > existing.state)
@@ -976,6 +1000,15 @@ impl HewCluster {
                 callback(transition.node_id, event, user_data);
             });
         }
+        self.apply_member_transition_side_effects(transition);
+    }
+
+    /// Run the per-peer-table reactions a delivered transition triggers: the
+    /// `MEMBER_DEAD` fan-outs (partition recv-queue, protocol, cross-node
+    /// monitors, pending asks + quarantine) and the readmission eviction. Kept
+    /// separate from the publication-token bookkeeping in
+    /// `deliver_member_transition` so each stays a single, readable concern.
+    fn apply_member_transition_side_effects(&self, transition: &MemberTransition) {
         // Partition-injection seam: fan out PartitionDetected to all queues
         // registered for this node when it transitions to DEAD.
         if transition.state == MEMBER_DEAD {
@@ -987,11 +1020,23 @@ impl HewCluster {
             // MonitorLost for every still-pending local watcher of an actor on
             // it (exactly-once; a prior definitive DOWN wins).
             crate::hew_node::fan_out_monitor_lost_for_node(transition.node_id);
-            // Pending-ask SWIM-DEAD fan-out: the recv-queue seam above wakes
-            // blocked recvs to PartitionDetected; this resolves every pending
-            // remote ask routed to the dead peer with AskError::Partition
-            // immediately, instead of hanging to the caller's deadline.
-            crate::hew_node::fail_remote_asks_for_node(transition.node_id);
+            // Pending-ask SWIM-DEAD fan-out + quarantine: the recv-queue seam
+            // above wakes blocked recvs to PartitionDetected; this resolves every
+            // pending remote ask routed to the dead peer with AskError::Partition
+            // immediately (instead of hanging to the caller's deadline) AND
+            // quarantines the peer at the incarnation it died at so a
+            // Quarantine-policy send/ask fails closed until it rejoins higher.
+            crate::hew_node::fail_remote_and_quarantine(transition.node_id, transition.incarnation);
+        }
+        // Readmission seam: a buried peer (DEAD or LEFT) returning ALIVE is the
+        // strictly-higher-incarnation rejoin the admission gate already authorized
+        // (a <=-incarnation ALIVE never produces this transition). Evict its
+        // quarantine entry exactly once so it is sendable again. An ALIVE->ALIVE
+        // incarnation bump has old_state = ALIVE and is skipped — nothing to evict.
+        if transition.state == MEMBER_ALIVE
+            && matches!(transition.old_state, Some(MEMBER_DEAD | MEMBER_LEFT))
+        {
+            crate::hew_node::readmit_node_clear_quarantine(transition.node_id);
         }
     }
 
@@ -999,18 +1044,43 @@ impl HewCluster {
         let mut should_drain = false;
         {
             let mut members = self.members.lock_or_recover();
+            // Gossip path: `incarnation` is what a peer announced, so a strictly
+            // higher one may readmit a buried node.
             if let Some(transition) = Self::stage_member_transition_locked(
                 &mut members,
                 node_id,
                 state,
                 incarnation,
                 addr,
+                true,
             ) {
                 should_drain = self.queue_member_transition(transition);
             }
         }
         if should_drain {
             self.drain_member_transitions();
+        }
+    }
+
+    /// Seed a member directly into the table without running the transition
+    /// dispatch fan-outs. Used by cross-module tests that need the membership
+    /// table to resolve a live incarnation for a node without also triggering the
+    /// DEAD fan-out / quarantine side-effects.
+    #[cfg(test)]
+    pub(crate) fn seed_member_for_test(&self, node_id: u16, state: i32, incarnation: u64) {
+        let mut members = self.members.lock_or_recover();
+        if let Some(existing) = members.iter_mut().find(|m| m.node_id == node_id) {
+            existing.state = state;
+            existing.incarnation = incarnation;
+        } else {
+            members.push(ClusterMember {
+                node_id,
+                state,
+                incarnation,
+                addr: [0u8; 128],
+                // SAFETY: hew_now_ms has no preconditions.
+                last_seen_ms: unsafe { crate::io_time::hew_now_ms() },
+            });
         }
     }
 
@@ -1269,10 +1339,12 @@ impl HewCluster {
                 // every still-pending local watcher of an actor on the dead
                 // node (exactly-once; a prior definitive DOWN wins).
                 crate::hew_node::fan_out_monitor_lost_for_node(change.node_id);
-                // Pending-ask SWIM-DEAD fan-out: resolve every pending remote
-                // ask routed to the dead peer with AskError::Partition
-                // immediately, mirroring the recv-queue partition seam above.
-                crate::hew_node::fail_remote_asks_for_node(change.node_id);
+                // Pending-ask SWIM-DEAD fan-out + quarantine: resolve every
+                // pending remote ask routed to the dead peer with
+                // AskError::Partition immediately (mirroring the recv-queue
+                // partition seam above) AND quarantine the peer at the incarnation
+                // it died at.
+                crate::hew_node::fail_remote_and_quarantine(change.node_id, change.incarnation);
             }
         }
     }
@@ -1288,12 +1360,16 @@ impl HewCluster {
                 .map(|m| (m.state, m.incarnation));
             if let Some((state, incarnation)) = member {
                 if state == MEMBER_ALIVE {
+                    // Demote an ALIVE peer to SUSPECT on a dropped connection. Not
+                    // a readmission (never terminal->ALIVE), so the gossip flag is
+                    // immaterial; pass false.
                     if let Some(transition) = Self::stage_member_transition_locked(
                         &mut members,
                         node_id,
                         MEMBER_SUSPECT,
                         incarnation,
                         &[],
+                        false,
                     ) {
                         should_drain = self.queue_member_transition(transition);
                     }
@@ -1335,12 +1411,15 @@ impl HewCluster {
                     .map(|m| (m.state, m.incarnation));
                 if let Some((state, incarnation)) = member {
                     if state == MEMBER_ALIVE {
+                        // SUSPECT demotion on a token-current drop; not a
+                        // readmission, so gossip_announced is immaterial.
                         if let Some(transition) = Self::stage_member_transition_locked(
                             &mut members,
                             node_id,
                             MEMBER_SUSPECT,
                             incarnation,
                             &[],
+                            false,
                         ) {
                             should_drain =
                                 self.queue_member_transition(transition.with_publication(
@@ -1394,6 +1473,10 @@ impl HewCluster {
                         member.last_seen_ms = unsafe { crate::io_time::hew_now_ms() };
                     }
                 } else {
+                    // Locally-synthesized bump on reconnect: raises a SUSPECT peer
+                    // back to ALIVE. gossip_announced=false so it can NEVER readmit
+                    // a DEAD/LEFT node — a TCP reconnect is not proof the buried
+                    // peer restarted with a fresh identity.
                     let incarnation = incarnation.saturating_add(1);
                     if let Some(transition) = Self::stage_member_transition_locked(
                         &mut members,
@@ -1401,6 +1484,7 @@ impl HewCluster {
                         MEMBER_ALIVE,
                         incarnation,
                         &[],
+                        false,
                     ) {
                         if let Some(member) = members.iter_mut().find(|m| m.node_id == node_id) {
                             // SAFETY: hew_now_ms has no preconditions.
@@ -1443,6 +1527,8 @@ impl HewCluster {
                     }
                     tokens.visible.insert(node_id, publication_token);
                 } else {
+                    // Locally-synthesized reconnect bump (token variant); cannot
+                    // readmit a DEAD/LEFT node — gossip_announced=false.
                     let incarnation = incarnation.saturating_add(1);
                     if let Some(transition) = Self::stage_member_transition_locked(
                         &mut members,
@@ -1450,6 +1536,7 @@ impl HewCluster {
                         MEMBER_ALIVE,
                         incarnation,
                         &[],
+                        false,
                     ) {
                         if let Some(member) = members.iter_mut().find(|m| m.node_id == node_id) {
                             // SAFETY: hew_now_ms has no preconditions.
@@ -2173,6 +2260,8 @@ pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token_if_not_
                 }
                 tokens.visible.insert(node_id, publication_token);
             } else {
+                // Locally-synthesized reconnect bump (guarded-token variant);
+                // cannot readmit a DEAD/LEFT node — gossip_announced=false.
                 let incarnation = old_incarnation.saturating_add(1);
                 if let Some(transition) = HewCluster::stage_member_transition_locked(
                     &mut members,
@@ -2180,6 +2269,7 @@ pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token_if_not_
                     MEMBER_ALIVE,
                     incarnation,
                     &[],
+                    false,
                 ) {
                     if let Some(member) = members.iter_mut().find(|m| m.node_id == node_id) {
                         // SAFETY: hew_now_ms has no preconditions.
@@ -2256,6 +2346,29 @@ pub unsafe extern "C" fn hew_cluster_member_state(cluster: *mut HewCluster, node
         .iter()
         .find(|m| m.node_id == node_id)
         .map_or(-1, |m| m.state)
+}
+
+impl HewCluster {
+    /// The live incarnation the membership table currently records for `node_id`,
+    /// or `None` if the node is unknown. Used by the `Quarantine` send/ask consult
+    /// to compare a peer's live incarnation against the quarantined one.
+    pub(crate) fn member_incarnation(&self, node_id: u16) -> Option<u64> {
+        let members = self.members.lock_or_recover();
+        members
+            .iter()
+            .find(|m| m.node_id == node_id)
+            .map(|m| m.incarnation)
+    }
+
+    /// The membership state recorded for `node_id` (a `MEMBER_*` constant), or
+    /// `-1` if the node is unknown. Used by the rejoin test-introspection probe.
+    pub(crate) fn member_state(&self, node_id: u16) -> i32 {
+        let members = self.members.lock_or_recover();
+        members
+            .iter()
+            .find(|m| m.node_id == node_id)
+            .map_or(-1, |m| m.state)
+    }
 }
 
 /// Get the number of pending gossip events.
@@ -2523,13 +2636,108 @@ mod tests {
         }
     }
 
+    /// The rejoin-admission truth table: a buried node (DEAD or LEFT) is
+    /// readmitted ONLY by a peer-announced strictly-higher incarnation. Equal and
+    /// lower incarnations are stale gossip and must never resurrect it.
     #[test]
-    fn dead_member_cannot_be_revived_by_alive_update() {
+    fn dead_member_revived_only_by_strictly_higher_incarnation() {
+        // Equal-incarnation ALIVE does NOT resurrect (fail-closed): a dead node at
+        // N stays dead for any ALIVE-at-N gossip.
+        {
+            let cluster = HewCluster::new(make_config(1));
+            cluster.upsert_member(2, MEMBER_DEAD, 5, b"10.0.0.1:9000");
+            cluster.upsert_member(2, MEMBER_ALIVE, 5, &[]);
+            let members = cluster.members.lock().unwrap();
+            assert_eq!(
+                members[0].state, MEMBER_DEAD,
+                "equal-incarnation must not revive"
+            );
+            assert_eq!(members[0].incarnation, 5);
+        }
+        // Lower-incarnation ALIVE does NOT resurrect (fail-closed): replayed stale
+        // gossip about the old identity is inert.
+        {
+            let cluster = HewCluster::new(make_config(1));
+            cluster.upsert_member(2, MEMBER_DEAD, 5, b"10.0.0.1:9000");
+            cluster.upsert_member(2, MEMBER_ALIVE, 4, &[]);
+            let members = cluster.members.lock().unwrap();
+            assert_eq!(
+                members[0].state, MEMBER_DEAD,
+                "lower-incarnation must not revive"
+            );
+            assert_eq!(members[0].incarnation, 5);
+        }
+        // Strictly-higher-incarnation ALIVE IS admitted (the positive readmission).
+        {
+            let cluster = HewCluster::new(make_config(1));
+            cluster.upsert_member(2, MEMBER_DEAD, 5, b"10.0.0.1:9000");
+            cluster.upsert_member(2, MEMBER_ALIVE, 6, &[]);
+            let members = cluster.members.lock().unwrap();
+            assert_eq!(
+                members[0].state, MEMBER_ALIVE,
+                "strictly-higher must readmit"
+            );
+            assert_eq!(members[0].incarnation, 6);
+        }
+    }
+
+    /// The same truth table for a gracefully-LEFT node: the readmission rule is
+    /// uniform across both terminal states (DEAD and LEFT).
+    #[test]
+    fn left_member_revived_only_by_strictly_higher_incarnation() {
+        // Equal-incarnation ALIVE does NOT readmit a LEFT node.
+        {
+            let cluster = HewCluster::new(make_config(1));
+            cluster.upsert_member(2, MEMBER_LEFT, 5, b"10.0.0.1:9000");
+            cluster.upsert_member(2, MEMBER_ALIVE, 5, &[]);
+            let members = cluster.members.lock().unwrap();
+            assert_eq!(
+                members[0].state, MEMBER_LEFT,
+                "equal-incarnation must not readmit"
+            );
+            assert_eq!(members[0].incarnation, 5);
+        }
+        // Lower-incarnation ALIVE does NOT readmit a LEFT node.
+        {
+            let cluster = HewCluster::new(make_config(1));
+            cluster.upsert_member(2, MEMBER_LEFT, 5, b"10.0.0.1:9000");
+            cluster.upsert_member(2, MEMBER_ALIVE, 4, &[]);
+            let members = cluster.members.lock().unwrap();
+            assert_eq!(
+                members[0].state, MEMBER_LEFT,
+                "lower-incarnation must not readmit"
+            );
+            assert_eq!(members[0].incarnation, 5);
+        }
+        // Strictly-higher-incarnation ALIVE readmits a LEFT node.
+        {
+            let cluster = HewCluster::new(make_config(1));
+            cluster.upsert_member(2, MEMBER_LEFT, 5, b"10.0.0.1:9000");
+            cluster.upsert_member(2, MEMBER_ALIVE, 6, &[]);
+            let members = cluster.members.lock().unwrap();
+            assert_eq!(
+                members[0].state, MEMBER_ALIVE,
+                "strictly-higher must readmit"
+            );
+            assert_eq!(members[0].incarnation, 6);
+        }
+    }
+
+    /// A locally-synthesized reconnect bump (`gossip_announced=false`) must never
+    /// readmit a buried node, even though it raises the incarnation — a `TCP`
+    /// reconnect is not proof the peer restarted with a fresh identity. This is the
+    /// distinction `connection_established_dead_member_stays_dead` depends on.
+    #[test]
+    fn reconnect_bump_does_not_readmit_dead_node() {
         let cluster = HewCluster::new(make_config(1));
         cluster.upsert_member(2, MEMBER_DEAD, 5, b"10.0.0.1:9000");
-        cluster.upsert_member(2, MEMBER_ALIVE, 6, &[]);
+        // notify_connection_established synthesizes incarnation 6 (5 + 1) locally.
+        cluster.notify_connection_established(2);
         let members = cluster.members.lock().unwrap();
-        assert_eq!(members[0].state, MEMBER_DEAD);
+        assert_eq!(
+            members[0].state, MEMBER_DEAD,
+            "a reconnect must not resurrect a dead node"
+        );
         assert_eq!(members[0].incarnation, 5);
     }
 
@@ -3240,9 +3448,15 @@ mod tests {
         cluster.upsert_member(2, MEMBER_SUSPECT, 1, b"10.0.0.1:9000");
         let transition = {
             let mut members = cluster.members.lock_or_recover();
-            let transition =
-                HewCluster::stage_member_transition_locked(&mut members, 2, MEMBER_ALIVE, 2, &[])
-                    .expect("suspect member should stage a guarded ALIVE transition");
+            let transition = HewCluster::stage_member_transition_locked(
+                &mut members,
+                2,
+                MEMBER_ALIVE,
+                2,
+                &[],
+                false,
+            )
+            .expect("suspect member should stage a guarded ALIVE transition");
             if let Some(member) = members.iter_mut().find(|m| m.node_id == 2) {
                 // SAFETY: hew_now_ms has no preconditions.
                 member.last_seen_ms = unsafe { crate::io_time::hew_now_ms() };

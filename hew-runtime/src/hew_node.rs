@@ -338,8 +338,8 @@ fn quarantine_blocks_send(node: &HewNode, target_node_id: u16) -> bool {
     }
     if node.cluster.is_null() {
         // No cluster to resolve a live incarnation: if the set holds the peer at
-        // any incarnation, block (fail-closed). u64::MAX forces is_blocked to
-        // compare against the recorded incarnation as a lower bound.
+        // any incarnation, block (fail-closed). Passing 0 as the live incarnation
+        // ensures no quarantined entry can ever be considered cleared.
         return quarantine_is_blocked(target_node_id, 0);
     }
     // SAFETY: node.cluster is valid while the node is installed.

@@ -983,6 +983,10 @@ impl HewCluster {
                 registry.on_member_dead(transition.node_id);
             }
             self.protocol.on_member_dead(transition.node_id);
+            // Cross-node monitor SWIM-DEAD fan-out (DIST-6): the peer is gone,
+            // so arm MonitorLost for every still-pending local watcher of an
+            // actor on it (exactly-once; a prior definitive DOWN wins).
+            crate::hew_node::fan_out_monitor_lost_for_node(transition.node_id);
         }
     }
 
@@ -1256,6 +1260,10 @@ impl HewCluster {
                     registry.on_member_dead(change.node_id);
                 }
                 self.protocol.on_member_dead(change.node_id);
+                // Cross-node monitor SWIM-DEAD fan-out (DIST-6): arm MonitorLost
+                // for every still-pending local watcher of an actor on the dead
+                // node (exactly-once; a prior definitive DOWN wins).
+                crate::hew_node::fan_out_monitor_lost_for_node(change.node_id);
             }
         }
     }

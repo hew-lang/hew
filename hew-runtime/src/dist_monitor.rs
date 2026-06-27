@@ -38,18 +38,6 @@
 //! watcher slot stores no remote pointer; the target side stores only the
 //! watcher's node id and ref id.
 
-// WHY: the delivery methods (`deliver_to_*`) and the whole target side
-// (`register_remote_watcher` / `take_remote_watchers` / …) are consumed by the
-// receiver-side control-frame handling and the connection-drop / SWIM-DEAD
-// fan-out, which land in the immediately-following slices of this lane. WHEN
-// OBSOLETE: removed once `connection.rs handle_control_frame` and the terminal
-// sweep / drop hooks call them (same lane). The unit tests below already
-// exercise every method, so this is a build-visibility allow, not untested code.
-#![allow(
-    dead_code,
-    reason = "consumed by the receiver-side + fan-out slices of this lane; exercised by the module tests"
-)]
-
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, PoisonError};

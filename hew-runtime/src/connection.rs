@@ -52,11 +52,12 @@ use crate::cluster::HewCluster;
 #[cfg(feature = "encryption")]
 use crate::envelope::encode_envelope_frame_from_raw_parts;
 use crate::envelope::{
-    decode_registry_gossip_payload, decode_swim_payload, decode_wire_frame, encode_control_frame,
-    encode_registry_gossip_payload, encode_swim_payload, ControlFrame, RegistryGossipPayload,
-    SwimControlPayload, SwimGossipEntry, WireFrame, CTRL_REGISTRY_GOSSIP, CTRL_SWIM,
-    FRAME_TYPE_CONTROL, FRAME_TYPE_ENVELOPE, REGISTRY_GOSSIP_OP_ADD, REGISTRY_GOSSIP_OP_REMOVE,
-    WIRE_VERSION,
+    decode_monitor_down_payload, decode_monitor_req_payload, decode_registry_gossip_payload,
+    decode_swim_payload, decode_wire_frame, encode_control_frame, encode_registry_gossip_payload,
+    encode_swim_payload, ControlFrame, RegistryGossipPayload, SwimControlPayload, SwimGossipEntry,
+    WireFrame, CTRL_DEMONITOR, CTRL_MONITOR_DOWN, CTRL_MONITOR_REQ, CTRL_REGISTRY_GOSSIP,
+    CTRL_SWIM, FRAME_TYPE_CONTROL, FRAME_TYPE_ENVELOPE, REGISTRY_GOSSIP_OP_ADD,
+    REGISTRY_GOSSIP_OP_REMOVE, WIRE_VERSION,
 };
 use crate::lifetime::poison_safe::PoisonSafe;
 use crate::mailbox_envelope::{validate_cross_node_send_params, MailboxPayloadClass};
@@ -568,6 +569,12 @@ fn retire_connection_publication(
             )
         };
     }
+
+    // Cross-node monitor connection-drop fan-out (DIST-6): the connection to
+    // `peer_node_id` is gone, so every local watcher of an actor on that node
+    // gets a MonitorLost DOWN — unless it already received a definitive
+    // clean-exit / crash DOWN (only Pending slots are armed; exactly-once).
+    crate::hew_node::fan_out_monitor_lost_for_node(peer_node_id);
 }
 
 fn reconnect_plan(mgr: &HewConnMgr, conn_id: c_int) -> Option<ReconnectPlan> {
@@ -1029,6 +1036,18 @@ fn handle_control_frame(
             handle_swim_control_frame(mgr, peer_feature_flags, conn_id, control);
             return;
         }
+        CTRL_MONITOR_REQ => {
+            handle_monitor_req_frame(control);
+            return;
+        }
+        CTRL_DEMONITOR => {
+            handle_demonitor_frame(control);
+            return;
+        }
+        CTRL_MONITOR_DOWN => {
+            handle_monitor_down_frame(control);
+            return;
+        }
         other => {
             set_last_error(format!(
                 "connection reader unknown control frame kind {other}"
@@ -1073,6 +1092,82 @@ fn handle_control_frame(
     unsafe {
         (&*mgr_ref.cluster).apply_registry_event(&payload.name, payload.actor_id, is_add);
     }
+}
+
+/// Handle an inbound `CTRL_MONITOR_REQ` (DIST-6): a remote node is monitoring
+/// one of our local actors. Record a target-side remote-watcher entry so the
+/// terminal sweep can fan out a `CTRL_MONITOR_DOWN` when that actor dies.
+///
+/// Fail-closed: a malformed / oversized payload is dropped with `set_last_error`
+/// and never registers a watcher — no fabricated state from untrusted bytes.
+fn handle_monitor_req_frame(control: &ControlFrame) {
+    let payload = match decode_monitor_req_payload(&control.payload) {
+        Ok(payload) => payload,
+        Err(err) => {
+            set_last_error(format!(
+                "connection reader monitor req payload decode failure: {err}"
+            ));
+            return;
+        }
+    };
+    let Some(rt) = crate::runtime::rt_current_opt() else {
+        set_last_error("connection reader monitor req: no runtime installed");
+        return;
+    };
+    rt.dist_monitors.register_remote_watcher(
+        payload.target_serial,
+        payload.watcher_node_id,
+        payload.ref_id,
+    );
+}
+
+/// Handle an inbound `CTRL_DEMONITOR` (DIST-6): a remote node retracted its
+/// monitor of one of our local actors. Remove the target-side remote-watcher
+/// entry. Idempotent / fail-closed on malformed input.
+fn handle_demonitor_frame(control: &ControlFrame) {
+    let payload = match decode_monitor_req_payload(&control.payload) {
+        Ok(payload) => payload,
+        Err(err) => {
+            set_last_error(format!(
+                "connection reader demonitor payload decode failure: {err}"
+            ));
+            return;
+        }
+    };
+    let Some(rt) = crate::runtime::rt_current_opt() else {
+        return;
+    };
+    rt.dist_monitors.remove_remote_watcher(
+        payload.target_serial,
+        payload.watcher_node_id,
+        payload.ref_id,
+    );
+}
+
+/// Handle an inbound `CTRL_MONITOR_DOWN` (DIST-6): the node owning an actor we
+/// monitor reports that actor reached a terminal state. Arm the watcher slot for
+/// `ref_id` with the carried reason so the blocked `hew_node_monitor_recv` wakes.
+///
+/// Fail-closed on malformed input. Arming the slot removes it from the
+/// connection-drop / SWIM-DEAD fan-out's reach (the slot is no longer
+/// `Pending`), which is the exactly-once disambiguation: a definitive DOWN beats
+/// a later partition signal for the same registration.
+fn handle_monitor_down_frame(control: &ControlFrame) {
+    let payload = match decode_monitor_down_payload(&control.payload) {
+        Ok(payload) => payload,
+        Err(err) => {
+            set_last_error(format!(
+                "connection reader monitor down payload decode failure: {err}"
+            ));
+            return;
+        }
+    };
+    let Some(rt) = crate::runtime::rt_current_opt() else {
+        set_last_error("connection reader monitor down: no runtime installed");
+        return;
+    };
+    rt.dist_monitors
+        .deliver_to_ref(payload.ref_id, payload.reason);
 }
 
 fn active_gossip_connection_ids(mgr: &HewConnMgr) -> Vec<c_int> {

@@ -2740,6 +2740,87 @@ pub extern "C" fn hew_node_demonitor(ref_id: i64) {
     });
 }
 
+/// Fan out a `CTRL_MONITOR_DOWN` to every remote node monitoring a locally-dying
+/// actor (DIST-6 terminal sweep).
+///
+/// Called from `notify_monitors_on_death` (the `hew_actor_trap` terminal hook)
+/// for a locally-owned actor: takes the target-side remote watchers for
+/// `target_serial` and sends each watcher node a DOWN frame carrying its
+/// `ref_id` and the terminal `reason`. This is the clean-exit AND crash path —
+/// both route through the trap.
+///
+/// Fail-closed and reentrancy-tolerant (R7): if no runtime / current node /
+/// connection manager is installed (the trap can run with none — e.g. the
+/// supervisor-cascade unit tests), it no-ops without sending or panicking,
+/// exactly as the local sweep does. The remote watchers are still removed so a
+/// later sweep finds nothing.
+pub(crate) fn fan_out_remote_monitor_down(target_serial: u64, reason: i32) {
+    let Some(rt) = crate::runtime::rt_current_opt() else {
+        return;
+    };
+    // Fast path: no remote watcher for this actor → nothing to send.
+    if !rt.dist_monitors.has_remote_watchers(target_serial) {
+        return;
+    }
+    let watchers = rt.dist_monitors.take_remote_watchers(target_serial);
+    if watchers.is_empty() {
+        return;
+    }
+    with_current_node_read(|guard| {
+        if *guard == 0 {
+            return;
+        }
+        let node = *guard as *const HewNode;
+        // SAFETY: read lock pins the current node pointer for this call.
+        let node_ref = unsafe { &*node };
+        if node_ref.conn_mgr.is_null() || node_ref.routing_table.is_null() {
+            return;
+        }
+        for (watcher_node_id, ref_id) in watchers {
+            let payload = match crate::envelope::encode_monitor_down_payload(
+                &crate::envelope::MonitorDownPayload { ref_id, reason },
+            ) {
+                Ok(payload) => payload,
+                Err(err) => {
+                    set_last_error(format!(
+                        "monitor down fan-out: payload encode failure: {err}"
+                    ));
+                    continue;
+                }
+            };
+            // Route the DOWN back to the watcher node by a pid on that node.
+            let watcher_pid = crate::pid::hew_pid_make(watcher_node_id, 0);
+            // SAFETY: node_ref is valid for this call.
+            let _ = unsafe {
+                send_monitor_control_frame(
+                    node_ref,
+                    watcher_pid,
+                    crate::envelope::CTRL_MONITOR_DOWN,
+                    payload,
+                )
+            };
+        }
+    });
+}
+
+/// Fan out `MonitorLost` to every local watcher of an actor on a lost/dead node
+/// (DIST-6 connection-drop / SWIM-DEAD hook).
+///
+/// Called from the connection-drop retire hook and the SWIM `MEMBER_DEAD`
+/// fan-out: arms every still-`Pending` watcher registration targeting
+/// `dead_node_id` with the `MonitorLost` sentinel, waking any blocked
+/// `hew_node_monitor_recv`. Only `Pending` slots are armed, so a registration
+/// that already received a definitive clean-exit / crash DOWN is untouched
+/// (exactly-once; the central R1/R2 disambiguation).
+pub(crate) fn fan_out_monitor_lost_for_node(dead_node_id: u16) {
+    let Some(rt) = crate::runtime::rt_current_opt() else {
+        return;
+    };
+    let _ = rt
+        .dist_monitors
+        .deliver_to_node(dead_node_id, crate::dist_monitor::MONITOR_REASON_LOST);
+}
+
 /// Connect to a remote node and register routing for its node ID.
 ///
 /// Supports `"<node_id>@<addr>"` format for explicit peer node IDs. If no

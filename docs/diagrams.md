@@ -145,7 +145,7 @@ block-beta
 
     block:L5["<b>L5: Networking & Distribution</b>"]
         columns 5
-        wire["wire.rs<br/>HBF encode/decode<br/>HewWireEnvelope"]
+        wire["envelope.rs<br/>CBOR EnvelopeFrame<br/>ControlFrame"]
         transport["transport.rs<br/>HewTransportOps vtable<br/>HewActorRef (local/remote)"]
         connection["connection.rs<br/>Connection Manager<br/>MAX_CONNS=64"]
         hew_node["hew_node.rs<br/>HewNode<br/>HewRegistry"]
@@ -258,63 +258,67 @@ stateDiagram-v2
 
 ---
 
-## 6. Wire Protocol Frame Format (HBF)
+## 6. Wire Protocol Frame Format (CBOR)
 
-The Hew Binary Format is the internal wire encoding for distributed actor messaging. Defined in `hew-runtime/src/wire.rs` and specified in §7.3.1 of the language spec.
+The Hew runtime encodes inter-node actor messages as CBOR (RFC 8949) frames.
+The schema is specified in `hew-runtime/schemas/envelope.cddl` (frame container)
+and `hew-runtime/schemas/wire-body.cddl` (per-type message body). The Rust
+types are in `hew-runtime/src/envelope.rs`.
 
-```mermaid
-packet-beta
-    0-7: "H (0x48)"
-    8-15: "E (0x45)"
-    16-23: "W (0x57)"
-    24-31: "1 (0x31)"
-    32-39: "Version (0x01)"
-    40-47: "Flags"
-    48-55: "Payload Length [0:7]"
-    56-63: "Payload Length [8:15]"
-    64-71: "Payload Length [16:23]"
-    72-79: "Payload Length [24:31]"
-    80-95: "Field 1: Tag (varint) | Wire Type (3 bits)"
-    96-111: "Field 1: Value (variable)"
-    112-127: "Field N: ..."
-    128-143: "Optional: CRC32C (if CHECKSUM flag set)"
-```
+### 6.1 Frame structure
 
-**Header structure** (`HBF_HEADER_LEN = 10` bytes):
-
-| Offset | Size | Field   | Value                                      |
-| ------ | ---- | ------- | ------------------------------------------ |
-| 0      | 4    | Magic   | `HBF_MAGIC = "HEW1"` (0x48 0x45 0x57 0x31) |
-| 4      | 1    | Version | `HBF_VERSION = 0x01`                       |
-| 5      | 1    | Flags   | `HBF_FLAG_COMPRESSED = 0x01` (LZ4)         |
-| 6      | 4    | Length  | Payload length (little-endian u32)         |
-
-**Wire types** (3-bit field in tag):
-
-| Value | Name             | Constant                     | Description                      |
-| ----- | ---------------- | ---------------------------- | -------------------------------- |
-| 0     | VARINT           | `WIRE_TYPE_VARINT`           | Unsigned LEB128, self-delimiting |
-| 1     | FIXED64          | `WIRE_TYPE_FIXED64`          | Always 8 bytes                   |
-| 2     | LENGTH_DELIMITED | `WIRE_TYPE_LENGTH_DELIMITED` | Varint length prefix + bytes     |
-| 5     | FIXED32          | `WIRE_TYPE_FIXED32`          | Always 4 bytes                   |
-
-**Tag encoding:** `(field_number << 3) | wire_type`
-
-**Envelope structure** (`HewWireEnvelope`):
+A CBOR frame is an `EnvelopeFrame` (actor message) or a `ControlFrame`
+(node-level signalling). Both are definite-length CBOR maps keyed by small
+unsigned integers. `frame_type` (key `2`) selects the branch.
 
 ```mermaid
 flowchart LR
-    E["HewWireEnvelope"] --> A["target_actor_id<br/>(u64)"]
-    E --> M["msg_type<br/>(u16, max 65535)"]
-    E --> P["payload<br/>(HewWireBuf)"]
+    F["wire-frame\n(CBOR map)"] -->|"frame_type=0"| CF["ControlFrame"]
+    F -->|"frame_type=1"| EF["EnvelopeFrame"]
 
-    P --> D["data: *mut u8"]
-    P --> L["len: usize"]
-    P --> C["cap: usize"]
-    P --> R["read_pos: usize"]
+    CF --> CV["version (key 1) = 1"]
+    CF --> CT["frame_type (key 2) = 0"]
+    CF --> CK["ctrl_kind (key 3): uint"]
+    CF --> CP["payload (key 4): bstr"]
+
+    EF --> EV["version (key 1) = 1"]
+    EF --> ET["frame_type (key 2) = 1"]
+    EF --> EA["target_actor_id (key 3): uint"]
+    EF --> ES["source_actor_id (key 4): uint"]
+    EF --> EM["msg_type (key 5): int"]
+    EF --> EP["payload (key 6): bstr\n(wire-body.cddl body)"]
+    EF --> ER["request_id (key 7): uint"]
+    EF --> EN["source_node_id (key 8): uint"]
 ```
 
-**Signed integers** use zigzag encoding: `zigzag(n) = (n << 1) ^ (n >> 63)`
+**EnvelopeFrame fields:**
+
+| CDDL key | Field | Type | Notes |
+| --- | --- | --- | --- |
+| 1 | `version` | `uint` | Must equal `1`; unknown versions rejected |
+| 2 | `frame_type` | `uint` | `0` = control, `1` = envelope |
+| 3 | `target_actor_id` | `uint` | Non-zero actor identity |
+| 4 | `source_actor_id` | `uint` | Sender actor identity |
+| 5 | `msg_type` | `int` | Signed; valid range `0..=2^30-1` |
+| 6 | `payload` | `bstr` | Serialised message body (see §6.2) |
+| 7 | `request_id` | `uint` | `0` = fire-and-forget; `> 0` = ask/reply |
+| 8 | `source_node_id` | `uint` | `0` on reply envelopes; non-zero on ask |
+
+The transport layer (QUIC stream or TCP with a 4-byte LE length prefix) owns
+frame delimitation. The CBOR envelope does **not** re-encode payload length.
+
+### 6.2 Message body — `wire-body.cddl`
+
+The bytes inside `payload` (key 6) are the per-`#[wire]`-type CBOR body:
+
+- **`#[wire]` struct** → CBOR map keyed by unsigned `@N` field tags (1-based
+  positional fallback for layout-less records). Keys in ascending order.
+- **`#[wire]` enum** → either a bare unsigned tag `N` (unit variant) or a
+  single-entry map `{ N => [field0, field1, ...] }` (payload variant).
+
+A type outside the supported leaf floor (`int`, `bool`, `float`, `string`,
+`bytes`, `Option<T>`, `Vec<T>`, nested `#[wire]` structs/enums) fails closed
+at codegen and never reaches the wire.
 
 ---
 
@@ -373,4 +377,4 @@ stateDiagram-v2
 - **Language specification:** [`docs/specs/HEW-SPEC-2026.md`](specs/HEW-SPEC-2026.md) — §8 (Compilation Model), §9 (Runtime Model)
 - **Runtime source:** [`hew-runtime/src/`](../hew-runtime/src/)
 - **Codegen source:** [`hew-codegen-rs/src/`](../hew-codegen-rs/src/)
-- **Wire format spec:** HEW-SPEC-2026.md §7.3.1 (HBF encoding)
+- **Wire format doctrine:** [`docs/specs/HEW-WIRE-FORMAT-DOCTRINE.md`](specs/HEW-WIRE-FORMAT-DOCTRINE.md) §1; schemas at [`hew-runtime/schemas/envelope.cddl`](../hew-runtime/schemas/envelope.cddl) and [`hew-runtime/schemas/wire-body.cddl`](../hew-runtime/schemas/wire-body.cddl)

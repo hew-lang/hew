@@ -937,6 +937,29 @@ impl Checker {
                 }
                 return self.make_vec_type(elem, span);
             }
+            // Cross-node monitor: `monitor(RemotePid<T>)` (DIST-6). The local
+            // `monitor(LocalPid<T>)` form stays on the generic `fn_sigs` path
+            // below (registered with a `LocalPid` receiver). When the argument
+            // resolves to a `RemotePid<T>`, accept it here and return
+            // `MonitorRef` — the MIR lowering branches on the argument's
+            // resolved type to route a remote receiver to the node monitor ABI
+            // (`hew_node_monitor`) instead of the in-process `hew_actor_monitor`.
+            // `link`/`unlink` of a `RemotePid` are NOT accepted here: cross-node
+            // link is deferred whole to a later milestone, so those keep their
+            // current `LocalPid` type-mismatch rejection (fail-closed).
+            "monitor" if args.len() == 1 => {
+                let (expr, sp) = args[0].expr();
+                let arg_ty = self.synthesize(expr, sp);
+                let resolved = self.subst.resolve(&arg_ty);
+                if resolved.as_remote_pid().is_some() {
+                    let result_ty = Ty::monitor_ref();
+                    self.record_type(span, &result_ty);
+                    return result_ty;
+                }
+                // Not a RemotePid — fall through to the generic `fn_sigs` path,
+                // which applies the `monitor(LocalPid<T>) -> MonitorRef` builtin
+                // signature (and reports the precise mismatch for a bad arg).
+            }
             "supervisor_child" if args.len() == 2 => {
                 // supervisor_child(sup, index) → typed LocalPid based on supervisor decl
                 let (sup_expr, sup_sp) = args[0].expr();

@@ -1076,6 +1076,8 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::MetricVecRegister
         | F::MetricVecWith
         | F::NodeLookup
+        | F::NodeMonitor
+        | F::NodeMonitorRecv
         | F::ObserveReadU64
         | F::ObserveScrape
         | F::ObserveSeries
@@ -2169,6 +2171,18 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // Called from the MonitorRef::close drop ritual (RuntimeDropDescriptor::MonitorRefClose).
         // Native-only: actors are not supported on wasm32.
         "hew_actor_demonitor" => ctx.void_type().fn_type(&[i64_ty.into()], false),
+        // hew_node_monitor(target_pid: i64) -> i64 (DIST-6,
+        // `hew-runtime/src/dist_monitor.rs`). Registers a distributed monitor
+        // for a remote actor (resolving the current node internally) and returns
+        // the ref_id. codegen-offset-mirror-drift: must match the runtime
+        // `#[no_mangle]` signature.
+        "hew_node_monitor" => i64_ty.fn_type(&[i64_ty.into()], false),
+        // hew_node_monitor_recv(ref_id: i64, timeout_ms: i64) -> i64 (DIST-6,
+        // `hew-runtime/src/dist_monitor.rs`). Blocks until the monitor's terminal
+        // signal arrives (or timeout_ms elapses) and returns the carried
+        // down-reason. codegen-offset-mirror-drift: must match the runtime
+        // `#[no_mangle]` signature.
+        "hew_node_monitor_recv" => i64_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false),
         // hew_actor_send_by_id(actor_id: u64, msg_type: i32, data: *mut c_void,
         //                      size: usize) -> c_int (`hew-runtime/src/actor.rs:2489`).
         // `size` is `usize`/`size_t` → target-correct width (i32 on wasm32).

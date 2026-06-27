@@ -25,6 +25,14 @@
 //   - "PASS <scenario> <detail>"  on success
 //   - "FAIL <scenario> <detail>"  on any mismatch; main returns non-zero
 import std::os;
+import std::link_monitor;
+
+// Self-stop FFI: the cross-node clean-exit scenario drives the remote actor to
+// the Stopped terminal state from within its own handler. `stop(self)` is not a
+// working surface yet, so the actor calls the runtime self-stop directly.
+extern "C" {
+    fn hew_actor_self_stop();
+}
 
 // `record` is Serializable — required for RemotePid messaging across the wire.
 record KvPut {
@@ -97,7 +105,7 @@ actor KeyValue {
             // terminal state, which the cross-node monitor reports as a DOWN
             // carrying the clean-exit reason.
             KvReq::StopSelf => {
-                stop(this);
+                unsafe { hew_actor_self_stop() };
                 KvResp::Ack
             },
             // Crash: a deliberate panic transitions the actor to the Crashed
@@ -333,17 +341,6 @@ fn scenario_wire_cbor(wp: RemotePid<WireProbe>) -> i64 {
     0
 }
 
-// Cross-node monitor runtime surface (DIST-6). `monitor(remote_pid)` registers
-// a distributed monitor and returns a MonitorRef whose ref_id keys the
-// distributed monitor table. `hew_node_monitor_recv` blocks until the remote
-// actor's terminal signal (clean exit / crash / connection-drop) arrives for
-// that ref, returning the carried reason code: HewActorState::Stopped (6),
-// HewActorState::Crashed (5), the MonitorLost sentinel (-1) on drop, or the
-// timeout sentinel (-2) if the deadline elapses first.
-extern "C" {
-    fn hew_node_monitor_recv(ref_id: i64, timeout_ms: i64) -> i64;
-}
-
 // Scenario: remote_monitor_clean_exit
 //
 // The client monitors the remote KeyValue actor, then tells it to stop. The
@@ -358,7 +355,7 @@ fn scenario_remote_monitor_clean_exit(kv: RemotePid<KeyValue>) -> i64 {
         },
         Result::Ok(_) => {},
     }
-    let reason = unsafe { hew_node_monitor_recv(m.ref_id, 10000) };
+    let reason = m.recv_down(10000);
     if reason == 6 {
         println(f"PASS remote_monitor_clean_exit reason={reason}");
     } else {
@@ -367,7 +364,7 @@ fn scenario_remote_monitor_clean_exit(kv: RemotePid<KeyValue>) -> i64 {
     }
     // Negative guard for exactly-once: a second recv must time out (-2), proving
     // no duplicate DOWN was delivered for the same registration.
-    let dup = unsafe { hew_node_monitor_recv(m.ref_id, 1000) };
+    let dup = m.recv_down(1000);
     if dup == -2 {
         println("PASS remote_monitor_clean_exit no-dup");
     } else {
@@ -391,14 +388,14 @@ fn scenario_remote_monitor_crash(kv: RemotePid<KeyValue>) -> i64 {
         },
         Result::Ok(_) => {},
     }
-    let reason = unsafe { hew_node_monitor_recv(m.ref_id, 10000) };
+    let reason = m.recv_down(10000);
     if reason == 5 {
         println(f"PASS remote_monitor_crash reason={reason}");
     } else {
         println(f"FAIL remote_monitor_crash reason={reason}");
         return 3;
     }
-    let dup = unsafe { hew_node_monitor_recv(m.ref_id, 1000) };
+    let dup = m.recv_down(1000);
     if dup == -2 {
         println("PASS remote_monitor_crash no-dup");
     } else {
@@ -419,14 +416,14 @@ fn scenario_remote_monitor_conn_drop(kv: RemotePid<KeyValue>) -> i64 {
     // Signal readiness so the harness knows the monitor is registered before it
     // kills the server. The actor stays alive; only the connection drops.
     println("READY_DROP remote_monitor_conn_drop");
-    let reason = unsafe { hew_node_monitor_recv(m.ref_id, 30000) };
+    let reason = m.recv_down(30000);
     if reason == -1 {
         println(f"PASS remote_monitor_conn_drop reason={reason}");
     } else {
         println(f"FAIL remote_monitor_conn_drop reason={reason}");
         return 3;
     }
-    let dup = unsafe { hew_node_monitor_recv(m.ref_id, 1000) };
+    let dup = m.recv_down(1000);
     if dup == -2 {
         println("PASS remote_monitor_conn_drop no-dup");
     } else {

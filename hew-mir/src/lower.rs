@@ -21458,6 +21458,16 @@ impl Builder {
             "hew_bytes_get" => self.lower_bytes_get_option(hir_args, site, context, result_ty),
             "hew_string_get" => self.lower_string_get_option(hir_args, site, context, result_ty),
             "hew_string_char_count" => self.lower_string_char_count(hir_args, site, context),
+            // Cross-node monitor extern surface (DIST-6), both `(...) -> i64`:
+            //  - `hew_node_monitor(target_pid)` reached as a direct `extern "C"`
+            //    call (statement position; the value-position `monitor(RemotePid)`
+            //    builtin routes through `lower_node_monitor`).
+            //  - `hew_node_monitor_recv(ref_id, timeout_ms)` blocks for the
+            //    distributed monitor's terminal signal and returns the carried
+            //    down-reason; called from the std `MonitorRef::recv_down` body.
+            "hew_node_monitor" | "hew_node_monitor_recv" => {
+                self.lower_simple_int_runtime_call(symbol, hir_args, site, context, result_ty)
+            }
             "hew_observe_read_u64"
             | "hew_observe_scrape"
             | "hew_observe_series"
@@ -22022,6 +22032,20 @@ impl Builder {
             return None;
         }
 
+        // Cross-node monitor (DIST-6): a `monitor(RemotePid<T>)` receiver routes
+        // to the node-monitor ABI instead of the in-process actor-monitor ABI.
+        // The remote receiver has no `HewActor*` in this address space, so the
+        // 2-arg (watcher_ptr, target_ptr) shape does not apply: `hew_node_monitor`
+        // takes the packed remote pid (an i64) and registers a distributed-table
+        // entry keyed by (node_id, serial). Detected from the target argument's
+        // checker-authoritative resolved type. Only `hew_actor_monitor` reaches
+        // the cross-node route; `hew_actor_link` of a remote target is deferred
+        // (no cross-node link surface), so it keeps the local 2-arg shape.
+        let target_ty = self.subst_ty(&hir_args[0].ty);
+        if symbol == "hew_actor_monitor" && actor_name_from_remote_pid_ty(&target_ty).is_some() {
+            return self.lower_node_monitor(hir_args, site, context, result_ty);
+        }
+
         // arg1: the user-provided target handle. Lower it first so a failure
         // to lower the target is reported before we emit the self-handle call.
         let target = self.lower_value(&hir_args[0])?;
@@ -22091,6 +22115,66 @@ impl Builder {
             }
             _ => unreachable!("only hew_actor_link / hew_actor_monitor reach this helper"),
         }
+    }
+
+    /// Lower a cross-node `monitor(RemotePid<T>)` to the node-monitor ABI.
+    ///
+    /// Unlike the local `hew_actor_monitor(watcher_ptr, target_ptr)` (which keys
+    /// on `HewActor*` pointers), the remote target has no pointer in this
+    /// address space. `hew_node_monitor(target_remote_pid: i64) -> u64` takes the
+    /// packed remote pid and registers a distributed-table entry keyed by
+    /// `(node_id, serial)`, sending a `CTRL_MONITOR_REQ` to the owning peer. The
+    /// `u64` return is the `ref_id` keying the registration; it is assembled into
+    /// the same `MonitorRef { ref_id }` value the local path returns, reusing the
+    /// DIST-2 composite-return construction.
+    fn lower_node_monitor(
+        &mut self,
+        hir_args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+        context: RuntimeCallContext,
+        result_ty: Option<&ResolvedTy>,
+    ) -> Option<Place> {
+        // The target is the remote pid; it lowers to a bare i64 (node<<48|serial).
+        let target = self.lower_value(&hir_args[0])?;
+
+        if context != RuntimeCallContext::ValueNeeded {
+            // Statement-position monitor: register but discard the ref. The
+            // codegen handler calls the ABI and ignores the u64 return.
+            self.push_runtime_call("hew_node_monitor", vec![target], None);
+            return None;
+        }
+
+        // Value-needed: the checker records `MonitorRef` as the result type.
+        // Fail closed if it did not — a HIR→MIR boundary violation.
+        let composite_ty = if let Some(ty) = result_ty {
+            ty.clone()
+        } else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "runtime call `hew_node_monitor` value result".to_string(),
+                    site,
+                },
+                note: "`hew_node_monitor` value-needed path requires a \
+                       checker-authoritative result type; result_ty was None \
+                       (checker did not record a type for this call site — \
+                       boundary violation)"
+                    .to_string(),
+            });
+            return None;
+        };
+
+        // hew_node_monitor returns a u64 ref_id; store it into a raw i64 temp,
+        // then assemble MonitorRef { ref_id } via RecordInit, exactly as the
+        // local hew_actor_monitor value path does.
+        let ref_id_local = self.alloc_local(ResolvedTy::I64);
+        self.push_runtime_call("hew_node_monitor", vec![target], Some(ref_id_local));
+        let monitor_ref_local = self.alloc_local(composite_ty.clone());
+        self.push_instr(Instr::RecordInit {
+            ty: composite_ty,
+            fields: vec![(FieldOffset(0), ref_id_local)],
+            dest: monitor_ref_local,
+        });
+        Some(monitor_ref_local)
     }
 
     /// Emit `Instr::CallRuntimeAbi` for discarded `unlink` calls.
@@ -22171,6 +22255,35 @@ impl Builder {
         }
         self.push_runtime_call(symbol, arg_places, None);
         None
+    }
+
+    /// Emit `Instr::CallRuntimeAbi` for a simple `(...) -> i64` runtime call.
+    ///
+    /// Lowers each argument to a Place and emits the call. In value position the
+    /// i64 return is stored into a fresh i64 dest; in statement position the
+    /// return is discarded. Used by the cross-node monitor extern surface
+    /// (`hew_node_monitor` / `hew_node_monitor_recv`), whose returns are plain
+    /// scalar reason / ref-id codes (no composite spine).
+    fn lower_simple_int_runtime_call(
+        &mut self,
+        symbol: &str,
+        hir_args: &[hew_hir::HirExpr],
+        _site: hew_hir::SiteId,
+        context: RuntimeCallContext,
+        _result_ty: Option<&ResolvedTy>,
+    ) -> Option<Place> {
+        let mut arg_places = Vec::with_capacity(hir_args.len());
+        for arg in hir_args {
+            let p = self.lower_value(arg)?;
+            arg_places.push(p);
+        }
+        if context != RuntimeCallContext::ValueNeeded {
+            self.push_runtime_call(symbol, arg_places, None);
+            return None;
+        }
+        let result_local = self.alloc_local(ResolvedTy::I64);
+        self.push_runtime_call(symbol, arg_places, Some(result_local));
+        Some(result_local)
     }
 
     /// Emit `Instr::CallRuntimeAbi` for `hew_duplex_pair`.

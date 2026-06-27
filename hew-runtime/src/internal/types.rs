@@ -618,4 +618,186 @@ impl ExitReason {
             sig => ExitReason::Signal(sig),
         }
     }
+
+    /// Project this runtime `ExitReason` into the link-cascade `CrashKind`
+    /// surfaced to a linked actor.
+    ///
+    /// This is the M-6 projection: the runtime distinguishes 13 exit reasons,
+    /// but a linked actor only observes the coarse CLASS of a peer's failure
+    /// (`std/failure.hew::CrashKind`), never the peer's private trap details.
+    ///
+    /// The match is INTENTIONALLY no-wildcard and exhaustive: adding an
+    /// `ExitReason` variant must force a deliberate `CrashKind` mapping decision
+    /// here (the `boundary-fail-closed` / `exhaustive-coverage` invariant). A
+    /// new reason MUST NOT default-swallow into `Crashed` silently — the
+    /// compiler error here is the forcing function.
+    ///
+    /// Current mapping (per `std/failure.hew::CrashKind` contract):
+    /// - `HeapExceeded` → `CrashKind::HeapExceeded` (the per-actor arena cap).
+    /// - every other fault class (traps, signals, send failures, internal
+    ///   compiler-invariant traps, wire-decode failures) → `CrashKind::Crashed`.
+    /// - `Normal` is not a crash; it projects to `Crashed` defensively but a
+    ///   normal exit never reaches the crash-propagation path
+    ///   (`propagate_exit_to_links` is called from the trap path, not clean stop).
+    ///
+    /// `CrashKind::PartitionDetected` has NO source `ExitReason` today: the
+    /// runtime carries no duplex/mailbox-partition exit reason yet. The variant
+    /// is reserved (the std doc's additive-widening note) for when one is added;
+    /// the new reason's arm here will map to it. A `CrashKind` variant that no
+    /// `ExitReason` projects to is the documented-allowed direction (the runtime
+    /// may surface fewer classes than `CrashKind` names).
+    #[must_use]
+    pub const fn to_crash_kind(self) -> CrashKind {
+        match self {
+            ExitReason::HeapExceeded => CrashKind::HeapExceeded,
+            ExitReason::IntegerOverflow
+            | ExitReason::DivideByZero
+            | ExitReason::SignedMinDivNegOne
+            | ExitReason::ShiftOutOfRange
+            | ExitReason::IndexOutOfBounds
+            | ExitReason::ActorSendFailed
+            | ExitReason::MachineDispatchUnreachable
+            | ExitReason::ExhaustivenessFallthrough
+            | ExitReason::ModuleInitRegexFailed
+            | ExitReason::WireDecodeFailed
+            | ExitReason::Signal(_)
+            | ExitReason::Normal => CrashKind::Crashed,
+        }
+    }
+}
+
+/// Class of a crash propagated to a linked actor — the runtime mirror of
+/// `std/failure.hew::CrashKind`.
+///
+/// The discriminants match the std enum's DECLARATION ORDER (the tagged-union
+/// tag a Hew `CrashKind` value carries): `Crashed = 0`, `HeapExceeded = 1`,
+/// `PartitionDetected = 2`. M-7 delivers this tag in a typed
+/// `CrashNotification { actor_id, kind }` to a linked actor's exit hook; the
+/// `as i32` tag is the wire value.
+///
+/// Adding a variant here REQUIRES a matching variant in `std/failure.hew`
+/// (and the embedded `FAILURE_HEW`) at the same declaration index, and a
+/// matching arm in `ExitReason::to_crash_kind`.
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CrashKind {
+    /// Generic crash from `panic(...)`, `hew_panic()`, or an unclassified trap.
+    Crashed = 0,
+    /// Per-actor arena cap exceeded.
+    HeapExceeded = 1,
+    /// A duplex / mailbox partition was observed on a recv path the crashed
+    /// actor was awaiting. Reserved: no `ExitReason` projects to it yet.
+    PartitionDetected = 2,
+}
+
+impl CrashKind {
+    /// The `i32` tag a Hew `CrashKind` value carries (its tagged-union tag).
+    #[must_use]
+    pub const fn tag(self) -> i32 {
+        self as i32
+    }
+
+    /// Project a raw actor `error_code` straight to the `CrashKind` tag — the
+    /// integer the link-cascade delivery boundary (`propagate_exit_to_links`'s
+    /// `reason: i32`) carries. Composes `ExitReason::from_error_code` with
+    /// `to_crash_kind` so callers at the delivery boundary do not re-derive the
+    /// projection.
+    #[must_use]
+    pub fn tag_from_error_code(code: i32) -> i32 {
+        ExitReason::from_error_code(code).to_crash_kind().tag()
+    }
+}
+
+#[cfg(test)]
+mod crash_kind_projection_tests {
+    use super::*;
+
+    /// The `CrashKind` tags match `std/failure.hew`'s declaration order — the
+    /// wire value M-7 delivers. Exact-value, not `> 0`: a wrong tag is a
+    /// cross-actor mis-classification.
+    #[test]
+    fn crash_kind_tags_match_std_declaration_order() {
+        assert_eq!(CrashKind::Crashed.tag(), 0);
+        assert_eq!(CrashKind::HeapExceeded.tag(), 1);
+        assert_eq!(CrashKind::PartitionDetected.tag(), 2);
+    }
+
+    /// `HeapExceeded` is the ONLY reason that projects to a non-`Crashed` kind.
+    /// Exact-value assertion per `wire-contract-test-presence`.
+    #[test]
+    fn heap_exceeded_projects_to_heap_exceeded_kind() {
+        assert_eq!(
+            ExitReason::HeapExceeded.to_crash_kind(),
+            CrashKind::HeapExceeded
+        );
+        assert_eq!(
+            CrashKind::tag_from_error_code(HEW_TRAP_HEAP_EXCEEDED),
+            CrashKind::HeapExceeded.tag()
+        );
+    }
+
+    /// Every non-heap fault class projects to `Crashed`. Exhaustive over the
+    /// runtime trap-code surface: if a NEW `ExitReason` variant is added, the
+    /// no-wildcard match in `to_crash_kind` fails to compile until mapped, and
+    /// THIS test must gain the new code's expected projection — the two together
+    /// are the `exhaustive-coverage` forcing function.
+    #[test]
+    fn every_non_heap_fault_projects_to_crashed() {
+        for code in [
+            HEW_TRAP_INTEGER_OVERFLOW,
+            HEW_TRAP_DIVIDE_BY_ZERO,
+            HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE,
+            HEW_TRAP_SHIFT_OUT_OF_RANGE,
+            HEW_TRAP_INDEX_OUT_OF_BOUNDS,
+            HEW_TRAP_ACTOR_SEND_FAILED,
+            HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE,
+            HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH,
+            HEW_TRAP_MODULE_INIT_REGEX_FAILED,
+            HEW_TRAP_WIRE_DECODE_FAILED,
+        ] {
+            assert_eq!(
+                CrashKind::tag_from_error_code(code),
+                CrashKind::Crashed.tag(),
+                "trap code {code} must project to Crashed"
+            );
+        }
+        // A raw signal number (not a known trap code) is a hardware-signal exit
+        // → Crashed.
+        assert_eq!(
+            ExitReason::Signal(11).to_crash_kind(),
+            CrashKind::Crashed,
+            "a hardware signal exit projects to Crashed"
+        );
+        // Normal is not a crash; it projects defensively to Crashed (it never
+        // reaches the crash-propagation path).
+        assert_eq!(ExitReason::Normal.to_crash_kind(), CrashKind::Crashed);
+    }
+
+    /// No `ExitReason` projects to `PartitionDetected` today — the variant is
+    /// reserved (the std doc's additive-widening note). This pins the current
+    /// contract: if a partition exit reason is added later, this test changes
+    /// deliberately rather than the projection silently gaining a mapping.
+    #[test]
+    fn no_exit_reason_projects_to_partition_yet() {
+        let all = [
+            ExitReason::HeapExceeded,
+            ExitReason::IntegerOverflow,
+            ExitReason::DivideByZero,
+            ExitReason::SignedMinDivNegOne,
+            ExitReason::ShiftOutOfRange,
+            ExitReason::IndexOutOfBounds,
+            ExitReason::ActorSendFailed,
+            ExitReason::MachineDispatchUnreachable,
+            ExitReason::ExhaustivenessFallthrough,
+            ExitReason::ModuleInitRegexFailed,
+            ExitReason::WireDecodeFailed,
+            ExitReason::Signal(-1),
+            ExitReason::Normal,
+        ];
+        assert!(
+            all.iter()
+                .all(|r| r.to_crash_kind() != CrashKind::PartitionDetected),
+            "no current ExitReason should project to PartitionDetected"
+        );
+    }
 }

@@ -285,13 +285,15 @@ fn vec_contains_eq_eligibility_classifies_layout_elements() {
         ty_is_eq_eligible(&point, &checker.type_defs),
         EqEligibility::Eligible
     );
+    // Floats are equality-eligible: structural equality bit-casts the float
+    // and compares the bit pattern (bitwise/total semantics).
     assert_eq!(
         ty_is_eq_eligible(&Ty::Tuple(vec![Ty::I32, Ty::F64]), &checker.type_defs),
-        EqEligibility::IneligibleFloat(Ty::F64)
+        EqEligibility::Eligible
     );
     assert_eq!(
         ty_is_eq_eligible(&with_float, &checker.type_defs),
-        EqEligibility::IneligibleFloat(Ty::F32)
+        EqEligibility::Eligible
     );
     assert_eq!(
         ty_is_eq_eligible(&Ty::Tuple(vec![Ty::I32, Ty::String]), &checker.type_defs),
@@ -488,7 +490,9 @@ fn vec_contains_f64_typechecks() {
 }
 
 #[test]
-fn vec_contains_float_record_rejected_with_eq_eligibility_diagnostic() {
+fn vec_contains_float_record_now_typechecks() {
+    // A record with an `f32` field is equality-eligible (floats compare on
+    // their bit pattern) and Copy, so `Vec::contains` is admitted.
     let output = check_source(
         r"
         type Measurement { value: f32 }
@@ -502,12 +506,8 @@ fn vec_contains_float_record_rejected_with_eq_eligibility_diagnostic() {
     );
 
     assert!(
-        output.errors.iter().any(|error| {
-            error.message.contains("`Vec::contains`")
-                && error.message.contains("floating-point")
-                && error.message.contains("f32")
-        }),
-        "float-field layout Vec::contains should cite float ineligibility: {:#?}",
+        output.errors.is_empty(),
+        "float-record Vec::contains should compile under bitwise float equality: {:#?}",
         output.errors
     );
 }

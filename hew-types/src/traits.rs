@@ -734,11 +734,15 @@ impl TraitRegistry {
             | Ty::Error
             | Ty::Never => !matches!(marker, MarkerTrait::Resource),
 
-            // Floats: most traits but NOT Eq, Ord, Hash (NaN issues), NOT Resource (value type)
-            Ty::F32 | Ty::F64 | Ty::FloatLiteral => !matches!(
-                marker,
-                MarkerTrait::Eq | MarkerTrait::Ord | MarkerTrait::Hash | MarkerTrait::Resource
-            ),
+            // Floats: most traits, including Eq and Hash, which use bitwise/total
+            // semantics (the eq/hash thunks compare and hash the bit pattern, so
+            // NaN==NaN when bits are identical and the relation is reflexive).
+            // Still NOT Ord — float ordering stays IEEE partial (`PartialOrd`,
+            // granted above via `is_numeric`); a total bitwise order is a
+            // separate decision. NOT Resource (value type).
+            Ty::F32 | Ty::F64 | Ty::FloatLiteral => {
+                !matches!(marker, MarkerTrait::Ord | MarkerTrait::Resource)
+            }
 
             // String: Send + Sync + Clone + Encode + Decode, but NOT Frozen (mutable), NOT Copy
             Ty::String => matches!(
@@ -1330,10 +1334,14 @@ mod tests {
     }
 
     #[test]
-    fn test_floats_not_eq() {
+    fn test_floats_eq_and_hash_but_not_ord() {
+        // Floats satisfy Eq and Hash under bitwise/total semantics, but Ord
+        // stays IEEE-partial (PartialOrd only).
         let registry = TraitRegistry::new();
-        assert!(!registry.implements_marker(&Ty::F64, MarkerTrait::Eq));
-        assert!(!registry.implements_marker(&Ty::F32, MarkerTrait::Hash));
+        assert!(registry.implements_marker(&Ty::F64, MarkerTrait::Eq));
+        assert!(registry.implements_marker(&Ty::F32, MarkerTrait::Hash));
+        assert!(registry.implements_marker(&Ty::F64, MarkerTrait::PartialOrd));
+        assert!(!registry.implements_marker(&Ty::F64, MarkerTrait::Ord));
     }
 
     #[test]

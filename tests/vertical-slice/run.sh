@@ -1020,6 +1020,12 @@ run_accept_expect_status "on_crash_info_code" 42
 # (Runtime honouring of each variant is in hew-runtime/tests/on_crash_invocation.rs.)
 run_accept_expect_status "on_crash_action_restart" 42
 
+# Accept: #[on(exit)] linked-actor exit hook compiles end-to-end (M-7-R). The
+# checker accepts `fn on_peer_exit(note: CrashNotification)`; MIR emits
+# Watcher__on_exit; codegen routes SYS_MSG_EXIT to it in the dispatch
+# trampoline; the supervisor boots; main exits 42.
+run_accept_expect_status "on_exit_hook" 42
+
 # `#[max_heap(N)]` wire-through — direct spawn path:
 #   1. MIR dump confirms SpawnActor carries max_heap=65536,
 #      proving the annotation propagated from HIR through MIR.

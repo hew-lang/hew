@@ -80,6 +80,19 @@ const SENTINEL_CRASH_CODE_NODE: HirNodeId = HirNodeId(u32::MAX);
 /// Lives one below `__crash_code`'s sentinel to stay clear of real bindings.
 const SENTINEL_CRASH_MESSAGE_BINDING: BindingId = BindingId(u32::MAX - 1);
 
+/// Sentinel HIR binding IDs for the synthetic `#[on(exit)]` (M-7-R) ABI params:
+/// `__exit_actor_id: u64` and `__exit_kind_tag: i32`. The runtime delivers a
+/// linked actor's `CrashNotification` as these two raw fields; the hook prologue
+/// rebuilds `note = CrashNotification { actor_id, kind }` from them.
+const SENTINEL_EXIT_ACTOR_ID_BINDING: BindingId = BindingId(u32::MAX - 2);
+const SENTINEL_EXIT_KIND_TAG_BINDING: BindingId = BindingId(u32::MAX - 3);
+
+/// `CrashKind` variants in declaration order (`std/failure.hew`). An
+/// `#[on(exit)]` prologue builds the `kind` field by matching the runtime
+/// `__exit_kind_tag` against these (Crashed=0, HeapExceeded=1,
+/// PartitionDetected=2).
+const CRASH_KIND_VARIANTS: &[&str] = &["Crashed", "HeapExceeded", "PartitionDetected"];
+
 /// The synthetic `#[on(crash)]` handler's logical return type — `CrashAction`.
 ///
 /// M-4: the emitted `__on_crash` function returns the `CrashAction` tagged-union
@@ -93,6 +106,164 @@ fn crash_action_return_ty() -> ResolvedTy {
         hew_types::BuiltinType::CrashAction,
         Vec::new(),
     )
+}
+
+/// Build the synthetic prologue body for an `#[on(exit)]` hook (M-7-R).
+///
+/// The runtime delivers a linked actor's `CrashNotification` as two raw ABI
+/// params — `__exit_actor_id: u64` and `__exit_kind_tag: i32` (the already-
+/// projected M-6 `CrashKind` tag). The user-visible `note: CrashNotification`
+/// param is replaced by these two; the body gains a prologue that reconstructs
+/// the typed value:
+///
+/// ```text
+/// let note = match __exit_kind_tag {
+///     0 => CrashNotification { actor_id: __exit_actor_id, kind: CrashKind::Crashed },
+///     1 => CrashNotification { actor_id: __exit_actor_id, kind: CrashKind::HeapExceeded },
+///     _ => CrashNotification { actor_id: __exit_actor_id, kind: CrashKind::PartitionDetected },
+/// };
+/// <original body>
+/// ```
+///
+/// `note_param` carries the original binding id so user `note.actor_id` /
+/// `note.kind` reads resolve. `CrashNotification` / `CrashKind` are std types.
+#[expect(
+    clippy::too_many_lines,
+    reason = "single coherent HIR-construction unit (the synthetic prologue \
+              match + CrashNotification rebuild); splitting it would scatter \
+              the node shapes that must stay aligned"
+)]
+fn build_exit_hook_body(body: HirBlock, note_param: &HirBinding) -> HirBlock {
+    let span = note_param.span.clone();
+    let crash_notification_ty = note_param.ty.clone();
+    let crash_kind_ty = ResolvedTy::named_user("CrashKind", Vec::new());
+
+    let actor_id_ref = || HirExpr {
+        node: SENTINEL_CRASH_CODE_NODE,
+        site: SENTINEL_CRASH_CODE_SITE,
+        ty: ResolvedTy::U64,
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::BindingRef {
+            name: "__exit_actor_id".to_string(),
+            resolved: ResolvedRef::Binding(SENTINEL_EXIT_ACTOR_ID_BINDING),
+        },
+        span: span.clone(),
+    };
+
+    // One match arm per CrashKind variant, each yielding a full
+    // `CrashNotification { actor_id, kind: CrashKind::<V> }`.
+    let arms: Vec<hew_hir::HirMatchArm> = CRASH_KIND_VARIANTS
+        .iter()
+        .enumerate()
+        .map(|(idx, variant_name)| {
+            // `CrashKind::<variant>` unit-variant constructor. A user enum
+            // projects onto the tagged-union (machine) substrate, so a unit
+            // variant value lowers as a payload-free `MachineVariantCtor` keyed
+            // by the enum name and the variant's declaration index.
+            let _ = variant_name; // name documented by CRASH_KIND_VARIANTS order
+            let kind_value = HirExpr {
+                node: SENTINEL_CRASH_CODE_NODE,
+                site: SENTINEL_CRASH_CODE_SITE,
+                ty: crash_kind_ty.clone(),
+                value_class: ValueClass::BitCopy,
+                intent: IntentKind::Read,
+                kind: HirExprKind::MachineVariantCtor {
+                    machine_name: "CrashKind".to_string(),
+                    state_idx: idx,
+                    payload: None,
+                },
+                span: span.clone(),
+            };
+            let notif = HirExpr {
+                node: SENTINEL_CRASH_CODE_NODE,
+                site: SENTINEL_CRASH_CODE_SITE,
+                ty: crash_notification_ty.clone(),
+                value_class: ValueClass::BitCopy,
+                intent: IntentKind::Unknown,
+                kind: HirExprKind::StructInit {
+                    name: "CrashNotification".to_string(),
+                    type_args: Vec::new(),
+                    fields: vec![
+                        ("actor_id".to_string(), actor_id_ref()),
+                        ("kind".to_string(), kind_value),
+                    ],
+                    base: None,
+                },
+                span: span.clone(),
+            };
+            let is_last = idx + 1 == CRASH_KIND_VARIANTS.len();
+            let predicate = if is_last {
+                hew_hir::HirMatchArmPredicate::Wildcard
+            } else {
+                hew_hir::HirMatchArmPredicate::Literal {
+                    // `idx` is bounded by CRASH_KIND_VARIANTS.len() (3).
+                    lit: HirLiteral::Integer(i64::try_from(idx).unwrap_or(0)),
+                    ty: ResolvedTy::I32,
+                }
+            };
+            hew_hir::HirMatchArm {
+                predicate,
+                bindings: Vec::new(),
+                payload_predicates: Vec::new(),
+                payload_variant_predicates: Vec::new(),
+                guard: None,
+                body: notif,
+                span: span.clone(),
+            }
+        })
+        .collect();
+
+    let kind_tag_ref = HirExpr {
+        node: SENTINEL_CRASH_CODE_NODE,
+        site: SENTINEL_CRASH_CODE_SITE,
+        ty: ResolvedTy::I32,
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::BindingRef {
+            name: "__exit_kind_tag".to_string(),
+            resolved: ResolvedRef::Binding(SENTINEL_EXIT_KIND_TAG_BINDING),
+        },
+        span: span.clone(),
+    };
+
+    let match_expr = HirExpr {
+        node: SENTINEL_CRASH_CODE_NODE,
+        site: SENTINEL_CRASH_CODE_SITE,
+        ty: crash_notification_ty.clone(),
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Unknown,
+        kind: HirExprKind::Match {
+            scrutinee: Box::new(kind_tag_ref),
+            arms,
+        },
+        span: span.clone(),
+    };
+
+    // `let note = match __exit_kind_tag { ... };` — preserve the original
+    // binding id so user `note.<field>` reads resolve.
+    let let_note = HirStmt {
+        node: SENTINEL_CRASH_CODE_NODE,
+        kind: HirStmtKind::Let(
+            HirBinding {
+                id: note_param.id,
+                name: note_param.name.clone(),
+                ty: crash_notification_ty,
+                mutable: false,
+                span: span.clone(),
+            },
+            Some(match_expr),
+        ),
+        span: span.clone(),
+    };
+
+    let mut stmts = Vec::with_capacity(body.statements.len() + 1);
+    stmts.push(let_note);
+    stmts.extend(body.statements.iter().cloned());
+    HirBlock {
+        statements: stmts,
+        ..body
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1556,6 +1727,11 @@ pub fn lower_hir_module_with_facts(
                 .iter()
                 .find(|hook| hook.kind == HirLifecycleHookKind::Crash)
                 .map(|_| mangle_actor_crash_handler(&actor_symbol_base(actor))),
+            on_exit_symbol: actor
+                .lifecycle_hooks
+                .iter()
+                .find(|hook| hook.kind == HirLifecycleHookKind::Exit)
+                .map(|_| mangle_actor_exit_handler(&actor_symbol_base(actor))),
             max_heap_bytes: actor.max_heap_bytes,
             cycle_capable: actor.cycle_capable,
             handlers: lower_actor_handler_layouts(actor),
@@ -3347,6 +3523,111 @@ fn lower_actor_lifecycle_handlers(
                     task_entry_adapter_symbols.clone(),
                 ));
             }
+            HirLifecycleHookKind::Exit => {
+                // M-7-R: `#[on(exit)]` linked-actor exit hook. The runtime
+                // delivers a peer's `CrashNotification` on SYS_MSG_EXIT as two
+                // raw ABI params (`__exit_actor_id: u64`, `__exit_kind_tag: i32`);
+                // the prologue rebuilds `note = CrashNotification { actor_id,
+                // kind }`. Returns `()` (the hook reacts; it does not steer).
+                let emit_name = mangle_actor_exit_handler(&actor_symbol_base(actor));
+                let duplicate_label =
+                    format!("actor `{}` #[on(exit)] hook `{}`", actor.name, hook.name);
+                if let Some(existing) = emitted_symbols.get(&emit_name) {
+                    diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::ActorHandlerSymbolCollision {
+                            symbol: emit_name,
+                            existing: existing.clone(),
+                            duplicate: duplicate_label,
+                        },
+                        note: "actor #[on(exit)] handler symbol mangling must be one-to-one before MIR emission"
+                            .to_string(),
+                    });
+                    continue;
+                }
+                emitted_symbols.insert(emit_name.clone(), duplicate_label);
+
+                // The CrashNotification payload param (if present) expands to the
+                // two raw ABI params; other params pass through (there are none
+                // in the canonical shape).
+                let notification_param: Option<HirBinding> = hook.params.iter().find_map(|p| {
+                    matches!(&p.ty, ResolvedTy::Named { name, args, .. }
+                        if name == "CrashNotification" && args.is_empty())
+                    .then(|| p.clone())
+                });
+
+                let abi_params: Vec<HirBinding> = hook
+                    .params
+                    .iter()
+                    .flat_map(|p| {
+                        let is_notification = matches!(&p.ty, ResolvedTy::Named { name, args, .. }
+                            if name == "CrashNotification" && args.is_empty());
+                        if is_notification {
+                            vec![
+                                HirBinding {
+                                    id: SENTINEL_EXIT_ACTOR_ID_BINDING,
+                                    name: "__exit_actor_id".to_string(),
+                                    ty: ResolvedTy::U64,
+                                    mutable: false,
+                                    span: p.span.clone(),
+                                },
+                                HirBinding {
+                                    id: SENTINEL_EXIT_KIND_TAG_BINDING,
+                                    name: "__exit_kind_tag".to_string(),
+                                    ty: ResolvedTy::I32,
+                                    mutable: false,
+                                    span: p.span.clone(),
+                                },
+                            ]
+                        } else {
+                            vec![p.clone()]
+                        }
+                    })
+                    .collect();
+
+                let body = if let Some(note_param) = notification_param {
+                    build_exit_hook_body(hook.body.clone(), &note_param)
+                } else {
+                    hook.body.clone()
+                };
+
+                let synthetic_fn = HirFn {
+                    id: actor.id,
+                    node: actor.node,
+                    name: format!("{}::{}", actor.name, hook.name),
+                    type_params: Vec::new(),
+                    params: abi_params,
+                    return_ty: ResolvedTy::Unit,
+                    body,
+                    span: hook.span.clone(),
+                    is_generator: false,
+                    intrinsic_id: None,
+                };
+                lowered.push(lower_function(
+                    &synthetic_fn,
+                    emit_name,
+                    HashMap::new(),
+                    type_classes,
+                    record_field_orders,
+                    actor_layouts,
+                    &HashMap::new(),
+                    machine_layout_names,
+                    enum_layouts,
+                    opaque_handle_names,
+                    Some(actor.qualified_name().as_str()),
+                    module_fn_names,
+                    module_generic_fn_names,
+                    funcupdate_fn_returns_fresh,
+                    &HashMap::new(),
+                    call_site_type_args,
+                    None,
+                    supervisor_child_slots,
+                    pool_accessor_sites,
+                    actor_send_aliasing,
+                    pointer_width,
+                    crate::model::FunctionCallConv::ActorHandler,
+                    task_entry_adapter_symbols.clone(),
+                ));
+            }
             HirLifecycleHookKind::Upgrade => push_lifecycle_not_wired_diagnostic(
                 diagnostics,
                 &actor.name,
@@ -3420,6 +3701,10 @@ fn mangle_actor_stop_handler_indexed(actor_name: &str, hook_idx: usize) -> Strin
 
 fn mangle_actor_crash_handler(actor_name: &str) -> String {
     format!("{actor_name}__on_crash")
+}
+
+fn mangle_actor_exit_handler(actor_name: &str) -> String {
+    format!("{actor_name}__on_exit")
 }
 
 /// Per-actor lifecycle-wrapper symbol: `__hew_lifecycle_<mangled-actor>`.
@@ -38035,6 +38320,8 @@ mod enum_layout_tests {
                     && l.name != "AskError"
                     && l.name != "TimeoutError"
                     && l.name != "LinkError"
+                    && l.name != "CrashAction"
+                    && l.name != "CrashKind"
             })
             .collect();
         assert_eq!(user_layouts.len(), 1, "expected one EnumLayout for Shape");
@@ -38093,6 +38380,8 @@ mod enum_layout_tests {
                     && l.name != "AskError"
                     && l.name != "TimeoutError"
                     && l.name != "LinkError"
+                    && l.name != "CrashAction"
+                    && l.name != "CrashKind"
             })
             .collect();
         assert_eq!(user_layouts.len(), 1, "expected one EnumLayout for Colour");
@@ -38295,6 +38584,8 @@ mod enum_layout_tests {
                     && l.name != "AskError"
                     && l.name != "TimeoutError"
                     && l.name != "LinkError"
+                    && l.name != "CrashAction"
+                    && l.name != "CrashKind"
             })
             .collect();
         assert_eq!(

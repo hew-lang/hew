@@ -1187,6 +1187,10 @@ impl Checker {
                     self.check_crash_hook(&ad.name, method, &ad.fields);
                     continue;
                 }
+                "exit" => {
+                    self.check_exit_hook(&ad.name, method, &ad.fields);
+                    continue;
+                }
                 "upgrade" => {
                     self.reject_upgrade_hook(&ad.name, &method.name, hook_attr.span.clone());
                     continue;
@@ -1218,19 +1222,19 @@ impl Checker {
                     hook_attr.span.clone(),
                     format!(
                         "`#[on]` on `{actor_name}::{method_name}` requires a hook kind argument; \
-                         valid hook kinds are: start, stop, crash, upgrade"
+                         valid hook kinds are: start, stop, crash, exit, upgrade"
                     ),
                 ));
                 return None;
             }
-            Some("start" | "stop" | "crash" | "upgrade") => {}
+            Some("start" | "stop" | "crash" | "exit" | "upgrade") => {}
             Some(unknown) => {
                 self.errors.push(TypeError::new(
                     TypeErrorKind::InvalidOperation,
                     hook_attr.span.clone(),
                     format!(
                         "`#[on({unknown})]` on `{actor_name}::{method_name}` is not a recognised \
-                         lifecycle hook; valid hook kinds are: start, stop, crash, upgrade"
+                         lifecycle hook; valid hook kinds are: start, stop, crash, exit, upgrade"
                     ),
                 ));
                 return None;
@@ -1238,11 +1242,11 @@ impl Checker {
         }
         let hook_kind_str = hook_kind.unwrap();
 
-        // Reject `#[on(crash, …)]` with extra arguments.
+        // Reject `#[on(crash, …)]` / `#[on(exit, …)]` with extra arguments.
         // start/stop already reject extra args via `check_lifecycle_hook`'s
-        // signature checks; for crash we validate the attribute shape here
-        // because its signature/body checking is event-specific.
-        if hook_kind_str == "crash" && hook_attr.args.len() > 1 {
+        // signature checks; for crash/exit we validate the attribute shape here
+        // because their signature/body checking is event-specific.
+        if (hook_kind_str == "crash" || hook_kind_str == "exit") && hook_attr.args.len() > 1 {
             self.errors.push(TypeError::new(
                 TypeErrorKind::InvalidOperation,
                 hook_attr.span.clone(),
@@ -1615,6 +1619,101 @@ impl Checker {
         // a `CrashAction`-returning body is removed — a `#[on(crash)]` hook may
         // now return `Restart`/`Escalate`/`Kill` (or `panic(...)`) freely. The
         // standard return-type checking against `current_return_type` covers it.
+        let _body_ty = self.check_block(&hook.body, None);
+        self.current_return_type = None;
+        self.in_actor_handler_context = prev_actor_handler_context;
+
+        self.current_function = prev_function;
+        self.env.pop_scope();
+    }
+
+    /// Validate a `#[on(exit)]` linked-actor exit hook (M-7-R, Q210/A211).
+    ///
+    /// Fires when an actor THIS actor is linked to crashes/exits, delivering a
+    /// typed `CrashNotification { actor_id, kind }`. Mirrors `#[on(crash)]`'s
+    /// attribute shape (one typed payload param) but, unlike crash, returns
+    /// `()` — an exit hook reacts (log / re-establish a link / drop work), it
+    /// does not steer a restart decision. The signature is
+    /// `fn on_exit(note: CrashNotification)`.
+    pub(super) fn check_exit_hook(
+        &mut self,
+        actor_name: &str,
+        hook: &FnDecl,
+        fields: &[FieldDecl],
+    ) {
+        let hook_kind = "on(exit)";
+
+        self.reject_hook_modifier_set(actor_name, hook, hook_kind);
+
+        // Param: exactly one `note: CrashNotification`. CrashNotification is a
+        // std/failure.hew type (not a compiler builtin), so match by resolved
+        // type name rather than a builtin marker.
+        match hook.params.as_slice() {
+            [p] => {
+                let pty = self.resolve_type_expr(&p.ty);
+                let is_crash_notification = matches!(
+                    &pty,
+                    Ty::Named { name, args, .. }
+                        if name == "CrashNotification" && args.is_empty()
+                );
+                if !is_crash_notification {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::InvalidOperation,
+                        p.ty.1.clone(),
+                        format!(
+                            "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` parameter \
+                             must have type `CrashNotification` (from `std::failure`)",
+                            hook.name
+                        ),
+                    ));
+                }
+            }
+            other => {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    hook.decl_span.clone(),
+                    format!(
+                        "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` must take \
+                         exactly one parameter `note: CrashNotification`; got {} parameter(s)",
+                        hook.name,
+                        other.len()
+                    ),
+                ));
+            }
+        }
+
+        // Return type: `()`. Reject a declared non-unit return.
+        if let Some(rt) = &hook.return_type {
+            let ty = self.resolve_type_expr(rt);
+            if !matches!(ty, Ty::Unit) {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    rt.1.clone(),
+                    format!(
+                        "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` must return `()`; \
+                         an exit hook reacts to a peer's failure, it does not return a value",
+                        hook.name
+                    ),
+                ));
+            }
+        }
+
+        // ── Body checking ───────────────────────────────────────────────
+        let prev_actor_handler_context = self.in_actor_handler_context;
+        self.in_actor_handler_context = true;
+        self.env.push_scope();
+
+        let qualified_name = format!("{actor_name}::{}", hook.name);
+        let prev_function = self.current_function.take();
+        self.current_function = Some(qualified_name);
+
+        self.bind_actor_fields(fields);
+        if let Some(p) = hook.params.first() {
+            let pty = self.resolve_type_expr(&p.ty);
+            self.env.define(p.name.clone(), pty, p.is_mutable);
+        }
+
+        self.current_return_type = Some(Ty::Unit);
         let _body_ty = self.check_block(&hook.body, None);
         self.current_return_type = None;
         self.in_actor_handler_context = prev_actor_handler_context;

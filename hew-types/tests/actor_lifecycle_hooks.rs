@@ -475,6 +475,80 @@ fn accept_closure_inside_crash_hook_returning_crash_action() {
     );
 }
 
+// ── M-7-R: `#[on(exit)]` linked-actor exit hook ──────────────────────
+//
+// The exit hook fires when an actor THIS actor is linked to crashes/exits,
+// delivering a typed `CrashNotification { actor_id, kind }`. Signature:
+// `fn on_exit(note: CrashNotification)` (returns `()`).
+
+#[test]
+fn accept_on_exit_hook_canonical_shape() {
+    let output = typecheck(
+        r"
+        actor Watcher {
+            #[on(exit)]
+            fn on_peer_exit(note: CrashNotification) {
+                let _id = note.actor_id;
+            }
+        }
+
+        fn main() {}
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "`#[on(exit)] fn on_peer_exit(note: CrashNotification)` should type-check cleanly: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn reject_on_exit_hook_wrong_param_type() {
+    let output = typecheck(
+        r"
+        actor Watcher {
+            #[on(exit)]
+            fn on_peer_exit(note: CrashInfo) {
+            }
+        }
+
+        fn main() {}
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            matches!(&e.kind, TypeErrorKind::InvalidOperation)
+                && e.message.contains("CrashNotification")
+        }),
+        "`#[on(exit)]` with a non-CrashNotification param must reject: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn reject_on_exit_hook_nonunit_return() {
+    let output = typecheck(
+        r"
+        actor Watcher {
+            #[on(exit)]
+            fn on_peer_exit(note: CrashNotification) -> i64 {
+                42
+            }
+        }
+
+        fn main() {}
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            matches!(&e.kind, TypeErrorKind::InvalidOperation)
+                && e.message.contains("must return `()`")
+        }),
+        "`#[on(exit)]` with a non-unit return must reject: {:?}",
+        output.errors
+    );
+}
+
 // ── E2: `#[on(crash)]` signature pinning ─────────────────────────────
 //
 // Failure-philosophy slice E2 pins the crash hook signature shape:

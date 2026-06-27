@@ -55,6 +55,8 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::LambdaPid
             | BuiltinType::CrashInfo
             | BuiltinType::CrashAction
+            | BuiltinType::CrashNotification
+            | BuiltinType::CrashKind
             | BuiltinType::SendError
             | BuiltinType::AskError
             | BuiltinType::RecvError

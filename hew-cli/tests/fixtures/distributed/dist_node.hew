@@ -190,7 +190,7 @@ fn lookup_wire_with_retry(name: string) -> Result<RemotePid<WireProbe>, LookupEr
     }
 }
 
-fn run_server(port: string) {
+fn run_server(port: string, scenario: string) {
     let addr = f"127.0.0.1:{port}";
     Node::set_transport("tcp");
     Node::start(addr);
@@ -206,10 +206,15 @@ fn run_server(port: string) {
     // harness never launches the client against a half-started node.
     println(f"READY {port}");
 
-    // Stay alive long enough for the client to connect, run its scenario, and
-    // exit. The harness kills the server as soon as the client returns, so this
-    // upper bound is only a safety ceiling, never the happy-path wait.
-    sleep(2m);
+    if scenario == "monitor_watcher_node_death" {
+        // For this scenario the server drives the assertion: poll the watcher
+        // count until it drops to 0 (prune fired) and print the result.
+        // The harness reads this PASS line from the server's stdout.
+        scenario_server_watcher_node_death(0);
+    } else {
+        // All other scenarios: stay alive until the harness kills us.
+        sleep(2m);
+    }
     Node::shutdown();
 }
 
@@ -536,6 +541,81 @@ fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
     }
 }
 
+// Scenario: monitor_watcher_node_death
+//
+// F2 two-process fixture: the watcher node dies and the target-side
+// RemoteWatcher entries it registered are pruned, keeping the table bounded.
+//
+// Server role: registers the target actor, prints READY, then polls
+// hew_dist_monitor_remote_watcher_count() until it drops to 0 (the prune
+// fired) and prints the exact count that was registered before the death.
+// Target actor stays alive and re-monitorable afterward.
+//
+// Client role: connects, registers a monitor on the server's "kv" actor,
+// prints READY_CLIENT_WATCHER so the harness knows the watch is live, then
+// sleeps until the harness kills it. The kill simulates a watcher-node crash.
+extern "C" {
+    fn hew_dist_monitor_remote_watcher_count() -> i64;
+}
+
+fn scenario_server_watcher_node_death(_kv_serial: i64) {
+    // Phase 1: wait until at least one RemoteWatcher entry appears (the client
+    // connected and registered its monitor via CTRL_MONITOR_REQ).
+    var registered: i64 = 0;
+    var wait_attempts: i64 = 0;
+    loop {
+        let c = unsafe { hew_dist_monitor_remote_watcher_count() };
+        if c > 0 {
+            registered = c;
+            // Signal that the monitor registration has been received and processed.
+            // The harness reads this line before killing the client, ensuring the
+            // kill arrives after — not before — the target-side entry is recorded.
+            println(f"READY_SERVER_WATCHER_REGISTERED monitor_watcher_node_death count={registered}");
+            break;
+        }
+        wait_attempts = wait_attempts + 1;
+        if wait_attempts >= 200 {
+            // Emit diagnostic count to distinguish no-runtime (-1) from table-empty (0).
+            println(f"FAIL monitor_watcher_node_death server-no-watcher-registered last-count={c}");
+            return;
+        }
+        sleep(100ms);
+    }
+
+    // Phase 2: poll until the count drops back to 0 (prune fired on connection-drop).
+    var prune_attempts: i64 = 0;
+    loop {
+        let c = unsafe { hew_dist_monitor_remote_watcher_count() };
+        if c == 0 {
+            // Table is empty: the prune fired correctly.
+            println(f"PASS monitor_watcher_node_death pruned={registered}");
+            return;
+        }
+        prune_attempts = prune_attempts + 1;
+        if prune_attempts >= 200 {
+            println(f"FAIL monitor_watcher_node_death pruned-timeout count={c}");
+            return;
+        }
+        sleep(100ms);
+    }
+}
+
+fn scenario_client_watcher_node_death(kv: RemotePid<KeyValue>) -> i64 {
+    // Register a monitor on the server's long-lived actor.
+    let m: MonitorRef = monitor(kv);
+    // Signal readiness so the harness knows CTRL_MONITOR_REQ has been sent.
+    // The server then confirms receipt (READY_SERVER_WATCHER_REGISTERED) before
+    // the harness kills this process, closing the registration race.
+    println("READY_CLIENT_WATCHER monitor_watcher_node_death");
+    // Block until this process is killed (SIGKILL from harness). The generous
+    // timeout keeps `m` alive and in scope so MonitorRef's Drop does not send
+    // CTRL_DEMONITOR before the harness kill arrives.
+    let down_reason = m.recv_down(120000);
+    // On a real kill this line is never reached. Return the down reason to
+    // keep `m` alive until here and suppress the unused-value warning.
+    down_reason
+}
+
 fn run_client(port: string, scenario: string) -> i64 {
     let remote_addr = f"127.0.0.1:{port}";
     Node::set_transport("tcp");
@@ -579,8 +659,12 @@ fn run_client(port: string, scenario: string) -> i64 {
                                 if scenario == "partition_ask" {
                                     scenario_partition_ask(kv)
                                 } else {
-                                    println(f"FAIL {scenario} unknown-scenario");
-                                    90
+                                    if scenario == "monitor_watcher_node_death" {
+                                        scenario_client_watcher_node_death(kv)
+                                    } else {
+                                        println(f"FAIL {scenario} unknown-scenario");
+                                        90
+                                    }
                                 }
                             }
                         }
@@ -601,7 +685,7 @@ fn main() -> i64 {
         scenario = "remote_ask";
     }
     if role == "server" {
-        run_server(port);
+        run_server(port, scenario);
         0
     } else {
         if role == "client" {

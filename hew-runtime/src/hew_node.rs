@@ -2830,6 +2830,12 @@ pub(crate) fn fan_out_remote_monitor_down(target_serial: u64, reason: i32) {
 /// `hew_node_monitor_recv`. Only `Pending` slots are armed, so a registration
 /// that already received a definitive clean-exit / crash DOWN is untouched
 /// (exactly-once; the central R1/R2 disambiguation).
+///
+/// Also prunes the target-side `RemoteWatcher` entries registered by the dead
+/// node. When a watcher node dies, the actors it was watching on this node must
+/// not accumulate its now-stale watcher records indefinitely — only a definitive
+/// demonitor or the watched actor's own death normally removes them. Pruning here
+/// ensures the target-side table stays bounded under watcher-node churn.
 pub(crate) fn fan_out_monitor_lost_for_node(dead_node_id: u16) {
     let Some(rt) = crate::runtime::rt_current_opt() else {
         return;
@@ -2837,6 +2843,9 @@ pub(crate) fn fan_out_monitor_lost_for_node(dead_node_id: u16) {
     let _ = rt
         .dist_monitors
         .deliver_to_node(dead_node_id, crate::dist_monitor::MONITOR_REASON_LOST);
+    let _ = rt
+        .dist_monitors
+        .prune_remote_watchers_for_node(dead_node_id);
 }
 
 /// Fail every pending remote ask routed to a SWIM-declared-DEAD node with
@@ -2871,6 +2880,20 @@ pub(crate) fn fail_remote_asks_for_node(dead_node_id: u16) {
             return;
         }
         // SAFETY: routing_table is valid while the node is installed.
+        //
+        // Replacement-connection window: this lookup returns the CURRENT conn_id
+        // for `dead_node_id` at the time of the SWIM-DEAD verdict. If the routing
+        // table has already been updated to a replacement connection (old socket
+        // retired, new connection established and routed), `conn_id` here is the
+        // NEW conn's id. Pending asks on the OLD conn that are still draining in
+        // the old reader's cleanup will NOT be reached by this fan-out — they
+        // resolve via `reader_cleanup` → `ConnectionDropped` rather than
+        // `Partition`. This is already fail-closed (the dying reader does fail
+        // them; no ask can hang) and is a cosmetic reason-label mismatch only.
+        //
+        // The real fix — keying the reply table on (node_id, conn_generation) so
+        // a DEAD verdict can reach a retired conn's draining asks — requires a
+        // reply-table schema change and an exactly-once proof; it is deferred.
         let conn_id =
             unsafe { crate::routing::hew_routing_conn_for_node(node.routing_table, dead_node_id) };
         if conn_id < 0 {
@@ -2882,6 +2905,30 @@ pub(crate) fn fail_remote_asks_for_node(dead_node_id: u16) {
             table.fail_connection_with_reason(connection, AskError::Partition);
         }
     });
+}
+
+/// Return the total number of `RemoteWatcher` entries across all serial slots
+/// in the target-side monitor table.
+///
+/// Test-introspection probe used by the two-process watcher-node-death fixture
+/// to assert the target-side table is empty after a watcher node dies — proving
+/// the prune path fires and the table is bounded. Not user-callable; the
+/// compiler does not emit calls to this symbol. Callable from `.hew` via
+/// `extern "C" { fn hew_dist_monitor_remote_watcher_count() -> i64; }`.
+#[no_mangle]
+pub extern "C" fn hew_dist_monitor_remote_watcher_count() -> i64 {
+    let Some(rt) = crate::runtime::rt_current_opt() else {
+        return -1;
+    };
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "remote_watcher_count is bounded by the number of live monitors, which is \
+                  far below i64::MAX in any realistic deployment; the sentinel -1 covers \
+                  the no-runtime case"
+    )]
+    {
+        rt.dist_monitors.remote_watcher_count() as i64
+    }
 }
 
 /// Connect to a remote node and register routing for its node ID.

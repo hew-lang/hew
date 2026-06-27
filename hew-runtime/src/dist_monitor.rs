@@ -240,11 +240,22 @@ impl DistMonitorState {
     /// `(remote_node_id, target_serial)` if the entry existed, so the caller can
     /// send a `CTRL_DEMONITOR` to the peer. Idempotent: a missing `ref_id`
     /// returns `None`.
+    ///
+    /// Wakes any thread blocked in [`recv_down`] for this `ref_id`. The woken
+    /// thread sees no entry and returns [`MONITOR_REASON_TIMEOUT`] immediately —
+    /// the correct response to an explicit demonitor. Without the wake the thread
+    /// would wait out its full timeout before observing the missing entry.
     pub(crate) fn remove_watcher(&self, ref_id: u64) -> Option<(u16, u64)> {
-        let mut watchers = self.watchers.lock().unwrap_or_else(PoisonError::into_inner);
-        watchers
-            .remove(&ref_id)
-            .map(|e| (e.remote_node_id, e.target_serial))
+        let result = {
+            let mut watchers = self.watchers.lock().unwrap_or_else(PoisonError::into_inner);
+            watchers
+                .remove(&ref_id)
+                .map(|e| (e.remote_node_id, e.target_serial))
+        };
+        // Wake any thread parked in recv_down on this ref so it observes the
+        // removal immediately rather than waiting out its full timeout.
+        self.delivered.notify_all();
+        result
     }
 
     // ── Target side ───────────────────────────────────────────────────────
@@ -307,6 +318,39 @@ impl DistMonitorState {
     pub(crate) fn has_remote_watchers(&self, target_serial: u64) -> bool {
         let targets = self.targets.lock().unwrap_or_else(PoisonError::into_inner);
         targets.get(&target_serial).is_some_and(|ws| !ws.is_empty())
+    }
+
+    /// Prune every `RemoteWatcher` entry on the target side whose `watcher_node_id`
+    /// matches `dead_watcher_node_id`, removing now-empty serial slots.
+    ///
+    /// Called when a watcher node dies (connection-drop or SWIM-DEAD) so its
+    /// pending watch registrations do not accumulate indefinitely on a long-lived
+    /// target actor. Returns the number of entries pruned.
+    ///
+    /// Takes only the `targets` lock; no interaction with the `watchers` mutex or
+    /// `delivered` condvar, so lock ordering is preserved. Idempotent: pruning a
+    /// node with no registered watchers is a no-op returning 0.
+    pub(crate) fn prune_remote_watchers_for_node(&self, dead_watcher_node_id: u16) -> usize {
+        let mut targets = self.targets.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut pruned = 0usize;
+        targets.retain(|_serial, watchers| {
+            let before = watchers.len();
+            watchers.retain(|w| w.watcher_node_id != dead_watcher_node_id);
+            pruned += before - watchers.len();
+            // Drop the serial slot when no watchers remain (mirrors
+            // remove_remote_watcher's empty-slot cleanup).
+            !watchers.is_empty()
+        });
+        pruned
+    }
+
+    /// Count of remote watcher entries across all serials.
+    ///
+    /// Used by `hew_dist_monitor_remote_watcher_count` (the test-introspection
+    /// probe callable from `.hew` fixtures) and by the in-process unit tests.
+    pub(crate) fn remote_watcher_count(&self) -> usize {
+        let targets = self.targets.lock().unwrap_or_else(PoisonError::into_inner);
+        targets.values().map(Vec::len).sum()
     }
 }
 
@@ -446,6 +490,63 @@ mod tests {
         state.remove_remote_watcher(999, 1, 1);
     }
 
+    /// F2: pruning a dead watcher node removes exactly its entries and leaves
+    /// surviving nodes intact. Also verifies empty serial slots are dropped.
+    #[test]
+    fn prune_remote_watchers_for_node_removes_dead_node_entries() {
+        let state = DistMonitorState::new();
+        // serial 50: watched by node 7 (two refs) and node 9 (one ref).
+        state.register_remote_watcher(50, 7, 100);
+        state.register_remote_watcher(50, 7, 101);
+        state.register_remote_watcher(50, 9, 200);
+        // serial 51: watched only by node 7.
+        state.register_remote_watcher(51, 7, 102);
+        // serial 52: watched only by node 9.
+        state.register_remote_watcher(52, 9, 201);
+
+        // Node 7 dies — prune its entries from the target side.
+        let pruned = state.prune_remote_watchers_for_node(7);
+        // Three entries for node 7 across serials 50 and 51.
+        assert_eq!(pruned, 3, "must prune exactly the three node-7 entries");
+
+        // serial 50: node-9 entry survives.
+        assert!(
+            state.has_remote_watchers(50),
+            "serial 50 must still have node-9 watcher"
+        );
+        // serial 51: was node-7 only → empty, slot must be dropped.
+        assert!(
+            !state.has_remote_watchers(51),
+            "serial 51 must be gone (empty after pruning node 7)"
+        );
+        // serial 52: node-9 only — untouched.
+        assert!(
+            state.has_remote_watchers(52),
+            "serial 52 must still have node-9 watcher"
+        );
+
+        // Exact count: 1 (serial 50 / node 9) + 1 (serial 52 / node 9) = 2.
+        assert_eq!(
+            state.remote_watcher_count(),
+            2,
+            "exactly 2 entries must remain"
+        );
+
+        // Negative: pruning again is a no-op.
+        assert_eq!(
+            state.prune_remote_watchers_for_node(7),
+            0,
+            "second prune must be a no-op"
+        );
+
+        // Negative: pruning a node with no entries is a no-op.
+        assert_eq!(
+            state.prune_remote_watchers_for_node(42),
+            0,
+            "pruning a node with no entries must return 0"
+        );
+    }
+
     #[test]
     fn recv_blocks_until_concurrent_arm() {
         use std::sync::Arc;
@@ -464,5 +565,62 @@ mod tests {
 
         let reason = handle.join().expect("recv thread panicked");
         assert_eq!(reason, 6, "blocked recv must wake with the armed reason");
+    }
+
+    /// F3: `remove_watcher` wakes a blocked `recv_down` promptly.
+    ///
+    /// A thread parked on `recv_down(ref, 5 s)` must return well before the
+    /// 5-second timeout when the registration is removed by `remove_watcher`.
+    /// Without the `notify_all` the thread would sleep for the full timeout and
+    /// only then observe the absent entry.
+    #[test]
+    fn remove_watcher_wakes_blocked_recv_promptly() {
+        use std::sync::Arc;
+        use std::time::Instant;
+        let state = Arc::new(DistMonitorState::new());
+        let ref_id = state.register_watcher(7, 1);
+
+        // A sibling ref on another node — must NOT be disturbed by this remove.
+        let sibling_ref = state.register_watcher(9, 2);
+
+        let state_recv = Arc::clone(&state);
+        let started = Instant::now();
+        let handle = std::thread::spawn(move || {
+            // 5-second ceiling; a missing wake would blow this.
+            state_recv.recv_down(ref_id, Duration::from_secs(5))
+        });
+
+        // Park the recv thread, then remove the registration.
+        std::thread::sleep(Duration::from_millis(50));
+        let removed = state.remove_watcher(ref_id);
+        assert_eq!(
+            removed,
+            Some((7, 1)),
+            "remove_watcher must return the target"
+        );
+
+        let reason = handle.join().expect("recv thread panicked");
+        let elapsed = started.elapsed();
+
+        // Correct return value: no entry → MONITOR_REASON_TIMEOUT.
+        assert_eq!(
+            reason, MONITOR_REASON_TIMEOUT,
+            "removed ref must yield MONITOR_REASON_TIMEOUT"
+        );
+        // Bounded-time: the wake must arrive well before the 5 s timeout.
+        // Allow 2 s for scheduling jitter on a slow CI host; a missing notify_all
+        // would take the full 5 s.
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "recv_down after remove_watcher took {elapsed:?}; expected well under 2 s \
+             (notify_all missing?)"
+        );
+        // Negative guard: the sibling ref on node 9 must not have been woken with
+        // a spurious signal — it is still Pending, so its recv times out normally.
+        assert_eq!(
+            state.recv_down(sibling_ref, Duration::from_millis(20)),
+            MONITOR_REASON_TIMEOUT,
+            "notify_all on remove must not spuriously deliver to a sibling ref"
+        );
     }
 }

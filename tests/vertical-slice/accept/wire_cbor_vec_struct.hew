@@ -1,0 +1,28 @@
+// Validation: a `Vec<#[wire] struct>` field round-trips through the CBOR body
+// codec as a CBOR array of nested maps — a list of wire messages, the core
+// distributed pattern (a batch of events / peers / log entries). The element
+// vec is a layout-aware BitCopy vec (the same ABI `Vec::new` constructs for a
+// `Vec<record>`), so the codec must read/write each slot through the
+// layout-aware accessors, NOT the generic ones (which abort on a layout-aware
+// vec). The decoded elements' `v` fields sum to 42, so a dropped, reordered, or
+// corrupted element changes the exit code.
+#[wire]
+struct Inner {
+    v: i64 @1,
+}
+
+#[wire]
+struct Container {
+    items: Vec<Inner> @1,
+}
+
+fn main() -> i64 {
+    let xs: Vec<Inner> = Vec::new();
+    xs.push(Inner { v: 10 });
+    xs.push(Inner { v: 20 });
+    xs.push(Inner { v: 12 });
+    let c = Container { items: xs };
+    let back = Container.decode(c.encode());
+    if back.items.len() != 3 { return 1; }
+    back.items[0].v + back.items[1].v + back.items[2].v
+}

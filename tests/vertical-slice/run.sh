@@ -3334,6 +3334,7 @@ run_accept_expect_status "wire_cbor_bytes" 0
 run_accept_expect_status "wire_cbor_option_some" 42
 run_accept_expect_status "wire_cbor_option_none" 42
 run_accept_expect_status "wire_cbor_vec_int" 42
+run_accept_expect_status "wire_cbor_vec_struct" 42
 run_accept_expect_status "wire_cbor_vec_string" 42
 run_accept_expect_status "wire_cbor_empty_collections" 42
 run_accept_expect_status "wire_cbor_nested_struct" 42

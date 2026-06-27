@@ -136,13 +136,28 @@ struct ManagedChild {
 
 impl ManagedChild {
     fn spawn(binary: &Path, role: &str, port: u16, scenario: &str) -> Self {
-        let child = Command::new(binary)
+        Self::spawn_with_env(binary, role, port, scenario, &[])
+    }
+
+    fn spawn_with_env(
+        binary: &Path,
+        role: &str,
+        port: u16,
+        scenario: &str,
+        extra_env: &[(&str, &str)],
+    ) -> Self {
+        let mut command = Command::new(binary);
+        command
             .env("HEW_TRANSPORT", "tcp")
             .env("HEW_DIST_ROLE", role)
             .env("HEW_DIST_PORT", port.to_string())
             .env("HEW_DIST_SCENARIO", scenario)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+        for (key, value) in extra_env {
+            command.env(key, value);
+        }
+        let child = command
             .spawn()
             .unwrap_or_else(|error| panic!("failed to spawn dist_node {role}: {error}"));
         Self {
@@ -249,19 +264,44 @@ fn run_two_process_scenario(scenario: &str) -> String {
     stdout
 }
 
-/// Run the server + client pair for a connection-drop scenario: the client
-/// prints `READY_DROP <name>` once its monitor is registered, the harness then
-/// kills the server process (dropping the connection mid-scenario), and the
-/// client runs to completion observing the connection-drop DOWN. Returns the
-/// client's captured stdout.
-fn run_conn_drop_scenario(scenario: &str) -> String {
+/// Run a cross-node link cascade scenario where the REMOTE actor dies on its own
+/// (clean exit or crash) and the client polls its local linker's terminal state.
+/// The client runs with `HEW_LINK_PROBE=1` so the runtime records actor terminal
+/// reasons in the probe ledger the fixture reads. Returns the client's stdout.
+fn run_link_cascade_scenario(scenario: &str) -> String {
     let binary = compiled_node_binary();
     let port = allocate_loopback_port();
 
     let mut server = ManagedChild::spawn(binary, "server", port, scenario);
     let _server_stdout = wait_for_server_ready(&mut server);
 
-    let mut client = ManagedChild::spawn(binary, "client", port, scenario);
+    let client =
+        ManagedChild::spawn_with_env(binary, "client", port, scenario, &[("HEW_LINK_PROBE", "1")]);
+    let stdout = run_client_to_completion(client);
+
+    drop(server);
+    stdout
+}
+
+/// Run the server + client pair for a connection-drop scenario: the client
+/// prints `READY_DROP <name>` once its monitor is registered, the harness then
+/// kills the server process (dropping the connection mid-scenario), and the
+/// client runs to completion observing the connection-drop DOWN. Returns the
+/// client's captured stdout.
+fn run_conn_drop_scenario(scenario: &str) -> String {
+    run_conn_drop_scenario_with_env(scenario, &[])
+}
+
+/// As [`run_conn_drop_scenario`], with extra client environment (e.g.
+/// `HEW_LINK_PROBE=1` for the cross-node link partition cascade).
+fn run_conn_drop_scenario_with_env(scenario: &str, client_env: &[(&str, &str)]) -> String {
+    let binary = compiled_node_binary();
+    let port = allocate_loopback_port();
+
+    let mut server = ManagedChild::spawn(binary, "server", port, scenario);
+    let _server_stdout = wait_for_server_ready(&mut server);
+
+    let mut client = ManagedChild::spawn_with_env(binary, "client", port, scenario, client_env);
 
     // Block until the client signals its monitor is registered, then kill the
     // server to drop the connection. Reading the client's stdout incrementally
@@ -446,6 +486,76 @@ fn run_watcher_drop_scenario(scenario: &str) -> String {
     }
 
     // Force-kill the server and discard its exit status.
+    let _ = server.child.kill();
+    let _ = server.child.wait();
+
+    server_out
+}
+
+/// Run a server-verdict scenario where the SERVER prints the PASS/FAIL line and
+/// the CLIENT runs to a clean exit on its own (it is not killed). Used by the F1
+/// cross-node demonitor reclamation proof: the client registers a cross-node
+/// monitor, closes it (sending `CTRL_DEMONITOR`), and exits; the server observes
+/// its target-side watcher count rise then fall and prints the verdict. Returns
+/// the server's captured stdout.
+fn run_server_verdict_scenario(scenario: &str) -> String {
+    let binary = compiled_node_binary();
+    let port = allocate_loopback_port();
+
+    let mut server = ManagedChild::spawn(binary, "server", port, scenario);
+    let server_stdout = server
+        .child
+        .stdout
+        .take()
+        .expect("server stdout was captured");
+    let mut server_reader = BufReader::new(server_stdout);
+
+    // Read until READY so we know the actor is registered.
+    let deadline = Instant::now() + SERVER_READY_TIMEOUT;
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "server did not print READY within {SERVER_READY_TIMEOUT:?}"
+        );
+        let mut line = String::new();
+        match server_reader.read_line(&mut line) {
+            Ok(0) => panic!("server stdout closed before READY"),
+            Ok(_) => {
+                if line.trim_start().starts_with("READY ") {
+                    break;
+                }
+            }
+            Err(error) => panic!("error reading server stdout: {error}"),
+        }
+    }
+
+    // Launch the client; it registers, closes its monitor, and exits cleanly.
+    let client = ManagedChild::spawn(binary, "client", port, scenario);
+
+    // Drain the server's output until it prints its verdict or the cap elapses.
+    let mut server_out = String::new();
+    let drain_deadline = Instant::now() + CLIENT_RUN_TIMEOUT;
+    loop {
+        let mut line = String::new();
+        match server_reader.read_line(&mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {
+                server_out.push_str(&line);
+                if line.contains(&format!("PASS {scenario}"))
+                    || line.contains(&format!("FAIL {scenario}"))
+                {
+                    break;
+                }
+            }
+        }
+        assert!(
+            Instant::now() < drain_deadline,
+            "server did not print verdict within {CLIENT_RUN_TIMEOUT:?}"
+        );
+    }
+
+    // Best-effort wait for the client to exit, then force-kill the server.
+    drop(client);
     let _ = server.child.kill();
     let _ = server.child.wait();
 
@@ -685,6 +795,112 @@ fn monitor_watcher_node_death_prunes_target_table() {
     assert!(
         !server_out.contains("FAIL "),
         "server reported a FAIL on the watcher-node-death scenario; \
+         server out:\n{server_out}"
+    );
+}
+
+/// DIST-9 headline: a `CrashLinked` cross-node link crashes the LOCAL linked
+/// actor when the remote actor cleanly exits. The client spawns a linker that
+/// `link_remote(kv, CrashLinked)`s the remote actor, then tells the remote to
+/// stop. The cross-node link-down lands in the linker's MAILBOX as a
+/// `SYS_MSG_EXIT` and crashes it (terminal Crashed == 5) — NOT a monitor recv
+/// slot. The fixture polls the linker's terminal state (probe ledger) and
+/// asserts it reached Crashed.
+#[test]
+fn link_remote_crash_cascade_on_clean_exit() {
+    let stdout = run_link_cascade_scenario("link_remote_clean_exit");
+    assert!(
+        stdout.contains("PASS link_remote_clean_exit linker-crashed reason=5"),
+        "expected the local linked actor to crash (Crashed == 5) when its remote \
+         peer cleanly exits under CrashLinked; client stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("FAIL "),
+        "client reported a FAIL on the link clean-exit cascade; client stdout:\n{stdout}"
+    );
+}
+
+/// A `CrashLinked` cross-node link crashes the LOCAL linked actor when the remote
+/// actor CRASHES (panics). Same mailbox-EXIT cascade as the clean-exit case; the
+/// terminal cause differs but the linked actor still crashes.
+#[test]
+fn link_remote_crash_cascade_on_crash() {
+    let stdout = run_link_cascade_scenario("link_remote_crash");
+    assert!(
+        stdout.contains("PASS link_remote_crash linker-crashed reason=5"),
+        "expected the local linked actor to crash when its remote peer crashes \
+         under CrashLinked; client stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("FAIL "),
+        "client reported a FAIL on the link crash cascade; client stdout:\n{stdout}"
+    );
+}
+
+/// A `CrashLinked` cross-node link crashes the LOCAL linked actor on a PARTITION
+/// (the server process is killed, dropping the connection). The death-signal
+/// must fire on the partition terminal cause too — firing only on a clean exit
+/// would fail-open (a linked actor surviving its dead peer).
+#[test]
+fn link_remote_crash_cascade_on_partition() {
+    let stdout =
+        run_conn_drop_scenario_with_env("link_remote_partition", &[("HEW_LINK_PROBE", "1")]);
+    assert!(
+        stdout.contains("PASS link_remote_partition linker-crashed reason=5"),
+        "expected the local linked actor to crash on a partition under CrashLinked; \
+         client stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("FAIL "),
+        "client reported a FAIL on the link partition cascade; client stdout:\n{stdout}"
+    );
+}
+
+/// A non-`CrashLinked` link policy (`MonitorLost`) must NOT crash the linked
+/// actor when the remote dies — the policy discriminator has teeth. After the
+/// remote cleanly exits, the linker must STILL answer a liveness ask. A "crash
+/// on every death regardless of policy" implementation fails this test.
+#[test]
+fn link_remote_non_crashlinked_policy_no_crash() {
+    let stdout = run_link_cascade_scenario("link_remote_non_crashlinked");
+    assert!(
+        stdout.contains("PASS link_remote_non_crashlinked linker-survived"),
+        "expected the linked actor to SURVIVE a remote death under a non-CrashLinked \
+         policy; client stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("FAIL "),
+        "client reported a FAIL on the non-CrashLinked policy scenario; client stdout:\n{stdout}"
+    );
+}
+
+/// F1 cross-node demonitor reclamation: when a client closes a cross-node
+/// `MonitorRef`, the close routes to the cross-node teardown (not the local-table
+/// no-op), sending `CTRL_DEMONITOR` to the peer. The server observes its
+/// target-side watcher count rise then fall and prints the verdict with an exact
+/// reclaimed count.
+#[test]
+fn cross_node_monitor_close_reclaims_watcher_entry() {
+    let server_out = run_server_verdict_scenario("cross_node_monitor_close_reclaim");
+    assert!(
+        server_out.contains("PASS cross_node_monitor_close_reclaim reclaimed="),
+        "server must print PASS cross_node_monitor_close_reclaim reclaimed=<n> after \
+         the client closes its cross-node monitor; server out:\n{server_out}"
+    );
+    let reclaimed: i64 = server_out
+        .lines()
+        .find(|l| l.contains("PASS cross_node_monitor_close_reclaim reclaimed="))
+        .and_then(|l| l.split("reclaimed=").nth(1))
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
+    assert!(
+        reclaimed > 0,
+        "reclaimed count must be > 0 (the monitor DID register an entry that was \
+         then reclaimed on close); server out:\n{server_out}"
+    );
+    assert!(
+        !server_out.contains("FAIL "),
+        "server reported a FAIL on the cross-node demonitor reclamation; \
          server out:\n{server_out}"
     );
 }

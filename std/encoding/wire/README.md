@@ -6,8 +6,8 @@
 > [`docs/specs/HEW-WIRE-FORMAT-DOCTRINE.md`](../../../docs/specs/HEW-WIRE-FORMAT-DOCTRINE.md)
 > §5 S1 for history.
 
-`std::encoding::wire` holds low-level wire helpers plus the canonical opaque
-`Value` contract shared by the stdlib encoding modules.
+`std::encoding::wire` holds the canonical opaque `Value` contract shared by the
+stdlib encoding modules.
 
 ## Why `Value` stays opaque
 

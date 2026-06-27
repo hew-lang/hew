@@ -273,7 +273,7 @@ unsigned integers. `frame_type` (key `2`) selects the branch.
 
 ```mermaid
 flowchart LR
-    F["wire-frame\n(CBOR map)"] -->|"frame_type=0"| CF["ControlFrame"]
+    F["wire-frame<br/>(CBOR map)"] -->|"frame_type=0"| CF["ControlFrame"]
     F -->|"frame_type=1"| EF["EnvelopeFrame"]
 
     CF --> CV["version (key 1) = 1"]
@@ -286,7 +286,7 @@ flowchart LR
     EF --> EA["target_actor_id (key 3): uint"]
     EF --> ES["source_actor_id (key 4): uint"]
     EF --> EM["msg_type (key 5): int"]
-    EF --> EP["payload (key 6): bstr\n(wire-body.cddl body)"]
+    EF --> EP["payload (key 6): bstr<br/>(wire-body.cddl body)"]
     EF --> ER["request_id (key 7): uint"]
     EF --> EN["source_node_id (key 8): uint"]
 ```

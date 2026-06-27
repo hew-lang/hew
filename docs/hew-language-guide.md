@@ -2358,6 +2358,102 @@ fn main() {
 
 **Memory management:** every `Value` (from `parse`, `get_field`, `array_get`, `from_*`, `object()`, `array()`) must be freed with `.free()` before it goes out of scope. Omitting `.free()` is a resource leak. Values returned by `get_field` and `array_get` are heap-allocated clones — free them independently of the parent.
 
+## Structural equality
+
+### Records and payload-bearing enums
+
+Records and enums support `==` and `!=` out of the box; no extra
+implementation is needed. Equality is structural: two record values are equal
+when every field is equal, and two enum values are equal when they carry the
+same variant and every payload field is equal.
+
+```hew
+type Point { x: i64; y: i64; }
+
+enum Color {
+    Red;
+    Green;
+    Blue;
+    Custom(i64);
+}
+
+fn main() {
+    // Record equality — field-by-field
+    let a = Point { x: 1, y: 2 };
+    let b = Point { x: 1, y: 2 };
+    let c = Point { x: 1, y: 3 };
+    println(a == b);   // true
+    println(a == c);   // false
+    println(a != c);   // true
+
+    // Enum equality — unit variants
+    println(Color::Red == Color::Red);     // true
+    println(Color::Red == Color::Green);   // false
+
+    // Enum equality — payload-bearing variants
+    println(Color::Custom(42) == Color::Custom(42));   // true
+    println(Color::Custom(42) == Color::Custom(99));   // false
+    println(Color::Custom(42) != Color::Red);           // true
+}
+```
+
+### Vec::contains relies on structural equality
+
+`Vec<T>.contains(v)` walks the vector using the same element-wise equality,
+so records and enums with payloads work transparently:
+
+```hew
+type Point { x: i64; y: i64; }
+
+enum Tag { A; B(i64); }
+
+fn main() {
+    // Primitive and string elements
+    let nums: Vec<i64> = Vec::new();
+    nums.push(10); nums.push(20); nums.push(30);
+    println(nums.contains(20));   // true
+    println(nums.contains(99));   // false
+
+    let words: Vec<string> = Vec::new();
+    words.push("hello"); words.push("world");
+    println(words.contains("hello"));   // true
+    println(words.contains("bye"));     // false
+
+    // Record elements
+    let pts: Vec<Point> = Vec::new();
+    pts.push(Point { x: 1, y: 2 });
+    pts.push(Point { x: 3, y: 4 });
+    println(pts.contains(Point { x: 1, y: 2 }));   // true
+    println(pts.contains(Point { x: 5, y: 6 }));   // false
+
+    // Payload enum elements
+    let tags: Vec<Tag> = Vec::new();
+    tags.push(Tag::A);
+    tags.push(Tag::B(7));
+    println(tags.contains(Tag::A));      // true
+    println(tags.contains(Tag::B(7)));   // true
+    println(tags.contains(Tag::B(8)));   // false
+}
+```
+
+### bytes field restriction
+
+Equality is rejected at compile time for any record or enum type that
+contains a `bytes` field. The checker emits a diagnostic rather than
+comparing raw buffer bytes, which would produce unreliable results for
+refcounted heap handles:
+
+<!-- doctest: skip -->
+```hew
+type Packet { data: bytes; }
+// Packet { data: bytes } == Packet { data: bytes }
+// ^^^ rejected: `==` on record type `Packet` is not supported because a
+//     field or payload contains layout-managed/non-Copy data `bytes`
+```
+
+Compare individual eligible fields or use a method that extracts the
+comparable portion instead.
+
 ## v0.5 surfaces
 
 The v0.5 release adds async networking, channels, and text surfaces. Each

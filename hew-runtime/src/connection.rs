@@ -1727,6 +1727,11 @@ pub unsafe extern "C" fn hew_connmgr_free(mgr: *mut HewConnMgr) {
         let drained: Vec<ConnectionActor> = mgr.connections.access(std::mem::take);
 
         for conn in drained {
+            // Signal expected stop BEFORE closing the transport so the reader
+            // that unblocks from the socket shutdown observes stop_flag == 1
+            // (expected-stop path) and does not call hew_connmgr_remove.
+            // The Release ordering pairs with the Acquire in reader_cleanup.
+            conn.reader_stop.store(1, Ordering::Release);
             // Mark closed before the explicit close so Drop does not
             // double-close when the actor is subsequently dropped.
             conn.transport_closed.store(true, Ordering::Release);
@@ -1740,7 +1745,9 @@ pub unsafe extern "C" fn hew_connmgr_free(mgr: *mut HewConnMgr) {
                     }
                 }
             }
-            // ConnectionActor::drop signals reader thread to stop and joins.
+            // ConnectionActor::drop joins the reader thread (idempotently
+            // sets reader_stop again and guards against double-close via
+            // transport_closed, which was already set above).
         }
         mgr.reader_lifecycle.wait_for_idle();
         let workers: Vec<JoinHandle<()>> = mgr.reconnect_workers.access(std::mem::take);
@@ -2186,7 +2193,10 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
     // SAFETY: caller guarantees `mgr` is valid.
     let mgr = unsafe { &*mgr };
 
-    let removed = mgr.connections.access(|conns| {
+    // Phase 1: locate the connection and clone the publication handles — without
+    // removing the conn from the list yet. Holding only Arc clones here so we
+    // release the connections lock before calling into routing/cluster.
+    let publication_data = mgr.connections.access(|conns| {
         let idx = conns.iter().position(|c| c.conn_id == conn_id);
         let Some(idx) = idx else {
             set_last_error(format!(
@@ -2194,44 +2204,74 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
             ));
             return None;
         };
-        let conn = conns.swap_remove(idx);
-        let peer_node_id = conn.peer_node_id;
-        let publication_token = conn.publication_token;
-        let publication_sync = Arc::clone(&conn.publication_sync);
-        let publication_removed = Arc::clone(&conn.publication_removed);
-        conn.state.store(CONN_STATE_CLOSED, Ordering::Release);
+        let conn = &conns[idx];
         Some((
-            conn,
-            peer_node_id,
-            publication_token,
-            publication_sync,
-            publication_removed,
+            conn.peer_node_id,
+            conn.publication_token,
+            Arc::clone(&conn.publication_sync),
+            Arc::clone(&conn.publication_removed),
         ))
     });
-    let Some((conn, peer_node_id, publication_token, publication_sync, publication_removed)) =
-        removed
+    let Some((peer_node_id, publication_token, publication_sync, publication_removed)) =
+        publication_data
     else {
         return -1;
     };
 
-    // Release the registry lock before waking the reader. The reader cleanup
-    // path can re-enter hew_connmgr_remove on an unexpected drop.
+    // Step 2a: flag the publication as removed and remove the route from the
+    // routing table — BEFORE removing the connection from mgr.connections.
     //
+    // This eliminates the TOCTOU window where hew_routing_lookup returns
+    // route-ok while hew_connmgr_send returns -1 (connection already gone
+    // from the list). After the route is removed, any new routing lookup for
+    // this peer returns no route, so no new hew_connmgr_send calls are
+    // dispatched to this conn_id. Route removal is idempotent; the full
+    // retire_connection_publication call at the end of this function repeats
+    // the routing step (no-op second time) and then fires the cluster
+    // notification — intentionally deferred so that a racing replacement
+    // connection can publish first and suppress the notification via the
+    // publication-token check.
     {
         let _publication = publication_sync.lock_or_recover();
         publication_removed.store(true, Ordering::Release);
+        if !mgr.routing_table.is_null() && peer_node_id != 0 {
+            // SAFETY: routing_table is valid per manager contract.
+            let _ = unsafe {
+                hew_routing_remove_route_if_conn(mgr.routing_table, peer_node_id, conn_id)
+            };
+        }
     }
+
+    // Step 2b: remove the connection from the list. The connections lock is
+    // released before waking the reader — the reader-cleanup path can re-enter
+    // hew_connmgr_remove on an unexpected drop; releasing here prevents deadlock.
+    // A second concurrent call (reader re-entry) will find conn_id gone and
+    // return 0 harmlessly.
+    let conn = mgr.connections.access(|conns| {
+        let idx = conns.iter().position(|c| c.conn_id == conn_id)?;
+        let conn = conns.swap_remove(idx);
+        conn.state.store(CONN_STATE_CLOSED, Ordering::Release);
+        Some(conn)
+    });
+    let Some(conn) = conn else {
+        // Already removed by a concurrent hew_connmgr_remove call (reader re-entry).
+        return 0;
+    };
+
     // Mark the reader as explicitly stopped before closing the transport so an
     // awakened reader does not treat this teardown as an unexpected drop.
     conn.reader_stop.store(1, Ordering::Release);
     // Mark closed before the explicit close so Drop does not double-close.
     conn.transport_closed.store(true, Ordering::Release);
-    //
     // Close the transport connection so a blocking recv unblocks.
     // SAFETY: transport is valid per manager contract.
     unsafe { close_transport_conn(mgr.transport, conn_id) };
-    // Now drop/join the reader thread after transport close.
+    // Drop joins the reader thread after transport close.
     drop(conn);
+    // Full publication retirement: re-removes route (idempotent) and fires the
+    // cluster connection-lost notification. Deferred until after drop(conn) so
+    // that a racing replacement connection can establish and publish first —
+    // its higher publication token then suppresses this notification.
     retire_connection_publication(
         mgr,
         peer_node_id,
@@ -3706,6 +3746,237 @@ mod tests {
             drop(Box::from_raw(
                 close_impl.cast::<std::sync::mpsc::Sender<c_int>>(),
             ));
+        }
+        drop(ops);
+    }
+
+    /// Regression: `hew_connmgr_free` must set `reader_stop` BEFORE closing the
+    /// transport so the reader that unblocks from the socket shutdown sees
+    /// `stop_flag` == 1 (expected-stop path) and does not call `hew_connmgr_remove`.
+    #[test]
+    fn connmgr_free_sets_reader_stop_before_transport_close() {
+        use std::sync::atomic::{AtomicI32, Ordering};
+
+        // A close_conn callback that captures the reader_stop value at the moment
+        // the transport close fires.
+        extern "C" fn capture_stop_on_close(impl_ptr: *mut std::ffi::c_void, _conn_id: c_int) {
+            // SAFETY: impl_ptr points at a Box<(Arc<AtomicI32>, Sender<i32>)>
+            // allocated in the test body below; the Box outlives this callback.
+            let pair =
+                unsafe { &*impl_ptr.cast::<(Arc<AtomicI32>, std::sync::mpsc::Sender<i32>)>() };
+            let _ = pair.1.send(pair.0.load(Ordering::Acquire));
+        }
+
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<i32>();
+        // We need to share the reader_stop Arc with the callback before the actor is
+        // created. Use a placeholder Arc; we'll swap the real one in after actor creation.
+        let placeholder: Arc<AtomicI32> = Arc::new(AtomicI32::new(0));
+        let pair = Box::new((Arc::clone(&placeholder), stop_tx));
+        let close_impl = Box::into_raw(pair).cast::<std::ffi::c_void>();
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: None,
+            recv: None,
+            close_conn: Some(capture_stop_on_close),
+            destroy: None,
+        });
+        let transport = Box::new(HewTransport {
+            ops: &raw const *ops,
+            r#impl: close_impl,
+        });
+        let transport_ptr = Box::into_raw(transport);
+
+        // SAFETY: transport_ptr remains valid for the lifetime of the manager.
+        let mgr = unsafe {
+            hew_connmgr_new(
+                transport_ptr,
+                None,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        assert!(!mgr.is_null());
+
+        let actor = ConnectionActor::new(55);
+        actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+        // Swap the real reader_stop Arc into the callback pair so it can observe
+        // the stop flag at the moment close_conn fires.
+        let real_stop = Arc::clone(&actor.reader_stop);
+        // SAFETY: close_impl points at the Box<(Arc<AtomicI32>, Sender<i32>)> we created.
+        unsafe {
+            let pair = &mut *close_impl.cast::<(Arc<AtomicI32>, std::sync::mpsc::Sender<i32>)>();
+            pair.0 = real_stop;
+        }
+
+        // SAFETY: mgr is live; actor is pushed and stays until free.
+        unsafe { (&*mgr).connections.access(|conns| conns.push(actor)) };
+        // SAFETY: mgr was allocated by hew_connmgr_new; this call frees it.
+        unsafe { hew_connmgr_free(mgr) };
+
+        let stop_seen = stop_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("close_conn should fire during hew_connmgr_free");
+        assert_eq!(
+            stop_seen, 1,
+            "reader_stop must be 1 at the moment close_conn fires in hew_connmgr_free"
+        );
+
+        // SAFETY: allocated in this test; no longer referenced.
+        unsafe {
+            drop(Box::from_raw(transport_ptr));
+            drop(Box::from_raw(
+                close_impl.cast::<(Arc<AtomicI32>, std::sync::mpsc::Sender<i32>)>(),
+            ));
+        }
+        drop(ops);
+    }
+
+    /// Regression: `hew_connmgr_remove` must remove the route from the routing
+    /// table BEFORE removing the connection from `mgr.connections`. There must be no
+    /// window where `hew_routing_lookup` returns a `conn_id` that `hew_connmgr_send`
+    /// would reject (route-ok but conn already gone from the list).
+    #[test]
+    fn connmgr_remove_route_gone_before_conn_leaves_list() {
+        use std::sync::atomic::Ordering;
+
+        // A close_conn callback that, at the moment the transport close fires,
+        // checks whether the route for peer node 2 is still present AND whether
+        // the connection is still in the manager's list. After the fix the route
+        // must already be absent while the conn may or may not be gone yet.
+        extern "C" fn check_route_on_close(impl_ptr: *mut std::ffi::c_void, _conn_id: c_int) {
+            // SAFETY: impl_ptr points at a Box<(*mut HewRoutingTable, *mut HewConnMgr, Sender<(i32, usize)>)>.
+            let triple = unsafe {
+                &*impl_ptr.cast::<(
+                    *mut crate::routing::HewRoutingTable,
+                    *mut HewConnMgr,
+                    std::sync::mpsc::Sender<(i32, usize)>,
+                )>()
+            };
+            let (routing_table, mgr, tx) = (triple.0, triple.1, &triple.2);
+            // Route lookup: returns conn_id for the route, or -1.
+            // SAFETY: routing_table is a live pointer allocated by hew_routing_table_new
+            // in the test body; the manager keeps it alive for the callback's duration.
+            let route = unsafe {
+                crate::routing::hew_routing_lookup(routing_table, crate::pid::hew_pid_make(2, 0))
+            };
+            // SAFETY: mgr is a live pointer allocated by hew_connmgr_new in the test body.
+            let raw_count = unsafe { hew_connmgr_count(mgr) };
+            // hew_connmgr_count returns >= 0; saturate negatives to 0 to avoid sign-loss warning.
+            let count = raw_count.unsigned_abs() as usize;
+            let _ = tx.send((route, count));
+        }
+
+        let (check_tx, check_rx) = std::sync::mpsc::channel::<(i32, usize)>();
+        // SAFETY: hew_routing_table_new allocates a new routing table with no preconditions.
+        let routing_table = unsafe { crate::routing::hew_routing_table_new(1) };
+        assert!(!routing_table.is_null());
+
+        // We'll fill in mgr after creation.
+        let triple = Box::new((routing_table, std::ptr::null_mut::<HewConnMgr>(), check_tx));
+        let close_impl = Box::into_raw(triple).cast::<std::ffi::c_void>();
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: None,
+            recv: None,
+            close_conn: Some(check_route_on_close),
+            destroy: None,
+        });
+        let transport = Box::new(HewTransport {
+            ops: &raw const *ops,
+            r#impl: close_impl,
+        });
+        let transport_ptr = Box::into_raw(transport);
+
+        // SAFETY: transport_ptr remains valid for the test duration.
+        let mgr =
+            unsafe { hew_connmgr_new(transport_ptr, None, routing_table, std::ptr::null_mut(), 1) };
+        assert!(!mgr.is_null());
+
+        // Patch the mgr pointer into the callback triple.
+        // SAFETY: close_impl points at the Box we created above.
+        unsafe {
+            let triple = &mut *close_impl.cast::<(
+                *mut crate::routing::HewRoutingTable,
+                *mut HewConnMgr,
+                std::sync::mpsc::Sender<(i32, usize)>,
+            )>();
+            triple.1 = mgr;
+        }
+
+        // Build a real-enough actor for conn_id=77, peer_node_id=2.
+        let mut actor = ConnectionActor::new(77);
+        actor.peer_node_id = 2;
+        actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+        // SAFETY: mgr is live and was allocated by hew_connmgr_new above.
+        let publication_token = unsafe { next_publication_token(&*mgr) };
+        actor.publication_token = publication_token;
+        let pub_sync = Arc::clone(&actor.publication_sync);
+        let pub_removed = Arc::clone(&actor.publication_removed);
+        // SAFETY: mgr is live.
+        unsafe { (&*mgr).connections.access(|conns| conns.push(actor)) };
+
+        // Publish the route so routing_lookup returns 77 before remove.
+        // SAFETY: mgr is live; all arguments come from the actor and publication
+        // metadata allocated in this test.
+        unsafe {
+            publish_connection_established(
+                &*mgr,
+                2,
+                77,
+                HEW_FEATURE_SUPPORTS_GOSSIP,
+                publication_token,
+                &pub_sync,
+                &pub_removed,
+            );
+        }
+        assert_eq!(
+            // SAFETY: routing_table is live and allocated by hew_routing_table_new above.
+            unsafe {
+                crate::routing::hew_routing_lookup(routing_table, crate::pid::hew_pid_make(2, 0))
+            },
+            77,
+            "route should exist before remove"
+        );
+
+        // SAFETY: mgr is live; this calls close_conn (our callback) during teardown.
+        let rc = unsafe { hew_connmgr_remove(mgr, 77) };
+        assert_eq!(rc, 0);
+
+        let (route_at_close, _count_at_close) = check_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("close_conn should fire during hew_connmgr_remove");
+        assert_eq!(
+            route_at_close, -1,
+            "route must already be removed when close_conn fires (no TOCTOU window)"
+        );
+
+        // After remove the route should be gone.
+        assert_eq!(
+            // SAFETY: routing_table is live; still held by the test.
+            unsafe {
+                crate::routing::hew_routing_lookup(routing_table, crate::pid::hew_pid_make(2, 0))
+            },
+            -1,
+            "route must be absent after remove completes"
+        );
+
+        // SAFETY: mgr was allocated by hew_connmgr_new; routing_table by hew_routing_table_new.
+        unsafe { hew_connmgr_free(mgr) };
+        // SAFETY: routing_table was allocated by hew_routing_table_new above.
+        unsafe { crate::routing::hew_routing_table_free(routing_table) };
+        // SAFETY: transport and triple allocated in this test.
+        unsafe {
+            drop(Box::from_raw(transport_ptr));
+            drop(Box::from_raw(close_impl.cast::<(
+                *mut crate::routing::HewRoutingTable,
+                *mut HewConnMgr,
+                std::sync::mpsc::Sender<(i32, usize)>,
+            )>()));
         }
         drop(ops);
     }

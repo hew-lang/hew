@@ -1,0 +1,231 @@
+// dist_node.hew — shared two-process distributed E2E node program.
+//
+// ONE program, two roles, selected at runtime by environment variables. Both
+// the server and the client are compiled from this single file so the
+// serializable message types (KvReq / KvResp / KvPut) are identical on both
+// sides of the wire by construction — there is no second file to drift out of
+// sync.
+//
+// Driven by the Rust harness in hew-cli/tests/distributed_two_process_e2e.rs.
+// Configuration is read from the environment so new scenarios can be added by
+// the harness without changing the program's command-line shape:
+//
+//   HEW_DIST_ROLE     "server" | "client"   (required)
+//   HEW_DIST_PORT     loopback TCP port the harness pre-allocated  (required)
+//   HEW_DIST_SCENARIO scenario name for the client role  (default "remote_ask")
+//
+// Readiness protocol (deterministic, no fixed sleeps for correctness):
+//   - The server prints "READY <port>" on a line of its own AFTER the actor is
+//     registered. The harness blocks on that line before launching the client.
+//   - The client retries Node::lookup in a bounded poll loop until registry
+//     gossip resolves the remote actor (or a deadline elapses), rather than
+//     sleeping a fixed interval and hoping gossip arrived.
+//
+// Output contract (the harness asserts on these, with teeth):
+//   - "PASS <scenario> <detail>"  on success
+//   - "FAIL <scenario> <detail>"  on any mismatch; main returns non-zero
+import std::os;
+
+// `record` is Serializable — required for RemotePid messaging across the wire.
+record KvPut {
+    key: string,
+    val: string
+}
+
+enum KvReq {
+    Put(KvPut);
+    GetKey(string);
+}
+
+enum KvResp {
+    Ack;
+    Value(string);
+}
+
+actor KeyValue {
+    let store: HashMap<string, string>;
+    receive fn handle(req: KvReq) -> KvResp {
+        match req {
+            KvReq::Put(kv) => {
+                store.insert(kv.key, kv.val);
+                KvResp::Ack
+            },
+            KvReq::GetKey(k) => {
+                match store.get(k) {
+                    Some(v) => KvResp::Value(v),
+                    None => KvResp::Value(""),
+                }
+            },
+        }
+    }
+    receive fn count() -> i64 {
+        store.len()
+    }
+}
+
+impl ActorMsg for KeyValue {
+    type Msg = KvReq;
+    type Reply = KvResp;
+}
+
+// Bounded poll for the remote actor: retry Node::lookup until registry gossip
+// resolves it, instead of a single fixed-interval sleep. ~50 attempts at 100 ms
+// = 5 s deadline, generous for loopback gossip while still failing closed if the
+// peer never registers.
+fn lookup_with_retry(name: string) -> Result<RemotePid<KeyValue>, LookupError> {
+    var attempts: i64 = 0;
+    loop {
+        let found: Result<RemotePid<KeyValue>, LookupError> = Node::lookup(name);
+        match found {
+            Result::Ok(pid) => {
+                return Ok(pid);
+            },
+            Result::Err(e) => {
+                attempts = attempts + 1;
+                if attempts >= 50 {
+                    return Err(e);
+                }
+                sleep(100ms);
+            },
+        }
+    }
+}
+
+fn run_server(port: string) {
+    let addr = f"127.0.0.1:{port}";
+    Node::set_transport("tcp");
+    Node::start(addr);
+    let s: HashMap<string, string> = HashMap::new();
+    let kv = spawn KeyValue(store: s);
+    Node::register("kv", kv);
+
+    // Readiness signal: emitted ONLY after the actor is registered, so the
+    // harness never launches the client against a half-started node.
+    println(f"READY {port}");
+
+    // Stay alive long enough for the client to connect, run its scenario, and
+    // exit. The harness kills the server as soon as the client returns, so this
+    // upper bound is only a safety ceiling, never the happy-path wait.
+    sleep(2m);
+    Node::shutdown();
+}
+
+// Scenario: remote_ask
+//
+// The client connects, puts two entries via fire-and-forget tell, then issues
+// two blocking remote asks and checks the exact returned values. This is the
+// first assertion: a real cross-process ask round-trip with exact-value teeth.
+fn scenario_remote_ask(kv: RemotePid<KeyValue>) -> i64 {
+    let send1 = kv.tell(KvReq::Put(KvPut { key: "hello", val: "world" }));
+    match send1 {
+        Result::Err(_) => {
+            println("FAIL remote_ask put-hello-send-error");
+            return 2;
+        },
+        Result::Ok(_) => {},
+    }
+    let send2 = kv.tell(KvReq::Put(KvPut { key: "count", val: "42" }));
+    match send2 {
+        Result::Err(_) => {
+            println("FAIL remote_ask put-count-send-error");
+            return 3;
+        },
+        Result::Ok(_) => {},
+    }
+    // Brief settle so the fire-and-forget tells are applied before the ask.
+    // (tell is async; the ask below is the synchronization point we assert on.)
+    sleep(200ms);
+    let ask1 = kv.ask(KvReq::GetKey("hello"), 5000);
+    match ask1 {
+        Result::Err(_) => {
+            println("FAIL remote_ask get-hello-ask-error");
+            return 4;
+        },
+        Result::Ok(resp) => {
+            match resp {
+                KvResp::Value(v) => {
+                    if v == "world" {
+                        println("PASS remote_ask get-hello=world");
+                    } else {
+                        println(f"FAIL remote_ask get-hello={v}");
+                        return 5;
+                    }
+                },
+                KvResp::Ack => {
+                    println("FAIL remote_ask get-hello-got-ack");
+                    return 5;
+                },
+            }
+        },
+    }
+    let ask2 = kv.ask(KvReq::GetKey("count"), 5000);
+    match ask2 {
+        Result::Err(_) => {
+            println("FAIL remote_ask get-count-ask-error");
+            return 6;
+        },
+        Result::Ok(resp) => {
+            match resp {
+                KvResp::Value(v) => {
+                    if v == "42" {
+                        println("PASS remote_ask get-count=42");
+                    } else {
+                        println(f"FAIL remote_ask get-count={v}");
+                        return 7;
+                    }
+                },
+                KvResp::Ack => {
+                    println("FAIL remote_ask get-count-got-ack");
+                    return 7;
+                },
+            }
+        },
+    }
+    0
+}
+
+fn run_client(port: string, scenario: string) -> i64 {
+    let remote_addr = f"127.0.0.1:{port}";
+    Node::set_transport("tcp");
+    Node::start("127.0.0.1:0");
+    Node::connect(remote_addr);
+    let found = lookup_with_retry("kv");
+    let status = match found {
+        Result::Err(_) => {
+            println(f"FAIL {scenario} lookup-unresolved");
+            1
+        },
+        Result::Ok(kv) => {
+            // Scenario dispatch. New scenarios add a branch here plus a
+            // scenario_* function above; the harness selects via HEW_DIST_SCENARIO.
+            if scenario == "remote_ask" {
+                scenario_remote_ask(kv)
+            } else {
+                println(f"FAIL {scenario} unknown-scenario");
+                90
+            }
+        },
+    };
+    Node::shutdown();
+    status
+}
+
+fn main() -> i64 {
+    let role = os.env("HEW_DIST_ROLE");
+    let port = os.env("HEW_DIST_PORT");
+    var scenario = os.env("HEW_DIST_SCENARIO");
+    if scenario == "" {
+        scenario = "remote_ask";
+    }
+    if role == "server" {
+        run_server(port);
+        0
+    } else {
+        if role == "client" {
+            run_client(port, scenario)
+        } else {
+            println(f"FAIL config unknown-role={role}");
+            99
+        }
+    }
+}

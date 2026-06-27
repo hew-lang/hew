@@ -210,6 +210,22 @@ test-group = "real-timing"
 slow-timeout = { period = "30s", terminate-after = 3 }
 
 [[profile.ci.overrides]]
+# The compiled-.hew two-process distributed harness spawns a server and a client
+# process — each a native binary built from dist_node.hew — that round-trip a
+# remote ask over loopback TCP. Unlike the runtime-crate two-process tests above,
+# this one COMPILES a real .hew program first (the proving gate for codegen +
+# transport + cluster), so its slow-timeout must cover a cold compile (~90 s
+# under hosted-runner load) in addition to the cross-process round-trip. It runs
+# in the real-timing group (max-threads = 1): its assertion irreducibly measures
+# a real cross-process exchange the in-process simtime seam cannot fake, and the
+# serialisation keeps it off the fast tiers and gives the round-trip headroom.
+# No retry: the round-trip is deterministic (server READY signal + client
+# bounded-poll lookup), so a correct outcome does not depend on scheduler luck.
+filter = "test(remote_ask_round_trip_returns_exact_values)"
+test-group = "real-timing"
+slow-timeout = { period = "120s", terminate-after = 3 }
+
+[[profile.ci.overrides]]
 # tcp_stream_backing_records_error_on_reset is a loopback-TCP reset test: it
 # gates the RST on an explicit "accepted" handshake, forces it via SO_LINGER=0 +
 # drop, joins the peer thread (so the RST is sent before the read), then blocks

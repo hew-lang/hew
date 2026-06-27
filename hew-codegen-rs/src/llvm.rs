@@ -12598,7 +12598,14 @@ fn emit_actor_lifecycle_wrapper<'ctx>(
     // Build the execution context FROM the actor pointer — the same 128-byte
     // context shape `build_spawn_lifecycle_context` builds on the direct-spawn
     // path: actor ptr at HEW_CTX_OFFSET_ACTOR, actor id at HEW_CTX_OFFSET_ACTOR_ID.
-    let ctx_ty = ctx.i8_type().array_type(128);
+    //
+    // Use [i64 x 16] (not [i8 x 128]) so the alloca carries 8-byte alignment.
+    // `hew_context_install` writes this stack address into TLS; `hew_actor_cooperate`
+    // reads it back and casts to `*mut HewExecutionContext` (requires 8-byte
+    // alignment). An [i8 x 128] alloca is only 1-byte aligned and causes a
+    // misaligned-pointer-dereference on the cooperate cast. Same 128 bytes, same
+    // field layout — only the LLVM alignment guarantee changes.
+    let ctx_ty = ctx.i64_type().array_type(HEW_CTX_SIZE / 8);
     let ctx_slot = builder
         .build_alloca(ctx_ty, "lifecycle_ctx")
         .llvm_ctx("lifecycle ctx alloca")?;
@@ -13029,7 +13036,10 @@ fn build_spawn_lifecycle_context<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     actor: PointerValue<'ctx>,
 ) -> CodegenResult<PointerValue<'ctx>> {
-    let ctx_ty = fn_ctx.ctx.i8_type().array_type(128);
+    // Use [i64 x 16] (not [i8 x 128]) so the alloca carries 8-byte alignment —
+    // same fix as the supervised lifecycle wrapper above. See that site for the
+    // full alignment rationale.
+    let ctx_ty = fn_ctx.ctx.i64_type().array_type(HEW_CTX_SIZE / 8);
     let ctx_slot = fn_ctx
         .builder
         .build_alloca(ctx_ty, "actor_spawn_lifecycle_ctx")

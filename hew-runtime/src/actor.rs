@@ -5030,17 +5030,30 @@ pub extern "C" fn hew_actor_self() -> *mut HewActor {
 /// routes a `SYS_MSG_EXIT` (103) with no `#[on(exit)]` hook here instead of the
 /// exhaustiveness `llvm.trap` default (which is UB — it SIGILLs on Linux and
 /// only accidentally produced a terminal state on macOS). This drives the SAME
-/// controlled crash path a handler panic uses (`hew_trap_with_code` → the
-/// scheduler's longjmp recovery seam → terminal `Crashed`, link / monitor /
-/// supervisor fan-out), with the carried reason stamped on the actor.
+/// controlled crash path a handler panic uses, with the carried reason stamped
+/// on the actor, and is target-symmetric: both backends export a
+/// `hew_trap_with_code(i32)` symbol with identical semantics but from different
+/// modules, because the crash seam itself differs per target.
+///
+/// * Native (`crate::supervisor::hew_trap_with_code`): longjmps to the
+///   scheduler's recovery frame — terminal `Crashed`, the carried reason
+///   stamped, link / monitor / supervisor fan-out.
+/// * wasm32 (`crate::trap_code::hew_trap_with_code`): stamps the carried reason
+///   on the actor and panics; under `panic = "abort"` (the wasm32-wasip1 runtime
+///   profile) the panic aborts the module — the fail-closed crash. On a host
+///   build with unwinding the cooperative scheduler's `catch_unwind` activation
+///   boundary observes the stamped code and transitions the actor to `Crashed`,
+///   the WASM counterpart of the native longjmp seam. wasm32 has no `supervisor`
+///   module (it is `#[cfg(not(target_arch = "wasm32"))]`), so the call must
+///   target `trap_code` there or the wasm runtime archive does not compile.
 ///
 /// `reason` is the EXIT's carried terminal reason; a zero (clean) reason is
 /// coerced to the non-zero `Crashed` sentinel so an unhandled EXIT ALWAYS
 /// crashes the non-trapping linked actor (a cleanly-exited linked peer still
-/// takes it down, OTP-style). `hew_trap_with_code` longjmps to the scheduler and
-/// does not return when called inside dispatch; it is a no-op outside an actor
-/// context (no recovery seam), where the trampoline's `llvm.trap` is unreachable
-/// because a `SYS_MSG_EXIT` only arrives at a scheduler-driven dispatch.
+/// takes it down, OTP-style). `hew_trap_with_code` does not return when called
+/// inside dispatch; outside an actor context there is no recovery seam, where
+/// the trampoline's `llvm.trap` is unreachable because a `SYS_MSG_EXIT` only
+/// arrives at a scheduler-driven dispatch.
 #[no_mangle]
 pub extern "C" fn hew_actor_exit_unhandled(reason: i32) {
     // Coerce a zero (clean) reason to a non-zero crash sentinel: an unhandled
@@ -5050,10 +5063,18 @@ pub extern "C" fn hew_actor_exit_unhandled(reason: i32) {
     } else {
         reason
     };
-    // SAFETY: routes through the per-thread recovery seam, which is a no-op when
-    // no dispatch recovery context is active; inside dispatch it longjmps to the
-    // scheduler crash frame (the same path a handler panic takes).
-    unsafe { crate::supervisor::hew_trap_with_code(crash_code) };
+    // SAFETY: routes through the per-target crash seam. Native's
+    // `try_direct_longjmp_with_code` checks the per-thread recovery context and
+    // is a no-op when none is active; wasm32's stamps the actor error code and
+    // panics. Both are safe to call from generated dispatch code.
+    #[cfg(not(target_arch = "wasm32"))]
+    unsafe {
+        crate::supervisor::hew_trap_with_code(crash_code);
+    }
+    #[cfg(target_arch = "wasm32")]
+    unsafe {
+        crate::trap_code::hew_trap_with_code(crash_code);
+    }
 }
 
 /// Return the current actor's id, or -1 outside a dispatch context.

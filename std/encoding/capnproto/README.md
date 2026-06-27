@@ -6,7 +6,7 @@ the non-choice legible in the workspace.
 
 ## What the doctrine says
 
-The wire-format doctrine evaluated Cap'n Proto during the HBF retirement.
+The wire-format doctrine evaluated Cap'n Proto during the HBF deletion.
 The zero-copy win is real, but the toolchain commitment and code-generation
 surface exceeded what v0.5 could absorb. CBOR + CDDL was chosen as the
 smaller-scope alternative.

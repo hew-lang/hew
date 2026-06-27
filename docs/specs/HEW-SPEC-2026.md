@@ -3851,7 +3851,7 @@ Hew tooling provides:
 
 ### 7.3 Encoding Formats
 
-Hew supports multiple encoding formats. The runtime envelope (actor-to-actor transport) uses CBOR (ratified in R62; the legacy HBF path is being retired — some `hew-runtime` modules still reference it during the migration). The `std::encoding::*` surface provides user-level wire type serialization for cross-service and file I/O use cases.
+Hew supports multiple encoding formats. The runtime envelope (actor-to-actor transport) uses CBOR (ratified in R62; the CBOR path is the sole internode encoding, HBF retired and migration complete). The `std::encoding::*` surface provides user-level wire type serialization for cross-service and file I/O use cases.
 
 #### 7.3.1 MessagePack — Default Binary Encoding
 

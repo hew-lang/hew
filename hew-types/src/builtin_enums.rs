@@ -186,6 +186,28 @@ const LINK_ERROR_VARIANTS: &[BuiltinMonomorphicEnumVariant] = &[
     BuiltinMonomorphicEnumVariant { name: "TargetDead" },
 ];
 
+/// `CrashAction` variants in declaration order (`std/failure.hew`). The tag
+/// each maps to is its index: `Restart=0`, `Escalate=1`, `Kill=2`.
+const CRASH_ACTION_VARIANTS: &[BuiltinMonomorphicEnumVariant] = &[
+    BuiltinMonomorphicEnumVariant { name: "Restart" },
+    BuiltinMonomorphicEnumVariant { name: "Escalate" },
+    BuiltinMonomorphicEnumVariant { name: "Kill" },
+];
+
+/// `CrashKind` variants in declaration order (`std/failure.hew`): `Crashed=0`,
+/// `HeapExceeded=1`, `PartitionDetected=2`. The `#[on(exit)]` prologue (M-7-R)
+/// builds a `CrashKind` value from the delivered tag, so codegen needs its
+/// tagged-union layout out-of-band like `CrashAction`.
+const CRASH_KIND_VARIANTS: &[BuiltinMonomorphicEnumVariant] = &[
+    BuiltinMonomorphicEnumVariant { name: "Crashed" },
+    BuiltinMonomorphicEnumVariant {
+        name: "HeapExceeded",
+    },
+    BuiltinMonomorphicEnumVariant {
+        name: "PartitionDetected",
+    },
+];
+
 /// Catalog of monomorphic builtin enums whose layout must be registered
 /// out-of-band into MIR's `enum_layouts` and `machine_layout_names`.
 ///
@@ -260,6 +282,30 @@ pub fn monomorphic_builtin_enums() -> &'static [BuiltinMonomorphicEnum] {
         BuiltinMonomorphicEnum {
             name: "LinkError",
             variants: LINK_ERROR_VARIANTS,
+            suppress_from_sandbox_emit: true,
+        },
+        // `CrashAction` is the return type of every `#[on(crash)]` hook
+        // (`std/failure.hew`). M-4 returns it by value across the `HewOnCrashFn`
+        // ABI, so codegen must know its tagged-union layout to size the emitted
+        // `__on_crash` return type — even for a panic()-diverging body that
+        // never constructs a CrashAction value (the function SIGNATURE still
+        // names the enum return type). Carried out-of-band here, parallel to
+        // `LinkError`, because a crash hook may name `CrashAction` only as its
+        // return type, so the generic `EnumLayoutRegistry` never seeds it.
+        // `suppress_from_sandbox_emit: true` (no stable sandbox baseline).
+        BuiltinMonomorphicEnum {
+            name: "CrashAction",
+            variants: CRASH_ACTION_VARIANTS,
+            suppress_from_sandbox_emit: true,
+        },
+        // `CrashKind` (M-7-R) — the crash-class enum delivered in a
+        // `CrashNotification` to an `#[on(exit)]` hook. Carried out-of-band so
+        // codegen knows its tagged-union layout (the prologue builds a CrashKind
+        // value from the runtime-delivered tag). `suppress_from_sandbox_emit:
+        // true` (no stable sandbox baseline).
+        BuiltinMonomorphicEnum {
+            name: "CrashKind",
+            variants: CRASH_KIND_VARIANTS,
             suppress_from_sandbox_emit: true,
         },
     ]

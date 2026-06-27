@@ -327,6 +327,8 @@ pub(crate) const SYNTHETIC_VEC_ITER_ITEM: ItemId = ItemId(u32::MAX - 1002);
 /// `std/builtins.hew` but never emitted as a HIR `Record`/`TypeDecl` item, so
 /// `layout_mono` seeds its decl from `hashmap_iter_field_shape`.
 pub(crate) const SYNTHETIC_HASHMAP_ITER_ITEM: ItemId = ItemId(u32::MAX - 1006);
+const SYNTHETIC_CRASH_ACTION_ITEM: ItemId = ItemId(u32::MAX - 1007);
+const SYNTHETIC_CRASH_KIND_ITEM: ItemId = ItemId(u32::MAX - 1008);
 const BUILTINS_HEW_SOURCE: &str = include_str!("../../std/builtins.hew");
 
 /// Field shape of the synthetic `VecIter<elem>` record — `{ vec: Vec<elem>,
@@ -498,6 +500,14 @@ const BUILTIN_ENUM_VARIANT_BARE_NAMES: &[&str] = &[
     "MonitorLost",
     "AlreadyLinked",
     "TargetDead",
+    // CrashAction (M-4)
+    "Restart",
+    "Escalate",
+    "Kill",
+    // CrashKind (M-7-R)
+    "Crashed",
+    "HeapExceeded",
+    "PartitionDetected",
 ];
 
 const UNIT_VARIANT_PAYLOAD: &[&str] = &[];
@@ -554,6 +564,10 @@ const TIMEOUT_ERROR_VARIANTS: &[&str] = &["Timeout"];
 const TIMEOUT_ERROR_PAYLOADS: &[&[&str]] = &[UNIT_VARIANT_PAYLOAD; 1];
 const LINK_ERROR_VARIANTS: &[&str] = &["AlreadyLinked", "TargetDead"];
 const LINK_ERROR_PAYLOADS: &[&[&str]] = &[UNIT_VARIANT_PAYLOAD; 2];
+const CRASH_ACTION_VARIANTS: &[&str] = &["Restart", "Escalate", "Kill"];
+const CRASH_ACTION_PAYLOADS: &[&[&str]] = &[UNIT_VARIANT_PAYLOAD; 3];
+const CRASH_KIND_VARIANTS: &[&str] = &["Crashed", "HeapExceeded", "PartitionDetected"];
+const CRASH_KIND_PAYLOADS: &[&[&str]] = &[UNIT_VARIANT_PAYLOAD; 3];
 
 /// Description of a built-in tagged union for the HIR pre-pass that seeds
 /// the same registries user enums populate (`machine_ctor_registry`,
@@ -619,6 +633,25 @@ fn builtin_enum_specs() -> &'static [BuiltinEnumSpec] {
             type_params: &[],
             variant_names: ASK_ERROR_VARIANTS,
             variant_payloads: ASK_ERROR_PAYLOADS,
+        },
+        // `CrashAction` (M-4) and `CrashKind` (M-7-R) are out-of-band monomorphic
+        // builtin enums: their MIR layout is registered from
+        // `hew_types::builtin_enums::monomorphic_builtin_enums()`, so the HIR
+        // discriminant assignments here MUST match that catalog's variant order
+        // (the parity test pins it).
+        BuiltinEnumSpec {
+            type_name: "CrashAction",
+            item_id: SYNTHETIC_CRASH_ACTION_ITEM,
+            type_params: &[],
+            variant_names: CRASH_ACTION_VARIANTS,
+            variant_payloads: CRASH_ACTION_PAYLOADS,
+        },
+        BuiltinEnumSpec {
+            type_name: "CrashKind",
+            item_id: SYNTHETIC_CRASH_KIND_ITEM,
+            type_params: &[],
+            variant_names: CRASH_KIND_VARIANTS,
+            variant_payloads: CRASH_KIND_PAYLOADS,
         },
     ]
 }
@@ -9991,6 +10024,7 @@ impl LowerCtx {
                     "start" => Some(HirLifecycleHookKind::Start),
                     "stop" => Some(HirLifecycleHookKind::Stop),
                     "crash" => Some(HirLifecycleHookKind::Crash),
+                    "exit" => Some(HirLifecycleHookKind::Exit),
                     "upgrade" => Some(HirLifecycleHookKind::Upgrade),
                     _ => None,
                 });

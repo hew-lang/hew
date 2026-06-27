@@ -50,6 +50,12 @@ pub enum BuiltinType {
     LambdaPid,
     CrashInfo,
     CrashAction,
+    /// `std/failure.hew::CrashNotification { actor_id: u64, kind: CrashKind }`
+    /// — the typed payload a linked actor's `#[on(exit)]` hook receives (M-7-R).
+    CrashNotification,
+    /// `std/failure.hew::CrashKind { Crashed; HeapExceeded; PartitionDetected }`
+    /// — the crash-class enum delivered in a `CrashNotification` (M-7-R).
+    CrashKind,
     SendError,
     AskError,
     RecvError,
@@ -177,6 +183,8 @@ builtin_types! {
     LambdaPid => "LambdaPid",
     CrashInfo => "CrashInfo",
     CrashAction => "CrashAction",
+    CrashNotification => "CrashNotification",
+    CrashKind => "CrashKind",
     SendError => "SendError",
     AskError => "AskError",
     RecvError => "RecvError",
@@ -216,7 +224,11 @@ impl BuiltinType {
             | Self::CancellationToken
             | Self::MonitorRef => BuiltinTypeMarker::Resource,
             Self::ActorState | Self::MachineState => BuiltinTypeMarker::Linear,
-            Self::CrashInfo => BuiltinTypeMarker::BitCopy,
+            // `CrashInfo` carries an owned `message: string` (M-5), so it is no
+            // longer a `BitCopy` aggregate. `None` lets the owned-aggregate
+            // record machinery classify it as `CowValue` (field-wise clone/drop
+            // via `__hew_record_{clone,drop}_inplace_CrashInfo`) rather than
+            // forcing a marker-driven `BitCopy`.
             _ => BuiltinTypeMarker::None,
         }
     }
@@ -300,6 +312,8 @@ impl BuiltinType {
             | Self::BoxedActor
             | Self::CrashInfo
             | Self::CrashAction
+            | Self::CrashNotification
+            | Self::CrashKind
             | Self::SendError
             | Self::AskError
             | Self::RecvError

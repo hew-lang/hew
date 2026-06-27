@@ -1,0 +1,40 @@
+// Acceptance fixture: a #[on(crash)] hook that RETURNS a CrashAction variant
+// (not a panic()-diverging body) now compiles end-to-end.
+//
+// Exercises the M-4 CrashAction-return path:
+//   - the checker accepts a `CrashAction::Restart` hook body (the former
+//     CrashActionReturnNotYetWired fail-closed gate is removed)
+//   - the hook's `CrashAction` value flows through the normal enum-return path;
+//     codegen returns the 2-byte `{ i8, [1 x i8] }` tagged-union struct BY VALUE
+//     (no i32 coercion, no `match __crash_action { Restart => 0, ... }` tag
+//     extraction — that intermediate lowering was removed in M-4)
+//   - the supervisor decodes the returned struct via its `#[repr(C)]`
+//     `HewCrashActionAbi`, reading field 0 (the tag); the supervisor boots
+//   - main returns 42, proving the full pipeline compiles and links cleanly.
+//
+// The crash path is NOT triggered at runtime here (no child crashes), so the
+// emitted `__on_crash` never executes; this fixture proves only that the
+// return-shape compiles end-to-end. A REAL crash that runs `__on_crash` (reads
+// `info.message`, returns Restart, clean restart) is exercised by
+// on_crash_action_restart_real_crash; runtime honouring of each variant
+// (Restart/Escalate/Kill) is covered by hew-runtime/tests/on_crash_invocation.rs.
+import std::failure;
+
+actor Worker {
+    #[on(crash)]
+    fn on_crash(info: CrashInfo) -> CrashAction {
+        CrashAction::Restart
+    }
+}
+
+supervisor AppSupervisor {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child c: Worker;
+}
+
+fn main() -> i64 {
+    spawn AppSupervisor;
+    42
+}

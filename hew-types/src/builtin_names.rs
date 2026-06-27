@@ -393,6 +393,8 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::LambdaPid
             | BuiltinType::CrashInfo
             | BuiltinType::CrashAction
+            | BuiltinType::CrashNotification
+            | BuiltinType::CrashKind
             | BuiltinType::SendError
             | BuiltinType::AskError
             | BuiltinType::RecvError

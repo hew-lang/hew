@@ -204,6 +204,10 @@ fn send_exit_signal(
             let exit_data = ExitMessage {
                 crashed_actor_id,
                 reason,
+                // M-7 substrate: precompute the CrashKind tag (the M-6
+                // projection) so the future typed `#[on(exit)]` hook reads
+                // `CrashNotification.kind` directly.
+                crash_kind: crate::internal::types::CrashKind::tag_from_error_code(reason),
             };
 
             let data_ptr = (&raw const exit_data).cast::<c_void>();
@@ -383,13 +387,25 @@ pub(crate) fn remove_all_links_for_actor(actor_id: u64, actor_addr: *mut HewActo
 }
 
 /// Message data for EXIT system messages.
+///
+/// M-7 typed-payload substrate: this is the runtime mirror of the
+/// `std/failure.hew::CrashNotification { actor_id, kind }` a linked actor's
+/// exit hook will receive once the `#[on(exit)]` user surface is ratified
+/// (M-7-R). `crash_kind` is the M-6 `ExitReason -> CrashKind` projection of
+/// `reason`, precomputed at the delivery boundary so the (future) typed hook
+/// reads a `CrashKind` tag directly without re-deriving the projection. The
+/// raw `reason` is retained for the existing integer-tag consumers.
 #[repr(C)]
 #[derive(Debug)]
 struct ExitMessage {
-    /// ID of the actor that crashed and caused this exit signal.
+    /// ID of the actor that crashed and caused this exit signal. Maps to
+    /// `CrashNotification.actor_id`.
     crashed_actor_id: u64,
     /// Reason code (`error_code` from `hew_actor_trap`).
     reason: i32,
+    /// The M-6 `CrashKind` tag projected from `reason` (Crashed=0,
+    /// HeapExceeded=1, PartitionDetected=2). Maps to `CrashNotification.kind`.
+    crash_kind: i32,
 }
 
 /// Returns true if any link entries reference the given actor address.
@@ -721,6 +737,14 @@ mod tests {
             let payload = &*((*node).data.cast::<ExitMessage>());
             assert_eq!(payload.crashed_actor_id, target_id);
             assert_eq!(payload.reason, 91);
+            // M-7 substrate: the delivered EXIT message carries the projected
+            // CrashKind tag. reason 91 is not a known trap code → Signal(91) →
+            // CrashKind::Crashed (tag 0). Exact-value (wire-contract-presence).
+            assert_eq!(
+                payload.crash_kind,
+                crate::internal::types::CrashKind::Crashed.tag(),
+                "EXIT message must carry the projected CrashKind tag (Crashed for a generic signal)"
+            );
             mailbox::hew_msg_node_free(node);
 
             (*linked_actor).actor_state.store(

@@ -111,6 +111,7 @@ fn spawn_pipeline(every_ms: Option<u64>) -> IrPipeline {
         on_start_symbol: None,
         on_stop_symbols: vec![],
         on_crash_symbol: None,
+        on_exit_symbol: None,
         max_heap_bytes: None,
         cycle_capable: false,
         handlers: vec![ActorHandlerLayout {

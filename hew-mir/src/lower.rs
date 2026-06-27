@@ -68,6 +68,215 @@ const SENTINEL_CRASH_CODE_BINDING: BindingId = BindingId(u32::MAX);
 const SENTINEL_CRASH_CODE_SITE: SiteId = SiteId(u32::MAX);
 const SENTINEL_CRASH_CODE_NODE: HirNodeId = HirNodeId(u32::MAX);
 
+/// Sentinel HIR binding ID for the synthetic `__crash_message: string` ABI
+/// param injected into `#[on(crash)]` handler prologues (M-3 ABI reshape).
+///
+/// The `HewOnCrashFn` ABI carries the crash message as a `*const c_char` (typed
+/// `ResolvedTy::String` here, which lowers to an LLVM `ptr`). It is a BORROW per
+/// the P0 `by-value-heap-params-are-borrows` invariant — the supervisor owns the
+/// underlying Hew header-aware buffer and frees it after the call — so M-5's
+/// prologue CLONES it (`hew_string_clone`, a refcount bump) into the owned
+/// `CrashInfo.message` field (a fresh `+1` owner the function frame drops once via
+/// `hew_string_drop`), rather than moving the borrow (a move would double-free
+/// with the supervisor's release). Because the prologue uses the Hew string
+/// primitives (which read a 16-byte refcount header), the supervisor MUST hand in
+/// a Hew header-aware allocation, not a bare Rust `CString` — see
+/// `supervisor.rs::invoke_on_crash_handler`, which allocates via `str_to_malloc`
+/// and releases via `free_cstring`.
+///
+/// Known follow-up (#2252): when the hook body reads `info.message` via a
+/// borrowing call, the `hew_string_clone` retain temp in the synthetic prologue
+/// is not yet released by drop-elaboration, leaking ~32 B per crash. The narrow
+/// fix regressed the generic record-clone drop path; both must be fixed together.
+/// Lives one below `__crash_code`'s sentinel to stay clear of real bindings.
+const SENTINEL_CRASH_MESSAGE_BINDING: BindingId = BindingId(u32::MAX - 1);
+
+/// Sentinel HIR binding IDs for the synthetic `#[on(exit)]` (M-7-R) ABI params:
+/// `__exit_actor_id: u64` and `__exit_kind_tag: i32`. The runtime delivers a
+/// linked actor's `CrashNotification` as these two raw fields; the hook prologue
+/// rebuilds `note = CrashNotification { actor_id, kind }` from them.
+const SENTINEL_EXIT_ACTOR_ID_BINDING: BindingId = BindingId(u32::MAX - 2);
+const SENTINEL_EXIT_KIND_TAG_BINDING: BindingId = BindingId(u32::MAX - 3);
+
+/// `CrashKind` variants in declaration order (`std/failure.hew`). An
+/// `#[on(exit)]` prologue builds the `kind` field by matching the runtime
+/// `__exit_kind_tag` against these (Crashed=0, HeapExceeded=1,
+/// PartitionDetected=2).
+const CRASH_KIND_VARIANTS: &[&str] = &["Crashed", "HeapExceeded", "PartitionDetected"];
+
+/// The synthetic `#[on(crash)]` handler's logical return type — `CrashAction`.
+///
+/// M-4: the emitted `__on_crash` function returns the `CrashAction` tagged-union
+/// value by its natural enum-return path (every return position — tail and
+/// explicit `return CrashAction::X;` — lowers identically). The runtime
+/// `HewOnCrashFn` ABI mirrors the LLVM struct with a `#[repr(C)]` 2-byte struct
+/// and decodes the tag byte. A `panic()`-diverging body returns no value.
+fn crash_action_return_ty() -> ResolvedTy {
+    ResolvedTy::named_builtin(
+        "CrashAction",
+        hew_types::BuiltinType::CrashAction,
+        Vec::new(),
+    )
+}
+
+/// Build the synthetic prologue body for an `#[on(exit)]` hook (M-7-R).
+///
+/// The runtime delivers a linked actor's `CrashNotification` as two raw ABI
+/// params — `__exit_actor_id: u64` and `__exit_kind_tag: i32` (the already-
+/// projected M-6 `CrashKind` tag). The user-visible `note: CrashNotification`
+/// param is replaced by these two; the body gains a prologue that reconstructs
+/// the typed value:
+///
+/// ```text
+/// let note = match __exit_kind_tag {
+///     0 => CrashNotification { actor_id: __exit_actor_id, kind: CrashKind::Crashed },
+///     1 => CrashNotification { actor_id: __exit_actor_id, kind: CrashKind::HeapExceeded },
+///     _ => CrashNotification { actor_id: __exit_actor_id, kind: CrashKind::PartitionDetected },
+/// };
+/// <original body>
+/// ```
+///
+/// `note_param` carries the original binding id so user `note.actor_id` /
+/// `note.kind` reads resolve. `CrashNotification` / `CrashKind` are std types.
+#[expect(
+    clippy::too_many_lines,
+    reason = "single coherent HIR-construction unit (the synthetic prologue \
+              match + CrashNotification rebuild); splitting it would scatter \
+              the node shapes that must stay aligned"
+)]
+fn build_exit_hook_body(body: HirBlock, note_param: &HirBinding) -> HirBlock {
+    let span = note_param.span.clone();
+    let crash_notification_ty = note_param.ty.clone();
+    let crash_kind_ty = ResolvedTy::named_user("CrashKind", Vec::new());
+
+    let actor_id_ref = || HirExpr {
+        node: SENTINEL_CRASH_CODE_NODE,
+        site: SENTINEL_CRASH_CODE_SITE,
+        ty: ResolvedTy::U64,
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::BindingRef {
+            name: "__exit_actor_id".to_string(),
+            resolved: ResolvedRef::Binding(SENTINEL_EXIT_ACTOR_ID_BINDING),
+        },
+        span: span.clone(),
+    };
+
+    // One match arm per CrashKind variant, each yielding a full
+    // `CrashNotification { actor_id, kind: CrashKind::<V> }`.
+    let arms: Vec<hew_hir::HirMatchArm> = CRASH_KIND_VARIANTS
+        .iter()
+        .enumerate()
+        .map(|(idx, variant_name)| {
+            // `CrashKind::<variant>` unit-variant constructor. A user enum
+            // projects onto the tagged-union (machine) substrate, so a unit
+            // variant value lowers as a payload-free `MachineVariantCtor` keyed
+            // by the enum name and the variant's declaration index.
+            let _ = variant_name; // name documented by CRASH_KIND_VARIANTS order
+            let kind_value = HirExpr {
+                node: SENTINEL_CRASH_CODE_NODE,
+                site: SENTINEL_CRASH_CODE_SITE,
+                ty: crash_kind_ty.clone(),
+                value_class: ValueClass::BitCopy,
+                intent: IntentKind::Read,
+                kind: HirExprKind::MachineVariantCtor {
+                    machine_name: "CrashKind".to_string(),
+                    state_idx: idx,
+                    payload: None,
+                },
+                span: span.clone(),
+            };
+            let notif = HirExpr {
+                node: SENTINEL_CRASH_CODE_NODE,
+                site: SENTINEL_CRASH_CODE_SITE,
+                ty: crash_notification_ty.clone(),
+                value_class: ValueClass::BitCopy,
+                intent: IntentKind::Unknown,
+                kind: HirExprKind::StructInit {
+                    name: "CrashNotification".to_string(),
+                    type_args: Vec::new(),
+                    fields: vec![
+                        ("actor_id".to_string(), actor_id_ref()),
+                        ("kind".to_string(), kind_value),
+                    ],
+                    base: None,
+                },
+                span: span.clone(),
+            };
+            let is_last = idx + 1 == CRASH_KIND_VARIANTS.len();
+            let predicate = if is_last {
+                hew_hir::HirMatchArmPredicate::Wildcard
+            } else {
+                hew_hir::HirMatchArmPredicate::Literal {
+                    // `idx` is bounded by CRASH_KIND_VARIANTS.len() (3).
+                    lit: HirLiteral::Integer(i64::try_from(idx).unwrap_or(0)),
+                    ty: ResolvedTy::I32,
+                }
+            };
+            hew_hir::HirMatchArm {
+                predicate,
+                bindings: Vec::new(),
+                payload_predicates: Vec::new(),
+                payload_variant_predicates: Vec::new(),
+                guard: None,
+                body: notif,
+                span: span.clone(),
+            }
+        })
+        .collect();
+
+    let kind_tag_ref = HirExpr {
+        node: SENTINEL_CRASH_CODE_NODE,
+        site: SENTINEL_CRASH_CODE_SITE,
+        ty: ResolvedTy::I32,
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::BindingRef {
+            name: "__exit_kind_tag".to_string(),
+            resolved: ResolvedRef::Binding(SENTINEL_EXIT_KIND_TAG_BINDING),
+        },
+        span: span.clone(),
+    };
+
+    let match_expr = HirExpr {
+        node: SENTINEL_CRASH_CODE_NODE,
+        site: SENTINEL_CRASH_CODE_SITE,
+        ty: crash_notification_ty.clone(),
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Unknown,
+        kind: HirExprKind::Match {
+            scrutinee: Box::new(kind_tag_ref),
+            arms,
+        },
+        span: span.clone(),
+    };
+
+    // `let note = match __exit_kind_tag { ... };` — preserve the original
+    // binding id so user `note.<field>` reads resolve.
+    let let_note = HirStmt {
+        node: SENTINEL_CRASH_CODE_NODE,
+        kind: HirStmtKind::Let(
+            HirBinding {
+                id: note_param.id,
+                name: note_param.name.clone(),
+                ty: crash_notification_ty,
+                mutable: false,
+                span: span.clone(),
+            },
+            Some(match_expr),
+        ),
+        span: span.clone(),
+    };
+
+    let mut stmts = Vec::with_capacity(body.statements.len() + 1);
+    stmts.push(let_note);
+    stmts.extend(body.statements.iter().cloned());
+    HirBlock {
+        statements: stmts,
+        ..body
+    }
+}
+
 #[derive(Debug, Clone)]
 struct ActorMethodInfo {
     msg_type: i32,
@@ -288,13 +497,16 @@ fn builtin_registration_fields_match(
 
 fn is_crash_info_payload_ty(
     ty: &ResolvedTy,
-    type_classes: &hew_hir::TypeClassTable,
+    _type_classes: &hew_hir::TypeClassTable,
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
 ) -> bool {
     let ResolvedTy::Named { name, args, .. } = ty else {
         return false;
     };
-    if !args.is_empty() || named_type_marker(ty, type_classes) != Some(ResourceMarker::BitCopy) {
+    // M-5: `CrashInfo` now carries an owned `message: string`, so it is no
+    // longer marker-`BitCopy`. The authoritative discriminant is the
+    // `CrashInfo` role on the builtin registration, not the marker.
+    if !args.is_empty() {
         return false;
     }
 
@@ -1526,6 +1738,11 @@ pub fn lower_hir_module_with_facts(
                 .iter()
                 .find(|hook| hook.kind == HirLifecycleHookKind::Crash)
                 .map(|_| mangle_actor_crash_handler(&actor_symbol_base(actor))),
+            on_exit_symbol: actor
+                .lifecycle_hooks
+                .iter()
+                .find(|hook| hook.kind == HirLifecycleHookKind::Exit)
+                .map(|_| mangle_actor_exit_handler(&actor_symbol_base(actor))),
             max_heap_bytes: actor.max_heap_bytes,
             cycle_capable: actor.cycle_capable,
             handlers: lower_actor_handler_layouts(actor),
@@ -3104,37 +3321,42 @@ fn lower_actor_lifecycle_handlers(
 
                 // ABI PROLOGUE — crash-info payload parameter injection:
                 //
-                // The runtime ABI for `HewOnCrashFn` passes the crash code as
-                // `i64` in the second argument register (updated from `c_int`
-                // in this slice; see hew-runtime/src/internal/types.rs).
+                // The runtime ABI for `HewOnCrashFn` (M-3 reshape) is
+                // `(ctx, crash_code: i64, crash_message: *const c_char,
+                //  actor_state_ptr) -> i32` — see
+                // `hew-runtime/src/internal/types.rs`.
                 //
-                // User sources declare a crash-info payload and access its `code`.
-                // To bridge the raw `i64` wire value to the user-visible struct,
-                // we inject a synthetic prologue into the function body:
+                // User sources declare a single crash-info payload param and
+                // access its `code`. To bridge the raw wire values to the
+                // user-visible struct, the user-visible crash-info param is
+                // replaced in `abi_params` by TWO synthetic ABI params:
+                //   - `__crash_code: i64`     (the trap-kind integer)
+                //   - `__crash_message: string` (a `ptr` — borrowed Hew string;
+                //     the supervisor owns + frees the buffer)
+                // and the body gains a synthetic prologue:
                 //
-                //   let __crash_code: i64 = <ABI param>;   // sentinel BindingId
-                //   let info = <crash-info-type> { code: __crash_code };
+                //   let info = <crash-info-type> {
+                //       code: __crash_code,
+                //       message: __crash_message.clone(),   // hew_string_clone
+                //   };
                 //
-                // The original user-visible crash-info param is replaced
-                // with `__crash_code: I64` in `abi_params`; the original binding
-                // ID for `info` is preserved in the `Let` statement so that every
-                // `BindingRef { resolved: Binding(info_id) }` in the user body
-                // continues to resolve correctly through `binding_locals`.
+                // The original binding ID for `info` is preserved in the `Let`
+                // statement so every `BindingRef { resolved: Binding(info_id) }`
+                // in the user body continues to resolve through `binding_locals`.
+                // `__crash_message` is a BORROW (the supervisor owns the Hew
+                // header-aware buffer and frees it after the call), so M-5 CLONES it
+                // into the owned `CrashInfo.message` field (a fresh `+1` owner the
+                // function frame drops once) rather than moving the borrow — moving
+                // would double-free with the supervisor's release.
                 //
-                // RETURN coercion: the runtime supervisor ignores the handler's
-                // return value in v0.5 and applies its own restart-policy enum.
-                // Passing `ResolvedTy::Named { "CrashAction" }` through to codegen
-                // trips the D10 fail-closed gate; we use I32 until v0.6 wires
-                // CrashAction enum-variant construction.
-                //
-                // BODY-RETURN NOTE: enum-variant construction (`CrashAction::Restart`)
-                // is not yet wired in HIR lowering (NotYetImplemented gate). Today
-                // only `panic()`-diverging bodies compile, so no actual CrashAction
-                // value can appear in the MIR return slot.
-                //
-                // WHEN obsolete: when v0.6 wires CrashAction return-shape consult,
-                // remove the I32 return coercion and let the HIR type flow through.
-                // The prologue injection itself stays (the ABI wire remains i64).
+                // RETURN (M-4): the synthetic function's logical return type is
+                // `CrashAction`; the hook's `CrashAction` tail/explicit-return
+                // value flows through the normal enum-return path and codegen
+                // returns the 2-byte `{ i8, [1 x i8] }` tagged-union struct by
+                // value. The runtime `HewOnCrashFn` mirrors it with a `#[repr(C)]`
+                // 2-byte struct and reads field 0 (the tag). A `panic()`-diverging
+                // body returns no value (also valid). There is no i32 coercion and
+                // no tag-extraction `match` — the M-3 i32 return was removed in M-4.
 
                 // Find the crash-info payload param (if present) and build ABI
                 // params. The payload param is replaced with `__crash_code: I64`;
@@ -3152,20 +3374,35 @@ fn lower_actor_lifecycle_handlers(
                         Some((p.clone(), name.clone()))
                     });
 
+                // The crash-info payload param expands to TWO ABI params:
+                // `__crash_code: i64` then `__crash_message: string` (a `ptr`),
+                // matching the `HewOnCrashFn` signature `(ctx, i64, *const
+                // c_char, *mut c_void) -> i32`. The message param is a borrow
+                // (the runtime owns the buffer) and is unused until M-5 seeds
+                // `CrashInfo.message` from it. Non-payload params pass through.
                 let abi_params: Vec<HirBinding> = hook
                     .params
                     .iter()
-                    .map(|p| {
+                    .flat_map(|p| {
                         if is_crash_info_payload_ty(&p.ty, type_classes, record_field_orders) {
-                            HirBinding {
-                                id: SENTINEL_CRASH_CODE_BINDING,
-                                name: "__crash_code".to_string(),
-                                ty: ResolvedTy::I64,
-                                mutable: false,
-                                span: p.span.clone(),
-                            }
+                            vec![
+                                HirBinding {
+                                    id: SENTINEL_CRASH_CODE_BINDING,
+                                    name: "__crash_code".to_string(),
+                                    ty: ResolvedTy::I64,
+                                    mutable: false,
+                                    span: p.span.clone(),
+                                },
+                                HirBinding {
+                                    id: SENTINEL_CRASH_MESSAGE_BINDING,
+                                    name: "__crash_message".to_string(),
+                                    ty: ResolvedTy::String,
+                                    mutable: false,
+                                    span: p.span.clone(),
+                                },
+                            ]
                         } else {
-                            p.clone()
+                            vec![p.clone()]
                         }
                     })
                     .collect();
@@ -3189,17 +3426,68 @@ fn lower_actor_lifecycle_handlers(
                         span: info_param.span.clone(),
                     };
 
-                    // Build `<payload> { code: __crash_code }` StructInit expression.
+                    // M-5: build the `__crash_message` BindingRef. The param is a
+                    // BORROW — the supervisor owns the underlying Hew header-aware
+                    // string (allocated via `str_to_malloc`, rc==1) and frees it via
+                    // `free_cstring` after the call (see `invoke_on_crash_handler`).
+                    // The field-init must NOT MOVE this borrow into the owned
+                    // `CrashInfo.message`: `lower_record_init` raw-stores its field
+                    // source with no construction retain, so a move would make the
+                    // record a raw rc==1 alias of the supervisor's buffer; the frame's
+                    // `CrashInfo` drop would free it (rc->0) and the supervisor's
+                    // `free_cstring` would then double-free it — the reported M-5
+                    // abort/corruption. Instead CLONE the borrow into an independent
+                    // `+1` owner via `RecordCloneCall` (its `string` arm emits
+                    // `hew_string_clone`, a header-aware refcount bump). The clone is
+                    // MOVED into `CrashInfo.message`, so the record owns its own copy:
+                    // rc == supervisor 1 -> clone 2 -> (record owns the clone) ->
+                    // `CrashInfo` drop releases it (->1) -> supervisor `free_cstring`
+                    // (->0). One buffer, freed exactly once, no double-free.
+                    let crash_message_ref = HirExpr {
+                        node: SENTINEL_CRASH_CODE_NODE,
+                        site: SENTINEL_CRASH_CODE_SITE,
+                        ty: ResolvedTy::String,
+                        value_class: ValueClass::CowValue,
+                        intent: IntentKind::Read,
+                        kind: HirExprKind::BindingRef {
+                            name: "__crash_message".to_string(),
+                            resolved: ResolvedRef::Binding(SENTINEL_CRASH_MESSAGE_BINDING),
+                        },
+                        span: info_param.span.clone(),
+                    };
+                    // Clone the owned param into the record's `+1` owner.
+                    // `clone_fn_sym` / `record_name` are ignored by the `string` arm
+                    // (it emits `hew_string_clone` directly); set for dump/verify.
+                    let crash_message_clone = HirExpr {
+                        node: SENTINEL_CRASH_CODE_NODE,
+                        site: SENTINEL_CRASH_CODE_SITE,
+                        ty: ResolvedTy::String,
+                        value_class: ValueClass::CowValue,
+                        intent: IntentKind::Read,
+                        kind: HirExprKind::RecordCloneCall {
+                            src: Box::new(crash_message_ref),
+                            clone_fn_sym: "hew_string_clone".to_string(),
+                            record_name: "string".to_string(),
+                        },
+                        span: info_param.span.clone(),
+                    };
+
+                    // Build `<payload> { code: __crash_code, message: <cloned message> }`.
+                    // `CrashInfo` is an owned-aggregate record (`CowValue`) because of
+                    // the `message: string` field; it OWNS the cloned message.
                     let struct_init = HirExpr {
                         node: SENTINEL_CRASH_CODE_NODE,
                         site: SENTINEL_CRASH_CODE_SITE,
                         ty: crash_info_ty.clone(),
-                        value_class: ValueClass::BitCopy,
+                        value_class: ValueClass::CowValue,
                         intent: IntentKind::Unknown,
                         kind: HirExprKind::StructInit {
                             name: crash_info_type_name,
                             type_args: Vec::new(),
-                            fields: vec![("code".to_string(), crash_code_ref)],
+                            fields: vec![
+                                ("code".to_string(), crash_code_ref),
+                                ("message".to_string(), crash_message_clone),
+                            ],
                             base: None,
                         },
                         span: info_param.span.clone(),
@@ -3234,13 +3522,127 @@ fn lower_actor_lifecycle_handlers(
                     hook.body.clone()
                 };
 
+                // M-4: the hook body returns a `CrashAction` value (or diverges).
+                // The synthetic function's logical return type IS `CrashAction`,
+                // so EVERY return position — the tail expression AND any explicit
+                // `return CrashAction::X;` statement — type-checks and lowers
+                // naturally through the existing enum-return path. The
+                // codegen-emitted `__on_crash` returns the `CrashAction`
+                // tagged-union struct by value; the runtime `HewOnCrashFn` ABI
+                // mirrors it with a `#[repr(C)]` 2-byte struct and reads the tag
+                // byte. A `panic()`-diverging body returns no value (also valid).
                 let synthetic_fn = HirFn {
                     id: actor.id,
                     node: actor.node,
                     name: format!("{}::{}", actor.name, hook.name),
                     type_params: Vec::new(),
                     params: abi_params,
-                    return_ty: ResolvedTy::I32,
+                    return_ty: crash_action_return_ty(),
+                    body,
+                    span: hook.span.clone(),
+                    is_generator: false,
+                    intrinsic_id: None,
+                };
+                lowered.push(lower_function(
+                    &synthetic_fn,
+                    emit_name,
+                    HashMap::new(),
+                    type_classes,
+                    record_field_orders,
+                    actor_layouts,
+                    &HashMap::new(),
+                    machine_layout_names,
+                    enum_layouts,
+                    opaque_handle_names,
+                    Some(actor.qualified_name().as_str()),
+                    module_fn_names,
+                    module_generic_fn_names,
+                    funcupdate_fn_returns_fresh,
+                    &HashMap::new(),
+                    call_site_type_args,
+                    None,
+                    supervisor_child_slots,
+                    pool_accessor_sites,
+                    actor_send_aliasing,
+                    pointer_width,
+                    crate::model::FunctionCallConv::ActorHandler,
+                    task_entry_adapter_symbols.clone(),
+                ));
+            }
+            HirLifecycleHookKind::Exit => {
+                // M-7-R: `#[on(exit)]` linked-actor exit hook. The runtime
+                // delivers a peer's `CrashNotification` on SYS_MSG_EXIT as two
+                // raw ABI params (`__exit_actor_id: u64`, `__exit_kind_tag: i32`);
+                // the prologue rebuilds `note = CrashNotification { actor_id,
+                // kind }`. Returns `()` (the hook reacts; it does not steer).
+                let emit_name = mangle_actor_exit_handler(&actor_symbol_base(actor));
+                let duplicate_label =
+                    format!("actor `{}` #[on(exit)] hook `{}`", actor.name, hook.name);
+                if let Some(existing) = emitted_symbols.get(&emit_name) {
+                    diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::ActorHandlerSymbolCollision {
+                            symbol: emit_name,
+                            existing: existing.clone(),
+                            duplicate: duplicate_label,
+                        },
+                        note: "actor #[on(exit)] handler symbol mangling must be one-to-one before MIR emission"
+                            .to_string(),
+                    });
+                    continue;
+                }
+                emitted_symbols.insert(emit_name.clone(), duplicate_label);
+
+                // The CrashNotification payload param (if present) expands to the
+                // two raw ABI params; other params pass through (there are none
+                // in the canonical shape).
+                let notification_param: Option<HirBinding> = hook.params.iter().find_map(|p| {
+                    matches!(&p.ty, ResolvedTy::Named { name, args, .. }
+                        if name == "CrashNotification" && args.is_empty())
+                    .then(|| p.clone())
+                });
+
+                let abi_params: Vec<HirBinding> = hook
+                    .params
+                    .iter()
+                    .flat_map(|p| {
+                        let is_notification = matches!(&p.ty, ResolvedTy::Named { name, args, .. }
+                            if name == "CrashNotification" && args.is_empty());
+                        if is_notification {
+                            vec![
+                                HirBinding {
+                                    id: SENTINEL_EXIT_ACTOR_ID_BINDING,
+                                    name: "__exit_actor_id".to_string(),
+                                    ty: ResolvedTy::U64,
+                                    mutable: false,
+                                    span: p.span.clone(),
+                                },
+                                HirBinding {
+                                    id: SENTINEL_EXIT_KIND_TAG_BINDING,
+                                    name: "__exit_kind_tag".to_string(),
+                                    ty: ResolvedTy::I32,
+                                    mutable: false,
+                                    span: p.span.clone(),
+                                },
+                            ]
+                        } else {
+                            vec![p.clone()]
+                        }
+                    })
+                    .collect();
+
+                let body = if let Some(note_param) = notification_param {
+                    build_exit_hook_body(hook.body.clone(), &note_param)
+                } else {
+                    hook.body.clone()
+                };
+
+                let synthetic_fn = HirFn {
+                    id: actor.id,
+                    node: actor.node,
+                    name: format!("{}::{}", actor.name, hook.name),
+                    type_params: Vec::new(),
+                    params: abi_params,
+                    return_ty: ResolvedTy::Unit,
                     body,
                     span: hook.span.clone(),
                     is_generator: false,
@@ -3345,6 +3747,10 @@ fn mangle_actor_stop_handler_indexed(actor_name: &str, hook_idx: usize) -> Strin
 
 fn mangle_actor_crash_handler(actor_name: &str) -> String {
     format!("{actor_name}__on_crash")
+}
+
+fn mangle_actor_exit_handler(actor_name: &str) -> String {
+    format!("{actor_name}__on_exit")
 }
 
 /// Per-actor lifecycle-wrapper symbol: `__hew_lifecycle_<mangled-actor>`.
@@ -6622,6 +7028,26 @@ fn user_record_layout_key(ty: &ResolvedTy) -> Option<String> {
         } => {
             let short_args: Vec<ResolvedTy> = args.iter().map(shorten_named_ty_spine).collect();
             Some(hew_hir::mangle(short_name(name), &short_args))
+        }
+        // M-5: a BUILTIN record with a registered `Struct` shape (today only
+        // `CrashInfo`, which carries an owned `message: string`) is keyed by its
+        // bare name so it routes through the SAME owned-aggregate record
+        // clone/drop synthesis (`__hew_record_{clone,drop}_inplace_<R>`) user
+        // records use. Its `record_field_orders` entry is seeded by
+        // `register_builtin_record_layouts` from the registration shape, so the
+        // field-kind classifier and the codegen thunk agree on the layout.
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin: Some(_),
+            ..
+        } if args.is_empty()
+            && matches!(
+                hew_hir::builtin_type_classes::builtin_type_registration(name).map(|r| r.shape),
+                Some(hew_hir::builtin_type_classes::BuiltinTypeShape::Struct(_))
+            ) =>
+        {
+            Some(name.clone())
         }
         _ => None,
     }
@@ -37940,6 +38366,8 @@ mod enum_layout_tests {
                     && l.name != "AskError"
                     && l.name != "TimeoutError"
                     && l.name != "LinkError"
+                    && l.name != "CrashAction"
+                    && l.name != "CrashKind"
             })
             .collect();
         assert_eq!(user_layouts.len(), 1, "expected one EnumLayout for Shape");
@@ -37998,6 +38426,8 @@ mod enum_layout_tests {
                     && l.name != "AskError"
                     && l.name != "TimeoutError"
                     && l.name != "LinkError"
+                    && l.name != "CrashAction"
+                    && l.name != "CrashKind"
             })
             .collect();
         assert_eq!(user_layouts.len(), 1, "expected one EnumLayout for Colour");
@@ -38200,6 +38630,8 @@ mod enum_layout_tests {
                     && l.name != "AskError"
                     && l.name != "TimeoutError"
                     && l.name != "LinkError"
+                    && l.name != "CrashAction"
+                    && l.name != "CrashKind"
             })
             .collect();
         assert_eq!(

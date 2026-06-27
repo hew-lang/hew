@@ -1151,6 +1151,77 @@ fn main() {
         );
     }
 
+    /// M-8: the `#[on(crash)]` crash-handling surface rides supervision — a
+    /// supervisor declaring a crash-hook child is wasm-rejected via the same
+    /// Supervision-tree gate, so the crash payload (CrashInfo/CrashAction) can
+    /// never reach a wasm crash path that fires. Parity is maintained by the
+    /// firing surface (supervisors) being rejected, not the hook code.
+    #[test]
+    fn wasm_rejects_supervisor_with_crash_hook() {
+        let output = check_wasm(
+            r"
+            import std::failure;
+
+            actor Crasher {
+                #[on(crash)]
+                fn on_crash(info: CrashInfo) -> CrashAction {
+                    CrashAction::Restart
+                }
+            }
+
+            supervisor App {
+                strategy: one_for_one,
+                intensity: 1 within 10s,
+                child c: Crasher
+            }
+
+            fn main() {}
+        ",
+        );
+        assert!(
+            has_platform_limitation_error(&output)
+                && platform_error_contains(&output, "Supervision tree"),
+            "a supervisor with a #[on(crash)] child must be a WASM error \
+             (Supervision tree); got: {:?}",
+            output.errors
+        );
+    }
+
+    /// M-8: the `#[on(exit)]` linked-actor exit hook (M-7-R) rides the link
+    /// surface — an actor that `link()`s a peer to receive its exit is
+    /// wasm-rejected via the Link/monitor gate, so the `CrashNotification` can
+    /// never reach a wasm exit path that fires. The `#[on(exit)]` hook itself
+    /// compiles on wasm (parity with native), but the delivery surface that
+    /// fires it is rejected.
+    #[test]
+    fn wasm_rejects_link_that_would_fire_exit_hook() {
+        let output = check_wasm(
+            r"
+            import std::failure;
+
+            actor Watcher {
+                #[on(exit)]
+                fn on_peer_exit(note: CrashNotification) {
+                    let _id = note.actor_id;
+                }
+
+                receive fn watch(peer: u64) {
+                    link(peer);
+                }
+            }
+
+            fn main() {}
+        ",
+        );
+        assert!(
+            has_platform_limitation_error(&output)
+                && platform_error_contains(&output, "Link/monitor"),
+            "link() (the surface that fires #[on(exit)]) must be a WASM error \
+             (Link/monitor); got: {:?}",
+            output.errors
+        );
+    }
+
     #[test]
     fn native_link_monitor_no_platform_error() {
         let output = check_native(link_monitor_calls_source());

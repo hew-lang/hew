@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicI32, AtomicI64, Ordering};
 
 use hew_runtime::actor::hew_actor_send;
 use hew_runtime::deterministic::{hew_deterministic_reset, hew_fault_inject_crash};
+use hew_runtime::internal::types::HewCrashActionAbi;
 use hew_runtime::supervisor::{
     hew_supervisor_add_child_spec, hew_supervisor_set_restart_notify, hew_supervisor_wait_restart,
     HewChildSpec,
@@ -41,6 +42,9 @@ const OVERFLOW_DROP_NEW: i32 = 1;
 static DISPATCH_COUNT: AtomicI32 = AtomicI32::new(0);
 static ON_CRASH_CALLS: AtomicI32 = AtomicI32::new(0);
 static LAST_CRASH_CODE: AtomicI64 = AtomicI64::new(0);
+/// Captures the borrowed `crash_message` the supervisor passes, so the
+/// population test can assert the trap-kind name reaches the handler.
+static LAST_CRASH_MESSAGE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 unsafe extern "C-unwind" fn noop_dispatch(
     _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
@@ -56,15 +60,41 @@ unsafe extern "C-unwind" fn noop_dispatch(
 
 /// Test `on_crash` handler: records that it fired and captures the trap code.
 ///
-/// `crash_code` is `i64` matching the updated `HewOnCrashFn` ABI, which aligns
-/// with `PanicInfo.code: i64` in `std/failure.hew`.
+/// Signature matches the `HewOnCrashFn` ABI:
+/// `(ctx, crash_code: i64, crash_message: *const c_char, actor_state_ptr)
+///  -> HewCrashActionAbi`.
+/// `crash_code` is `i64` aligning with `CrashInfo.code: i64` in
+/// `std/failure.hew`; `crash_message` is a borrowed C string. The return is
+/// the `CrashAction` value — `Restart` (tag 0) keeps the existing
+/// restart-policy behaviour these tests assert.
 unsafe extern "C" fn recording_on_crash(
     _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     crash_code: i64,
+    crash_message: *const std::ffi::c_char,
     _actor_state_ptr: *mut c_void,
-) {
+) -> HewCrashActionAbi {
     ON_CRASH_CALLS.fetch_add(1, Ordering::SeqCst);
     LAST_CRASH_CODE.store(crash_code, Ordering::SeqCst);
+    // Capture the borrowed message (the supervisor owns the buffer; we copy
+    // into an owned String, never retaining the borrow).
+    let message = if crash_message.is_null() {
+        None
+    } else {
+        // SAFETY: the supervisor passes a NUL-terminated C string live across
+        // this call; we only read it here.
+        Some(
+            unsafe { std::ffi::CStr::from_ptr(crash_message) }
+                .to_string_lossy()
+                .into_owned(),
+        )
+    };
+    *LAST_CRASH_MESSAGE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = message;
+    HewCrashActionAbi {
+        tag: 0, // CrashAction::Restart
+        payload_pad: [0],
+    }
 }
 
 fn cstr(s: &str) -> CString {
@@ -111,6 +141,9 @@ fn on_crash_handler_fires_once_per_crash_then_restart_proceeds() {
     DISPATCH_COUNT.store(0, Ordering::SeqCst);
     ON_CRASH_CALLS.store(0, Ordering::SeqCst);
     LAST_CRASH_CODE.store(0, Ordering::SeqCst);
+    *LAST_CRASH_MESSAGE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
 
     // Budget of 10 — well above our one crash — and a generous 60s window.
     let sup = TestSupervisor::new(STRATEGY_ONE_FOR_ONE, 10, 60);
@@ -166,6 +199,20 @@ fn on_crash_handler_fires_once_per_crash_then_restart_proceeds() {
             LAST_CRASH_CODE.load(Ordering::SeqCst),
             -1i64,
             "handler must receive the real trap code captured on the actor"
+        );
+
+        // M-5: the handler must receive the populated crash MESSAGE. The
+        // injected trap code -1 maps to `ExitReason::Signal(-1)`, whose
+        // trap-kind name is "Signal" — the exact diagnostic the supervisor
+        // passes through the `crash_message` channel. Exact-value assertion:
+        // not just non-null, the SPECIFIC trap-kind name.
+        assert_eq!(
+            LAST_CRASH_MESSAGE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_deref(),
+            Some("Signal"),
+            "handler must receive the populated crash message (trap-kind name)"
         );
 
         // The restart still happened: child slot 0 is non-null again.
@@ -247,6 +294,98 @@ fn null_on_crash_handler_is_skipped_cleanly() {
             !restarted.is_null(),
             "child should still be restarted when no handler is installed"
         );
+    }
+
+    hew_deterministic_reset();
+}
+
+/// M-4: a handler returning `CrashAction::Kill` (tag 2) must make the
+/// supervisor terminate the child PERMANENTLY — null the slot and NOT restart —
+/// even though the child's `restart_policy` is `RESTART_PERMANENT` (which would
+/// otherwise always restart). This proves the hook return takes PRECEDENCE over
+/// the static restart policy.
+unsafe extern "C" fn kill_on_crash(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
+    crash_code: i64,
+    _crash_message: *const std::ffi::c_char,
+    _actor_state_ptr: *mut c_void,
+) -> HewCrashActionAbi {
+    ON_CRASH_CALLS.fetch_add(1, Ordering::SeqCst);
+    LAST_CRASH_CODE.store(crash_code, Ordering::SeqCst);
+    HewCrashActionAbi {
+        tag: 2, // CrashAction::Kill
+        payload_pad: [0],
+    }
+}
+
+#[test]
+fn on_crash_kill_return_terminates_child_overriding_restart_policy() {
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ensure_scheduler();
+    hew_deterministic_reset();
+    DISPATCH_COUNT.store(0, Ordering::SeqCst);
+    ON_CRASH_CALLS.store(0, Ordering::SeqCst);
+
+    let sup = TestSupervisor::new(STRATEGY_ONE_FOR_ONE, 10, 60);
+    let name = cstr("kill-on-crash-worker");
+    let mut state: i32 = 0;
+
+    // SAFETY: sup is live; spec lives across the FFI call.
+    unsafe {
+        hew_supervisor_set_restart_notify(sup.as_ptr());
+
+        let spec = HewChildSpec {
+            name: name.as_ptr(),
+            init_state: (&raw mut state).cast(),
+            init_state_size: std::mem::size_of::<i32>(),
+            dispatch: Some(noop_dispatch),
+            // RESTART_PERMANENT would always restart — the Kill return must win.
+            restart_policy: RESTART_PERMANENT,
+            mailbox_capacity: -1,
+            overflow: OVERFLOW_DROP_NEW,
+            arena_cap_bytes: 0,
+            cycle_capable: 0,
+            on_crash: Some(kill_on_crash),
+            lifecycle_fn: None,
+            init_fn: None,
+            config: std::ptr::null_mut(),
+            config_size: 0,
+        };
+        assert_eq!(
+            hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
+            0
+        );
+        assert_eq!(sup.start(), 0);
+
+        let child = wait_for_child(sup.as_ptr(), 0, 2000);
+        crash_child(child);
+
+        // The handler fires; then the Kill return short-circuits the restart.
+        // No restart cycle should occur — wait_restart times out at 0.
+        let count = hew_supervisor_wait_restart(sup.as_ptr(), 1, 1500);
+        assert_eq!(
+            count, 0,
+            "Kill return must suppress the restart cycle (got {count})"
+        );
+        assert_eq!(
+            ON_CRASH_CALLS.load(Ordering::SeqCst),
+            1,
+            "the Kill handler must still fire exactly once"
+        );
+
+        // The child slot stays null: the child was killed, not restarted.
+        // Poll a short window to confirm it does NOT come back.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(800);
+        while std::time::Instant::now() < deadline {
+            let slot = hew_runtime::supervisor::hew_supervisor_get_child(sup.as_ptr(), 0);
+            assert!(
+                slot.is_null(),
+                "Kill return must leave child slot 0 null (no restart)"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
     }
 
     hew_deterministic_reset();

@@ -485,7 +485,7 @@ pub struct HirLifecycleHook {
     pub span: Span,
 }
 
-/// The four lifecycle-hook kinds recognised by HEW-SPEC-2026 §9.1.2.
+/// The lifecycle-hook kinds recognised by HEW-SPEC-2026 §9.1.2.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HirLifecycleHookKind {
     /// `#[on(start)]` — runs once after the actor is spawned and its
@@ -497,6 +497,11 @@ pub enum HirLifecycleHookKind {
     /// `#[on(crash)]` — runs when the actor body traps. Takes the stdlib
     /// crash-info payload parameter and returns the stdlib crash action enum.
     Crash,
+    /// `#[on(exit)]` — runs when an actor THIS actor is linked to
+    /// crashes/exits. Takes the stdlib `CrashNotification { actor_id, kind }`
+    /// payload and returns `()`. Fired on the linked actor's own dispatch via
+    /// the `SYS_MSG_EXIT` delivery (M-7-R, Q210/A211).
+    Exit,
     /// `#[on(upgrade)]` — reserved marker for hot-upgrade flows. No
     /// runtime invocation in v0.5.
     Upgrade,

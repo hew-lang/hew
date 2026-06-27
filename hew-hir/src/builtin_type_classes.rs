@@ -13,6 +13,12 @@ pub enum BuiltinTypeRole {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinFieldTy {
     I64,
+    U64,
+    /// An owned heap `string` field (`*mut c_char`). A builtin record carrying
+    /// one (e.g. `CrashInfo.message`) is heap-owning, so it is no longer a
+    /// `BitCopy` aggregate — it routes through the owned-aggregate record
+    /// clone/drop synthesis (`__hew_record_{clone,drop}_inplace_<R>`).
+    String,
 }
 
 impl BuiltinFieldTy {
@@ -20,6 +26,8 @@ impl BuiltinFieldTy {
     pub fn to_resolved_ty(self) -> ResolvedTy {
         match self {
             Self::I64 => ResolvedTy::I64,
+            Self::U64 => ResolvedTy::U64,
+            Self::String => ResolvedTy::String,
         }
     }
 }
@@ -62,10 +70,16 @@ impl BuiltinTypeRegistration {
     }
 }
 
-const CRASH_INFO_FIELDS: &[BuiltinTypeField] = &[BuiltinTypeField {
-    name: "code",
-    ty: BuiltinFieldTy::I64,
-}];
+const CRASH_INFO_FIELDS: &[BuiltinTypeField] = &[
+    BuiltinTypeField {
+        name: "code",
+        ty: BuiltinFieldTy::I64,
+    },
+    BuiltinTypeField {
+        name: "message",
+        ty: BuiltinFieldTy::String,
+    },
+];
 
 /// `MonitorRef { ref_id: i64 }` — single-field resource handle returned by `monitor()`.
 const MONITOR_REF_FIELDS: &[BuiltinTypeField] = &[BuiltinTypeField {
@@ -297,36 +311,55 @@ mod tests {
     }
 
     #[test]
-    fn crash_info_is_seeded_as_bitcopy_marker() {
+    fn crash_info_is_seeded_as_none_marker_owned_record() {
+        // M-5: CrashInfo carries an owned `message: string`, so it is no longer
+        // marker-`BitCopy`. The `None` marker routes it through the
+        // owned-aggregate record clone/drop synthesis; the `CrashInfo` ROLE (not
+        // the marker) is now the crash-hook-payload discriminant.
         let mut table: TypeClassTable = HashMap::default();
         seed_builtin_type_classes(&mut table);
         assert_eq!(
             crate::lookup_type_marker("CrashInfo", &table),
-            Some(ResourceMarker::BitCopy),
-            "CrashInfo must be BitCopy so crash-hook payload lowering is marker-driven"
+            Some(ResourceMarker::None),
+            "CrashInfo is a `None`-marker owned record once it carries `message: string`"
         );
     }
 
     #[test]
-    fn crash_info_named_ty_resolves_to_bitcopy() {
+    fn crash_info_named_ty_resolves_to_owned_not_bitcopy() {
+        // With the owned `message: string` field, CrashInfo must NOT classify as
+        // BitCopy — a BitCopy classification would skip the field-wise drop and
+        // leak the message string. A `None`-marker builtin record resolves to
+        // `Unknown` at the bare `ValueClass::of_ty` level (the owned-aggregate
+        // record machinery in MIR is what admits it as `CowValue` for drop).
         let mut table: TypeClassTable = HashMap::default();
         seed_builtin_type_classes(&mut table);
         let ty = ResolvedTy::named_user("CrashInfo", vec![]);
-        assert_eq!(ValueClass::of_ty(&ty, &table), ValueClass::BitCopy);
+        assert_ne!(
+            ValueClass::of_ty(&ty, &table),
+            ValueClass::BitCopy,
+            "CrashInfo must not be BitCopy once it owns a `message: string` field"
+        );
     }
 
     #[test]
-    fn crash_info_shape_is_registered_as_crash_info_payload() {
+    fn crash_info_shape_is_registered_with_message_field() {
         let registration = crash_info_type_registration();
         assert_eq!(registration.name(), "CrashInfo");
-        assert_eq!(registration.marker, ResourceMarker::BitCopy);
+        assert_eq!(registration.marker, ResourceMarker::None);
         assert!(registration.has_role(BuiltinRegistrationRole::CrashInfoPayload));
         assert_eq!(
             registration.shape,
-            BuiltinTypeShape::Struct(&[BuiltinTypeField {
-                name: "code",
-                ty: BuiltinFieldTy::I64,
-            }])
+            BuiltinTypeShape::Struct(&[
+                BuiltinTypeField {
+                    name: "code",
+                    ty: BuiltinFieldTy::I64,
+                },
+                BuiltinTypeField {
+                    name: "message",
+                    ty: BuiltinFieldTy::String,
+                },
+            ])
         );
     }
 

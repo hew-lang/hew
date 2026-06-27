@@ -288,27 +288,6 @@ impl Checker {
         ty
     }
 
-    /// Emit `CrashActionReturnNotYetWired` for a `return CrashAction::…;` inside
-    /// an `#[on(crash)]` hook body.  Called from both `Stmt::Return` arms
-    /// (`check_stmt` and `check_stmt_as_expr`) after the type of the returned
-    /// expression is confirmed to be `CrashAction`.
-    ///
-    /// WHEN obsolete: when v0.6 wires the full `CrashAction` return path through
-    /// HIR lowering, remove this helper together with the `in_crash_hook` field
-    /// and the `body_is_crash_action` check in `check_crash_hook` in `items.rs`.
-    fn emit_crash_action_return_error(&mut self, span: &Span, fn_name: &str) {
-        self.errors.push(TypeError::new(
-            TypeErrorKind::CrashActionReturnNotYetWired,
-            span.clone(),
-            format!(
-                "`#[on(crash)]` hook `{fn_name}` uses `return CrashAction::…`; \
-                 `CrashAction` enum-variant construction is not yet wired through \
-                 the compiler — use `panic(...)` (a diverging expression) as the \
-                 hook body for now",
-            ),
-        ));
-    }
-
     /// Type-check the operand of a `return` against the enclosing function's
     /// declared return type.
     ///
@@ -361,21 +340,10 @@ impl Checker {
                 _ => {}
             }
         }
-        // Fail-closed: a `return <CrashAction>` inside a `#[on(crash)]` hook hits
-        // the same unimplemented lowering path as the tail-expression form.
-        // Reject it here so the user never reaches codegen.
-        if self.in_crash_hook
-            && matches!(
-                self.subst.resolve(&effective_expected),
-                Ty::Named { name, .. } if name == "CrashAction"
-            )
-        {
-            let fn_name = self
-                .current_function
-                .clone()
-                .unwrap_or_else(|| "<unknown>".to_string());
-            self.emit_crash_action_return_error(span, &fn_name);
-        }
+        // M-4: a `return CrashAction::…;` inside a `#[on(crash)]` hook is now
+        // fully wired (the MIR return boundary extracts the variant tag; the
+        // supervisor honours it). The former fail-closed reject is removed; the
+        // standard `check_against` above type-checks the operand normally.
     }
 
     /// Check a statement that may serve as a block's trailing expression.

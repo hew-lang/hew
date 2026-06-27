@@ -1,0 +1,72 @@
+// Acceptance fixture: a real crash fires a #[on(crash)] hook that READS
+// info.message and RETURNS CrashAction::Restart — the M-4/M-5 headline path,
+// exercised on an ACTUAL trap (not a compile-only spawn).
+//
+// This is the teeth the compile-only on_crash_action_restart fixture lacks: that
+// fixture spawns a supervisor and returns 42 WITHOUT ever crashing a child, so
+// the emitted Worker__on_crash never executes at runtime. Here the child really
+// traps, so the supervisor invokes the codegen __on_crash, which:
+//   1. CLONES the borrowed crash_message into the owned CrashInfo.message (a
+//      hew_string_clone refcount bump — the M-5 fix). A move-then-drop of the
+//      borrow (the pre-fix bug) would free the supervisor's buffer out from
+//      under it; and because the supervisor handed in a bare Rust CString with
+//      no Hew refcount header, hew_string_drop's validate_cstring_header would
+//      OOB-read the bytes before the buffer, miss the sentinel, and libc::abort()
+//      the whole runtime — exit 134, NOT a clean restart.
+//   2. reads info.message (proving the header-aware allocation is valid) and
+//      returns CrashAction::Restart.
+//
+// Teeth: a wrong string ABI / a move-of-borrow aborts the process (exit 134) the
+// instant the hook runs on a real crash. A CLEAN restart that re-asks the fresh
+// child and returns 42 is reachable ONLY when the crash message is cloned and
+// dropped correctly. The on_crash body also branches on info.message.len() so a
+// garbage (uninitialised / OOB) length would route to Kill (no restart → the
+// await_restart never completes → 30s timeout, a visible failure), not Restart.
+import std::failure;
+
+actor Worker {
+    var value: i64;
+    receive fn get() -> i64 {
+        value
+    }
+    receive fn boom() {
+        panic("forced crash to fire on(crash)");
+    }
+    #[on(crash)]
+    fn on_crash(info: CrashInfo) -> CrashAction {
+        // Read the cloned owned message. Every trap-kind name is a non-empty
+        // slug (e.g. "Signal"), so a correctly-cloned message has length > 0.
+        // A garbage read (the pre-fix move-of-borrow / headerless drop) either
+        // aborts before reaching here or yields a nonsense length → Kill (no
+        // restart), turning the bug into a timeout rather than a false pass.
+        if !info.message.is_empty() {
+            CrashAction::Restart
+        } else {
+            CrashAction::Kill
+        }
+    }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 5 within 60s;
+
+    child w: Worker(value: 42);
+}
+
+fn main() -> i64 {
+    let sup = spawn App;
+    let w = sup.w;
+    // Crash the child (fire-and-forget tell, processed in mailbox order). The
+    // supervisor fires Worker__on_crash on the real trap; the hook clones +
+    // reads info.message and returns Restart.
+    w.boom();
+    // Suspend until the restarted child's slot is Live again, then re-fetch it.
+    // This only completes if on_crash returned Restart AND the runtime survived
+    // the crash-message clone/drop without aborting.
+    let w2 = await_restart sup.w;
+    match await w2.get() {
+        Ok(n) => n, // 42 — the fresh child's init value.
+        Err(_) => 1,
+    }
+}

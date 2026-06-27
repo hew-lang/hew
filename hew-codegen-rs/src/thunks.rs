@@ -2199,11 +2199,23 @@ pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
     payload_src.add_incoming(&[(&borrowed_payload, borrow_ok_bb), (&data_ptr, copy_src_bb)]);
     let payload_src = payload_src.as_basic_value().into_pointer_value();
 
-    let mut cases = Vec::with_capacity(layout.handlers.len());
+    let mut cases = Vec::with_capacity(layout.handlers.len() + 1);
     for handler in &layout.handlers {
         let bb = ctx.append_basic_block(dispatch_fn, &format!("msg_{}", handler.msg_type));
         cases.push((i32_ty.const_int(handler.msg_type as u64, false), bb));
     }
+    // M-7-R: route `SYS_MSG_EXIT` (103) to the actor's `#[on(exit)]` hook when
+    // one is declared. The case block (emitted after the handler arms) unpacks
+    // the `ExitMessage { crashed_actor_id: u64, reason: i32, crash_kind: i32 }`
+    // payload and calls `__on_exit(ctx, actor_id, crash_kind)`.
+    const SYS_MSG_EXIT: u64 = 103;
+    let on_exit_bb = if layout.on_exit_symbol.is_some() {
+        let bb = ctx.append_basic_block(dispatch_fn, "msg_sys_exit");
+        cases.push((i32_ty.const_int(SYS_MSG_EXIT, false), bb));
+        Some(bb)
+    } else {
+        None
+    };
     builder
         .build_switch(msg_type, default_bb, &cases)
         .llvm_ctx("actor dispatch switch")?;
@@ -2563,6 +2575,64 @@ pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
                 .llvm_ctx("actor dispatch branch")?;
             return_incomings.push((ptr_ty.const_null(), pred));
         }
+    }
+
+    // M-7-R: emit the `SYS_MSG_EXIT` → `#[on(exit)]` case body. The runtime
+    // delivers `ExitMessage { crashed_actor_id: u64, reason: i32, crash_kind:
+    // i32 }` as the message payload; unpack `crashed_actor_id` and `crash_kind`
+    // (the M-6 projection) and call `__on_exit(ctx, actor_id, crash_kind,
+    // borrow_mode)`. The hook is a run-to-completion ActorHandler returning unit,
+    // so the dispatch contributes `null` to the suspend-handle phi.
+    if let (Some(on_exit_bb), Some(on_exit_symbol)) = (on_exit_bb, &layout.on_exit_symbol) {
+        builder.position_at_end(on_exit_bb);
+        let on_exit_sym = fn_symbols.get(on_exit_symbol).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "actor dispatch `{dispatch_name}` references undeclared on_exit handler \
+                 `{on_exit_symbol}`"
+            ))
+        })?;
+        let (on_exit_fn, _on_exit_ret, _on_exit_unit) =
+            on_exit_sym.real(on_exit_symbol, "actor dispatch on_exit handler")?;
+
+        // The ExitMessage layout (hew-runtime/src/link.rs) is
+        // `{ u64 crashed_actor_id, i32 reason, i32 crash_kind }`. Read
+        // `crashed_actor_id` (field 0) and `crash_kind` (field 2) from the
+        // payload by their natural #[repr(C)] offsets via a matching LLVM struct.
+        let u64_ty = ctx.i64_type();
+        let exit_msg_st = ctx.struct_type(&[u64_ty.into(), i32_ty.into(), i32_ty.into()], false);
+        let actor_id_ptr = builder
+            .build_struct_gep(exit_msg_st, payload_src, 0, "exit_actor_id_ptr")
+            .llvm_ctx("on_exit actor_id gep")?;
+        let actor_id = builder
+            .build_load(u64_ty, actor_id_ptr, "exit_actor_id")
+            .llvm_ctx("on_exit actor_id load")?;
+        let crash_kind_ptr = builder
+            .build_struct_gep(exit_msg_st, payload_src, 2, "exit_crash_kind_ptr")
+            .llvm_ctx("on_exit crash_kind gep")?;
+        let crash_kind = builder
+            .build_load(i32_ty, crash_kind_ptr, "exit_crash_kind")
+            .llvm_ctx("on_exit crash_kind load")?;
+
+        let ctx_arg = dispatch_fn
+            .get_nth_param(0)
+            .ok_or_else(|| CodegenError::FailClosed("dispatch missing ctx param".into()))?;
+        // ABI: `__on_exit(ctx, __exit_actor_id: u64, __exit_kind_tag: i32)` — the
+        // ActorHandler convention (ctx-leading) plus the two unpacked
+        // CrashNotification fields. `__on_exit` is NOT a `__recv__` symbol, so it
+        // does NOT carry the trailing `borrow_mode` arg (that ABI growth is gated
+        // on the `__recv__` symbol in `declare_function`).
+        let on_exit_args: Vec<BasicMetadataValueEnum> = vec![
+            ctx_arg.into(),
+            metadata_value_from_basic(actor_id),
+            metadata_value_from_basic(crash_kind),
+        ];
+        builder
+            .build_call(on_exit_fn, &on_exit_args, "call_on_exit")
+            .llvm_ctx("actor dispatch on_exit call")?;
+        builder
+            .build_unconditional_branch(after_bb)
+            .llvm_ctx("actor dispatch on_exit branch")?;
+        return_incomings.push((ptr_ty.const_null(), on_exit_bb));
     }
 
     builder.position_at_end(default_bb);

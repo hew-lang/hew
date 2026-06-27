@@ -1,0 +1,38 @@
+// Acceptance fixture: a #[on(exit)] linked-actor exit hook compiles end-to-end
+// (M-7-R, Q210/A211).
+//
+// Exercises the full pipeline:
+//   - the checker accepts `#[on(exit)] fn on_peer_exit(note: CrashNotification)`
+//     (a recognised lifecycle hook returning `()`)
+//   - HIR lowers it as HirLifecycleHookKind::Exit
+//   - MIR emits `Watcher__on_exit` with the two-field ABI (actor_id, kind_tag)
+//     and a prologue that rebuilds `note = CrashNotification { actor_id, kind }`
+//   - codegen routes SYS_MSG_EXIT in the actor dispatch trampoline to __on_exit,
+//     unpacking the delivered ExitMessage payload
+//   - the supervisor boots; main returns 42.
+//
+// The link-cascade is not triggered at runtime here (no peer crashes); the goal
+// is to prove the exit-hook attribute + dispatch wiring compiles and links.
+// Runtime delivery (a linked peer crash firing the hook with the right
+// CrashNotification) is covered by hew-runtime tests.
+import std::failure;
+
+actor Watcher {
+    #[on(exit)]
+    fn on_peer_exit(note: CrashNotification) {
+        let _id = note.actor_id;
+        let _kind = note.kind;
+    }
+}
+
+supervisor AppSupervisor {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child c: Watcher;
+}
+
+fn main() -> i64 {
+    spawn AppSupervisor;
+    42
+}

@@ -29608,6 +29608,125 @@ fn base_local(place: Place) -> Option<u32> {
     }
 }
 
+/// Whole-value alias grouping for the `derive_*_drop_allowed` escape scans.
+///
+/// Seeds each candidate as its own root (`alias_of[c] = c`) and then runs a
+/// fixpoint that forward-propagates a candidate's root through every
+/// whole-value `Move { dest: Local, src: Local | ReturnSlot }` copy — a rebind
+/// `let m2 = m;` hands the same payload pointer to a new slot with NO retain,
+/// so `m2` joins `m`'s alias group. The escape scans that consume this map
+/// exclude an alias group's ROOT when any member escapes, and free the cleared
+/// root exactly once.
+///
+/// MONOTONE CONVERGENCE (the #1942 fix). The fixpoint must only ever ADD
+/// entries or REMOVE conflicted ones — never REPLACE a slot's root — or it
+/// fails to converge. A naive `alias_of.insert(dl, root)` REPLACES the prior
+/// value: when one slot `dl` receives `Move`s from two DIFFERENT roots (two
+/// match arms each constructing a local collection that moves into the shared
+/// result slot), the two roots OSCILLATE — each iteration overwrites the
+/// other, `changed` never clears, and lowering spins until SIGKILL (#1942: a
+/// 2-arm `Vec`-returning match hung `hew check` at ~9.6s CPU).
+///
+/// A candidate adopting another group's root for the FIRST time (its slot
+/// still holds its own self-seed — the legitimate `let b = a;` merge) is not a
+/// conflict; it takes the incoming root once. But a slot that already carries a
+/// DIFFERENT non-self root and then sees a second distinct root is reachable
+/// from two groups — by definition NOT the sole alias of either. Such a slot is
+/// EVICTED from `alias_of` and recorded in `conflicted` so it is never
+/// re-added. Each slot therefore transitions at most twice (self-seed/vacant →
+/// merged-root → conflicted), so the map is monotone: it only gains entries or
+/// sheds conflicted ones, is bounded below by the empty set, and converges in
+/// at most O(locals) iterations.
+///
+/// DROP-SAFETY of eviction (conservative direction — this CANNOT introduce a
+/// double-free or a leak the prior code avoided). An evicted slot is absent
+/// from `alias_of`, so in the downstream escape scan a `Move` INTO it reads as
+/// `dest_is_member == false` — i.e. an ESCAPE of the source — which EXCLUDES
+/// the source's root from the allow-set. An excluded root earns NO scope-exit
+/// free: it LEAKS (fail-closed), never double-frees. This is exactly the
+/// `boundary-fail-closed` direction the escape scans already take for an
+/// ambiguous alias group: when ownership cannot be proven to rest in a single
+/// local, the prover declines to free. In the #1942 repro the conflicted slot
+/// is the match result that is RETURNED to the caller, so excluding the arm
+/// locals from the producing function's drops is also the *correct* result
+/// (the caller owns and frees the returned handle) — not merely a safe leak.
+///
+/// LESSONS: `drop-allowset-from-value-flow`, `boundary-fail-closed`.
+fn propagate_whole_value_alias_roots(
+    blocks: &[BasicBlock],
+    candidate_locals: impl IntoIterator<Item = u32>,
+) -> HashMap<u32, u32> {
+    let mut alias_of: HashMap<u32, u32> = HashMap::new();
+    for local in candidate_locals {
+        alias_of.insert(local, local);
+    }
+    // Slots reachable from two distinct roots: evicted from `alias_of` and
+    // permanently barred from re-entry so the fixpoint stays monotone.
+    let mut conflicted: HashSet<u32> = HashSet::new();
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                if let Instr::Move { dest, src } = instr {
+                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
+                        // Only whole-value Local→Local copies propagate the
+                        // alias. An interior-projection src is a payload
+                        // destructure, handled by the escape scan.
+                        if matches!(src, Place::Local(_) | Place::ReturnSlot)
+                            && matches!(dest, Place::Local(_))
+                        {
+                            if conflicted.contains(&dl) {
+                                continue;
+                            }
+                            if let Some(&root) = alias_of.get(&sl) {
+                                use std::collections::hash_map::Entry;
+                                match alias_of.entry(dl) {
+                                    Entry::Vacant(slot) => {
+                                        slot.insert(root);
+                                        changed = true;
+                                    }
+                                    // `dl` still holds its own self-seed root: a
+                                    // candidate joining another group for the
+                                    // FIRST time (`let b = a;`). A one-time merge,
+                                    // not a conflict — adopt the incoming root.
+                                    Entry::Occupied(mut slot)
+                                        if *slot.get() == dl && root != dl =>
+                                    {
+                                        slot.insert(root);
+                                        changed = true;
+                                    }
+                                    // `dl` already carries a DIFFERENT non-self
+                                    // root: it is reachable from two distinct
+                                    // groups (two match arms each moving a fresh
+                                    // handle into one result slot — #1942). Not
+                                    // the sole alias of either; evict and bar it
+                                    // so the fixpoint converges (monotone:
+                                    // alias_of only gains entries or sheds
+                                    // conflicted ones). The evicted slot is a
+                                    // non-member in the escape scan, so a Move
+                                    // into it EXCLUDES the source's root —
+                                    // fail-closed (the ambiguous group leaks,
+                                    // never double-frees).
+                                    Entry::Occupied(slot) if *slot.get() != root => {
+                                        slot.remove();
+                                        conflicted.insert(dl);
+                                        changed = true;
+                                    }
+                                    Entry::Occupied(_) => {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    alias_of
+}
+
 /// True if reading this `Place` as a `Move` source yields a value that
 /// *aliases interior storage* of a still-live parent aggregate rather than
 /// a standalone slot the move can hand off ownership of.
@@ -31533,37 +31652,10 @@ fn derive_enum_composite_drop_allowed(
     // Alias set: each candidate's local plus every local reachable from it
     // through forward-propagated whole-value `Move { dest: Local, src: Local }`
     // copies (the scrutinee copy and rebind chain). These all byte-alias the
-    // same payload pointer with no retain.
-    let mut alias_of: HashMap<u32, u32> = HashMap::new();
-    for &local in candidate_local_to_binding.keys() {
-        alias_of.insert(local, local);
-    }
-    loop {
-        let mut changed = false;
-        for block in blocks {
-            for instr in &block.instructions {
-                if let Instr::Move { dest, src } = instr {
-                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
-                        // Only whole-value Local→Local copies propagate the
-                        // alias. An interior-projection src is a payload
-                        // destructure, handled by the escape scan below.
-                        if matches!(src, Place::Local(_) | Place::ReturnSlot)
-                            && matches!(dest, Place::Local(_))
-                        {
-                            if let Some(&root) = alias_of.get(&sl) {
-                                if alias_of.insert(dl, root) != Some(root) {
-                                    changed = true;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
+    // same payload pointer with no retain. The propagation is monotone: a slot
+    // reachable from two distinct roots is evicted, not oscillated (#1942).
+    let alias_of =
+        propagate_whole_value_alias_roots(blocks, candidate_local_to_binding.keys().copied());
 
     // Local→ScopeId helper for the propagation scope-equality check.
     // Built from the public `binding_locals` × `binding_scope` view: each
@@ -31949,33 +32041,9 @@ fn derive_owned_record_drop_allowed(
 
     // Whole-value alias set: each candidate plus every local reachable through
     // forward-propagated whole-value `Move { dest: Local, src: Local }` copies.
-    let mut alias_of: HashMap<u32, u32> = HashMap::new();
-    for &local in candidate_local_to_binding.keys() {
-        alias_of.insert(local, local);
-    }
-    loop {
-        let mut changed = false;
-        for block in blocks {
-            for instr in &block.instructions {
-                if let Instr::Move { dest, src } = instr {
-                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
-                        if matches!(src, Place::Local(_) | Place::ReturnSlot)
-                            && matches!(dest, Place::Local(_))
-                        {
-                            if let Some(&root) = alias_of.get(&sl) {
-                                if alias_of.insert(dl, root) != Some(root) {
-                                    changed = true;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
+    // Monotone: a slot reachable from two distinct roots is evicted (#1942).
+    let alias_of =
+        propagate_whole_value_alias_roots(blocks, candidate_local_to_binding.keys().copied());
 
     // Owned-field-binder set: destinations of `RecordFieldLoad { record: alias-
     // set member }` whose loaded field is itself heap-owning. Propagate forward
@@ -32277,33 +32345,13 @@ fn derive_local_collection_drop_allowed(
     // (a rebind `let m2 = m;` hands the same handle to a new slot). The
     // constructor temp → binding-slot `Move` does NOT extend the set: its src is
     // the constructor temp, which is not a candidate, so it never seeds a root.
-    let mut alias_of: HashMap<u32, u32> = HashMap::new();
-    for &local in candidate_local_to_binding.keys() {
-        alias_of.insert(local, local);
-    }
-    loop {
-        let mut changed = false;
-        for block in blocks {
-            for instr in &block.instructions {
-                if let Instr::Move { dest, src } = instr {
-                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
-                        if matches!(src, Place::Local(_) | Place::ReturnSlot)
-                            && matches!(dest, Place::Local(_))
-                        {
-                            if let Some(&root) = alias_of.get(&sl) {
-                                if alias_of.insert(dl, root) != Some(root) {
-                                    changed = true;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
+    // Monotone: a slot reachable from two distinct roots (two match arms each
+    // moving a fresh handle into the shared result slot) is evicted, not
+    // oscillated — the #1942 compile hang. The evicted slot reads as a non-member
+    // dest in the escape scan below, so a `Move` into it EXCLUDES the source's
+    // root (fail-closed: the ambiguous group leaks, never double-frees).
+    let alias_of =
+        propagate_whole_value_alias_roots(blocks, candidate_local_to_binding.keys().copied());
 
     let mut excluded_roots: HashSet<u32> = HashSet::new();
     let note_escape = |local: u32, excluded: &mut HashSet<u32>| {
@@ -32617,33 +32665,9 @@ fn derive_local_bytes_drop_allowed(
 
     // Whole-value alias set: each candidate plus every local reachable through
     // forward-propagated whole-value `Move { dest: Local, src: Local }` copies.
-    let mut alias_of: HashMap<u32, u32> = HashMap::new();
-    for &local in candidate_local_to_binding.keys() {
-        alias_of.insert(local, local);
-    }
-    loop {
-        let mut changed = false;
-        for block in blocks {
-            for instr in &block.instructions {
-                if let Instr::Move { dest, src } = instr {
-                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
-                        if matches!(src, Place::Local(_) | Place::ReturnSlot)
-                            && matches!(dest, Place::Local(_))
-                        {
-                            if let Some(&root) = alias_of.get(&sl) {
-                                if alias_of.insert(dl, root) != Some(root) {
-                                    changed = true;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
+    // Monotone: a slot reachable from two distinct roots is evicted (#1942).
+    let alias_of =
+        propagate_whole_value_alias_roots(blocks, candidate_local_to_binding.keys().copied());
 
     let mut excluded_roots: HashSet<u32> = HashSet::new();
     let note_escape = |local: u32, excluded: &mut HashSet<u32>| {
@@ -32829,33 +32853,9 @@ fn derive_tuple_composite_drop_allowed(
 
     // Whole-value alias set: each candidate plus every local reachable through
     // forward-propagated whole-value `Move { dest: Local, src: Local }` copies.
-    let mut alias_of: HashMap<u32, u32> = HashMap::new();
-    for &local in candidate_local_to_binding.keys() {
-        alias_of.insert(local, local);
-    }
-    loop {
-        let mut changed = false;
-        for block in blocks {
-            for instr in &block.instructions {
-                if let Instr::Move { dest, src } = instr {
-                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
-                        if matches!(src, Place::Local(_) | Place::ReturnSlot)
-                            && matches!(dest, Place::Local(_))
-                        {
-                            if let Some(&root) = alias_of.get(&sl) {
-                                if alias_of.insert(dl, root) != Some(root) {
-                                    changed = true;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
+    // Monotone: a slot reachable from two distinct roots is evicted (#1942).
+    let alias_of =
+        propagate_whole_value_alias_roots(blocks, candidate_local_to_binding.keys().copied());
 
     // Owned-element-binder set: destinations of `TupleFieldLoad { tuple: alias-
     // set member }` whose loaded element is itself heap-owning. Propagate

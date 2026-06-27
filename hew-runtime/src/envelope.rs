@@ -11,13 +11,11 @@
 //! payload fields are encoded as CBOR byte strings (`bstr`), not arrays.
 //! `schemas/envelope.cddl` is the wire contract.
 //!
-//! # Legacy note
+//! # Wire format history
 //!
-//! `HewWireEnvelope` in `wire.rs` is the C-FFI struct for the HBF wire
-//! format, which is being retired (W5 deletes it). This type is the
-//! clean-break CBOR-native equivalent. The two are structurally equivalent
-//! but not ABI-compatible: `HewWireEnvelope` carries a raw `*mut u8` payload
-//! pointer; `EnvelopeFrame` owns the payload as a `Vec<u8>`.
+//! The HBF (Hew Binary Format) era closed with DIST-5. This module is the
+//! CBOR-native replacement: `EnvelopeFrame` owns the payload as a `Vec<u8>`,
+//! the CDDL schema is the doc-of-truth, and there is no fallback HBF path.
 
 use std::collections::BTreeMap;
 
@@ -98,8 +96,8 @@ pub struct ControlFrame {
 ///
 /// CDDL: `envelope-frame` rule in `schemas/envelope.cddl`.
 ///
-/// Field numbers mirror the legacy HBF field ordering (fields 1-6) so
-/// documentation can cross-reference the two representations.
+/// Field numbers are stable across protocol versions; new fields use new
+/// keys and leave older decoders unaffected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnvelopeFrame {
     /// Wire protocol version. MUST equal [`WIRE_VERSION`].
@@ -119,7 +117,7 @@ pub struct EnvelopeFrame {
 
     /// Message type tag.
     ///
-    /// Signed; valid range `0..=2^30-1` (matches HBF zigzag legacy range).
+    /// Signed; valid range `0..=2^30-1`.
     ///
     /// CDDL key 5.
     pub msg_type: i32,

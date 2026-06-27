@@ -7,7 +7,7 @@
 //!
 //! Each logical connection uses a single bidirectional QUIC stream. The same
 //! 4-byte LE length-prefixed framing used by the TCP transport is layered on
-//! top for HBF wire-format compatibility.
+//! top (matching the TCP transport's framing).
 //!
 //! # Deprecation notice
 //!

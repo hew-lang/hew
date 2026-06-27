@@ -46,14 +46,6 @@ numbers are stable across protocol versions; adding new fields uses new numbers
 and leaves older decoders unaffected (they reject unknown versions via the
 `version` field).
 
-### C-FFI vs CBOR shape
-
-The legacy `HewWireEnvelope` C struct (see `src/wire.rs`) carries a
-`(payload_size: u32, payload: *mut u8)` pair because C cannot express
-owned byte slices. The CBOR shape collapses these into a single `bstr` field.
-The two representations are semantically equivalent; the split is
-FFI-only noise with no wire significance.
-
 ### Version gating
 
 `wire-version = 1` is a constant in the schema. Any frame whose `version`

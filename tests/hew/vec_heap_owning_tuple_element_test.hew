@@ -1,0 +1,38 @@
+//! Regression test for #2191 — a `Vec<(Rec, i64)>` whose tuple element owns
+//! heap (the record has a `string` field) must round-trip through the owned
+//! element ABI.
+//!
+//! Before the fix this program passed `hew check` but aborted at runtime with
+//! "Vec layout-aware operation is not implemented": the MIR getter routing
+//! classified the tuple element with a record-layout-blind authority, so a
+//! record nested in a tuple was mis-classified non-heap-owning and the getter
+//! routed to the layout getter on a Vec the constructor and free had already
+//! built through the OWNED ABI. The fix routes the tuple arm through the
+//! record-aware authority, so getter/constructor/free agree.
+
+import std::testing;
+
+type Rec {
+    s: string;
+}
+
+#[test]
+fn heap_owning_tuple_element_round_trips() {
+    let v: Vec<(Rec, i64)> = Vec::new();
+    v.push((Rec { s: "hello" }, 1));
+    v.push((Rec { s: "world" }, 2));
+    let p0 = v[0];
+    let p1 = v[1];
+    testing.assert_eq_str(p0.0.s, "hello");
+    testing.assert_eq(p0.1, 1);
+    testing.assert_eq_str(p1.0.s, "world");
+    testing.assert_eq(p1.1, 2);
+}
+
+#[test]
+fn heap_owning_tuple_element_sum_payload() {
+    let v: Vec<(Rec, i64)> = Vec::new();
+    v.push((Rec { s: "a" }, 10));
+    v.push((Rec { s: "b" }, 32));
+    testing.assert_eq(v[0].1 + v[1].1, 42);
+}

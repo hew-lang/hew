@@ -175,8 +175,8 @@ fn on_crash_real_crash_message_clean_under_guard_malloc() {
     // string-alloc-leak-freedom here: a separate, pre-existing drop-elaboration
     // limitation leaves a small per-crash `string` leak when the hook BODY reads
     // `info.message` via a borrowing call (the codegen field-read `hew_string_clone`
-    // retain temp is not yet released for the synthetic-prologue shape — a tracked
-    // follow-up). That leak is orthogonal to the crash-message ABI bug this fix
+    // retain temp is not yet released for the synthetic-prologue shape — tracked
+    // in #2252). That leak is orthogonal to the crash-message ABI bug this fix
     // addresses: the reported defect was an ABORT / heap-corruption / double-free
     // on the crash path, which the `exit 42 under guard malloc` check above pins as
     // eliminated (pre-fix this path aborted at 134 or corrupted the heap). The

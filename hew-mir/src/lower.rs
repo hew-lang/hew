@@ -83,6 +83,11 @@ const SENTINEL_CRASH_CODE_NODE: HirNodeId = HirNodeId(u32::MAX);
 /// a Hew header-aware allocation, not a bare Rust `CString` — see
 /// `supervisor.rs::invoke_on_crash_handler`, which allocates via `str_to_malloc`
 /// and releases via `free_cstring`.
+///
+/// Known follow-up (#2252): when the hook body reads `info.message` via a
+/// borrowing call, the `hew_string_clone` retain temp in the synthetic prologue
+/// is not yet released by drop-elaboration, leaking ~32 B per crash. The narrow
+/// fix regressed the generic record-clone drop path; both must be fixed together.
 /// Lives one below `__crash_code`'s sentinel to stay clear of real bindings.
 const SENTINEL_CRASH_MESSAGE_BINDING: BindingId = BindingId(u32::MAX - 1);
 

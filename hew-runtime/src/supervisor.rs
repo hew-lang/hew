@@ -2120,7 +2120,7 @@ unsafe fn restart_child_supervisor_with_budget(sup: &mut HewSupervisor, failed_i
 /// (Known follow-up, not the reported critical bug: when the hook BODY reads
 /// `info.message` via a borrowing call, the codegen field-read `hew_string_clone`
 /// retain temp is not yet released by drop-elaboration for the synthetic-prologue
-/// shape, a small per-crash `string` leak tracked separately. No abort, no
+/// shape, a small per-crash `string` leak tracked in #2252. No abort, no
 /// double-free, no corruption — the fail-closed crash path stays safe.)
 ///
 /// # Safety

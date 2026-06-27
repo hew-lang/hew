@@ -341,6 +341,13 @@ pub(crate) fn notify_monitors_on_death(actor_id: u64, reason: i32) {
     for monitor in monitors {
         send_down_notification(&monitor, actor_id, reason);
     }
+
+    // Cross-node terminal sweep (DIST-6): if any REMOTE node monitors this
+    // locally-dying actor, fan out a CTRL_MONITOR_DOWN carrying the same
+    // terminal reason. The distributed table keys on the actor's serial; the
+    // fan-out is fail-closed and no-ops when no remote watcher exists or no
+    // node/conn-mgr is installed (R7), so the local sweep above is unaffected.
+    crate::hew_node::fan_out_remote_monitor_down(crate::pid::hew_pid_serial(actor_id), reason);
 }
 
 #[cfg(test)]

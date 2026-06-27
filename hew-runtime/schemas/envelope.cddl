@@ -31,6 +31,11 @@ wire-frame = control-frame / envelope-frame
 ; Payload is a byte string whose interpretation is protocol-defined.
 ;
 ; ctrl_kind = 1 carries registry-gossip-payload.
+; ctrl_kind = 2 carries the SWIM control payload (defined by the SWIM codec).
+; ctrl_kind = 3 carries monitor-req-payload   (cross-node monitor request).
+; ctrl_kind = 4 carries monitor-down-payload  (cross-node monitor DOWN).
+; ctrl_kind = 5 carries monitor-req-payload   (cross-node demonitor request;
+;                                              same identifying triple as req).
 
 control-frame = {
     version:    1 => wire-version,
@@ -46,6 +51,26 @@ registry-gossip-payload = {
 }
 
 registry-gossip-op = 5 / 6         ; add / remove
+
+; ── Cross-node monitor payloads (DIST-6) ──────────────────────────────────────
+;
+; monitor-req-payload identifies a monitor registration: watcher node W,
+; registration ref_id, watching target actor `serial` on the owning node. Used
+; by both CTRL_MONITOR_REQ (register) and CTRL_DEMONITOR (retract).
+;
+; monitor-down-payload carries the terminal signal back to the watcher: the
+; echoed ref_id and the terminal reason code.
+
+monitor-req-payload = {
+    watcher_node_id: 1 => node-id,
+    ref_id:          2 => uint,    ; watcher's local monitor-registration id
+    target_serial:   3 => uint,    ; monitored actor's serial on the owning node
+}
+
+monitor-down-payload = {
+    ref_id: 1 => uint,             ; echoed from the request
+    reason: 2 => int,              ; terminal reason (HewActorState value, or sentinel)
+}
 
 ; ── Envelope frame ───────────────────────────────────────────────────────────
 ;

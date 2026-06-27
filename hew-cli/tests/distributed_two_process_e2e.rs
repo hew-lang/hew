@@ -249,6 +249,150 @@ fn run_two_process_scenario(scenario: &str) -> String {
     stdout
 }
 
+/// Run the server + client pair for a connection-drop scenario: the client
+/// prints `READY_DROP <name>` once its monitor is registered, the harness then
+/// kills the server process (dropping the connection mid-scenario), and the
+/// client runs to completion observing the connection-drop DOWN. Returns the
+/// client's captured stdout.
+fn run_conn_drop_scenario(scenario: &str) -> String {
+    let binary = compiled_node_binary();
+    let port = allocate_loopback_port();
+
+    let mut server = ManagedChild::spawn(binary, "server", port, scenario);
+    let _server_stdout = wait_for_server_ready(&mut server);
+
+    let mut client = ManagedChild::spawn(binary, "client", port, scenario);
+
+    // Block until the client signals its monitor is registered, then kill the
+    // server to drop the connection. Reading the client's stdout incrementally
+    // would consume the PASS lines we assert on later, so we take the stdout
+    // handle, read up to READY_DROP, and stitch the remaining output back.
+    let client_stdout = client
+        .child
+        .stdout
+        .take()
+        .expect("client stdout was captured");
+    let mut reader = BufReader::new(client_stdout);
+    let mut captured = String::new();
+    let deadline = Instant::now() + SERVER_READY_TIMEOUT;
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "client did not print READY_DROP within {SERVER_READY_TIMEOUT:?}"
+        );
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => panic!(
+                "client stdout closed before READY_DROP (exited early); captured:\n{captured}"
+            ),
+            Ok(_) => {
+                captured.push_str(&line);
+                if line.contains("READY_DROP ") {
+                    break;
+                }
+            }
+            Err(error) => panic!("error reading client stdout: {error}"),
+        }
+    }
+
+    // Drop the connection by killing the server now that the monitor is live.
+    let _ = server.child.kill();
+    let _ = server.child.wait();
+
+    // Drain the rest of the client's output to completion, with a wall-clock
+    // cap so a wedged client never hangs the suite.
+    let drain_deadline = Instant::now() + CLIENT_RUN_TIMEOUT;
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => captured.push_str(&line),
+            Err(error) => panic!("error draining client stdout: {error}"),
+        }
+        assert!(
+            Instant::now() < drain_deadline,
+            "client did not finish within {CLIENT_RUN_TIMEOUT:?} after connection drop"
+        );
+    }
+
+    let status = client
+        .child
+        .wait()
+        .expect("wait for client after connection-drop scenario");
+    assert!(
+        status.success(),
+        "client exited non-zero ({status:?}) on connection-drop scenario\nstdout:\n{captured}"
+    );
+    captured
+}
+
+/// Clean cross-node exit: a client monitoring a remote actor receives exactly
+/// one DOWN carrying the clean-exit reason (`HewActorState::Stopped` == 6) when
+/// the remote actor stops itself.
+#[test]
+fn remote_monitor_down_on_clean_exit() {
+    let stdout = run_two_process_scenario("remote_monitor_clean_exit");
+
+    // Teeth: the exact clean-exit reason code, distinct from crash (5) and the
+    // MonitorLost drop sentinel (-1).
+    assert!(
+        stdout.contains("PASS remote_monitor_clean_exit reason=6"),
+        "expected clean-exit DOWN reason 6; client stdout:\n{stdout}"
+    );
+    // Exactly-once: the second recv must time out (no duplicate DOWN).
+    assert!(
+        stdout.contains("PASS remote_monitor_clean_exit no-dup"),
+        "expected no duplicate DOWN for the clean-exit monitor; client stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("FAIL "),
+        "client reported a FAIL on the clean-exit monitor; client stdout:\n{stdout}"
+    );
+}
+
+/// Cross-node crash: a client monitoring a remote actor receives exactly one
+/// DOWN carrying the crash reason (`HewActorState::Crashed` == 5) when the remote
+/// actor panics.
+#[test]
+fn remote_monitor_down_on_crash() {
+    let stdout = run_two_process_scenario("remote_monitor_crash");
+
+    // Teeth: the exact crash reason code, distinct from clean exit (6).
+    assert!(
+        stdout.contains("PASS remote_monitor_crash reason=5"),
+        "expected crash DOWN reason 5; client stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("PASS remote_monitor_crash no-dup"),
+        "expected no duplicate DOWN for the crash monitor; client stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("FAIL "),
+        "client reported a FAIL on the crash monitor; client stdout:\n{stdout}"
+    );
+}
+
+/// Cross-node connection drop: a client monitoring a remote actor receives
+/// exactly one DOWN carrying the `MonitorLost` sentinel (-1) when the server
+/// process is killed mid-scenario — distinct from clean exit and crash.
+#[test]
+fn remote_monitor_down_on_connection_drop() {
+    let stdout = run_conn_drop_scenario("remote_monitor_conn_drop");
+
+    assert!(
+        stdout.contains("PASS remote_monitor_conn_drop reason=-1"),
+        "expected MonitorLost DOWN reason -1 on connection drop; client stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("PASS remote_monitor_conn_drop no-dup"),
+        "expected no duplicate DOWN for the connection-drop monitor; client stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("FAIL "),
+        "client reported a FAIL on the connection-drop monitor; client stdout:\n{stdout}"
+    );
+}
+
 /// The linchpin assertion: a real two-process remote-ask round-trip over a
 /// loopback socket returns the exact values stored on the remote actor.
 #[test]

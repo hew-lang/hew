@@ -163,6 +163,14 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     // -- Pre-staged codegen intercept with no in-corpus producer
     //    (network actor attach requires a live net surface fixture).
     "hew_tcp_attach_local",
+    // -- Cross-node monitor surface (DIST-6). `monitor(RemotePid<T>)` lowers to
+    //    `hew_node_monitor` and `MonitorRef::recv_down` to `hew_node_monitor_recv`,
+    //    but both require a two-process distributed program to exercise; they are
+    //    proven by the compiled two-process e2e fixture
+    //    (hew-cli/tests/distributed_two_process_e2e.rs), not the single-program
+    //    golden checked-mir corpus, so they pin as uncovered here.
+    "hew_node_monitor",
+    "hew_node_monitor_recv",
     // -- Ptr element-type variants with no source-reachable producer
     //    (no user surface yields a ptr-element Vec).
     "hew_vec_get_ptr",

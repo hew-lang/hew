@@ -311,6 +311,18 @@ pub enum RuntimeCallFamily {
     // already has a typed `FnSymbol::NodeRegisterPid` so it does NOT appear
     // here as a runtime-call family.
     NodeLookup,
+    /// `monitor(RemotePid<T>)` → `hew_node_monitor(target_pid: i64) -> i64`
+    /// (DIST-6). Registers a distributed-monitor entry keyed by the packed
+    /// remote pid's `(node_id, serial)` and returns the `ref_id` assembled into
+    /// `MonitorRef`. The current node is resolved internally (like
+    /// `hew_actor_self`), so the single arg is the remote target pid
+    /// (`BitCopy` `i64`); non-consuming.
+    NodeMonitor,
+    /// `MonitorRef::recv_down` → `hew_node_monitor_recv(ref_id: i64,
+    /// timeout_ms: i64) -> i64` (DIST-6). Blocks until the distributed monitor's
+    /// terminal signal arrives for `ref_id` (or `timeout_ms` elapses), returning
+    /// the carried down-reason. Both args are `BitCopy` `i64`; non-consuming.
+    NodeMonitorRecv,
 
     // --- User metrics (#1862) -----------------------------------------------
     // `std::metrics` emit path: register-or-get + mutate developer-defined
@@ -597,6 +609,8 @@ impl RuntimeCallFamily {
             Self::MathIntrinsic(MathIntrinsic::Round) => "round",
             // Node (pre-staged)
             Self::NodeLookup => "Node::lookup",
+            Self::NodeMonitor => "hew_node_monitor",
+            Self::NodeMonitorRecv => "hew_node_monitor_recv",
             // User metrics (#1862)
             Self::MetricCounterRegister => "hew_metric_counter_register",
             Self::MetricCounterInc => "hew_metric_counter_inc",
@@ -840,6 +854,8 @@ impl RuntimeCallFamily {
             "round" => Self::MathIntrinsic(MathIntrinsic::Round),
             // Node
             "Node::lookup" => Self::NodeLookup,
+            "hew_node_monitor" => Self::NodeMonitor,
+            "hew_node_monitor_recv" => Self::NodeMonitorRecv,
             // User metrics (#1862)
             "hew_metric_counter_register" => Self::MetricCounterRegister,
             "hew_metric_counter_inc" => Self::MetricCounterInc,
@@ -1114,6 +1130,8 @@ impl RuntimeCallFamily {
             | F::MetricVecRegister
             | F::MetricVecWith
             | F::NodeLookup
+            | F::NodeMonitor
+            | F::NodeMonitorRecv
             | F::ObserveReadU64
             | F::ObserveScrape
             | F::ObserveSeries

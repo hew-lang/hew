@@ -1242,6 +1242,67 @@ pub(crate) fn lower_call_runtime_abi(
             // void return; dest is always None (the close body is a void call).
             let _ = (i32_ty, ptr_ty, dest);
         }
+        // hew_node_monitor(target_pid: i64) -> i64 (DIST-6). Registers a
+        // distributed monitor for a remote actor (the remote pid is a bare i64;
+        // the current node is resolved internally) and returns the ref_id. In
+        // value position the i64 ref_id is stored into the i64 dest; a subsequent
+        // MIR RecordInit assembles MonitorRef{ref_id}. In statement position the
+        // return is discarded. boundary-fail-closed (P0): BitCopy i64 args only.
+        F::NodeMonitor => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_node_monitor): expected 1 arg \
+                     (target_pid: i64), got {}",
+                    args.len()
+                )));
+            }
+            let target_pid = load_int_arg(fn_ctx, args[0], i64_ty, "node_monitor_target")?;
+            let llvm_args: [BasicMetadataValueEnum; 1] = [target_pid.into()];
+            let ref_id = fn_ctx.call_runtime_int(
+                symbol,
+                &llvm_args,
+                "hew_node_monitor_call",
+                "hew_node_monitor call",
+            )?;
+            if let Some(d) = dest {
+                let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, d)?;
+                fn_ctx
+                    .builder
+                    .build_store(dest_ptr, ref_id)
+                    .llvm_ctx("hew_node_monitor store ref_id")?;
+            }
+            let _ = (i32_ty, ptr_ty);
+        }
+        // hew_node_monitor_recv(ref_id: i64, timeout_ms: i64) -> i64 (DIST-6).
+        // Blocks for the distributed monitor's terminal signal and returns the
+        // carried down-reason. Both args are BitCopy i64; the i64 reason is
+        // stored into the i64 dest in value position.
+        F::NodeMonitorRecv => {
+            if args.len() != 2 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_node_monitor_recv): expected 2 args \
+                     (ref_id: i64, timeout_ms: i64), got {}",
+                    args.len()
+                )));
+            }
+            let ref_id = load_int_arg(fn_ctx, args[0], i64_ty, "node_monitor_recv_ref")?;
+            let timeout = load_int_arg(fn_ctx, args[1], i64_ty, "node_monitor_recv_timeout")?;
+            let llvm_args: [BasicMetadataValueEnum; 2] = [ref_id.into(), timeout.into()];
+            let reason = fn_ctx.call_runtime_int(
+                symbol,
+                &llvm_args,
+                "hew_node_monitor_recv_call",
+                "hew_node_monitor_recv call",
+            )?;
+            if let Some(d) = dest {
+                let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, d)?;
+                fn_ctx
+                    .builder
+                    .build_store(dest_ptr, reason)
+                    .llvm_ctx("hew_node_monitor_recv store reason")?;
+            }
+            let _ = (i32_ty, ptr_ty);
+        }
         // hew_actor_self() -> *mut HewActor (`hew-runtime/src/actor.rs`). Reads
         // the live actor from the per-dispatch thread-local — the borrowed
         // handle the current `receive fn` runs on. Emitted for `this` used as a

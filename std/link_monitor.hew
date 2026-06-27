@@ -66,8 +66,27 @@ impl MonitorRef {
             hew_actor_demonitor(monitor_ref.ref_id)
         };
     }
+    /// Block until this cross-node monitor's terminal signal arrives, or until
+    /// `timeout_ms` elapses.
+    ///
+    /// Returns the carried down-reason code: the remote actor's terminal
+    /// `HewActorState` value for a clean exit or crash, a `MonitorLost`
+    /// sentinel when the connection drops or the peer node is declared dead, or
+    /// a timeout sentinel if the deadline elapses before any signal arrives.
+    /// Exactly one terminal signal is delivered per registration: a second call
+    /// after the signal has been observed returns the timeout sentinel.
+    ///
+    /// For a local monitor (`monitor(LocalPid)`) the runtime delivers DOWN into
+    /// the watcher actor's mailbox instead; this reader observes the
+    /// distributed-table delivery used by `monitor(RemotePid)`.
+    fn recv_down(monitor_ref: MonitorRef, timeout_ms: i64) -> i64 {
+        unsafe {
+            hew_node_monitor_recv(monitor_ref.ref_id, timeout_ms)
+        }
+    }
 }
 
 extern "C" {
     fn hew_actor_demonitor(ref_id: i64);
+    fn hew_node_monitor_recv(ref_id: i64, timeout_ms: i64) -> i64;
 }

@@ -275,6 +275,14 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     "hew_metric_vec_register",
     "hew_metric_vec_with",
     // --- end user metrics (#1862) --------------------------------------------
+    // --- Cross-node monitor surface (DIST-6) ---------------------------------
+    // `hew_node_monitor(target_pid: i64) -> i64` registers a distributed
+    // monitor for a remote actor and returns the ref_id. `hew_node_monitor_recv
+    // (ref_id: i64, timeout_ms: i64) -> i64` blocks for that monitor's terminal
+    // signal and returns the carried down-reason. The current node is resolved
+    // internally (like `hew_actor_self`), so neither carries a node argument.
+    "hew_node_monitor",
+    "hew_node_monitor_recv",
     // --- Observe read surface ------------------------------------------------
     "hew_observe_barrier",
     "hew_observe_read_u64",

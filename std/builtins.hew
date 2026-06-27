@@ -25,12 +25,13 @@ pub type LocalPid<T> {
 /// Produced by peer-discovery or explicit construction via `RemotePid::from_raw`.
 /// Does NOT coerce implicitly to `LocalPid<T>` — remote actors are a distinct class.
 ///
-/// `.tell` is a fail-closed stub until S4 wires up `hew_actor_send_remote`.
-///
-/// # SHIM
-///
-/// `RemotePid::from_raw` is scaffolding for S1 tests. `.tell` fails closed
-/// with `SendError::NodeRoutingNotWired` until `hew_actor_send_remote` lands.
+/// On the native target `.tell` and `.ask` are real cross-node operations:
+/// codegen rewrites each call on a `RemotePid<T>` receiver to the runtime
+/// transport ABI, sending the message over the mesh to the peer (proven by the
+/// two-process distributed harness). A remote `.ask` returns its peer's reply,
+/// or a typed `AskError` — including `Partition` when the route to the peer is
+/// declared dead — never a hang. The Hew bodies in the `RemotePid<T>` impl below
+/// are the WASM/uninterpreted fail-closed fallback only.
 pub type RemotePid<T> {
 }
 
@@ -211,8 +212,11 @@ impl<T> LocalPid<T> {
     // a wasm peer transport is decided.
     /// Obtain a remote pid that routes to the same actor via `node_handle`.
     ///
-    /// SHIM: `node_handle` is currently unused; actual cross-node routing
-    /// arrives in S4 when `hew_actor_send_remote` is wired up.
+    /// Cross-node routing itself is wired: once a `RemotePid<T>` is held, its
+    /// `.tell`/`.ask` reach the peer over the mesh. This explicit conversion
+    /// helper is not the proven acquisition path — `Node::lookup` resolves a
+    /// `RemotePid<T>` from registry gossip — and its `node_handle` argument is
+    /// not yet consumed; it remains scaffolding pending a peer-handle API.
     fn to_remote_via(pid: LocalPid<T>, node_handle: dyn Display) -> RemotePid<T> {}
 }
 

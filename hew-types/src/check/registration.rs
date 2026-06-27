@@ -6382,7 +6382,31 @@ impl Checker {
                             .filter(|qualified| (ctx.defines_qualified)(qualified))
                             .unwrap_or_else(|| name.clone()),
                     };
-                    Ty::normalize_named(canonical, args.iter().map(rec).collect())
+                    // Primitive types (i64, bool, f64, …) are represented in two
+                    // ways: as the flat `Ty::I64` / `Ty::Bool` / … variants (from
+                    // `resolve_type_expr` hitting the `Ty::from_name` fast-path)
+                    // and as `Ty::Named { name: "i64", builtin: Some(I64), … }`
+                    // (from `Ty::normalize_named` when a `Self` annotation is
+                    // eagerly substituted via `current_self_type` during
+                    // `lookup_trait_method` resolution).  Both representations are
+                    // semantically identical, but `Ty::Named { … } != Ty::I64` as
+                    // Rust enum discriminants, so trait-impl signature comparison
+                    // falsely rejects them.
+                    //
+                    // Collapsing the canonical name to the flat primitive variant
+                    // here is the canonical reconcile point: both the expected
+                    // (trait) and actual (impl) sides pass through this function
+                    // before comparison, so a single normalization here handles
+                    // every path (fn_sigs registered before impl, lookup_trait_method
+                    // eager substitution, and substitute_trait_sig_for_impl output).
+                    // Only fires for zero-arg names (primitives never carry type args).
+                    let canonical_args = args.iter().map(rec).collect::<Vec<_>>();
+                    if canonical_args.is_empty() {
+                        if let Some(prim) = Ty::from_name(&canonical) {
+                            return prim;
+                        }
+                    }
+                    Ty::normalize_named(canonical, canonical_args)
                 }
                 Ty::Function { params, ret } => Ty::Function {
                     params: params.iter().map(rec).collect(),
@@ -6517,10 +6541,30 @@ impl Checker {
             }
         }
 
-        let impl_self = Ty::Named {
-            builtin: None,
-            name: type_name.to_string(),
-            args: self_type_args.to_vec(),
+        // Construct `impl_self` as the canonical `Ty` for the implementing
+        // type. For primitive types (i64, bool, f64, …) `Ty::from_name`
+        // returns the flat primitive variant (e.g. `Ty::I64`), which is what
+        // the impl's annotation resolves to via
+        // `resolve_registered_annotation_ty_no_holes`.  Using `Ty::Named` for
+        // a primitive name produces a different enum variant than the impl's
+        // resolved param type, causing a false "has type i64 but requires i64"
+        // mismatch on non-receiver Self params.  `Ty::from_name` is the single
+        // source of truth for primitive name → variant; non-primitive names
+        // that have no flat variant (user-defined types, generics) take the
+        // `Ty::Named` path as before.  Primitive types never carry type args,
+        // so the from_name path only fires when self_type_args is empty.
+        let impl_self = if self_type_args.is_empty() {
+            Ty::from_name(type_name).unwrap_or_else(|| Ty::Named {
+                builtin: None,
+                name: type_name.to_string(),
+                args: Vec::new(),
+            })
+        } else {
+            Ty::Named {
+                builtin: None,
+                name: type_name.to_string(),
+                args: self_type_args.to_vec(),
+            }
         };
 
         // Materialise the expected impl-side signature.

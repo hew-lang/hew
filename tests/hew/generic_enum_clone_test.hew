@@ -16,6 +16,7 @@ import std::testing;
 
 enum Maybe<T> { Some(T); None }
 enum Shape { Named(string); Tagged(string); Empty }
+enum Counter { Value(i64); Zero }
 
 #[test]
 fn test_generic_enum_clone() {
@@ -62,4 +63,29 @@ fn test_concrete_enum_clone_owned_payload() {
     let tb = match b { Shape::Named(s) => 1, Shape::Tagged(s) => 2, Shape::Empty => 0 };
     testing.assert_eq(ta, 1);
     testing.assert_eq(tb, 1);
+}
+
+#[test]
+fn test_enum_clone_mutation_independence() {
+    // Rebinding the original to a different variant must not affect the clone.
+    // This guards that clone produces a genuine independent copy, not a shared
+    // reference to the same discriminant cell.
+    var orig = Counter::Value(10);
+    let cloned = clone orig;
+    orig = Counter::Zero;
+    let ov = match orig { Counter::Value(x) => x, Counter::Zero => -1 };
+    let cv = match cloned { Counter::Value(x) => x, Counter::Zero => -1 };
+    testing.assert_eq(ov, -1);
+    testing.assert_eq(cv, 10);
+}
+
+#[test]
+fn test_unit_variant_enum_clone() {
+    // Enums with no payload (all BitCopy discriminant) clone correctly.
+    let a = Counter::Zero;
+    let b = clone a;
+    let av = match a { Counter::Value(x) => x, Counter::Zero => 0 };
+    let bv = match b { Counter::Value(x) => x, Counter::Zero => 0 };
+    testing.assert_eq(av, 0);
+    testing.assert_eq(bv, 0);
 }

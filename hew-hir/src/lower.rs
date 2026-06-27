@@ -27679,6 +27679,9 @@ fn check_vec_index_element_type(
                 | ResolvedTy::U64
                 | ResolvedTy::Isize
                 | ResolvedTy::Usize
+                // `duration` is an i64-class element (same `hew_vec_*_i64`
+                // family); `instant` reaches here as the canonical `I64`.
+                | ResolvedTy::Duration
                 | ResolvedTy::F32
                 | ResolvedTy::F64
                 | ResolvedTy::String
@@ -27701,6 +27704,9 @@ fn check_vec_index_element_type(
                 | ResolvedTy::U64
                 | ResolvedTy::Isize
                 | ResolvedTy::Usize
+                // `duration` is an i64-class element (same `hew_vec_*_i64`
+                // family); `instant` reaches here as the canonical `I64`.
+                | ResolvedTy::Duration
                 | ResolvedTy::F32
                 | ResolvedTy::F64
                 | ResolvedTy::String

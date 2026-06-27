@@ -60,6 +60,27 @@ fn emit_ll(source: &str, module_name: &str) -> String {
     std::fs::read_to_string(ll_path).expect("read emitted .ll")
 }
 
+/// Slice the emitted module down to the body of the `@main` function.
+///
+/// The negative assertions below (no `with.overflow`, no `@llvm.trap`) are
+/// about the WRAPPING OPERATION under test, not the whole module: every module
+/// now carries the always-spliced stdlib builtin impls, including the
+/// `duration::from_*` constructors whose `n * 1<unit>` bodies legitimately use
+/// `smul.with.overflow` + `@llvm.trap` (default trap-on-overflow arithmetic).
+/// Scoping to `@main` keeps the assertion about `&+`/`&-`/`&*` precise.
+fn main_body(ll: &str) -> String {
+    let start = ll
+        .find("define")
+        .and_then(|defs| ll[defs..].find("@main").map(|m| defs + m))
+        .map(|m| ll[..m].rfind("define").unwrap_or(m))
+        .expect("emitted module must define @main");
+    let rest = &ll[start..];
+    let end = rest[1..]
+        .find("\ndefine")
+        .map_or(rest.len(), |next| next + 1);
+    rest[..end].to_string()
+}
+
 // ---------------------------------------------------------------------------
 // `&+` emits plain `add`, not a with.overflow intrinsic.
 // ---------------------------------------------------------------------------
@@ -70,20 +91,21 @@ fn wrapping_emission_add_emits_plain_add_not_intrinsic() {
         "fn main() -> i64 { let a: i64 = 1; let b: i64 = 2; a &+ b }",
         "wrap_add_i64",
     );
+    let body = main_body(&ll);
     // Must contain a plain `add` instruction.
     assert!(
-        ll.contains(" = add "),
-        "`&+` must emit a plain LLVM `add`; got:\n{ll}"
+        body.contains(" = add "),
+        "`&+` must emit a plain LLVM `add`; got:\n{body}"
     );
     // Must NOT call any with.overflow intrinsic.
     assert!(
-        !ll.contains("with.overflow"),
-        "`&+` must not call any with.overflow intrinsic; got:\n{ll}"
+        !body.contains("with.overflow"),
+        "`&+` must not call any with.overflow intrinsic; got:\n{body}"
     );
     // Must NOT emit a trap call (no overflow path exists).
     assert!(
-        !ll.contains("@llvm.trap"),
-        "`&+` must not emit @llvm.trap; got:\n{ll}"
+        !body.contains("@llvm.trap"),
+        "`&+` must not emit @llvm.trap; got:\n{body}"
     );
 }
 
@@ -97,17 +119,18 @@ fn wrapping_emission_sub_emits_plain_sub_not_intrinsic() {
         "fn main() -> i64 { let a: i64 = 5; let b: i64 = 3; a &- b }",
         "wrap_sub_i64",
     );
+    let body = main_body(&ll);
     assert!(
-        ll.contains(" = sub "),
-        "`&-` must emit a plain LLVM `sub`; got:\n{ll}"
+        body.contains(" = sub "),
+        "`&-` must emit a plain LLVM `sub`; got:\n{body}"
     );
     assert!(
-        !ll.contains("with.overflow"),
-        "`&-` must not call any with.overflow intrinsic; got:\n{ll}"
+        !body.contains("with.overflow"),
+        "`&-` must not call any with.overflow intrinsic; got:\n{body}"
     );
     assert!(
-        !ll.contains("@llvm.trap"),
-        "`&-` must not emit @llvm.trap; got:\n{ll}"
+        !body.contains("@llvm.trap"),
+        "`&-` must not emit @llvm.trap; got:\n{body}"
     );
 }
 
@@ -121,16 +144,17 @@ fn wrapping_emission_mul_emits_plain_mul_not_intrinsic() {
         "fn main() -> i64 { let a: i64 = 7; let b: i64 = 6; a &* b }",
         "wrap_mul_i64",
     );
+    let body = main_body(&ll);
     assert!(
-        ll.contains(" = mul "),
-        "`&*` must emit a plain LLVM `mul`; got:\n{ll}"
+        body.contains(" = mul "),
+        "`&*` must emit a plain LLVM `mul`; got:\n{body}"
     );
     assert!(
-        !ll.contains("with.overflow"),
-        "`&*` must not call any with.overflow intrinsic; got:\n{ll}"
+        !body.contains("with.overflow"),
+        "`&*` must not call any with.overflow intrinsic; got:\n{body}"
     );
     assert!(
-        !ll.contains("@llvm.trap"),
-        "`&*` must not emit @llvm.trap; got:\n{ll}"
+        !body.contains("@llvm.trap"),
+        "`&*` must not emit @llvm.trap; got:\n{body}"
     );
 }

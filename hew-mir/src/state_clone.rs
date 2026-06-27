@@ -1071,6 +1071,17 @@ fn classify_named(
         return Ok(StateFieldCloneKind::BitCopy { size_bytes: 0 });
     }
 
+    // `instant` is a monotonic i64-nanos timestamp. The actor-state field-type
+    // producer surfaces it as `Named { builtin: Instant }` (not the canonical
+    // `ResolvedTy::I64`), so without this arm it falls through to the user
+    // record/enum path and fails as `MissingRecordLayout`. It is an 8-byte
+    // copyable scalar — bit-copy it like `duration` / `i64`. Dispatch on the
+    // authoritative `builtin` discriminator so a user `type instant` (which
+    // arrives with `builtin: None`) is never captured here.
+    if matches!(builtin, Some(hew_types::BuiltinType::Instant)) {
+        return Ok(StateFieldCloneKind::BitCopy { size_bytes: 8 });
+    }
+
     // `Stream<T>` / `Sink<T>` pointer-backed IO handles (W5.021 — owned-tuple
     // drop spine). A tuple/record carrying these handles must close each one
     // exactly once at the owner's scope exit; the drop step routes to

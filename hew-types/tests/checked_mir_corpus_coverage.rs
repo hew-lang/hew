@@ -137,7 +137,9 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     "hew_duration_micros",
     "hew_duration_millis",
     "hew_duration_mins",
-    "hew_duration_nanos",
+    // `hew_duration_nanos` is now covered: the `impl Display for duration` fmt
+    // body (`to_string(val.nanos()) + "ns"`) calls `.nanos()`, so the symbol
+    // appears in every checked-mir golden dump.
     "hew_duration_secs",
     "hew_instant_duration_since",
     "hew_instant_elapsed",

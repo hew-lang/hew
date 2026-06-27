@@ -71,12 +71,12 @@ fn slice_diagnostics(out: &hew_hir::LowerOutput) -> Vec<String> {
 
 #[test]
 fn vec_index_unsupported_element_types_rejected() {
-    // Scalar index on Vec<duration> must emit a
-    // VecIndexElementTypeUnsupported diagnostic. Platform-sized integers are
-    // accepted below; duration still has no Vec element ABI.
+    // Scalar index on Vec<bytes> must emit a
+    // VecIndexElementTypeUnsupported diagnostic. Platform-sized integers and
+    // duration are accepted below; bytes still has no Vec element ABI.
     let out = lower(
         r"
-        fn pick_duration(xs: Vec<duration>, i: i64) -> duration { xs[i] }
+        fn pick_bytes(xs: Vec<bytes>, i: i64) -> bytes { xs[i] }
         ",
     );
 
@@ -88,8 +88,8 @@ fn vec_index_unsupported_element_types_rejected() {
         out.diagnostics
     );
     assert!(
-        diags.contains(&"duration".to_string()),
-        "missing duration: {diags:?}"
+        diags.contains(&"bytes".to_string()),
+        "missing bytes: {diags:?}"
     );
 
     // The diagnostic note should enumerate the supported element-type
@@ -128,7 +128,7 @@ fn vec_slice_unsupported_element_types_rejected() {
     let out = lower(
         r"
         fn double(x: i64) -> i64 { x * 2 }
-        fn pick_duration(xs: Vec<duration>) -> Vec<duration> { xs[0..1] }
+        fn pick_bytes(xs: Vec<bytes>) -> Vec<bytes> { xs[0..1] }
         fn pick_fn(xs: Vec<fn(i64) -> i64>) -> Vec<fn(i64) -> i64> { xs[0..1] }
         ",
     );
@@ -141,8 +141,8 @@ fn vec_slice_unsupported_element_types_rejected() {
         out.diagnostics
     );
     assert!(
-        diags.contains(&"duration".to_string()),
-        "missing duration: {diags:?}"
+        diags.contains(&"bytes".to_string()),
+        "missing bytes: {diags:?}"
     );
     assert!(
         diags.contains(&"fn(i64) -> i64".to_string()),
@@ -199,6 +199,8 @@ fn vec_index_supported_element_types_accepted() {
         fn pick_string(xs: Vec<string>, i: i64) -> string { xs[i] }
         fn pick_named(xs: Vec<UserRecord>, i: i64) -> UserRecord { xs[i] }
         fn pick_tuple(xs: Vec<(i64, i64)>, i: i64) -> (i64, i64) { xs[i] }
+        fn pick_duration(xs: Vec<duration>, i: i64) -> duration { xs[i] }
+        fn pick_instant(xs: Vec<instant>, i: i64) -> instant { xs[i] }
         ",
     );
 
@@ -237,6 +239,8 @@ fn vec_slice_supported_element_types_accepted() {
         fn slice_tuple(xs: Vec<(i64, i64)>) -> Vec<(i64, i64)> { xs[0..1] }
         fn slice_named(xs: Vec<UserRecord>) -> Vec<UserRecord> { xs[0..1] }
         fn slice_enum(xs: Vec<Colour>) -> Vec<Colour> { xs[0..1] }
+        fn slice_duration(xs: Vec<duration>) -> Vec<duration> { xs[0..1] }
+        fn slice_instant(xs: Vec<instant>) -> Vec<instant> { xs[0..1] }
         ",
     );
 
@@ -277,13 +281,13 @@ fn vec_index_diag_for_elem(out: &hew_hir::LowerOutput, elem: &str) -> bool {
 
 #[test]
 fn vec_index_in_machine_transition_body_rejected() {
-    // Vec<duration> scalar-indexed inside a transition body must trip the gate.
+    // Vec<bytes> scalar-indexed inside a transition body must trip the gate.
     // Transition bodies are type-checked (registration.rs ~ check_against),
     // so `tc.expr_types` carries the container type at the indexing site.
-    // duration still has no Vec element ABI.
+    // bytes still has no Vec element ABI (duration is now supported).
     let out = lower(
         r"
-        fn make_durations() -> Vec<duration> { [] }
+        fn make_byteses() -> Vec<bytes> { [] }
 
         machine M {
             events {
@@ -294,8 +298,8 @@ fn vec_index_in_machine_transition_body_rejected() {
             state Idle;
             state Done;
             on Go: Idle => Done {
-                let xs: Vec<duration> = make_durations();
-                let _: duration = xs[0];
+                let xs: Vec<bytes> = make_byteses();
+                let _: bytes = xs[0];
                 Done
             }
             on Go: Done => Done;
@@ -306,8 +310,8 @@ fn vec_index_in_machine_transition_body_rejected() {
     );
 
     assert!(
-        vec_index_diag_for_elem(&out, "duration"),
-        "expected VecIndexElementTypeUnsupported(duration) inside transition body; got diagnostics: {:#?}",
+        vec_index_diag_for_elem(&out, "bytes"),
+        "expected VecIndexElementTypeUnsupported(bytes) inside transition body; got diagnostics: {:#?}",
         out.diagnostics
     );
     assert!(
@@ -318,13 +322,14 @@ fn vec_index_in_machine_transition_body_rejected() {
 
 #[test]
 fn vec_index_in_machine_transition_guard_rejected() {
-    // Vec<duration> scalar-indexed inside a transition `when` guard must trip
+    // Vec<bytes> scalar-indexed inside a transition `when` guard must trip
     // the gate. Guards are type-checked against `Ty::Bool`
     // (registration.rs:2663 check_against), so `tc.expr_types` carries
-    // the container type at the indexing site. duration remains fail-closed.
+    // the container type at the indexing site. bytes remains fail-closed
+    // (duration is now supported).
     let out = lower(
         r"
-        fn make_durations() -> Vec<duration> { [] }
+        fn make_byteses() -> Vec<bytes> { [] }
 
         machine M {
             events {
@@ -334,7 +339,7 @@ fn vec_index_in_machine_transition_guard_rejected() {
 
             state Idle;
             state Done;
-            on Go: Idle => Done when make_durations()[0].is_zero() { Done }
+            on Go: Idle => Done when make_byteses()[0].is_empty() { Done }
             on Go: Done => Done;
             on Reset: Done => Idle;
             on Reset: Idle => Idle;
@@ -343,8 +348,8 @@ fn vec_index_in_machine_transition_guard_rejected() {
     );
 
     assert!(
-        vec_index_diag_for_elem(&out, "duration"),
-        "expected VecIndexElementTypeUnsupported(duration) inside transition guard; got diagnostics: {:#?}",
+        vec_index_diag_for_elem(&out, "bytes"),
+        "expected VecIndexElementTypeUnsupported(bytes) inside transition guard; got diagnostics: {:#?}",
         out.diagnostics
     );
     assert!(

@@ -19429,9 +19429,13 @@ impl Builder {
             ResolvedTy::I16 => "hew_vec_get_i16",
             ResolvedTy::U16 => "hew_vec_get_u16",
             ResolvedTy::Char | ResolvedTy::I32 | ResolvedTy::U32 => "hew_vec_get_i32",
-            ResolvedTy::I64 | ResolvedTy::U64 | ResolvedTy::Isize | ResolvedTy::Usize => {
-                "hew_vec_get_i64"
-            }
+            // `duration` is a signed 8-byte newtype — same i64-class getter as
+            // i64 (`instant` reaches here already canonicalised to I64).
+            ResolvedTy::I64
+            | ResolvedTy::U64
+            | ResolvedTy::Isize
+            | ResolvedTy::Usize
+            | ResolvedTy::Duration => "hew_vec_get_i64",
             ResolvedTy::F32 => "hew_vec_get_f32",
             ResolvedTy::F64 => "hew_vec_get_f64",
             ResolvedTy::String => "hew_vec_get_str",
@@ -19651,6 +19655,9 @@ impl Builder {
             | ResolvedTy::U64
             | ResolvedTy::Isize
             | ResolvedTy::Usize
+            // `duration` is an 8-byte bitcopy scalar (same byte-sized slice path
+            // as i64); `instant` reaches here canonicalised to I64.
+            | ResolvedTy::Duration
             | ResolvedTy::F32
             | ResolvedTy::F64 => "hew_vec_slice_range_bytesize",
             ResolvedTy::String => "hew_vec_slice_range_str",

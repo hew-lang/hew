@@ -155,6 +155,16 @@ impl ValueClass {
             | ResolvedTy::F32
             | ResolvedTy::F64
             | ResolvedTy::Duration
+            // `instant` is a monotonic i64-nanos timestamp. The field-type
+            // producer (`lower_type`) emits it as `Named { builtin: Instant }`
+            // (only `duration` short-circuits to `ResolvedTy::Duration`), so it
+            // reaches this classifier as a Named type and would otherwise fall
+            // to `Unknown` (record-field reject, W3.029). It is a plain 8-byte
+            // copyable scalar — classify it BitCopy like `duration` / `i64`.
+            | ResolvedTy::Named {
+                builtin: Some(BuiltinType::Instant),
+                ..
+            }
             | ResolvedTy::Unit
             | ResolvedTy::Never => Self::BitCopy,
             ResolvedTy::String

@@ -4742,6 +4742,17 @@ pub(crate) fn primitive_to_llvm<'ctx>(
         ResolvedTy::Named { name, .. } if name == "regex.Pattern" => {
             Ok(ctx.ptr_type(AddressSpace::default()).into())
         }
+        // `instant` is a monotonic i64-nanos timestamp. The field-type producer
+        // surfaces it as `Named { builtin: Instant }` (not the canonical I64), so
+        // a record/actor field typed `instant` reaches the emitter as a Named
+        // type. It is ABI-identical to a bare i64 (the `hew_instant_*` symbols
+        // take/return i64), so lower it to the i64 backing type. Dispatched on
+        // the `builtin` discriminant so a user `type instant` (builtin: None)
+        // still hits the D10 fail-closed arm below.
+        ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::Instant),
+            ..
+        } => Ok(ctx.i64_type().into()),
         ResolvedTy::Named { name, .. } => Err(CodegenError::FailClosed(format!(
             "D10 violation: Named/user type `{name}` reached the LLVM emitter; \
              the MIR D10 gate should have rejected this earlier"
@@ -21021,9 +21032,16 @@ fn lower_vec_constructor_call(
         ResolvedTy::I16 => VecCtor::Plain("hew_vec_new_i16"),
         ResolvedTy::U16 => VecCtor::Plain("hew_vec_new_u16"),
         ResolvedTy::Char | ResolvedTy::I32 | ResolvedTy::U32 => VecCtor::Plain("hew_vec_new"),
-        ResolvedTy::I64 | ResolvedTy::U64 | ResolvedTy::Isize | ResolvedTy::Usize => {
-            VecCtor::Plain("hew_vec_new_i64")
-        }
+        // `duration` is a signed 8-byte newtype — i64-class element, same
+        // constructor as i64 (`instant` arrives canonicalised to I64). This must
+        // match the i64 routing on every accessor (push/get/set/pop/slice) so
+        // the Vec is built and operated under one ABI tier
+        // (`vec-element-width-symmetric-abi`).
+        ResolvedTy::I64
+        | ResolvedTy::U64
+        | ResolvedTy::Isize
+        | ResolvedTy::Usize
+        | ResolvedTy::Duration => VecCtor::Plain("hew_vec_new_i64"),
         ResolvedTy::F32 => VecCtor::Plain("hew_vec_new_f32"),
         ResolvedTy::F64 => VecCtor::Plain("hew_vec_new_f64"),
         ResolvedTy::String => VecCtor::Plain("hew_vec_new_str"),

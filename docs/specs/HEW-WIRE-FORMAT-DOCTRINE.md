@@ -55,6 +55,60 @@ The Rust mirror is `EnvelopeFrame` (and `ControlFrame`) in
 [`hew-runtime/src/envelope.rs`][envelope-rs] starting near line 30. The
 CDDL integer keys are mirrored as field-doc comments on each struct field.
 
+### The message body — CDDL-described tagged CBOR
+
+The `envelope-frame` `payload` (key `6`) is a `bstr` to the *frame* schema:
+the frame does not interpret it. The bytes inside that `bstr` are the
+**per-`#[wire]`-type CBOR body** the codegen serializer emits for the
+message being sent, and they have their own doc-of-truth schema in
+[`hew-runtime/schemas/wire-body.cddl`][wire-body-cddl]. Together,
+`envelope.cddl` (the container) and `wire-body.cddl` (the body) make the
+whole internode wire — frame and body — CDDL-described.
+
+[wire-body-cddl]: ../../hew-runtime/schemas/wire-body.cddl
+
+The body shapes (the `wire-body` rule and its parts):
+
+- A **`#[wire]` struct** (or any cross-node `Serializable` record) encodes
+  as a CBOR **map keyed by the unsigned `@N` field tags** — `cbor_field_key`
+  uses the explicit `@N` from the wire layout, or a 1-based positional
+  fallback for layout-less records. Keys are emitted in canonical
+  (ascending) order. Forward-compatible: a decoder tolerates unknown keys
+  and treats absent keys as optional/default.
+- A **`#[wire]` enum** encodes as either a **bare unsigned tag `N`** (a unit
+  variant) or a **single-entry map `{ N => [field0, field1, …] }`** (a
+  payload variant, the "map-of-one"). The variant tag is the declaration
+  ordinal (the `#[wire]` enum surface tags variants positionally). The
+  runtime reader `hew_cbor_de_enum_begin` accepts exactly these two shapes
+  and fails closed on a negative tag, a multi-entry map, or a single value
+  that is not an array.
+- The **leaf floor** is scalars (CBOR int / uint / bool / float), `string`
+  (CBOR text), `bytes` (CBOR byte string), `Option<T>` (`null` for `None`,
+  the inner encoding for `Some`), `Vec<T>` (a CBOR array), and nested
+  `#[wire]` structs/enums (nested maps / unit-tag / map-of-one). A value
+  type outside this floor fails closed at codegen ("unsupported value type …
+  outside the supported wire-body floor") and never reaches the wire.
+
+The CDDL is an **additive description**, not a second decoder: a body that
+does not match `wire-body.cddl` still fails closed at the runtime reader
+(`xnode_serial.rs::decode_payload` returns null; the codec thunks trap on
+malformed / out-of-range / arity-mismatch input). The conformance test
+[`hew-runtime/tests/wire_body_cddl_conformance.rs`][wire-body-test]
+validates the emitted bytes against `wire-body.cddl` with a real RFC 8610
+validator, and a compiled cross-process round-trip
+(`distributed_two_process_e2e.rs::wire_cbor_cross_process_round_trip`)
+proves an explicit-`@N` `#[wire]` payload decodes to exact values in a
+second OS process. The legacy positional codec is retired — the tagged CBOR
+body is the sole internode body format.
+
+[wire-body-test]: ../../hew-runtime/tests/wire_body_cddl_conformance.rs
+
+A cross-node payload whose type is **neither `#[wire]` nor otherwise
+`Serializable`** has no registered codec, so `encode_payload` fails closed
+(returns null, `*out_len = 0`) rather than sending raw bytes — the
+fail-closed posture extends to "no codec for this type", not just malformed
+input.
+
 ### Why CBOR, not JSON / msgpack / Protobuf / HBF
 
 - **JSON.** Text-based, ambiguous numeric typing (no native `i64` vs
@@ -99,7 +153,9 @@ The round-trip and version-rejection tests live in
 
 - Add new envelope fields **first to the CDDL**, then to `EnvelopeFrame`.
   The CDDL is the doc-of-truth; the Rust struct conforms to it, not the
-  other way around.
+  other way around. The same rule holds for the body: a change to the
+  per-type body shape the codegen serializer emits must be reflected in
+  `wire-body.cddl`, and the conformance test keeps the two from drifting.
 - New frame kinds extend the `wire-frame` rule alternatives. Do not
   invent a parallel framing layer.
 - Decoders must reject unknown `version` values rather than degrading.
@@ -335,8 +391,11 @@ only one with an active obsolescence trigger.
 
 - Runtime substrate provenance: commits `63a486d6`, `bb8826e7`, `04bfb422`
   on `v05-integration`.
-- CDDL schema: [`hew-runtime/schemas/envelope.cddl`](../../hew-runtime/schemas/envelope.cddl).
+- CDDL frame schema: [`hew-runtime/schemas/envelope.cddl`](../../hew-runtime/schemas/envelope.cddl).
+- CDDL body schema: [`hew-runtime/schemas/wire-body.cddl`](../../hew-runtime/schemas/wire-body.cddl).
 - Runtime envelope types: [`hew-runtime/src/envelope.rs`](../../hew-runtime/src/envelope.rs).
-- Round-trip tests: [`hew-runtime/tests/envelope_round_trip.rs`](../../hew-runtime/tests/envelope_round_trip.rs).
+- Frame round-trip tests: [`hew-runtime/tests/envelope_round_trip.rs`](../../hew-runtime/tests/envelope_round_trip.rs).
+- Body conformance test: [`hew-runtime/tests/wire_body_cddl_conformance.rs`](../../hew-runtime/tests/wire_body_cddl_conformance.rs).
+- Cross-process body round-trip: [`hew-cli/tests/distributed_two_process_e2e.rs`](../../hew-cli/tests/distributed_two_process_e2e.rs).
 - Stdlib `Value` contract: [`std/encoding/wire/README.md`](../../std/encoding/wire/README.md), issue #1247.
 - Distributed actor companion doc: [`HEW-DIST-SPEC.md`](./HEW-DIST-SPEC.md).

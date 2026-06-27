@@ -1370,6 +1370,30 @@ fn heap_exceeded_exit_reason_round_trips_through_internal_types() {
     );
 }
 
+/// M-8: the M-6 `ExitReason -> CrashKind` projection (the link-cascade crash
+/// class delivered to a linked actor's `#[on(exit)]` hook) must produce the
+/// same `CrashKind` tags from the same trap codes regardless of native vs WASM
+/// code path — the `CrashKind` discriminator crosses the wasm boundary. The
+/// projection lives in `internal::types` (shared by both targets), so this pins
+/// that the same trap code maps to the same `CrashKind` tag everywhere.
+#[test]
+fn crash_kind_projection_is_target_invariant() {
+    use crate::internal::types::{CrashKind, HEW_TRAP_HEAP_EXCEEDED, HEW_TRAP_INTEGER_OVERFLOW};
+    // HeapExceeded is the only non-Crashed projection; exact tag values.
+    assert_eq!(
+        CrashKind::tag_from_error_code(HEW_TRAP_HEAP_EXCEEDED),
+        CrashKind::HeapExceeded.tag(),
+    );
+    assert_eq!(
+        CrashKind::tag_from_error_code(HEW_TRAP_INTEGER_OVERFLOW),
+        CrashKind::Crashed.tag(),
+    );
+    // Declaration-order tags (the wire value M-7 delivers).
+    assert_eq!(CrashKind::Crashed.tag(), 0);
+    assert_eq!(CrashKind::HeapExceeded.tag(), 1);
+    assert_eq!(CrashKind::PartitionDetected.tag(), 2);
+}
+
 fn assert_canonical_wasi_trap_exit(code: i32, expected_reason: crate::internal::types::ExitReason) {
     assert_eq!(
         crate::internal::types::canonical_trap_wasi_exit_code(code),

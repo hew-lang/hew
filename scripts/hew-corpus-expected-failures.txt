@@ -5,12 +5,11 @@
 # list) or UNEXPECTED PASS (listed here but now compiles — delete the entry).
 #
 # Classification categories:
-#   deferred-nyi    — Feature not yet implemented in the compiler (sleep
-#                     duration literals, select/channel, link_monitor MIR,
-#                     hashmap/hashset for-in, lambdas with await, await_restart
-#                     syntax, clone on generic types, etc.). The fixture is
-#                     correctly written Hew; the compiler just hasn't landed
-#                     the feature yet.
+#   deferred-nyi    — Feature not yet implemented in the compiler (select/channel,
+#                     link_monitor MIR, hashmap/hashset for-in, lambdas with await,
+#                     await_restart syntax, clone on generic types, etc.). The
+#                     fixture is correctly written Hew; the compiler just hasn't
+#                     landed the feature yet.
 #   stale-syntax    — File uses pre-v0.5 syntax that was removed (e.g.
 #                     `struct` → `type`, `event` → `events { }` block,
 #                     `let x = channel()` → new channel API). Needs migrating
@@ -35,8 +34,6 @@
 # Gate: make hew-check-all (scripts/hew-corpus-check.sh)
 
 # ── examples/ ────────────────────────────────────────────────────────────────
-
-# deferred-nyi: sleep duration literals (50ms / 0ns) not yet accepted
 
 # deferred-nyi: channel/select syntax not yet lowered
 examples/benchmark_demo.hew
@@ -153,8 +150,8 @@ hew-parser/tests/fmt_roundtrip_corpus/assoc_types/self_projection_signatures.hew
 # demonstration for the sandbox VM — it is designed to fail hew check
 hew-sandbox-vm/fixtures/09-compile-type-error/main.hew
 
-# deferred-nyi: sandbox fixtures using NYI features (sleep duration, actor
-# ask/reply, channel select, supervisor, machine events, stdin, random)
+# deferred-nyi: sandbox fixtures using NYI features (actor ask/reply, channel
+# select, supervisor, machine events, stdin, random)
 hew-sandbox-vm/fixtures/15-actor-counter/main.hew
 hew-sandbox-vm/fixtures/16-actor-ask-reply/main.hew
 hew-sandbox-vm/fixtures/17-channel-select/main.hew
@@ -204,9 +201,9 @@ tests/corpus/v05-value-model/19_actor_scope.hew
 
 # ── tests/hew/ ───────────────────────────────────────────────────────────────
 
-# deferred-nyi: hew test suite files using NYI features (sleep duration,
-# actor select/suspend, generic clone, hashmap clone, instant methods, process,
-# generic vec iter, this-send)
+# deferred-nyi: hew test suite files using NYI features (actor select/suspend,
+# generic clone, hashmap clone, instant methods, process, generic vec iter,
+# this-send)
 tests/hew/generic_vec_iter_surface_test.hew
 
 # ── tests/ll-oracle/ ─────────────────────────────────────────────────────────
@@ -304,8 +301,6 @@ tests/vertical-slice/accept/local_fn_msg_actor_method_allowed.hew
 tests/vertical-slice/accept/regex_match_arm.hew
 
 # deferred-nyi: select recv guard NYI
-
-# deferred-nyi: sleep duration literal NYI
 
 # deferred-nyi: supervisor NYI features
 

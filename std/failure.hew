@@ -11,26 +11,28 @@
 //! `register_builtin_failure_surface` so isolated fixtures can pin the
 //! hook signature without importing.
 //!
-//! ## `CrashInfo` is i64-tag only for v0.5
+//! ## `CrashInfo` carries `code` + `message`
 //!
-//! WHY: the codegen-rs spine does not yet accept `string` / `Function` /
-//! `Closure` types as struct fields (S9 in the spine-widening registry).
-//! WHEN: replace `code` with a richer payload after spine-widening
-//! (Q20 (c) of the failure-philosophy plan) lands.
-//! WHAT: the real shape grows a string field carrying the panic message
-//! and a stack-pointer-style cursor for trampoline diagnostics.  Until
-//! then, `code` is an opaque integer discriminator the runtime sets per
-//! crash class (arena exhaustion, link-cascade, explicit panic, …).
+//! `code` is an opaque integer discriminator the runtime sets per crash
+//! class (arena exhaustion, link-cascade, explicit panic, …).  `message`
+//! is a heap-owned diagnostic string the runtime supplies (empty when no
+//! message is available); a crash hook can log or route on it.
+//!
+//! WHEN (further widening): a `Function` / `Closure` field and a
+//! stack-pointer-style cursor for trampoline diagnostics are a later
+//! spine-widening (S9), out of scope for the `message` field.
 
 /// Diagnostic payload passed to `#[on(crash)]` hooks.
 ///
-/// The integer `code` discriminates crash classes; the v0.5 runtime sets
-/// it before invoking `on_crash`.  Hooks may match on `code` to decide a
+/// The integer `code` discriminates crash classes; the runtime sets it
+/// before invoking `on_crash`.  `message` carries a heap-owned diagnostic
+/// string (empty when unavailable).  Hooks may match on `code` to decide a
 /// `CrashAction`, but the canonical reading is "any non-zero code is a
 /// real fault — the hook's job is to choose between Restart, Escalate,
 /// and Kill".  See `JOURNEY.md` for the per-code assignment plan.
 pub type CrashInfo {
     code: i64;
+    message: string;
 }
 
 /// Advisory return value of a `#[on(crash)]` hook.

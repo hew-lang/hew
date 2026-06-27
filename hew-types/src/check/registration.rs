@@ -173,6 +173,7 @@ extern "C" {
 const FAILURE_HEW: &str = r"
 pub type CrashInfo {
     code: i64;
+    message: string;
 }
 
 pub enum CrashAction {

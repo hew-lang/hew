@@ -300,13 +300,16 @@ fn builtin_registration_fields_match(
 
 fn is_crash_info_payload_ty(
     ty: &ResolvedTy,
-    type_classes: &hew_hir::TypeClassTable,
+    _type_classes: &hew_hir::TypeClassTable,
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
 ) -> bool {
     let ResolvedTy::Named { name, args, .. } = ty else {
         return false;
     };
-    if !args.is_empty() || named_type_marker(ty, type_classes) != Some(ResourceMarker::BitCopy) {
+    // M-5: `CrashInfo` now carries an owned `message: string`, so it is no
+    // longer marker-`BitCopy`. The authoritative discriminant is the
+    // `CrashInfo` role on the builtin registration, not the marker.
+    if !args.is_empty() {
         return false;
     }
 
@@ -3215,17 +3218,39 @@ fn lower_actor_lifecycle_handlers(
                         span: info_param.span.clone(),
                     };
 
-                    // Build `<payload> { code: __crash_code }` StructInit expression.
+                    // M-5: build the `__crash_message` BindingRef. The param is a
+                    // BORROW (the runtime owns the buffer); the StructInit clones
+                    // it into the owned `CrashInfo.message` field, so the `info`
+                    // record is a fresh owner the function frame drops once.
+                    let crash_message_ref = HirExpr {
+                        node: SENTINEL_CRASH_CODE_NODE,
+                        site: SENTINEL_CRASH_CODE_SITE,
+                        ty: ResolvedTy::String,
+                        value_class: ValueClass::CowValue,
+                        intent: IntentKind::Read,
+                        kind: HirExprKind::BindingRef {
+                            name: "__crash_message".to_string(),
+                            resolved: ResolvedRef::Binding(SENTINEL_CRASH_MESSAGE_BINDING),
+                        },
+                        span: info_param.span.clone(),
+                    };
+
+                    // Build `<payload> { code: __crash_code, message: __crash_message }`.
+                    // `CrashInfo` is now an owned-aggregate record (`CowValue`)
+                    // because of the `message: string` field.
                     let struct_init = HirExpr {
                         node: SENTINEL_CRASH_CODE_NODE,
                         site: SENTINEL_CRASH_CODE_SITE,
                         ty: crash_info_ty.clone(),
-                        value_class: ValueClass::BitCopy,
+                        value_class: ValueClass::CowValue,
                         intent: IntentKind::Unknown,
                         kind: HirExprKind::StructInit {
                             name: crash_info_type_name,
                             type_args: Vec::new(),
-                            fields: vec![("code".to_string(), crash_code_ref)],
+                            fields: vec![
+                                ("code".to_string(), crash_code_ref),
+                                ("message".to_string(), crash_message_ref),
+                            ],
                             base: None,
                         },
                         span: info_param.span.clone(),
@@ -6648,6 +6673,26 @@ fn user_record_layout_key(ty: &ResolvedTy) -> Option<String> {
         } => {
             let short_args: Vec<ResolvedTy> = args.iter().map(shorten_named_ty_spine).collect();
             Some(hew_hir::mangle(short_name(name), &short_args))
+        }
+        // M-5: a BUILTIN record with a registered `Struct` shape (today only
+        // `CrashInfo`, which carries an owned `message: string`) is keyed by its
+        // bare name so it routes through the SAME owned-aggregate record
+        // clone/drop synthesis (`__hew_record_{clone,drop}_inplace_<R>`) user
+        // records use. Its `record_field_orders` entry is seeded by
+        // `register_builtin_record_layouts` from the registration shape, so the
+        // field-kind classifier and the codegen thunk agree on the layout.
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin: Some(_),
+            ..
+        } if args.is_empty()
+            && matches!(
+                hew_hir::builtin_type_classes::builtin_type_registration(name).map(|r| r.shape),
+                Some(hew_hir::builtin_type_classes::BuiltinTypeShape::Struct(_))
+            ) =>
+        {
+            Some(name.clone())
         }
         _ => None,
     }

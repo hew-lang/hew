@@ -216,7 +216,11 @@ impl BuiltinType {
             | Self::CancellationToken
             | Self::MonitorRef => BuiltinTypeMarker::Resource,
             Self::ActorState | Self::MachineState => BuiltinTypeMarker::Linear,
-            Self::CrashInfo => BuiltinTypeMarker::BitCopy,
+            // `CrashInfo` carries an owned `message: string` (M-5), so it is no
+            // longer a `BitCopy` aggregate. `None` lets the owned-aggregate
+            // record machinery classify it as `CowValue` (field-wise clone/drop
+            // via `__hew_record_{clone,drop}_inplace_CrashInfo`) rather than
+            // forcing a marker-driven `BitCopy`.
             _ => BuiltinTypeMarker::None,
         }
     }

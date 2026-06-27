@@ -41,6 +41,9 @@ const OVERFLOW_DROP_NEW: i32 = 1;
 static DISPATCH_COUNT: AtomicI32 = AtomicI32::new(0);
 static ON_CRASH_CALLS: AtomicI32 = AtomicI32::new(0);
 static LAST_CRASH_CODE: AtomicI64 = AtomicI64::new(0);
+/// Captures the borrowed `crash_message` the supervisor passes, so the
+/// population test can assert the trap-kind name reaches the handler.
+static LAST_CRASH_MESSAGE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 unsafe extern "C-unwind" fn noop_dispatch(
     _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
@@ -66,11 +69,27 @@ unsafe extern "C-unwind" fn noop_dispatch(
 unsafe extern "C" fn recording_on_crash(
     _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     crash_code: i64,
-    _crash_message: *const std::ffi::c_char,
+    crash_message: *const std::ffi::c_char,
     _actor_state_ptr: *mut c_void,
 ) -> i32 {
     ON_CRASH_CALLS.fetch_add(1, Ordering::SeqCst);
     LAST_CRASH_CODE.store(crash_code, Ordering::SeqCst);
+    // Capture the borrowed message (the supervisor owns the buffer; we copy
+    // into an owned String, never retaining the borrow).
+    let message = if crash_message.is_null() {
+        None
+    } else {
+        // SAFETY: the supervisor passes a NUL-terminated C string live across
+        // this call; we only read it here.
+        Some(
+            unsafe { std::ffi::CStr::from_ptr(crash_message) }
+                .to_string_lossy()
+                .into_owned(),
+        )
+    };
+    *LAST_CRASH_MESSAGE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = message;
     0
 }
 
@@ -118,6 +137,9 @@ fn on_crash_handler_fires_once_per_crash_then_restart_proceeds() {
     DISPATCH_COUNT.store(0, Ordering::SeqCst);
     ON_CRASH_CALLS.store(0, Ordering::SeqCst);
     LAST_CRASH_CODE.store(0, Ordering::SeqCst);
+    *LAST_CRASH_MESSAGE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
 
     // Budget of 10 — well above our one crash — and a generous 60s window.
     let sup = TestSupervisor::new(STRATEGY_ONE_FOR_ONE, 10, 60);
@@ -173,6 +195,20 @@ fn on_crash_handler_fires_once_per_crash_then_restart_proceeds() {
             LAST_CRASH_CODE.load(Ordering::SeqCst),
             -1i64,
             "handler must receive the real trap code captured on the actor"
+        );
+
+        // M-5: the handler must receive the populated crash MESSAGE. The
+        // injected trap code -1 maps to `ExitReason::Signal(-1)`, whose
+        // trap-kind name is "Signal" — the exact diagnostic the supervisor
+        // passes through the `crash_message` channel. Exact-value assertion:
+        // not just non-null, the SPECIFIC trap-kind name.
+        assert_eq!(
+            LAST_CRASH_MESSAGE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_deref(),
+            Some("Signal"),
+            "handler must receive the populated crash message (trap-kind name)"
         );
 
         // The restart still happened: child slot 0 is non-null again.

@@ -2158,17 +2158,26 @@ unsafe fn apply_restart(
         if let Some(handler) = spec.on_crash {
             // Capture state pointer before relinquishing the borrow.
             let state_ptr = spec.init_state;
-            // M-3: crash-message channel. M-5 wires the real diagnostic
-            // string captured from the crashed actor's trap; M-3 passes null
-            // (the codegen prologue renders null as the empty string), so the
-            // ABI carries the message slot without yet populating it.
-            let crash_message: *const c_char = ptr::null();
+            // M-5: crash-message channel. Supply the trap-kind name as the
+            // diagnostic message (e.g. "HeapExceeded", "DivideByZero",
+            // "Signal"). The `CString` is supervisor-owned and BORROWED by the
+            // handler for the duration of the call (the codegen prologue clones
+            // it into the owned `CrashInfo.message` field); it is dropped here
+            // at scope exit, after the call returns. A null message renders as
+            // the empty string in the prologue.
+            let crash_message_cstr =
+                std::ffi::CString::new(ExitReason::from_error_code(crash_code).trap_kind_name())
+                    .ok();
+            let crash_message: *const c_char = crash_message_cstr
+                .as_ref()
+                .map_or(ptr::null(), |s| s.as_ptr());
             // SAFETY: `handler` is a codegen-emitted `extern "C" fn` with
             // the `HewOnCrashFn` signature; `ctx` is the live supervisor
             // execution context for the in-flight dispatch; `state_ptr`
             // is the template state the supervisor owns for this child
             // slot (allocated in `hew_supervisor_add_child_spec`);
-            // `crash_message` is null (borrowed, not owned by the callee).
+            // `crash_message` borrows the supervisor-owned `CString` (or null),
+            // valid for the duration of this call.
             // Widen crash_code from c_int to i64 at the call boundary.
             // `HewOnCrashFn` uses i64 to match `CrashInfo.code: i64` in
             // std/failure.hew; the internal event plumbing stays c_int so the
@@ -2181,7 +2190,7 @@ unsafe fn apply_restart(
             // `hew_supervisor_add_child_spec`; `ctx` is the current execution context
             // (non-null, live for the duration of this supervisor dispatch); `state_ptr`
             // is the template state owned by this child slot (allocated in add_child_spec);
-            // `crash_message` is null or a caller-owned NUL-terminated string.
+            // `crash_message` is null or a caller-owned NUL-terminated string live across the call.
             let _crash_action_tag: i32 =
                 unsafe { handler(ctx, crash_code as i64, crash_message, state_ptr) };
         }

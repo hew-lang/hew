@@ -10108,20 +10108,15 @@ fn collect_record_inplace_drop_seeds(
                     continue;
                 }
                 // RecordInPlace carries a user record — bare-name monomorphic
-                // OR a generic INSTANTIATION (`Pair<i64, string>`, args present).
-                // `record_inplace_drop_name` is the consumer authority for the
-                // helper name; this seed must register the SAME key so the body
-                // is synthesised before the drop call resolves it. A non-record
-                // ty here is a producer invariant violation the consumer already
-                // rejects, so skip it (the consumer's fail-closed arm is the
-                // diagnostic surface, not this seed).
-                let ResolvedTy::Named {
-                    name,
-                    args,
-                    builtin: None,
-                    ..
-                } = &drop.ty
-                else {
+                // OR a generic INSTANTIATION (`Pair<i64, string>`, args present)
+                // — OR a builtin owned-aggregate record (M-5: `CrashInfo`, keyed
+                // by its bare name). `record_inplace_drop_name` is the consumer
+                // authority for the helper name; this seed must register the SAME
+                // key so the body is synthesised before the drop call resolves
+                // it. A non-record ty here is a producer invariant violation the
+                // consumer already rejects, so skip it (the consumer's
+                // fail-closed arm is the diagnostic surface, not this seed).
+                let ResolvedTy::Named { name, args, .. } = &drop.ty else {
                     continue;
                 };
                 // Confirm the record actually has a registered layout before
@@ -23467,6 +23462,17 @@ fn record_inplace_drop_name(ty: &ResolvedTy) -> CodegenResult<String> {
                 .map_or(name.as_str(), |(_, bare)| bare);
             Ok(mangle_with_shortened_args(short, args))
         }
+        // M-5: a builtin owned-aggregate record (today only `CrashInfo`, which
+        // carries an owned `message: string`) is keyed by its bare name — the
+        // same key the MIR `user_record_layout_key` admit authority produces and
+        // the clone/drop synthesis seed registers, so the drop call resolves the
+        // synthesised `__hew_record_drop_inplace_CrashInfo` body.
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin: Some(_),
+            ..
+        } if args.is_empty() => Ok(name.clone()),
         other => Err(CodegenError::FailClosed(format!(
             "RecordInPlace drop requires a user record type; got {other:?}"
         ))),

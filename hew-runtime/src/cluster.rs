@@ -987,6 +987,11 @@ impl HewCluster {
             // so arm MonitorLost for every still-pending local watcher of an
             // actor on it (exactly-once; a prior definitive DOWN wins).
             crate::hew_node::fan_out_monitor_lost_for_node(transition.node_id);
+            // Pending-ask SWIM-DEAD fan-out (DIST-7): the recv-queue seam above
+            // wakes blocked recvs to PartitionDetected; this resolves every
+            // pending remote ask routed to the dead peer with AskError::Partition
+            // immediately, instead of hanging to the caller's deadline.
+            crate::hew_node::fail_remote_asks_for_node(transition.node_id);
         }
     }
 
@@ -1264,6 +1269,10 @@ impl HewCluster {
                 // for every still-pending local watcher of an actor on the dead
                 // node (exactly-once; a prior definitive DOWN wins).
                 crate::hew_node::fan_out_monitor_lost_for_node(change.node_id);
+                // Pending-ask SWIM-DEAD fan-out (DIST-7): resolve every pending
+                // remote ask routed to the dead peer with AskError::Partition
+                // immediately, mirroring the recv-queue partition seam above.
+                crate::hew_node::fail_remote_asks_for_node(change.node_id);
             }
         }
     }

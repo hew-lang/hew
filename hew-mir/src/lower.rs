@@ -8116,6 +8116,38 @@ impl Builder {
             .collect()
     }
 
+    /// Strip type args from a machine-typed field when the outer name is a
+    /// known machine decl and every arg is `i64`.  This mirrors the
+    /// `normalize_machine_field_ty` closure used in the actor-state
+    /// classification path (lower.rs ~1513): generic machine instantiations
+    /// are canonicalised to the bare decl name because the machine layout is
+    /// always registered under that bare name, never mangled.
+    ///
+    /// Non-machine types and non-all-i64 instantiations are returned unchanged
+    /// so they fail closed through the normal classification miss.
+    fn normalize_machine_field_ty(&self, ty: &ResolvedTy) -> ResolvedTy {
+        if let ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+            is_opaque,
+        } = ty
+        {
+            if !args.is_empty()
+                && args.iter().all(|a| matches!(a, ResolvedTy::I64))
+                && machine_layout_name_matches(&self.machine_layout_names, name)
+            {
+                return ResolvedTy::Named {
+                    name: name.clone(),
+                    args: vec![],
+                    builtin: *builtin,
+                    is_opaque: *is_opaque,
+                };
+            }
+        }
+        ty.clone()
+    }
+
     /// True when `ty` may be admitted as a generator-env capture field: a
     /// plain, recursively-copyable value — every leaf `BitCopy` AND the whole
     /// transitively free of `#[opaque]` runtime handles.
@@ -8253,7 +8285,22 @@ impl Builder {
         if fields.is_empty() {
             return Ok(None);
         }
-        let field_tys: Vec<ResolvedTy> = fields.iter().map(|(_, ty)| ty.clone()).collect();
+        // Normalize machine-typed fields before classification: a generic
+        // machine instantiation in a record field (e.g. `m: Lifecycle<i64>`)
+        // arrives as `Named { name: "Lifecycle", args: [I64] }`.  The machine
+        // view is registered under the bare name "Lifecycle" (never mangled),
+        // so `lookup_enum_layout` misses the mangled probe and falls through to
+        // `classify_user_record`, which finds no RecordLayout for a machine →
+        // MissingRecordLayout → UnsupportedUserRecordValueClass.  Strip the
+        // args when the named type is a known machine (all-i64 args, same
+        // condition as the actor-state normalize pass at lower.rs ~1513) so the
+        // bare-name machine view is found.  Any other instantiation keeps its
+        // args and fails closed — matching the Move-type refusal such programs
+        // already hit at codegen.
+        let field_tys: Vec<ResolvedTy> = fields
+            .iter()
+            .map(|(_, ty)| self.normalize_machine_field_ty(ty))
+            .collect();
         let record_layouts = self.record_layouts_for_classification();
         let kinds = crate::state_clone::classify_actor_state_fields_with_opaque_handles(
             &field_tys,

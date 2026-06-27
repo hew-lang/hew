@@ -1,0 +1,29 @@
+// Accept fixture: a generic machine used as a record field (`m: Lifecycle<i64>`)
+// must compile end to end without "record type Box has a value class MIR
+// cannot lower yet" / "could not resolve RecordLayout for nested user record
+// Lifecycle".
+//
+// The type parameter T is i64 at the use site; the machine layout is
+// registered under the bare name "Lifecycle" and the field type must be
+// normalised to the bare name before classification probes the enum-layout
+// table.  Previously the record was rejected at the MIR value-class gate;
+// this fixture guards the fix.
+//
+// Harness verb: compile_accept (compile only — main allocates the record but
+// does not run the machine through transitions; the MIR admit path is the
+// load-bearing assertion)
+
+machine Lifecycle<T> {
+    events { ev; }
+    state Start;
+    state Mid;
+    on ev: Start => Mid { Mid }
+    on ev: _ => _ { state }
+}
+
+type Box { m: Lifecycle<i64>, x: i64 }
+
+fn main() {
+    let b = Box { m: Lifecycle::Start, x: 0 };
+    println(b.x);
+}

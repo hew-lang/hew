@@ -301,6 +301,12 @@ grep -q 'Blocking channel receive operations are not supported on WASM32' "${rej
 # Item::Machine task-gate walker directly.
 compile_accept "machine_fork_args_spawn"
 
+# A generic machine used as a record field (`m: Lifecycle<i64>`) must compile
+# and run without "record type Box has a value class MIR cannot lower yet".
+# The machine layout is registered under the bare name "Lifecycle"; the field
+# type is normalised before the enum-layout probe so the bare-name view is found.
+run_accept_expect_status "machine_generic_record_field" 0
+
 # Stage-2 lazy iterator wrappers: structural smoke. The fixture's wrapper
 # records and `impl Iterator` blocks compile cleanly through the parser and
 # the type checker. The generic adapter bodies only lower through MIR once

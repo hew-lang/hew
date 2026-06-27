@@ -1264,9 +1264,12 @@ fn lookup_enum_layout<'a>(
             .collect();
         let full_mangled = hew_hir::mangle(name, &short_args);
         let short_mangled = hew_hir::mangle(short, &short_args);
+        // Also probe the bare name: a machine registered under "Lifecycle"
+        // (never mangled) is found when the use-site carries type args
+        // (e.g. `Lifecycle<i64>`), mirroring model::find_enum_layout.
         enum_layouts
             .iter()
-            .find(|el| el.name == full_mangled || el.name == short_mangled)
+            .find(|el| el.name == full_mangled || el.name == short_mangled || el.name == name)
     }
 }
 

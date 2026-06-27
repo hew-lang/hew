@@ -3137,6 +3137,7 @@ pub fn lower_program_with_mono_cap(
                         }
                         Item::TypeDecl(decl)
                             if decl.visibility.is_pub()
+                                || decl.kind == TypeDeclKind::Enum
                                 || (decl.kind == TypeDeclKind::Struct
                                     && decl.type_params.is_none()) =>
                         {

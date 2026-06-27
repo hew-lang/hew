@@ -2866,6 +2866,35 @@ fn cross_module_generic_fn_value_context_determined_accepted() {
     );
 }
 
+/// A private (non-pub) enum returned from a pub fn across a module boundary
+/// must compile and run correctly.  Previously the §4b pre-pass cached the
+/// `HirTypeDecl` for all enums, but the fourth-pass emission guard was missing
+/// the enum arm, so the private enum's layout never reached MIR and produced
+/// `E_MIR: unknown type`.  Regression fixture for #2195.
+#[test]
+fn cross_module_private_enum_returned_from_pub_fn() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/cross_module_private_enum/main.hew");
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "cross_module_private_enum should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/cross_module_private_enum/main.expected"),
+    )
+    .expect("read main.expected");
+    assert_eq!(
+        actual, expected,
+        "expected 'not found' from cross_module_private_enum; got: {actual:?}"
+    );
+}
+
 /// A Vec element type containing a function value fails closed at the
 /// checker (the layout/owned byte-copy would alias the sole-owner env).
 #[test]

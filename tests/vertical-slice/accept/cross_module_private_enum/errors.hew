@@ -1,0 +1,13 @@
+// Private (non-pub) enum returned from a pub fn across a module boundary.
+// Regression fixture for the §4b / fourth-pass emission asymmetry: the
+// pre-pass cached the HirTypeDecl for any enum, but the emission guard
+// previously only emitted pub types and non-generic structs, so a private
+// enum's layout was invisible to MIR and produced "E_MIR: unknown type".
+enum AppErr {
+    NotFound;
+    Forbidden;
+}
+
+pub fn make_error() -> AppErr {
+    AppErr::NotFound
+}

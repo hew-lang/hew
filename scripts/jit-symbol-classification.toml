@@ -991,6 +991,20 @@ internal = [
   # Used by two-process link fixtures to confirm a local linked actor crashed
   # via the mailbox EXIT cascade. Not user-callable; not JIT-reachable.
   "hew_link_probe_terminal_state",
+  # Test-introspection probe: drives one piggybacked SWIM gossip entry into the
+  # current node's cluster (DEAD verdict / stale-ALIVE replay / higher-incarnation
+  # rejoin) so a two-process rejoin fixture can exercise the membership admission
+  # gate deterministically. Not user-callable; not JIT-reachable.
+  "hew_dist_inject_swim_gossip",
+  # Test-introspection probe: returns the membership state the current node's
+  # cluster records for a node id (a MEMBER_* constant, or -1 if unknown). Used by
+  # the rejoin fixture to assert a buried node stays DEAD under stale gossip. Not
+  # user-callable; not JIT-reachable.
+  "hew_dist_member_state",
+  # Test-introspection probe: returns 1 if a node id is in the quarantine set, 0
+  # if not, -1 with no node installed. The resurrection-guard teeth for the rejoin
+  # fixture. Not user-callable; not JIT-reachable.
+  "hew_dist_quarantine_contains",
   "hew_fault_clear",
   "hew_fault_clear_all",
   "hew_fault_count",

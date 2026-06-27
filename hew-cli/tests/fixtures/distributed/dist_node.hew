@@ -178,6 +178,16 @@ extern "C" {
     fn hew_link_probe_terminal_state(actor_id: i64) -> i64;
 }
 
+// Test-introspection probes for the SWIM rejoin-admission gate: drive a gossip
+// entry into the local cluster, read a peer's membership state, and read whether a
+// peer is quarantined. These let the rejoin scenario exercise the admission gate
+// deterministically (no failure-detector race).
+extern "C" {
+    fn hew_dist_inject_swim_gossip(node_id: u16, state: i32, incarnation: u64) -> i64;
+    fn hew_dist_member_state(node_id: u16) -> i64;
+    fn hew_dist_quarantine_contains(node_id: u16) -> i64;
+}
+
 actor Linker {
     // 0 = CrashLinked (the linked actor crashes); 1 = MonitorLost (non-fatal).
     let policy_sel: i64;
@@ -880,6 +890,71 @@ fn scenario_client_monitor_close_reclaim(kv: RemotePid<KeyValue>) -> i64 {
     0
 }
 
+// Scenario: quarantine_rejoin
+//
+// Proves the fail-closed rejoin-admission boundary through the full compiled
+// stack. A buried peer (DEAD) is quarantined; a stale (<=-incarnation) ALIVE
+// gossip replay must NOT resurrect it, while a strictly-higher-incarnation rejoin
+// IS admitted and evicts the quarantine entry. The membership gossip frames are
+// driven deterministically through the runtime so there is no failure-detector
+// race; the resurrection-guard negative half is the assertion with teeth.
+//
+// MEMBER_* states: ALIVE = 0, DEAD = 2.
+fn scenario_quarantine_rejoin() -> i64 {
+    let peer: u16 = 4242;
+    let alive: i32 = 0;
+    let dead: i32 = 2;
+
+    // Establish the peer ALIVE at incarnation 5, then bury it (DEAD at 5). The
+    // DEAD verdict quarantines it at incarnation 5.
+    unsafe { hew_dist_inject_swim_gossip(peer, alive, 5) };
+    unsafe { hew_dist_inject_swim_gossip(peer, dead, 5) };
+
+    let state_after_verdict = unsafe { hew_dist_member_state(peer) };
+    if state_after_verdict != 2 {
+        println("FAIL quarantine_rejoin not-dead-after-verdict");
+        return 2;
+    }
+    let quarantined_after_verdict = unsafe { hew_dist_quarantine_contains(peer) };
+    if quarantined_after_verdict != 1 {
+        println("FAIL quarantine_rejoin not-quarantined-after-verdict");
+        return 3;
+    }
+
+    // Negative half (the resurrection guard): a stale ALIVE replay at an
+    // incarnation <= the buried one must NOT resurrect the peer. Try equal (5) and
+    // lower (4); after each the peer must stay DEAD and quarantined.
+    unsafe { hew_dist_inject_swim_gossip(peer, alive, 5) };
+    unsafe { hew_dist_inject_swim_gossip(peer, alive, 4) };
+    let state_after_stale = unsafe { hew_dist_member_state(peer) };
+    if state_after_stale != 2 {
+        println("FAIL quarantine_rejoin resurrected-by-stale");
+        return 4;
+    }
+    let quarantined_after_stale = unsafe { hew_dist_quarantine_contains(peer) };
+    if quarantined_after_stale != 1 {
+        println("FAIL quarantine_rejoin quarantine-cleared-by-stale");
+        return 5;
+    }
+    println("PASS quarantine_rejoin stale-rejected");
+
+    // Positive half: a strictly-higher-incarnation rejoin (6 > 5) IS admitted;
+    // the peer returns ALIVE and the quarantine entry is evicted.
+    unsafe { hew_dist_inject_swim_gossip(peer, alive, 6) };
+    let state_after_rejoin = unsafe { hew_dist_member_state(peer) };
+    if state_after_rejoin != 0 {
+        println("FAIL quarantine_rejoin not-readmitted-at-higher");
+        return 6;
+    }
+    let quarantined_after_rejoin = unsafe { hew_dist_quarantine_contains(peer) };
+    if quarantined_after_rejoin != 0 {
+        println("FAIL quarantine_rejoin not-evicted-after-readmission");
+        return 7;
+    }
+    println("PASS quarantine_rejoin readmitted-at=6");
+    0
+}
+
 fn run_client(port: string, scenario: string) -> i64 {
     let remote_addr = f"127.0.0.1:{port}";
     Node::set_transport("tcp");
@@ -889,7 +964,11 @@ fn run_client(port: string, scenario: string) -> i64 {
     // function above; the harness selects via HEW_DIST_SCENARIO. The #[wire]
     // scenario targets the WireProbe actor ("wire"); the rest target KeyValue
     // ("kv").
-    let status = if scenario == "wire_cbor" {
+    let status = if scenario == "quarantine_rejoin" {
+        // Membership-gate scenario: driven entirely through injected gossip on the
+        // local cluster, so it needs no remote actor lookup.
+        scenario_quarantine_rejoin()
+    } else if scenario == "wire_cbor" {
         let found_wire = lookup_wire_with_retry("wire");
         match found_wire {
             Result::Err(_) => {

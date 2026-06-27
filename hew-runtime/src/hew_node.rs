@@ -3319,6 +3319,76 @@ pub extern "C" fn hew_dist_monitor_remote_watcher_count() -> i64 {
     }
 }
 
+/// Drive a single piggybacked SWIM gossip entry into the current node's cluster,
+/// exactly as a received gossip frame would.
+///
+/// Test-introspection probe: lets a two-process rejoin fixture deterministically
+/// drive a DEAD verdict, a stale (`<=`-incarnation) ALIVE replay, and a
+/// strictly-higher-incarnation rejoin into the membership admission gate without
+/// racing the failure detector. Returns 0 on success, -1 when no node is
+/// installed. Not user-callable; the compiler does not emit calls to this symbol.
+/// Callable from `.hew` via
+/// `extern "C" { fn hew_dist_inject_swim_gossip(node_id: u16, state: i32, incarnation: u64) -> i64; }`.
+#[no_mangle]
+pub extern "C" fn hew_dist_inject_swim_gossip(node_id: u16, state: i32, incarnation: u64) -> i64 {
+    with_current_node_read(|guard| {
+        let node_ptr = *guard as *const HewNode;
+        if node_ptr.is_null() {
+            return -1;
+        }
+        // SAFETY: the read lock pins CURRENT_NODE for the duration of this call.
+        let node = unsafe { &*node_ptr };
+        if node.cluster.is_null() {
+            return -1;
+        }
+        // SAFETY: cluster is valid while the node is installed.
+        let cluster = unsafe { &*node.cluster };
+        cluster.apply_swim_gossip(&[(node_id, state, incarnation)]);
+        0
+    })
+}
+
+/// Return the membership state the current node's cluster records for `node_id`
+/// (the `MEMBER_*` constants), or -1 if the node is unknown / no node installed.
+///
+/// Test-introspection probe for the rejoin fixture: asserts a buried node stays
+/// DEAD under a stale-ALIVE replay and flips to ALIVE only after a strictly-higher
+/// rejoin. Not user-callable.
+#[no_mangle]
+pub extern "C" fn hew_dist_member_state(node_id: u16) -> i64 {
+    with_current_node_read(|guard| {
+        let node_ptr = *guard as *const HewNode;
+        if node_ptr.is_null() {
+            return -1;
+        }
+        // SAFETY: the read lock pins CURRENT_NODE for the duration of this call.
+        let node = unsafe { &*node_ptr };
+        if node.cluster.is_null() {
+            return -1;
+        }
+        // SAFETY: cluster is valid while the node is installed.
+        let cluster = unsafe { &*node.cluster };
+        i64::from(cluster.member_state(node_id))
+    })
+}
+
+/// Return 1 if `node_id` is currently in the quarantine set, 0 if not, -1 when no
+/// node is installed.
+///
+/// Test-introspection probe for the rejoin fixture: the resurrection-guard teeth.
+/// A buried node must remain quarantined under a stale-ALIVE replay and be evicted
+/// after a strictly-higher rejoin. Not user-callable.
+#[no_mangle]
+pub extern "C" fn hew_dist_quarantine_contains(node_id: u16) -> i64 {
+    match crate::runtime::rt_current_opt() {
+        Some(rt) => rt
+            .node
+            .quarantine
+            .access(|set| i64::from(set.contains_key(&node_id))),
+        None => -1,
+    }
+}
+
 /// Connect to a remote node and register routing for its node ID.
 ///
 /// Supports `"<node_id>@<addr>"` format for explicit peer node IDs. If no

@@ -2359,6 +2359,16 @@ impl HewCluster {
             .find(|m| m.node_id == node_id)
             .map(|m| m.incarnation)
     }
+
+    /// The membership state recorded for `node_id` (a `MEMBER_*` constant), or
+    /// `-1` if the node is unknown. Used by the rejoin test-introspection probe.
+    pub(crate) fn member_state(&self, node_id: u16) -> i32 {
+        let members = self.members.lock_or_recover();
+        members
+            .iter()
+            .find(|m| m.node_id == node_id)
+            .map_or(-1, |m| m.state)
+    }
 }
 
 /// Get the number of pending gossip events.

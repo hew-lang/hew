@@ -904,3 +904,34 @@ fn cross_node_monitor_close_reclaims_watcher_entry() {
          server out:\n{server_out}"
     );
 }
+
+/// Cross-process rejoin-admission proof: a buried peer cannot be resurrected by a
+/// stale (`<=`-incarnation) ALIVE gossip replay, but a strictly-higher-incarnation
+/// rejoin IS admitted and evicts the quarantine entry. The client drives the
+/// admission gate through the compiled runtime via injected SWIM gossip frames
+/// (deterministic — no failure-detector race), proving the boundary across the
+/// whole frontend → codegen → runtime stack.
+///
+/// The teeth: BOTH `PASS quarantine_rejoin stale-rejected` (the resurrection
+/// guard — `resurrected-by-stale` must NEVER fire) AND
+/// `PASS quarantine_rejoin readmitted-at=6` (the positive readmission) must
+/// appear, and no `FAIL` line. A no-op admission gate that let the stale ALIVE
+/// through would emit `FAIL quarantine_rejoin resurrected-by-stale`.
+#[test]
+fn quarantine_rejoin_stale_rejected_higher_readmitted() {
+    let stdout = run_two_process_scenario("quarantine_rejoin");
+    assert!(
+        stdout.contains("PASS quarantine_rejoin stale-rejected"),
+        "a stale (<=-incarnation) ALIVE gossip must NOT resurrect a buried peer; \
+         client stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("PASS quarantine_rejoin readmitted-at=6"),
+        "a strictly-higher-incarnation rejoin must be admitted and evict the \
+         quarantine entry; client stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("FAIL "),
+        "client reported a FAIL on the rejoin-admission proof; client stdout:\n{stdout}"
+    );
+}

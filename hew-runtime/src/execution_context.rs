@@ -65,8 +65,15 @@ pub enum PartitionPolicy {
     /// degrading to `FailFast` (no-silent-no-op-stubs).
     CrashLinked = 3,
     /// Stop sending to a suspect or dead peer until a fresh incarnation appears.
-    /// The runtime currently admits this variant but treats it as `FailFast` for send/ask
-    /// resolution; incarnation tracking requires a future reply-table schema change.
+    ///
+    /// The send/ask path consults a per-runtime quarantine set keyed
+    /// `node_id -> incarnation` (the incarnation a peer was quarantined at on its
+    /// SWIM-DEAD verdict). A `Quarantine`-policy send/ask to a peer present in the
+    /// set fails closed with `Partition` until the peer rejoins at a strictly
+    /// higher incarnation, which evicts the entry. Incarnation is a property of
+    /// peer identity at the membership layer, so the quarantine set is its home —
+    /// NOT a reply-table column. The reply table correlates in-flight asks to a
+    /// connection and needs no incarnation field for this behaviour.
     Quarantine = 4,
 }
 

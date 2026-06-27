@@ -21032,6 +21032,145 @@ pub(crate) fn lower_layout_vec_direct_call(
 /// gate in the dispatch switch (`uses_wasm_excluded_symbol`); WASM builds
 /// never arrive here.
 ///
+/// Release the caller's duplicate key on the OVERWRITE path of a
+/// `HashMap.insert` / `HashSet.insert` (#2033).
+///
+/// `hew_hashmap_insert_layout` / `hew_hashset_insert_layout` return `true` for a
+/// vacant insert (the runtime MOVES the caller's key into the slot — consumed)
+/// and `false` for an overwrite (the runtime reuses the stored key in place; the
+/// caller's freshly-built duplicate key is NOT consumed). The MIR move-checker
+/// statically consumes the key binding at every insert site
+/// (`consume_moved_builtin_method_arg`), which is correct on the vacant path but
+/// orphans the caller's key on the overwrite path: its scope-exit drop is
+/// suppressed and nothing else frees it, so it leaks one allocation per
+/// colliding insert.
+///
+/// This is the Stage-C conditional-drop materialiser the runtime ownership
+/// comments anticipate: branch on the returned `i1` and, on the overwrite path
+/// (`returned == false`), release the caller's key with its type-appropriate
+/// drop:
+///   - `string` key -> `hew_string_drop` on the loaded string pointer (the key
+///     blob is the 8-byte string handle; this is the same release the vacant
+///     path's static consume relies on). Null- and static-literal-safe.
+///   - layout-managed record key (a record with a heap leaf) ->
+///     `__hew_record_drop_inplace_<R>` on the key blob in place (the record's
+///     per-field drop spine, the same thunk wired into the key layout's
+///     `drop_fn`).
+///   - any other key (BitCopy scalar / Copy record) -> no heap to release; emit
+///     nothing.
+///
+/// Frees EXACTLY ONCE on the overwrite path only: the static consume already
+/// suppressed the scope-exit drop (vacant: map owns it; overwrite: this release
+/// owns it), so the key is never double-freed and never leaked. The `key_place`
+/// type drives the disposition via `place_resolved_ty`; congruence with the key
+/// layout's `drop_fn` (see `hashmap_key_layout_descriptor_ptr`) keeps the two
+/// authorities from drifting. LESSONS: `cleanup-all-exits`,
+/// `boundary-fail-closed`, `lifecycle-symmetry`.
+fn emit_insert_overwrite_key_release(
+    fn_ctx: &FnCtx<'_, '_>,
+    callee: &str,
+    raw_bool: inkwell::values::IntValue<'_>,
+    key_place: Place,
+) -> CodegenResult<()> {
+    let key_ty = place_resolved_ty(fn_ctx, key_place)?;
+    // Decide the release ritual for the caller's duplicate key. `None` = a key
+    // with no owned heap leaf (BitCopy scalar / Copy record); nothing to drop.
+    enum KeyRelease<'ctx> {
+        /// Load the string handle from the key slot and `hew_string_drop` it.
+        StringPtr,
+        /// `__hew_record_drop_inplace_<R>` over the key blob in place.
+        RecordInPlace(FunctionValue<'ctx>),
+    }
+    let release = match key_ty {
+        ResolvedTy::String => Some(KeyRelease::StringPtr),
+        rty if resolved_ty_contains_heap_leaf(fn_ctx, rty, &mut HashSet::new()) => {
+            match crate::thunks::owned_elem_thunk_key(fn_ctx, rty) {
+                Some((OwnedElemThunkKind::Record, record_key)) => Some(KeyRelease::RecordInPlace(
+                    get_or_declare_record_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &record_key),
+                )),
+                _ => {
+                    return Err(CodegenError::FailClosed(format!(
+                        "{callee}: caller-key overwrite release for `{rty:?}` has no per-record \
+                         drop thunk path; only string and string-bearing record keys are \
+                         layout-managed (see hashmap_key_layout_descriptor_ptr)"
+                    )));
+                }
+            }
+        }
+        // BitCopy scalar / Copy record key: no owned heap, nothing to release.
+        _ => None,
+    };
+    let Some(release) = release else {
+        return Ok(());
+    };
+
+    // The drop fires only when the slot already existed (`returned == false`).
+    // Branch: `is_overwrite = (returned == 0)` -> release block -> continuation.
+    let parent_fn = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "{callee}: no insertion block/parent for overwrite-key release branch"
+            ))
+        })?;
+    let release_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent_fn, "insert_overwrite_key_release");
+    let cont_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent_fn, "insert_overwrite_key_cont");
+    let zero = raw_bool.get_type().const_zero();
+    let is_overwrite = fn_ctx
+        .builder
+        .build_int_compare(inkwell::IntPredicate::EQ, raw_bool, zero, "insert_existed")
+        .llvm_ctx_with(|| format!("{callee} overwrite-flag compare"))?;
+    fn_ctx
+        .builder
+        .build_conditional_branch(is_overwrite, release_bb, cont_bb)
+        .llvm_ctx_with(|| format!("{callee} overwrite-key branch"))?;
+
+    fn_ctx.builder.position_at_end(release_bb);
+    match release {
+        KeyRelease::StringPtr => {
+            // The key blob is the string handle; load it and drop. `key_place`
+            // resolves to the slot holding the `ptr`. `load_duplex_handle`
+            // validates the slot type is a pointer and yields the loaded handle.
+            let key_handle =
+                load_duplex_handle(fn_ctx, key_place, &format!("{callee} overwrite key"))?;
+            let helper = get_or_declare_drop_helper(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &DropHelper {
+                    name: "hew_string_drop",
+                },
+            );
+            fn_ctx
+                .builder
+                .build_call(helper, &[key_handle.into()], "overwrite_key_string_drop")
+                .llvm_ctx_with(|| format!("{callee} overwrite key hew_string_drop"))?;
+        }
+        KeyRelease::RecordInPlace(thunk) => {
+            // The key blob is the record struct; `__hew_record_drop_inplace_<R>`
+            // takes a pointer to it and drops its owned fields in place. The key
+            // arg the insert call passed is exactly that blob pointer.
+            let (key_ptr, _key_slot_ty) = place_pointer(fn_ctx, key_place)?;
+            fn_ctx
+                .builder
+                .build_call(thunk, &[key_ptr.into()], "overwrite_key_record_drop")
+                .llvm_ctx_with(|| format!("{callee} overwrite key record drop"))?;
+        }
+    }
+    fn_ctx
+        .builder
+        .build_unconditional_branch(cont_bb)
+        .llvm_ctx_with(|| format!("{callee} overwrite-key release join"))?;
+
+    fn_ctx.builder.position_at_end(cont_bb);
+    Ok(())
+}
+
 /// LESSONS: `codegen-abi-authority` (P0), `no-silent-no-op-stubs`.
 fn lower_hashmap_layout_direct_call(
     fn_ctx: &FnCtx<'_, '_>,
@@ -21087,14 +21226,16 @@ fn lower_hashmap_layout_direct_call(
                     "hew_hashmap_insert_layout_call",
                 )
                 .llvm_ctx("hew_hashmap_insert_layout call")?;
+            // The `i1` return is always needed for the #2033 overwrite-key
+            // release, even when the source-level `bool` is discarded.
+            let raw_bool = call
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("hew_hashmap_insert_layout returned void".into())
+                })?
+                .into_int_value();
             if let Some(dest_place) = dest {
-                let raw_bool = call
-                    .try_as_basic_value()
-                    .basic()
-                    .ok_or_else(|| {
-                        CodegenError::FailClosed("hew_hashmap_insert_layout returned void".into())
-                    })?
-                    .into_int_value();
                 let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
                 let widened =
                     zext_bool_i1_to_dest(fn_ctx, raw_bool, dest_ty, "hashmap_insert_bool")?;
@@ -21103,6 +21244,10 @@ fn lower_hashmap_layout_direct_call(
                     .build_store(dest_ptr, widened)
                     .llvm_ctx("hew_hashmap_insert_layout store")?;
             }
+            // #2033 — on the overwrite path the runtime keeps the stored key and
+            // the caller's duplicate is orphaned; release it (the vacant path's
+            // static consume is correct and emits nothing here).
+            emit_insert_overwrite_key_release(fn_ctx, callee, raw_bool, args[1])?;
         }
         "hew_hashmap_contains_key_layout" => {
             // `bool hew_hashmap_contains_key_layout(map, key_ptr)`.
@@ -21263,14 +21408,16 @@ fn lower_hashmap_layout_direct_call(
                     "hew_hashset_insert_layout_call",
                 )
                 .llvm_ctx("hew_hashset_insert_layout call")?;
+            // The `i1` return is always needed for the #2033 overwrite-key
+            // release, even when the source-level `bool` is discarded.
+            let raw_bool = call
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("hew_hashset_insert_layout returned void".into())
+                })?
+                .into_int_value();
             if let Some(dest_place) = dest {
-                let raw_bool = call
-                    .try_as_basic_value()
-                    .basic()
-                    .ok_or_else(|| {
-                        CodegenError::FailClosed("hew_hashset_insert_layout returned void".into())
-                    })?
-                    .into_int_value();
                 let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
                 let widened =
                     zext_bool_i1_to_dest(fn_ctx, raw_bool, dest_ty, "hashset_insert_bool")?;
@@ -21279,6 +21426,10 @@ fn lower_hashmap_layout_direct_call(
                     .build_store(dest_ptr, widened)
                     .llvm_ctx("hew_hashset_insert_layout store")?;
             }
+            // #2033 — a HashSet element is its own key; on the overwrite path
+            // (`returned == false`) the runtime keeps the stored element and the
+            // caller's duplicate is orphaned. Release it (vacant path consumes).
+            emit_insert_overwrite_key_release(fn_ctx, callee, raw_bool, args[1])?;
         }
         "hew_hashset_contains_layout" => {
             // `bool hew_hashset_contains_layout(set, elem_ptr)`.

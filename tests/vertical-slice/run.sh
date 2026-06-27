@@ -1014,11 +1014,27 @@ run_accept_expect_status "on_crash_basic" 42
 # FieldAccess lowering succeeds.  The supervisor boots and main returns 42.
 run_accept_expect_status "on_crash_info_code" 42
 
-# Accept: #[on(crash)] body that RETURNS a CrashAction variant now compiles
-# end-to-end (M-4). The checker accepts the return; MIR extracts the variant
-# tag as the i32 ABI return; codegen + supervisor boot cleanly; main exits 42.
-# (Runtime honouring of each variant is in hew-runtime/tests/on_crash_invocation.rs.)
+# Accept: #[on(crash)] body that RETURNS a CrashAction variant compiles
+# end-to-end (M-4). The checker accepts the return; the hook's CrashAction value
+# flows through the normal enum-return path and codegen returns the 2-byte
+# { i8, [1 x i8] } tagged-union struct by value (no i32 coercion, no tag-match);
+# the supervisor reads field 0 (the tag); codegen + supervisor boot cleanly; main
+# exits 42. This fixture is COMPILE-ONLY — no child crashes, so the emitted
+# __on_crash never runs at runtime (the real-crash path is the next fixture).
 run_accept_expect_status "on_crash_action_restart" 42
+
+# Accept: a REAL crash fires the emitted Worker__on_crash, which clones the
+# borrowed crash_message into the owned CrashInfo.message (hew_string_clone),
+# reads it, and returns CrashAction::Restart. The child traps, the supervisor
+# restarts it, await_restart re-fetches the fresh child, and main exits 42.
+# Teeth: a wrong crash-message string ABI / a move-of-borrow aborts the runtime
+# (exit 134, libc::abort from validate_cstring_header) the instant the hook runs
+# on a real crash — only a correct clone+drop reaches the clean restart and
+# exit 42. This is the runtime coverage the compile-only fixture above lacks.
+# Verified ASan/guard-malloc clean on the crash+restart path (no double-free,
+# no leak, no OOB) — see the on_crash_action_restart_real_crash gate in
+# scripts/asan-fixture-check.sh (Linux) and the macOS leaks oracle.
+run_accept_expect_status "on_crash_action_restart_real_crash" 42
 
 # Accept: #[on(exit)] linked-actor exit hook compiles end-to-end (M-7-R). The
 # checker accepts `fn on_peer_exit(note: CrashNotification)`; MIR emits

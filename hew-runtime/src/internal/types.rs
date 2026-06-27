@@ -108,14 +108,31 @@ pub type HewOnCrashFn = unsafe extern "C" fn(
 /// the 2-bit tag up to `i8`). The supervisor reads [`Self::tag`] to recover the
 /// variant. ABI-critical: this layout MUST match what codegen emits for the
 /// `CrashAction` enum — a mismatch is wrong-code at the FFI boundary.
+///
+/// ONLY FIELD 0 (`tag`) IS ABI-LOAD-BEARING. Cross-target correctness rests on
+/// the supervisor reading `tag` (field 0) and nothing else: a 2-byte all-integer
+/// struct returns its field 0 in the low byte of the return register on both
+/// `x86_64` System V (AL of RAX) and ARM64 `AAPCS64` (low byte of x0) under both
+/// the LLVM raw-aggregate producer and the `#[repr(C)]` consumer, so the decoded
+/// `tag` always agrees. The codegen producer uses LLVM's raw aggregate return,
+/// which scatters `payload_pad` to a DIFFERENT register than the C-ABI consumer
+/// expects and leaves it undef — so `payload_pad` is GARBAGE across the boundary.
+/// Do NOT read `payload_pad`, derive `PartialEq`/`Eq`-based comparisons of the
+/// whole struct across the FFI boundary, or widen this struct without re-checking
+/// the producer/consumer register agreement on every target (Windows x64 MSVC in
+/// particular is unverified — a 2-byte struct returns in RAX there so it is very
+/// likely fine, but flag it if Windows becomes a target). The fail-closed
+/// `0..=2 → Restart` default in `apply_restart` is a second layer of protection.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HewCrashActionAbi {
-    /// Variant discriminant: `Restart = 0`, `Escalate = 1`, `Kill = 2`.
+    /// Variant discriminant: `Restart = 0`, `Escalate = 1`, `Kill = 2`. The ONLY
+    /// ABI-load-bearing field — read via [`Self::tag_i32`]; see the type doc.
     pub tag: u8,
     /// Zero-sized-payload pad matching the LLVM `[1 x i8]` payload slot.
     /// ABI-required (keeps the struct's 2-byte size in sync with the enum
-    /// layout); not read by the supervisor.
+    /// layout); NOT read by the supervisor and GARBAGE across the FFI boundary
+    /// (the producer scatters it to a different register and leaves it undef).
     pub payload_pad: [u8; 1],
 }
 

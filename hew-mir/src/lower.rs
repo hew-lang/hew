@@ -71,12 +71,18 @@ const SENTINEL_CRASH_CODE_NODE: HirNodeId = HirNodeId(u32::MAX);
 /// Sentinel HIR binding ID for the synthetic `__crash_message: string` ABI
 /// param injected into `#[on(crash)]` handler prologues (M-3 ABI reshape).
 ///
-/// The `HewOnCrashFn` ABI carries the crash message as a `*const c_char`
-/// (typed `ResolvedTy::String` here, which lowers to an LLVM `ptr`). It is a
-/// BORROW per the P0 `by-value-heap-params-are-borrows` invariant — the
-/// runtime owns the underlying buffer, so the `__on_crash` function never
-/// drops this param; M-5's prologue clones it into the owned
-/// `CrashInfo.message` field (a fresh owner the function frame drops once).
+/// The `HewOnCrashFn` ABI carries the crash message as a `*const c_char` (typed
+/// `ResolvedTy::String` here, which lowers to an LLVM `ptr`). It is a BORROW per
+/// the P0 `by-value-heap-params-are-borrows` invariant — the supervisor owns the
+/// underlying Hew header-aware buffer and frees it after the call — so M-5's
+/// prologue CLONES it (`hew_string_clone`, a refcount bump) into the owned
+/// `CrashInfo.message` field (a fresh `+1` owner the function frame drops once via
+/// `hew_string_drop`), rather than moving the borrow (a move would double-free
+/// with the supervisor's release). Because the prologue uses the Hew string
+/// primitives (which read a 16-byte refcount header), the supervisor MUST hand in
+/// a Hew header-aware allocation, not a bare Rust `CString` — see
+/// `supervisor.rs::invoke_on_crash_handler`, which allocates via `str_to_malloc`
+/// and releases via `free_cstring`.
 /// Lives one below `__crash_code`'s sentinel to stay clear of real bindings.
 const SENTINEL_CRASH_MESSAGE_BINDING: BindingId = BindingId(u32::MAX - 1);
 
@@ -3320,26 +3326,32 @@ fn lower_actor_lifecycle_handlers(
                 // user-visible struct, the user-visible crash-info param is
                 // replaced in `abi_params` by TWO synthetic ABI params:
                 //   - `__crash_code: i64`     (the trap-kind integer)
-                //   - `__crash_message: string` (a `ptr` — borrowed C string)
+                //   - `__crash_message: string` (a `ptr` — borrowed Hew string;
+                //     the supervisor owns + frees the buffer)
                 // and the body gains a synthetic prologue:
                 //
-                //   let info = <crash-info-type> { code: __crash_code };
+                //   let info = <crash-info-type> {
+                //       code: __crash_code,
+                //       message: __crash_message.clone(),   // hew_string_clone
+                //   };
                 //
                 // The original binding ID for `info` is preserved in the `Let`
                 // statement so every `BindingRef { resolved: Binding(info_id) }`
                 // in the user body continues to resolve through `binding_locals`.
-                // `__crash_message` is a BORROW (the runtime owns the buffer)
-                // and is unused here; M-5 seeds `CrashInfo.message` from it.
+                // `__crash_message` is a BORROW (the supervisor owns the Hew
+                // header-aware buffer and frees it after the call), so M-5 CLONES it
+                // into the owned `CrashInfo.message` field (a fresh `+1` owner the
+                // function frame drops once) rather than moving the borrow — moving
+                // would double-free with the supervisor's release.
                 //
-                // RETURN: the M-3 ABI return is `i32` (the `CrashAction` tag).
-                // Until M-4 removes the checker fail-closed gate, only
-                // `panic()`-diverging bodies compile, so no `CrashAction` value
-                // materialises in the return slot yet — `return_ty` stays I32.
-                //
-                // WHEN obsolete: M-4 removes the I32 coercion and wraps the body
-                // so its `CrashAction` tail value is reduced to its tag i32 (a
-                // `match __action { Restart=>0, Escalate=>1, Kill=>2 }`); the
-                // prologue injection and the `__crash_message` ABI param stay.
+                // RETURN (M-4): the synthetic function's logical return type is
+                // `CrashAction`; the hook's `CrashAction` tail/explicit-return
+                // value flows through the normal enum-return path and codegen
+                // returns the 2-byte `{ i8, [1 x i8] }` tagged-union struct by
+                // value. The runtime `HewOnCrashFn` mirrors it with a `#[repr(C)]`
+                // 2-byte struct and reads field 0 (the tag). A `panic()`-diverging
+                // body returns no value (also valid). There is no i32 coercion and
+                // no tag-extraction `match` — the M-3 i32 return was removed in M-4.
 
                 // Find the crash-info payload param (if present) and build ABI
                 // params. The payload param is replaced with `__crash_code: I64`;
@@ -3410,9 +3422,22 @@ fn lower_actor_lifecycle_handlers(
                     };
 
                     // M-5: build the `__crash_message` BindingRef. The param is a
-                    // BORROW (the runtime owns the buffer); the StructInit clones
-                    // it into the owned `CrashInfo.message` field, so the `info`
-                    // record is a fresh owner the function frame drops once.
+                    // BORROW — the supervisor owns the underlying Hew header-aware
+                    // string (allocated via `str_to_malloc`, rc==1) and frees it via
+                    // `free_cstring` after the call (see `invoke_on_crash_handler`).
+                    // The field-init must NOT MOVE this borrow into the owned
+                    // `CrashInfo.message`: `lower_record_init` raw-stores its field
+                    // source with no construction retain, so a move would make the
+                    // record a raw rc==1 alias of the supervisor's buffer; the frame's
+                    // `CrashInfo` drop would free it (rc->0) and the supervisor's
+                    // `free_cstring` would then double-free it — the reported M-5
+                    // abort/corruption. Instead CLONE the borrow into an independent
+                    // `+1` owner via `RecordCloneCall` (its `string` arm emits
+                    // `hew_string_clone`, a header-aware refcount bump). The clone is
+                    // MOVED into `CrashInfo.message`, so the record owns its own copy:
+                    // rc == supervisor 1 -> clone 2 -> (record owns the clone) ->
+                    // `CrashInfo` drop releases it (->1) -> supervisor `free_cstring`
+                    // (->0). One buffer, freed exactly once, no double-free.
                     let crash_message_ref = HirExpr {
                         node: SENTINEL_CRASH_CODE_NODE,
                         site: SENTINEL_CRASH_CODE_SITE,
@@ -3425,10 +3450,26 @@ fn lower_actor_lifecycle_handlers(
                         },
                         span: info_param.span.clone(),
                     };
+                    // Clone the owned param into the record's `+1` owner.
+                    // `clone_fn_sym` / `record_name` are ignored by the `string` arm
+                    // (it emits `hew_string_clone` directly); set for dump/verify.
+                    let crash_message_clone = HirExpr {
+                        node: SENTINEL_CRASH_CODE_NODE,
+                        site: SENTINEL_CRASH_CODE_SITE,
+                        ty: ResolvedTy::String,
+                        value_class: ValueClass::CowValue,
+                        intent: IntentKind::Read,
+                        kind: HirExprKind::RecordCloneCall {
+                            src: Box::new(crash_message_ref),
+                            clone_fn_sym: "hew_string_clone".to_string(),
+                            record_name: "string".to_string(),
+                        },
+                        span: info_param.span.clone(),
+                    };
 
-                    // Build `<payload> { code: __crash_code, message: __crash_message }`.
-                    // `CrashInfo` is now an owned-aggregate record (`CowValue`)
-                    // because of the `message: string` field.
+                    // Build `<payload> { code: __crash_code, message: <cloned message> }`.
+                    // `CrashInfo` is an owned-aggregate record (`CowValue`) because of
+                    // the `message: string` field; it OWNS the cloned message.
                     let struct_init = HirExpr {
                         node: SENTINEL_CRASH_CODE_NODE,
                         site: SENTINEL_CRASH_CODE_SITE,
@@ -3440,7 +3481,7 @@ fn lower_actor_lifecycle_handlers(
                             type_args: Vec::new(),
                             fields: vec![
                                 ("code".to_string(), crash_code_ref),
-                                ("message".to_string(), crash_message_ref),
+                                ("message".to_string(), crash_message_clone),
                             ],
                             base: None,
                         },

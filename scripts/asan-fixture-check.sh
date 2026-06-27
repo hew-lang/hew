@@ -291,6 +291,15 @@ run_asan_fixture_expect_leak() {
 # ── Step 2: compile the clean and leak-probe fixtures ────────────────────
 CLEAN_SRC="${ROOT}/tests/vertical-slice/accept/asan_fixture_clean_probe.hew"
 LEAK_SRC="${ROOT}/tests/vertical-slice/accept/asan_fixture_leak_probe.hew"
+# Crash+restart clean probe: an actor really traps, its #[on(crash)] hook clones
+# and reads CrashInfo.message and returns CrashAction::Restart, the supervisor
+# restarts it, and main exits 42. Exercises the emitted __on_crash on a REAL
+# crash under ASan/LSan — the crash-message clone (hew_string_clone) and the
+# CrashInfo drop must balance the supervisor's str_to_malloc/free_cstring with no
+# double-free, no leak, no OOB. The pre-fix move-of-borrow + headerless drop
+# would OOB-read and abort here; ASan would catch the heap-buffer-overflow even
+# before the abort.
+CRASH_RESTART_SRC="${ROOT}/tests/vertical-slice/accept/on_crash_action_restart_real_crash.hew"
 
 # ── Step 3: compile the Hew fixtures ─────────────────────────────────────
 echo ""
@@ -307,6 +316,12 @@ compile_asan_fixture "clean-probe" "${CLEAN_SRC}" "${CLEAN_BIN}"
 # the pipeline catches leaks in compiled Hew code.
 LEAK_BIN="${WORK_DIR}/asan_fixture_leak_probe"
 compile_asan_fixture "leak-probe (Hew generated-code)" "${LEAK_SRC}" "${LEAK_BIN}"
+
+# ── Step 3d: compile the crash+restart clean probe ───────────────────────
+# The on(crash) hook runs on a real trap; the crash-message clone/drop path must
+# be ASan/LSan-clean across the crash and restart.
+CRASH_RESTART_BIN="${WORK_DIR}/on_crash_action_restart_real_crash"
+compile_asan_fixture "crash-restart (on_crash real crash)" "${CRASH_RESTART_SRC}" "${CRASH_RESTART_BIN}"
 
 # ── Step 3c: compile and link the clean probe via the CLI flag path ───────
 # Uses HEW_SANITIZE_ADDRESS=1 hew build (full link, not --emit-obj) to exercise
@@ -361,6 +376,19 @@ fi
 # HEW_SANITIZE_ADDRESS=1) under ASan/LSan.  Proves the CLI flag integration is
 # exercised by this gate, not only the manual clang path.
 if run_asan_fixture "clean-probe (CLI link path)" "${CLI_LINK_BIN}" 0; then
+  pass=$((pass + 1))
+else
+  fail=$((fail + 1))
+fi
+
+# ── Gate 4: crash+restart clean probe MUST produce zero findings, exit 42 ─
+# A real crash fires the emitted __on_crash, which clones + reads
+# CrashInfo.message and returns CrashAction::Restart. The crash-message
+# clone/drop (hew_string_clone / CrashInfo record drop) must balance the
+# supervisor's str_to_malloc/free_cstring with no double-free, no leak, no OOB.
+# Exit 42 = the restarted child's init value; any ASan/LSan finding (or a non-42
+# exit) fails the gate.
+if run_asan_fixture "crash-restart (on_crash real crash)" "${CRASH_RESTART_BIN}" 42; then
   pass=$((pass + 1))
 else
   fail=$((fail + 1))

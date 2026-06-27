@@ -460,6 +460,15 @@ run_accept_expect_status "assert_ne" 0
 run_accept_expect_status "sleep_duration" 0
 run_accept_expect_status "sleep_until" 0
 
+# #2269: a suspending lifecycle hook (`#[on(start)]` / `init()`) must run to
+# completion across the suspension point — code AND state writes after the
+# suspend must survive, driven by the same park/resume the scheduler uses for a
+# suspending `receive` handler. Exact-stdout oracles (the regressed bug printed
+# `before`/`0`, dropping `after` and the state write).
+run_accept_expect_stdout "on_start_suspension_resumes"
+run_accept_expect_stdout "on_start_multi_suspension_resumes"
+run_accept_expect_stdout "init_suspension_resumes"
+
 # Static trait dispatch through supertrait bounds:
 # - reject missing concrete dispatch target at checker time, before MIR;
 # - accept inline supermethod provision on the direct impl;
@@ -1803,6 +1812,27 @@ fi
 grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
 grep -qF 'MIR lowering for scope deadline body is not implemented yet' "${reject_output}"
 grep -qF 'a contextless caller has no parkable continuation' "${reject_output}"
+
+# #2269 fail-closed: a suspending `#[on(stop)]` hook cannot be resumed at teardown
+# (the actor is already terminal). Refuse at codegen rather than silently truncate
+# the work after the suspension point.
+if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/on_stop_suspension.hew" >"${reject_output}" 2>&1; then
+  echo "expected on-stop-suspension fixture to fail" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
+grep -qF 'an `#[on(stop)]` hook' "${reject_output}"
+grep -qF 'cannot be resumed' "${reject_output}"
+
+# #2269 fail-closed: a suspending `init()` alongside an `#[on(start)]` hook would
+# need two sequential coroutines parked on one actor; refuse at codegen.
+if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/init_and_on_start_both_suspend.hew" >"${reject_output}" 2>&1; then
+  echo "expected init-and-on-start-both-suspend fixture to fail" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
+grep -qF 'a suspending `init()`' "${reject_output}"
+grep -qF 'not supported' "${reject_output}"
 
 # Reject: `for x in non_iterable` — Vec<T> is accepted through IntoIterator,
 # but values with no iterable contract must still fail closed.

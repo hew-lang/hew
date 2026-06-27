@@ -1,0 +1,22 @@
+// #2269: a suspending `init()` constructor (no `#[on(start)]`) had the same
+// discard bug. With no on_start present it is driven resumably, identically to a
+// suspending `#[on(start)]`.
+actor Booter {
+  var value: i64 = 0;
+  init() {
+    println("init-before");
+    sleep(50ms);
+    println("init-after");
+    value = 7;
+  }
+  receive fn get() -> i64 { value }
+}
+
+fn main() {
+  let b = spawn Booter;
+  sleep(200ms);
+  match await b.get() {
+    Ok(v) => println(v),
+    Err(_) => println("ask failed"),
+  }
+}

@@ -1,0 +1,24 @@
+// #2269: a `#[on(start)]` hook with MULTIPLE suspension points must resume across
+// every one, with state writes between suspends all preserved. Exercises the
+// resume re-entry's Pending re-park loop (not just a single Ready completion).
+actor Multi {
+  var value: i64 = 0;
+  #[on(start)] fn started() {
+    sleep(10ms);
+    value = value + 1;
+    sleep(10ms);
+    value = value + 10;
+    sleep(10ms);
+    value = value + 100;
+  }
+  receive fn get() -> i64 { value }
+}
+
+fn main() {
+  let m = spawn Multi;
+  sleep(150ms);
+  match await m.get() {
+    Ok(v) => println(v),
+    Err(_) => println("ask failed"),
+  }
+}

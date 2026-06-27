@@ -1,0 +1,21 @@
+// #2269 fail-closed: an `#[on(stop)]` hook that suspends cannot be driven to
+// completion at teardown (the actor is already terminal — no scheduler activation
+// to resume the parked continuation into). Refuse at compile time rather than
+// silently truncate the teardown work after the suspension point.
+actor Cleaner {
+  var value: i64 = 0;
+  #[on(stop)] fn cleanup() {
+    println("stopping");
+    sleep(50ms);
+    println("stopped");
+  }
+  receive fn get() -> i64 { value }
+}
+
+fn main() {
+  let c = spawn Cleaner;
+  match await c.get() {
+    Ok(v) => println(v),
+    Err(_) => println("ask failed"),
+  }
+}

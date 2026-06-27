@@ -1961,6 +1961,23 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // hew_cont_destroy(handle: *mut c_void) -> void (cont.rs:296). The SOLE
         // teardown owner of the child coro frame; null-safe.
         "hew_cont_destroy" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        // hew_actor_park_lifecycle_cont(actor: *mut HewActor, cont: *mut c_void)
+        // -> bool (scheduler.rs). Parks a SUSPENDED `init`/`#[on(start)]`
+        // continuation against a freshly-spawned (Idle) actor so the scheduler's
+        // resume re-entry drives it to completion. Returns true when parked; false
+        // (and destroys the handle) when refused. The C return is `bool` (i1).
+        "hew_actor_park_lifecycle_cont" => {
+            ctx.bool_type().fn_type(&[ptr_ty.into(), ptr_ty.into()], false)
+        }
+        // hew_context_install(ctx: *mut c_void) -> *mut c_void
+        // (execution_context.rs). Installs a codegen-built execution context as the
+        // current canonical context and returns the previous one. The lifecycle
+        // spawn site brackets the hook ramp call with install/restore so a
+        // suspending hook's `hew_actor_self()` resolves to the spawned actor.
+        "hew_context_install" => ptr_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_context_restore(prev: *mut c_void) -> void (execution_context.rs).
+        // Restores the context `hew_context_install` returned; pairs 1:1.
+        "hew_context_restore" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
         // hew_context_reply_channel_swap_push(ch: *mut c_void) -> void
         // (`hew-runtime/src/execution_context.rs`). Opens a SCOPED reply-channel
         // swap: installs `ch` as the current execution context's reply channel,
@@ -12153,6 +12170,20 @@ fn has_connection_field(kinds: &[StateFieldCloneKind]) -> bool {
     })
 }
 
+/// True when a lifecycle hook function lowers as an `llvm.coro` switched-resume
+/// ramp — i.e. its body carries a `Terminator::Suspend` (a `sleep`/await), so
+/// `declare_function` set its LLVM return type to the `coro.begin` handle `ptr`
+/// rather than its logical return type. This is the SAME discriminator the
+/// dispatch trampoline keys off, traced (transitively) to the MIR suspend
+/// carrier via `declare_function`'s `is_coroutine_function` → `ptr`-return rule,
+/// not a name heuristic.
+pub(crate) fn lifecycle_hook_is_coroutine(hook: FunctionValue<'_>) -> bool {
+    matches!(
+        hook.get_type().get_return_type(),
+        Some(BasicTypeEnum::PointerType(_))
+    )
+}
+
 fn emit_actor_spawn_lifecycle<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     actor_name: &str,
@@ -12178,6 +12209,23 @@ fn emit_actor_spawn_lifecycle<'ctx>(
         return Ok(());
     }
 
+    let init_is_coro = init_fn.is_some_and(lifecycle_hook_is_coroutine);
+    let start_is_coro = start_fn.is_some_and(lifecycle_hook_is_coroutine);
+
+    // Fail-closed scope guard: a suspending `init()` followed by an `#[on(start)]`
+    // hook would require driving two sequential coroutines across suspensions on
+    // one actor (only one continuation can be parked at a time), which the spawn
+    // site does not yet sequence. Refuse at compile time rather than silently
+    // truncating either hook (#2269 fix doctrine: fail closed, never wrong-answer).
+    if init_is_coro && start_fn.is_some() {
+        return Err(CodegenError::FailClosed(format!(
+            "actor `{actor_name}`: a suspending `init()` (it contains a `sleep`/`await`) \
+             combined with an `#[on(start)]` hook is not supported — the two hooks would \
+             need to suspend and resume in sequence on one actor. Move the suspending work \
+             into `#[on(start)]`, or keep `init()` non-suspending."
+        )));
+    }
+
     let mut init_call_args = Vec::with_capacity(1 + init_args.len());
     for (idx, place) in init_args.iter().enumerate() {
         init_call_args.push(load_place_as_metadata(
@@ -12187,47 +12235,276 @@ fn emit_actor_spawn_lifecycle<'ctx>(
         )?);
     }
     let ctx_arg = build_spawn_lifecycle_context(fn_ctx, spawned)?;
+
+    // Install the lifecycle context as the current thread-local execution context
+    // across the hook calls so a suspending hook's `hew_actor_self()` resolves to
+    // THIS actor (and its sleep/await timer wakes this actor). The spawn site runs
+    // synchronously outside any scheduler dispatch frame, so without this the
+    // current context belongs to `main` (or the spawning actor) and the timer
+    // would wake the wrong actor — the hook would never resume. Restored on every
+    // exit edge below (Ready, Pending-park, and the non-coroutine fall-through).
+    let install_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_context_install",
+    )?;
+    let prev_ctx = fn_ctx
+        .builder
+        .build_call(install_fn, &[ctx_arg.into()], "lifecycle_ctx_install")
+        .llvm_ctx("hew_context_install call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_context_install returned void".into()))?
+        .into_pointer_value();
+
     emit_actor_state_lock_call(fn_ctx, spawned, "hew_actor_state_lock_acquire")?;
+
+    // The one hook (if any) that may suspend: either a coroutine `init()` (only
+    // when no `#[on(start)]` exists — guarded above) or a coroutine `#[on(start)]`.
+    // It is driven via the resume/park pattern; everything else is a plain call.
     if let Some(init_fn) = init_fn {
         let mut args = Vec::with_capacity(1 + init_call_args.len());
         args.push(ctx_arg.into());
         args.extend(init_call_args);
+        if init_is_coro {
+            // init suspends (and, per the guard, there is no on_start): drive it.
+            return emit_lifecycle_coro_drive(
+                fn_ctx,
+                spawned,
+                init_fn,
+                &args,
+                &init_name,
+                terminate_fn,
+                prev_ctx,
+            );
+        }
         fn_ctx
             .builder
             .build_call(init_fn, &args, &format!("call_{init_name}"))
             .llvm_ctx("actor init call")?;
     }
     if let Some(start_fn) = start_fn {
+        if start_is_coro {
+            // on_start suspends: drive it via resume/park. init (if any) already
+            // ran to completion above (it was non-coroutine — the guard rejects a
+            // coroutine init alongside on_start).
+            return emit_lifecycle_coro_drive(
+                fn_ctx,
+                spawned,
+                start_fn,
+                &[ctx_arg.into()],
+                &start_name,
+                terminate_fn,
+                prev_ctx,
+            );
+        }
         fn_ctx
             .builder
             .build_call(start_fn, &[ctx_arg.into()], &format!("call_{start_name}"))
             .llvm_ctx("actor on(start) call")?;
     }
+
+    // No hook suspended: the lock-acquire/hook-call/lock-release ordering is
+    // byte-identical to the historical run-to-completion path.
     emit_actor_state_lock_call(fn_ctx, spawned, "hew_actor_state_lock_release")?;
+    emit_lifecycle_context_restore(fn_ctx, prev_ctx)?;
+    emit_lifecycle_register_terminate(fn_ctx, spawned, terminate_fn)?;
 
-    // Register the terminate trampoline on the actor so the runtime fires it
-    // at normal teardown. Done after the init/on(start) block (outside the
-    // lock) so that the registration write is not ordered before any state
-    // initialisation performed by init.
-    if let Some(terminate_fn) = terminate_fn {
-        let mut runtime_decls = RuntimeDeclMap::new();
-        let set_terminate = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut runtime_decls,
-            "hew_actor_set_terminate",
-        )?;
-        let fn_ptr = terminate_fn.as_global_value().as_pointer_value();
-        fn_ctx
-            .builder
-            .build_call(
-                set_terminate,
-                &[spawned.into(), fn_ptr.into()],
-                "hew_actor_set_terminate_call",
-            )
-            .llvm_ctx("hew_actor_set_terminate call")?;
+    Ok(())
+}
+
+/// Restore the execution context `hew_context_install` returned (paired 1:1).
+fn emit_lifecycle_context_restore<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    prev_ctx: PointerValue<'ctx>,
+) -> CodegenResult<()> {
+    let restore_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_context_restore",
+    )?;
+    fn_ctx
+        .builder
+        .build_call(restore_fn, &[prev_ctx.into()], "lifecycle_ctx_restore")
+        .llvm_ctx("hew_context_restore call")?;
+    Ok(())
+}
+
+/// Register the terminate trampoline on the actor so the runtime fires it at
+/// normal teardown. Done after the init/on(start) block (outside the lock) so
+/// the registration write is not ordered before any state initialisation
+/// performed by init.
+fn emit_lifecycle_register_terminate<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    spawned: PointerValue<'ctx>,
+    terminate_fn: Option<FunctionValue<'ctx>>,
+) -> CodegenResult<()> {
+    let Some(terminate_fn) = terminate_fn else {
+        return Ok(());
+    };
+    let set_terminate = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_actor_set_terminate",
+    )?;
+    let fn_ptr = terminate_fn.as_global_value().as_pointer_value();
+    fn_ctx
+        .builder
+        .build_call(
+            set_terminate,
+            &[spawned.into(), fn_ptr.into()],
+            "hew_actor_set_terminate_call",
+        )
+        .llvm_ctx("hew_actor_set_terminate call")?;
+    Ok(())
+}
+
+/// Drive a SUSPENDING lifecycle hook (a coroutine ramp) at the direct-spawn
+/// site, mirroring the dispatch trampoline's resume/park pattern:
+///
+///   handle = ramp(ctx, args...)        ; runs the body to its first coro.suspend
+///   poll   = hew_cont_poll(handle, 0)
+///   Ready  → hew_cont_destroy(handle)  ; ran to completion synchronously
+///            release lock; restore ctx; register terminate
+///   Pending→ release lock (a suspended actor must not hold its lock — FG2/R2 P0)
+///            register terminate (init's state writes are done); restore ctx
+///            hew_actor_park_lifecycle_cont(actor, handle)  ; scheduler resumes
+///
+/// Both arms converge on a continuation block so `main`/the caller proceeds to
+/// store the spawn destination either way. On Pending the hook resumes
+/// asynchronously on a scheduler worker via the existing resume re-entry; the
+/// spawning thread does NOT block.
+fn emit_lifecycle_coro_drive<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    spawned: PointerValue<'ctx>,
+    ramp: FunctionValue<'ctx>,
+    args: &[BasicMetadataValueEnum<'ctx>],
+    hook_name: &str,
+    terminate_fn: Option<FunctionValue<'ctx>>,
+    prev_ctx: PointerValue<'ctx>,
+) -> CodegenResult<()> {
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    let i32_ty = fn_ctx.ctx.i32_type();
+
+    let call = fn_ctx
+        .builder
+        .build_call(ramp, args, &format!("call_{hook_name}"))
+        .llvm_ctx("lifecycle coro ramp call")?;
+    let handle = call.try_as_basic_value().basic().ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "suspending lifecycle hook `{hook_name}` ramp returned void; a ramp \
+                 must return its coro.begin handle (ptr)"
+        ))
+    })?;
+    if !matches!(handle.get_type(), BasicTypeEnum::PointerType(_)) {
+        return Err(CodegenError::FailClosed(format!(
+            "suspending lifecycle hook `{hook_name}` ramp returned {:?}, not the \
+             coro.begin handle (ptr)",
+            handle.get_type()
+        )));
     }
+    let handle = handle.into_pointer_value();
 
+    // Poll the just-suspended handle for its done-state only (the body deposits no
+    // reply value — a lifecycle hook returns unit). Ready → it ran to completion
+    // without parking on a real readiness source; Pending → it parked on its
+    // sleep/await timer.
+    let poll_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_cont_poll",
+    )?;
+    let poll = fn_ctx
+        .builder
+        .build_call(
+            poll_fn,
+            &[handle.into(), ptr_ty.const_null().into()],
+            "lifecycle_cont_poll",
+        )
+        .llvm_ctx("hew_cont_poll call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_cont_poll returned void".into()))?
+        .into_int_value();
+    // ResumePoll::Ready == 1, ResumePoll::Pending == 0.
+    let is_ready = fn_ctx
+        .builder
+        .build_int_compare(
+            inkwell::IntPredicate::EQ,
+            poll,
+            i32_ty.const_int(1, false),
+            "lifecycle_poll_is_ready",
+        )
+        .llvm_ctx("lifecycle poll ready compare")?;
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| CodegenError::Llvm("lifecycle drive block has no parent".into()))?;
+    let ready_bb = fn_ctx.ctx.append_basic_block(parent, "lifecycle_ready");
+    let pending_bb = fn_ctx.ctx.append_basic_block(parent, "lifecycle_pending");
+    let after_bb = fn_ctx.ctx.append_basic_block(parent, "lifecycle_after");
+    fn_ctx
+        .builder
+        .build_conditional_branch(is_ready, ready_bb, pending_bb)
+        .llvm_ctx("lifecycle poll branch")?;
+
+    // ── Ready: the hook ran straight to its final suspend. Reclaim the frame,
+    // then run the historical run-to-completion teardown ordering. ──
+    fn_ctx.builder.position_at_end(ready_bb);
+    let destroy_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_cont_destroy",
+    )?;
+    fn_ctx
+        .builder
+        .build_call(destroy_fn, &[handle.into()], "lifecycle_cont_destroy")
+        .llvm_ctx("hew_cont_destroy call")?;
+    emit_actor_state_lock_call(fn_ctx, spawned, "hew_actor_state_lock_release")?;
+    emit_lifecycle_context_restore(fn_ctx, prev_ctx)?;
+    emit_lifecycle_register_terminate(fn_ctx, spawned, terminate_fn)?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(after_bb)
+        .llvm_ctx("lifecycle ready -> after")?;
+
+    // ── Pending: the hook suspended on its readiness source. Release the lock
+    // BEFORE parking (a suspended actor must not hold its state lock against
+    // senders — FG2 / R2 P0), register terminate (init's state writes are done),
+    // restore the context, then park the handle so the scheduler resumes it. ──
+    fn_ctx.builder.position_at_end(pending_bb);
+    emit_actor_state_lock_call(fn_ctx, spawned, "hew_actor_state_lock_release")?;
+    emit_lifecycle_register_terminate(fn_ctx, spawned, terminate_fn)?;
+    emit_lifecycle_context_restore(fn_ctx, prev_ctx)?;
+    let park_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_actor_park_lifecycle_cont",
+    )?;
+    fn_ctx
+        .builder
+        .build_call(
+            park_fn,
+            &[spawned.into(), handle.into()],
+            "lifecycle_park_cont",
+        )
+        .llvm_ctx("hew_actor_park_lifecycle_cont call")?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(after_bb)
+        .llvm_ctx("lifecycle pending -> after")?;
+
+    // Both arms converge here; the caller continues from this block (e.g. storing
+    // the spawn destination pointer). On the Pending path the hook resumes
+    // asynchronously on the scheduler — the spawning thread does not block.
+    fn_ctx.builder.position_at_end(after_bb);
     Ok(())
 }
 
@@ -12325,6 +12602,13 @@ fn emit_actor_lifecycle_wrapper<'ctx>(
     let ctx_slot = builder
         .build_alloca(ctx_ty, "lifecycle_ctx")
         .llvm_ctx("lifecycle ctx alloca")?;
+    // Zero the whole carrier before populating the actor fields (see
+    // `build_spawn_lifecycle_context`): a suspending supervised hook installs this
+    // context and reads pointer fields (e.g. `cancel_token`) across the suspend,
+    // so the unset fields must be null rather than stack garbage.
+    builder
+        .build_store(ctx_slot, ctx_ty.const_zero())
+        .llvm_ctx("lifecycle ctx zero-init")?;
     // actor ptr → ctx[HEW_CTX_OFFSET_ACTOR]
     let actor_slot = unsafe {
         builder
@@ -12369,6 +12653,34 @@ fn emit_actor_lifecycle_wrapper<'ctx>(
 
     let mut runtime_decls = RuntimeDeclMap::new();
 
+    // Fail-closed scope guard, mirroring the direct-spawn site: a suspending
+    // `init()` alongside an `#[on(start)]` would need two sequential coroutines
+    // parked on one actor, which neither site sequences yet. Refuse at compile
+    // time rather than silently truncate.
+    let init_is_coro = init_fn.is_some_and(lifecycle_hook_is_coroutine);
+    let start_is_coro = start_fn.is_some_and(lifecycle_hook_is_coroutine);
+    if init_is_coro && start_fn.is_some() {
+        return Err(CodegenError::FailClosed(format!(
+            "actor `{actor_name}` (supervised): a suspending `init()` combined with an \
+             `#[on(start)]` hook is not supported — the two hooks would need to suspend \
+             and resume in sequence on one actor. Move the suspending work into \
+             `#[on(start)]`, or keep `init()` non-suspending."
+        )));
+    }
+
+    // Install the lifecycle context across the hook calls so a suspending hook's
+    // `hew_actor_self()` resolves to this child actor (the supervisor's worker is
+    // running `restart_child_from_spec`; the current context is the supervisor's,
+    // not the child's, without this install).
+    let install_fn = intern_runtime_decl(ctx, llvm_mod, &mut runtime_decls, "hew_context_install")?;
+    let prev_ctx = builder
+        .build_call(install_fn, &[ctx_slot.into()], "lifecycle_ctx_install")
+        .llvm_ctx("hew_context_install call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_context_install returned void".into()))?
+        .into_pointer_value();
+
     // Acquire the actor state lock (trap on non-zero) before running init /
     // on_start, matching the direct-spawn ordering. The supervisor holds no
     // lock on this actor at the fire site, so there is no re-entrancy.
@@ -12399,12 +12711,50 @@ fn emit_actor_lifecycle_wrapper<'ctx>(
         // through the wrapper (or a richer spec carrier); then call init here
         // with the threaded args regardless of arity.
         if init_fn.count_params() == 1 {
+            if init_is_coro {
+                // init suspends (and, per the guard, there is no on_start): drive
+                // it via resume/park. The wrapper returns void on both arms.
+                emit_supervised_lifecycle_coro_drive(
+                    ctx,
+                    llvm_mod,
+                    &builder,
+                    &mut runtime_decls,
+                    wrapper,
+                    actor,
+                    init_fn,
+                    ctx_slot,
+                    &init_name,
+                    terminate_fn,
+                    prev_ctx,
+                )?;
+                let _ = i32_ty;
+                return Ok(wrapper);
+            }
             builder
                 .build_call(init_fn, &[ctx_slot.into()], &format!("call_{init_name}"))
                 .llvm_ctx("supervised actor init call")?;
         }
     }
     if let Some(start_fn) = start_fn {
+        if start_is_coro {
+            // on_start suspends: drive it via resume/park. init (non-coroutine per
+            // the guard) already ran above.
+            emit_supervised_lifecycle_coro_drive(
+                ctx,
+                llvm_mod,
+                &builder,
+                &mut runtime_decls,
+                wrapper,
+                actor,
+                start_fn,
+                ctx_slot,
+                &start_name,
+                terminate_fn,
+                prev_ctx,
+            )?;
+            let _ = i32_ty;
+            return Ok(wrapper);
+        }
         builder
             .build_call(start_fn, &[ctx_slot.into()], &format!("call_{start_name}"))
             .llvm_ctx("supervised actor on(start) call")?;
@@ -12420,27 +12770,209 @@ fn emit_actor_lifecycle_wrapper<'ctx>(
         "hew_actor_state_lock_release",
     )?;
 
+    emit_supervised_lifecycle_context_restore(
+        ctx,
+        llvm_mod,
+        &builder,
+        &mut runtime_decls,
+        prev_ctx,
+    )?;
+
     // Register the terminate trampoline AFTER the lock release (outside the
     // lock), so the registration write is not ordered before any state init
     // performed by init — matching `emit_actor_spawn_lifecycle`.
-    if let Some(terminate_fn) = terminate_fn {
-        let set_terminate =
-            intern_runtime_decl(ctx, llvm_mod, &mut runtime_decls, "hew_actor_set_terminate")?;
-        let fn_ptr = terminate_fn.as_global_value().as_pointer_value();
-        builder
-            .build_call(
-                set_terminate,
-                &[actor.into(), fn_ptr.into()],
-                "hew_actor_set_terminate_call",
-            )
-            .llvm_ctx("supervised hew_actor_set_terminate call")?;
-    }
+    emit_supervised_lifecycle_register_terminate(
+        ctx,
+        llvm_mod,
+        &builder,
+        &mut runtime_decls,
+        actor,
+        terminate_fn,
+    )?;
 
     let _ = i32_ty;
     builder
         .build_return(None)
         .llvm_ctx("lifecycle wrapper ret")?;
     Ok(wrapper)
+}
+
+/// Restore the execution context `hew_context_install` returned, for the
+/// supervised wrapper's bare-builder context (no `FnCtx`).
+fn emit_supervised_lifecycle_context_restore<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &Builder<'ctx>,
+    runtime_decls: &mut RuntimeDeclMap<'ctx>,
+    prev_ctx: PointerValue<'ctx>,
+) -> CodegenResult<()> {
+    let restore_fn = intern_runtime_decl(ctx, llvm_mod, runtime_decls, "hew_context_restore")?;
+    builder
+        .build_call(restore_fn, &[prev_ctx.into()], "lifecycle_ctx_restore")
+        .llvm_ctx("hew_context_restore call")?;
+    Ok(())
+}
+
+/// Register the terminate trampoline for the supervised wrapper's bare builder.
+fn emit_supervised_lifecycle_register_terminate<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &Builder<'ctx>,
+    runtime_decls: &mut RuntimeDeclMap<'ctx>,
+    actor: PointerValue<'ctx>,
+    terminate_fn: Option<FunctionValue<'ctx>>,
+) -> CodegenResult<()> {
+    let Some(terminate_fn) = terminate_fn else {
+        return Ok(());
+    };
+    let set_terminate =
+        intern_runtime_decl(ctx, llvm_mod, runtime_decls, "hew_actor_set_terminate")?;
+    let fn_ptr = terminate_fn.as_global_value().as_pointer_value();
+    builder
+        .build_call(
+            set_terminate,
+            &[actor.into(), fn_ptr.into()],
+            "hew_actor_set_terminate_call",
+        )
+        .llvm_ctx("supervised hew_actor_set_terminate call")?;
+    Ok(())
+}
+
+/// Drive a SUSPENDING supervised lifecycle hook (the resume/park pattern for the
+/// supervised wrapper's bare builder). Mirrors `emit_lifecycle_coro_drive`: poll
+/// the just-suspended handle, Ready → destroy + release-lock + restore +
+/// register-terminate + `ret void`; Pending → release-lock + register-terminate +
+/// restore + `hew_actor_park_lifecycle_cont` + `ret void`. Either way the
+/// supervisor continues; the child resumes asynchronously on the scheduler.
+#[allow(clippy::too_many_arguments)]
+fn emit_supervised_lifecycle_coro_drive<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &Builder<'ctx>,
+    runtime_decls: &mut RuntimeDeclMap<'ctx>,
+    wrapper: FunctionValue<'ctx>,
+    actor: PointerValue<'ctx>,
+    ramp: FunctionValue<'ctx>,
+    ctx_slot: PointerValue<'ctx>,
+    hook_name: &str,
+    terminate_fn: Option<FunctionValue<'ctx>>,
+    prev_ctx: PointerValue<'ctx>,
+) -> CodegenResult<()> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i32_ty = ctx.i32_type();
+
+    let handle = builder
+        .build_call(ramp, &[ctx_slot.into()], &format!("call_{hook_name}"))
+        .llvm_ctx("supervised lifecycle coro ramp call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "suspending supervised lifecycle hook `{hook_name}` ramp returned void; \
+                 a ramp must return its coro.begin handle (ptr)"
+            ))
+        })?;
+    if !matches!(handle.get_type(), BasicTypeEnum::PointerType(_)) {
+        return Err(CodegenError::FailClosed(format!(
+            "suspending supervised lifecycle hook `{hook_name}` ramp returned {:?}, not \
+             the coro.begin handle (ptr)",
+            handle.get_type()
+        )));
+    }
+    let handle = handle.into_pointer_value();
+
+    let poll_fn = intern_runtime_decl(ctx, llvm_mod, runtime_decls, "hew_cont_poll")?;
+    let poll = builder
+        .build_call(
+            poll_fn,
+            &[handle.into(), ptr_ty.const_null().into()],
+            "lifecycle_cont_poll",
+        )
+        .llvm_ctx("hew_cont_poll call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_cont_poll returned void".into()))?
+        .into_int_value();
+    let is_ready = builder
+        .build_int_compare(
+            inkwell::IntPredicate::EQ,
+            poll,
+            i32_ty.const_int(1, false),
+            "lifecycle_poll_is_ready",
+        )
+        .llvm_ctx("lifecycle poll ready compare")?;
+    let ready_bb = ctx.append_basic_block(wrapper, "lifecycle_ready");
+    let pending_bb = ctx.append_basic_block(wrapper, "lifecycle_pending");
+    builder
+        .build_conditional_branch(is_ready, ready_bb, pending_bb)
+        .llvm_ctx("lifecycle poll branch")?;
+
+    // ── Ready: ran to completion synchronously. ──
+    builder.position_at_end(ready_bb);
+    let destroy_fn = intern_runtime_decl(ctx, llvm_mod, runtime_decls, "hew_cont_destroy")?;
+    builder
+        .build_call(destroy_fn, &[handle.into()], "lifecycle_cont_destroy")
+        .llvm_ctx("hew_cont_destroy call")?;
+    emit_lifecycle_lock_call(
+        ctx,
+        llvm_mod,
+        builder,
+        runtime_decls,
+        wrapper,
+        actor,
+        "hew_actor_state_lock_release",
+    )?;
+    emit_supervised_lifecycle_context_restore(ctx, llvm_mod, builder, runtime_decls, prev_ctx)?;
+    emit_supervised_lifecycle_register_terminate(
+        ctx,
+        llvm_mod,
+        builder,
+        runtime_decls,
+        actor,
+        terminate_fn,
+    )?;
+    builder
+        .build_return(None)
+        .llvm_ctx("supervised lifecycle ready ret")?;
+
+    // ── Pending: suspended on its readiness source. Release the lock, register
+    // terminate, restore context, park the handle, return. ──
+    builder.position_at_end(pending_bb);
+    emit_lifecycle_lock_call(
+        ctx,
+        llvm_mod,
+        builder,
+        runtime_decls,
+        wrapper,
+        actor,
+        "hew_actor_state_lock_release",
+    )?;
+    emit_supervised_lifecycle_register_terminate(
+        ctx,
+        llvm_mod,
+        builder,
+        runtime_decls,
+        actor,
+        terminate_fn,
+    )?;
+    emit_supervised_lifecycle_context_restore(ctx, llvm_mod, builder, runtime_decls, prev_ctx)?;
+    let park_fn = intern_runtime_decl(
+        ctx,
+        llvm_mod,
+        runtime_decls,
+        "hew_actor_park_lifecycle_cont",
+    )?;
+    builder
+        .build_call(
+            park_fn,
+            &[actor.into(), handle.into()],
+            "lifecycle_park_cont",
+        )
+        .llvm_ctx("hew_actor_park_lifecycle_cont call")?;
+    builder
+        .build_return(None)
+        .llvm_ctx("supervised lifecycle pending ret")?;
+    Ok(())
 }
 
 /// Self-contained actor-state lock call for the lifecycle wrapper (no `FnCtx`).
@@ -12502,6 +13034,16 @@ fn build_spawn_lifecycle_context<'ctx>(
         .builder
         .build_alloca(ctx_ty, "actor_spawn_lifecycle_ctx")
         .llvm_ctx("spawn lifecycle ctx alloca")?;
+    // Zero the whole carrier before populating the actor fields. A suspending
+    // lifecycle hook installs this context as the current execution context
+    // (`hew_context_install`) and reads pointer fields from it across the suspend
+    // (e.g. `cancel_token` via the cooperate/cancel checks). Leaving the unset
+    // fields as uninitialised stack garbage would deref a wild `cancel_token` on
+    // resume — zero (null) is the well-defined "no token / no scope" default.
+    fn_ctx
+        .builder
+        .build_store(ctx_slot, ctx_ty.const_zero())
+        .llvm_ctx("spawn lifecycle ctx zero-init")?;
     store_context_ptr_field(fn_ctx, ctx_slot, HEW_CTX_OFFSET_ACTOR, actor, "ctx_actor")?;
     let actor_id = load_actor_id(fn_ctx, actor)?;
     store_context_i64_field(

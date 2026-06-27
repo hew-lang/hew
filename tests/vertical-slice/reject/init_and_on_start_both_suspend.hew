@@ -1,0 +1,25 @@
+// #2269 fail-closed: a suspending `init()` combined with an `#[on(start)]` hook
+// would require two sequential coroutines parked on one actor (only one
+// continuation can be parked at a time). The spawn site does not sequence that;
+// refuse at compile time rather than silently truncate either hook.
+actor Both {
+  var value: i64 = 0;
+  init() {
+    println("init");
+    sleep(20ms);
+  }
+  #[on(start)] fn started() {
+    println("start");
+    value = 5;
+  }
+  receive fn get() -> i64 { value }
+}
+
+fn main() {
+  let b = spawn Both;
+  sleep(100ms);
+  match await b.get() {
+    Ok(v) => println(v),
+    Err(_) => println("ask failed"),
+  }
+}

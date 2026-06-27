@@ -1223,6 +1223,69 @@ unsafe fn park_suspended_activation_wasm(actor: *mut HewActor, cont: *mut c_void
     true
 }
 
+/// Park a SUSPENDED lifecycle-hook continuation against a freshly-spawned (Idle)
+/// actor — the wasm counterpart of the native `hew_actor_park_lifecycle_cont`
+/// (scheduler.rs). The lifecycle spawn site (codegen) runs `init`/`#[on(start)]`
+/// synchronously while the actor is `Idle`; a suspending hook hands back its
+/// `coro.begin` handle, which this parks so the wasm cooperative scheduler's
+/// resume re-entry (`resume_suspended_activation_wasm` via
+/// `has_live_parked_cont`) drives it to completion on its sleep-timer wake.
+/// Single-threaded, so the two-phase park reduces to a store ordering, but it
+/// goes through the SAME `coro_exec` guards as native for parity.
+///
+/// Returns `true` when parked; `false` (and destroys the handle) when refused.
+///
+/// # Safety
+///
+/// `actor` must be the live, Idle, freshly-spawned actor; `cont` is the live,
+/// suspended continuation the lifecycle ramp produced; the caller must have
+/// released the actor state lock before this call.
+///
+/// `not(test)` `no_mangle`: native test builds also compile this module
+/// (`cfg(any(wasm32, test))`) alongside the native `scheduler.rs` export of the
+/// same symbol, so the wasm export drops its mangling under `test` to avoid a
+/// duplicate-symbol clash — the same pattern `hew_sched_init` et al. use.
+#[cfg_attr(not(test), no_mangle)]
+pub unsafe extern "C" fn hew_actor_park_lifecycle_cont(
+    actor: *mut HewActor,
+    cont: *mut c_void,
+) -> bool {
+    if actor.is_null() {
+        // SAFETY: `cont` (if non-null) is the live, not-yet-parked frame; no other
+        // owner exists. Null-safe destroy avoids leaking the coro frame.
+        unsafe { crate::cont::hew_cont_destroy(cont) };
+        return false;
+    }
+    let a = as_native_actor(actor);
+    if !crate::coro_exec::begin_park(a).is_ok() {
+        // SAFETY: we still own `cont` (never stored); destroy rather than leak.
+        unsafe { crate::cont::hew_cont_destroy(cont) };
+        return false;
+    }
+    // SAFETY: `cont` is a live suspended continuation per the fn contract.
+    unsafe { crate::coro_exec::finish_park(a, cont) };
+    // Publish `Suspended` from the Idle spawn-window state. The actor is
+    // unreachable to senders here (its handle/slot is stored only after lifecycle
+    // completes), so on the single-threaded wasm scheduler this is a plain store.
+    // SAFETY: wasm HewActor; single-threaded store.
+    unsafe {
+        (*actor)
+            .actor_state
+            .store(HewActorState::Suspended as i32, Ordering::Relaxed);
+    }
+    // Drain a wake that fired during the park (FG3): re-enqueue if so.
+    if crate::coro_exec::take_pending_wake(a) {
+        // SAFETY: single-threaded; actor valid.
+        unsafe {
+            (*actor)
+                .actor_state
+                .store(HewActorState::Runnable as i32, Ordering::Relaxed);
+            sched_enqueue(actor);
+        }
+    }
+    true
+}
+
 /// The RESUME re-entry (wasm): drive the parked continuation to its next
 /// suspend or completion, mirroring the native `resume_suspended_activation`.
 ///

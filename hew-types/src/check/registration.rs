@@ -181,6 +181,17 @@ pub enum CrashAction {
     Escalate;
     Kill;
 }
+
+pub type CrashNotification {
+    actor_id: u64;
+    kind: CrashKind;
+}
+
+pub enum CrashKind {
+    Crashed;
+    HeapExceeded;
+    PartitionDetected;
+}
 ";
 
 /// Embedded source for the built-in `LookupError` enum used as the `Err`
@@ -8834,5 +8845,70 @@ impl Checker {
             .entry((self.current_module.clone(), bare_binding.to_string()))
             .or_default()
             .insert(source_identity.to_string());
+    }
+}
+
+#[cfg(test)]
+mod failure_surface_lockstep_tests {
+    use super::FAILURE_HEW;
+
+    /// R4 lockstep (M-5/M-7): the embedded `FAILURE_HEW` must declare the same
+    /// type surface as the on-disk `std/failure.hew`, or module-graph and
+    /// inline-test checking diverge. Pins the four type names the on-disk file
+    /// declares — `CrashInfo`, `CrashAction`, `CrashNotification`, `CrashKind` —
+    /// so adding/removing one from either copy without the other fails here.
+    #[test]
+    fn embedded_failure_surface_declares_full_type_set() {
+        let parsed = hew_parser::parse(FAILURE_HEW);
+        assert!(
+            parsed.errors.is_empty(),
+            "embedded FAILURE_HEW must parse cleanly: {:?}",
+            parsed.errors
+        );
+        let declared: std::collections::HashSet<String> = parsed
+            .program
+            .items
+            .iter()
+            .filter_map(|(item, _)| match item {
+                hew_parser::ast::Item::TypeDecl(decl) => Some(decl.name.clone()),
+                _ => None,
+            })
+            .collect();
+        for expected in ["CrashInfo", "CrashAction", "CrashNotification", "CrashKind"] {
+            assert!(
+                declared.contains(expected),
+                "embedded FAILURE_HEW is missing `{expected}` (drifted from std/failure.hew); \
+                 declared: {declared:?}"
+            );
+        }
+    }
+
+    /// M-5: `CrashInfo` carries `code: i64` AND `message: string` in the
+    /// embedded copy (the field-presence half of `wire-contract-test-presence`).
+    #[test]
+    fn embedded_crash_info_has_code_and_message_fields() {
+        let parsed = hew_parser::parse(FAILURE_HEW);
+        let crash_info = parsed
+            .program
+            .items
+            .iter()
+            .find_map(|(item, _)| match item {
+                hew_parser::ast::Item::TypeDecl(decl) if decl.name == "CrashInfo" => Some(decl),
+                _ => None,
+            })
+            .expect("embedded FAILURE_HEW must declare CrashInfo");
+        let field_names: Vec<&str> = crash_info
+            .body
+            .iter()
+            .filter_map(|item| match item {
+                hew_parser::ast::TypeBodyItem::Field { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            field_names,
+            vec!["code", "message"],
+            "CrashInfo must carry exactly `code` then `message`"
+        );
     }
 }

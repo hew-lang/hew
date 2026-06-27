@@ -2,270 +2,318 @@ fn main -> i64
   statements:
     bind BindingId(0) a site=SiteId(0) ty=Option<i64>
     use BindingId(0) a site=SiteId(4) ty=Option<i64> intent=Consume
-    bind BindingId(1) __option_unwrap_value site=SiteId(5) ty=i64
-    use BindingId(1) __option_unwrap_value site=SiteId(5) ty=i64 intent=Read
+    bind BindingId(1) __option_unwrap_value site=SiteId(8) ty=i64
+    use BindingId(1) __option_unwrap_value site=SiteId(8) ty=i64 intent=Read
     eval site=SiteId(2) ty=()
-    bind BindingId(2) b site=SiteId(7) ty=Option<f64>
-    use BindingId(2) b site=SiteId(11) ty=Option<f64> intent=Consume
-    bind BindingId(3) __option_unwrap_value site=SiteId(12) ty=f64
-    use BindingId(3) __option_unwrap_value site=SiteId(12) ty=f64 intent=Read
-    eval site=SiteId(9) ty=()
-    bind BindingId(4) c site=SiteId(14) ty=Option<i32>
-    use BindingId(4) c site=SiteId(17) ty=Option<i32> intent=Consume
-    bind BindingId(6) cv site=SiteId(16) ty=i32
-    bind BindingId(7) d site=SiteId(19) ty=Option<i64>
-    use BindingId(7) d site=SiteId(23) ty=Option<i64> intent=Consume
-    bind BindingId(5) __option_unwrap_value site=SiteId(18) ty=i32
-    use BindingId(5) __option_unwrap_value site=SiteId(18) ty=i32 intent=Read
-    bind BindingId(8) __option_unwrap_or_value site=SiteId(25) ty=i64
-    use BindingId(8) __option_unwrap_or_value site=SiteId(25) ty=i64 intent=Read
-    eval site=SiteId(21) ty=()
-    bind BindingId(9) e site=SiteId(27) ty=Option<f64>
-    use BindingId(9) e site=SiteId(31) ty=Option<f64> intent=Consume
-    bind BindingId(10) __option_unwrap_or_value site=SiteId(33) ty=f64
-    use BindingId(10) __option_unwrap_or_value site=SiteId(33) ty=f64 intent=Read
-    eval site=SiteId(29) ty=()
-    bind BindingId(11) g site=SiteId(35) ty=Option<i32>
-    use BindingId(11) g site=SiteId(38) ty=Option<i32> intent=Consume
-    bind BindingId(13) gv site=SiteId(37) ty=i32
-    bind BindingId(14) r site=SiteId(41) ty=Result<i64, string>
-    use BindingId(14) r site=SiteId(45) ty=Result<i64, string> intent=Consume
-    bind BindingId(12) __option_unwrap_or_value site=SiteId(40) ty=i32
-    use BindingId(12) __option_unwrap_or_value site=SiteId(40) ty=i32 intent=Read
-    bind BindingId(15) __result_unwrap_value site=SiteId(46) ty=i64
-    use BindingId(15) __result_unwrap_value site=SiteId(46) ty=i64 intent=Read
-    eval site=SiteId(43) ty=()
-    bind BindingId(16) rf site=SiteId(48) ty=Result<f64, string>
-    use BindingId(16) rf site=SiteId(52) ty=Result<f64, string> intent=Consume
-    bind BindingId(17) __result_unwrap_value site=SiteId(53) ty=f64
-    use BindingId(17) __result_unwrap_value site=SiteId(53) ty=f64 intent=Read
-    eval site=SiteId(50) ty=()
-    bind BindingId(18) ri site=SiteId(55) ty=Result<i32, string>
-    use BindingId(18) ri site=SiteId(58) ty=Result<i32, string> intent=Consume
-    bind BindingId(20) riv site=SiteId(57) ty=i32
-    bind BindingId(21) ru site=SiteId(60) ty=Result<i64, string>
-    use BindingId(21) ru site=SiteId(64) ty=Result<i64, string> intent=Consume
-    bind BindingId(19) __result_unwrap_value site=SiteId(59) ty=i32
-    use BindingId(19) __result_unwrap_value site=SiteId(59) ty=i32 intent=Read
-    bind BindingId(22) __result_unwrap_or_value site=SiteId(66) ty=i64
-    use BindingId(22) __result_unwrap_or_value site=SiteId(66) ty=i64 intent=Read
+    bind BindingId(2) b site=SiteId(10) ty=Option<f64>
+    use BindingId(2) b site=SiteId(14) ty=Option<f64> intent=Consume
+    bind BindingId(3) __option_unwrap_value site=SiteId(18) ty=f64
+    use BindingId(3) __option_unwrap_value site=SiteId(18) ty=f64 intent=Read
+    eval site=SiteId(12) ty=()
+    bind BindingId(4) c site=SiteId(20) ty=Option<i32>
+    use BindingId(4) c site=SiteId(23) ty=Option<i32> intent=Consume
+    bind BindingId(6) cv site=SiteId(22) ty=i32
+    bind BindingId(7) d site=SiteId(28) ty=Option<i64>
+    use BindingId(7) d site=SiteId(32) ty=Option<i64> intent=Consume
+    bind BindingId(5) __option_unwrap_value site=SiteId(27) ty=i32
+    use BindingId(5) __option_unwrap_value site=SiteId(27) ty=i32 intent=Read
+    bind BindingId(8) __option_unwrap_or_value site=SiteId(34) ty=i64
+    use BindingId(8) __option_unwrap_or_value site=SiteId(34) ty=i64 intent=Read
+    eval site=SiteId(30) ty=()
+    bind BindingId(9) e site=SiteId(36) ty=Option<f64>
+    use BindingId(9) e site=SiteId(40) ty=Option<f64> intent=Consume
+    bind BindingId(10) __option_unwrap_or_value site=SiteId(42) ty=f64
+    use BindingId(10) __option_unwrap_or_value site=SiteId(42) ty=f64 intent=Read
+    eval site=SiteId(38) ty=()
+    bind BindingId(11) g site=SiteId(44) ty=Option<i32>
+    use BindingId(11) g site=SiteId(47) ty=Option<i32> intent=Consume
+    bind BindingId(13) gv site=SiteId(46) ty=i32
+    bind BindingId(14) r site=SiteId(50) ty=Result<i64, string>
+    use BindingId(14) r site=SiteId(54) ty=Result<i64, string> intent=Consume
+    bind BindingId(12) __option_unwrap_or_value site=SiteId(49) ty=i32
+    use BindingId(12) __option_unwrap_or_value site=SiteId(49) ty=i32 intent=Read
+    bind BindingId(15) __result_unwrap_value site=SiteId(58) ty=i64
+    use BindingId(15) __result_unwrap_value site=SiteId(58) ty=i64 intent=Read
+    eval site=SiteId(52) ty=()
+    bind BindingId(16) rf site=SiteId(60) ty=Result<f64, string>
+    use BindingId(16) rf site=SiteId(64) ty=Result<f64, string> intent=Consume
+    bind BindingId(17) __result_unwrap_value site=SiteId(68) ty=f64
+    use BindingId(17) __result_unwrap_value site=SiteId(68) ty=f64 intent=Read
     eval site=SiteId(62) ty=()
-    bind BindingId(23) rv site=SiteId(68) ty=Result<i32, string>
-    use BindingId(23) rv site=SiteId(71) ty=Result<i32, string> intent=Consume
-    bind BindingId(25) rvv site=SiteId(70) ty=i32
-    bind BindingId(26) p site=SiteId(74) ty=Result<i64, string>
-    use BindingId(26) p site=SiteId(77) ty=Result<i64, string> intent=Read
-    bind BindingId(24) __result_unwrap_or_value site=SiteId(73) ty=i32
-    use BindingId(24) __result_unwrap_or_value site=SiteId(73) ty=i32 intent=Read
-    bind BindingId(27) ok site=SiteId(76) ty=bool
-    use BindingId(26) p site=SiteId(81) ty=Result<i64, string> intent=Read
-    bind BindingId(28) err site=SiteId(80) ty=bool
-    use BindingId(27) ok site=SiteId(86) ty=bool intent=Read
-    use BindingId(28) err site=SiteId(90) ty=bool intent=Read
-    eval site=SiteId(84) ty=()
-    use BindingId(6) cv site=SiteId(102) ty=i32 intent=Read
-    use BindingId(13) gv site=SiteId(104) ty=i32 intent=Read
-    use BindingId(20) riv site=SiteId(106) ty=i32 intent=Read
-    use BindingId(25) rvv site=SiteId(108) ty=i32 intent=Read
-    bind BindingId(29) keep site=SiteId(98) ty=i64
-    use BindingId(29) keep site=SiteId(110) ty=i64 intent=Read
-    eval site=SiteId(109) ty=()
-    return site=Some(SiteId(112)) ty=i64
+    bind BindingId(18) ri site=SiteId(70) ty=Result<i32, string>
+    use BindingId(18) ri site=SiteId(73) ty=Result<i32, string> intent=Consume
+    bind BindingId(20) riv site=SiteId(72) ty=i32
+    bind BindingId(21) ru site=SiteId(78) ty=Result<i64, string>
+    use BindingId(21) ru site=SiteId(82) ty=Result<i64, string> intent=Consume
+    bind BindingId(19) __result_unwrap_value site=SiteId(77) ty=i32
+    use BindingId(19) __result_unwrap_value site=SiteId(77) ty=i32 intent=Read
+    bind BindingId(22) __result_unwrap_or_value site=SiteId(84) ty=i64
+    use BindingId(22) __result_unwrap_or_value site=SiteId(84) ty=i64 intent=Read
+    eval site=SiteId(80) ty=()
+    bind BindingId(23) rv site=SiteId(86) ty=Result<i32, string>
+    use BindingId(23) rv site=SiteId(89) ty=Result<i32, string> intent=Consume
+    bind BindingId(25) rvv site=SiteId(88) ty=i32
+    bind BindingId(26) p site=SiteId(92) ty=Result<i64, string>
+    use BindingId(26) p site=SiteId(95) ty=Result<i64, string> intent=Read
+    bind BindingId(24) __result_unwrap_or_value site=SiteId(91) ty=i32
+    use BindingId(24) __result_unwrap_or_value site=SiteId(91) ty=i32 intent=Read
+    bind BindingId(27) ok site=SiteId(94) ty=bool
+    use BindingId(26) p site=SiteId(99) ty=Result<i64, string> intent=Read
+    bind BindingId(28) err site=SiteId(98) ty=bool
+    use BindingId(27) ok site=SiteId(104) ty=bool intent=Read
+    use BindingId(28) err site=SiteId(108) ty=bool intent=Read
+    eval site=SiteId(102) ty=()
+    use BindingId(6) cv site=SiteId(120) ty=i32 intent=Read
+    use BindingId(13) gv site=SiteId(122) ty=i32 intent=Read
+    use BindingId(20) riv site=SiteId(124) ty=i32 intent=Read
+    use BindingId(25) rvv site=SiteId(126) ty=i32 intent=Read
+    bind BindingId(29) keep site=SiteId(116) ty=i64
+    use BindingId(29) keep site=SiteId(128) ty=i64 intent=Read
+    eval site=SiteId(127) ty=()
+    return site=Some(SiteId(130)) ty=i64
     drop BindingId(26) p ty=Result<i64, string>
   drop_plans:
-    branch[bb0: bb2/bb3] ->
+    branch[bb0: bb2/bb5] ->
       (none)
     cancel[bb0] ->
       (none)
-    call[bb1 println_i64 -> bb4] ->
+    call[bb1 println_i64 -> bb7] ->
       (none)
     goto[bb2->bb1] ->
       (none)
     cancel[bb2] ->
       (none)
-    panic[bb3] ->
+    call[bb3 panic -> bb6] ->
       (none)
-    branch[bb4: bb6/bb7] ->
+    panic[bb4] ->
       (none)
-    call[bb5 println_f64 -> bb8] ->
+    branch[bb5: bb3/bb4] ->
       (none)
-    goto[bb6->bb5] ->
+    goto[bb6->bb1] ->
       (none)
     cancel[bb6] ->
       (none)
-    panic[bb7] ->
+    branch[bb7: bb9/bb12] ->
       (none)
-    branch[bb8: bb10/bb11] ->
+    call[bb8 println_f64 -> bb14] ->
       (none)
-    branch[bb9: bb13/bb16] ->
+    goto[bb9->bb8] ->
       (none)
-    goto[bb10->bb9] ->
+    cancel[bb9] ->
       (none)
-    cancel[bb10] ->
+    call[bb10 panic -> bb13] ->
       (none)
     panic[bb11] ->
       (none)
-    call[bb12 println_i64 -> bb17] ->
+    branch[bb12: bb10/bb11] ->
       (none)
-    goto[bb13->bb12] ->
+    goto[bb13->bb8] ->
       (none)
     cancel[bb13] ->
       (none)
-    goto[bb14->bb12] ->
+    branch[bb14: bb16/bb19] ->
       (none)
-    cancel[bb14] ->
+    branch[bb15: bb22/bb25] ->
       (none)
-    panic[bb15] ->
+    goto[bb16->bb15] ->
       (none)
-    branch[bb16: bb14/bb15] ->
+    cancel[bb16] ->
       (none)
-    branch[bb17: bb19/bb22] ->
+    call[bb17 panic -> bb20] ->
       (none)
-    call[bb18 println_f64 -> bb23] ->
+    panic[bb18] ->
       (none)
-    goto[bb19->bb18] ->
+    branch[bb19: bb17/bb18] ->
       (none)
-    cancel[bb19] ->
-      (none)
-    goto[bb20->bb18] ->
+    goto[bb20->bb15] ->
       (none)
     cancel[bb20] ->
       (none)
-    panic[bb21] ->
+    call[bb21 println_i64 -> bb26] ->
       (none)
-    branch[bb22: bb20/bb21] ->
+    goto[bb22->bb21] ->
       (none)
-    branch[bb23: bb25/bb28] ->
+    cancel[bb22] ->
       (none)
-    branch[bb24: bb30/bb31] ->
+    goto[bb23->bb21] ->
       (none)
-    goto[bb25->bb24] ->
+    cancel[bb23] ->
       (none)
-    cancel[bb25] ->
+    panic[bb24] ->
       (none)
-    goto[bb26->bb24] ->
+    branch[bb25: bb23/bb24] ->
       (none)
-    cancel[bb26] ->
+    branch[bb26: bb28/bb31] ->
       (none)
-    panic[bb27] ->
+    call[bb27 println_f64 -> bb32] ->
       (none)
-    branch[bb28: bb26/bb27] ->
+    goto[bb28->bb27] ->
       (none)
-    call[bb29 println_i64 -> bb32] ->
+    cancel[bb28] ->
       (none)
-    goto[bb30->bb29] ->
+    goto[bb29->bb27] ->
       (none)
-    cancel[bb30] ->
+    cancel[bb29] ->
       (none)
-    panic[bb31] ->
+    panic[bb30] ->
       (none)
-    branch[bb32: bb34/bb35] ->
+    branch[bb31: bb29/bb30] ->
       (none)
-    call[bb33 println_f64 -> bb36] ->
+    branch[bb32: bb34/bb37] ->
+      (none)
+    branch[bb33: bb39/bb42] ->
       (none)
     goto[bb34->bb33] ->
       (none)
     cancel[bb34] ->
       (none)
-    panic[bb35] ->
+    goto[bb35->bb33] ->
       (none)
-    branch[bb36: bb38/bb39] ->
+    cancel[bb35] ->
       (none)
-    branch[bb37: bb41/bb44] ->
+    panic[bb36] ->
       (none)
-    goto[bb38->bb37] ->
+    branch[bb37: bb35/bb36] ->
       (none)
-    cancel[bb38] ->
+    call[bb38 println_i64 -> bb44] ->
       (none)
-    panic[bb39] ->
+    goto[bb39->bb38] ->
       (none)
-    call[bb40 println_i64 -> bb45] ->
+    cancel[bb39] ->
       (none)
-    goto[bb41->bb40] ->
+    call[bb40 panic -> bb43] ->
       (none)
-    cancel[bb41] ->
+    panic[bb41] ->
       (none)
-    goto[bb42->bb40] ->
+    branch[bb42: bb40/bb41] ->
       (none)
-    cancel[bb42] ->
+    goto[bb43->bb38] ->
       (none)
-    panic[bb43] ->
+    cancel[bb43] ->
       (none)
-    branch[bb44: bb42/bb43] ->
+    branch[bb44: bb46/bb49] ->
       (none)
-    branch[bb45: bb47/bb50] ->
+    call[bb45 println_f64 -> bb51] ->
       (none)
-    branch[bb46: bb52/bb55] ->
+    goto[bb46->bb45] ->
       (none)
-    goto[bb47->bb46] ->
+    cancel[bb46] ->
       (none)
-    cancel[bb47] ->
+    call[bb47 panic -> bb50] ->
       (none)
-    goto[bb48->bb46] ->
+    panic[bb48] ->
       (none)
-    cancel[bb48] ->
+    branch[bb49: bb47/bb48] ->
       (none)
-    panic[bb49] ->
+    goto[bb50->bb45] ->
       (none)
-    branch[bb50: bb48/bb49] ->
+    cancel[bb50] ->
       (none)
-    branch[bb51: bb57/bb60] ->
+    branch[bb51: bb53/bb56] ->
       (none)
-    goto[bb52->bb51] ->
+    branch[bb52: bb59/bb62] ->
       (none)
-    cancel[bb52] ->
-      drop _121 ty=Result<i64, string> kind=enum_in_place
-    goto[bb53->bb51] ->
+    goto[bb53->bb52] ->
       (none)
     cancel[bb53] ->
-      drop _121 ty=Result<i64, string> kind=enum_in_place
-    panic[bb54] ->
-      drop _121 ty=Result<i64, string> kind=enum_in_place
-    branch[bb55: bb53/bb54] ->
       (none)
-    call[bb56 to_string_bool -> bb61] ->
+    call[bb54 panic -> bb57] ->
       (none)
-    goto[bb57->bb56] ->
+    panic[bb55] ->
+      (none)
+    branch[bb56: bb54/bb55] ->
+      (none)
+    goto[bb57->bb52] ->
       (none)
     cancel[bb57] ->
-      drop _121 ty=Result<i64, string> kind=enum_in_place
-    goto[bb58->bb56] ->
       (none)
-    cancel[bb58] ->
-      drop _121 ty=Result<i64, string> kind=enum_in_place
-    panic[bb59] ->
-      drop _121 ty=Result<i64, string> kind=enum_in_place
-    branch[bb60: bb58/bb59] ->
+    call[bb58 println_i64 -> bb63] ->
       (none)
-    call[bb61 string_concat -> bb62] ->
+    goto[bb59->bb58] ->
       (none)
-    call[bb62 to_string_bool -> bb63] ->
+    cancel[bb59] ->
       (none)
-    call[bb63 string_concat -> bb64] ->
+    goto[bb60->bb58] ->
       (none)
-    call[bb64 println_str -> bb65] ->
+    cancel[bb60] ->
       (none)
-    branch[bb65: bb66/bb67] ->
+    panic[bb61] ->
       (none)
-    panic[bb66] ->
-      drop _121 ty=Result<i64, string> kind=enum_in_place
-    branch[bb67: bb68/bb69] ->
+    branch[bb62: bb60/bb61] ->
       (none)
-    panic[bb68] ->
-      drop _121 ty=Result<i64, string> kind=enum_in_place
-    branch[bb69: bb70/bb71] ->
+    branch[bb63: bb65/bb68] ->
       (none)
-    panic[bb70] ->
-      drop _121 ty=Result<i64, string> kind=enum_in_place
-    call[bb71 println_i64 -> bb72] ->
+    branch[bb64: bb70/bb73] ->
       (none)
-    return[bb72] ->
-      drop _121 ty=Result<i64, string> kind=enum_in_place
+    goto[bb65->bb64] ->
+      (none)
+    cancel[bb65] ->
+      (none)
+    goto[bb66->bb64] ->
+      (none)
+    cancel[bb66] ->
+      (none)
+    panic[bb67] ->
+      (none)
+    branch[bb68: bb66/bb67] ->
+      (none)
+    branch[bb69: bb75/bb78] ->
+      (none)
+    goto[bb70->bb69] ->
+      (none)
+    cancel[bb70] ->
+      drop _139 ty=Result<i64, string> kind=enum_in_place
+    goto[bb71->bb69] ->
+      (none)
+    cancel[bb71] ->
+      drop _139 ty=Result<i64, string> kind=enum_in_place
+    panic[bb72] ->
+      drop _139 ty=Result<i64, string> kind=enum_in_place
+    branch[bb73: bb71/bb72] ->
+      (none)
+    call[bb74 to_string_bool -> bb79] ->
+      (none)
+    goto[bb75->bb74] ->
+      (none)
+    cancel[bb75] ->
+      drop _139 ty=Result<i64, string> kind=enum_in_place
+    goto[bb76->bb74] ->
+      (none)
+    cancel[bb76] ->
+      drop _139 ty=Result<i64, string> kind=enum_in_place
+    panic[bb77] ->
+      drop _139 ty=Result<i64, string> kind=enum_in_place
+    branch[bb78: bb76/bb77] ->
+      (none)
+    call[bb79 string_concat -> bb80] ->
+      (none)
+    call[bb80 to_string_bool -> bb81] ->
+      (none)
+    call[bb81 string_concat -> bb82] ->
+      (none)
+    call[bb82 println_str -> bb83] ->
+      (none)
+    branch[bb83: bb84/bb85] ->
+      (none)
+    panic[bb84] ->
+      drop _139 ty=Result<i64, string> kind=enum_in_place
+    branch[bb85: bb86/bb87] ->
+      (none)
+    panic[bb86] ->
+      drop _139 ty=Result<i64, string> kind=enum_in_place
+    branch[bb87: bb88/bb89] ->
+      (none)
+    panic[bb88] ->
+      drop _139 ty=Result<i64, string> kind=enum_in_place
+    call[bb89 println_i64 -> bb90] ->
+      (none)
+    return[bb90] ->
+      drop _139 ty=Result<i64, string> kind=enum_in_place
 
 fn i8::fmt -> string
   statements:
-    use BindingId(36) val site=SiteId(175) ty=i8 intent=Read
-    return site=Some(SiteId(173)) ty=string
+    use BindingId(36) val site=SiteId(193) ty=i8 intent=Read
+    return site=Some(SiteId(191)) ty=string
   drop_plans:
     call[bb0 to_string_i32 -> bb1] ->
       (none)
@@ -276,8 +324,8 @@ fn i8::fmt -> string
 
 fn i16::fmt -> string
   statements:
-    use BindingId(37) val site=SiteId(179) ty=i16 intent=Read
-    return site=Some(SiteId(177)) ty=string
+    use BindingId(37) val site=SiteId(197) ty=i16 intent=Read
+    return site=Some(SiteId(195)) ty=string
   drop_plans:
     call[bb0 to_string_i32 -> bb1] ->
       (none)
@@ -288,8 +336,8 @@ fn i16::fmt -> string
 
 fn i32::fmt -> string
   statements:
-    use BindingId(38) val site=SiteId(182) ty=i32 intent=Read
-    return site=Some(SiteId(181)) ty=string
+    use BindingId(38) val site=SiteId(200) ty=i32 intent=Read
+    return site=Some(SiteId(199)) ty=string
   drop_plans:
     call[bb0 to_string_i32 -> bb1] ->
       (none)
@@ -300,8 +348,8 @@ fn i32::fmt -> string
 
 fn i64::fmt -> string
   statements:
-    use BindingId(39) val site=SiteId(185) ty=i64 intent=Read
-    return site=Some(SiteId(184)) ty=string
+    use BindingId(39) val site=SiteId(203) ty=i64 intent=Read
+    return site=Some(SiteId(202)) ty=string
   drop_plans:
     call[bb0 to_string_i64 -> bb1] ->
       (none)
@@ -312,8 +360,8 @@ fn i64::fmt -> string
 
 fn u8::fmt -> string
   statements:
-    use BindingId(40) val site=SiteId(188) ty=u8 intent=Read
-    return site=Some(SiteId(187)) ty=string
+    use BindingId(40) val site=SiteId(206) ty=u8 intent=Read
+    return site=Some(SiteId(205)) ty=string
   drop_plans:
     call[bb0 to_string_u8 -> bb1] ->
       (none)
@@ -324,8 +372,8 @@ fn u8::fmt -> string
 
 fn u16::fmt -> string
   statements:
-    use BindingId(41) val site=SiteId(191) ty=u16 intent=Read
-    return site=Some(SiteId(190)) ty=string
+    use BindingId(41) val site=SiteId(209) ty=u16 intent=Read
+    return site=Some(SiteId(208)) ty=string
   drop_plans:
     call[bb0 to_string_u16 -> bb1] ->
       (none)
@@ -336,8 +384,8 @@ fn u16::fmt -> string
 
 fn u32::fmt -> string
   statements:
-    use BindingId(42) val site=SiteId(194) ty=u32 intent=Read
-    return site=Some(SiteId(193)) ty=string
+    use BindingId(42) val site=SiteId(212) ty=u32 intent=Read
+    return site=Some(SiteId(211)) ty=string
   drop_plans:
     call[bb0 to_string_u32 -> bb1] ->
       (none)
@@ -348,8 +396,8 @@ fn u32::fmt -> string
 
 fn u64::fmt -> string
   statements:
-    use BindingId(43) val site=SiteId(197) ty=u64 intent=Read
-    return site=Some(SiteId(196)) ty=string
+    use BindingId(43) val site=SiteId(215) ty=u64 intent=Read
+    return site=Some(SiteId(214)) ty=string
   drop_plans:
     call[bb0 to_string_u64 -> bb1] ->
       (none)
@@ -360,8 +408,8 @@ fn u64::fmt -> string
 
 fn isize::fmt -> string
   statements:
-    use BindingId(44) val site=SiteId(201) ty=isize intent=Read
-    return site=Some(SiteId(199)) ty=string
+    use BindingId(44) val site=SiteId(219) ty=isize intent=Read
+    return site=Some(SiteId(217)) ty=string
   drop_plans:
     call[bb0 to_string_i64 -> bb1] ->
       (none)
@@ -372,8 +420,8 @@ fn isize::fmt -> string
 
 fn usize::fmt -> string
   statements:
-    use BindingId(45) val site=SiteId(205) ty=usize intent=Read
-    return site=Some(SiteId(203)) ty=string
+    use BindingId(45) val site=SiteId(223) ty=usize intent=Read
+    return site=Some(SiteId(221)) ty=string
   drop_plans:
     call[bb0 to_string_u64 -> bb1] ->
       (none)
@@ -384,8 +432,8 @@ fn usize::fmt -> string
 
 fn bool::fmt -> string
   statements:
-    use BindingId(46) val site=SiteId(208) ty=bool intent=Read
-    return site=Some(SiteId(207)) ty=string
+    use BindingId(46) val site=SiteId(226) ty=bool intent=Read
+    return site=Some(SiteId(225)) ty=string
   drop_plans:
     call[bb0 to_string_bool -> bb1] ->
       (none)
@@ -396,8 +444,8 @@ fn bool::fmt -> string
 
 fn char::fmt -> string
   statements:
-    use BindingId(47) val site=SiteId(211) ty=char intent=Read
-    return site=Some(SiteId(210)) ty=string
+    use BindingId(47) val site=SiteId(229) ty=char intent=Read
+    return site=Some(SiteId(228)) ty=string
   drop_plans:
     call[bb0 to_string_char -> bb1] ->
       (none)
@@ -408,8 +456,8 @@ fn char::fmt -> string
 
 fn f64::fmt -> string
   statements:
-    use BindingId(48) val site=SiteId(214) ty=f64 intent=Read
-    return site=Some(SiteId(213)) ty=string
+    use BindingId(48) val site=SiteId(232) ty=f64 intent=Read
+    return site=Some(SiteId(231)) ty=string
   drop_plans:
     call[bb0 to_string_f64 -> bb1] ->
       (none)
@@ -420,8 +468,8 @@ fn f64::fmt -> string
 
 fn f32::fmt -> string
   statements:
-    use BindingId(49) val site=SiteId(218) ty=f32 intent=Read
-    return site=Some(SiteId(216)) ty=string
+    use BindingId(49) val site=SiteId(236) ty=f32 intent=Read
+    return site=Some(SiteId(234)) ty=string
   drop_plans:
     call[bb0 to_string_f64 -> bb1] ->
       (none)
@@ -432,8 +480,8 @@ fn f32::fmt -> string
 
 fn string::fmt -> string
   statements:
-    use BindingId(50) val site=SiteId(220) ty=string intent=Read
-    return site=Some(SiteId(220)) ty=string
+    use BindingId(50) val site=SiteId(238) ty=string intent=Read
+    return site=Some(SiteId(238)) ty=string
   drop_plans:
     return[bb0] ->
       (none)

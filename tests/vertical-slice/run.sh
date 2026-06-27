@@ -3500,4 +3500,10 @@ echo "PASS loop_break_in_iflet_scrutinee (reject)"
 run_accept_expect_status "string_split_to_chars_ascii" 0
 run_accept_expect_status "string_split_to_chars_multibyte" 0
 run_accept_expect_status "string_split_to_chars_empty" 0
+# ---------------------------------------------------------------------------
+# Non-empty separator split — exact element values.
+# Confirms the free-function-to-method delegation handles comma-separated
+# input, trailing delimiters, and multi-byte separator / multi-byte value.
+# ---------------------------------------------------------------------------
+run_accept_expect_status "string_split_nonempty" 0
 

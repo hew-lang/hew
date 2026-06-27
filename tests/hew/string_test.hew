@@ -271,3 +271,47 @@ fn test_is_ascii_rejects_128_and_above() {
     // A string containing a non-ASCII multibyte sequence is also rejected.
     testing.assert_false(string.is_ascii("héllo"));
 }
+
+// ── from_char multi-byte round-trip (regression lock for A195 fix) ───────────
+
+#[test]
+fn test_from_char_emits_full_utf8_for_two_byte_codepoint() {
+    // U+00E9 (é) is a two-byte UTF-8 sequence: 0xC3 0xA9.
+    // Before the A195 fix, only the first byte was encoded, producing a
+    // one-byte garbage string rather than "é".
+    testing.assert_eq_str(string.from_char(233), "é");
+}
+
+#[test]
+fn test_from_char_emits_full_utf8_for_four_byte_codepoint() {
+    // U+1F600 (😀) encodes as four UTF-8 bytes: 0xF0 0x9F 0x98 0x80.
+    testing.assert_eq_str(string.from_char(128512), "😀");
+}
+
+// ── split empty-separator multi-byte exact values ─────────────────────────────
+
+#[test]
+fn test_split_empty_separator_returns_multibyte_codepoints_as_individual_elements() {
+    // "café" is 5 bytes but 4 Unicode codepoints. The empty-separator split
+    // must yield 4 elements with "é" as a single two-byte string, never split
+    // at the byte boundary.
+    let expected: Vec<string> = Vec::new();
+    expected.push("c");
+    expected.push("a");
+    expected.push("f");
+    expected.push("é");
+    assert_string_vec_eq(string.split("café", ""), expected);
+}
+
+// ── split non-empty separator exact element values ────────────────────────────
+
+#[test]
+fn test_split_returns_exact_element_values_for_nonempty_separator() {
+    // Checks each element, not just the count, to catch off-by-one errors in
+    // the split position that a len()-only assertion would miss.
+    let expected: Vec<string> = Vec::new();
+    expected.push("red");
+    expected.push("green");
+    expected.push("blue");
+    assert_string_vec_eq(string.split("red,green,blue", ","), expected);
+}

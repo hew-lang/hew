@@ -1,0 +1,28 @@
+// Vertical slice: string.split with non-empty separators — exact element values.
+//
+// Verifies the delegation path (free function → method → hew_string_split FFI)
+// produces correct results for non-empty separators. Assertions use exact element
+// values, not length-only checks, so a wrong split position would be caught.
+import std::string;
+
+fn main() {
+    // Basic comma-separated split — three elements.
+    let parts = string.split("a,b,c", ",");
+    assert_eq(parts.len(), 3);
+    assert_eq(parts[0], "a");
+    assert_eq(parts[1], "b");
+    assert_eq(parts[2], "c");
+
+    // Trailing delimiter produces a trailing empty element.
+    let trail = string.split("a,b,", ",");
+    assert_eq(trail.len(), 3);
+    assert_eq(trail[0], "a");
+    assert_eq(trail[1], "b");
+    assert_eq(trail[2], "");
+
+    // Multi-byte separator with a multi-byte character in the value.
+    let mb = string.split("héllo::world", "::");
+    assert_eq(mb.len(), 2);
+    assert_eq(mb[0], "héllo");
+    assert_eq(mb[1], "world");
+}

@@ -571,32 +571,10 @@ pub fn replace(s: string, old: string, new_val: string) -> string {
 /// let empty = string.split("", "");        // []
 /// ```
 pub fn split(s: string, sep: string) -> Vec<string> {
-    let result: Vec<string> = Vec::new();
-    let slen = s.len();
-    let dlen = sep.len();
-    if dlen == 0 {
-        // Split into individual Unicode codepoints.
-        // char_count_utf8 returns the number of Unicode scalar values; for ASCII
-        // strings this equals len(). codepoint_at_utf8(i) returns the i-th scalar.
-        let nchars = s.char_count_utf8();
-        for i in 0 .. nchars {
-            let cp = s.codepoint_at_utf8(i);
-            result.push(from_char(cp));
-        }
-        return result;
-    }
-    var start = 0;
-    while start <= slen {
-        let rest = s.slice(start, slen);
-        let idx = rest.find(sep);
-        if idx < 0 {
-            result.push(rest);
-            break;
-        }
-        result.push(s.slice(start, start + idx));
-        start = start + idx + dlen;
-    }
-    result
+    // Delegate to the method, which routes to hew_string_split FFI.
+    // That implementation is O(n) for both the empty-separator (codepoints)
+    // and non-empty-separator (windows scan) paths.
+    s.split(sep)
 }
 
 /// Split a string into lines, stripping `\r\n` or `\n` endings.

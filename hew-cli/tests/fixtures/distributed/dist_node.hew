@@ -42,6 +42,38 @@ enum KvResp {
     Value(string);
 }
 
+// ── #[wire] cross-process body types (DIST-4) ────────────────────────────────
+//
+// The KV types above are plain record/enum: they cross the wire as Serializable
+// types and get @N tags by the codec's positional fallback. The types below are
+// explicitly #[wire]-annotated with EXPLICIT @N field/variant tags, so they
+// exercise the tag-keyed CBOR body the positional path does not — a struct as an
+// @N-keyed map, an enum as a unit tag (Ping) or a map-of-one (Move). Both the
+// request (WireCmd) and the reply (WireResult) are #[wire] types, so the
+// explicit-@N body is proven crossing the wire in BOTH directions.
+#[wire]
+struct WirePoint {
+    x: i64 @1,
+    y: i64 @2,
+}
+
+// Enum variant wire tags are the declaration ordinal (Ping = 0, Move = 1);
+// the #[wire] enum surface tags variants positionally. The struct fields above
+// carry EXPLICIT @N tags — that is the explicit-tag body this scenario proves.
+#[wire]
+enum WireCmd {
+    Ping;
+    Move(WirePoint);
+}
+
+// WireResult is the #[wire] struct reply: `tag` is which variant the server saw
+// (0 = Ping, 1 = Move); `sum` is x + y for Move, or 0 for Ping.
+#[wire]
+struct WireResult {
+    tag: i64 @1,
+    sum: i64 @2,
+}
+
 actor KeyValue {
     let store: HashMap<string, string>;
     receive fn handle(req: KvReq) -> KvResp {
@@ -68,6 +100,24 @@ impl ActorMsg for KeyValue {
     type Reply = KvResp;
 }
 
+// Actor for the #[wire] cross-process scenario. It receives a #[wire] enum and
+// replies with a #[wire] struct, so the explicit-@N tagged body is exercised on
+// both the request and the reply leg of a remote ask.
+actor WireProbe {
+    let calls: i64;
+    receive fn handle(cmd: WireCmd) -> WireResult {
+        match cmd {
+            WireCmd::Ping => WireResult { tag: 0, sum: 0 },
+            WireCmd::Move(p) => WireResult { tag: 1, sum: p.x + p.y },
+        }
+    }
+}
+
+impl ActorMsg for WireProbe {
+    type Msg = WireCmd;
+    type Reply = WireResult;
+}
+
 // Bounded poll for the remote actor: retry Node::lookup until registry gossip
 // resolves it, instead of a single fixed-interval sleep. ~50 attempts at 100 ms
 // = 5 s deadline, generous for loopback gossip while still failing closed if the
@@ -91,6 +141,26 @@ fn lookup_with_retry(name: string) -> Result<RemotePid<KeyValue>, LookupError> {
     }
 }
 
+// Same bounded poll, typed for the WireProbe actor (the #[wire] scenario).
+fn lookup_wire_with_retry(name: string) -> Result<RemotePid<WireProbe>, LookupError> {
+    var attempts: i64 = 0;
+    loop {
+        let found: Result<RemotePid<WireProbe>, LookupError> = Node::lookup(name);
+        match found {
+            Result::Ok(pid) => {
+                return Ok(pid);
+            },
+            Result::Err(e) => {
+                attempts = attempts + 1;
+                if attempts >= 50 {
+                    return Err(e);
+                }
+                sleep(100ms);
+            },
+        }
+    }
+}
+
 fn run_server(port: string) {
     let addr = f"127.0.0.1:{port}";
     Node::set_transport("tcp");
@@ -98,8 +168,12 @@ fn run_server(port: string) {
     let s: HashMap<string, string> = HashMap::new();
     let kv = spawn KeyValue(store: s);
     Node::register("kv", kv);
+    // Also register the #[wire] probe actor so the wire_cbor scenario has a
+    // remote target. Registering both keeps run_server scenario-independent.
+    let wp = spawn WireProbe(calls: 0);
+    Node::register("wire", wp);
 
-    // Readiness signal: emitted ONLY after the actor is registered, so the
+    // Readiness signal: emitted ONLY after the actors are registered, so the
     // harness never launches the client against a half-started node.
     println(f"READY {port}");
 
@@ -184,27 +258,99 @@ fn scenario_remote_ask(kv: RemotePid<KeyValue>) -> i64 {
     0
 }
 
+// Scenario: wire_cbor
+//
+// Sends a #[wire] enum (WireCmd) with EXPLICIT @N variant tags via two remote
+// asks — a payload variant (Move, the map-of-one body) and a unit variant (Ping,
+// the bare-tag body) — and checks the #[wire] struct reply (WireResult, an
+// @N-keyed map) field-by-field. This is the distinct thing DIST-4 proves: an
+// explicit-@N tagged CBOR body crossing two OS processes in both directions,
+// which the plain-record/enum remote_ask scenario does not exercise.
+fn scenario_wire_cbor(wp: RemotePid<WireProbe>) -> i64 {
+    // Payload variant: Move(WirePoint { x: 3, y: 4 }) → server replies
+    // WireResult { tag: 1, sum: 7 }.
+    let ask_move = wp.ask(WireCmd::Move(WirePoint { x: 3, y: 4 }), 5000);
+    match ask_move {
+        Result::Err(_) => {
+            println("FAIL wire_cbor move-ask-error");
+            return 2;
+        },
+        Result::Ok(res) => {
+            if res.tag == 1 {
+                println(f"PASS wire_cbor move-tag={res.tag}");
+            } else {
+                println(f"FAIL wire_cbor move-tag={res.tag}");
+                return 3;
+            }
+            if res.sum == 7 {
+                println(f"PASS wire_cbor move-sum={res.sum}");
+            } else {
+                println(f"FAIL wire_cbor move-sum={res.sum}");
+                return 4;
+            }
+        },
+    }
+    // Unit variant: Ping → server replies WireResult { tag: 0, sum: 0 }.
+    let ask_ping = wp.ask(WireCmd::Ping, 5000);
+    match ask_ping {
+        Result::Err(_) => {
+            println("FAIL wire_cbor ping-ask-error");
+            return 5;
+        },
+        Result::Ok(res) => {
+            if res.tag == 0 {
+                println(f"PASS wire_cbor ping-tag={res.tag}");
+            } else {
+                println(f"FAIL wire_cbor ping-tag={res.tag}");
+                return 6;
+            }
+            if res.sum == 0 {
+                println(f"PASS wire_cbor ping-sum={res.sum}");
+            } else {
+                println(f"FAIL wire_cbor ping-sum={res.sum}");
+                return 7;
+            }
+        },
+    }
+    0
+}
+
 fn run_client(port: string, scenario: string) -> i64 {
     let remote_addr = f"127.0.0.1:{port}";
     Node::set_transport("tcp");
     Node::start("127.0.0.1:0");
     Node::connect(remote_addr);
-    let found = lookup_with_retry("kv");
-    let status = match found {
-        Result::Err(_) => {
-            println(f"FAIL {scenario} lookup-unresolved");
-            1
-        },
-        Result::Ok(kv) => {
-            // Scenario dispatch. New scenarios add a branch here plus a
-            // scenario_* function above; the harness selects via HEW_DIST_SCENARIO.
-            if scenario == "remote_ask" {
-                scenario_remote_ask(kv)
-            } else {
-                println(f"FAIL {scenario} unknown-scenario");
-                90
-            }
-        },
+    // Scenario dispatch. New scenarios add a branch here plus a scenario_*
+    // function above; the harness selects via HEW_DIST_SCENARIO. The #[wire]
+    // scenario targets the WireProbe actor ("wire"); the rest target KeyValue
+    // ("kv").
+    let status = if scenario == "wire_cbor" {
+        let found_wire = lookup_wire_with_retry("wire");
+        match found_wire {
+            Result::Err(_) => {
+                println(f"FAIL {scenario} lookup-unresolved");
+                1
+            },
+            Result::Ok(wp) => {
+                scenario_wire_cbor(wp)
+            },
+        }
+    } else {
+        let found = lookup_with_retry("kv");
+        match found {
+            Result::Err(_) => {
+                println(f"FAIL {scenario} lookup-unresolved");
+                1
+            },
+            Result::Ok(kv) => {
+                if scenario == "remote_ask" {
+                    scenario_remote_ask(kv)
+                } else {
+                    println(f"FAIL {scenario} unknown-scenario");
+                    90
+                }
+            },
+        }
     };
     Node::shutdown();
     status

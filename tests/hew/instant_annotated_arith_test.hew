@@ -8,8 +8,8 @@
 //! to `I64` at the top of `binary_ty` so arithmetic rules fire identically
 //! regardless of how the binding was introduced.
 //!
-//! These tests pair every repro from the cross-eco defect report with an exact-value
-//! assertion via `.duration_since`/`.nanos` so a garbage-path regression fails loudly.
+//! Each test pairs a concrete repro shape with an exact-value assertion via
+//! `.duration_since`/`.nanos` so a garbage-path regression fails loudly.
 
 import std::testing;
 

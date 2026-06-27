@@ -295,24 +295,17 @@ pub enum LoweringFactConsistencyError {
 impl HashMapKeyType {
     /// Derive the key-type discriminant from a checker-resolved type.
     ///
-    /// Admitted: `i64` (including `IntLiteral`), `u64`, and `Named` record
-    /// types (which map to `Layout`; full hash-eligibility walk is deferred
-    /// to C-2c). A `Named` record key may carry `f64`/`f32` fields — they hash
-    /// on their bit pattern through the layout hash thunk.
+    /// This is the discriminant for the **scalar-key fast path** only. It maps
+    /// `i64` (including `IntLiteral`), `u64`, and `Named` record types (which map
+    /// to `Layout`). Everything else returns `IneligibleKeyType` here — but that
+    /// verdict only means "not a scalar fast-path key", NOT "rejected".
     ///
-    /// Rejected: strings, bool, char, duration, tuples, managed types, narrow
-    /// integer widths, unresolved variables, and error types.
-    ///
-    /// A bare scalar `f64`/`f32` key is also rejected here. WHY: a bare scalar
-    /// key takes the primitive-scalar key ABI (`hew_layout_key_<prim>`), and the
-    /// float scalar descriptors are shipped fail-closed (no hash/eq thunk). The
-    /// f64-bearing-record path is the structural-equality surface this gate
-    /// admits; a bare `HashMap<f64, V>` would expose bitwise key identity
-    /// directly (`+0.0` ≠ `-0.0` as distinct keys), which is a deliberately
-    /// separate scalar-key decision. WHEN obsolete: if a bare float scalar key
-    /// is later admitted, wire `Ty::F64 | Ty::F32 => Ok(Self::F64Key/F32Key)`
-    /// here and populate the scalar descriptors' hash/eq with the same bitwise
-    /// thunk the record path uses.
+    /// Bare `f64`/`f32` keys (and any other `Hash + Eq` key not on the fast
+    /// path) are admitted by the bounds-based gate in `admissibility.rs`
+    /// (`validate_hashmap_key_value_types`, `T: Hash + Eq`) and route through the
+    /// **layout** key path, whose codegen hash/eq thunks compare/hash the float
+    /// bit pattern (bitwise/total). So `HashMap<f64, V>` and a float-bearing
+    /// record key both work; their float leaves use the same bitwise thunk.
     ///
     /// # Errors
     ///
@@ -684,15 +677,16 @@ mod tests {
     // ── C-2b: HashMap key type validation ────────────────────────────────────
 
     #[test]
-    fn hashmap_layout_fact_rejects_bare_float_key() {
-        // A bare scalar f64/f32 key takes the primitive-scalar key ABI, whose
-        // float descriptors are shipped fail-closed. The structural f64 surface
-        // (records/enums with float fields) routes through `Named` -> `Layout`
-        // instead; a bare scalar float key is a separate scalar-key decision.
+    fn hashmap_key_type_float_is_not_a_scalar_fast_path_key() {
+        // `HashMapKeyType::from_ty` is the scalar fast-path classifier only.
+        // A bare f64/f32 key is not on the scalar fast path (it has no scalar
+        // key discriminant), so `from_ty` returns Err — but the key is still
+        // ADMITTED elsewhere, via the `T: Hash + Eq` bounds gate, and routes
+        // through the layout key path with the bitwise hash/eq thunk.
         let f64_result = HashMapKeyType::from_ty(&Ty::F64);
         assert!(
             f64_result.is_err(),
-            "a bare f64 scalar key is not admitted (separate scalar-key ABI)"
+            "f64 is not a scalar fast-path key (it routes through the layout path)"
         );
         assert_eq!(
             f64_result.unwrap_err(),

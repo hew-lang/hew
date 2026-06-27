@@ -5808,12 +5808,6 @@ impl Checker {
         let prev_capture_facts = std::mem::take(&mut self.lambda_capture_facts);
         let prev_actor_handler_context = self.in_actor_handler_context;
         self.in_actor_handler_context = false;
-        // A closure is NOT the crash hook itself, even if it is syntactically
-        // nested inside one.  Clear in_crash_hook so a `return CrashAction::X;`
-        // inside the nested closure does not inherit the hook's flag and fire a
-        // false-positive CrashActionReturnNotYetWired diagnostic.
-        let prev_in_crash_hook = self.in_crash_hook;
-        self.in_crash_hook = false;
         // A lambda body does not inherit the lexical task scope it is written
         // inside: the closure may run after the scope has joined, so `fork`
         // statements inside it have no spawn context.
@@ -5940,7 +5934,6 @@ impl Checker {
 
         self.current_return_type = prev_return_type;
         self.in_actor_handler_context = prev_actor_handler_context;
-        self.in_crash_hook = prev_in_crash_hook;
         self.task_scope_depth = prev_task_scope_depth;
         self.in_lambda_actor_body = prev_in_lambda_actor_body;
         self.in_generator = prev_in_generator;

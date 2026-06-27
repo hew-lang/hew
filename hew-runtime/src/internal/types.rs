@@ -78,24 +78,55 @@ pub type HewDispatchFn = unsafe extern "C-unwind" fn(
 ///
 /// # Return value
 ///
-/// The hook's `CrashAction` decision encoded as its declaration-order tag:
-/// `Restart = 0`, `Escalate = 1`, `Kill = 2`. A payload-free 3-variant enum
-/// returned across the C ABI as a struct-by-value would have a sub-byte tag
-/// (`i2`) that is awkward to mirror in `#[repr(C)]`, so the codegen-emitted
-/// `__on_crash` body extracts the variant tag and returns a plain `i32`
-/// (see `hew-mir/src/lower.rs::lower_actor_lifecycle_hooks`). The supervisor
-/// decodes this tag into a `CrashAction` control decision; a value outside
-/// `0..=2` is treated fail-closed as `Restart` (the conservative default that
-/// preserves the existing restart-policy behaviour) — see
+/// The hook's `CrashAction` decision, returned as the `CrashAction`
+/// tagged-union value by its NATURAL enum-return ABI. The codegen-emitted
+/// `__on_crash` returns the `CrashAction` LLVM struct
+/// (`%CrashAction = { i8, [1 x i8] }`); [`HewCrashActionAbi`] mirrors that
+/// layout `#[repr(C)]` so the supervisor reads the variant `tag` byte directly.
+/// Returning the value naturally (rather than extracting a tag in MIR) lets
+/// EVERY return position — the tail expression and any explicit
+/// `return CrashAction::X;` — lower identically through the existing
+/// enum-return path. The tag is `Restart = 0`, `Escalate = 1`, `Kill = 2`
+/// (declaration order); the supervisor decodes it, treating any value outside
+/// `0..=2` fail-closed as `Restart` — see
 /// `hew-runtime/src/supervisor.rs::apply_restart`.
 ///
-/// `int32_t (*on_crash)(HewExecutionContext *ctx, int64_t crash_code, const char *crash_message, void *actor_state_ptr)`
+/// `HewCrashActionAbi (*on_crash)(HewExecutionContext *ctx, int64_t crash_code, const char *crash_message, void *actor_state_ptr)`
 pub type HewOnCrashFn = unsafe extern "C" fn(
     ctx: *mut HewExecutionContext,
     crash_code: i64,
     crash_message: *const std::ffi::c_char,
     actor_state_ptr: *mut std::ffi::c_void,
-) -> i32;
+) -> HewCrashActionAbi;
+
+/// `#[repr(C)]` mirror of the `CrashAction` tagged-union LLVM struct
+/// (`%CrashAction = { i8, [1 x i8] }`) — the by-value return of
+/// [`HewOnCrashFn`].
+///
+/// A `CrashAction` is a payload-free 3-variant enum; its tagged-union layout is
+/// a 1-byte discriminant tag plus a 1-byte zero-sized-payload pad (codegen rounds
+/// the 2-bit tag up to `i8`). The supervisor reads [`Self::tag`] to recover the
+/// variant. ABI-critical: this layout MUST match what codegen emits for the
+/// `CrashAction` enum — a mismatch is wrong-code at the FFI boundary.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HewCrashActionAbi {
+    /// Variant discriminant: `Restart = 0`, `Escalate = 1`, `Kill = 2`.
+    pub tag: u8,
+    /// Zero-sized-payload pad matching the LLVM `[1 x i8]` payload slot.
+    /// ABI-required (keeps the struct's 2-byte size in sync with the enum
+    /// layout); not read by the supervisor.
+    pub payload_pad: [u8; 1],
+}
+
+impl HewCrashActionAbi {
+    /// The variant tag as an `i32`, for decoding against the
+    /// `CRASH_ACTION_*` supervisor constants.
+    #[must_use]
+    pub const fn tag_i32(self) -> i32 {
+        self.tag as i32
+    }
+}
 
 /// Lifecycle wrapper function signature for supervised actors.
 ///

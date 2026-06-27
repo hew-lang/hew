@@ -80,6 +80,21 @@ const SENTINEL_CRASH_CODE_NODE: HirNodeId = HirNodeId(u32::MAX);
 /// Lives one below `__crash_code`'s sentinel to stay clear of real bindings.
 const SENTINEL_CRASH_MESSAGE_BINDING: BindingId = BindingId(u32::MAX - 1);
 
+/// The synthetic `#[on(crash)]` handler's logical return type — `CrashAction`.
+///
+/// M-4: the emitted `__on_crash` function returns the `CrashAction` tagged-union
+/// value by its natural enum-return path (every return position — tail and
+/// explicit `return CrashAction::X;` — lowers identically). The runtime
+/// `HewOnCrashFn` ABI mirrors the LLVM struct with a `#[repr(C)]` 2-byte struct
+/// and decodes the tag byte. A `panic()`-diverging body returns no value.
+fn crash_action_return_ty() -> ResolvedTy {
+    ResolvedTy::named_builtin(
+        "CrashAction",
+        hew_types::BuiltinType::CrashAction,
+        Vec::new(),
+    )
+}
+
 #[derive(Debug, Clone)]
 struct ActorMethodInfo {
     msg_type: i32,
@@ -3285,13 +3300,22 @@ fn lower_actor_lifecycle_handlers(
                     hook.body.clone()
                 };
 
+                // M-4: the hook body returns a `CrashAction` value (or diverges).
+                // The synthetic function's logical return type IS `CrashAction`,
+                // so EVERY return position — the tail expression AND any explicit
+                // `return CrashAction::X;` statement — type-checks and lowers
+                // naturally through the existing enum-return path. The
+                // codegen-emitted `__on_crash` returns the `CrashAction`
+                // tagged-union struct by value; the runtime `HewOnCrashFn` ABI
+                // mirrors it with a `#[repr(C)]` 2-byte struct and reads the tag
+                // byte. A `panic()`-diverging body returns no value (also valid).
                 let synthetic_fn = HirFn {
                     id: actor.id,
                     node: actor.node,
                     name: format!("{}::{}", actor.name, hook.name),
                     type_params: Vec::new(),
                     params: abi_params,
-                    return_ty: ResolvedTy::I32,
+                    return_ty: crash_action_return_ty(),
                     body,
                     span: hook.span.clone(),
                     is_generator: false,

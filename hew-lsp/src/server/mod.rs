@@ -2542,7 +2542,6 @@ machine Traffic {
             TypeErrorKind::OrphanImpl,
             TypeErrorKind::PlatformLimitation,
             TypeErrorKind::OnUpgradeNotYetWired,
-            TypeErrorKind::CrashActionReturnNotYetWired,
             TypeErrorKind::MachineExhaustivenessError,
             TypeErrorKind::BlockingCallInReceiveFn,
         ];

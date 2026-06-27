@@ -1609,43 +1609,15 @@ impl Checker {
         }
 
         self.current_return_type = Some(return_ty);
-        let prev_in_crash_hook = self.in_crash_hook;
-        self.in_crash_hook = true;
-        let body_ty = self.check_block(&hook.body, None);
-        self.in_crash_hook = prev_in_crash_hook;
+        // M-4: the `CrashAction` enum-variant return is now wired end-to-end
+        // (MIR extracts the variant tag at the return boundary; the supervisor
+        // honours it). The former `in_crash_hook` fail-closed gate that rejected
+        // a `CrashAction`-returning body is removed — a `#[on(crash)]` hook may
+        // now return `Restart`/`Escalate`/`Kill` (or `panic(...)`) freely. The
+        // standard return-type checking against `current_return_type` covers it.
+        let _body_ty = self.check_block(&hook.body, None);
         self.current_return_type = None;
         self.in_actor_handler_context = prev_actor_handler_context;
-
-        // Fail-closed: `CrashAction` enum-variant return is not yet wired
-        // through HIR→MIR→codegen (the MIR lowering coerces the handler return
-        // to `i32` and the body's `CrashAction` struct causes a Move type
-        // mismatch at codegen time).  Gate it here so the user sees a clear
-        // compile error instead of an internal `E_NOT_YET_IMPLEMENTED` panic.
-        //
-        // Match by name rather than by `builtin: Some(CrashAction)` because
-        // `fn_sigs`-sourced variant constructors carry `builtin: None` (set at
-        // `registration.rs:1584`) — the authoritative discriminant is the name.
-        //
-        // WHEN obsolete: when v0.6 removes the I32 return coercion in
-        // `hew-mir/src/lower.rs` (`lower_actor_lifecycle_hooks`) and wires the
-        // full enum-variant return path, remove this guard and the corresponding
-        // `TypeErrorKind::CrashActionReturnNotYetWired` variant.
-        let body_is_crash_action = matches!(
-            &body_ty,
-            Ty::Named { name, .. } if name == "CrashAction"
-        );
-        if body_is_crash_action {
-            self.errors.push(TypeError::new(
-                TypeErrorKind::CrashActionReturnNotYetWired,
-                hook.fn_span.clone(),
-                format!(
-                    "`#[on(crash)]` hook `{actor_name}::{}` body returns `CrashAction` directly; \
-                     `CrashAction` enum-variant construction is not yet wired through the compiler — \
-                     use `panic(...)` (a diverging expression) as the hook body for now",
-                    hook.name
-                ),
-            ));
-        }
 
         self.current_function = prev_function;
         self.env.pop_scope();

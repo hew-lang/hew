@@ -348,6 +348,18 @@ pub const RESTART_PERMANENT: c_int = 0;
 pub const RESTART_TRANSIENT: c_int = 1;
 pub const RESTART_TEMPORARY: c_int = 2;
 
+// ── CrashAction return tags (M-4) ─────────────────────────────────────────
+//
+// The `HewOnCrashFn` ABI returns the hook's `CrashAction` decision as an i32
+// tag in `std/failure.hew::CrashAction` declaration order. The supervisor
+// HONOURS this return: it takes precedence over the static `restart_policy`
+// when a hook is present (the at-crash-time decision overrides the static
+// default). A tag outside `0..=2` is treated fail-closed as `Restart` (the
+// conservative default that preserves the pre-M-4 restart-policy behaviour).
+pub const CRASH_ACTION_RESTART: i32 = 0;
+pub const CRASH_ACTION_ESCALATE: i32 = 1;
+pub const CRASH_ACTION_KILL: i32 = 2;
+
 // ── Exit reasons ─────────────────────────────────────────────────────────
 //
 // Trap error codes and the typed `ExitReason` live in
@@ -2081,6 +2093,48 @@ unsafe fn restart_child_supervisor_with_budget(sup: &mut HewSupervisor, failed_i
     notify_restart(sup);
 }
 
+/// Invoke a child's `#[on(crash)]` handler (if installed) and return its
+/// `CrashAction` decision as an i32 tag, or `None` when no handler is installed.
+///
+/// The handler receives the crash code (widened to i64), a borrowed trap-kind
+/// diagnostic message (e.g. "HeapExceeded"/"Signal"), and the child's template
+/// seed-state pointer. The `CString` message is supervisor-owned and BORROWED
+/// for the duration of the call (the codegen prologue clones it into the owned
+/// `CrashInfo.message` field); it drops at this function's scope exit, after the
+/// call returns.
+///
+/// # Safety
+///
+/// `handler` (when `Some`) must be a valid `HewOnCrashFn` fn-pointer; `ctx` must
+/// be the live execution context for the in-flight supervisor dispatch;
+/// `state_ptr` must be the child's supervisor-owned template state.
+unsafe fn invoke_on_crash_handler(
+    handler: Option<HewOnCrashFn>,
+    state_ptr: *mut c_void,
+    crash_code: c_int,
+    ctx: *mut crate::execution_context::HewExecutionContext,
+) -> Option<i32> {
+    let handler = handler?;
+    let crash_message_cstr =
+        std::ffi::CString::new(ExitReason::from_error_code(crash_code).trap_kind_name()).ok();
+    let crash_message: *const c_char = crash_message_cstr
+        .as_ref()
+        .map_or(ptr::null(), |s| s.as_ptr());
+    // Widen crash_code from c_int to i64 at the call boundary. `HewOnCrashFn`
+    // uses i64 to match `CrashInfo.code: i64` in std/failure.hew.
+    #[allow(
+        clippy::cast_lossless,
+        reason = "c_int to i64: intentional widening to match HewOnCrashFn ABI"
+    )]
+    let crash_code_i64 = crash_code as i64;
+    // SAFETY: `handler` is a valid `HewOnCrashFn`; `ctx` is the live execution
+    // context; `state_ptr` is the child's supervisor-owned template state;
+    // `crash_message` borrows the supervisor-owned `CString` (or null), live
+    // across this call.
+    let action = unsafe { handler(ctx, crash_code_i64, crash_message, state_ptr) };
+    Some(action.tag_i32())
+}
+
 /// Apply the restart strategy after a child failure.
 ///
 /// # Safety
@@ -2147,52 +2201,41 @@ unsafe fn apply_restart(
         //     catch across a non-unwinding ABI, and silently swallowing
         //     would violate the `boundary-fail-closed` invariant.
         //
-        // `CrashAction` return channel (M-3 ABI reshape):
+        // `CrashAction` return channel (M-3 ABI) + honouring (M-4):
         //   `std/failure.hew` declares `#[on(crash)]` returning a
         //   `CrashAction` variant (Restart/Escalate/Kill). The `HewOnCrashFn`
-        //   ABI now CARRIES that decision back as an `i32` tag. M-3 captures
-        //   the returned tag into `_crash_action_tag`; honouring it (gating
-        //   the restart decision on the variant) is M-4. Until M-4 lands the
-        //   captured tag is intentionally unused — the supervisor still
-        //   applies the per-child `restart_policy` below.
-        if let Some(handler) = spec.on_crash {
-            // Capture state pointer before relinquishing the borrow.
-            let state_ptr = spec.init_state;
-            // M-5: crash-message channel. Supply the trap-kind name as the
-            // diagnostic message (e.g. "HeapExceeded", "DivideByZero",
-            // "Signal"). The `CString` is supervisor-owned and BORROWED by the
-            // handler for the duration of the call (the codegen prologue clones
-            // it into the owned `CrashInfo.message` field); it is dropped here
-            // at scope exit, after the call returns. A null message renders as
-            // the empty string in the prologue.
-            let crash_message_cstr =
-                std::ffi::CString::new(ExitReason::from_error_code(crash_code).trap_kind_name())
-                    .ok();
-            let crash_message: *const c_char = crash_message_cstr
-                .as_ref()
-                .map_or(ptr::null(), |s| s.as_ptr());
-            // SAFETY: `handler` is a codegen-emitted `extern "C" fn` with
-            // the `HewOnCrashFn` signature; `ctx` is the live supervisor
-            // execution context for the in-flight dispatch; `state_ptr`
-            // is the template state the supervisor owns for this child
-            // slot (allocated in `hew_supervisor_add_child_spec`);
-            // `crash_message` borrows the supervisor-owned `CString` (or null),
-            // valid for the duration of this call.
-            // Widen crash_code from c_int to i64 at the call boundary.
-            // `HewOnCrashFn` uses i64 to match `CrashInfo.code: i64` in
-            // std/failure.hew; the internal event plumbing stays c_int so the
-            // public `hew_supervisor_notify_child_event` C ABI is unchanged.
-            #[allow(
-                clippy::cast_lossless,
-                reason = "c_int to i64: intentional widening to match HewOnCrashFn ABI"
-            )]
-            // SAFETY: `handler` is a valid fn-pointer registered by the caller of
-            // `hew_supervisor_add_child_spec`; `ctx` is the current execution context
-            // (non-null, live for the duration of this supervisor dispatch); `state_ptr`
-            // is the template state owned by this child slot (allocated in add_child_spec);
-            // `crash_message` is null or a caller-owned NUL-terminated string live across the call.
-            let _crash_action_tag: i32 =
-                unsafe { handler(ctx, crash_code as i64, crash_message, state_ptr) };
+        //   ABI carries that decision back; the supervisor now HONOURS it
+        //   (below) — the hook's at-crash-time decision takes precedence over
+        //   the static `restart_policy`. `None` when no hook is installed (the
+        //   policy alone decides). SAFETY: `ctx` is the live supervisor
+        //   execution context for the in-flight dispatch.
+        let crash_action_tag =
+            unsafe { invoke_on_crash_handler(spec.on_crash, spec.init_state, crash_code, ctx) };
+
+        // ── Honour the hook's CrashAction return (M-4) ───────────────────
+        //
+        // The hook return takes PRECEDENCE over the static `restart_policy`:
+        // it is the at-crash-time decision; the policy is the registration
+        // default. `Escalate`/`Kill` short-circuit the restart path entirely;
+        // `Restart` (and any out-of-range tag, fail-closed) falls through to
+        // the existing policy/budget machinery below.
+        match crash_action_tag {
+            Some(CRASH_ACTION_KILL) => {
+                // Terminate permanently: null the slot, do not restart.
+                // Mirrors the RESTART_TEMPORARY terminal arm.
+                store_child_slot(sup, failed_index, ptr::null_mut());
+                return;
+            }
+            Some(CRASH_ACTION_ESCALATE) => {
+                // Propagate the failure to the supervisor's supervisor instead
+                // of restarting locally.
+                escalate_to_parent(sup);
+                return;
+            }
+            // Some(CRASH_ACTION_RESTART) or any out-of-range tag (fail-closed
+            // to Restart) or None (no hook): fall through to the existing
+            // restart-policy + budget path below.
+            _ => {}
         }
 
         // Apply exponential backoff delay after crash (only for subsequent crashes)

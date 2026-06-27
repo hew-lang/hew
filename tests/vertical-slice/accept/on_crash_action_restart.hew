@@ -1,0 +1,35 @@
+// Acceptance fixture: a #[on(crash)] hook that RETURNS a CrashAction variant
+// (not a panic()-diverging body) now compiles end-to-end.
+//
+// Exercises the M-4 CrashAction-return path:
+//   - the checker accepts a `CrashAction::Restart` hook body (the former
+//     CrashActionReturnNotYetWired fail-closed gate is removed)
+//   - MIR rewrites the body to extract the variant tag as the i32 ABI return
+//     (`match __crash_action { Restart => 0, Escalate => 1, Kill => 2 }`)
+//   - codegen emits the i32-returning `__on_crash` and the supervisor boots
+//   - main returns 42, proving the full pipeline compiles and links cleanly.
+//
+// The crash path is NOT triggered at runtime here (no child crashes); the goal
+// is to prove the return-shape compiles end-to-end. Runtime honouring of each
+// variant (Restart/Escalate/Kill) is covered by
+// hew-runtime/tests/on_crash_invocation.rs.
+import std::failure;
+
+actor Worker {
+    #[on(crash)]
+    fn on_crash(info: CrashInfo) -> CrashAction {
+        CrashAction::Restart
+    }
+}
+
+supervisor AppSupervisor {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child c: Worker;
+}
+
+fn main() -> i64 {
+    spawn AppSupervisor;
+    42
+}

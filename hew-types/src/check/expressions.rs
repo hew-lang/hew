@@ -4247,6 +4247,13 @@ impl Checker {
             (l, Ty::Duration, BinaryOp::Add) if l.is_instant() => left.clone(),
             // duration + instant → instant (commutative: duration + instant)
             (Ty::Duration, r, BinaryOp::Add) if r.is_instant() => right.clone(),
+            // instant - duration → instant (rewind a point in time by a duration)
+            (l, Ty::Duration, BinaryOp::Subtract) if l.is_instant() => left.clone(),
+            // instant - instant → duration (the elapsed gap between two points;
+            // both instants canonicalise to i64 nanos, the difference is a
+            // signed nanosecond duration). Not commutative — `duration - instant`
+            // is meaningless and stays on the error arm below.
+            (l, r, BinaryOp::Subtract) if l.is_instant() && r.is_instant() => Ty::Duration,
             _ => {
                 self.report_error(
                     TypeErrorKind::InvalidOperation,

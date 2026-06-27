@@ -35,6 +35,11 @@ record KvPut {
 enum KvReq {
     Put(KvPut);
     GetKey(string);
+    // Cross-node monitor scenarios: fire-and-forget commands that drive the
+    // remote actor to a terminal state so a monitoring client observes the
+    // cross-node DOWN with the right reason.
+    StopSelf;
+    CrashSelf;
 }
 
 enum KvResp {
@@ -87,6 +92,19 @@ actor KeyValue {
                     Some(v) => KvResp::Value(v),
                     None => KvResp::Value(""),
                 }
+            },
+            // Clean exit: the actor stops itself, transitioning to the Stopped
+            // terminal state, which the cross-node monitor reports as a DOWN
+            // carrying the clean-exit reason.
+            KvReq::StopSelf => {
+                stop(this);
+                KvResp::Ack
+            },
+            // Crash: a deliberate panic transitions the actor to the Crashed
+            // terminal state, reported as a DOWN carrying the crash reason.
+            KvReq::CrashSelf => {
+                panic("crash requested by cross-node monitor scenario");
+                KvResp::Ack
             },
         }
     }
@@ -315,6 +333,109 @@ fn scenario_wire_cbor(wp: RemotePid<WireProbe>) -> i64 {
     0
 }
 
+// Cross-node monitor runtime surface (DIST-6). `monitor(remote_pid)` registers
+// a distributed monitor and returns a MonitorRef whose ref_id keys the
+// distributed monitor table. `hew_node_monitor_recv` blocks until the remote
+// actor's terminal signal (clean exit / crash / connection-drop) arrives for
+// that ref, returning the carried reason code: HewActorState::Stopped (6),
+// HewActorState::Crashed (5), the MonitorLost sentinel (-1) on drop, or the
+// timeout sentinel (-2) if the deadline elapses first.
+extern "C" {
+    fn hew_node_monitor_recv(ref_id: i64, timeout_ms: i64) -> i64;
+}
+
+// Scenario: remote_monitor_clean_exit
+//
+// The client monitors the remote KeyValue actor, then tells it to stop. The
+// monitor must deliver exactly one DOWN carrying the clean-exit reason (6).
+fn scenario_remote_monitor_clean_exit(kv: RemotePid<KeyValue>) -> i64 {
+    let m: MonitorRef = monitor(kv);
+    let tell_stop = kv.tell(KvReq::StopSelf);
+    match tell_stop {
+        Result::Err(_) => {
+            println("FAIL remote_monitor_clean_exit stop-send-error");
+            return 2;
+        },
+        Result::Ok(_) => {},
+    }
+    let reason = unsafe { hew_node_monitor_recv(m.ref_id, 10000) };
+    if reason == 6 {
+        println(f"PASS remote_monitor_clean_exit reason={reason}");
+    } else {
+        println(f"FAIL remote_monitor_clean_exit reason={reason}");
+        return 3;
+    }
+    // Negative guard for exactly-once: a second recv must time out (-2), proving
+    // no duplicate DOWN was delivered for the same registration.
+    let dup = unsafe { hew_node_monitor_recv(m.ref_id, 1000) };
+    if dup == -2 {
+        println("PASS remote_monitor_clean_exit no-dup");
+    } else {
+        println(f"FAIL remote_monitor_clean_exit dup-reason={dup}");
+        return 4;
+    }
+    0
+}
+
+// Scenario: remote_monitor_crash
+//
+// The client monitors the remote KeyValue actor, then tells it to crash. The
+// monitor must deliver exactly one DOWN carrying the crash reason (5).
+fn scenario_remote_monitor_crash(kv: RemotePid<KeyValue>) -> i64 {
+    let m: MonitorRef = monitor(kv);
+    let tell_crash = kv.tell(KvReq::CrashSelf);
+    match tell_crash {
+        Result::Err(_) => {
+            println("FAIL remote_monitor_crash crash-send-error");
+            return 2;
+        },
+        Result::Ok(_) => {},
+    }
+    let reason = unsafe { hew_node_monitor_recv(m.ref_id, 10000) };
+    if reason == 5 {
+        println(f"PASS remote_monitor_crash reason={reason}");
+    } else {
+        println(f"FAIL remote_monitor_crash reason={reason}");
+        return 3;
+    }
+    let dup = unsafe { hew_node_monitor_recv(m.ref_id, 1000) };
+    if dup == -2 {
+        println("PASS remote_monitor_crash no-dup");
+    } else {
+        println(f"FAIL remote_monitor_crash dup-reason={dup}");
+        return 4;
+    }
+    0
+}
+
+// Scenario: remote_monitor_conn_drop
+//
+// The client monitors the remote actor, then the harness kills the server
+// process. The monitor must deliver exactly one DOWN carrying the MonitorLost
+// sentinel (-1) for the connection-drop / partition cause — distinct from the
+// clean-exit and crash reasons.
+fn scenario_remote_monitor_conn_drop(kv: RemotePid<KeyValue>) -> i64 {
+    let m: MonitorRef = monitor(kv);
+    // Signal readiness so the harness knows the monitor is registered before it
+    // kills the server. The actor stays alive; only the connection drops.
+    println("READY_DROP remote_monitor_conn_drop");
+    let reason = unsafe { hew_node_monitor_recv(m.ref_id, 30000) };
+    if reason == -1 {
+        println(f"PASS remote_monitor_conn_drop reason={reason}");
+    } else {
+        println(f"FAIL remote_monitor_conn_drop reason={reason}");
+        return 3;
+    }
+    let dup = unsafe { hew_node_monitor_recv(m.ref_id, 1000) };
+    if dup == -2 {
+        println("PASS remote_monitor_conn_drop no-dup");
+    } else {
+        println(f"FAIL remote_monitor_conn_drop dup-reason={dup}");
+        return 4;
+    }
+    0
+}
+
 fn run_client(port: string, scenario: string) -> i64 {
     let remote_addr = f"127.0.0.1:{port}";
     Node::set_transport("tcp");
@@ -346,8 +467,20 @@ fn run_client(port: string, scenario: string) -> i64 {
                 if scenario == "remote_ask" {
                     scenario_remote_ask(kv)
                 } else {
-                    println(f"FAIL {scenario} unknown-scenario");
-                    90
+                    if scenario == "remote_monitor_clean_exit" {
+                        scenario_remote_monitor_clean_exit(kv)
+                    } else {
+                        if scenario == "remote_monitor_crash" {
+                            scenario_remote_monitor_crash(kv)
+                        } else {
+                            if scenario == "remote_monitor_conn_drop" {
+                                scenario_remote_monitor_conn_drop(kv)
+                            } else {
+                                println(f"FAIL {scenario} unknown-scenario");
+                                90
+                            }
+                        }
+                    }
                 }
             },
         }

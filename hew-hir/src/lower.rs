@@ -17334,6 +17334,61 @@ impl LowerCtx {
     }
 
     fn binary_ty(op: BinaryOp, left: &ResolvedTy, right: &ResolvedTy) -> ResolvedTy {
+        // `instant` in any annotation position (let x: instant, fn f(x: instant), etc.)
+        // reaches here as `Named { builtin: Some(BuiltinType::Instant) }` because
+        // `lower_type` (the field-type producer) preserves the named form for field
+        // storage — it has no `instant` arm unlike the expression-level `from_ty`.
+        //
+        // Canonicalise Named{Instant} operands to I64 for classification so the
+        // existing arithmetic arms fire regardless of how the operand binding was
+        // introduced. Preserve the original left-operand type when it is an
+        // instant-result operation (instant + duration, instant - duration) so the
+        // binary result type matches `-> instant` return annotations and the
+        // checker-promotion logic remains consistent.
+        //
+        // Field storage arms (`value_class`, `state_clone`, `primitive_to_llvm`, etc.)
+        // are untouched — this normalisation is local to operand type classification.
+        let left_is_named_instant = matches!(
+            left,
+            ResolvedTy::Named {
+                builtin: Some(BuiltinType::Instant),
+                ..
+            }
+        );
+        let left_canon;
+        let right_canon;
+        let left_eff = if left_is_named_instant {
+            left_canon = ResolvedTy::I64;
+            &left_canon
+        } else {
+            left
+        };
+        let right_eff = if matches!(
+            right,
+            ResolvedTy::Named {
+                builtin: Some(BuiltinType::Instant),
+                ..
+            }
+        ) {
+            right_canon = ResolvedTy::I64;
+            &right_canon
+        } else {
+            right
+        };
+        let result = Self::binary_ty_classified(op, left_eff, right_eff);
+        // When the left operand was Named{Instant} and the result type is the
+        // same as left (i.e. I64 from the wildcard arm — an instant-result op
+        // like `instant + duration` or `instant - duration`), return the
+        // original Named{Instant} so the result type matches annotation and the
+        // MIR can classify it alongside Duration in integer_signedness.
+        if left_is_named_instant && result == ResolvedTy::I64 {
+            left.clone()
+        } else {
+            result
+        }
+    }
+
+    fn binary_ty_classified(op: BinaryOp, left: &ResolvedTy, right: &ResolvedTy) -> ResolvedTy {
         match op {
             BinaryOp::Equal
             | BinaryOp::NotEqual

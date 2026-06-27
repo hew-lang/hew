@@ -316,7 +316,19 @@ fn integer_signedness(ty: &ResolvedTy) -> Option<IntSignedness> {
         // same B-2 overflow-trap / div-by-zero path as `i64`: the dest local
         // keeps its `Duration` type (so drop / value-class are unaffected),
         // but the arithmetic instruction treats it as a signed 8-byte integer.
-        | ResolvedTy::Duration => Some(IntSignedness::Signed),
+        | ResolvedTy::Duration
+        // `instant` is ABI-identical to i64 (a monotonic nanosecond timestamp).
+        // When the left operand of `instant + duration` or `instant - duration`
+        // was introduced via an annotation (`let t: instant`, `fn f(t: instant)`),
+        // `binary_ty` preserves the original `Named{Instant}` result type so it
+        // matches the `-> instant` return annotation. MIR therefore receives
+        // `Named{Instant}` here and must classify it as signed-integer arithmetic.
+        // Field-storage arms (`value_class`, `state_clone`, `primitive_to_llvm`)
+        // are unchanged; the dest local keeps its `Named{Instant}` type.
+        | ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::Instant),
+            ..
+        } => Some(IntSignedness::Signed),
         ResolvedTy::U8
         | ResolvedTy::U16
         | ResolvedTy::U32

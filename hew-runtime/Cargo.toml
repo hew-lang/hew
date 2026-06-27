@@ -48,8 +48,7 @@ sim-transport = []
 otel = ["dep:ureq"]
 
 [dependencies]
-# CBOR codec (R62: CBOR+CDDL replaces HBF; ciborium chosen by Council B).
-# Added in W0 (dependency available); encoding usage added in W1-W6.
+# CBOR body codec (ciborium, RFC 8949); CDDL schema in schemas/envelope.cddl.
 ciborium = "0.2"
 # Serde derive support for the CBOR envelope types (W1+).
 serde.workspace = true

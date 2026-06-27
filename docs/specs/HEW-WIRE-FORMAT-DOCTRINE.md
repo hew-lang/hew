@@ -217,7 +217,7 @@ and was settled by issue #1247.
 | `std::encoding::base64` | **Real.** | `std/encoding/base64/`. |
 | `std::encoding::hex` | **Real.** | `std/encoding/hex/`. |
 | `std::encoding::compress` | **Real.** gzip/deflate/zlib. | `std/encoding/compress/`. |
-| `std::encoding::wire` | **Substrate.** Holds the opaque `Value` contract and the legacy HBF byte-layout helpers (`encode_header` / framing). | `std/encoding/wire/` — see §5 for the migration story. |
+| `std::encoding::wire` | **Substrate.** Holds the opaque `Value` contract (issue #1247). The legacy HBF byte-layout helpers (`encode_header` / framing) were removed in DIST-5. | `std/encoding/wire/` — see §5 for history. |
 
 Each module's README states its own scope. The doctrine here is about
 **which one to reach for**, not how each one is implemented.
@@ -236,10 +236,11 @@ Each module's README states its own scope. The doctrine here is about
 
 ### Anti-pattern: do not use `std::encoding::wire` directly
 
-`std::encoding::wire` exposes low-level helpers (`encode_header` and
-friends) that reflect the **legacy HBF** byte layout, not the current
-CBOR envelope. These helpers are a migration stub pending deletion (see §5
-S1 for the obsolescence trigger). New code must not reach for them.
+`std::encoding::wire` held low-level HBF byte-layout helpers
+(`encode_header` and friends) that reflected the pre-v0.5 format.
+Those helpers were deleted in DIST-5 (see §5 S1). The module now holds
+only the opaque `Value` contract. User or stdlib code that needs wire
+bytes must use the format-specific module (`json`, `msgpack`, etc.).
 
 ---
 
@@ -324,13 +325,13 @@ code, lives under `hew-runtime/`) or it talks a user-facing wire format
 does both is a sign that the layer boundary has been crossed and should
 be split.
 
-### A4. Do not reach for `std::encoding::wire`'s legacy helpers in new code
+### A4. HBF helpers are gone — use format-specific stdlib modules
 
-The legacy HBF helpers in `std/encoding/wire/wire.hew` (e.g.
-`encode_header`) describe the pre-v0.5 substrate that the runtime no
-longer uses on the hot path. New stdlib or user code that needs wire
-bytes must use the format-specific module (`json`, `msgpack`, etc.),
-not these helpers. See §5 for the migration commitment.
+The HBF byte-layout helpers (`encode_header`, `decode_header`,
+`validate_header`) in `std/encoding/wire/wire.hew` were removed in
+DIST-5. There is no legacy path to reach for. User and stdlib code that
+needs wire bytes uses the format-specific module (`json`, `msgpack`,
+etc.).
 
 ### A5. Do not best-effort parse an unknown envelope `version`
 
@@ -352,25 +353,13 @@ failure. The existing `EnvelopeFrame::encode` surface is the template.
 
 ### S1. `std::encoding::wire` — legacy HBF helpers
 
-**State today.** `std/encoding/wire/wire.hew` exposes `encode_header`
-and related helpers that describe the pre-v0.5 HBF header (`"HEW1"`
-magic + version + flags + length). The runtime no longer uses these
-on the inter-process hot path (the CBOR envelope substrate replaced
-them in `04bfb422`).
-
-> **WHEN-obsolete:** when the user-facing surface either (a) is
-> migrated to format-specific stdlib modules and these helpers can be
-> deleted, or (b) is explicitly retargeted at the CBOR envelope and
-> renamed accordingly. Either path closes this stub.
->
-> **WHAT-real-solution-looks-like:** the `std::encoding::wire` module
-> either disappears (consumers migrated, helpers deleted) or it
-> documents itself as "low-level CBOR envelope access for users who
-> deliberately want to talk the runtime substrate at the language
-> layer" — with the same fail-closed posture the runtime decoder has
-> (version rejection, truncation rejection, no silent defaults).
-> Until then, the `Value` contract under `std::encoding::wire` stays;
-> the legacy HBF byte helpers do not get new callers.
+**State: DELETED (DIST-5).** The `encode_header`, `decode_header`, and
+`validate_header` helpers in `std/encoding/wire/wire.hew` were removed.
+The CBOR envelope substrate (`hew-runtime/src/envelope.rs`, commit
+`04bfb422`) was the replacement; the migration is complete. The opaque
+`Value` contract under `std::encoding::wire` (in `value_trait.hew`)
+remains active — it is a shared surface for `json`, `yaml`, `toml`, and
+`msgpack`, not part of the HBF path.
 
 ### S2. Cap'n Proto stub crate
 
@@ -401,16 +390,15 @@ checklist.
 ### S4. Module renames / deprecations
 
 No stdlib `std::encoding::*` modules are scheduled for rename or
-deprecation in v0.5. The list in §2 is the v0.5 surface. The next
-candidate for revisiting is `std::encoding::wire` per S1; that is the
-only one with an active obsolescence trigger.
+deprecation in v0.5. The list in §2 is the v0.5 surface. S1 is closed
+(HBF helpers deleted); no other module has an active obsolescence trigger.
 
 ---
 
 ## Cross-references
 
 - Runtime substrate provenance: commits `63a486d6`, `bb8826e7`, `04bfb422`
-  on `v05-integration`.
+  on `v05-integration`; HBF helpers deleted in DIST-5.
 - CDDL frame schema: [`hew-runtime/schemas/envelope.cddl`](../../hew-runtime/schemas/envelope.cddl).
 - CDDL body schema: [`hew-runtime/schemas/wire-body.cddl`](../../hew-runtime/schemas/wire-body.cddl).
 - Runtime envelope types: [`hew-runtime/src/envelope.rs`](../../hew-runtime/src/envelope.rs).

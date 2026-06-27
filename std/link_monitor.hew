@@ -66,7 +66,6 @@ impl MonitorRef {
             hew_actor_demonitor(monitor_ref.ref_id)
         };
     }
-
     /// Block until this cross-node monitor's terminal signal arrives, or until
     /// `timeout_ms` elapses.
     ///

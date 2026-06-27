@@ -25,6 +25,7 @@
 //   - "PASS <scenario> <detail>"  on success
 //   - "FAIL <scenario> <detail>"  on any mismatch; main returns non-zero
 import std::os;
+
 import std::link_monitor;
 
 // Self-stop FFI: the cross-node clean-exit scenario drives the remote actor to
@@ -105,7 +106,9 @@ actor KeyValue {
             // terminal state, which the cross-node monitor reports as a DOWN
             // carrying the clean-exit reason.
             KvReq::StopSelf => {
-                unsafe { hew_actor_self_stop() };
+                unsafe {
+                    hew_actor_self_stop()
+                };
                 KvResp::Ack
             },
             // Crash: a deliberate panic transitions the actor to the Crashed

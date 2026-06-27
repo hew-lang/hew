@@ -1,4 +1,4 @@
-//! Distributed (cross-node) actor monitor table (DIST-6).
+//! Distributed (cross-node) actor monitor table.
 //!
 //! The in-process monitor table (`crate::monitor`) keys on a local `actor_id`
 //! and stores a raw `*mut HewActor` watcher pointer, so it is fundamentally
@@ -82,9 +82,9 @@ enum TerminalSlot {
 /// actor's mailbox (the OTP crash cascade), per its `PartitionPolicy`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WatcherAction {
-    /// Cross-node monitor (DIST-6): arm the recv slot; `recv_down` observes it.
+    /// Cross-node monitor: arm the recv slot; `recv_down` observes it.
     Observe,
-    /// Cross-node link (DIST-9): on the target's death, fire a link-down into
+    /// Cross-node link: on the target's death, fire a link-down into
     /// the LOCAL linked actor `local_actor_id` per `policy_tag` (the
     /// `PartitionPolicy` discriminant; `CrashLinked` == 3 crashes it).
     Link { local_actor_id: u64, policy_tag: u8 },
@@ -150,11 +150,11 @@ pub(crate) struct RemoteWatcherTarget {
 /// Base for the cross-node `ref_id` allocator.
 ///
 /// Cross-node `ref_id`s are namespaced into a high range disjoint from the local
-/// monitor counter (`crate::monitor`, which starts at 1) so the F1 locality split
+/// monitor counter (`crate::monitor`, which starts at 1) so the locality split
 /// in `hew_actor_demonitor` can route by `ref_id` without misrouting: a local ref
 /// is always `< DIST_REF_ID_BASE` and a cross-node ref always `>=` it, so a
 /// local-table miss for a value in the high range unambiguously routes to the
-/// cross-node teardown (R-F1-routing). 2^48 is far above any realistic local
+/// cross-node teardown. 2^48 is far above any realistic local
 /// monitor count and below the pid serial mask, so the two spaces never collide.
 pub(crate) const DIST_REF_ID_BASE: u64 = 1 << 48;
 
@@ -348,7 +348,7 @@ impl DistMonitorState {
     /// Only `Pending` link entries fire, so a link that already received a
     /// definitive `CTRL_LINK_DOWN` (clean exit / crash) is untouched — the
     /// exactly-once disambiguation: a definitive remote-exit beats a later
-    /// partition signal for the same registration (R-exactly-once).
+    /// partition signal for the same registration.
     pub(crate) fn take_link_downs_for_node(
         &self,
         remote_node_id: u16,
@@ -723,7 +723,7 @@ mod tests {
         state.remove_remote_watcher(999, 1, 1);
     }
 
-    /// F2: pruning a dead watcher node removes exactly its entries and leaves
+    /// Pruning a dead watcher node removes exactly its entries and leaves
     /// surviving nodes intact. Also verifies empty serial slots are dropped.
     #[test]
     fn prune_remote_watchers_for_node_removes_dead_node_entries() {
@@ -780,7 +780,7 @@ mod tests {
         );
     }
 
-    /// DIST-9: a LINK entry fires its cascade exactly once via
+    /// A cross-node LINK entry fires its cascade exactly once via
     /// `deliver_link_down_to_ref`, carrying the local actor id + policy, and a
     /// second delivery is a no-op (the exactly-once link-down guard).
     #[test]
@@ -835,7 +835,7 @@ mod tests {
 
     /// The node fan-out fires only still-Pending LINK entries on the dead node;
     /// a link that already received a definitive `CTRL_LINK_DOWN` is untouched
-    /// (R-exactly-once: a definitive remote-exit beats a later partition).
+    /// Exactly-once: a definitive remote-exit beats a later partition.
     #[test]
     fn take_link_downs_for_node_fires_pending_links_only() {
         let state = DistMonitorState::new();
@@ -894,7 +894,7 @@ mod tests {
         assert_eq!(reason, 6, "blocked recv must wake with the armed reason");
     }
 
-    /// F3: `remove_watcher` wakes a blocked `recv_down` promptly.
+    /// `remove_watcher` wakes a blocked `recv_down` promptly.
     ///
     /// A thread parked on `recv_down(ref, 5 s)` must return well before the
     /// 5-second timeout when the registration is removed by `remove_watcher`.

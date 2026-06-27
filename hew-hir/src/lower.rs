@@ -383,8 +383,8 @@ const SYNTHETIC_MONITOR_ITEM: ItemId = ItemId(u32::MAX / 2 - 10);
 /// builtin with no AST `fn` item. Resolves to
 /// `ResolvedRef::Builtin(ActorUnlink)` via `builtin_family`.
 const SYNTHETIC_UNLINK_ITEM: ItemId = ItemId(u32::MAX / 2 - 18);
-/// Synthetic-builtin sentinel `ItemId` for the user-facing `link_remote` builtin
-/// (DIST-9). The checker (`registration.rs`) registers `link_remote` as a 2-arg
+/// Synthetic-builtin sentinel `ItemId` for the user-facing `link_remote` builtin.
+/// The checker (`registration.rs`) registers `link_remote` as a 2-arg
 /// `(RemotePid<T>, PartitionPolicy) → Result<(), LinkError>` builtin with no AST
 /// `fn` item; it resolves to `ResolvedRef::Builtin(LinkRemote)` via
 /// `builtin_family` and MIR reads the C symbol `hew_node_link_remote` off the
@@ -6535,7 +6535,7 @@ impl LowerCtx {
     }
 
     /// Seed the `link_remote(RemotePid<T>, PartitionPolicy) -> Result<(),
-    /// LinkError>` builtin (DIST-9). Unlike `link`/`monitor`/`unlink` (1-arg
+    /// LinkError>` builtin. Unlike `link`/`monitor`/`unlink` (1-arg
     /// `LocalPid`, self synthesized), `link_remote` is 2-arg: the explicit remote
     /// target and the `PartitionPolicy`. The linking subject (self) is resolved
     /// inside the runtime. The checker records the call-result type at the call

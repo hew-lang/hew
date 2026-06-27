@@ -275,8 +275,8 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     "hew_metric_vec_register",
     "hew_metric_vec_with",
     // --- end user metrics (#1862) --------------------------------------------
-    // --- Cross-node link/monitor surface (DIST-6 / DIST-9) -------------------
-    // `hew_node_link_remote(target_pid: i64, policy_tag: i64) -> i64` (DIST-9)
+    // --- Cross-node link/monitor surface --------------------------------------
+    // `hew_node_link_remote(target_pid: i64, policy_tag: i64) -> i64`
     // establishes a cross-node link: the calling actor links the remote actor
     // and the remote's death fires the per-link PartitionPolicy. Returns the
     // link ref_id. The current node + calling actor are resolved internally.

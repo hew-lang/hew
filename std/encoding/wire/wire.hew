@@ -1,7 +1,7 @@
 //! Wire format substrate for `std::encoding::wire`.
 //!
 //! This module held the legacy HBF byte-layout helpers (`encode_header`,
-//! `decode_header`, `validate_header`). Those helpers were removed in DIST-5
-//! — the CBOR envelope substrate (`hew-runtime/src/envelope.rs`) is the sole
+//! `decode_header`, `validate_header`). Those helpers were removed when
+//! the CBOR envelope substrate (`hew-runtime/src/envelope.rs`) became the sole
 //! internode encoding. The opaque `Value` contract for user-facing stdlib
 //! encoding modules lives in `value_trait.hew` and remains active.

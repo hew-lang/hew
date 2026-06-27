@@ -2566,7 +2566,7 @@ pub unsafe extern "C" fn hew_node_send(
     rc
 }
 
-// ── Cross-node monitor (DIST-6) ──────────────────────────────────────────────
+// ── Cross-node monitor ───────────────────────────────────────────────────────
 
 /// Encode a `CTRL_MONITOR_*` control frame and send it on the connection routing
 /// to `target_pid`'s node. Returns 0 on a successful send, -1 otherwise (no
@@ -2683,7 +2683,7 @@ pub extern "C" fn hew_node_monitor(target_pid: u64) -> u64 {
 }
 
 /// `link_remote(RemotePid<T>, PartitionPolicy)` → establish a cross-node link
-/// and return its `ref_id` (DIST-9).
+/// and return its `ref_id`.
 ///
 /// The calling actor (resolved via `hew_actor_self`) links the remote actor
 /// `target_pid` so the remote's death fires the per-link `PartitionPolicy`
@@ -2873,7 +2873,7 @@ pub extern "C" fn hew_node_demonitor(ref_id: i64) {
 }
 
 /// Fan out a `CTRL_MONITOR_DOWN` to every remote node monitoring a locally-dying
-/// actor (DIST-6 terminal sweep).
+/// actor (terminal sweep).
 ///
 /// Called from `notify_monitors_on_death` (the `hew_actor_trap` terminal hook)
 /// for a locally-owned actor: takes the target-side remote watchers for
@@ -2943,7 +2943,7 @@ pub(crate) fn fan_out_remote_monitor_down(target_serial: u64, reason: i32) {
     });
 }
 
-/// Handle an inbound `CTRL_LINK_REQ` (DIST-9): a remote node is linking one of
+/// Handle an inbound `CTRL_LINK_REQ`: a remote node is linking one of
 /// our local actors. Establishes the BIDIRECTIONAL cross-node link.
 ///
 /// On the ORIGINAL request (`reciprocate == 1`):
@@ -3029,7 +3029,7 @@ pub(crate) fn handle_inbound_link_req(payload: &crate::envelope::LinkReqPayload)
     });
 }
 
-/// Handle an inbound `CTRL_UNLINK` (DIST-9): a remote node retracted a prior
+/// Handle an inbound `CTRL_UNLINK`: a remote node retracted a prior
 /// link of one of our local actors. Remove the target-side remote LINK watcher.
 /// Idempotent / fail-closed on a missing entry.
 pub(crate) fn handle_inbound_unlink(payload: &crate::envelope::LinkReqPayload) {
@@ -3043,7 +3043,7 @@ pub(crate) fn handle_inbound_unlink(payload: &crate::envelope::LinkReqPayload) {
     );
 }
 
-/// Handle an inbound `CTRL_LINK_DOWN` (DIST-9): a node owning an actor we LINK
+/// Handle an inbound `CTRL_LINK_DOWN`: a node owning an actor we LINK
 /// reports it reached a terminal state. Fire the cross-node link cascade —
 /// synthesize a `SYS_MSG_EXIT` into the LOCAL linked actor's MAILBOX and crash it
 /// (for `CrashLinked`), keyed by the local actor id stored in our link entry.
@@ -3052,7 +3052,7 @@ pub(crate) fn handle_inbound_unlink(payload: &crate::envelope::LinkReqPayload) {
 /// slot). A monitor DOWN lands in a slot the program polls; a `CrashLinked` link
 /// DOWN crashes the linked actor through its mailbox. The EXIT is fired exactly
 /// once and ONLY for a link entry THIS node registered, so a forged frame cannot
-/// crash an actor we never linked (R-boundary).
+/// crash an actor we never linked.
 pub(crate) fn handle_inbound_link_down(ref_id: u64, reason: i32) {
     let Some(rt) = crate::runtime::rt_current_opt() else {
         set_last_error("handle_inbound_link_down: no runtime installed");
@@ -3069,7 +3069,7 @@ pub(crate) fn handle_inbound_link_down(ref_id: u64, reason: i32) {
 }
 
 /// Fan out `MonitorLost` to every local watcher of an actor on a lost/dead node
-/// (DIST-6 connection-drop / SWIM-DEAD hook).
+/// (connection-drop / SWIM-DEAD hook).
 ///
 /// Called from the connection-drop retire hook and the SWIM `MEMBER_DEAD`
 /// fan-out: arms every still-`Pending` watcher registration targeting
@@ -3088,17 +3088,17 @@ pub(crate) fn fan_out_monitor_lost_for_node(dead_node_id: u16) {
         return;
     };
     // Monitor half: arm every still-Pending monitor watcher with MonitorLost so a
-    // blocked recv_down wakes (DIST-6).
+    // blocked recv_down wakes.
     let _ = rt
         .dist_monitors
         .deliver_to_node(dead_node_id, crate::dist_monitor::MONITOR_REASON_LOST);
-    // Link half (DIST-9): fire the cross-node link cascade for every still-Pending
-    // LINK watcher on the dead node — the death-signal must fire on the PARTITION
+    // Link half: fire the cross-node link cascade for every still-Pending LINK
+    // watcher on the dead node — the death-signal must fire on the PARTITION
     // terminal cause too (firing only on a clean exit / crash would fail-open: a
     // linked actor surviving its dead peer). For CrashLinked this synthesizes a
     // SYS_MSG_EXIT into the LOCAL linked actor's mailbox and crashes it. The
     // one-shot slot makes this exactly-once vs a definitive CTRL_LINK_DOWN that
-    // may already have fired (R-exactly-once).
+    // may already have fired.
     let link_downs = rt
         .dist_monitors
         .take_link_downs_for_node(dead_node_id, crate::dist_monitor::MONITOR_REASON_LOST);
@@ -3111,8 +3111,8 @@ pub(crate) fn fan_out_monitor_lost_for_node(dead_node_id: u16) {
         );
     }
     // Prune target-side watcher entries (monitor AND link) the dead node had
-    // registered, so the table stays bounded under node churn (DIST-8a F2,
-    // inherited; covers link watchers via the same map).
+    // registered, so the table stays bounded under node churn (target-side watcher
+    // prune; covers link watchers via the same map).
     let _ = rt
         .dist_monitors
         .prune_remote_watchers_for_node(dead_node_id);
@@ -7681,7 +7681,7 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
-    /// DIST-7 core gap: a SWIM-declared-DEAD peer (socket still nominally open)
+    /// A SWIM-declared-DEAD peer (socket still nominally open)
     /// must resolve a pending remote ask IMMEDIATELY with `AskError::Partition`,
     /// not hang to the caller's deadline. The connection-drop test above proves
     /// the socket-drop cause; this proves the SWIM-DEAD cause through the

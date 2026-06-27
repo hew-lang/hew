@@ -493,7 +493,7 @@ fn run_watcher_drop_scenario(scenario: &str) -> String {
 }
 
 /// Run a server-verdict scenario where the SERVER prints the PASS/FAIL line and
-/// the CLIENT runs to a clean exit on its own (it is not killed). Used by the F1
+/// the CLIENT runs to a clean exit on its own (it is not killed). Used by the
 /// cross-node demonitor reclamation proof: the client registers a cross-node
 /// monitor, closes it (sending `CTRL_DEMONITOR`), and exits; the server observes
 /// its target-side watcher count rise then fall and prints the verdict. Returns
@@ -629,7 +629,7 @@ fn remote_monitor_down_on_connection_drop() {
     );
 }
 
-/// DIST-7 partition gate: a remote ask whose target peer is gone must resolve
+/// Partition gate: a remote ask whose target peer is gone must resolve
 /// fail-closed with a typed cause WITHOUT hanging, rather than blocking to the
 /// client ceiling or fabricating a value. The harness kills the server after the
 /// client signals `READY_DROP`; the client then asks the now-unreachable actor.
@@ -754,7 +754,7 @@ fn wire_cbor_cross_process_round_trip() {
     );
 }
 
-/// F2 cross-process proof: when the watcher node dies (client process killed),
+/// Cross-process proof: when the watcher node dies (client process killed),
 /// the target-side `RemoteWatcher` entries it registered on the server are
 /// pruned from the `targets` map, keeping the table bounded.
 ///
@@ -799,7 +799,7 @@ fn monitor_watcher_node_death_prunes_target_table() {
     );
 }
 
-/// DIST-9 headline: a `CrashLinked` cross-node link crashes the LOCAL linked
+/// Cross-node link headline: a `CrashLinked` cross-node link crashes the LOCAL linked
 /// actor when the remote actor cleanly exits. The client spawns a linker that
 /// `link_remote(kv, CrashLinked)`s the remote actor, then tells the remote to
 /// stop. The cross-node link-down lands in the linker's MAILBOX as a
@@ -874,7 +874,7 @@ fn link_remote_non_crashlinked_policy_no_crash() {
     );
 }
 
-/// F1 cross-node demonitor reclamation: when a client closes a cross-node
+/// Cross-node demonitor reclamation: when a client closes a cross-node
 /// `MonitorRef`, the close routes to the cross-node teardown (not the local-table
 /// no-op), sending `CTRL_DEMONITOR` to the peer. The server observes its
 /// target-side watcher count rise then fall and prints the verdict with an exact

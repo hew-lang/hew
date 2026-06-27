@@ -671,7 +671,7 @@ impl Checker {
             vec![Ty::local_pid(Ty::Var(monitor_t))],
             Ty::monitor_ref(),
         );
-        // Cross-node link (DIST-9): `link_remote(RemotePid<T>, PartitionPolicy)`
+        // Cross-node link: `link_remote(RemotePid<T>, PartitionPolicy)`
         // links a local actor to a remote actor so the remote's death fires the
         // per-link `PartitionPolicy` (`CrashLinked` crashes the local actor). The
         // immediate return is `Result<(), LinkError>` (registration success — the

@@ -56,7 +56,7 @@ enum KvResp {
     Value(string);
 }
 
-// ── #[wire] cross-process body types (DIST-4) ────────────────────────────────
+// ── #[wire] cross-process body types ─────────────────────────────────────────
 //
 // The KV types above are plain record/enum: they cross the wire as Serializable
 // types and get @N tags by the codec's positional fallback. The types below are
@@ -147,7 +147,7 @@ impl ActorMsg for WireProbe {
     type Reply = WireResult;
 }
 
-// ── Cross-node link (DIST-9) ─────────────────────────────────────────────────
+// ── Cross-node link ───────────────────────────────────────────────────────────
 //
 // The link scenarios prove the OTP "linked processes die together" semantic
 // across the node boundary: a LOCAL actor links a REMOTE actor with
@@ -279,7 +279,7 @@ fn run_server(port: string, scenario: string) {
         scenario_server_watcher_node_death(0);
     } else {
         if scenario == "cross_node_monitor_close_reclaim" {
-            // F1: the server watches its target-side count rise then fall after
+            // The server watches its target-side count rise then fall after
             // the client closes its cross-node monitor (CTRL_DEMONITOR received).
             scenario_server_monitor_close_reclaim();
         } else {
@@ -369,7 +369,7 @@ fn scenario_remote_ask(kv: RemotePid<KeyValue>) -> i64 {
 // Sends a #[wire] enum (WireCmd) with EXPLICIT @N variant tags via two remote
 // asks — a payload variant (Move, the map-of-one body) and a unit variant (Ping,
 // the bare-tag body) — and checks the #[wire] struct reply (WireResult, an
-// @N-keyed map) field-by-field. This is the distinct thing DIST-4 proves: an
+// @N-keyed map) field-by-field. This is the distinct thing this scenario proves: an
 // explicit-@N tagged CBOR body crossing two OS processes in both directions,
 // which the plain-record/enum remote_ask scenario does not exercise.
 fn scenario_wire_cbor(wp: RemotePid<WireProbe>) -> i64 {
@@ -515,7 +515,7 @@ fn scenario_remote_monitor_conn_drop(kv: RemotePid<KeyValue>) -> i64 {
 
 // Scenario: partition_ask
 //
-// The DIST-7 partition gate. The client looks up the remote actor, signals
+// The partition gate. The client looks up the remote actor, signals
 // READY_DROP so the harness can kill the server (dropping the route to the
 // peer), then issues a remote ask to the now-unreachable actor. The invariant
 // under test is: the ask FAILS CLOSED — it resolves to a typed AskError WITHOUT
@@ -615,7 +615,7 @@ fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
 
 // Scenario: monitor_watcher_node_death
 //
-// F2 two-process fixture: the watcher node dies and the target-side
+// Two-process fixture: the watcher node dies and the target-side
 // RemoteWatcher entries it registered are pruned, keeping the table bounded.
 //
 // Server role: registers the target actor, prints READY, then polls
@@ -688,7 +688,7 @@ fn scenario_client_watcher_node_death(kv: RemotePid<KeyValue>) -> i64 {
     down_reason
 }
 
-// ── Cross-node link scenarios (DIST-9) ───────────────────────────────────────
+// ── Cross-node link scenarios ────────────────────────────────────────────────
 
 // Spawn a Linker, tell it to establish the cross-node link (capturing its actor
 // id from the reply), drive the remote actor to a terminal state, then poll the
@@ -823,8 +823,8 @@ fn scenario_link_remote_non_crashlinked(kv: RemotePid<KeyValue>) -> i64 {
     }
 }
 
-// F1: cross-node demonitor reclamation (server-driven, mirrors the F2 watcher-
-// node-death proof). The client monitors the remote actor, then explicitly
+// Cross-node demonitor reclamation (server-driven, mirrors the watcher-node-death
+// proof). The client monitors the remote actor, then explicitly
 // closes the MonitorRef. The close must route to the cross-node teardown (not
 // the local-table no-op), sending a CTRL_DEMONITOR to the peer. The SERVER
 // observes its target-side entry appear (count>0) then disappear (count==0)

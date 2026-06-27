@@ -571,7 +571,7 @@ fn retire_connection_publication(
         };
     }
 
-    // Cross-node monitor connection-drop fan-out (DIST-6): the connection to
+    // Cross-node monitor connection-drop fan-out: the connection to
     // `peer_node_id` is gone, so every local watcher of an actor on that node
     // gets a MonitorLost DOWN — unless it already received a definitive
     // clean-exit / crash DOWN (only Pending slots are armed; exactly-once).
@@ -1107,7 +1107,7 @@ fn handle_control_frame(
     }
 }
 
-/// Handle an inbound `CTRL_MONITOR_REQ` (DIST-6): a remote node is monitoring
+/// Handle an inbound `CTRL_MONITOR_REQ`: a remote node is monitoring
 /// one of our local actors. Record a target-side remote-watcher entry so the
 /// terminal sweep can fan out a `CTRL_MONITOR_DOWN` when that actor dies.
 ///
@@ -1134,7 +1134,7 @@ fn handle_monitor_req_frame(control: &ControlFrame) {
     );
 }
 
-/// Handle an inbound `CTRL_DEMONITOR` (DIST-6): a remote node retracted its
+/// Handle an inbound `CTRL_DEMONITOR`: a remote node retracted its
 /// monitor of one of our local actors. Remove the target-side remote-watcher
 /// entry. Idempotent / fail-closed on malformed input.
 fn handle_demonitor_frame(control: &ControlFrame) {
@@ -1157,7 +1157,7 @@ fn handle_demonitor_frame(control: &ControlFrame) {
     );
 }
 
-/// Handle an inbound `CTRL_MONITOR_DOWN` (DIST-6): the node owning an actor we
+/// Handle an inbound `CTRL_MONITOR_DOWN`: the node owning an actor we
 /// monitor reports that actor reached a terminal state. Arm the watcher slot for
 /// `ref_id` with the carried reason so the blocked `hew_node_monitor_recv` wakes.
 ///
@@ -1183,13 +1183,13 @@ fn handle_monitor_down_frame(control: &ControlFrame) {
         .deliver_to_ref(payload.ref_id, payload.reason);
 }
 
-/// Handle an inbound `CTRL_LINK_REQ` (DIST-9): a remote node is linking one of
-/// our local actors. Establish the bidirectional cross-node link.
+/// Handle an inbound `CTRL_LINK_REQ`: a remote node is linking one of our local
+/// actors. Establish the bidirectional cross-node link.
 ///
 /// Fail-closed: a malformed / oversized payload is dropped with `set_last_error`
 /// and never registers a link — no fabricated state from untrusted bytes. The
 /// decode bar is HIGHER than monitor because a registered link can later crash a
-/// real actor (R-boundary).
+/// real actor.
 fn handle_link_req_frame(control: &ControlFrame) {
     let payload = match decode_link_req_payload(&control.payload) {
         Ok(payload) => payload,
@@ -1203,7 +1203,7 @@ fn handle_link_req_frame(control: &ControlFrame) {
     crate::hew_node::handle_inbound_link_req(&payload);
 }
 
-/// Handle an inbound `CTRL_UNLINK` (DIST-9): a remote node retracted a prior
+/// Handle an inbound `CTRL_UNLINK`: a remote node retracted a prior
 /// link of one of our local actors. Idempotent / fail-closed on malformed input.
 fn handle_unlink_frame(control: &ControlFrame) {
     let payload = match decode_link_req_payload(&control.payload) {
@@ -1218,7 +1218,7 @@ fn handle_unlink_frame(control: &ControlFrame) {
     crate::hew_node::handle_inbound_unlink(&payload);
 }
 
-/// Handle an inbound `CTRL_LINK_DOWN` (DIST-9): the node owning an actor we LINK
+/// Handle an inbound `CTRL_LINK_DOWN`: the node owning an actor we LINK
 /// reports it reached a terminal state. Fire the cross-node link cascade —
 /// synthesize a `SYS_MSG_EXIT` into the LOCAL linked actor's mailbox and crash it
 /// (for `CrashLinked`). THE divergence from a monitor DOWN (which arms a recv

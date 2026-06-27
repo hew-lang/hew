@@ -21458,7 +21458,7 @@ impl Builder {
             "hew_bytes_get" => self.lower_bytes_get_option(hir_args, site, context, result_ty),
             "hew_string_get" => self.lower_string_get_option(hir_args, site, context, result_ty),
             "hew_string_char_count" => self.lower_string_char_count(hir_args, site, context),
-            // Cross-node monitor extern surface (DIST-6), both `(...) -> i64`:
+            // Cross-node monitor extern surface, both `(...) -> i64`:
             //  - `hew_node_monitor(target_pid)` reached as a direct `extern "C"`
             //    call (statement position; the value-position `monitor(RemotePid)`
             //    builtin routes through `lower_node_monitor`).
@@ -21468,7 +21468,7 @@ impl Builder {
             "hew_node_monitor" | "hew_node_monitor_recv" => {
                 self.lower_simple_int_runtime_call(symbol, hir_args, site, context, result_ty)
             }
-            // Cross-node link (DIST-9): `link_remote(RemotePid<T>, PartitionPolicy)`
+            // Cross-node link: `link_remote(RemotePid<T>, PartitionPolicy)`
             // establishes a cross-node link and returns `Result<(), LinkError>`.
             // The remote target has no `HewActor*` in this address space, so it
             // routes to the node-link ABI keyed by the packed remote pid + the
@@ -22043,7 +22043,7 @@ impl Builder {
             return None;
         }
 
-        // Cross-node monitor (DIST-6): a `monitor(RemotePid<T>)` receiver routes
+        // Cross-node monitor: a `monitor(RemotePid<T>)` receiver routes
         // to the node-monitor ABI instead of the in-process actor-monitor ABI.
         // The remote receiver has no `HewActor*` in this address space, so the
         // 2-arg (watcher_ptr, target_ptr) shape does not apply: `hew_node_monitor`
@@ -22137,7 +22137,7 @@ impl Builder {
     /// `(node_id, serial)`, sending a `CTRL_MONITOR_REQ` to the owning peer. The
     /// `u64` return is the `ref_id` keying the registration; it is assembled into
     /// the same `MonitorRef { ref_id }` value the local path returns, reusing the
-    /// DIST-2 composite-return construction.
+    /// the composite-return construction used for monitor results.
     fn lower_node_monitor(
         &mut self,
         hir_args: &[hew_hir::HirExpr],

@@ -13,7 +13,7 @@
 //!
 //! # Wire format history
 //!
-//! The HBF (Hew Binary Format) era closed with DIST-5. This module is the
+//! The HBF (Hew Binary Format) era closed when the CBOR-native wire format landed. This module is the
 //! CBOR-native replacement: `EnvelopeFrame` owns the payload as a `Vec<u8>`,
 //! the CDDL schema is the doc-of-truth, and there is no fallback HBF path.
 
@@ -41,7 +41,7 @@ pub const CTRL_REGISTRY_GOSSIP: u64 = 1;
 /// (PING / ACK / `PING_REQ` with piggybacked membership gossip).
 pub const CTRL_SWIM: u64 = 2;
 
-/// Control-frame kind for a cross-node monitor request (DIST-6).
+/// Control-frame kind for a cross-node monitor request.
 ///
 /// Sent by a watcher node to the node owning the target actor: "node W,
 /// registration `ref_id`, is monitoring your actor `serial`." The owning node
@@ -49,21 +49,21 @@ pub const CTRL_SWIM: u64 = 2;
 /// the target reaches a terminal state.
 pub const CTRL_MONITOR_REQ: u64 = 3;
 
-/// Control-frame kind for a cross-node monitor DOWN notification (DIST-6).
+/// Control-frame kind for a cross-node monitor DOWN notification.
 ///
 /// Sent by the node owning a monitored actor back to the watcher node when the
 /// target reaches a terminal state (clean exit / crash). Carries the watcher's
 /// `ref_id` and the terminal reason code.
 pub const CTRL_MONITOR_DOWN: u64 = 4;
 
-/// Control-frame kind for a cross-node demonitor request (DIST-6).
+/// Control-frame kind for a cross-node demonitor request.
 ///
 /// Sent by a watcher node to retract a prior `CTRL_MONITOR_REQ`: "node W,
 /// registration `ref_id`, no longer watches your actor `serial`." The owning
 /// node removes the remote-watcher entry. Idempotent on the receiver.
 pub const CTRL_DEMONITOR: u64 = 5;
 
-/// Control-frame kind for a cross-node link request (DIST-9).
+/// Control-frame kind for a cross-node link request.
 ///
 /// Sent by a linker node to the node owning the target actor: "node L, actor
 /// `linker_serial`, registration `ref_id`, links your actor `target_serial`
@@ -75,7 +75,7 @@ pub const CTRL_DEMONITOR: u64 = 5;
 /// death crashes the target per the policy).
 pub const CTRL_LINK_REQ: u64 = 6;
 
-/// Control-frame kind for a cross-node link DOWN notification (DIST-9).
+/// Control-frame kind for a cross-node link DOWN notification.
 ///
 /// Sent to a linked node when its remote peer reaches a terminal state. Unlike
 /// a `CTRL_MONITOR_DOWN` (which arms a recv slot a program polls), a
@@ -84,7 +84,7 @@ pub const CTRL_LINK_REQ: u64 = 6;
 /// Carries the linked node's `ref_id` and the terminal reason code.
 pub const CTRL_LINK_DOWN: u64 = 7;
 
-/// Control-frame kind for a cross-node unlink request (DIST-9).
+/// Control-frame kind for a cross-node unlink request.
 ///
 /// Sent by a linker node to retract a prior `CTRL_LINK_REQ`. The owning node
 /// removes both the target-side remote-linker entry and the reverse watcher
@@ -291,7 +291,7 @@ pub struct SwimControlPayload {
     pub gossip: Vec<SwimGossipEntry>,
 }
 
-/// Bounded cross-node monitor REQUEST / DEMONITOR control payload (DIST-6).
+/// Bounded cross-node monitor REQUEST / DEMONITOR control payload.
 ///
 /// Encoded as a definite CBOR map `{1: watcher_node_id, 2: ref_id,
 /// 3: target_serial}`. Used by both `CTRL_MONITOR_REQ` and `CTRL_DEMONITOR`:
@@ -314,7 +314,7 @@ pub struct MonitorReqPayload {
     pub target_serial: u64,
 }
 
-/// Bounded cross-node monitor DOWN control payload (DIST-6).
+/// Bounded cross-node monitor DOWN control payload.
 ///
 /// Encoded as a definite CBOR map `{1: ref_id, 2: reason}`. Sent from the node
 /// owning the monitored actor back to the watcher node when the target reaches
@@ -332,7 +332,7 @@ pub struct MonitorDownPayload {
     pub reason: i32,
 }
 
-/// Bounded cross-node link REQUEST / UNLINK control payload (DIST-9).
+/// Bounded cross-node link REQUEST / UNLINK control payload.
 ///
 /// Encoded as a definite CBOR map `{1: linker_node_id, 2: ref_id,
 /// 3: target_serial, 4: linker_serial, 5: policy_tag, 6: reciprocate}`. Used by both
@@ -1294,7 +1294,7 @@ pub fn decode_monitor_down_payload(
     })
 }
 
-/// Encode a bounded cross-node link REQUEST / UNLINK payload (DIST-9).
+/// Encode a bounded cross-node link REQUEST / UNLINK payload.
 ///
 /// # Errors
 ///
@@ -1338,7 +1338,7 @@ pub fn encode_link_req_payload(payload: &LinkReqPayload) -> Result<Vec<u8>, Moni
     Ok(bytes)
 }
 
-/// Decode a bounded cross-node link REQUEST / UNLINK payload (DIST-9).
+/// Decode a bounded cross-node link REQUEST / UNLINK payload.
 ///
 /// # Errors
 ///
@@ -1366,7 +1366,7 @@ pub fn decode_link_req_payload(bytes: &[u8]) -> Result<LinkReqPayload, MonitorPa
     })
 }
 
-/// Encode a bounded cross-node link DOWN payload (DIST-9).
+/// Encode a bounded cross-node link DOWN payload.
 ///
 /// The DOWN shape is identical to the monitor DOWN (`{1: ref_id, 2: reason}`);
 /// the divergence is in the receiver's HANDLING (mailbox-EXIT crash, not a recv
@@ -1382,7 +1382,7 @@ pub fn encode_link_down_payload(
     encode_monitor_down_payload(payload)
 }
 
-/// Decode a bounded cross-node link DOWN payload (DIST-9). Same `{ref_id,
+/// Decode a bounded cross-node link DOWN payload. Same `{ref_id,
 /// reason}` shape as the monitor DOWN.
 ///
 /// # Errors

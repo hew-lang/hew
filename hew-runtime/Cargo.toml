@@ -140,7 +140,7 @@ harness = false
 # native-only, so this scoping costs no test coverage on wasm.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 proptest = "1"
-# CDDL validator (DIST-4): the wire-body conformance test feeds the authored
+# CDDL validator: the wire-body conformance test feeds the authored
 # `schemas/wire-body.cddl` text + the codegen-emitted CBOR bytes into a real
 # RFC 8610 validator so the schema is the authority, not a hand-mirrored
 # structural assertion that could silently drift from the CDDL. Test-only and

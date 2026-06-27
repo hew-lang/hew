@@ -1140,7 +1140,7 @@ pub(crate) fn lower_call_runtime_abi(
         //   Value-needed   (dest=Some(result_local: Result<(),LinkError>)):
         //     call void → `emit_result_ok(dest, None)` writes tag=0 (Ok, no
         //     payload). hew_actor_link is infallible at the runtime today, so
-        //     Ok(()) is the only shape. Err arms belong to DIST-6/DIST-7.
+        //     Ok(()) is the only shape. Err arms are reserved for future partition policies.
         //
         // hew_actor_monitor(watcher, target) -> i64 (ref_id)
         //   Statement-position (dest=None): emit the call, discard i64 return.
@@ -1242,7 +1242,7 @@ pub(crate) fn lower_call_runtime_abi(
             // void return; dest is always None (the close body is a void call).
             let _ = (i32_ty, ptr_ty, dest);
         }
-        // hew_node_monitor(target_pid: i64) -> i64 (DIST-6). Registers a
+        // hew_node_monitor(target_pid: i64) -> i64. Registers a
         // distributed monitor for a remote actor (the remote pid is a bare i64;
         // the current node is resolved internally) and returns the ref_id. In
         // value position the i64 ref_id is stored into the i64 dest; a subsequent
@@ -1273,7 +1273,7 @@ pub(crate) fn lower_call_runtime_abi(
             }
             let _ = (i32_ty, ptr_ty);
         }
-        // hew_node_monitor_recv(ref_id: i64, timeout_ms: i64) -> i64 (DIST-6).
+        // hew_node_monitor_recv(ref_id: i64, timeout_ms: i64) -> i64.
         // Blocks for the distributed monitor's terminal signal and returns the
         // carried down-reason. Both args are BitCopy i64; the i64 reason is
         // stored into the i64 dest in value position.
@@ -1303,7 +1303,7 @@ pub(crate) fn lower_call_runtime_abi(
             }
             let _ = (i32_ty, ptr_ty);
         }
-        // hew_node_link_remote(target_pid: i64, policy_tag: i64) -> i64 (DIST-9).
+        // hew_node_link_remote(target_pid: i64, policy_tag: i64) -> i64.
         // Establishes a cross-node link: the calling actor (resolved internally)
         // links the remote actor `target_pid` with the `PartitionPolicy`
         // discriminant `policy_tag`. Both args are BitCopy i64. The i64 return is

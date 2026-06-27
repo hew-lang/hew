@@ -1011,7 +1011,7 @@ fn swim_payload_truncated_cbor_returns_error() {
     }
 }
 
-// ── Cross-node monitor control payloads (DIST-6) ─────────────────────────────
+// ── Cross-node monitor control payloads ──────────────────────────────────────
 
 #[test]
 fn monitor_ctrl_kinds_are_distinct_and_stable() {
@@ -1165,7 +1165,7 @@ fn monitor_payload_truncated_cbor_returns_error() {
     }
 }
 
-// ── Cross-node link control payloads (DIST-9) ────────────────────────────────
+// ── Cross-node link control payloads ─────────────────────────────────────────
 
 #[test]
 fn link_ctrl_kinds_are_distinct_and_stable() {

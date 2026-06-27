@@ -2216,7 +2216,7 @@ pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
     } else {
         None
     };
-    // DIST-9: a non-trapping actor (no `#[on(exit)]`) receiving a `SYS_MSG_EXIT`
+    // A non-trapping actor (no `#[on(exit)]`) receiving a `SYS_MSG_EXIT`
     // must CRASH via the controlled crash path — the OTP "linked processes die
     // together" semantic — NOT fall through to the `default_bb` exhaustiveness
     // `llvm.trap` (which is UB: it SIGILLs on Linux and only accidentally
@@ -2649,7 +2649,7 @@ pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
         return_incomings.push((ptr_ty.const_null(), on_exit_bb));
     }
 
-    // DIST-9: emit the unhandled-`SYS_MSG_EXIT` case body — a non-trapping actor
+    // Emit the unhandled-`SYS_MSG_EXIT` case body — a non-trapping actor
     // crashes via the controlled crash path. Read `reason` (field 1 of the
     // `ExitMessage { crashed_actor_id: u64, reason: i32, crash_kind: i32 }`
     // payload) and call `hew_actor_exit_unhandled(reason)`, which longjmps to the

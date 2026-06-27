@@ -963,7 +963,7 @@ impl Checker {
                 // Not a RemotePid — fall through to the generic `fn_sigs` path,
                 // which applies the `link`/`unlink(LocalPid<T>)` builtin signature.
             }
-            // Cross-node monitor: `monitor(RemotePid<T>)` (DIST-6). The local
+            // Cross-node monitor: `monitor(RemotePid<T>)`. The local
             // `monitor(LocalPid<T>)` form stays on the generic `fn_sigs` path
             // below (registered with a `LocalPid` receiver). When the argument
             // resolves to a `RemotePid<T>`, accept it here and return

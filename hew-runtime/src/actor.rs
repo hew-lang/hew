@@ -4964,7 +4964,7 @@ pub unsafe extern "C" fn hew_actor_trap(actor: *mut HewActor, error_code: i32) {
     };
     crate::tracing::hew_trace_lifecycle(actor_id, lifecycle_event);
 
-    // Test-only crash ledger (DIST-9 probe): record the TERMINAL STATE so a
+    // Test-only crash ledger (cross-node link probe): record the TERMINAL STATE so a
     // two-process link fixture can confirm a LOCAL linked actor actually crashed
     // (terminal Crashed == 5) after a cross-node link-down, surviving the actor's
     // free. Gated by HEW_LINK_PROBE so production pays nothing.
@@ -5023,7 +5023,7 @@ pub extern "C" fn hew_actor_self() -> *mut HewActor {
     unsafe { (*ctx).actor }
 }
 
-/// Crash the current actor in response to an unhandled link EXIT (DIST-9).
+/// Crash the current actor in response to an unhandled link EXIT.
 ///
 /// A linked actor that does NOT trap exits (`#[on(exit)]`) must CRASH when its
 /// linked peer dies — the OTP fail-together semantic. The dispatch trampoline
@@ -5079,7 +5079,7 @@ pub extern "C" fn hew_actor_exit_unhandled(reason: i32) {
 
 /// Return the current actor's id, or -1 outside a dispatch context.
 ///
-/// Test-introspection probe (DIST-9): a linker actor reports its own id so a
+/// Test-introspection probe: a linker actor reports its own id so a
 /// two-process link fixture can poll its terminal state after a cross-node
 /// link-down. Not part of the user surface; the compiler emits no calls to this
 /// symbol. Callable from `.hew` via

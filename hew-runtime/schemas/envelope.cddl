@@ -59,7 +59,7 @@ registry-gossip-payload = {
 
 registry-gossip-op = 5 / 6         ; add / remove
 
-; ── Cross-node monitor payloads (DIST-6) ──────────────────────────────────────
+; ── Cross-node monitor payloads ───────────────────────────────────────────────
 ;
 ; monitor-req-payload identifies a monitor registration: watcher node W,
 ; registration ref_id, watching target actor `serial` on the owning node. Used
@@ -79,7 +79,7 @@ monitor-down-payload = {
     reason: 2 => int,              ; terminal reason (HewActorState value, or sentinel)
 }
 
-; ── Cross-node link payloads (DIST-9) ─────────────────────────────────────────
+; ── Cross-node link payloads ──────────────────────────────────────────────────
 ;
 ; link-req-payload establishes a BIDIRECTIONAL cross-node link: linker node L,
 ; registration ref_id, links target actor `target_serial` on the owning node

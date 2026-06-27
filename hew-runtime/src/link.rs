@@ -299,7 +299,7 @@ pub(crate) fn propagate_exit_to_links(actor_id: u64, reason: i32) {
 /// LOCAL linked actor when its remote peer dies; any other policy is non-fatal.
 pub(crate) const POLICY_TAG_CRASH_LINKED: u8 = 3;
 
-/// Fire a cross-node link-down into a LOCAL linked actor (DIST-9).
+/// Fire a cross-node link-down into a LOCAL linked actor.
 ///
 /// This is the cross-node mirror of [`send_exit_signal`]: when a remote linked
 /// peer reaches a terminal state, a `CrashLinked` link must synthesize a
@@ -457,7 +457,7 @@ struct ExitMessage {
     crash_kind: i32,
 }
 
-// ── Test-only crash ledger + probe FFI (DIST-9 link cascade observability) ────
+// ── Test-only crash ledger + probe FFI (cross-node link cascade observability) ────
 //
 // The cross-node link fixtures need to confirm a LOCAL linked actor actually
 // CRASHED (terminal Crashed) after a cross-node link-down — proving the link-down

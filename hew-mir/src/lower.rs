@@ -9311,9 +9311,23 @@ impl Builder {
     ///     descriptor derive from — `dedup-semantic-boundary`).
     fn is_owned_vec_element(&self, elem_ty: &ResolvedTy) -> bool {
         match elem_ty {
+            // A tuple element is owned when any field transitively owns heap.
+            // Use `named_elem_owns_heap` (which consults
+            // `record_field_resolved_tys` for record fields) — NOT
+            // `ty_contains_heap_owning`, which is record-layout BLIND and would
+            // mis-classify a `(Rec, i64)` where `Rec` has a `string` field as
+            // non-heap-owning. That false negative routed the getter to
+            // `hew_vec_get_layout` on a Vec the constructor and scope-exit free
+            // already built through the OWNED ABI (the release-path sibling
+            // `binding_ty_is_plain_vec` / `tuple_is_all_bitcopy` correctly
+            // classify it owned), so the layout-aware get aborted at runtime
+            // ("Vec layout-aware operation is not implemented"). This is the
+            // SAME record-aware authority codegen's `resolved_ty_contains_heap_leaf`
+            // uses, so the getter, constructor, and free all agree
+            // (`dedup-semantic-boundary`).
             ResolvedTy::Tuple(elems) => elems
                 .iter()
-                .any(|e| crate::model::ty_contains_heap_owning(e, &self.enum_layouts)),
+                .any(|e| self.named_elem_owns_heap(e, &mut HashSet::new())),
             // Nested collection elements (Vec<T> / HashMap / HashSet) are owned
             // heap handles constructed through the owned descriptor ABI: their
             // element loads route to `hew_vec_get_owned`, their pushes upgrade

@@ -1018,14 +1018,18 @@ pub unsafe extern "C" fn hew_hashmap_clone_layout(
 ///   — consumed, the map is now its sole owner.
 /// - **Overwrite** (`existed`): the stored slot K is the equality-witness and
 ///   is **reused in place**; the caller's duplicate K is **NOT** consumed here
-///   — the caller retains it (its drop/recycle is hoisted to the Stage C HIR
-///   consumer / codegen materializer; see the occupied-slot branch below).
+///   — the caller retains it. Its release is materialised by the codegen
+///   conditional drop (`emit_insert_overwrite_key_release` in
+///   `hew-codegen-rs/src/llvm.rs`), which branches on this function's `i1`
+///   return and frees the caller's duplicate on the overwrite path (issue
+///   #2033; see the occupied-slot branch below).
 ///
 /// Since `insert` returns `!existed`, K consumption is decided at runtime; a
 /// static null-after-move on the caller's K would be **wrong on the overwrite
-/// path**. P3 must derive the consuming-call ownership model from this
-/// per-path contract, not apply a uniform null-after-move (LESSONS
-/// `raii-null-after-move` — documented here, deliberately not applied).
+/// path**. The codegen materialiser therefore derives the consuming-call
+/// ownership model from this per-path contract — a runtime branch on the `i1`
+/// return — rather than a uniform null-after-move (LESSONS
+/// `raii-null-after-move`).
 ///
 /// # Safety
 ///
@@ -1111,9 +1115,10 @@ pub unsafe extern "C" fn hew_hashmap_insert_layout(
         // 1. The stored slot K stays in place — it is the equality-witness
         //    that the probe found, and re-copying caller-K bytes would leak
         //    the stored K's owned allocation when K is `String` /
-        //    `LayoutManaged`. The duplicate K_in the caller passed is the
-        //    caller's responsibility to drop or recycle (hoisted to the
-        //    Stage C HIR consumer / codegen materializer).
+        //    `LayoutManaged`. The duplicate K the caller passed is released by
+        //    the codegen conditional drop on the overwrite path
+        //    (`emit_insert_overwrite_key_release`, branching on this function's
+        //    `i1` return; issue #2033).
         // 2. The old V is dropped via `val_layout.drop_fn` before the new V
         //    overwrites it. `drop_fn = None` (Plain ownership) is the
         //    no-op fast path.

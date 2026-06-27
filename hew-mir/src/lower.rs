@@ -28036,22 +28036,17 @@ impl Builder {
     /// already taken ownership — a double-free. The static consume suppresses
     /// that scope-exit drop, making the vacant-insert path sound.
     ///
-    /// LIMITATION (known bounded leak — see issue #2033): on an overwrite
-    /// (`existed` path), the runtime reuses the stored key in place and the
-    /// caller's duplicate key is NOT consumed by the runtime. The static
-    /// consume still suppresses the scope-exit drop, so the caller's duplicate
-    /// leaks (one allocation per colliding insert, no UB). This is a strict
-    /// improvement over the prior double-free. The fix is a Stage-C
-    /// conditional-drop materializer: branch on the `existed` return from
-    /// `hew_hashmap_insert_layout` / `hew_hashset_insert_layout`
-    /// (`hew-codegen-rs/src/llvm.rs:21305`) and emit a drop for the caller's
-    /// duplicate on the overwrite path. See the conditional-key-consume
-    /// contract comment in `hew-runtime/src/hashmap.rs:995-1010`.
-    ///
-    /// WHEN obsolete: once the Stage-C materializer is implemented and the
-    /// codegen branches on `existed`, this function's unconditional consume is
-    /// narrowed to the vacant-insert path only; the overwrite path materialises
-    /// its own drop instead.
+    /// On the OVERWRITE path (`existed`) the runtime keeps the stored key and
+    /// the caller's duplicate is NOT consumed by the runtime. The static consume
+    /// above still correctly suppresses the scope-exit drop; the overwrite-path
+    /// release is materialised in codegen
+    /// (`emit_insert_overwrite_key_release` in `hew-codegen-rs/src/llvm.rs`),
+    /// which branches on the insert's `i1` return and frees the caller's
+    /// duplicate exactly on the overwrite path. So this consume pairs with that
+    /// conditional release: the key is freed exactly once on either path —
+    /// vacant by the map, overwrite by the codegen release — never both, never
+    /// leaked (issue #2033 — see the conditional-key-consume contract comment in
+    /// `hew-runtime/src/hashmap.rs`).
     fn consume_moved_builtin_method_arg(&mut self, operand: &HirExpr) {
         let HirExprKind::BindingRef {
             name,

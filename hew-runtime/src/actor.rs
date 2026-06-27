@@ -4964,6 +4964,12 @@ pub unsafe extern "C" fn hew_actor_trap(actor: *mut HewActor, error_code: i32) {
     };
     crate::tracing::hew_trace_lifecycle(actor_id, lifecycle_event);
 
+    // Test-only crash ledger (DIST-9 probe): record the TERMINAL STATE so a
+    // two-process link fixture can confirm a LOCAL linked actor actually crashed
+    // (terminal Crashed == 5) after a cross-node link-down, surviving the actor's
+    // free. Gated by HEW_LINK_PROBE so production pays nothing.
+    crate::link::record_link_probe_terminal(actor_id, terminal);
+
     // Propagate exit to linked actors and notify monitors.
     // Do this BEFORE notifying supervisor to ensure proper ordering.
     run_crash_teardown_order_hook(HEW_ACTOR_CRASH_TEARDOWN_BEFORE_EXIT_PROPAGATION);
@@ -5015,6 +5021,39 @@ pub extern "C" fn hew_actor_self() -> *mut HewActor {
     // SAFETY: a non-null canonical context points to a live context slot owned
     // by the current dispatch/scope boundary.
     unsafe { (*ctx).actor }
+}
+
+/// Crash the current actor in response to an unhandled link EXIT (DIST-9).
+///
+/// A linked actor that does NOT trap exits (`#[on(exit)]`) must CRASH when its
+/// linked peer dies — the OTP fail-together semantic. The dispatch trampoline
+/// routes a `SYS_MSG_EXIT` (103) with no `#[on(exit)]` hook here instead of the
+/// exhaustiveness `llvm.trap` default (which is UB — it SIGILLs on Linux and
+/// only accidentally produced a terminal state on macOS). This drives the SAME
+/// controlled crash path a handler panic uses (`hew_trap_with_code` → the
+/// scheduler's longjmp recovery seam → terminal `Crashed`, link / monitor /
+/// supervisor fan-out), with the carried reason stamped on the actor.
+///
+/// `reason` is the EXIT's carried terminal reason; a zero (clean) reason is
+/// coerced to the non-zero `Crashed` sentinel so an unhandled EXIT ALWAYS
+/// crashes the non-trapping linked actor (a cleanly-exited linked peer still
+/// takes it down, OTP-style). `hew_trap_with_code` longjmps to the scheduler and
+/// does not return when called inside dispatch; it is a no-op outside an actor
+/// context (no recovery seam), where the trampoline's `llvm.trap` is unreachable
+/// because a `SYS_MSG_EXIT` only arrives at a scheduler-driven dispatch.
+#[no_mangle]
+pub extern "C" fn hew_actor_exit_unhandled(reason: i32) {
+    // Coerce a zero (clean) reason to a non-zero crash sentinel: an unhandled
+    // EXIT always crashes the non-trapping linked actor (Crashed, not Stopped).
+    let crash_code = if reason == 0 {
+        HewActorState::Crashed as i32
+    } else {
+        reason
+    };
+    // SAFETY: routes through the per-thread recovery seam, which is a no-op when
+    // no dispatch recovery context is active; inside dispatch it longjmps to the
+    // scheduler crash frame (the same path a handler panic takes).
+    unsafe { crate::supervisor::hew_trap_with_code(crash_code) };
 }
 
 /// Return the current actor's id, or -1 outside a dispatch context.

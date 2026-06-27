@@ -291,12 +291,6 @@ pub(crate) fn propagate_exit_to_links(actor_id: u64, reason: i32) {
         remove_link_by_target(linked_id, actor_id);
         send_exit_signal(linked_id, linked_actor, actor_id, reason);
     }
-
-    // Test-only crash ledger (DIST-9 probe): record the terminal reason so a
-    // two-process link fixture can confirm a LOCAL linked actor actually crashed
-    // (terminal Crashed) after a cross-node link-down, surviving the actor's
-    // free. Gated by HEW_LINK_PROBE so production pays nothing.
-    record_link_probe_terminal(actor_id, reason);
 }
 
 /// `PartitionPolicy::CrashLinked` discriminant (mirrors
@@ -485,15 +479,19 @@ static LINK_PROBE_ENABLED: LazyLock<bool> =
 static LINK_PROBE_LEDGER: LazyLock<std::sync::Mutex<HashMap<u64, i32>>> =
     LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
-/// Record an actor's terminal reason in the probe ledger (no-op unless enabled).
-fn record_link_probe_terminal(actor_id: u64, reason: i32) {
+/// Record an actor's TERMINAL STATE (`HewActorState`: Crashed == 5, Stopped ==
+/// 6) in the probe ledger (no-op unless enabled). Called from `hew_actor_trap`
+/// with the terminal state — distinct from the link EXIT reason — so a fixture
+/// can assert the local linked actor reached `Crashed`, proving the mailbox-EXIT
+/// cascade drove a controlled crash (not the exhaustiveness `llvm.trap`).
+pub(crate) fn record_link_probe_terminal(actor_id: u64, terminal_state: i32) {
     if !*LINK_PROBE_ENABLED {
         return;
     }
     let mut ledger = LINK_PROBE_LEDGER
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    ledger.insert(actor_id, reason);
+    ledger.insert(actor_id, terminal_state);
 }
 
 /// Test-introspection probe: report the recorded terminal reason for `actor_id`,

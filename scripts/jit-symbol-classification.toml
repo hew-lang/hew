@@ -35,6 +35,7 @@ stable = [
   "hew_actor_close",
   "hew_actor_current_id",
   "hew_actor_demonitor",
+  "hew_actor_exit_unhandled",
   "hew_actor_free",
   "hew_actor_get_budget",
   "hew_actor_get_error",

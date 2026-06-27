@@ -240,11 +240,22 @@ impl DistMonitorState {
     /// `(remote_node_id, target_serial)` if the entry existed, so the caller can
     /// send a `CTRL_DEMONITOR` to the peer. Idempotent: a missing `ref_id`
     /// returns `None`.
+    ///
+    /// Wakes any thread blocked in [`recv_down`] for this `ref_id`. The woken
+    /// thread sees no entry and returns [`MONITOR_REASON_TIMEOUT`] immediately —
+    /// the correct response to an explicit demonitor. Without the wake the thread
+    /// would wait out its full timeout before observing the missing entry.
     pub(crate) fn remove_watcher(&self, ref_id: u64) -> Option<(u16, u64)> {
-        let mut watchers = self.watchers.lock().unwrap_or_else(PoisonError::into_inner);
-        watchers
-            .remove(&ref_id)
-            .map(|e| (e.remote_node_id, e.target_serial))
+        let result = {
+            let mut watchers = self.watchers.lock().unwrap_or_else(PoisonError::into_inner);
+            watchers
+                .remove(&ref_id)
+                .map(|e| (e.remote_node_id, e.target_serial))
+        };
+        // Wake any thread parked in recv_down on this ref so it observes the
+        // removal immediately rather than waiting out its full timeout.
+        self.delivered.notify_all();
+        result
     }
 
     // ── Target side ───────────────────────────────────────────────────────
@@ -464,5 +475,62 @@ mod tests {
 
         let reason = handle.join().expect("recv thread panicked");
         assert_eq!(reason, 6, "blocked recv must wake with the armed reason");
+    }
+
+    /// F3: `remove_watcher` wakes a blocked `recv_down` promptly.
+    ///
+    /// A thread parked on `recv_down(ref, 5 s)` must return well before the
+    /// 5-second timeout when the registration is removed by `remove_watcher`.
+    /// Without the `notify_all` the thread would sleep for the full timeout and
+    /// only then observe the absent entry.
+    #[test]
+    fn remove_watcher_wakes_blocked_recv_promptly() {
+        use std::sync::Arc;
+        use std::time::Instant;
+        let state = Arc::new(DistMonitorState::new());
+        let ref_id = state.register_watcher(7, 1);
+
+        // A sibling ref on another node — must NOT be disturbed by this remove.
+        let sibling_ref = state.register_watcher(9, 2);
+
+        let state_recv = Arc::clone(&state);
+        let started = Instant::now();
+        let handle = std::thread::spawn(move || {
+            // 5-second ceiling; a missing wake would blow this.
+            state_recv.recv_down(ref_id, Duration::from_secs(5))
+        });
+
+        // Park the recv thread, then remove the registration.
+        std::thread::sleep(Duration::from_millis(50));
+        let removed = state.remove_watcher(ref_id);
+        assert_eq!(
+            removed,
+            Some((7, 1)),
+            "remove_watcher must return the target"
+        );
+
+        let reason = handle.join().expect("recv thread panicked");
+        let elapsed = started.elapsed();
+
+        // Correct return value: no entry → MONITOR_REASON_TIMEOUT.
+        assert_eq!(
+            reason, MONITOR_REASON_TIMEOUT,
+            "removed ref must yield MONITOR_REASON_TIMEOUT"
+        );
+        // Bounded-time: the wake must arrive well before the 5 s timeout.
+        // Allow 2 s for scheduling jitter on a slow CI host; a missing notify_all
+        // would take the full 5 s.
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "recv_down after remove_watcher took {elapsed:?}; expected well under 2 s \
+             (notify_all missing?)"
+        );
+        // Negative guard: the sibling ref on node 9 must not have been woken with
+        // a spurious signal — it is still Pending, so its recv times out normally.
+        assert_eq!(
+            state.recv_down(sibling_ref, Duration::from_millis(20)),
+            MONITOR_REASON_TIMEOUT,
+            "notify_all on remove must not spuriously deliver to a sibling ref"
+        );
     }
 }

@@ -247,3 +247,81 @@ fn wrong_impl_param_type_is_rejected() {
         output.errors
     );
 }
+
+// ---------------------------------------------------------------------------
+// Nested Self on a primitive impl (recursion through composite types)
+// ---------------------------------------------------------------------------
+//
+// `canonicalize_type_identity` recurses into composite type variants
+// (Vec/Option/tuple/…), so a `Self` nested inside `Vec<Self>`, `Option<Self>`,
+// or a tuple must also collapse `Ty::Named { name: "i64" }` → `Ty::I64` on
+// both sides. These lock the recursive path against future regression.
+
+/// `Self` nested inside `Vec<Self>` in return position.
+#[test]
+fn nested_self_in_vec_return_i64_typechecks() {
+    let output = typecheck(
+        r"
+        trait Dup {
+            fn dup(a: Self) -> Vec<Self>;
+        }
+
+        impl Dup for i64 {
+            fn dup(a: i64) -> Vec<i64> {
+                Vec::new()
+            }
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected no errors for Vec<Self> return; got: {:#?}",
+        output.errors
+    );
+}
+
+/// `Self` nested inside `Option<Self>` in return position.
+#[test]
+fn nested_self_in_option_return_i64_typechecks() {
+    let output = typecheck(
+        r"
+        trait Wrap {
+            fn wrap(a: Self) -> Option<Self>;
+        }
+
+        impl Wrap for i64 {
+            fn wrap(a: i64) -> Option<i64> {
+                Some(a)
+            }
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected no errors for Option<Self> return; got: {:#?}",
+        output.errors
+    );
+}
+
+/// `Self` nested inside a tuple in both param and return position.
+#[test]
+fn nested_self_in_tuple_return_i64_typechecks() {
+    let output = typecheck(
+        r"
+        trait Pair {
+            fn mk(a: Self, b: Self) -> (Self, Self);
+        }
+
+        impl Pair for i64 {
+            fn mk(a: i64, b: i64) -> (i64, i64) {
+                (a, b)
+            }
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected no errors for (Self, Self) return; got: {:#?}",
+        output.errors
+    );
+}

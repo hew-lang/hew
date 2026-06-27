@@ -463,6 +463,103 @@ fn plain_vec_chained_pipeline_frees_each_intermediate_exactly_once() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Multi-arm match — the alias-propagation fixpoint must converge (#1942) and
+// the ambiguous result group must fail closed (leak, never double-free).
+// ---------------------------------------------------------------------------
+
+/// A `match` whose result type is `Vec<i64>`, where two arms each construct a
+/// fresh local Vec and yield it, moves both arm handles into ONE shared result
+/// slot. Before the monotone-fixpoint fix the two distinct alias roots
+/// oscillated forever and MIR lowering spun until SIGKILL (#1942: `hew check`
+/// hung at ~9.6s CPU on this exact shape). The fix EVICTS the dual-rooted
+/// result slot so the fixpoint converges.
+///
+/// Here the result is RETURNED, so the arm locals legitimately escape to the
+/// caller and the producing function must free NEITHER — both the convergence
+/// proof (this test runs to completion) and the correct exclusion are pinned.
+/// LESSONS: `drop-allowset-from-value-flow`, `boundary-fail-closed`.
+#[test]
+fn plain_vec_local_drop_multi_arm_match_returned_converges_and_excludes() {
+    let pipeline = pipeline_with_tc(
+        r"
+        enum Action { Move; Left }
+        fn codes(a: Action) -> Vec<i64> {
+            match a {
+                Action::Move => { let v: Vec<i64> = Vec::new(); v },
+                Action::Left => { let v: Vec<i64> = Vec::new(); v.push(20); v }
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let drops = all_exit_drops(&pipeline, "codes");
+    assert_eq!(
+        count_free(&drops, "hew_vec_free"),
+        0,
+        "both arms' vecs are moved into the returned result slot — the caller \
+         owns them; the producing function must free NEITHER (a free here is \
+         the double-free this fix must never introduce); got {drops:?}"
+    );
+}
+
+/// The same dual-root result slot when the match value is consumed LOCALLY
+/// rather than returned: convergence must still hold, and the ambiguous group
+/// (the two arm handles plus the result slot all reachable from two roots) is
+/// fail-closed — it leaks, never double-frees. A `match` returning `string`
+/// alongside proves the non-collection multi-arm path is unaffected.
+/// LESSONS: `boundary-fail-closed`.
+#[test]
+fn plain_vec_local_drop_multi_arm_match_consumed_locally_converges() {
+    let pipeline = pipeline_with_tc(
+        r"
+        enum Action { Move; Left }
+        fn main() -> i64 {
+            let r: Vec<i64> = match Action::Left {
+                Action::Move => { let v: Vec<i64> = Vec::new(); v },
+                Action::Left => { let v: Vec<i64> = Vec::new(); v.push(20); v }
+            };
+            r.len()
+        }
+        ",
+    );
+    // The assertion that matters is that lowering CONVERGED at all (pre-fix this
+    // hung). The ambiguous group is fail-closed: no double-free is emitted.
+    let drops = all_exit_drops(&pipeline, "main");
+    assert!(
+        count_free(&drops, "hew_vec_free") <= 1,
+        "the ambiguous dual-root result group must fail closed (at most one \
+         free of the single live result, never one-per-arm); got {drops:?}"
+    );
+}
+
+/// A SINGLE-arm match yielding a fresh local Vec is the unambiguous control:
+/// exactly one root flows into the result slot, so the result earns its single
+/// scope-exit free — the monotone fix must NOT over-evict a sole-alias slot.
+/// LESSONS: `cleanup-all-exits`.
+#[test]
+fn plain_vec_local_drop_single_arm_match_frees_result_exactly_once() {
+    let pipeline = pipeline_with_tc(
+        r"
+        enum Tag { Only }
+        fn main() -> i64 {
+            let r: Vec<i64> = match Tag::Only {
+                Tag::Only => { let v: Vec<i64> = Vec::new(); v.push(7); v }
+            };
+            r.len()
+        }
+        ",
+    );
+    let drops = return_drops(&pipeline, "main");
+    assert_eq!(
+        count_free(&drops, "hew_vec_free"),
+        1,
+        "a single-arm match has one alias root flowing into the result; the \
+         sole-owner result must free exactly once (the fix must not evict a \
+         non-conflicting slot); got {drops:?}"
+    );
+}
+
 /// A vec consumed by a by-value call is owned by the callee now; the calling
 /// function must NOT also free it. LESSONS: `raii-null-after-move`.
 #[test]

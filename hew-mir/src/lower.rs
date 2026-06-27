@@ -8133,8 +8133,27 @@ impl Builder {
             is_opaque,
         } = ty
         {
+            // Strip type args only for machine decl types, never for generic
+            // enums (Option, Result, etc.).  Both sets are present in
+            // `machine_layout_names` — machine names are added directly from
+            // HirItem::Machine, and generic enum origin names are added from
+            // module.enum_layouts so that `is_known_actor_runtime_ty` resolves
+            // them as BitCopy.  The distinguishing property: every generic enum
+            // instantiation has at least one EnumLayout whose name begins with
+            // `{short_name}$$` (the mangled form), while machine types never
+            // produce a `$$`-mangled layout entry (machines always register
+            // under the bare decl name).  If we stripped args from a generic
+            // enum, the bare-name lookup would miss the mangled layout (e.g.
+            // "Option" instead of "Option$$i64") and produce MissingRecordLayout
+            // on any record with an Option<i64> field.
+            let sname = short_name(name);
+            let is_generic_enum_origin = self
+                .enum_layouts
+                .iter()
+                .any(|el| el.name.starts_with(&format!("{sname}$$")));
             if !args.is_empty()
                 && args.iter().all(|a| matches!(a, ResolvedTy::I64))
+                && !is_generic_enum_origin
                 && machine_layout_name_matches(&self.machine_layout_names, name)
             {
                 return ResolvedTy::Named {

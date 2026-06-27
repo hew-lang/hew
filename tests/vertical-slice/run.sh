@@ -307,6 +307,13 @@ compile_accept "machine_fork_args_spawn"
 # type is normalised before the enum-layout probe so the bare-name view is found.
 run_accept_expect_status "machine_generic_record_field" 0
 
+# Regression guard: a plain record with an Option<i64> field must compile and
+# run.  The MIR field classifier must NOT strip args from generic enum types
+# (Option, Result) even though their origin names appear in machine_layout_names.
+# Stripping "Option<i64>" to bare "Option" causes MissingRecordLayout; this
+# fixture catches any widening of the machine-field normalisation guard.
+run_accept_expect_status "record_generic_enum_field" 7
+
 # Stage-2 lazy iterator wrappers: structural smoke. The fixture's wrapper
 # records and `impl Iterator` blocks compile cleanly through the parser and
 # the type checker. The generic adapter bodies only lower through MIR once

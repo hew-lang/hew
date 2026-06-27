@@ -1,0 +1,19 @@
+// Regression guard: a plain (non-wire) record whose field type is a generic
+// enum with an i64 argument (Option<i64>) must compile and run.
+//
+// The MIR record-field classifier normalises machine-typed fields before the
+// enum-layout probe, but must NOT strip args from generic enum types like
+// Option<i64>.  Stripping the args produces a bare-name "Option" probe that
+// misses the mangled "Option$$i64" layout and fails with MissingRecordLayout.
+// This fixture catches any regression where that guard is widened to include
+// generic enum origin names.
+type Holder { val: Option<i64> }
+
+fn main() -> i64 {
+    let a = Holder { val: Some(7) };
+    let _b = Holder { val: None };
+    match a.val {
+        Some(v) => v,
+        None => -1,
+    }
+}

@@ -2880,6 +2880,20 @@ pub(crate) fn fail_remote_asks_for_node(dead_node_id: u16) {
             return;
         }
         // SAFETY: routing_table is valid while the node is installed.
+        //
+        // Replacement-connection window: this lookup returns the CURRENT conn_id
+        // for `dead_node_id` at the time of the SWIM-DEAD verdict. If the routing
+        // table has already been updated to a replacement connection (old socket
+        // retired, new connection established and routed), `conn_id` here is the
+        // NEW conn's id. Pending asks on the OLD conn that are still draining in
+        // the old reader's cleanup will NOT be reached by this fan-out — they
+        // resolve via `reader_cleanup` → `ConnectionDropped` rather than
+        // `Partition`. This is already fail-closed (the dying reader does fail
+        // them; no ask can hang) and is a cosmetic reason-label mismatch only.
+        //
+        // The real fix — keying the reply table on (node_id, conn_generation) so
+        // a DEAD verdict can reach a retired conn's draining asks — requires a
+        // reply-table schema change and an exactly-once proof; it is deferred.
         let conn_id =
             unsafe { crate::routing::hew_routing_conn_for_node(node.routing_table, dead_node_id) };
         if conn_id < 0 {

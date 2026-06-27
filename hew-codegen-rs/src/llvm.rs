@@ -20277,6 +20277,21 @@ pub(crate) fn layout_vec_element_needs_descriptor<'ctx>(
             }
         }
         ResolvedTy::Named { name, args, .. } => {
+            // An indirect enum is heap-allocated: every element slot holds an
+            // 8-byte pointer, so it rides the pointer ABI (`hew_vec_*_ptr`) —
+            // the same routing the checker (`vec_element_runtime_suffix` →
+            // `"ptr"`) and the MIR getter (`lower_vec_index`'s `!is_indirect`
+            // gate) already use. It must NOT take a layout descriptor: its
+            // tagged-union struct is registered in `record_layouts` (every enum
+            // is), so without this gate the `contains_key` check below would
+            // build a layout-aware (BitCopy) Vec, and a `hew_vec_push_ptr` then
+            // tripped the runtime layout-aware abort ("Vec layout-aware
+            // operation is not implemented"). Fall through to `Ok(None)` so the
+            // constructor selects the plain pointer-element Vec
+            // (`dedup-semantic-boundary`).
+            if crate::layout::is_indirect_enum(name, fn_ctx.enum_layouts) {
+                return Ok(None);
+            }
             let lookup_key = if args.is_empty() {
                 name.clone()
             } else {
@@ -20448,6 +20463,21 @@ fn lower_vec_constructor_call(
         // the plain pointer-element vec. Scope-exit release routes through
         // `hew_vec_free_closure_pairs`, never the descriptor ABIs.
         ResolvedTy::Function { .. } | ResolvedTy::Closure { .. } => {
+            VecCtor::Plain("hew_vec_new_ptr")
+        }
+        // Indirect-enum elements are heap-allocated pointer handles: each slot
+        // holds an 8-byte pointer, the same convention the checker
+        // (`vec_element_runtime_suffix` → `"ptr"`) and the MIR getter
+        // (`lower_vec_index`'s `!is_indirect` gate) route through. Selected
+        // explicitly because `resolve_ty` returns the registered tagged-union
+        // STRUCT for an indirect enum (struct-layout-first), so the generic
+        // pointer-detection in the `_` arm below would not recognise it and
+        // would fail closed. Without this arm the indirect enum fell through to
+        // the layout-descriptor path and `hew_vec_push_ptr` tripped the runtime
+        // layout-aware abort (`dedup-semantic-boundary`).
+        ResolvedTy::Named { name, .. }
+            if crate::layout::is_indirect_enum(name, fn_ctx.enum_layouts) =>
+        {
             VecCtor::Plain("hew_vec_new_ptr")
         }
         _ => {

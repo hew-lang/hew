@@ -976,6 +976,10 @@ internal = [
   "hew_deterministic_get_seed",
   "hew_deterministic_reset",
   "hew_deterministic_set_seed",
+  # Test-introspection probe: returns the total RemoteWatcher count across the
+  # target-side monitor table. Used by two-process fixtures to assert bounded
+  # table growth after a watcher node dies. Not user-callable; not JIT-reachable.
+  "hew_dist_monitor_remote_watcher_count",
   "hew_fault_clear",
   "hew_fault_clear_all",
   "hew_fault_count",

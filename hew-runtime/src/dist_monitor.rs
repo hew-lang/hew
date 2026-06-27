@@ -344,10 +344,10 @@ impl DistMonitorState {
         pruned
     }
 
-    /// Count of remote watcher entries across all serials. Test-only introspection
-    /// hook for the two-process fixture (confirms the table is bounded after a
-    /// watcher node dies without adding a production ABI).
-    #[cfg(test)]
+    /// Count of remote watcher entries across all serials.
+    ///
+    /// Used by `hew_dist_monitor_remote_watcher_count` (the test-introspection
+    /// probe callable from `.hew` fixtures) and by the in-process unit tests.
     pub(crate) fn remote_watcher_count(&self) -> usize {
         let targets = self.targets.lock().unwrap_or_else(PoisonError::into_inner);
         targets.values().map(Vec::len).sum()

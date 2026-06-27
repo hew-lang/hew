@@ -326,6 +326,132 @@ fn run_conn_drop_scenario(scenario: &str) -> String {
     captured
 }
 
+/// Run the server + client pair for a watcher-node-death scenario: the client
+/// (the watcher) prints `READY_CLIENT_WATCHER <name>` once its monitor is
+/// registered, the harness then kills the CLIENT process (simulating watcher-
+/// node death), and the SERVER runs to completion observing the prune and
+/// printing its assertion. Returns the server's captured stdout.
+fn run_watcher_drop_scenario(scenario: &str) -> String {
+    let binary = compiled_node_binary();
+    let port = allocate_loopback_port();
+
+    let mut server = ManagedChild::spawn(binary, "server", port, scenario);
+    let server_stdout = server
+        .child
+        .stdout
+        .take()
+        .expect("server stdout was captured");
+    let mut server_reader = BufReader::new(server_stdout);
+
+    // Read until READY so we know actors are registered.
+    let deadline = Instant::now() + SERVER_READY_TIMEOUT;
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "server did not print READY within {SERVER_READY_TIMEOUT:?}"
+        );
+        let mut line = String::new();
+        match server_reader.read_line(&mut line) {
+            Ok(0) => panic!("server stdout closed before READY"),
+            Ok(_) => {
+                if line.trim_start().starts_with("READY ") {
+                    break;
+                }
+            }
+            Err(error) => panic!("error reading server stdout: {error}"),
+        }
+    }
+
+    // Launch the client (the watcher) and block until it signals its monitor
+    // is live so the harness knows the watch-side entry is registered.
+    let mut client = ManagedChild::spawn(binary, "client", port, scenario);
+    let client_stdout = client
+        .child
+        .stdout
+        .take()
+        .expect("client stdout was captured");
+    let mut client_reader = BufReader::new(client_stdout);
+    let ready_deadline = Instant::now() + SERVER_READY_TIMEOUT;
+    loop {
+        assert!(
+            Instant::now() < ready_deadline,
+            "client did not print READY_CLIENT_WATCHER within {SERVER_READY_TIMEOUT:?}"
+        );
+        let mut line = String::new();
+        match client_reader.read_line(&mut line) {
+            Ok(0) => panic!("client stdout closed before READY_CLIENT_WATCHER"),
+            Ok(_) => {
+                if line.contains("READY_CLIENT_WATCHER ") {
+                    break;
+                }
+            }
+            Err(error) => panic!("error reading client stdout: {error}"),
+        }
+    }
+
+    // Accumulate all server output (including diagnostic lines) in one buffer
+    // so the final assertion can reference the full server trace on failure.
+    let mut server_out = String::new();
+
+    // Wait for the server to confirm it received and processed the
+    // CTRL_MONITOR_REQ (target-side entry recorded).  This read must happen
+    // BEFORE the client kill: killing the client races CTRL_MONITOR_REQ
+    // processing — the OS may deliver the RST/FIN before the connection reader
+    // finishes processing the frame, losing the registration.
+    let reg_deadline = Instant::now() + SERVER_READY_TIMEOUT;
+    loop {
+        assert!(
+            Instant::now() < reg_deadline,
+            "server did not confirm watcher registration within {SERVER_READY_TIMEOUT:?}"
+        );
+        let mut line = String::new();
+        match server_reader.read_line(&mut line) {
+            Ok(0) => panic!("server stdout closed before READY_SERVER_WATCHER_REGISTERED"),
+            Ok(_) => {
+                server_out.push_str(&line);
+                if line.contains("READY_SERVER_WATCHER_REGISTERED ") {
+                    break;
+                }
+            }
+            Err(error) => panic!("error reading server stdout: {error}"),
+        }
+    }
+
+    // Kill the client to simulate watcher-node death. The server has already
+    // confirmed registration so there is no race between kill and processing.
+    let _ = client.child.kill();
+    let _ = client.child.wait();
+
+    // Drain the server's output until it prints its assertion (PASS or FAIL)
+    // or the wall-clock cap elapses.
+    let drain_deadline = Instant::now() + CLIENT_RUN_TIMEOUT;
+    loop {
+        let mut line = String::new();
+        match server_reader.read_line(&mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {
+                server_out.push_str(&line);
+                // Stop once the server prints its verdict.
+                if line.contains("PASS monitor_watcher_node_death")
+                    || line.contains("FAIL monitor_watcher_node_death")
+                {
+                    break;
+                }
+            }
+        }
+        assert!(
+            Instant::now() < drain_deadline,
+            "server did not print verdict within {CLIENT_RUN_TIMEOUT:?}"
+        );
+    }
+
+    // Force-kill the server and discard its exit status.
+    let _ = server.child.kill();
+    let _ = server.child.wait();
+
+    server_out
+}
+
 /// Clean cross-node exit: a client monitoring a remote actor receives exactly
 /// one DOWN carrying the clean-exit reason (`HewActorState::Stopped` == 6) when
 /// the remote actor stops itself.
@@ -515,5 +641,50 @@ fn wire_cbor_cross_process_round_trip() {
     assert!(
         !stdout.contains("FAIL "),
         "client reported a FAIL on the #[wire] cross-process round-trip; client stdout:\n{stdout}"
+    );
+}
+
+/// F2 cross-process proof: when the watcher node dies (client process killed),
+/// the target-side `RemoteWatcher` entries it registered on the server are
+/// pruned from the `targets` map, keeping the table bounded.
+///
+/// The server polls `hew_dist_monitor_remote_watcher_count()` until the count
+/// drops to 0 (the prune fired) and prints `PASS monitor_watcher_node_death
+/// pruned=<N>`. The harness asserts that PASS line with an exact count, that the
+/// target actor itself is NOT reported as DOWN (the watcher dying must not affect
+/// the watched actor's liveness), and that no FAIL line appears.
+///
+/// Teeth: the server-side assertion is an exact count (pruned > 0 would pass over
+/// a table that never grew); the wait loop has a bounded timeout that fails if the
+/// prune never fires; the no-FAIL guard catches any scenario-level error.
+#[test]
+fn monitor_watcher_node_death_prunes_target_table() {
+    let server_out = run_watcher_drop_scenario("monitor_watcher_node_death");
+
+    // The server must print PASS with an exact non-zero pruned count — the exact
+    // integer after "pruned=" is the number of RemoteWatcher entries that were
+    // present before the kill and then removed.
+    assert!(
+        server_out.contains("PASS monitor_watcher_node_death pruned="),
+        "server must print PASS monitor_watcher_node_death pruned=<n>; \
+         server out:\n{server_out}"
+    );
+    // The pruned count must be > 0 (the watcher DID register at least one entry).
+    let pruned_count: i64 = server_out
+        .lines()
+        .find(|l| l.contains("PASS monitor_watcher_node_death pruned="))
+        .and_then(|l| l.split("pruned=").nth(1))
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
+    assert!(
+        pruned_count > 0,
+        "pruned count must be > 0 (watcher registered at least one entry); \
+         server out:\n{server_out}"
+    );
+    // No FAIL line — no scenario-level error.
+    assert!(
+        !server_out.contains("FAIL "),
+        "server reported a FAIL on the watcher-node-death scenario; \
+         server out:\n{server_out}"
     );
 }

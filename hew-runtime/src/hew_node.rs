@@ -2893,6 +2893,30 @@ pub(crate) fn fail_remote_asks_for_node(dead_node_id: u16) {
     });
 }
 
+/// Return the total number of `RemoteWatcher` entries across all serial slots
+/// in the target-side monitor table.
+///
+/// Test-introspection probe used by the two-process watcher-node-death fixture
+/// to assert the target-side table is empty after a watcher node dies — proving
+/// the prune path fires and the table is bounded. Not user-callable; the
+/// compiler does not emit calls to this symbol. Callable from `.hew` via
+/// `extern "C" { fn hew_dist_monitor_remote_watcher_count() -> i64; }`.
+#[no_mangle]
+pub extern "C" fn hew_dist_monitor_remote_watcher_count() -> i64 {
+    let Some(rt) = crate::runtime::rt_current_opt() else {
+        return -1;
+    };
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "remote_watcher_count is bounded by the number of live monitors, which is \
+                  far below i64::MAX in any realistic deployment; the sentinel -1 covers \
+                  the no-runtime case"
+    )]
+    {
+        rt.dist_monitors.remote_watcher_count() as i64
+    }
+}
+
 /// Connect to a remote node and register routing for its node ID.
 ///
 /// Supports `"<node_id>@<addr>"` format for explicit peer node IDs. If no

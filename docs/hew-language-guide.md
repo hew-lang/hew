@@ -1310,6 +1310,66 @@ fn main() {
 
 Spawn the dependency first, pass its `LocalPid<Dep>` into the dependent actor's spawn, store it in a field, and `await dep.method(...)` from a handler. Awaiting another actor yields `Result<R, AskError>` like any ask.
 
+### Timers and scheduling — sleep and sleep_until
+
+Hew provides two blocking/suspending timer builtins backed by a single
+hierarchical timer wheel. The wheel is tickless — the scheduler thread parks
+until the next deadline and never spins when no timers are armed.
+
+**`sleep(d: duration)`** — suspend for a duration. Inside an actor handler
+the actor suspends cooperatively and the worker is freed for other actors;
+in `fn main` or a free function the calling thread blocks.
+
+```hew
+actor Ticker {
+    receive fn run(count: i64) {
+        var i = 0;
+        while i < count {
+            sleep(5ms);
+            println(f"tick {i}");
+            i = i + 1;
+        }
+    }
+}
+
+fn main() {
+    let t = spawn Ticker;
+    t.run(3);
+    sleep(100ms);
+    // tick 0
+    // tick 1
+    // tick 2
+}
+```
+
+**`sleep_until(target: instant)`** — suspend until a monotonic `instant`.
+Returns immediately if `target` is already in the past. Combine with
+`instant::now()` and duration arithmetic to build deadline-bounded loops:
+
+```hew
+fn main() {
+    let t0 = instant::now();
+    let deadline = t0 + 50ms;
+    // ... do some work ...
+    sleep_until(deadline);    // waits only the remaining time
+    let elapsed = t0.elapsed();
+    println(elapsed.millis() >= 45);   // true
+}
+```
+
+**Duration literals:** `10ms`, `2s`, `500ms`, `1ns`, `1us`. These produce a
+`duration` value. `instant + duration` and `duration + instant` both produce
+a new `instant`.
+
+**Timer model:** both `sleep` and `sleep_until` arm a single entry in the
+runtime's two-level hierarchical wheel (256 × 1 ms slots + 64 × 256 ms
+slots; overflow list for intervals > 16 s). There is one shared wheel per
+process; all sleeping actors and threads compete for its entries. Scheduling
+granularity is 1 ms on the native target. Sub-millisecond values in actor
+handlers convert to 0 ms (next tick); in `fn main` the OS sleep is
+nanosecond-precise (subject to OS granularity, typically ≥ 1 µs on
+Linux/macOS).
+
 ## State machines
 
 ### Machine declaration: events, states, transitions, step(), state_name()
@@ -1593,6 +1653,94 @@ fn main() {
 > ```
 >
 > Note: `Stack { items: Vec::new() }` *without* a type annotation on the binding also fails — with `cannot infer type for local binding` when `T` is unconstrained, or `E_MIR: unknown type 'T' at the MIR boundary` once usage constrains `T`. Always provide a type annotation when constructing a generic record inline.
+
+### Generic functions as values (cross-module)
+
+A generic function exported from another module can be passed as a first-class
+value. The concrete type arguments are inferred from the receiving variable's
+declared type or the parameter type at the call site — the context fully
+determines the monomorphisation.
+
+<!-- doctest: skip -->
+```hew
+import math_utils;
+
+fn apply(f: fn(i64) -> i64, x: i64) -> i64 {
+    f(x)
+}
+
+fn main() {
+    // Monomorphic cross-module function as a value
+    let sq: fn(i64) -> i64 = math_utils.square;
+    println(apply(sq, 7));                       // 49
+
+    // Generic cross-module function; type inferred from the annotation
+    let id: fn(i64) -> i64 = math_utils.identity;
+    println(apply(id, 5));                        // 5
+
+    // Inline: pass a cross-module fn directly to a higher-order function
+    println(apply(math_utils.add_one, 10));       // 11
+}
+```
+
+Where `math_utils.hew` exports:
+
+<!-- doctest: skip -->
+```hew
+pub fn add_one(x: i64) -> i64 { x + 1 }
+pub fn square(x: i64) -> i64 { x * x }
+pub fn identity<T>(x: T) -> T { x }
+```
+
+The type annotation on the `let` binding (e.g. `fn(i64) -> i64`) is what
+drives inference for `identity<T>` — without it the checker cannot determine
+`T` and rejects the assignment with a diagnostic asking for an explicit
+annotation. Monomorphic cross-module functions (`square`, `add_one`) do not
+need an annotation; the type is recovered from the function's declared
+signature directly.
+
+> **Scope:** this path fires only for cross-module functions
+> (`module.fn_name`). Capturing a generic function from the *current* module
+> as a value is not supported — split the generic helper into a separate
+> module if you need it as a value.
+
+### Generic Display and println
+
+`println` and `print` accept any type `T: Display`. For primitive types
+(`i64`, `f64`, `bool`, `char`, `string`) the `Display` impl is built in and
+`println(v)` works without further setup. For a user-defined type, implement
+`Display` and call `println` through a generic wrapper or use f-string
+interpolation:
+
+```hew
+type Celsius { degrees: f64; }
+
+impl Display for Celsius {
+    fn fmt(c: Celsius) -> string {
+        f"{c.degrees}°C"
+    }
+}
+
+// Generic helper: accepts any T that implements Display
+fn show<T: Display>(label: string, value: T) {
+    println(f"{label}: {value}");
+}
+
+fn main() {
+    show("int", 42);               // int: 42
+    show("float", 2.718);          // float: 2.718
+    show("str", "Hew");            // str: Hew
+    let temp = Celsius { degrees: 36.6 };
+    show("temp", temp);            // temp: 36.6°C
+}
+```
+
+`println(x)` called directly on a user type (without an f-string or a `<T:
+Display>` wrapper) does not dispatch — the checker emits
+`E_HIR: builtin call has no registered monomorphic overload`. Two correct
+forms: `println(f"{val}")` (f-string interpolation) or a generic function
+that takes `T: Display` and calls `println` internally. The `fmt` method is
+also callable directly: `val.fmt()` returns the string representation.
 
 ### Generics NYI — current limitations
 
@@ -2209,6 +2357,102 @@ fn main() {
 ```
 
 **Memory management:** every `Value` (from `parse`, `get_field`, `array_get`, `from_*`, `object()`, `array()`) must be freed with `.free()` before it goes out of scope. Omitting `.free()` is a resource leak. Values returned by `get_field` and `array_get` are heap-allocated clones — free them independently of the parent.
+
+## Structural equality
+
+### Records and payload-bearing enums
+
+Records and enums support `==` and `!=` out of the box; no extra
+implementation is needed. Equality is structural: two record values are equal
+when every field is equal, and two enum values are equal when they carry the
+same variant and every payload field is equal.
+
+```hew
+type Point { x: i64; y: i64; }
+
+enum Color {
+    Red;
+    Green;
+    Blue;
+    Custom(i64);
+}
+
+fn main() {
+    // Record equality — field-by-field
+    let a = Point { x: 1, y: 2 };
+    let b = Point { x: 1, y: 2 };
+    let c = Point { x: 1, y: 3 };
+    println(a == b);   // true
+    println(a == c);   // false
+    println(a != c);   // true
+
+    // Enum equality — unit variants
+    println(Color::Red == Color::Red);     // true
+    println(Color::Red == Color::Green);   // false
+
+    // Enum equality — payload-bearing variants
+    println(Color::Custom(42) == Color::Custom(42));   // true
+    println(Color::Custom(42) == Color::Custom(99));   // false
+    println(Color::Custom(42) != Color::Red);           // true
+}
+```
+
+### Vec::contains relies on structural equality
+
+`Vec<T>.contains(v)` walks the vector using the same element-wise equality,
+so records and enums with payloads work transparently:
+
+```hew
+type Point { x: i64; y: i64; }
+
+enum Tag { A; B(i64); }
+
+fn main() {
+    // Primitive and string elements
+    let nums: Vec<i64> = Vec::new();
+    nums.push(10); nums.push(20); nums.push(30);
+    println(nums.contains(20));   // true
+    println(nums.contains(99));   // false
+
+    let words: Vec<string> = Vec::new();
+    words.push("hello"); words.push("world");
+    println(words.contains("hello"));   // true
+    println(words.contains("bye"));     // false
+
+    // Record elements
+    let pts: Vec<Point> = Vec::new();
+    pts.push(Point { x: 1, y: 2 });
+    pts.push(Point { x: 3, y: 4 });
+    println(pts.contains(Point { x: 1, y: 2 }));   // true
+    println(pts.contains(Point { x: 5, y: 6 }));   // false
+
+    // Payload enum elements
+    let tags: Vec<Tag> = Vec::new();
+    tags.push(Tag::A);
+    tags.push(Tag::B(7));
+    println(tags.contains(Tag::A));      // true
+    println(tags.contains(Tag::B(7)));   // true
+    println(tags.contains(Tag::B(8)));   // false
+}
+```
+
+### bytes field restriction
+
+Equality is rejected at compile time for any record or enum type that
+contains a `bytes` field. The checker emits a diagnostic rather than
+comparing raw buffer bytes, which would produce unreliable results for
+refcounted heap handles:
+
+<!-- doctest: skip -->
+```hew
+type Packet { data: bytes; }
+// Packet { data: bytes } == Packet { data: bytes }
+// ^^^ rejected: `==` on record type `Packet` is not supported because a
+//     field or payload contains layout-managed/non-Copy data `bytes`
+```
+
+Compare individual eligible fields or use a method that extracts the
+comparable portion instead.
 
 ## v0.5 surfaces
 

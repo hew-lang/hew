@@ -6,14 +6,16 @@
 use ciborium::value::{Integer, Value};
 use hew_runtime::cluster::{GOSSIP_REGISTRY_ADD, GOSSIP_REGISTRY_REMOVE};
 use hew_runtime::envelope::{
-    decode_control_frame, decode_envelope_frame, decode_monitor_down_payload,
-    decode_monitor_req_payload, decode_registry_gossip_payload, decode_swim_payload,
-    decode_wire_frame, encode_control_frame, encode_envelope_frame, encode_monitor_down_payload,
+    decode_control_frame, decode_envelope_frame, decode_link_down_payload, decode_link_req_payload,
+    decode_monitor_down_payload, decode_monitor_req_payload, decode_registry_gossip_payload,
+    decode_swim_payload, decode_wire_frame, encode_control_frame, encode_envelope_frame,
+    encode_link_down_payload, encode_link_req_payload, encode_monitor_down_payload,
     encode_monitor_req_payload, encode_registry_gossip_payload, encode_swim_payload, ControlFrame,
-    DecodeError, EnvelopeFrame, MonitorDownPayload, MonitorPayloadError, MonitorReqPayload,
-    RegistryGossipPayload, RegistryGossipPayloadError, SwimControlPayload, SwimGossipEntry,
-    SwimPayloadError, WireFrame, CTRL_DEMONITOR, CTRL_MONITOR_DOWN, CTRL_MONITOR_REQ,
-    CTRL_REGISTRY_GOSSIP, FRAME_TYPE_CONTROL, FRAME_TYPE_ENVELOPE, MAX_MONITOR_PAYLOAD_BYTES,
+    DecodeError, EnvelopeFrame, LinkReqPayload, MonitorDownPayload, MonitorPayloadError,
+    MonitorReqPayload, RegistryGossipPayload, RegistryGossipPayloadError, SwimControlPayload,
+    SwimGossipEntry, SwimPayloadError, WireFrame, CTRL_DEMONITOR, CTRL_LINK_DOWN, CTRL_LINK_REQ,
+    CTRL_MONITOR_DOWN, CTRL_MONITOR_REQ, CTRL_REGISTRY_GOSSIP, CTRL_UNLINK, FRAME_TYPE_CONTROL,
+    FRAME_TYPE_ENVELOPE, MAX_LINK_PAYLOAD_BYTES, MAX_MONITOR_PAYLOAD_BYTES,
     MAX_REGISTRY_GOSSIP_NAME_BYTES, MAX_REGISTRY_GOSSIP_PAYLOAD_BYTES, MAX_SWIM_GOSSIP_ENTRIES,
     MAX_SWIM_PAYLOAD_BYTES, REGISTRY_GOSSIP_OP_ADD, REGISTRY_GOSSIP_OP_REMOVE, WIRE_VERSION,
 };
@@ -1159,6 +1161,142 @@ fn monitor_payload_truncated_cbor_returns_error() {
         assert!(
             decode_monitor_down_payload(&down_bytes[..cut]).is_err(),
             "down decoder returned Ok on a {cut}-byte truncation"
+        );
+    }
+}
+
+// ── Cross-node link control payloads (DIST-9) ────────────────────────────────
+
+#[test]
+fn link_ctrl_kinds_are_distinct_and_stable() {
+    // The link kinds must be stable and distinct from the monitor / gossip / SWIM
+    // families so a peer routes each frame to the right handler.
+    assert_eq!(CTRL_LINK_REQ, 6);
+    assert_eq!(CTRL_LINK_DOWN, 7);
+    assert_eq!(CTRL_UNLINK, 8);
+    // Distinct from the monitor family (3/4/5) and the others.
+    assert_ne!(CTRL_LINK_REQ, CTRL_MONITOR_REQ);
+    assert_ne!(CTRL_LINK_DOWN, CTRL_MONITOR_DOWN);
+    assert_ne!(CTRL_UNLINK, CTRL_DEMONITOR);
+}
+
+#[test]
+fn link_req_payload_round_trips_with_cddl_shape() {
+    // CrashLinked (policy_tag == 3) link request carrying both directions'
+    // identity for the bidirectional reciprocation.
+    let original = LinkReqPayload {
+        linker_node_id: 7,
+        ref_id: 4242,
+        target_serial: 99,
+        linker_serial: 55,
+        policy_tag: 3,
+    };
+    let bytes = encode_link_req_payload(&original).expect("link req should encode");
+    let decoded = decode_link_req_payload(&bytes).expect("link req should decode");
+    assert_eq!(decoded, original);
+
+    // CDDL shape: definite map keyed {1,2,3,4,5} with exact integer values.
+    let value = decode_value(&bytes);
+    let entries = map_entries(&value);
+    assert_eq!(entries.len(), 5);
+    assert_integer_keys_and_order(entries, &[1, 2, 3, 4, 5]);
+    assert_integer_value(find_field(entries, 1), 7);
+    assert_integer_value(find_field(entries, 2), 4242);
+    assert_integer_value(find_field(entries, 3), 99);
+    assert_integer_value(find_field(entries, 4), 55);
+    assert_integer_value(find_field(entries, 5), 3);
+}
+
+#[test]
+fn link_down_payload_reuses_monitor_down_shape() {
+    // The link DOWN reuses the monitor DOWN {ref_id, reason} shape — the
+    // divergence is in the RECEIVER (mailbox-EXIT crash), not the wire.
+    let original = MonitorDownPayload {
+        ref_id: 4242,
+        reason: 5,
+    };
+    let bytes = encode_link_down_payload(&original).expect("link down should encode");
+    let decoded = decode_link_down_payload(&bytes).expect("link down should decode");
+    assert_eq!(decoded, original);
+    // Negative sentinel (partition) round-trips on the link DOWN too.
+    let partition = MonitorDownPayload {
+        ref_id: 1,
+        reason: -1,
+    };
+    let pbytes = encode_link_down_payload(&partition).expect("link down should encode");
+    assert_eq!(decode_link_down_payload(&pbytes).unwrap().reason, -1);
+}
+
+#[test]
+fn link_req_payload_codec_rejects_malformed_payloads() {
+    // Unknown key beyond the {1..5} set: a fabricated link request with an extra
+    // key must be rejected — a HIGHER-stakes bar than monitor because a forged
+    // link can later crash a real actor.
+    let unknown_key = Value::Map(vec![
+        (int(1u64), int(1u64)),
+        (int(2u64), int(2u64)),
+        (int(3u64), int(3u64)),
+        (int(4u64), int(4u64)),
+        (int(5u64), int(3u64)),
+        (int(6u64), int(9u64)),
+    ]);
+    assert!(matches!(
+        decode_link_req_payload(&value_to_cbor(&unknown_key)),
+        Err(MonitorPayloadError::UnknownKey { key: 6 })
+    ));
+
+    // Missing required key 4 (linker_serial): the reverse-link half cannot be
+    // established without it, so it fails closed rather than registering a
+    // one-directional link.
+    let missing = Value::Map(vec![
+        (int(1u64), int(1u64)),
+        (int(2u64), int(2u64)),
+        (int(3u64), int(3u64)),
+        (int(5u64), int(3u64)),
+    ]);
+    assert!(matches!(
+        decode_link_req_payload(&value_to_cbor(&missing)),
+        Err(MonitorPayloadError::MissingKey { key: 4 })
+    ));
+
+    // policy_tag out of u8 range fails closed rather than truncating.
+    let oob_policy = Value::Map(vec![
+        (int(1u64), int(1u64)),
+        (int(2u64), int(2u64)),
+        (int(3u64), int(3u64)),
+        (int(4u64), int(4u64)),
+        (int(5u64), int(9000u64)),
+    ]);
+    assert!(matches!(
+        decode_link_req_payload(&value_to_cbor(&oob_policy)),
+        Err(MonitorPayloadError::MalformedField { key: 5, .. })
+    ));
+}
+
+#[test]
+fn link_payload_rejects_oversized_input() {
+    // A fabricated payload larger than the cap is rejected before any decode work.
+    let oversized = vec![0u8; MAX_LINK_PAYLOAD_BYTES + 1];
+    assert!(matches!(
+        decode_link_req_payload(&oversized),
+        Err(MonitorPayloadError::PayloadTooLarge { .. })
+    ));
+}
+
+#[test]
+fn link_req_payload_truncated_cbor_returns_error() {
+    let req = LinkReqPayload {
+        linker_node_id: 3,
+        ref_id: 7,
+        target_serial: 11,
+        linker_serial: 22,
+        policy_tag: 3,
+    };
+    let bytes = encode_link_req_payload(&req).expect("link req should encode");
+    for cut in 1..bytes.len() {
+        assert!(
+            decode_link_req_payload(&bytes[..cut]).is_err(),
+            "link req decoder returned Ok on a {cut}-byte truncation"
         );
     }
 }

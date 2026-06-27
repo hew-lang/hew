@@ -63,6 +63,44 @@ pub const CTRL_MONITOR_DOWN: u64 = 4;
 /// node removes the remote-watcher entry. Idempotent on the receiver.
 pub const CTRL_DEMONITOR: u64 = 5;
 
+/// Control-frame kind for a cross-node link request (DIST-9).
+///
+/// Sent by a linker node to the node owning the target actor: "node L, actor
+/// `linker_serial`, registration `ref_id`, links your actor `target_serial`
+/// under `policy_tag`." A cross-node link is BIDIRECTIONAL — the owning node
+/// reciprocates by registering a reverse link so the linker's death also fires
+/// into the target — so it carries both directions' identity. On the target
+/// node this records a target-side remote-linker entry (so the target's death
+/// fans a `CTRL_LINK_DOWN` back) AND a reverse watcher entry (so the linker's
+/// death crashes the target per the policy).
+pub const CTRL_LINK_REQ: u64 = 6;
+
+/// Control-frame kind for a cross-node link DOWN notification (DIST-9).
+///
+/// Sent to a linked node when its remote peer reaches a terminal state. Unlike
+/// a `CTRL_MONITOR_DOWN` (which arms a recv slot a program polls), a
+/// `CrashLinked` `CTRL_LINK_DOWN` synthesizes a `SYS_MSG_EXIT` into the local
+/// linked actor's MAILBOX and crashes it (the OTP fail-together semantic).
+/// Carries the linked node's `ref_id` and the terminal reason code.
+pub const CTRL_LINK_DOWN: u64 = 7;
+
+/// Control-frame kind for a cross-node unlink request (DIST-9).
+///
+/// Sent by a linker node to retract a prior `CTRL_LINK_REQ`. The owning node
+/// removes both the target-side remote-linker entry and the reverse watcher
+/// entry. Idempotent on the receiver. Carries the same identifying payload as
+/// `CTRL_LINK_REQ`.
+pub const CTRL_UNLINK: u64 = 8;
+
+/// Maximum accepted cross-node link control payload size, in bytes.
+///
+/// A link request payload is a fixed small CBOR map of bounded integers (two
+/// node ids, two serials, a ref id, a policy tag); a link DOWN reuses the
+/// monitor DOWN shape. 256 bytes is far more than any conformant payload needs
+/// and bounds a malicious peer's allocation — a HIGHER-stakes bound than
+/// monitor because a fabricated `CTRL_LINK_DOWN` would crash a REAL actor.
+pub const MAX_LINK_PAYLOAD_BYTES: usize = 256;
+
 /// Maximum accepted cross-node monitor control payload size, in bytes.
 ///
 /// A monitor request / down / demonitor payload is a fixed small CBOR map of
@@ -292,6 +330,38 @@ pub struct MonitorDownPayload {
     pub ref_id: u64,
     /// Carried terminal reason code.
     pub reason: i32,
+}
+
+/// Bounded cross-node link REQUEST / UNLINK control payload (DIST-9).
+///
+/// Encoded as a definite CBOR map `{1: linker_node_id, 2: ref_id,
+/// 3: target_serial, 4: linker_serial, 5: policy_tag}`. Used by both
+/// `CTRL_LINK_REQ` and `CTRL_UNLINK`: the request establishes the bidirectional
+/// link, the unlink retracts it; the identifying tuple is the same.
+///
+/// - `linker_node_id` is the linking node's id; the receiver routes the eventual
+///   `CTRL_LINK_DOWN` back to it AND registers a reverse link toward it.
+/// - `ref_id` is the linker's local link-registration id; the receiver echoes it
+///   verbatim in the DOWN so the linker can match the registration and find the
+///   local actor to crash.
+/// - `target_serial` is the linked actor's serial on the owning (receiver) node.
+/// - `linker_serial` is the LINKING actor's serial on the linker node — so the
+///   receiver's reverse link knows which remote actor to crash when its own
+///   local linked actor dies (the OTP bidirectional half).
+/// - `policy_tag` is the `PartitionPolicy` discriminant governing the link
+///   (`CrashLinked` == 3 crashes the linked actor on the peer's death).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkReqPayload {
+    /// Linking node's id (DOWN destination + reverse-link target node).
+    pub linker_node_id: u16,
+    /// Linker's local link-registration id.
+    pub ref_id: u64,
+    /// Linked actor's serial on the owning (receiver) node.
+    pub target_serial: u64,
+    /// Linking actor's serial on the linker node (reverse-link subject).
+    pub linker_serial: u64,
+    /// `PartitionPolicy` discriminant governing the link.
+    pub policy_tag: u8,
 }
 
 struct PayloadBytes<'a>(&'a [u8]);
@@ -1215,6 +1285,100 @@ pub fn decode_monitor_down_payload(
         ref_id: value_to_u64(required(&map, 1)?, 1)?,
         reason: value_to_i32(required(&map, 2)?, 2)?,
     })
+}
+
+/// Encode a bounded cross-node link REQUEST / UNLINK payload (DIST-9).
+///
+/// # Errors
+///
+/// Returns [`MonitorPayloadError`] if CBOR serialisation fails or the encoded
+/// payload exceeds [`MAX_LINK_PAYLOAD_BYTES`].
+pub fn encode_link_req_payload(payload: &LinkReqPayload) -> Result<Vec<u8>, MonitorPayloadError> {
+    let value = Value::Map(vec![
+        (
+            Value::Integer(Integer::from(1u64)),
+            Value::Integer(Integer::from(payload.linker_node_id)),
+        ),
+        (
+            Value::Integer(Integer::from(2u64)),
+            Value::Integer(Integer::from(payload.ref_id)),
+        ),
+        (
+            Value::Integer(Integer::from(3u64)),
+            Value::Integer(Integer::from(payload.target_serial)),
+        ),
+        (
+            Value::Integer(Integer::from(4u64)),
+            Value::Integer(Integer::from(payload.linker_serial)),
+        ),
+        (
+            Value::Integer(Integer::from(5u64)),
+            Value::Integer(Integer::from(payload.policy_tag)),
+        ),
+    ]);
+    let mut bytes = Vec::new();
+    ciborium::ser::into_writer(&value, &mut bytes).map_err(MonitorPayloadError::CborEncode)?;
+    if bytes.len() > MAX_LINK_PAYLOAD_BYTES {
+        return Err(MonitorPayloadError::PayloadTooLarge {
+            len: bytes.len(),
+            max: MAX_LINK_PAYLOAD_BYTES,
+        });
+    }
+    Ok(bytes)
+}
+
+/// Decode a bounded cross-node link REQUEST / UNLINK payload (DIST-9).
+///
+/// # Errors
+///
+/// Returns [`MonitorPayloadError`] if the payload is too large, malformed, or
+/// contains unknown / duplicate / missing keys. The decode bar is HIGHER-stakes
+/// than monitor: a fabricated link request would register a link that can later
+/// crash a real actor, so the exact-keys / range checks are not optional.
+pub fn decode_link_req_payload(bytes: &[u8]) -> Result<LinkReqPayload, MonitorPayloadError> {
+    if bytes.len() > MAX_LINK_PAYLOAD_BYTES {
+        return Err(MonitorPayloadError::PayloadTooLarge {
+            len: bytes.len(),
+            max: MAX_LINK_PAYLOAD_BYTES,
+        });
+    }
+    let value: Value = ciborium::de::from_reader(bytes).map_err(MonitorPayloadError::CborDecode)?;
+    let map = collect_map(&value)?;
+    ensure_exact_keys(&map, &[1, 2, 3, 4, 5])?;
+    Ok(LinkReqPayload {
+        linker_node_id: value_to_u16(required(&map, 1)?, 1)?,
+        ref_id: value_to_u64(required(&map, 2)?, 2)?,
+        target_serial: value_to_u64(required(&map, 3)?, 3)?,
+        linker_serial: value_to_u64(required(&map, 4)?, 4)?,
+        policy_tag: value_to_u8(required(&map, 5)?, 5)?,
+    })
+}
+
+/// Encode a bounded cross-node link DOWN payload (DIST-9).
+///
+/// The DOWN shape is identical to the monitor DOWN (`{1: ref_id, 2: reason}`);
+/// the divergence is in the receiver's HANDLING (mailbox-EXIT crash, not a recv
+/// slot), not the wire shape. Reuses [`encode_monitor_down_payload`] under the
+/// [`MAX_LINK_PAYLOAD_BYTES`] bound.
+///
+/// # Errors
+///
+/// Returns [`MonitorPayloadError`] on encode failure or oversize.
+pub fn encode_link_down_payload(
+    payload: &MonitorDownPayload,
+) -> Result<Vec<u8>, MonitorPayloadError> {
+    encode_monitor_down_payload(payload)
+}
+
+/// Decode a bounded cross-node link DOWN payload (DIST-9). Same `{ref_id,
+/// reason}` shape as the monitor DOWN.
+///
+/// # Errors
+///
+/// Returns [`MonitorPayloadError`] if the payload is too large, malformed, or
+/// contains unknown / duplicate / missing keys.
+pub fn decode_link_down_payload(bytes: &[u8]) -> Result<MonitorDownPayload, MonitorPayloadError> {
+    decode_monitor_down_payload(bytes)
 }
 
 fn control_frame_from_value(value: &Value) -> Result<ControlFrame, DecodeError> {

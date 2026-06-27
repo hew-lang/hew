@@ -6,11 +6,14 @@
 use ciborium::value::{Integer, Value};
 use hew_runtime::cluster::{GOSSIP_REGISTRY_ADD, GOSSIP_REGISTRY_REMOVE};
 use hew_runtime::envelope::{
-    decode_control_frame, decode_envelope_frame, decode_registry_gossip_payload,
-    decode_swim_payload, decode_wire_frame, encode_control_frame, encode_envelope_frame,
-    encode_registry_gossip_payload, encode_swim_payload, ControlFrame, DecodeError, EnvelopeFrame,
+    decode_control_frame, decode_envelope_frame, decode_monitor_down_payload,
+    decode_monitor_req_payload, decode_registry_gossip_payload, decode_swim_payload,
+    decode_wire_frame, encode_control_frame, encode_envelope_frame, encode_monitor_down_payload,
+    encode_monitor_req_payload, encode_registry_gossip_payload, encode_swim_payload, ControlFrame,
+    DecodeError, EnvelopeFrame, MonitorDownPayload, MonitorPayloadError, MonitorReqPayload,
     RegistryGossipPayload, RegistryGossipPayloadError, SwimControlPayload, SwimGossipEntry,
-    SwimPayloadError, WireFrame, CTRL_REGISTRY_GOSSIP, FRAME_TYPE_CONTROL, FRAME_TYPE_ENVELOPE,
+    SwimPayloadError, WireFrame, CTRL_DEMONITOR, CTRL_MONITOR_DOWN, CTRL_MONITOR_REQ,
+    CTRL_REGISTRY_GOSSIP, FRAME_TYPE_CONTROL, FRAME_TYPE_ENVELOPE, MAX_MONITOR_PAYLOAD_BYTES,
     MAX_REGISTRY_GOSSIP_NAME_BYTES, MAX_REGISTRY_GOSSIP_PAYLOAD_BYTES, MAX_SWIM_GOSSIP_ENTRIES,
     MAX_SWIM_PAYLOAD_BYTES, REGISTRY_GOSSIP_OP_ADD, REGISTRY_GOSSIP_OP_REMOVE, WIRE_VERSION,
 };
@@ -1004,4 +1007,185 @@ fn swim_payload_truncated_cbor_returns_error() {
             "decoder returned Ok on a {cut}-byte truncation"
         );
     }
+}
+
+// ── Cross-node monitor control payloads (DIST-6) ─────────────────────────────
+
+#[test]
+fn monitor_ctrl_kinds_are_distinct_and_stable() {
+    // The wire kinds must be stable and distinct from the existing families so a
+    // peer routes each frame to the right handler.
+    assert_eq!(CTRL_MONITOR_REQ, 3);
+    assert_eq!(CTRL_MONITOR_DOWN, 4);
+    assert_eq!(CTRL_DEMONITOR, 5);
+    assert_eq!(CTRL_REGISTRY_GOSSIP, 1);
+}
+
+#[test]
+fn monitor_req_payload_round_trips_with_cddl_shape() {
+    let original = MonitorReqPayload {
+        watcher_node_id: 7,
+        ref_id: 4242,
+        target_serial: 99,
+    };
+    let bytes = encode_monitor_req_payload(&original).expect("req should encode");
+    let decoded = decode_monitor_req_payload(&bytes).expect("req should decode");
+    assert_eq!(decoded, original);
+
+    // CDDL shape: definite map keyed {1,2,3} with exact integer values.
+    let value = decode_value(&bytes);
+    let entries = map_entries(&value);
+    assert_eq!(entries.len(), 3);
+    assert_integer_keys_and_order(entries, &[1, 2, 3]);
+    assert_integer_value(find_field(entries, 1), 7);
+    assert_integer_value(find_field(entries, 2), 4242);
+    assert_integer_value(find_field(entries, 3), 99);
+}
+
+#[test]
+fn monitor_down_payload_round_trips_with_cddl_shape() {
+    // A crash reason (HewActorState::Crashed == 5) on the DOWN frame.
+    let original = MonitorDownPayload {
+        ref_id: 4242,
+        reason: 5,
+    };
+    let bytes = encode_monitor_down_payload(&original).expect("down should encode");
+    let decoded = decode_monitor_down_payload(&bytes).expect("down should decode");
+    assert_eq!(decoded, original);
+
+    let value = decode_value(&bytes);
+    let entries = map_entries(&value);
+    assert_eq!(entries.len(), 2);
+    assert_integer_keys_and_order(entries, &[1, 2]);
+    assert_integer_value(find_field(entries, 1), 4242);
+    assert_integer_value(find_field(entries, 2), 5);
+}
+
+#[test]
+fn monitor_down_payload_carries_negative_sentinel_reason() {
+    // The MonitorLost connection-drop sentinel is negative; CBOR `int` (not
+    // `uint`) must round-trip it so the watcher distinguishes a partition from a
+    // clean exit / crash (which are non-negative HewActorState values).
+    let original = MonitorDownPayload {
+        ref_id: 1,
+        reason: -1,
+    };
+    let bytes = encode_monitor_down_payload(&original).expect("down should encode");
+    let decoded = decode_monitor_down_payload(&bytes).expect("down should decode");
+    assert_eq!(decoded.reason, -1);
+    assert_eq!(decoded, original);
+}
+
+#[test]
+fn monitor_req_payload_codec_rejects_malformed_payloads() {
+    // Unknown key: a fourth key beyond the {1,2,3} set must be rejected.
+    let unknown_key = Value::Map(vec![
+        (int(1u64), int(1u64)),
+        (int(2u64), int(2u64)),
+        (int(3u64), int(3u64)),
+        (int(4u64), int(4u64)),
+    ]);
+    assert!(matches!(
+        decode_monitor_req_payload(&value_to_cbor(&unknown_key)),
+        Err(MonitorPayloadError::UnknownKey { key: 4 })
+    ));
+
+    // Missing required key 3 (target_serial).
+    let missing = Value::Map(vec![(int(1u64), int(1u64)), (int(2u64), int(2u64))]);
+    assert!(matches!(
+        decode_monitor_req_payload(&value_to_cbor(&missing)),
+        Err(MonitorPayloadError::MissingKey { key: 3 })
+    ));
+
+    // Wrong field type: watcher_node_id as text, not an integer.
+    let wrong_type = Value::Map(vec![
+        (int(1u64), Value::Text("nope".to_owned())),
+        (int(2u64), int(2u64)),
+        (int(3u64), int(3u64)),
+    ]);
+    assert!(matches!(
+        decode_monitor_req_payload(&value_to_cbor(&wrong_type)),
+        Err(MonitorPayloadError::MalformedField { key: 1, .. })
+    ));
+
+    // watcher_node_id out of u16 range fails closed rather than truncating.
+    let oob_node = Value::Map(vec![
+        (int(1u64), int(70_000u64)),
+        (int(2u64), int(2u64)),
+        (int(3u64), int(3u64)),
+    ]);
+    assert!(matches!(
+        decode_monitor_req_payload(&value_to_cbor(&oob_node)),
+        Err(MonitorPayloadError::MalformedField { key: 1, .. })
+    ));
+}
+
+#[test]
+fn monitor_payload_rejects_oversized_input() {
+    // A payload larger than the cap is rejected before any allocation-heavy
+    // decode (boundary-fail-closed): an attacker cannot force unbounded work.
+    let oversized = vec![0u8; MAX_MONITOR_PAYLOAD_BYTES + 1];
+    assert!(matches!(
+        decode_monitor_req_payload(&oversized),
+        Err(MonitorPayloadError::PayloadTooLarge { .. })
+    ));
+    assert!(matches!(
+        decode_monitor_down_payload(&oversized),
+        Err(MonitorPayloadError::PayloadTooLarge { .. })
+    ));
+}
+
+#[test]
+fn monitor_payload_truncated_cbor_returns_error() {
+    let req = MonitorReqPayload {
+        watcher_node_id: 3,
+        ref_id: 7,
+        target_serial: 11,
+    };
+    let bytes = encode_monitor_req_payload(&req).expect("req should encode");
+    for cut in 1..bytes.len() {
+        assert!(
+            decode_monitor_req_payload(&bytes[..cut]).is_err(),
+            "req decoder returned Ok on a {cut}-byte truncation"
+        );
+    }
+
+    let down = MonitorDownPayload {
+        ref_id: 7,
+        reason: 6,
+    };
+    let down_bytes = encode_monitor_down_payload(&down).expect("down should encode");
+    for cut in 1..down_bytes.len() {
+        assert!(
+            decode_monitor_down_payload(&down_bytes[..cut]).is_err(),
+            "down decoder returned Ok on a {cut}-byte truncation"
+        );
+    }
+}
+
+#[test]
+fn monitor_control_frame_round_trips_through_wire_frame() {
+    // The monitor payload rides inside a ControlFrame; the full wire frame must
+    // round-trip with the right ctrl_kind so the reader dispatches it.
+    let req = MonitorReqPayload {
+        watcher_node_id: 7,
+        ref_id: 4242,
+        target_serial: 99,
+    };
+    let frame = ControlFrame {
+        version: WIRE_VERSION,
+        ctrl_kind: CTRL_MONITOR_REQ,
+        payload: encode_monitor_req_payload(&req).expect("req should encode"),
+    };
+    cddl_control_shape(&frame);
+    let bytes = encode_control_frame(&frame).expect("control frame should encode");
+    let WireFrame::Control(decoded) = decode_wire_frame(&bytes).expect("frame should decode")
+    else {
+        panic!("expected a control frame");
+    };
+    assert_eq!(decoded.ctrl_kind, CTRL_MONITOR_REQ);
+    assert_eq!(
+        decode_monitor_req_payload(&decoded.payload).expect("payload should decode"),
+        req
+    );
 }

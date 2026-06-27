@@ -41,6 +41,35 @@ pub const CTRL_REGISTRY_GOSSIP: u64 = 1;
 /// (PING / ACK / `PING_REQ` with piggybacked membership gossip).
 pub const CTRL_SWIM: u64 = 2;
 
+/// Control-frame kind for a cross-node monitor request (DIST-6).
+///
+/// Sent by a watcher node to the node owning the target actor: "node W,
+/// registration `ref_id`, is monitoring your actor `serial`." The owning node
+/// records a remote-watcher entry so it can fan out a `CTRL_MONITOR_DOWN` when
+/// the target reaches a terminal state.
+pub const CTRL_MONITOR_REQ: u64 = 3;
+
+/// Control-frame kind for a cross-node monitor DOWN notification (DIST-6).
+///
+/// Sent by the node owning a monitored actor back to the watcher node when the
+/// target reaches a terminal state (clean exit / crash). Carries the watcher's
+/// `ref_id` and the terminal reason code.
+pub const CTRL_MONITOR_DOWN: u64 = 4;
+
+/// Control-frame kind for a cross-node demonitor request (DIST-6).
+///
+/// Sent by a watcher node to retract a prior `CTRL_MONITOR_REQ`: "node W,
+/// registration `ref_id`, no longer watches your actor `serial`." The owning
+/// node removes the remote-watcher entry. Idempotent on the receiver.
+pub const CTRL_DEMONITOR: u64 = 5;
+
+/// Maximum accepted cross-node monitor control payload size, in bytes.
+///
+/// A monitor request / down / demonitor payload is a fixed small CBOR map of
+/// bounded integers (node id, ref id, serial / reason). 256 bytes is far more
+/// than any conformant payload needs and bounds a malicious peer's allocation.
+pub const MAX_MONITOR_PAYLOAD_BYTES: usize = 256;
+
 /// Maximum accepted SWIM control payload size, in bytes.
 ///
 /// Bounds the piggybacked gossip list so a malicious or buggy peer cannot
@@ -222,6 +251,47 @@ pub struct SwimControlPayload {
     pub target_node: u16,
     /// Piggybacked membership-gossip batch.
     pub gossip: Vec<SwimGossipEntry>,
+}
+
+/// Bounded cross-node monitor REQUEST / DEMONITOR control payload (DIST-6).
+///
+/// Encoded as a definite CBOR map `{1: watcher_node_id, 2: ref_id,
+/// 3: target_serial}`. Used by both `CTRL_MONITOR_REQ` and `CTRL_DEMONITOR`:
+/// the request registers, the demonitor retracts, the identifying triple
+/// `(watcher_node_id, ref_id, target_serial)` is the same.
+///
+/// - `watcher_node_id` is the monitoring node's id; the receiver routes the
+///   eventual `CTRL_MONITOR_DOWN` back to it.
+/// - `ref_id` is the watcher's local monitor-registration id (the `MonitorRef`
+///   value); the receiver echoes it verbatim in the DOWN so the watcher can
+///   match the registration.
+/// - `target_serial` is the monitored actor's serial on the owning node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MonitorReqPayload {
+    /// Monitoring node's id (DOWN destination).
+    pub watcher_node_id: u16,
+    /// Watcher's local monitor-registration id.
+    pub ref_id: u64,
+    /// Monitored actor's serial on the owning node.
+    pub target_serial: u64,
+}
+
+/// Bounded cross-node monitor DOWN control payload (DIST-6).
+///
+/// Encoded as a definite CBOR map `{1: ref_id, 2: reason}`. Sent from the node
+/// owning the monitored actor back to the watcher node when the target reaches
+/// a terminal state.
+///
+/// - `ref_id` echoes the watcher's monitor-registration id from the request, so
+///   the watcher matches the DOWN to its `MonitorRef`.
+/// - `reason` is the carried terminal reason: the target's terminal
+///   `HewActorState` value for a clean exit / crash (verbatim, R4 fidelity).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MonitorDownPayload {
+    /// Watcher's monitor-registration id (echoed from the request).
+    pub ref_id: u64,
+    /// Carried terminal reason code.
+    pub reason: i32,
 }
 
 struct PayloadBytes<'a>(&'a [u8]);
@@ -516,6 +586,93 @@ impl From<DecodeError> for SwimPayloadError {
             | DecodeError::FrameTypeUnsupported { .. }
             | DecodeError::UnknownVersion { .. } => Self::MalformedPayload {
                 reason: "unexpected wire-frame field in SWIM payload",
+            },
+        }
+    }
+}
+
+/// Errors returned by the bounded cross-node monitor payload codecs.
+#[derive(Debug)]
+pub enum MonitorPayloadError {
+    /// Encoded payload exceeded [`MAX_MONITOR_PAYLOAD_BYTES`].
+    PayloadTooLarge { len: usize, max: usize },
+    /// Payload CBOR was malformed or truncated.
+    CborDecode(ciborium::de::Error<std::io::Error>),
+    /// Payload CBOR encoding failed.
+    CborEncode(ciborium::ser::Error<std::io::Error>),
+    /// Top-level payload shape was not the expected map.
+    MalformedPayload { reason: &'static str },
+    /// A payload map key was malformed.
+    MalformedKey,
+    /// Required payload key was absent.
+    MissingKey { key: u64 },
+    /// Unsupported payload key was present.
+    UnknownKey { key: u64 },
+    /// Payload key appeared more than once.
+    DuplicateKey { key: u64 },
+    /// Payload field had the wrong CBOR type or value range.
+    MalformedField { key: u64, expected: &'static str },
+}
+
+impl std::fmt::Display for MonitorPayloadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PayloadTooLarge { len, max } => {
+                write!(f, "monitor payload is too large ({len} > {max})")
+            }
+            Self::CborDecode(e) => write!(f, "monitor CBOR decode failed: {e}"),
+            Self::CborEncode(e) => write!(f, "monitor CBOR encode failed: {e}"),
+            Self::MalformedPayload { reason } => write!(f, "malformed monitor payload: {reason}"),
+            Self::MalformedKey => {
+                write!(f, "monitor payload map key is not a non-negative integer")
+            }
+            Self::MissingKey { key } => {
+                write!(f, "monitor payload is missing required key {key}")
+            }
+            Self::UnknownKey { key } => {
+                write!(f, "monitor payload contains unsupported key {key}")
+            }
+            Self::DuplicateKey { key } => {
+                write!(f, "monitor payload contains duplicate key {key}")
+            }
+            Self::MalformedField { key, expected } => {
+                write!(f, "monitor payload key {key} is not {expected}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for MonitorPayloadError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::CborDecode(e) => Some(e),
+            Self::CborEncode(e) => Some(e),
+            Self::PayloadTooLarge { .. }
+            | Self::MalformedPayload { .. }
+            | Self::MalformedKey
+            | Self::MissingKey { .. }
+            | Self::UnknownKey { .. }
+            | Self::DuplicateKey { .. }
+            | Self::MalformedField { .. } => None,
+        }
+    }
+}
+
+impl From<DecodeError> for MonitorPayloadError {
+    fn from(err: DecodeError) -> Self {
+        match err {
+            DecodeError::Cbor(e) => Self::CborDecode(e),
+            DecodeError::MalformedFrame { reason } => Self::MalformedPayload { reason },
+            DecodeError::MalformedKey => Self::MalformedKey,
+            DecodeError::MissingKey { key } => Self::MissingKey { key },
+            DecodeError::UnknownKey { key } => Self::UnknownKey { key },
+            DecodeError::DuplicateKey { key } => Self::DuplicateKey { key },
+            DecodeError::MalformedField { key, expected } => Self::MalformedField { key, expected },
+            DecodeError::FrameTypeMissing
+            | DecodeError::FrameTypeMalformed
+            | DecodeError::FrameTypeUnsupported { .. }
+            | DecodeError::UnknownVersion { .. } => Self::MalformedPayload {
+                reason: "unexpected wire-frame field in monitor payload",
             },
         }
     }
@@ -946,6 +1103,117 @@ pub fn decode_swim_payload(bytes: &[u8]) -> Result<SwimControlPayload, SwimPaylo
         incarnation: value_to_u64(required(&map, 3)?, 3)?,
         target_node: value_to_u16(required(&map, 4)?, 4)?,
         gossip,
+    })
+}
+
+/// Encode a bounded cross-node monitor REQUEST / DEMONITOR payload.
+///
+/// # Errors
+///
+/// Returns [`MonitorPayloadError`] if CBOR serialisation fails or the encoded
+/// payload exceeds [`MAX_MONITOR_PAYLOAD_BYTES`].
+pub fn encode_monitor_req_payload(
+    payload: &MonitorReqPayload,
+) -> Result<Vec<u8>, MonitorPayloadError> {
+    let value = Value::Map(vec![
+        (
+            Value::Integer(Integer::from(1u64)),
+            Value::Integer(Integer::from(payload.watcher_node_id)),
+        ),
+        (
+            Value::Integer(Integer::from(2u64)),
+            Value::Integer(Integer::from(payload.ref_id)),
+        ),
+        (
+            Value::Integer(Integer::from(3u64)),
+            Value::Integer(Integer::from(payload.target_serial)),
+        ),
+    ]);
+    let mut bytes = Vec::new();
+    ciborium::ser::into_writer(&value, &mut bytes).map_err(MonitorPayloadError::CborEncode)?;
+    if bytes.len() > MAX_MONITOR_PAYLOAD_BYTES {
+        return Err(MonitorPayloadError::PayloadTooLarge {
+            len: bytes.len(),
+            max: MAX_MONITOR_PAYLOAD_BYTES,
+        });
+    }
+    Ok(bytes)
+}
+
+/// Decode a bounded cross-node monitor REQUEST / DEMONITOR payload.
+///
+/// # Errors
+///
+/// Returns [`MonitorPayloadError`] if the payload is too large, malformed, or
+/// contains unknown / duplicate / missing keys.
+pub fn decode_monitor_req_payload(bytes: &[u8]) -> Result<MonitorReqPayload, MonitorPayloadError> {
+    if bytes.len() > MAX_MONITOR_PAYLOAD_BYTES {
+        return Err(MonitorPayloadError::PayloadTooLarge {
+            len: bytes.len(),
+            max: MAX_MONITOR_PAYLOAD_BYTES,
+        });
+    }
+    let value: Value = ciborium::de::from_reader(bytes).map_err(MonitorPayloadError::CborDecode)?;
+    let map = collect_map(&value)?;
+    ensure_exact_keys(&map, &[1, 2, 3])?;
+    Ok(MonitorReqPayload {
+        watcher_node_id: value_to_u16(required(&map, 1)?, 1)?,
+        ref_id: value_to_u64(required(&map, 2)?, 2)?,
+        target_serial: value_to_u64(required(&map, 3)?, 3)?,
+    })
+}
+
+/// Encode a bounded cross-node monitor DOWN payload.
+///
+/// # Errors
+///
+/// Returns [`MonitorPayloadError`] if CBOR serialisation fails or the encoded
+/// payload exceeds [`MAX_MONITOR_PAYLOAD_BYTES`].
+pub fn encode_monitor_down_payload(
+    payload: &MonitorDownPayload,
+) -> Result<Vec<u8>, MonitorPayloadError> {
+    let value = Value::Map(vec![
+        (
+            Value::Integer(Integer::from(1u64)),
+            Value::Integer(Integer::from(payload.ref_id)),
+        ),
+        (
+            Value::Integer(Integer::from(2u64)),
+            Value::Integer(Integer::from(payload.reason)),
+        ),
+    ]);
+    let mut bytes = Vec::new();
+    ciborium::ser::into_writer(&value, &mut bytes).map_err(MonitorPayloadError::CborEncode)?;
+    if bytes.len() > MAX_MONITOR_PAYLOAD_BYTES {
+        return Err(MonitorPayloadError::PayloadTooLarge {
+            len: bytes.len(),
+            max: MAX_MONITOR_PAYLOAD_BYTES,
+        });
+    }
+    Ok(bytes)
+}
+
+/// Decode a bounded cross-node monitor DOWN payload.
+///
+/// # Errors
+///
+/// Returns [`MonitorPayloadError`] if the payload is too large, malformed, or
+/// contains unknown / duplicate / missing keys.
+pub fn decode_monitor_down_payload(
+    bytes: &[u8],
+) -> Result<MonitorDownPayload, MonitorPayloadError> {
+    if bytes.len() > MAX_MONITOR_PAYLOAD_BYTES {
+        return Err(MonitorPayloadError::PayloadTooLarge {
+            len: bytes.len(),
+            max: MAX_MONITOR_PAYLOAD_BYTES,
+        });
+    }
+    let value: Value = ciborium::de::from_reader(bytes).map_err(MonitorPayloadError::CborDecode)?;
+    let map = collect_map(&value)?;
+    ensure_exact_keys(&map, &[1, 2])?;
+    Ok(MonitorDownPayload {
+        ref_id: value_to_u64(required(&map, 1)?, 1)?,
+        reason: value_to_i32(required(&map, 2)?, 2)?,
     })
 }
 

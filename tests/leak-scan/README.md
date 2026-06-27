@@ -18,19 +18,25 @@ tracked source and exits 1 on any hit.  It is wired into:
 
 ## Why this fixture exists
 
-Four consecutive orchestration lanes leaked internal identifiers into
-committed source:
+Orchestration lanes have leaked internal identifiers into committed source,
+each caught only at review and requiring a revision cycle:
 
-| Lane | Token | Location |
-|------|-------|----------|
-| PCA-8 | `PCA-8` | comment/string |
-| wire-l1 | `L7` | reason/string |
-| g8 | `G8` | comment/string |
-| wire-l2 | `q185`, `Qa` | user-facing diagnostic strings |
+| Pattern class | Example tokens | Caught by |
+|---------------|----------------|-----------|
+| PCA tracking IDs | `PCA-8`, `PCA-12` | T1 |
+| Fleet terms | `wire-fleet` | T2 |
+| Lane names | `wire-l1`, `wireL2` | T3 |
+| Lane IDs | `L7`, `L8`, `L9` | T4 |
+| Q-tags (lowercase) | `q185`, `q023` | T5 |
+| Q-tags (short) | `Qa`, `Qb` | T6 |
+| Orch paths in strings | `.tmp/orchestration/…` | T7 |
+| Orch vocab in source | `cross-eco`, `this lane`, `GPT` | T8 |
+| Dist-work lane codes | `DIST-4`, `DIST-8` | T9 |
+| Follow-up tags in docs | `F1`, `F3` in `*.md` | T10 |
 
-Each was caught only at review, requiring a revision cycle. This fixture
-proves the pre-push gate fires on every such pattern before code reaches
-a reviewer.
+T9 and T10 were added after `DIST-N` lane codes and `F<n>` follow-up tags
+reached the PR gate as BLOCKs (~58 occurrences in source comments and a
+`LESSONS.md` ledger-tag leak).
 
 ## Running the gate manually
 

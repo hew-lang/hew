@@ -41,6 +41,17 @@
 #       "compilation phase", "wave of lints", Lane-A/Lane-B failure-class
 #       labels, QUIC "lane-kind" wire encoding.  Excludes examples/hew-orch/
 #       (orchestration-helper tool uses these terms intentionally).
+#   T9  DIST-<digits>       — distribution-work lane codes (e.g. DIST-4, DIST-8)
+#                             that belong only in orchestration context.
+#                             NOT flagged: HEW-DIST-SPEC (the public spec doc)
+#                             and its §N section references — the spec doc name
+#                             uses "DIST-SPEC" not "DIST-<number>".
+#   T10 F<1-9> in *.md      — standalone follow-up tags (e.g. F1, F3) that
+#                             belong only in orchestration tracking; scoped to
+#                             *.md files (*.rs/*.hew legitimately use F1–F9 as
+#                             sub-finding labels within work-item comments).
+#                             Excludes LESSONS.md (uses F<n> as evidence-cell
+#                             sub-finding refs like W5.016 F4).
 #
 # Accepted convention (not flagged):
 #   W### / R### work-item tags   — long-standing per-commit convention
@@ -50,6 +61,7 @@
 #   L1–L6 in architecture docs   — layer labels (L3 Actors, L4 Async …)
 #   q### in .hew test fixtures   — feature-naming convention (q175 program)
 #   .tmp/<path> in // comments   — plan citations (doc links, not leaks)
+#   HEW-DIST-SPEC (+ §N refs)    — the public distributed-actor spec document
 #
 # Usage:
 #   scripts/lint-orchestration-leak.sh               # scan tracked source files
@@ -225,6 +237,33 @@ if [[ "${1-}" == "--self-test" ]]; then
     assert_clean "T8 NEG hew-orch excl"    "examples/hew-orch/x.rs" \
         '// this lane fixes the orchestration gap'
 
+    # T9 — DIST-<digits> lane codes
+    assert_detects "T9 DIST-4 in Rust comment"  "src/lib.rs"   '// DIST-4 slice'
+    assert_detects "T9 DIST-8 in string"         "src/lib.rs"   'let s = "DIST-8";'
+    assert_detects "T9 DIST-9 in .md"            "docs/x.md"    '<!-- DIST-9 follow-up -->'
+    assert_detects "T9 DIST-1 in shell"          "scripts/x.sh" '# DIST-1 work item'
+    # T9 — negative controls (HEW-DIST-SPEC is the public spec document, not a lane code)
+    assert_clean "T9 NEG HEW-DIST-SPEC ref"         "src/lib.rs" \
+        '// per HEW-DIST-SPEC §14 invariant 1'
+    assert_clean "T9 NEG HEW-DIST-SPEC in Cargo"    "Cargo.toml.extra" \
+        '# HEW-DIST-SPEC §14 property tests'
+    assert_clean "T9 NEG HEW-DIST-SPEC doc name"    "docs/spec.md" \
+        'see [HEW-DIST-SPEC](./HEW-DIST-SPEC.md)'
+
+    # T10 — F<1-9> follow-up tags in *.md files
+    assert_detects "T10 F1 in .md file"             "docs/x.md"    'F1 follow-up: add test coverage'
+    assert_detects "T10 F3 in docs"                 "docs/plan.md" '- F3 (deferred to next slice)'
+    assert_detects "T10 F9 in changelog"             "CHANGELOG.md"  'F9 — wiring the codec'
+    # T10 — negative controls
+    # F<n> in *.rs is NOT flagged (sub-finding labels in work-item comments)
+    assert_clean "T10 NEG F2 in Rust comment"        "src/lib.rs" \
+        '// F2: size caps fail closed (413 / -1)'
+    assert_clean "T10 NEG F1 in .hew comment"        "src/x.hew" \
+        '// F1 (registry consulted) — f-string lowering'
+    # F<n> in LESSONS.md is NOT flagged (evidence-cell sub-finding refs)
+    assert_clean "T10 NEG F4 in LESSONS.md"          "LESSONS.md" \
+        'W5.016 F4 (2026-06-02): implements_rc_free'
+
     # ── Negative controls (must NOT fire) ────────────────────────────────────
 
     # Accepted: W### / R### work-item tags
@@ -291,6 +330,10 @@ if [[ "${1-}" == "--self-test" ]]; then
     assert_commit_detects "CMSG T5 q185 in commit subject"  "feat: add q185 errors-as-values path"
     # T4 token in commit subject line
     assert_commit_detects "CMSG T4 L8 lane ID in subject"   "chore: fix L8 regression in dispatcher"
+    # T9 token in commit subject line
+    assert_commit_detects "CMSG T9 DIST-4 in subject"       "feat: DIST-4 slice — add cddl body"
+    # T10 token in commit subject line
+    assert_commit_detects "CMSG T10 F1 follow-up in subject" "chore: F1 deferred codec follow-up"
     # Clean commit message — must not fire
     assert_commit_clean   "CMSG clean commit (no tokens)"    "feat: add robust error propagation"
     # Scoped opt-out: T4 with reason suppresses only T4 — clean
@@ -402,6 +445,8 @@ ${_m}
         _check_commit_msg "$_sha" "T5 q<NNN> Q-tag"        '\bq[0-9]{3,}\b'                           "$_full_msg" "$_allows"
         _check_commit_msg "$_sha" "T6 Q<a-z> short Q-tag"  '\bQ[a-z]\b'                               "$_full_msg" "$_allows"
         _check_commit_msg "$_sha" "T7 .tmp/orch path"      '\.tmp[/\\]+(orchestration|plans|worktrees)' "$_full_msg" "$_allows"
+        _check_commit_msg "$_sha" "T9 DIST-<digits>"       '\bDIST-[0-9]+\b'                          "$_full_msg" "$_allows"
+        _check_commit_msg "$_sha" "T10 F<1-9> follow-up"  '\bF[1-9]\b'                               "$_full_msg" "$_allows"
     done < <(git log --format='%H' "$_commit_range" 2>/dev/null)
 
     if (( _commit_hits > 0 )); then
@@ -525,6 +570,37 @@ record_hit "T8 orchestration vocab in source" "$(
         2>/dev/null || true
 )"
 
+# T9 — DIST-<digits> lane codes in all tracked text files.
+# Matches orchestration distribution-work lane IDs (DIST-4, DIST-8, etc.) that
+# belong only in orchestration context, not in committed source.
+# NOT flagged: "HEW-DIST-SPEC" — the public distributed-actor spec document
+# uses "DIST-SPEC" as its identifier suffix, never "DIST-<number>".  The PCRE
+# word-boundary anchors on both sides mean HEW-DIST-SPEC is not affected.
+record_hit "T9 DIST-<digits> lane code" "$(
+    git grep -InP '\bDIST-[0-9]+\b' -- \
+        ':!scripts/lint-orchestration-leak.sh' \
+        ':!LESSONS.md' \
+        ':!tests/leak-scan/' \
+        2>/dev/null || true
+)"
+
+# T10 — standalone F<1-9> follow-up tags in *.md files.
+# Catches orchestration follow-up labels (F1, F3, …) when they appear in
+# committed Markdown documents outside LESSONS.md.  Scoped to *.md only because
+# *.rs/*.hew legitimately use F1–F9 as sub-finding labels within work-item
+# comments (e.g. "F1.3 path", "F2: size caps").  LESSONS.md is excluded because
+# it uses F<n> as evidence-cell sub-finding refs tied to W-tags (e.g. W5.016 F4).
+# The negative lookbehind (?<![A-Z]) prevents matching inside SCREAMING_SNAKE
+# identifiers (e.g. a hypothetical "XF1" macro constant).
+record_hit "T10 F<1-9> follow-up tag in docs" "$(
+    git grep -InP '(?<![A-Z])\bF[1-9]\b' -- \
+        '*.md' \
+        ':!LESSONS.md' \
+        ':!scripts/lint-orchestration-leak.sh' \
+        ':!tests/leak-scan/' \
+        2>/dev/null || true
+)"
+
 # ── Report ────────────────────────────────────────────────────────────────────
 if (( hits > 0 )); then
     echo "lint-orchestration-leak: ${hits} pattern group(s) flagged" >&2
@@ -537,7 +613,10 @@ if (( hits > 0 )); then
     echo "          L1–L6 layer labels, q### in .hew feature programs," >&2
     echo "          .tmp/ references in // comments (plan citations)," >&2
     echo "          'express lane', 'compilation phase', 'wave of lints'," >&2
-    echo "          Lane-A/Lane-B failure-class labels, QUIC lane-kind terms." >&2
+    echo "          Lane-A/Lane-B failure-class labels, QUIC lane-kind terms," >&2
+    echo "          HEW-DIST-SPEC (the public spec doc + §N references)," >&2
+    echo "          F<n> in *.rs/*.hew (sub-finding labels in work-item comments)," >&2
+    echo "          F<n> in LESSONS.md evidence cells (W-tag sub-finding refs)." >&2
     exit 1
 fi
 

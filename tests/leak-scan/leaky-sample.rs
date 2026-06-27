@@ -64,3 +64,9 @@ fn bad_plan() -> &'static str {
 fn bad_wt() -> &'static str {
     ".tmp/worktrees/my-lane"
 }
+
+// ── T9: DIST-<digits> distribution-work lane codes ───────────────────────────
+// DIST-4 and DIST-8 are orchestration lane identifiers for distribution work.
+// They belong in the orchestration ledger, not in committed source.
+const DIST_NOTE: &str = "DIST-4 slice — add cddl body";
+// DIST-8 follow-up: hardening the monitor path

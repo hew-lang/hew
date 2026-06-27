@@ -221,7 +221,10 @@ slow-timeout = { period = "30s", terminate-after = 3 }
 # serialisation keeps it off the fast tiers and gives the round-trip headroom.
 # No retry: the round-trip is deterministic (server READY signal + client
 # bounded-poll lookup), so a correct outcome does not depend on scheduler luck.
-filter = "test(remote_ask_round_trip_returns_exact_values)"
+# wire_cbor_cross_process_round_trip is the same harness with a #[wire]-typed
+# payload (explicit @N tags); it shares the compiled binary via OnceLock and runs
+# in the same serialized group for the same reasons.
+filter = "test(remote_ask_round_trip_returns_exact_values) | test(wire_cbor_cross_process_round_trip)"
 test-group = "real-timing"
 slow-timeout = { period = "120s", terminate-after = 3 }
 

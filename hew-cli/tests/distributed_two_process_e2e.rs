@@ -271,3 +271,47 @@ fn remote_ask_round_trip_returns_exact_values() {
         "client reported a FAIL on the remote-ask round-trip; client stdout:\n{stdout}"
     );
 }
+
+/// A `#[wire]`-annotated payload with EXPLICIT `@N` field tags round-trips across
+/// two OS processes. The `remote_ask` scenario above sends plain `record`/`enum`
+/// types, which get `@N` tags by the codec's positional fallback; this scenario
+/// sends `#[wire]` types (`WireCmd` enum request, `WireResult` struct reply) with
+/// explicit `@N` field tags, exercising the tag-keyed CBOR body the positional
+/// path does not — the struct `@N`-keyed map and the enum unit-tag / map-of-one
+/// body, in both the request and the reply direction. The body shape conforms to
+/// `hew-runtime/schemas/wire-body.cddl` (validated in
+/// `hew-runtime/tests/wire_body_cddl_conformance.rs`).
+///
+/// Cross-platform note (`elf-init-array-ctors`, PR #2246): the codec registers
+/// via a program-start constructor, which on ELF must land in `.init_array`. A
+/// successful cross-process send IS the proof the constructor ran and registered
+/// the codec; macOS masked the pre-#2246 ELF defect, so this scenario must also
+/// be validated on a real Linux host (done out-of-band).
+#[test]
+fn wire_cbor_cross_process_round_trip() {
+    let stdout = run_two_process_scenario("wire_cbor");
+
+    // Teeth: exact field values on the #[wire] struct reply for both the payload
+    // variant (Move → tag 1, sum 7) and the unit variant (Ping → tag 0, sum 0).
+    assert!(
+        stdout.contains("PASS wire_cbor move-tag=1"),
+        "expected Move variant tag 1 from the #[wire] reply; client stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("PASS wire_cbor move-sum=7"),
+        "expected Move x+y == 7 from the #[wire] struct field round-trip; client stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("PASS wire_cbor ping-tag=0"),
+        "expected Ping unit-variant tag 0 from the #[wire] reply; client stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("PASS wire_cbor ping-sum=0"),
+        "expected Ping sum 0 from the #[wire] reply; client stdout:\n{stdout}"
+    );
+    // Negative guard: no FAIL line may appear on a successful round-trip.
+    assert!(
+        !stdout.contains("FAIL "),
+        "client reported a FAIL on the #[wire] cross-process round-trip; client stdout:\n{stdout}"
+    );
+}

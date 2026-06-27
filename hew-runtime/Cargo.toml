@@ -141,6 +141,13 @@ harness = false
 # native-only, so this scoping costs no test coverage on wasm.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 proptest = "1"
+# CDDL validator (DIST-4): the wire-body conformance test feeds the authored
+# `schemas/wire-body.cddl` text + the codegen-emitted CBOR bytes into a real
+# RFC 8610 validator so the schema is the authority, not a hand-mirrored
+# structural assertion that could silently drift from the CDDL. Test-only and
+# native-only (the crate pulls a full CDDL parser/AST it never needs in the
+# runtime binary, and is irrelevant on wasm where there is no internode wire).
+cddl = "0.10"
 # Safe handle wrappers for integration tests (RAII over runtime FFI). Native
 # only: wraps FFI (e.g. hew_actor_trap) the runtime does not export on wasm32.
 hew-runtime-testkit = { path = "../hew-runtime-testkit" }

@@ -1275,6 +1275,7 @@ fn is_builtin_display_impl(item: &Item) -> bool {
                 | "f32"
                 | "f64"
                 | "string"
+                | "duration"
         )
 }
 
@@ -7936,6 +7937,14 @@ impl LowerCtx {
                 let builtin = scalar_display_builtin(&ty);
                 self.build_catalog_call(builtin, vec![value], span)
             }
+            // `duration` has a pure-Hew `impl Display for duration` (rendered
+            // through `is_builtin_display_impl`), so dispatch to its fmt symbol
+            // exactly like a user named-type Display impl. The `_` fail-closed
+            // arm below would otherwise reject it (checker–HIR contract
+            // violation) even though the checker admitted it.
+            ResolvedTy::Duration => {
+                self.dispatch_display_to_named_impl("duration", &method_name, value, span)
+            }
             ResolvedTy::Named { name, .. } => {
                 // An abstract type parameter `T: Display` (the checker lowers
                 // `T` to a bare `Named`) defers to per-monomorphisation static
@@ -7950,31 +7959,8 @@ impl LowerCtx {
                         span,
                     );
                 }
-                let symbol = crate::node::HirImplBlock::method_symbol(name, &method_name);
-                if let Some(call) = self.build_user_fn_call(&symbol, vec![value], span.clone()) {
-                    call
-                } else {
-                    // Invariant: the checker's `require_display_impl` gate
-                    // rejects interpolants whose type lacks an `impl Display`.
-                    // Reaching here means the checker accepted the program
-                    // but the impl symbol is absent from the HIR fn registry,
-                    // which is a checker–HIR contract violation. Surface a
-                    // fail-closed diagnostic and an `Unsupported` sentinel
-                    // — never fabricate an empty string.
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: symbol.clone(),
-                            reason: format!("no fn_registry entry for display impl `{symbol}`"),
-                        },
-                        span.clone(),
-                        "checker accepted a Display interpolant but HIR has no \
-                         corresponding impl symbol — checker–HIR contract violation",
-                    ));
-                    self.unsupported_expr(
-                        span,
-                        format!("f-string display dispatch: missing {symbol}"),
-                    )
-                }
+                let name = name.clone();
+                self.dispatch_display_to_named_impl(&name, &method_name, value, span)
             }
             ResolvedTy::TypeParam { name } => {
                 // Abstract type parameter `T` carrying a `Display` bound — the
@@ -8002,6 +7988,37 @@ impl LowerCtx {
         }
     }
 
+    /// Dispatch a `Display::fmt` call to a concrete named/builtin type's impl
+    /// symbol (`<type>::fmt`).
+    ///
+    /// Shared by the duration and concrete-named-type arms of
+    /// [`Self::lower_display_dispatch`]. The checker's `require_display_impl`
+    /// gate guarantees the impl exists; reaching the `else` here means the
+    /// symbol is absent from the HIR fn registry — a checker–HIR contract
+    /// violation surfaced fail-closed rather than fabricating an empty string.
+    fn dispatch_display_to_named_impl(
+        &mut self,
+        type_name: &str,
+        method_name: &str,
+        value: HirExpr,
+        span: Span,
+    ) -> HirExpr {
+        let symbol = crate::node::HirImplBlock::method_symbol(type_name, method_name);
+        if let Some(call) = self.build_user_fn_call(&symbol, vec![value], span.clone()) {
+            return call;
+        }
+        self.diagnostics.push(HirDiagnostic::new(
+            HirDiagnosticKind::CheckerBoundaryViolation {
+                name: symbol.clone(),
+                reason: format!("no fn_registry entry for display impl `{symbol}`"),
+            },
+            span.clone(),
+            "checker accepted a Display interpolant but HIR has no \
+             corresponding impl symbol — checker–HIR contract violation",
+        ));
+        self.unsupported_expr(span, format!("display dispatch: missing {symbol}"))
+    }
+
     /// #1565: route `println` / `print` / `to_string` of a value whose type
     /// is an abstract type parameter `T: Display` through the Display
     /// static-trait-dispatch spine (`lower_display_dispatch`).
@@ -8024,11 +8041,22 @@ impl LowerCtx {
         span: &Span,
     ) -> Result<(HirExprKind, ResolvedTy), Vec<HirExpr>> {
         let is_display_surface = matches!(name, "println" | "print" | "to_string");
-        let single_type_param = args.len() == 1
-            && args
-                .first()
-                .is_some_and(|arg| self.abstract_type_param_name(&arg.ty).is_some());
-        if !is_display_surface || !single_type_param || self.lang_items.display_method().is_none() {
+        // Route a single `dyn Display` argument through the Display dispatch
+        // spine when no concrete-ABI overload matched. This covers two shapes:
+        //   * an abstract type parameter `T: Display` (per-monomorphisation
+        //     static dispatch), and
+        //   * `duration`, whose `impl Display for duration` fmt has no
+        //     `to_string_*` catalog overload — without this it would fail closed
+        //     with `UnresolvedBuiltinOverload` even though the checker admitted
+        //     the call (`instant` needs no arm: it canonicalises to i64 and the
+        //     i64 overload renders it as raw nanos).
+        let single_dispatchable = args.len() == 1
+            && args.first().is_some_and(|arg| {
+                self.abstract_type_param_name(&arg.ty).is_some()
+                    || matches!(arg.ty, ResolvedTy::Duration)
+            });
+        if !is_display_surface || !single_dispatchable || self.lang_items.display_method().is_none()
+        {
             return Err(args);
         }
         let value = args
@@ -12531,7 +12559,23 @@ impl LowerCtx {
             Expr::Binary { left, op, right } => {
                 let left = self.lower_expr(left, IntentKind::Read);
                 let right = self.lower_expr(right, IntentKind::Read);
-                let ty = Self::binary_ty(*op, &left.ty, &right.ty);
+                let mut ty = Self::binary_ty(*op, &left.ty, &right.ty);
+                // `instant - instant -> duration`: both operands erase to i64
+                // (instant canonicalises to i64), so `binary_ty` over the operand
+                // types yields i64 and cannot recover the Duration result. The
+                // checker typed this subtraction as Duration; prefer its recorded
+                // type so the result drives Display and the duration accessors
+                // (checker–HIR contract). Only adopt the recorded Duration when
+                // `binary_ty` did not already produce it, so genuine i64
+                // arithmetic is untouched.
+                if ty != ResolvedTy::Duration {
+                    let checker_key = self.mk_key(&span);
+                    if let Some(checker_ty) = self.expr_types.get(&checker_key) {
+                        if matches!(ResolvedTy::from_ty(checker_ty), Ok(ResolvedTy::Duration)) {
+                            ty = ResolvedTy::Duration;
+                        }
+                    }
+                }
                 (
                     HirExprKind::Binary {
                         op: *op,

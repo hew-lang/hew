@@ -153,6 +153,14 @@ impl Checker {
         if matches!(resolved, Ty::Var(_) | Ty::Error) {
             return;
         }
+        // `instant` is a monotonic timestamp that canonicalises to a bare i64 at
+        // the MIR boundary; HIR's Display dispatch routes it through the i64
+        // catalog arm (raw-nanos rendering), so it is Display-able without a
+        // dedicated `impl Display for instant` body. A monotonic timestamp has
+        // no wall-clock meaning, so raw nanos is the honest rendering.
+        if resolved.is_instant() {
+            return;
+        }
         // Resolve the Display trait name through the lang-item registry.
         // No `#[lang_item("display")]` in scope means the program defines no
         // Display trait at all — in which case f-string interpolation can

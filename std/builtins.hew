@@ -677,6 +677,18 @@ impl instant {
     }
 }
 
+// Render a duration as its exact nanosecond count with an `ns` suffix
+// (e.g. `10ms` prints as `10000000ns`). Integer-only and round-trippable
+// through `duration::from_nanos`, so the rendering is exact and lossless; a
+// human-unit format would need float division and lose that property. `instant`
+// has no Display body — it canonicalises to i64 and renders as raw nanos
+// through HIR's i64 dispatch arm (see `require_display_impl`).
+impl Display for duration {
+    fn fmt(val: duration) -> string {
+        to_string(val.nanos()) + "ns"
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Output
 // ---------------------------------------------------------------------------

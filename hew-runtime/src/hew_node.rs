@@ -2830,6 +2830,12 @@ pub(crate) fn fan_out_remote_monitor_down(target_serial: u64, reason: i32) {
 /// `hew_node_monitor_recv`. Only `Pending` slots are armed, so a registration
 /// that already received a definitive clean-exit / crash DOWN is untouched
 /// (exactly-once; the central R1/R2 disambiguation).
+///
+/// Also prunes the target-side `RemoteWatcher` entries registered by the dead
+/// node. When a watcher node dies, the actors it was watching on this node must
+/// not accumulate its now-stale watcher records indefinitely — only a definitive
+/// demonitor or the watched actor's own death normally removes them. Pruning here
+/// ensures the target-side table stays bounded under watcher-node churn.
 pub(crate) fn fan_out_monitor_lost_for_node(dead_node_id: u16) {
     let Some(rt) = crate::runtime::rt_current_opt() else {
         return;
@@ -2837,6 +2843,9 @@ pub(crate) fn fan_out_monitor_lost_for_node(dead_node_id: u16) {
     let _ = rt
         .dist_monitors
         .deliver_to_node(dead_node_id, crate::dist_monitor::MONITOR_REASON_LOST);
+    let _ = rt
+        .dist_monitors
+        .prune_remote_watchers_for_node(dead_node_id);
 }
 
 /// Fail every pending remote ask routed to a SWIM-declared-DEAD node with

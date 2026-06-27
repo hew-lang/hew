@@ -319,6 +319,39 @@ impl DistMonitorState {
         let targets = self.targets.lock().unwrap_or_else(PoisonError::into_inner);
         targets.get(&target_serial).is_some_and(|ws| !ws.is_empty())
     }
+
+    /// Prune every `RemoteWatcher` entry on the target side whose `watcher_node_id`
+    /// matches `dead_watcher_node_id`, removing now-empty serial slots.
+    ///
+    /// Called when a watcher node dies (connection-drop or SWIM-DEAD) so its
+    /// pending watch registrations do not accumulate indefinitely on a long-lived
+    /// target actor. Returns the number of entries pruned.
+    ///
+    /// Takes only the `targets` lock; no interaction with the `watchers` mutex or
+    /// `delivered` condvar, so lock ordering is preserved. Idempotent: pruning a
+    /// node with no registered watchers is a no-op returning 0.
+    pub(crate) fn prune_remote_watchers_for_node(&self, dead_watcher_node_id: u16) -> usize {
+        let mut targets = self.targets.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut pruned = 0usize;
+        targets.retain(|_serial, watchers| {
+            let before = watchers.len();
+            watchers.retain(|w| w.watcher_node_id != dead_watcher_node_id);
+            pruned += before - watchers.len();
+            // Drop the serial slot when no watchers remain (mirrors
+            // remove_remote_watcher's empty-slot cleanup).
+            !watchers.is_empty()
+        });
+        pruned
+    }
+
+    /// Count of remote watcher entries across all serials. Test-only introspection
+    /// hook for the two-process fixture (confirms the table is bounded after a
+    /// watcher node dies without adding a production ABI).
+    #[cfg(test)]
+    pub(crate) fn remote_watcher_count(&self) -> usize {
+        let targets = self.targets.lock().unwrap_or_else(PoisonError::into_inner);
+        targets.values().map(Vec::len).sum()
+    }
 }
 
 #[cfg(test)]
@@ -455,6 +488,63 @@ mod tests {
         // Idempotent: removing again does not panic.
         state.remove_remote_watcher(50, 7, 100);
         state.remove_remote_watcher(999, 1, 1);
+    }
+
+    /// F2: pruning a dead watcher node removes exactly its entries and leaves
+    /// surviving nodes intact. Also verifies empty serial slots are dropped.
+    #[test]
+    fn prune_remote_watchers_for_node_removes_dead_node_entries() {
+        let state = DistMonitorState::new();
+        // serial 50: watched by node 7 (two refs) and node 9 (one ref).
+        state.register_remote_watcher(50, 7, 100);
+        state.register_remote_watcher(50, 7, 101);
+        state.register_remote_watcher(50, 9, 200);
+        // serial 51: watched only by node 7.
+        state.register_remote_watcher(51, 7, 102);
+        // serial 52: watched only by node 9.
+        state.register_remote_watcher(52, 9, 201);
+
+        // Node 7 dies — prune its entries from the target side.
+        let pruned = state.prune_remote_watchers_for_node(7);
+        // Three entries for node 7 across serials 50 and 51.
+        assert_eq!(pruned, 3, "must prune exactly the three node-7 entries");
+
+        // serial 50: node-9 entry survives.
+        assert!(
+            state.has_remote_watchers(50),
+            "serial 50 must still have node-9 watcher"
+        );
+        // serial 51: was node-7 only → empty, slot must be dropped.
+        assert!(
+            !state.has_remote_watchers(51),
+            "serial 51 must be gone (empty after pruning node 7)"
+        );
+        // serial 52: node-9 only — untouched.
+        assert!(
+            state.has_remote_watchers(52),
+            "serial 52 must still have node-9 watcher"
+        );
+
+        // Exact count: 1 (serial 50 / node 9) + 1 (serial 52 / node 9) = 2.
+        assert_eq!(
+            state.remote_watcher_count(),
+            2,
+            "exactly 2 entries must remain"
+        );
+
+        // Negative: pruning again is a no-op.
+        assert_eq!(
+            state.prune_remote_watchers_for_node(7),
+            0,
+            "second prune must be a no-op"
+        );
+
+        // Negative: pruning a node with no entries is a no-op.
+        assert_eq!(
+            state.prune_remote_watchers_for_node(42),
+            0,
+            "pruning a node with no entries must return 0"
+        );
     }
 
     #[test]

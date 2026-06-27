@@ -1000,6 +1000,15 @@ impl HewCluster {
                 callback(transition.node_id, event, user_data);
             });
         }
+        self.apply_member_transition_side_effects(transition);
+    }
+
+    /// Run the per-peer-table reactions a delivered transition triggers: the
+    /// `MEMBER_DEAD` fan-outs (partition recv-queue, protocol, cross-node
+    /// monitors, pending asks + quarantine) and the readmission eviction. Kept
+    /// separate from the publication-token bookkeeping in
+    /// `deliver_member_transition` so each stays a single, readable concern.
+    fn apply_member_transition_side_effects(&self, transition: &MemberTransition) {
         // Partition-injection seam: fan out PartitionDetected to all queues
         // registered for this node when it transitions to DEAD.
         if transition.state == MEMBER_DEAD {
@@ -1011,11 +1020,23 @@ impl HewCluster {
             // MonitorLost for every still-pending local watcher of an actor on
             // it (exactly-once; a prior definitive DOWN wins).
             crate::hew_node::fan_out_monitor_lost_for_node(transition.node_id);
-            // Pending-ask SWIM-DEAD fan-out: the recv-queue seam above wakes
-            // blocked recvs to PartitionDetected; this resolves every pending
-            // remote ask routed to the dead peer with AskError::Partition
-            // immediately, instead of hanging to the caller's deadline.
-            crate::hew_node::fail_remote_asks_for_node(transition.node_id);
+            // Pending-ask SWIM-DEAD fan-out + quarantine: the recv-queue seam
+            // above wakes blocked recvs to PartitionDetected; this resolves every
+            // pending remote ask routed to the dead peer with AskError::Partition
+            // immediately (instead of hanging to the caller's deadline) AND
+            // quarantines the peer at the incarnation it died at so a
+            // Quarantine-policy send/ask fails closed until it rejoins higher.
+            crate::hew_node::fail_remote_and_quarantine(transition.node_id, transition.incarnation);
+        }
+        // Readmission seam: a buried peer (DEAD or LEFT) returning ALIVE is the
+        // strictly-higher-incarnation rejoin the admission gate already authorized
+        // (a <=-incarnation ALIVE never produces this transition). Evict its
+        // quarantine entry exactly once so it is sendable again. An ALIVE->ALIVE
+        // incarnation bump has old_state = ALIVE and is skipped — nothing to evict.
+        if transition.state == MEMBER_ALIVE
+            && matches!(transition.old_state, Some(MEMBER_DEAD | MEMBER_LEFT))
+        {
+            crate::hew_node::readmit_node_clear_quarantine(transition.node_id);
         }
     }
 
@@ -1038,6 +1059,28 @@ impl HewCluster {
         }
         if should_drain {
             self.drain_member_transitions();
+        }
+    }
+
+    /// Seed a member directly into the table without running the transition
+    /// dispatch fan-outs. Used by cross-module tests that need the membership
+    /// table to resolve a live incarnation for a node without also triggering the
+    /// DEAD fan-out / quarantine side-effects.
+    #[cfg(test)]
+    pub(crate) fn seed_member_for_test(&self, node_id: u16, state: i32, incarnation: u64) {
+        let mut members = self.members.lock_or_recover();
+        if let Some(existing) = members.iter_mut().find(|m| m.node_id == node_id) {
+            existing.state = state;
+            existing.incarnation = incarnation;
+        } else {
+            members.push(ClusterMember {
+                node_id,
+                state,
+                incarnation,
+                addr: [0u8; 128],
+                // SAFETY: hew_now_ms has no preconditions.
+                last_seen_ms: unsafe { crate::io_time::hew_now_ms() },
+            });
         }
     }
 
@@ -1296,10 +1339,12 @@ impl HewCluster {
                 // every still-pending local watcher of an actor on the dead
                 // node (exactly-once; a prior definitive DOWN wins).
                 crate::hew_node::fan_out_monitor_lost_for_node(change.node_id);
-                // Pending-ask SWIM-DEAD fan-out: resolve every pending remote
-                // ask routed to the dead peer with AskError::Partition
-                // immediately, mirroring the recv-queue partition seam above.
-                crate::hew_node::fail_remote_asks_for_node(change.node_id);
+                // Pending-ask SWIM-DEAD fan-out + quarantine: resolve every
+                // pending remote ask routed to the dead peer with
+                // AskError::Partition immediately (mirroring the recv-queue
+                // partition seam above) AND quarantine the peer at the incarnation
+                // it died at.
+                crate::hew_node::fail_remote_and_quarantine(change.node_id, change.incarnation);
             }
         }
     }
@@ -2301,6 +2346,19 @@ pub unsafe extern "C" fn hew_cluster_member_state(cluster: *mut HewCluster, node
         .iter()
         .find(|m| m.node_id == node_id)
         .map_or(-1, |m| m.state)
+}
+
+impl HewCluster {
+    /// The live incarnation the membership table currently records for `node_id`,
+    /// or `None` if the node is unknown. Used by the `Quarantine` send/ask consult
+    /// to compare a peer's live incarnation against the quarantined one.
+    pub(crate) fn member_incarnation(&self, node_id: u16) -> Option<u64> {
+        let members = self.members.lock_or_recover();
+        members
+            .iter()
+            .find(|m| m.node_id == node_id)
+            .map(|m| m.incarnation)
+    }
 }
 
 /// Get the number of pending gossip events.

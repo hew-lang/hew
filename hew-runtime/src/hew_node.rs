@@ -159,6 +159,13 @@ pub(crate) struct NodeSlot {
     /// Reply routing table correlating this runtime's outbound remote asks with
     /// their replies.
     reply_table: ReplyRoutingTable,
+    /// Quarantine set: peers the failure detector has declared DEAD, keyed
+    /// `node_id -> the incarnation the peer was quarantined at`. A
+    /// `Quarantine`-policy send/ask to a peer present here fails closed until the
+    /// peer rejoins at a strictly higher incarnation, which evicts the entry. Per
+    /// runtime, isolated like `reply_table`; written from the SWIM-DEAD verdict and
+    /// the readmission dispatch, read on the send/ask path.
+    quarantine: PoisonSafe<HashMap<u16, u64>>,
     /// Node id assigned to this runtime for local PID encoding/routing. Was
     /// `pid::LOCAL_NODE_ID`.
     local_node_id: AtomicU16,
@@ -172,6 +179,7 @@ impl NodeSlot {
             current: PoisonSafeRw::new(0),
             known_nodes: PoisonSafe::new(Vec::new()),
             reply_table: ReplyRoutingTable::new(),
+            quarantine: PoisonSafe::new(HashMap::new()),
             local_node_id: AtomicU16::new(0),
         }
     }
@@ -195,6 +203,9 @@ impl NodeSlot {
 
         let known = other.known_nodes.access(std::mem::take);
         self.known_nodes.access(|dst| *dst = known);
+
+        let quarantine = other.quarantine.access(std::mem::take);
+        self.quarantine.access(|dst| *dst = quarantine);
 
         let pending = {
             let mut map = other
@@ -261,6 +272,80 @@ fn reply_table() -> &'static ReplyRoutingTable {
 
 fn reply_table_opt() -> Option<&'static ReplyRoutingTable> {
     crate::runtime::rt_current_opt().map(|rt| &rt.node.reply_table)
+}
+
+/// Quarantine a peer at the incarnation it was declared DEAD at.
+///
+/// Idempotent and monotonic: a later DEAD verdict at a higher incarnation
+/// overwrites the recorded incarnation; a lower or equal one never regresses it.
+/// Fail-closed on no installed runtime (the SWIM-DEAD verdict runs from the
+/// connection-reader / SWIM-driver threads, where a runtime may not be installed)
+/// — there is no quarantine set to write, so the call is a no-op.
+fn quarantine_insert(node_id: u16, incarnation: u64) {
+    if let Some(rt) = crate::runtime::rt_current_opt() {
+        rt.node.quarantine.access(|set| {
+            let entry = set.entry(node_id).or_insert(incarnation);
+            if incarnation > *entry {
+                *entry = incarnation;
+            }
+        });
+    }
+}
+
+/// Whether a send/ask to `node_id` at its `live_incarnation` is currently blocked
+/// by the quarantine set.
+///
+/// Blocked iff the set holds an entry for `node_id` AND the peer's live
+/// incarnation has not yet exceeded the quarantined one (`live <= quarantined`).
+/// A peer whose live incarnation already passed the quarantined one is not blocked
+/// — though in practice the readmission dispatch evicts the entry first, so the
+/// incarnation compare is the belt to eviction's suspenders. Returns `false` when
+/// no runtime is installed (nothing to consult).
+fn quarantine_is_blocked(node_id: u16, live_incarnation: u64) -> bool {
+    crate::runtime::rt_current_opt().is_some_and(|rt| {
+        rt.node
+            .quarantine
+            .access(|set| set.get(&node_id).is_some_and(|&q| live_incarnation <= q))
+    })
+}
+
+/// Evict a peer from the quarantine set on its strictly-higher-incarnation
+/// readmission, so it is sendable again. A no-op if the peer is not quarantined.
+/// Fail-closed on no runtime.
+fn quarantine_evict(node_id: u16) {
+    if let Some(rt) = crate::runtime::rt_current_opt() {
+        rt.node.quarantine.access(|set| {
+            set.remove(&node_id);
+        });
+    }
+}
+
+/// Whether the current dispatch's partition policy is `Quarantine` AND a send/ask
+/// to `target_node_id` must fail closed because the peer is quarantined at a still-
+/// stale incarnation.
+///
+/// Only the `Quarantine` policy consults the set; `FailFast`/`Deadline`/the others
+/// keep their prior behaviour. The peer's live incarnation is resolved from the
+/// cluster membership table so the comparison is exact (a peer whose live
+/// incarnation already exceeds the quarantined one is not blocked, even before the
+/// readmission dispatch evicts the entry). A quarantined peer the membership table
+/// no longer knows (unknown incarnation) is treated as blocked — fail-closed.
+fn quarantine_blocks_send(node: &HewNode, target_node_id: u16) -> bool {
+    if crate::execution_context::current_partition_policy()
+        != crate::execution_context::PartitionPolicy::Quarantine
+    {
+        return false;
+    }
+    if node.cluster.is_null() {
+        // No cluster to resolve a live incarnation: if the set holds the peer at
+        // any incarnation, block (fail-closed). u64::MAX forces is_blocked to
+        // compare against the recorded incarnation as a lower bound.
+        return quarantine_is_blocked(target_node_id, 0);
+    }
+    // SAFETY: node.cluster is valid while the node is installed.
+    let cluster = unsafe { &*node.cluster };
+    let live_incarnation = cluster.member_incarnation(target_node_id).unwrap_or(0);
+    quarantine_is_blocked(target_node_id, live_incarnation)
 }
 
 // ---------------------------------------------------------------------------
@@ -2493,6 +2578,17 @@ pub unsafe extern "C" fn hew_node_send(
         return -1;
     }
 
+    // Quarantine consult: under a Quarantine policy, a buried peer that has not
+    // rejoined at a strictly higher incarnation fails closed here — before any
+    // payload bytes are serialized, so nothing is allocated on the blocked path.
+    if quarantine_blocks_send(node, target_node_id) {
+        set_last_error(format!(
+            "cross-node send refused: node {target_node_id} is quarantined (partitioned \
+             until it rejoins at a higher incarnation)"
+        ));
+        return -1;
+    }
+
     // Serialize the payload before it leaves this address space. `payload` is the
     // raw in-memory value (a struct that may contain heap pointers); shipping it
     // verbatim would make the receiver dereference stale pointers and crash. The
@@ -3177,6 +3273,28 @@ pub(crate) fn fail_remote_asks_for_node(dead_node_id: u16) {
     });
 }
 
+/// Node-side reaction to a SWIM-DEAD verdict: fail every pending remote ask to
+/// the dead peer AND quarantine it at the incarnation it died at.
+///
+/// Both per-peer tables react at the verdict: the reply-table fan-out resolves
+/// in-flight asks with [`AskError::Partition`], and the quarantine insert records
+/// `(node_id, incarnation)` so a `Quarantine`-policy send/ask to the peer fails
+/// closed until it rejoins at a strictly higher incarnation. The two
+/// `MEMBER_DEAD` seams in `cluster.rs` route through this single wrapper so
+/// neither can quarantine without also failing the asks, nor vice versa.
+pub(crate) fn fail_remote_and_quarantine(dead_node_id: u16, dead_incarnation: u64) {
+    fail_remote_asks_for_node(dead_node_id);
+    quarantine_insert(dead_node_id, dead_incarnation);
+}
+
+/// Node-side reaction to a strictly-higher-incarnation readmission: evict the
+/// returned peer from the quarantine set so it is sendable again. The admission
+/// gate (`cluster.rs`) has already proved the new incarnation is strictly higher,
+/// so the node side only clears.
+pub(crate) fn readmit_node_clear_quarantine(node_id: u16) {
+    quarantine_evict(node_id);
+}
+
 /// Return the total number of `RemoteWatcher` entries across all serial slots
 /// in the target-side monitor table.
 ///
@@ -3651,6 +3769,15 @@ fn setup_remote_ask(
             return RemoteAskSetupResult::Error(AskError::RoutingFailed);
         }
 
+        // Quarantine consult: under a Quarantine policy, a peer the failure
+        // detector buried and that has not yet rejoined at a strictly higher
+        // incarnation fails closed here — before any request bytes are serialized,
+        // so nothing is allocated on the blocked path.
+        let target_node_id = crate::pid::hew_pid_node(pid);
+        if quarantine_blocks_send(node, target_node_id) {
+            return RemoteAskSetupResult::Error(AskError::Partition);
+        }
+
         // Serialize the request value before it leaves this address space —
         // `data`/`size` is the raw in-memory struct (which may hold heap
         // pointers). The codec for `msg_type` encodes its CONTENTS; the receiver
@@ -4024,6 +4151,141 @@ mod tests {
     use std::time::{Duration, Instant};
 
     const TEST_REMOTE_ASK_TIMEOUT_MS: u64 = 250;
+
+    #[test]
+    fn quarantine_insert_blocks_then_evict_clears() {
+        let _guard = crate::runtime_test_guard();
+        // Insert quarantines the peer at the dead incarnation; a same-or-lower
+        // live incarnation is blocked, a higher live incarnation is not.
+        quarantine_insert(7, 5);
+        assert!(
+            quarantine_is_blocked(7, 5),
+            "equal live incarnation is blocked"
+        );
+        assert!(
+            quarantine_is_blocked(7, 4),
+            "lower live incarnation is blocked"
+        );
+        assert!(
+            !quarantine_is_blocked(7, 6),
+            "a live incarnation past the quarantined one is not blocked"
+        );
+        assert!(
+            !quarantine_is_blocked(8, 5),
+            "an unrelated node is not blocked"
+        );
+        // Eviction clears the entry.
+        quarantine_evict(7);
+        assert!(
+            !quarantine_is_blocked(7, 5),
+            "evicted node is sendable again"
+        );
+    }
+
+    #[test]
+    fn quarantine_insert_is_monotonic() {
+        let _guard = crate::runtime_test_guard();
+        quarantine_insert(9, 3);
+        // A higher-incarnation death overwrites.
+        quarantine_insert(9, 7);
+        assert!(
+            quarantine_is_blocked(9, 7),
+            "blocked at the higher incarnation"
+        );
+        assert!(
+            quarantine_is_blocked(9, 6),
+            "blocked below the higher incarnation"
+        );
+        // A lower-incarnation death never regresses the recorded incarnation.
+        quarantine_insert(9, 2);
+        assert!(
+            quarantine_is_blocked(9, 7),
+            "a lower re-insert must not regress the quarantined incarnation"
+        );
+    }
+
+    #[test]
+    fn quarantine_evict_absent_node_is_noop() {
+        let _guard = crate::runtime_test_guard();
+        // No panic, no effect.
+        quarantine_evict(123);
+        assert!(!quarantine_is_blocked(123, 1));
+    }
+
+    /// Proving gate B: a `Quarantine`-policy send to a buried peer fails closed at
+    /// the consult, then resolves normally once the quarantine entry is evicted.
+    /// The consult is exercised through `quarantine_blocks_send` (the exact code
+    /// the send/ask paths call) with a real node + cluster so the live-incarnation
+    /// lookup is genuine.
+    #[test]
+    fn quarantine_blocks_send_under_policy_then_clears_on_evict() {
+        const PEER: u16 = 602;
+        let _guard = crate::runtime_test_guard();
+        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+        // SAFETY: bind_addr is a valid C string for the duration of this test.
+        let node_handle = unsafe { TestNode::new(601, &bind_addr) };
+        assert!(!node_handle.as_ptr().is_null());
+        // SAFETY: pointer came from TestNode::new and is valid until drop.
+        unsafe { assert_eq!(hew_node_start(node_handle.as_ptr()), 0) };
+        // SAFETY: started node has a non-null cluster.
+        let node = unsafe { &*node_handle.as_ptr() };
+        assert!(!node.cluster.is_null());
+        // SAFETY: cluster is valid while the node is running.
+        let cluster = unsafe { &*node.cluster };
+
+        // The peer is known to the cluster, buried (DEAD) at incarnation 5. Seed
+        // the membership table so the live-incarnation lookup resolves, and record
+        // the quarantine at the incarnation it died at.
+        cluster.seed_member_for_test(PEER, crate::cluster::MEMBER_DEAD, 5);
+        quarantine_insert(PEER, 5);
+
+        // Under a Quarantine policy the buried peer (live incarnation 5 <=
+        // quarantined 5) is blocked.
+        {
+            let mut ctx = crate::execution_context::HewExecutionContext {
+                partition_policy: crate::execution_context::PartitionPolicy::Quarantine.to_slot(),
+                ..crate::execution_context::HewExecutionContext::default()
+            };
+            let _ctx_guard =
+                crate::execution_context::TestExecutionContext::install(std::mem::take(&mut ctx));
+            assert!(
+                quarantine_blocks_send(node, PEER),
+                "a Quarantine-policy send to a buried peer must fail closed"
+            );
+        }
+
+        // A FailFast policy never consults the set: the same peer is NOT blocked.
+        {
+            let mut ctx = crate::execution_context::HewExecutionContext {
+                partition_policy: crate::execution_context::PartitionPolicy::FailFast.to_slot(),
+                ..crate::execution_context::HewExecutionContext::default()
+            };
+            let _ctx_guard =
+                crate::execution_context::TestExecutionContext::install(std::mem::take(&mut ctx));
+            assert!(
+                !quarantine_blocks_send(node, PEER),
+                "a FailFast-policy send must not consult the quarantine set"
+            );
+        }
+
+        // Evict (the readmission edge) clears the block under Quarantine too.
+        quarantine_evict(PEER);
+        {
+            let mut ctx = crate::execution_context::HewExecutionContext {
+                partition_policy: crate::execution_context::PartitionPolicy::Quarantine.to_slot(),
+                ..crate::execution_context::HewExecutionContext::default()
+            };
+            let _ctx_guard =
+                crate::execution_context::TestExecutionContext::install(std::mem::take(&mut ctx));
+            assert!(
+                !quarantine_blocks_send(node, PEER),
+                "after eviction the peer is sendable again"
+            );
+        }
+
+        // SAFETY: stop the node before drop.
+        unsafe { assert_eq!(hew_node_stop(node_handle.as_ptr()), 0) };
+    }
 
     /// Initialise a real, worker-backed scheduler for a node test (delegates to
     /// the scheduler-side helper, which sees the module-private `stealers` and

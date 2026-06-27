@@ -20514,9 +20514,22 @@ impl LowerCtx {
                 ]
             }
             OptionResultMethod::OptionUnwrap | OptionResultMethod::ResultUnwrap => {
-                let (type_name, variant_name, binding_name) = match method {
-                    OptionResultMethod::OptionUnwrap => ("Option", "Some", "__option_unwrap_value"),
-                    OptionResultMethod::ResultUnwrap => ("Result", "Ok", "__result_unwrap_value"),
+                let (type_name, variant_name, empty_variant, binding_name, panic_msg) = match method
+                {
+                    OptionResultMethod::OptionUnwrap => (
+                        "Option",
+                        "Some",
+                        "None",
+                        "__option_unwrap_value",
+                        "called 'unwrap()' on a 'None' value",
+                    ),
+                    OptionResultMethod::ResultUnwrap => (
+                        "Result",
+                        "Ok",
+                        "Err",
+                        "__result_unwrap_value",
+                        "called 'unwrap()' on an 'Err' value",
+                    ),
                     _ => unreachable!("handled by outer match"),
                 };
                 let Some(payload_predicate) = variant(self, type_name, variant_name) else {
@@ -20525,26 +20538,50 @@ impl LowerCtx {
                         format!("{type_name}::{variant_name} predicate"),
                     );
                 };
-                let payload_binding = self.ids.binding();
-                vec![HirMatchArm {
-                    predicate: payload_predicate,
-                    bindings: vec![HirMatchArmBinding {
-                        binding: payload_binding,
-                        field_idx: 0,
-                        name: binding_name.to_string(),
-                        ty: ret_ty.clone(),
-                    }],
-                    payload_predicates: Vec::new(),
-                    payload_variant_predicates: Vec::new(),
-                    guard: None,
-                    body: self.synthetic_binding_ref(
-                        binding_name,
-                        payload_binding,
-                        ret_ty.clone(),
+                let Some(empty_predicate) = variant(self, type_name, empty_variant) else {
+                    return self.unsupported_postfix_try(
                         &span,
-                    ),
-                    span: span.clone(),
-                }]
+                        format!("{type_name}::{empty_variant} predicate"),
+                    );
+                };
+                let payload_binding = self.ids.binding();
+                // Build `panic("...")` as the failure-arm body. The call diverges
+                // (return type Never) so the match is type-correct even though the
+                // failure arm never produces a value of `ret_ty`.
+                let panic_msg_expr =
+                    self.build_string_literal_expr(panic_msg.to_string(), span.clone());
+                let panic_call =
+                    self.build_catalog_call("panic", vec![panic_msg_expr], span.clone());
+                vec![
+                    HirMatchArm {
+                        predicate: payload_predicate,
+                        bindings: vec![HirMatchArmBinding {
+                            binding: payload_binding,
+                            field_idx: 0,
+                            name: binding_name.to_string(),
+                            ty: ret_ty.clone(),
+                        }],
+                        payload_predicates: Vec::new(),
+                        payload_variant_predicates: Vec::new(),
+                        guard: None,
+                        body: self.synthetic_binding_ref(
+                            binding_name,
+                            payload_binding,
+                            ret_ty.clone(),
+                            &span,
+                        ),
+                        span: span.clone(),
+                    },
+                    HirMatchArm {
+                        predicate: empty_predicate,
+                        bindings: Vec::new(),
+                        payload_predicates: Vec::new(),
+                        payload_variant_predicates: Vec::new(),
+                        guard: None,
+                        body: panic_call,
+                        span: span.clone(),
+                    },
+                ]
             }
             OptionResultMethod::OptionUnwrapOr | OptionResultMethod::ResultUnwrapOr => {
                 let (type_name, payload_variant, empty_variant, binding_name) = match method {

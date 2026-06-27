@@ -21,7 +21,7 @@
 # map_literal_empty_annotated.hew, array_repeat_int_sum.hew, and
 # array_repeat_runtime_count.hew are intentionally absent: they must pass.
 #
-# Total: 19 known-failing entries (19 intentional-trap/abort fixtures).
+# Total: 20 known-failing entries (19 intentional-trap/abort fixtures, 1 intentional-panic).
 #
 # Intentional aborts/traps: fixtures in tests/vertical-slice/accept/ that are
 # designed to trap or abort at runtime as their correctness proof.  Listed here
@@ -37,7 +37,8 @@ string_index_oob_traps.hew   # intentional abort: out-of-bounds string index s[i
 # Arch-dependent trap signals: SIGILL (132) on x86_64 Linux, SIGTRAP (133) on aarch64/macOS.
 isize_div_by_zero_traps.hew  # intentional trap: isize / 0 → DivideByZero signal (SIGILL x86_64 / SIGTRAP aarch64)
 isize_shift_oob_traps.hew    # intentional trap: isize << 64 → ShiftOutOfRange signal (SIGILL x86_64 / SIGTRAP aarch64)
-option_unwrap_none_aborts.hew  # intentional abort: None unwrap traps deterministically — x86_64 SIGILL/132 or aarch64 SIGTRAP/133 — via the generic unmatched-arm path
+option_unwrap_none_aborts.hew  # intentional panic: None unwrap calls hew_panic_msg → exit 101 (not a trap signal)
+result_unwrap_err_aborts.hew   # intentional panic: Err unwrap calls hew_panic_msg → exit 101 (not a trap signal)
 vec_element_width_oob_traps.hew  # intentional trap: Vec<i8> index at len → IndexOutOfBounds signal (SIGILL x86_64 / SIGTRAP aarch64)
 vec_index_assign_oob_traps.hew   # intentional trap: Vec<i64> OOB write v[1] on 1-element vec → IndexOutOfBounds signal (SIGILL x86_64 / SIGTRAP aarch64)
 vec_index_oob_traps.hew          # intentional trap: Vec<i64> read v[10] on 3-element vec → IndexOutOfBounds signal (SIGILL x86_64 / SIGTRAP aarch64)

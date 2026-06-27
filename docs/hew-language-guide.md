@@ -1310,6 +1310,66 @@ fn main() {
 
 Spawn the dependency first, pass its `LocalPid<Dep>` into the dependent actor's spawn, store it in a field, and `await dep.method(...)` from a handler. Awaiting another actor yields `Result<R, AskError>` like any ask.
 
+### Timers and scheduling — sleep and sleep_until
+
+Hew provides two blocking/suspending timer builtins backed by a single
+hierarchical timer wheel. The wheel is tickless — the scheduler thread parks
+until the next deadline and never spins when no timers are armed.
+
+**`sleep(d: duration)`** — suspend for a duration. Inside an actor handler
+the actor suspends cooperatively and the worker is freed for other actors;
+in `fn main` or a free function the calling thread blocks.
+
+```hew
+actor Ticker {
+    receive fn run(count: i64) {
+        var i = 0;
+        while i < count {
+            sleep(5ms);
+            println(f"tick {i}");
+            i = i + 1;
+        }
+    }
+}
+
+fn main() {
+    let t = spawn Ticker;
+    t.run(3);
+    sleep(100ms);
+    // tick 0
+    // tick 1
+    // tick 2
+}
+```
+
+**`sleep_until(target: instant)`** — suspend until a monotonic `instant`.
+Returns immediately if `target` is already in the past. Combine with
+`instant::now()` and duration arithmetic to build deadline-bounded loops:
+
+```hew
+fn main() {
+    let t0 = instant::now();
+    let deadline = t0 + 50ms;
+    // ... do some work ...
+    sleep_until(deadline);    // waits only the remaining time
+    let elapsed = t0.elapsed();
+    println(elapsed.millis() >= 45);   // true
+}
+```
+
+**Duration literals:** `10ms`, `2s`, `500ms`, `1ns`, `1us`. These produce a
+`duration` value. `instant + duration` and `duration + instant` both produce
+a new `instant`.
+
+**Timer model:** both `sleep` and `sleep_until` arm a single entry in the
+runtime's two-level hierarchical wheel (256 × 1 ms slots + 64 × 256 ms
+slots; overflow list for intervals > 16 s). There is one shared wheel per
+process; all sleeping actors and threads compete for its entries. Scheduling
+granularity is 1 ms on the native target. Sub-millisecond values in actor
+handlers convert to 0 ms (next tick); in `fn main` the OS sleep is
+nanosecond-precise (subject to OS granularity, typically ≥ 1 µs on
+Linux/macOS).
+
 ## State machines
 
 ### Machine declaration: events, states, transitions, step(), state_name()

@@ -7070,6 +7070,97 @@ fn vec_iter_record_layout_key(ty: &ResolvedTy) -> Option<String> {
     (key == "VecIter" || key.starts_with("VecIter$$")).then_some(key)
 }
 
+/// `true` when a `for x in vec`/`VecIter<T>` cursor whose element type is `elem`
+/// can have its `vec` handle freed at loop/scope exit WITHOUT risking a
+/// double-free of a shared element (#1949).
+///
+/// The for-in body extracts each element through `hew_vec_get_*`. For an OWNED
+/// element type — `string` (`hew_vec_get_str` RETAINS a refcounted reference),
+/// or any heap-owning element (`hew_vec_get_owned` clones via the descriptor) —
+/// that extracted reference can be MOVED into another owner inside the body
+/// (e.g. `for w in words { map.insert(w, …) }`). Freeing the source vec then
+/// runs `free_string_elements` / the per-element descriptor drop over slots that
+/// alias the value the downstream owner also frees: a double-free. The
+/// element-escape accounting needed to free the source safely in that case is
+/// not modelled here, so the cursor/source vec drop is restricted to elements
+/// the body can only COPY, never retain-and-consume: the `BitCopy` scalars. For
+/// every other element type the source vec is left undropped (leak, as before
+/// this fix — fail-closed, never double-free).
+///
+/// Tuple / array / named-aggregate elements are excluded too: even an
+/// all-`BitCopy` tuple element is read out by value with no retain, but the
+/// `hew_vec_free` element walk for those layouts is descriptor-driven and shares
+/// the same element-escape hazard surface, so they stay conservative here.
+fn vec_iter_elem_drop_safe(elem: &ResolvedTy) -> bool {
+    matches!(
+        elem,
+        ResolvedTy::I8
+            | ResolvedTy::I16
+            | ResolvedTy::I32
+            | ResolvedTy::I64
+            | ResolvedTy::U8
+            | ResolvedTy::U16
+            | ResolvedTy::U32
+            | ResolvedTy::U64
+            | ResolvedTy::Isize
+            | ResolvedTy::Usize
+            | ResolvedTy::F32
+            | ResolvedTy::F64
+            | ResolvedTy::Bool
+            | ResolvedTy::Char
+            | ResolvedTy::Duration
+    )
+}
+
+/// `true` when `ty` is a `VecIter<T>` cursor whose element `T` is drop-safe at
+/// loop/scope exit (see [`vec_iter_elem_drop_safe`]).
+fn vec_iter_ty_drop_safe(ty: &ResolvedTy) -> bool {
+    let ResolvedTy::Named { name, args, .. } = ty else {
+        return false;
+    };
+    if vec_iter_record_layout_key(ty).is_none() && name != "VecIter" {
+        return false;
+    }
+    args.first().is_some_and(vec_iter_elem_drop_safe)
+}
+
+/// The `vec`-field (`.0`) source place of a `record_init VecIter { vec, idx }`,
+/// or `None` for any other instruction.
+///
+/// A `for x in vec` desugar lowers the source collection into the synthetic
+/// `VecIter { vec: <source>, idx: 0 }` cursor. The cursor BORROWS the source's
+/// handle for the loop's duration — for a place source it is a `CowShare` (the
+/// source binding stays Live and the iteration only READS the handle via
+/// `len()` / `get(i)`); for an rvalue / `to_vec()` source it is a sole-owner
+/// transfer. Either way the `record_init`'s `vec`-field read is NOT an
+/// ownership escape of the source handle the way a user `record_init` field
+/// store is — the cursor never frees what it borrows. Surfacing this field lets
+/// `derive_local_collection_drop_allowed` exempt it from the escape scan so a
+/// captured place source keeps its own scope-exit drop, and lets
+/// `derive_vec_iter_drop_allowed` decide whether the cursor (rvalue source) or
+/// the source binding (place source) is the sole owner that frees the handle.
+fn vec_iter_record_init_vec_source(instr: &Instr) -> Option<Place> {
+    let Instr::RecordInit { ty, fields, .. } = instr else {
+        return None;
+    };
+    vec_iter_record_layout_key(ty)?;
+    // Only a drop-safe (BitCopy-element) cursor exempts its source from the
+    // escape scan. For an owned/string-element cursor the source vec is NOT
+    // freed at all (the body may retain-and-consume elements; see
+    // `vec_iter_elem_drop_safe`), so the source must stay EXCLUDED — do not
+    // exempt its ingress.
+    if !vec_iter_ty_drop_safe(ty) {
+        return None;
+    }
+    // The `vec` field is declaration-order field 0; `idx` is field 1 (BitCopy,
+    // never an alias member). `make_vec_iter_init` constructs the literal with
+    // exactly this field order.
+    fields
+        .iter()
+        .find(|(offset, _)| offset.0 == 0)
+        .map(|(_, src)| *src)
+}
+
 fn is_unsupported_user_record_value_class_ty(ty: &ResolvedTy, builder: &Builder) -> bool {
     let Some(key) = user_record_layout_key(ty) else {
         return false;
@@ -7461,6 +7552,21 @@ struct Builder {
     /// the scope-exit drop is emitted so the function-exit pass cannot
     /// double-free (the drop also null-stores the slot as defence-in-depth).
     scope_generator_bindings: Vec<(ScopeId, hew_hir::BindingId, ResolvedTy)>,
+    /// Sole-owner `for x in …` cursor (`VecIter<T>`) bindings tagged with the
+    /// for-in block scope they were declared in, so a per-scope-exit
+    /// `__hew_record_drop_inplace_VecIter$$T` (freeing the cursor's `vec` field
+    /// via `hew_vec_free`) fires when the scope closes — releasing the handle on
+    /// every outer iteration of an enclosing loop, the case the function-exit
+    /// LIFO drop misses. Mirrors `scope_generator_bindings`. Registered ONLY for
+    /// cursors that solely own their handle (rvalue / `to_vec()` / consumed
+    /// `into_iter()` source — see `vec_iter_let_cursor_owns_handle`); a `CowShare`
+    /// place source (`for x in v`) is NOT registered because the source binding
+    /// keeps its own drop and the cursor only borrows (freeing here would
+    /// double-free and dangle a post-loop `v` read). Entries are removed from
+    /// `owned_locals` once the scope-exit drop is emitted so the function-exit
+    /// pass cannot double-free; the inline `Instr::Drop` null-stores the slot as
+    /// defence in depth (`raii-null-after-move`).
+    scope_vec_iter_bindings: Vec<(ScopeId, hew_hir::BindingId, ResolvedTy)>,
     /// Active per-iteration generator-yielded heap value bindings, recorded
     /// while lowering a `for v in gen()` (or `match g.next()`) consuming body so
     /// a `break`/`continue` inside that body frees the current iteration's
@@ -8484,6 +8590,66 @@ impl Builder {
                 place,
                 ty,
                 drop_fn: Some(crate::model::DropFnSpec::Release("hew_gen_coro_destroy")),
+            });
+        }
+    }
+
+    /// Release the `vec` handle of every sole-owner `for x in …` cursor
+    /// (`VecIter<T>`) declared in `scope_id` when that scope closes, so the
+    /// handle is freed on every outer-loop iteration rather than leaking one per
+    /// iteration. #1949.
+    ///
+    /// Mirrors [`Self::emit_scope_generator_drops`]: it emits the release inline
+    /// as an `Instr::RecordFieldDrop` on the cursor's `vec` field (declaration-
+    /// order field 0), removes the cursor from `owned_locals` so the function-exit
+    /// LIFO pass cannot fire a second free, and the inline drop is null-safe
+    /// (`hew_vec_free` no-ops on null). Only cursors the registration gate
+    /// admitted are here — a sole-owner cursor with a `BitCopy`-element `vec`
+    /// (`vec_iter_ty_drop_safe`) and an rvalue/consumed source
+    /// (`vec_iter_let_cursor_owns_handle`). A `CowShare` place-source cursor and
+    /// any owned/string-element cursor were never registered, so the handle is
+    /// freed exactly once (by the source binding's drop for a place source, or
+    /// left undropped for an owned-element vec — fail-closed leak, never a shared-
+    /// element double-free).
+    ///
+    /// The element is `BitCopy` by the registration gate, so the `vec` handle's
+    /// release is the plain `hew_vec_free` (buffer + handle; no per-element
+    /// release path, hence no shared-element double-free hazard).
+    fn emit_scope_vec_iter_drops(&mut self, scope_id: ScopeId) {
+        let mut to_drop: Vec<(hew_hir::BindingId, ResolvedTy)> = Vec::new();
+        self.scope_vec_iter_bindings.retain(|(s, binding, ty)| {
+            if *s == scope_id {
+                to_drop.push((*binding, ty.clone()));
+                false
+            } else {
+                true
+            }
+        });
+        for (binding, cursor_ty) in to_drop.into_iter().rev() {
+            let Some(place) = self.binding_locals.get(&binding).copied() else {
+                continue;
+            };
+            // The cursor's `vec` field is `Vec<T>` where `T` is the cursor's sole
+            // type argument; the registration gate proved `T` is `BitCopy`, so the
+            // release is the plain `hew_vec_free`.
+            let ResolvedTy::Named { args, .. } = &cursor_ty else {
+                continue;
+            };
+            let Some(elem_ty) = args.first().cloned() else {
+                continue;
+            };
+            let vec_ty = ResolvedTy::Named {
+                name: "Vec".to_string(),
+                args: vec![elem_ty],
+                builtin: Some(BuiltinType::Vec),
+                is_opaque: false,
+            };
+            self.owned_locals.retain(|(b, _, _)| *b != binding);
+            self.push_instr(Instr::RecordFieldDrop {
+                record: place,
+                field_offset: crate::model::FieldOffset(0),
+                ty: vec_ty,
+                drop_fn: crate::model::DropFnSpec::Release("hew_vec_free"),
             });
         }
     }
@@ -10181,6 +10347,25 @@ impl Builder {
                             ));
                         }
                     }
+                    // #1949 — tag a sole-owner `for x in …` cursor (`VecIter<T>`)
+                    // with its declaring scope so a per-scope-exit
+                    // `__hew_record_drop_inplace_VecIter$$T` frees its `vec`
+                    // handle when the scope closes, releasing the handle on every
+                    // outer-loop iteration (the leak this fixes). Only a cursor
+                    // that solely owns its handle (rvalue / `to_vec()` / consumed
+                    // `into_iter()` source) is registered; a CowShare place source
+                    // keeps the source binding's drop instead (see
+                    // `vec_iter_let_cursor_owns_handle`).
+                    if vec_iter_ty_drop_safe(&binding_ty) && vec_iter_let_cursor_owns_handle(value)
+                    {
+                        if let Some(scope) = self.active_scopes.last().copied() {
+                            self.scope_vec_iter_bindings.push((
+                                scope,
+                                binding.id,
+                                binding_ty.clone(),
+                            ));
+                        }
+                    }
                 }
                 if owned_string_record_key.is_some() && value_place.is_some() {
                     self.owned_string_record_bindings.insert(binding.id);
@@ -11580,6 +11765,12 @@ impl Builder {
                 // enclosing loop frees its `__hew_for_iter_*` context + thread
                 // every outer iteration instead of leaking one per iteration.
                 self.emit_scope_generator_drops(block.scope);
+                // #1949 — release any sole-owner `for x in …` cursor (`VecIter`)
+                // declared in this block's scope before it closes, so a cursor in
+                // an enclosing-loop body frees its `vec` handle every outer
+                // iteration instead of leaking one per iteration (the generator
+                // analogue above).
+                self.emit_scope_vec_iter_drops(block.scope);
                 self.active_scopes.pop();
                 result
             }
@@ -17913,6 +18104,10 @@ impl Builder {
         // iteration rather than accumulating one per pass (see
         // `emit_scope_generator_drops`).
         self.emit_scope_generator_drops(body.scope);
+        // #1949 — release sole-owner `for x in …` cursors (`VecIter`) declared
+        // directly in this loop body before the back-edge, the cursor analogue of
+        // the generator release above (see `emit_scope_vec_iter_drops`).
+        self.emit_scope_vec_iter_drops(body.scope);
         // Record this block as a loop-body back-edge so `enumerate_exits`
         // populates its `Goto` `DropPlan` with per-iteration releases for
         // heap-owning bindings declared in `body.scope`. Without this, an
@@ -18140,6 +18335,10 @@ impl Builder {
         // Release generators declared in the loop body before the back-edge
         // (per-iteration `hew_gen_free`; see `emit_scope_generator_drops`).
         self.emit_scope_generator_drops(body.scope);
+        // #1949 — release sole-owner `for x in …` cursors (`VecIter`) declared
+        // directly in this loop body before the back-edge, the cursor analogue of
+        // the generator release above (see `emit_scope_vec_iter_drops`).
+        self.emit_scope_vec_iter_drops(body.scope);
         // Record this block as a loop-body back-edge so `enumerate_exits`
         // populates its `Goto` `DropPlan` with per-iteration releases for
         // heap-owning bindings declared in `body.scope` (including the
@@ -18748,6 +18947,10 @@ impl Builder {
         // back-edge (per-iteration `hew_gen_free`; see
         // `emit_scope_generator_drops`).
         self.emit_scope_generator_drops(body.scope);
+        // #1949 — release sole-owner `for x in …` cursors (`VecIter`) declared
+        // directly in this loop body before the back-edge, the cursor analogue of
+        // the generator release above (see `emit_scope_vec_iter_drops`).
+        self.emit_scope_vec_iter_drops(body.scope);
         // Record body→inc as the per-iteration back-edge for body-scope
         // bindings. body.scope closes here (active_scopes.pop next), so any
         // heap-owning let-binding declared inside the body must be released
@@ -18867,6 +19070,10 @@ impl Builder {
         // Release generators declared in the loop body before the back-edge
         // (per-iteration `hew_gen_free`; see `emit_scope_generator_drops`).
         self.emit_scope_generator_drops(body.scope);
+        // #1949 — release sole-owner `for x in …` cursors (`VecIter`) declared
+        // directly in this loop body before the back-edge, the cursor analogue of
+        // the generator release above (see `emit_scope_vec_iter_drops`).
+        self.emit_scope_vec_iter_drops(body.scope);
         // Record this block as a loop-body back-edge so `enumerate_exits`
         // populates its `Goto` `DropPlan` with per-iteration releases for
         // heap-owning bindings declared in `body.scope`. `loop { ... }` has
@@ -32442,11 +32649,27 @@ fn derive_local_collection_drop_allowed(
                     continue;
                 }
             }
+            // The synthetic `for x in vec` cursor `record_init VecIter { vec, idx }`
+            // BORROWS the source handle in its `vec` field — the loop only READS
+            // it (`len()` / `get(i)`) and the cursor never frees what it borrows
+            // (see `vec_iter_record_init_vec_source`). For a place source this is
+            // a CowShare: the source binding stays the sole owner and keeps its
+            // own scope-exit drop. So the `vec`-field source is NOT an escape;
+            // skip it here. The actual owner-vs-borrower decision for the cursor
+            // itself is made by `derive_vec_iter_drop_allowed` (a `Capture`-source
+            // cursor borrows and does not drop; an rvalue / consumed-source cursor
+            // owns and drops). A consumed place source (`v.into_iter()`) is still
+            // removed by the dataflow `Consumed` filter, so exempting the read
+            // here never re-admits a genuinely moved-out source.
+            let vec_iter_borrow_src = vec_iter_record_init_vec_source(instr);
             // Every other instruction reading an alias member is an owning-sink
             // escape (stored into a record field, captured into a closure env,
             // moved into an aggregate via `RecordInit` / `SpawnActor`, …).
             // Fail-closed: a leaf handle has no benign interior instruction read.
             for p in instr_source_places(instr) {
+                if vec_iter_borrow_src == Some(p) {
+                    continue;
+                }
                 if let Some(l) = base_local(p) {
                     if alias_of.contains_key(&l) && matches!(p, Place::Local(_) | Place::ReturnSlot)
                     {
@@ -35724,6 +35947,60 @@ fn ty_is_generator_handle(ty: &ResolvedTy) -> bool {
             ..
         }
     )
+}
+
+/// True when a `for x in …` cursor `let __hew_for_iter = <value>` makes the
+/// cursor the SOLE owner of the `Vec` handle in its `vec` field, so the cursor
+/// (not a still-live source binding) must free that handle when its scope
+/// closes. #1949.
+///
+/// The cursor owns iff its initialiser is a fresh `StructInit VecIter { vec, idx }`
+/// whose `vec`-field source is NOT a still-live captured place binding:
+///   - **rvalue source** (`for x in make_vec()`): the `vec` field is a call /
+///     index / other rvalue — no source binding survives, the cursor owns.
+///   - **`HashSet` source** (`for x in s`): the `vec` field is the set's
+///     `to_vec()` snapshot — a FRESH Vec the cursor solely owns (the set stays
+///     live as a separate handle).
+///   - **place source** (`for x in v`): the `vec` field is a bare `BindingRef`
+///     to a still-live source binding shared via `CowShare` (`IntentKind::Capture`
+///     — the only site that emits it). The source binding keeps its own
+///     scope-exit drop (`derive_local_collection_drop_allowed` exempts the
+///     cursor ingress), so the cursor BORROWS and must NOT drop. Returns false.
+///
+/// A non-`StructInit` value (e.g. `for x in it`, where the cursor is a
+/// whole-value MOVE of an already-bound `VecIter` — that bound cursor owns and
+/// is registered at ITS own `StructInit` let) returns false here: the move
+/// consumes the source and the existing owner's registration already covers the
+/// single free. Returning false in every ambiguous shape is fail-closed (leak,
+/// never double-free), matching the sibling drop authorities.
+fn vec_iter_let_cursor_owns_handle(value: &HirExpr) -> bool {
+    let HirExprKind::StructInit {
+        name,
+        fields,
+        base: None,
+        ..
+    } = &value.kind
+    else {
+        return false;
+    };
+    if name != "VecIter" {
+        return false;
+    }
+    let Some((_, vec_src)) = fields.iter().find(|(field, _)| field == "vec") else {
+        return false;
+    };
+    // A bare `BindingRef` with `Capture` intent is the CowShare place source
+    // (`for x in v`) — the source binding owns; the cursor borrows. Every other
+    // `vec`-field producer (rvalue call/index, `to_vec()` MethodCall, a moved /
+    // consumed source) leaves the cursor the sole owner.
+    let borrows_live_place = matches!(
+        &vec_src.kind,
+        HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(_),
+            ..
+        }
+    ) && vec_src.intent == IntentKind::Capture;
+    !borrows_live_place
 }
 
 /// True when `ty` is the builtin `Vec<T>`. The owned-element decision lives in

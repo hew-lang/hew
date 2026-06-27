@@ -335,7 +335,7 @@ pub struct MonitorDownPayload {
 /// Bounded cross-node link REQUEST / UNLINK control payload (DIST-9).
 ///
 /// Encoded as a definite CBOR map `{1: linker_node_id, 2: ref_id,
-/// 3: target_serial, 4: linker_serial, 5: policy_tag}`. Used by both
+/// 3: target_serial, 4: linker_serial, 5: policy_tag, 6: reciprocate}`. Used by both
 /// `CTRL_LINK_REQ` and `CTRL_UNLINK`: the request establishes the bidirectional
 /// link, the unlink retracts it; the identifying tuple is the same.
 ///

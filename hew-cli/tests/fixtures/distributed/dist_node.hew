@@ -436,6 +436,74 @@ fn scenario_remote_monitor_conn_drop(kv: RemotePid<KeyValue>) -> i64 {
     0
 }
 
+// Scenario: partition_ask
+//
+// The DIST-7 partition gate. The client looks up the remote actor, signals
+// READY_DROP so the harness can kill the server (dropping the route to the
+// peer), then issues a remote ask to the now-unreachable actor. The ask MUST
+// resolve fail-closed with a typed partition cause — AskError::Partition (the
+// SWIM-DEAD verdict) or AskError::ConnectionDropped (the socket-drop verdict),
+// both valid fail-closed outcomes — and it MUST do so well within the client
+// ceiling, NEVER hanging to the deadline. A Timeout here means the fail-closed
+// path did not fire (a hang-to-deadline), which fails the scenario.
+//
+// The deterministic SWIM-DEAD-while-socket-open path (specifically Partition,
+// not ConnectionDropped) is proven by the in-process runtime unit test
+// `swim_dead_wakes_pending_remote_ask_with_partition`; a two-process kill drops
+// the socket, so this fixture accepts either fail-closed cause and pins the
+// no-hang + typed-error invariant.
+fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
+    // Signal the harness to kill the server now that the route is established.
+    println("READY_DROP partition_ask");
+    // Poll the route until the ask observes the peer is gone. Each ask has a
+    // bounded 1 s timeout; we retry a handful of times so a still-draining
+    // socket gets a chance to surface the drop, but the total is far under the
+    // client ceiling. A typed partition/drop error on ANY attempt is the pass.
+    var attempts: i64 = 0;
+    loop {
+        let probe = kv.ask(KvReq::GetKey("hello"), 1000);
+        match probe {
+            Result::Ok(_) => {
+                // The peer is not gone yet (kill in flight); retry briefly.
+                attempts = attempts + 1;
+                if attempts >= 20 {
+                    println("FAIL partition_ask never-partitioned");
+                    return 2;
+                }
+                sleep(200ms);
+            },
+            Result::Err(e) => {
+                match e {
+                    AskError::Partition => {
+                        println("PASS partition_ask reason=partition");
+                        return 0;
+                    },
+                    AskError::ConnectionDropped => {
+                        println("PASS partition_ask reason=conn-dropped");
+                        return 0;
+                    },
+                    AskError::Timeout => {
+                        // A timeout is a hang-to-deadline: the fail-closed
+                        // partition/drop path did not resolve the ask. Retry a
+                        // bounded number of times in case the verdict is still
+                        // propagating, then fail.
+                        attempts = attempts + 1;
+                        if attempts >= 20 {
+                            println("FAIL partition_ask reason=timeout");
+                            return 3;
+                        }
+                        sleep(200ms);
+                    },
+                    _ => {
+                        println("FAIL partition_ask reason=other");
+                        return 4;
+                    },
+                }
+            },
+        }
+    }
+}
+
 fn run_client(port: string, scenario: string) -> i64 {
     let remote_addr = f"127.0.0.1:{port}";
     Node::set_transport("tcp");
@@ -476,8 +544,12 @@ fn run_client(port: string, scenario: string) -> i64 {
                             if scenario == "remote_monitor_conn_drop" {
                                 scenario_remote_monitor_conn_drop(kv)
                             } else {
-                                println(f"FAIL {scenario} unknown-scenario");
-                                90
+                                if scenario == "partition_ask" {
+                                    scenario_partition_ask(kv)
+                                } else {
+                                    println(f"FAIL {scenario} unknown-scenario");
+                                    90
+                                }
                             }
                         }
                     }

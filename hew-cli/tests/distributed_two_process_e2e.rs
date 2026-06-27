@@ -393,6 +393,46 @@ fn remote_monitor_down_on_connection_drop() {
     );
 }
 
+/// DIST-7 partition gate: a remote ask whose target peer is gone must resolve
+/// fail-closed with a typed partition cause within a bounded window, NEVER
+/// hanging to the client ceiling. The harness kills the server after the client
+/// signals `READY_DROP`; the client then asks the now-unreachable actor and the
+/// ask resolves `Partition` (the SWIM-DEAD verdict) or `ConnectionDropped` (the
+/// socket-drop verdict) — both fail-closed — rather than timing out.
+///
+/// Teeth: (a) a typed partition/drop `PASS` line, (b) the run finishes well
+/// under the 40 s client ceiling (`run_conn_drop_scenario`'s drain cap is the
+/// no-hang guard — a hang-to-deadline would blow it), (c) no `FAIL` line (in
+/// particular no `reason=timeout`, which would mean the fail-closed path did
+/// not fire).
+///
+/// The deterministic SWIM-DEAD-while-socket-open → Partition path (the specific
+/// fail-open this lane closes) is proven in-process by the runtime unit test
+/// `swim_dead_wakes_pending_remote_ask_with_partition`; a two-process kill drops
+/// the socket, so this fixture accepts either fail-closed cause.
+#[test]
+fn remote_ask_under_partition_fails_closed_not_hang() {
+    let stdout = run_conn_drop_scenario("partition_ask");
+
+    let partitioned = stdout.contains("PASS partition_ask reason=partition");
+    let conn_dropped = stdout.contains("PASS partition_ask reason=conn-dropped");
+    assert!(
+        partitioned || conn_dropped,
+        "expected a typed partition/drop PASS (Partition or ConnectionDropped); \
+         client stdout:\n{stdout}"
+    );
+    // A timeout is the hang-to-deadline failure this gate exists to catch.
+    assert!(
+        !stdout.contains("FAIL partition_ask reason=timeout"),
+        "remote ask under partition timed out instead of failing closed \
+         (the fail-open this lane closes); client stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("FAIL "),
+        "client reported a FAIL on the partition-ask scenario; client stdout:\n{stdout}"
+    );
+}
+
 /// The linchpin assertion: a real two-process remote-ask round-trip over a
 /// loopback socket returns the exact values stored on the remote actor.
 #[test]

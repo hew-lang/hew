@@ -2365,7 +2365,9 @@ fn main() {
 Records and enums support `==` and `!=` out of the box; no extra
 implementation is needed. Equality is structural: two record values are equal
 when every field is equal, and two enum values are equal when they carry the
-same variant and every payload field is equal.
+same variant and every payload field is equal. Fields of any equality-eligible
+type participate — integers, `bool`, `char`, `string`, `duration`, nested
+records/enums, and **floating-point** fields (`f64`/`f32`, see below).
 
 ```hew
 type Point { x: i64; y: i64; }
@@ -2435,6 +2437,63 @@ fn main() {
     println(tags.contains(Tag::B(8)));   // false
 }
 ```
+
+### Floating-point fields use bitwise (total) equality
+
+Structural equality over a float field is **bitwise**, not IEEE numeric. The
+compiler compares the raw bit patterns of the two floats, so:
+
+- it is **reflexive**: `x == x` holds for every value, including `NaN`. Two
+  `NaN` values compare *equal* when their bit patterns are identical.
+- `+0.0` and `-0.0` are **distinct** (their bit patterns differ), so a record
+  holding `+0.0` is not equal to one holding `-0.0`.
+
+This is deliberately different from the IEEE numeric `==` you get on a bare
+`f64`/`f32` expression, where `NaN != NaN` and `+0.0 == -0.0`:
+
+```hew
+record Vec2 { x: f64, y: f64 }
+
+fn main() {
+    let nan = 0.0 / 0.0;
+
+    // Scalar `==` is IEEE numeric.
+    println(nan == nan);   // false  (NaN != NaN)
+    println(0.0 == -0.0);  // true   (signed zeros compare equal)
+
+    // Structural `==` over a record is bitwise/total.
+    let a = Vec2 { x: nan, y: 1.0 };
+    let b = Vec2 { x: nan, y: 1.0 };
+    println(a == b);       // true   (identical bit patterns, reflexive)
+
+    let pz = Vec2 { x: 0.0, y: 0.0 };
+    let nz = Vec2 { x: -0.0, y: 0.0 };
+    println(pz == nz);     // false  (+0.0 and -0.0 differ in bits)
+}
+```
+
+Bitwise semantics are what structural equality needs to stay reflexive, which
+in turn keeps dedup, `Vec::contains`, and `HashMap` keys correct: a value can
+always find itself. The hash of a float field is computed from the same bit
+pattern, so `==` implies an equal hash and a float-bearing `record` is a sound
+`HashMap` key.
+
+```hew
+record Coord { x: f64, y: f64 }
+
+fn main() {
+    let m: HashMap<Coord, i64> = HashMap::new();
+    m.insert(Coord { x: 1.5, y: 2.5 }, 42);
+    let v = m.get(Coord { x: 1.5, y: 2.5 });
+    match v {
+        Some(n) => println(n),   // 42 — structurally equal key round-trips
+        None => println(-1),
+    }
+}
+```
+
+Float ordering (`<`, `<=`, `>`, `>=`) is unaffected: it stays IEEE-partial. Only
+equality (`==`/`!=`) and hashing use the bitwise/total form.
 
 ### bytes field restriction
 

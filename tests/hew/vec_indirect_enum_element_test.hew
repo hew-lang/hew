@@ -1,0 +1,60 @@
+//! Regression test for #2150 — a `Vec<Foo>` with an `indirect enum Foo` must
+//! be built and operated through the pointer-element ABI.
+//!
+//! Before the fix this program passed `hew check` but aborted at runtime with
+//! "Vec layout-aware operation is not implemented": codegen found the enum's
+//! tagged-union struct in `record_layouts` (every enum is registered there) and
+//! built a layout-aware Vec regardless of indirection, while the checker and
+//! MIR getter routed the element through the pointer ABI. The push then tripped
+//! the runtime layout-aware abort. The fix gates the codegen descriptor
+//! decision on `is_indirect_enum` so the indirect enum rides the pointer ABI,
+//! agreeing with the checker and MIR. Direct enums keep the layout path.
+
+import std::testing;
+
+indirect enum Foo {
+    A(i64);
+    B;
+}
+
+fn describe(f: Foo) -> string {
+    match f {
+        A(n) => f"A({n})",
+        B => "B",
+    }
+}
+
+#[test]
+fn indirect_enum_vec_round_trips() {
+    let v: Vec<Foo> = Vec::new();
+    v.push(Foo::B);
+    v.push(Foo::A(42));
+    testing.assert_eq_str(describe(v[0]), "B");
+    testing.assert_eq_str(describe(v[1]), "A(42)");
+}
+
+// Direct (non-indirect) enum Vec must keep the layout-descriptor path.
+enum Dir {
+    North;
+    South;
+    East(i64);
+}
+
+fn dir_name(d: Dir) -> string {
+    match d {
+        North => "N",
+        South => "S",
+        East(n) => f"E{n}",
+    }
+}
+
+#[test]
+fn direct_enum_vec_unaffected() {
+    let v: Vec<Dir> = Vec::new();
+    v.push(Dir::North);
+    v.push(Dir::East(7));
+    v.push(Dir::South);
+    testing.assert_eq_str(dir_name(v[0]), "N");
+    testing.assert_eq_str(dir_name(v[1]), "E7");
+    testing.assert_eq_str(dir_name(v[2]), "S");
+}

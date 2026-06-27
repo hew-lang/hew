@@ -791,7 +791,6 @@ impl Checker {
             },
         );
         self.register_builtin_fn("bytes::new", vec![], Ty::Bytes);
-        self.register_builtin_fn("duration::from_nanos", vec![Ty::I64], Ty::Duration);
 
         // Rc<T> constructor — Rc::new(value: T) -> Rc<T>
         // Each call site gets a fresh type variable; the actual Rc<T> type is

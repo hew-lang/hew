@@ -1278,8 +1278,52 @@ fn is_builtin_display_impl(item: &Item) -> bool {
         )
 }
 
+/// The pure-Hew `duration` constructor block in `std/builtins.hew`
+/// (`from_nanos` / `from_micros` / `from_millis` / `from_secs`).
+///
+/// Distinguished from the sibling `#[extern_symbol]` instance-method block on
+/// `duration` by carrying no trait bound and exactly the four static
+/// constructor methods, each with a single non-receiver `i64` parameter (a
+/// receiver param would have type `duration` or `Self`). Lowering this block
+/// through the user-impl spine registers `duration::from_*` as real HIR fns
+/// whose bodies (`n * 1<unit>`) run — without this, the checker accepts the
+/// call (the impl registers an `fn_sig`) but HIR has no binding and fails with
+/// `UnresolvedSymbol`.
+fn is_builtin_duration_ctor_impl(item: &Item) -> bool {
+    const CTORS: [&str; 4] = ["from_nanos", "from_micros", "from_millis", "from_secs"];
+    let Item::Impl(impl_decl) = item else {
+        return false;
+    };
+    if impl_decl.trait_bound.is_some() {
+        return false;
+    }
+    let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 else {
+        return false;
+    };
+    if name != "duration" {
+        return false;
+    }
+    impl_decl.methods.len() == CTORS.len()
+        && impl_decl.methods.iter().all(|method| {
+            CTORS.contains(&method.name.as_str())
+                && method
+                    .params
+                    .first()
+                    .is_none_or(|param| !is_duration_receiver_param(param))
+        })
+}
+
+fn is_duration_receiver_param(param: &Param) -> bool {
+    matches!(
+        &param.ty.0,
+        TypeExpr::Named { name, .. } if name == "Self" || name == "duration"
+    )
+}
+
 fn is_builtin_receiver_impl(item: &Item) -> bool {
-    is_builtin_vec_iterator_impl(item) || is_builtin_display_impl(item)
+    is_builtin_vec_iterator_impl(item)
+        || is_builtin_display_impl(item)
+        || is_builtin_duration_ctor_impl(item)
 }
 
 fn impl_type_param_names(decl: &hew_parser::ast::ImplDecl) -> Vec<String> {

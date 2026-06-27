@@ -605,6 +605,28 @@ impl Display for string {
 // `i64` (the `hew_instant_*` runtime symbols take/return `i64`). It is a
 // compiler builtin scalar — there is no record declaration; the `impl instant`
 // block below binds its three methods to the runtime via `#[extern_symbol]`.
+// Construct a duration from a runtime nanosecond / microsecond / millisecond /
+// second count. The bodies multiply the runtime int by the corresponding unit
+// literal; `int * duration -> duration` is admitted by the checker and lowers
+// as signed 8-byte arithmetic (trap-on-overflow), so these are ordinary Hew
+// expressions with no dedicated runtime symbol. This block is lowered through
+// the same spine as user impl blocks (HIR `is_builtin_duration_ctor_impl`), so
+// the bodies below are the running source of truth, not documentation.
+impl duration {
+    fn from_nanos(n: i64) -> duration {
+        n * 1ns
+    }
+    fn from_micros(n: i64) -> duration {
+        n * 1us
+    }
+    fn from_millis(n: i64) -> duration {
+        n * 1ms
+    }
+    fn from_secs(n: i64) -> duration {
+        n * 1s
+    }
+}
+
 impl duration {
     #[extern_symbol(hew_duration_nanos)]
     fn nanos(d: duration) -> i64 {

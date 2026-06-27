@@ -310,7 +310,13 @@ fn integer_signedness(ty: &ResolvedTy) -> Option<IntSignedness> {
         | ResolvedTy::I16
         | ResolvedTy::I32
         | ResolvedTy::I64
-        | ResolvedTy::Isize => Some(IntSignedness::Signed),
+        | ResolvedTy::Isize
+        // `duration` is a newtype around a signed 8-byte nanosecond count.
+        // Default arithmetic (`d1 + d2`, `d * n`, `d / n`) lowers through the
+        // same B-2 overflow-trap / div-by-zero path as `i64`: the dest local
+        // keeps its `Duration` type (so drop / value-class are unaffected),
+        // but the arithmetic instruction treats it as a signed 8-byte integer.
+        | ResolvedTy::Duration => Some(IntSignedness::Signed),
         ResolvedTy::U8
         | ResolvedTy::U16
         | ResolvedTy::U32
@@ -444,7 +450,9 @@ fn signed_min_value(ty: &ResolvedTy, ptr_width: PointerWidth) -> Option<i64> {
         ResolvedTy::I8 => Some(i64::from(i8::MIN)),
         ResolvedTy::I16 => Some(i64::from(i16::MIN)),
         ResolvedTy::I32 => Some(i64::from(i32::MIN)),
-        ResolvedTy::I64 => Some(i64::MIN),
+        // `duration` is a signed 8-byte nanosecond count; its MIN is `i64::MIN`,
+        // so `dur / int` gets the same signed-MIN/-1 trap guard as `i64 / int`.
+        ResolvedTy::I64 | ResolvedTy::Duration => Some(i64::MIN),
         ResolvedTy::Isize => Some(ptr_width.isize_min()),
         // Unsigned types (including Usize): no MIN check needed.
         _ => None,

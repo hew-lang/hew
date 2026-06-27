@@ -283,6 +283,24 @@ pub extern "C" fn hew_actor_demonitor(ref_id: u64) {
         return;
     }
 
+    // Locality split: a cross-node MonitorRef's ref_id is allocated in the high
+    // `DIST_REF_ID_BASE` namespace, disjoint from the local monitor counter.
+    // `MonitorRef::close` (and the implicit Drop) lower to this symbol for BOTH
+    // local and cross-node refs; route a cross-node ref to the cross-node teardown
+    // (tear down the watcher entry + send CTRL_DEMONITOR to the peer) so the
+    // watcher-side entry is reclaimed instead of silently no-op'ing on the local
+    // table. The std `MonitorRef::close` body is unchanged — the locality dispatch
+    // lives entirely here. A local ref (below the base) always hits the local table
+    // below; the namespaces never collide.
+    if crate::dist_monitor::is_cross_node_ref(ref_id) {
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "cross-node ref_id is a counter far below i64::MAX; hew_node_demonitor reads i64"
+        )]
+        crate::hew_node::hew_node_demonitor(ref_id as i64);
+        return;
+    }
+
     // Find which shard contains this ref_id by checking all shards.
     // This is not optimal but monitors are typically rare operations.
     let Some(state) = monitor_state_opt() else {
@@ -342,7 +360,7 @@ pub(crate) fn notify_monitors_on_death(actor_id: u64, reason: i32) {
         send_down_notification(&monitor, actor_id, reason);
     }
 
-    // Cross-node terminal sweep (DIST-6): if any REMOTE node monitors this
+    // Cross-node terminal sweep: if any REMOTE node monitors this
     // locally-dying actor, fan out a CTRL_MONITOR_DOWN carrying the same
     // terminal reason. The distributed table keys on the actor's serial; the
     // fan-out is fail-closed and no-ops when no remote watcher exists or no

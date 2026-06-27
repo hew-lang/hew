@@ -2566,7 +2566,7 @@ pub unsafe extern "C" fn hew_node_send(
     rc
 }
 
-// ── Cross-node monitor (DIST-6) ──────────────────────────────────────────────
+// ── Cross-node monitor ───────────────────────────────────────────────────────
 
 /// Encode a `CTRL_MONITOR_*` control frame and send it on the connection routing
 /// to `target_pid`'s node. Returns 0 on a successful send, -1 otherwise (no
@@ -2682,6 +2682,120 @@ pub extern "C" fn hew_node_monitor(target_pid: u64) -> u64 {
     ref_id
 }
 
+/// `link_remote(RemotePid<T>, PartitionPolicy)` → establish a cross-node link
+/// and return its `ref_id`.
+///
+/// The calling actor (resolved via `hew_actor_self`) links the remote actor
+/// `target_pid` so the remote's death fires the per-link `PartitionPolicy`
+/// (`policy_tag`; `CrashLinked` == 3 crashes the LOCAL linked actor). Records a
+/// watcher-side LINK entry keyed by a fresh `ref_id` (carrying the local actor
+/// id + policy) and sends a `CTRL_LINK_REQ` to the owning node so it (a) fans a
+/// `CTRL_LINK_DOWN` back when the target dies AND (b) registers the reverse link
+/// so the LOCAL actor's death crashes the remote peer too (bidirectional OTP).
+///
+/// Fail-closed: returns 0 (an invalid `ref_id`) when there is no runtime, no
+/// current actor (a link's subject is the calling actor — a link from `main` has
+/// nothing to crash), the target is local, or no route exists. The watcher entry
+/// is still recorded on a send failure so a later connection-drop fan-out can
+/// still deliver the cascade (the route may recover, or the drop is itself the
+/// terminal signal).
+#[no_mangle]
+pub extern "C" fn hew_node_link_remote(target_pid: i64, policy_tag: i64) -> i64 {
+    let Some(rt) = crate::runtime::rt_current_opt() else {
+        set_last_error("hew_node_link_remote: no runtime installed");
+        return 0;
+    };
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "target_pid is a packed u64 pid reinterpreted as i64 on the Hew side"
+    )]
+    let target_pid = target_pid as u64;
+    // The linking subject is the calling actor; a cross-node link with no local
+    // actor has nothing to crash, so fail closed.
+    let self_actor = crate::actor::hew_actor_self();
+    if self_actor.is_null() {
+        set_last_error("hew_node_link_remote: no current actor (link subject)");
+        return 0;
+    }
+    // SAFETY: hew_actor_self returned a non-null live actor pointer.
+    // The actor `id` is already a packed pid (node<<48 | serial); the cascade
+    // looks it up verbatim via get_actor_ptr_by_id, while the wire carries only
+    // the serial part so the peer can address the linker on its own node.
+    let local_actor_id = unsafe { (*self_actor).id };
+    let local_serial = crate::pid::hew_pid_serial(local_actor_id);
+
+    let remote_node_id = crate::pid::hew_pid_node(target_pid);
+    let target_serial = crate::pid::hew_pid_serial(target_pid);
+    if remote_node_id == 0 || remote_node_id == rt.node.local_node_id() {
+        set_last_error("hew_node_link_remote: target is not on a remote node");
+        return 0;
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "policy_tag is a small PartitionPolicy discriminant (0..4); the Hew side passes i64"
+    )]
+    let policy_tag = policy_tag as u8;
+
+    // Record the watcher-side LINK entry first so a connection-drop / SWIM-DEAD
+    // fan-out can deliver even if the request send races a drop.
+    let ref_id = rt.dist_monitors.register_link_watcher(
+        remote_node_id,
+        target_serial,
+        local_actor_id,
+        policy_tag,
+    );
+
+    let payload = match crate::envelope::encode_link_req_payload(&crate::envelope::LinkReqPayload {
+        linker_node_id: rt.node.local_node_id(),
+        ref_id,
+        target_serial,
+        linker_serial: local_serial,
+        policy_tag,
+        // Original request: the receiver reciprocates with a reverse request so
+        // the link is bidirectional (the linker's death also crashes the target).
+        reciprocate: 1,
+    }) {
+        Ok(payload) => payload,
+        Err(err) => {
+            set_last_error(format!(
+                "hew_node_link_remote: req payload encode failure: {err}"
+            ));
+            #[expect(
+                clippy::cast_possible_wrap,
+                reason = "ref_id is a monotonic counter far below i64::MAX"
+            )]
+            return ref_id as i64;
+        }
+    };
+
+    with_current_node_read(|guard| {
+        if *guard == 0 {
+            set_last_error("hew_node_link_remote: no current node");
+            return;
+        }
+        let node = *guard as *const HewNode;
+        // SAFETY: read lock pins the current node pointer for this call.
+        let node_ref = unsafe { &*node };
+        // SAFETY: node_ref is valid for this call.
+        let _ = unsafe {
+            send_monitor_control_frame(
+                node_ref,
+                target_pid,
+                crate::envelope::CTRL_LINK_REQ,
+                payload,
+            )
+        };
+    });
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "ref_id is a monotonic counter far below i64::MAX"
+    )]
+    {
+        ref_id as i64
+    }
+}
+
 /// `hew_node_monitor_recv(ref_id, timeout_ms)` → block for the cross-node
 /// monitor's terminal signal, returning the carried reason.
 ///
@@ -2759,7 +2873,7 @@ pub extern "C" fn hew_node_demonitor(ref_id: i64) {
 }
 
 /// Fan out a `CTRL_MONITOR_DOWN` to every remote node monitoring a locally-dying
-/// actor (DIST-6 terminal sweep).
+/// actor (terminal sweep).
 ///
 /// Called from `notify_monitors_on_death` (the `hew_actor_trap` terminal hook)
 /// for a locally-owned actor: takes the target-side remote watchers for
@@ -2794,9 +2908,12 @@ pub(crate) fn fan_out_remote_monitor_down(target_serial: u64, reason: i32) {
         if node_ref.conn_mgr.is_null() || node_ref.routing_table.is_null() {
             return;
         }
-        for (watcher_node_id, ref_id) in watchers {
+        for watcher in watchers {
             let payload = match crate::envelope::encode_monitor_down_payload(
-                &crate::envelope::MonitorDownPayload { ref_id, reason },
+                &crate::envelope::MonitorDownPayload {
+                    ref_id: watcher.ref_id,
+                    reason,
+                },
             ) {
                 Ok(payload) => payload,
                 Err(err) => {
@@ -2806,23 +2923,153 @@ pub(crate) fn fan_out_remote_monitor_down(target_serial: u64, reason: i32) {
                     continue;
                 }
             };
-            // Route the DOWN back to the watcher node by a pid on that node.
-            let watcher_pid = crate::pid::hew_pid_make(watcher_node_id, 0);
-            // SAFETY: node_ref is valid for this call.
-            let _ = unsafe {
-                send_monitor_control_frame(
-                    node_ref,
-                    watcher_pid,
-                    crate::envelope::CTRL_MONITOR_DOWN,
-                    payload,
-                )
+            // A LINK watcher receives CTRL_LINK_DOWN (its node crashes the local
+            // linked actor via the mailbox EXIT cascade); a MONITOR watcher
+            // receives CTRL_MONITOR_DOWN (its node arms a recv slot). The wire
+            // payload is identical; only the kind — and the receiver's handling —
+            // diverge (the death-signal-fires-on-every-terminal-cause invariant
+            // covers BOTH watcher kinds on this one terminal sweep).
+            let ctrl_kind = if watcher.is_link {
+                crate::envelope::CTRL_LINK_DOWN
+            } else {
+                crate::envelope::CTRL_MONITOR_DOWN
             };
+            // Route the DOWN back to the watcher node by a pid on that node.
+            let watcher_pid = crate::pid::hew_pid_make(watcher.watcher_node_id, 0);
+            // SAFETY: node_ref is valid for this call.
+            let _ =
+                unsafe { send_monitor_control_frame(node_ref, watcher_pid, ctrl_kind, payload) };
         }
     });
 }
 
+/// Handle an inbound `CTRL_LINK_REQ`: a remote node is linking one of
+/// our local actors. Establishes the BIDIRECTIONAL cross-node link.
+///
+/// On the ORIGINAL request (`reciprocate == 1`):
+/// 1. Register a target-side remote LINK watcher for our `target_serial` →
+///    `(linker_node, ref_id)`, so when our actor dies the terminal sweep fans a
+///    `CTRL_LINK_DOWN` to the linker (Direction 1: our death → crash the linker).
+/// 2. Register a watcher-side LINK entry watching `(linker_node, linker_serial)`
+///    keyed by a fresh reverse ref, action = crash OUR `target` actor per the
+///    policy, so the linker's death crashes our actor (Direction 2 receive).
+/// 3. Send a reverse `CTRL_LINK_REQ` (`reciprocate == 0`) back to the linker so
+///    IT registers the target-side watcher that fans Direction 2's DOWN to us.
+///
+/// On the REVERSE request (`reciprocate == 0`): only step 1 — register the
+/// target-side remote LINK watcher — and do NOT reciprocate again (bounding the
+/// handshake to one round trip, never an infinite reciprocation).
+///
+/// Fail-closed: a no-runtime / no-current-node / no-route state no-ops without
+/// panicking; the EXIT is only ever synthesized later for an entry THIS node
+/// registered, so a forged frame cannot crash an actor this node never linked.
+pub(crate) fn handle_inbound_link_req(payload: &crate::envelope::LinkReqPayload) {
+    let Some(rt) = crate::runtime::rt_current_opt() else {
+        set_last_error("handle_inbound_link_req: no runtime installed");
+        return;
+    };
+    // Step 1 (both directions): our local `target_serial` gains a remote LINK
+    // watcher on the linker node. The terminal sweep fans CTRL_LINK_DOWN to it.
+    rt.dist_monitors.register_remote_link_watcher(
+        payload.target_serial,
+        payload.linker_node_id,
+        payload.ref_id,
+    );
+
+    if payload.reciprocate == 0 {
+        // Reverse request: target-side registration only; do not loop.
+        return;
+    }
+
+    // Step 2 (original only): register the reverse watcher-side LINK entry so the
+    // linker's death crashes OUR target actor per the policy.
+    let local_node = rt.node.local_node_id();
+    let our_target_id = crate::pid::hew_pid_make(local_node, payload.target_serial);
+    let reverse_ref = rt.dist_monitors.register_link_watcher(
+        payload.linker_node_id,
+        payload.linker_serial,
+        our_target_id,
+        payload.policy_tag,
+    );
+
+    // Step 3 (original only): send the reverse CTRL_LINK_REQ so the linker node
+    // registers the target-side watcher that fans Direction 2's DOWN back to us.
+    let reverse_payload = crate::envelope::LinkReqPayload {
+        linker_node_id: local_node,
+        ref_id: reverse_ref,
+        // From the linker's perspective the roles swap: its linker actor is now
+        // our "target" to watch, and our target is now the reverse "linker".
+        target_serial: payload.linker_serial,
+        linker_serial: payload.target_serial,
+        policy_tag: payload.policy_tag,
+        reciprocate: 0,
+    };
+    let bytes = match crate::envelope::encode_link_req_payload(&reverse_payload) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            set_last_error(format!(
+                "handle_inbound_link_req: reverse payload encode failure: {err}"
+            ));
+            return;
+        }
+    };
+    // Route the reverse REQ back to the linker node by a pid on that node.
+    let linker_pid = crate::pid::hew_pid_make(payload.linker_node_id, payload.linker_serial);
+    with_current_node_read(|guard| {
+        if *guard == 0 {
+            return;
+        }
+        let node = *guard as *const HewNode;
+        // SAFETY: read lock pins the current node pointer for this call.
+        let node_ref = unsafe { &*node };
+        // SAFETY: node_ref is valid for this call.
+        let _ = unsafe {
+            send_monitor_control_frame(node_ref, linker_pid, crate::envelope::CTRL_LINK_REQ, bytes)
+        };
+    });
+}
+
+/// Handle an inbound `CTRL_UNLINK`: a remote node retracted a prior
+/// link of one of our local actors. Remove the target-side remote LINK watcher.
+/// Idempotent / fail-closed on a missing entry.
+pub(crate) fn handle_inbound_unlink(payload: &crate::envelope::LinkReqPayload) {
+    let Some(rt) = crate::runtime::rt_current_opt() else {
+        return;
+    };
+    rt.dist_monitors.remove_remote_watcher(
+        payload.target_serial,
+        payload.linker_node_id,
+        payload.ref_id,
+    );
+}
+
+/// Handle an inbound `CTRL_LINK_DOWN`: a node owning an actor we LINK
+/// reports it reached a terminal state. Fire the cross-node link cascade —
+/// synthesize a `SYS_MSG_EXIT` into the LOCAL linked actor's MAILBOX and crash it
+/// (for `CrashLinked`), keyed by the local actor id stored in our link entry.
+///
+/// This is THE divergence from monitor's `deliver_to_ref` (which arms a recv
+/// slot). A monitor DOWN lands in a slot the program polls; a `CrashLinked` link
+/// DOWN crashes the linked actor through its mailbox. The EXIT is fired exactly
+/// once and ONLY for a link entry THIS node registered, so a forged frame cannot
+/// crash an actor we never linked.
+pub(crate) fn handle_inbound_link_down(ref_id: u64, reason: i32) {
+    let Some(rt) = crate::runtime::rt_current_opt() else {
+        set_last_error("handle_inbound_link_down: no runtime installed");
+        return;
+    };
+    if let Some(down) = rt.dist_monitors.deliver_link_down_to_ref(ref_id, reason) {
+        let _ = crate::link::deliver_cross_node_link_exit(
+            down.local_actor_id,
+            down.remote_target_serial,
+            down.reason,
+            down.policy_tag,
+        );
+    }
+}
+
 /// Fan out `MonitorLost` to every local watcher of an actor on a lost/dead node
-/// (DIST-6 connection-drop / SWIM-DEAD hook).
+/// (connection-drop / SWIM-DEAD hook).
 ///
 /// Called from the connection-drop retire hook and the SWIM `MEMBER_DEAD`
 /// fan-out: arms every still-`Pending` watcher registration targeting
@@ -2840,9 +3087,32 @@ pub(crate) fn fan_out_monitor_lost_for_node(dead_node_id: u16) {
     let Some(rt) = crate::runtime::rt_current_opt() else {
         return;
     };
+    // Monitor half: arm every still-Pending monitor watcher with MonitorLost so a
+    // blocked recv_down wakes.
     let _ = rt
         .dist_monitors
         .deliver_to_node(dead_node_id, crate::dist_monitor::MONITOR_REASON_LOST);
+    // Link half: fire the cross-node link cascade for every still-Pending LINK
+    // watcher on the dead node — the death-signal must fire on the PARTITION
+    // terminal cause too (firing only on a clean exit / crash would fail-open: a
+    // linked actor surviving its dead peer). For CrashLinked this synthesizes a
+    // SYS_MSG_EXIT into the LOCAL linked actor's mailbox and crashes it. The
+    // one-shot slot makes this exactly-once vs a definitive CTRL_LINK_DOWN that
+    // may already have fired.
+    let link_downs = rt
+        .dist_monitors
+        .take_link_downs_for_node(dead_node_id, crate::dist_monitor::MONITOR_REASON_LOST);
+    for down in link_downs {
+        let _ = crate::link::deliver_cross_node_link_exit(
+            down.local_actor_id,
+            down.remote_target_serial,
+            down.reason,
+            down.policy_tag,
+        );
+    }
+    // Prune target-side watcher entries (monitor AND link) the dead node had
+    // registered, so the table stays bounded under node churn (target-side watcher
+    // prune; covers link watchers via the same map).
     let _ = rt
         .dist_monitors
         .prune_remote_watchers_for_node(dead_node_id);
@@ -7411,7 +7681,7 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
-    /// DIST-7 core gap: a SWIM-declared-DEAD peer (socket still nominally open)
+    /// A SWIM-declared-DEAD peer (socket still nominally open)
     /// must resolve a pending remote ask IMMEDIATELY with `AskError::Partition`,
     /// not hang to the caller's deadline. The connection-drop test above proves
     /// the socket-drop cause; this proves the SWIM-DEAD cause through the

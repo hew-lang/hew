@@ -36,6 +36,13 @@ wire-frame = control-frame / envelope-frame
 ; ctrl_kind = 4 carries monitor-down-payload  (cross-node monitor DOWN).
 ; ctrl_kind = 5 carries monitor-req-payload   (cross-node demonitor request;
 ;                                              same identifying triple as req).
+; ctrl_kind = 6 carries link-req-payload      (cross-node link request).
+; ctrl_kind = 7 carries monitor-down-payload  (cross-node link DOWN; same
+;                                              {ref_id, reason} shape as monitor
+;                                              DOWN — the divergence is the
+;                                              receiver's mailbox-EXIT handling).
+; ctrl_kind = 8 carries link-req-payload      (cross-node unlink request; same
+;                                              identifying payload as link req).
 
 control-frame = {
     version:    1 => wire-version,
@@ -52,7 +59,7 @@ registry-gossip-payload = {
 
 registry-gossip-op = 5 / 6         ; add / remove
 
-; ── Cross-node monitor payloads (DIST-6) ──────────────────────────────────────
+; ── Cross-node monitor payloads ───────────────────────────────────────────────
 ;
 ; monitor-req-payload identifies a monitor registration: watcher node W,
 ; registration ref_id, watching target actor `serial` on the owning node. Used
@@ -70,6 +77,28 @@ monitor-req-payload = {
 monitor-down-payload = {
     ref_id: 1 => uint,             ; echoed from the request
     reason: 2 => int,              ; terminal reason (HewActorState value, or sentinel)
+}
+
+; ── Cross-node link payloads ──────────────────────────────────────────────────
+;
+; link-req-payload establishes a BIDIRECTIONAL cross-node link: linker node L,
+; registration ref_id, links target actor `target_serial` on the owning node
+; under `policy_tag`. It carries the linking actor's serial (linker_serial) so
+; the owning node can register the reverse link (the owning actor's death must
+; also fire into the linker). Used by both CTRL_LINK_REQ (establish) and
+; CTRL_UNLINK (retract). A cross-node link DOWN reuses monitor-down-payload.
+;
+; policy_tag is the PartitionPolicy discriminant (FailFast=0, Deadline=1,
+; MonitorLost=2, CrashLinked=3, Quarantine=4).
+
+link-req-payload = {
+    linker_node_id: 1 => node-id,
+    ref_id:         2 => uint,     ; linker's local link-registration id
+    target_serial:  3 => uint,     ; linked actor's serial on the owning node
+    linker_serial:  4 => uint,     ; linking actor's serial on the linker node
+    policy_tag:     5 => uint,     ; PartitionPolicy discriminant (0..4)
+    reciprocate:    6 => uint,     ; 1 = original request, 0 = reverse (bounds the
+                                   ; bidirectional handshake to one round trip)
 }
 
 ; ── Envelope frame ───────────────────────────────────────────────────────────

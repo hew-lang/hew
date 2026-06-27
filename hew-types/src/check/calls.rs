@@ -592,7 +592,7 @@ impl Checker {
             return;
         }
         match func_name {
-            "link" | "unlink" | "monitor" | "demonitor" => {
+            "link" | "unlink" | "monitor" | "demonitor" | "link_remote" => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::LinkMonitor);
             }
             "supervisor_child" | "supervisor_stop" => {
@@ -937,16 +937,43 @@ impl Checker {
                 }
                 return self.make_vec_type(elem, span);
             }
-            // Cross-node monitor: `monitor(RemotePid<T>)` (DIST-6). The local
+            // `link`/`unlink` of a `RemotePid<T>` → a targeted "use link_remote"
+            // diagnostic. The local `link(LocalPid<T>)` form stays on the generic
+            // `fn_sigs` path below; a `link`/`unlink` of a remote pid would
+            // otherwise surface as an opaque LocalPid-vs-RemotePid type mismatch.
+            // The cross-node link surface is `link_remote(pid, policy)` — it
+            // carries a `PartitionPolicy` the bare `link` cannot express — so name
+            // it explicitly here rather than letting the mismatch stand.
+            "link" | "unlink" if args.len() == 1 => {
+                let (expr, sp) = args[0].expr();
+                let arg_ty = self.synthesize(expr, sp);
+                let resolved = self.subst.resolve(&arg_ty);
+                if resolved.as_remote_pid().is_some() {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!(
+                            "`{func_name}` links a LOCAL actor; for a cross-node link use \
+                             `link_remote(pid, policy)`, which carries a `PartitionPolicy` \
+                             governing what happens to the local actor when its remote peer dies"
+                        ),
+                    );
+                    return Ty::Error;
+                }
+                // Not a RemotePid — fall through to the generic `fn_sigs` path,
+                // which applies the `link`/`unlink(LocalPid<T>)` builtin signature.
+            }
+            // Cross-node monitor: `monitor(RemotePid<T>)`. The local
             // `monitor(LocalPid<T>)` form stays on the generic `fn_sigs` path
             // below (registered with a `LocalPid` receiver). When the argument
             // resolves to a `RemotePid<T>`, accept it here and return
             // `MonitorRef` — the MIR lowering branches on the argument's
             // resolved type to route a remote receiver to the node monitor ABI
             // (`hew_node_monitor`) instead of the in-process `hew_actor_monitor`.
-            // `link`/`unlink` of a `RemotePid` are NOT accepted here: cross-node
-            // link is deferred whole to a later milestone, so those keep their
-            // current `LocalPid` type-mismatch rejection (fail-closed).
+            // The cross-node LINK form is `link_remote(RemotePid<T>,
+            // PartitionPolicy)` — its own builtin, routed via the generic
+            // `fn_sigs` path; a bare `link(RemotePid)` is rejected above with a
+            // "use link_remote" diagnostic.
             "monitor" if args.len() == 1 => {
                 let (expr, sp) = args[0].expr();
                 let arg_ty = self.synthesize(expr, sp);

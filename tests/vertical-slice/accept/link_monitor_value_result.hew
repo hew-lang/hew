@@ -14,7 +14,7 @@
 //   - monitor: m is a move-only #[resource] value; its mere construction and
 //     drop without abort proves MonitorRef was built.  ref_id boundary
 //     assertion (0 for null-self context) requires actor-context field access,
-//     which is covered in the later actor-context fixture (DIST-6 lane).
+//     which is covered in the cross-node monitor fixture.
 actor Child {
     receive fn ping() {}
 }

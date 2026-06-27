@@ -94,7 +94,7 @@ pub(crate) struct RuntimeInner {
     /// `monitor::MONITOR_TABLE` + `MONITOR_REF_COUNTER` globals; resolved
     /// through `rt_current().monitors` by the monitor module.
     pub(crate) monitors: crate::monitor::MonitorState,
-    /// Distributed (cross-node) monitor table (DIST-6). Resolved through
+    /// Distributed (cross-node) monitor table. Resolved through
     /// `rt_current().dist_monitors` by the `dist_monitor` module — the
     /// node-keyed analogue of `monitors`, holding watcher-side registrations
     /// (the `hew_node_monitor_recv` observation slots) and target-side remote

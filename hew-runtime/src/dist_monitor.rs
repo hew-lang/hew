@@ -1,4 +1,4 @@
-//! Distributed (cross-node) actor monitor table (DIST-6).
+//! Distributed (cross-node) actor monitor table.
 //!
 //! The in-process monitor table (`crate::monitor`) keys on a local `actor_id`
 //! and stores a raw `*mut HewActor` watcher pointer, so it is fundamentally
@@ -66,28 +66,103 @@ enum TerminalSlot {
     Pending,
     /// A terminal signal arrived carrying this reason; not yet observed.
     Delivered(i32),
-    /// The terminal signal was observed by a `recv_down` call.
+    /// The terminal signal was observed by a `recv_down` call (monitor) or the
+    /// link EXIT cascade was fired (link).
     Consumed,
 }
 
-/// Watcher-side entry: a local registration watching a remote actor.
+/// What a watcher-side entry does when its remote target reaches a terminal
+/// state.
+///
+/// A single table backs both cross-node monitors and cross-node links so the
+/// register / deliver / terminal-sweep / connection-drop / SWIM-DEAD machinery
+/// serves both (per `feedback_unify_repeated_compiler_patterns` — no third
+/// special-case table). The action is the per-entry divergence: a monitor arms a
+/// recv slot a program polls; a link fires a `SYS_MSG_EXIT` into the LOCAL linked
+/// actor's mailbox (the OTP crash cascade), per its `PartitionPolicy`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WatcherAction {
+    /// Cross-node monitor: arm the recv slot; `recv_down` observes it.
+    Observe,
+    /// Cross-node link: on the target's death, fire a link-down into
+    /// the LOCAL linked actor `local_actor_id` per `policy_tag` (the
+    /// `PartitionPolicy` discriminant; `CrashLinked` == 3 crashes it).
+    Link { local_actor_id: u64, policy_tag: u8 },
+}
+
+/// The cross-node link cascade a delivery cause produces: fire a link-down into
+/// `local_actor_id` carrying `reason`, governed by `policy_tag`. Returned to the
+/// caller (the runtime layer) which performs the mailbox-EXIT synthesis — the
+/// table stays pure data and does not reach into actor code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LinkDown {
+    /// The LOCAL linked actor to fire the EXIT into.
+    pub local_actor_id: u64,
+    /// The dead remote peer's serial (carried into the `ExitMessage` for the
+    /// typed `#[on(exit)]` consumer; informational — the crash is the action).
+    pub remote_target_serial: u64,
+    /// The terminal reason (`HewActorState` value, or a partition sentinel).
+    pub reason: i32,
+    /// The `PartitionPolicy` discriminant governing the link.
+    pub policy_tag: u8,
+}
+
+/// Watcher-side entry: a local registration watching a remote actor (monitor or
+/// link).
 #[derive(Debug)]
 struct WatcherEntry {
-    /// Node owning the monitored actor.
+    /// Node owning the monitored/linked actor.
     remote_node_id: u16,
-    /// Monitored actor's serial on the owning node.
+    /// Monitored/linked actor's serial on the owning node.
     target_serial: u64,
     /// One-shot terminal slot armed by the delivery causes.
     slot: TerminalSlot,
+    /// Monitor (arm recv slot) vs link (fire mailbox EXIT cascade).
+    action: WatcherAction,
 }
 
 /// A remote watcher recorded on the target side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RemoteWatcher {
-    /// Node that issued the monitor (the DOWN destination).
+    /// Node that issued the monitor/link (the DOWN destination).
     watcher_node_id: u16,
-    /// Watcher's monitor-registration id (echoed in the DOWN).
+    /// Watcher's monitor/link-registration id (echoed in the DOWN).
     ref_id: u64,
+    /// Whether this watcher is a cross-node LINK (true → the terminal sweep
+    /// sends `CTRL_LINK_DOWN`; false → `CTRL_MONITOR_DOWN`). The wire frame kind
+    /// and the receiver's handling (mailbox-EXIT crash vs recv slot) diverge on
+    /// this bit.
+    is_link: bool,
+}
+
+/// A target-side remote watcher's destination + kind, returned by the terminal
+/// sweep so the caller routes the right DOWN frame kind to the right node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RemoteWatcherTarget {
+    /// The watcher node to send the DOWN to.
+    pub watcher_node_id: u16,
+    /// The watcher's registration id (echoed in the DOWN).
+    pub ref_id: u64,
+    /// LINK (`CTRL_LINK_DOWN` + mailbox-EXIT) vs MONITOR (`CTRL_MONITOR_DOWN`).
+    pub is_link: bool,
+}
+
+/// Base for the cross-node `ref_id` allocator.
+///
+/// Cross-node `ref_id`s are namespaced into a high range disjoint from the local
+/// monitor counter (`crate::monitor`, which starts at 1) so the locality split
+/// in `hew_actor_demonitor` can route by `ref_id` without misrouting: a local ref
+/// is always `< DIST_REF_ID_BASE` and a cross-node ref always `>=` it, so a
+/// local-table miss for a value in the high range unambiguously routes to the
+/// cross-node teardown. 2^48 is far above any realistic local
+/// monitor count and below the pid serial mask, so the two spaces never collide.
+pub(crate) const DIST_REF_ID_BASE: u64 = 1 << 48;
+
+/// Whether `ref_id` belongs to the cross-node namespace (so `hew_actor_demonitor`
+/// routes its teardown to the dist table rather than the local monitor table).
+#[must_use]
+pub(crate) fn is_cross_node_ref(ref_id: u64) -> bool {
+    ref_id >= DIST_REF_ID_BASE
 }
 
 /// Per-runtime distributed monitor state.
@@ -101,7 +176,8 @@ pub(crate) struct DistMonitorState {
     delivered: Condvar,
     /// Target side: monitored `serial` -> the remote watchers of that actor.
     targets: Mutex<HashMap<u64, Vec<RemoteWatcher>>>,
-    /// Monotonic `ref_id` allocator for watcher registrations.
+    /// Monotonic `ref_id` allocator for watcher registrations, based at
+    /// [`DIST_REF_ID_BASE`] so cross-node refs never collide with local ones.
     ref_counter: AtomicU64,
 }
 
@@ -112,7 +188,8 @@ impl DistMonitorState {
             watchers: Mutex::new(HashMap::new()),
             delivered: Condvar::new(),
             targets: Mutex::new(HashMap::new()),
-            ref_counter: AtomicU64::new(1),
+            // Base in the high cross-node namespace (see DIST_REF_ID_BASE).
+            ref_counter: AtomicU64::new(DIST_REF_ID_BASE + 1),
         }
     }
 
@@ -123,8 +200,38 @@ impl DistMonitorState {
 
     // ── Watcher side ──────────────────────────────────────────────────────
 
-    /// Register a watcher entry and return its `ref_id`.
+    /// Register a cross-node MONITOR watcher entry and return its `ref_id`.
     pub(crate) fn register_watcher(&self, remote_node_id: u16, target_serial: u64) -> u64 {
+        self.register_entry(remote_node_id, target_serial, WatcherAction::Observe)
+    }
+
+    /// Register a cross-node LINK watcher entry and return its `ref_id`. On the
+    /// remote target's death, the entry fires a link-down into the LOCAL linked
+    /// actor `local_actor_id` per `policy_tag`.
+    pub(crate) fn register_link_watcher(
+        &self,
+        remote_node_id: u16,
+        target_serial: u64,
+        local_actor_id: u64,
+        policy_tag: u8,
+    ) -> u64 {
+        self.register_entry(
+            remote_node_id,
+            target_serial,
+            WatcherAction::Link {
+                local_actor_id,
+                policy_tag,
+            },
+        )
+    }
+
+    /// Register a watcher entry with the given action and return its `ref_id`.
+    fn register_entry(
+        &self,
+        remote_node_id: u16,
+        target_serial: u64,
+        action: WatcherAction,
+    ) -> u64 {
         let ref_id = self.next_ref_id();
         let mut watchers = self.watchers.lock().unwrap_or_else(PoisonError::into_inner);
         watchers.insert(
@@ -133,6 +240,7 @@ impl DistMonitorState {
                 remote_node_id,
                 target_serial,
                 slot: TerminalSlot::Pending,
+                action,
             },
         );
         ref_id
@@ -147,7 +255,13 @@ impl DistMonitorState {
         let armed = {
             let mut watchers = self.watchers.lock().unwrap_or_else(PoisonError::into_inner);
             match watchers.get_mut(&ref_id) {
-                Some(entry) if entry.slot == TerminalSlot::Pending => {
+                // Only MONITOR (Observe) entries arm a recv slot. A link entry is
+                // delivered through `deliver_link_down_to_ref`; a CTRL_MONITOR_DOWN
+                // must never arm a link entry's slot (it has no recv consumer).
+                Some(entry)
+                    if entry.slot == TerminalSlot::Pending
+                        && matches!(entry.action, WatcherAction::Observe) =>
+                {
                     entry.slot = TerminalSlot::Delivered(reason);
                     true
                 }
@@ -158,6 +272,41 @@ impl DistMonitorState {
             self.delivered.notify_all();
         }
         armed
+    }
+
+    /// Fire a cross-node LINK down for a single link registration (`CTRL_LINK_DOWN`
+    /// receipt). Transitions the entry `Pending → Consumed` exactly once and
+    /// returns the cascade action (the LOCAL linked actor + reason + policy) so the
+    /// caller can synthesize the mailbox EXIT. A no-op (returns `None`) if the
+    /// entry is unknown, already fired, or is a monitor (not a link) — the
+    /// exactly-once + fail-closed guard. The EXIT is fired ONLY for an entry THIS
+    /// node registered, so a forged `CTRL_LINK_DOWN` `ref_id` cannot crash an actor
+    /// this node never linked.
+    pub(crate) fn deliver_link_down_to_ref(&self, ref_id: u64, reason: i32) -> Option<LinkDown> {
+        let mut watchers = self.watchers.lock().unwrap_or_else(PoisonError::into_inner);
+        match watchers.get_mut(&ref_id) {
+            Some(entry) if entry.slot == TerminalSlot::Pending => {
+                if let WatcherAction::Link {
+                    local_actor_id,
+                    policy_tag,
+                } = entry.action
+                {
+                    let remote_target_serial = entry.target_serial;
+                    // Fire-once: a link has no recv step, so go straight to
+                    // Consumed (a later partition fan-out finds it non-Pending).
+                    entry.slot = TerminalSlot::Consumed;
+                    Some(LinkDown {
+                        local_actor_id,
+                        remote_target_serial,
+                        reason,
+                        policy_tag,
+                    })
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
     }
 
     /// Arm every watcher registration targeting `remote_node_id` with `reason`,
@@ -172,7 +321,13 @@ impl DistMonitorState {
             let mut watchers = self.watchers.lock().unwrap_or_else(PoisonError::into_inner);
             let mut count = 0;
             for entry in watchers.values_mut() {
-                if entry.remote_node_id == remote_node_id && entry.slot == TerminalSlot::Pending {
+                // Only MONITOR (Observe) entries arm a recv slot here; link
+                // entries fire through `take_link_downs_for_node` (the mailbox
+                // EXIT cascade has no recv consumer).
+                if entry.remote_node_id == remote_node_id
+                    && entry.slot == TerminalSlot::Pending
+                    && matches!(entry.action, WatcherAction::Observe)
+                {
                     entry.slot = TerminalSlot::Delivered(reason);
                     count += 1;
                 }
@@ -183,6 +338,43 @@ impl DistMonitorState {
             self.delivered.notify_all();
         }
         armed
+    }
+
+    /// Fire the cross-node LINK cascade for every still-`Pending` LINK entry
+    /// targeting `remote_node_id` (connection-drop / SWIM-DEAD fan-out). Each is
+    /// transitioned `Pending → Consumed` exactly once and returned as a `LinkDown`
+    /// the caller fires into the local linked actor's mailbox per its policy.
+    ///
+    /// Only `Pending` link entries fire, so a link that already received a
+    /// definitive `CTRL_LINK_DOWN` (clean exit / crash) is untouched — the
+    /// exactly-once disambiguation: a definitive remote-exit beats a later
+    /// partition signal for the same registration.
+    pub(crate) fn take_link_downs_for_node(
+        &self,
+        remote_node_id: u16,
+        reason: i32,
+    ) -> Vec<LinkDown> {
+        let mut watchers = self.watchers.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut downs = Vec::new();
+        for entry in watchers.values_mut() {
+            if entry.remote_node_id == remote_node_id && entry.slot == TerminalSlot::Pending {
+                if let WatcherAction::Link {
+                    local_actor_id,
+                    policy_tag,
+                } = entry.action
+                {
+                    let remote_target_serial = entry.target_serial;
+                    entry.slot = TerminalSlot::Consumed;
+                    downs.push(LinkDown {
+                        local_actor_id,
+                        remote_target_serial,
+                        reason,
+                        policy_tag,
+                    });
+                }
+            }
+        }
+        downs
     }
 
     /// Block until the watcher registration `ref_id` has a delivered terminal
@@ -260,23 +452,52 @@ impl DistMonitorState {
 
     // ── Target side ───────────────────────────────────────────────────────
 
-    /// Record a remote watcher of a locally-owned actor (`CTRL_MONITOR_REQ`
-    /// receipt). Deduplicates on `(watcher_node_id, ref_id)` so a retried
-    /// request does not double-register.
+    /// Record a remote MONITOR watcher of a locally-owned actor
+    /// (`CTRL_MONITOR_REQ` receipt). Deduplicates on `(watcher_node_id, ref_id)`.
     pub(crate) fn register_remote_watcher(
         &self,
         target_serial: u64,
         watcher_node_id: u16,
         ref_id: u64,
     ) {
+        self.register_remote_watcher_kind(target_serial, watcher_node_id, ref_id, false);
+    }
+
+    /// Record a remote LINK watcher of a locally-owned actor (`CTRL_LINK_REQ`
+    /// receipt): when the local target dies, the terminal sweep fans a
+    /// `CTRL_LINK_DOWN` (not a monitor DOWN) to the linker node.
+    pub(crate) fn register_remote_link_watcher(
+        &self,
+        target_serial: u64,
+        watcher_node_id: u16,
+        ref_id: u64,
+    ) {
+        self.register_remote_watcher_kind(target_serial, watcher_node_id, ref_id, true);
+    }
+
+    /// Record a remote watcher (monitor or link) of a locally-owned actor.
+    /// Deduplicates on `(watcher_node_id, ref_id)` so a retried request does not
+    /// double-register.
+    fn register_remote_watcher_kind(
+        &self,
+        target_serial: u64,
+        watcher_node_id: u16,
+        ref_id: u64,
+        is_link: bool,
+    ) {
         let mut targets = self.targets.lock().unwrap_or_else(PoisonError::into_inner);
         let watchers = targets.entry(target_serial).or_default();
-        let watcher = RemoteWatcher {
-            watcher_node_id,
-            ref_id,
-        };
-        if !watchers.contains(&watcher) {
-            watchers.push(watcher);
+        // Dedup on the identifying (node, ref) pair regardless of kind so a
+        // retried REQ does not double-register.
+        if !watchers
+            .iter()
+            .any(|w| w.watcher_node_id == watcher_node_id && w.ref_id == ref_id)
+        {
+            watchers.push(RemoteWatcher {
+                watcher_node_id,
+                ref_id,
+                is_link,
+            });
         }
     }
 
@@ -298,16 +519,21 @@ impl DistMonitorState {
     }
 
     /// Take all remote watchers of a locally-dying actor (terminal sweep),
-    /// removing the target entry so a later sweep finds nothing. Returns the
-    /// `(watcher_node_id, ref_id)` pairs to which a `CTRL_MONITOR_DOWN` must be
-    /// fanned out.
-    pub(crate) fn take_remote_watchers(&self, target_serial: u64) -> Vec<(u16, u64)> {
+    /// removing the target entry so a later sweep finds nothing. Returns each
+    /// watcher's destination + kind so the caller fans the right DOWN frame:
+    /// `CTRL_MONITOR_DOWN` for a monitor watcher, `CTRL_LINK_DOWN` for a link
+    /// watcher (whose receiver crashes its local linked actor).
+    pub(crate) fn take_remote_watchers(&self, target_serial: u64) -> Vec<RemoteWatcherTarget> {
         let mut targets = self.targets.lock().unwrap_or_else(PoisonError::into_inner);
         targets
             .remove(&target_serial)
             .map(|ws| {
                 ws.into_iter()
-                    .map(|w| (w.watcher_node_id, w.ref_id))
+                    .map(|w| RemoteWatcherTarget {
+                        watcher_node_id: w.watcher_node_id,
+                        ref_id: w.ref_id,
+                        is_link: w.is_link,
+                    })
                     .collect()
             })
             .unwrap_or_default()
@@ -357,6 +583,7 @@ impl DistMonitorState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::link::POLICY_TAG_CRASH_LINKED;
 
     #[test]
     fn register_and_recv_delivers_reason_exactly_once() {
@@ -466,14 +693,20 @@ mod tests {
     #[test]
     fn target_side_register_dedupes_and_take_sweeps() {
         let state = DistMonitorState::new();
-        state.register_remote_watcher(50, 7, 100);
+        state.register_remote_watcher(50, 7, 100); // monitor
         state.register_remote_watcher(50, 7, 100); // duplicate: ignored
-        state.register_remote_watcher(50, 9, 200);
+        state.register_remote_link_watcher(50, 9, 200); // link
         assert!(state.has_remote_watchers(50));
 
-        let mut taken = state.take_remote_watchers(50);
+        let mut taken: Vec<(u16, u64, bool)> = state
+            .take_remote_watchers(50)
+            .into_iter()
+            .map(|w| (w.watcher_node_id, w.ref_id, w.is_link))
+            .collect();
         taken.sort_unstable();
-        assert_eq!(taken, vec![(7, 100), (9, 200)]);
+        // The monitor watcher carries is_link=false; the link watcher is_link=true
+        // so the terminal sweep routes CTRL_LINK_DOWN vs CTRL_MONITOR_DOWN.
+        assert_eq!(taken, vec![(7, 100, false), (9, 200, true)]);
         // The sweep removed the entry.
         assert!(!state.has_remote_watchers(50));
         assert!(state.take_remote_watchers(50).is_empty());
@@ -490,7 +723,7 @@ mod tests {
         state.remove_remote_watcher(999, 1, 1);
     }
 
-    /// F2: pruning a dead watcher node removes exactly its entries and leaves
+    /// Pruning a dead watcher node removes exactly its entries and leaves
     /// surviving nodes intact. Also verifies empty serial slots are dropped.
     #[test]
     fn prune_remote_watchers_for_node_removes_dead_node_entries() {
@@ -547,6 +780,100 @@ mod tests {
         );
     }
 
+    /// A cross-node LINK entry fires its cascade exactly once via
+    /// `deliver_link_down_to_ref`, carrying the local actor id + policy, and a
+    /// second delivery is a no-op (the exactly-once link-down guard).
+    #[test]
+    fn link_entry_fires_cascade_exactly_once() {
+        let state = DistMonitorState::new();
+        let ref_id = state.register_link_watcher(7, 99, 12_345, POLICY_TAG_CRASH_LINKED);
+        assert_ne!(ref_id, 0);
+
+        // First link-down fires the cascade carrying the local actor + policy.
+        let down = state
+            .deliver_link_down_to_ref(ref_id, 5)
+            .expect("first link-down must fire");
+        assert_eq!(down.local_actor_id, 12_345);
+        assert_eq!(down.reason, 5);
+        assert_eq!(down.policy_tag, POLICY_TAG_CRASH_LINKED);
+
+        // Second delivery is a no-op (fire-once): the entry is Consumed.
+        assert!(
+            state.deliver_link_down_to_ref(ref_id, 6).is_none(),
+            "second link-down must be a no-op"
+        );
+    }
+
+    /// A `CTRL_MONITOR_DOWN`-style `deliver_to_ref` must NOT fire a LINK entry,
+    /// and a `CTRL_LINK_DOWN`-style `deliver_link_down_to_ref` must NOT fire a
+    /// MONITOR entry — the two delivery paths never cross (a link has no recv
+    /// slot; a monitor has no mailbox-EXIT cascade).
+    #[test]
+    fn link_and_monitor_delivery_paths_do_not_cross() {
+        let state = DistMonitorState::new();
+        let monitor_ref = state.register_watcher(7, 1);
+        let link_ref = state.register_link_watcher(7, 2, 500, POLICY_TAG_CRASH_LINKED);
+
+        // A monitor DOWN must not fire the link entry.
+        assert!(
+            state.deliver_link_down_to_ref(monitor_ref, 5).is_none(),
+            "link delivery must not fire a monitor entry"
+        );
+        // A link DOWN must not arm the monitor's recv slot.
+        assert!(
+            !state.deliver_to_ref(link_ref, 5),
+            "monitor delivery must not arm a link entry"
+        );
+
+        // Each fires only through its own path.
+        assert!(state.deliver_to_ref(monitor_ref, 6), "monitor arms");
+        assert!(
+            state.deliver_link_down_to_ref(link_ref, 5).is_some(),
+            "link fires"
+        );
+    }
+
+    /// The node fan-out fires only still-Pending LINK entries on the dead node;
+    /// a link that already received a definitive `CTRL_LINK_DOWN` is untouched
+    /// Exactly-once: a definitive remote-exit beats a later partition.
+    #[test]
+    fn take_link_downs_for_node_fires_pending_links_only() {
+        let state = DistMonitorState::new();
+        let a = state.register_link_watcher(7, 1, 100, POLICY_TAG_CRASH_LINKED);
+        let _b = state.register_link_watcher(7, 2, 200, POLICY_TAG_CRASH_LINKED);
+        let other = state.register_link_watcher(9, 3, 300, POLICY_TAG_CRASH_LINKED);
+        // A monitor on the same node must NOT appear in the link fan-out.
+        let _m = state.register_watcher(7, 4);
+
+        // `a` already received a definitive crash DOWN.
+        assert!(state.deliver_link_down_to_ref(a, 5).is_some());
+
+        // Connection drop to node 7: only the still-Pending link `b` fires
+        // (MonitorLost == -1); `a` is Consumed, `other` is on node 9, the
+        // monitor is not a link.
+        let downs = state.take_link_downs_for_node(7, MONITOR_REASON_LOST);
+        assert_eq!(downs.len(), 1, "only the pending link on node 7 fires");
+        assert_eq!(downs[0].local_actor_id, 200);
+        assert_eq!(downs[0].reason, MONITOR_REASON_LOST);
+
+        // `other` (node 9) untouched; still fires on its own node's drop.
+        assert!(state.deliver_link_down_to_ref(other, 5).is_some());
+    }
+
+    /// A non-`CrashLinked` policy is carried through the table verbatim so the
+    /// runtime layer can decide (non-fatal); the table itself does not interpret.
+    #[test]
+    fn link_entry_carries_policy_tag_verbatim() {
+        let state = DistMonitorState::new();
+        // MonitorLost policy (tag 2) — non-fatal.
+        let ref_id = state.register_link_watcher(7, 1, 42, 2);
+        let down = state
+            .deliver_link_down_to_ref(ref_id, 6)
+            .expect("link-down fires regardless of policy; the runtime decides fatality");
+        assert_eq!(down.policy_tag, 2, "policy tag round-trips verbatim");
+        assert_eq!(down.local_actor_id, 42);
+    }
+
     #[test]
     fn recv_blocks_until_concurrent_arm() {
         use std::sync::Arc;
@@ -567,7 +894,7 @@ mod tests {
         assert_eq!(reason, 6, "blocked recv must wake with the armed reason");
     }
 
-    /// F3: `remove_watcher` wakes a blocked `recv_down` promptly.
+    /// `remove_watcher` wakes a blocked `recv_down` promptly.
     ///
     /// A thread parked on `recv_down(ref, 5 s)` must return well before the
     /// 5-second timeout when the registration is removed by `remove_watcher`.

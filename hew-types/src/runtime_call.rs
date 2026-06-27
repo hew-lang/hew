@@ -167,6 +167,14 @@ pub enum RuntimeCallFamily {
     /// the canonical path is `RuntimeDropDescriptor::MonitorRefClose`.
     ActorDemonitor,
     ActorLink,
+    /// `link_remote(RemotePid<T>, PartitionPolicy)` →
+    /// `hew_node_link_remote(target_pid, policy_tag) -> i64`. Establishes a
+    /// cross-node link: a local actor links a remote actor so the remote's
+    /// death (exit / crash / partition) fires the per-link `PartitionPolicy`
+    /// (`CrashLinked` crashes the local actor). Distinct from `ActorLink` (the
+    /// process-local pointer-keyed link); the cross-node form has no local
+    /// `HewActor*` for the remote peer.
+    LinkRemote,
     ActorMonitor,
     ActorSelf,
     ActorSendById,
@@ -311,17 +319,16 @@ pub enum RuntimeCallFamily {
     // already has a typed `FnSymbol::NodeRegisterPid` so it does NOT appear
     // here as a runtime-call family.
     NodeLookup,
-    /// `monitor(RemotePid<T>)` → `hew_node_monitor(target_pid: i64) -> i64`
-    /// (DIST-6). Registers a distributed-monitor entry keyed by the packed
-    /// remote pid's `(node_id, serial)` and returns the `ref_id` assembled into
-    /// `MonitorRef`. The current node is resolved internally (like
-    /// `hew_actor_self`), so the single arg is the remote target pid
-    /// (`BitCopy` `i64`); non-consuming.
+    /// `monitor(RemotePid<T>)` → `hew_node_monitor(target_pid: i64) -> i64`.
+    /// Registers a distributed-monitor entry keyed by the packed remote pid's
+    /// `(node_id, serial)` and returns the `ref_id` assembled into `MonitorRef`.
+    /// The current node is resolved internally (like `hew_actor_self`), so the
+    /// single arg is the remote target pid (`BitCopy` `i64`); non-consuming.
     NodeMonitor,
     /// `MonitorRef::recv_down` → `hew_node_monitor_recv(ref_id: i64,
-    /// timeout_ms: i64) -> i64` (DIST-6). Blocks until the distributed monitor's
-    /// terminal signal arrives for `ref_id` (or `timeout_ms` elapses), returning
-    /// the carried down-reason. Both args are `BitCopy` `i64`; non-consuming.
+    /// timeout_ms: i64) -> i64`. Blocks until the distributed monitor's terminal
+    /// signal arrives for `ref_id` (or `timeout_ms` elapses), returning the
+    /// carried down-reason. Both args are `BitCopy` `i64`; non-consuming.
     NodeMonitorRecv,
 
     // --- User metrics (#1862) -----------------------------------------------
@@ -505,6 +512,7 @@ impl RuntimeCallFamily {
             Self::ActorCooperate => "hew_actor_cooperate",
             Self::ActorDemonitor => "hew_actor_demonitor",
             Self::ActorLink => "hew_actor_link",
+            Self::LinkRemote => "hew_node_link_remote",
             Self::ActorMonitor => "hew_actor_monitor",
             Self::ActorSelf => "hew_actor_self",
             Self::ActorSendById => "hew_actor_send_by_id",
@@ -750,6 +758,7 @@ impl RuntimeCallFamily {
             "hew_actor_cooperate" => Self::ActorCooperate,
             "hew_actor_demonitor" => Self::ActorDemonitor,
             "hew_actor_link" => Self::ActorLink,
+            "hew_node_link_remote" => Self::LinkRemote,
             "hew_actor_monitor" => Self::ActorMonitor,
             "hew_actor_self" => Self::ActorSelf,
             "hew_actor_send_by_id" => Self::ActorSendById,
@@ -1056,6 +1065,7 @@ impl RuntimeCallFamily {
             | F::ActorCooperate
             | F::ActorDemonitor
             | F::ActorLink
+            | F::LinkRemote
             | F::ActorMonitor
             | F::ActorSelf
             | F::ActorSendById

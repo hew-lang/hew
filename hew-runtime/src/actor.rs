@@ -4964,6 +4964,12 @@ pub unsafe extern "C" fn hew_actor_trap(actor: *mut HewActor, error_code: i32) {
     };
     crate::tracing::hew_trace_lifecycle(actor_id, lifecycle_event);
 
+    // Test-only crash ledger (cross-node link probe): record the TERMINAL STATE so a
+    // two-process link fixture can confirm a LOCAL linked actor actually crashed
+    // (terminal Crashed == 5) after a cross-node link-down, surviving the actor's
+    // free. Gated by HEW_LINK_PROBE so production pays nothing.
+    crate::link::record_link_probe_terminal(actor_id, terminal);
+
     // Propagate exit to linked actors and notify monitors.
     // Do this BEFORE notifying supervisor to ensure proper ordering.
     run_crash_teardown_order_hook(HEW_ACTOR_CRASH_TEARDOWN_BEFORE_EXIT_PROPAGATION);
@@ -5015,6 +5021,83 @@ pub extern "C" fn hew_actor_self() -> *mut HewActor {
     // SAFETY: a non-null canonical context points to a live context slot owned
     // by the current dispatch/scope boundary.
     unsafe { (*ctx).actor }
+}
+
+/// Crash the current actor in response to an unhandled link EXIT.
+///
+/// A linked actor that does NOT trap exits (`#[on(exit)]`) must CRASH when its
+/// linked peer dies — the OTP fail-together semantic. The dispatch trampoline
+/// routes a `SYS_MSG_EXIT` (103) with no `#[on(exit)]` hook here instead of the
+/// exhaustiveness `llvm.trap` default (which is UB — it SIGILLs on Linux and
+/// only accidentally produced a terminal state on macOS). This drives the SAME
+/// controlled crash path a handler panic uses, with the carried reason stamped
+/// on the actor, and is target-symmetric: both backends export a
+/// `hew_trap_with_code(i32)` symbol with identical semantics but from different
+/// modules, because the crash seam itself differs per target.
+///
+/// * Native (`crate::supervisor::hew_trap_with_code`): longjmps to the
+///   scheduler's recovery frame — terminal `Crashed`, the carried reason
+///   stamped, link / monitor / supervisor fan-out.
+/// * wasm32 (`crate::trap_code::hew_trap_with_code`): stamps the carried reason
+///   on the actor and panics; under `panic = "abort"` (the wasm32-wasip1 runtime
+///   profile) the panic aborts the module — the fail-closed crash. On a host
+///   build with unwinding the cooperative scheduler's `catch_unwind` activation
+///   boundary observes the stamped code and transitions the actor to `Crashed`,
+///   the WASM counterpart of the native longjmp seam. wasm32 has no `supervisor`
+///   module (it is `#[cfg(not(target_arch = "wasm32"))]`), so the call must
+///   target `trap_code` there or the wasm runtime archive does not compile.
+///
+/// `reason` is the EXIT's carried terminal reason; a zero (clean) reason is
+/// coerced to the non-zero `Crashed` sentinel so an unhandled EXIT ALWAYS
+/// crashes the non-trapping linked actor (a cleanly-exited linked peer still
+/// takes it down, OTP-style). `hew_trap_with_code` does not return when called
+/// inside dispatch; outside an actor context there is no recovery seam, where
+/// the trampoline's `llvm.trap` is unreachable because a `SYS_MSG_EXIT` only
+/// arrives at a scheduler-driven dispatch.
+#[no_mangle]
+pub extern "C" fn hew_actor_exit_unhandled(reason: i32) {
+    // Coerce a zero (clean) reason to a non-zero crash sentinel: an unhandled
+    // EXIT always crashes the non-trapping linked actor (Crashed, not Stopped).
+    let crash_code = if reason == 0 {
+        HewActorState::Crashed as i32
+    } else {
+        reason
+    };
+    // SAFETY: routes through the per-target crash seam. Native's
+    // `try_direct_longjmp_with_code` checks the per-thread recovery context and
+    // is a no-op when none is active; wasm32's stamps the actor error code and
+    // panics. Both are safe to call from generated dispatch code.
+    #[cfg(not(target_arch = "wasm32"))]
+    unsafe {
+        crate::supervisor::hew_trap_with_code(crash_code);
+    }
+    #[cfg(target_arch = "wasm32")]
+    unsafe {
+        crate::trap_code::hew_trap_with_code(crash_code);
+    }
+}
+
+/// Return the current actor's id, or -1 outside a dispatch context.
+///
+/// Test-introspection probe: a linker actor reports its own id so a
+/// two-process link fixture can poll its terminal state after a cross-node
+/// link-down. Not part of the user surface; the compiler emits no calls to this
+/// symbol. Callable from `.hew` via
+/// `extern "C" { fn hew_actor_self_id() -> i64; }`.
+#[no_mangle]
+pub extern "C" fn hew_actor_self_id() -> i64 {
+    let actor = hew_actor_self();
+    if actor.is_null() {
+        return -1;
+    }
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "actor ids are a monotonic counter far below i64::MAX; the Hew side reads i64"
+    )]
+    // SAFETY: hew_actor_self returned a non-null live actor pointer.
+    unsafe {
+        (*actor).id as i64
+    }
 }
 
 /// Stamp the WASM actor panic sentinel on the current actor, when present.

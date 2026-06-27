@@ -13,7 +13,7 @@
 //!
 //! # Wire format history
 //!
-//! The HBF (Hew Binary Format) era closed with DIST-5. This module is the
+//! The HBF (Hew Binary Format) era closed when the CBOR-native wire format landed. This module is the
 //! CBOR-native replacement: `EnvelopeFrame` owns the payload as a `Vec<u8>`,
 //! the CDDL schema is the doc-of-truth, and there is no fallback HBF path.
 
@@ -41,7 +41,7 @@ pub const CTRL_REGISTRY_GOSSIP: u64 = 1;
 /// (PING / ACK / `PING_REQ` with piggybacked membership gossip).
 pub const CTRL_SWIM: u64 = 2;
 
-/// Control-frame kind for a cross-node monitor request (DIST-6).
+/// Control-frame kind for a cross-node monitor request.
 ///
 /// Sent by a watcher node to the node owning the target actor: "node W,
 /// registration `ref_id`, is monitoring your actor `serial`." The owning node
@@ -49,19 +49,57 @@ pub const CTRL_SWIM: u64 = 2;
 /// the target reaches a terminal state.
 pub const CTRL_MONITOR_REQ: u64 = 3;
 
-/// Control-frame kind for a cross-node monitor DOWN notification (DIST-6).
+/// Control-frame kind for a cross-node monitor DOWN notification.
 ///
 /// Sent by the node owning a monitored actor back to the watcher node when the
 /// target reaches a terminal state (clean exit / crash). Carries the watcher's
 /// `ref_id` and the terminal reason code.
 pub const CTRL_MONITOR_DOWN: u64 = 4;
 
-/// Control-frame kind for a cross-node demonitor request (DIST-6).
+/// Control-frame kind for a cross-node demonitor request.
 ///
 /// Sent by a watcher node to retract a prior `CTRL_MONITOR_REQ`: "node W,
 /// registration `ref_id`, no longer watches your actor `serial`." The owning
 /// node removes the remote-watcher entry. Idempotent on the receiver.
 pub const CTRL_DEMONITOR: u64 = 5;
+
+/// Control-frame kind for a cross-node link request.
+///
+/// Sent by a linker node to the node owning the target actor: "node L, actor
+/// `linker_serial`, registration `ref_id`, links your actor `target_serial`
+/// under `policy_tag`." A cross-node link is BIDIRECTIONAL — the owning node
+/// reciprocates by registering a reverse link so the linker's death also fires
+/// into the target — so it carries both directions' identity. On the target
+/// node this records a target-side remote-linker entry (so the target's death
+/// fans a `CTRL_LINK_DOWN` back) AND a reverse watcher entry (so the linker's
+/// death crashes the target per the policy).
+pub const CTRL_LINK_REQ: u64 = 6;
+
+/// Control-frame kind for a cross-node link DOWN notification.
+///
+/// Sent to a linked node when its remote peer reaches a terminal state. Unlike
+/// a `CTRL_MONITOR_DOWN` (which arms a recv slot a program polls), a
+/// `CrashLinked` `CTRL_LINK_DOWN` synthesizes a `SYS_MSG_EXIT` into the local
+/// linked actor's MAILBOX and crashes it (the OTP fail-together semantic).
+/// Carries the linked node's `ref_id` and the terminal reason code.
+pub const CTRL_LINK_DOWN: u64 = 7;
+
+/// Control-frame kind for a cross-node unlink request.
+///
+/// Sent by a linker node to retract a prior `CTRL_LINK_REQ`. The owning node
+/// removes both the target-side remote-linker entry and the reverse watcher
+/// entry. Idempotent on the receiver. Carries the same identifying payload as
+/// `CTRL_LINK_REQ`.
+pub const CTRL_UNLINK: u64 = 8;
+
+/// Maximum accepted cross-node link control payload size, in bytes.
+///
+/// A link request payload is a fixed small CBOR map of bounded integers (two
+/// node ids, two serials, a ref id, a policy tag); a link DOWN reuses the
+/// monitor DOWN shape. 256 bytes is far more than any conformant payload needs
+/// and bounds a malicious peer's allocation — a HIGHER-stakes bound than
+/// monitor because a fabricated `CTRL_LINK_DOWN` would crash a REAL actor.
+pub const MAX_LINK_PAYLOAD_BYTES: usize = 256;
 
 /// Maximum accepted cross-node monitor control payload size, in bytes.
 ///
@@ -253,7 +291,7 @@ pub struct SwimControlPayload {
     pub gossip: Vec<SwimGossipEntry>,
 }
 
-/// Bounded cross-node monitor REQUEST / DEMONITOR control payload (DIST-6).
+/// Bounded cross-node monitor REQUEST / DEMONITOR control payload.
 ///
 /// Encoded as a definite CBOR map `{1: watcher_node_id, 2: ref_id,
 /// 3: target_serial}`. Used by both `CTRL_MONITOR_REQ` and `CTRL_DEMONITOR`:
@@ -276,7 +314,7 @@ pub struct MonitorReqPayload {
     pub target_serial: u64,
 }
 
-/// Bounded cross-node monitor DOWN control payload (DIST-6).
+/// Bounded cross-node monitor DOWN control payload.
 ///
 /// Encoded as a definite CBOR map `{1: ref_id, 2: reason}`. Sent from the node
 /// owning the monitored actor back to the watcher node when the target reaches
@@ -292,6 +330,45 @@ pub struct MonitorDownPayload {
     pub ref_id: u64,
     /// Carried terminal reason code.
     pub reason: i32,
+}
+
+/// Bounded cross-node link REQUEST / UNLINK control payload.
+///
+/// Encoded as a definite CBOR map `{1: linker_node_id, 2: ref_id,
+/// 3: target_serial, 4: linker_serial, 5: policy_tag, 6: reciprocate}`. Used by both
+/// `CTRL_LINK_REQ` and `CTRL_UNLINK`: the request establishes the bidirectional
+/// link, the unlink retracts it; the identifying tuple is the same.
+///
+/// - `linker_node_id` is the linking node's id; the receiver routes the eventual
+///   `CTRL_LINK_DOWN` back to it AND registers a reverse link toward it.
+/// - `ref_id` is the linker's local link-registration id; the receiver echoes it
+///   verbatim in the DOWN so the linker can match the registration and find the
+///   local actor to crash.
+/// - `target_serial` is the linked actor's serial on the owning (receiver) node.
+/// - `linker_serial` is the LINKING actor's serial on the linker node — so the
+///   receiver's reverse link knows which remote actor to crash when its own
+///   local linked actor dies (the OTP bidirectional half).
+/// - `policy_tag` is the `PartitionPolicy` discriminant governing the link
+///   (`CrashLinked` == 3 crashes the linked actor on the peer's death).
+/// - `reciprocate` is 1 for the ORIGINAL request (the receiver registers the
+///   reverse half and sends a `reciprocate = 0` reverse request back) and 0 for
+///   that reverse request (the original linker completes its target-side
+///   registration and does NOT reply again — bounding the handshake to one round
+///   trip, never an infinite reciprocation).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkReqPayload {
+    /// Linking node's id (DOWN destination + reverse-link target node).
+    pub linker_node_id: u16,
+    /// Linker's local link-registration id.
+    pub ref_id: u64,
+    /// Linked actor's serial on the owning (receiver) node.
+    pub target_serial: u64,
+    /// Linking actor's serial on the linker node (reverse-link subject).
+    pub linker_serial: u64,
+    /// `PartitionPolicy` discriminant governing the link.
+    pub policy_tag: u8,
+    /// 1 = original request (receiver reciprocates); 0 = the reverse request.
+    pub reciprocate: u8,
 }
 
 struct PayloadBytes<'a>(&'a [u8]);
@@ -1215,6 +1292,105 @@ pub fn decode_monitor_down_payload(
         ref_id: value_to_u64(required(&map, 1)?, 1)?,
         reason: value_to_i32(required(&map, 2)?, 2)?,
     })
+}
+
+/// Encode a bounded cross-node link REQUEST / UNLINK payload.
+///
+/// # Errors
+///
+/// Returns [`MonitorPayloadError`] if CBOR serialisation fails or the encoded
+/// payload exceeds [`MAX_LINK_PAYLOAD_BYTES`].
+pub fn encode_link_req_payload(payload: &LinkReqPayload) -> Result<Vec<u8>, MonitorPayloadError> {
+    let value = Value::Map(vec![
+        (
+            Value::Integer(Integer::from(1u64)),
+            Value::Integer(Integer::from(payload.linker_node_id)),
+        ),
+        (
+            Value::Integer(Integer::from(2u64)),
+            Value::Integer(Integer::from(payload.ref_id)),
+        ),
+        (
+            Value::Integer(Integer::from(3u64)),
+            Value::Integer(Integer::from(payload.target_serial)),
+        ),
+        (
+            Value::Integer(Integer::from(4u64)),
+            Value::Integer(Integer::from(payload.linker_serial)),
+        ),
+        (
+            Value::Integer(Integer::from(5u64)),
+            Value::Integer(Integer::from(payload.policy_tag)),
+        ),
+        (
+            Value::Integer(Integer::from(6u64)),
+            Value::Integer(Integer::from(payload.reciprocate)),
+        ),
+    ]);
+    let mut bytes = Vec::new();
+    ciborium::ser::into_writer(&value, &mut bytes).map_err(MonitorPayloadError::CborEncode)?;
+    if bytes.len() > MAX_LINK_PAYLOAD_BYTES {
+        return Err(MonitorPayloadError::PayloadTooLarge {
+            len: bytes.len(),
+            max: MAX_LINK_PAYLOAD_BYTES,
+        });
+    }
+    Ok(bytes)
+}
+
+/// Decode a bounded cross-node link REQUEST / UNLINK payload.
+///
+/// # Errors
+///
+/// Returns [`MonitorPayloadError`] if the payload is too large, malformed, or
+/// contains unknown / duplicate / missing keys. The decode bar is HIGHER-stakes
+/// than monitor: a fabricated link request would register a link that can later
+/// crash a real actor, so the exact-keys / range checks are not optional.
+pub fn decode_link_req_payload(bytes: &[u8]) -> Result<LinkReqPayload, MonitorPayloadError> {
+    if bytes.len() > MAX_LINK_PAYLOAD_BYTES {
+        return Err(MonitorPayloadError::PayloadTooLarge {
+            len: bytes.len(),
+            max: MAX_LINK_PAYLOAD_BYTES,
+        });
+    }
+    let value: Value = ciborium::de::from_reader(bytes).map_err(MonitorPayloadError::CborDecode)?;
+    let map = collect_map(&value)?;
+    ensure_exact_keys(&map, &[1, 2, 3, 4, 5, 6])?;
+    Ok(LinkReqPayload {
+        linker_node_id: value_to_u16(required(&map, 1)?, 1)?,
+        ref_id: value_to_u64(required(&map, 2)?, 2)?,
+        target_serial: value_to_u64(required(&map, 3)?, 3)?,
+        linker_serial: value_to_u64(required(&map, 4)?, 4)?,
+        policy_tag: value_to_u8(required(&map, 5)?, 5)?,
+        reciprocate: value_to_u8(required(&map, 6)?, 6)?,
+    })
+}
+
+/// Encode a bounded cross-node link DOWN payload.
+///
+/// The DOWN shape is identical to the monitor DOWN (`{1: ref_id, 2: reason}`);
+/// the divergence is in the receiver's HANDLING (mailbox-EXIT crash, not a recv
+/// slot), not the wire shape. Reuses [`encode_monitor_down_payload`] under the
+/// [`MAX_LINK_PAYLOAD_BYTES`] bound.
+///
+/// # Errors
+///
+/// Returns [`MonitorPayloadError`] on encode failure or oversize.
+pub fn encode_link_down_payload(
+    payload: &MonitorDownPayload,
+) -> Result<Vec<u8>, MonitorPayloadError> {
+    encode_monitor_down_payload(payload)
+}
+
+/// Decode a bounded cross-node link DOWN payload. Same `{ref_id,
+/// reason}` shape as the monitor DOWN.
+///
+/// # Errors
+///
+/// Returns [`MonitorPayloadError`] if the payload is too large, malformed, or
+/// contains unknown / duplicate / missing keys.
+pub fn decode_link_down_payload(bytes: &[u8]) -> Result<MonitorDownPayload, MonitorPayloadError> {
+    decode_monitor_down_payload(bytes)
 }
 
 fn control_frame_from_value(value: &Value) -> Result<ControlFrame, DecodeError> {

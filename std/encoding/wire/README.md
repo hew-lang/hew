@@ -1,7 +1,8 @@
 # std::encoding::wire
 
 > The legacy HBF byte-layout helpers (`encode_header`, `decode_header`,
-> `validate_header`) were removed in DIST-5. This module now holds only the
+> `validate_header`) were removed when the CBOR-native wire format replaced the
+> HBF era. This module now holds only the
 > opaque `Value` contract described below. See
 > [`docs/specs/HEW-WIRE-FORMAT-DOCTRINE.md`](../../../docs/specs/HEW-WIRE-FORMAT-DOCTRINE.md)
 > §5 S1 for history.

@@ -2216,6 +2216,20 @@ pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
     } else {
         None
     };
+    // A non-trapping actor (no `#[on(exit)]`) receiving a `SYS_MSG_EXIT`
+    // must CRASH via the controlled crash path — the OTP "linked processes die
+    // together" semantic — NOT fall through to the `default_bb` exhaustiveness
+    // `llvm.trap` (which is UB: it SIGILLs on Linux and only accidentally
+    // produced a terminal state on macOS). Route this case to a block that reads
+    // the carried reason and calls `hew_actor_exit_unhandled`, which longjmps to
+    // the scheduler crash frame (terminal `Crashed`, the carried reason stamped).
+    let unhandled_exit_bb = if layout.on_exit_symbol.is_none() {
+        let bb = ctx.append_basic_block(dispatch_fn, "msg_sys_exit_unhandled");
+        cases.push((i32_ty.const_int(SYS_MSG_EXIT, false), bb));
+        Some(bb)
+    } else {
+        None
+    };
     builder
         .build_switch(msg_type, default_bb, &cases)
         .llvm_ctx("actor dispatch switch")?;
@@ -2633,6 +2647,44 @@ pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
             .build_unconditional_branch(after_bb)
             .llvm_ctx("actor dispatch on_exit branch")?;
         return_incomings.push((ptr_ty.const_null(), on_exit_bb));
+    }
+
+    // Emit the unhandled-`SYS_MSG_EXIT` case body — a non-trapping actor
+    // crashes via the controlled crash path. Read `reason` (field 1 of the
+    // `ExitMessage { crashed_actor_id: u64, reason: i32, crash_kind: i32 }`
+    // payload) and call `hew_actor_exit_unhandled(reason)`, which longjmps to the
+    // scheduler crash frame (terminal Crashed, the carried reason stamped) — never
+    // the exhaustiveness `llvm.trap` (UB / SIGILL on Linux).
+    if let Some(unhandled_exit_bb) = unhandled_exit_bb {
+        builder.position_at_end(unhandled_exit_bb);
+        let u64_ty = ctx.i64_type();
+        let exit_msg_st = ctx.struct_type(&[u64_ty.into(), i32_ty.into(), i32_ty.into()], false);
+        let reason_ptr = builder
+            .build_struct_gep(exit_msg_st, payload_src, 1, "exit_reason_ptr")
+            .llvm_ctx("unhandled exit reason gep")?;
+        let reason = builder
+            .build_load(i32_ty, reason_ptr, "exit_reason")
+            .llvm_ctx("unhandled exit reason load")?;
+        let exit_unhandled_fn = llvm_mod
+            .get_function("hew_actor_exit_unhandled")
+            .unwrap_or_else(|| {
+                let sig = ctx.void_type().fn_type(&[i32_ty.into()], false);
+                llvm_mod.add_function("hew_actor_exit_unhandled", sig, Some(Linkage::External))
+            });
+        builder
+            .build_call(
+                exit_unhandled_fn,
+                &[metadata_value_from_basic(reason)],
+                "call_exit_unhandled",
+            )
+            .llvm_ctx("actor dispatch unhandled exit call")?;
+        // hew_actor_exit_unhandled longjmps to the scheduler crash frame inside a
+        // dispatch, so control never returns here; branch to after_bb to satisfy
+        // the CFG (the branch is unreachable in practice).
+        builder
+            .build_unconditional_branch(after_bb)
+            .llvm_ctx("actor dispatch unhandled exit branch")?;
+        return_incomings.push((ptr_ty.const_null(), unhandled_exit_bb));
     }
 
     builder.position_at_end(default_bb);

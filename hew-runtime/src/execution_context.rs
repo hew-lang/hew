@@ -46,7 +46,7 @@ pub enum HewActorStateLockState {}
 /// the context-layout offset mirror is unchanged and no allocation
 /// or drop obligation is attached to the hot dispatch path.
 ///
-/// DIST-7 consumes this on the send/ask failure path; DIST-9's `link_remote`
+/// The send/ask failure path consumes this; `link_remote`
 /// writes a non-default policy into the slot.
 #[repr(usize)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -60,13 +60,13 @@ pub enum PartitionPolicy {
     /// Resolve monitor and supervision partitions as `MonitorLost`.
     MonitorLost = 2,
     /// Cross-node link/supervision fail-together behaviour. **Link-only**: not a
-    /// valid `send`/`ask` policy — DIST-9's `link_remote` owns it. A send/ask
+    /// valid `send`/`ask` policy — `link_remote` owns it. A send/ask
     /// failure path that observes this tag fails closed rather than silently
     /// degrading to `FailFast` (no-silent-no-op-stubs).
     CrashLinked = 3,
     /// Stop sending to a suspect or dead peer until a fresh incarnation appears.
-    /// DIST-7 admits the variant but treats it as `FailFast` for send/ask
-    /// resolution; incarnation tracking is DIST-8.
+    /// The runtime currently admits this variant but treats it as `FailFast` for send/ask
+    /// resolution; incarnation tracking requires a future reply-table schema change.
     Quarantine = 4,
 }
 
@@ -100,7 +100,7 @@ impl PartitionPolicy {
 
     /// Whether this policy is a valid choice for a remote `send`/`ask` call.
     ///
-    /// `CrashLinked` is link-only (DIST-9); it is never a send/ask policy. A
+    /// `CrashLinked` is link-only; it is never a send/ask policy. A
     /// send/ask path that reads `CrashLinked` must fail closed.
     #[must_use]
     pub fn is_valid_for_send_ask(self) -> bool {
@@ -220,8 +220,8 @@ pub struct HewExecutionContext {
     /// Partition policy governing remote `send`/`ask` resolution for this
     /// dispatch, encoded as a small repr-stable integer tag in the
     /// pointer-width slot (see [`PartitionPolicy`]). Null reads as the
-    /// `FailFast` default. DIST-7 reads it on the send/ask failure path;
-    /// DIST-9's `link_remote` writes a non-default policy here. Never a heap
+    /// `FailFast` default. The send/ask failure path reads it;
+    /// `link_remote` writes a non-default policy here. Never a heap
     /// pointer — no allocation or drop on the hot dispatch path.
     pub partition_policy: *mut c_void,
     /// Previous canonical context for nested dispatch restoration.
@@ -757,8 +757,8 @@ mod tests {
         );
     }
 
-    /// `CrashLinked` is rejected as a send/ask policy (link-only, DIST-9); every
-    /// other variant DIST-7 admits on send/ask is accepted.
+    /// `CrashLinked` is rejected as a send/ask policy (link-only); every
+    /// other variant admitted on send/ask is accepted.
     #[test]
     fn crash_linked_is_not_valid_for_send_ask() {
         assert!(!PartitionPolicy::CrashLinked.is_valid_for_send_ask());

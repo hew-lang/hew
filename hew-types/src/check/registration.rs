@@ -671,6 +671,28 @@ impl Checker {
             vec![Ty::local_pid(Ty::Var(monitor_t))],
             Ty::monitor_ref(),
         );
+        // Cross-node link: `link_remote(RemotePid<T>, PartitionPolicy)`
+        // links a local actor to a remote actor so the remote's death fires the
+        // per-link `PartitionPolicy` (`CrashLinked` crashes the local actor). The
+        // immediate return is `Result<(), LinkError>` (registration success — the
+        // EXIT arrives async). The `PartitionPolicy` enum is declared in
+        // `std/link_monitor.hew`; the call-site checker validates the precise arg
+        // type. The local `link(LocalPid)` form keeps its 1-arg shape; a
+        // `link(RemotePid)` is rejected with a "use link_remote" diagnostic
+        // (`calls.rs`), so the cross-node link is never a silent type mismatch.
+        let link_remote_t = TypeVar::fresh();
+        self.register_builtin_fn(
+            "link_remote",
+            vec![
+                Ty::remote_pid(Ty::Var(link_remote_t)),
+                Ty::Named {
+                    name: "PartitionPolicy".to_string(),
+                    args: vec![],
+                    builtin: None,
+                },
+            ],
+            Ty::result(Ty::Unit, Ty::link_error()),
+        );
 
         // Supervisor child access
         let sup_child_t = TypeVar::fresh();

@@ -1140,7 +1140,7 @@ pub(crate) fn lower_call_runtime_abi(
         //   Value-needed   (dest=Some(result_local: Result<(),LinkError>)):
         //     call void → `emit_result_ok(dest, None)` writes tag=0 (Ok, no
         //     payload). hew_actor_link is infallible at the runtime today, so
-        //     Ok(()) is the only shape. Err arms belong to DIST-6/DIST-7.
+        //     Ok(()) is the only shape. Err arms are reserved for future partition policies.
         //
         // hew_actor_monitor(watcher, target) -> i64 (ref_id)
         //   Statement-position (dest=None): emit the call, discard i64 return.
@@ -1242,7 +1242,7 @@ pub(crate) fn lower_call_runtime_abi(
             // void return; dest is always None (the close body is a void call).
             let _ = (i32_ty, ptr_ty, dest);
         }
-        // hew_node_monitor(target_pid: i64) -> i64 (DIST-6). Registers a
+        // hew_node_monitor(target_pid: i64) -> i64. Registers a
         // distributed monitor for a remote actor (the remote pid is a bare i64;
         // the current node is resolved internally) and returns the ref_id. In
         // value position the i64 ref_id is stored into the i64 dest; a subsequent
@@ -1273,7 +1273,7 @@ pub(crate) fn lower_call_runtime_abi(
             }
             let _ = (i32_ty, ptr_ty);
         }
-        // hew_node_monitor_recv(ref_id: i64, timeout_ms: i64) -> i64 (DIST-6).
+        // hew_node_monitor_recv(ref_id: i64, timeout_ms: i64) -> i64.
         // Blocks for the distributed monitor's terminal signal and returns the
         // carried down-reason. Both args are BitCopy i64; the i64 reason is
         // stored into the i64 dest in value position.
@@ -1300,6 +1300,41 @@ pub(crate) fn lower_call_runtime_abi(
                     .builder
                     .build_store(dest_ptr, reason)
                     .llvm_ctx("hew_node_monitor_recv store reason")?;
+            }
+            let _ = (i32_ty, ptr_ty);
+        }
+        // hew_node_link_remote(target_pid: i64, policy_tag: i64) -> i64.
+        // Establishes a cross-node link: the calling actor (resolved internally)
+        // links the remote actor `target_pid` with the `PartitionPolicy`
+        // discriminant `policy_tag`. Both args are BitCopy i64. The i64 return is
+        // the link ref_id; the immediate Hew-visible result is registration
+        // success — Ok(()) — because the EXIT arrives asynchronously when the
+        // remote dies (mirrors hew_actor_link's infallible immediate return).
+        // boundary-fail-closed (P0): i64 args only, no heap-owning composite.
+        F::LinkRemote => {
+            if args.len() != 2 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_node_link_remote): expected 2 args \
+                     (target_pid: i64, policy_tag: i64), got {}",
+                    args.len()
+                )));
+            }
+            let target_pid = load_int_arg(fn_ctx, args[0], i64_ty, "node_link_target")?;
+            let policy_tag = load_int_arg(fn_ctx, args[1], i64_ty, "node_link_policy")?;
+            let llvm_args: [BasicMetadataValueEnum; 2] = [target_pid.into(), policy_tag.into()];
+            // Call hew_node_link_remote → i64 ref_id. The ref_id is discarded at
+            // codegen: registration is the immediate result and the Result<(),
+            // LinkError> dest is written Ok(()). A failed registration is recorded
+            // via set_last_error in the runtime and the link simply never fires
+            // (it cannot crash an actor it never registered) — fail-closed.
+            let _ref_id = fn_ctx.call_runtime_int(
+                symbol,
+                &llvm_args,
+                "hew_node_link_remote_call",
+                "hew_node_link_remote call",
+            )?;
+            if let Some(d) = dest {
+                emit_result_ok(fn_ctx, d, None)?;
             }
             let _ = (i32_ty, ptr_ty);
         }

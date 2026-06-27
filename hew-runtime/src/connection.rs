@@ -52,12 +52,13 @@ use crate::cluster::HewCluster;
 #[cfg(feature = "encryption")]
 use crate::envelope::encode_envelope_frame_from_raw_parts;
 use crate::envelope::{
-    decode_monitor_down_payload, decode_monitor_req_payload, decode_registry_gossip_payload,
-    decode_swim_payload, decode_wire_frame, encode_control_frame, encode_registry_gossip_payload,
-    encode_swim_payload, ControlFrame, RegistryGossipPayload, SwimControlPayload, SwimGossipEntry,
-    WireFrame, CTRL_DEMONITOR, CTRL_MONITOR_DOWN, CTRL_MONITOR_REQ, CTRL_REGISTRY_GOSSIP,
-    CTRL_SWIM, FRAME_TYPE_CONTROL, FRAME_TYPE_ENVELOPE, REGISTRY_GOSSIP_OP_ADD,
-    REGISTRY_GOSSIP_OP_REMOVE, WIRE_VERSION,
+    decode_link_down_payload, decode_link_req_payload, decode_monitor_down_payload,
+    decode_monitor_req_payload, decode_registry_gossip_payload, decode_swim_payload,
+    decode_wire_frame, encode_control_frame, encode_registry_gossip_payload, encode_swim_payload,
+    ControlFrame, RegistryGossipPayload, SwimControlPayload, SwimGossipEntry, WireFrame,
+    CTRL_DEMONITOR, CTRL_LINK_DOWN, CTRL_LINK_REQ, CTRL_MONITOR_DOWN, CTRL_MONITOR_REQ,
+    CTRL_REGISTRY_GOSSIP, CTRL_SWIM, CTRL_UNLINK, FRAME_TYPE_CONTROL, FRAME_TYPE_ENVELOPE,
+    REGISTRY_GOSSIP_OP_ADD, REGISTRY_GOSSIP_OP_REMOVE, WIRE_VERSION,
 };
 use crate::lifetime::poison_safe::PoisonSafe;
 use crate::mailbox_envelope::{validate_cross_node_send_params, MailboxPayloadClass};
@@ -570,7 +571,7 @@ fn retire_connection_publication(
         };
     }
 
-    // Cross-node monitor connection-drop fan-out (DIST-6): the connection to
+    // Cross-node monitor connection-drop fan-out: the connection to
     // `peer_node_id` is gone, so every local watcher of an actor on that node
     // gets a MonitorLost DOWN — unless it already received a definitive
     // clean-exit / crash DOWN (only Pending slots are armed; exactly-once).
@@ -1048,6 +1049,18 @@ fn handle_control_frame(
             handle_monitor_down_frame(control);
             return;
         }
+        CTRL_LINK_REQ => {
+            handle_link_req_frame(control);
+            return;
+        }
+        CTRL_UNLINK => {
+            handle_unlink_frame(control);
+            return;
+        }
+        CTRL_LINK_DOWN => {
+            handle_link_down_frame(control);
+            return;
+        }
         other => {
             set_last_error(format!(
                 "connection reader unknown control frame kind {other}"
@@ -1094,7 +1107,7 @@ fn handle_control_frame(
     }
 }
 
-/// Handle an inbound `CTRL_MONITOR_REQ` (DIST-6): a remote node is monitoring
+/// Handle an inbound `CTRL_MONITOR_REQ`: a remote node is monitoring
 /// one of our local actors. Record a target-side remote-watcher entry so the
 /// terminal sweep can fan out a `CTRL_MONITOR_DOWN` when that actor dies.
 ///
@@ -1121,7 +1134,7 @@ fn handle_monitor_req_frame(control: &ControlFrame) {
     );
 }
 
-/// Handle an inbound `CTRL_DEMONITOR` (DIST-6): a remote node retracted its
+/// Handle an inbound `CTRL_DEMONITOR`: a remote node retracted its
 /// monitor of one of our local actors. Remove the target-side remote-watcher
 /// entry. Idempotent / fail-closed on malformed input.
 fn handle_demonitor_frame(control: &ControlFrame) {
@@ -1144,7 +1157,7 @@ fn handle_demonitor_frame(control: &ControlFrame) {
     );
 }
 
-/// Handle an inbound `CTRL_MONITOR_DOWN` (DIST-6): the node owning an actor we
+/// Handle an inbound `CTRL_MONITOR_DOWN`: the node owning an actor we
 /// monitor reports that actor reached a terminal state. Arm the watcher slot for
 /// `ref_id` with the carried reason so the blocked `hew_node_monitor_recv` wakes.
 ///
@@ -1168,6 +1181,61 @@ fn handle_monitor_down_frame(control: &ControlFrame) {
     };
     rt.dist_monitors
         .deliver_to_ref(payload.ref_id, payload.reason);
+}
+
+/// Handle an inbound `CTRL_LINK_REQ`: a remote node is linking one of our local
+/// actors. Establish the bidirectional cross-node link.
+///
+/// Fail-closed: a malformed / oversized payload is dropped with `set_last_error`
+/// and never registers a link — no fabricated state from untrusted bytes. The
+/// decode bar is HIGHER than monitor because a registered link can later crash a
+/// real actor.
+fn handle_link_req_frame(control: &ControlFrame) {
+    let payload = match decode_link_req_payload(&control.payload) {
+        Ok(payload) => payload,
+        Err(err) => {
+            set_last_error(format!(
+                "connection reader link req payload decode failure: {err}"
+            ));
+            return;
+        }
+    };
+    crate::hew_node::handle_inbound_link_req(&payload);
+}
+
+/// Handle an inbound `CTRL_UNLINK`: a remote node retracted a prior
+/// link of one of our local actors. Idempotent / fail-closed on malformed input.
+fn handle_unlink_frame(control: &ControlFrame) {
+    let payload = match decode_link_req_payload(&control.payload) {
+        Ok(payload) => payload,
+        Err(err) => {
+            set_last_error(format!(
+                "connection reader unlink payload decode failure: {err}"
+            ));
+            return;
+        }
+    };
+    crate::hew_node::handle_inbound_unlink(&payload);
+}
+
+/// Handle an inbound `CTRL_LINK_DOWN`: the node owning an actor we LINK
+/// reports it reached a terminal state. Fire the cross-node link cascade —
+/// synthesize a `SYS_MSG_EXIT` into the LOCAL linked actor's mailbox and crash it
+/// (for `CrashLinked`). THE divergence from a monitor DOWN (which arms a recv
+/// slot): a link DOWN crashes the linked actor through its mailbox. Fail-closed
+/// on malformed input; the EXIT fires exactly once and ONLY for a link entry this
+/// node registered, so a forged frame cannot crash an actor we never linked.
+fn handle_link_down_frame(control: &ControlFrame) {
+    let payload = match decode_link_down_payload(&control.payload) {
+        Ok(payload) => payload,
+        Err(err) => {
+            set_last_error(format!(
+                "connection reader link down payload decode failure: {err}"
+            ));
+            return;
+        }
+    };
+    crate::hew_node::handle_inbound_link_down(payload.ref_id, payload.reason);
 }
 
 fn active_gossip_connection_ids(mgr: &HewConnMgr) -> Vec<c_int> {

@@ -217,7 +217,7 @@ and was settled by issue #1247.
 | `std::encoding::base64` | **Real.** | `std/encoding/base64/`. |
 | `std::encoding::hex` | **Real.** | `std/encoding/hex/`. |
 | `std::encoding::compress` | **Real.** gzip/deflate/zlib. | `std/encoding/compress/`. |
-| `std::encoding::wire` | **Substrate.** Holds the opaque `Value` contract (issue #1247). The legacy HBF byte-layout helpers (`encode_header` / framing) were removed in DIST-5. | `std/encoding/wire/` — see §5 for history. |
+| `std::encoding::wire` | **Substrate.** Holds the opaque `Value` contract (issue #1247). The legacy HBF byte-layout helpers (`encode_header` / framing) were removed when the CBOR-native wire format replaced HBF. | `std/encoding/wire/` — see §5 for history. |
 
 Each module's README states its own scope. The doctrine here is about
 **which one to reach for**, not how each one is implemented.
@@ -238,7 +238,7 @@ Each module's README states its own scope. The doctrine here is about
 
 `std::encoding::wire` held low-level HBF byte-layout helpers
 (`encode_header` and friends) that reflected the pre-v0.5 format.
-Those helpers were deleted in DIST-5 (see §5 S1). The module now holds
+Those helpers were deleted when the CBOR-native wire format replaced HBF (see §5 S1). The module now holds
 only the opaque `Value` contract. User or stdlib code that needs wire
 bytes must use the format-specific module (`json`, `msgpack`, etc.).
 
@@ -328,8 +328,9 @@ be split.
 ### A4. HBF helpers are gone — use format-specific stdlib modules
 
 The HBF byte-layout helpers (`encode_header`, `decode_header`,
-`validate_header`) in `std/encoding/wire/wire.hew` were removed in
-DIST-5. There is no legacy path to reach for. User and stdlib code that
+`validate_header`) in `std/encoding/wire/wire.hew` were removed when
+the CBOR-native wire format replaced HBF. There is no legacy path to
+reach for. User and stdlib code that
 needs wire bytes uses the format-specific module (`json`, `msgpack`,
 etc.).
 
@@ -353,7 +354,7 @@ failure. The existing `EnvelopeFrame::encode` surface is the template.
 
 ### S1. `std::encoding::wire` — legacy HBF helpers
 
-**State: DELETED (DIST-5).** The `encode_header`, `decode_header`, and
+**State: DELETED.** The `encode_header`, `decode_header`, and
 `validate_header` helpers in `std/encoding/wire/wire.hew` were removed.
 The CBOR envelope substrate (`hew-runtime/src/envelope.rs`, commit
 `04bfb422`) was the replacement; the migration is complete. The opaque
@@ -398,7 +399,7 @@ deprecation in v0.5. The list in §2 is the v0.5 surface. S1 is closed
 ## Cross-references
 
 - Runtime substrate provenance: commits `63a486d6`, `bb8826e7`, `04bfb422`
-  on `v05-integration`; HBF helpers deleted in DIST-5.
+  on `v05-integration`; HBF helpers deleted when the CBOR-native wire format replaced HBF.
 - CDDL frame schema: [`hew-runtime/schemas/envelope.cddl`](../../hew-runtime/schemas/envelope.cddl).
 - CDDL body schema: [`hew-runtime/schemas/wire-body.cddl`](../../hew-runtime/schemas/wire-body.cddl).
 - Runtime envelope types: [`hew-runtime/src/envelope.rs`](../../hew-runtime/src/envelope.rs).

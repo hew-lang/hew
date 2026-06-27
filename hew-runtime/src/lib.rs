@@ -735,7 +735,7 @@ pub mod cluster;
 pub mod connection;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod deterministic;
-/// Distributed (cross-node) actor monitor table (DIST-6): the node-keyed
+/// Distributed (cross-node) actor monitor table: the node-keyed
 /// analogue of the process-local `monitor` table, plus the `hew_node_monitor` /
 /// `hew_node_monitor_recv` ABI that registers a remote monitor and blocks for
 /// its terminal signal. Native-only (cross-node messaging is not on wasm32).

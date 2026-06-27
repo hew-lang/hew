@@ -56,7 +56,7 @@ enum KvResp {
     Value(string);
 }
 
-// ── #[wire] cross-process body types (DIST-4) ────────────────────────────────
+// ── #[wire] cross-process body types ─────────────────────────────────────────
 //
 // The KV types above are plain record/enum: they cross the wire as Serializable
 // types and get @N tags by the codec's positional fallback. The types below are
@@ -147,6 +147,72 @@ impl ActorMsg for WireProbe {
     type Reply = WireResult;
 }
 
+// ── Cross-node link ───────────────────────────────────────────────────────────
+//
+// The link scenarios prove the OTP "linked processes die together" semantic
+// across the node boundary: a LOCAL actor links a REMOTE actor with
+// `link_remote(pid, PartitionPolicy::CrashLinked)`, and when the remote actor
+// dies (clean exit, crash, or partition) the LOCAL linked actor CRASHES too.
+//
+// The headline divergence from monitor: a `CrashLinked` link-down lands in the
+// local actor's MAILBOX as a SYS_MSG_EXIT and crashes a non-trapping actor — it
+// does NOT land in a monitor recv slot (a link that reused the monitor recv-slot
+// delivery would fail-OPEN: the linked actor would never crash). The fixture
+// proves the crash by LOCALLY monitoring the linker actor from `main`: when the
+// cross-node link-down crashes the linker, the local monitor observes a DOWN
+// carrying the Crashed reason (5). A non-`CrashLinked` policy must NOT crash the
+// linker — that negative case gives the policy discriminator teeth.
+//
+// `Linker` holds the remote KeyValue pid and a policy selector; on a `link_go`
+// ask it establishes the cross-node link from inside its own handler (so the
+// implicit `self` subject of `link_remote` is THIS actor — the one that must
+// crash on the remote's death). The ask reply is the linker's own actor id, so
+// `main` learns the id to poll its terminal state after the remote dies.
+//
+// `main` then polls `hew_link_probe_terminal_state(linker_id)`: the runtime
+// records each actor's terminal reason in a probe-only ledger (gated by
+// HEW_LINK_PROBE), so the death survives the actor's free. A `CrashLinked`
+// cascade records Crashed (5); a survivor never reaches terminal (sentinel).
+extern "C" {
+    fn hew_actor_self_id() -> i64;
+    fn hew_link_probe_terminal_state(actor_id: i64) -> i64;
+}
+
+actor Linker {
+    // 0 = CrashLinked (the linked actor crashes); 1 = MonitorLost (non-fatal).
+    let policy_sel: i64;
+    // Establish the cross-node link from inside this actor's own handler so the
+    // implicit `self` subject of `link_remote` is THIS actor. The remote peer is
+    // passed as a message argument (a RemotePid is an opaque i64 pid; storing it
+    // in actor state is not a supported clone-layout shape, so it rides the
+    // message instead). Returns its own actor id (or -1 on a registration
+    // failure) so `main` can poll its terminal state.
+    receive fn link_go(peer: RemotePid<KeyValue>) -> i64 {
+        let status = if policy_sel == 0 {
+            link_remote(peer, PartitionPolicy::CrashLinked)
+        } else {
+            link_remote(peer, PartitionPolicy::MonitorLost)
+        };
+        let ok = match status {
+            Result::Ok(_) => true,
+            Result::Err(_) => false,
+        };
+        // Return this actor's id on success, 0 on failure. The id is a packed pid
+        // (node<<48 | serial) and can be NEGATIVE as an i64 when the node id is
+        // large, so the caller must test `== 0`, never `< 0`. The probe casts to
+        // u64, so a negative-as-i64 id round-trips correctly.
+        if ok {
+            unsafe { hew_actor_self_id() }
+        } else {
+            0
+        }
+    }
+    // Liveness probe: a surviving linker answers; a crashed one cannot.
+    receive fn ping() -> i64 {
+        7
+    }
+}
+
 // Bounded poll for the remote actor: retry Node::lookup until registry gossip
 // resolves it, instead of a single fixed-interval sleep. ~50 attempts at 100 ms
 // = 5 s deadline, generous for loopback gossip while still failing closed if the
@@ -212,8 +278,14 @@ fn run_server(port: string, scenario: string) {
         // The harness reads this PASS line from the server's stdout.
         scenario_server_watcher_node_death(0);
     } else {
-        // All other scenarios: stay alive until the harness kills us.
-        sleep(2m);
+        if scenario == "cross_node_monitor_close_reclaim" {
+            // The server watches its target-side count rise then fall after
+            // the client closes its cross-node monitor (CTRL_DEMONITOR received).
+            scenario_server_monitor_close_reclaim();
+        } else {
+            // All other scenarios: stay alive until the harness kills us.
+            sleep(2m);
+        }
     }
     Node::shutdown();
 }
@@ -297,7 +369,7 @@ fn scenario_remote_ask(kv: RemotePid<KeyValue>) -> i64 {
 // Sends a #[wire] enum (WireCmd) with EXPLICIT @N variant tags via two remote
 // asks — a payload variant (Move, the map-of-one body) and a unit variant (Ping,
 // the bare-tag body) — and checks the #[wire] struct reply (WireResult, an
-// @N-keyed map) field-by-field. This is the distinct thing DIST-4 proves: an
+// @N-keyed map) field-by-field. This is the distinct thing this scenario proves: an
 // explicit-@N tagged CBOR body crossing two OS processes in both directions,
 // which the plain-record/enum remote_ask scenario does not exercise.
 fn scenario_wire_cbor(wp: RemotePid<WireProbe>) -> i64 {
@@ -443,7 +515,7 @@ fn scenario_remote_monitor_conn_drop(kv: RemotePid<KeyValue>) -> i64 {
 
 // Scenario: partition_ask
 //
-// The DIST-7 partition gate. The client looks up the remote actor, signals
+// The partition gate. The client looks up the remote actor, signals
 // READY_DROP so the harness can kill the server (dropping the route to the
 // peer), then issues a remote ask to the now-unreachable actor. The invariant
 // under test is: the ask FAILS CLOSED — it resolves to a typed AskError WITHOUT
@@ -543,7 +615,7 @@ fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
 
 // Scenario: monitor_watcher_node_death
 //
-// F2 two-process fixture: the watcher node dies and the target-side
+// Two-process fixture: the watcher node dies and the target-side
 // RemoteWatcher entries it registered are pruned, keeping the table bounded.
 //
 // Server role: registers the target actor, prints READY, then polls
@@ -616,6 +688,198 @@ fn scenario_client_watcher_node_death(kv: RemotePid<KeyValue>) -> i64 {
     down_reason
 }
 
+// ── Cross-node link scenarios ────────────────────────────────────────────────
+
+// Spawn a Linker, tell it to establish the cross-node link (capturing its actor
+// id from the reply), drive the remote actor to a terminal state, then poll the
+// linker's terminal state. With CrashLinked the linker must reach Crashed (5):
+// the cross-node link-down landed in its mailbox as a SYS_MSG_EXIT and crashed
+// it. `policy_sel` 0 = CrashLinked. `drive` selects how the remote dies.
+fn link_cascade_common(kv: RemotePid<KeyValue>, scenario: string, drive: string) -> i64 {
+    let linker = spawn Linker(policy_sel: 0);
+    // Establish the link from inside the linker's own handler; the reply is its
+    // actor id (or -1 on a registration failure).
+    let linker_id = await linker.link_go(kv);
+    let lid = match linker_id {
+        Result::Ok(id) => id,
+        Result::Err(_) => {
+            println(f"FAIL {scenario} link-ask-error");
+            return 2;
+        },
+    };
+    if lid == 0 {
+        println(f"FAIL {scenario} link-register-failed");
+        return 3;
+    }
+    // Drive the remote actor to its terminal state per the scenario.
+    if drive == "stop" {
+        let t = kv.tell(KvReq::StopSelf);
+        match t {
+            Result::Err(_) => {
+                println(f"FAIL {scenario} stop-send-error");
+                return 4;
+            },
+            Result::Ok(_) => {},
+        }
+    } else {
+        if drive == "crash" {
+            let t = kv.tell(KvReq::CrashSelf);
+            match t {
+                Result::Err(_) => {
+                    println(f"FAIL {scenario} crash-send-error");
+                    return 4;
+                },
+                Result::Ok(_) => {},
+            }
+        }
+        // drive == "partition": the harness kills the server; nothing to send.
+    }
+    if drive == "partition" {
+        // Signal readiness so the harness kills the server now that the link is
+        // established. The remote actor stays alive; only the connection drops.
+        println(f"READY_DROP {scenario}");
+    }
+    // Poll the linker's terminal state until the cascade crashes it (or a bound
+    // elapses). The probe returns the recorded terminal reason or -999 while live.
+    var attempts: i64 = 0;
+    loop {
+        let st = unsafe { hew_link_probe_terminal_state(lid) };
+        if st == 5 {
+            println(f"PASS {scenario} linker-crashed reason={st}");
+            return 0;
+        }
+        if st >= 0 {
+            // Reached a terminal state other than Crashed — unexpected for a
+            // CrashLinked cascade (a clean Stopped would be a fail-open bug).
+            println(f"FAIL {scenario} linker-terminal-wrong reason={st}");
+            return 5;
+        }
+        attempts = attempts + 1;
+        if attempts >= 300 {
+            println(f"FAIL {scenario} linker-never-crashed");
+            return 6;
+        }
+        sleep(100ms);
+    }
+}
+
+fn scenario_link_remote_clean_exit(kv: RemotePid<KeyValue>) -> i64 {
+    link_cascade_common(kv, "link_remote_clean_exit", "stop")
+}
+
+fn scenario_link_remote_crash(kv: RemotePid<KeyValue>) -> i64 {
+    link_cascade_common(kv, "link_remote_crash", "crash")
+}
+
+fn scenario_link_remote_partition(kv: RemotePid<KeyValue>) -> i64 {
+    link_cascade_common(kv, "link_remote_partition", "partition")
+}
+
+// Negative case: a non-CrashLinked link policy (MonitorLost) must NOT crash the
+// linker when the remote dies. After driving the remote to a clean exit, the
+// linker must STILL answer a liveness ask — proving the policy discriminator has
+// teeth and a non-CrashLinked link does not synthesize a fatal EXIT.
+fn scenario_link_remote_non_crashlinked(kv: RemotePid<KeyValue>) -> i64 {
+    let linker = spawn Linker(policy_sel: 1);
+    let linker_id = await linker.link_go(kv);
+    let lid = match linker_id {
+        Result::Ok(id) => id,
+        Result::Err(_) => {
+            println("FAIL link_remote_non_crashlinked link-ask-error");
+            return 2;
+        },
+    };
+    if lid == 0 {
+        println("FAIL link_remote_non_crashlinked link-register-failed");
+        return 3;
+    }
+    let t = kv.tell(KvReq::StopSelf);
+    match t {
+        Result::Err(_) => {
+            println("FAIL link_remote_non_crashlinked stop-send-error");
+            return 4;
+        },
+        Result::Ok(_) => {},
+    }
+    // Give the cross-node link-down ample time to (wrongly) crash the linker.
+    sleep(1500ms);
+    // The probe must NOT report a terminal state — the linker survived.
+    let st = unsafe { hew_link_probe_terminal_state(lid) };
+    if st >= 0 {
+        println(f"FAIL link_remote_non_crashlinked linker-crashed reason={st}");
+        return 5;
+    }
+    // Liveness confirmation: a surviving linker still answers an ask.
+    let ping = await linker.ping();
+    match ping {
+        Result::Ok(_) => {
+            println("PASS link_remote_non_crashlinked linker-survived");
+            0
+        },
+        Result::Err(_) => {
+            println("FAIL link_remote_non_crashlinked linker-unreachable");
+            6
+        },
+    }
+}
+
+// Cross-node demonitor reclamation (server-driven, mirrors the watcher-node-death
+// proof). The client monitors the remote actor, then explicitly
+// closes the MonitorRef. The close must route to the cross-node teardown (not
+// the local-table no-op), sending a CTRL_DEMONITOR to the peer. The SERVER
+// observes its target-side entry appear (count>0) then disappear (count==0)
+// after the demonitor — proving the close reached the peer (the watcher-side
+// entry was reclaimed locally AND the peer was told). The server prints the
+// PASS; this client just registers, signals ready, closes, and exits cleanly.
+fn scenario_server_monitor_close_reclaim() {
+    var registered: i64 = 0;
+    var wait_attempts: i64 = 0;
+    loop {
+        let c = unsafe { hew_dist_monitor_remote_watcher_count() };
+        if c > 0 {
+            registered = c;
+            println(f"READY_SERVER_WATCHER_REGISTERED cross_node_monitor_close_reclaim count={registered}");
+            break;
+        }
+        wait_attempts = wait_attempts + 1;
+        if wait_attempts >= 200 {
+            println(f"FAIL cross_node_monitor_close_reclaim server-no-watcher last-count={c}");
+            return;
+        }
+        sleep(100ms);
+    }
+    var reclaim_attempts: i64 = 0;
+    loop {
+        let c = unsafe { hew_dist_monitor_remote_watcher_count() };
+        if c == 0 {
+            println(f"PASS cross_node_monitor_close_reclaim reclaimed={registered}");
+            return;
+        }
+        reclaim_attempts = reclaim_attempts + 1;
+        if reclaim_attempts >= 200 {
+            println(f"FAIL cross_node_monitor_close_reclaim reclaim-timeout count={c}");
+            return;
+        }
+        sleep(100ms);
+    }
+}
+
+fn scenario_client_monitor_close_reclaim(kv: RemotePid<KeyValue>) -> i64 {
+    let m: MonitorRef = monitor(kv);
+    // Signal the watch is live so the server records the target-side entry and
+    // confirms (READY_SERVER_WATCHER_REGISTERED) before we close, closing the
+    // registration race.
+    println("READY_CLIENT_WATCHER cross_node_monitor_close_reclaim");
+    // Give the server time to record the target-side entry before we demonitor.
+    sleep(800ms);
+    // Close the monitor: must route cross-node (send CTRL_DEMONITOR to the peer
+    // + reclaim the local watcher entry), not hit the local table and no-op.
+    m.close();
+    // Stay alive briefly so the CTRL_DEMONITOR is delivered before shutdown.
+    sleep(800ms);
+    0
+}
+
 fn run_client(port: string, scenario: string) -> i64 {
     let remote_addr = f"127.0.0.1:{port}";
     Node::set_transport("tcp");
@@ -662,8 +926,28 @@ fn run_client(port: string, scenario: string) -> i64 {
                                     if scenario == "monitor_watcher_node_death" {
                                         scenario_client_watcher_node_death(kv)
                                     } else {
-                                        println(f"FAIL {scenario} unknown-scenario");
-                                        90
+                                        if scenario == "link_remote_clean_exit" {
+                                            scenario_link_remote_clean_exit(kv)
+                                        } else {
+                                            if scenario == "link_remote_crash" {
+                                                scenario_link_remote_crash(kv)
+                                            } else {
+                                                if scenario == "link_remote_partition" {
+                                                    scenario_link_remote_partition(kv)
+                                                } else {
+                                                    if scenario == "link_remote_non_crashlinked" {
+                                                        scenario_link_remote_non_crashlinked(kv)
+                                                    } else {
+                                                        if scenario == "cross_node_monitor_close_reclaim" {
+                                                            scenario_client_monitor_close_reclaim(kv)
+                                                        } else {
+                                                            println(f"FAIL {scenario} unknown-scenario");
+                                                            90
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }

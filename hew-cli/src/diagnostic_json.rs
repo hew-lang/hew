@@ -504,7 +504,8 @@ mod tests {
             None,
             None,
             "NotYetImplemented",
-            "MIR lowering for HirExprKind::RegexLiteralRef is not implemented yet",
+            "MIR lowering for functional-update override aliasing the consumed base \
+             is not implemented yet",
             &[],
             &["MIR kind: NotYetImplemented".to_string()],
         );

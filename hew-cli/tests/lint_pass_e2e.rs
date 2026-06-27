@@ -256,24 +256,30 @@ fn dead_code_deny_promotes_to_error() {
 }
 
 /// A `re"..."` literal triggers implicit injection of `import std::text::regex`,
-/// whose body compares `values.len() == 0` internally. The lint sweep runs over
-/// user-authored bodies only, so that standard-library comparison must NOT
-/// surface as a `len_zero_comparison` warning against the user's program. (The
-/// regex literal itself is not yet lowered past the frontend, so `hew check`
-/// still exits non-zero on the `E_NOT_YET_IMPLEMENTED` MIR gate — that error is
-/// the proof the module was pulled in; the lint leak is what we guard against.)
-const REGEX_LITERAL: &str = "fn main() -> i64 {\n    let _r = re\"hello\";\n    return 0;\n}\n";
+/// whose method bodies compare `values.len() == 0` internally. The lint sweep
+/// runs over user-authored bodies only, so that standard-library comparison must
+/// NOT surface as a `len_zero_comparison` warning against the user's program.
+/// The literal is used through the regex API so the library's method bodies are
+/// genuinely pulled into the compilation (the guard is not vacuous), and the
+/// program compiles cleanly — successful `check` is the witness that the implicit
+/// module resolved and lowered.
+const REGEX_LITERAL: &str = "fn main() {\n\
+     let r = re\"hello\";\n\
+     if r.is_match(\"hello world\") {\n\
+     println(\"match\");\n\
+     }\n\
+     }\n";
 
 #[test]
 fn stdlib_lints_do_not_leak_through_implicit_import() {
     let output = run_check(REGEX_LITERAL, &[]);
     let stderr = stderr_of(&output);
-    // Sanity: the implicit `std::text::regex` import was actually resolved and
-    // compiled (otherwise this test would pass vacuously). The regex literal is
-    // not yet lowered, so its MIR gate error is the witness.
+    // Sanity: the implicit `std::text::regex` import was actually resolved,
+    // compiled, and lowered (otherwise this test would pass vacuously). A clean
+    // `check` over a program that uses the regex API is the witness.
     assert!(
-        stderr.contains("RegexLiteralRef") || stderr.contains("regex"),
-        "expected the implicit std::text::regex import to be exercised:\n{stderr}"
+        output.status.success(),
+        "the implicit std::text::regex import must resolve and lower cleanly:\n{stderr}"
     );
     // The actual guard: no lint finding from the library's own source.
     assert!(

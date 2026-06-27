@@ -17,7 +17,7 @@ use std::collections::HashSet;
 
 use inkwell::intrinsics::Intrinsic;
 use inkwell::module::{Linkage, Module as LlvmModule};
-use inkwell::types::{BasicType, BasicTypeEnum, StructType};
+use inkwell::types::{BasicType, BasicTypeEnum, FloatType, IntType, StructType};
 use inkwell::values::{BasicMetadataValueEnum, FunctionValue, IntValue, PointerValue};
 use inkwell::{AddressSpace, IntPredicate};
 
@@ -1132,6 +1132,28 @@ pub(crate) fn get_or_emit_eq_thunk<'ctx>(
     Ok(func)
 }
 
+/// Integer type with the same bit width as `float_ty`, for bit-casting a float
+/// to its raw bit pattern (f32 -> i32, f64 -> i64). Used by the structural eq
+/// and hash thunks so floats compare and hash bitwise/total. The width is
+/// always 32 or 64 here, so `custom_width_int_type` cannot fail in practice;
+/// the `Result` is surfaced fail-closed rather than unwrapped.
+fn float_bits_int_type<'ctx>(
+    ctx: &'ctx Context,
+    float_ty: FloatType<'ctx>,
+) -> CodegenResult<IntType<'ctx>> {
+    let width = float_ty.get_bit_width();
+    let width_nz = std::num::NonZeroU32::new(width).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "float_bits_int_type: float type reported a zero bit width ({width})"
+        ))
+    })?;
+    ctx.custom_width_int_type(width_nz).map_err(|e| {
+        CodegenError::Llvm(format!(
+            "float_bits_int_type: custom_width_int_type({width}): {e}"
+        ))
+    })
+}
+
 /// Emit a chain of field-by-field equality checks for `elem_ty`.  After all
 /// checks succeed control flows to `ret_true_bb`; any failed check branches
 /// directly to `ret_false_bb`.  The builder must be positioned at a block
@@ -1246,8 +1268,9 @@ fn emit_eq_thunk_body<'ctx>(
         }
         BasicTypeEnum::ArrayType(arr_ty) => {
             // Arrays of equality-eligible elements: compare element-by-element.
-            // The checker eligibility gate forbids float/managed fields, so any
-            // array we see here has integer/aggregate elements.
+            // Elements may be integers, floats (compared bitwise via the
+            // FloatType arm of `emit_eq_thunk_field_check`), or nested
+            // aggregates; the checker rejects managed/owned leaves upstream.
             let len = arr_ty.len();
             if len == 0 {
                 fn_ctx
@@ -1305,15 +1328,45 @@ fn emit_eq_thunk_body<'ctx>(
             }
             Ok(())
         }
-        BasicTypeEnum::FloatType(_) => {
-            // The checker eligibility gate (Slice 1) rejects every record /
-            // tuple type that contains a float field before `_layout`
-            // contains can reach codegen.  A float type at this point is a
-            // checker-gate bypass — fail closed instead of silently emitting
-            // an `fcmp` that would have NaN semantics.
-            Err(CodegenError::FailClosed(
-                "eq_thunk: float field reached codegen — checker gate bypassed".into(),
-            ))
+        BasicTypeEnum::FloatType(float_ty) => {
+            // Structural float equality is BITWISE/total, not IEEE numeric:
+            // bit-cast each float to a same-width integer and compare the bit
+            // patterns. This is reflexive (NaN==NaN when bits are identical)
+            // and treats +0.0 / -0.0 as distinct — the property structural
+            // equality needs so the equal-implies-equal-hash contract holds
+            // (the hash thunk hashes the same bit pattern). A bare scalar
+            // `f64 == f64` keeps IEEE `fcmp` semantics via MIR `FloatCmp`; only
+            // the structural path (record/enum/Vec element) reaches this thunk.
+            let lv = fn_ctx
+                .builder
+                .build_load(float_ty, lhs, "eq_lhs")
+                .llvm_ctx("eq_thunk float lhs load")?
+                .into_float_value();
+            let rv = fn_ctx
+                .builder
+                .build_load(float_ty, rhs, "eq_rhs")
+                .llvm_ctx("eq_thunk float rhs load")?
+                .into_float_value();
+            let int_ty = float_bits_int_type(fn_ctx.ctx, float_ty)?;
+            let lv_bits = fn_ctx
+                .builder
+                .build_bit_cast(lv, int_ty, "eq_lhs_bits")
+                .llvm_ctx("eq_thunk float lhs bitcast")?
+                .into_int_value();
+            let rv_bits = fn_ctx
+                .builder
+                .build_bit_cast(rv, int_ty, "eq_rhs_bits")
+                .llvm_ctx("eq_thunk float rhs bitcast")?
+                .into_int_value();
+            let eq = fn_ctx
+                .builder
+                .build_int_compare(IntPredicate::EQ, lv_bits, rv_bits, "eq_float_bits")
+                .llvm_ctx("eq_thunk float icmp")?;
+            fn_ctx
+                .builder
+                .build_conditional_branch(eq, ret_true_bb, ret_false_bb)
+                .llvm_ctx("eq_thunk float br")?;
+            Ok(())
         }
         BasicTypeEnum::PointerType(_) => emit_eq_thunk_field_check(
             fn_ctx,
@@ -1389,9 +1442,41 @@ fn emit_eq_thunk_field_check<'ctx>(
                 .into_int_value();
             emit_eq_i32_result_branch(fn_ctx, raw, success_bb, fail_bb, "eq_field_nested")
         }
-        BasicTypeEnum::FloatType(_) => Err(CodegenError::FailClosed(
-            "eq_thunk: float field reached codegen — checker gate bypassed".into(),
-        )),
+        BasicTypeEnum::FloatType(float_ty) => {
+            // Bitwise/total float field equality — see `emit_eq_thunk_body`'s
+            // FloatType arm for the semantics. Compare the bit patterns so the
+            // relation is reflexive and matches the bit-pattern hash.
+            let lv = fn_ctx
+                .builder
+                .build_load(float_ty, lhs_field, "eq_field_lhs")
+                .llvm_ctx("eq_thunk field float lhs load")?
+                .into_float_value();
+            let rv = fn_ctx
+                .builder
+                .build_load(float_ty, rhs_field, "eq_field_rhs")
+                .llvm_ctx("eq_thunk field float rhs load")?
+                .into_float_value();
+            let int_ty = float_bits_int_type(fn_ctx.ctx, float_ty)?;
+            let lv_bits = fn_ctx
+                .builder
+                .build_bit_cast(lv, int_ty, "eq_field_lhs_bits")
+                .llvm_ctx("eq_thunk field float lhs bitcast")?
+                .into_int_value();
+            let rv_bits = fn_ctx
+                .builder
+                .build_bit_cast(rv, int_ty, "eq_field_rhs_bits")
+                .llvm_ctx("eq_thunk field float rhs bitcast")?
+                .into_int_value();
+            let eq = fn_ctx
+                .builder
+                .build_int_compare(IntPredicate::EQ, lv_bits, rv_bits, "eq_field_float_cmp")
+                .llvm_ctx("eq_thunk field float icmp")?;
+            fn_ctx
+                .builder
+                .build_conditional_branch(eq, success_bb, fail_bb)
+                .llvm_ctx("eq_thunk field float br")?;
+            Ok(())
+        }
         BasicTypeEnum::PointerType(_) => match resolved_ty {
             Some(ResolvedTy::String) => {
                 let lhs_v = fn_ctx
@@ -1762,9 +1847,34 @@ fn emit_hash_thunk_body<'ctx>(
             }
             Ok(())
         }
-        BasicTypeEnum::FloatType(_) => Err(CodegenError::FailClosed(
-            "hash_thunk: float field reached codegen — checker eligibility gate bypassed".into(),
-        )),
+        BasicTypeEnum::FloatType(float_ty) => {
+            // Hash the float BIT PATTERN so `==` (bitwise/total — see the eq
+            // thunk) implies an equal hash: bit-cast to a same-width integer,
+            // zero-extend to i64, and run the same FNV-1a mix every scalar
+            // field uses. NaN hashes by its bits like any other value; +0.0 and
+            // -0.0 hash differently (matching their bitwise inequality).
+            let loaded = fn_ctx
+                .builder
+                .build_load(float_ty, base_ptr, "hash_float_load")
+                .llvm_ctx("hash_thunk float load")?
+                .into_float_value();
+            let int_ty = float_bits_int_type(ctx, float_ty)?;
+            let bits = fn_ctx
+                .builder
+                .build_bit_cast(loaded, int_ty, "hash_float_bits")
+                .llvm_ctx("hash_thunk float bitcast")?
+                .into_int_value();
+            let zext = if int_ty.get_bit_width() < 64 {
+                fn_ctx
+                    .builder
+                    .build_int_z_extend(bits, i64_ty, "hash_float_zext")
+                    .llvm_ctx("hash_thunk float zext")?
+            } else {
+                bits
+            };
+            mix_into_hash_acc(fn_ctx, acc_slot, zext)?;
+            Ok(())
+        }
         BasicTypeEnum::PointerType(_) => match resolved_ty {
             // A `string` field inside a hash key: load the owned `*const c_char`
             // and hash its NUL-terminated payload via `hew_string_hash_fnv1a`

@@ -95,7 +95,10 @@ fn layout_element_hashset_methods_dual_emit_resolved_calls() {
 }
 
 #[test]
-fn unsupported_float_hashset_stays_checker_rejected_and_unresolved() {
+fn float_hashset_is_admitted_via_layout_element_path() {
+    // f64 satisfies Hash + Eq (bitwise/total), so `HashSet<f64>` is admitted
+    // through the bounded `Set<T: Hash + Eq>` impl and routes to the layout
+    // element path, whose codegen hash/eq thunks compare the bit pattern.
     let output = typecheck(
         r"
         fn main() {
@@ -106,11 +109,16 @@ fn unsupported_float_hashset_stays_checker_rejected_and_unresolved() {
     );
 
     assert!(
-        !output.errors.is_empty(),
-        "HashSet<f64> must remain rejected by the legacy Stage-B allowlist"
+        output.errors.is_empty(),
+        "HashSet<f64> must be admitted under bitwise float Hash/Eq; got: {:?}",
+        output.errors
     );
     assert!(
-        output.resolved_calls.is_empty(),
-        "rejected HashSet<f64> sites must not receive ResolvedCall entries"
+        output
+            .resolved_calls
+            .values()
+            .any(|call| { call.target.symbol_name == "hew_hashset_insert_layout" }),
+        "HashSet<f64>::insert must route to the layout element path: {:#?}",
+        output.resolved_calls
     );
 }

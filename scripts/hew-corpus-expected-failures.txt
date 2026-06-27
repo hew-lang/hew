@@ -85,11 +85,8 @@ examples/v05/channel_vec_element_fails.hew
 # deferred-nyi: checked-mir v05 examples using NYI features
 examples/v05/checked-mir/actor_link_monitor.hew
 
-# deferred-nyi: f64 key/annotation expected-fail test fixtures
-examples/v05/hashmap_f64_annotation_fails.hew
-examples/v05/hashmap_f64_key_fails.hew
+# deferred-nyi: f64 hashmap/hashset expected-fail test fixtures (is_empty / clear NYI)
 examples/v05/hashmap_f64_key_is_empty_fails.hew
-examples/v05/hashset_f64_annotation_fails.hew
 examples/v05/hashset_f64_clear_fails.hew
 
 # deferred-nyi: channel/stream surfaces NYI

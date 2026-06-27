@@ -185,24 +185,30 @@ fn actor_ref_is_frozen() {
 // ===========================================================================
 
 // ===========================================================================
-// Float trait edge cases (NaN issues)
+// Float trait edge cases: Eq + Hash bitwise/total, Ord still partial
 // ===========================================================================
 
 #[test]
-fn floats_not_eq_ord_hash() {
+fn floats_are_eq_and_hash_but_not_ord() {
     let reg = TraitRegistry::new();
     for ty in [Ty::F32, Ty::F64] {
+        // Eq + Hash hold under bitwise/total semantics.
         assert!(
-            !reg.implements_marker(&ty, MarkerTrait::Eq),
-            "{ty:?} should NOT be Eq"
+            reg.implements_marker(&ty, MarkerTrait::Eq),
+            "{ty:?} should be Eq (bitwise/total)"
+        );
+        assert!(
+            reg.implements_marker(&ty, MarkerTrait::Hash),
+            "{ty:?} should be Hash (bit-pattern)"
+        );
+        // Ord stays IEEE-partial: floats are PartialOrd, not Ord.
+        assert!(
+            reg.implements_marker(&ty, MarkerTrait::PartialOrd),
+            "{ty:?} should be PartialOrd"
         );
         assert!(
             !reg.implements_marker(&ty, MarkerTrait::Ord),
-            "{ty:?} should NOT be Ord"
-        );
-        assert!(
-            !reg.implements_marker(&ty, MarkerTrait::Hash),
-            "{ty:?} should NOT be Hash"
+            "{ty:?} should NOT be Ord (ordering stays IEEE-partial)"
         );
     }
 }
@@ -702,9 +708,23 @@ fn trait_with_associated_types() {
 #[test]
 fn vec_of_non_eq_is_not_eq() {
     let reg = TraitRegistry::new();
-    // F64 is not Eq (NaN), so Vec<F64> shouldn't be Eq either
-    let vec_f64 = named_with("Vec", vec![Ty::F64]);
-    assert!(!reg.implements_marker(&vec_f64, MarkerTrait::Eq));
+    // A function-typed element is not Eq, so Vec<fn(..)> is not Eq either.
+    // `normalize_named` tags the builtin so the collection element-derivation
+    // arm runs (a `builtin: None` "Vec" would be an unknown user type).
+    let fn_ty = Ty::Function {
+        params: vec![Ty::I32],
+        ret: Box::new(Ty::Bool),
+    };
+    let vec_fn = Ty::normalize_named("Vec".to_string(), vec![fn_ty]);
+    assert!(!reg.implements_marker(&vec_fn, MarkerTrait::Eq));
+}
+
+#[test]
+fn vec_of_float_is_eq() {
+    let reg = TraitRegistry::new();
+    // F64 is Eq under bitwise/total semantics, so Vec<F64> is Eq too.
+    let vec_f64 = Ty::normalize_named("Vec".to_string(), vec![Ty::F64]);
+    assert!(reg.implements_marker(&vec_f64, MarkerTrait::Eq));
 }
 
 // ===========================================================================

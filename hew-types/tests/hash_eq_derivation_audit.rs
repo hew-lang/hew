@@ -25,8 +25,10 @@
 //!   `hash_eligibility` admits today must be a `MarkerTrait::Hash` and
 //!   `MarkerTrait::Eq` member; otherwise Stage C's replacement gate
 //!   would reject what the legacy gate accepted.
-//! - **NaN-ineligible ⇒ NOT Hash, NOT Eq.** `f32`/`f64` violate the
-//!   hash/equality contract and must be rejected at both levels.
+//! - **Floats ARE Hash + Eq (bitwise/total).** `f32`/`f64` implement Hash and
+//!   Eq via their bit pattern (NaN==NaN when bits match, reflexive; +0.0 != -0.0).
+//!   Ord stays IEEE-partial. `hash_eligibility` also admits float-bearing
+//!   records as layout keys.
 //! - **Heap-eligible at type level but layout-ineligible.** `String`
 //!   and `Bytes` ARE Hash + Eq at the type level (Stage C will admit
 //!   `HashMap<String, _>` via the bounds predicate), but
@@ -95,13 +97,16 @@ fn bool_char_duration_are_hash_and_eq() {
     assert_hash_eq_pos(&reg, &Ty::Duration, "duration");
 }
 
-// ---- NaN-ineligible floats MUST NOT be Hash or Eq at any level ----
+// ---- Floats ARE Hash + Eq under bitwise/total semantics ----
 
 #[test]
-fn floats_are_neither_hash_nor_eq() {
+fn floats_are_hash_and_eq_bitwise() {
     let reg = r();
-    assert_hash_eq_neg(&reg, &Ty::F32, "f32 (NaN hazard)");
-    assert_hash_eq_neg(&reg, &Ty::F64, "f64 (NaN hazard)");
+    assert_hash_eq_pos(&reg, &Ty::F32, "f32 (bitwise/total)");
+    assert_hash_eq_pos(&reg, &Ty::F64, "f64 (bitwise/total)");
+    // Ord stays IEEE-partial: floats are PartialOrd but not Ord.
+    assert!(reg.implements_marker(&Ty::F64, MarkerTrait::PartialOrd));
+    assert!(!reg.implements_marker(&Ty::F64, MarkerTrait::Ord));
 }
 
 // ---- Heap-eligible-at-type-level but layout-ineligible (documented gap) ----
@@ -139,7 +144,7 @@ fn record_of_hash_eligible_primitives_is_hash_and_eq() {
 }
 
 #[test]
-fn record_containing_float_is_neither_hash_nor_eq() {
+fn record_containing_float_is_hash_and_eq() {
     let mut reg = r();
     reg.register_type("FPoint".into(), vec![Ty::F64, Ty::F64]);
     let fpoint = Ty::Named {
@@ -147,7 +152,8 @@ fn record_containing_float_is_neither_hash_nor_eq() {
         args: vec![],
         builtin: None,
     };
-    assert_hash_eq_neg(&reg, &fpoint, "record<f64, f64>");
+    // Float fields compare and hash bitwise, so the record is Hash + Eq.
+    assert_hash_eq_pos(&reg, &fpoint, "record<f64, f64>");
 }
 
 // ---- Layout-tracked-but-rejected: tuples (documented gap) ----
@@ -169,10 +175,11 @@ fn tuple_of_hash_eligible_components_is_hash_and_eq_at_type_level() {
 }
 
 #[test]
-fn tuple_containing_float_is_neither_hash_nor_eq() {
+fn tuple_containing_float_is_hash_and_eq() {
     let reg = r();
     let tup = Ty::Tuple(vec![Ty::I64, Ty::F32]);
-    assert_hash_eq_neg(&reg, &tup, "tuple<i64, f32>");
+    // A tuple of Hash+Eq components (floats included) is Hash + Eq.
+    assert_hash_eq_pos(&reg, &tup, "tuple<i64, f32>");
 }
 
 // ---- Unresolved / platform-dependent / non-record reject paths ----
@@ -182,10 +189,10 @@ fn tuple_containing_float_is_neither_hash_nor_eq() {
 // `Ty::IntLiteral` / `Ty::FloatLiteral` (still unresolved).
 //
 // At the type level: `implements_marker` accepts Isize/Usize/IntLiteral
-// as Hash+Eq (they're primitives in the type system). It rejects
-// `Ty::Var` (a free var is not bound to any marker) and `FloatLiteral`
-// (inherits float NaN rejection). The asymmetries below are documented;
-// the test pins them so the substrate cannot drift.
+// and FloatLiteral as Hash+Eq (they're primitives in the type system;
+// floats use bitwise/total Hash+Eq). It rejects `Ty::Var` (a free var is
+// not bound to any marker). The asymmetries below are documented; the test
+// pins them so the substrate cannot drift.
 
 #[test]
 fn ty_var_is_not_hash_or_eq() {
@@ -195,11 +202,11 @@ fn ty_var_is_not_hash_or_eq() {
 }
 
 #[test]
-fn float_literal_is_not_hash_or_eq() {
+fn float_literal_is_hash_and_eq() {
     let reg = r();
     // Literal forms inherit their numeric family's marker constraints.
-    // FloatLiteral falls under the F32/F64 NaN-rejection rule.
-    assert_hash_eq_neg(&reg, &Ty::FloatLiteral, "FloatLiteral");
+    // FloatLiteral shares the F32/F64 bitwise/total Hash+Eq derivation.
+    assert_hash_eq_pos(&reg, &Ty::FloatLiteral, "FloatLiteral");
 }
 
 #[test]

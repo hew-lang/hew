@@ -1,8 +1,17 @@
 //! Checker-side equality eligibility for layout-backed aggregate elements.
 //!
 //! This predicate is intentionally conservative: anything that would require
-//! ownership-aware, floating-point, or heap-handle equality is rejected before a
-//! later slice can route layout-backed `Vec::contains` through generated thunks.
+//! ownership-aware or heap-handle equality is rejected before a later slice can
+//! route layout-backed `Vec::contains` through generated thunks.
+//!
+//! Floating-point fields (`f32`/`f64`) ARE eligible. Their structural equality
+//! uses bitwise/total semantics — the codegen eq thunk bit-casts each float to
+//! an integer of the same width and compares the bit patterns, so two NaN
+//! values with identical bits compare equal and `+0.0` is distinct from `-0.0`.
+//! This is reflexive (`x == x` for every `x`, including NaN), which is the
+//! property structural equality needs to drive dedup, `contains`, and
+//! `HashMap` keys correctly. It is deliberately different from the IEEE numeric `==` a
+//! bare `f64 == f64` expression lowers to (where `NaN != NaN`).
 //!
 //! Named-type field traversal substitutes generic arguments before walking
 //! fields so generic aggregates can defer parameter-dependent leaves until
@@ -16,7 +25,6 @@ use std::collections::{HashMap, HashSet};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum EqEligibility {
     Eligible,
-    IneligibleFloat(Ty),
     IneligibleManaged(Ty),
     IneligibleOwned(Ty),
     IneligibleUnknown,
@@ -47,8 +55,11 @@ fn eq_ineligibility(
         | Ty::Char
         | Ty::Duration
         | Ty::Unit
+        // Floats are equality-eligible: codegen compares their bit patterns
+        // (bitwise/total semantics — reflexive, NaN==NaN iff identical bits).
+        | Ty::F32
+        | Ty::F64
         | Ty::String => None,
-        Ty::F32 | Ty::F64 => Some(EqEligibility::IneligibleFloat(ty.clone())),
         Ty::Tuple(elems) => elems
             .iter()
             .find_map(|elem| eq_ineligibility(elem, type_defs, type_params)),

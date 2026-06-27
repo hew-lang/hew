@@ -295,12 +295,17 @@ pub enum LoweringFactConsistencyError {
 impl HashMapKeyType {
     /// Derive the key-type discriminant from a checker-resolved type.
     ///
-    /// Admitted: `i64` (including `IntLiteral`), `u64`, and `Named` record
-    /// types (which map to `Layout`; full hash-eligibility walk is deferred
-    /// to C-2c).
+    /// This is the discriminant for the **scalar-key fast path** only. It maps
+    /// `i64` (including `IntLiteral`), `u64`, and `Named` record types (which map
+    /// to `Layout`). Everything else returns `IneligibleKeyType` here — but that
+    /// verdict only means "not a scalar fast-path key", NOT "rejected".
     ///
-    /// Rejected: floats, strings, bool, char, duration, tuples, managed types,
-    /// narrow integer widths, unresolved variables, and error types.
+    /// Bare `f64`/`f32` keys (and any other `Hash + Eq` key not on the fast
+    /// path) are admitted by the bounds-based gate in `admissibility.rs`
+    /// (`validate_hashmap_key_value_types`, `T: Hash + Eq`) and route through the
+    /// **layout** key path, whose codegen hash/eq thunks compare/hash the float
+    /// bit pattern (bitwise/total). So `HashMap<f64, V>` and a float-bearing
+    /// record key both work; their float leaves use the same bitwise thunk.
     ///
     /// # Errors
     ///
@@ -672,11 +677,16 @@ mod tests {
     // ── C-2b: HashMap key type validation ────────────────────────────────────
 
     #[test]
-    fn hashmap_layout_fact_rejects_float_key() {
+    fn hashmap_key_type_float_is_not_a_scalar_fast_path_key() {
+        // `HashMapKeyType::from_ty` is the scalar fast-path classifier only.
+        // A bare f64/f32 key is not on the scalar fast path (it has no scalar
+        // key discriminant), so `from_ty` returns Err — but the key is still
+        // ADMITTED elsewhere, via the `T: Hash + Eq` bounds gate, and routes
+        // through the layout key path with the bitwise hash/eq thunk.
         let f64_result = HashMapKeyType::from_ty(&Ty::F64);
         assert!(
             f64_result.is_err(),
-            "f64 is ineligible as a HashMap key (floats are not hash-eligible)"
+            "f64 is not a scalar fast-path key (it routes through the layout path)"
         );
         assert_eq!(
             f64_result.unwrap_err(),

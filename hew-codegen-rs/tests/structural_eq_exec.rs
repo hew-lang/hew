@@ -88,6 +88,13 @@ fn run_record_eq_executes() {
 }
 
 #[test]
+fn run_float_eq_executes() {
+    // Structural equality over f64 fields is bitwise/total: reflexive (NaN==NaN
+    // when bits match) and +0.0 != -0.0. The .expected output pins both teeth.
+    run_fixture(&repo_root(), "records", "run_float_eq");
+}
+
+#[test]
 fn run_payload_enum_eq_executes() {
     run_fixture(&repo_root(), "enums", "run_payload_enum_eq");
 }

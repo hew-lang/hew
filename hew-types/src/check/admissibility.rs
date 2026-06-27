@@ -3506,18 +3506,22 @@ mod tests {
     }
 
     #[test]
-    fn finalize_hashmap_named_key_float_field_emits_error() {
+    fn finalize_hashmap_named_key_float_field_is_admitted() {
+        use crate::lowering_facts::{HashMapAbi, HashMapLoweringFactState};
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let span = 50..60;
-        // record Bad { x: f64 } — ineligible due to float
-        checker
-            .type_defs
-            .insert("Bad".to_string(), make_record("Bad", vec![("x", Ty::F64)]));
+        // record FKey { x: f64 } — float fields hash on their bit pattern, so
+        // the record is hash-eligible and admitted as a layout key.
+        let key = SpanKey::in_module(&span, 0);
+        checker.type_defs.insert(
+            "FKey".to_string(),
+            make_record("FKey", vec![("x", Ty::F64)]),
+        );
         checker.deferred_hashmap_admission.insert(
-            SpanKey::in_module(&span, 0),
+            key.clone(),
             DeferredHashMapAdmission {
                 span: span.clone(),
-                key_ty: Ty::normalize_named("Bad".to_string(), vec![]),
+                key_ty: Ty::normalize_named("FKey".to_string(), vec![]),
                 val_ty: Ty::I64,
                 source_module: None,
                 is_abstract_key_param: false,
@@ -3525,13 +3529,23 @@ mod tests {
         );
         checker.finalize_hashmap_admission();
         assert!(
-            !checker.errors.is_empty(),
-            "float-field key must produce a diagnostic"
+            checker.errors.is_empty(),
+            "float-field key must be admitted (bitwise hash); got: {:?}",
+            checker.errors
         );
+        let fact = checker
+            .hashmap_layout_facts
+            .get(&key)
+            .expect("admitted float-field key must produce a layout fact");
+        assert_eq!(fact.state, HashMapLoweringFactState::Pending);
         assert!(
-            checker.hashmap_layout_facts.is_empty(),
-            "no layout fact must be produced for ineligible key"
+            matches!(&fact.abi, HashMapAbi::LayoutKey { key_record_name, .. } if key_record_name == "FKey"),
+            "abi must be LayoutKey with key_record_name == FKey; got: {:?}",
+            fact.abi
         );
+        // One f64 field → size=8, align=8.
+        assert_eq!(fact.key_size, Some(8));
+        assert_eq!(fact.key_align, Some(8));
     }
 
     #[test]
@@ -3587,29 +3601,43 @@ mod tests {
     }
 
     #[test]
-    fn finalize_hashset_named_elem_float_field_emits_error() {
+    fn finalize_hashset_named_elem_float_field_is_admitted() {
+        use crate::lowering_facts::{HashMapLoweringFactState, HashSetAbi};
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let span = 90..100;
-        // record Bad { v: f32 }
-        checker
-            .type_defs
-            .insert("Bad".to_string(), make_record("Bad", vec![("v", Ty::F32)]));
+        // record FElem { v: f32 } — float fields hash on their bit pattern, so
+        // the record is hash-eligible and admitted as a layout element.
+        let key = SpanKey::in_module(&span, 0);
+        checker.type_defs.insert(
+            "FElem".to_string(),
+            make_record("FElem", vec![("v", Ty::F32)]),
+        );
         checker.pending_lowering_facts.insert(
-            SpanKey::in_module(&span, 0),
+            key.clone(),
             crate::check::types::PendingLoweringFact {
-                hashset_element_ty: Ty::normalize_named("Bad".to_string(), vec![]),
+                hashset_element_ty: Ty::normalize_named("FElem".to_string(), vec![]),
                 source_module: None,
             },
         );
         let _result = checker.finalize_lowering_facts();
         assert!(
-            !checker.errors.is_empty(),
-            "float-field element must produce a diagnostic"
+            checker.errors.is_empty(),
+            "float-field element must be admitted (bitwise hash); got: {:?}",
+            checker.errors
         );
+        let fact = checker
+            .hashset_layout_facts
+            .get(&key)
+            .expect("admitted float-field element must produce a layout fact");
+        assert_eq!(fact.state, HashMapLoweringFactState::Pending);
         assert!(
-            checker.hashset_layout_facts.is_empty(),
-            "no layout fact must be produced for ineligible element"
+            matches!(&fact.abi, HashSetAbi::Layout { elem_record_name } if elem_record_name == "FElem"),
+            "abi must be Layout with elem_record_name == FElem; got: {:?}",
+            fact.abi
         );
+        // One f32 field → size=4, align=4.
+        assert_eq!(fact.elem_size, Some(4));
+        assert_eq!(fact.elem_align, Some(4));
     }
 
     // ── Additional admissibility tests from independent review ────────────────

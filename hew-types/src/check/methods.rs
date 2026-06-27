@@ -481,23 +481,6 @@ impl Checker {
                                 // TypeDef not found — silently drop; lookup failure
                                 // is a pre-existing error from the type-resolution pass.
                             }
-                            HashEligibility::IneligibleFloat(bad_ty) => {
-                                let span = span_key.start..span_key.end;
-                                let mut err = crate::error::TypeError::new(
-                                    TypeErrorKind::InvalidOperation,
-                                    span,
-                                    format!(
-                                        "HashSet element type `{name}` contains a floating-point \
-                                         field (`{}`); floats are not hash-eligible because \
-                                         NaN != NaN would corrupt element lookup semantics",
-                                        bad_ty.user_facing(),
-                                    ),
-                                );
-                                if let Some(module) = &pending_fact.source_module {
-                                    err = err.with_source_module(module.clone());
-                                }
-                                new_errors.push(err);
-                            }
                             HashEligibility::IneligibleManaged(bad_ty) => {
                                 let span = span_key.start..span_key.end;
                                 let msg = if bad_ty == resolved_ty {
@@ -821,23 +804,6 @@ impl Checker {
                                 new_errors.push(err);
                             }
                         }
-                    }
-
-                    HashEligibility::IneligibleFloat(bad_ty) => {
-                        let mut err = crate::error::TypeError::new(
-                            TypeErrorKind::InvalidOperation,
-                            check.span.clone(),
-                            format!(
-                                "HashMap key type `{key_name}` contains a floating-point field \
-                                 (`{}`); floats are not hash-eligible because NaN != NaN would \
-                                 corrupt key lookup semantics",
-                                bad_ty.user_facing(),
-                            ),
-                        );
-                        if let Some(module) = check.source_module {
-                            err = err.with_source_module(module);
-                        }
-                        new_errors.push(err);
                     }
 
                     HashEligibility::IneligibleManaged(bad_ty) => {
@@ -4456,12 +4422,6 @@ impl Checker {
                 "`Vec::contains` on layout-backed element type `{}` is equality-eligible, \
                  but layout contains is not yet supported for this element type",
                 elem_ty.user_facing()
-            ),
-            EqEligibility::IneligibleFloat(float_ty) => format!(
-                "`Vec::contains` on layout-backed element type `{}` requires aggregate \
-                 equality, but `{}` is or contains floating-point data",
-                elem_ty.user_facing(),
-                float_ty.user_facing()
             ),
             EqEligibility::IneligibleManaged(managed_ty) => format!(
                 "`Vec::contains` on layout-backed element type `{}` requires aggregate \

@@ -2302,7 +2302,10 @@ fn vec_contains_eligible_copy_record_compiles_after_w3_032_slice_3() {
 }
 
 #[test]
-fn vec_contains_tuple_element_is_layout_fail_closed() {
+fn vec_contains_float_tuple_element_now_typechecks() {
+    // A `(i32, f64)` tuple is equality-eligible (floats compare bitwise) and
+    // Copy, so `Vec<(i32, f64)>::contains` is admitted; the float leaves hash
+    // and compare on their bit pattern in the layout thunk.
     let output = typecheck(
         r"
         fn main() {
@@ -2312,21 +2315,16 @@ fn vec_contains_tuple_element_is_layout_fail_closed() {
         ",
     );
     assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains("`Vec::contains`")
-                && e.message.contains("floating-point")
-                && e.message.contains("f64")
-                && e.message.contains("no runtime method rewrite was recorded")),
-        "Expected layout fail-closed diagnostic for Vec<(i32,f64)>::contains, got: {:?}",
+        output.errors.is_empty(),
+        "Vec<(i32,f64)>::contains must compile under bitwise float equality: {:?}",
         output.errors
     );
 }
 
 #[test]
-fn vec_contains_float_record_element_has_eq_eligibility_diagnostic() {
+fn vec_contains_float_record_element_now_typechecks() {
+    // A record with an `f32` field is equality-eligible and Copy: `contains`
+    // is admitted and the float field compares on its bit pattern.
     let output = typecheck(
         r"
         type Measurement {
@@ -2340,14 +2338,8 @@ fn vec_contains_float_record_element_has_eq_eligibility_diagnostic() {
         ",
     );
     assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains("`Vec::contains`")
-                && e.message.contains("floating-point")
-                && e.message.contains("f32")),
-        "Expected float-field equality eligibility diagnostic, got: {:?}",
+        output.errors.is_empty(),
+        "Vec<Measurement>::contains (Copy float record) must compile: {:?}",
         output.errors
     );
 }

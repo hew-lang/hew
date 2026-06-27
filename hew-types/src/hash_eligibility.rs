@@ -10,10 +10,12 @@
 //! - **char fields**: load as `i32`, hash all 4 bytes of the Unicode scalar value.
 //! - **integer fields**: hash the exact-width value load (`i8`..`i64`, `u8`..`u64`).
 //! - **duration fields**: load as `i64` nanoseconds (a duration is always 8 bytes).
-//!
-//! Floats are **never** hash-eligible because `NaN != NaN` violates the
-//! hash-equality contract: two NaN values may be `!=` yet hash to the same bucket,
-//! making every `HashMap<FloatRecord, V>` lookup semantically broken.
+//! - **float fields** (`f32`/`f64`): bit-cast to an integer of the same width
+//!   and hash the bit pattern. This is consistent with the bitwise/total
+//!   structural equality the eq thunk uses (`eq_eligibility.rs`): two values
+//!   that compare equal (identical bit patterns) hash identically, so the
+//!   hash-equality contract holds. NaN hashes by its bits like any other value
+//!   — there is no `NaN != NaN` hazard under bitwise semantics.
 //!
 //! Strings are heap-managed but structurally hashable: a `string` field inside a
 //! record key is hashed by dereferencing the field's pointer and hashing the
@@ -40,9 +42,6 @@ use std::collections::HashMap;
 pub(crate) enum HashEligibility {
     /// Structurally hashable on typed field values with deterministic fixed widths.
     Eligible,
-    /// Contains a floating-point field (or is itself a float). `NaN != NaN`
-    /// torpedoes the hash-equality contract.
-    IneligibleFloat(Ty),
     /// Is or contains a heap-managed component (String, Bytes, indirect record).
     IneligibleManaged(Ty),
     /// Is or contains an owned, non-Copy component (closure, function, trait object,
@@ -79,6 +78,9 @@ fn hash_ineligibility(ty: &Ty, type_defs: &HashMap<String, TypeDef>) -> Option<H
         // per-record drop thunk. The owned-string deep-clone-on-insert / drop
         // discipline mirrors the already-shipped eq side (`eq_eligibility.rs`,
         // `Ty::String => None`), so admit it here too — eligible like a primitive.
+        // Floats hash on their bit pattern (bit-cast to a same-width integer
+        // before the FNV-1a mix). This matches the bitwise/total structural
+        // equality the eq thunk uses, so `==` implies an equal hash.
         Ty::I8
         | Ty::I16
         | Ty::I32
@@ -90,10 +92,9 @@ fn hash_ineligibility(ty: &Ty, type_defs: &HashMap<String, TypeDef>) -> Option<H
         | Ty::Bool
         | Ty::Char
         | Ty::Duration
+        | Ty::F32
+        | Ty::F64
         | Ty::String => None,
-
-        // Floats: NaN != NaN violates the hash-equality contract.
-        Ty::F32 | Ty::F64 => Some(HashEligibility::IneligibleFloat(ty.clone())),
 
         // Tuples: tracked but not admitted as layout hash keys in this slice.
         Ty::Tuple(_) => Some(HashEligibility::IneligibleTuple(ty.clone())),
@@ -252,15 +253,17 @@ mod tests {
     }
 
     #[test]
-    fn hash_ineligible_float_f64() {
+    fn hash_eligible_float_f64_and_f32() {
+        // Floats hash on their bit pattern (bitwise/total semantics), matching
+        // the eq thunk's bitwise compare so `==` implies an equal hash.
         let tds = empty_type_defs();
         assert_eq!(
             ty_is_hash_eligible(&Ty::F64, &tds),
-            HashEligibility::IneligibleFloat(Ty::F64)
+            HashEligibility::Eligible
         );
         assert_eq!(
             ty_is_hash_eligible(&Ty::F32, &tds),
-            HashEligibility::IneligibleFloat(Ty::F32)
+            HashEligibility::Eligible
         );
     }
 
@@ -287,17 +290,16 @@ mod tests {
     }
 
     #[test]
-    fn hash_ineligible_record_with_float_field() {
+    fn hash_eligible_record_with_float_field() {
+        // A record key whose fields are all hash-eligible — including floats,
+        // which hash on their bit pattern — is admitted as a layout key.
         let mut tds = HashMap::new();
         tds.insert(
             "FPoint".to_string(),
             make_record("FPoint", vec![("x", Ty::F64), ("y", Ty::F64)], false),
         );
         let ty = Ty::normalize_named("FPoint".to_string(), vec![]);
-        assert_eq!(
-            ty_is_hash_eligible(&ty, &tds),
-            HashEligibility::IneligibleFloat(Ty::F64)
-        );
+        assert_eq!(ty_is_hash_eligible(&ty, &tds), HashEligibility::Eligible);
     }
 
     #[test]

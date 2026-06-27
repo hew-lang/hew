@@ -470,7 +470,8 @@ fn hash_thunk_does_not_hash_padding_bytes() {
         !body.contains("call i64 @memcpy") && !body.contains("call i32 @memcmp"),
         "hash thunk must not use memcpy/memcmp over the whole struct:\n{body}"
     );
-    // Defence-in-depth: float must never appear (checker gate).
+    // This record has no float field; even float fields hash via bitcast + the
+    // FNV-1a integer mix, so no float arithmetic (`fadd`/`fmul`) is ever emitted.
     assert!(
         !body.contains("fadd") && !body.contains("fmul"),
         "hash thunk must not contain float ops:\n{body}"

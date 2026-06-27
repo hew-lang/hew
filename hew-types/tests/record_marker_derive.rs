@@ -96,25 +96,26 @@ fn record_point_not_resource() {
 
 // ---------------------------------------------------------------------------
 // record Measurement { v: float }
-// f64 fields are NOT Eq/Hash/Ord. Derives Send/Frozen/Clone/Copy but not Eq/Hash.
+// f64 fields ARE Eq/Hash (bitwise/total) but NOT Ord (ordering stays partial).
+// Derives Send/Frozen/Clone/Copy/Eq/Hash but not Ord.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn record_measurement_float_field_not_eq_not_hash() {
+fn record_measurement_float_field_eq_hash_not_ord() {
     let mut reg = TraitRegistry::new();
     let m = register_named_record(&mut reg, "Measurement", vec![Ty::F64]);
 
     assert!(
-        !reg.implements_marker(&m, MarkerTrait::Eq),
-        "Measurement {{ v: float }} must NOT derive Eq (float field)"
+        reg.implements_marker(&m, MarkerTrait::Eq),
+        "Measurement {{ v: float }} derives Eq (bitwise float equality)"
     );
     assert!(
-        !reg.implements_marker(&m, MarkerTrait::Hash),
-        "Measurement {{ v: float }} must NOT derive Hash (float field)"
+        reg.implements_marker(&m, MarkerTrait::Hash),
+        "Measurement {{ v: float }} derives Hash (bit-pattern hash)"
     );
     assert!(
         !reg.implements_marker(&m, MarkerTrait::Ord),
-        "Measurement {{ v: float }} must NOT derive Ord (float field)"
+        "Measurement {{ v: float }} must NOT derive Ord (ordering stays IEEE-partial)"
     );
 }
 
@@ -228,18 +229,22 @@ fn tuple_record_int_fields_derives_eq_hash_copy() {
 }
 
 #[test]
-fn tuple_record_float_field_not_eq_not_hash() {
+fn tuple_record_float_field_eq_hash_not_ord() {
     let mut reg = TraitRegistry::new();
     // record MeasureT(float)
     let m = register_tuple_record(&mut reg, "MeasureT", vec![Ty::F64]);
 
     assert!(
-        !reg.implements_marker(&m, MarkerTrait::Eq),
-        "tuple-record MeasureT(float) must NOT derive Eq"
+        reg.implements_marker(&m, MarkerTrait::Eq),
+        "tuple-record MeasureT(float) derives Eq (bitwise float equality)"
     );
     assert!(
-        !reg.implements_marker(&m, MarkerTrait::Hash),
-        "tuple-record MeasureT(float) must NOT derive Hash"
+        reg.implements_marker(&m, MarkerTrait::Hash),
+        "tuple-record MeasureT(float) derives Hash (bit-pattern hash)"
+    );
+    assert!(
+        !reg.implements_marker(&m, MarkerTrait::Ord),
+        "tuple-record MeasureT(float) must NOT derive Ord (ordering stays IEEE-partial)"
     );
 }
 

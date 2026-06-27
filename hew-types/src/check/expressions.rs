@@ -4200,10 +4200,6 @@ impl Checker {
             EqEligibility::Eligible => {
                 "structural equality eligibility was unexpectedly unresolved".to_string()
             }
-            EqEligibility::IneligibleFloat(float_ty) => format!(
-                "a field or payload contains floating-point data `{}`",
-                float_ty.user_facing()
-            ),
             EqEligibility::IneligibleManaged(managed_ty) => format!(
                 "a field or payload contains layout-managed/non-Copy data `{}`",
                 managed_ty.user_facing()

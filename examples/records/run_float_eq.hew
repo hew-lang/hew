@@ -1,0 +1,30 @@
+// Exercises structural equality over floating-point fields.
+//
+// Structural `==` on a float field is bitwise/total: it compares the raw bit
+// patterns, so it is reflexive (NaN equals NaN when the bits match) and treats
+// +0.0 and -0.0 as distinct. This differs from the IEEE numeric `==` a bare
+// `f64` expression uses (NaN != NaN, +0.0 == -0.0).
+type Vec2 {
+    x: f64;
+    y: f64;
+}
+
+fn main() {
+    let a = Vec2 { x: 1.5, y: 2.5 };
+    let b = Vec2 { x: 1.5, y: 2.5 };
+    let c = Vec2 { x: 1.5, y: 9.9 };
+    println(a == b); // true  — every field equal
+    println(a == c); // false — y differs
+    println(a != c); // true
+
+    // Bitwise/total: NaN compares equal to NaN when the bit patterns match.
+    let nan = 0.0 / 0.0;
+    let q = Vec2 { x: nan, y: 1.0 };
+    let r = Vec2 { x: nan, y: 1.0 };
+    println(q == r); // true  — identical bits, reflexive
+
+    // +0.0 and -0.0 have different bit patterns, so they are not equal.
+    let pz = Vec2 { x: 0.0, y: 0.0 };
+    let nz = Vec2 { x: -0.0, y: 0.0 };
+    println(pz == nz); // false
+}

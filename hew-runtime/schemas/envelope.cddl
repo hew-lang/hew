@@ -63,7 +63,10 @@ envelope-frame = {
     target_actor_id:  3 => actor-id,
     source_actor_id:  4 => actor-id,
     msg_type:         5 => int,          ; signed; valid range 0..=2^30-1 (zigzag legacy)
-    payload:          6 => bstr,         ; serialised message body; 0..* bytes
+    payload:          6 => bstr,         ; serialised message body; 0..* bytes.
+                                         ; The bytes inside this bstr are the
+                                         ; per-`#[wire]`-type CBOR body described
+                                         ; by `wire-body.cddl` (`wire-body` rule).
     request_id:       7 => uint,         ; 0 = fire-and-forget
     source_node_id:   8 => node-id,      ; 0 on reply envelopes
 }

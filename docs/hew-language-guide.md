@@ -2472,11 +2472,18 @@ fn main() {
 }
 ```
 
-Bitwise semantics are what structural equality needs to stay reflexive, which
-in turn keeps dedup, `Vec::contains`, and `HashMap` keys correct: a value can
-always find itself. The hash of a float field is computed from the same bit
-pattern, so `==` implies an equal hash and a float-bearing `record` is a sound
-`HashMap` key.
+Bitwise semantics are what structural equality needs to stay reflexive. This
+guarantee applies to **structural positions** — record and enum fields, and
+`HashMap`/`HashSet` keys — so a float-bearing record or enum can always find
+itself in a `HashMap`/`HashSet` lookup, and dedup over records works correctly.
+The hash of a float field is computed from the same bit pattern, so `==`
+implies an equal hash and a float-bearing `record` is a sound `HashMap` key.
+
+> **Sharp edge:** `Vec<f64>` and bare scalar `==` on `f64` remain IEEE.
+> `[nan].contains(nan)` is `false` (scalar IEEE `==`, NaN ≠ NaN), while
+> `HashSet<f64>` (which stores `f64` as a structural position) treats two
+> identical NaN bit-patterns as equal. The reflexive/bitwise guarantee does
+> not extend to `Vec<f64>::contains` or direct `f64 == f64` expressions.
 
 ```hew
 record Coord { x: f64, y: f64 }

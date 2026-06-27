@@ -35218,6 +35218,7 @@ fn build_module_for_target<'ctx>(
         &machine_layouts,
         &pipeline.record_layouts,
         &pipeline.enum_layouts,
+        &target_data,
     )? {
         module_init_ctors.push(f);
     }
@@ -35232,6 +35233,7 @@ fn build_module_for_target<'ctx>(
         &machine_layouts,
         &pipeline.record_layouts,
         &pipeline.enum_layouts,
+        &target_data,
     )?;
     // Materialise the program-start constructor registration from all collected
     // module inits, in the form the target's startup mechanism actually walks
@@ -36522,6 +36524,7 @@ fn emit_ser_value_cbor<'ctx>(
     machine_layouts: &MachineLayoutMap<'ctx>,
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    target_data: &TargetData,
 ) -> CodegenResult<()> {
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let void_ty = ctx.void_type();
@@ -36707,6 +36710,7 @@ fn emit_ser_value_cbor<'ctx>(
                     machine_layouts,
                     pipeline_records,
                     enum_layouts,
+                    target_data,
                 )
             }
             Some(BuiltinType::Option) => emit_ser_option_cbor(
@@ -36723,6 +36727,7 @@ fn emit_ser_value_cbor<'ctx>(
                 machine_layouts,
                 pipeline_records,
                 enum_layouts,
+                target_data,
             ),
             _ => emit_ser_named_cbor(
                 ctx,
@@ -36738,6 +36743,7 @@ fn emit_ser_value_cbor<'ctx>(
                 machine_layouts,
                 pipeline_records,
                 enum_layouts,
+                target_data,
             ),
         },
         other => Err(CodegenError::FailClosed(format!(
@@ -36765,6 +36771,7 @@ fn emit_ser_named_cbor<'ctx>(
     machine_layouts: &MachineLayoutMap<'ctx>,
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    target_data: &TargetData,
 ) -> CodegenResult<()> {
     let key = xnode_registry_key(name, args, pipeline_records, enum_layouts);
     // Enum: encode under the map-of-one shape.
@@ -36787,6 +36794,7 @@ fn emit_ser_named_cbor<'ctx>(
             machine_layouts,
             pipeline_records,
             enum_layouts,
+            target_data,
         );
     }
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
@@ -36843,6 +36851,7 @@ fn emit_ser_named_cbor<'ctx>(
                 machine_layouts,
                 pipeline_records,
                 enum_layouts,
+                target_data,
             )?;
         }
         let end = declare_codec_prim(
@@ -36880,6 +36889,7 @@ fn emit_de_value_cbor<'ctx>(
     machine_layouts: &MachineLayoutMap<'ctx>,
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    target_data: &TargetData,
 ) -> CodegenResult<()> {
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let i64_ty = ctx.i64_type();
@@ -37118,6 +37128,7 @@ fn emit_de_value_cbor<'ctx>(
                     machine_layouts,
                     pipeline_records,
                     enum_layouts,
+                    target_data,
                 )
             }
             Some(BuiltinType::Option) => emit_de_option_cbor(
@@ -37134,6 +37145,7 @@ fn emit_de_value_cbor<'ctx>(
                 machine_layouts,
                 pipeline_records,
                 enum_layouts,
+                target_data,
             ),
             _ => emit_de_named_cbor(
                 ctx,
@@ -37149,6 +37161,7 @@ fn emit_de_value_cbor<'ctx>(
                 machine_layouts,
                 pipeline_records,
                 enum_layouts,
+                target_data,
             ),
         },
         other => Err(CodegenError::FailClosed(format!(
@@ -37177,6 +37190,7 @@ fn emit_de_named_cbor<'ctx>(
     machine_layouts: &MachineLayoutMap<'ctx>,
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    target_data: &TargetData,
 ) -> CodegenResult<()> {
     let key = xnode_registry_key(name, args, pipeline_records, enum_layouts);
     // Enum: decode the map-of-one shape.
@@ -37199,6 +37213,7 @@ fn emit_de_named_cbor<'ctx>(
             machine_layouts,
             pipeline_records,
             enum_layouts,
+            target_data,
         );
     }
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
@@ -37250,6 +37265,7 @@ fn emit_de_named_cbor<'ctx>(
                 machine_layouts,
                 pipeline_records,
                 enum_layouts,
+                target_data,
             )?;
         }
         let exit = declare_codec_prim(
@@ -37668,14 +37684,23 @@ fn cbor_ty_owns_heap(
 /// Backing-store kind a decoded CBOR array needs for its element type.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CborVecElemKind {
-    /// BitCopy element (scalar / heap-free record / heap-free enum): a plain
+    /// Scalar BitCopy element (bool / int / float / char / duration): a plain
     /// `hew_vec_new_with_elem_size` buffer filled by byte-copy
-    /// `hew_vec_push_generic`. `hew_vec_free` frees the buffer; no per-element
-    /// heap to release.
+    /// `hew_vec_push_generic` and read through `hew_vec_get_generic`. The
+    /// constructed vec has a NULL layout descriptor (`hew_vec_new_*`), so the
+    /// generic (non-layout-aware) accessors are the matching ABI.
     Plain,
     /// `string` element: a `hew_vec_new_str` vec filled by copy-in
     /// `hew_vec_push_str`. `hew_vec_free` releases every element string.
     Str,
+    /// Heap-free record/enum element: a *layout-aware* BitCopy vec
+    /// (`hew_vec_new_with_layout` / `hew_vec_push_layout` / `hew_vec_get_layout`,
+    /// `ownership_kind = Plain`). This is the SAME ABI `Vec::new` constructs for
+    /// a `Vec<record>` (`VecCtor::BitCopyLayout`), so the codec MUST use the
+    /// layout-aware accessors — the generic ones abort on a layout-aware vec
+    /// (`Vec layout-aware operation is not implemented`). The descriptor is a
+    /// thunk-less `{size, align, ownership_kind=0}` matching `layout_descriptor_ptr`.
+    LayoutBitCopy,
     /// Owned-compound element (bytes / heap-owning record / nested collection):
     /// the standalone emitter cannot synthesise the owned clone/drop descriptor
     /// the backing vec would need, so the codec fails closed (a failable
@@ -37683,9 +37708,11 @@ enum CborVecElemKind {
     Defer,
 }
 
-/// Classify a CBOR Vec element type into the backing-store kind its decode
-/// needs. Encode is uniform across `Plain`/`Str` (both read through
-/// `hew_vec_get_generic`); only decode branches on the kind.
+/// Classify a CBOR Vec element type into the backing-store kind its codec needs.
+/// Both encode and decode branch on the kind: scalar elements use the generic
+/// (null-layout) accessors, record/enum elements use the layout-aware BitCopy
+/// accessors (matching `Vec::new`'s `VecCtor::BitCopyLayout` construction), and
+/// heap-owning compounds fail closed.
 fn cbor_vec_elem_kind(
     elem: &ResolvedTy,
     pipeline_records: &[RecordLayout],
@@ -37711,13 +37738,56 @@ fn cbor_vec_elem_kind(
         ResolvedTy::Named { .. } => {
             let mut visiting = std::collections::HashSet::new();
             if cbor_ty_owns_heap(elem, pipeline_records, enum_layouts, &mut visiting) {
+                // A heap-owning record/enum needs the owned (thunk-bearing) Vec
+                // ABI the standalone codec cannot synthesise: fail closed.
                 CborVecElemKind::Defer
             } else {
-                CborVecElemKind::Plain
+                // A heap-free record/enum element: `Vec::new` constructs this as
+                // a layout-aware BitCopy vec (`hew_vec_new_with_layout`), so the
+                // codec MUST round-trip it through the layout-aware accessors.
+                CborVecElemKind::LayoutBitCopy
             }
         }
         _ => CborVecElemKind::Defer,
     }
+}
+
+/// Emit (or reuse) a thunk-less `HewTypeLayout` (`{size, align, ownership_kind=0}`)
+/// global for a layout-aware BitCopy Vec element, returning a pointer suitable
+/// for the `hew_vec_*_layout` accessor family.
+///
+/// This mirrors `crate::layout::layout_descriptor_ptr` EXACTLY (same struct
+/// shape, same `__hew_layout_{label}_{size}_{align}_plain` dedup name, same
+/// `ownership_kind = 0`, same `target_data`-driven size/align) so a descriptor
+/// the codec stamps and a descriptor `Vec::new` stamps for the same element
+/// collapse onto one global and pass the runtime's
+/// `validate_bitcopy_layout_operation` equality check. The codec path has no
+/// `FnCtx`, so it takes the raw `ctx`/`llvm_mod`/`target_data` directly.
+fn codec_bitcopy_layout_descriptor_ptr<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    target_data: &TargetData,
+    elem_llvm_ty: BasicTypeEnum<'ctx>,
+    label: &str,
+) -> CodegenResult<PointerValue<'ctx>> {
+    let (size, align) = abi_size_align(elem_llvm_ty, Some(target_data))?;
+    let usize_ty = ctx.ptr_sized_int_type(target_data, None);
+    let i8_ty = ctx.i8_type();
+    let layout_ty = ctx.struct_type(&[usize_ty.into(), usize_ty.into(), i8_ty.into()], false);
+    let global_name = format!("__hew_layout_{label}_{size}_{align}_plain");
+    if let Some(global) = llvm_mod.get_global(&global_name) {
+        return Ok(global.as_pointer_value());
+    }
+    let init = layout_ty.const_named_struct(&[
+        usize_ty.const_int(size, false).into(),
+        usize_ty.const_int(u64::from(align), false).into(),
+        i8_ty.const_zero().into(),
+    ]);
+    let global = llvm_mod.add_global(layout_ty, None, &global_name);
+    global.set_constant(true);
+    global.set_linkage(Linkage::Private);
+    global.set_initializer(&init);
+    Ok(global.as_pointer_value())
 }
 
 /// Encode a `Vec<T>` field as a CBOR array. Encode is uniform across element
@@ -37739,8 +37809,10 @@ fn emit_ser_vec_cbor<'ctx>(
     machine_layouts: &MachineLayoutMap<'ctx>,
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    target_data: &TargetData,
 ) -> CodegenResult<()> {
-    if cbor_vec_elem_kind(elem_ty, pipeline_records, enum_layouts) == CborVecElemKind::Defer {
+    let kind = cbor_vec_elem_kind(elem_ty, pipeline_records, enum_layouts);
+    if kind == CborVecElemKind::Defer {
         return Err(CodegenError::FailClosed(format!(
             "wire CBOR serialize: Vec<{elem_ty:?}> has an owned-compound element \
              (bytes / heap-owning record / nested collection) outside the \
@@ -37750,6 +37822,24 @@ fn emit_ser_vec_cbor<'ctx>(
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let void_ty = ctx.void_type();
     let i64_ty = ctx.i64_type();
+
+    // A heap-free record/enum element is held in a LAYOUT-AWARE BitCopy vec
+    // (`Vec::new` → `VecCtor::BitCopyLayout`), so its element slots must be read
+    // through `hew_vec_get_layout` with a matching descriptor. The generic
+    // accessor (`hew_vec_get_generic`) aborts on a layout-aware vec. Scalar /
+    // string vecs carry a NULL layout and use the generic accessor.
+    let layout_ptr = if kind == CborVecElemKind::LayoutBitCopy {
+        let elem_llvm = resolve_ty(ctx, elem_ty, record_layouts)?;
+        Some(codec_bitcopy_layout_descriptor_ptr(
+            ctx,
+            llvm_mod,
+            target_data,
+            elem_llvm,
+            "wire_vec",
+        )?)
+    } else {
+        None
+    };
 
     let vec_ptr = builder
         .build_load(ptr_ty, value_ptr, "cbor_ser_vec_ptr")
@@ -37806,19 +37896,39 @@ fn emit_ser_vec_cbor<'ctx>(
         .llvm_ctx("cbor ser vec head br")?;
 
     builder.position_at_end(body_bb);
-    let get_gen = declare_codec_prim(
-        ctx,
-        llvm_mod,
-        "hew_vec_get_generic",
-        ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
-    );
-    let elem_ptr = builder
-        .build_call(get_gen, &[vec_ptr.into(), i_cur.into()], "cbor_ser_vec_get")
-        .llvm_ctx("cbor ser vec get_generic")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_vec_get_generic void".into()))?
-        .into_pointer_value();
+    let elem_ptr = if let Some(layout_ptr) = layout_ptr {
+        let get_layout = declare_codec_prim(
+            ctx,
+            llvm_mod,
+            "hew_vec_get_layout",
+            ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false),
+        );
+        builder
+            .build_call(
+                get_layout,
+                &[vec_ptr.into(), i_cur.into(), layout_ptr.into()],
+                "cbor_ser_vec_get_layout",
+            )
+            .llvm_ctx("cbor ser vec get_layout")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_vec_get_layout void".into()))?
+            .into_pointer_value()
+    } else {
+        let get_gen = declare_codec_prim(
+            ctx,
+            llvm_mod,
+            "hew_vec_get_generic",
+            ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
+        );
+        builder
+            .build_call(get_gen, &[vec_ptr.into(), i_cur.into()], "cbor_ser_vec_get")
+            .llvm_ctx("cbor ser vec get_generic")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_vec_get_generic void".into()))?
+            .into_pointer_value()
+    };
     emit_ser_value_cbor(
         ctx,
         llvm_mod,
@@ -37832,6 +37942,7 @@ fn emit_ser_vec_cbor<'ctx>(
         machine_layouts,
         pipeline_records,
         enum_layouts,
+        target_data,
     )?;
     let i_next = builder
         .build_int_add(i_cur, i64_ty.const_int(1, false), "cbor_ser_vec_inc")
@@ -37876,6 +37987,7 @@ fn emit_de_vec_cbor<'ctx>(
     machine_layouts: &MachineLayoutMap<'ctx>,
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    target_data: &TargetData,
 ) -> CodegenResult<()> {
     let kind = cbor_vec_elem_kind(elem_ty, pipeline_records, enum_layouts);
     if kind == CborVecElemKind::Defer {
@@ -37889,6 +38001,24 @@ fn emit_de_vec_cbor<'ctx>(
     let void_ty = ctx.void_type();
     let i64_ty = ctx.i64_type();
     let i32_ty = ctx.i32_type();
+
+    // A heap-free record/enum element is reconstructed into a LAYOUT-AWARE
+    // BitCopy vec (matching `Vec::new` → `VecCtor::BitCopyLayout`), so the rest
+    // of the program — element indexing, scope-exit free — sees the same ABI it
+    // would for a directly-constructed `Vec<record>`. Build the matching
+    // descriptor once; the constructor and per-element push both consume it.
+    let layout_ptr = if kind == CborVecElemKind::LayoutBitCopy {
+        let elem_llvm = resolve_ty(ctx, elem_ty, record_layouts)?;
+        Some(codec_bitcopy_layout_descriptor_ptr(
+            ctx,
+            llvm_mod,
+            target_data,
+            elem_llvm,
+            "wire_vec",
+        )?)
+    } else {
+        None
+    };
 
     // Construct the backing vec matching the element ownership kind.
     let vec_ptr = match kind {
@@ -37920,6 +38050,24 @@ fn emit_de_vec_cbor<'ctx>(
                 .try_as_basic_value()
                 .basic()
                 .ok_or_else(|| CodegenError::FailClosed("hew_vec_new_with_elem_size void".into()))?
+                .into_pointer_value()
+        }
+        CborVecElemKind::LayoutBitCopy => {
+            let layout_ptr = layout_ptr.ok_or_else(|| {
+                CodegenError::FailClosed("layout-aware Vec decode missing descriptor".into())
+            })?;
+            let new_layout = declare_codec_prim(
+                ctx,
+                llvm_mod,
+                "hew_vec_new_with_layout",
+                ptr_ty.fn_type(&[ptr_ty.into()], false),
+            );
+            builder
+                .build_call(new_layout, &[layout_ptr.into()], "cbor_de_vec_new_layout")
+                .llvm_ctx("cbor de vec new_with_layout")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_vec_new_with_layout void".into()))?
                 .into_pointer_value()
         }
         CborVecElemKind::Defer => unreachable!("Defer handled above"),
@@ -38035,6 +38183,7 @@ fn emit_de_vec_cbor<'ctx>(
                 machine_layouts,
                 pipeline_records,
                 enum_layouts,
+                target_data,
             )?;
             let push_gen = declare_codec_prim(
                 ctx,
@@ -38045,6 +38194,48 @@ fn emit_de_vec_cbor<'ctx>(
             builder
                 .build_call(push_gen, &[vec_ptr.into(), temp.into()], "cbor_de_vec_push")
                 .llvm_ctx("cbor de vec push_generic")?;
+        }
+        CborVecElemKind::LayoutBitCopy => {
+            let layout_ptr = layout_ptr.ok_or_else(|| {
+                CodegenError::FailClosed("layout-aware Vec decode missing descriptor".into())
+            })?;
+            let elem_llvm = resolve_ty(ctx, elem_ty, record_layouts)?;
+            let temp = builder
+                .build_alloca(elem_llvm, "cbor_de_vec_elem_layout")
+                .llvm_ctx("cbor de vec layout elem alloca")?;
+            // Zero the slot so a fail-closed partial element is a defined,
+            // heap-free BitCopy value (a layout-BitCopy element owns no heap).
+            builder
+                .build_store(temp, elem_llvm.const_zero())
+                .llvm_ctx("cbor de vec layout elem zero")?;
+            emit_de_value_cbor(
+                ctx,
+                llvm_mod,
+                builder,
+                func,
+                elem_ty,
+                temp,
+                reader,
+                wire_layouts,
+                record_layouts,
+                machine_layouts,
+                pipeline_records,
+                enum_layouts,
+                target_data,
+            )?;
+            let push_layout = declare_codec_prim(
+                ctx,
+                llvm_mod,
+                "hew_vec_push_layout",
+                void_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false),
+            );
+            builder
+                .build_call(
+                    push_layout,
+                    &[vec_ptr.into(), temp.into(), layout_ptr.into()],
+                    "cbor_de_vec_push_layout",
+                )
+                .llvm_ctx("cbor de vec push_layout")?;
         }
         CborVecElemKind::Defer => unreachable!("Defer handled above"),
     }
@@ -38084,6 +38275,7 @@ fn emit_ser_option_cbor<'ctx>(
     machine_layouts: &MachineLayoutMap<'ctx>,
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    target_data: &TargetData,
 ) -> CodegenResult<()> {
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let void_ty = ctx.void_type();
@@ -38170,6 +38362,7 @@ fn emit_ser_option_cbor<'ctx>(
         machine_layouts,
         pipeline_records,
         enum_layouts,
+        target_data,
     )?;
     builder
         .build_unconditional_branch(cont_bb)
@@ -38211,6 +38404,7 @@ fn emit_de_option_cbor<'ctx>(
     machine_layouts: &MachineLayoutMap<'ctx>,
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    target_data: &TargetData,
 ) -> CodegenResult<()> {
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let void_ty = ctx.void_type();
@@ -38368,6 +38562,7 @@ fn emit_de_option_cbor<'ctx>(
         machine_layouts,
         pipeline_records,
         enum_layouts,
+        target_data,
     )?;
     builder
         .build_unconditional_branch(cont_bb)
@@ -38398,6 +38593,7 @@ fn emit_ser_enum_cbor<'ctx>(
     machine_layouts: &MachineLayoutMap<'ctx>,
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    target_data: &TargetData,
 ) -> CodegenResult<()> {
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let void_ty = ctx.void_type();
@@ -38535,6 +38731,7 @@ fn emit_ser_enum_cbor<'ctx>(
                     machine_layouts,
                     pipeline_records,
                     enum_layouts,
+                    target_data,
                 )?;
             }
             builder
@@ -38574,6 +38771,7 @@ fn emit_de_enum_cbor<'ctx>(
     machine_layouts: &MachineLayoutMap<'ctx>,
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    target_data: &TargetData,
 ) -> CodegenResult<()> {
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let void_ty = ctx.void_type();
@@ -38754,6 +38952,7 @@ fn emit_de_enum_cbor<'ctx>(
                     machine_layouts,
                     pipeline_records,
                     enum_layouts,
+                    target_data,
                 )?;
             }
         }
@@ -38789,6 +38988,7 @@ fn emit_cbor_codec_thunks<'ctx>(
     machine_layouts: &MachineLayoutMap<'ctx>,
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    target_data: &TargetData,
 ) -> CodegenResult<(String, String)> {
     let key = xnode_codec_key(ty);
     let ser_sym = format!("__hew_cbor_serialize_{key}");
@@ -38845,6 +39045,7 @@ fn emit_cbor_codec_thunks<'ctx>(
             machine_layouts,
             pipeline_records,
             enum_layouts,
+            target_data,
         )?;
         let finish = declare_codec_prim(
             ctx,
@@ -39001,6 +39202,7 @@ fn emit_cbor_codec_thunks<'ctx>(
             machine_layouts,
             pipeline_records,
             enum_layouts,
+            target_data,
         )?;
 
         // Fail closed: if the reader latched an error, drop the partial value's
@@ -39250,6 +39452,7 @@ fn emit_llvm_global_ctors<'ctx>(
 /// is present). A wire type referenced by several `.encode()` / `.decode()`
 /// sites — or used as both a direct-call type and an actor message — shares the
 /// one CBOR thunk pair.
+#[allow(clippy::too_many_arguments)]
 fn emit_wire_codec_call_thunks<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
@@ -39258,6 +39461,7 @@ fn emit_wire_codec_call_thunks<'ctx>(
     machine_layouts: &MachineLayoutMap<'ctx>,
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    target_data: &TargetData,
 ) -> CodegenResult<()> {
     let mut seen: Vec<ResolvedTy> = Vec::new();
     for func in &pipeline.raw_mir {
@@ -39275,6 +39479,7 @@ fn emit_wire_codec_call_thunks<'ctx>(
                             machine_layouts,
                             pipeline_records,
                             enum_layouts,
+                            target_data,
                         )?;
                     }
                 }
@@ -39391,6 +39596,7 @@ fn emit_actor_codec_module_init<'ctx>(
     machine_layouts: &MachineLayoutMap<'ctx>,
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    target_data: &TargetData,
 ) -> CodegenResult<Option<FunctionValue<'ctx>>> {
     // Collect (dispatch global, msg_type, msg_ty, reply_ty) for every handler.
     // The codec registry is keyed by `(dispatch, msg_type)` — the owning actor
@@ -39484,6 +39690,7 @@ fn emit_actor_codec_module_init<'ctx>(
             machine_layouts,
             pipeline_records,
             enum_layouts,
+            target_data,
         )?;
         if !matches!(reply_ty, ResolvedTy::Unit | ResolvedTy::Never) {
             emit_cbor_codec_thunks(
@@ -39495,6 +39702,7 @@ fn emit_actor_codec_module_init<'ctx>(
                 machine_layouts,
                 pipeline_records,
                 enum_layouts,
+                target_data,
             )?;
         }
     }

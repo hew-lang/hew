@@ -164,6 +164,49 @@ fn round_trip_source(frames: usize) -> String {
     )
 }
 
+/// Round-trip fixture for a `Vec<#[wire] struct>` field whose ELEMENT is a
+/// heap-free record — a list of wire messages, the core distributed batch
+/// pattern (events / peers / log entries). `Vec::new` builds this as a
+/// layout-aware `BitCopy` vec (`hew_vec_new_with_layout`, `ownership_kind=Plain`),
+/// so the codec round-trips each slot through `hew_vec_get_layout` /
+/// `hew_vec_push_layout`. The decoded vec is freed by `hew_vec_free` (a Plain
+/// layout-aware vec owns no per-element heap), so the leak slope must stay flat.
+/// A vec freed under the wrong ABI, or an element double-decoded into an
+/// over-grown buffer, shows up as a per-frame slope. (Measured post-fix: 0 leaks
+/// at both LOW and HIGH.)
+///
+/// The decoded value is held live by reading the SCALAR sibling field `seq`
+/// (not the `items` Vec) — reading the Vec field itself (`.len()` / `[i]`)
+/// triggers the pre-existing field-read drop-suppression confound that the
+/// existing `round_trip` oracle dodges the same way (it reads `back.seq`, never
+/// `back.tags`). The `raw` encode buffer is a NAMED local so the anonymous-bytes
+/// temporary confound (confound 1) does not add its own per-frame node.
+fn vec_struct_round_trip_source(frames: usize) -> String {
+    format!(
+        "#[wire]\n\
+         struct Inner {{ v: i64 @1; }}\n\
+         #[wire]\n\
+         struct Container {{ items: Vec<Inner> @1; seq: i64 @2; }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let xs: Vec<Inner> = Vec::new();\n\
+         \x20       xs.push(Inner {{ v: 10 }});\n\
+         \x20       xs.push(Inner {{ v: 20 }});\n\
+         \x20       xs.push(Inner {{ v: 12 }});\n\
+         \x20       let c = Container {{ items: xs, seq: i }};\n\
+         \x20       let raw = c.encode();\n\
+         \x20       let back = Container.decode(raw);\n\
+         \x20       total = total + back.seq;\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n"
+    )
+}
+
 /// Decode-failure fixture: encode a two-`string` value, then decode the SAME
 /// bytes against a `{string @1, i64 @2}` layout. Field 1 (`string`) decodes
 /// and allocates a C string; field 2 reads an `i64` where the stream holds a
@@ -489,6 +532,21 @@ fn owned_field_round_trip_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
         "wire_cbor_round_trip",
         round_trip_source,
+        LOW_FRAMES,
+        HIGH_FRAMES,
+    );
+}
+
+/// Layout-aware `Vec<#[wire] struct>` round-trip drop: a field holding a list of
+/// heap-free wire records round-trips with a flat leak slope. The decoded vec is
+/// a layout-aware `BitCopy` vec (matching `Vec::new`'s construction), freed by the
+/// record value drop via `hew_vec_free`. A wrong-ABI free or a per-element decode
+/// over-allocation would show up as a per-frame slope.
+#[test]
+fn vec_struct_round_trip_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance(
+        "wire_cbor_vec_struct_round_trip",
+        vec_struct_round_trip_source,
         LOW_FRAMES,
         HIGH_FRAMES,
     );

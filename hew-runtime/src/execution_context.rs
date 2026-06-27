@@ -43,7 +43,7 @@ pub enum HewActorStateLockState {}
 /// [`HewExecutionContext::partition_policy`] slot, encoded **as a small
 /// repr-stable integer tag stored inside the pointer-width slot** — never a heap
 /// pointer. A null slot reads as [`PartitionPolicy::FailFast`] (the default), so
-/// the context-layout offset mirror is unchanged by this lane and no allocation
+/// the context-layout offset mirror is unchanged and no allocation
 /// or drop obligation is attached to the hot dispatch path.
 ///
 /// DIST-7 consumes this on the send/ask failure path; DIST-9's `link_remote`

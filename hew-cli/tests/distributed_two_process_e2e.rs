@@ -407,7 +407,7 @@ fn remote_monitor_down_on_connection_drop() {
 /// not fire).
 ///
 /// The deterministic SWIM-DEAD-while-socket-open → Partition path (the specific
-/// fail-open this lane closes) is proven in-process by the runtime unit test
+/// fail-open that `swim_dead_wakes_pending_remote_ask_with_partition` closes) is proven in-process by the runtime unit test
 /// `swim_dead_wakes_pending_remote_ask_with_partition`; a two-process kill drops
 /// the socket, so this fixture accepts either fail-closed cause.
 #[test]
@@ -425,7 +425,7 @@ fn remote_ask_under_partition_fails_closed_not_hang() {
     assert!(
         !stdout.contains("FAIL partition_ask reason=timeout"),
         "remote ask under partition timed out instead of failing closed \
-         (the fail-open this lane closes); client stdout:\n{stdout}"
+         (the fail-open guard on SWIM-dead peers); client stdout:\n{stdout}"
     );
     assert!(
         !stdout.contains("FAIL "),

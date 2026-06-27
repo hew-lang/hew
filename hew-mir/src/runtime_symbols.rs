@@ -283,6 +283,11 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     // internally (like `hew_actor_self`), so neither carries a node argument.
     "hew_node_monitor",
     "hew_node_monitor_recv",
+    // `hew_node_link_remote(target_pid: i64, policy_tag: i64) -> i64` (DIST-9)
+    // establishes a cross-node link: the calling actor links the remote actor
+    // and the remote's death fires the per-link PartitionPolicy. Returns the
+    // link ref_id. The current node + calling actor are resolved internally.
+    "hew_node_link_remote",
     // --- Observe read surface ------------------------------------------------
     "hew_observe_barrier",
     "hew_observe_read_u64",

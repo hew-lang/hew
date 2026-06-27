@@ -1303,6 +1303,41 @@ pub(crate) fn lower_call_runtime_abi(
             }
             let _ = (i32_ty, ptr_ty);
         }
+        // hew_node_link_remote(target_pid: i64, policy_tag: i64) -> i64 (DIST-9).
+        // Establishes a cross-node link: the calling actor (resolved internally)
+        // links the remote actor `target_pid` with the `PartitionPolicy`
+        // discriminant `policy_tag`. Both args are BitCopy i64. The i64 return is
+        // the link ref_id; the immediate Hew-visible result is registration
+        // success — Ok(()) — because the EXIT arrives asynchronously when the
+        // remote dies (mirrors hew_actor_link's infallible immediate return).
+        // boundary-fail-closed (P0): i64 args only, no heap-owning composite.
+        F::LinkRemote => {
+            if args.len() != 2 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_node_link_remote): expected 2 args \
+                     (target_pid: i64, policy_tag: i64), got {}",
+                    args.len()
+                )));
+            }
+            let target_pid = load_int_arg(fn_ctx, args[0], i64_ty, "node_link_target")?;
+            let policy_tag = load_int_arg(fn_ctx, args[1], i64_ty, "node_link_policy")?;
+            let llvm_args: [BasicMetadataValueEnum; 2] = [target_pid.into(), policy_tag.into()];
+            // Call hew_node_link_remote → i64 ref_id. The ref_id is discarded at
+            // codegen: registration is the immediate result and the Result<(),
+            // LinkError> dest is written Ok(()). A failed registration is recorded
+            // via set_last_error in the runtime and the link simply never fires
+            // (it cannot crash an actor it never registered) — fail-closed.
+            let _ref_id = fn_ctx.call_runtime_int(
+                symbol,
+                &llvm_args,
+                "hew_node_link_remote_call",
+                "hew_node_link_remote call",
+            )?;
+            if let Some(d) = dest {
+                emit_result_ok(fn_ctx, d, None)?;
+            }
+            let _ = (i32_ty, ptr_ty);
+        }
         // hew_actor_self() -> *mut HewActor (`hew-runtime/src/actor.rs`). Reads
         // the live actor from the per-dispatch thread-local — the borrowed
         // handle the current `receive fn` runs on. Emitted for `this` used as a

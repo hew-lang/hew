@@ -21468,6 +21468,17 @@ impl Builder {
             "hew_node_monitor" | "hew_node_monitor_recv" => {
                 self.lower_simple_int_runtime_call(symbol, hir_args, site, context, result_ty)
             }
+            // Cross-node link (DIST-9): `link_remote(RemotePid<T>, PartitionPolicy)`
+            // establishes a cross-node link and returns `Result<(), LinkError>`.
+            // The remote target has no `HewActor*` in this address space, so it
+            // routes to the node-link ABI keyed by the packed remote pid + the
+            // policy discriminant; the linking subject (self) is resolved inside
+            // the runtime. Unlike `monitor(RemotePid)` (which is dispatched out of
+            // `hew_actor_monitor` by the RemotePid receiver type), `link_remote`
+            // is its own builtin that always reaches the cross-node form.
+            "hew_node_link_remote" => {
+                self.lower_node_link_remote(hir_args, site, context, result_ty)
+            }
             "hew_observe_read_u64"
             | "hew_observe_scrape"
             | "hew_observe_series"
@@ -22175,6 +22186,101 @@ impl Builder {
             dest: monitor_ref_local,
         });
         Some(monitor_ref_local)
+    }
+
+    /// Lower a cross-node `link_remote(RemotePid<T>, PartitionPolicy)` to the
+    /// node-link ABI.
+    ///
+    /// The user surface is 2-arg: the remote target pid and the `PartitionPolicy`
+    /// governing what happens to the LOCAL linked actor when the remote dies. The
+    /// linking subject (self) is resolved inside the runtime (like
+    /// `hew_node_monitor` / `hew_actor_self`), so the ABI takes only
+    /// `(target_pid: i64, policy_tag: i64)`. The target lowers to a bare i64
+    /// (node<<48|serial); the policy is a fieldless enum whose discriminant tag is
+    /// extracted via `Place::EnumTag` and passed as the `policy_tag` i64.
+    ///
+    /// The return is `Result<(), LinkError>` (matching the local `link`); the
+    /// immediate result signals registration success — the EXIT arrives async when
+    /// the remote dies. Codegen writes Ok(()) and discards the ABI's `ref_id`.
+    fn lower_node_link_remote(
+        &mut self,
+        hir_args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+        context: RuntimeCallContext,
+        result_ty: Option<&ResolvedTy>,
+    ) -> Option<Place> {
+        if hir_args.len() != 2 {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "runtime call `hew_node_link_remote` arity".to_string(),
+                    site,
+                },
+                note: format!(
+                    "`link_remote` expects exactly 2 arguments (remote pid, policy), got {}",
+                    hir_args.len()
+                ),
+            });
+            return None;
+        }
+
+        // arg0: the remote pid (a bare i64 node<<48|serial).
+        let target = self.lower_value(&hir_args[0])?;
+        // arg1: the PartitionPolicy fieldless enum value; extract its discriminant
+        // tag into an i64 the ABI consumes as the policy selector.
+        let policy_value = self.lower_value(&hir_args[1])?;
+        let Place::Local(policy_local) = policy_value else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "runtime call `hew_node_link_remote` policy operand".to_string(),
+                    site,
+                },
+                note: "`link_remote` lowers the PartitionPolicy through the \
+                       tagged-union discriminant; the policy operand must first \
+                       materialise as an enum local"
+                    .to_string(),
+            });
+            return None;
+        };
+        let policy_tag = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::Move {
+            dest: policy_tag,
+            src: Place::EnumTag(policy_local),
+        });
+
+        if context != RuntimeCallContext::ValueNeeded {
+            // Statement-position: register the link, discard the ref_id.
+            self.push_runtime_call("hew_node_link_remote", vec![target, policy_tag], None);
+            return None;
+        }
+
+        // Value-needed: the checker records `Result<(), LinkError>` as the result.
+        // Fail closed if it did not — a HIR→MIR boundary violation.
+        let composite_ty = if let Some(ty) = result_ty {
+            ty.clone()
+        } else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "runtime call `hew_node_link_remote` value result".to_string(),
+                    site,
+                },
+                note: "`hew_node_link_remote` value-needed path requires a \
+                       checker-authoritative result type; result_ty was None \
+                       (checker did not record a type for this call site — \
+                       boundary violation)"
+                    .to_string(),
+            });
+            return None;
+        };
+        // Allocate the Result<(), LinkError> dest and pass it to the ABI call. The
+        // codegen LinkRemote handler sees the dest and emits emit_result_ok (tag=0,
+        // no payload) — registration success; the EXIT arrives async on death.
+        let result_local = self.alloc_local(composite_ty);
+        self.push_runtime_call(
+            "hew_node_link_remote",
+            vec![target, policy_tag],
+            Some(result_local),
+        );
+        Some(result_local)
     }
 
     /// Emit `Instr::CallRuntimeAbi` for discarded `unlink` calls.

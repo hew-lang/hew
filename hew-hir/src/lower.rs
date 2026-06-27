@@ -383,6 +383,13 @@ const SYNTHETIC_MONITOR_ITEM: ItemId = ItemId(u32::MAX / 2 - 10);
 /// builtin with no AST `fn` item. Resolves to
 /// `ResolvedRef::Builtin(ActorUnlink)` via `builtin_family`.
 const SYNTHETIC_UNLINK_ITEM: ItemId = ItemId(u32::MAX / 2 - 18);
+/// Synthetic-builtin sentinel `ItemId` for the user-facing `link_remote` builtin
+/// (DIST-9). The checker (`registration.rs`) registers `link_remote` as a 2-arg
+/// `(RemotePid<T>, PartitionPolicy) → Result<(), LinkError>` builtin with no AST
+/// `fn` item; it resolves to `ResolvedRef::Builtin(LinkRemote)` via
+/// `builtin_family` and MIR reads the C symbol `hew_node_link_remote` off the
+/// catalog bijection.
+const SYNTHETIC_LINK_REMOTE_ITEM: ItemId = ItemId(u32::MAX / 2 - 20);
 
 /// Synthetic-builtin sentinel `ItemId` for the static `instant::now()`
 /// constructor. The `impl instant` block in `std/builtins.hew` binds it via
@@ -6527,11 +6534,51 @@ impl LowerCtx {
         self.seed_channel_recv_fn_registry();
     }
 
+    /// Seed the `link_remote(RemotePid<T>, PartitionPolicy) -> Result<(),
+    /// LinkError>` builtin (DIST-9). Unlike `link`/`monitor`/`unlink` (1-arg
+    /// `LocalPid`, self synthesized), `link_remote` is 2-arg: the explicit remote
+    /// target and the `PartitionPolicy`. The linking subject (self) is resolved
+    /// inside the runtime. The checker records the call-result type at the call
+    /// site, so `return_ty` is a placeholder; the params carry arity. Resolves to
+    /// `ResolvedRef::Builtin(LinkRemote)` → C symbol `hew_node_link_remote`.
+    fn seed_link_remote_fn_registry(&mut self) {
+        use hew_types::runtime_call::RuntimeCallFamily;
+        self.fn_registry.insert(
+            "link_remote".to_string(),
+            FnEntry {
+                id: SYNTHETIC_LINK_REMOTE_ITEM,
+                return_ty: ResolvedTy::Unit,
+                param_tys: vec![
+                    ResolvedTy::Named {
+                        name: hew_types::BuiltinType::RemotePid
+                            .canonical_name()
+                            .to_string(),
+                        args: vec![ResolvedTy::Unit],
+                        builtin: Some(hew_types::BuiltinType::RemotePid),
+                        is_opaque: false,
+                    },
+                    // PartitionPolicy is a stdlib enum (not a BuiltinType); a
+                    // Named ref with no builtin tag is sufficient for arity here —
+                    // the checker validates the precise type at the call site.
+                    ResolvedTy::Named {
+                        name: "PartitionPolicy".to_string(),
+                        args: vec![],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                ],
+                linkage: None,
+                type_params: vec!["T".to_string()],
+                builtin_family: Some(RuntimeCallFamily::LinkRemote),
+            },
+        );
+    }
+
     /// Seeds the checker-registered runtime builtins that have no
     /// `stdlib_catalog` entry and no AST `fn` item (`supervisor_stop`,
-    /// `link`, `monitor`, `unlink`, `duplex_pair`, the `hew_duplex_*`
-    /// rewrite targets). See the per-entry comments for the resolution
-    /// contracts.
+    /// `link`, `monitor`, `unlink`, `link_remote`, `duplex_pair`, the
+    /// `hew_duplex_*` rewrite targets). See the per-entry comments for the
+    /// resolution contracts.
     fn seed_typed_builtin_fn_registry(&mut self) {
         use hew_types::runtime_call::RuntimeCallFamily;
         // Checker-registered runtime-builtin functions that have no stdlib_catalog
@@ -6607,6 +6654,7 @@ impl LowerCtx {
                 },
             );
         }
+        self.seed_link_remote_fn_registry();
         // `duplex_pair<S, R>(capacity: i64) -> (Duplex<S, R>, Duplex<R, S>)`.
         // The checker (`Checker::register_builtins`) registers it as a builtin
         // with no AST `fn` item, so — like `link`/`monitor`/`supervisor_stop`
@@ -27659,6 +27707,7 @@ mod tests {
                 SYNTHETIC_STREAM_TRY_NEXT_LAYOUT_ITEM,
             ),
             ("hew_stream_send_layout", SYNTHETIC_STREAM_SEND_LAYOUT_ITEM),
+            ("link_remote", SYNTHETIC_LINK_REMOTE_ITEM),
         ];
         // The duplex rewrite-target family (offsets 0..=7 below
         // supervisor_stop), exactly as `seed_typed_builtin_fn_registry`

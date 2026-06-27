@@ -167,6 +167,14 @@ pub enum RuntimeCallFamily {
     /// the canonical path is `RuntimeDropDescriptor::MonitorRefClose`.
     ActorDemonitor,
     ActorLink,
+    /// `link_remote(RemotePid<T>, PartitionPolicy)` →
+    /// `hew_node_link_remote(target_pid, policy_tag) -> i64`. Establishes a
+    /// cross-node link: a local actor links a remote actor so the remote's
+    /// death (exit / crash / partition) fires the per-link `PartitionPolicy`
+    /// (`CrashLinked` crashes the local actor). Distinct from `ActorLink` (the
+    /// process-local pointer-keyed link); the cross-node form has no local
+    /// `HewActor*` for the remote peer.
+    LinkRemote,
     ActorMonitor,
     ActorSelf,
     ActorSendById,
@@ -505,6 +513,7 @@ impl RuntimeCallFamily {
             Self::ActorCooperate => "hew_actor_cooperate",
             Self::ActorDemonitor => "hew_actor_demonitor",
             Self::ActorLink => "hew_actor_link",
+            Self::LinkRemote => "hew_node_link_remote",
             Self::ActorMonitor => "hew_actor_monitor",
             Self::ActorSelf => "hew_actor_self",
             Self::ActorSendById => "hew_actor_send_by_id",
@@ -750,6 +759,7 @@ impl RuntimeCallFamily {
             "hew_actor_cooperate" => Self::ActorCooperate,
             "hew_actor_demonitor" => Self::ActorDemonitor,
             "hew_actor_link" => Self::ActorLink,
+            "hew_node_link_remote" => Self::LinkRemote,
             "hew_actor_monitor" => Self::ActorMonitor,
             "hew_actor_self" => Self::ActorSelf,
             "hew_actor_send_by_id" => Self::ActorSendById,
@@ -1056,6 +1066,7 @@ impl RuntimeCallFamily {
             | F::ActorCooperate
             | F::ActorDemonitor
             | F::ActorLink
+            | F::LinkRemote
             | F::ActorMonitor
             | F::ActorSelf
             | F::ActorSendById

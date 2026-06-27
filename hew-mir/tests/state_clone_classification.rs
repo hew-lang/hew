@@ -902,6 +902,44 @@ fn string_payload_machine_record_field_admits() {
     );
 }
 
+/// A GENERIC machine field (`m: Lifecycle<i64>`) in a user record classifies
+/// clean: the machine view is registered under the bare name "Lifecycle", so
+/// the field type must be normalised (args stripped) before the lookup.
+/// Regression guard for the "record type Box has a value class MIR cannot
+/// lower yet" / "could not resolve `RecordLayout` for nested user record
+/// Lifecycle" failure path.
+#[test]
+fn generic_machine_record_field_admits() {
+    let pipeline = lower_source(
+        "
+        machine Lifecycle<T> {
+            events { ev; }
+            state Start;
+            state Mid;
+            on ev: Start => Mid { Mid }
+            on ev: _ => _ { state }
+        }
+
+        type Box { m: Lifecycle<i64>, x: i64 }
+
+        fn main() {
+            let b = Box { m: Lifecycle::Start, x: 0 };
+            println(b.x);
+        }
+    ",
+    );
+    assert!(
+        !has_unsupported_record_value_class(&pipeline, "Box"),
+        "generic machine record field must not be rejected with UnsupportedUserRecordValueClass; got: {:#?}",
+        pipeline.diagnostics
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "generic machine record field must lower clean; got: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
 // ─── LocalPid<T> phantom-arg fix (chat_server regression) ───────────────────
 //
 // `LocalPid<T>`, `ActorRef<T>`, and `Actor<T>` are bit-copy actor handles; T

@@ -8116,6 +8116,57 @@ impl Builder {
             .collect()
     }
 
+    /// Strip type args from a machine-typed field when the outer name is a
+    /// known machine decl and every arg is `i64`.  This mirrors the
+    /// `normalize_machine_field_ty` closure used in the actor-state
+    /// classification path (lower.rs ~1513): generic machine instantiations
+    /// are canonicalised to the bare decl name because the machine layout is
+    /// always registered under that bare name, never mangled.
+    ///
+    /// Non-machine types and non-all-i64 instantiations are returned unchanged
+    /// so they fail closed through the normal classification miss.
+    fn normalize_machine_field_ty(&self, ty: &ResolvedTy) -> ResolvedTy {
+        if let ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+            is_opaque,
+        } = ty
+        {
+            // Strip type args only for machine decl types, never for generic
+            // enums (Option, Result, etc.).  Both sets are present in
+            // `machine_layout_names` — machine names are added directly from
+            // HirItem::Machine, and generic enum origin names are added from
+            // module.enum_layouts so that `is_known_actor_runtime_ty` resolves
+            // them as BitCopy.  The distinguishing property: every generic enum
+            // instantiation has at least one EnumLayout whose name begins with
+            // `{short_name}$$` (the mangled form), while machine types never
+            // produce a `$$`-mangled layout entry (machines always register
+            // under the bare decl name).  If we stripped args from a generic
+            // enum, the bare-name lookup would miss the mangled layout (e.g.
+            // "Option" instead of "Option$$i64") and produce MissingRecordLayout
+            // on any record with an Option<i64> field.
+            let sname = short_name(name);
+            let is_generic_enum_origin = self
+                .enum_layouts
+                .iter()
+                .any(|el| el.name.starts_with(&format!("{sname}$$")));
+            if !args.is_empty()
+                && args.iter().all(|a| matches!(a, ResolvedTy::I64))
+                && !is_generic_enum_origin
+                && machine_layout_name_matches(&self.machine_layout_names, name)
+            {
+                return ResolvedTy::Named {
+                    name: name.clone(),
+                    args: vec![],
+                    builtin: *builtin,
+                    is_opaque: *is_opaque,
+                };
+            }
+        }
+        ty.clone()
+    }
+
     /// True when `ty` may be admitted as a generator-env capture field: a
     /// plain, recursively-copyable value — every leaf `BitCopy` AND the whole
     /// transitively free of `#[opaque]` runtime handles.
@@ -8253,7 +8304,22 @@ impl Builder {
         if fields.is_empty() {
             return Ok(None);
         }
-        let field_tys: Vec<ResolvedTy> = fields.iter().map(|(_, ty)| ty.clone()).collect();
+        // Normalize machine-typed fields before classification: a generic
+        // machine instantiation in a record field (e.g. `m: Lifecycle<i64>`)
+        // arrives as `Named { name: "Lifecycle", args: [I64] }`.  The machine
+        // view is registered under the bare name "Lifecycle" (never mangled),
+        // so `lookup_enum_layout` misses the mangled probe and falls through to
+        // `classify_user_record`, which finds no RecordLayout for a machine →
+        // MissingRecordLayout → UnsupportedUserRecordValueClass.  Strip the
+        // args when the named type is a known machine (all-i64 args, same
+        // condition as the actor-state normalize pass at lower.rs ~1513) so the
+        // bare-name machine view is found.  Any other instantiation keeps its
+        // args and fails closed — matching the Move-type refusal such programs
+        // already hit at codegen.
+        let field_tys: Vec<ResolvedTy> = fields
+            .iter()
+            .map(|(_, ty)| self.normalize_machine_field_ty(ty))
+            .collect();
         let record_layouts = self.record_layouts_for_classification();
         let kinds = crate::state_clone::classify_actor_state_fields_with_opaque_handles(
             &field_tys,

@@ -1594,6 +1594,94 @@ fn main() {
 >
 > Note: `Stack { items: Vec::new() }` *without* a type annotation on the binding also fails — with `cannot infer type for local binding` when `T` is unconstrained, or `E_MIR: unknown type 'T' at the MIR boundary` once usage constrains `T`. Always provide a type annotation when constructing a generic record inline.
 
+### Generic functions as values (cross-module)
+
+A generic function exported from another module can be passed as a first-class
+value. The concrete type arguments are inferred from the receiving variable's
+declared type or the parameter type at the call site — the context fully
+determines the monomorphisation.
+
+<!-- doctest: skip -->
+```hew
+import math_utils;
+
+fn apply(f: fn(i64) -> i64, x: i64) -> i64 {
+    f(x)
+}
+
+fn main() {
+    // Monomorphic cross-module function as a value
+    let sq: fn(i64) -> i64 = math_utils.square;
+    println(apply(sq, 7));                       // 49
+
+    // Generic cross-module function; type inferred from the annotation
+    let id: fn(i64) -> i64 = math_utils.identity;
+    println(apply(id, 5));                        // 5
+
+    // Inline: pass a cross-module fn directly to a higher-order function
+    println(apply(math_utils.add_one, 10));       // 11
+}
+```
+
+Where `math_utils.hew` exports:
+
+<!-- doctest: skip -->
+```hew
+pub fn add_one(x: i64) -> i64 { x + 1 }
+pub fn square(x: i64) -> i64 { x * x }
+pub fn identity<T>(x: T) -> T { x }
+```
+
+The type annotation on the `let` binding (e.g. `fn(i64) -> i64`) is what
+drives inference for `identity<T>` — without it the checker cannot determine
+`T` and rejects the assignment with a diagnostic asking for an explicit
+annotation. Monomorphic cross-module functions (`square`, `add_one`) do not
+need an annotation; the type is recovered from the function's declared
+signature directly.
+
+> **Scope:** this path fires only for cross-module functions
+> (`module.fn_name`). Capturing a generic function from the *current* module
+> as a value is not supported — split the generic helper into a separate
+> module if you need it as a value.
+
+### Generic Display and println
+
+`println` and `print` accept any type `T: Display`. For primitive types
+(`i64`, `f64`, `bool`, `char`, `string`) the `Display` impl is built in and
+`println(v)` works without further setup. For a user-defined type, implement
+`Display` and call `println` through a generic wrapper or use f-string
+interpolation:
+
+```hew
+type Celsius { degrees: f64; }
+
+impl Display for Celsius {
+    fn fmt(c: Celsius) -> string {
+        f"{c.degrees}°C"
+    }
+}
+
+// Generic helper: accepts any T that implements Display
+fn show<T: Display>(label: string, value: T) {
+    println(f"{label}: {value}");
+}
+
+fn main() {
+    show("int", 42);               // int: 42
+    show("float", 2.718);          // float: 2.718
+    show("str", "Hew");            // str: Hew
+    let temp = Celsius { degrees: 36.6 };
+    show("temp", temp);            // temp: 36.6°C
+}
+```
+
+`println(x)` called directly on a user type (without an f-string or a `<T:
+Display>` wrapper) does not dispatch — the checker emits
+`E_HIR: builtin call has no registered monomorphic overload`. Two correct
+forms: `println(f"{val}")` (f-string interpolation) or a generic function
+that takes `T: Display` and calls `println` internally. The `fmt` method is
+also callable directly: `val.fmt()` returns the string representation.
+
 ### Generics NYI — current limitations
 
 Two patterns type-check but fail at call or check time:

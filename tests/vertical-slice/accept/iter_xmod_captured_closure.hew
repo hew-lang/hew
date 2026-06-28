@@ -1,0 +1,34 @@
+// Cross-module chained generic-adapter monomorphisation with a closure that
+// captures a local.
+//
+// The closure passed to the cross-module `iter::map` captures the local `bump`
+// by value; its capture fact reaches MIR resolved, the captured environment is
+// dropped exactly once, and it is not held live across the iterator pump. The
+// `Map` adapter drives the captured closure once per item as `iter::count`
+// counts.
+//
+// Countdown{4} yields [4,3,2,1]; map adds bump=10 to each; count returns 4.
+import std::iter;
+
+type Countdown {
+    n: i64;
+}
+
+impl Iterator for Countdown {
+    type Item = i64;
+    fn next(var self) -> Option<i64> {
+        if self.n <= 0 {
+            None
+        } else {
+            let cur = self.n;
+            self.n = self.n - 1;
+            Some(cur)
+        }
+    }
+}
+
+pub fn main() -> i64 {
+    let bump = 10;
+    let mapped = iter::map(Countdown { n: 4 }, |x: i64| x + bump);
+    iter::count(mapped)
+}

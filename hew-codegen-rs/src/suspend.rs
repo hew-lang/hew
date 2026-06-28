@@ -279,6 +279,52 @@ where
     emit_resume_bind()
 }
 
+/// Construct the one-shot `HewAwaitCancel` arbiter every suspending terminator
+/// races its deadline/cancel ramp on.
+///
+/// `hew_await_cancel_new(self, cleanup, ctx)` mints the first-ready CAS record
+/// that the deadline arm (`schedule_deadline_ms`) and the readiness arm (slot
+/// take / reply deposit / scope join) settle exactly once. The three pointer
+/// arguments are the only per-terminator variation in the constructor itself:
+/// - `self_actor` — the parked-continuation actor a timer/reactor wake
+///   re-enqueues (always `hew_actor_self()`, never a spilled param).
+/// - `cleanup` — the timer-fire teardown callback, or null for the deadline-only
+///   ramps (sleep / sleep_until / scope) whose abandon/resume arms do the
+///   teardown directly with full pointer context.
+/// - `ctx` — the cleanup callback's argument (the read slot, a recv cancel-ctx
+///   struct, or the reply channel), or null when `cleanup` is null.
+///
+/// Returns the arbiter pointer or fails closed — the constructor never fabricates
+/// a registration from a void return. Each call site keeps its own
+/// `set_await_cancel` wiring, deadline schedule, and per-kind timeout
+/// continuation; only the fail-closed constructor lives here.
+pub(crate) fn emit_await_cancel_new<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    self_actor: inkwell::values::PointerValue<'ctx>,
+    cleanup: inkwell::values::PointerValue<'ctx>,
+    ctx_arg: inkwell::values::PointerValue<'ctx>,
+    name: &str,
+) -> CodegenResult<inkwell::values::PointerValue<'ctx>> {
+    let cancel_new = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_await_cancel_new",
+    )?;
+    Ok(fn_ctx
+        .builder
+        .build_call(
+            cancel_new,
+            &[self_actor.into(), cleanup.into(), ctx_arg.into()],
+            name,
+        )
+        .llvm_ctx("hew_await_cancel_new call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_await_cancel_new returned void".into()))?
+        .into_pointer_value())
+}
+
 /// Emit the caller-side non-blocking `await conn.read()` (NEW-1
 /// `Terminator::SuspendingRead`). The fd-readiness analogue of
 /// [`emit_suspending_ask_terminator`].
@@ -386,12 +432,6 @@ pub(crate) fn emit_suspending_read_terminator<'ctx>(
     let i32_ty = fn_ctx.ctx.i32_type();
     let i64_ty = fn_ctx.ctx.i64_type();
     let reg: Option<inkwell::values::PointerValue<'ctx>> = if term.deadline_ns.is_some() {
-        let cancel_new = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_new",
-        )?;
         let cleanup_fn = intern_runtime_decl(
             fn_ctx.ctx,
             fn_ctx.llvm_mod,
@@ -399,18 +439,13 @@ pub(crate) fn emit_suspending_read_terminator<'ctx>(
             "hew_read_slot_cancel_cleanup",
         )?;
         let cleanup_ptr = cleanup_fn.as_global_value().as_pointer_value();
-        let reg = fn_ctx
-            .builder
-            .build_call(
-                cancel_new,
-                &[self_actor.into(), cleanup_ptr.into(), slot.into()],
-                "suspending_read_deadline_reg",
-            )
-            .llvm_ctx("hew_await_cancel_new call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| CodegenError::FailClosed("hew_await_cancel_new returned void".into()))?
-            .into_pointer_value();
+        let reg = emit_await_cancel_new(
+            fn_ctx,
+            self_actor,
+            cleanup_ptr,
+            slot,
+            "suspending_read_deadline_reg",
+        )?;
         let set_await_cancel = intern_runtime_decl(
             fn_ctx.ctx,
             fn_ctx.llvm_mod,
@@ -1049,12 +1084,6 @@ pub(crate) fn emit_suspending_accept_terminator<'ctx>(
     // before the reactor can fire. Mirrors the SuspendingRead cancel-registration
     // sequence (hew_await_cancel_new → hew_read_slot_set_await_cancel).
     let reg: Option<inkwell::values::PointerValue<'ctx>> = if term.deadline_ns.is_some() {
-        let cancel_new = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_new",
-        )?;
         let cleanup_fn = intern_runtime_decl(
             fn_ctx.ctx,
             fn_ctx.llvm_mod,
@@ -1062,18 +1091,13 @@ pub(crate) fn emit_suspending_accept_terminator<'ctx>(
             "hew_read_slot_cancel_cleanup",
         )?;
         let cleanup_ptr = cleanup_fn.as_global_value().as_pointer_value();
-        let reg = fn_ctx
-            .builder
-            .build_call(
-                cancel_new,
-                &[self_actor.into(), cleanup_ptr.into(), slot.into()],
-                "suspending_accept_deadline_reg",
-            )
-            .llvm_ctx("hew_await_cancel_new call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| CodegenError::FailClosed("hew_await_cancel_new returned void".into()))?
-            .into_pointer_value();
+        let reg = emit_await_cancel_new(
+            fn_ctx,
+            self_actor,
+            cleanup_ptr,
+            slot,
+            "suspending_accept_deadline_reg",
+        )?;
         let set_await_cancel = intern_runtime_decl(
             fn_ctx.ctx,
             fn_ctx.llvm_mod,
@@ -1690,12 +1714,6 @@ pub(crate) fn emit_suspending_stream_next_terminator<'ctx>(
     // The coroutine frame's lifetime spans the suspend point, so the alloca is
     // live when the deadline timer fires and calls the cleanup.
     let reg: Option<inkwell::values::PointerValue<'ctx>> = if term.deadline_ns.is_some() {
-        let cancel_new = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_new",
-        )?;
         let cleanup_fn = intern_runtime_decl(
             fn_ctx.ctx,
             fn_ctx.llvm_mod,
@@ -1740,18 +1758,13 @@ pub(crate) fn emit_suspending_stream_next_terminator<'ctx>(
             .builder
             .build_store(ctx_stream_ptr, stream_ptr)
             .llvm_ctx("stream next cancel ctx stream store")?;
-        let reg = fn_ctx
-            .builder
-            .build_call(
-                cancel_new,
-                &[self_actor.into(), cleanup_ptr.into(), cancel_ctx.into()],
-                "suspending_stream_next_deadline_reg",
-            )
-            .llvm_ctx("hew_await_cancel_new call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| CodegenError::FailClosed("hew_await_cancel_new returned void".into()))?
-            .into_pointer_value();
+        let reg = emit_await_cancel_new(
+            fn_ctx,
+            self_actor,
+            cleanup_ptr,
+            cancel_ctx,
+            "suspending_stream_next_deadline_reg",
+        )?;
         let set_await_cancel = intern_runtime_decl(
             fn_ctx.ctx,
             fn_ctx.llvm_mod,
@@ -2367,12 +2380,6 @@ pub(crate) fn emit_suspending_channel_recv_terminator<'ctx>(
     // The coroutine frame's lifetime spans the suspend point, so the alloca is
     // live when the deadline timer fires and calls the cleanup.
     let reg: Option<inkwell::values::PointerValue<'ctx>> = if term.deadline_ns.is_some() {
-        let cancel_new = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_new",
-        )?;
         let cleanup_fn = intern_runtime_decl(
             fn_ctx.ctx,
             fn_ctx.llvm_mod,
@@ -2417,18 +2424,13 @@ pub(crate) fn emit_suspending_channel_recv_terminator<'ctx>(
             .builder
             .build_store(ctx_rx_ptr, rx_ptr)
             .llvm_ctx("channel recv cancel ctx rx store")?;
-        let reg = fn_ctx
-            .builder
-            .build_call(
-                cancel_new,
-                &[self_actor.into(), cleanup_ptr.into(), cancel_ctx.into()],
-                "suspending_channel_recv_deadline_reg",
-            )
-            .llvm_ctx("hew_await_cancel_new call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| CodegenError::FailClosed("hew_await_cancel_new returned void".into()))?
-            .into_pointer_value();
+        let reg = emit_await_cancel_new(
+            fn_ctx,
+            self_actor,
+            cleanup_ptr,
+            cancel_ctx,
+            "suspending_channel_recv_deadline_reg",
+        )?;
         let set_await_cancel = intern_runtime_decl(
             fn_ctx.ctx,
             fn_ctx.llvm_mod,
@@ -3451,27 +3453,16 @@ pub(crate) fn emit_suspending_sleep_terminator<'ctx>(
         .ctx
         .ptr_type(inkwell::AddressSpace::default())
         .const_null();
-    let cancel_new = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_await_cancel_new",
-    )?;
     // A pure timer→enqueue_resume registration: no cleanup source (sleep owns no
     // read slot / channel registration to tear down — the wheel cancel on the
     // abandon edge is the whole teardown).
-    let reg = fn_ctx
-        .builder
-        .build_call(
-            cancel_new,
-            &[self_actor.into(), null_ptr.into(), null_ptr.into()],
-            "suspending_sleep_reg",
-        )
-        .llvm_ctx("hew_await_cancel_new call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_await_cancel_new returned void".into()))?
-        .into_pointer_value();
+    let reg = emit_await_cancel_new(
+        fn_ctx,
+        self_actor,
+        null_ptr,
+        null_ptr,
+        "suspending_sleep_reg",
+    )?;
 
     let tw_fn = intern_runtime_decl(
         fn_ctx.ctx,
@@ -3702,24 +3693,7 @@ pub(crate) fn emit_suspending_sleep_until_terminator<'ctx>(
         .ctx
         .ptr_type(inkwell::AddressSpace::default())
         .const_null();
-    let cancel_new = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_await_cancel_new",
-    )?;
-    let reg = fn_ctx
-        .builder
-        .build_call(
-            cancel_new,
-            &[self_actor.into(), null_ptr.into(), null_ptr.into()],
-            "sleep_until_reg",
-        )
-        .llvm_ctx("hew_await_cancel_new call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_await_cancel_new returned void".into()))?
-        .into_pointer_value();
+    let reg = emit_await_cancel_new(fn_ctx, self_actor, null_ptr, null_ptr, "sleep_until_reg")?;
 
     let tw_fn = intern_runtime_decl(
         fn_ctx.ctx,
@@ -3983,24 +3957,13 @@ pub(crate) fn emit_suspending_scope_deadline_terminator<'ctx>(
     // do the scope cancel + join + arbiter free with full pointer context, like
     // the sleep ramp's null-cleanup arbiter).
     let null_ptr = ptr_ty.const_null();
-    let cancel_new = intern_runtime_decl(
-        ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_await_cancel_new",
+    let reg = emit_await_cancel_new(
+        fn_ctx,
+        self_actor,
+        null_ptr,
+        null_ptr,
+        "suspending_scope_deadline_reg",
     )?;
-    let reg = fn_ctx
-        .builder
-        .build_call(
-            cancel_new,
-            &[self_actor.into(), null_ptr.into(), null_ptr.into()],
-            "suspending_scope_deadline_reg",
-        )
-        .llvm_ctx("hew_await_cancel_new call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_await_cancel_new returned void".into()))?
-        .into_pointer_value();
 
     // DEADLINE arm: arm the timeout on the shared arbiter via the global wheel.
     // Ignore the schedule rc: the JOIN arm still decides the winner if the wheel
@@ -4618,12 +4581,6 @@ pub(crate) fn emit_suspending_ask_terminator<'ctx>(
     let i32_ty = fn_ctx.ctx.i32_type();
     let i64_ty = fn_ctx.ctx.i64_type();
     let reg: Option<inkwell::values::PointerValue<'ctx>> = if term.deadline_ns.is_some() {
-        let cancel_new = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_new",
-        )?;
         let cleanup_fn = intern_runtime_decl(
             fn_ctx.ctx,
             fn_ctx.llvm_mod,
@@ -4631,18 +4588,13 @@ pub(crate) fn emit_suspending_ask_terminator<'ctx>(
             "hew_reply_channel_cancel_cleanup",
         )?;
         let cleanup_ptr = cleanup_fn.as_global_value().as_pointer_value();
-        let reg = fn_ctx
-            .builder
-            .build_call(
-                cancel_new,
-                &[self_actor.into(), cleanup_ptr.into(), ch.into()],
-                "suspending_ask_deadline_reg",
-            )
-            .llvm_ctx("hew_await_cancel_new call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| CodegenError::FailClosed("hew_await_cancel_new returned void".into()))?
-            .into_pointer_value();
+        let reg = emit_await_cancel_new(
+            fn_ctx,
+            self_actor,
+            cleanup_ptr,
+            ch,
+            "suspending_ask_deadline_reg",
+        )?;
         let set_await_cancel = intern_runtime_decl(
             fn_ctx.ctx,
             fn_ctx.llvm_mod,

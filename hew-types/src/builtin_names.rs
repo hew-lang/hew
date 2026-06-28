@@ -320,14 +320,18 @@ builtin_named_types! {
     },
     // RemotePid<T>: actor pid on a remote node.
     //
-    // A `RemotePid<T>` is produced by peer-discovery or explicit construction
-    // (`RemotePid::from_raw`). It does NOT unify with `LocalPid<T>`.
-    // Coercion from local → remote is explicit: `local_pid.to_remote_via(node_handle)`.
+    // The production constructor is `Node::lookup<T>(name) ->
+    // Result<RemotePid<T>, LookupError>`, which snapshots the registration the
+    // StaleRef boundary tracks. `RemotePid::from_raw` is a test-only raw
+    // constructor for fixtures that fabricate a `(node_id, serial)` pid directly;
+    // it is functional (codegen lowers it via `hew_remote_pid_from_raw`), not a
+    // shim, but a from_raw pid carries no registration provenance so it is not
+    // subject to the supersession / StaleRef check. `RemotePid<T>` does NOT unify
+    // with `LocalPid<T>`; coercion from local → remote is explicit via
+    // `local_pid.to_remote_via(node_handle)`.
     //
-    // `.tell` returns Result<(), SendError> and fails closed until actual routing arrives.
-    //
-    // SHIM: `RemotePid::from_raw` is S1 scaffolding;
-    //       remove / replace when `hew_actor_send_remote` ABI lands in S4.
+    // `.tell` returns Result<(), SendError>; a captured ref whose registration
+    // was superseded fails closed with `SendError::StaleRef`.
     RemotePid {
         consts: (REMOTE_PID, QUALIFIED_REMOTE_PID),
         methods_const: REMOTE_PID_METHODS,

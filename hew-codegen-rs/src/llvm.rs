@@ -10225,6 +10225,142 @@ fn collect_record_inplace_drop_seeds(
     seeds
 }
 
+/// Collect the record / enum / machine layout keys of every record or enum that
+/// appears as a member of a `DropKind::TupleInPlace` drop's tuple type.
+///
+/// A heap-owning tuple's `__hew_tuple_drop_inplace_<key>` body runs a per-member
+/// drop that, for a record/enum member, calls the member's
+/// `__hew_record_drop_inplace_<R>` / `__hew_enum_drop_inplace_<E>` thunk. That
+/// member thunk's BODY is synthesised only if its key is seeded — and a record
+/// reachable ONLY as a tuple member (`(Boxed, i64)` where `Boxed { payload:
+/// Vec<i64> }`) is discovered by no other seed pass (it is not a state field,
+/// not an owned-Vec element, not a direct `RecordInPlace` local). Without this
+/// seed the member thunk is declared-but-undefined and LLVM verify rejects the
+/// module. This pass closes that gap for the tuple-member shape the unified
+/// record-aware heap-ownership authority newly admits to a `TupleInPlace` drop.
+///
+/// Mirrors `collect_vec_owned_element_seeds`'s resolution: a `Named` member
+/// resolving to a registered enum (or machine, via the enum view) seeds the
+/// enum list; one resolving to a registered record seeds the record list.
+/// Nested tuples/arrays are walked; primitive / builtin members never bear a
+/// per-member thunk and are skipped. Returns `(record_seeds, enum_seeds)`.
+fn collect_tuple_member_inplace_drop_seeds(
+    elaborated: &[hew_mir::ElaboratedMirFunction],
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> (Vec<String>, Vec<String>) {
+    let mut record_seeds: Vec<String> = Vec::new();
+    let mut enum_seeds: Vec<String> = Vec::new();
+    let mut rec_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut enum_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    fn consider(
+        ty: &ResolvedTy,
+        record_layouts: &[RecordLayout],
+        enum_layouts: &[EnumLayout],
+        rec_seen: &mut std::collections::HashSet<String>,
+        enum_seen: &mut std::collections::HashSet<String>,
+        record_seeds: &mut Vec<String>,
+        enum_seeds: &mut Vec<String>,
+    ) {
+        match ty {
+            // Nested aggregate members are themselves dropped per-element; walk
+            // them so a `((Boxed, i64), i64)` reaches the inner record.
+            ResolvedTy::Tuple(elems) => {
+                for e in elems {
+                    consider(
+                        e,
+                        record_layouts,
+                        enum_layouts,
+                        rec_seen,
+                        enum_seen,
+                        record_seeds,
+                        enum_seeds,
+                    );
+                }
+            }
+            ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
+                consider(
+                    inner,
+                    record_layouts,
+                    enum_layouts,
+                    rec_seen,
+                    enum_seen,
+                    record_seeds,
+                    enum_seeds,
+                );
+            }
+            ResolvedTy::Named { name, args, .. } => {
+                let short = short_name(name);
+                // Enum-first (machine views are folded into the enum slice by
+                // the caller), mirroring owned_elem_thunk_key resolution order.
+                let enum_key = if args.is_empty() {
+                    enum_layouts
+                        .iter()
+                        .find(|el| el.name == *name || short_name(&el.name) == short)
+                        .map(|el| el.name.clone())
+                } else {
+                    let mangled = mangle_with_shortened_args(short, args);
+                    enum_layouts
+                        .iter()
+                        .find(|el| el.name == mangled || el.name == *name)
+                        .map(|el| el.name.clone())
+                };
+                if let Some(key) = enum_key {
+                    if enum_seen.insert(key.clone()) {
+                        enum_seeds.push(key);
+                    }
+                    return;
+                }
+                let rec_key = if args.is_empty() {
+                    record_layouts
+                        .iter()
+                        .find(|rl| rl.name == *name || short_name(&rl.name) == short)
+                        .map(|rl| rl.name.clone())
+                } else {
+                    let full_mangled = mangle_with_shortened_args(name, args);
+                    let short_mangled = mangle_with_shortened_args(short, args);
+                    record_layouts
+                        .iter()
+                        .find(|rl| rl.name == full_mangled || rl.name == short_mangled)
+                        .map(|rl| rl.name.clone())
+                };
+                if let Some(key) = rec_key {
+                    if rec_seen.insert(key.clone()) {
+                        record_seeds.push(key);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    for func in elaborated {
+        for (_exit, plan) in &func.drop_plans {
+            for drop in &plan.drops {
+                if drop.kind != hew_mir::DropKind::TupleInPlace {
+                    continue;
+                }
+                let ResolvedTy::Tuple(elems) = &drop.ty else {
+                    continue;
+                };
+                for elem in elems {
+                    consider(
+                        elem,
+                        record_layouts,
+                        enum_layouts,
+                        &mut rec_seen,
+                        &mut enum_seen,
+                        &mut record_seeds,
+                        &mut enum_seeds,
+                    );
+                }
+            }
+        }
+    }
+    (record_seeds, enum_seeds)
+}
+
 /// Collect the config struct name of every supervisor whose config struct has
 /// at least one OWNED field, so its `__hew_record_drop_inplace_<ConfigTy>` body
 /// is synthesised. The supervisor-owned config buffer owns those inner fields;
@@ -24757,106 +24893,81 @@ pub(crate) fn resolved_ty_element_owns_heap_for_owned_vec(
     }
 }
 
-/// Structural heap-owning check on a `ResolvedTy`: a string/bytes leaf, or a
-/// record/enum/tuple transitively containing one. Resolves user record/enum
-/// member types through the codegen registries (`record_field_resolved_tys`
-/// for records, `enum_layouts` for enums) with a visited-set guard for
-/// recursive nominals.
+/// Codegen [`HeapOwnershipLayouts`] adapter: surfaces the `FnCtx` registries
+/// (record fields, enum variant payloads, AND machine state payloads) to the
+/// single `hew_mir::ty_owns_heap` authority. Machine layouts are the codegen-
+/// only third axis (the MIR side folds machine state payloads into its
+/// `enum_layouts` view); this adapter unions them into the one
+/// `enum_variant_field_tys` lookup so machine-bearing composites reach the same
+/// verdict as enum-bearing ones, and the verdict matches the MIR drop
+/// elaborator's (`dedup-semantic-boundary`).
+struct CgHeapLayouts<'a, 'ctx> {
+    fn_ctx: &'a FnCtx<'a, 'ctx>,
+}
+
+impl hew_mir::HeapOwnershipLayouts for CgHeapLayouts<'_, '_> {
+    fn record_field_tys(&self, name: &str, args: &[ResolvedTy]) -> Option<Vec<ResolvedTy>> {
+        let short = short_name(name);
+        let key = if args.is_empty() {
+            name.to_string()
+        } else {
+            mangle_with_shortened_args(short, args)
+        };
+        self.fn_ctx
+            .record_field_resolved_tys
+            .get(key.as_str())
+            .or_else(|| self.fn_ctx.record_field_resolved_tys.get(short))
+            .cloned()
+    }
+
+    fn enum_variant_field_tys(
+        &self,
+        name: &str,
+        args: &[ResolvedTy],
+    ) -> Option<Vec<Vec<ResolvedTy>>> {
+        let short = short_name(name);
+        let key = if args.is_empty() {
+            name.to_string()
+        } else {
+            mangle_with_shortened_args(short, args)
+        };
+        // Enum layouts.
+        if let Some(layout) = self
+            .fn_ctx
+            .enum_layouts
+            .iter()
+            .find(|el| el.name == key || el.name == name || short_name(&el.name) == short)
+        {
+            return Some(
+                layout
+                    .variants
+                    .iter()
+                    .map(|v| v.field_tys.clone())
+                    .collect(),
+            );
+        }
+        // Machine state payloads (machines are enums at the value-classification
+        // layer; their per-variant field types live in the machine layout
+        // registry, not `enum_layouts`).
+        if let Some(machine) = self.fn_ctx.machine_layouts.get(short) {
+            return Some(machine.variant_field_tys.clone());
+        }
+        None
+    }
+}
+
+/// Structural heap-owning check on a `ResolvedTy` — thin adapter over the single
+/// `hew_mir::ty_owns_heap` authority. Resolves user record/enum/machine member
+/// types through the codegen registries via [`CgHeapLayouts`] so the
+/// constructor's owned-descriptor decision and the elaborator's drop_fn agree
+/// (`dedup-semantic-boundary`). The `visiting` parameter is retained for caller
+/// stability; the unified walker manages its own recursion guard.
 fn resolved_ty_contains_heap_leaf(
     fn_ctx: &FnCtx<'_, '_>,
     ty: &ResolvedTy,
-    visiting: &mut HashSet<String>,
+    _visiting: &mut HashSet<String>,
 ) -> bool {
-    match ty {
-        // `string` / `bytes` are heap leaves. A `Vec` / `HashMap` / `HashSet`
-        // is a heap-owning handle for any element type: a record/enum field of
-        // one of these owns heap even when every element is BitCopy
-        // (`type Boxed { payload: [i64] }` owns its `payload` buffer). Must
-        // mirror the MIR `named_elem_owns_heap` / `ty_contains_heap_owning` arm
-        // and `ValueClass::of_ty` so the constructor's owned-descriptor decision
-        // and the elaborator's drop_fn agree (`dedup-semantic-boundary`).
-        // Without the collection arm a `Vec<Boxed>` is built as a plain
-        // (shallow) vec and the per-element buffers leak.
-        ResolvedTy::String
-        | ResolvedTy::Bytes
-        | ResolvedTy::Named {
-            builtin:
-                Some(
-                    hew_types::BuiltinType::Vec
-                    | hew_types::BuiltinType::HashMap
-                    | hew_types::BuiltinType::HashSet,
-                ),
-            ..
-        } => true,
-        ResolvedTy::Tuple(elems) => elems
-            .iter()
-            .any(|e| resolved_ty_contains_heap_leaf(fn_ctx, e, visiting)),
-        ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => {
-            resolved_ty_contains_heap_leaf(fn_ctx, elem, visiting)
-        }
-        ResolvedTy::Named { name, args, .. } => {
-            // Type args first (Option<string>, Vec<string>, ...).
-            if args
-                .iter()
-                .any(|a| resolved_ty_contains_heap_leaf(fn_ctx, a, visiting))
-            {
-                return true;
-            }
-            let short = short_name(name);
-            let key = if args.is_empty() {
-                name.clone()
-            } else {
-                mangle_with_shortened_args(short, args)
-            };
-            if !visiting.insert(key.clone()) {
-                // A recursive nominal already on the stack: its own fields are
-                // being checked higher up. Returning false here is sound — the
-                // back-edge contributes no NEW leaf beyond what the active
-                // frame already accounts for.
-                return false;
-            }
-            // Record fields.
-            let fields = fn_ctx
-                .record_field_resolved_tys
-                .get(key.as_str())
-                .or_else(|| fn_ctx.record_field_resolved_tys.get(short));
-            let mut owns = false;
-            if let Some(fields) = fields {
-                owns = fields
-                    .iter()
-                    .any(|f| resolved_ty_contains_heap_leaf(fn_ctx, f, visiting));
-            }
-            // Enum variant payloads.
-            if !owns {
-                if let Some(layout) = fn_ctx
-                    .enum_layouts
-                    .iter()
-                    .find(|el| el.name == key || el.name == *name || short_name(&el.name) == short)
-                {
-                    owns = layout.variants.iter().any(|v| {
-                        v.field_tys
-                            .iter()
-                            .any(|f| resolved_ty_contains_heap_leaf(fn_ctx, f, visiting))
-                    });
-                }
-            }
-            // Machine state payloads (machines are enums at the
-            // value-classification layer; their per-variant field types
-            // live in the machine layout registry, not `enum_layouts`).
-            if !owns {
-                if let Some(machine) = fn_ctx.machine_layouts.get(short) {
-                    owns = machine.variant_field_tys.iter().any(|fields| {
-                        fields
-                            .iter()
-                            .any(|f| resolved_ty_contains_heap_leaf(fn_ctx, f, visiting))
-                    });
-                }
-            }
-            visiting.remove(&key);
-            owns
-        }
-        _ => false,
-    }
+    hew_mir::ty_owns_heap(ty, &CgHeapLayouts { fn_ctx })
 }
 
 fn cow_heap_release_symbol(fn_ctx: &FnCtx<'_, '_>, ty: &ResolvedTy) -> Option<&'static str> {
@@ -35815,6 +35926,31 @@ fn build_module_for_target<'ctx>(
             vec_owned_record_seeds.push(record_seed);
         }
     }
+    // Tuple-member capstone — a heap-owning tuple dropped via
+    // `DropKind::TupleInPlace` runs a per-member drop that calls each
+    // record/enum member's `__hew_{record,enum}_drop_inplace_<key>` thunk. A
+    // record/enum reachable ONLY as a tuple member (`(Boxed, i64)` where
+    // `Boxed { payload: Vec<i64> }`) is discovered by no other seed pass, so its
+    // member thunk would be declared-but-undefined and LLVM verify would reject
+    // the module. Seed those member keys here (the unified record-aware
+    // heap-ownership authority newly admits such tuples to a `TupleInPlace`
+    // drop). Records → the record channel; enums/machines → the enum channel.
+    let (tuple_member_record_seeds, tuple_member_enum_seeds) =
+        collect_tuple_member_inplace_drop_seeds(
+            &pipeline.elaborated_mir,
+            &pipeline.record_layouts,
+            &synthesis_enum_layouts,
+        );
+    for record_seed in tuple_member_record_seeds {
+        if !vec_owned_record_seeds.contains(&record_seed) {
+            vec_owned_record_seeds.push(record_seed);
+        }
+    }
+    for enum_seed in tuple_member_enum_seeds {
+        if !enum_inplace_drop_seeds.contains(&enum_seed) {
+            enum_inplace_drop_seeds.push(enum_seed);
+        }
+    }
     // cross-node codec path — seed every record- or enum-typed actor handler
     // message/reply so `emit_state_clone_drop_synthesis` emits the
     // `__hew_record_drop_inplace_*` / `__hew_enum_drop_inplace_*` body before
@@ -45829,6 +45965,104 @@ mod tests {
         assert!(
             is_known_cow_heap_drop_symbol("hew_vec_free_closure_pairs"),
             "hew_vec_free_closure_pairs must be in the permitted CowHeap release set"
+        );
+    }
+
+    /// DIV-2: codegen's owned-Vec element walker
+    /// (`resolved_ty_element_owns_heap_for_owned_vec` → the unified
+    /// `resolved_ty_contains_heap_leaf` → `hew_mir::ty_owns_heap`) must classify
+    /// a `CancellationToken` / `Generator` / `AsyncGenerator` as a heap-owning
+    /// leaf, matching the MIR drop elaborator's authority. Before the walkers
+    /// were unified codegen had no token/generator arm and answered `false` for
+    /// a bare handle, while the MIR side answered `true` — the asymmetry that
+    /// makes a handle-bearing tuple's owned-Vec element ABI disagree between the
+    /// constructor and the elaborator's drop_fn (the #2191/#2150 class).
+    #[test]
+    fn owned_vec_element_walker_treats_tokens_and_generators_as_heap_owning() {
+        let ctx = Context::create();
+        let llvm_mod = ctx.create_module("div2_leaf_test");
+        let harness = build_harness(&ctx, &[], &[]);
+        let fn_ctx = make_test_fn_ctx(&ctx, &llvm_mod, &harness, "div2_leaf_probe");
+
+        let generator = ResolvedTy::Named {
+            name: "Generator".to_string(),
+            args: vec![ResolvedTy::I64, ResolvedTy::Unit],
+            builtin: Some(hew_types::BuiltinType::Generator),
+            is_opaque: false,
+        };
+        let async_generator = ResolvedTy::Named {
+            name: "AsyncGenerator".to_string(),
+            args: vec![ResolvedTy::I64],
+            builtin: Some(hew_types::BuiltinType::AsyncGenerator),
+            is_opaque: false,
+        };
+
+        // The exact DIV-2 element shape: `(Generator<i64,()>, i64)`.
+        let gen_tuple = ResolvedTy::Tuple(vec![generator, ResolvedTy::I64]);
+        assert!(
+            resolved_ty_element_owns_heap_for_owned_vec(&fn_ctx, &gen_tuple),
+            "a tuple carrying a Generator handle must own heap on the codegen owned-Vec path \
+             so its element ABI matches the MIR drop elaborator's"
+        );
+        let async_tuple = ResolvedTy::Tuple(vec![async_generator, ResolvedTy::I64]);
+        assert!(
+            resolved_ty_element_owns_heap_for_owned_vec(&fn_ctx, &async_tuple),
+            "a tuple carrying an AsyncGenerator handle must own heap on the codegen owned-Vec \
+             path"
+        );
+        let token_tuple = ResolvedTy::Tuple(vec![ResolvedTy::CancellationToken, ResolvedTy::I64]);
+        assert!(
+            resolved_ty_element_owns_heap_for_owned_vec(&fn_ctx, &token_tuple),
+            "a tuple carrying a CancellationToken must own heap on the codegen owned-Vec path"
+        );
+        // Guard against over-broad classification: a plain `(i64, bool)` tuple
+        // still owns no heap.
+        let plain_tuple = ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::Bool]);
+        assert!(
+            !resolved_ty_element_owns_heap_for_owned_vec(&fn_ctx, &plain_tuple),
+            "an all-BitCopy tuple must not be classified heap-owning"
+        );
+    }
+
+    /// DIV-1 at the codegen layer: the unified `resolved_ty_contains_heap_leaf`
+    /// consults record fields through the `CgHeapLayouts` adapter, so a record
+    /// carrying a heap field (`Boxed { payload: Vec<i64> }`) is classified
+    /// heap-owning even when reached as a tuple element. Before unification the
+    /// MIR side could classify such a tuple owned while a record-blind codegen
+    /// walker disagreed; both now share the one authority.
+    #[test]
+    fn owned_vec_element_walker_is_record_aware() {
+        use std::collections::HashMap;
+
+        let ctx = Context::create();
+        let llvm_mod = ctx.create_module("div1_codegen_test");
+        let mut harness = build_harness(&ctx, &[], &[]);
+        // Register `Boxed { payload: Vec<i64> }` in the codegen record registry.
+        let mut record_field_resolved_tys: HashMap<String, Vec<ResolvedTy>> = HashMap::new();
+        record_field_resolved_tys.insert(
+            "Boxed".to_string(),
+            vec![ResolvedTy::Named {
+                name: "Vec".to_string(),
+                args: vec![ResolvedTy::I64],
+                builtin: Some(hew_types::BuiltinType::Vec),
+                is_opaque: false,
+            }],
+        );
+        harness.record_field_resolved_tys = record_field_resolved_tys;
+        let fn_ctx = make_test_fn_ctx(&ctx, &llvm_mod, &harness, "div1_codegen_probe");
+
+        let boxed = ResolvedTy::Named {
+            name: "Boxed".to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: false,
+        };
+        // `(Boxed, i64)` — the exact runtime-confirmed DIV-1 leak shape.
+        let boxed_tuple = ResolvedTy::Tuple(vec![boxed, ResolvedTy::I64]);
+        assert!(
+            resolved_ty_element_owns_heap_for_owned_vec(&fn_ctx, &boxed_tuple),
+            "a tuple carrying a record whose field owns heap must be classified heap-owning \
+             through the record-aware authority (DIV-1)"
         );
     }
 

@@ -166,13 +166,19 @@ fn compile_fixture(repo: &Path, fixture: &MachineFixture) -> String {
         stderr
     );
 
-    std::fs::read_to_string(out_dir.join(format!("{}.ll", fixture.stem))).unwrap_or_else(|e| {
-        panic!(
-            "read emitted LLVM IR for {} from {}: {e}",
-            fixture.stem,
-            out_dir.display()
-        )
-    })
+    // Normalise line endings: LLVM's print_to_file emits CRLF on Windows
+    // while read_to_string is binary (no translation).  The extractors below
+    // search for "\n}\n" which would miss "\r\n}\r\n", turning the extracted
+    // body into the entire file tail and breaking downstream assertions.
+    std::fs::read_to_string(out_dir.join(format!("{}.ll", fixture.stem)))
+        .unwrap_or_else(|e| {
+            panic!(
+                "read emitted LLVM IR for {} from {}: {e}",
+                fixture.stem,
+                out_dir.display()
+            )
+        })
+        .replace("\r\n", "\n")
 }
 
 /// Compile and link a fixture to a standalone native binary via `hew build`,

@@ -409,3 +409,13 @@ Nuance row (table under the core):
 | id | trigger | apply | evidence |
 | --- | --- | --- | --- |
 | `carrier-cfg-edge-check-first` | A plan proposes collapsing N carriers/variants to a single terminator, or desugaring a terminator to lower-IR statements. | Enumerate every carrier's CFG successor count and the target variant's successor count BEFORE writing implementation code. If any carrier has extra edges the target lacks, keep it distinct or design a separate multi-edge variant. Also confirm the target IR's op vocabulary covers all source control-flow patterns (rc-forks, arbiter switches, fn-pointer constants). When codegen ramps are irreducible, prefer a side-table over a lossy fold (the `await_deadline_ns` side-table is the precedent). Byte-identity oracle (`make ll-diff`) is the acceptance gate — plan for it rather than learning it post-hoc. | Suspension Phase-2 grounding (2026-06-20): the MIR-desugar plan was not byte-identity-viable; 2/12 carriers (`SuspendingSelect`, `SuspendingScopeDeadline`) have extra CFG edges; the plan was re-based to a `SuspendKind` side-table for the 10 pure carriers. |
+
+### `ll-crlf-normalization` — tests string-searching compiler IR output must normalise CRLF on Windows
+
+- **area**: test harness, portability, toolchain trust
+- **invariant**: LLVM's `print_to_file` emits CRLF line endings on Windows. Rust's `std::fs::read_to_string` is binary (no translation). Any test that string-searches the emitted `.ll` for `"\n}\n"` or similar newline-delimited markers will silently miss on Windows, causing the extractor to return the entire file tail instead of the intended function body, and downstream assertions will fail on unrelated content.
+- **why**: The bug is latent on Linux/macOS (where `.ll` uses LF) and on `origin/main` as long as no compiled-in stdlib function emits `unreachable`. It becomes visible the moment a new stdlib function (e.g. overflow-trapping constructors) adds `unreachable` outside the targeted function body.
+
+| id | trigger | apply | evidence |
+| --- | --- | --- | --- |
+| `ll-crlf-normalize-at-read` | A test reads an emitted `.ll` (or any LLVM text output) and then uses `find`, `contains`, or slicing anchored to `"\n"`. | Normalise immediately after `read_to_string`: `.replace("\r\n", "\n")`. Do it at the single read site so all downstream extractors see LF-only text. | PR #2277 (CAP-07): `machine_exec.rs` `step_function_body` extractor returned the full file tail on Windows because `"\n}\n"` did not match `"\r\n}\r\n"`; duration overflow-trap `unreachable` outside the step body then falsely tripped the `has_default` assertion. |

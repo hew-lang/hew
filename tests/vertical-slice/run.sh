@@ -1537,6 +1537,21 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/ask_reply_non_send.hew" >
 fi
 grep -q 'E_DUPLEX_NON_SEND' "${reject_output}"
 
+# Reject: consume-on-split affine discipline. `.send_half()` moves the unified
+# Duplex handle out; a second use of the source binding fails the move-checker.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/duplex_split_use_after_move.hew" >"${reject_output}" 2>&1; then
+  echo "expected duplex-split-use-after-move fixture to fail" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks are literal — they match the
+# diagnostic's pretty-printed `a` binding name.
+grep -qF 'use of moved value `a`' "${reject_output}"
+
+# Accept + run: the channel-Duplex split round-trip delivers the exact value.
+# Split a symmetric pair, send 7 on the send-half, receive it on the recv-half,
+# close both halves; exit code 7 proves the value crossed the split intact.
+run_accept_expect_status "duplex_split_roundtrip" 7
+
 # Reject: removed <- operator (E_OPERATOR_REMOVED).
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/lambda_arrow_operator.hew" >"${reject_output}" 2>&1; then
   echo "expected lambda-arrow-operator fixture to fail" >&2

@@ -276,6 +276,13 @@ pub struct HirImplBlock {
     /// Outer type parameters on the impl, e.g. `["T"]` for
     /// `impl<T> Iterator for VecIter<T>`.
     pub type_params: Vec<String>,
+    /// Concrete self-type arguments for a concrete specialised impl, e.g.
+    /// `[ResolvedTy::I64]` for `impl Describe for Wrapper<i64>`. Always empty
+    /// when `type_params` is non-empty (generic impl) or when the target type
+    /// carries no type arguments. Used to distinguish two concrete impls for
+    /// the same base nominal (`Wrapper<i64>` vs `Wrapper<string>`) so the
+    /// dispatch index key and method symbol are distinct per instantiation.
+    pub self_type_concrete_args: Vec<ResolvedTy>,
     /// Associated-type bindings declared on the impl
     /// (e.g. `type Item = T;` → `("Item", ResolvedTy::TypeParam("T"))`).
     pub type_aliases: Vec<(String, ResolvedTy)>,

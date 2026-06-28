@@ -5719,6 +5719,55 @@ impl Checker {
         if method.consumes_self {
             self.consume_receiver_methods.insert(method_key.clone());
         }
+
+        // Concrete-specialised-impl dual registration (#2270).
+        //
+        // When two `impl Trait for Wrapper<i64>` and `impl Trait for Wrapper<string>`
+        // blocks are present, both produce `method_key = "Wrapper::describe"`.  The
+        // second call clobbers the first in `fn_sigs`, and codegen later emits two
+        // LLVM functions under the same name → linkage crash.
+        //
+        // Detection: no impl-level type params (concrete impl, not `impl<T>`),
+        // AND the enclosing impl's self-type has non-empty concrete type args
+        // (from `current_self_type`).  For such impls we ALSO register a
+        // mangled-key entry (`"Wrapper$$i64::describe"`), and that mangled key is
+        // what method-call dispatch and HIR will actually use.  The bare key entry
+        // in `fn_sigs` is kept as a fallback for lookup paths that have not yet
+        // been updated (e.g. method-set validation, external lookup).
+        let is_concrete_specialised_impl = impl_type_params.is_none_or(Vec::is_empty); // None → no impl type params → concrete
+        if is_concrete_specialised_impl {
+            if let Some((self_type_name, self_type_args)) = &self.current_self_type.clone() {
+                if self_type_name == type_name && !self_type_args.is_empty() {
+                    // Try to resolve each type arg to a concrete `ResolvedTy` and
+                    // compute the mangled self-type name.  Fails gracefully if any
+                    // arg contains an inference variable or error node (which cannot
+                    // appear for a concrete specialised impl, but we are defensive).
+                    let resolved_args: Option<Vec<ResolvedTy>> = self_type_args
+                        .iter()
+                        .map(|ty| ResolvedTy::from_ty(ty).ok())
+                        .collect();
+                    if let Some(resolved_args) = resolved_args {
+                        if let Some(mangled_self) = crate::resolved_ty::mangle_impl_self_name(
+                            self_type_name,
+                            &resolved_args,
+                        ) {
+                            let mangled_method_key = format!("{mangled_self}::{}", method.name);
+                            // Register the full sig under the mangled key.  A
+                            // previous concrete-impl registration may already be
+                            // present; overwriting is correct because each impl
+                            // block processes its own concrete args in sequence.
+                            self.fn_sigs.insert(mangled_method_key.clone(), sig.clone());
+                            // Propagate consume-receiver membership to the mangled key
+                            // so HIR dispatch does not lose the move contract.
+                            if method.consumes_self {
+                                self.consume_receiver_methods.insert(mangled_method_key);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         sig
     }
 

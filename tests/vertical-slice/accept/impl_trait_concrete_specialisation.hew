@@ -1,0 +1,31 @@
+// Accept fixture: concrete impl-Trait specialisations — two distinct impls
+// for the same generic type (#2270).
+//
+// Two `impl Describe for Wrapper<i64>` and `impl Describe for Wrapper<string>`
+// blocks previously produced a mangled-symbol collision: both registered the
+// same `"Wrapper::describe"` symbol in fn_registry, the second clobbering the
+// first. Codegen then emitted two LLVM globals with the same name → linkage
+// error. The fix: concrete specialised impls mangle the self-type name with
+// the concrete type args (`"Wrapper$$i64"`, `"Wrapper$$string"`), producing
+// distinct symbols through the entire checker→HIR→MIR→codegen pipeline.
+trait Describe {
+    fn describe(val: Self) -> string;
+}
+
+type Wrapper<T> { inner: T; }
+
+impl Describe for Wrapper<i64> {
+    fn describe(w: Wrapper<i64>) -> string { "i64-wrapper" }
+}
+
+impl Describe for Wrapper<string> {
+    fn describe(w: Wrapper<string>) -> string { "string-wrapper" }
+}
+
+fn main() -> i64 {
+    let a = Wrapper<i64> { inner: 42 };
+    let b = Wrapper<string> { inner: "hello" };
+    let da = a.describe();
+    let db = b.describe();
+    if da == "i64-wrapper" && db == "string-wrapper" { 0 } else { 1 }
+}

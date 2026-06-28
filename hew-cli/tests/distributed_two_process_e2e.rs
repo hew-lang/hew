@@ -710,6 +710,35 @@ fn remote_ask_round_trip_returns_exact_values() {
     );
 }
 
+/// DIST-10 `StaleRef`: a captured `RemotePid<T>` fails closed with `StaleRef` once
+/// its registration is superseded by a re-registration of the same name to a
+/// DIFFERENT actor — on both `tell` and `ask`, across two OS processes.
+///
+/// The client looks up "kv" (capturing the original actor's pid), the server
+/// re-points "kv" to a fresh actor (unregister + re-register, which supersedes
+/// the original serial and gossips the re-point), and the client's captured ref
+/// must observe `SendError::StaleRef` / `AskError::StaleRef` — never a silent
+/// delivery to the replacement, never a generic routing error.
+///
+/// Teeth: the scenario fails if the captured ref ever succeeds after the
+/// re-point, and the exact `StaleRef` discriminant is required on BOTH verbs.
+#[test]
+fn captured_remote_ref_fails_closed_with_stale_ref_after_repoint() {
+    let stdout = run_two_process_scenario("stale_ref");
+
+    assert!(
+        stdout.contains("PASS stale_ref tell=stale ask=stale"),
+        "expected the captured ref to go StaleRef on both tell and ask after the \
+         server re-pointed the name; client stdout:\n{stdout}"
+    );
+    // Negative guard: no FAIL line — in particular not `tell-never-stale` (the ref
+    // kept delivering to the replacement) or a wrong-error discriminant.
+    assert!(
+        !stdout.contains("FAIL "),
+        "client reported a FAIL on the StaleRef scenario; client stdout:\n{stdout}"
+    );
+}
+
 /// A `#[wire]`-annotated payload with EXPLICIT `@N` field tags round-trips across
 /// two OS processes. The `remote_ask` scenario above sends plain `record`/`enum`
 /// types, which get `@N` tags by the codec's positional fallback; this scenario

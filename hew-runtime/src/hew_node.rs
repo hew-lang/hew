@@ -3935,6 +3935,37 @@ pub unsafe extern "C" fn hew_node_api_register_by_pid(name: *const c_char, pid: 
     })
 }
 
+/// `Node::unregister(name)` — remove a name registration from the active node.
+///
+/// The symmetric counterpart of [`hew_node_api_register_by_pid`]: it clears the
+/// routing mapping for `name` and broadcasts a removal so peers drop the cached
+/// name. The registration-incarnation / `name_serials` bookkeeping persists so a
+/// later re-registration to a DIFFERENT actor supersedes the prior serial (the
+/// `StaleRef` path). Returns 0 on success, -1 on error (no active node, null
+/// name).
+///
+/// # Safety
+///
+/// `name` must be a valid null-terminated C string that remains live for the
+/// duration of this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_api_unregister(name: *const c_char) -> c_int {
+    if name.is_null() {
+        set_last_error("Node::unregister: name pointer is null");
+        return -1;
+    }
+    with_current_node_read(|guard| {
+        let node = *guard as *mut HewNode;
+        if node.is_null() {
+            set_last_error("Node::unregister: no active node (call Node::start first)");
+            return -1;
+        }
+        // SAFETY: node is non-null; name is non-null and caller guarantees a
+        // valid C string.
+        unsafe { hew_node_unregister(node, name) }
+    })
+}
+
 /// `Node::lookup(name)` — Look up a registered actor by name.
 ///
 /// # Safety

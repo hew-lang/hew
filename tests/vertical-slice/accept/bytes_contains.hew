@@ -1,0 +1,22 @@
+// `bytes.contains(b)` linear-scans the active region. Asserts BOTH the present
+// case (true) AND the absent case (false) -- the absent case is the one that
+// crashed (SIGBUS) through the Vec-backed shim, so it is the test with teeth.
+fn main() -> i64 {
+    let b: bytes = bytes::new();
+    b.push(7);
+    b.push(8);
+    b.push(9);
+    if !b.contains(7) {
+        return 71;
+    }
+    if !b.contains(9) {
+        return 72;
+    }
+    if b.contains(99) {
+        return 73;
+    }
+    if b.contains(0) {
+        return 74;
+    }
+    0
+}

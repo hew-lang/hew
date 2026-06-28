@@ -1203,6 +1203,25 @@ run_accept_expect_status_and_stdout "bytes_slice_open_right" 4
 run_accept_expect_status_and_stdout "bytes_slice_full" 4
 run_accept_expect_status_and_stdout "bytes_slice_open_right_loop" 10
 
+# Completed bytes collection surface (pop/set/is_empty/contains/clear/append).
+# Each fixture reads back exact bytes and returns 0 only when every assertion
+# matches; a non-zero exit names the failing assertion. is_empty covers a
+# SLICED value (offset > 0) to catch the field-aliasing hazard; contains covers
+# the absent case; clear proves the buffer is reusable; append proves the source
+# is copied not consumed.
+run_accept_expect_status "bytes_pop_round_trip" 0
+run_accept_expect_status "bytes_set_overwrite" 0
+run_accept_expect_status "bytes_is_empty" 0
+run_accept_expect_status "bytes_contains" 0
+run_accept_expect_status "bytes_clear" 0
+run_accept_expect_status "bytes_append" 0
+
+# Fail-closed negatives: pop on an empty buffer and set past the end abort via
+# the bytes runtime trap (exit 134 = SIGABRT+128), the same fail-closed
+# termination as bytes_index_oob_traps.
+run_accept_expect_status "bytes_pop_empty_traps" 134
+run_accept_expect_status "bytes_set_oob_traps" 134
+
 run_accept_expect_stdout "regex_captures_find_all"
 run_check_run_expect_stdout "stdlib_io_scanner_file_oracle"
 run_accept_expect_stdout "tls_ffi_result_lowering"

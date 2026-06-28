@@ -1,0 +1,96 @@
+//! Proving fixtures for the copy-on-write write-barrier across the completed
+//! `bytes` mutation surface (push/pop/set/clear/append).
+//!
+//! `bytes` is immutable-shareable: slicing (`b[a..b]`) shares the backing
+//! buffer by refcount, and any in-place mutation of an owner forks the active
+//! region first (`ensure_unique`) so co-owners observe the original buffer
+//! unchanged. Each test takes a slice (the surface-reachable shared owner),
+//! mutates the source, and asserts the slice still reads the pre-mutation
+//! bytes -- the exact-value form, not a smoke check.
+
+import std::testing;
+
+#[test]
+fn test_push_cow_leaves_slice_intact() {
+    let source: bytes = bytes::new();
+    source.push(1);
+    source.push(2);
+    source.push(3);
+
+    // The slice shares the buffer; pushing onto the source must CoW.
+    let view: bytes = source[0..3];
+    source.push(4);
+    testing.assert_eq(source.len(), 4);
+    testing.assert_eq_u8(source[3], 4);
+    // The slice keeps its three pre-push bytes.
+    testing.assert_eq(view.len(), 3);
+    testing.assert_eq_u8(view[0], 1);
+    testing.assert_eq_u8(view[2], 3);
+}
+
+#[test]
+fn test_set_cow_leaves_slice_intact() {
+    let source: bytes = bytes::new();
+    source.push(10);
+    source.push(20);
+    source.push(30);
+    let view: bytes = source[0..3];
+    source.set(0, 99);
+
+    // The source's byte 0 changed; the slice keeps the original byte 0.
+    testing.assert_eq_u8(source[0], 99);
+    testing.assert_eq_u8(view[0], 10);
+    testing.assert_eq_u8(view[1], 20);
+    testing.assert_eq_u8(view[2], 30);
+}
+
+#[test]
+fn test_pop_cow_leaves_slice_intact() {
+    let source: bytes = bytes::new();
+    source.push(5);
+    source.push(6);
+    source.push(7);
+    let view: bytes = source[0..3];
+    let popped: u8 = source.pop();
+    testing.assert_eq_u8(popped, 7);
+    testing.assert_eq(source.len(), 2);
+    // The slice still reads all three bytes.
+    testing.assert_eq(view.len(), 3);
+    testing.assert_eq_u8(view[2], 7);
+}
+
+#[test]
+fn test_clear_on_owner_leaves_slice_alive() {
+    // clear releases only the source's reference; the shared backing buffer
+    // survives for the slice co-owner (R4: no premature free).
+    let source: bytes = bytes::new();
+    source.push(1);
+    source.push(2);
+    source.push(3);
+    let view: bytes = source[0..3];
+    source.clear();
+    testing.assert_true(source.is_empty());
+    // The slice is unaffected and still fully readable.
+    testing.assert_eq(view.len(), 3);
+    testing.assert_eq_u8(view[0], 1);
+    testing.assert_eq_u8(view[1], 2);
+    testing.assert_eq_u8(view[2], 3);
+}
+
+#[test]
+fn test_append_cow_leaves_slice_intact() {
+    let source: bytes = bytes::new();
+    source.push(1);
+    source.push(2);
+    let view: bytes = source[0..2];
+    let extra: bytes = bytes::new();
+    extra.push(3);
+    extra.push(4);
+    source.append(extra);
+    testing.assert_eq(source.len(), 4);
+    testing.assert_eq_u8(source[3], 4);
+    // The slice keeps its own two bytes.
+    testing.assert_eq(view.len(), 2);
+    testing.assert_eq_u8(view[0], 1);
+    testing.assert_eq_u8(view[1], 2);
+}

@@ -1,0 +1,12 @@
+// `bytes.pop()` on an empty buffer fails closed: the spec pop signature has no
+// Option, so the empty case aborts via the bytes runtime trap rather than
+// returning a fabricated sentinel. The runtime aborts via libc::abort() ->
+// exit 134 (SIGABRT+128), the same fail-closed termination as the b[i] index
+// OOB trap (bytes_index_oob_traps).
+fn main() -> i64 {
+    let b: bytes = bytes::new();
+    // Empty buffer: pop must trap before returning.
+    let x: u8 = b.pop();
+    // Unreachable: the empty-pop trap fires above.
+    x as i64
+}

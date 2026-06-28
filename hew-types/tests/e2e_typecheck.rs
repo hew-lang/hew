@@ -3480,15 +3480,15 @@ fn rc_vec_set_rejected() {
 }
 
 #[test]
-fn rc_vec_extend_rejected() {
+fn rc_vec_append_rejected() {
     assert_unsafe_collection_element(
         r"
         fn main() {
             var v: Vec<Rc<i64>> = Vec::new();
             let w: Vec<Rc<i64>> = Vec::new();
-            v.extend(w);
+            v.append(w);
         }",
-        "Vec.extend(Vec<Rc<i64>>)",
+        "Vec.append(Vec<Rc<i64>>)",
     );
 }
 

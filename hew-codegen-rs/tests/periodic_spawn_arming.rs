@@ -151,6 +151,7 @@ fn spawn_pipeline(every_ms: Option<u64>) -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
+        resource_record_close: vec![],
     }
 }
 

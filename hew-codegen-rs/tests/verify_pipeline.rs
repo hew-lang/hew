@@ -79,6 +79,7 @@ fn pipeline_const_42() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
+        resource_record_close: vec![],
     }
 }
 
@@ -135,6 +136,7 @@ fn pipeline_unsupported_array_return() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
+        resource_record_close: vec![],
     }
 }
 

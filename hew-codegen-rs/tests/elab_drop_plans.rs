@@ -133,6 +133,7 @@ fn pipeline_with_elab_drop_plan() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
+        resource_record_close: vec![],
     }
 }
 
@@ -313,6 +314,7 @@ fn elab_drop_plan_unknown_drop_fn_fails_closed() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
+        resource_record_close: vec![],
     };
     let dir = out_dir("elab-drop-unknown-fail-closed");
     let options = EmitOptions {

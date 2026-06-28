@@ -115,6 +115,7 @@ fn pipeline_with_call_runtime_abi_parts(
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
+        resource_record_close: vec![],
     }
 }
 

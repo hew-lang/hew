@@ -121,6 +121,7 @@ fn select_stream_i64_pipeline() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
+        resource_record_close: vec![],
     }
 }
 

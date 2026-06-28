@@ -2824,6 +2824,42 @@ pub fn lower_hir_module_with_facts(
     // to run after drop elaboration so a `Drop`'s read of the local is modelled.
     let lint_warnings = crate::liveness::run_mir_lints(&raw_mir);
 
+    // Field-bearing `#[resource]` record → `<Type>::close` symbol registry
+    // (spec §3.7.3). A `#[resource]` record that owns a heap/aggregate field
+    // is admitted to `owned_record_drop_allowed` and routes to the recursive
+    // `__hew_record_drop_inplace_<R>` thunk, which frees heap leaves but would
+    // otherwise skip the RAII `close()` contract. Seed the thunk synthesis with
+    // each such record's user close symbol so codegen calls `close(self)` as
+    // the first step of the record's (and any nested resource field's) drop.
+    //
+    // Keyed off `record_layouts` so only records with a real layout (the ones
+    // the thunk is synthesised for) are listed; a single-handle `#[resource]`
+    // with no record layout never reaches the thunk and is excluded. The close
+    // method name comes from the SAME `type_classes` entry `resource_drop_fn`
+    // reads, and the `<Type>::close` symbol matches `declare_function`'s
+    // flattened `<Self>::<method>` mangling, so MIR and codegen agree without
+    // translation glue.
+    let resource_record_close: Vec<(String, String)> = record_layouts
+        .iter()
+        .filter_map(|layout| {
+            let short = short_name(&layout.name);
+            let entry = module
+                .type_classes
+                .get(layout.name.as_str())
+                .or_else(|| module.type_classes.get(short))?;
+            let (marker, close) = entry;
+            if !matches!(marker, ResourceMarker::Resource) {
+                return None;
+            }
+            let close_method = close.as_ref()?;
+            // The close symbol is `<short type name>::<method>` — the same
+            // flattening `HirImplBlock::method_symbol` / `declare_function`
+            // and `resource_drop_fn`'s `UserClose` spelling use.
+            let symbol = format!("{short}::{close_method}");
+            Some((layout.name.clone(), symbol))
+        })
+        .collect();
+
     IrPipeline {
         thir,
         raw_mir,
@@ -2877,6 +2913,7 @@ pub fn lower_hir_module_with_facts(
         // here so the lowerer does not depend on `TypeCheckOutput` directly.
         user_clone_record_seeds: Vec::new(),
         lint_warnings,
+        resource_record_close,
     }
 }
 

@@ -198,6 +198,7 @@ fn supervisor_pipeline() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
+        resource_record_close: vec![],
     }
 }
 
@@ -454,6 +455,7 @@ fn on_crash_pipeline() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
+        resource_record_close: vec![],
     }
 }
 
@@ -779,6 +781,7 @@ fn nested_supervisor_pipeline() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
+        resource_record_close: vec![],
     }
 }
 
@@ -973,6 +976,7 @@ fn pool_then_static_pipeline() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
+        resource_record_close: vec![],
     }
 }
 

@@ -29,6 +29,7 @@ fn empty_pipeline(machine_layouts: Vec<MachineLayout>) -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
+        resource_record_close: vec![],
     }
 }
 

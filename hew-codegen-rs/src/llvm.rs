@@ -1477,6 +1477,13 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// is shared (read-only) — no new declarations are added during body
     /// lowering.
     pub(crate) fn_symbols: &'a FnSymbolMap<'ctx>,
+    /// Field-bearing `#[resource]` record → `<Type>::close` symbol registry
+    /// (`IrPipeline::resource_record_close`). Consulted by the on-demand
+    /// record-drop thunk synthesis in `emit_aggregate_recursive_drop` so a
+    /// `#[resource]` record reached as a tuple/array element gets the SAME
+    /// close-then-teardown thunk the up-front synthesis pass emits — the two
+    /// synthesis points cannot diverge on whether close fires (spec §3.7.3).
+    pub(crate) resource_record_close: &'a [(String, String)],
     /// Module-wide actor layouts keyed by `ActorLayout.name` at use sites.
     /// Spawn lowering consumes these layouts to emit the WASM bridge metadata
     /// producer before calling into the runtime spawn ABI.
@@ -8694,6 +8701,7 @@ fn emit_state_clone_drop_synthesis<'ctx>(
     target_data: Option<&TargetData>,
     enum_inplace_drop_seeds: &[String],
     vec_owned_record_seeds: &[String],
+    resource_record_close: &[(String, String)],
 ) -> CodegenResult<()> {
     // Per-record AND per-enum helpers must exist before the per-actor body
     // that calls them is emitted. Collect-then-emit two passes. The
@@ -8711,6 +8719,14 @@ fn emit_state_clone_drop_synthesis<'ctx>(
         enum_inplace_drop_seeds,
         vec_owned_record_seeds,
     )?;
+    // Resource-record close-symbol lookup (spec §3.7.3). A `#[resource]`
+    // record's recursive drop thunk must run the user `close(self)` FIRST,
+    // before the field-wise teardown — so a `#[resource]` field at any depth
+    // gets its RAII close through the same thunk that frees its heap leaves.
+    let resource_close_by_record: HashMap<&str, &str> = resource_record_close
+        .iter()
+        .map(|(record, symbol)| (record.as_str(), symbol.as_str()))
+        .collect();
     for (record_name, kinds) in &record_classifications {
         let record_struct = record_struct_map.get(record_name).copied().ok_or_else(|| {
             CodegenError::FailClosed(format!(
@@ -8719,7 +8735,14 @@ fn emit_state_clone_drop_synthesis<'ctx>(
             ))
         })?;
         emit_record_clone_inplace_body(ctx, llvm_mod, record_name, record_struct, kinds)?;
-        emit_record_drop_inplace_body(ctx, llvm_mod, record_name, record_struct, kinds)?;
+        emit_record_drop_inplace_body(
+            ctx,
+            llvm_mod,
+            record_name,
+            record_struct,
+            kinds,
+            resource_close_by_record.get(record_name.as_str()).copied(),
+        )?;
     }
     for (enum_name, variant_kinds) in &enum_classifications {
         let layout = machine_layout_map.get(enum_name).ok_or_else(|| {
@@ -10032,6 +10055,7 @@ fn emit_record_drop_inplace_body<'ctx>(
     record_name: &str,
     record_struct: StructType<'ctx>,
     kinds: &[StateFieldCloneKind],
+    resource_close_symbol: Option<&str>,
 ) -> CodegenResult<()> {
     let f = get_or_declare_record_drop_inplace(ctx, llvm_mod, record_name);
     if f.count_basic_blocks() > 0 {
@@ -10040,7 +10064,14 @@ fn emit_record_drop_inplace_body<'ctx>(
              already has a body — duplicate synthesis is a substrate invariant violation"
         )));
     }
-    emit_aggregate_drop_inplace_body(ctx, llvm_mod, f, record_struct, kinds)
+    emit_aggregate_drop_inplace_body_with_close(
+        ctx,
+        llvm_mod,
+        f,
+        record_struct,
+        kinds,
+        resource_close_symbol,
+    )
 }
 
 /// Emit the reverse-order per-field drop body into a pre-declared `fn(*mut)`
@@ -10052,6 +10083,35 @@ pub(crate) fn emit_aggregate_drop_inplace_body<'ctx>(
     f: FunctionValue<'ctx>,
     record_struct: StructType<'ctx>,
     kinds: &[StateFieldCloneKind],
+) -> CodegenResult<()> {
+    // Tuples and the non-resource record path carry no user `close`.
+    emit_aggregate_drop_inplace_body_with_close(ctx, llvm_mod, f, record_struct, kinds, None)
+}
+
+/// `emit_aggregate_drop_inplace_body`, plus an optional user `#[resource]`
+/// `close(self)` call emitted as the FIRST step of the do-drop block — before
+/// the reverse-order field teardown (spec §3.7.3 / §10(d): the resource's own
+/// close runs, then fields drop in reverse declaration order).
+///
+/// `resource_close_symbol` is `Some("<Type>::close")` ONLY for a field-bearing
+/// `#[resource]` record (seeded from `IrPipeline::resource_record_close`); the
+/// symbol must already be declared (every user `impl` method reaches
+/// `declare_function` before drop-thunk synthesis). The close receives the
+/// loaded aggregate `self` by value, exactly like a normal user call and like
+/// the `AffineResource` `lower_drop_user_fn` path — it operates on the external
+/// resource and never frees the record's heap fields, so the subsequent
+/// field-wise teardown frees each heap leaf exactly once (no double-free). A
+/// nested `#[resource]` field's close fires through ITS own thunk, reached by
+/// the recursive `UserRecord` field-drop step (raii-null-after-move: the
+/// teardown is null-guarded; a moved-out / consumed record routes through the
+/// consume-gated `AffineResource` path and never reaches this thunk).
+fn emit_aggregate_drop_inplace_body_with_close<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    f: FunctionValue<'ctx>,
+    record_struct: StructType<'ctx>,
+    kinds: &[StateFieldCloneKind],
+    resource_close_symbol: Option<&str>,
 ) -> CodegenResult<()> {
     let i64_ty = ctx.i64_type();
     let builder = ctx.create_builder();
@@ -10079,6 +10139,41 @@ pub(crate) fn emit_aggregate_drop_inplace_body<'ctx>(
         .llvm_ctx("record drop null branch")?;
 
     builder.position_at_end(do_drop_bb);
+    // Spec §3.7.3 / §10(d): a `#[resource]` record runs its user `close(self)`
+    // BEFORE field teardown. Load the aggregate by value (the `<Type>::close`
+    // calling convention — same as `lower_drop_user_fn` and a normal user
+    // call) and call it. close operates on the external resource only; the
+    // field-wise teardown below frees the heap leaves, so each heap allocation
+    // is released exactly once.
+    if let Some(close_symbol) = resource_close_symbol {
+        let close_fn = llvm_mod.get_function(close_symbol).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "resource-record drop synthesis: user close `{close_symbol}` is not \
+                 declared; every `#[resource]` `close` body must reach `declare_function` \
+                 before drop-thunk synthesis (LESSONS: boundary-fail-closed, \
+                 lifecycle-symmetry)"
+            ))
+        })?;
+        let params = close_fn.get_type().get_param_types();
+        if params.len() != 1 {
+            return Err(CodegenError::FailClosed(format!(
+                "resource-record drop synthesis: user close `{close_symbol}` has {} \
+                 params; a `#[resource]` `close(self)` takes exactly one (the value) — \
+                 refusing to emit a mismatched call (LESSONS: boundary-fail-closed)",
+                params.len(),
+            )));
+        }
+        let loaded_self = builder
+            .build_load(record_struct, state, &format!("{close_symbol}_self"))
+            .llvm_ctx_with(|| format!("{close_symbol} self load"))?;
+        builder
+            .build_call(
+                close_fn,
+                &[metadata_value_from_basic(loaded_self)],
+                &format!("{close_symbol}_call"),
+            )
+            .llvm_ctx_with(|| format!("{close_symbol} call"))?;
+    }
     for (idx, kind) in kinds.iter().enumerate().rev() {
         if matches!(kind, StateFieldCloneKind::BitCopy { .. }) {
             continue;
@@ -25881,12 +25976,23 @@ fn emit_heap_slot_drop<'ctx>(
                 if helper.count_basic_blocks() == 0 {
                     let record_struct = record_struct_for(fn_ctx, ty)?;
                     let field_kinds = classify_record_drop_fields_for_key(fn_ctx, &name)?;
+                    // A `#[resource]` record reached as a tuple/array element
+                    // gets the SAME close-then-teardown thunk the up-front
+                    // synthesis pass emits — keyed off the shared registry so
+                    // the two synthesis points cannot diverge on whether the
+                    // user `close(self)` fires (spec §3.7.3).
+                    let resource_close = fn_ctx
+                        .resource_record_close
+                        .iter()
+                        .find(|(record, _)| record == &name)
+                        .map(|(_, symbol)| symbol.as_str());
                     emit_record_drop_inplace_body(
                         fn_ctx.ctx,
                         fn_ctx.llvm_mod,
                         &name,
                         record_struct,
                         &field_kinds,
+                        resource_close,
                     )?;
                 }
                 fn_ctx
@@ -35125,6 +35231,7 @@ fn lower_function<'ctx>(
     record_field_names: &HashMap<String, Vec<String>>,
     dyn_vtable_registry: &[DynVtableInstance],
     const_globals: &ConstGlobalMap<'ctx>,
+    resource_record_close: &[(String, String)],
     emit_wasm_entry_alias: bool,
     has_supervisors: bool,
     module_uses_runtime: bool,
@@ -36020,6 +36127,7 @@ fn lower_function<'ctx>(
         runtime_decls: RefCell::new(HashMap::new()),
         record_layouts,
         fn_symbols,
+        resource_record_close,
         actor_layouts,
         machine_layouts,
         enum_layouts,
@@ -36971,6 +37079,7 @@ fn build_module_for_target<'ctx>(
         Some(&target_data),
         &enum_inplace_drop_seeds,
         &vec_owned_record_seeds,
+        &pipeline.resource_record_close,
     )?;
     // Supervisor bootstraps replace the MIR-side synthesised body wholesale
     // with the canonical `hew_supervisor_new` → `add_child_spec` × N →
@@ -37049,6 +37158,7 @@ fn build_module_for_target<'ctx>(
             &record_field_names,
             &pipeline.dyn_vtable_registry,
             &const_globals,
+            &pipeline.resource_record_close,
             emit_wasm_entry_alias,
             !pipeline.supervisor_layouts.is_empty(),
             module_uses_runtime,
@@ -41947,6 +42057,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         }
     }
 
@@ -42456,6 +42567,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         };
 
         let ctx = Context::create();
@@ -42548,6 +42660,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         }
     }
 
@@ -42678,6 +42791,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         }
     }
 
@@ -42792,6 +42906,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         }
     }
 
@@ -42926,6 +43041,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         }
     }
 
@@ -43060,6 +43176,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "handler_ctx_test")
@@ -43146,6 +43263,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "ctx_field_test")
@@ -43226,6 +43344,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         };
         let ctx = Context::create();
         let m =
@@ -43509,6 +43628,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         }
     }
 
@@ -43724,6 +43844,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         }
     }
 
@@ -44514,6 +44635,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         };
 
         let ctx = Context::create();
@@ -44609,6 +44731,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "gen_yield_codegen_test")
@@ -44770,6 +44893,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "make_generator_codegen_test")
@@ -44858,6 +44982,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "cancel_token_is_cancelled_codegen_test")
@@ -45132,6 +45257,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         };
         let syms = empty_fn_symbols();
         let err = verify_drop_dispatch_resolves(&pipeline, &syms)
@@ -45203,6 +45329,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         };
         let syms = empty_fn_symbols();
         verify_drop_dispatch_resolves(&pipeline, &syms)
@@ -45260,6 +45387,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         };
         let found = uses_wasm_excluded_symbol(&pipeline)
             .expect("Duplex::close ElabDrop must be flagged as WASM-excluded");
@@ -45295,6 +45423,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         }
     }
 
@@ -45911,6 +46040,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         };
         assert!(
             uses_wasm_excluded_symbol(&pipeline).is_none(),
@@ -46222,6 +46352,7 @@ mod tests {
             runtime_decls: RefCell::new(HashMap::new()),
             record_layouts: &harness.record_layouts,
             fn_symbols: &harness.fn_symbols,
+            resource_record_close: &[],
             actor_layouts: &harness.actor_layouts,
             machine_layouts: &harness.machine_layouts,
             enum_layouts: &[],
@@ -48177,6 +48308,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         };
         let tmp = tempfile::Builder::new()
             .prefix("hew-dyn-coerce-ok-")
@@ -48328,6 +48460,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         };
         let tmp = tempfile::Builder::new()
             .prefix("hew-dyn-coerce-miss-")
@@ -48719,6 +48852,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         };
         let tmp = tempfile::Builder::new()
             .prefix("hew-frame-owned-drop-fail-")
@@ -49005,6 +49139,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         }
     }
 
@@ -49235,6 +49370,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         }
     }
 
@@ -49431,6 +49567,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         }
     }
 
@@ -49624,6 +49761,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         };
 
         let ctx = Context::create();
@@ -49833,6 +49971,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         }
     }
 

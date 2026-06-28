@@ -315,6 +315,30 @@ pub struct IrPipeline {
     /// at HIR and never lower to MIR, so they never populate or read this.
     /// Editor/web surfacing is tracked in issue #2176.
     pub lint_warnings: Vec<MirLint>,
+    /// Field-bearing `#[resource]` records that own at least one heap/aggregate
+    /// field and therefore reach codegen through the recursive
+    /// `__hew_record_drop_inplace_<R>` thunk rather than the single-handle
+    /// `AffineResource` close path. Each entry pairs the record's canonical
+    /// layout name (`record_inplace_drop_name` key) with the mangled
+    /// `<Type>::close` symbol the user `impl` declares.
+    ///
+    /// Codegen's record-drop thunk synthesis consumes this so a `#[resource]`
+    /// record's user `close(self)` runs as the FIRST step of its scope-exit /
+    /// nested-field drop (spec §3.7.3 / §10(d)): the resource's own close fires
+    /// before the field-wise teardown, and a nested `#[resource]` field's close
+    /// fires through the same recursive thunk. Without this seed the field-wise
+    /// `RecordInPlace` drop would free heap leaves but silently skip the RAII
+    /// `close()` contract.
+    ///
+    /// Populated by `lower_hir_module` from `HirModule::type_classes` for every
+    /// `#[resource]`-marked type that ALSO has a record layout. A single-handle
+    /// `#[resource]` (no owned/aggregate field) is NOT listed: it routes to the
+    /// `AffineResource` close path and never reaches the record-drop thunk.
+    ///
+    /// WHY here and not in codegen directly: `IrPipeline` is the checker→codegen
+    /// boundary; codegen consumes pipeline fields, never the HIR `type_classes`
+    /// table. Mirrors `opaque_handle_names` / `user_clone_record_seeds`.
+    pub resource_record_close: Vec<(String, String)>,
 }
 
 /// A single warning-severity finding from the MIR-stage lint pass.

@@ -499,7 +499,7 @@ fn main() {
 
 `v.set(i, value)` overwrites the element at index `i` in place. It complements `v[i]` (read) — reading uses the subscript, writing uses `.set()`. Out-of-bounds traps at runtime; guard with `i < v.len()`.
 
-### .contains(), .clear(), .extend()
+### .contains(), .clear(), .append()
 
 ```hew
 fn main() {
@@ -510,7 +510,7 @@ fn main() {
 
     let v2: Vec<i64> = Vec::new();
     v2.push(4); v2.push(5);
-    v.extend(v2);             // v is now [1, 2, 3, 4, 5]
+    v.append(v2);             // v is now [1, 2, 3, 4, 5]
     println(v.len());         // 5
 
     v.clear();                // removes all elements
@@ -518,7 +518,7 @@ fn main() {
 }
 ```
 
-`.contains(x)` returns `bool` — works for scalars, strings, and records. `.extend(v2)` appends every element of `v2` to `v` in order. `.clear()` empties the Vec without freeing it (you can push again afterward).
+`.contains(x)` returns `bool` — works for scalars, strings, and records. `.append(v2)` appends every element of `v2` to `v` in order. `.clear()` empties the Vec without freeing it (you can push again afterward).
 
 ### Vec<Vec<T>> — nested Vecs
 
@@ -1888,7 +1888,7 @@ For a fallible operation with no meaningful success value, return `Result<i64, E
 fn main() {
     let name = "world";
     let n = 42;
-    println(f"n={n} expr={n + 1} up={name.to_uppercase()}");
+    println(f"n={n} expr={n + 1} up={name.to_upper()}");
 }
 ```
 
@@ -2330,7 +2330,7 @@ fn main() {
 import std::encoding::json;
 
 fn main() {
-    let s = json.from_string("hello");
+    let s = json.string_value("hello");
     println(s.type_of());   // 4
     s.free();
 }

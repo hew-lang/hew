@@ -271,3 +271,53 @@ fn runtime_send_error_discriminants_are_pinned() {
     assert_eq!(SendError::DoubleClose as i32, 4);
     assert_eq!(SendError::OrphanedAsk as i32, 5);
 }
+
+/// The surface (user-visible) `SendError`, in declaration (= discriminant)
+/// order, read from the `hew-types` monomorphic catalog (NOT a hand-copy).
+fn surface_senderror_variants() -> Vec<&'static str> {
+    let catalog = hew_types::builtin_enums::monomorphic_builtin_enums();
+    let entry = catalog
+        .iter()
+        .find(|e| e.name == "SendError")
+        .expect("hew-types monomorphic catalog must contain SendError");
+    entry.variants.iter().map(|v| v.name).collect()
+}
+
+#[test]
+fn remote_tell_stale_ref_mapping_is_pinned_cross_crate() {
+    // `emit_remote_pid_tell_call` (llvm.rs) maps the runtime send rc to the
+    // user-visible `SendError` discriminant:
+    //   rc == HEW_ERR_STALE_REF (-16)  -> SendError::StaleRef          (surface 4)
+    //   any other nonzero rc           -> SendError::NodeRoutingNotWired (surface 2)
+    // The codegen-side literals are function-local consts; this test pins them
+    // to (a) the runtime send-error rc constant and (b) the surface enum
+    // positions, so a renumber on either side goes red here.
+
+    // (a) The send-path StaleRef rc constant the codegen branches on must equal
+    // the runtime producer `hew_node::HEW_ERR_STALE_REF`.
+    const CODEGEN_HEW_ERR_STALE_REF: i32 = -16;
+    assert_eq!(
+        CODEGEN_HEW_ERR_STALE_REF,
+        hew_runtime::hew_node::HEW_ERR_STALE_REF,
+        "codegen send-path StaleRef rc literal drifted from runtime HEW_ERR_STALE_REF"
+    );
+
+    // (b) The surface SendError positions the codegen writes.
+    const CODEGEN_SEND_ERR_STALE_REF: usize = 4;
+    const CODEGEN_SEND_ERR_NODE_ROUTING: usize = 2;
+    let surface = surface_senderror_variants();
+    assert_eq!(
+        surface.get(CODEGEN_SEND_ERR_STALE_REF).copied(),
+        Some("StaleRef"),
+        "surface SendError position {CODEGEN_SEND_ERR_STALE_REF} is not StaleRef; \
+         the codegen tell-path writes that discriminant for a stale capture.\n\
+         surface: {surface:?}"
+    );
+    assert_eq!(
+        surface.get(CODEGEN_SEND_ERR_NODE_ROUTING).copied(),
+        Some("NodeRoutingNotWired"),
+        "surface SendError position {CODEGEN_SEND_ERR_NODE_ROUTING} is not \
+         NodeRoutingNotWired; the codegen tell-path writes that discriminant for a \
+         generic routing failure.\nsurface: {surface:?}"
+    );
+}

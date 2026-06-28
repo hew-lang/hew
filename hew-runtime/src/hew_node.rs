@@ -33,6 +33,14 @@ const NODE_STATE_STARTING: u8 = 0;
 pub(crate) const NODE_STATE_RUNNING: u8 = 1;
 const NODE_STATE_STOPPING: u8 = 2;
 const NODE_STATE_STOPPED: u8 = 3;
+
+/// Remote-send rc returned by [`hew_node_send`] when the captured `RemotePid<T>`
+/// names a registration that has since been superseded — the `StaleRef`
+/// fail-closed boundary. The codegen tell-path maps this distinct rc to
+/// `SendError::StaleRef`; every OTHER nonzero rc stays the generic routing
+/// failure. `pub` so the codegen cross-crate parity test pins its literal to
+/// this producer.
+pub const HEW_ERR_STALE_REF: c_int = -16;
 const _: () = assert!(
     std::mem::size_of::<usize>() >= std::mem::size_of::<u64>(),
     "Hew requires 64-bit target for actor ID encoding"
@@ -318,6 +326,140 @@ fn quarantine_evict(node_id: u16) {
             set.remove(&node_id);
         });
     }
+}
+
+// ── Registration incarnation + supersession (actor-slot identity) ──────────────
+//
+// The actor-slot / registration incarnation dimension lives on `HewRegistry`.
+// DISTINCT from the node-level SWIM peer incarnation (the `quarantine` set):
+//   * `quarantine`             — "is the PEER I'm talking to the same incarnation?"
+//   * registration incarnation — "is the ACTOR REGISTRATION I captured still live?"
+// The two counters never read each other (LESSONS `monotonic-epoch-single-clock`).
+
+/// Record that `name` now resolves to `new_serial` on `registry`, bumping its
+/// registration incarnation when the name is re-pointed to a DIFFERENT actor and
+/// superseding the prior serial so any captured `RemotePid<T>` over it fails
+/// closed with `StaleRef` on dispatch.
+///
+/// Returns the registration incarnation for `name` after the update — `0` for a
+/// fresh registration, bumped on each re-registration to a new actor. A
+/// re-registration of the SAME serial is idempotent (no bump, no supersession).
+/// Both the local register path and the cluster gossip ADD path call this so the
+/// server and every client converge on the same supersession verdict.
+fn registration_record(registry: &HewRegistry, name: &str, new_serial: u64) -> u32 {
+    let prev_serial = registry.name_serials.lock_or_recover().get(name).copied();
+    let incarnation = {
+        let mut map = registry.incarnations.lock_or_recover();
+        if let Some(slot) = map.get_mut(name) {
+            if prev_serial == Some(new_serial) {
+                // Idempotent re-register of the same actor: no bump.
+                *slot
+            } else {
+                *slot = slot.saturating_add(1);
+                *slot
+            }
+        } else {
+            map.insert(name.to_string(), 0);
+            0
+        }
+    };
+    // Supersede the previous serial if the name now points at a different actor.
+    if let Some(prev) = prev_serial {
+        if prev != new_serial {
+            registry
+                .superseded_serials
+                .lock_or_recover()
+                .insert(prev, incarnation);
+        }
+    }
+    registry
+        .name_serials
+        .lock_or_recover()
+        .insert(name.to_string(), new_serial);
+    incarnation
+}
+
+/// Mark a serial superseded on `registry` directly. Used by actor-teardown
+/// (`unregister_actor_names`) where a still-live registration's actor is freed:
+/// any captured `RemotePid<T>` over that serial must fail closed with `StaleRef`
+/// rather than route to a dead / replacement actor. A bare unregister of a NAME
+/// does NOT call this — the name→serial bookkeeping persists so a later
+/// re-registration to a different actor supersedes the old serial through
+/// `registration_record`.
+fn registry_supersede_serial(registry: &HewRegistry, serial: u64) {
+    registry
+        .superseded_serials
+        .lock_or_recover()
+        .entry(serial)
+        .or_insert(0);
+}
+
+/// The live registration incarnation for a captured PID, resolved by the PID's
+/// serial against the current node's registry. Returns the incarnation a still-
+/// live registration carries, or `0` when the serial names no tracked
+/// registration / no node is installed. The bare-`u64` resolution path for
+/// `pid::hew_pid_incarnation`.
+pub(crate) fn registration_incarnation_for_serial(serial: u64) -> u32 {
+    with_current_node_read(|guard| {
+        let node = *guard as *const HewNode;
+        if node.is_null() {
+            return 0;
+        }
+        // SAFETY: the read lock pins CURRENT_NODE for the duration of this call.
+        let node = unsafe { &*node };
+        if node.registry.is_null() {
+            return 0;
+        }
+        // SAFETY: registry is valid while the node is installed.
+        let registry = unsafe { &*node.registry };
+        let live_name = registry
+            .name_serials
+            .lock_or_recover()
+            .iter()
+            .find(|(_, &s)| s == serial)
+            .map(|(n, _)| n.clone());
+        match live_name {
+            Some(name) => registry
+                .incarnations
+                .lock_or_recover()
+                .get(&name)
+                .copied()
+                .unwrap_or(0),
+            None => 0,
+        }
+    })
+}
+
+/// Whether a captured PID's serial has been superseded — consulted by the remote
+/// dispatch boundary (`hew_node_send` / ask / monitor) to fail closed with
+/// `StaleRef`. Resolves against the registry of the node the dispatch is leaving
+/// (the captured ref's local node), so a client that learned the supersession
+/// via gossip rejects its stale capture.
+fn serial_is_superseded(registry: &HewRegistry, serial: u64) -> bool {
+    registry
+        .superseded_serials
+        .lock_or_recover()
+        .contains_key(&serial)
+}
+
+/// The single `StaleRef` gate shared across the remote send / ask / monitor
+/// dispatch boundaries (LESSONS `cross-layer-name-gate-agreement` — one helper,
+/// not three divergent checks): does `target_pid` name a registration that has
+/// been superseded by a re-registration of its name to a different actor?
+///
+/// Fails CLOSED (LESSONS `boundary-fail-closed`, DI-012): a superseded capture
+/// is rejected here rather than routed to the live replacement. The check keys
+/// on the captured serial against the dispatching node's registry; a node with
+/// no registry (never started a distributed registry) has nothing to supersede,
+/// so the gate is open. The captured serial uniquely names its registration
+/// because serials are monotonic and never reused.
+fn dispatch_is_stale(node: &HewNode, target_pid: u64) -> bool {
+    if node.registry.is_null() {
+        return false;
+    }
+    // SAFETY: registry is valid while the node is installed.
+    let registry = unsafe { &*node.registry };
+    serial_is_superseded(registry, crate::pid::hew_pid_serial(target_pid))
 }
 
 /// Whether the current dispatch's partition policy is `Quarantine` AND a send/ask
@@ -991,10 +1133,33 @@ pub(crate) unsafe fn try_remote_send(
 }
 
 /// Node-local distributed registry state.
+///
+/// `incarnations` / `name_serials` / `superseded_serials` together carry the
+/// actor-slot / registration **incarnation** dimension of the spec's
+/// `(NodeId, slot, incarnation)` identity — DISTINCT from the node-level SWIM
+/// peer incarnation (`NodeSlot::quarantine`). They live on the registry (not the
+/// per-runtime `NodeSlot`) because both the local register/unregister path
+/// (`node.registry`) AND the cluster gossip callback (`user_data` → registry)
+/// must keep them in lockstep, and the gossip callback can run on a
+/// connection-reader thread with no installed runtime.
 #[repr(C)]
 #[derive(Debug, Default)]
 pub struct HewRegistry {
     remote_names: Mutex<HashMap<String, u64>>,
+    /// Registration incarnation per name: `0` for a fresh registration, bumped
+    /// each time the name is re-pointed to a DIFFERENT actor.
+    incarnations: Mutex<HashMap<String, u32>>,
+    /// The serial each name currently resolves to. Persists across a bare
+    /// unregister so a later re-registration to a different actor can detect the
+    /// re-point and supersede the prior serial.
+    name_serials: Mutex<HashMap<String, u64>>,
+    /// Serials whose registration has been superseded by a re-registration of
+    /// the same name to a different actor (or whose actor was torn down). Serials
+    /// are monotonic and never reused, so a captured `RemotePid<T>` (a bare
+    /// `u64`) uniquely names its original registration; a hit here makes the
+    /// remote dispatch boundary fail closed with `StaleRef`. Value = the
+    /// incarnation it was superseded at (diagnostics).
+    superseded_serials: Mutex<HashMap<u64, u32>>,
 }
 
 #[derive(Clone, Copy)]
@@ -1135,6 +1300,11 @@ pub(crate) unsafe fn unregister_actor_names(actor_id: u64) {
             if names.is_empty() {
                 continue;
             }
+
+            // The actor backing these registrations is being torn down: supersede
+            // its serial so any captured `RemotePid<T>` over it fails closed with
+            // StaleRef rather than routing to a freed or replacement actor.
+            registry_supersede_serial(registry, crate::pid::hew_pid_serial(actor_id));
 
             let emit_gossip_remove =
                 node.state.load(Ordering::Acquire) == NODE_STATE_RUNNING && !node.cluster.is_null();
@@ -1744,33 +1914,49 @@ extern "C" fn node_registry_gossip_callback(
     let key = unsafe { CStr::from_ptr(name) }
         .to_string_lossy()
         .into_owned();
-    let mut map = registry.remote_names.lock_or_recover();
-    if is_add {
-        // Fail-closed registration-string boundary (gossip side): an inbound
-        // ADD for a name that is already mapped to a DIFFERENT actor is a
-        // cluster-wide ambiguity — two distinct actors (possibly two distinct
-        // qualified actor types) chose the same registration string. Keep the
-        // existing mapping and RECORD the refusal rather than silently
-        // re-pointing routing at whichever gossip arrived last. Qualified
-        // registration keys on the gossip wire (a CDDL/CBOR RegistryEvent
-        // change) are the tracked full fix.
-        match map.get(&key) {
-            Some(existing) if *existing != actor_id => {
-                set_last_error(format!(
-                    "registry gossip: name `{key}` is already registered to \
-                     actor {existing}; refusing gossiped re-registration to \
-                     actor {actor_id} — registration strings carry no \
-                     actor-type qualifier on the wire, so the conflict cannot \
-                     be disambiguated (qualified registration keys are a \
-                     tracked follow-up)"
-                ));
+    let inserted = {
+        let mut map = registry.remote_names.lock_or_recover();
+        if is_add {
+            // Fail-closed registration-string boundary (gossip side): an inbound
+            // ADD for a name that is already mapped to a DIFFERENT actor is a
+            // cluster-wide ambiguity — two distinct actors (possibly two distinct
+            // qualified actor types) chose the same registration string. Keep the
+            // existing mapping and RECORD the refusal rather than silently
+            // re-pointing routing at whichever gossip arrived last. Qualified
+            // registration keys on the gossip wire (a CDDL/CBOR RegistryEvent
+            // change) are the tracked full fix.
+            match map.get(&key) {
+                Some(existing) if *existing != actor_id => {
+                    set_last_error(format!(
+                        "registry gossip: name `{key}` is already registered to \
+                         actor {existing}; refusing gossiped re-registration to \
+                         actor {actor_id} — registration strings carry no \
+                         actor-type qualifier on the wire, so the conflict cannot \
+                         be disambiguated (qualified registration keys are a \
+                         tracked follow-up)"
+                    ));
+                    false
+                }
+                _ => {
+                    map.insert(key.clone(), actor_id);
+                    true
+                }
             }
-            _ => {
-                map.insert(key, actor_id);
-            }
+        } else {
+            map.remove(&key);
+            false
         }
-    } else {
-        map.remove(&key);
+    };
+
+    // Mirror the local register path's incarnation bookkeeping on the gossip
+    // side so a client converges on the same supersession verdict as the server:
+    // when a name is re-pointed (via the server's unregister→re-register, which
+    // arrives as a remove then a fresh add), the client supersedes the serial it
+    // previously captured for that name. Done outside the `remote_names` lock to
+    // avoid nesting registry locks.
+    if inserted {
+        let _incarnation =
+            registration_record(registry, &key, crate::pid::hew_pid_serial(actor_id));
     }
 }
 
@@ -2433,6 +2619,12 @@ pub unsafe extern "C" fn hew_node_register(
         map.insert(key.clone(), actor);
     }
 
+    // Record the registration incarnation for this name. A re-registration to a
+    // DIFFERENT actor (e.g. after an unregister) bumps the incarnation and
+    // supersedes the prior serial, so a captured `RemotePid<T>` over the old
+    // actor fails closed with `StaleRef` at the dispatch boundary.
+    let _incarnation = registration_record(reg, &key, crate::pid::hew_pid_serial(actor));
+
     // Propagate to cluster gossip so remote nodes learn about this actor.
     if !node.cluster.is_null() {
         // SAFETY: cluster pointer is valid while the node is alive.
@@ -2553,6 +2745,20 @@ pub unsafe extern "C" fn hew_node_send(
     let node = unsafe { &*node };
     if node.state.load(Ordering::Acquire) != NODE_STATE_RUNNING {
         return -1;
+    }
+
+    // StaleRef gate (shared with the ask + monitor paths): a captured
+    // `RemotePid<T>` whose registration has been superseded by a re-registration
+    // of its name to a different actor fails CLOSED here — it is never routed to
+    // the live replacement (DI-012 / LESSONS `boundary-fail-closed`).
+    if dispatch_is_stale(node, target_pid) {
+        set_last_error(format!(
+            "remote send refused: target pid serial {} names a superseded actor \
+             registration (the name was re-registered to a different actor); the \
+             captured RemotePid is stale",
+            crate::pid::hew_pid_serial(target_pid)
+        ));
+        return HEW_ERR_STALE_REF;
     }
 
     let target_node_id = crate::pid::hew_pid_node(target_pid);
@@ -2733,6 +2939,25 @@ pub extern "C" fn hew_node_monitor(target_pid: u64) -> u64 {
         // Not a remote target — the cross-node route does not apply. The checker
         // routes only RemotePid receivers here, but guard fail-closed anyway.
         set_last_error("hew_node_monitor: target is not on a remote node");
+        return 0;
+    }
+
+    // StaleRef gate (shared with the send + ask paths): a captured
+    // `RemotePid<T>` whose registration has been superseded fails CLOSED here —
+    // no watcher is registered against the stale capture, and the invalid `0`
+    // ref_id signals the failure (DI-012 / LESSONS `boundary-fail-closed`). The
+    // diagnostic names StaleRef so the cause is not collapsed into the generic
+    // no-route case.
+    let stale = with_current_node_read(|guard| {
+        let node = *guard as *const HewNode;
+        // SAFETY: read lock pins the current node pointer for this check.
+        !node.is_null() && dispatch_is_stale(unsafe { &*node }, target_pid)
+    });
+    if stale {
+        set_last_error(format!(
+            "hew_node_monitor: target pid serial {target_serial} names a superseded \
+             actor registration; the captured RemotePid is stale (StaleRef)"
+        ));
         return 0;
     }
 
@@ -3839,6 +4064,14 @@ fn setup_remote_ask(
             return RemoteAskSetupResult::Error(AskError::RoutingFailed);
         }
 
+        // StaleRef gate (shared with the send + monitor paths): a captured
+        // `RemotePid<T>` whose registration has been superseded fails CLOSED here
+        // — before any request bytes are serialized — rather than asking the live
+        // replacement (DI-012 / LESSONS `boundary-fail-closed`).
+        if dispatch_is_stale(node, pid) {
+            return RemoteAskSetupResult::Error(AskError::StaleRef);
+        }
+
         // Quarantine consult: under a Quarantine policy, a peer the failure
         // detector buried and that has not yet rejoined at a strictly higher
         // incarnation fails closed here — before any request bytes are serialized,
@@ -4250,6 +4483,62 @@ mod tests {
             !quarantine_is_blocked(7, 5),
             "evicted node is sendable again"
         );
+    }
+
+    #[test]
+    fn registration_record_bumps_incarnation_and_supersedes_on_repoint() {
+        let registry = HewRegistry::default();
+        // Fresh registration of name "kv" to serial 100: incarnation 0, nothing
+        // superseded.
+        assert_eq!(registration_record(&registry, "kv", 100), 0);
+        assert!(
+            !serial_is_superseded(&registry, 100),
+            "a fresh registration's serial is not superseded"
+        );
+
+        // Idempotent re-register of the SAME serial: no bump, no supersession.
+        assert_eq!(registration_record(&registry, "kv", 100), 0);
+        assert!(!serial_is_superseded(&registry, 100));
+
+        // Re-point "kv" to a DIFFERENT serial 200: incarnation bumps to 1, and
+        // the previous serial 100 is superseded (a captured RemotePid over 100
+        // must now fail closed with StaleRef).
+        assert_eq!(registration_record(&registry, "kv", 200), 1);
+        assert!(
+            serial_is_superseded(&registry, 100),
+            "the re-pointed-away serial is superseded"
+        );
+        assert!(
+            !serial_is_superseded(&registry, 200),
+            "the live serial is NOT superseded"
+        );
+
+        // A second re-point bumps again.
+        assert_eq!(registration_record(&registry, "kv", 300), 2);
+        assert!(serial_is_superseded(&registry, 200));
+    }
+
+    #[test]
+    fn supersede_serial_marks_a_serial_stale() {
+        let registry = HewRegistry::default();
+        registration_record(&registry, "worker", 42);
+        assert!(!serial_is_superseded(&registry, 42));
+        // Actor-teardown path: superseding the live serial directly (the actor is
+        // being freed) makes a captured ref over it fail closed.
+        registry_supersede_serial(&registry, 42);
+        assert!(serial_is_superseded(&registry, 42));
+    }
+
+    #[test]
+    fn distinct_names_have_independent_incarnations() {
+        let registry = HewRegistry::default();
+        assert_eq!(registration_record(&registry, "a", 1), 0);
+        assert_eq!(registration_record(&registry, "b", 2), 0);
+        // Re-pointing "a" does not touch "b"'s incarnation.
+        assert_eq!(registration_record(&registry, "a", 11), 1);
+        assert_eq!(registration_record(&registry, "b", 2), 0);
+        assert!(serial_is_superseded(&registry, 1));
+        assert!(!serial_is_superseded(&registry, 2));
     }
 
     #[test]

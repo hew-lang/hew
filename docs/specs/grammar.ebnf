@@ -322,8 +322,9 @@ YieldExpr      = "yield" Expr? ;
 (* Integer literals default to int (i64), float literals default to float (f64) *)
 Type           = Ident TypeArgs?
                | "Task" "<" Type ">"              (* Task type: Task<T> *)
-               | "ActorRef" "<" Type ">"          (* Actor reference: ActorRef<A> *)
-               | "Actor" "<" Type ("," Type)? ">" (* Actor type: Actor<M> or Actor<M, R> *)
+               | "LocalPid" "<" Type ">"          (* In-process actor pid: LocalPid<A> *)
+               | "RemotePid" "<" Type ">"         (* Cross-node actor pid: RemotePid<A> *)
+               | "LambdaPid" "<" Type "," Type ">" (* Lambda-actor handle: LambdaPid<M, R> *)
                | "Arc" "<" Type ">"               (* Atomic refcount: Arc<T> *)
                | "Rc" "<" Type ">"                (* Single-actor refcount: Rc<T> *)
                | "Weak" "<" Type ">"              (* Weak reference: Weak<T> *)

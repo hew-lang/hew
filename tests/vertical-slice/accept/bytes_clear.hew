@@ -1,0 +1,25 @@
+// `bytes.clear()` empties the buffer and leaves it reusable. Pushes 3 bytes,
+// clears, asserts len 0 and is_empty, then re-pushes and reads back to prove
+// the buffer is reusable (clear resets the triple to the canonical empty value
+// rather than corrupting it).
+fn main() -> i64 {
+    let b: bytes = bytes::new();
+    b.push(1);
+    b.push(2);
+    b.push(3);
+    b.clear();
+    if b.len() != 0 {
+        return 81;
+    }
+    if !b.is_empty() {
+        return 82;
+    }
+    b.push(42);
+    if b.len() != 1 {
+        return 83;
+    }
+    if b[0] != 42 {
+        return 84;
+    }
+    0
+}

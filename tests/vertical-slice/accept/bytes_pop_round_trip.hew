@@ -1,0 +1,28 @@
+// `bytes.pop()` removes and returns the last byte and shrinks the buffer.
+// Pushes 1,2,3 then pops in LIFO order, asserting the exact bytes returned and
+// the length after each pop. Exits 0 only when every step matches.
+fn main() -> i64 {
+    let b: bytes = bytes::new();
+    b.push(1);
+    b.push(2);
+    b.push(3);
+    let third: u8 = b.pop();
+    if third != 3 {
+        return 41;
+    }
+    if b.len() != 2 {
+        return 42;
+    }
+    let second: u8 = b.pop();
+    if second != 2 {
+        return 43;
+    }
+    let first: u8 = b.pop();
+    if first != 1 {
+        return 44;
+    }
+    if b.len() != 0 {
+        return 45;
+    }
+    0
+}

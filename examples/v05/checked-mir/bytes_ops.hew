@@ -1,7 +1,9 @@
 // MIR-corpus fixture: bytes value runtime surface.
 //
-// Pins `hew_bytes_len`, `hew_bytes_index` (`b[i]`), `hew_bytes_slice`
-// (`b[a..b]`), `hew_bytes_push`, and the bytes drop elaboration.
+// Pins the dedicated BytesTriple ABI: `hew_bytes_len`, `hew_bytes_index`
+// (`b[i]`), `hew_bytes_slice` (`b[a..b]`), `hew_bytes_push`, `hew_bytes_pop`,
+// `hew_bytes_set`, `hew_bytes_is_empty`, `hew_bytes_contains`,
+// `hew_bytes_clear`, `hew_bytes_append`, and the bytes drop elaboration.
 fn main() -> i64 {
     let b: bytes = "abcd".to_bytes();
     println(b.len());
@@ -12,5 +14,18 @@ fn main() -> i64 {
     let slice: bytes = b[1..3];
     println(slice.len());
     println(slice.to_string());
+    let popped: u8 = b.pop();
+    println(popped as i64);
+    b.set(0, 65);
+    if b.contains(65) {
+        println(1);
+    }
+    if b.is_empty() {
+        println(0);
+    }
+    let extra: bytes = "xy".to_bytes();
+    b.append(extra);
+    println(b.len());
+    b.clear();
     0
 }

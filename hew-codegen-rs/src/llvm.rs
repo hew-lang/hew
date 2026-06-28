@@ -1005,10 +1005,16 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::AutoMutexFree
         | F::AutoMutexLock
         | F::AutoMutexUnlock
+        | F::BytesAppend
+        | F::BytesClear
+        | F::BytesContains
         | F::BytesGet
         | F::BytesIndex
+        | F::BytesIsEmpty
         | F::BytesLen
+        | F::BytesPop
         | F::BytesPush
+        | F::BytesSet
         | F::BytesSlice
         | F::CancelTokenIsRequested
         | F::CancelTokenRelease
@@ -2558,6 +2564,33 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // `index` and aborts on OOB (boundary-fail-closed). Returns the byte as u8.
         "hew_bytes_index" => i8_ty.fn_type(
             &[ptr_ty.into(), i32_ty.into(), i32_ty.into(), i64_ty.into()],
+            false,
+        ),
+        // hew_bytes_pop(triple: &mut BytesTriple) -> i64. The receiver is passed
+        // by the address of its stack-resident triple (write-back after CoW);
+        // returns the popped byte as i64.
+        "hew_bytes_pop" => i64_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_bytes_set(triple: &mut BytesTriple, index: i64, byte: u8) -> void.
+        // Receiver by address (write-back after CoW); index i64, byte i8.
+        "hew_bytes_set" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), i64_ty.into(), i8_ty.into()], false),
+        // hew_bytes_is_empty(triple: *const BytesTriple) -> bool. Receiver by
+        // address; Rust/C bool crosses the ABI as i1.
+        "hew_bytes_is_empty" => ctx.bool_type().fn_type(&[ptr_ty.into()], false),
+        // hew_bytes_contains(triple: *const BytesTriple, byte: u8) -> bool.
+        // Receiver by address, byte i8; returns i1.
+        "hew_bytes_contains" => ctx
+            .bool_type()
+            .fn_type(&[ptr_ty.into(), i8_ty.into()], false),
+        // hew_bytes_clear(triple: &mut BytesTriple) -> void. Receiver by address
+        // (releases the buffer ref and writes back the empty triple).
+        "hew_bytes_clear" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        // hew_bytes_append(dst: &mut BytesTriple, src_ptr, src_offset, src_len)
+        // -> void. Destination by address (write-back after CoW/grow); the
+        // source triple is unpacked into (ptr, i32 offset, i32 len).
+        "hew_bytes_append" => ctx.void_type().fn_type(
+            &[ptr_ty.into(), ptr_ty.into(), i32_ty.into(), i32_ty.into()],
             false,
         ),
         // hew_vec_get_bool(v: *mut HewVec, index: i64) -> bool

@@ -187,11 +187,17 @@ pub enum RuntimeCallFamily {
     AutoMutexLock,
     AutoMutexUnlock,
 
-    // --- Bytes value get/index/length/slice/push ----------------------------
+    // --- Bytes value collection ops -----------------------------------------
+    BytesAppend,
+    BytesClear,
+    BytesContains,
     BytesGet,
     BytesIndex,
+    BytesIsEmpty,
     BytesLen,
+    BytesPop,
     BytesPush,
+    BytesSet,
     BytesSlice,
 
     // --- CancellationToken retain/release/poll ------------------------------
@@ -532,10 +538,16 @@ impl RuntimeCallFamily {
             Self::AutoMutexLock => "hew_auto_mutex_lock",
             Self::AutoMutexUnlock => "hew_auto_mutex_unlock",
             // Bytes
+            Self::BytesAppend => "hew_bytes_append",
+            Self::BytesClear => "hew_bytes_clear",
+            Self::BytesContains => "hew_bytes_contains",
             Self::BytesGet => "hew_bytes_get",
             Self::BytesIndex => "hew_bytes_index",
+            Self::BytesIsEmpty => "hew_bytes_is_empty",
             Self::BytesLen => "hew_bytes_len",
+            Self::BytesPop => "hew_bytes_pop",
             Self::BytesPush => "hew_bytes_push",
+            Self::BytesSet => "hew_bytes_set",
             Self::BytesSlice => "hew_bytes_slice",
             // CancellationToken
             Self::CancelTokenIsRequested => "hew_cancel_token_is_requested",
@@ -779,10 +791,16 @@ impl RuntimeCallFamily {
             "hew_auto_mutex_lock" => Self::AutoMutexLock,
             "hew_auto_mutex_unlock" => Self::AutoMutexUnlock,
             // Bytes
+            "hew_bytes_append" => Self::BytesAppend,
+            "hew_bytes_clear" => Self::BytesClear,
+            "hew_bytes_contains" => Self::BytesContains,
             "hew_bytes_get" => Self::BytesGet,
             "hew_bytes_index" => Self::BytesIndex,
+            "hew_bytes_is_empty" => Self::BytesIsEmpty,
             "hew_bytes_len" => Self::BytesLen,
+            "hew_bytes_pop" => Self::BytesPop,
             "hew_bytes_push" => Self::BytesPush,
+            "hew_bytes_set" => Self::BytesSet,
             "hew_bytes_slice" => Self::BytesSlice,
             // CancellationToken
             "hew_cancel_token_is_requested" => Self::CancelTokenIsRequested,
@@ -1085,10 +1103,16 @@ impl RuntimeCallFamily {
             | F::AutoMutexFree
             | F::AutoMutexLock
             | F::AutoMutexUnlock
+            | F::BytesAppend
+            | F::BytesClear
+            | F::BytesContains
             | F::BytesGet
             | F::BytesIndex
+            | F::BytesIsEmpty
             | F::BytesLen
+            | F::BytesPop
             | F::BytesPush
+            | F::BytesSet
             | F::BytesSlice
             | F::CancelTokenIsRequested
             | F::CancelTokenRelease

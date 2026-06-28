@@ -1,0 +1,20 @@
+// `bytes.set(i, b)` overwrites the byte at `i` and leaves neighbours intact.
+// Pushes 10,20,30; sets index 1 to 99; asserts b[0]==10 (unchanged), b[1]==99
+// (overwritten), b[2]==30 (unchanged). Exits 0 only when all three match.
+fn main() -> i64 {
+    let b: bytes = bytes::new();
+    b.push(10);
+    b.push(20);
+    b.push(30);
+    b.set(1, 99);
+    if b[0] != 10 {
+        return 51;
+    }
+    if b[1] != 99 {
+        return 52;
+    }
+    if b[2] != 30 {
+        return 53;
+    }
+    0
+}

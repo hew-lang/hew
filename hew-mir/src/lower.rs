@@ -21715,6 +21715,12 @@ impl Builder {
             "hew_actor_unlink" => self.lower_actor_unlink(hir_args, site, context),
             "hew_bytes_push" => self.lower_bytes_push(hir_args, site, context),
             "hew_vec_len" => self.lower_bytes_len(hir_args, site, context),
+            "hew_bytes_pop" => self.lower_bytes_pop(hir_args, site, context),
+            "hew_bytes_set" => self.lower_bytes_set(hir_args, site, context),
+            "hew_bytes_is_empty" => self.lower_bytes_is_empty(hir_args, site, context),
+            "hew_bytes_contains" => self.lower_bytes_contains(hir_args, site, context),
+            "hew_bytes_clear" => self.lower_bytes_clear(hir_args, site, context),
+            "hew_bytes_append" => self.lower_bytes_append(hir_args, site, context),
             "hew_bytes_get" => self.lower_bytes_get_option(hir_args, site, context, result_ty),
             "hew_string_get" => self.lower_string_get_option(hir_args, site, context, result_ty),
             "hew_string_char_count" => self.lower_string_char_count(hir_args, site, context),
@@ -21825,6 +21831,230 @@ impl Builder {
         let bytes = self.lower_value(&hir_args[0])?;
         let byte = self.lower_value(&hir_args[1])?;
         self.push_runtime_call("hew_bytes_push", vec![bytes, byte], None);
+        None
+    }
+
+    /// Emit `hew_bytes_pop(&mut BytesTriple) -> i64` for `bytes.pop()`.
+    ///
+    /// Returns the popped byte as an i64 dest when a value is needed; codegen
+    /// passes the receiver alloca address so the runtime writes back the
+    /// shrunken triple. An empty buffer fails closed in the runtime (the spec
+    /// `pop` signature has no Option). The receiver is BORROWED — listed in
+    /// `is_bytes_receiver_borrow_callee` — so it keeps its scope-exit drop.
+    fn lower_bytes_pop(
+        &mut self,
+        hir_args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+        context: RuntimeCallContext,
+    ) -> Option<Place> {
+        if hir_args.len() != 1 {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "runtime call `hew_bytes_pop` arity".to_string(),
+                    site,
+                },
+                note: format!(
+                    "`hew_bytes_pop` (bytes.pop) expects 1 argument (receiver), got {}",
+                    hir_args.len()
+                ),
+            });
+            return None;
+        }
+        let buf = self.lower_value(&hir_args[0])?;
+        let dest =
+            (context == RuntimeCallContext::ValueNeeded).then(|| self.alloc_local(ResolvedTy::I64));
+        self.push_runtime_call("hew_bytes_pop", vec![buf], dest);
+        dest
+    }
+
+    /// Emit `hew_bytes_set(&mut BytesTriple, index, byte)` for `bytes.set(i, b)`.
+    ///
+    /// Statement-position mutation: codegen passes the receiver alloca address
+    /// (write-back after `CoW`) plus the i64 index and the byte. An
+    /// out-of-range index fails closed in the runtime. The receiver is
+    /// BORROWED.
+    fn lower_bytes_set(
+        &mut self,
+        hir_args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+        context: RuntimeCallContext,
+    ) -> Option<Place> {
+        if hir_args.len() != 3 {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "runtime call `hew_bytes_set` arity".to_string(),
+                    site,
+                },
+                note: format!(
+                    "`hew_bytes_set` (bytes.set) expects 3 arguments (receiver, index, byte), \
+                     got {}",
+                    hir_args.len()
+                ),
+            });
+            return None;
+        }
+        if context == RuntimeCallContext::ValueNeeded {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "runtime call `hew_bytes_set` value result".to_string(),
+                    site,
+                },
+                note: "`hew_bytes_set` returns unit and is wired for statement-position \
+                       mutation only"
+                    .to_string(),
+            });
+            return None;
+        }
+        let buf = self.lower_value(&hir_args[0])?;
+        let idx = self.lower_value(&hir_args[1])?;
+        let byte = self.lower_value(&hir_args[2])?;
+        self.push_runtime_call("hew_bytes_set", vec![buf, idx, byte], None);
+        None
+    }
+
+    /// Emit `hew_bytes_is_empty(*const BytesTriple) -> bool` for
+    /// `bytes.is_empty()`. Pure read; the receiver is BORROWED.
+    fn lower_bytes_is_empty(
+        &mut self,
+        hir_args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+        context: RuntimeCallContext,
+    ) -> Option<Place> {
+        if hir_args.len() != 1 {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "runtime call `hew_bytes_is_empty` arity".to_string(),
+                    site,
+                },
+                note: format!(
+                    "`hew_bytes_is_empty` (bytes.is_empty) expects 1 argument (receiver), got {}",
+                    hir_args.len()
+                ),
+            });
+            return None;
+        }
+        let buf = self.lower_value(&hir_args[0])?;
+        let dest = (context == RuntimeCallContext::ValueNeeded)
+            .then(|| self.alloc_local(ResolvedTy::Bool));
+        self.push_runtime_call("hew_bytes_is_empty", vec![buf], dest);
+        dest
+    }
+
+    /// Emit `hew_bytes_contains(*const BytesTriple, byte) -> bool` for
+    /// `bytes.contains(b)`. Pure read; the receiver is BORROWED.
+    fn lower_bytes_contains(
+        &mut self,
+        hir_args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+        context: RuntimeCallContext,
+    ) -> Option<Place> {
+        if hir_args.len() != 2 {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "runtime call `hew_bytes_contains` arity".to_string(),
+                    site,
+                },
+                note: format!(
+                    "`hew_bytes_contains` (bytes.contains) expects 2 arguments (receiver, byte), \
+                     got {}",
+                    hir_args.len()
+                ),
+            });
+            return None;
+        }
+        let buf = self.lower_value(&hir_args[0])?;
+        let byte = self.lower_value(&hir_args[1])?;
+        let dest = (context == RuntimeCallContext::ValueNeeded)
+            .then(|| self.alloc_local(ResolvedTy::Bool));
+        self.push_runtime_call("hew_bytes_contains", vec![buf, byte], dest);
+        dest
+    }
+
+    /// Emit `hew_bytes_clear(&mut BytesTriple)` for `bytes.clear()`.
+    ///
+    /// Statement-position in-place reset; codegen passes the receiver alloca
+    /// address so the runtime releases the buffer ref and writes back the empty
+    /// triple. The receiver is BORROWED (clear releases its OWN reference and
+    /// leaves the binding owning a null triple whose scope-exit drop is inert).
+    fn lower_bytes_clear(
+        &mut self,
+        hir_args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+        context: RuntimeCallContext,
+    ) -> Option<Place> {
+        if hir_args.len() != 1 {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "runtime call `hew_bytes_clear` arity".to_string(),
+                    site,
+                },
+                note: format!(
+                    "`hew_bytes_clear` (bytes.clear) expects 1 argument (receiver), got {}",
+                    hir_args.len()
+                ),
+            });
+            return None;
+        }
+        if context == RuntimeCallContext::ValueNeeded {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "runtime call `hew_bytes_clear` value result".to_string(),
+                    site,
+                },
+                note: "`hew_bytes_clear` returns unit and is wired for statement-position \
+                       mutation only"
+                    .to_string(),
+            });
+            return None;
+        }
+        let buf = self.lower_value(&hir_args[0])?;
+        self.push_runtime_call("hew_bytes_clear", vec![buf], None);
+        None
+    }
+
+    /// Emit `hew_bytes_append(&mut dst, ...)` for `bytes.append(other)`.
+    ///
+    /// Statement-position mutation. MIR carries the two `bytes` places
+    /// `[dst, other]`; codegen passes the dst alloca address (write-back) and
+    /// unpacks `other` into the scalar `(src_ptr, src_offset, src_len)` runtime
+    /// args. Both operands are BORROWED — `hew_bytes_append` copies the source
+    /// region and never takes its reference (see
+    /// `is_bytes_all_args_borrow_callee`), so `other` keeps its scope-exit drop.
+    fn lower_bytes_append(
+        &mut self,
+        hir_args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+        context: RuntimeCallContext,
+    ) -> Option<Place> {
+        if hir_args.len() != 2 {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "runtime call `hew_bytes_append` arity".to_string(),
+                    site,
+                },
+                note: format!(
+                    "`hew_bytes_append` (bytes.append) expects 2 arguments (receiver, other), \
+                     got {}",
+                    hir_args.len()
+                ),
+            });
+            return None;
+        }
+        if context == RuntimeCallContext::ValueNeeded {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "runtime call `hew_bytes_append` value result".to_string(),
+                    site,
+                },
+                note: "`hew_bytes_append` returns unit and is wired for statement-position \
+                       mutation only"
+                    .to_string(),
+            });
+            return None;
+        }
+        let dst = self.lower_value(&hir_args[0])?;
+        let other = self.lower_value(&hir_args[1])?;
+        self.push_runtime_call("hew_bytes_append", vec![dst, other], None);
         None
     }
 
@@ -32873,10 +33103,17 @@ fn derive_local_collection_drop_allowed(
 ///     before returning the derived triple), so the receiver KEEPS its own
 ///     reference and both owners release independently through the
 ///     refcount-aware `hew_bytes_drop`.
-///   - `hew_bytes_push` — in-place `CoW` mutate; on a shared buffer
-///     `ensure_unique` clones the active region and releases the receiver's
-///     old reference itself, so the binding still owns exactly one reference
-///     afterwards.
+///   - `hew_bytes_push` / `hew_bytes_pop` / `hew_bytes_set` — in-place `CoW`
+///     mutate; on a shared buffer `ensure_unique` clones the active region and
+///     releases the receiver's old reference itself, so the binding still owns
+///     exactly one reference afterwards.
+///   - `hew_bytes_is_empty` / `hew_bytes_contains` — pure reads (no refcount
+///     motion).
+///   - `hew_bytes_clear` — releases the receiver's OWN reference (refcount-
+///     aware `hew_bytes_drop`) and resets the triple to the canonical empty
+///     value in place. The binding still owns its (now-null) triple, whose
+///     scope-exit drop is a no-op; the buffer ref does not escape, so this is a
+///     receiver borrow, not a transfer.
 ///
 /// The consuming release `hew_bytes_drop` and the producers
 /// (`hew_bytes_from_str` / `hew_bytes_from_static` / `hew_bytes_concat` /
@@ -32892,8 +33129,26 @@ fn is_bytes_receiver_borrow_callee(callee: &str) -> bool {
             | "hew_bytes_index"
             | "hew_bytes_slice"
             | "hew_bytes_push"
+            | "hew_bytes_pop"
+            | "hew_bytes_set"
+            | "hew_bytes_is_empty"
+            | "hew_bytes_contains"
+            | "hew_bytes_clear"
             | "hew_bytes_to_string"
     )
+}
+
+/// Bytes runtime ops that borrow EVERY operand (no escape on any arg).
+///
+/// `hew_bytes_append(&mut dst, src_ptr, src_offset, src_len)` extends the
+/// receiver with a COPY of the source region and never retains the source's
+/// reference, so both the receiver (arg[0]) and the source `bytes` binding
+/// (whose triple codegen unpacks into arg[1..=3]) keep their own scope-exit
+/// drop. Listed separately from `is_bytes_receiver_borrow_callee` because that
+/// predicate scans arg[1..] as escapes — correct for the single-receiver ops,
+/// wrong for `append` whose tail args are a borrowed source.
+fn is_bytes_all_args_borrow_callee(callee: &str) -> bool {
+    callee == "hew_bytes_append"
 }
 
 /// Fail-closed sole-owner derivation for **local `bytes`** bindings. Returns
@@ -33037,6 +33292,17 @@ fn derive_local_bytes_drop_allowed(
             // the finalized MIR), never an escape.
             if matches!(instr, Instr::Drop { .. }) {
                 continue;
+            }
+            // `hew_bytes_append` reads BOTH operands as borrows: it copies the
+            // source region (arg[1..=3]) into the receiver (arg[0]) and never
+            // takes the source's reference, so neither binding escapes. Scan
+            // nothing — both keep their scope-exit drop (a more precise
+            // classification than the Vec append precedent, which over-excludes
+            // arg[1] for a conservative leak).
+            if let Instr::CallRuntimeAbi(call) = instr {
+                if is_bytes_all_args_borrow_callee(call.symbol()) {
+                    continue;
+                }
             }
             // A receiver-borrowing bytes runtime op reads the triple as arg[0]
             // but only borrows it (see `is_bytes_receiver_borrow_callee`); scan

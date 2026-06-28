@@ -107,18 +107,25 @@ fn bytes_methods_resolve_through_std_io_extern_symbols() {
     );
     for symbol in [
         "hew_bytes_push",
-        "hew_vec_pop_i32",
+        "hew_bytes_pop",
+        // `bytes.len()` keeps the `hew_vec_len` extern annotation: the symbol
+        // is shape-compatible (reads the length word of the BytesTriple) and
+        // codegen routes a bytes receiver to the canonical `hew_bytes_len`
+        // entry, so the checker-owned rewrite still records `hew_vec_len`.
         "hew_vec_len",
         // `bytes.get` routes to the dedicated `hew_bytes_get` getter, which
         // returns `Option<u8>` — de-aliased from the trapping index getter
         // `hew_bytes_index` that backs `buf[i]`.
         "hew_bytes_get",
-        "hew_vec_set_i32",
-        "hew_vec_is_empty",
-        "hew_vec_clear",
-        "hew_vec_contains_i32",
+        // The collection ops below now ride dedicated `hew_bytes_*` runtime
+        // entries operating on the `BytesTriple` ABI directly, replacing the
+        // pre-cutover `hew_vec_*_i32` / `hew_vec_*` shims they used to borrow.
+        "hew_bytes_set",
+        "hew_bytes_is_empty",
+        "hew_bytes_clear",
+        "hew_bytes_contains",
         "hew_bytes_to_string",
-        "hew_vec_append",
+        "hew_bytes_append",
     ] {
         assert!(
             has_rewrite(&output, symbol),

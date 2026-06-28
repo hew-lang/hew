@@ -1,0 +1,29 @@
+// `bytes.is_empty()` reports the active length truthfully across the lifecycle:
+// true on a fresh buffer, false after a push, true again after clear. A SLICED
+// value with offset > 0 must report NOT empty -- the Vec-backed shim mis-read
+// the len field over the triple's offset bytes; the dedicated entry reads len.
+fn main() -> i64 {
+    let b: bytes = bytes::new();
+    if !b.is_empty() {
+        return 61;
+    }
+    b.push(1);
+    b.push(2);
+    b.push(3);
+    if b.is_empty() {
+        return 62;
+    }
+    // A non-empty slice (offset > 0) is NOT empty.
+    let s: bytes = b[1..3];
+    if s.is_empty() {
+        return 63;
+    }
+    if s.len() != 2 {
+        return 64;
+    }
+    b.clear();
+    if !b.is_empty() {
+        return 65;
+    }
+    0
+}

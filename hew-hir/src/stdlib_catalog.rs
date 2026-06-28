@@ -273,6 +273,8 @@ const CHAR: &[BuiltinTy] = &[BuiltinTy::Char];
 const STRING: &[BuiltinTy] = &[BuiltinTy::String];
 const BYTES_U8: &[BuiltinTy] = &[BuiltinTy::Bytes, BuiltinTy::U8];
 const BYTES_I64: &[BuiltinTy] = &[BuiltinTy::Bytes, BuiltinTy::I64];
+const BYTES_I64_U8: &[BuiltinTy] = &[BuiltinTy::Bytes, BuiltinTy::I64, BuiltinTy::U8];
+const BYTES_BYTES: &[BuiltinTy] = &[BuiltinTy::Bytes, BuiltinTy::Bytes];
 const U8_U8: &[BuiltinTy] = &[BuiltinTy::U8, BuiltinTy::U8];
 const DURATION: &[BuiltinTy] = &[BuiltinTy::Duration];
 const INSTANT: &[BuiltinTy] = &[BuiltinTy::Instant];
@@ -987,14 +989,63 @@ pub const CATALOG: &[BuiltinEntry] = &[
     ),
     // Class A: declarative bytes receiver bridge. Keep every symbol named by
     // `std/io.hew`'s `impl bytes` extern declarations in the HIR catalog so
-    // method-call rewrites resolve at the HIR boundary. Bytes push and
-    // to_string use native bytes ABI; the remaining collection-like bytes
-    // methods still name Vec-backed runtime entry points until matching
-    // hew_bytes_* symbols exist.
+    // method-call rewrites resolve at the HIR boundary. Every collection-like
+    // bytes method names a dedicated `hew_bytes_*` runtime entry that operates
+    // on the `BytesTriple` ABI directly.
     direct(
         "hew_bytes_push",
         BuiltinClass::ClassA,
         BYTES_U8,
+        BuiltinTy::Unit,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    // `bytes.pop() -> u8` — removes and returns the last byte (CoW-aware).
+    // `CalleeNameDispatchOnly`: checker authority drives the `u8` result; the
+    // MIR producer arm emits the dedicated `hew_bytes_pop` runtime call.
+    direct(
+        "hew_bytes_pop",
+        BuiltinClass::ClassA,
+        BYTES,
+        BuiltinTy::U8,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    // `bytes.set(index, byte)` — overwrites the byte at `index` (CoW-aware).
+    direct(
+        "hew_bytes_set",
+        BuiltinClass::ClassA,
+        BYTES_I64_U8,
+        BuiltinTy::Unit,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    // `bytes.is_empty() -> bool`.
+    direct(
+        "hew_bytes_is_empty",
+        BuiltinClass::ClassA,
+        BYTES,
+        BuiltinTy::Bool,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    // `bytes.contains(byte) -> bool` — linear scan.
+    direct(
+        "hew_bytes_contains",
+        BuiltinClass::ClassA,
+        BYTES_U8,
+        BuiltinTy::Bool,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    // `bytes.clear()` — releases the receiver's buffer ref and resets to empty.
+    direct(
+        "hew_bytes_clear",
+        BuiltinClass::ClassA,
+        BYTES,
+        BuiltinTy::Unit,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    // `bytes.append(other)` — extends the receiver with a copy of `other`.
+    direct(
+        "hew_bytes_append",
+        BuiltinClass::ClassA,
+        BYTES_BYTES,
         BuiltinTy::Unit,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),

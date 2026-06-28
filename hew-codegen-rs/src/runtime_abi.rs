@@ -1133,6 +1133,275 @@ pub(crate) fn lower_call_runtime_abi(
                 .llvm_ctx("hew_bytes_index store")?;
             let _ = (i8_ty, i64_ty, ptr_ty);
         }
+        // hew_bytes_pop(&mut BytesTriple) -> i64. The receiver is a stack-
+        // resident triple; pass its alloca ADDRESS so the runtime writes back
+        // the shrunken triple after CoW. Returns the popped byte; the runtime
+        // aborts on an empty buffer (the spec pop signature has no Option).
+        F::BytesPop => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_bytes_pop): expected 1 arg (bytes), got {}",
+                    args.len()
+                )));
+            }
+            if !matches!(place_resolved_ty(fn_ctx, args[0])?, ResolvedTy::Bytes) {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_bytes_pop arg0 must be a `bytes` receiver; got {:?}",
+                    place_resolved_ty(fn_ctx, args[0])?
+                )));
+            }
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_bytes_pop returns a byte; producer must supply a dest".into(),
+                )
+            })?;
+            let (triple_ptr, _triple_ty) = place_pointer(fn_ctx, args[0])?;
+            let byte_val = fn_ctx.call_runtime_int(
+                symbol,
+                &[triple_ptr.into()],
+                "hew_bytes_pop_call",
+                "hew_bytes_pop call",
+            )?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest_place)?;
+            let BasicTypeEnum::IntType(dest_int_ty) = dest_ty else {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_bytes_pop dest must be integer-shaped; got {dest_ty:?}"
+                )));
+            };
+            // The runtime returns i64; truncate to the dest width (no-op for
+            // an i64 dest, narrows to i8 for a u8 dest).
+            let store_val = fn_ctx
+                .builder
+                .build_int_truncate_or_bit_cast(byte_val, dest_int_ty, "bytes_pop_trunc")
+                .llvm_ctx("hew_bytes_pop trunc")?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, store_val)
+                .llvm_ctx("hew_bytes_pop store")?;
+            let _ = (i8_ty, i32_ty, ptr_ty);
+        }
+        // hew_bytes_set(&mut BytesTriple, index: i64, byte: u8). Pass the
+        // receiver alloca address (write-back after CoW), the i64 index, and the
+        // byte truncated to u8. Void return; the runtime aborts on OOB.
+        F::BytesSet => {
+            if args.len() != 3 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_bytes_set): expected 3 args \
+                     (bytes, index, byte), got {}",
+                    args.len()
+                )));
+            }
+            if !matches!(place_resolved_ty(fn_ctx, args[0])?, ResolvedTy::Bytes) {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_bytes_set arg0 must be a `bytes` receiver; got {:?}",
+                    place_resolved_ty(fn_ctx, args[0])?
+                )));
+            }
+            let (triple_ptr, _triple_ty) = place_pointer(fn_ctx, args[0])?;
+            let index_val = load_int_arg(fn_ctx, args[1], i64_ty, "hew_bytes_set index")?;
+            let byte_i8 = load_int_arg(fn_ctx, args[2], i8_ty, "hew_bytes_set byte")?;
+            fn_ctx.call_runtime_void(
+                symbol,
+                &[triple_ptr.into(), index_val.into(), byte_i8.into()],
+                "hew_bytes_set_call",
+                "hew_bytes_set call",
+            )?;
+            if let Some(d) = dest {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_bytes_set returns void; producer must not supply dest={d:?}"
+                )));
+            }
+            let _ = (i32_ty, ptr_ty);
+        }
+        // hew_bytes_is_empty(*const BytesTriple) -> bool. Pass the triple alloca
+        // address (the by-pointer bytes-consumer convention); the runtime reads
+        // the len field.
+        F::BytesIsEmpty => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_bytes_is_empty): expected 1 arg (bytes), got {}",
+                    args.len()
+                )));
+            }
+            if !matches!(place_resolved_ty(fn_ctx, args[0])?, ResolvedTy::Bytes) {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_bytes_is_empty arg0 must be a `bytes` receiver; got {:?}",
+                    place_resolved_ty(fn_ctx, args[0])?
+                )));
+            }
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_bytes_is_empty returns bool; producer must supply a dest".into(),
+                )
+            })?;
+            let (triple_ptr, _triple_ty) = place_pointer(fn_ctx, args[0])?;
+            let bool_val = fn_ctx.call_runtime_int(
+                symbol,
+                &[triple_ptr.into()],
+                "hew_bytes_is_empty_call",
+                "hew_bytes_is_empty call",
+            )?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest_place)?;
+            // The runtime returns Rust `bool` (i1 at the C ABI); widen into the
+            // i8 bool dest.
+            let store_val = zext_bool_i1_to_dest(fn_ctx, bool_val, dest_ty, "hew_bytes_is_empty")?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, store_val)
+                .llvm_ctx("hew_bytes_is_empty store")?;
+            let _ = (i8_ty, i32_ty, i64_ty, ptr_ty);
+        }
+        // hew_bytes_contains(*const BytesTriple, byte: u8) -> bool. Pass the
+        // triple alloca address and the byte truncated to u8.
+        F::BytesContains => {
+            if args.len() != 2 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_bytes_contains): expected 2 args \
+                     (bytes, byte), got {}",
+                    args.len()
+                )));
+            }
+            if !matches!(place_resolved_ty(fn_ctx, args[0])?, ResolvedTy::Bytes) {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_bytes_contains arg0 must be a `bytes` receiver; got {:?}",
+                    place_resolved_ty(fn_ctx, args[0])?
+                )));
+            }
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_bytes_contains returns bool; producer must supply a dest".into(),
+                )
+            })?;
+            let (triple_ptr, _triple_ty) = place_pointer(fn_ctx, args[0])?;
+            let byte_i8 = load_int_arg(fn_ctx, args[1], i8_ty, "hew_bytes_contains byte")?;
+            let bool_val = fn_ctx.call_runtime_int(
+                symbol,
+                &[triple_ptr.into(), byte_i8.into()],
+                "hew_bytes_contains_call",
+                "hew_bytes_contains call",
+            )?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest_place)?;
+            // The runtime returns Rust `bool` (i1 at the C ABI); widen into the
+            // i8 bool dest.
+            let store_val = zext_bool_i1_to_dest(fn_ctx, bool_val, dest_ty, "hew_bytes_contains")?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, store_val)
+                .llvm_ctx("hew_bytes_contains store")?;
+            let _ = (i32_ty, i64_ty, ptr_ty);
+        }
+        // hew_bytes_clear(&mut BytesTriple). Pass the receiver alloca address so
+        // the runtime releases the buffer ref and writes back the empty triple.
+        F::BytesClear => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_bytes_clear): expected 1 arg (bytes), got {}",
+                    args.len()
+                )));
+            }
+            if !matches!(place_resolved_ty(fn_ctx, args[0])?, ResolvedTy::Bytes) {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_bytes_clear arg0 must be a `bytes` receiver; got {:?}",
+                    place_resolved_ty(fn_ctx, args[0])?
+                )));
+            }
+            let (triple_ptr, _triple_ty) = place_pointer(fn_ctx, args[0])?;
+            fn_ctx.call_runtime_void(
+                symbol,
+                &[triple_ptr.into()],
+                "hew_bytes_clear_call",
+                "hew_bytes_clear call",
+            )?;
+            if let Some(d) = dest {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_bytes_clear returns void; producer must not supply dest={d:?}"
+                )));
+            }
+            let _ = (i8_ty, i32_ty, i64_ty, ptr_ty);
+        }
+        // hew_bytes_append(&mut dst, src_ptr, src_offset, src_len). Pass the
+        // destination alloca address (write-back after CoW/grow) plus the source
+        // triple unpacked field-by-field (the source is borrowed, never freed).
+        F::BytesAppend => {
+            if args.len() != 2 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_bytes_append): expected 2 args \
+                     (bytes, other), got {}",
+                    args.len()
+                )));
+            }
+            if !matches!(place_resolved_ty(fn_ctx, args[0])?, ResolvedTy::Bytes) {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_bytes_append arg0 must be a `bytes` receiver; got {:?}",
+                    place_resolved_ty(fn_ctx, args[0])?
+                )));
+            }
+            if !matches!(place_resolved_ty(fn_ctx, args[1])?, ResolvedTy::Bytes) {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_bytes_append arg1 must be a `bytes` source; got {:?}",
+                    place_resolved_ty(fn_ctx, args[1])?
+                )));
+            }
+            // arg0: destination receiver — pass the alloca address for write-back.
+            let (dst_ptr, _dst_ty) = place_pointer(fn_ctx, args[0])?;
+            // arg1: source triple — unpack {ptr, offset, len} field-by-field.
+            let (src_triple_ptr, src_triple_ty) = place_pointer(fn_ctx, args[1])?;
+            let BasicTypeEnum::StructType(src_struct_ty) = src_triple_ty else {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_bytes_append: source alloca has non-struct type {src_triple_ty:?}; \
+                     expected the `{{ptr, i32, i32}}` BytesTriple layout"
+                )));
+            };
+            let src_data_gep = fn_ctx
+                .builder
+                .build_struct_gep(src_struct_ty, src_triple_ptr, 0, "bytes_append_src_ptr_gep")
+                .llvm_ctx("hew_bytes_append src ptr GEP")?;
+            let src_data_ptr = fn_ctx
+                .builder
+                .build_load(ptr_ty, src_data_gep, "bytes_append_src_ptr")
+                .llvm_ctx("hew_bytes_append src ptr load")?
+                .into_pointer_value();
+            let src_offset_gep = fn_ctx
+                .builder
+                .build_struct_gep(
+                    src_struct_ty,
+                    src_triple_ptr,
+                    1,
+                    "bytes_append_src_offset_gep",
+                )
+                .llvm_ctx("hew_bytes_append src offset GEP")?;
+            let src_offset_val = fn_ctx
+                .builder
+                .build_load(i32_ty, src_offset_gep, "bytes_append_src_offset")
+                .llvm_ctx("hew_bytes_append src offset load")?
+                .into_int_value();
+            let src_len_gep = fn_ctx
+                .builder
+                .build_struct_gep(src_struct_ty, src_triple_ptr, 2, "bytes_append_src_len_gep")
+                .llvm_ctx("hew_bytes_append src len GEP")?;
+            let src_len_val = fn_ctx
+                .builder
+                .build_load(i32_ty, src_len_gep, "bytes_append_src_len")
+                .llvm_ctx("hew_bytes_append src len load")?
+                .into_int_value();
+            fn_ctx.call_runtime_void(
+                symbol,
+                &[
+                    dst_ptr.into(),
+                    src_data_ptr.into(),
+                    src_offset_val.into(),
+                    src_len_val.into(),
+                ],
+                "hew_bytes_append_call",
+                "hew_bytes_append call",
+            )?;
+            if let Some(d) = dest {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_bytes_append returns void; producer must not supply dest={d:?}"
+                )));
+            }
+            let _ = (i8_ty, i64_ty);
+        }
         // Actor link/monitor builtins.
         //
         // hew_actor_link(parent, child) -> void

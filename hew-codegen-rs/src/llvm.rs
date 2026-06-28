@@ -9435,7 +9435,7 @@ fn emit_field_clone_step<'ctx>(
 /// the synthesised in-place record-drop helper. BitCopy / Connection
 /// fields are no-ops (caller filters them out, but this helper is
 /// defensive).
-fn emit_field_drop_step<'ctx>(
+pub(crate) fn emit_field_drop_step<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
     builder: &Builder<'ctx>,
@@ -18323,6 +18323,73 @@ fn lower_make_closure(
     Ok(())
 }
 
+/// Derive the per-capture drop manifest for an escaping closure env: classify
+/// each captured field's `ResolvedTy` (read off the env record registry under
+/// the env Place's Named type) through the canonical
+/// `classify_state_field_with_enum_layouts` authority into a
+/// [`StateFieldCloneKind`] the free thunk drops with `emit_field_drop_step`.
+///
+/// Reconstructs the `RecordLayout` slice the classifier needs from
+/// `fn_ctx.record_field_resolved_tys` exactly as `ask_reply_drop_thunk_ptr`
+/// does — the codegen record registry is the single source of field-type
+/// truth, so the closure-env drop path and every other owned-value drop path
+/// agree on what a field owns.
+///
+/// Fail-closed: a capture whose type the classifier cannot map to a drop kind
+/// is a `CodegenError::FailClosed` (the owned capture would otherwise leak by
+/// omission), and an env whose record type is missing from the registry is a
+/// hard error rather than a silent empty (which would reinstate the leak).
+fn closure_env_capture_drop_kinds(
+    fn_ctx: &FnCtx<'_, '_>,
+    fn_symbol: &str,
+    env: Place,
+) -> CodegenResult<Vec<StateFieldCloneKind>> {
+    let env_ty = place_resolved_ty(fn_ctx, env)?;
+    let ResolvedTy::Named { name: env_name, .. } = env_ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "closure env for `{fn_symbol}` has non-Named place type {env_ty:?}; \
+             expected the `__hew_closure_env_*` record"
+        )));
+    };
+    let Some(field_tys) = fn_ctx.record_field_resolved_tys.get(env_name.as_str()) else {
+        return Err(CodegenError::FailClosed(format!(
+            "closure env `{env_name}` for `{fn_symbol}` is not in the codegen record \
+             registry; its captured-field drop manifest cannot be derived and owned \
+             captures would leak (boundary-fail-closed)"
+        )));
+    };
+    // Reconstruct the RecordLayout slice the classifier consumes from the same
+    // registry, mirroring `ask_reply_drop_thunk_ptr`.
+    let record_layouts: Vec<hew_mir::RecordLayout> = fn_ctx
+        .record_field_resolved_tys
+        .iter()
+        .map(|(name, tys)| hew_mir::RecordLayout {
+            name: name.clone(),
+            field_tys: tys.clone(),
+            field_names: Vec::new(),
+        })
+        .collect();
+    let mut kinds = Vec::with_capacity(field_tys.len());
+    for (idx, field_ty) in field_tys.iter().enumerate() {
+        let mut visited = std::collections::HashSet::new();
+        let kind = hew_mir::classify_state_field_with_enum_layouts(
+            field_ty,
+            &record_layouts,
+            fn_ctx.enum_layouts,
+            &mut visited,
+        )
+        .map_err(|e| {
+            CodegenError::FailClosed(format!(
+                "closure env `{env_name}` capture field {idx} (type {field_ty:?}) is not \
+                 drop-classifiable: {e}; an owned capture would leak when the escaping \
+                 closure is dropped (borrow-classifier-completeness-or-leak)"
+            ))
+        })?;
+        kinds.push(kind);
+    }
+    Ok(kinds)
+}
+
 /// Heap-promote a closure env: allocate the box, plant the free thunk in
 /// the header slot, copy the stack-materialised env record into the
 /// captures region, and return the captures address (the pair's env_ptr).
@@ -18377,9 +18444,32 @@ fn emit_closure_env_heap_box<'ctx>(
             )
         })?
         .into_pointer_value();
-    // Header slot 0: the per-closure free thunk.
-    let free_thunk =
-        crate::thunks::get_or_emit_closure_env_free_thunk(fn_ctx, fn_symbol, total_size)?;
+    // Header slot 0: the per-closure free thunk. Derive its per-capture drop
+    // manifest here — the SINGLE place that knows both the env record type and
+    // the box layout. Classify each captured field's `ResolvedTy` through the
+    // canonical `classify_state_field_with_enum_layouts` authority (the same
+    // classifier the actor-`state_drop_fn`, ask-reply, and owned-Vec paths
+    // use); the thunk then drops each owning field via `emit_field_drop_step`
+    // before freeing the box. An owned capture the classifier cannot map to a
+    // drop strategy fails closed HERE rather than leaking by omission
+    // (boundary-fail-closed / borrow-classifier-completeness-or-leak).
+    let env_struct = match env_llvm_ty {
+        BasicTypeEnum::StructType(st) => st,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "closure env for `{fn_symbol}` has non-struct captures region {other:?}; \
+                 the env record layout and the heap-box convention have drifted"
+            )));
+        }
+    };
+    let field_kinds = closure_env_capture_drop_kinds(fn_ctx, fn_symbol, env)?;
+    let free_thunk = crate::thunks::get_or_emit_closure_env_free_thunk(
+        fn_ctx,
+        fn_symbol,
+        total_size,
+        env_struct,
+        &field_kinds,
+    )?;
     fn_ctx
         .builder
         .build_store(box_ptr, free_thunk.as_global_value().as_pointer_value())

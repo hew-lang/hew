@@ -584,14 +584,41 @@ pub(crate) fn emit_spawn_task_closure(
 }
 
 /// Synthesise (once per closure shim) the `void(ptr env)` free thunk the
-/// env box's header slot carries: `hew_dyn_box_free(env - HEADER, total,
-/// align)` with the exact layout the matching `hew_dyn_box_alloc` used.
+/// env box's header slot carries. The thunk is the SOLE teardown owner of an
+/// escaping (heap-boxed) closure env — it runs in two acts, both keyed to the
+/// captures region pointer the pair stores:
+///
+///   1. **Drop each owned captured field** in reverse (LIFO) declaration
+///      order through the canonical per-field drop authority
+///      ([`crate::llvm::emit_field_drop_step`] over the captures region's
+///      [`StructType`]). A `string` capture is released via `hew_string_drop`,
+///      a `Vec`/`HashMap`/`HashSet` via its managed free, a captured
+///      closure-pair via its OWN planted free thunk (the recursive
+///      env-of-env case), a record/enum via its in-place drop helper — the
+///      identical classifier+step the actor-`state_drop_fn` and ask-reply
+///      paths use, so a captured value drops byte-for-byte as it would in any
+///      other owning aggregate (`lifecycle-symmetry`). BitCopy fields are
+///      no-ops. A field whose type the classifier cannot map to a drop
+///      strategy fails closed at synthesis (caller side), never silently
+///      leaks-by-omission.
+///   2. **Free the box**: `hew_dyn_box_free(env - HEADER, total, align)` with
+///      the exact (size, align) the matching `hew_dyn_box_alloc` used.
+///
+/// Before this fix the thunk freed only the box, leaking every owned capture
+/// (a runtime-built `string`/`Vec` captured into a returned closure → 2 leaks
+/// under `leaks --atExit`). The drop manifest is derived once at the
+/// `emit_closure_env_heap_box` call site (classifying the env record's field
+/// `ResolvedTy`s) and passed in as `field_kinds`, paired with the captures-
+/// region `env_struct` so the per-field GEPs land on the validated layout.
+///
 /// Private linkage — internal to the module, referenced only through the
 /// header slot planted by `emit_closure_env_heap_box`.
 pub(crate) fn get_or_emit_closure_env_free_thunk<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     fn_symbol: &str,
     total_size: u64,
+    env_struct: StructType<'ctx>,
+    field_kinds: &[StateFieldCloneKind],
 ) -> CodegenResult<FunctionValue<'ctx>> {
     let symbol = format!("__hew_closure_env_free_{fn_symbol}");
     if let Some(existing) = fn_ctx.llvm_mod.get_function(&symbol) {
@@ -627,7 +654,33 @@ pub(crate) fn get_or_emit_closure_env_free_thunk<'ctx>(
             ))
         })?
         .into_pointer_value();
-    // box = env - HEADER (in-bounds: the header is part of the allocation).
+
+    // Act 1: drop each owned captured field in reverse declaration order
+    // (LIFO — the same order the elaboration pass drops scope-exit locals and
+    // the record/actor-state drop bodies use). `env` IS the captures region
+    // pointer (the header sits BEFORE it at `env - HEADER`), so the env struct
+    // GEPs land directly on the capture fields. BitCopy / Connection / opaque
+    // arms are no-ops inside `emit_field_drop_step`; every owning class routes
+    // to its single canonical release.
+    for (idx, kind) in field_kinds.iter().enumerate().rev() {
+        let field_idx = u32::try_from(idx).map_err(|_| {
+            CodegenError::FailClosed(format!(
+                "closure env free thunk `{symbol}`: capture field count exceeds u32::MAX"
+            ))
+        })?;
+        crate::llvm::emit_field_drop_step(
+            ctx,
+            fn_ctx.llvm_mod,
+            &builder,
+            Some(env_struct),
+            env,
+            field_idx,
+            kind,
+        )?;
+    }
+
+    // Act 2: free the box. box = env - HEADER (in-bounds: the header is part
+    // of the allocation).
     let neg_header = i64_ty.const_int(CLOSURE_ENV_BOX_HEADER.wrapping_neg(), true);
     let box_ptr =
         unsafe { builder.build_in_bounds_gep(ctx.i8_type(), env, &[neg_header], "env_box_base") }

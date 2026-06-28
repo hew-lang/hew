@@ -1,0 +1,45 @@
+// Cross-module chained generic-adapter monomorphisation through the
+// `iter::collect` terminal.
+//
+// `iter::map` builds a `Map` adapter over the imported iterator and
+// `iter::collect` materialises it into a fresh owned `Vec<i64>`. This exercises
+// the same cross-module chain as the count terminal — qualified→bare dispatch
+// of the imported `Map::next`, the projection-pinned terminal type param, and
+// the per-instantiation origin of the adapter method — but drives the
+// `iter::collect` terminal rather than `iter::count`.
+//
+// The collected element is a non-owned `i64`: the collect terminal's owned
+// heap-element drop (each collected `string` releasing exactly once) is a
+// distinct, pre-existing CoW-prover concern tracked separately, NOT a property
+// this cross-module-mono fixture certifies. Keeping the element non-owned makes
+// the fixture's drop-safety claim one it actually holds.
+//
+// Countdown{3} yields [3,2,1]; map doubles each -> [6,4,2]; collect; sum = 12.
+import std::iter;
+
+type Countdown {
+    n: i64;
+}
+
+impl Iterator for Countdown {
+    type Item = i64;
+    fn next(var self) -> Option<i64> {
+        if self.n <= 0 {
+            None
+        } else {
+            let cur = self.n;
+            self.n = self.n - 1;
+            Some(cur)
+        }
+    }
+}
+
+pub fn main() -> i64 {
+    let mapped = iter::map(Countdown { n: 3 }, |x: i64| x * 2);
+    let v: Vec<i64> = iter::collect(mapped);
+    var total = 0;
+    for n in v {
+        total = total + n;
+    }
+    total
+}

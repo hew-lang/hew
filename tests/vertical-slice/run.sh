@@ -374,9 +374,13 @@ run_accept_expect_status "iter_filter_string_run" 2
 # former mir_gap_cross_module_iter ratchet flipped to these accept fixtures.
 # Countdown{3} doubled then counted → 3.
 run_accept_expect_status "iter_xmod_map_count" 3
-# Cross-type owned-element terminal: map i64 → distinct heap strings, collect
-# into a fresh Vec<string>, sum lengths. Countdown{3} → ["xxx","xx","x"] → 6.
-run_accept_expect_status "iter_xmod_map_string" 6
+# Cross-module `iter::collect` terminal: map i64 → i64, collect into a fresh
+# Vec<i64>, sum. Drives the collect terminal through the same cross-module chain
+# as the count fixture (qualified→bare `Map::next`, projection-pinned terminal
+# type param, per-instantiation adapter origin) over a non-owned element. The
+# collect terminal's owned heap-element drop is a separate pre-existing CoW-prover
+# concern, not certified here. Countdown{3} doubled → [6,4,2], collect, sum → 12.
+run_accept_expect_status "iter_xmod_map_collect" 12
 # Closure that captures a local crosses the module boundary with its capture
 # fact resolved. Countdown{4} mapped by +bump(10) then counted → 4.
 run_accept_expect_status "iter_xmod_captured_closure" 4

@@ -14,6 +14,9 @@
 #[linear]
 type Txn {
     id: i64;
+}
+
+impl Txn {
     fn commit(consuming self) -> i64 {
         0
     }

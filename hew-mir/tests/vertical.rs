@@ -1337,7 +1337,8 @@ fn registered_fieldless_user_type_still_requires_codegen_readiness() {
     let parsed = hew_parser::parse(
         r"
         #[linear]
-        type Token {
+        type Token {}
+        impl Token {
             fn consume(consuming self) -> i64 { 0 }
         }
         fn f(x: Token) -> i64 { 0 }

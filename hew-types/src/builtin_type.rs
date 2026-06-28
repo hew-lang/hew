@@ -194,7 +194,7 @@ builtin_types! {
     CloseError => "CloseError",
     Iterator => "Iterator",
     Unit => "Unit",
-    Duration => "Duration",
+    Duration => "duration",
     Instant => "instant",
     Trap => "Trap",
     CancellationToken => "CancellationToken",

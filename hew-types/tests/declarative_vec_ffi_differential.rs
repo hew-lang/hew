@@ -2,13 +2,13 @@
 //!
 //! Pins the **declarative** `#[extern_symbol]` resolution path against
 //! the **legacy** magic table (`hew_types::stdlib::resolve_vec_method`)
-//! across the full 91-cell matrix from plan §6 Stage 3 plus W3.003 bool/char
+//! across the full 84-cell matrix from plan §6 Stage 3 plus W3.003 bool/char
 //! scalar ABI additions:
 //!
 //! ```text
-//! 13 methods × 7 element types = 91 cells.
+//! 12 methods × 7 element types = 84 cells.
 //! Methods : push pop get set contains len is_empty clear clone
-//!           append extend remove join
+//!           append remove join
 //! Element : Vec<bool> Vec<char> Vec<i32> Vec<i64> Vec<f64>
 //!           Vec<string> Vec<Vec<i32>>
 //! ```
@@ -65,10 +65,10 @@ fn element_types() -> Vec<(&'static str, Ty)> {
     ]
 }
 
-/// The 13 method names in plan §6 Stage 3 matrix order.
+/// The Vec method names in plan §6 Stage 3 matrix order.
 const METHODS: &[&str] = &[
     "push", "pop", "get", "set", "contains", "len", "is_empty", "clear", "clone", "append",
-    "extend", "remove", "join",
+    "remove", "join",
 ];
 
 /// Stage-3 substrate: minimal `TypeDef` map seeded with the heap-handle
@@ -274,20 +274,20 @@ fn vec_ffi_differential_matrix_65_cells() {
     }
 
     assert_eq!(
-        cells_checked, 91,
-        "differential matrix must cover 13 × 7 = 91 cells exactly",
+        cells_checked, 84,
+        "differential matrix must cover 12 × 7 = 84 cells exactly",
     );
 
     assert!(
         failures.is_empty(),
-        "differential test: {} cell(s) failed out of 91:\n  {}",
+        "differential test: {} cell(s) failed out of 84:\n  {}",
         failures.len(),
         failures.join("\n  ")
     );
 
     assert_eq!(
         cells_matched + cells_aliased_len + cells_both_none + cells_join_gap,
-        91,
+        84,
         "every cell must be accounted for: matched={cells_matched}, \
          aliased_len={cells_aliased_len}, both_none={cells_both_none}, \
          join_gap={cells_join_gap}",

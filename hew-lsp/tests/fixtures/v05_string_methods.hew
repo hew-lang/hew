@@ -2,7 +2,6 @@ fn string_methods_probe(text: string) -> i64 {
     let sliced: string = text.slice(0, 1);
     let replaced: string = text.replace("a", "b");
     let found: i64 = text.find("a");
-    let indexed: i64 = text.index_of("a");
     let parts: Vec<string> = text.split(",");
     let line_parts: Vec<string> = text.lines();
     let repeated: string = text.repeat(2);
@@ -12,7 +11,7 @@ fn string_methods_probe(text: string) -> i64 {
     let alpha: bool = text.is_alpha();
     let alnum: bool = text.is_alphanumeric();
     let cloned: string = text.clone();
-    found + indexed + ch
+    found + ch
 }
 
 fn string_methods_use() -> i64 {

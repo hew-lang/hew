@@ -67,7 +67,7 @@ pub fn vec_method_template(method: &str) -> Option<&'static str> {
         "is_empty" => Some("hew_vec_is_empty"),
         "clear" => Some("hew_vec_clear"),
         "clone" => Some("hew_vec_clone"),
-        "append" | "extend" => Some("hew_vec_append"),
+        "append" => Some("hew_vec_append"),
         // `Vec::remove(i64)` removes by index — runtime symbol is
         // monomorphic (`hew_vec_remove_at`); mirrors the legacy
         // `resolve_vec_method` "remove" arm.
@@ -202,7 +202,6 @@ mod tests {
             ("clear", "hew_vec_clear"),
             ("clone", "hew_vec_clone"),
             ("append", "hew_vec_append"),
-            ("extend", "hew_vec_append"),
             ("remove", "hew_vec_remove_at"),
             ("join", "hew_vec_join_str"),
         ] {

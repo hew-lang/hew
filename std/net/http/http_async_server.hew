@@ -366,7 +366,7 @@ fn find_header(header_section: string, name: string) -> string {
     if string.is_empty(header_section) {
         return "";
     }
-    let target = string.to_lower(name);
+    let target = name.to_lower();
     let lines = string.split(header_section, "\r\n");
     let n = lines.len();
     var found = "";
@@ -374,7 +374,7 @@ fn find_header(header_section: string, name: string) -> string {
         let line = lines[i];
         let colon = line.find(":");
         if colon > 0 {
-            let key = string.to_lower(string.trim(line.slice(0, colon)));
+            let key = string.trim(line.slice(0, colon)).to_lower();
             if key == target {
                 found = string.trim(line.slice(colon + 1, line.len()));
             }
@@ -389,7 +389,7 @@ fn header_count(header_section: string, name: string) -> i64 {
     if string.is_empty(header_section) {
         return 0;
     }
-    let target = string.to_lower(name);
+    let target = name.to_lower();
     let lines = string.split(header_section, "\r\n");
     let n = lines.len();
     var count: i64 = 0;
@@ -397,7 +397,7 @@ fn header_count(header_section: string, name: string) -> i64 {
         let line = lines[i];
         let colon = line.find(":");
         if colon > 0 {
-            let key = string.to_lower(string.trim(line.slice(0, colon)));
+            let key = string.trim(line.slice(0, colon)).to_lower();
             if key == target {
                 count = count + 1;
             }

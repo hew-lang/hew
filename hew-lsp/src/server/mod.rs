@@ -6848,7 +6848,6 @@ machine Traffic {
             "slice",
             "replace",
             "find",
-            "index_of",
             "split",
             "lines",
             "repeat",

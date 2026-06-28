@@ -2791,7 +2791,7 @@ fn match_wrong_variant_against_result_scrutinee_is_compile_time_type_error() {
     );
 }
 
-/// Positive probe: a `.len()` / `.starts_with(...)` / `.to_uppercase()` chain
+/// Positive probe: a `.len()` / `.starts_with(...)` / `.to_upper()` chain
 /// on a string runs end-to-end via the `impl string` block in
 /// std/builtins.hew rather than the legacy per-symbol FFI dispatch table
 /// in `check_string_method`.  Asserts byte-level stdout so codegen actually
@@ -2810,7 +2810,7 @@ fn run_string_methods_dispatch_through_impl_block() {
          \x20   if s.starts_with(\"hello\") {\n\
          \x20       println(\"matched\");\n\
          \x20   }\n\
-         \x20   let upper = s.to_uppercase();\n\
+         \x20   let upper = s.to_upper();\n\
          \x20   println(upper);\n\
          }\n",
     )

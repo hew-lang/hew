@@ -858,8 +858,8 @@ pub const CATALOG: &[BuiltinEntry] = &[
         },
     ),
     overload(
-        "to_lowercase_str",
-        "to_lowercase",
+        "to_lower_str",
+        "to_lower",
         STRING,
         BuiltinTy::String,
         BuiltinLinkage::RuntimeFfiShim {
@@ -867,8 +867,8 @@ pub const CATALOG: &[BuiltinEntry] = &[
         },
     ),
     overload(
-        "to_uppercase_str",
-        "to_uppercase",
+        "to_upper_str",
+        "to_upper",
         STRING,
         BuiltinTy::String,
         BuiltinLinkage::RuntimeFfiShim {
@@ -927,15 +927,6 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::I64,
         BuiltinLinkage::RuntimeFfiShim {
             symbol: "hew_string_find",
-        },
-    ),
-    overload(
-        "index_of_str",
-        "index_of",
-        STRING_STRING,
-        BuiltinTy::I64,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_string_index_of_start",
         },
     ),
     overload(

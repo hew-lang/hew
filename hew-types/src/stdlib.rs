@@ -366,7 +366,7 @@ pub fn resolve_vec_method<S: std::hash::BuildHasher>(
             Some("layout") => Some("hew_vec_clone_layout"),
             _ => Some("hew_vec_clone"),
         },
-        "append" | "extend" => match vec_element_runtime_suffix(elem_ty, type_defs) {
+        "append" => match vec_element_runtime_suffix(elem_ty, type_defs) {
             Some("layout") => Some("hew_vec_append_layout"),
             _ => Some("hew_vec_append"),
         },
@@ -572,7 +572,6 @@ mod tests {
             ("clear", "hew_vec_clear"),
             ("clone", "hew_vec_clone"),
             ("append", "hew_vec_append"),
-            ("extend", "hew_vec_append"),
             ("remove", "hew_vec_remove_at"),
         ] {
             assert_eq!(
@@ -854,10 +853,6 @@ mod tests {
             Some("hew_vec_append_layout")
         );
         assert_eq!(
-            resolve_vec_method("extend", &point, &record_defs),
-            Some("hew_vec_append_layout")
-        );
-        assert_eq!(
             resolve_vec_method("remove", &point, &record_defs),
             Some("hew_vec_remove_at_layout")
         );
@@ -891,10 +886,6 @@ mod tests {
         );
         assert_eq!(
             resolve_vec_method("append", &tup, &type_defs),
-            Some("hew_vec_append_layout")
-        );
-        assert_eq!(
-            resolve_vec_method("extend", &tup, &type_defs),
             Some("hew_vec_append_layout")
         );
 

@@ -2,7 +2,7 @@
 //!
 //! A fresh-owned `string` result used in a non-consuming (borrowing) context
 //! must be released exactly once. `string` is refcounted; every fresh producer
-//! (`+`/concat, `.to_uppercase()`, the `Vec<string>` getter) hands the caller
+//! (`+`/concat, `.to_upper()`, the `Vec<string>` getter) hands the caller
 //! one drop obligation, and a borrowing use (`.len()`) reads the buffer without
 //! consuming the refcount. The substrate releases the owner once per use:
 //!
@@ -28,10 +28,10 @@ fn main() -> i64 {
         // NESTED concat (inline drop after the borrowing `len`).
         let _b = ("p-" + "q").len();
         // BOUND transform (scope-exit drop).
-        let y2 = "lower".to_uppercase();
+        let y2 = "lower".to_upper();
         let _c = y2.len();
         // NESTED transform (inline drop).
-        let _d = "more".to_uppercase().len();
+        let _d = "more".to_upper().len();
         // BOUND Vec<string> getter — retained owner, scope-exit drop.
         let y3 = xs[0];
         let _e = y3.len();

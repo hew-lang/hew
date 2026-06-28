@@ -631,8 +631,6 @@ impl Checker {
         self.register_builtin_fn("len", vec![Ty::Var(TypeVar::fresh())], Ty::I64);
 
         // I/O and system
-        self.register_builtin_fn("read_file", vec![Ty::String], Ty::String);
-        self.register_builtin_fn("write_file", vec![Ty::String, Ty::String], Ty::Unit);
         self.register_builtin_fn("sleep", vec![Ty::Duration], Ty::Unit);
         self.register_builtin_fn(
             "sleep_until",
@@ -829,7 +827,6 @@ impl Checker {
         );
         self.register_builtin_fn("string_trim", vec![Ty::String], Ty::String);
         self.register_builtin_fn("string_to_int", vec![Ty::String], Ty::I64);
-        self.register_builtin_fn("string_find", vec![Ty::String, Ty::String], Ty::I64);
         self.register_builtin_fn(
             "string_replace",
             vec![Ty::String, Ty::String, Ty::String],

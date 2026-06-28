@@ -2582,7 +2582,10 @@ fn vec_append_record_element_is_layout_fail_closed() {
 }
 
 #[test]
-fn vec_extend_record_element_is_layout_fail_closed() {
+fn vec_extend_retired_is_undefined_method() {
+    // `.extend` was retired; the canonical bulk-append method is `.append`.
+    // The type-checker must reject `.extend` with UndefinedMethod so callers
+    // are steered to the replacement rather than silently doing nothing.
     let output = typecheck(
         r"
         type Point {
@@ -2600,12 +2603,8 @@ fn vec_extend_record_element_is_layout_fail_closed() {
         output
             .errors
             .iter()
-            .any(|e| e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains("`Vec::extend`")
-                && e.message.contains("not runtime-backed yet")
-                // extend maps to the append runtime entry
-                && e.message.contains("hew_vec_append_layout")),
-        "Expected layout fail-closed diagnostic for Vec<Point>::extend, got: {:?}",
+            .any(|e| e.kind == TypeErrorKind::UndefinedMethod && e.message.contains("extend")),
+        "Expected UndefinedMethod for retired Vec::extend, got: {:?}",
         output.errors
     );
 }

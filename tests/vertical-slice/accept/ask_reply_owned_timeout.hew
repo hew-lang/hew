@@ -17,7 +17,7 @@ actor SlowWorker {
 
         // Reply arrives well after the 10 ms deadline → cancel leg.
         sleep(50ms);
-        "late-owned-reply".to_uppercase()
+        "late-owned-reply".to_upper()
     }
 }
 

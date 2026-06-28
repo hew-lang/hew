@@ -3245,8 +3245,8 @@ fn declare_print_runtime<'ctx>(
 ///
 /// WHY: the stdlib catalog records the **Hew-facing** type of each shim (e.g.
 /// `string.find -> i64`), but several runtime functions actually return `i32`
-/// (`hew_string_find`, `hew_string_index_of_start`, `hew_string_length`,
-/// `hew_string_char_at`). Declaring the LLVM extern with the Hew-facing width
+/// (`hew_string_find`, `hew_string_length`, `hew_string_char_at`). Declaring
+/// the LLVM extern with the Hew-facing width
 /// (i64) does not match the C ABI: a `-> i32` C function leaves the upper 32
 /// bits of the return register undefined, so reading a 64-bit result yields
 /// garbage (the `-1` not-found sentinel surfaces as `4294967295`). The LLVM
@@ -3264,7 +3264,7 @@ fn declare_print_runtime<'ctx>(
 fn runtime_ffi_return_abi_bits(symbol: &str) -> Option<u32> {
     match symbol {
         // `*const c_char -> i32`: -1 not-found sentinel must sign-extend to i64.
-        "hew_string_find" | "hew_string_index_of_start" => Some(32),
+        "hew_string_find" => Some(32),
         // `*const c_char -> i32` length / char code: non-negative in practice,
         // but the i64-declared call still reads undefined high bits. Declaring
         // the true i32 and sign-extending is the ABI-correct path.
@@ -28746,8 +28746,8 @@ fn lower_terminator<'ctx>(
                         let stored = if dest_ty == return_ty {
                             // Reconcile the runtime C-ABI return width against the
                             // Hew dest width. A runtime function declared `-> i32`
-                            // (e.g. `hew_string_find` / `hew_string_index_of_start`,
-                            // returning the `-1` not-found sentinel) must
+                            // (e.g. `hew_string_find`, returning the `-1`
+                            // not-found sentinel) must
                             // sign-extend its result up to the Hew-facing i64 dest,
                             // so `-1` stays `-1` rather than `4294967295`. Equal
                             // widths and matching types pass through; genuinely
@@ -33388,8 +33388,8 @@ fn scalar_di_basic(ty: &ResolvedTy, target_data: &TargetData) -> Option<(&'stati
         ResolvedTy::Char => ("char", 32, DW_ATE_UNSIGNED_CHAR),
         ResolvedTy::F32 => ("f32", 32, DW_ATE_FLOAT),
         ResolvedTy::F64 => ("f64", 64, DW_ATE_FLOAT),
-        // Duration is i64 nanoseconds at the ABI.
-        ResolvedTy::Duration => ("Duration", 64, DW_ATE_SIGNED),
+        // duration is i64 nanoseconds at the ABI.
+        ResolvedTy::Duration => ("duration", 64, DW_ATE_SIGNED),
         _ => return None,
     })
 }

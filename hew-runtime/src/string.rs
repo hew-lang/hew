@@ -1014,57 +1014,6 @@ pub unsafe extern "C" fn hew_string_repeat(s: *const c_char, count: i32) -> *mut
     result.cast::<c_char>()
 }
 
-/// Find the first occurrence of `substr` in `s` starting at position `from`.
-/// Returns byte offset or -1 if not found.
-///
-/// # Safety
-///
-/// Both `s` and `substr` must be valid NUL-terminated C strings (or null).
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    reason = "Matching C ABI: string offsets are i32 per Hew convention"
-)]
-#[no_mangle]
-pub unsafe extern "C" fn hew_string_index_of(
-    s: *const c_char,
-    substr: *const c_char,
-    from: i32,
-) -> i32 {
-    cabi_guard!(s.is_null() || substr.is_null(), -1);
-    // SAFETY: Both pointers are valid NUL-terminated C strings per caller contract.
-    let slen = unsafe { cstr_len(s) };
-    let start = if from < 0 { 0usize } else { from as usize };
-    if start >= slen {
-        // SAFETY: substr is a valid NUL-terminated C string per caller contract.
-        let sublen = unsafe { cstr_len(substr) };
-        if sublen == 0 && start == slen {
-            return start as i32;
-        }
-        return -1;
-    }
-    // SAFETY: start < slen, so s + start is within the string.
-    let p = unsafe { libc::strstr(s.add(start), substr) };
-    cabi_guard!(p.is_null(), -1);
-    // SAFETY: p points within s, so the offset is non-negative.
-    unsafe { p.offset_from(s) as i32 }
-}
-
-/// Method-call shim for `string.index_of(needle)`.
-///
-/// The language surface takes no explicit `from` argument; it always starts at
-/// the beginning of the string.
-///
-/// # Safety
-///
-/// Both `s` and `substr` must be valid NUL-terminated C strings (or null).
-#[no_mangle]
-pub unsafe extern "C" fn hew_string_index_of_start(s: *const c_char, substr: *const c_char) -> i32 {
-    // SAFETY: Delegates to `hew_string_index_of` with a fixed start offset.
-    unsafe { hew_string_index_of(s, substr, 0) }
-}
-
 // ── Static string detection ─────────────────────────────────────────────
 //
 // String literals live in the binary's read-only data segment. We must
@@ -2177,28 +2126,6 @@ mod tests {
         let result = unsafe { hew_string_repeat(s.as_ptr(), 0) };
         // SAFETY: result is a valid malloc'd C string.
         assert_eq!(unsafe { read_and_free(result) }, "");
-    }
-
-    #[test]
-    fn test_string_index_of() {
-        let s = CString::new("abcabc").unwrap();
-        let sub = CString::new("bc").unwrap();
-        assert_eq!(
-            // SAFETY: Both args are valid NUL-terminated C strings.
-            unsafe { hew_string_index_of(s.as_ptr(), sub.as_ptr(), 0) },
-            1
-        );
-    }
-
-    #[test]
-    fn test_string_index_of_start() {
-        let s = CString::new("banana").unwrap();
-        let sub = CString::new("na").unwrap();
-        assert_eq!(
-            // SAFETY: Both args are valid NUL-terminated C strings.
-            unsafe { hew_string_index_of_start(s.as_ptr(), sub.as_ptr()) },
-            2
-        );
     }
 
     #[test]

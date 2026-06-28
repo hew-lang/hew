@@ -4753,7 +4753,7 @@ impl Checker {
                     },
                     _,
                 )) => {
-                    const STORING_METHODS: &[&str] = &["push", "set", "insert", "extend", "append"];
+                    const STORING_METHODS: &[&str] = &["push", "set", "insert", "append"];
                     if STORING_METHODS.contains(&method.as_str()) {
                         if let Expr::Identifier(recv_name) = &receiver.0 {
                             for arg in args {

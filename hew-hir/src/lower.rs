@@ -8326,7 +8326,31 @@ impl LowerCtx {
         // callable `<SelfType>::<method>` functions. Older declarative receiver
         // FFI blocks with all-`#[extern_symbol]` methods are also metadata-only.
         // Skip these blocks as already-consumed metadata.
-        if decl.trait_bound.is_none() && hew_types::lookup_builtin_type(self_type_name).is_some() {
+        //
+        // The `duration` constructor block (`from_nanos`/`from_micros`/
+        // `from_millis`/`from_secs`, each taking a non-receiver `i64`) is the
+        // exception that must fall through to normal lowering: its arithmetic
+        // bodies (`n * 1<unit>`) run, so it is registered as real `duration::from_*`
+        // HIR fns via the user-impl spine (see `is_builtin_duration_ctor_impl`).
+        // It carries no `#[extern_symbol]`, so without this bypass the guard
+        // below would reject `duration` as a builtin nominal once its canonical
+        // name became a recognised builtin lookup key.
+        let duration_ctors = ["from_nanos", "from_micros", "from_millis", "from_secs"];
+        let is_duration_ctor_block = self_type_name == "duration"
+            && decl.methods.len() == duration_ctors.len()
+            && decl.methods.iter().all(|m| {
+                duration_ctors.contains(&m.name.as_str())
+                    && m.params.first().is_none_or(|param| {
+                        !matches!(
+                            &param.ty.0,
+                            TypeExpr::Named { name, .. } if name == "Self" || name == "duration"
+                        )
+                    })
+            });
+        if !is_duration_ctor_block
+            && decl.trait_bound.is_none()
+            && hew_types::lookup_builtin_type(self_type_name).is_some()
+        {
             let declared_resource_close_impl = self
                 .type_classes
                 .get(self_type_name)

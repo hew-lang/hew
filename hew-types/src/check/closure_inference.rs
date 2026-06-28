@@ -38,8 +38,8 @@ pub(super) struct LambdaBodyFacts {
 /// Narrow on purpose — only the runtime's documented mutating-in-place
 /// methods are listed. Extending this list is a deliberate decision.
 const MUTATING_METHODS: &[&str] = &[
-    "push", "pop", "insert", "remove", "clear", "extend", "append", "set", "swap", "sort",
-    "reverse", "truncate", "drain", "retain", "send",
+    "push", "pop", "insert", "remove", "clear", "append", "set", "swap", "sort", "reverse",
+    "truncate", "drain", "retain", "send",
 ];
 
 pub(super) fn scan_lambda_body(body: &Spanned<Expr>) -> LambdaBodyFacts {

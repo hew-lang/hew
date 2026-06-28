@@ -116,7 +116,7 @@ fn collection_overwrite_source(frames: usize) -> String {
 /// missed release leaks one node per frame; an over-eager release of the
 /// aliased `label` is a use-after-free the poisoned-allocator triple
 /// crashes on. The durable `label` is built on the HEAP at spawn
-/// (`.to_uppercase()`) so `hew_string_drop` would actually free it — a
+/// (`.to_upper()`) so `hew_string_drop` would actually free it — a
 /// static literal would make the alias guard vacuous.
 fn record_functional_update_source(frames: usize) -> String {
     format!(
@@ -138,7 +138,7 @@ fn record_functional_update_source(frames: usize) -> String {
          \x20       cur = Outer {{\n\
          \x20           label: cur.label,\n\
          \x20           payload: \"outer-payload\".to_bytes(),\n\
-         \x20           inner: Inner {{ note: \"inner-note\".to_uppercase() }},\n\
+         \x20           inner: Inner {{ note: \"inner-note\".to_upper() }},\n\
          \x20           count: cur.count + 1,\n\
          \x20       }};\n\
          \x20   }}\n\
@@ -150,7 +150,7 @@ fn record_functional_update_source(frames: usize) -> String {
          \n\
          fn main() -> i64 {{\n\
          \x20   let k = spawn Keeper(cur: Outer {{\n\
-         \x20       label: \"durable-label\".to_uppercase(),\n\
+         \x20       label: \"durable-label\".to_upper(),\n\
          \x20       payload: bytes::new(),\n\
          \x20       inner: Inner {{ note: \"first\" }},\n\
          \x20       count: 0,\n\
@@ -186,8 +186,8 @@ fn enum_overwrite_source(frames: usize) -> String {
          \x20   receive fn advance(n: i64) {{\n\
          \x20       status = match n % 3 {{\n\
          \x20           0 => Status::Idle,\n\
-         \x20           1 => Status::Working(\"busy\".to_uppercase()),\n\
-         \x20           _ => Status::Done(\"finished\".to_uppercase(), n),\n\
+         \x20           1 => Status::Working(\"busy\".to_upper()),\n\
+         \x20           _ => Status::Done(\"finished\".to_upper(), n),\n\
          \x20       }};\n\
          \x20   }}\n\
          \n\
@@ -218,10 +218,10 @@ fn enum_overwrite_source(frames: usize) -> String {
 
 /// Whole-value self-store: `prof = prof` byte-copies every leaf, so the
 /// release must neutralise them ALL (drop nothing). The aliased `name`
-/// leaf is HEAP-allocated at spawn (`.to_uppercase()`) so an over-eager
+/// leaf is HEAP-allocated at spawn (`.to_upper()`) so an over-eager
 /// release would actually free it; the trailing read then crashes under
 /// the poisoned triple (a static literal would never be freed, making
-/// the pin vacuous). `"self-store-name".to_uppercase()` stays length 15.
+/// the pin vacuous). `"self-store-name".to_upper()` stays length 15.
 const RECORD_SELF_STORE_SOURCE: &str = "\
 record Profile {
     name: string,
@@ -241,7 +241,7 @@ actor Keeper {
 }
 
 fn main() -> i64 {
-    let k = spawn Keeper(prof: Profile { name: \"self-store-name\".to_uppercase(), hits: 1 });
+    let k = spawn Keeper(prof: Profile { name: \"self-store-name\".to_upper(), hits: 1 });
     var i: i64 = 0;
     while i < 25 {
         k.refresh();
@@ -258,7 +258,7 @@ fn main() -> i64 {
 /// Cross-position swap: the new value reuses BOTH old leaves at swapped
 /// positions. A per-position-only guard would free `a` while the new `b`
 /// still points at it; the full-set neutralise keeps both alive. Both
-/// leaves are HEAP-allocated at spawn (`.to_uppercase()`) so a wrongful
+/// leaves are HEAP-allocated at spawn (`.to_upper()`) so a wrongful
 /// release actually frees them. After an odd number of swaps `a` holds
 /// the original `b` string (`"RIGHT-SIDE"`, length 10).
 const RECORD_SWAP_SOURCE: &str = "\
@@ -280,7 +280,7 @@ actor Swapper {
 }
 
 fn main() -> i64 {
-    let s = spawn Swapper(pair: Pair { a: \"left\".to_uppercase(), b: \"right-side\".to_uppercase() });
+    let s = spawn Swapper(pair: Pair { a: \"left\".to_upper(), b: \"right-side\".to_upper() });
     var i: i64 = 0;
     while i < 25 {
         s.swap();

@@ -225,7 +225,7 @@ fn collection_method_desc(kind: CollectionKind, method: &str) -> Option<Collecti
             "clear" => desc(Some(0), &[], Unit),
             "clone" => desc(Some(0), &[], SelfTy),
             "set" => desc(None, &[I64, Elem], Unit),
-            "append" | "extend" => desc(None, &[Receiver], Unit),
+            "append" => desc(None, &[Receiver], Unit),
             _ => return None,
         },
     })
@@ -4189,10 +4189,7 @@ impl Checker {
             CollectionKind::Vec => {
                 // Element Rc-rejection on the mutating/element-consuming arms;
                 // fire-and-continue (does NOT short-circuit, matching history).
-                if matches!(
-                    method,
-                    "push" | "pop" | "get" | "remove" | "set" | "append" | "extend"
-                ) {
+                if matches!(method, "push" | "pop" | "get" | "remove" | "set" | "append") {
                     self.reject_rc_collection_element("Vec", &cx.elem, span);
                 }
                 // Every table-driven Vec arm records via the symbol-override
@@ -4532,7 +4529,7 @@ impl Checker {
         // releases — fail closed with a precise diagnostic rather than alias
         // owners (`boundary-fail-closed`, `ffi-ownership-contracts`).
         if matches!(elem_ty, Ty::Function { .. } | Ty::Closure { .. })
-            && matches!(method, "clone" | "append" | "extend")
+            && matches!(method, "clone" | "append")
         {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
@@ -8680,7 +8677,6 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
             vec_method_target("clear", VecMethod::Clear, RuntimeAbi::ByRefMut),
             vec_method_target("clone", VecMethod::Clone, RuntimeAbi::ByRef),
             vec_method_target("append", VecMethod::Append, RuntimeAbi::ByRefMut),
-            vec_method_target("extend", VecMethod::Extend, RuntimeAbi::ByRefMut),
             vec_method_target("join", VecMethod::Join, RuntimeAbi::ByRef),
         ],
     });
@@ -9139,10 +9135,9 @@ mod tests {
                 "{kind:?}::is_empty skips arity"
             );
         }
-        // Vec `set`/`append`/`extend` also historically skipped arity.
+        // Vec `set`/`append` skip arity.
         assert_eq!(arity_of(CollectionKind::Vec, "set"), None);
         assert_eq!(arity_of(CollectionKind::Vec, "append"), None);
-        assert_eq!(arity_of(CollectionKind::Vec, "extend"), None);
     }
 
     #[test]

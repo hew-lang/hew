@@ -309,8 +309,8 @@ pub fn from_float(val: f64) -> Value {
     }
 }
 
-/// Create a JSON Value from a string.
-pub fn from_string(val: string) -> Value {
+/// Create a JSON Value wrapping a string.
+pub fn string_value(val: string) -> Value {
     unsafe {
         hew_json_from_string(val)
     }

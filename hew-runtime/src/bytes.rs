@@ -355,6 +355,179 @@ pub unsafe extern "C" fn hew_bytes_push(triple: &mut BytesTriple, byte: u8) {
     }
 }
 
+/// Abort with a bytes empty-buffer panic message.
+///
+/// Backs `bytes.pop()` on an empty buffer: the spec signature is `() -> i64`
+/// with no `Option`, so the empty case fails closed (boundary-fail-closed)
+/// rather than returning a fabricated sentinel. Same `libc::abort()` mechanism
+/// as [`hew_bytes_abort_index_oob`], so the process terminates with SIGABRT.
+///
+/// # Safety
+///
+/// Always aborts — safe to call from any context.
+#[no_mangle]
+pub unsafe extern "C" fn hew_bytes_abort_empty_pop() -> ! {
+    // SAFETY: writing to stderr and aborting is always safe.
+    unsafe {
+        let msg = b"PANIC: bytes.pop() on an empty buffer\n";
+        #[cfg(not(target_os = "windows"))]
+        libc::write(2, msg.as_ptr().cast(), msg.len());
+        #[cfg(target_os = "windows")]
+        libc::write(2, msg.as_ptr().cast(), msg.len() as core::ffi::c_uint);
+        libc::abort();
+    }
+}
+
+/// Remove and return the last byte, using copy-on-write if shared.
+///
+/// Aborts via [`hew_bytes_abort_empty_pop`] when the buffer is empty (spec
+/// `pop() -> i64`: no `Option`, so the empty case fails closed like `b[i]`
+/// OOB). On a shared buffer (refcount > 1) the active region is forked before
+/// the in-place length decrement so co-owners observe the original buffer
+/// unchanged. The receiver keeps its single reference afterward.
+///
+/// # Safety
+///
+/// `triple` must point to a valid `BytesTriple`. If its `len > 0`,
+/// `ptr + offset` must be valid for `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn hew_bytes_pop(triple: &mut BytesTriple) -> i64 {
+    if triple.len == 0 || triple.ptr.is_null() {
+        // SAFETY: abort is always safe; it does not return.
+        unsafe { hew_bytes_abort_empty_pop() };
+    }
+
+    // Ensure unique ownership (CoW) before mutating the length: a shared buffer
+    // must not observe the pop through a co-owner's triple.
+    // SAFETY: triple.ptr is non-null and valid per caller contract.
+    let ptr = unsafe { ensure_unique(triple.ptr, triple.offset, triple.len) };
+    if ptr != triple.ptr {
+        // CoW happened — offset is now 0.
+        triple.ptr = ptr;
+        triple.offset = 0;
+    }
+
+    let last_index = triple.offset + triple.len - 1;
+    // SAFETY: last_index < offset + len <= capacity per caller contract.
+    let byte = unsafe { *ptr.add(last_index as usize) };
+    triple.len -= 1;
+    i64::from(byte)
+}
+
+/// Overwrite the byte at `index`, using copy-on-write if shared.
+///
+/// Aborts via [`hew_bytes_abort_index_oob`] when `index < 0` or
+/// `index >= len` (boundary-fail-closed, matching `b[i]`). On a shared buffer
+/// the active region is forked before the in-place write so co-owners are
+/// unaffected. The receiver keeps its single reference afterward.
+///
+/// # Safety
+///
+/// `triple` must point to a valid `BytesTriple`. If its `len > 0`,
+/// `ptr + offset` must be valid for `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn hew_bytes_set(triple: &mut BytesTriple, index: i64, byte: u8) {
+    if index < 0 || index >= i64::from(triple.len) || triple.ptr.is_null() {
+        // SAFETY: abort is always safe; it does not return.
+        unsafe { hew_bytes_abort_index_oob() };
+    }
+
+    // Ensure unique ownership (CoW) before the in-place write.
+    // SAFETY: triple.ptr is non-null and valid per caller contract.
+    let ptr = unsafe { ensure_unique(triple.ptr, triple.offset, triple.len) };
+    if ptr != triple.ptr {
+        // CoW happened — offset is now 0.
+        triple.ptr = ptr;
+        triple.offset = 0;
+    }
+
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "index is bounds-checked >= 0 before cast to u32"
+    )]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "index is bounds-checked < len (u32) before cast"
+    )]
+    let idx = index as u32;
+    // Checked `offset + idx`: a triple derived from a slice near `u32::MAX`
+    // capacity could overflow here; in release mode `+` wraps silently and
+    // would mis-point the write. Abort explicitly (boundary-fail-closed).
+    let Some(byte_off) = triple.offset.checked_add(idx) else {
+        // SAFETY: abort is always safe; it does not return.
+        unsafe { hew_bytes_abort_offset_overflow() };
+    };
+    // SAFETY: byte_off < offset + len <= capacity per the bounds check above;
+    // the checked_add proved the u32 add did not wrap.
+    unsafe { *ptr.add(byte_off as usize) = byte };
+}
+
+/// Return whether the active byte region is empty.
+///
+/// # Safety
+///
+/// `triple` must point to a valid `BytesTriple` (a null `ptr` with `len == 0`,
+/// or a `ptr` into a `hew_bytes_*` allocation). The buffer itself is not
+/// dereferenced — only the `len` field is read.
+#[no_mangle]
+pub unsafe extern "C" fn hew_bytes_is_empty(triple: *const BytesTriple) -> bool {
+    if triple.is_null() {
+        return true;
+    }
+    // SAFETY: `triple` points to the caller's valid BytesTriple slot.
+    unsafe { (*triple).len == 0 }
+}
+
+/// Return whether the active byte region contains `byte` (linear scan).
+///
+/// # Safety
+///
+/// `triple` must point to a valid `BytesTriple`. If its `len > 0`,
+/// `ptr + offset` must be valid for `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn hew_bytes_contains(triple: *const BytesTriple, byte: u8) -> bool {
+    if triple.is_null() {
+        return false;
+    }
+    // SAFETY: `triple` points to the caller's valid BytesTriple slot.
+    let triple = unsafe { *triple };
+    if triple.len == 0 || triple.ptr.is_null() {
+        return false;
+    }
+    // SAFETY: ptr + offset is valid for len bytes per caller contract.
+    let data = unsafe {
+        std::slice::from_raw_parts(triple.ptr.add(triple.offset as usize), triple.len as usize)
+    };
+    data.contains(&byte)
+}
+
+/// Reset the buffer to empty, releasing the receiver's reference to its backing
+/// allocation.
+///
+/// On a shared buffer (refcount > 1) the co-owners' allocation is left intact —
+/// only this receiver's reference is released ([`hew_bytes_drop`] on the data
+/// pointer). After this call the triple is the canonical empty value
+/// (`ptr: null, offset: 0, len: 0`), so a subsequent `push`/`append` allocates
+/// a fresh buffer (the binding is reusable). No-op on an already-empty triple.
+///
+/// # Safety
+///
+/// `triple` must point to a valid `BytesTriple`. If `triple.ptr` is non-null it
+/// must be a `hew_bytes_*` allocation whose reference this triple owns.
+#[no_mangle]
+pub unsafe extern "C" fn hew_bytes_clear(triple: &mut BytesTriple) {
+    if !triple.ptr.is_null() {
+        // Release this receiver's reference; refcount-aware, so a shared
+        // backing buffer survives for its co-owners and is freed only when the
+        // last reference drops.
+        // SAFETY: triple.ptr is a valid bytes allocation per caller contract.
+        unsafe { hew_bytes_drop(triple.ptr) };
+    }
+    triple.ptr = std::ptr::null_mut();
+    triple.offset = 0;
+    triple.len = 0;
+}
+
 /// Append `src_len` bytes from `src_ptr + src_offset` onto the destination buffer.
 /// Uses copy-on-write if the destination is shared.
 ///
@@ -1475,6 +1648,26 @@ mod tests {
         run_aborting_subprocess("bytes_slice_offset_overflow_aborts");
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+    )]
+    fn bytes_pop_empty_aborts() {
+        run_aborting_subprocess("bytes_pop_empty_aborts");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+    )]
+    fn bytes_set_oob_aborts() {
+        run_aborting_subprocess("bytes_set_oob_aborts");
+    }
+
     /// The refcount-overflow guard in `hew_bytes_clone_ref` actually aborts
     /// when a retain observes a count already past the saturation threshold —
     /// proving the wrap guard is wired into the real path (mirrors
@@ -1487,6 +1680,220 @@ mod tests {
     )]
     fn bytes_clone_ref_overflow_aborts() {
         run_aborting_subprocess("bytes_clone_ref_overflow_aborts");
+    }
+
+    #[test]
+    #[allow(
+        clippy::undocumented_unsafe_blocks,
+        reason = "test code: inline FFI invocations"
+    )]
+    fn bytes_pop_returns_last_and_shrinks() {
+        let mut triple = BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        };
+        unsafe {
+            hew_bytes_push(&mut triple, 1);
+            hew_bytes_push(&mut triple, 2);
+            hew_bytes_push(&mut triple, 3);
+            assert_eq!(hew_bytes_pop(&mut triple), 3);
+            assert_eq!(triple.len, 2);
+            assert_eq!(hew_bytes_pop(&mut triple), 2);
+            assert_eq!(hew_bytes_pop(&mut triple), 1);
+            assert_eq!(triple.len, 0);
+            hew_bytes_drop(triple.ptr);
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::undocumented_unsafe_blocks,
+        reason = "test code: inline FFI invocations"
+    )]
+    fn bytes_pop_cow_leaves_co_owner_intact() {
+        // A shared buffer must not observe a pop through a co-owner's triple.
+        let original = unsafe { hew_bytes_from_static(b"abc".as_ptr(), 3) };
+        unsafe { hew_bytes_clone_ref(original.ptr) };
+        let mut shared = original;
+        unsafe {
+            assert_eq!(hew_bytes_pop(&mut shared), i64::from(b'c'));
+        }
+        // The pop forked the active region: the new buffer differs and the
+        // co-owner still reads the full original.
+        assert_ne!(shared.ptr, original.ptr);
+        assert_eq!(shared.len, 2);
+        let original_data = unsafe {
+            std::slice::from_raw_parts(
+                original.ptr.add(original.offset as usize),
+                original.len as usize,
+            )
+        };
+        assert_eq!(original_data, b"abc");
+        unsafe {
+            hew_bytes_drop(shared.ptr);
+            hew_bytes_drop(original.ptr);
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::undocumented_unsafe_blocks,
+        reason = "test code: inline FFI invocations"
+    )]
+    fn bytes_set_overwrites_and_preserves_neighbours() {
+        let mut triple = BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        };
+        unsafe {
+            hew_bytes_push(&mut triple, 10);
+            hew_bytes_push(&mut triple, 20);
+            hew_bytes_push(&mut triple, 30);
+            hew_bytes_set(&mut triple, 1, 99);
+            let data = std::slice::from_raw_parts(
+                triple.ptr.add(triple.offset as usize),
+                triple.len as usize,
+            );
+            assert_eq!(data, &[10, 99, 30]);
+            hew_bytes_drop(triple.ptr);
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::undocumented_unsafe_blocks,
+        reason = "test code: inline FFI invocations"
+    )]
+    fn bytes_set_cow_leaves_co_owner_intact() {
+        let original = unsafe { hew_bytes_from_static(b"abc".as_ptr(), 3) };
+        unsafe { hew_bytes_clone_ref(original.ptr) };
+        let mut shared = original;
+        unsafe {
+            hew_bytes_set(&mut shared, 0, b'Z');
+        }
+        assert_ne!(shared.ptr, original.ptr);
+        let original_data = unsafe {
+            std::slice::from_raw_parts(
+                original.ptr.add(original.offset as usize),
+                original.len as usize,
+            )
+        };
+        assert_eq!(original_data, b"abc");
+        let shared_data = unsafe {
+            std::slice::from_raw_parts(shared.ptr.add(shared.offset as usize), shared.len as usize)
+        };
+        assert_eq!(shared_data, b"Zbc");
+        unsafe {
+            hew_bytes_drop(shared.ptr);
+            hew_bytes_drop(original.ptr);
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::undocumented_unsafe_blocks,
+        reason = "test code: inline FFI invocations"
+    )]
+    fn bytes_is_empty_fresh_loaded_and_sliced() {
+        // Fresh empty triple.
+        let empty = BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        };
+        assert!(unsafe { hew_bytes_is_empty(std::ptr::addr_of!(empty)) });
+
+        // Loaded buffer is not empty.
+        let loaded = unsafe { hew_bytes_from_static(b"abc".as_ptr(), 3) };
+        assert!(!unsafe { hew_bytes_is_empty(std::ptr::addr_of!(loaded)) });
+
+        // A non-empty slice with offset > 0 is NOT empty — the aliasing bug in
+        // the Vec-backed shim mis-read `(triple.len << 32) | offset`; the
+        // dedicated entry reads `len` directly.
+        let slice = unsafe { hew_bytes_slice(loaded.ptr, loaded.offset, loaded.len, 1, 3) };
+        assert!(slice.offset > 0);
+        assert!(!unsafe { hew_bytes_is_empty(std::ptr::addr_of!(slice)) });
+        unsafe {
+            hew_bytes_drop(slice.ptr);
+            hew_bytes_drop(loaded.ptr);
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::undocumented_unsafe_blocks,
+        reason = "test code: inline FFI invocations"
+    )]
+    fn bytes_contains_present_and_absent() {
+        let data: [u8; 3] = [7, 8, 9];
+        let triple = unsafe { hew_bytes_from_static(data.as_ptr(), 3) };
+        assert!(unsafe { hew_bytes_contains(std::ptr::addr_of!(triple), 7) });
+        assert!(unsafe { hew_bytes_contains(std::ptr::addr_of!(triple), 9) });
+        // The absent case is the one that SIGBUSed through the Vec ABI.
+        assert!(!unsafe { hew_bytes_contains(std::ptr::addr_of!(triple), 99) });
+        unsafe { hew_bytes_drop(triple.ptr) };
+
+        // Empty buffer never contains anything.
+        let empty = BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        };
+        assert!(!unsafe { hew_bytes_contains(std::ptr::addr_of!(empty), 0) });
+    }
+
+    #[test]
+    #[allow(
+        clippy::undocumented_unsafe_blocks,
+        reason = "test code: inline FFI invocations"
+    )]
+    fn bytes_clear_resets_and_releases_ref() {
+        let mut triple = BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        };
+        unsafe {
+            hew_bytes_push(&mut triple, 1);
+            hew_bytes_push(&mut triple, 2);
+            hew_bytes_clear(&mut triple);
+            assert!(triple.ptr.is_null());
+            assert_eq!(triple.len, 0);
+            assert_eq!(triple.offset, 0);
+            // Reusable: a fresh push allocates a new buffer.
+            hew_bytes_push(&mut triple, 42);
+            assert_eq!(triple.len, 1);
+            assert_eq!(*triple.ptr.add(triple.offset as usize), 42);
+            hew_bytes_drop(triple.ptr);
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::undocumented_unsafe_blocks,
+        reason = "test code: inline FFI invocations"
+    )]
+    fn bytes_clear_on_shared_leaves_co_owner_alive() {
+        // clear must release only THIS receiver's reference; the shared backing
+        // buffer survives for its co-owner (R4: no premature free).
+        let original = unsafe { hew_bytes_from_static(b"abc".as_ptr(), 3) };
+        unsafe { hew_bytes_clone_ref(original.ptr) };
+        let mut shared = original;
+        unsafe {
+            assert_eq!(refcount(original.ptr).load(Ordering::Relaxed), 2);
+            hew_bytes_clear(&mut shared);
+            // The co-owner's buffer is still alive (refcount back to 1) and
+            // readable.
+            assert_eq!(refcount(original.ptr).load(Ordering::Relaxed), 1);
+            let data = std::slice::from_raw_parts(
+                original.ptr.add(original.offset as usize),
+                original.len as usize,
+            );
+            assert_eq!(data, b"abc");
+            hew_bytes_drop(original.ptr);
+        }
     }
 
     /// The overflow predicate trips exactly above the saturation threshold and
@@ -1631,6 +2038,21 @@ mod tests {
                 let ptr = hew_bytes_new(16);
                 refcount(ptr).store(BYTES_RC_MAX + 1, Ordering::Relaxed);
                 hew_bytes_clone_ref(ptr); // must abort, never returns
+            },
+            "bytes_pop_empty_aborts" => unsafe {
+                // pop() on a fresh empty triple fails closed (no Option in the
+                // spec signature) — same termination class as index OOB.
+                let mut empty = BytesTriple {
+                    ptr: std::ptr::null_mut(),
+                    offset: 0,
+                    len: 0,
+                };
+                let _ = hew_bytes_pop(&mut empty);
+            },
+            "bytes_set_oob_aborts" => unsafe {
+                // set() past the end fails closed via the index-OOB trap.
+                let mut t = triple;
+                hew_bytes_set(&mut t, 99, 1);
             },
             other => panic!("unknown abort case: {other}"),
         }

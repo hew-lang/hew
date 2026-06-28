@@ -4814,8 +4814,9 @@ pub(crate) fn primitive_to_llvm<'ctx>(
         } => Ok(ctx.i64_type().into()),
         // `RecvError` is the recv-family error marker. It is intentionally a
         // variant-blind `Ty::Named` in the checker (no enumerated TypeDef —
-        // language-level exhaustiveness over its variants is the M3 RecvError-
-        // as-Hew-enum lane), so it never registers an enum layout. The recv
+        // language-level exhaustiveness over its variants is deferred until
+        // `RecvError` is registered as a Hew enum), so it never registers an
+        // enum layout. The recv
         // codegen arm materialises `Result<R, RecvError>` and stores the
         // runtime `RecvError` discriminant (Closed=1 / Empty=2 /
         // PartitionDetected=3) into this slot, so its ABI representation is the
@@ -4830,7 +4831,7 @@ pub(crate) fn primitive_to_llvm<'ctx>(
         // `CloseError` is the channel close-family error marker (the
         // `BuiltinType::CloseError` the checker stamps on `Duplex`/half
         // `.close()` results — distinct from the std `Closable` trait's
-        // `CloseError` enum, which they unify in a later stdlib lane). Like
+        // `CloseError` enum; the two are unified in a later stdlib change). Like
         // `RecvError` it is a variant-blind builtin marker with no registered
         // enum layout; the close codegen arm stores the user-visible
         // discriminant (AlreadyClosed=1 on a non-success close) into this slot,

@@ -1544,6 +1544,24 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/lambda_arrow_operator.hew
 fi
 grep -q 'E_OPERATOR_REMOVED' "${reject_output}"
 
+# Reject: the §6.5 codec/adapter freeze. `Stream<bytes>.lines()` is not part of
+# the shipped stream surface; the checker rejects it so a future widening that
+# breaks the freeze fails the gate.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/stream_bytes_lines_frozen.hew" >"${reject_output}" 2>&1; then
+  echo "expected stream-bytes-lines-frozen fixture to fail" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks in the pattern are literal — they match
+# the diagnostic's pretty-printed `lines` / `Stream<bytes>` names.
+grep -qF 'no method `lines` on `Stream<bytes>`' "${reject_output}"
+
+# Accept + run: the §6.5 first-class stream pipe round-trips bytes end-to-end.
+# Two writes then a close drain through `for await`; the summed chunk lengths
+# (2 + 3) leave exit code 5. Regression-guards the shipped stream surface so a
+# change to the Duplex split lowering cannot quietly break the stream pair that
+# shares the same dual-queue substrate.
+run_accept_expect_status "stream_pipe_roundtrip" 5
+
 # Accept + run: `.send()` on a lambda-actor handle delivers the message.
 # Lambda-actor handles are `Duplex<Msg, Reply>` underneath; `.send(msg)` on a
 # `LambdaActorHandle` Place routes to the lambda-actor ABI

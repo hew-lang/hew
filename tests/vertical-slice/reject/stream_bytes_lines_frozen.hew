@@ -1,0 +1,13 @@
+// Reject fixture: the §6.5 codec/adapter freeze.
+// `Stream<bytes>.lines()` is deliberately not part of the shipped stream
+// surface — `lines()` stays `Stream<string> -> Stream<string>`, and no
+// `Stream<bytes>` line adapter is exposed. The checker must reject the call
+// with "no method `lines` on `Stream<bytes>`" so a future widening that
+// breaks the freeze fails this gate.
+// Expected: type error "no method `lines` on `Stream<bytes>`".
+import std::stream;
+
+fn main() {
+    let (_sink, source) = stream.bytes_pipe(16);
+    let _lined = source.lines();
+}

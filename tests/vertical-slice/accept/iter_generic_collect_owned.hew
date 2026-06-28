@@ -1,0 +1,59 @@
+//! Runnable check for monomorphising a generic terminal over an owned-element
+//! iterator whose element type is reachable only through the where-clause
+//! projection.
+//!
+//! `collect_items<I, A>` is instantiated with `A = string`, which is bound
+//! solely by `where I: Iterator<Item = A>`. Each yielded `string` is an
+//! independently-droppable owner that flows into the collected `Vec<string>`;
+//! the elements must drop exactly once through the materialised vector. Run
+//! under `MallocScribble=1` to surface any use-after-free on the owned path.
+//!
+//! Expected exit code: 12 — three yielded `"word"` items, summed by length
+//! (3 × 4). A wrong length or count returns a distinct code.
+
+type Words {
+    n: i64;
+}
+
+impl Iterator for Words {
+    type Item = string;
+    /// Yield `n` copies of `"word"` then `None`.
+    fn next(var self) -> Option<string> {
+        if self.n <= 0 {
+            None
+        } else {
+            self.n = self.n - 1;
+            Some("word")
+        }
+    }
+}
+
+/// Collect items into a `Vec<A>`; `A` (= `string`) is pinned through the
+/// `Iterator<Item = A>` projection at the call site.
+fn collect_items<I, A>(it: I) -> Vec<A> where I: Iterator<Item = A> {
+    let out: Vec<A> = Vec::new();
+    var cur = it;
+    loop {
+        match cur.next() {
+            Some(x) => {
+                out.push(x);
+            },
+            None => {
+                break;
+            },
+        }
+    }
+    out
+}
+
+pub fn main() -> i64 {
+    let v: Vec<string> = collect_items(Words { n: 3 });
+    if v.len() != 3 {
+        return 101;
+    }
+    var total = 0;
+    for s in v {
+        total = total + s.len();
+    }
+    total
+}

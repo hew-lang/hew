@@ -1,0 +1,84 @@
+//! Runnable check for monomorphising a generic terminal whose type parameter
+//! is reachable only through a where-clause associated-type projection.
+//!
+//! `count_items<I, A>` and `collect_items<I, A>` carry a free `A` that never
+//! appears in a value parameter or the return position of `count_items` — it
+//! is bound solely by `where I: Iterator<Item = A>`. The collector pins `A`
+//! from `I`'s concrete associated type, so the call monomorphises and lowers
+//! through MIR. `std::iter::count`/`collect` carry `A` in exactly this
+//! position, which is what makes the generic free-function adapters usable.
+//!
+//! Expected exit code: 8 — the item count (4) plus the collected `Vec`
+//! length (4). Component failures return distinct codes so a regression is
+//! legible.
+
+type Countdown {
+    n: i64;
+}
+
+impl Iterator for Countdown {
+    type Item = i64;
+    /// Yield `n, n-1, …, 1` then `None`; advance the cursor in place.
+    fn next(var self) -> Option<i64> {
+        if self.n <= 0 {
+            None
+        } else {
+            let cur = self.n;
+            self.n = self.n - 1;
+            Some(cur)
+        }
+    }
+}
+
+/// Count items; `A` is reachable only through `I`'s `Iterator<Item = A>` bound.
+fn count_items<I, A>(it: I) -> i64 where I: Iterator<Item = A> {
+    var c = 0;
+    var cur = it;
+    loop {
+        match cur.next() {
+            Some(_x) => {
+                c = c + 1;
+            },
+            None => {
+                break;
+            },
+        }
+    }
+    c
+}
+
+/// Collect items into a `Vec<A>`; `A` appears in the return type here but is
+/// still pinned through the same projection at the call site.
+fn collect_items<I, A>(it: I) -> Vec<A> where I: Iterator<Item = A> {
+    let out: Vec<A> = Vec::new();
+    var cur = it;
+    loop {
+        match cur.next() {
+            Some(x) => {
+                out.push(x);
+            },
+            None => {
+                break;
+            },
+        }
+    }
+    out
+}
+
+pub fn main() -> i64 {
+    let c = count_items(Countdown { n: 4 });
+    if c != 4 {
+        return 101;
+    }
+    let v = collect_items(Countdown { n: 4 });
+    if v.len() != 4 {
+        return 102;
+    }
+    if v[0] != 4 {
+        return 103;
+    }
+    if v[3] != 1 {
+        return 104;
+    }
+    c + v.len()
+}

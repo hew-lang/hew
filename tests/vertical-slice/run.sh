@@ -375,14 +375,14 @@ expect_check_fail_contains \
   'undefined function `iter::map`' \
   "mir_gap_cross_module_iter"
 
-# mir-gap-where-clause-proj-monomorph: a generic fn whose type param appears
-# only in a `where I: Iterator<Item = A>` projection has no MIR body to lower
-# (the collector cannot pin a projection-only param). Closing this enables
-# `iter_generic_count_collect`.
-expect_check_fail_contains \
-  "${ROOT}/tests/vertical-slice/reject/mir_gap_where_clause_proj_mono.hew" \
-  "MIR lowering for function call is not implemented yet" \
-  "mir_gap_where_clause_proj_mono"
+# where-clause-projection monomorphisation (CLOSED): a generic terminal whose
+# type param appears only in a `where I: Iterator<Item = A>` projection now
+# pins that param from the iterator's concrete associated type and lowers
+# through MIR. Count + collect over a projection-only `A`: count 4 + len 4 → 8.
+run_accept_expect_status "iter_generic_count_collect" 8
+# Owned-element variant: collect a string-Item iterator (A reachable only
+# through the projection); 3 × "word" summed by length → 12.
+run_accept_expect_status "iter_generic_collect_owned" 12
 
 # g12-A (CLOSED): `for (k, v) in m` over a HashMap lowers through a HashMapIter
 # cursor built from the map's keys()/values() projections. The former

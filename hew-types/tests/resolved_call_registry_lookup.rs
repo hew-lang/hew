@@ -332,7 +332,7 @@ fn production_registry_exposes_vec_seq_methods_with_one_type_arg() {
         .collect();
     let expected = BTreeSet::from([
         "push", "pop", "len", "get", "set", "remove", "contains", "is_empty", "clear", "clone",
-        "append", "extend", "join",
+        "append", "join",
     ]);
     assert_eq!(methods, expected);
 

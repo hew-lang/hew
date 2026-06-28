@@ -23,8 +23,6 @@ fn main() -> i64 {
     let _copy = nums.clone();
     let more: Vec<i64> = Vec::new();
     nums.append(more);
-    let extra: Vec<i64> = Vec::new();
-    nums.extend(extra);
     nums.clear();
     let words: Vec<string> = Vec::new();
     words.push("a");

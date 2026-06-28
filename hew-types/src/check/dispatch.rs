@@ -264,7 +264,6 @@ pub enum VecMethod {
     Clear,
     Clone,
     Append,
-    Extend,
     Join,
 }
 

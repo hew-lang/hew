@@ -86,8 +86,6 @@ impl bytes {
     }
     #[extern_symbol(hew_vec_append)]
     fn append(buf: bytes, other: bytes) {}
-    #[extern_symbol(hew_vec_append)]
-    fn extend(buf: bytes, other: bytes) {}
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────

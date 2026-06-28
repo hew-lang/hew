@@ -6826,6 +6826,7 @@ fn lower_function(
         &builder.owned_locals,
         &builder.binding_locals,
         &builder.locals,
+        &builder.record_field_orders,
         &builder.enum_layouts,
     );
     let mut source_excluded = returned_aggregate_members;
@@ -6836,6 +6837,7 @@ fn lower_function(
         &builder.owned_locals,
         &builder.binding_locals,
         &builder.locals,
+        &builder.record_field_orders,
         &builder.enum_layouts,
     );
     let is_owned_record = |ty: &ResolvedTy| builder.is_owned_aggregate_record_ty(ty);
@@ -6846,6 +6848,7 @@ fn lower_function(
         &builder.binding_locals,
         &builder.locals,
         &is_owned_record,
+        &builder.record_field_orders,
         &builder.enum_layouts,
     );
     let mut composite_drop_allowed = tuple_composite_drop_allowed;
@@ -6856,6 +6859,7 @@ fn lower_function(
         &builder.owned_locals,
         &builder.binding_locals,
         &builder.locals,
+        &builder.record_field_orders,
         &builder.enum_layouts,
         &source_excluded,
         &composite_drop_allowed,
@@ -9338,7 +9342,7 @@ impl Builder {
         // owned getter (which reads an owned descriptor the Copy Vec never
         // carries). Check field/variant heap-ownership via the record/enum
         // registries.
-        if !self.named_elem_owns_heap(&args[0], &mut HashSet::new()) {
+        if !self.named_elem_owns_heap(&args[0]) {
             return;
         }
         // A closure-bearing record/enum element never harvests: the owned-Vec
@@ -9370,81 +9374,17 @@ impl Builder {
         }
     }
 
-    /// True when a `ResolvedTy` transitively owns heap (a `string`/`bytes`
-    /// leaf, or a record/enum/tuple containing one). Resolves user record
-    /// fields via `record_field_orders` and enum variant payloads via
-    /// `enum_layouts`, with a visited-set guard for recursive nominals. This is
-    /// the heap-owning authority the owned-Vec element harvest consults so an
+    /// True when a `ResolvedTy` transitively owns heap. Thin adapter over the
+    /// single `crate::model::ty_owns_heap` authority (record fields via
+    /// `record_field_orders`, enum/machine variant payloads via `enum_layouts`,
+    /// one builtin leaf set). The owned-Vec element harvest consults this so an
     /// all-BitCopy record/enum (which is `Copy` and uses the `BitCopy` `_layout`
-    /// path) is NOT treated as an owned-Vec element.
-    fn named_elem_owns_heap(&self, ty: &ResolvedTy, visiting: &mut HashSet<String>) -> bool {
-        match ty {
-            // `string` / `bytes` are heap leaves. A `Vec` / `HashMap` /
-            // `HashSet` is a heap-owning handle regardless of element type: a
-            // record/enum field of one of these owns heap even when every
-            // element is BitCopy (`type Boxed { payload: [i64] }` owns its
-            // `payload` buffer). Mirror the same arm in
-            // `crate::model::ty_contains_heap_owning` and codegen's
-            // `resolved_ty_contains_heap_leaf`, and `ValueClass::of_ty` (all
-            // classify these builtins as heap-owning for any element)
-            // (`dedup-semantic-boundary`).
-            ResolvedTy::String
-            | ResolvedTy::Bytes
-            | ResolvedTy::Named {
-                builtin:
-                    Some(
-                        hew_types::BuiltinType::Vec
-                        | hew_types::BuiltinType::HashMap
-                        | hew_types::BuiltinType::HashSet,
-                    ),
-                ..
-            } => true,
-            ResolvedTy::Tuple(elems) => {
-                elems.iter().any(|e| self.named_elem_owns_heap(e, visiting))
-            }
-            ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
-                self.named_elem_owns_heap(inner, visiting)
-            }
-            ResolvedTy::Named { name, args, .. } => {
-                if args.iter().any(|a| self.named_elem_owns_heap(a, visiting)) {
-                    return true;
-                }
-                let short = short_name(name);
-                let key = if args.is_empty() {
-                    name.clone()
-                } else {
-                    mangle_layout_key(short, args)
-                };
-                if !visiting.insert(key.clone()) {
-                    return false;
-                }
-                // Record fields.
-                let mut owns = false;
-                if let Some(fields) = self
-                    .lookup_record_field_order(&key)
-                    .or_else(|| self.lookup_record_field_order(name))
-                {
-                    owns = fields
-                        .iter()
-                        .any(|(_, fty)| self.named_elem_owns_heap(fty, visiting));
-                }
-                // Enum variant payloads.
-                if !owns {
-                    if let Some(layout) = self.enum_layouts.iter().find(|el| {
-                        el.name == key || el.name == *name || short_name(&el.name) == short
-                    }) {
-                        owns = layout.variants.iter().any(|v| {
-                            v.field_tys
-                                .iter()
-                                .any(|fty| self.named_elem_owns_heap(fty, visiting))
-                        });
-                    }
-                }
-                visiting.remove(&key);
-                owns
-            }
-            _ => false,
-        }
+    /// path) is NOT treated as an owned-Vec element, while a
+    /// `CancellationToken`/`Generator`-bearing element correctly is — the same
+    /// verdict the codegen owned-Vec walker now reaches, so getter, constructor,
+    /// and release agree (`dedup-semantic-boundary`).
+    fn named_elem_owns_heap(&self, ty: &ResolvedTy) -> bool {
+        crate::model::ty_owns_heap_mir(ty, &self.record_field_orders, &self.enum_layouts)
     }
 
     fn fieldless_enum_layout_key(&self, ty: &ResolvedTy) -> Option<String> {
@@ -9577,9 +9517,7 @@ impl Builder {
             // SAME record-aware authority codegen's `resolved_ty_contains_heap_leaf`
             // uses, so the getter, constructor, and free all agree
             // (`dedup-semantic-boundary`).
-            ResolvedTy::Tuple(elems) => elems
-                .iter()
-                .any(|e| self.named_elem_owns_heap(e, &mut HashSet::new())),
+            ResolvedTy::Tuple(elems) => elems.iter().any(|e| self.named_elem_owns_heap(e)),
             // Nested collection elements (Vec<T> / HashMap / HashSet) are owned
             // heap handles constructed through the owned descriptor ABI: their
             // element loads route to `hew_vec_get_owned`, their pushes upgrade
@@ -27711,11 +27649,19 @@ impl Builder {
             ResolvedTy::Tuple(elems) => {
                 elems.iter().any(|elem| {
                     self.aggregate_ingress_moves_binding_ty_inner(elem, visited_enum_layouts)
-                }) || crate::model::ty_contains_heap_owning(ty, &self.enum_layouts)
+                }) || crate::model::ty_owns_heap_mir(
+                    ty,
+                    &self.record_field_orders,
+                    &self.enum_layouts,
+                )
             }
             ResolvedTy::Array(elem, _) => {
                 self.aggregate_ingress_moves_binding_ty_inner(elem, visited_enum_layouts)
-                    || crate::model::ty_contains_heap_owning(ty, &self.enum_layouts)
+                    || crate::model::ty_owns_heap_mir(
+                        ty,
+                        &self.record_field_orders,
+                        &self.enum_layouts,
+                    )
             }
             ResolvedTy::Named { name, args, .. } => {
                 let short = crate::model::short_name(name);
@@ -27753,9 +27699,9 @@ impl Builder {
                 if is_registered_record {
                     return false;
                 }
-                crate::model::ty_contains_heap_owning(ty, &self.enum_layouts)
+                crate::model::ty_owns_heap_mir(ty, &self.record_field_orders, &self.enum_layouts)
             }
-            _ => crate::model::ty_contains_heap_owning(ty, &self.enum_layouts),
+            _ => crate::model::ty_owns_heap_mir(ty, &self.record_field_orders, &self.enum_layouts),
         }
     }
 
@@ -28628,6 +28574,7 @@ fn elaborate(
         &builder.binding_locals,
         &builder.binding_scope,
         &builder.locals,
+        &builder.record_field_orders,
         &builder.enum_layouts,
     );
 
@@ -28868,6 +28815,7 @@ fn elaborate(
         &builder.binding_locals,
         &builder.locals,
         &is_owned_record,
+        &builder.record_field_orders,
         &builder.enum_layouts,
     );
 
@@ -28887,6 +28835,7 @@ fn elaborate(
         &builder.owned_locals,
         &builder.binding_locals,
         &builder.locals,
+        &builder.record_field_orders,
         &builder.enum_layouts,
     );
 
@@ -28908,6 +28857,7 @@ fn elaborate(
         &builder.owned_locals,
         &builder.binding_locals,
         &builder.locals,
+        &builder.record_field_orders,
         &builder.enum_layouts,
     );
 
@@ -28945,6 +28895,7 @@ fn elaborate(
         &builder.dyn_trait_storage,
         &owned_record_drop_allowed,
         &cow_drop_allowed,
+        &builder.record_field_orders,
         &builder.enum_layouts,
         &enum_composite_drop_allowed,
         &owned_vec_drop_allowed,
@@ -31933,6 +31884,14 @@ fn shift_instr_spans_on_insert(
               commented; splitting them would scatter the shared fixpoint \
               state and obscure the fail-closed ordering the passes depend on"
 )]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the drop-allow derivations take the function's MIR (blocks, \
+              suspend_kinds), the binding registries, and the layout lookups \
+              (record_field_orders + enum_layouts) the unified heap-ownership \
+              authority needs; bundling them into a struct would only relocate \
+              the same fields"
+)]
 fn derive_enum_composite_drop_allowed(
     blocks: &[BasicBlock],
     suspend_kinds: &HashMap<u32, SuspendKind>,
@@ -31940,6 +31899,7 @@ fn derive_enum_composite_drop_allowed(
     binding_locals: &HashMap<BindingId, Place>,
     binding_scope: &HashMap<BindingId, ScopeId>,
     local_tys: &[ResolvedTy],
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
 ) -> HashSet<BindingId> {
     // A local carries a heap-owning value (string/Bytes/owning aggregate or a
@@ -31947,11 +31907,13 @@ fn derive_enum_composite_drop_allowed(
     // binders (an `i64`/`bool` extracted from an `Ok(i64)` arm) carry no owner,
     // so their "escape" is harmless and must not exclude the composite drop —
     // that over-exclusion would leak every `Result<i64, string>` whose Ok arm
-    // returns the i64 (the dominant real case).
+    // returns the i64 (the dominant real case). Record-aware through the single
+    // `ty_owns_heap` authority so a binder of nested-record type whose field
+    // owns heap is correctly recognised (DIV-1).
     let local_is_heap_owning = |local: u32| -> bool {
         local_tys
             .get(local as usize)
-            .is_some_and(|ty| crate::model::ty_contains_heap_owning(ty, enum_layouts))
+            .is_some_and(|ty| crate::model::ty_owns_heap_mir(ty, record_field_orders, enum_layouts))
     };
     // The candidate composite locals: base locals of heap-owning enum
     // composite bindings.
@@ -32311,6 +32273,13 @@ fn derive_enum_composite_drop_allowed(
               scan) sharing fixpoint state, mirroring derive_enum_composite_\
               drop_allowed; splitting scatters the fail-closed ordering"
 )]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the function's MIR + binding registries + the candidate predicate \
+              + the layout lookups (record_field_orders + enum_layouts) the \
+              unified heap-ownership authority needs; a struct would only \
+              relocate the same fields"
+)]
 fn derive_owned_record_drop_allowed(
     blocks: &[BasicBlock],
     suspend_kinds: &HashMap<u32, SuspendKind>,
@@ -32318,30 +32287,27 @@ fn derive_owned_record_drop_allowed(
     binding_locals: &HashMap<BindingId, Place>,
     local_tys: &[ResolvedTy],
     is_owned_record: &dyn Fn(&ResolvedTy) -> bool,
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
 ) -> HashSet<BindingId> {
     // A local carries a heap-owning value iff its registered type says so. Used
     // to decide whether a `RecordFieldLoad` dest is an owned-field binder (a
     // BitCopy field load is harmless to alias out).
     //
-    // `ty_contains_heap_owning` is record-layout BLIND — it recurses into enum
-    // variant payloads, tuple/array elements, and generic type arguments, but a
-    // bare nested user-record type (`Inner { label: string, n: i64 }`) is a
-    // `Named` that is neither a builtin nor an enum layout, so it answers
-    // `false`. A nested-record field loaded out of the base record and then
-    // ESCAPED into an owning sink (the functional-update result's `RecordInit`,
-    // a `return b.inner`, …) must mark its binder so the base root is excluded
-    // from its composite `RecordInPlace` drop — otherwise the base frees the
-    // nested record's heap leaves while the escapee still owns them
-    // (use-after-free / double-free). `is_owned_record` consults the record
-    // layout (`is_owned_aggregate_record_ty`) and answers `true` for any user
-    // record with an owned field, closing that blindness without widening
-    // `ty_contains_heap_owning`'s 50-plus call sites. The two are unioned: a
-    // field is a heap-owning binder iff EITHER authority says so.
+    // The single `ty_owns_heap` authority is record-aware: a bare nested
+    // user-record type (`Inner { label: string, n: i64 }`) whose field owns
+    // heap answers `true` because the authority consults `record_field_orders`.
+    // A nested-record field loaded out of the base record and then ESCAPED into
+    // an owning sink (the functional-update result's `RecordInit`, a
+    // `return b.inner`, …) is marked so the base root is excluded from its
+    // composite `RecordInPlace` drop — otherwise the base frees the nested
+    // record's heap leaves while the escapee still owns them (use-after-free /
+    // double-free). Routing through the unified authority subsumed the former
+    // `|| is_owned_record(ty)` workaround the record-blind walker needed (DIV-1).
     let local_is_heap_owning = |local: u32| -> bool {
-        local_tys.get(local as usize).is_some_and(|ty| {
-            crate::model::ty_contains_heap_owning(ty, enum_layouts) || is_owned_record(ty)
-        })
+        local_tys
+            .get(local as usize)
+            .is_some_and(|ty| crate::model::ty_owns_heap_mir(ty, record_field_orders, enum_layouts))
     };
 
     // Candidate record locals: base locals of owned-aggregate-record bindings.
@@ -33160,22 +33126,24 @@ fn derive_tuple_composite_drop_allowed(
     owned_locals: &[(BindingId, String, ResolvedTy)],
     binding_locals: &HashMap<BindingId, Place>,
     local_tys: &[ResolvedTy],
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
 ) -> HashSet<BindingId> {
     // A local carries a heap-owning value iff its registered type says so. Used
     // to decide whether a `TupleFieldLoad` dest is an owned-element binder (a
-    // BitCopy element load is harmless to alias out).
+    // BitCopy element load is harmless to alias out). Record-aware through the
+    // single `ty_owns_heap` authority (DIV-1).
     let local_is_heap_owning = |local: u32| -> bool {
         local_tys
             .get(local as usize)
-            .is_some_and(|ty| crate::model::ty_contains_heap_owning(ty, enum_layouts))
+            .is_some_and(|ty| crate::model::ty_owns_heap_mir(ty, record_field_orders, enum_layouts))
     };
 
     // Candidate tuple locals: base locals of owned-tuple bindings (a `Tuple`
     // type carrying at least one heap-owning element).
     let mut candidate_local_to_binding: HashMap<u32, BindingId> = HashMap::new();
     for (binding, _name, ty) in owned_locals {
-        if !ty_is_heap_owning_tuple(ty, enum_layouts) {
+        if !ty_is_heap_owning_tuple(ty, record_field_orders, enum_layouts) {
             continue;
         }
         let Some(place) = binding_locals.get(binding) else {
@@ -33722,12 +33690,14 @@ fn derive_consumed_local_aggregate_member_bindings(
     owned_locals: &[(BindingId, String, ResolvedTy)],
     binding_locals: &HashMap<BindingId, Place>,
     local_tys: &[ResolvedTy],
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
 ) -> HashSet<BindingId> {
+    // Record-aware through the single `ty_owns_heap` authority (DIV-1).
     let local_is_heap_owning = |local: u32| -> bool {
         local_tys
             .get(local as usize)
-            .is_some_and(|ty| crate::model::ty_contains_heap_owning(ty, enum_layouts))
+            .is_some_and(|ty| crate::model::ty_owns_heap_mir(ty, record_field_orders, enum_layouts))
     };
 
     // Release-consumer locals: the base local of every inline release `Drop`
@@ -33962,14 +33932,16 @@ fn detect_unproven_aggregate_handle_double_free(
     owned_locals: &[(BindingId, String, ResolvedTy)],
     binding_locals: &HashMap<BindingId, Place>,
     local_tys: &[ResolvedTy],
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
     source_excluded: &HashSet<BindingId>,
     composite_drop_allowed: &HashSet<BindingId>,
 ) -> Vec<MirCheck> {
+    // Record-aware through the single `ty_owns_heap` authority (DIV-1).
     let local_is_heap_owning = |local: u32| -> bool {
         local_tys
             .get(local as usize)
-            .is_some_and(|ty| crate::model::ty_contains_heap_owning(ty, enum_layouts))
+            .is_some_and(|ty| crate::model::ty_owns_heap_mir(ty, record_field_orders, enum_layouts))
     };
 
     // ── ctx-origin propagation ────────────────────────────────────────────
@@ -34673,11 +34645,19 @@ fn render_owned_handle_ty(ty: &ResolvedTy) -> String {
 }
 
 /// True when `ty` is a tuple type carrying at least one heap-owning element
-/// (pointer handle or heap leaf). The single `ty_contains_heap_owning`
-/// authority decides heap-ownership so MIR and codegen agree; a tuple whose
-/// elements are all `BitCopy` is excluded (no scope-exit drop needed).
-fn ty_is_heap_owning_tuple(ty: &ResolvedTy, enum_layouts: &[crate::model::EnumLayout]) -> bool {
-    matches!(ty, ResolvedTy::Tuple(_)) && crate::model::ty_contains_heap_owning(ty, enum_layouts)
+/// (pointer handle or heap leaf). The single `ty_owns_heap` authority decides
+/// heap-ownership so MIR and codegen agree; a tuple whose elements are all
+/// `BitCopy` is excluded (no scope-exit drop needed). Record-aware: a tuple
+/// element of nested-record type whose field owns heap (`(Boxed, i64)` where
+/// `Boxed { payload: Vec<i64> }`) is recognised so its member-drop fires the
+/// inner buffer's release (DIV-1; a record-blind walker leaked it).
+fn ty_is_heap_owning_tuple(
+    ty: &ResolvedTy,
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    enum_layouts: &[crate::model::EnumLayout],
+) -> bool {
+    matches!(ty, ResolvedTy::Tuple(_))
+        && crate::model::ty_owns_heap_mir(ty, record_field_orders, enum_layouts)
 }
 
 /// A payload binder read into an owning sink means the active payload escaped
@@ -35475,6 +35455,7 @@ fn build_lifo_drops(
     dyn_trait_storage: &HashMap<BindingId, TraitObjectStorage>,
     owned_record_drop_allowed: &HashSet<BindingId>,
     cow_drop_allowed: &HashSet<BindingId>,
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
     enum_composite_drop_allowed: &HashSet<BindingId>,
     owned_vec_drop_allowed: &HashSet<BindingId>,
@@ -35749,7 +35730,7 @@ fn build_lifo_drops(
         // helper frees each member exactly once. A binding the prover did not
         // clear leaks (as before); it never double-frees.
         if tuple_composite_drop_allowed.contains(binding)
-            && ty_is_heap_owning_tuple(ty, enum_layouts)
+            && ty_is_heap_owning_tuple(ty, record_field_orders, enum_layouts)
         {
             let place = *binding_locals.get(binding).unwrap_or_else(|| {
                 panic!(
@@ -39484,6 +39465,16 @@ mod owned_record_drop_derivation {
         binding_locals: &HashMap<BindingId, Place>,
         local_tys: &[ResolvedTy],
     ) -> HashSet<BindingId> {
+        // `Rec` carries a heap-owning `string` field so the unified
+        // `ty_owns_heap` authority (record-aware) classifies a `Rec`-typed
+        // field-load binder as heap-owning — the verdict the candidate
+        // predicate `is_rec` selects on, kept in agreement now that the
+        // record-blindness workaround is gone (DIV-1).
+        let mut record_field_orders: HashMap<String, Vec<(String, ResolvedTy)>> = HashMap::new();
+        record_field_orders.insert(
+            "Rec".to_string(),
+            vec![("label".to_string(), ResolvedTy::String)],
+        );
         derive_owned_record_drop_allowed(
             blocks,
             &HashMap::new(),
@@ -39491,6 +39482,7 @@ mod owned_record_drop_derivation {
             binding_locals,
             local_tys,
             &is_rec,
+            &record_field_orders,
             &[],
         )
     }
@@ -39948,6 +39940,7 @@ mod w3053_aggregate_handle_double_free_gate {
             &owned,
             &binding_locals,
             &local_tys,
+            &std::collections::HashMap::new(),
             &[],
             &source_excluded,
             &composite_drop_allowed,
@@ -40001,6 +39994,7 @@ mod w3053_aggregate_handle_double_free_gate {
             &owned,
             &binding_locals,
             &local_tys,
+            &std::collections::HashMap::new(),
             &[],
             &source_excluded,
             &composite_drop_allowed,
@@ -40069,6 +40063,7 @@ mod w3053_aggregate_handle_double_free_gate {
             &owned,
             &binding_locals,
             &local_tys,
+            &std::collections::HashMap::new(),
             &[],
             &source_excluded,
             &composite_drop_allowed,
@@ -40123,6 +40118,7 @@ mod w3053_aggregate_handle_double_free_gate {
             &owned,
             &binding_locals,
             &local_tys,
+            &std::collections::HashMap::new(),
             &[],
             &HashSet::new(),
             &HashSet::new(),
@@ -40153,6 +40149,7 @@ mod w3053_aggregate_handle_double_free_gate {
             &owned,
             &binding_locals,
             &local_tys,
+            &std::collections::HashMap::new(),
             &[],
             &HashSet::new(),
             &HashSet::new(),
@@ -40183,6 +40180,7 @@ mod w3053_aggregate_handle_double_free_gate {
             &owned,
             &binding_locals,
             &local_tys,
+            &std::collections::HashMap::new(),
             &[],
             &HashSet::new(),
             &HashSet::new(),

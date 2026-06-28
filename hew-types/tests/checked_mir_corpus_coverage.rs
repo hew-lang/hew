@@ -93,26 +93,34 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     // -- Compiler-internal name: explicit user spelling rejected
     //    ("'cooperate' is compiler-internal").
     "hew_actor_cooperate",
-    // -- Surface NYI (probed; fail-closed): duplex_pair cannot infer
-    //    its binding type; explicit `await handle.close()` refuses with
-    //    "MIR lowering for runtime call `hew_duplex_close` is not
-    //    implemented yet"; nested supervisor access names
-    //    `hew_supervisor_nested_get` as landing in v0.6.
+    // -- The channel-Duplex split user surface is lowered end-to-end and
+    //    covered by the `duplex_split_half_ops` / `duplex_unified_recv` corpus
+    //    fixtures: half extraction (`hew_duplex_send_half` /
+    //    `hew_duplex_recv_half`), half send/recv/try (`hew_send_half_send` /
+    //    `hew_send_half_try_send` / `hew_recv_half_recv` /
+    //    `hew_recv_half_try_recv`), half close (`hew_duplex_close_half`), and
+    //    unified channel-mode recv (`hew_duplex_recv` / `hew_duplex_try_recv`).
+    //    Those families are no longer pinned.
+    //
+    //    The `duplex_split_half_ops` fixture also exercises `hew_duplex_pair`,
+    //    so that family is now covered and no longer pinned.
+    //
+    //    Still uncovered:
+    //    - `hew_duplex_send`: the tell-shaped send renders as a D1 send carrier
+    //      whose symbol materialises at the codegen edge, not as a `family:`
+    //      row the corpus needle matches.
+    //    - `hew_duplex_clone`: no user clone surface.
+    //    - `hew_duplex_close`: explicit raw close routes through drop
+    //      elaboration, not a value-position call, so no fixture emits it.
+    //    - `hew_duplex_payload_free`: codegen-internal — emitted inside the
+    //      recv materialisation, never its own CallRuntimeAbi family in a dump.
+    //    - `hew_duplex_try_send`: no user surface lowers to it today.
+    //    - `hew_supervisor_nested_get`: v0.6 surface.
     "hew_duplex_clone",
     "hew_duplex_close",
-    "hew_duplex_close_half",
-    "hew_duplex_pair",
     "hew_duplex_payload_free",
-    "hew_duplex_recv",
-    "hew_duplex_recv_half",
     "hew_duplex_send",
-    "hew_duplex_send_half",
-    "hew_duplex_try_recv",
     "hew_duplex_try_send",
-    "hew_recv_half_recv",
-    "hew_recv_half_try_recv",
-    "hew_send_half_send",
-    "hew_send_half_try_send",
     "hew_supervisor_nested_get",
     // -- Static-pool accessor symbols. `sup.pool[i]` / `.len()` lower to these
     //    (`sup.pool.get(i)` fail-closes at MIR for now); the static-pool surface

@@ -1,0 +1,21 @@
+// MIR-corpus fixture: unified channel-mode Duplex recv.
+//
+// Pins the unified-handle recv producers (`hew_duplex_recv` /
+// `hew_duplex_try_recv`): a message sent on one half's send-direction is
+// received on the paired unified handle via `.recv()` / `.try_recv()`.
+fn main() {
+    let (a, b) = duplex_pair<i64, i64>(4);
+    let tx = a.send_half();
+    match tx.send(55) {
+        Ok(_) => {},
+        Err(_) => {},
+    }
+    match b.recv() {
+        Ok(_) => {},
+        Err(_) => {},
+    }
+    match b.try_recv() {
+        Ok(_) => {},
+        Err(_) => {},
+    }
+}

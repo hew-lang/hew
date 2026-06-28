@@ -121,7 +121,21 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     // `hew_auto_mutex_unlock(mtx: *mut HewAutoMutex)` — release. The
     // compiler emits this immediately AFTER the access completes.
     "hew_auto_mutex_unlock",
-    // --- Bytes value index/slice substrate (W3 collections-sugar S2) --------
+    // --- Bytes value collection substrate -----------------------------------
+    // `hew_bytes_append(&mut BytesTriple, src_ptr, src_offset, src_len)`
+    //   appends the source region onto the destination (CoW-aware). Emitted for
+    //   `bytes.append(bytes)`; codegen unpacks the source triple into the
+    //   scalar (ptr, offset, len) args.
+    "hew_bytes_append",
+    // `hew_bytes_clear(&mut BytesTriple)` releases the receiver's reference to
+    //   its backing buffer (refcount-aware, so a shared buffer survives its
+    //   co-owners) and resets the triple to the canonical empty value. Emitted
+    //   for `bytes.clear()`.
+    "hew_bytes_clear",
+    // `hew_bytes_contains(*const BytesTriple, byte: u8) -> bool` linear-scans
+    //   the active region. Emitted for `bytes.contains(i64)`; codegen truncates
+    //   the element to u8.
+    "hew_bytes_contains",
     // `hew_bytes_get` is the non-trapping `bytes.get(index) -> Option<u8>`
     //   accessor (de-aliased from the trapping `b[i]` `hew_bytes_index`). It
     //   carries no runtime export: codegen intercepts the `Terminator::Call`
@@ -134,16 +148,27 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     //   `BytesTriple`. Aborts on negative index or index >= len. Emitted by
     //   the MIR producer arm for `b[i]` over `Ty::Bytes` receivers.
     "hew_bytes_index",
+    // `hew_bytes_is_empty(*const BytesTriple) -> bool` reads the active length
+    //   directly. Emitted for `bytes.is_empty()`.
+    "hew_bytes_is_empty",
     // `hew_bytes_len(triple: *const BytesTriple) -> i64`
     //   (`hew-runtime/src/bytes.rs`). Reads the logical byte length from the
-    //   stack-resident triple. Emitted for open-end bytes ranges `b[a..]` /
-    //   `b[..]` so MIR materialises the end bound before calling
-    //   `hew_bytes_slice`.
+    //   stack-resident triple. Emitted for `bytes.len()` and open-end bytes
+    //   ranges `b[a..]` / `b[..]` so MIR materialises the end bound before
+    //   calling `hew_bytes_slice`.
     "hew_bytes_len",
+    // `hew_bytes_pop(&mut BytesTriple) -> i64` removes and returns the last
+    //   byte, updating the caller's triple (CoW-aware). Aborts on an empty
+    //   buffer. Emitted for `bytes.pop()`.
+    "hew_bytes_pop",
     // `hew_bytes_push(&mut BytesTriple, byte: u8)` appends one byte, updating
     // the caller's stack-resident triple after CoW/growth. Emitted for
     // `bytes.push(i32)` receiver methods; codegen truncates the element to u8.
     "hew_bytes_push",
+    // `hew_bytes_set(&mut BytesTriple, index: i64, byte: u8)` overwrites the
+    //   byte at `index` (CoW-aware). Aborts on an out-of-range index. Emitted
+    //   for `bytes.set(i64, i64)`; codegen truncates the element to u8.
+    "hew_bytes_set",
     // `hew_bytes_slice(ptr, offset, len, start, end) -> BytesTriple`
     //   (`hew-runtime/src/bytes.rs`). O(1) byte-range slice that bumps the
     //   underlying refcount for non-empty results (empty slice returns a

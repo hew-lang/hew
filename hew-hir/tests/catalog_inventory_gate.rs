@@ -175,15 +175,14 @@ fn catalog_contains_bytes_constructor_and_method_targets() {
     for name in [
         "bytes::new",
         "hew_bytes_push",
-        "hew_vec_pop_i32",
-        "hew_vec_len",
-        "hew_vec_get_i32",
-        "hew_vec_set_i32",
-        "hew_vec_is_empty",
-        "hew_vec_clear",
-        "hew_vec_contains_i32",
+        "hew_bytes_pop",
+        "hew_bytes_get",
+        "hew_bytes_set",
+        "hew_bytes_is_empty",
+        "hew_bytes_clear",
+        "hew_bytes_contains",
         "hew_bytes_to_string",
-        "hew_vec_append",
+        "hew_bytes_append",
     ] {
         assert!(names.contains(name), "missing bytes catalog row `{name}`");
     }

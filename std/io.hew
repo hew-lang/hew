@@ -50,13 +50,13 @@ pub fn read_all() -> string {
 
 // ── Declarative bytes receiver FFI ───────────────────────────────────
 //
-// Native bytes now has a dedicated push ABI. The remaining collection-like
-// helpers stay on the checked-in Vec symbols until corresponding hew_bytes_*
-// runtime entries exist.
+// Every method routes to a dedicated hew_bytes_* runtime entry operating on
+// the BytesTriple ABI directly. `len` names hew_vec_len: codegen routes a
+// bytes receiver to the canonical hew_bytes_len entry.
 impl bytes {
     #[extern_symbol(hew_bytes_push)]
     fn push(buf: bytes, byte: u8) {}
-    #[extern_symbol(hew_vec_pop_i32)]
+    #[extern_symbol(hew_bytes_pop)]
     fn pop(buf: bytes) -> u8 {
         0
     }
@@ -68,15 +68,15 @@ impl bytes {
     fn get(buf: bytes, index: i64) -> Option<u8> {
         None
     }
-    #[extern_symbol(hew_vec_set_i32)]
+    #[extern_symbol(hew_bytes_set)]
     fn set(buf: bytes, index: i64, byte: u8) {}
-    #[extern_symbol(hew_vec_is_empty)]
+    #[extern_symbol(hew_bytes_is_empty)]
     fn is_empty(buf: bytes) -> bool {
         false
     }
-    #[extern_symbol(hew_vec_clear)]
+    #[extern_symbol(hew_bytes_clear)]
     fn clear(buf: bytes) {}
-    #[extern_symbol(hew_vec_contains_i32)]
+    #[extern_symbol(hew_bytes_contains)]
     fn contains(buf: bytes, byte: u8) -> bool {
         false
     }
@@ -84,7 +84,7 @@ impl bytes {
     fn to_string(buf: bytes) -> string {
         ""
     }
-    #[extern_symbol(hew_vec_append)]
+    #[extern_symbol(hew_bytes_append)]
     fn append(buf: bytes, other: bytes) {}
 }
 

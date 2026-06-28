@@ -1555,16 +1555,24 @@ fn ty_owns_heap_inner(
 
 /// Visited-set key for a `Named { name, args }` record/enum recursion guard.
 ///
-/// A coarse, mangle-free key (`short_name` + arity) — the checker rejects
-/// recursive value types, so this guard only needs to terminate on a malformed
-/// input that reached elaboration anyway, where the fail-closed `true` is the
-/// safe answer (the drop fires). It deliberately does NOT hand-roll the
-/// `mangle(.., args)` layout key (that authority is `find_enum_layout` /
-/// `find_record_layout`); over-guarding two distinct instantiations of one
-/// generic to the same key is harmless for a recursion guard and never produces
-/// a wrong layout lookup, because the lookup itself happens in the adapters.
+/// Must DISTINGUISH distinct generic instantiations of one origin: a
+/// `Wrap<Wrap<i64>>` field of type `Wrap<i64>` is NOT a recursion — collapsing
+/// both to a `short_name`-only key would falsely trip the guard and force the
+/// fail-closed `true`, mis-classifying an all-BitCopy nested generic as
+/// heap-owning. The key folds the short origin name with each type arg's
+/// structural mangle (`mangle_resolved_ty`, the per-type structural key — NOT
+/// the `mangle(.., args)` layout-lookup authority, so the
+/// `mangle_feeding_layout_lookup_is_centralised` guard stays satisfied). A
+/// genuinely recursive value type (checker-rejected) still terminates: its
+/// self-referential field keys identically and trips the guard at the
+/// fail-closed `true`.
 fn record_or_enum_visit_key(name: &str, args: &[ResolvedTy]) -> String {
-    format!("{}/{}", short_name(name), args.len())
+    if args.is_empty() {
+        short_name(name).to_string()
+    } else {
+        let arg_keys: Vec<String> = args.iter().map(hew_hir::mangle_resolved_ty).collect();
+        format!("{}<{}>", short_name(name), arg_keys.join(","))
+    }
 }
 
 /// Returns `true` if `ty` is, or transitively contains, a `#[opaque]` runtime
@@ -5959,6 +5967,59 @@ mod heap_owning_tests {
         );
         let holder = ResolvedTy::named_user("Holder", vec![]);
         assert!(ty_owns_heap_mir(&holder, &orders, &[]));
+    }
+
+    #[test]
+    fn nested_generic_instantiation_is_not_a_recursion_false_positive() {
+        // `Wrap<Wrap<i64>>` where `Wrap<T> { v: T }` is all-BitCopy: the field
+        // of `Wrap<Wrap<i64>>` is `Wrap<i64>`, whose field is `i64`. The
+        // recursion guard must DISTINGUISH the two instantiations of `Wrap` — a
+        // short-name-only visit key would collide them, falsely trip the guard,
+        // and force the fail-closed `true`, mis-classifying the all-BitCopy Vec
+        // element as heap-owning (it then builds an owned-descriptor Vec while
+        // get/iter route to the layout path → runtime abort).
+        let mut orders = HashMap::new();
+        // `record_field_resolved_tys` stores SUBSTITUTED fields per mono key.
+        orders.insert(
+            "Wrap$$Wrap$$i64".to_string(),
+            vec![(
+                "v".to_string(),
+                ResolvedTy::named_user("Wrap", vec![ResolvedTy::I64]),
+            )],
+        );
+        orders.insert(
+            "Wrap$$i64".to_string(),
+            vec![("v".to_string(), ResolvedTy::I64)],
+        );
+        let nested = ResolvedTy::named_user(
+            "Wrap",
+            vec![ResolvedTy::named_user("Wrap", vec![ResolvedTy::I64])],
+        );
+        assert!(
+            !ty_owns_heap_mir(&nested, &orders, &[]),
+            "an all-BitCopy nested generic must NOT be classified heap-owning"
+        );
+        // Sanity: the SAME shape but with a heap leaf at the bottom IS owning.
+        let mut heap_orders = HashMap::new();
+        heap_orders.insert(
+            "Wrap$$Wrap$$string".to_string(),
+            vec![(
+                "v".to_string(),
+                ResolvedTy::named_user("Wrap", vec![ResolvedTy::String]),
+            )],
+        );
+        heap_orders.insert(
+            "Wrap$$string".to_string(),
+            vec![("v".to_string(), ResolvedTy::String)],
+        );
+        let nested_heap = ResolvedTy::named_user(
+            "Wrap",
+            vec![ResolvedTy::named_user("Wrap", vec![ResolvedTy::String])],
+        );
+        assert!(
+            ty_owns_heap_mir(&nested_heap, &heap_orders, &[]),
+            "a nested generic whose innermost field owns heap must be classified heap-owning"
+        );
     }
 
     #[test]

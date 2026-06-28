@@ -1,0 +1,13 @@
+// A `#[linear]` binding that reaches an exit without being consumed is rejected
+// (`MustConsume`). The must-consume wall must hold even though the consuming
+// method now dispatches via the sibling inherent impl.
+#[linear]
+type Tx { id: i64; }
+impl Tx {
+    fn commit(consuming self) { println(f"commit {self.id}"); }
+}
+
+fn main() {
+    let t = Tx { id: 1 };
+    println(f"have {t.id}");
+}

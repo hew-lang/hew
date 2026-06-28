@@ -944,6 +944,57 @@ fn collect_inherent_impl_close_methods_from_items(
     }
 }
 
+/// Walk the program and its module graph collecting the self-type names that
+/// declare at least one `consuming self` method in a sibling inherent-impl
+/// block. Trait impls (`impl T for U`) are skipped — the consume surface this
+/// records is the inherent `<T>::method` dispatch, the form that lowers to a
+/// callable symbol.
+fn collect_inherent_impl_consuming_methods(program: &Program) -> HashSet<String> {
+    let mut out: HashSet<String> = HashSet::new();
+    collect_inherent_impl_consuming_methods_from_items(&program.items, &mut out);
+    if let Some(module_graph) = &program.module_graph {
+        for module_id in &module_graph.topo_order {
+            if *module_id == module_graph.root {
+                continue;
+            }
+            if let Some(module) = module_graph.modules.get(module_id) {
+                collect_inherent_impl_consuming_methods_from_items(&module.items, &mut out);
+            }
+        }
+    }
+    out
+}
+
+fn collect_inherent_impl_consuming_methods_from_items(
+    items: &[(Item, Span)],
+    out: &mut HashSet<String>,
+) {
+    for (item, _item_span) in items {
+        if let Item::Import(import_decl) = item {
+            if let Some(resolved_items) = &import_decl.resolved_items {
+                collect_inherent_impl_consuming_methods_from_items(resolved_items, out);
+            }
+            continue;
+        }
+        let Item::Impl(impl_decl) = item else {
+            continue;
+        };
+        if impl_decl.trait_bound.is_some() {
+            continue;
+        }
+        let TypeExpr::Named {
+            name: self_type_name,
+            ..
+        } = &impl_decl.target_type.0
+        else {
+            continue;
+        };
+        if impl_decl.methods.iter().any(|method| method.consumes_self) {
+            out.insert(self_type_name.clone());
+        }
+    }
+}
+
 /// Collect trait default method bodies from all `Item::Trait` declarations
 /// in the root program. Keyed by trait name; values are the `TraitMethod`
 /// entries that carry a non-`None` body. Used by `lower_impl_block` to lower
@@ -1134,6 +1185,7 @@ fn trait_method_to_fn_decl(method: &TraitMethod) -> FnDecl {
         decl_span: 0..0,
         fn_span: 0..0,
         intrinsic: None,
+        consumes_self: false,
     }
 }
 
@@ -1567,6 +1619,11 @@ pub fn lower_program_with_mono_cap(
     // See [`collect_inherent_impl_close_methods`] for the precise contract
     // (W3.030 Q-α-B + Q-β-C ratifications).
     ctx.impl_close_methods = collect_inherent_impl_close_methods(program);
+    // Harvest the self-type names that declare a `consuming self` inherent
+    // method so the `#[linear]` validation accepts a sibling-inherent consuming
+    // method as satisfying the must-declare-a-consumer contract — the inherent
+    // form is the surface that lowers to a callable symbol.
+    ctx.impl_consuming_methods = collect_inherent_impl_consuming_methods(program);
 
     // Pre-pre-pass: harvest trait default method bodies so that impl-block
     // lowering can emit them for impls that do not override them.
@@ -4557,6 +4614,16 @@ struct LowerCtx {
     /// carry no `#[resource]` marker so the absence of their inherent
     /// impls in this map is harmless).
     impl_close_methods: HashMap<String, ImplCloseSignature>,
+    /// Self-type names that declare at least one `consuming self` method in a
+    /// sibling inherent-impl block (`impl T { fn m(consuming self) { … } }`).
+    ///
+    /// A `#[linear]` type's required consuming method may live here instead of
+    /// in the type body — the inherent-impl form is the one that actually lowers
+    /// to a callable symbol, so it is the usable consume surface. Populated the
+    /// same way as `impl_close_methods`; consulted by the `#[linear]` validation
+    /// so `LinearNoConsumingMethods` only fires when NEITHER a type-body nor a
+    /// sibling-inherent consuming method exists.
+    impl_consuming_methods: HashSet<String>,
     diagnostics: Vec<HirDiagnostic>,
     /// Checker-owned function and method signatures keyed by canonical function
     /// symbol. Var-self write-back lowering reads `requires_mutable_receiver`
@@ -5090,6 +5157,7 @@ impl LowerCtx {
             imported_module_consts: None,
             type_classes,
             impl_close_methods: HashMap::new(),
+            impl_consuming_methods: HashSet::new(),
             diagnostics: Vec::new(),
             fn_sigs: tc_output.fn_sigs.clone(),
             method_call_rewrites: tc_output.method_call_rewrites.clone(),
@@ -8994,6 +9062,52 @@ impl LowerCtx {
         ));
     }
 
+    /// Enforce the `#[linear]` consuming-method discipline.
+    ///
+    /// A `#[linear]` type must declare at least one `consuming self` method so
+    /// that some exit path can exhaust a binding of the type (the
+    /// `MirCheck::MustConsume` enforcement target). The supported surface is a
+    /// sibling inherent-impl block (`impl T { fn commit(consuming self) { … } }`)
+    /// — the form that lowers to a callable consume target.
+    ///
+    ///   1. A type-body `consuming self` method (`type T { fn m(consuming self)
+    ///      … }`) is rejected: it is not lowered to a callable symbol, so a call
+    ///      raises `IndirectCallUnsupported` at the call site, leaving the type
+    ///      unusable. Fail-close here at the declaration with a directive to the
+    ///      supported surface, mirroring the `#[resource]` inline-`close`
+    ///      rejection.
+    ///   2. Otherwise the type must carry a sibling-inherent consuming method
+    ///      (`impl_consuming_methods`); absent that, no exit path could exhaust
+    ///      a binding — `LinearNoConsumingMethods`.
+    fn check_linear_consume_discipline(&mut self, decl: &TypeDecl, span: &Span) {
+        let has_inline_consuming = decl.body.iter().any(|item| {
+            matches!(item, TypeBodyItem::Method(m)
+                if decl.consuming_methods.iter().any(|n| n == &m.name))
+        });
+        if has_inline_consuming {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::LinearConsumingMethodSourceUnsupported {
+                    name: decl.name.clone(),
+                },
+                span.clone(),
+                "`#[linear]` types must declare their `consuming self` method in a \
+                 sibling inherent-impl block (`impl T { fn commit(consuming self) \
+                 { ... } }`); the inline `type T { fn commit(consuming self) ... }` \
+                 surface is not lowered to a callable consume target",
+            ));
+        } else if !self.impl_consuming_methods.contains(&decl.name) {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::LinearNoConsumingMethods {
+                    name: decl.name.clone(),
+                },
+                span.clone(),
+                "`#[linear]` type must declare at least one `consuming self` method \
+                 in a sibling inherent-impl block; without one no exit path could \
+                 exhaust a binding of this type",
+            ));
+        }
+    }
+
     fn lower_type_decl(&mut self, decl: &TypeDecl, span: std::ops::Range<usize>) -> HirTypeDecl {
         // Generic resource/linear types are rejected — the type→class map is
         // keyed by name, not by instantiation. This rule belongs at the
@@ -9014,17 +9128,7 @@ impl LowerCtx {
                 self.check_resource_close_discipline(decl, &span);
             }
             AstResourceMarker::Linear => {
-                // `#[linear]` must declare at least one consuming method.
-                if decl.consuming_methods.is_empty() {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::LinearNoConsumingMethods {
-                            name: decl.name.clone(),
-                        },
-                        span.clone(),
-                        "`#[linear]` type must declare at least one `consuming self` method; \
-                         without one no exit path could exhaust a binding of this type",
-                    ));
-                }
+                self.check_linear_consume_discipline(decl, &span);
             }
             AstResourceMarker::None => {}
         }

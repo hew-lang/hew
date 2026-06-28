@@ -1196,6 +1196,7 @@ fn program_with_select(select_expr: Expr) -> Program {
         decl_span: 0..0,
         fn_span: 0..0,
         intrinsic: None,
+        consumes_self: false,
     };
     Program {
         items: vec![(Item::Function(main_fn), 0..0)],

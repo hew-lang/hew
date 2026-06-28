@@ -1,0 +1,17 @@
+// A builder-terminal `consuming self` inherent method: the receiver is moved
+// into the call and the produced value returned. Demonstrates `consuming self`
+// on a plain (non-`#[linear]`) inherent impl — the generalised single-consume
+// surface.
+//
+// Expected stdout:
+//   5
+pub type Builder { n: i64; }
+impl Builder {
+    fn build(consuming self) -> i64 { self.n }
+}
+
+fn main() {
+    let b = Builder { n: 5 };
+    let x = b.build();
+    println(f"{x}");
+}

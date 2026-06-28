@@ -1,0 +1,19 @@
+// A `#[linear]` type carrying an owned-string field, consumed via an inherent
+// `consuming self` method that hands the owned string out as the return value.
+// The owned-string heap is transferred exactly once (no leak, no double-free):
+// the consume moves ownership of the field into the return slot, and the linear
+// binding carries no implicit drop.
+//
+// Expected stdout:
+//   txn
+#[linear]
+type Tx { label: string; }
+impl Tx {
+    fn commit(consuming self) -> string { self.label }
+}
+
+fn main() {
+    let t = Tx { label: "txn" };
+    let s = t.commit();
+    println(s);
+}

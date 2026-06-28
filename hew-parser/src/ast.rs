@@ -862,6 +862,16 @@ pub struct FnDecl {
     /// remove the corresponding catalog rows in the migration slices.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intrinsic: Option<String>,
+    /// `true` when this method declares a `consuming self` receiver — the
+    /// terminal single-consume surface (`fn build(consuming self) -> T`, a
+    /// `#[linear]` type's consuming method). The receiver is moved into the call
+    /// and a later use of the binding surfaces `UseAfterMove`; the checker
+    /// registers the method into its consume-receiver set so the move-checker
+    /// marks the receiver consumed. Only meaningful on inherent-impl methods —
+    /// type-body `consuming self` methods carry the same fact through
+    /// `TypeDecl.consuming_methods` instead.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub consumes_self: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

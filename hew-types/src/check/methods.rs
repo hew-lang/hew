@@ -7693,19 +7693,24 @@ impl Checker {
                             _ => {}
                         }
                     }
-                    // #1295: a terminal consuming `close` moves its receiver, so
-                    // record the per-call-site flag for HIR/codegen AND mark the
-                    // receiver expression moved (a later use surfaces
-                    // `UseAfterMove`). Two surfaces qualify:
+                    // A terminal consuming method moves its receiver, so record
+                    // the per-call-site flag for HIR/codegen AND mark the receiver
+                    // expression moved (a later use surfaces `UseAfterMove`).
+                    // Three surfaces qualify:
                     //   1. stdlib `impl Closable for T { fn close }` — the trait
                     //      `close` flattens into T's inherent-method table; honour
                     //      the `consumes_receiver` declared on the trait.
                     //   2. a `#[resource]` type's inherent `fn close(self)` — the
-                    //      W3.030 implicit-drop dispatch target, which when called
+                    //      implicit-drop dispatch target, which when called
                     //      explicitly also moves the receiver so the scope-exit
                     //      implicit drop is suppressed on the consumed path (no
                     //      double-close).
-                    let consumes_receiver = self.named_type_method_consumes_receiver(name, method)
+                    //   3. any `fn m(consuming self)` inherent method — the
+                    //      terminal single-consume surface (a builder's
+                    //      `build(consuming self)`, a `#[linear]` type's consuming
+                    //      method). The resolved sig carries the consume fact.
+                    let consumes_receiver = sig.consumes_receiver
+                        || self.named_type_method_consumes_receiver(name, method)
                         || self.named_type_inherent_close_consumes_receiver(name, method, &sig);
                     if consumes_receiver {
                         self.method_call_consumes_receiver

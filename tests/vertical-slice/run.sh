@@ -691,6 +691,54 @@ if "${HEW}" compile \
 fi
 grep -q 'ResourceCloseSourceUnsupported' "${reject_output}"
 
+# --- #[linear] / consuming-self surface -----------------------------------
+#
+# A `#[linear]` type's consuming method declared in a sibling inherent-impl
+# block dispatches end to end (`commit 1`); the same surface carries the
+# builder-terminal `consuming self` shape and an owned-string consume that
+# transfers heap ownership exactly once.
+run_accept_expect_stdout "linear_inherent_consume"
+run_accept_expect_stdout "linear_inherent_owned_string"
+run_accept_expect_stdout "consuming_self_builder"
+
+# An unconsumed `#[linear]` binding is still rejected — the must-consume wall
+# does not regress now that the consuming call dispatches.
+if "${HEW}" compile \
+    "${ROOT}/tests/vertical-slice/reject/linear_unconsumed.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected linear_unconsumed to fail" >&2
+  exit 1
+fi
+grep -q 'MustConsume' "${reject_output}"
+
+# Consuming a `#[linear]` binding twice is rejected (`UseAfterConsume`).
+if "${HEW}" compile \
+    "${ROOT}/tests/vertical-slice/reject/linear_double_consume.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected linear_double_consume to fail" >&2
+  exit 1
+fi
+grep -q 'UseAfterConsume' "${reject_output}"
+
+# A type-body `consuming self` on a `#[linear]` is rejected with a directive to
+# the sibling-inherent-impl surface (`LinearConsumingMethodSourceUnsupported`).
+if "${HEW}" compile \
+    "${ROOT}/tests/vertical-slice/reject/linear_inline_consuming_source.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected linear_inline_consuming_source to fail" >&2
+  exit 1
+fi
+grep -q 'LinearConsumingMethodSourceUnsupported' "${reject_output}"
+
+# Reusing a non-copy binding after a `consuming self` call is rejected.
+if "${HEW}" compile \
+    "${ROOT}/tests/vertical-slice/reject/consuming_self_use_after_move.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected consuming_self_use_after_move to fail" >&2
+  exit 1
+fi
+grep -q 'moved value' "${reject_output}"
+
 # V12 — inherent-impl `close` returning non-unit -> ResourceCloseMustReturnUnit
 # (Q-β-C). Fallible cleanup composes via `defer`, not a non-unit close.
 if "${HEW}" compile \

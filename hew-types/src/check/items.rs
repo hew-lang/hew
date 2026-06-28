@@ -1012,6 +1012,7 @@ impl Checker {
                         decl_span: 0..0,
                         fn_span: 0..0,
                         intrinsic: None,
+                        consumes_self: false,
                     };
                     let qualified = format!("{}::{}", td.name, method.name);
 

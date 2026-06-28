@@ -36,6 +36,7 @@ mod non_root_module_inference_scope {
             decl_span: 0..0,
             fn_span: 0..0,
             intrinsic: None,
+            consumes_self: false,
         };
         Module {
             id: mod_id.clone(),
@@ -175,6 +176,7 @@ mod non_root_module_inference_scope {
             decl_span: 0..0,
             fn_span: 0..0,
             intrinsic: None,
+            consumes_self: false,
         };
 
         let root_id = ModuleId::root();
@@ -229,6 +231,7 @@ mod non_root_module_inference_scope {
                 decl_span: 0..0,
                 fn_span: 0..0,
                 intrinsic: None,
+                consumes_self: false,
             };
             (Item::Function(fd), span_start..span_start + 30)
         };
@@ -313,6 +316,7 @@ mod non_root_module_inference_scope {
             decl_span: 0..0,
             fn_span: 0..0,
             intrinsic: None,
+            consumes_self: false,
         };
 
         let non_root = Module {
@@ -380,6 +384,7 @@ mod non_root_module_inference_scope {
             decl_span: 0..0,
             fn_span: 0..0,
             intrinsic: None,
+            consumes_self: false,
         };
 
         let non_root = Module {
@@ -833,6 +838,7 @@ mod non_root_module_inference_scope {
             decl_span: 0..0,
             fn_span: 0..0,
             intrinsic: None,
+            consumes_self: false,
         };
 
         let non_root = Module {

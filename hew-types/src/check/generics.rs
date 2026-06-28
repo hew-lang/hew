@@ -538,6 +538,14 @@ impl Checker {
                 });
                 continue;
             }
+            // Pin a type param that appears only as the associated-type slot of
+            // another param's bound (`where I: Iterator<Item = A>`, with `A`
+            // absent from every value parameter and the return type). The base
+            // param `I` is concrete here, so the projection `I::Item` is known;
+            // unifying it into the still-unbound binding target resolves `A` so
+            // the call's resolved type args become fully concrete and the
+            // monomorphisation registry can mint a key for it.
+            self.pin_projection_only_assoc_bindings(&assoc_bindings, &resolved_arg);
             self.report_unsatisfied_type_param_bounds(param_name, &bounds, &resolved_arg, span);
             self.report_unsatisfied_assoc_type_bindings(
                 param_name,
@@ -853,6 +861,46 @@ impl Checker {
         candidates.sort();
         candidates.dedup();
         candidates
+    }
+
+    /// Resolve a type param that is reachable only through another param's
+    /// associated-type binding (`where I: Iterator<Item = A>`).
+    ///
+    /// `assoc_bindings` are the bindings declared on the base param whose
+    /// concrete type is `resolved_arg`. For each binding whose target is still
+    /// an unbound inference variable, project the base type's concrete
+    /// associated type and unify it into the target. This pins the otherwise
+    /// free param in the substitution so the call's resolved type args are
+    /// fully concrete at `record_concrete_call_type_args`, which is what lets
+    /// the monomorphisation registry observe the instantiation.
+    ///
+    /// Only the unbound case unifies; a binding with a concrete target is left
+    /// to `report_unsatisfied_assoc_type_bindings` to validate. The unify is
+    /// best-effort — a mismatch is surfaced by the report pass, not here.
+    fn pin_projection_only_assoc_bindings(
+        &mut self,
+        assoc_bindings: &[(String, String, Ty)],
+        resolved_arg: &Ty,
+    ) {
+        for (trait_name, assoc_name, expected_ty) in assoc_bindings {
+            let expected = self.subst.resolve(expected_ty);
+            if !expected.has_inference_var() {
+                continue;
+            }
+            if !self.type_satisfies_trait_bound(resolved_arg, trait_name) {
+                continue;
+            }
+            let actual = self.project_assoc_types(&Ty::AssocType {
+                base: Box::new(resolved_arg.clone()),
+                trait_name: trait_name.clone().into_boxed_str(),
+                assoc_name: assoc_name.clone().into_boxed_str(),
+            });
+            let actual = self.subst.resolve(&actual).materialize_literal_defaults();
+            if actual.has_inference_var() {
+                continue;
+            }
+            let _ = unify(&mut self.subst, &expected, &actual);
+        }
     }
 
     fn report_unsatisfied_assoc_type_bindings(

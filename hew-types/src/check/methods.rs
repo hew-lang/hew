@@ -1751,7 +1751,7 @@ impl Checker {
         }
     }
 
-    fn record_module_qualified_stdlib_call_rewrite_if_any(
+    pub(super) fn record_module_qualified_stdlib_call_rewrite_if_any(
         &mut self,
         module_name: &str,
         method: &str,
@@ -1823,7 +1823,7 @@ impl Checker {
     /// — argument list preserved). HIR's `RewriteModuleQualifiedToFunction`
     /// arm consumes the rewrite to emit a direct function call against the
     /// qualified symbol.
-    fn record_module_qualified_user_call_rewrite_if_any(
+    pub(super) fn record_module_qualified_user_call_rewrite_if_any(
         &mut self,
         module_name: &str,
         method: &str,

@@ -365,24 +365,25 @@ run_accept_expect_status "iter_filter_string_run" 2
 # When a slice closes the gap, the corresponding ratchet flips from a
 # check-fail to an accept fixture (see the cross-references below).
 
-# mir-gap-cross-module-std-iter-lowering: namespaced `iter::map`/`iter::count`
-# called from an importing module do not resolve into the consumer's
-# fn_registry (and a closure arg to a cross-module generic fn lacks a
-# ClosureCaptureFact). Closing this enables `iter_xmod_map_count`.
-# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
+# cross-module generic-impl-method monomorphisation: a namespaced
+# `iter::map`/`iter::count` chain from an importing module resolves and the
+# closure arg is captured, but the imported generic adapter's impl-method
+# (`Map::next` etc.) monomorphisation references an origin that is not emitted
+# into the consumer module, so the chain fails closed at MIR lowering. Closing
+# this enables `iter_xmod_map_count`.
 expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/mir_gap_cross_module_iter/main.hew" \
-  'undefined function `iter::map`' \
+  "MIR lowering for function call is not implemented yet" \
   "mir_gap_cross_module_iter"
 
-# mir-gap-where-clause-proj-monomorph: a generic fn whose type param appears
-# only in a `where I: Iterator<Item = A>` projection has no MIR body to lower
-# (the collector cannot pin a projection-only param). Closing this enables
-# `iter_generic_count_collect`.
-expect_check_fail_contains \
-  "${ROOT}/tests/vertical-slice/reject/mir_gap_where_clause_proj_mono.hew" \
-  "MIR lowering for function call is not implemented yet" \
-  "mir_gap_where_clause_proj_mono"
+# where-clause-projection monomorphisation (CLOSED): a generic terminal whose
+# type param appears only in a `where I: Iterator<Item = A>` projection now
+# pins that param from the iterator's concrete associated type and lowers
+# through MIR. Count + collect over a projection-only `A`: count 4 + len 4 → 8.
+run_accept_expect_status "iter_generic_count_collect" 8
+# Owned-element variant: collect a string-Item iterator (A reachable only
+# through the projection); 3 × "word" summed by length → 12.
+run_accept_expect_status "iter_generic_collect_owned" 12
 
 # g12-A (CLOSED): `for (k, v) in m` over a HashMap lowers through a HashMapIter
 # cursor built from the map's keys()/values() projections. The former

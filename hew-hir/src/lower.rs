@@ -8136,6 +8136,74 @@ impl LowerCtx {
         (acc.kind, acc.ty)
     }
 
+    /// Lower a module-qualified direct call (`module.fn(args)` /
+    /// `module::fn(args)`) given already-lowered arguments.
+    ///
+    /// Both the dot-form method-call surface and the namespaced `Call` surface
+    /// record the same `RewriteModuleQualifiedToFunction` on the call span and
+    /// route here. The `c_symbol` from the checker uses dotted notation for
+    /// user-module calls (`module.fn`) and `hew_*` for stdlib calls. User-module
+    /// keys are stored in `fn_registry` under the mangled form (`module$fn`) so
+    /// they are safe as native object-file symbols on all targets. Apply
+    /// `mangle_dotted_name` before the registry lookup AND in the emitted
+    /// `BindingRef.name` so all three consumers (HIR verifier, MIR
+    /// `module_fn_names`, codegen `add_function`) see the same mangled key.
+    /// Stdlib `hew_*` symbols contain no dots, so mangling is identity.
+    ///
+    /// A direct call to an imported GENERIC free fn needs the per-instantiation
+    /// monomorphisation registered here — the same authority the bare-identifier
+    /// callee feeds through `record_monomorphisation` — or MIR's `Call` arm
+    /// finds neither a `call_site_type_args` entry nor the mangled name in
+    /// `module_fn_names`, and the callee falls through to the function-call NYI.
+    /// The helper seeds `call_site_type_args` with the checker-recorded args and
+    /// inserts the `MonoKey` whose `origin_name == symbol`. No-op for
+    /// non-generic callees, so safe to call unconditionally.
+    fn lower_module_qualified_direct_call_lowered(
+        &mut self,
+        c_symbol: &str,
+        lowered_args: Vec<HirExpr>,
+        span: &Span,
+        site: SiteId,
+    ) -> (HirExprKind, ResolvedTy) {
+        let symbol = crate::mangle_dotted_name(c_symbol);
+        self.register_free_fn_monomorphisation(&symbol, span, site);
+        let key = self.mk_key(span);
+        let ret_ty = self
+            .expr_types
+            .get(&key)
+            .cloned()
+            .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
+            .unwrap_or(ResolvedTy::Unit);
+        self.assert_resolved_ty_totality(span);
+        let resolved_ref = self
+            .fn_registry
+            .get(&symbol)
+            .map_or(ResolvedRef::Unresolved, |entry| ResolvedRef::Item(entry.id));
+        let callee_ty = ResolvedTy::Function {
+            params: Vec::new(),
+            ret: Box::new(ret_ty.clone()),
+        };
+        let callee = HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            value_class: ValueClass::PersistentShare,
+            ty: callee_ty,
+            intent: IntentKind::Read,
+            kind: HirExprKind::BindingRef {
+                name: symbol,
+                resolved: resolved_ref,
+            },
+            span: span.clone(),
+        };
+        (
+            HirExprKind::Call {
+                callee: Box::new(callee),
+                args: lowered_args,
+            },
+            ret_ty,
+        )
+    }
+
     fn lower_regular_call(
         &mut self,
         function: &Spanned<Expr>,
@@ -8143,6 +8211,20 @@ impl LowerCtx {
         span: &Span,
         site: SiteId,
     ) -> (HirExprKind, ResolvedTy) {
+        // Namespaced module-qualified call `module::fn(args)`: the callee is a
+        // `FieldAccess` on a module identifier, not a value. The checker
+        // recorded a `RewriteModuleQualifiedToFunction` on this call span (the
+        // same rewrite the dot form `module.fn(args)` records via the
+        // method-call path). Route through the identical direct-call lowering so
+        // the callee resolves to the qualified registry symbol and the
+        // per-instantiation monomorphisation is registered — without it the
+        // `FieldAccess` callee lowers to an unresolved binding.
+        let rewrite_key = self.mk_key(span);
+        if let Some(MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol, .. }) =
+            self.method_call_rewrites.get(&rewrite_key).cloned()
+        {
+            return self.lower_module_qualified_direct_call_lowered(&c_symbol, args, span, site);
+        }
         let callee = self.lower_expr(function, IntentKind::Read);
         // Record the per-instantiation monomorphisation if the callee is a
         // generic top-level user fn. Direct-name callees only;
@@ -19969,72 +20051,18 @@ impl LowerCtx {
             }
             Some(MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol, .. }) => {
                 // Module-qualified direct call: the receiver expression is the
-                // module identifier, not a value.  Lower the args only — do
-                // NOT prepend the receiver (LESSONS
-                // `module-qualified-rewrite-authority`).
-                //
-                // The `c_symbol` from the checker uses dotted notation for
-                // user-module calls (`module.fn`) and `hew_*` for stdlib calls.
-                // User-module keys are stored in `fn_registry` under the mangled
-                // form (`module$fn`) so they are safe as native object-file
-                // symbols on all targets.  Apply `mangle_dotted_name` before
-                // the registry lookup AND in the emitted `BindingRef.name` so
-                // all three consumers (HIR verifier, MIR `module_fn_names`,
-                // codegen `add_function`) see the same mangled key.  Stdlib
-                // `hew_*` symbols contain no dots, so mangling is identity.
-                let symbol = crate::mangle_dotted_name(&c_symbol);
-                // A direct call to an imported GENERIC free fn
-                // (`module.first([1,2,3])`) needs the per-instantiation
-                // monomorphisation registered here — the same authority the
-                // bare-identifier callee feeds through `record_monomorphisation`
-                // — or MIR's `Call` arm finds neither a `call_site_type_args`
-                // entry (mangled-dispatch) nor the mangled name in
-                // `module_fn_names`, and the callee falls through to the
-                // "function call" NYI. The helper seeds `call_site_type_args`
-                // with the checker-recorded args and inserts the `MonoKey`
-                // whose `origin_name == symbol`, so the registry's
-                // `mangled_name` matches what MIR re-mangles from the un-mono
-                // `BindingRef.name` below. No-op for non-generic callees, so
-                // safe to call unconditionally (mirrors the by-value
-                // `RewriteToFunction` arm's `record_var_self_direct_monomorphisation`).
-                self.register_free_fn_monomorphisation(&symbol, &span, site);
+                // module identifier, not a value. Lower the args only — do NOT
+                // prepend the receiver (LESSONS `module-qualified-rewrite-authority`).
+                // The namespaced `module::fn(args)` Call form routes through the
+                // same helper from `lower_regular_call`.
                 let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
-                let ret_ty = self
-                    .expr_types
-                    .get(&key)
-                    .cloned()
-                    .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
-                    .unwrap_or(ResolvedTy::Unit);
-                // W4.047 P1.2: prove the typed handoff agrees at this fail-open
-                // module-qualified-rewrite return site (no behaviour change).
-                self.assert_resolved_ty_totality(&span);
-                let resolved_ref = self
-                    .fn_registry
-                    .get(&symbol)
-                    .map_or(ResolvedRef::Unresolved, |entry| ResolvedRef::Item(entry.id));
-                let callee_ty = ResolvedTy::Function {
-                    params: Vec::new(),
-                    ret: Box::new(ret_ty.clone()),
-                };
-                let callee = HirExpr {
-                    node: self.ids.node(),
-                    site: self.ids.site(),
-                    value_class: ValueClass::PersistentShare,
-                    ty: callee_ty,
-                    intent: IntentKind::Read,
-                    kind: HirExprKind::BindingRef {
-                        name: symbol,
-                        resolved: resolved_ref,
-                    },
-                    span: span.clone(),
-                };
-                (
-                    HirExprKind::Call {
-                        callee: Box::new(callee),
-                        args: lowered_args,
-                    },
-                    ret_ty,
-                )
+                let (call_kind, ret_ty) = self.lower_module_qualified_direct_call_lowered(
+                    &c_symbol,
+                    lowered_args,
+                    &span,
+                    site,
+                );
+                (call_kind, ret_ty)
             }
             Some(MethodCallRewrite::DeferToLowering) => {
                 // `DeferToLowering` belonged to the legacy codegen pipeline and is

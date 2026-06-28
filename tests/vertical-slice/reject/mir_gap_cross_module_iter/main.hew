@@ -1,16 +1,12 @@
-// Ratchet for `mir-gap-cross-module-std-iter-lowering`.
+// Ratchet for cross-module generic-impl-method monomorphisation.
 //
 // Calling the `std::iter` free-function combinators from an importing module
-// must fail closed — loudly — until the cross-module lowering gap is closed.
-// Today two things go wrong and both are pinned here so the gap cannot widen
-// or silently regress to a wrong-value pass:
-//
-//   1. The namespaced `iter::map` / `iter::count` calls do not resolve: the
-//      stdlib's `pub fn` adapters are not admitted into the importing module's
-//      `fn_registry`, so the checker reports `undefined function iter::map`.
-//   2. A closure passed as an argument to a cross-module generic fn reaches the
-//      checker output without a resolved `ClosureCaptureFact`, tripping the
-//      checker -> MIR contract.
+// must fail closed — loudly — until the remaining cross-module lowering gap is
+// closed. The namespaced `iter::map` / `iter::count` calls resolve and the
+// closure argument is captured, but the imported generic adapter type's
+// impl-method (`Map::next`) monomorphisation references an origin that is not
+// emitted into the consumer module, so the chain fails closed at MIR lowering
+// with `MIR lowering for function call is not implemented yet`.
 //
 // When the gap closes this fixture flips to an accept (the chain runs and
 // returns the mapped count) — see `iter_xmod_map_count` in run.sh.

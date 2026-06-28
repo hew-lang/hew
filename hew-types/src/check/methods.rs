@@ -5469,6 +5469,37 @@ impl Checker {
             true,
         );
         let method_key = format!("{canonical}::{method}");
+        // Concrete-specialised primitive impl (#2270): when the builtin receiver
+        // has non-empty type args (e.g. `Vec<i64>`) and the impl is a concrete
+        // specialisation (`impl Summable for Vec<i64>` — no generic impl type
+        // params), the HIR fn_registry key is the mangled form
+        // (`"Vec$$i64::total"`), not the bare `"Vec::total"`. The HIR first pass
+        // mangled the key to prevent `impl Trait for Vec<i64>` and
+        // `impl Trait for Vec<string>` from registering the same LLVM symbol.
+        // Use the mangled c_symbol here so HIR can resolve it to a
+        // `ResolvedRef::Item`; fall back to the bare key for generic impls and
+        // for any type arg that cannot be mangled.
+        let c_symbol = if let Ty::Named {
+            args: receiver_type_args,
+            ..
+        } = &defaulted_receiver
+        {
+            if receiver_type_args.is_empty() {
+                method_key.clone()
+            } else {
+                let resolved_args: Option<Vec<ResolvedTy>> = receiver_type_args
+                    .iter()
+                    .map(|ty| ResolvedTy::from_ty(ty).ok())
+                    .collect();
+                resolved_args
+                    .as_ref()
+                    .and_then(|args| crate::resolved_ty::mangle_impl_self_name(&canonical, args))
+                    .filter(|m| self.fn_sigs.contains_key(&format!("{m}::{method}")))
+                    .map_or_else(|| method_key.clone(), |m| format!("{m}::{method}"))
+            }
+        } else {
+            method_key.clone()
+        };
         self.record_method_call_receiver_kind(
             span,
             MethodCallReceiverKind::PrimitiveTraitImpl {
@@ -5476,11 +5507,11 @@ impl Checker {
                 canonical_receiver: canonical,
             },
         );
-        if self.fn_sigs.contains_key(&method_key) {
+        if self.fn_sigs.contains_key(&method_key) || self.fn_sigs.contains_key(&c_symbol) {
             self.record_method_call_rewrite(
                 span,
                 MethodCallRewrite::RewriteToFunction {
-                    c_symbol: method_key,
+                    c_symbol,
                     // User-fn dispatch into a primitive trait impl
                     // (`i64::fmt` etc.) is open-set; the typed runtime-call
                     // catalog does not enumerate user-defined method keys.

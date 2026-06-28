@@ -710,7 +710,7 @@ fn remote_ask_round_trip_returns_exact_values() {
     );
 }
 
-/// DIST-10 `StaleRef`: a captured `RemotePid<T>` fails closed with `StaleRef` once
+/// `StaleRef` supersession: a captured `RemotePid<T>` fails closed with `StaleRef` once
 /// its registration is superseded by a re-registration of the same name to a
 /// DIFFERENT actor — on both `tell` and `ask`, across two OS processes.
 ///

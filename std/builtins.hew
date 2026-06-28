@@ -227,7 +227,7 @@ impl<T> RemotePid<T> {
     ///
     /// Test-only raw constructor. The production path to a `RemotePid<T>` is
     /// `Node::lookup<T>(name) -> Result<RemotePid<T>, LookupError>`, which
-    /// snapshots the registration this lane's StaleRef boundary tracks; a
+    /// snapshots the registration the StaleRef boundary this pid tracks; a
     /// `from_raw` pid carries no registration provenance and so is not subject
     /// to the supersession check. It exists for fixtures that need to fabricate
     /// a `(node_id, serial)` pid directly (e.g. the multi-arg-remote reject

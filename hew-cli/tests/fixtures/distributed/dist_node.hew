@@ -652,7 +652,7 @@ fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
 
 // Scenario: stale_ref
 //
-// The StaleRef identity-hardening proof (DIST-10). The client looks up "kv" and
+// StaleRef identity-hardening proof: the client looks up "kv" and
 // captures a RemotePid for the ORIGINAL actor. The server then re-points "kv" to
 // a DIFFERENT actor (unregister + re-register), which supersedes the original
 // serial. Once the re-point gossip propagates, the client's CAPTURED ref must

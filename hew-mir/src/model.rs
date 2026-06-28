@@ -1256,6 +1256,49 @@ pub(crate) fn find_enum_layout<'a>(
     }
 }
 
+/// THE single record-registry key authority for this module.
+///
+/// Builds the candidate lookup keys a `Named { name, args }` resolves to in any
+/// record registry keyed by `hew_hir::mangle` (`record_layouts` keyed by
+/// `RecordLayout::name`, and the MIR `record_field_orders` map — both populated
+/// from the same HIR `mangled_name`). The empty-args arm yields the bare name +
+/// short name; the generic arm yields the full + short mangle of the SHORTENED
+/// type-arg spine (`Holder<i64>` → `Holder$$i64`, `Slot<lmonobox.Box>` →
+/// `Slot$$Box`). Shortening the args internally means a caller CANNOT pass a raw
+/// module-qualified spine into the key (the C1 qualified-spine miss class).
+///
+/// Both record-side lookups — [`find_record_layout`] over `&[RecordLayout]` and
+/// the [`MirHeapLayouts`] adapter over `record_field_orders` — route through
+/// here so the record-key scheme is written once. The
+/// `mangle_feeding_layout_lookup_is_centralised` guard fails if a bare
+/// `mangle(.., args)` feeding a layout lookup reappears outside this and
+/// [`find_enum_layout`].
+fn record_lookup_keys(name: &str, args: &[ResolvedTy]) -> Vec<String> {
+    let short = short_name(name);
+    if args.is_empty() {
+        let mut keys = vec![name.to_string()];
+        if short != name {
+            keys.push(short.to_string());
+        }
+        keys
+    } else {
+        let short_args: Vec<ResolvedTy> = args
+            .iter()
+            .cloned()
+            .map(hew_hir::shorten_named_arg_qualifiers)
+            .collect();
+        vec![
+            hew_hir::mangle(name, &short_args),
+            hew_hir::mangle(short, &short_args),
+            // Bare/short-name fallbacks for any registry that did not key the
+            // instantiation by its mangle (defensive; the generic arm above is
+            // the hot path).
+            name.to_string(),
+            short.to_string(),
+        ]
+    }
+}
+
 /// Mangle-aware record layout lookup — the companion of [`find_enum_layout`]
 /// for the record side. Resolves both monomorphic records (bare-name or
 /// short-name) and generic instantiations (`LocalPid<Socket>` →
@@ -1269,23 +1312,8 @@ pub(crate) fn find_record_layout<'a>(
     args: &[ResolvedTy],
     record_layouts: &'a [RecordLayout],
 ) -> Option<&'a RecordLayout> {
-    let short = short_name(name);
-    if args.is_empty() {
-        record_layouts
-            .iter()
-            .find(|r| r.name == name || r.name == short)
-    } else {
-        let short_args: Vec<ResolvedTy> = args
-            .iter()
-            .cloned()
-            .map(hew_hir::shorten_named_arg_qualifiers)
-            .collect();
-        let full_mangled = hew_hir::mangle(name, &short_args);
-        let short_mangled = hew_hir::mangle(short, &short_args);
-        record_layouts
-            .iter()
-            .find(|r| r.name == full_mangled || r.name == short_mangled)
-    }
+    let keys = record_lookup_keys(name, args);
+    record_layouts.iter().find(|r| keys.contains(&r.name))
 }
 
 /// Record-BLIND entry point to the heap-ownership authority [`ty_owns_heap`]:
@@ -1323,11 +1351,24 @@ pub struct MirHeapLayouts<'a, S = std::collections::hash_map::RandomState> {
 
 impl<S: std::hash::BuildHasher> HeapOwnershipLayouts for MirHeapLayouts<'_, S> {
     fn record_field_tys(&self, name: &str, args: &[ResolvedTy]) -> Option<Vec<ResolvedTy>> {
-        let key = record_or_enum_visit_key(name, args);
-        self.record_field_orders
-            .get(&key)
-            .or_else(|| self.record_field_orders.get(name))
-            .or_else(|| self.record_field_orders.get(short_name(name)))
+        // Route the record-field lookup through the single `record_lookup_keys`
+        // authority — the same key scheme `find_record_layout` uses and the same
+        // `$$`-mangled key `record_field_orders` is registered under (`lower.rs`
+        // ← `mangle(name, type_args)`), matching codegen's `CgHeapLayouts` and
+        // the deleted `named_elem_owns_heap`.
+        //
+        // The previous key (`record_or_enum_visit_key`, the `Name<arg,…>` form)
+        // is the recursion VISIT key — correct for cycle-guarding distinct
+        // instantiations (`Wrap<Wrap<i64>>` vs `Wrap<i64>`) but NOT a registry
+        // key. Using it here returned `None` for every generic instantiation, so
+        // the authority never saw a generic record's fields and silently
+        // classified a generic record carrying a non-type-parameter heap field
+        // (`Holder<i64>{ payload: Vec<i64> }`) as non-owning — while codegen
+        // (correctly keyed) classified it owning, re-creating the MIR↔codegen
+        // adapter divergence DIV-1 exists to eliminate.
+        record_lookup_keys(name, args)
+            .iter()
+            .find_map(|key| self.record_field_orders.get(key))
             .map(|fields| fields.iter().map(|(_, ty)| ty.clone()).collect())
     }
 
@@ -6441,8 +6482,9 @@ mod heap_owning_tests {
     }
 
     /// Structural guard: every generic layout key built in this module must
-    /// route through either `find_enum_layout` or `find_record_layout` — the
-    /// two authorised layout-lookup functions. A bare `mangle(.., args)` call
+    /// route through either `find_enum_layout` (enum side) or `record_lookup_keys`
+    /// (record side — the key authority both `find_record_layout` and the
+    /// `MirHeapLayouts` adapter delegate to). A bare `mangle(.., args)` call
     /// outside those functions re-opens the C1 qualified-spine miss class
     /// (incorrect shortening of the type-arg spine → probe misses the registered
     /// key). This self-scan of the source keeps the two-authority invariant from
@@ -6451,8 +6493,8 @@ mod heap_owning_tests {
     fn mangle_feeding_layout_lookup_is_centralised() {
         let src = include_str!("model.rs");
         // The authorised `mangle(` calls in this module's non-test code live in
-        // `find_enum_layout` (1 call: the `mangled` key) and `find_record_layout`
-        // (2 calls: full_mangled + short_mangled). Strip the test module (which
+        // `find_enum_layout` (1 call: the `mangled` key) and `record_lookup_keys`
+        // (2 calls: full + short mangle). Strip the test module (which
         // legitimately mangles bare-arg fixture keys) before scanning.
         let prod = src
             .split("#[cfg(test)]")
@@ -6461,7 +6503,7 @@ mod heap_owning_tests {
         // Count only real call sites: drop comment lines (`//` / `///`) so the
         // doc-comment mentions of `mangle(` in this module's prose don't inflate
         // the count. The 3 remaining calls live in `find_enum_layout` (1) and
-        // `find_record_layout` (2).
+        // `record_lookup_keys` (2).
         let mangle_calls = prod
             .lines()
             .filter(|line| !line.trim_start().starts_with("//"))
@@ -6470,10 +6512,12 @@ mod heap_owning_tests {
         assert_eq!(
             mangle_calls, 3,
             "exactly three `mangle(` calls are allowed in model.rs non-test code: \
-             one in `find_enum_layout` and two in `find_record_layout` (the two \
-             authorised layout-lookup functions). A new bare call outside those \
-             functions feeds the C1 qualified-spine miss class — route through \
-             one of the authority functions instead. Found {mangle_calls}."
+             one in `find_enum_layout` and two in `record_lookup_keys` (the two \
+             authorised layout-key functions; `find_record_layout` and the \
+             `MirHeapLayouts` adapter both delegate to `record_lookup_keys`). A \
+             new bare call outside those functions feeds the C1 qualified-spine \
+             miss class — route through one of the authority functions instead. \
+             Found {mangle_calls}."
         );
     }
 }

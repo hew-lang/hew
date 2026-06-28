@@ -31919,7 +31919,7 @@ fn derive_enum_composite_drop_allowed(
     // composite bindings.
     let mut candidate_local_to_binding: HashMap<u32, BindingId> = HashMap::new();
     for (binding, _name, ty) in owned_locals {
-        if !ty_is_heap_owning_enum_composite(ty, enum_layouts) {
+        if !ty_is_heap_owning_enum_composite(ty, record_field_orders, enum_layouts) {
             continue;
         }
         let Some(place) = binding_locals.get(binding) else {
@@ -34685,10 +34685,14 @@ fn note_payload_escape(
 /// `enum`) whose active variant can own a heap allocation. Borrowed views,
 /// `dyn Trait`, and non-enum aggregates are excluded — only an inline
 /// tagged-union struct earns the in-place tag-aware drop. The heap-owning
-/// decision delegates to the single `ty_contains_heap_owning` authority so
-/// MIR and codegen agree.
+/// decision delegates to the single record-AWARE `ty_owns_heap_mir` authority
+/// so MIR and codegen agree even when a variant payload is a user record that
+/// owns heap through a non-type-parameter field (`enum Wrap { A(Boxed) }`,
+/// `Boxed { payload: Vec<i64> }`) — the record-blind `ty_contains_heap_owning`
+/// would classify that variant non-owning and leak its payload.
 fn ty_is_heap_owning_enum_composite(
     ty: &ResolvedTy,
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
 ) -> bool {
     let ResolvedTy::Named { name, args, .. } = ty else {
@@ -34715,7 +34719,7 @@ fn ty_is_heap_owning_enum_composite(
     if layout.is_indirect {
         return false;
     }
-    crate::model::ty_contains_heap_owning(ty, enum_layouts)
+    crate::model::ty_owns_heap_mir(ty, record_field_orders, enum_layouts)
 }
 
 /// Resolve the `DropKind` for an `ElabDrop` given the addressable
@@ -35671,7 +35675,7 @@ fn build_lifo_drops(
         // payload at scope exit (`enum_composite_drop_allowed`). A binding the
         // prover did not clear leaks (as before W5.020); it never double-frees.
         if enum_composite_drop_allowed.contains(binding)
-            && ty_is_heap_owning_enum_composite(ty, enum_layouts)
+            && ty_is_heap_owning_enum_composite(ty, record_field_orders, enum_layouts)
         {
             let place = *binding_locals.get(binding).unwrap_or_else(|| {
                 panic!(

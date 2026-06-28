@@ -145,6 +145,82 @@ fn main() -> i64 {{
     )
 }
 
+/// Generic-record DIV-1: `(Holder<i64>, i64)` where `Holder<T> { payload: Vec<T> }`.
+/// The heap leaf (`payload: Vec<T>`) is NOT a type parameter of the use site —
+/// it is the record's own field, only reachable by consulting `Holder`'s field
+/// types under its `Holder$$i64` mangled registry key. The MIR adapter
+/// (`MirHeapLayouts::record_field_tys`) keyed the lookup with the recursion VISIT
+/// key (`Holder<i64>`) instead of the registry `$$` key, so the lookup returned
+/// `None`, the authority never saw `payload`, and MIR classified the generic
+/// record non-owning while codegen (correctly keyed) classified it owning —
+/// re-creating the exact MIR↔codegen adapter divergence DIV-1 closes, and
+/// leaking the inner Vec once per call. The existing `record_clone_generic` /
+/// `vec_record_collection_field` oracles only exercise type-PARAMETER fields
+/// (covered by the arg-recursion fast-path), so none of them catch this.
+fn generic_record_in_tuple_source() -> String {
+    format!(
+        "\
+type Holder<T> {{ payload: Vec<T> }}
+
+fn build(n: i64) -> i64 {{
+    let inner: Vec<i64> = Vec::new();
+    inner.push(n);
+    inner.push(n + 1);
+    let pair = (Holder<i64> {{ payload: inner }}, n);
+    pair.1
+}}
+
+fn main() -> i64 {{
+    var total: i64 = 0;
+    for i in 0..{ITERATIONS} {{
+        total = total + build(i);
+    }}
+    if total != {expected} {{ return 73; }}
+    0
+}}
+",
+        expected = (0..ITERATIONS).sum::<usize>()
+    )
+}
+
+/// Enum-composite DIV-1: a local `Wrap` where `enum Wrap {{ A(Boxed) }}` and
+/// `Boxed { payload: Vec<i64> }`. The variant payload is a user record that owns
+/// heap through a non-type-parameter field. The enum-composite drop gate
+/// (`ty_is_heap_owning_enum_composite`) consulted the record-BLIND
+/// `ty_contains_heap_owning`, so the variant's `Boxed` payload was classified
+/// non-owning, the enum earned no in-place drop, and the inner Vec leaked once
+/// per call. Routing the gate through the record-aware `ty_owns_heap_mir`
+/// authority sees `Boxed`'s `payload: Vec<i64>` field and emits the drop.
+fn enum_composite_record_payload_source() -> String {
+    format!(
+        "\
+type Boxed {{ payload: Vec<i64> }}
+
+enum Wrap {{ A(Boxed) }}
+
+fn build(n: i64) -> i64 {{
+    let inner: Vec<i64> = Vec::new();
+    inner.push(n);
+    inner.push(n + 1);
+    let w: Wrap = Wrap::A(Boxed {{ payload: inner }});
+    match w {{
+        Wrap::A(_) => n,
+    }}
+}}
+
+fn main() -> i64 {{
+    var total: i64 = 0;
+    for i in 0..{ITERATIONS} {{
+        total = total + build(i);
+    }}
+    if total != {expected} {{ return 74; }}
+    0
+}}
+",
+        expected = (0..ITERATIONS).sum::<usize>()
+    )
+}
+
 /// No-double-free pin: a `(Boxed, i64)` plus a co-resident scalar Vec in one
 /// frame. The Boxed-in-tuple member-drop must run EXACTLY once and free the
 /// inner Vec; a double-free or wrong-ABI free crashes under the poisoned
@@ -315,6 +391,36 @@ fn record_in_tuple_no_leak() {
 #[test]
 fn nested_record_in_tuple_no_leak() {
     assert_no_leak_over_control("nested_record_in_tuple", &nested_record_in_tuple_source());
+}
+
+/// `(Holder<i64>, i64)` where `Holder<T> { payload: Vec<i64> }` -- the
+/// generic-record DIV-1 shape. The heap leaf is the record's own field (not a
+/// type parameter of the use site), only visible by keying `record_field_orders`
+/// through `Holder`'s `$$`-mangled registry key. Pre-fix the MIR adapter keyed
+/// the lookup with the `Holder<i64>` recursion VISIT key, missed the registry,
+/// classified the record non-owning, and leaked the inner Vec while codegen
+/// (correctly keyed) classified it owning -- the MIR<->codegen adapter
+/// divergence DIV-1 closes. Reverting the adapter key fails this by
+/// >= `ITERATIONS` nodes.
+#[test]
+fn generic_record_in_tuple_no_leak() {
+    assert_no_leak_over_control("generic_record_in_tuple", &generic_record_in_tuple_source());
+}
+
+/// `enum Wrap { A(Boxed) }` where `Boxed { payload: Vec<i64> }` -- an enum
+/// variant carrying a heap-owning user record. Pre-fix the enum-composite drop
+/// gate (`ty_is_heap_owning_enum_composite`) consulted the record-blind
+/// `ty_contains_heap_owning`, classified the variant non-owning, and leaked the
+/// payload's inner Vec once per call. Routing the gate through the record-aware
+/// `ty_owns_heap_mir` authority sees `Boxed`'s `payload: Vec<i64>` field and
+/// emits the in-place drop. Reverting the routing fails this by >= `ITERATIONS`
+/// nodes.
+#[test]
+fn enum_composite_record_payload_no_leak() {
+    assert_no_leak_over_control(
+        "enum_composite_record_payload",
+        &enum_composite_record_payload_source(),
+    );
 }
 
 /// No-double-free pin: the `(Boxed, i64)` member-drop must run EXACTLY once and

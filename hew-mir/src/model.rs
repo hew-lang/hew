@@ -5448,6 +5448,36 @@ pub enum DropKind {
     /// `ElabDrop::drop_fn` must be `None`; the thunk is carried in-band by
     /// the env box itself, never resolved through the close-method dispatch.
     ClosurePair,
+    /// Function-scope drop of an `indirect enum` (spec §3.7.4) owned local.
+    /// An indirect-enum value is a single heap pointer to a tagged-union
+    /// node (`{ tag, payload }`), so the binding's alloca holds a `ptr`
+    /// (see `is_indirect_enum` / the codegen heap-allocation prologue). The
+    /// node's payload may itself hold child `indirect enum` pointers (a
+    /// recursive `Node(Tree, Tree)`), so the release is a tag-dispatched
+    /// recursive free: codegen loads the node pointer, null-checks it, frees
+    /// each owned child node first (by reading the active variant's tag and
+    /// recursing through the payload's indirect-enum fields), then
+    /// `hew_dealloc`s the node and null-stores the slot
+    /// (`raii-null-after-move`). The node's size/align come from the same
+    /// `is_indirect_enum` layout path the allocation prologue uses, so the
+    /// free can never select a mismatched (size, align) for the dealloc.
+    ///
+    /// `ElabDrop::drop_fn` must be `None`; the variant is self-describing
+    /// (the release symbol is the fixed `hew_dealloc`, the recursion is
+    /// derived from the paired [`ElabDrop::ty`]'s registered enum layout),
+    /// so the runtime-vs-user `resolve_drop_fn` dispatch is never consulted.
+    ///
+    /// The MIR elaborator emits this kind ONLY for an indirect-enum local
+    /// the fail-closed sole-owner derivation
+    /// (`derive_indirect_enum_drop_allowed`) proves still solely owns its
+    /// heap node at scope exit: a binding that is a destructure/projection
+    /// alias of a still-live parent node, that escapes (returned, moved into
+    /// an aggregate, passed by value to a callee — a borrow that does NOT
+    /// transfer ownership), or that is consumed/maybe-consumed on a path is
+    /// excluded so the node is freed by exactly one owner. A binding the
+    /// prover does not positively clear leaks (as before this kind); it
+    /// never double-frees.
+    IndirectEnum,
 }
 
 /// Storage discriminator for `DropKind::TraitObject`. Distinguishes the

@@ -1660,6 +1660,7 @@ fn render_drop_kind(kind: DropKind) -> String {
         DropKind::EnumInPlace => "enum_in_place".to_string(),
         DropKind::TupleInPlace => "tuple_in_place".to_string(),
         DropKind::ClosurePair => "closure_pair".to_string(),
+        DropKind::IndirectEnum => "indirect_enum".to_string(),
     }
 }
 

@@ -29483,6 +29483,31 @@ fn elaborate(
         }
     }
 
+    // Indirect-enum heap-node sole-owner allow-set (spec §3.7.4). A constructed
+    // indirect-enum node earns its recursive `hew_dealloc` release UNLESS the
+    // fail-closed structural proof shows it is an alias (a destructure binder),
+    // a child handed to a parent node, returned, or consumed. Because indirect
+    // enums are borrow-on-use everywhere (`intent = Read`), the consume-dataflow
+    // alone cannot prove sole ownership — this derivation supplies the
+    // construction-site + parent-ingress proof; the `returned_aggregate_members`
+    // skip and the `Consumed`/`MaybeConsumed` exit filter below complete it.
+    let mut indirect_enum_drop_allowed = derive_indirect_enum_drop_allowed(
+        &checked.blocks,
+        &builder.owned_locals,
+        &builder.binding_locals,
+        &builder.enum_layouts,
+    );
+    for states in dataflow_result.exit_states.values() {
+        for (binding, state) in states {
+            if matches!(
+                state,
+                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+            ) {
+                indirect_enum_drop_allowed.remove(binding);
+            }
+        }
+    }
+
     let lifo_drops = build_lifo_drops(
         &builder.owned_locals,
         &builder.binding_locals,
@@ -29502,6 +29527,7 @@ fn elaborate(
         &closure_pair_drop_allowed,
         &closure_vec_drop_allowed,
         &plain_vec_drop_allowed,
+        &indirect_enum_drop_allowed,
         &builder.resource_drop_flags,
     );
     let (elab_blocks, drop_plans) = enumerate_exits(
@@ -29768,6 +29794,23 @@ fn expected_drop_kind_for_validation(drop: &ElabDrop) -> DropKind {
         DropKind::ClosurePair => {
             if matches!(drop.place, Place::Local(_)) && ty_is_closure_pair(&drop.ty) {
                 DropKind::ClosurePair
+            } else {
+                drop_kind_for(drop.place, &drop.ty, None)
+            }
+        }
+        // Indirect-enum heap-node drops are keyed by both kind and
+        // `ElabDrop::ty` (the enum identity selects the node size/align and the
+        // recursive child-free walk), while the place is an ordinary stack
+        // `Local` holding the heap pointer. `drop_kind_for` is layout-blind (it
+        // has no `enum_layouts` to tell an indirect enum from an inline one), so
+        // the indirect-enum kind is validated here by shape rather than
+        // re-derived through the dispatcher: accept the dedicated kind on a local
+        // `Named` place; any other shape re-derives via the dispatcher so a
+        // non-indirect-enum place cannot silently carry an `IndirectEnum` kind.
+        DropKind::IndirectEnum => {
+            if matches!(drop.place, Place::Local(_)) && matches!(&drop.ty, ResolvedTy::Named { .. })
+            {
+                DropKind::IndirectEnum
             } else {
                 drop_kind_for(drop.place, &drop.ty, None)
             }
@@ -36126,6 +36169,199 @@ fn dedup_whole_value_handoff(
     }
 }
 
+/// True when `name` is an `indirect enum` registered in `enum_layouts` — the
+/// MIR-side mirror of the codegen `is_indirect_enum` authority. An indirect
+/// enum is heap-boxed: every binding of the type holds a `ptr` to a tagged-union
+/// node, so its scope-exit release is a `hew_dealloc` of that node (recursing
+/// into owned child nodes), not an inline composite drop.
+#[must_use]
+fn name_is_indirect_enum(name: &str, enum_layouts: &[crate::model::EnumLayout]) -> bool {
+    let short = short_name(name);
+    enum_layouts
+        .iter()
+        .find(|el| el.name == name || short_name(&el.name) == short)
+        .is_some_and(|el| el.is_indirect)
+}
+
+/// True when `ty` is an `indirect enum` type.
+#[must_use]
+fn ty_is_indirect_enum(ty: &ResolvedTy, enum_layouts: &[crate::model::EnumLayout]) -> bool {
+    matches!(ty, ResolvedTy::Named { name, .. } if name_is_indirect_enum(name, enum_layouts))
+}
+
+/// Fail-closed sole-owner allow-set for `indirect enum` heap-node bindings
+/// (spec §3.7.4). An indirect-enum local is a single heap `ptr` to a
+/// tagged-union node; its scope-exit release (`DropKind::IndirectEnum`) frees
+/// that node and recurses into owned child nodes. Because the move-checker
+/// treats every by-value indirect-enum use as a borrow (`intent = Read`
+/// everywhere — neither a return nor a call-argument marks the binding
+/// `Consumed`), the consume-dataflow alone cannot prove sole ownership; this
+/// derivation supplies the structural proof, defaulting every unproven binding
+/// to EXCLUSION (leak, never double-free).
+///
+/// A binding is admitted ONLY IF all hold:
+///
+///  1. it has a `Place::Local` slot whose type is an indirect enum, AND
+///  2. its local is a CONSTRUCTION site — it is written through a tag/variant
+///     place (`Move { dest: MachineTag/MachineVariant/EnumTag/EnumVariant
+///     (local), .. }`), i.e. THIS binding allocated and populated the node.
+///     A binding that only RECEIVES a pointer (a destructure binder
+///     `l = move mvar.payload`, a move-temp, a call-result binding) is not a
+///     construction site and is excluded: it aliases a node another owner (the
+///     parent node, or the callee) is responsible for, AND
+///  3. its node is NOT moved INTO a parent node's variant payload
+///     (`Move { dest: MachineVariant/EnumVariant { parent, .. }, src: this }`):
+///     a child wired into a parent `Node(child, …)` is owned by the parent now
+///     — the parent's recursive free reclaims it, so the child must not also
+///     fire its own free (the recursive-free double-free this rule prevents).
+///
+/// The caller (`elaborate`) folds in the remaining fail-closed filters that
+/// every other drop class shares: the `returned_aggregate_members` skip
+/// (a node handed to the caller through the `ReturnSlot` or a returned
+/// aggregate), and the dataflow `Consumed`/`MaybeConsumed` exit-state removal.
+///
+/// Every classifier consulted (`instr_*` Move-dest shapes) is a
+/// compiler-exhaustive match over `Instr`, so a future construction- or
+/// ingress-shaped instruction cannot be introduced without a classification
+/// decision whose default direction is exclusion (a leak, never a double-free).
+///
+/// LESSONS: drop-allowset-from-value-flow (P0 — the default is no-drop; a drop
+/// is earned only by a positive sole-owner proof), boundary-fail-closed,
+/// cleanup-all-exits, raii-null-after-move.
+#[must_use]
+fn derive_indirect_enum_drop_allowed(
+    blocks: &[BasicBlock],
+    owned_locals: &[(BindingId, String, ResolvedTy)],
+    binding_locals: &HashMap<BindingId, Place>,
+    enum_layouts: &[crate::model::EnumLayout],
+) -> HashSet<BindingId> {
+    // Pass 1 — classify the construction sites, the parent-ingress sources, and
+    // the whole-value Move edges. A constructed node lands in a tag/variant
+    // place's local, but the BINDING's slot is usually a later SSA local the
+    // node is `Move`d into (`_ctor = Node(..); _binding = move _ctor`), so node
+    // ownership must be PROPAGATED forward through Move to find the binding's
+    // resting slot.
+    let mut construction_sites: HashSet<u32> = HashSet::new();
+    let mut moved_into_parent_node: HashSet<u32> = HashSet::new();
+    // Whole-value Move edges `src -> dest` between plain locals (the node-pointer
+    // flow graph). Tag/variant writes are construction, not flow, so excluded.
+    let mut move_edges: Vec<(u32, u32)> = Vec::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            if let Instr::Move { dest, src } = instr {
+                match dest {
+                    Place::MachineTag(l)
+                    | Place::EnumTag(l)
+                    | Place::MachineVariant { local: l, .. }
+                    | Place::EnumVariant { local: l, .. } => {
+                        construction_sites.insert(*l);
+                        // The SOURCE of a variant-payload store is a child node
+                        // wired into the parent `*l`'s node — the parent owns it.
+                        if matches!(
+                            dest,
+                            Place::MachineVariant { .. } | Place::EnumVariant { .. }
+                        ) {
+                            if let Some(child) = base_local(*src) {
+                                moved_into_parent_node.insert(child);
+                            }
+                        }
+                    }
+                    Place::Local(dl) => {
+                        if let Some(sl) = base_local(*src) {
+                            if sl != *dl {
+                                move_edges.push((sl, *dl));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // Pass 2 — forward-propagate node ownership from each construction-site
+    // local along the Move edges to a fixpoint. `owns_node` is the set of
+    // locals that hold a freshly-constructed node (the node's flow closure).
+    let mut owns_node: HashSet<u32> = construction_sites.clone();
+    loop {
+        let mut changed = false;
+        for &(sl, dl) in &move_edges {
+            if owns_node.contains(&sl) && owns_node.insert(dl) {
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // Pass 3 — the locals that own a binding's resting slot. Only locals that
+    // back an owned indirect-enum binding are candidates.
+    let mut local_to_binding: HashMap<u32, BindingId> = HashMap::new();
+    for (binding, _name, ty) in owned_locals {
+        if !ty_is_indirect_enum(ty, enum_layouts) {
+            continue;
+        }
+        if let Some(place) = binding_locals.get(binding) {
+            if let Some(local) = base_local(*place) {
+                local_to_binding.insert(local, *binding);
+            }
+        }
+    }
+
+    let mut allowed: HashSet<BindingId> = HashSet::new();
+    for (&local, &binding) in &local_to_binding {
+        // (a) the binding's slot must hold a freshly-constructed node, AND
+        // (b) that node must not have been handed to a parent node (the parent's
+        //     recursive free owns it). A binding whose node was moved into a
+        //     parent (a child `let left = ...; Node(left, right)`) is excluded.
+        if !owns_node.contains(&local) || moved_into_parent_node.contains(&local) {
+            continue;
+        }
+        allowed.insert(binding);
+    }
+
+    // Pass 4 — fan-out / hand-off collapse (fail-closed). If the SAME node flows
+    // into two admitted binding slots (whole-value rebind `let u = t;`, or a
+    // construction-site local that is itself a separate admitted binding), only
+    // one may free it and we cannot prove which — so drop BOTH (leak, never
+    // double-free). Union-find over the undirected Move graph restricted to
+    // admitted bindings' locals.
+    let admitted_locals: HashMap<u32, BindingId> = allowed
+        .iter()
+        .filter_map(|b| {
+            binding_locals
+                .get(b)
+                .and_then(|p| base_local(*p))
+                .map(|l| (l, *b))
+        })
+        .collect();
+    if admitted_locals.len() > 1 {
+        let mut parent: HashMap<u32, u32> = HashMap::new();
+        for &(s, d) in &move_edges {
+            let rs = move_component_root(&mut parent, s);
+            let rd = move_component_root(&mut parent, d);
+            if rs != rd {
+                parent.insert(rs, rd);
+            }
+        }
+        let mut component_admitted: HashMap<u32, Vec<BindingId>> = HashMap::new();
+        for (&local, &binding) in &admitted_locals {
+            let root = move_component_root(&mut parent, local);
+            component_admitted.entry(root).or_default().push(binding);
+        }
+        for bindings in component_admitted.values() {
+            if bindings.len() > 1 {
+                for binding in bindings {
+                    allowed.remove(binding);
+                }
+            }
+        }
+    }
+
+    allowed
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "drop elaboration threads the binding ledgers, the per-class \
@@ -36157,6 +36393,7 @@ fn build_lifo_drops(
     closure_pair_drop_allowed: &HashSet<BindingId>,
     closure_vec_drop_allowed: &HashSet<BindingId>,
     plain_vec_drop_allowed: &HashSet<BindingId>,
+    indirect_enum_drop_allowed: &HashSet<BindingId>,
     resource_drop_flags: &HashMap<BindingId, Place>,
 ) -> Vec<ElabDrop> {
     let mut drops = Vec::new();
@@ -36375,6 +36612,38 @@ fn build_lifo_drops(
                 ty: ty.clone(),
                 drop_fn: None,
                 kind: DropKind::EnumInPlace,
+                guard: None,
+            });
+            continue;
+        }
+        // `indirect enum` heap-node local (spec §3.7.4). An indirect enum is a
+        // single heap `ptr` to a tagged-union node, so it is `ValueClass::
+        // Unknown` and would otherwise fall into the no-drop arm below (leak the
+        // heap node — and, for a recursive `Node(Tree, Tree)`, every child node
+        // too). Intercept BEFORE the value-class match (mirroring the
+        // enum-composite arm) and emit the recursive `DropKind::IndirectEnum`
+        // free ONLY when the fail-closed sole-owner derivation proved this
+        // binding constructed and still solely owns its node at scope exit
+        // (`indirect_enum_drop_allowed`): a destructure/alias binder, a child
+        // wired into a parent node, a returned node, and a consumed node are all
+        // excluded so the node is freed by exactly one owner. A binding the
+        // prover did not clear leaks (as before this kind); it never
+        // double-frees.
+        // LESSONS: drop-allowset-from-value-flow, cleanup-all-exits,
+        // raii-null-after-move, boundary-fail-closed.
+        if indirect_enum_drop_allowed.contains(binding) && ty_is_indirect_enum(ty, enum_layouts) {
+            let place = *binding_locals.get(binding).unwrap_or_else(|| {
+                panic!(
+                    "build_lifo_drops invariant: indirect-enum binding {binding:?} is in \
+                     owned_locals but missing from binding_locals; lowering must wire a \
+                     Place before the drop-elaboration pass observes the binding"
+                )
+            });
+            drops.push(ElabDrop {
+                place,
+                ty: ty.clone(),
+                drop_fn: None,
+                kind: DropKind::IndirectEnum,
                 guard: None,
             });
             continue;
@@ -38112,6 +38381,7 @@ mod slice3_invariants {
                     | DropKind::EnumInPlace
                     | DropKind::TupleInPlace
                     | DropKind::ClosurePair
+                    | DropKind::IndirectEnum
                     | DropKind::TraitObject { .. } => {}
                 }
             }

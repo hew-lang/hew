@@ -1288,70 +1288,200 @@ pub(crate) fn find_record_layout<'a>(
     }
 }
 
-/// Returns `true` if the given `ResolvedTy` (or any type reachable through
-/// its generic arguments or enum variant field types) contains a heap-owning
-/// type such as `string` or `Bytes`.
+/// Record-BLIND entry point to the heap-ownership authority [`ty_owns_heap`]:
+/// answers over enum/machine variant payloads + tuple/array/type-arg recursion +
+/// the builtin leaf set, but does NOT consult user record field types (no record
+/// registry is available from an `[EnumLayout]` slice alone).
 ///
-/// This is the SINGLE authority for "does this composite carry an owned heap
-/// payload?" — both the MIR drop elaborator (which uses it to decide whether
-/// an enum-composite binding earns a tag-aware `DropKind::EnumInPlace`) and
-/// the codegen composite-return boundary call through here, so the two can
-/// never disagree about which return/binding shapes own heap memory
-/// (LESSONS: dedup-semantic-boundary).
-///
-/// ## Coverage
-///
-/// Two independent paths may flag a heap-owning result:
-///
-/// 1. **Type arguments** — `Option<string>`, `Result<i64, string>`. Caught by
-///    the `args` walk first; returns early.
-/// 2. **Non-param variant fields** — a generic enum whose type args are all
-///    bitcopy but a separate variant carries a concrete `string` field, e.g.
-///    `Envelope<i64>` where `enum Envelope<T> { Data(T), Message(string) }`.
-///    Caught by inspecting the monomorphised `EnumLayout` regardless of
-///    whether `args` is empty.
-///
-/// Layout lookup uses the same mangling scheme as `register_enum_layouts`:
-/// - Non-generic (args empty): bare name or `short_name` fallback.
-/// - Generic (args non-empty): `mangle(short_name, args)` → e.g. `Envelope$$i64`.
+/// Kept for the call sites whose only layout context is `enum_layouts` and which
+/// cannot transitively reach a heap-owning user record (the codegen
+/// composite-return boundary, which gates on `record_layouts` membership FIRST
+/// and only consults this for the already-confirmed-record case). Every site
+/// that may reach a nested user record carrying a heap field instead routes
+/// through [`ty_owns_heap`] with a record-aware adapter — see the MIR
+/// [`MirHeapLayouts`] adapter — so a record-wrapped heap leaf is never missed
+/// (DIV-1).
 #[must_use]
 pub fn ty_contains_heap_owning(ty: &ResolvedTy, enum_layouts: &[EnumLayout]) -> bool {
-    ty_contains_heap_owning_inner(ty, enum_layouts, &mut HashSet::new())
+    ty_owns_heap(ty, &EnumLayoutsOnly(enum_layouts))
 }
 
-fn ty_contains_heap_owning_inner(
+/// Record-aware [`HeapOwnershipLayouts`] adapter for the MIR layer.
+///
+/// Supplies record field types from the `Builder`'s `record_field_orders`
+/// (name → ordered `(field_name, ty)` pairs) and enum/machine variant payloads
+/// from the `Builder`'s `enum_layouts` (the `classification_enum_layouts` view,
+/// which already folds machine state payloads in as enum views — so the MIR
+/// layer needs no separate machine-layout axis). This is the adapter every MIR
+/// drop-allow / move / double-free analysis uses so its "owns heap" verdict is
+/// record-aware (DIV-1) and shares the one leaf set (DIV-2).
+#[derive(Debug)]
+pub struct MirHeapLayouts<'a, S = std::collections::hash_map::RandomState> {
+    pub record_field_orders: &'a HashMap<String, Vec<(String, ResolvedTy)>, S>,
+    pub enum_layouts: &'a [EnumLayout],
+}
+
+impl<S: std::hash::BuildHasher> HeapOwnershipLayouts for MirHeapLayouts<'_, S> {
+    fn record_field_tys(&self, name: &str, args: &[ResolvedTy]) -> Option<Vec<ResolvedTy>> {
+        let key = record_or_enum_visit_key(name, args);
+        self.record_field_orders
+            .get(&key)
+            .or_else(|| self.record_field_orders.get(name))
+            .or_else(|| self.record_field_orders.get(short_name(name)))
+            .map(|fields| fields.iter().map(|(_, ty)| ty.clone()).collect())
+    }
+
+    fn enum_variant_field_tys(
+        &self,
+        name: &str,
+        args: &[ResolvedTy],
+    ) -> Option<Vec<Vec<ResolvedTy>>> {
+        find_enum_layout(name, args, self.enum_layouts).map(|layout| {
+            layout
+                .variants
+                .iter()
+                .map(|v| v.field_tys.clone())
+                .collect()
+        })
+    }
+}
+
+/// Record-aware MIR convenience: `ty_owns_heap` over a [`MirHeapLayouts`] built
+/// from the loose `record_field_orders` + `enum_layouts` borrows the MIR free
+/// functions (the `derive_*` drop-allow derivations, `aggregate_ingress_*`,
+/// `ty_is_heap_owning_tuple`) already hold. Closes DIV-1 at every former
+/// record-blind call site without converting those free functions to methods.
+#[must_use]
+pub fn ty_owns_heap_mir<S: std::hash::BuildHasher>(
     ty: &ResolvedTy,
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>, S>,
     enum_layouts: &[EnumLayout],
-    visited_enum_layouts: &mut HashSet<String>,
+) -> bool {
+    ty_owns_heap(
+        ty,
+        &MirHeapLayouts {
+            record_field_orders,
+            enum_layouts,
+        },
+    )
+}
+
+/// Layout-lookup input for the single heap-ownership authority [`ty_owns_heap`].
+///
+/// The MIR drop elaborator, the MIR move/double-free analyses, and the codegen
+/// owned-Vec / composite-return boundaries each answer the SAME structural
+/// question — "does this type transitively own heap memory?" — over the SAME
+/// leaf set, but each holds its layout registries in a different shape: the MIR
+/// `Builder` keys record fields by `record_field_orders` (name → ordered
+/// `(field_name, ty)` pairs) and carries machine state payloads folded into its
+/// `enum_layouts` (the `classification_enum_layouts` view); codegen's `FnCtx`
+/// keys record fields by `record_field_resolved_tys` and carries machine state
+/// payloads in a separate `machine_layouts` registry. This trait is the single
+/// seam over those shapes so [`ty_owns_heap`] is written once and every consumer
+/// routes through it — record-aware, enum-aware, machine-aware, with one leaf
+/// set — closing the divergence class where the old parallel walkers
+/// (`ty_contains_heap_owning`, `named_elem_owns_heap`,
+/// `resolved_ty_contains_heap_leaf`) drifted: one consulted record fields and
+/// another did not, one treated a `CancellationToken`/`Generator` as a heap
+/// leaf and another did not (`dedup-semantic-boundary`).
+pub trait HeapOwnershipLayouts {
+    /// Field types of a registered user record, resolved from a
+    /// `Named { name, args }` (substituted concrete types in declaration order).
+    /// `None` when `name`/`args` resolve to no user record layout in scope.
+    fn record_field_tys(&self, name: &str, args: &[ResolvedTy]) -> Option<Vec<ResolvedTy>>;
+
+    /// Variant payload field-type lists of a registered enum (or machine, whose
+    /// state payloads the consumer surfaces here too). `None` when `name`/`args`
+    /// resolve to no enum/machine layout in scope. The outer `Vec` is one entry
+    /// per variant; the inner is that variant's payload field types.
+    fn enum_variant_field_tys(
+        &self,
+        name: &str,
+        args: &[ResolvedTy],
+    ) -> Option<Vec<Vec<ResolvedTy>>>;
+}
+
+/// The SINGLE structural heap-ownership authority for the whole compiler.
+///
+/// Answers "does `ty` transitively own heap memory?" — `true` when `ty` is, or
+/// any type reachable through its record fields, enum/machine variant payloads,
+/// tuple/array/slice elements, or generic type arguments is, a heap-owning
+/// leaf. The leaf set is the `ValueClass::of_ty` heap classification made
+/// structural: `string`, `Bytes`, `CancellationToken`, `Generator<Y, R>`,
+/// `AsyncGenerator<Y>`, and the `Vec` / `HashMap` / `HashSet` collection
+/// handles (each owns a heap buffer / runtime handle regardless of its element
+/// type — even `Vec<i64>` owns its backing buffer, even `Generator<i64, ()>`
+/// owns its context + OS thread). A record/enum/tuple FIELD of one of these
+/// makes the whole composite heap-owning.
+///
+/// Every "does this own heap" decision — the MIR drop elaborator's composite
+/// drop-allow derivation, the move/double-free analyses, the owned-Vec element
+/// ABI selection, and the codegen composite-return + owned-Vec-release
+/// boundaries — routes through this one walker (over its own
+/// [`HeapOwnershipLayouts`] adapter) so the getter, constructor, and release
+/// paths cannot reach different verdicts (the `#2191`/`#2150` element-ABI
+/// congruence) and a heap-owning record field can no longer be silently missed
+/// at a call site that forgot a separate record-aware check
+/// (`dedup-semantic-boundary`, `drop-allowset-from-value-flow`).
+#[must_use]
+pub fn ty_owns_heap(ty: &ResolvedTy, layouts: &impl HeapOwnershipLayouts) -> bool {
+    ty_owns_heap_inner(ty, layouts, &mut HashSet::new())
+}
+
+/// [`HeapOwnershipLayouts`] adapter that supplies enum/machine variant payloads
+/// from an `[EnumLayout]` slice but NO record fields. Backs the legacy
+/// `ty_contains_heap_owning(ty, enum_layouts)` entry point, which is
+/// record-blind by signature — callers that must also consult record fields
+/// (every MIR drop-allow / move analysis) use a record-aware adapter instead.
+struct EnumLayoutsOnly<'a>(&'a [EnumLayout]);
+
+impl HeapOwnershipLayouts for EnumLayoutsOnly<'_> {
+    fn record_field_tys(&self, _name: &str, _args: &[ResolvedTy]) -> Option<Vec<ResolvedTy>> {
+        None
+    }
+
+    fn enum_variant_field_tys(
+        &self,
+        name: &str,
+        args: &[ResolvedTy],
+    ) -> Option<Vec<Vec<ResolvedTy>>> {
+        find_enum_layout(name, args, self.0).map(|layout| {
+            layout
+                .variants
+                .iter()
+                .map(|v| v.field_tys.clone())
+                .collect()
+        })
+    }
+}
+
+fn ty_owns_heap_inner(
+    ty: &ResolvedTy,
+    layouts: &impl HeapOwnershipLayouts,
+    visited: &mut HashSet<String>,
 ) -> bool {
     match ty {
-        // `string` / `Bytes` own a refcounted buffer. A `CancellationToken` is
-        // an owned, ref-counted runtime handle whose sole release is
-        // `hew_cancel_token_release`. A `Generator<Y, R>` / `AsyncGenerator<Y>`
-        // is an owned, affine `*mut HewGenCtx` handle whose sole release is
-        // `hew_gen_free` (cancel-if-running, join the generator thread, drain
-        // unconsumed yields, free the context). The generator handles are
-        // heap-owning leaves regardless of their generic arguments: a
-        // `Generator<i64, ()>` owns its context + OS thread even though `i64` is
-        // bit-copy. Without these arms a composite carrying such a handle (e.g.
-        // `(Generator<i64, ()>, i64)`) is mis-classified non-heap-owning, its
-        // member-drop never fires, and the context + thread leak. The
-        // value-class authority (`value_class::of_ty`) already treats all of
-        // these as heap-owning (`CowValue` / `AffineResource`); this is the
-        // matching composite-recursion leaf so the two cannot disagree
-        // (`dedup-semantic-boundary`).
+        // The single heap-leaf set, identical to `ValueClass::of_ty`'s heap
+        // classification (`dedup-semantic-boundary`):
         //
-        // A `Vec<T>` / `HashMap<K, V>` / `HashSet<T>` is likewise a heap-owning
-        // handle regardless of its element types: even `Vec<i64>` owns its
-        // backing buffer (`hew_vec_free` releases it). A record/enum/tuple FIELD
-        // of such a type therefore makes the whole composite heap-owning — e.g.
-        // `type Boxed { payload: Vec<i64> }` owns heap through `payload` even
-        // though `i64` is BitCopy. Without the collection arm the type-arg
-        // recursion below answers `false` (the args are BitCopy), the composite
-        // is mis-classified non-heap-owning, its `Vec<Boxed>` is built as a plain
-        // (shallow `hew_vec_free`) vec, and the per-element `payload` buffers
-        // leak. `ValueClass::of_ty` already classifies these builtins as
-        // `CowValue` for any element type, so the two authorities must agree.
+        // - `string` / `Bytes` own a refcounted buffer.
+        // - `CancellationToken` is an owned, ref-counted runtime handle whose
+        //   sole release is `hew_cancel_token_release`.
+        // - `Generator<Y, R>` / `AsyncGenerator<Y>` is an owned, affine
+        //   `*mut HewGenCtx` handle (context + OS thread) whose sole release is
+        //   `hew_gen_free` — heap-owning regardless of its generic arguments
+        //   (`Generator<i64, ()>` owns its context + thread even though `i64`
+        //   is bit-copy).
+        // - `Vec<T>` / `HashMap<K, V>` / `HashSet<T>` owns a heap buffer for
+        //   ANY element type — `Vec<i64>` owns its `hew_vec_free`-released
+        //   backing buffer. A record/enum/tuple field of such a type therefore
+        //   makes the whole composite heap-owning (`type Boxed { payload:
+        //   Vec<i64> }` owns heap through `payload` even though `i64` is
+        //   BitCopy).
+        //
+        // `value_class::of_ty` classifies all of these as `CowValue` /
+        // `AffineResource`; this is the matching composite-recursion leaf so
+        // the two authorities cannot disagree.
         ResolvedTy::String
         | ResolvedTy::Bytes
         | ResolvedTy::CancellationToken
@@ -1367,45 +1497,74 @@ fn ty_contains_heap_owning_inner(
             ..
         } => true,
         ResolvedTy::Named { name, args, .. } => {
-            // 1. Check type arguments first (fast path: Option<string>, etc.)
+            // 1. Type arguments first (fast path: `Option<string>`, etc.).
             if args
                 .iter()
-                .any(|arg| ty_contains_heap_owning_inner(arg, enum_layouts, visited_enum_layouts))
+                .any(|arg| ty_owns_heap_inner(arg, layouts, visited))
             {
                 return true;
             }
-            // 2. Inspect the enum layout's variant field types directly.
-            //    Covers non-param heap-owning fields in generic enums
-            //    (e.g. `Envelope<i64>` where `Message(string)` is unrelated
-            //    to the type parameter `T`). `find_enum_layout` is the single
-            //    lookup authority — it shortens the type-arg spine before
-            //    mangling so a qualified payload (`Envelope<lmonobox.Box>`)
-            //    keys the registered `Envelope$$Box`, never `Envelope$$lmonobox.Box`.
-            let found = find_enum_layout(name, args, enum_layouts);
-            if let Some(layout) = found {
-                if !visited_enum_layouts.insert(layout.name.clone()) {
-                    // The checker rejects recursive value types; if one reaches
-                    // elaboration anyway, force the fail-closed path.
+            // 2. Record fields (DIV-1: a bare nested user-record carrying a heap
+            //    field, e.g. `type Inner { payload: Vec<i64> }`, that the old A
+            //    walker answered `false` for because it never looked up record
+            //    layouts). The consumer's adapter substitutes the field types.
+            if let Some(fields) = layouts.record_field_tys(name, args) {
+                let key = record_or_enum_visit_key(name, args);
+                if !visited.insert(key.clone()) {
+                    // Recursive value type: the checker rejects these; force the
+                    // fail-closed path so the drop fires.
                     return true;
                 }
-                let contains_heap_owning = layout.variants.iter().any(|v| {
-                    v.field_tys.iter().any(|ft| {
-                        ty_contains_heap_owning_inner(ft, enum_layouts, visited_enum_layouts)
-                    })
+                let owns = fields
+                    .iter()
+                    .any(|ft| ty_owns_heap_inner(ft, layouts, visited));
+                visited.remove(&key);
+                if owns {
+                    return true;
+                }
+            }
+            // 3. Enum / machine variant payloads. Covers non-param heap-owning
+            //    fields in generic enums (`Envelope<i64>` where a separate
+            //    `Message(string)` variant is unrelated to the type parameter).
+            if let Some(variants) = layouts.enum_variant_field_tys(name, args) {
+                let key = record_or_enum_visit_key(name, args);
+                if !visited.insert(key.clone()) {
+                    return true;
+                }
+                let owns = variants.iter().any(|fields| {
+                    fields
+                        .iter()
+                        .any(|ft| ty_owns_heap_inner(ft, layouts, visited))
                 });
-                visited_enum_layouts.remove(&layout.name);
-                return contains_heap_owning;
+                visited.remove(&key);
+                if owns {
+                    return true;
+                }
             }
             false
         }
         ResolvedTy::Tuple(elems) => elems
             .iter()
-            .any(|e| ty_contains_heap_owning_inner(e, enum_layouts, visited_enum_layouts)),
+            .any(|e| ty_owns_heap_inner(e, layouts, visited)),
         ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
-            ty_contains_heap_owning_inner(inner, enum_layouts, visited_enum_layouts)
+            ty_owns_heap_inner(inner, layouts, visited)
         }
         _ => false,
     }
+}
+
+/// Visited-set key for a `Named { name, args }` record/enum recursion guard.
+///
+/// A coarse, mangle-free key (`short_name` + arity) — the checker rejects
+/// recursive value types, so this guard only needs to terminate on a malformed
+/// input that reached elaboration anyway, where the fail-closed `true` is the
+/// safe answer (the drop fires). It deliberately does NOT hand-roll the
+/// `mangle(.., args)` layout key (that authority is `find_enum_layout` /
+/// `find_record_layout`); over-guarding two distinct instantiations of one
+/// generic to the same key is harmless for a recursion guard and never produces
+/// a wrong layout lookup, because the lookup itself happens in the adapters.
+fn record_or_enum_visit_key(name: &str, args: &[ResolvedTy]) -> String {
+    format!("{}/{}", short_name(name), args.len())
 }
 
 /// Returns `true` if `ty` is, or transitively contains, a `#[opaque]` runtime
@@ -5729,6 +5888,95 @@ mod heap_owning_tests {
         // still be non-heap-owning.
         let tuple = ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::Bool]);
         assert!(!ty_contains_heap_owning(&tuple, &[]));
+    }
+
+    // ── canonical authority: record-aware + shared leaf set ─────────────────
+
+    fn vec_i64() -> ResolvedTy {
+        ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::I64])
+    }
+
+    /// `record_field_orders` map with one record `Boxed { payload: Vec<i64> }`.
+    fn boxed_record_orders() -> HashMap<String, Vec<(String, ResolvedTy)>> {
+        let mut orders = HashMap::new();
+        orders.insert(
+            "Boxed".to_string(),
+            vec![("payload".to_string(), vec_i64())],
+        );
+        orders
+    }
+
+    #[test]
+    fn record_blind_entry_misses_heap_record_field() {
+        // The `[EnumLayout]`-only entry point cannot reach a user record's
+        // fields — `Boxed` resolves to no enum layout, so it answers `false`.
+        // This is WHY DIV-1 existed: any site that only had `enum_layouts` was
+        // record-blind. (Pins the documented limitation of the back-compat
+        // wrapper, NOT a regression — the record-aware path below is the fix.)
+        let boxed = ResolvedTy::named_user("Boxed", vec![]);
+        assert!(!ty_contains_heap_owning(&boxed, &[]));
+    }
+
+    #[test]
+    fn record_aware_authority_sees_heap_record_field() {
+        // DIV-1 fix: the canonical authority over a record-aware adapter sees
+        // `Boxed`'s `payload: Vec<i64>` field and classifies `Boxed` heap-owning.
+        let boxed = ResolvedTy::named_user("Boxed", vec![]);
+        assert!(ty_owns_heap_mir(&boxed, &boxed_record_orders(), &[]));
+    }
+
+    #[test]
+    fn record_aware_authority_sees_heap_record_field_inside_tuple() {
+        // The exact DIV-1 leak shape proven at runtime: `(Boxed, i64)` where
+        // `Boxed { payload: Vec<i64> }`. A record-blind walker answers `false`
+        // and the tuple member-drop never frees the inner Vec.
+        let boxed = ResolvedTy::named_user("Boxed", vec![]);
+        let tuple = ResolvedTy::Tuple(vec![boxed, ResolvedTy::I64]);
+        assert!(ty_owns_heap_mir(&tuple, &boxed_record_orders(), &[]));
+        // ... while a bit-copy record field stays non-owning.
+        let mut plain = HashMap::new();
+        plain.insert(
+            "Point".to_string(),
+            vec![
+                ("x".to_string(), ResolvedTy::I64),
+                ("y".to_string(), ResolvedTy::I64),
+            ],
+        );
+        let point = ResolvedTy::named_user("Point", vec![]);
+        let plain_tuple = ResolvedTy::Tuple(vec![point, ResolvedTy::I64]);
+        assert!(!ty_owns_heap_mir(&plain_tuple, &plain, &[]));
+    }
+
+    #[test]
+    fn record_carrying_cancellation_token_owns_heap() {
+        // DIV-2 + DIV-1 combined: a record field of `CancellationToken` must be
+        // seen as heap-owning through the canonical authority (the leaf set is
+        // shared, the record field is consulted).
+        let mut orders = HashMap::new();
+        orders.insert(
+            "Holder".to_string(),
+            vec![("token".to_string(), ResolvedTy::CancellationToken)],
+        );
+        let holder = ResolvedTy::named_user("Holder", vec![]);
+        assert!(ty_owns_heap_mir(&holder, &orders, &[]));
+    }
+
+    #[test]
+    fn token_and_generator_share_the_one_leaf_set() {
+        // DIV-2: the single leaf set classifies the affine runtime handles as
+        // heap-owning regardless of which adapter supplies layouts. Every
+        // consumer (MIR drop elaborator, codegen owned-vec) routes through this
+        // set, so none can silently disagree about a bare handle.
+        let layouts = MirHeapLayouts {
+            record_field_orders: &HashMap::new(),
+            enum_layouts: &[],
+        };
+        assert!(ty_owns_heap(&ResolvedTy::CancellationToken, &layouts));
+        assert!(ty_owns_heap(&generator_ty(), &layouts));
+        assert!(ty_owns_heap(&async_generator_ty(), &layouts));
+        // The exact DIV-2 element shape: `(Generator<i64,()>, i64)`.
+        let pair = ResolvedTy::Tuple(vec![generator_ty(), ResolvedTy::I64]);
+        assert!(ty_owns_heap(&pair, &layouts));
     }
 
     // ── ty_contains_unclonable_opaque (round-4 transitive authority) ────────

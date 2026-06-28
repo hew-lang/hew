@@ -1797,9 +1797,9 @@ fn ty_contains_unclonable_opaque_inner(
                     }
                 }
             }
-            // 4. Bit-copy actor-handle types: LocalPid<T>, ActorRef<T>, Actor<T>.
+            // 4. Bit-copy actor-handle type: LocalPid<T>.
             //    Placed AFTER the record/enum-layout lookups (steps 2-3) so a
-            //    user record/enum that genuinely shadows one of these names
+            //    user record/enum that genuinely shadows this name
             //    (proven by EXACT layout-name match, not short-name-only) is
             //    already handled above and never reaches this arm.
             //    Uses the `builtin` identity discriminator (authoritative) rather
@@ -1808,16 +1808,9 @@ fn ty_contains_unclonable_opaque_inner(
             //    here only if it ALSO has no layout in scope. With `builtin: None`
             //    the match below does NOT fire, so the args recursion (step 5)
             //    walks the type args and finds any opaque payload. Only a real
-            //    builtin handle (stamped `builtin: Some(ActorRef|Actor|LocalPid)`
-            //    by the checker) earns the bit-copy skip.
-            if matches!(
-                builtin,
-                Some(
-                    hew_types::BuiltinType::ActorRef
-                        | hew_types::BuiltinType::Actor
-                        | hew_types::BuiltinType::LocalPid
-                )
-            ) {
+            //    builtin handle (stamped `builtin: Some(LocalPid)` by the
+            //    checker) earns the bit-copy skip.
+            if matches!(builtin, Some(hew_types::BuiltinType::LocalPid)) {
                 return false;
             }
             // 5. Type arguments (generic builtins with no layout: Vec<T>,

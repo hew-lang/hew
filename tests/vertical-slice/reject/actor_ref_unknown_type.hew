@@ -1,0 +1,15 @@
+// Reject fixture: actor_ref_unknown_type — `ActorRef<T>` is not a known type.
+// The canonical actor-reference family is `LocalPid<A>` (in-process),
+// `RemotePid<A>` (cross-node), and `LambdaPid<M, R>` (lambda actors). Writing
+// `ActorRef<T>` as a type annotation resolves to an unknown type and fails
+// closed at the checker/MIR boundary rather than silently typechecking.
+//
+// Harness verb: hew check
+// Expected: rejected with `unknown type` for the unresolved `ActorRef` name.
+actor Greeter {
+    receive fn greet(name: string) {}
+}
+
+fn use_handle(g: ActorRef<Greeter>) {}
+
+fn main() {}

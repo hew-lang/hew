@@ -365,11 +365,10 @@ impl TraitRegistry {
                     RcFreeStatus::ContainsRc
                 }
             }
-            // ActorRef<T>/LocalPid<T>/RemotePid<T> are opaque identity references;
+            // LocalPid<T>/RemotePid<T> are opaque identity references;
             // their T parameter is phantom for rc-free structural checks.
             Ty::Named {
-                builtin:
-                    Some(BuiltinType::ActorRef | BuiltinType::LocalPid | BuiltinType::RemotePid),
+                builtin: Some(BuiltinType::LocalPid | BuiltinType::RemotePid),
                 ..
             } => RcFreeStatus::RcFree,
             // Heap-indirecting collections (`Vec`/`HashMap`/`HashSet`): the
@@ -665,7 +664,7 @@ impl TraitRegistry {
     /// Marker traits are derived automatically based on the structure of the type:
     /// - Primitives implement most marker traits
     /// - Composite types implement a trait if all their components do
-    /// - `ActorRef` is always `Send` and `Frozen`
+    /// - `LocalPid`/`RemotePid` are always `Send` and `Frozen`
     /// - Negative impls can override automatic derivation
     #[must_use]
     pub fn implements_marker(&self, ty: &Ty, marker: MarkerTrait) -> bool {
@@ -791,22 +790,9 @@ impl TraitRegistry {
                     | MarkerTrait::Resource
             ),
 
-            // ActorRef: always Send + Sync + Frozen + Copy (identity reference)
-            Ty::Named {
-                builtin: Some(BuiltinType::ActorRef),
-                ..
-            } => matches!(
-                marker,
-                MarkerTrait::Send
-                    | MarkerTrait::Sync
-                    | MarkerTrait::Frozen
-                    | MarkerTrait::Copy
-                    | MarkerTrait::Clone
-                    | MarkerTrait::Debug
-            ),
-
             // LocalPid<T>: process-local actor pid returned by `spawn`.
-            // Same marker set as ActorRef — an opaque identity reference, not a resource.
+            // An opaque identity reference, not a resource: Send + Sync + Frozen
+            // + Copy + Clone + Debug.
             Ty::Named {
                 builtin: Some(BuiltinType::LocalPid),
                 ..
@@ -833,16 +819,6 @@ impl TraitRegistry {
                     | MarkerTrait::Copy
                     | MarkerTrait::Clone
                     | MarkerTrait::Debug
-            ),
-
-            // Actor<T>: the built-in lambda-actor handle; always Send + Sync + Clone + Debug.
-            // Actor references are channel handles — safe to capture in spawned actors.
-            Ty::Named {
-                builtin: Some(BuiltinType::Actor),
-                ..
-            } => matches!(
-                marker,
-                MarkerTrait::Send | MarkerTrait::Sync | MarkerTrait::Clone | MarkerTrait::Debug
             ),
 
             // Stream<T> and Sink<T>: Send/Sync iff T: Send; NOT Clone, Copy, or Frozen (move-only)
@@ -1283,32 +1259,6 @@ mod tests {
     }
 
     #[test]
-    fn test_actor_ref_is_send_and_frozen() {
-        let registry = TraitRegistry::new();
-        let actor_ref = Ty::actor_ref(Ty::Named {
-            builtin: None,
-            name: "MyActor".to_string(),
-            args: vec![],
-        });
-        assert!(registry.is_send(&actor_ref));
-        assert!(registry.is_frozen(&actor_ref));
-    }
-
-    #[test]
-    fn test_actor_handle_is_send() {
-        // Actor<T> (the lambda actor handle returned by spawn) must be Send so it can
-        // be captured inside another spawned actor (pipeline pattern).
-        let registry = TraitRegistry::new();
-        let actor_int = Ty::Named {
-            builtin: Some(BuiltinType::Actor),
-            name: "Actor".to_string(),
-            args: vec![Ty::I32],
-        };
-        assert!(registry.is_send(&actor_int));
-        assert!(registry.is_sync(&actor_int));
-    }
-
-    #[test]
     fn test_tuple_send_if_all_elements_send() {
         let registry = TraitRegistry::new();
         let tuple = Ty::Tuple(vec![Ty::I32, Ty::Bool]);
@@ -1475,17 +1425,6 @@ mod tests {
     }
 
     #[test]
-    fn test_actor_ref_is_sync() {
-        let registry = TraitRegistry::new();
-        let actor_ref = Ty::actor_ref(Ty::Named {
-            builtin: None,
-            name: "MyActor".to_string(),
-            args: vec![],
-        });
-        assert!(registry.is_sync(&actor_ref));
-    }
-
-    #[test]
     fn test_vec_is_send_when_element_is_send() {
         let registry = TraitRegistry::new();
         let vec_i32 = Ty::Named {
@@ -1579,31 +1518,31 @@ mod tests {
     }
 
     #[test]
-    fn actorref_with_rc_bearing_actor_is_rc_free() {
+    fn local_pid_with_rc_bearing_actor_is_rc_free() {
         let mut registry = TraitRegistry::new();
         registry.register_rcfree_members("Worker".to_string(), vec![Ty::rc(Ty::I32)]);
-        let actor_ref = Ty::actor_ref(Ty::Named {
+        let handle = Ty::local_pid(Ty::Named {
             builtin: None,
             name: "Worker".to_string(),
             args: vec![],
         });
 
-        assert_eq!(registry.rc_free_status(&actor_ref), RcFreeStatus::RcFree);
-        assert!(registry.implements_marker(&actor_ref, MarkerTrait::RcFree));
+        assert_eq!(registry.rc_free_status(&handle), RcFreeStatus::RcFree);
+        assert!(registry.implements_marker(&handle, MarkerTrait::RcFree));
     }
 
     #[test]
-    fn actorref_simple_is_rc_free() {
+    fn local_pid_simple_is_rc_free() {
         let mut registry = TraitRegistry::new();
         registry.register_rcfree_members("SimpleActor".to_string(), vec![Ty::I32, Ty::Bool]);
-        let actor_ref = Ty::actor_ref(Ty::Named {
+        let handle = Ty::local_pid(Ty::Named {
             builtin: None,
             name: "SimpleActor".to_string(),
             args: vec![],
         });
 
-        assert_eq!(registry.rc_free_status(&actor_ref), RcFreeStatus::RcFree);
-        assert!(registry.implements_marker(&actor_ref, MarkerTrait::RcFree));
+        assert_eq!(registry.rc_free_status(&handle), RcFreeStatus::RcFree);
+        assert!(registry.implements_marker(&handle, MarkerTrait::RcFree));
     }
 
     #[test]
@@ -1620,7 +1559,7 @@ mod tests {
     }
 
     #[test]
-    fn mutual_actorref_cycle_is_rc_free_not_recursive() {
+    fn mutual_local_pid_cycle_is_rc_free_not_recursive() {
         let mut registry = TraitRegistry::new();
         let a = Ty::Named {
             builtin: None,
@@ -1632,11 +1571,11 @@ mod tests {
             name: "B".to_string(),
             args: vec![],
         };
-        registry.register_rcfree_members("A".to_string(), vec![Ty::actor_ref(b.clone())]);
-        registry.register_rcfree_members("B".to_string(), vec![Ty::actor_ref(a.clone())]);
+        registry.register_rcfree_members("A".to_string(), vec![Ty::local_pid(b.clone())]);
+        registry.register_rcfree_members("B".to_string(), vec![Ty::local_pid(a.clone())]);
 
-        let a_ref = Ty::actor_ref(a);
-        let b_ref = Ty::actor_ref(b);
+        let a_ref = Ty::local_pid(a);
+        let b_ref = Ty::local_pid(b);
 
         assert_eq!(registry.rc_free_status(&a_ref), RcFreeStatus::RcFree);
         assert_eq!(registry.rc_free_status(&b_ref), RcFreeStatus::RcFree);

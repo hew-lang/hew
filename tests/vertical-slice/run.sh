@@ -724,6 +724,16 @@ expect_check_fail_contains \
     'cannot assign to immutable field `count`' \
     "actor_let_field_assign"
 
+# Reject: `ActorRef<T>` is not a known type. The canonical actor-reference
+# family is `LocalPid`/`RemotePid`/`LambdaPid`; an `ActorRef<T>` annotation
+# resolves to an unknown type and fails closed rather than silently
+# typechecking (closes the FND-14 dropped-type-argument hole at its source).
+# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/actor_ref_unknown_type.hew" \
+    'unknown type `ActorRef`' \
+    "actor_ref_unknown_type"
+
 # Reject: `ref.send(msg)` on a named actor with NO `receive fn send` handler is
 # rejected at the type-checker with an actionable UndefinedMethod diagnostic.
 # The anonymous-payload path has no lowerable mailbox slot; the checker now

@@ -3917,7 +3917,7 @@ impl Checker {
     /// and `string` elements unconditionally, and pointer / layout-descriptor
     /// elements **only when the element is `Copy`**. The `Copy` gate is what
     /// makes the pointer and layout arms safe: it admits identity handles
-    /// (`LocalPid`/`ActorRef`) and bit-copy value records, while deferring
+    /// (`LocalPid`) and bit-copy value records, while deferring
     /// every shape with an ownership contract — owned heap-handles, non-`Copy`
     /// records, closures (each owns a captured environment), and nested
     /// collections (each owns a backing store). Those would alias an owner
@@ -6919,109 +6919,6 @@ impl Checker {
                 );
                 Ty::Error
             }
-            // ActorRef methods
-            (resolved, _) if resolved.as_actor_ref().is_some() => {
-                let inner = resolved.as_actor_ref().unwrap();
-                // A user-defined `receive fn send(...)` takes precedence over the
-                // builtin fire-and-forget path.  When no such handler exists the
-                // anonymous-payload surface is not lowerable — reject it here with
-                // an actionable diagnostic rather than accepting and failing closed
-                // in HIR with `MethodCallNoRewrite`.
-                let has_user_send_handler = method == "send" && {
-                    if let Ty::Named {
-                        name: ref actor_name,
-                        ..
-                    } = inner
-                    {
-                        self.fn_sigs.contains_key(&format!("{actor_name}::send"))
-                    } else {
-                        false
-                    }
-                };
-                if method == "send" && !has_user_send_handler {
-                    // Synthesize args so downstream bindings resolve cleanly.
-                    for arg in args {
-                        let (expr, sp) = arg.expr();
-                        self.synthesize(expr, sp);
-                    }
-                    let actor_hint = if let Ty::Named { name, .. } = inner {
-                        name.clone()
-                    } else {
-                        "this actor".to_string()
-                    };
-                    self.report_error(
-                        TypeErrorKind::UndefinedMethod,
-                        span,
-                        format!(
-                            "actor `{actor_hint}` has no `receive fn send` handler; \
-                             anonymous-payload `.send()` is not supported — \
-                             add `receive fn send(payload: T) {{ ... }}` to the actor, \
-                             or dispatch through a named handler: `ref.method_name(payload)`"
-                        ),
-                    );
-                    Ty::Error
-                } else {
-                    // Try to dispatch to the actor's receive methods
-                    if let Ty::Named {
-                        name: actor_name, ..
-                    } = inner
-                    {
-                        let method_key = format!("{actor_name}::{method}");
-                        if let Some(sig) = self.fn_sigs.get(&method_key).cloned() {
-                            for (i, arg) in args.iter().enumerate() {
-                                let (expr, sp) = arg.expr();
-                                let ty = if let Some(param_ty) = sig.params.get(i) {
-                                    self.check_against(expr, sp, param_ty)
-                                } else {
-                                    self.synthesize(expr, sp)
-                                };
-                                self.enforce_actor_boundary_send(expr, sp, sp, &ty);
-                            }
-                            self.record_method_call_receiver_kind(
-                                span,
-                                MethodCallReceiverKind::ActorInstance {
-                                    actor_name: actor_name.clone(),
-                                },
-                            );
-                            // Ask-without-await guard: ask-shaped receive fn must be
-                            // awaited. Generator methods (`receive gen fn`) use `for
-                            // await` at the call site and are exempt from this guard.
-                            let resolved_ret = self.subst.resolve(&sig.return_type);
-                            if !matches!(resolved_ret, Ty::Unit)
-                                && !self.receive_generator_methods.contains(&method_key)
-                                && !self.inside_await_expr
-                            {
-                                self.report_error(
-                                    TypeErrorKind::InvalidOperation,
-                                    span,
-                                    format!(
-                                        "actor ask `{actor_name}::{method}` requires `await`; \
-                                         write `let v? = await ref.{method}(...)` \
-                                         or `match await ref.{method}(...) {{ Ok(v) => ..., Err(e) => ... }}`",
-                                    ),
-                                );
-                            }
-                            self.record_actor_method_dispatch(
-                                span,
-                                method_key,
-                                sig.return_type.clone(),
-                            );
-                            return sig.return_type;
-                        }
-                    }
-                    for arg in args {
-                        let (expr, sp) = arg.expr();
-                        self.synthesize(expr, sp);
-                    }
-                    self.report_error_with_suggestions(
-                        TypeErrorKind::UndefinedMethod,
-                        span,
-                        format!("no method `{method}` on `{}`", resolved.user_facing()),
-                        self.similar_methods(resolved, method),
-                    );
-                    Ty::Error
-                }
-            }
             // Duplex<S, R>: bidirectional channel handle (raw channel substrate
             // from `duplex` / `duplex_pair`).
             //
@@ -7080,26 +6977,6 @@ impl Checker {
                 },
                 _,
             ) => self.check_recv_half_method(type_args, receiver, method, args, span),
-            // Named types that have built-in methods (Actor<T> from lambda actors)
-            (
-                Ty::Named {
-                    builtin: Some(BuiltinType::Actor),
-                    args: type_args,
-                    ..
-                },
-                "send",
-            ) => {
-                for arg in args {
-                    let (expr, sp) = arg.expr();
-                    let ty = if let Some(param_ty) = type_args.first() {
-                        self.check_against(expr, sp, param_ty)
-                    } else {
-                        self.synthesize(expr, sp)
-                    };
-                    self.enforce_actor_boundary_send(expr, sp, sp, &ty);
-                }
-                Ty::Unit
-            }
             // String methods are declared in `std/string.hew` with
             // monomorphic `#[extern_symbol]` annotations.
             (Ty::String, _) => self.dispatch_string_method(method, args, span),
@@ -7681,7 +7558,7 @@ impl Checker {
                     // `fn_sigs` keyed `{Actor}::{method}`, but a value of bare
                     // actor type `W` is still an actor handle, not a struct: the
                     // call must cross the mailbox boundary exactly like the
-                    // `LocalPid<W>` / `ActorRef<W>` arms above. Route it through
+                    // `LocalPid<W>` arm above. Route it through
                     // the same send/ask dispatch machinery instead of falling
                     // through to the synchronous `W::method(self, ...)`
                     // `RewriteToFunction` path (which HIR cannot lower — there is
@@ -7710,7 +7587,7 @@ impl Checker {
                         self.enforce_actor_method_send_args(args);
                         // Ask-without-await guard: an ask-shaped receive fn
                         // (non-unit return, non-generator) must be invoked under
-                        // `await`. Mirrors the `LocalPid` / `ActorRef` arms.
+                        // `await`. Mirrors the `LocalPid` arm.
                         let method_key = format!("{name}::{method}");
                         let resolved_ret = self.subst.resolve(&applied_sig.return_type);
                         if !matches!(resolved_ret, Ty::Unit)

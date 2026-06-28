@@ -907,10 +907,10 @@ actor Greeter {
 fn actor_ref_cycle_warning_uses_first_actor_decl_span() {
     let source = concat!(
         "actor Alpha {\n",
-        "    let beta: ActorRef<Beta>;\n",
+        "    let beta: LocalPid<Beta>;\n",
         "}\n",
         "actor Beta {\n",
-        "    let alpha: ActorRef<Alpha>;\n",
+        "    let alpha: LocalPid<Alpha>;\n",
         "}\n",
         "fn main() {}\n",
     );
@@ -1124,7 +1124,7 @@ fn recursive_value_type_allows_pointer_self_reference() {
 }
 
 #[test]
-fn typecheck_await_actor_ref_returns_unit() {
+fn typecheck_await_local_pid_returns_unit() {
     let output = check_source(
         r#"
         actor Greeter {
@@ -1183,13 +1183,13 @@ fn named_actor_receive_dispatch_reports_bad_arg_once() {
 }
 
 #[test]
-fn typecheck_await_close_actor_ref() {
+fn typecheck_await_close_local_pid() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.register_builtins();
 
     checker.env.define(
         "g".to_string(),
-        Ty::actor_ref(Ty::Named {
+        Ty::local_pid(Ty::Named {
             builtin: None,
             name: "Greeter".to_string(),
             args: vec![],
@@ -1221,17 +1221,17 @@ fn typecheck_await_close_actor_ref() {
 }
 
 #[test]
-fn typecheck_await_close_lambda_actor() {
+fn typecheck_await_close_local_pid_worker() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.register_builtins();
 
     checker.env.define(
         "worker".to_string(),
-        Ty::Named {
-            builtin: Some(crate::BuiltinType::Actor),
-            name: "Actor".to_string(),
-            args: vec![Ty::I64],
-        },
+        Ty::local_pid(Ty::Named {
+            builtin: None,
+            name: "Worker".to_string(),
+            args: vec![],
+        }),
         false,
     );
 

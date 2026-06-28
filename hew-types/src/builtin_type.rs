@@ -13,8 +13,6 @@ pub enum BuiltinType {
     Vec,
     HashMap,
     HashSet,
-    ActorRef,
-    Actor,
     Task,
     StreamPair,
     Generator,
@@ -26,7 +24,6 @@ pub enum BuiltinType {
     Stream,
     Sink,
     Duplex,
-    Pid,
     LocalPid,
     RemotePid,
     HewActor,
@@ -154,8 +151,6 @@ builtin_types! {
     Vec => "Vec",
     HashMap => "HashMap",
     HashSet => "HashSet",
-    ActorRef => "ActorRef",
-    Actor => "Actor",
     Task => "Task",
     StreamPair => "StreamPair",
     Generator => "Generator",
@@ -167,7 +162,6 @@ builtin_types! {
     Stream => "Stream",
     Sink => "Sink",
     Duplex => "Duplex",
-    Pid => "Pid",
     LocalPid => "LocalPid",
     RemotePid => "RemotePid",
     HewActor => "HewActor",
@@ -259,7 +253,7 @@ impl BuiltinType {
     #[must_use]
     pub const fn handle_family(self) -> Option<BuiltinHandleFamily> {
         match self {
-            Self::Pid | Self::LocalPid | Self::RemotePid | Self::LambdaPid => {
+            Self::LocalPid | Self::RemotePid | Self::LambdaPid => {
                 Some(BuiltinHandleFamily::ActorPid)
             }
             Self::HewActor | Self::BoxedActor => Some(BuiltinHandleFamily::ActorRuntime),
@@ -281,8 +275,6 @@ impl BuiltinType {
             Self::Option
             | Self::Vec
             | Self::HashSet
-            | Self::ActorRef
-            | Self::Actor
             | Self::Task
             | Self::Generator
             | Self::AsyncGenerator
@@ -305,8 +297,7 @@ impl BuiltinType {
             | Self::HewDuplex
             | Self::LambdaActorHandle
             | Self::LambdaPid => 2,
-            Self::Pid
-            | Self::HewActor
+            Self::HewActor
             | Self::HewSendHalf
             | Self::HewRecvHalf
             | Self::BoxedActor
@@ -334,9 +325,7 @@ impl BuiltinType {
     #[must_use]
     pub const fn roles(self) -> &'static [BuiltinTypeRole] {
         match self {
-            Self::ActorRef | Self::Actor | Self::LambdaPid => {
-                &[BuiltinTypeRole::ActorDispatchLocal]
-            }
+            Self::LambdaPid => &[BuiltinTypeRole::ActorDispatchLocal],
             Self::LocalPid => &[
                 BuiltinTypeRole::ActorDispatchLocal,
                 BuiltinTypeRole::SupervisorLocalPid,
@@ -377,14 +366,13 @@ impl BuiltinType {
         )
     }
 
-    /// True for the local actor-handle builtins that lower to a single
-    /// pointer-shaped runtime word (`*mut HewActor`) — `LocalPid<T>`,
-    /// `ActorRef<T>`, and `Actor<T>`.
+    /// True for the local actor-handle builtin that lowers to a single
+    /// pointer-shaped runtime word (`*mut HewActor`) — `LocalPid<T>`.
     ///
-    /// These are the builtins whose codegen `resolve_ty` arm produces an opaque
+    /// This is the builtin whose codegen `resolve_ty` arm produces an opaque
     /// `ptr` and whose `Vec<T>` constructor routes to `hew_vec_new_ptr` (see
     /// `resolve_ty` + `resolved_ty_is_plain_bitcopy` in `hew-codegen-rs`). The
-    /// checker MUST classify them as the pointer-shaped (`"ptr"`) Vec-element
+    /// checker MUST classify it as the pointer-shaped (`"ptr"`) Vec-element
     /// ABI so `push`/`get`/`set`/`pop` route to the `hew_vec_*_ptr` family
     /// rather than the layout-descriptor family — otherwise the constructor and
     /// the element ops disagree (null-layout `hew_vec_new_ptr` + layout push),
@@ -396,7 +384,7 @@ impl BuiltinType {
     /// move-only resources and are not admitted as Vec elements here.
     #[must_use]
     pub const fn lowers_as_pointer_vec_element(self) -> bool {
-        matches!(self, Self::LocalPid | Self::ActorRef | Self::Actor)
+        matches!(self, Self::LocalPid)
     }
 }
 
@@ -459,14 +447,6 @@ mod tests {
     #[allow(clippy::too_many_lines, reason = "single builtin fact table")]
     fn handle_and_project_cap_facts_are_registered() {
         let expected = [
-            (
-                BuiltinType::Pid,
-                BuiltinTypeMarker::None,
-                None,
-                Some(BuiltinHandleFamily::ActorPid),
-                0,
-                &[][..],
-            ),
             (
                 BuiltinType::LocalPid,
                 BuiltinTypeMarker::Resource,

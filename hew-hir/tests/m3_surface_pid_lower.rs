@@ -116,9 +116,8 @@ fn lower_with_types(source: &str) -> (hew_types::TypeCheckOutput, hew_hir::Lower
 #[test]
 fn spawn_expr_type_is_local_pid() {
     // After type-checking, the `spawn` expression must be recorded as
-    // `LocalPid<Counter>` (not `ActorRef<Counter>`).  This ensures that
-    // the checker's discriminator survives into the type-check output that
-    // HIR lowering consumes.
+    // `LocalPid<Counter>`. This ensures that the checker's discriminator
+    // survives into the type-check output that HIR lowering consumes.
     let source = r"
         actor Counter {
             let n: i32;
@@ -137,13 +136,15 @@ fn spawn_expr_type_is_local_pid() {
         has_local_pid,
         "expr_types should contain at least one LocalPid<Counter> entry"
     );
-    let has_actor_ref_for_spawn = tc
+    // `LocalPid` is the spawn-return type; no stray `ActorRef`-named handle
+    // exists anywhere in the type table (the family is LocalPid/RemotePid).
+    let has_stray_actor_ref = tc
         .expr_types
         .values()
         .any(|ty| matches!(ty, Ty::Named { name, .. } if name == "ActorRef"));
     assert!(
-        !has_actor_ref_for_spawn,
-        "spawn should no longer produce ActorRef — found one in expr_types: {:#?}",
+        !has_stray_actor_ref,
+        "spawn must produce LocalPid; no `ActorRef`-named handle should appear: {:#?}",
         tc.expr_types
             .values()
             .filter(|ty| matches!(ty, Ty::Named { name, .. } if name == "ActorRef"))

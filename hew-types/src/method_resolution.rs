@@ -89,18 +89,18 @@ fn named_receiver_parts(ty: &Ty) -> Option<(&str, &[Ty])> {
         Ty::Bytes => Some(("bytes", &[])),
         Ty::CancellationToken => Some(("CancellationToken", &[])),
         Ty::Duration => Some(("duration", &[])),
-        // ActorRef<T>/LocalPid<T> wrap an actor type T.
+        // LocalPid<T> wraps an actor type T.
         // RemotePid<T> is intentionally NOT unwrapped here: its methods are
         // resolved against RemotePid itself, not T.
         //
-        // NOTE: `collect_method_sigs_for_receiver` handles LocalPid/ActorRef
-        // specially (collecting own handle methods + actor receive handlers)
-        // and does NOT call this helper for those types. This arm covers the
-        // single-method `lookup_method_sig` path used by the checker's fallback
-        // for actor receive-fn dispatch — it unwraps to T so e.g.
-        // `pid.increment(arg)` resolves against `Counter::increment` in fn_sigs.
+        // NOTE: `collect_method_sigs_for_receiver` handles LocalPid specially
+        // (collecting own handle methods + actor receive handlers) and does NOT
+        // call this helper for that type. This arm covers the single-method
+        // `lookup_method_sig` path used by the checker's fallback for actor
+        // receive-fn dispatch — it unwraps to T so e.g. `pid.increment(arg)`
+        // resolves against `Counter::increment` in fn_sigs.
         Ty::Named {
-            builtin: Some(BuiltinType::ActorRef | BuiltinType::LocalPid),
+            builtin: Some(BuiltinType::LocalPid),
             args,
             ..
         } if args.len() == 1 => named_receiver_parts(&args[0]),
@@ -246,9 +246,9 @@ pub fn lookup_type_def(type_defs: &HashMap<String, TypeDef>, type_name: &str) ->
 
 /// Look up the type definition for a named receiver.
 ///
-/// Returns `None` for `LocalPid<T>` and `ActorRef<T>`: actor-handle types do
-/// not expose the actor's internal fields to callers. Method completions on
-/// handles come from `collect_method_sigs_for_receiver` instead.
+/// Returns `None` for `LocalPid<T>`: actor-handle types do not expose the
+/// actor's internal fields to callers. Method completions on handles come
+/// from `collect_method_sigs_for_receiver` instead.
 #[must_use]
 pub fn lookup_type_def_for_receiver(
     type_defs: &HashMap<String, TypeDef>,
@@ -256,7 +256,7 @@ pub fn lookup_type_def_for_receiver(
 ) -> Option<TypeDef> {
     // Actor handles have no public fields accessible via the handle.
     if let Ty::Named {
-        builtin: Some(BuiltinType::LocalPid | BuiltinType::ActorRef),
+        builtin: Some(BuiltinType::LocalPid),
         ..
     } = receiver_ty
     {
@@ -330,13 +330,13 @@ pub fn collect_method_sigs_for_named_type(
 
 /// Collect all method signatures visible on a receiver type.
 ///
-/// For `LocalPid<T>` and `ActorRef<T>`, this produces two groups:
+/// For `LocalPid<T>`, this produces two groups:
 /// 1. The handle's own impl methods (`tell`, `to_remote_via`, etc.) registered
-///    in `fn_sigs` as `"LocalPid::{method}"` / `"ActorRef::{method}"`.
+///    in `fn_sigs` as `"LocalPid::{method}"`.
 /// 2. The actor's receive handlers (the methods callers can dispatch to via the
 ///    handle), resolved against the inner actor type T.
 ///
-/// This two-group collection is why the handle types are NOT unwrapped through
+/// This two-group collection is why the handle type is NOT unwrapped through
 /// `named_receiver_parts` for this call path — the checker's own `LocalPid` arm
 /// in `methods.rs` handles the dispatch logic; this path drives LSP completions.
 #[must_use]
@@ -353,11 +353,6 @@ pub fn collect_method_sigs_for_receiver(
             args,
             ..
         } if args.len() == 1 => Some(("LocalPid", &args[0])),
-        Ty::Named {
-            builtin: Some(BuiltinType::ActorRef),
-            args,
-            ..
-        } if args.len() == 1 => Some(("ActorRef", &args[0])),
         _ => None,
     };
 

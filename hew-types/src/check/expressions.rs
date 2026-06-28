@@ -419,8 +419,8 @@ impl Checker {
                 // await Task<T> → T (simplified)
                 match inner_ty {
                     Ty::Task(inner) => *inner,
-                    // `await close(actor)` or bare actor ref → Unit (actor termination).
-                    // But NOT for method calls that happen to return an ActorRef —
+                    // `await close(actor)` or bare actor handle → Unit (actor termination).
+                    // But NOT for method calls that happen to return an actor handle —
                     // those should pass through the method's declared return type.
                     _ if inner_ty.as_actor_handle().is_some()
                         && !matches!(effective_expr, Expr::MethodCall { .. }) =>
@@ -644,7 +644,7 @@ impl Checker {
             // `record` types, tuples, ranges, fn/closures.
             //
             // Result is always `bool`. Cross-class mismatches (e.g.
-            // `ActorRef<T> is Vec<int>`) collapse into a single
+            // `LocalPid<T> is Vec<int>`) collapse into a single
             // `TypeErrorKind::Mismatch` diagnostic that requires the operands
             // share the same resolved type. Move/consumed-self semantics
             // follow the existing use-after-move rule (plan §D-D4, Q-N3).
@@ -7270,7 +7270,7 @@ impl Checker {
         }
 
         // Cross-class / cross-instantiation mismatch (e.g. `Vec<int> is Vec<String>`
-        // or `ActorRef<Foo> is Vec<int>`) — only reported when both sides are
+        // or `LocalPid<Foo> is Vec<int>`) — only reported when both sides are
         // independently identity-capable; otherwise the value-type rejection
         // above carries the diagnostic.
         if lhs_ok && rhs_ok && lhs_resolved != rhs_resolved {
@@ -7397,8 +7397,8 @@ impl Checker {
     /// Returns `true` when `is` is valid on values of this type:
     ///
     /// * Machines (`TypeDefKind::Machine`).
-    /// * Actors and actor handles: `TypeDefKind::Actor` named types,
-    ///   `ActorRef<T>`, and `Actor<T>`.
+    /// * Actors and actor handles: `TypeDefKind::Actor` named types and
+    ///   `LocalPid<T>`.
     /// * Heap-backed collections: `Vec<T>`, `HashMap<K,V>`, `HashSet<T>`.
     /// * `bytes`.
     /// * User `type Foo { ... }` declarations (`TypeDefKind::Struct` and
@@ -7416,7 +7416,7 @@ impl Checker {
             // Named types: actor handles, collection builtins, and any user
             // `TypeDef` whose kind carries heap/reference identity.
             Ty::Named { name, builtin, .. } => {
-                // Actor handles (`ActorRef<T>` / `Actor<T>`).
+                // Actor handles (`LocalPid<T>`).
                 if ty.as_actor_handle().is_some() {
                     return true;
                 }

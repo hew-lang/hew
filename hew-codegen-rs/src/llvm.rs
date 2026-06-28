@@ -4158,12 +4158,12 @@ fn resolved_ty_contains_channel_handle(ty: &ResolvedTy) -> bool {
 }
 
 /// True when `ty` is — or transitively carries through generic args, tuples,
-/// arrays, or slices — a process-local actor-pid / actor-handle builtin
-/// (`Pid` / `LocalPid` / `RemotePid` / `ActorRef` / `Actor`).
+/// arrays, or slices — an actor-pid / actor-handle builtin
+/// (`LocalPid` / `RemotePid`).
 ///
 /// These are the actor-identity siblings of the channel handles above. A
-/// `LocalPid`/`ActorRef`/`Actor` lowers to a process-local `*mut HewActor`
-/// pointer word and `RemotePid` to a bare packed `i64` — none has a cross-node
+/// `LocalPid` lowers to a process-local `*mut HewActor` pointer word and
+/// `RemotePid` to a bare packed `i64` — neither has a cross-node
 /// wire layout, and none implements `Serializable` (see `hew-types`
 /// `implements_marker`), so the checker already refuses every one of them at
 /// the `RemotePid` boundary with a named diagnostic. A same-node send transfers
@@ -4192,13 +4192,7 @@ fn resolved_ty_contains_actor_handle(ty: &ResolvedTy) -> bool {
         ResolvedTy::Named { args, builtin, .. } => {
             matches!(
                 builtin,
-                Some(
-                    hew_types::BuiltinType::Pid
-                        | hew_types::BuiltinType::LocalPid
-                        | hew_types::BuiltinType::RemotePid
-                        | hew_types::BuiltinType::ActorRef
-                        | hew_types::BuiltinType::Actor
-                )
+                Some(hew_types::BuiltinType::LocalPid | hew_types::BuiltinType::RemotePid)
             ) || args.iter().any(resolved_ty_contains_actor_handle)
         }
         ResolvedTy::Tuple(elems) => elems.iter().any(resolved_ty_contains_actor_handle),
@@ -4633,7 +4627,7 @@ pub(crate) fn primitive_to_llvm<'ctx>(
         ResolvedTy::Named { name, .. }
             if matches!(
                 name.as_str(),
-                "Duplex" | "LambdaPid" | "LocalPid" | "ActorRef" | "Actor" | "Stream" | "Sink"
+                "Duplex" | "LambdaPid" | "LocalPid" | "Stream" | "Sink"
             ) =>
         {
             // M2 substrate handle. The producer (`hew-mir/src/lower.rs`
@@ -21060,7 +21054,7 @@ fn resolved_ty_is_plain_bitcopy(
             Ok(true)
         }
         ResolvedTy::Named { name, args, .. } => {
-            if matches!(name.as_str(), "ActorRef" | "Actor" | "LocalPid") {
+            if name.as_str() == "LocalPid" {
                 return Ok(true);
             }
             let lookup_key = if args.is_empty() {
@@ -29712,7 +29706,7 @@ fn lower_terminator<'ctx>(
             // the message. We must not silently proceed — that could leave the
             // caller operating on stale state or attempting a follow-up ask
             // on a dead actor.
-            // `Terminator::Send` targets a LOCAL actor handle (`ActorRef`/`Pid`);
+            // `Terminator::Send` targets a LOCAL actor handle (`LocalPid`);
             // it delivers into a local mailbox and never reaches the cross-node
             // serialize path (that is the `RemotePid<T>` `emit_remote_pid_tell_call`
             // spine). So the `(dispatch, msg_type)` codec key is irrelevant here —
@@ -40579,7 +40573,7 @@ fn emit_actor_codec_module_init<'ctx>(
                 continue;
             };
             // Channel handles (`Sender<T>`/`Receiver<T>`) and actor-identity
-            // handles (`LocalPid`/`RemotePid`/`ActorRef`/`Actor`/`Pid`) are
+            // handles (`LocalPid`/`RemotePid`) are
             // process-local runtime resources: the local mailbox transfers the
             // retained handle pointer or packed pid by value (ownership moves;
             // the checker consumes the caller binding for resources), and the
@@ -41382,7 +41376,7 @@ mod tests {
         // name but carrying `builtin: None` must NOT be treated as a handle —
         // directly, module-qualified, behind a tuple, or behind a generic arg —
         // so its cross-node codec is still emitted (never silently skipped).
-        for shadow in ["Pid", "LocalPid", "RemotePid", "ActorRef", "Actor"] {
+        for shadow in ["LocalPid", "RemotePid"] {
             let user_ty = named_record_ty(shadow);
             assert!(
                 !resolved_ty_contains_actor_handle(&user_ty),
@@ -41412,11 +41406,8 @@ mod tests {
         // of the actor-pid family carrying its `builtin` discriminator must
         // match — directly, behind a tuple, and behind a non-handle generic arg.
         for (name, kind) in [
-            ("Pid", BuiltinType::Pid),
             ("LocalPid", BuiltinType::LocalPid),
             ("RemotePid", BuiltinType::RemotePid),
-            ("ActorRef", BuiltinType::ActorRef),
-            ("Actor", BuiltinType::Actor),
         ] {
             let handle = builtin_handle(name, kind);
             assert!(

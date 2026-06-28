@@ -244,7 +244,7 @@ fn test_builder_with_consumes_child() {
 #[test]
 fn test_builder_push_consumes_element() {
     // elem consumed by push(); do not free elem.
-    let elem = json.from_string("hi");
+    let elem = json.string_value("hi");
     let arr = json.array().push(elem); // elem consumed here
     let got = arr.array_get(0);
     testing.assert_eq_str(got.get_string(), "hi");
@@ -314,7 +314,7 @@ fn test_try_parse_truncated_array_returns_err() {
     }
 }
 
-// ── from_float / from_string round-trips ─────────────────────────────
+// ── from_float / string_value round-trips ────────────────────────────
 
 #[test]
 fn test_from_float_stringify_parse_round_trip() {
@@ -334,8 +334,8 @@ fn test_from_float_stringify_parse_round_trip() {
 }
 
 #[test]
-fn test_from_string_get_string_round_trip() {
-    let val = json.from_string("hello");
+fn test_string_value_get_string_round_trip() {
+    let val = json.string_value("hello");
     testing.assert_eq_str(val.get_string(), "hello");
     val.free();
 }

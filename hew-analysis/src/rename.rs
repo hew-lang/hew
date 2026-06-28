@@ -491,7 +491,6 @@ mod tests {
             "string_slice",
             "string_trim",
             "string_to_int",
-            "string_find",
             "string_replace",
             "string_to_upper",
             "string_to_lower",

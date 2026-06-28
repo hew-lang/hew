@@ -534,16 +534,6 @@ pub fn is_ascii(s: string) -> bool {
     true
 }
 
-/// Convert a string to lowercase.
-pub fn to_lower(s: string) -> string {
-    s.to_lowercase()
-}
-
-/// Convert a string to uppercase.
-pub fn to_upper(s: string) -> string {
-    s.to_uppercase()
-}
-
 /// Trim leading and trailing whitespace from a string.
 pub fn trim(s: string) -> string {
     s.trim()
@@ -665,15 +655,7 @@ impl string {
         false
     }
     #[extern_symbol(hew_string_to_uppercase)]
-    fn to_uppercase(s: string) -> string {
-        ""
-    }
-    #[extern_symbol(hew_string_to_uppercase)]
     fn to_upper(s: string) -> string {
-        ""
-    }
-    #[extern_symbol(hew_string_to_lowercase)]
-    fn to_lowercase(s: string) -> string {
         ""
     }
     #[extern_symbol(hew_string_to_lowercase)]
@@ -714,10 +696,6 @@ impl string {
     }
     #[extern_symbol(hew_string_find)]
     fn find(s: string, needle: string) -> i64 {
-        0
-    }
-    #[extern_symbol(hew_string_index_of_start)]
-    fn index_of(s: string, needle: string) -> i64 {
         0
     }
     #[extern_symbol(hew_string_slice)]

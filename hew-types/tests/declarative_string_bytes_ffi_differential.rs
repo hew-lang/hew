@@ -26,9 +26,7 @@ fn string_methods_resolve_through_std_string_extern_symbols() {
             let _: bool = s.contains("ell");
             let _: bool = s.starts_with("he");
             let _: bool = s.ends_with("lo");
-            let _: string = s.to_uppercase();
             let _: string = s.to_upper();
-            let _: string = s.to_lowercase();
             let _: string = s.to_lower();
             let _: string = s.trim();
             let _: bool = s.is_digit();
@@ -39,7 +37,6 @@ fn string_methods_resolve_through_std_string_extern_symbols() {
             let _: Vec<string> = s.split("l");
             let _: Vec<string> = s.lines();
             let _: i64 = s.find("e");
-            let _: i64 = s.index_of("e");
             let _: string = s.slice(0, 1);
             let _: string = s.repeat(2);
             let _: i64 = s.char_at(0);
@@ -71,7 +68,6 @@ fn string_methods_resolve_through_std_string_extern_symbols() {
         "hew_string_split",
         "hew_string_lines",
         "hew_string_find",
-        "hew_string_index_of_start",
         "hew_string_slice",
         "hew_string_repeat",
         "hew_string_char_at",
@@ -101,7 +97,6 @@ fn bytes_methods_resolve_through_std_io_extern_symbols() {
             let _: bool = buf.contains(66);
             let _: string = buf.to_string();
             buf.append(other);
-            buf.extend(other);
         }
     ";
     let output = typecheck(source);

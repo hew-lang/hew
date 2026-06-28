@@ -205,14 +205,14 @@ fn canary2_nested_vec_get_in_loop_balances() {
 }
 
 // ---------------------------------------------------------------------------
-// Canary 3 — BOUND string producers: `let y = s.to_uppercase(); y.len()` and
+// Canary 3 — BOUND string producers: `let y = s.to_upper(); y.len()` and
 // `let y = a + b; y.len()` each release exactly once.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn canary3_bound_string_producers_release_once() {
     let pl = pipeline_with_tc(
-        "fn upper(s: string) -> i64 {\n    let y = s.to_uppercase();\n    y.len() as i64\n}\nfn concat(a: string, b: string) -> i64 {\n    let y = a + b;\n    y.len() as i64\n}\n",
+        "fn upper(s: string) -> i64 {\n    let y = s.to_upper();\n    y.len() as i64\n}\nfn concat(a: string, b: string) -> i64 {\n    let y = a + b;\n    y.len() as i64\n}\n",
     );
     assert_no_nyi(&pl);
     assert_eq!(
@@ -234,13 +234,13 @@ fn canary3_bound_string_producers_release_once() {
 
 // ---------------------------------------------------------------------------
 // Canary 3b — NESTED string producers: `(a + b).len()` and
-// `s.to_uppercase().len()` each release the bare temp once, inline.
+// `s.to_upper().len()` each release the bare temp once, inline.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn canary3b_nested_string_producers_release_once() {
     let pl = pipeline_with_tc(
-        "fn nconcat(a: string, b: string) -> i64 {\n    (a + b).len() as i64\n}\nfn nupper(s: string) -> i64 {\n    s.to_uppercase().len() as i64\n}\n",
+        "fn nconcat(a: string, b: string) -> i64 {\n    (a + b).len() as i64\n}\nfn nupper(s: string) -> i64 {\n    s.to_upper().len() as i64\n}\n",
     );
     assert_no_nyi(&pl);
     assert_eq!(

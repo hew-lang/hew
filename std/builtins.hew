@@ -886,24 +886,6 @@ pub fn string_to_int(s: string) -> i64 {
     0
 }
 
-/// Find the first occurrence of `needle` in `haystack`.
-///
-/// Returns the byte offset, or -1 if not found.
-pub fn string_find(haystack: string, needle: string) -> i32 {
-    0 as i32
-}
-
-// ---------------------------------------------------------------------------
-// File I/O  (convenience wrappers — see also `import std::fs;`)
-// ---------------------------------------------------------------------------
-/// Read the entire contents of a file as a string.
-pub fn read_file(path: string) -> string {
-    ""
-}
-
-/// Write a string to a file, creating or overwriting it.
-pub fn write_file(path: string, content: string) {}
-
 // ---------------------------------------------------------------------------
 // Program control
 // ---------------------------------------------------------------------------

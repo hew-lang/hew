@@ -126,7 +126,7 @@ fn grep_content(content: string, pat: regex.Pattern, cfg: Config, label: string,
         // For -i, fold the line to lowercase before matching.
         // The pattern was already folded when the Pattern was compiled.
         let test_line = if cfg.flag_i {
-            raw_line.to_lowercase()
+            raw_line.to_lower()
         } else {
             raw_line
         };
@@ -242,7 +242,7 @@ fn main() -> i64 {
         Ok(cfg) => {
             // For -i, fold the pattern to lowercase so it matches lowercased input.
             let compiled_pattern = if cfg.flag_i {
-                cfg.pattern.to_lowercase()
+                cfg.pattern.to_lower()
             } else {
                 cfg.pattern
             };

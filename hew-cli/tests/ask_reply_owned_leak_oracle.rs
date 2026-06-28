@@ -89,7 +89,7 @@ fn cancelled_owned_reply_source(iters: usize) -> String {
         "actor SlowReplier {{\n\
          \x20   receive fn fetch() -> string {{\n\
          \x20       sleep(5ms);\n\
-         \x20       \"owned-reply-heap-payload\".to_uppercase()\n\
+         \x20       \"owned-reply-heap-payload\".to_upper()\n\
          \x20   }}\n\
          }}\n\
          fn main() -> i64 {{\n\
@@ -117,7 +117,7 @@ fn never_consumed_owned_reply_source(iters: usize) -> String {
     format!(
         "actor Replier {{\n\
          \x20   let tag: string;\n\
-         \x20   receive fn fetch() -> string {{ tag.to_uppercase() }}\n\
+         \x20   receive fn fetch() -> string {{ tag.to_upper() }}\n\
          }}\n\
          fn main() -> i64 {{\n\
          \x20   var i: i64 = 0;\n\

@@ -737,7 +737,6 @@ pub fn is_borrowing_string_use(symbol: &str) -> bool {
             | "hew_string_is_alpha"
             | "hew_string_is_alphanumeric"
             | "hew_string_find"
-            | "hew_string_index_of_start"
             | "hew_string_to_bytes"
             | "hew_string_split"
             | "hew_string_lines"

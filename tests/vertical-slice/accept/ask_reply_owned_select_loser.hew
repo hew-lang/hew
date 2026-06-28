@@ -10,14 +10,14 @@
 //   - after 100ms: safety-net arm, also an owned `string`; should never fire.
 //
 // Exit-code contract: main returns the winning reply's length. FastWorker's
-// "winner-owned-reply".to_uppercase() is "WINNER-OWNED-REPLY" = 18 chars, so
+// "winner-owned-reply".to_upper() is "WINNER-OWNED-REPLY" = 18 chars, so
 // the process exits 18. A crash on the loser teardown leg (double-free / UAF)
 // or a hang would fail this fixture instead.
 actor FastWorker {
     receive fn label() -> string {
 
         // No sleep — reply immediately with an owned (heap) string.
-        "winner-owned-reply".to_uppercase()
+        "winner-owned-reply".to_upper()
     }
 }
 
@@ -26,7 +26,7 @@ actor SlowWorker {
 
         // Park 50 ms so FastWorker's reply wins; this owned reply is abandoned.
         sleep(50ms);
-        "loser-owned-reply".to_uppercase()
+        "loser-owned-reply".to_upper()
     }
 }
 
@@ -36,7 +36,7 @@ fn main() -> i64 {
     let winner = select {
         reply from fast.label() => reply,
         reply from slow.label() => reply,
-        after 100ms => "timeout-owned-reply".to_uppercase(),
+        after 100ms => "timeout-owned-reply".to_upper(),
     };
     // "WINNER-OWNED-REPLY" is 18 characters; exit code == 18.
     winner.len()

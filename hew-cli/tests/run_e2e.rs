@@ -1341,7 +1341,7 @@ fn run_fn_local_string_is_dropped_bounded_memory() {
 }
 
 /// W5.011 P3 owned-`string` temporary substrate double-free guard: a fresh-owned
-/// `string` produced by `+`/concat, `.to_uppercase()`, or the `Vec<string>`
+/// `string` produced by `+`/concat, `.to_upper()`, or the `Vec<string>`
 /// getter and then used in a borrowing context (`.len()`) — whether bound
 /// (`let y = <producer>; y.len()`), nested (`(<producer>).len()`), or discarded
 /// (`<producer>;`) — must be released exactly once. A regressed substrate that

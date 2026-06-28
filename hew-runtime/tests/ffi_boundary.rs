@@ -38,11 +38,11 @@ use hew_runtime::string::{
     hew_bool_to_string, hew_float_to_string, hew_int_to_string, hew_string_byte_length,
     hew_string_char_at, hew_string_char_at_utf8, hew_string_char_count, hew_string_clone,
     hew_string_concat, hew_string_contains, hew_string_drop, hew_string_ends_with,
-    hew_string_equals, hew_string_find, hew_string_from_char, hew_string_index_of,
-    hew_string_is_ascii, hew_string_length, hew_string_repeat, hew_string_replace,
-    hew_string_reverse_utf8, hew_string_slice, hew_string_split, hew_string_starts_with,
-    hew_string_substring_utf8, hew_string_to_bytes, hew_string_to_int, hew_string_to_lowercase,
-    hew_string_to_uppercase, hew_string_trim,
+    hew_string_equals, hew_string_find, hew_string_from_char, hew_string_is_ascii,
+    hew_string_length, hew_string_repeat, hew_string_replace, hew_string_reverse_utf8,
+    hew_string_slice, hew_string_split, hew_string_starts_with, hew_string_substring_utf8,
+    hew_string_to_bytes, hew_string_to_int, hew_string_to_lowercase, hew_string_to_uppercase,
+    hew_string_trim,
 };
 use hew_runtime::vec::{
     hew_vec_clear, hew_vec_clone, hew_vec_contains_f64, hew_vec_contains_i32, hew_vec_contains_i64,
@@ -1856,53 +1856,6 @@ mod string_extended {
             let r = hew_string_repeat(s.as_ptr(), 1);
             assert_eq!(read_cstr(r), "hello");
             free_hew_string(r);
-        }
-    }
-
-    #[test]
-    fn index_of_basic() {
-        unsafe {
-            let s = cstr("hello world");
-            let sub = cstr("world");
-            assert_eq!(hew_string_index_of(s.as_ptr(), sub.as_ptr(), 0), 6);
-        }
-    }
-
-    #[test]
-    fn index_of_from_position() {
-        unsafe {
-            let s = cstr("abcabc");
-            let sub = cstr("abc");
-            assert_eq!(hew_string_index_of(s.as_ptr(), sub.as_ptr(), 0), 0);
-            assert_eq!(hew_string_index_of(s.as_ptr(), sub.as_ptr(), 1), 3);
-        }
-    }
-
-    #[test]
-    fn index_of_not_found() {
-        unsafe {
-            let s = cstr("hello");
-            let sub = cstr("xyz");
-            assert_eq!(hew_string_index_of(s.as_ptr(), sub.as_ptr(), 0), -1);
-        }
-    }
-
-    #[test]
-    fn index_of_null_args() {
-        unsafe {
-            let s = cstr("hello");
-            assert_eq!(hew_string_index_of(ptr::null(), s.as_ptr(), 0), -1);
-            assert_eq!(hew_string_index_of(s.as_ptr(), ptr::null(), 0), -1);
-        }
-    }
-
-    #[test]
-    fn index_of_negative_from() {
-        unsafe {
-            let s = cstr("abc");
-            let sub = cstr("a");
-            // Negative from is clamped to 0.
-            assert_eq!(hew_string_index_of(s.as_ptr(), sub.as_ptr(), -5), 0);
         }
     }
 }

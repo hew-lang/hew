@@ -365,14 +365,15 @@ run_accept_expect_status "iter_filter_string_run" 2
 # When a slice closes the gap, the corresponding ratchet flips from a
 # check-fail to an accept fixture (see the cross-references below).
 
-# mir-gap-cross-module-std-iter-lowering: namespaced `iter::map`/`iter::count`
-# called from an importing module do not resolve into the consumer's
-# fn_registry (and a closure arg to a cross-module generic fn lacks a
-# ClosureCaptureFact). Closing this enables `iter_xmod_map_count`.
-# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
+# cross-module generic-impl-method monomorphisation: a namespaced
+# `iter::map`/`iter::count` chain from an importing module resolves and the
+# closure arg is captured, but the imported generic adapter's impl-method
+# (`Map::next` etc.) monomorphisation references an origin that is not emitted
+# into the consumer module, so the chain fails closed at MIR lowering. Closing
+# this enables `iter_xmod_map_count`.
 expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/mir_gap_cross_module_iter/main.hew" \
-  'undefined function `iter::map`' \
+  "MIR lowering for function call is not implemented yet" \
   "mir_gap_cross_module_iter"
 
 # where-clause-projection monomorphisation (CLOSED): a generic terminal whose

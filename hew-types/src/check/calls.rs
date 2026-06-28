@@ -670,6 +670,123 @@ impl Checker {
         }
     }
 
+    /// Resolve a namespaced module-qualified call `module::fn(args)` against an
+    /// imported module's free functions, mirroring the dot-form dispatch in
+    /// `check_method_call`.
+    ///
+    /// Returns `Some(ret_ty)` when the call names a known module and the
+    /// `module.fn` registry key resolves (including a reported `Ty::Error` for
+    /// a visibility violation), and `None` when `func_name` is not a
+    /// module-qualified call, the module is unknown, or no `module.fn` key
+    /// exists — leaving the existing `undefined function` diagnostic to fire.
+    fn try_check_namespaced_module_call(
+        &mut self,
+        func_name: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Option<Ty> {
+        let (module_name, method) = func_name.split_once("::")?;
+        // A trait-qualified call (`Trait::method`) is handled by the dedicated
+        // paths above and must not be re-interpreted as a module call.
+        if self.trait_defs.contains_key(module_name) {
+            return None;
+        }
+        if method.contains("::") {
+            return None;
+        }
+        if !self.modules.contains(module_name) {
+            return None;
+        }
+        let key = format!("{module_name}.{method}");
+        if !self.fn_sigs.contains_key(&key) {
+            return None;
+        }
+        if self.modules.contains(module_name) {
+            self.used_modules.borrow_mut().insert(ImportKey::new(
+                self.current_module.clone(),
+                module_name.to_string(),
+            ));
+        }
+        // Export gate: only `pub` functions are reachable across the module
+        // boundary, mirroring the dot-form path. A `package fn` accessible
+        // within the same package falls through to the success branch.
+        if !self.module_fn_exports.contains(&key) {
+            if let Some(&vis) = self.fn_visibility.get(&key) {
+                let decl_module_owned = self.fn_def_spans.get(&key).and_then(|(_, m)| m.clone());
+                let decl_span_owned = self
+                    .fn_def_spans
+                    .get(&key)
+                    .map_or_else(|| span.clone(), |(s, _)| s.clone());
+                let acc_module_owned = self.current_module.clone();
+                if !visibility::access_allowed(
+                    decl_module_owned.as_deref(),
+                    acc_module_owned.as_deref(),
+                    vis,
+                ) {
+                    for arg in args {
+                        let (expr, sp) = arg.expr();
+                        self.synthesize(expr, sp);
+                    }
+                    let acc_module_str =
+                        acc_module_owned.as_deref().unwrap_or("(root)").to_string();
+                    let err = TypeError::visibility_violation(
+                        vis,
+                        span.clone(),
+                        method,
+                        decl_module_owned.as_deref().unwrap_or("(root)"),
+                        &acc_module_str,
+                        decl_span_owned,
+                        acc_module_owned,
+                    );
+                    self.errors.push(err);
+                    return Some(Ty::Error);
+                }
+                // access_allowed: `package fn` reachable from this package.
+            } else {
+                return None;
+            }
+        }
+        self.require_unsafe(&key, span);
+        if !self.user_modules.contains(module_name) {
+            for &(module, feature) in Self::NATIVE_ONLY_WASM_MODULE_REJECTIONS {
+                if module_name == module {
+                    self.reject_wasm_feature(span, feature);
+                }
+            }
+            if module_name == "crypto" && method == "random_bytes" {
+                self.reject_wasm_feature(span, WasmUnsupportedFeature::CryptoRandom);
+            }
+        }
+        let sig = self.fn_sigs.get(&key).cloned()?;
+        if let Some(caller) = &self.current_function {
+            self.call_graph
+                .entry(caller.clone())
+                .or_default()
+                .insert(key.clone());
+        }
+        self.record_module_qualified_stdlib_call_rewrite_if_any(module_name, method, span);
+        self.record_module_qualified_user_call_rewrite_if_any(module_name, method, span);
+        let assoc_bindings = self
+            .fn_type_param_assoc_bindings
+            .get(&key)
+            .cloned()
+            .unwrap_or_default();
+        let applied_sig = self.apply_instantiated_call_signature_with_assoc(
+            &sig,
+            &assoc_bindings,
+            None,
+            args,
+            span,
+            SignatureArgApplication::FunctionLike {
+                param_names: &sig.param_names,
+                accepts_kwargs: sig.accepts_kwargs,
+                module_qualified: true,
+            },
+            true,
+        );
+        Some(applied_sig.return_type)
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "call checking covers many builtin and method signatures"
@@ -1271,6 +1388,19 @@ impl Checker {
                 );
                 return Ty::Error;
             }
+        }
+
+        // Namespaced module-qualified call: `module::fn(args)` parses as a
+        // `FieldAccess` callee and arrives here as `func_name = "module::fn"`.
+        // The dot form `module.fn(args)` already resolves through the
+        // method-call path (`check_method_call`) under the `module.fn`
+        // registry key. Route the namespaced form through the same dispatch so
+        // an imported generic free function (e.g. `iter::map`) resolves to the
+        // same signature, records the same module-qualified rewrite for HIR,
+        // and applies the associated-type binding pins. The dot key is the
+        // canonical registry identity for both surfaces.
+        if let Some(ret) = self.try_check_namespaced_module_call(&func_name, args, span) {
+            return ret;
         }
 
         // Detect recursive closure self-reference in call position: if we are

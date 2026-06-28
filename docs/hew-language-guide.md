@@ -1,4 +1,4 @@
-# Hew v0.5 Language Guide
+# Hew Language Guide
 
 A reference for writing correct idiomatic Hew. Every example below was executed against `target/debug/hew` and ran clean.
 
@@ -1602,7 +1602,7 @@ fn main() {
 }
 ```
 
-A monomorphic enum, even one carrying a string payload, is a valid Vec element. Construct variants as `Enum::Variant(payload)`. (Only concrete/monomorphic record and enum element types are supported as Vec elements.)
+A monomorphic enum, even one carrying a string payload, is a valid Vec element. Construct variants as `Enum::Variant(payload)`. Generic type parameters (`Vec<T>`) are also supported for element methods (`get`, `push`, `set`, `pop`, `contains`, indexing, and range-slice).
 
 ### Vec of a concrete record
 
@@ -2520,12 +2520,11 @@ type Packet { data: bytes; }
 Compare individual eligible fields or use a method that extracts the
 comparable portion instead.
 
-## v0.5 surfaces
+## Shipped surfaces
 
-The v0.5 release adds async networking, channels, and text surfaces. Each
-subsection below is a runnable snippet; a full idiomatic program per surface
-lives under [`examples/v05/surfaces/`](../examples/v05/surfaces) (text
-surfaces), [`examples/channel/`](../examples/channel) (channels), or
+Each subsection below is a runnable snippet; a full idiomatic program per
+surface lives under [`examples/v05/surfaces/`](../examples/v05/surfaces)
+(text surfaces), [`examples/channel/`](../examples/channel) (channels), or
 [`examples/net/`](../examples/net) (networking).
 
 ### Typed streams — `await sink.send(x)` / `await stream.recv()`

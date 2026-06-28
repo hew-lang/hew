@@ -1277,13 +1277,14 @@ resource is released exactly once.
 
 **Automatic field-wise drop** — for plain data types, the compiler emits a
 recursive drop that frees heap storage (strings, `Vec`, `HashMap`, nested
-structs) in field-declaration order. No annotation or `impl` is needed.
+structs) in **reverse declaration order (LIFO)**. No annotation or `impl`
+is needed.
 
 **Cleanup guarantees:**
 
 - `close()` (resource types) or field-wise drop runs exactly once per value
 - Cleanup runs at a predictable point (scope exit)
-- Drop order: fields are released in declaration order
+- Drop order: fields are released in reverse declaration order (LIFO) — last declared, first dropped
 - Nested structs are recursively dropped
 - `Rc<T>` payloads are released when the refcount reaches zero; unsupported `Rc<T>` payload types are rejected during checking
 - All owned values in an actor are cleaned up when the actor terminates; heap is freed after the last field
@@ -1557,10 +1558,10 @@ at a safepoint (§4.5) while holding the value:
 hooks, or the supervised shutdown handler):
 
 - `#[resource]` fields: each field's implicit `close()` runs in
-  declaration order after the terminating handler returns. The handler
-  may also close them explicitly via `f.close()?` to surface errors; an
-  already-closed `#[resource]` is a use-after-consume diagnostic on any
-  subsequent reference.
+  **reverse declaration order** after the terminating handler returns. The
+  handler may also close them explicitly via `f.close()?` to surface
+  errors; an already-closed `#[resource]` is a use-after-consume
+  diagnostic on any subsequent reference.
 - `#[linear]` fields: the move-checker requires that every reachable exit
   path of the terminating handler consume each `#[linear]` field via one
   of its declared consuming methods. The check runs at actor-declaration
@@ -3809,7 +3810,26 @@ no `Stream<bytes>` `lines()` surface is promised here.
 - Streams and sinks implement `Resource`/`Drop` and **auto-close on scope exit** (RAII). Explicit `.close()` is available for early release but is not required.
 - Types holding OS resources (streams, sinks, file handles) implement `Resource`/`Drop` and are **never arena-allocated**.
 
-#### 6.5.4 Relation to Actor Streams
+#### 6.5.4 Bidirectional connections
+
+A bidirectional network connection (such as a TCP socket from `std::net`)
+splits into a `(Stream<bytes>, Sink<bytes>)` pair via `.into_stream_sink()`:
+
+<!-- doctest: skip -->
+```hew
+import std::net;
+
+let conn = net.connect("127.0.0.1:8080")?;
+let (rx, tx) = conn.into_stream_sink();
+// rx: Stream<bytes>  — inbound data
+// tx: Sink<bytes>    — outbound data
+```
+
+Accepted connections from a `TcpListener` expose the same method. The
+`Stream<bytes>` and `Sink<bytes>` halves are independently move-able and
+may be passed to separate actors. See `std/net/net.hew` for the full API.
+
+#### 6.5.5 Relation to Actor Streams
 
 `receive gen fn` produces a `Stream<Y>` backed by the actor mailbox protocol.
 First-class `Stream<T>` values from `std::stream` are bounded handles that may
@@ -3912,17 +3932,16 @@ struct User {
 
 Wire enums are encoded as MessagePack **integers** representing the 0-based variant index:
 
-> **Not yet implemented.** `#[wire] enum` type-checks but codec lowering is not yet implemented
-> in v0.5 (`E_NOT_YET_IMPLEMENTED`). The intended encoding is described below.
+`#[wire] enum` codec lowering is fully implemented: encode and decode are
+emitted alongside the struct codec path, unified on the CBOR body format.
 
-<!-- doctest: skip -->
 ```hew
 #[wire]
 enum Status { Pending; Active; Completed; }
 
-// Status::Pending  -> MessagePack: 0 (i64)
-// Status::Active   -> MessagePack: 1 (i64)
-// Status::Completed -> MessagePack: 2 (i64)
+// Status::Pending   -> CBOR integer: 0
+// Status::Active    -> CBOR integer: 1
+// Status::Completed -> CBOR integer: 2
 ```
 
 ##### 7.3.1.4 Optional Field Handling
@@ -4550,14 +4569,29 @@ mailbox 100 overflow coalesce(request_id);
 
 ---
 
-## 11. Distributed computing and the Node API
+## 11. Distributed computing
 
-> See HEW-FUTURE.md §4.2 for the Node API and distributed actor
-> surface — targeted for v0.7+, gated on wire types stabilising,
-> actors remaining stable, and an authentication story landing. The
-> normative distributed contract draft lives in
-> [`HEW-DIST-SPEC.md`](./HEW-DIST-SPEC.md); promotion into this
-> document waits for the next edition.
+The cross-node actor surface shipped across v0.5.x and is the default
+runtime mode when a Hew program runs as a cluster node. The normative
+specification is [`HEW-DIST-SPEC.md`](./HEW-DIST-SPEC.md); this section
+summarises what is shipped and stable.
+
+**Shipped cross-node surface:**
+
+- Remote `tell` and `ask` (`<- actor.method()` / `<id> from actor.method()`)
+  with typed `SendError` and `AskError` result envelopes.
+- Cross-node actor monitoring (`monitor` / `demonitor`) with exactly-once
+  `DOWN` delivery; pruning on watcher-node death.
+- Explicit cross-node links with `CrashLinked` cascade semantics.
+- `PartitionPolicy::FailFast` and partition-detected-dead resolution for
+  pending remote asks.
+- SWIM-based membership with quarantine and incarnation-gated readmission.
+- Two-process CI harness (13/13) as the distributed proving gate.
+
+Authentication tokens and supervisor-capability enforcement are not yet
+runtime-enforced; see `HEW-DIST-SPEC.md` §rc1-notes for the current
+status. The SWIM quarantine/readmission surface is stable and in the
+proving gate.
 
 ---
 
@@ -4703,19 +4737,23 @@ let precise = 500us;     // i64: 500_000 nanoseconds
 
 `duration` is a distinct type — it does not implicitly convert to or from integers.
 
-> **Not yet implemented:** Duration arithmetic operators (`+`, `-`, `*`, `/`) and duration
-> accessor methods (`.nanos()`, `.micros()`, `.millis()`, etc.) are not yet lowered. Duration
-> *literals* (`5s`, `100ms`) parse and type-check. Arithmetic and methods fail at MIR with
-> `E_NOT_YET_IMPLEMENTED`. See HEW-FUTURE for the intended arithmetic/accessor surface.
-
-Duration literals compile to `i64` values representing nanoseconds and are accepted as
-arguments to timeout constructs. The planned (not yet implemented) arithmetic surface:
+Duration arithmetic operators and accessor methods are fully implemented
+(shipped in v0.5.4). Duration literals compile to `i64` nanosecond values;
+arithmetic results are also `duration`.
 
 ```
-duration + duration → duration    // planned
-duration * i64      → duration    // planned
-duration + i64      → COMPILE ERROR (type mismatch — already enforced)
+duration + duration → duration
+duration - duration → duration
+duration * i64      → duration
+duration / i64      → duration
+duration % duration → duration
+duration + i64      → COMPILE ERROR (type mismatch — enforced)
 ```
+
+**Accessor methods** (return `i64`): `.nanos()`, `.micros()`, `.millis()`,
+`.secs()`, `.minutes()`, `.hours()`. **Instant arithmetic** is also
+available via `std::time::Instant` — subtraction of two instants yields a
+`duration`. Both `duration` and `Instant` implement `Display`.
 
 **Timeouts:**
 
@@ -4911,5 +4949,6 @@ If you want this to be directly executable as an engineering project, the next m
   `receive gen fn` / `Lazy<T>` / `#[prefetch(N)]`), closures with captured
   environment, user-facing `Arc<T>`, `dyn Trait`, full `Iterator` trait
   hierarchy, generic `HashMap<K, V>`, cancellation tokens, channels, actor
-  await + read-after-send barrier, distributed Node API, and the self-
-  hosting roadmap. See HEW-FUTURE.md for the surface and version targets.
+  await + read-after-send barrier, and the self-hosting roadmap. See
+  HEW-FUTURE.md for the surface and version targets. Cross-node actor
+  communication is shipped and normative — see §11 and HEW-DIST-SPEC.md.

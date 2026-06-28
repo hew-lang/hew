@@ -365,16 +365,25 @@ run_accept_expect_status "iter_filter_string_run" 2
 # When a slice closes the gap, the corresponding ratchet flips from a
 # check-fail to an accept fixture (see the cross-references below).
 
-# cross-module generic-impl-method monomorphisation: a namespaced
-# `iter::map`/`iter::count` chain from an importing module resolves and the
-# closure arg is captured, but the imported generic adapter's impl-method
-# (`Map::next` etc.) monomorphisation references an origin that is not emitted
-# into the consumer module, so the chain fails closed at MIR lowering. Closing
-# this enables `iter_xmod_map_count`.
-expect_check_fail_contains \
-  "${ROOT}/tests/vertical-slice/reject/mir_gap_cross_module_iter/main.hew" \
-  "MIR lowering for function call is not implemented yet" \
-  "mir_gap_cross_module_iter"
+# cross-module generic-impl-method monomorphisation (CLOSED): a namespaced
+# `iter::map`/`iter::count` chain from an importing module composes through the
+# import boundary. The generic terminal pins its projection-only type param
+# from the imported iterator's associated type, the imported generic adapter's
+# impl-method (`Map::next`) lowers as a per-instantiation origin, and the
+# static-dispatch chain resolves against the module-qualified receiver. The
+# former mir_gap_cross_module_iter ratchet flipped to these accept fixtures.
+# Countdown{3} doubled then counted → 3.
+run_accept_expect_status "iter_xmod_map_count" 3
+# Cross-module `iter::collect` terminal: map i64 → i64, collect into a fresh
+# Vec<i64>, sum. Drives the collect terminal through the same cross-module chain
+# as the count fixture (qualified→bare `Map::next`, projection-pinned terminal
+# type param, per-instantiation adapter origin) over a non-owned element. The
+# collect terminal's owned heap-element drop is a separate pre-existing CoW-prover
+# concern, not certified here. Countdown{3} doubled → [6,4,2], collect, sum → 12.
+run_accept_expect_status "iter_xmod_map_collect" 12
+# Closure that captures a local crosses the module boundary with its capture
+# fact resolved. Countdown{4} mapped by +bump(10) then counted → 4.
+run_accept_expect_status "iter_xmod_captured_closure" 4
 
 # where-clause-projection monomorphisation (CLOSED): a generic terminal whose
 # type param appears only in a `where I: Iterator<Item = A>` projection now

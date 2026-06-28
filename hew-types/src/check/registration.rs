@@ -7805,6 +7805,28 @@ impl Checker {
                         self.fn_type_param_assoc_bindings
                             .insert(qualified.clone(), assoc_bindings);
                         self.fn_sigs.insert(qualified, sig);
+                    } else if fd.where_clause.is_some()
+                        && self
+                            .fn_type_param_assoc_bindings
+                            .get(&qualified)
+                            .is_none_or(HashMap::is_empty)
+                    {
+                        // The module-short signature was registered through an
+                        // earlier collection pass that keyed only the bare/short
+                        // form and did not carry the where-clause associated-type
+                        // bindings (`where I: Iterator<Item = A>`). The
+                        // projection-pin at the cross-module call site reads these
+                        // bindings under the module-short key to resolve a type
+                        // param reachable only through the bound; without them the
+                        // param stays free, no monomorphisation key is minted, and
+                        // a generic terminal like `iter::count` fails closed at MIR.
+                        // Backfill from the declaration so producer and call site
+                        // agree on the bindings under the same key.
+                        let (_sig, assoc_bindings) = self.build_fn_sig_from_decl_with_assoc(fd);
+                        if !assoc_bindings.is_empty() {
+                            self.fn_type_param_assoc_bindings
+                                .insert(qualified.clone(), assoc_bindings);
+                        }
                     }
                 }
                 Item::Actor(ad) => {

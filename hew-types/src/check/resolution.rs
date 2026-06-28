@@ -1054,15 +1054,41 @@ impl Checker {
                             assoc_name: assoc_name.clone(),
                         };
                     }
+                    // An imported type carries its module-qualified spelling
+                    // (`iter.Map`) at a cross-module call site, but the impl's
+                    // associated-type binding and its `type_defs` entry are keyed
+                    // on the bare declaration name (`Map`). Resolve against the
+                    // qualified name first, then fall back to the bare leaf so the
+                    // projection collapses for an imported generic adapter the same
+                    // way it does in the defining module (`per-module-type-identity`:
+                    // the qualifier is an outer-identity concern, not part of the
+                    // impl-binding key).
+                    let bare_name = name.rsplit('.').next().unwrap_or(name.as_str());
                     let key = (name.clone(), trait_name.to_string(), assoc_name.to_string());
-                    if let Some(binding) = self.impl_assoc_type_bindings.get(&key) {
+                    let binding = self.impl_assoc_type_bindings.get(&key).or_else(|| {
+                        if bare_name == name.as_str() {
+                            None
+                        } else {
+                            let bare_key = (
+                                bare_name.to_string(),
+                                trait_name.to_string(),
+                                assoc_name.to_string(),
+                            );
+                            self.impl_assoc_type_bindings.get(&bare_key)
+                        }
+                    });
+                    if let Some(binding) = binding {
                         // The binding may itself reference impl-level type
                         // params; substitute them using the impl's declared
                         // type params (from `type_defs[name].type_params` if
                         // available) zipped with `args`. The fallback when
                         // `type_params` is absent is to return the binding
                         // unchanged — sound when the impl is non-generic.
-                        let bound = if let Some(td) = self.type_defs.get(name) {
+                        let bound = if let Some(td) = self
+                            .type_defs
+                            .get(name)
+                            .or_else(|| self.type_defs.get(bare_name))
+                        {
                             let map: HashMap<String, Ty> = td
                                 .type_params
                                 .iter()

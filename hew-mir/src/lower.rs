@@ -13298,13 +13298,15 @@ impl Builder {
                     });
                     return None;
                 };
-                // (3) structured registry lookup.
-                let key = (
-                    declaring_trait.clone(),
-                    self_type_name.clone(),
-                    method_name.clone(),
-                );
-                let Some(entry) = self.trait_impl_index.get(&key).cloned() else {
+                // (3) structured registry lookup (tolerant of a
+                // module-qualified receiver name for imported impls).
+                let Some(entry) = hew_hir::dispatch::lookup_trait_impl_entry(
+                    &self.trait_impl_index,
+                    declaring_trait,
+                    &self_type_name,
+                    method_name,
+                )
+                .cloned() else {
                     self.diagnostics.push(MirDiagnostic {
                         kind: MirDiagnosticKind::StaticDispatchImplNotFound {
                             declaring_trait: declaring_trait.clone(),
@@ -21257,12 +21259,13 @@ impl Builder {
             });
             return None;
         };
-        let key = (
-            declaring_trait.to_string(),
-            self_type_name.clone(),
-            method_name.to_string(),
-        );
-        let Some(entry) = self.trait_impl_index.get(&key).cloned() else {
+        let Some(entry) = hew_hir::dispatch::lookup_trait_impl_entry(
+            &self.trait_impl_index,
+            declaring_trait,
+            &self_type_name,
+            method_name,
+        )
+        .cloned() else {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::StaticDispatchImplNotFound {
                     declaring_trait: declaring_trait.to_string(),

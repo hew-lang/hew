@@ -1,0 +1,33 @@
+// Cross-module chained generic-adapter monomorphisation.
+//
+// Calling the `std::iter` free-function combinators from an importing module
+// composes through the import boundary: `iter::map` builds a `Map` adapter and
+// `iter::count` drives it. The generic terminal pins its projection-only type
+// param from the imported iterator's associated type, the imported adapter's
+// generic impl-method (`Map::next`) lowers as a per-instantiation origin, and
+// the static-dispatch chain resolves `Map::next` against the qualified receiver.
+//
+// Countdown{3} yields [3,2,1]; map doubles each; count returns 3.
+import std::iter;
+
+type Countdown {
+    n: i64;
+}
+
+impl Iterator for Countdown {
+    type Item = i64;
+    fn next(var self) -> Option<i64> {
+        if self.n <= 0 {
+            None
+        } else {
+            let cur = self.n;
+            self.n = self.n - 1;
+            Some(cur)
+        }
+    }
+}
+
+pub fn main() -> i64 {
+    let m = iter::map(Countdown { n: 3 }, |x: i64| x * 2);
+    iter::count(m)
+}

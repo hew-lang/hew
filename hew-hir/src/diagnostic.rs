@@ -132,6 +132,18 @@ pub enum HirDiagnosticKind {
         /// Type name carrying the inline `close` method.
         name: String,
     },
+    /// `#[linear]` type declares its `consuming self` method inline in the
+    /// type body (`type T { fn m(consuming self) { … } }`). The supported
+    /// surface that lowers to a callable consume target is a sibling inherent
+    /// impl block (`impl T { fn m(consuming self) { … } }`). The inline form
+    /// is not lowered to HIR/MIR, so a call to it raises
+    /// `IndirectCallUnsupported` at the call site — making the `#[linear]`
+    /// type unusable. Fail-close here at the declaration with a directive to
+    /// the supported surface instead of trapping the user at every call.
+    LinearConsumingMethodSourceUnsupported {
+        /// Type name carrying the inline consuming method.
+        name: String,
+    },
     /// `#[resource]` type's `close` method declares a return type other
     /// than unit. In v0.5 the implicit-drop contract dispatches `close`
     /// on every scope-exit path (return, early-return, branch, trap,

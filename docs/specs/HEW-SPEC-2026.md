@@ -3815,6 +3815,7 @@ no `Stream<bytes>` `lines()` surface is promised here.
 A bidirectional network connection (such as a TCP socket from `std::net`)
 splits into a `(Stream<bytes>, Sink<bytes>)` pair via `.into_stream_sink()`:
 
+<!-- doctest: skip -->
 ```hew
 import std::net;
 

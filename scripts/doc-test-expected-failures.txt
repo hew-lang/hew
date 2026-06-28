@@ -131,7 +131,6 @@ spec-0107   # IMPL-GAP: `pool` as pattern — reserved word clash in supervisor 
 spec-0109   # FRAGMENT: references `prices` from prior fence context — context-dependent
 spec-0110   # SNIPPET: bare `let` — wire schema illustration
 spec-0111   # SNIPPET: bare `match` — wire format pattern illustration
-spec-0121   # SNIPPET: bare `let` — distribution illustration
 spec-0122   # SNIPPET: bare `let` — remote PID illustration
 spec-0123   # SNIPPET: bare `mailbox` identifier — mailbox API illustration
 spec-0124   # SNIPPET: bare `let` — cluster API illustration
@@ -143,3 +142,4 @@ spec-0129   # NYI: bare `@outer` label — labeled break/continue not yet lowere
 spec-0130   # SNIPPET: bare `var` — timer illustration
 spec-0131   # SNIPPET: bare `let` — timer illustration
 spec-0132   # SNIPPET: bare `var` — timer illustration
+spec-0133   # SNIPPET: bare `var` — timer illustration (renumbered from 0132 by §6.5.4 fence addition)

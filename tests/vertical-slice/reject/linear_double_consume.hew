@@ -1,0 +1,14 @@
+// Consuming a `#[linear]` binding twice is rejected (`UseAfterConsume`): the
+// inherent consuming method moves the receiver, so a second consume reads a
+// moved-out value.
+#[linear]
+type Tx { id: i64; }
+impl Tx {
+    fn commit(consuming self) { println(f"commit {self.id}"); }
+}
+
+fn main() {
+    let t = Tx { id: 1 };
+    t.commit();
+    t.commit();
+}

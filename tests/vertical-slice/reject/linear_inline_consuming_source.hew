@@ -1,0 +1,14 @@
+// A `#[linear]` type that declares its `consuming self` method inline in the
+// type body is rejected (`LinearConsumingMethodSourceUnsupported`): the inline
+// form is not lowered to a callable consume target. The supported surface is a
+// sibling inherent-impl block.
+#[linear]
+type Tx {
+    id: i64;
+    fn commit(consuming self) { println(f"commit {self.id}"); }
+}
+
+fn main() {
+    let t = Tx { id: 1 };
+    t.commit();
+}

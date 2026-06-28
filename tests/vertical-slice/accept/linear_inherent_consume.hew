@@ -1,0 +1,16 @@
+// A `#[linear]` type's consuming method declared in a sibling inherent-impl
+// block makes the type usable end to end: the value is constructed, the
+// consume call dispatches, and the must-consume contract is satisfied.
+//
+// Expected stdout:
+//   commit 1
+#[linear]
+type Tx { id: i64; }
+impl Tx {
+    fn commit(consuming self) { println(f"commit {self.id}"); }
+}
+
+fn main() {
+    let t = Tx { id: 1 };
+    t.commit();
+}

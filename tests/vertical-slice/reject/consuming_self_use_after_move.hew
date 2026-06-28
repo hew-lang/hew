@@ -1,0 +1,14 @@
+// A `consuming self` inherent method moves a non-copy receiver; reusing the
+// binding after the consuming call is rejected (`use of moved value`). The
+// owned-string field makes `Builder` non-copy so the move is observable.
+pub type Builder { label: string; }
+impl Builder {
+    fn build(consuming self) -> string { self.label }
+}
+
+fn main() {
+    let b = Builder { label: "hi" };
+    let x = b.build();
+    let y = b.build();
+    println(f"{x} {y}");
+}

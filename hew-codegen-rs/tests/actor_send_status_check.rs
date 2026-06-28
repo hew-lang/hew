@@ -19,26 +19,23 @@ use hew_mir::{
     BasicBlock, BlockKind, CheckedMirFunction, DropPlan, ElabBlock, ElaboratedMirFunction,
     ExitPath, IrPipeline, Place, RawMirFunction, Terminator,
 };
-use hew_types::ResolvedTy;
+use hew_types::{BuiltinType, ResolvedTy};
 use std::path::Path;
 
 /// Build a minimal `IrPipeline` containing one function whose only block
 /// terminates with `Terminator::Send`. The function has:
 ///
-/// - `local 0` — `ResolvedTy::Named { name: "Actor" }` (opaque `ptr`):
-///   the actor handle used as the send target.
+/// - `local 0` — `LocalPid<Unit>` (opaque `ptr`):
+///   the canonical actor-local handle used as the send target.
 /// - `local 1` — `ResolvedTy::Unit`: the payload value. `actor_payload_ptr_size`
 ///   short-circuits to `(null, 0)` for Unit, so no payload alloca is needed.
 /// - Block 0: `Terminator::Send { actor: ActorHandle(0), msg_type: 1, value: Local(1), next: 1 }`
 /// - Block 1: `Terminator::Return` (the success continuation; reachable only
 ///   when send status == 0).
 fn send_status_pipeline() -> IrPipeline {
-    let actor_ty = ResolvedTy::Named {
-        name: "Actor".to_string(),
-        args: vec![],
-        builtin: None,
-        is_opaque: false,
-    };
+    // `LocalPid<Unit>` is the canonical actor-dispatch-local handle.
+    let actor_ty =
+        ResolvedTy::named_builtin("LocalPid", BuiltinType::LocalPid, vec![ResolvedTy::Unit]);
     let raw_blocks = vec![
         BasicBlock {
             id: 0,

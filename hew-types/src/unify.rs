@@ -271,33 +271,11 @@ pub fn unify(subst: &mut Substitution, a: &Ty, b: &Ty) -> Result<(), UnifyError>
             unify(subst, ar, br)
         }
 
-        // Named types with same name — unify type args.
-        // ActorRef<T> ↔ ActorRef: typed and untyped actor refs are compatible.
-        // Both are representationally identical (actor pointers). Allow
-        // passing ActorRef<T> where ActorRef is expected, and vice versa.
-        (
-            Ty::Named {
-                builtin: ab,
-                args: aa,
-                ..
-            },
-            Ty::Named {
-                builtin: bb,
-                args: ba,
-                ..
-            },
-        ) if matches!(
-            ab,
-            Some(crate::BuiltinType::ActorRef | crate::BuiltinType::Actor)
-        ) && matches!(
-            bb,
-            Some(crate::BuiltinType::ActorRef | crate::BuiltinType::Actor)
-        ) && matches!((aa.len(), ba.len()), (0, 1) | (1, 0)) =>
-        {
-            Ok(())
-        }
-
-        // Also handles module-qualified names: "json.Value" matches "Value"
+        // Named types with same name — unify type args. Arity must match: a
+        // handle's type parameter is load-bearing, so `RemotePid<A>` only
+        // unifies with `RemotePid<A>` (and `RemotePid<A1>` ≠ `RemotePid<A2>`
+        // when `A1 != A2`). Also handles module-qualified names: "json.Value"
+        // matches "Value".
         (
             Ty::Named {
                 name: an, args: aa, ..
@@ -555,23 +533,59 @@ mod tests {
     }
 
     #[test]
-    fn test_typed_actor_ref_unifies_with_untyped() {
-        let typed = Ty::actor_ref(Ty::Named {
+    fn remote_pid_same_actor_unifies_distinct_actor_rejects() {
+        // The handle's type parameter is load-bearing: `RemotePid<A>` unifies
+        // only with `RemotePid<A>`, and two remote pids over different actors
+        // never unify. This is the sound generic-arm behaviour the checker
+        // depends on — a wrong-actor handle must surface a mismatch, never a
+        // silent accept that drops the type argument.
+        let actor_a = Ty::Named {
             builtin: None,
             name: "ClientHandler".to_string(),
             args: vec![],
-        });
-        let untyped = Ty::builtin_named(crate::BuiltinType::ActorRef, vec![]);
-        // Both directions should work
+        };
+        let actor_b = Ty::Named {
+            builtin: None,
+            name: "Supervisor".to_string(),
+            args: vec![],
+        };
+
         let mut subst = Substitution::new();
         assert!(
-            unify(&mut subst, &typed, &untyped).is_ok(),
-            "ActorRef<T> should unify with ActorRef"
+            unify(
+                &mut subst,
+                &Ty::remote_pid(actor_a.clone()),
+                &Ty::remote_pid(actor_a.clone()),
+            )
+            .is_ok(),
+            "RemotePid<A> must unify with RemotePid<A>"
         );
+
         let mut subst = Substitution::new();
         assert!(
-            unify(&mut subst, &untyped, &typed).is_ok(),
-            "ActorRef should unify with ActorRef<T>"
+            unify(
+                &mut subst,
+                &Ty::remote_pid(actor_a.clone()),
+                &Ty::remote_pid(actor_b),
+            )
+            .is_err(),
+            "RemotePid<A> must NOT unify with RemotePid<B> when A != B"
+        );
+
+        // A typed handle never collapses with a zero-arg same-name shadow:
+        // arity is enforced, so the dropped-type-argument hole stays closed.
+        let mut subst = Substitution::new();
+        let untyped = Ty::Named {
+            builtin: Some(crate::BuiltinType::RemotePid),
+            name: "RemotePid".to_string(),
+            args: vec![],
+        };
+        assert!(
+            matches!(
+                unify(&mut subst, &Ty::remote_pid(actor_a), &untyped),
+                Err(UnifyError::ArityMismatch { .. })
+            ),
+            "RemotePid<A> vs RemotePid (no arg) must be an arity mismatch"
         );
     }
 
@@ -700,16 +714,16 @@ mod tests {
     }
 
     #[test]
-    fn test_actor_ref_arity_mismatch_rejects_nonstandard_pairs() {
+    fn same_name_handle_arity_mismatch_rejects_nonstandard_pairs() {
         let mut subst = Substitution::new();
         let typed = Ty::Named {
             builtin: None,
-            name: "ActorRef".to_string(),
+            name: "RemotePid".to_string(),
             args: vec![Ty::I32, Ty::Bool],
         };
         let untyped = Ty::Named {
             builtin: None,
-            name: "ActorRef".to_string(),
+            name: "RemotePid".to_string(),
             args: vec![],
         };
 

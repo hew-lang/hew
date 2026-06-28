@@ -310,7 +310,25 @@ fn integer_signedness(ty: &ResolvedTy) -> Option<IntSignedness> {
         | ResolvedTy::I16
         | ResolvedTy::I32
         | ResolvedTy::I64
-        | ResolvedTy::Isize => Some(IntSignedness::Signed),
+        | ResolvedTy::Isize
+        // `duration` is a newtype around a signed 8-byte nanosecond count.
+        // Default arithmetic (`d1 + d2`, `d * n`, `d / n`) lowers through the
+        // same B-2 overflow-trap / div-by-zero path as `i64`: the dest local
+        // keeps its `Duration` type (so drop / value-class are unaffected),
+        // but the arithmetic instruction treats it as a signed 8-byte integer.
+        | ResolvedTy::Duration
+        // `instant` is ABI-identical to i64 (a monotonic nanosecond timestamp).
+        // When the left operand of `instant + duration` or `instant - duration`
+        // was introduced via an annotation (`let t: instant`, `fn f(t: instant)`),
+        // `binary_ty` preserves the original `Named{Instant}` result type so it
+        // matches the `-> instant` return annotation. MIR therefore receives
+        // `Named{Instant}` here and must classify it as signed-integer arithmetic.
+        // Field-storage arms (`value_class`, `state_clone`, `primitive_to_llvm`)
+        // are unchanged; the dest local keeps its `Named{Instant}` type.
+        | ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::Instant),
+            ..
+        } => Some(IntSignedness::Signed),
         ResolvedTy::U8
         | ResolvedTy::U16
         | ResolvedTy::U32
@@ -444,7 +462,9 @@ fn signed_min_value(ty: &ResolvedTy, ptr_width: PointerWidth) -> Option<i64> {
         ResolvedTy::I8 => Some(i64::from(i8::MIN)),
         ResolvedTy::I16 => Some(i64::from(i16::MIN)),
         ResolvedTy::I32 => Some(i64::from(i32::MIN)),
-        ResolvedTy::I64 => Some(i64::MIN),
+        // `duration` is a signed 8-byte nanosecond count; its MIN is `i64::MIN`,
+        // so `dur / int` gets the same signed-MIN/-1 trap guard as `i64 / int`.
+        ResolvedTy::I64 | ResolvedTy::Duration => Some(i64::MIN),
         ResolvedTy::Isize => Some(ptr_width.isize_min()),
         // Unsigned types (including Usize): no MIN check needed.
         _ => None,
@@ -19421,9 +19441,13 @@ impl Builder {
             ResolvedTy::I16 => "hew_vec_get_i16",
             ResolvedTy::U16 => "hew_vec_get_u16",
             ResolvedTy::Char | ResolvedTy::I32 | ResolvedTy::U32 => "hew_vec_get_i32",
-            ResolvedTy::I64 | ResolvedTy::U64 | ResolvedTy::Isize | ResolvedTy::Usize => {
-                "hew_vec_get_i64"
-            }
+            // `duration` is a signed 8-byte newtype — same i64-class getter as
+            // i64 (`instant` reaches here already canonicalised to I64).
+            ResolvedTy::I64
+            | ResolvedTy::U64
+            | ResolvedTy::Isize
+            | ResolvedTy::Usize
+            | ResolvedTy::Duration => "hew_vec_get_i64",
             ResolvedTy::F32 => "hew_vec_get_f32",
             ResolvedTy::F64 => "hew_vec_get_f64",
             ResolvedTy::String => "hew_vec_get_str",
@@ -19643,6 +19667,9 @@ impl Builder {
             | ResolvedTy::U64
             | ResolvedTy::Isize
             | ResolvedTy::Usize
+            // `duration` is an 8-byte bitcopy scalar (same byte-sized slice path
+            // as i64); `instant` reaches here canonicalised to I64.
+            | ResolvedTy::Duration
             | ResolvedTy::F32
             | ResolvedTy::F64 => "hew_vec_slice_range_bytesize",
             ResolvedTy::String => "hew_vec_slice_range_str",

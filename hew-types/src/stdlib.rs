@@ -93,6 +93,19 @@ pub fn vec_element_runtime_suffix<S: std::hash::BuildHasher>(
         crate::Ty::U16 => Some("u16"),
         crate::Ty::Char | crate::Ty::I32 | crate::Ty::U32 => Some("i32"),
         crate::Ty::I64 | crate::Ty::U64 | crate::Ty::Isize | crate::Ty::Usize => Some("i64"),
+        // `duration` is a signed 8-byte nanosecond newtype — an i64-class Vec
+        // element. Route every Vec op (new/push/get/set/pop/slice/index) through
+        // the same `hew_vec_*_i64` family as i64 so the constructor and every
+        // accessor agree on one ABI tier (`vec-element-width-symmetric-abi`).
+        crate::Ty::Duration => Some("i64"),
+        // `instant` is an i64-nanos timestamp; at the checker level it is still
+        // `Ty::Named { builtin: Instant }` (the I64 canonicalisation happens
+        // downstream), so it does not hit the `Ty::I64` arm above. Route it to
+        // the same i64-class family — Vec<instant> push/get/etc. lower like i64.
+        crate::Ty::Named {
+            builtin: Some(crate::builtin_type::BuiltinType::Instant),
+            ..
+        } => Some("i64"),
         crate::Ty::F32 => Some("f32"),
         crate::Ty::F64 => Some("f64"),
         crate::Ty::String => Some("string"),

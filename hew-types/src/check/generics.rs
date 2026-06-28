@@ -1048,6 +1048,15 @@ impl Checker {
                 args,
                 ..
             } if trait_name == "Iterator" && !args.is_empty() => true,
+            // `instant` is a monotonic i64-nanos timestamp; it canonicalises to
+            // i64 at the MIR boundary and renders through the i64 Display arm
+            // (raw nanos), so it satisfies any bound that i64 satisfies —
+            // Display, the integer markers — without a dedicated `impl`. Delegate
+            // to the i64 satisfaction path (mirrors `require_display_impl`).
+            Ty::Named {
+                builtin: Some(crate::BuiltinType::Instant),
+                ..
+            } => self.type_satisfies_trait_bound(&Ty::I64, trait_name),
             Ty::Named { name, .. } => {
                 let name = name.clone();
                 if self.type_implements_trait(&name, trait_name)

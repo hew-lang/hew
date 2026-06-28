@@ -716,6 +716,10 @@ impl TraitRegistry {
             // Primitives: always Send, Sync, Frozen, Copy, Clone, Eq, Ord, Hash, Debug.
             // NOT Resource: primitives own no OS/runtime resource and need no drop close.
             // Isize/Usize are platform-sized integers: same marker set as fixed-width ints.
+            // `instant` is a monotonic i64-nanos timestamp — ABI-identical to a
+            // bare i64, so it carries the same marker set (without this an
+            // `instant` actor field / spawn arg / message is rejected as
+            // non-Send).
             Ty::I8
             | Ty::I16
             | Ty::I32
@@ -730,6 +734,10 @@ impl TraitRegistry {
             | Ty::Bool
             | Ty::Char
             | Ty::Duration
+            | Ty::Named {
+                builtin: Some(BuiltinType::Instant),
+                ..
+            }
             | Ty::Unit
             | Ty::Error
             | Ty::Never => !matches!(marker, MarkerTrait::Resource),

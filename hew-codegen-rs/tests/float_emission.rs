@@ -67,6 +67,26 @@ fn emit_ll(source: &str, module_name: &str) -> String {
     std::fs::read_to_string(ll_path).expect("read emitted .ll")
 }
 
+/// Slice the emitted module to the `@main` function body.
+///
+/// Negative assertions ("no `with.overflow`", "no `@llvm.trap`") concern the
+/// float operation under test, not the whole module: every module now carries
+/// the always-spliced stdlib builtin impls, including the `duration::from_*`
+/// constructors whose `n * 1<unit>` bodies legitimately emit
+/// `smul.with.overflow` + `@llvm.trap` (default trap-on-overflow arithmetic).
+fn main_body(ll: &str) -> String {
+    let start = ll
+        .find("define")
+        .and_then(|defs| ll[defs..].find("@main").map(|m| defs + m))
+        .map(|m| ll[..m].rfind("define").unwrap_or(m))
+        .expect("emitted module must define @main");
+    let rest = &ll[start..];
+    let end = rest[1..]
+        .find("\ndefine")
+        .map_or(rest.len(), |next| next + 1);
+    rest[..end].to_string()
+}
+
 // ---------------------------------------------------------------------------
 // FloatLit: f64 constant `1.5` must appear as a double constant in the IR.
 // The function returns i64 (Cluster 1 gate); the float local exercises the
@@ -92,17 +112,18 @@ fn float_emission_add_emits_fadd_not_overflow_intrinsic() {
         "fn main() -> i64 { let a: f64 = 1.5; let b: f64 = 2.5; let r: f64 = a + b; 0 }",
         "float_add_f64",
     );
+    let body = main_body(&ll);
     assert!(
-        ll.contains("fadd double"),
-        "FloatAdd must emit `fadd double`; got:\n{ll}"
+        body.contains("fadd double"),
+        "FloatAdd must emit `fadd double`; got:\n{body}"
     );
     assert!(
-        !ll.contains("with.overflow"),
-        "FloatAdd must not use any with.overflow intrinsic; got:\n{ll}"
+        !body.contains("with.overflow"),
+        "FloatAdd must not use any with.overflow intrinsic; got:\n{body}"
     );
     assert!(
-        !ll.contains("@llvm.trap"),
-        "FloatAdd must not emit @llvm.trap; got:\n{ll}"
+        !body.contains("@llvm.trap"),
+        "FloatAdd must not emit @llvm.trap; got:\n{body}"
     );
 }
 
@@ -148,13 +169,14 @@ fn float_emission_div_emits_fdiv_no_trap() {
         "fn main() -> i64 { let a: f64 = 6.0; let b: f64 = 2.0; let r: f64 = a / b; 0 }",
         "float_div_f64",
     );
+    let body = main_body(&ll);
     assert!(
-        ll.contains("fdiv double"),
-        "FloatDiv must emit `fdiv double`; got:\n{ll}"
+        body.contains("fdiv double"),
+        "FloatDiv must emit `fdiv double`; got:\n{body}"
     );
     assert!(
-        !ll.contains("@llvm.trap"),
-        "FloatDiv must not emit @llvm.trap (IEEE 754 div-by-zero → ±inf); got:\n{ll}"
+        !body.contains("@llvm.trap"),
+        "FloatDiv must not emit @llvm.trap (IEEE 754 div-by-zero → ±inf); got:\n{body}"
     );
 }
 

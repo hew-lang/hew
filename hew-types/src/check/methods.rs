@@ -7808,11 +7808,61 @@ impl Checker {
                                     );
                                 }
                             }
-                        } else if self.fn_sigs.contains_key(&method_key) {
+                        } else if self.fn_sigs.contains_key(&method_key)
+                            || (!type_args.is_empty() && {
+                                // Concrete-specialised-impl check (#2270): the
+                                // type_args may resolve to a mangled key even
+                                // when the bare key is absent (e.g. after the
+                                // first concrete impl was registered and the bare
+                                // key was clobbered by the second).
+                                let resolved_args: Option<Vec<ResolvedTy>> = type_args
+                                    .iter()
+                                    .map(|ty| ResolvedTy::from_ty(&self.subst.resolve(ty)).ok())
+                                    .collect();
+                                resolved_args
+                                    .as_ref()
+                                    .and_then(|args| {
+                                        crate::resolved_ty::mangle_impl_self_name(
+                                            method_owner,
+                                            args,
+                                        )
+                                    })
+                                    .is_some_and(|m| {
+                                        self.fn_sigs.contains_key(&format!("{m}::{method}"))
+                                    })
+                            })
+                        {
+                            // For concrete-specialised impls, use the mangled
+                            // c_symbol so HIR looks up the right `fn_registry`
+                            // entry.  Falls back to the bare key for all other
+                            // cases (generic impls, inherent methods, etc.).
+                            let dispatch_key = if type_args.is_empty() {
+                                method_key.clone()
+                            } else {
+                                let resolved_args: Option<Vec<ResolvedTy>> = type_args
+                                    .iter()
+                                    .map(|ty| ResolvedTy::from_ty(&self.subst.resolve(ty)).ok())
+                                    .collect();
+                                resolved_args
+                                    .as_ref()
+                                    .and_then(|args| {
+                                        crate::resolved_ty::mangle_impl_self_name(
+                                            method_owner,
+                                            args,
+                                        )
+                                    })
+                                    .filter(|m| {
+                                        self.fn_sigs.contains_key(&format!("{m}::{method}"))
+                                    })
+                                    .map_or_else(
+                                        || method_key.clone(),
+                                        |m| format!("{m}::{method}"),
+                                    )
+                            };
                             self.record_method_call_rewrite(
                                 span,
                                 MethodCallRewrite::RewriteToFunction {
-                                    c_symbol: method_key,
+                                    c_symbol: dispatch_key,
                                     // User-defined `Type::method` dispatch is
                                     // open-set; the typed runtime-call catalog
                                     // does not enumerate user method keys.

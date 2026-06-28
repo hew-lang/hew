@@ -10,6 +10,7 @@ use crate::builtin_names::{builtin_named_type, builtin_type_def as builtin_named
 #[cfg(test)]
 use crate::check::TypeDefKind;
 use crate::check::{FnSig, TypeDef};
+use crate::resolved_ty::{mangle_impl_self_name, ResolvedTy};
 use crate::BuiltinType;
 use crate::Ty;
 
@@ -169,6 +170,40 @@ pub fn lookup_named_method_sig(
     }
 
     let type_params = lookup_user_type_def(type_defs, type_name).map(|td| td.type_params.clone());
+
+    // Concrete-specialised-impl lookup (#2270): when the receiver has non-empty
+    // concrete type args (e.g. `Wrapper<i64>`), try the mangled key first
+    // (`"Wrapper$$i64::describe"`).  This resolves to the correct impl when two
+    // concrete specialisations (`Wrapper<i64>` and `Wrapper<string>`) both exist.
+    // Falls back to the bare key for generic impls (`impl<T> Trait for Wrapper<T>`),
+    // inherent methods, and any arg that cannot be mangled.
+    //
+    // IMPORTANT: use a direct `fn_sigs.get` (not `lookup_user_fn_sig`) for the
+    // mangled key.  `lookup_user_fn_sig` has a module-stripping fallback that
+    // strips after the last `.` in the type-name part of the key.  A mangled key
+    // like `"LocalPid$$bank.Account::who"` contains a `.` in the mangled segment,
+    // causing the fallback to strip `"LocalPid$$bank"` and resolve `"Account::who"` —
+    // i.e. the root-module actor's method — instead of failing.  The mangled
+    // key is an exact, unambiguous identifier; it must only match via direct lookup.
+    if !type_args.is_empty() {
+        let resolved_args: Option<Vec<ResolvedTy>> = type_args
+            .iter()
+            .map(|ty| ResolvedTy::from_ty(ty).ok())
+            .collect();
+        if let Some(resolved_args) = resolved_args {
+            if let Some(mangled_self) = mangle_impl_self_name(type_name, &resolved_args) {
+                let mangled_key = format!("{mangled_self}::{method}");
+                // Direct lookup only — no module-stripping fallback (see comment above).
+                if let Some(sig) = fn_sigs.get(&mangled_key).cloned() {
+                    // The mangled-key entry has no generic type params (it was
+                    // registered for a concrete specialised impl), so we
+                    // instantiate with the type-def params (empty for concrete).
+                    let tps = type_params.clone().unwrap_or_default();
+                    return Some(instantiate_named_method_sig(sig, &tps, type_args));
+                }
+            }
+        }
+    }
 
     lookup_user_fn_sig(fn_sigs, &format!("{type_name}::{method}"))
         .cloned()

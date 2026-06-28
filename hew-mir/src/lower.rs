@@ -13300,11 +13300,15 @@ impl Builder {
                 };
                 // (3) structured registry lookup (tolerant of a
                 // module-qualified receiver name for imported impls).
+                // Pass `type_args` so the lookup finds concrete-specialised impls
+                // (`impl Describe for Wrapper<i64>`) keyed under the mangled name
+                // (`"Wrapper$$i64"`) before falling back to generic impls (#2270).
                 let Some(entry) = hew_hir::dispatch::lookup_trait_impl_entry(
                     &self.trait_impl_index,
                     declaring_trait,
                     &self_type_name,
                     method_name,
+                    &type_args,
                 )
                 .cloned() else {
                     self.diagnostics.push(MirDiagnostic {
@@ -21259,11 +21263,13 @@ impl Builder {
             });
             return None;
         };
+        // Pass `type_args` so concrete-specialised impls resolve correctly (#2270).
         let Some(entry) = hew_hir::dispatch::lookup_trait_impl_entry(
             &self.trait_impl_index,
             declaring_trait,
             &self_type_name,
             method_name,
+            &type_args,
         )
         .cloned() else {
             self.diagnostics.push(MirDiagnostic {

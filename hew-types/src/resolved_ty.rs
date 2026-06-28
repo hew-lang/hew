@@ -713,6 +713,120 @@ impl fmt::Display for UserFacingResolvedTy<'_> {
     }
 }
 
+// ── Symbol-key mangling for concrete specialised impls ───────────────────────
+//
+// When two `impl Trait for Wrapper<i64>` and `impl Trait for Wrapper<string>`
+// blocks coexist, their methods are registered and looked up under the bare
+// key `"Wrapper::method"` which causes the second registration to clobber the
+// first, and codegen to emit two LLVM functions with the same name (the
+// linkage error that #2270 surfaced). The fix: for concrete specialised impls
+// (no generic type params on the impl, non-empty target type args), use a
+// mangled self-type name that embeds the concrete args — e.g. `"Wrapper$$i64"`
+// — so `"Wrapper$$i64::describe"` and `"Wrapper$$string::describe"` are
+// distinct throughout the checker–HIR–MIR–codegen pipeline.
+//
+// The mangle format matches `hew-hir::monomorph::mangle` for
+// `SymbolClass::Function`: `"{origin}$$" + args joined by "$"`, where each
+// arg is its canonical string segment (primitives → their keyword, named
+// types → their bare name, compounds → recursively rendered).
+//
+// These helpers live in `hew-types` (not `hew-hir`) because `hew-types` does
+// not depend on `hew-hir` and the checker must compute mangled keys without
+// introducing a circular dependency. `hew-hir` calls its own `mangle()` entry
+// point over `ResolvedTy` values; both produce byte-identical output for the
+// inputs that a concrete specialised impl target can carry.
+//
+// Scope: only concrete specialised impls ever produce mangled keys here.
+// Generic impls (`impl<T> Trait for Wrapper<T>`) and impls with no target type
+// args keep the bare name as before. This change is strictly additive on the
+// checker side: when the mangled key is absent from `fn_sigs` (e.g. an
+// unresolved or complex type arg), we fall back to the bare key so existing
+// behaviour is preserved.
+
+/// Render a single `ResolvedTy` as the canonical mangle segment used by
+/// `hew-hir::monomorph::mangle_resolved_ty`. Returns `None` for shapes that
+/// cannot be embedded (inference variables, error placeholders, abstract
+/// type-parameter references).
+///
+/// The output for every concrete type matches `hew-hir`'s rendering
+/// byte-for-byte: scalar keywords (`i64`, `string`, …), named types by their
+/// bare name (compound args separated by `_`), and compound shapes recursively.
+/// This function must be kept in sync with `hew-hir/src/monomorph.rs::mangle_resolved_ty`.
+#[must_use]
+pub fn mangle_resolved_ty_segment(ty: &ResolvedTy) -> Option<String> {
+    match ty {
+        ResolvedTy::I8 => Some("i8".to_string()),
+        ResolvedTy::I16 => Some("i16".to_string()),
+        ResolvedTy::I32 => Some("i32".to_string()),
+        ResolvedTy::I64 => Some("i64".to_string()),
+        ResolvedTy::U8 => Some("u8".to_string()),
+        ResolvedTy::U16 => Some("u16".to_string()),
+        ResolvedTy::U32 => Some("u32".to_string()),
+        ResolvedTy::U64 => Some("u64".to_string()),
+        ResolvedTy::Isize => Some("isize".to_string()),
+        ResolvedTy::Usize => Some("usize".to_string()),
+        ResolvedTy::F32 => Some("f32".to_string()),
+        ResolvedTy::F64 => Some("f64".to_string()),
+        ResolvedTy::Bool => Some("bool".to_string()),
+        ResolvedTy::Char => Some("char".to_string()),
+        ResolvedTy::String => Some("string".to_string()),
+        ResolvedTy::Bytes => Some("bytes".to_string()),
+        ResolvedTy::CancellationToken => Some("CancellationToken".to_string()),
+        ResolvedTy::Duration => Some("duration".to_string()),
+        ResolvedTy::Unit => Some("unit".to_string()),
+        ResolvedTy::Never => Some("never".to_string()),
+        ResolvedTy::Named { name, args, .. } => {
+            // Bare name, args joined by `_` — mirrors the HIR rendering.
+            let mut out = name.replace("::", "_");
+            for arg in args {
+                out.push('_');
+                out.push_str(&mangle_resolved_ty_segment(arg)?);
+            }
+            Some(out)
+        }
+        // Abstract type parameters, inference leftovers, and complex shapes
+        // (closures, tuples, pointers, …) produce None — callers fall back to
+        // the bare key, preserving existing behaviour.
+        ResolvedTy::TypeParam { .. }
+        | ResolvedTy::Tuple(_)
+        | ResolvedTy::Array(_, _)
+        | ResolvedTy::Slice(_)
+        | ResolvedTy::Function { .. }
+        | ResolvedTy::Closure { .. }
+        | ResolvedTy::Pointer { .. }
+        | ResolvedTy::Borrow { .. }
+        | ResolvedTy::TraitObject { .. }
+        | ResolvedTy::Task(_) => None,
+    }
+}
+
+/// Produce the mangled self-type name for a concrete specialised impl.
+///
+/// For `impl Describe for Wrapper<i64>`: returns `Some("Wrapper$$i64")`.
+/// For `impl Describe for Wrapper<string>`: returns `Some("Wrapper$$string")`.
+/// Returns `None` when any type arg cannot be mangled (e.g. abstract type
+/// parameters, inference variables), in which case callers fall back to the
+/// bare `name`.
+///
+/// The produced name matches `hew-hir::monomorph::mangle(name, type_args)` for
+/// `SymbolClass::Function` — both omit a class prefix and join args with `$$`
+/// + `$` separators.
+#[must_use]
+pub fn mangle_impl_self_name(name: &str, type_args: &[ResolvedTy]) -> Option<String> {
+    if type_args.is_empty() {
+        return None;
+    }
+    let mut out = String::from(name);
+    out.push_str("$$");
+    for (i, ty) in type_args.iter().enumerate() {
+        if i > 0 {
+            out.push('$');
+        }
+        out.push_str(&mangle_resolved_ty_segment(ty)?);
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

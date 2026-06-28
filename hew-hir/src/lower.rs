@@ -1671,13 +1671,43 @@ pub fn lower_program_with_mono_cap(
                 // resolve them in the second pass. The Index special-case is
                 // a subset of this — its methods landed in `fn_registry`
                 // historically via the same key shape.
-                if let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 {
+                if let TypeExpr::Named {
+                    name,
+                    type_args: target_type_args,
+                } = &impl_decl.target_type.0
+                {
                     if impl_decl.where_clause.is_none()
                         || classify_unsupported_where_clause(impl_decl).is_none()
                     {
                         let impl_type_params = impl_type_param_names(impl_decl);
+                        // For concrete specialised impls (empty impl type-params,
+                        // non-empty target type args), compute the mangled self-type
+                        // name so the fn_registry key is distinct per instantiation.
+                        // Mirrors the identical logic in `lower_impl_block` (#2270).
+                        let symbol_name: std::borrow::Cow<str> = if impl_type_params.is_empty() {
+                            let concrete_args: Vec<hew_types::ResolvedTy> = target_type_args
+                                .as_deref()
+                                .unwrap_or(&[])
+                                .iter()
+                                .map(|a| ctx.lower_type(a))
+                                .collect();
+                            if concrete_args.is_empty() {
+                                std::borrow::Cow::Borrowed(name.as_str())
+                            } else {
+                                std::borrow::Cow::Owned(crate::monomorph::mangle(
+                                    name,
+                                    &concrete_args,
+                                ))
+                            }
+                        } else {
+                            std::borrow::Cow::Borrowed(name.as_str())
+                        };
                         for method in &impl_decl.methods {
-                            ctx.register_impl_method_fn_entry(name, method, &impl_type_params);
+                            ctx.register_impl_method_fn_entry(
+                                &symbol_name,
+                                method,
+                                &impl_type_params,
+                            );
                         }
                         // Also register trait default methods that are NOT
                         // overridden in this impl block — they need fn_registry
@@ -1692,7 +1722,7 @@ pub fn lower_program_with_mono_cap(
                                     if !overridden.contains(default_method.name.as_str()) {
                                         let fn_decl = trait_method_to_fn_decl(default_method);
                                         ctx.register_impl_method_fn_entry(
-                                            name,
+                                            &symbol_name,
                                             &fn_decl,
                                             &impl_type_params,
                                         );
@@ -3999,11 +4029,13 @@ fn closure_under_substitution(
             // structured fields only — no symbol-name parsing. Tolerant of a
             // module-qualified receiver name: an imported generic adapter
             // (`iter.Map`) keys its impl block on the bare `Map`.
+            // Pass `type_args` to resolve concrete-specialised impls (#2270).
             let Some(entry) = crate::dispatch::lookup_trait_impl_entry(
                 &impl_index,
                 &tms.declaring_trait,
                 &self_type_name,
                 &tms.method_name,
+                &type_args,
             ) else {
                 continue;
             };
@@ -7037,9 +7069,16 @@ impl LowerCtx {
         method: &FnDecl,
         impl_type_params: &[String],
     ) {
+        // `self_type_name` is the symbol-prefix name — may be the mangled form
+        // for concrete specialised impls (e.g. `"Wrapper$$i64"`). The var-self
+        // check must use the bare AST receiver type name (e.g. `"Wrapper"`) so
+        // the param-type annotation `Wrapper<i64>` still matches (#2270).
+        let bare_type_name = self_type_name
+            .split_once("$$")
+            .map_or(self_type_name, |(bare, _)| bare);
         let symbol = crate::node::HirImplBlock::method_symbol(self_type_name, &method.name);
         self.register_fn_entry(&symbol, method);
-        if Self::is_var_self_method_for_type(method, self_type_name) {
+        if Self::is_var_self_method_for_type(method, bare_type_name) {
             if let Some(entry) = self.fn_registry.get_mut(&symbol) {
                 let Some(receiver_ty) = entry.param_tys.first().cloned() else {
                     unreachable!(
@@ -8526,7 +8565,7 @@ impl LowerCtx {
         }
         let TypeExpr::Named {
             name: self_type_name,
-            ..
+            type_args: target_type_args,
         } = &decl.target_type.0
         else {
             self.diagnostics.push(HirDiagnostic::new(
@@ -8546,6 +8585,36 @@ impl LowerCtx {
             .as_ref()
             .map(|ps| ps.iter().map(|p| p.name.clone()).collect())
             .unwrap_or_default();
+        // For concrete specialised impls (`impl Describe for Wrapper<i64>`, i.e.
+        // empty type_params with non-empty target type args), lower the target's
+        // type args and compute a mangled self-type name for use in method symbols.
+        // This prevents `impl Describe for Wrapper<i64>` and
+        // `impl Describe for Wrapper<string>` from both emitting the symbol
+        // `"Wrapper::describe"` and colliding in fn_registry / codegen (#2270).
+        //
+        // Generic impls (`impl<U> Describe for Wrapper<U>`, non-empty type_params)
+        // are excluded: their method symbols stay bare (`"Wrapper::describe"`)
+        // and monomorphisation suffixes them at instantiation time.
+        let self_type_concrete_args: Vec<hew_types::ResolvedTy> = if type_params.is_empty() {
+            target_type_args
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .map(|a| self.lower_type(a))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        // Symbol name for this impl's methods: mangled when the impl is a concrete
+        // specialisation of a generic type, bare otherwise.
+        let symbol_self_name: std::borrow::Cow<str> = if self_type_concrete_args.is_empty() {
+            std::borrow::Cow::Borrowed(self_type_name.as_str())
+        } else {
+            std::borrow::Cow::Owned(crate::monomorph::mangle(
+                self_type_name,
+                &self_type_concrete_args,
+            ))
+        };
         // Blanket-impl guard: reject `impl<T> Trait for T` (target name is
         // itself one of the outer type parameters) — V0b does not handle the
         // monomorphisation of blanket impls.
@@ -8698,7 +8767,7 @@ impl LowerCtx {
                     continue;
                 }
             }
-            let symbol = crate::node::HirImplBlock::method_symbol(self_type_name, &method.name);
+            let symbol = crate::node::HirImplBlock::method_symbol(&symbol_self_name, &method.name);
             // Pass impl-level type params so that methods of e.g. `impl<U> Trait for Wrapper<U>`
             // carry `U` as a `HirFn::type_params` entry — required for monomorphization
             // of generic-over-generic impl methods (W3.022 Stage 3).
@@ -8736,7 +8805,7 @@ impl LowerCtx {
                     }
                     let fn_decl = trait_method_to_fn_decl(default_method);
                     let symbol =
-                        crate::node::HirImplBlock::method_symbol(self_type_name, &fn_decl.name);
+                        crate::node::HirImplBlock::method_symbol(&symbol_self_name, &fn_decl.name);
                     items.push(HirItem::Function(self.lower_fn_with_name_and_impl_params(
                         &fn_decl,
                         &symbol,
@@ -8770,6 +8839,7 @@ impl LowerCtx {
             trait_name: decl.trait_bound.as_ref().map(|b| b.name.clone()),
             self_type_name: self_type_name.clone(),
             type_params,
+            self_type_concrete_args,
             type_aliases,
             method_symbols,
             method_names,

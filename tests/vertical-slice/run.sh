@@ -510,6 +510,9 @@ if grep -qF 'E_CODEGEN_FRONT' "${reject_output}" || \
 fi
 run_accept_expect_stdout "static_trait_dispatch_inline_supertrait"
 run_accept_expect_stdout "static_trait_dispatch_intermediate_inline_supertrait"
+# Two concrete impl-Trait instantiations for the same generic type must produce
+# distinct codegen symbols (#2270: mangled-symbol collision → LLVM linkage crash).
+run_accept_expect_status "impl_trait_concrete_specialisation" 0
 
 run_accept_expect_status "assert_eq_fail" 134
 grep -q 'assertion failed: assert_eq(4, 5)' "${stderr_output}"

@@ -45,6 +45,13 @@ pub type TraitImplKey = (String, String, String);
 /// and zips `method_names` with `method_symbols` (parallel arrays maintained
 /// by `lower_impl_block`). Inherent impls (no trait bound) do not participate
 /// in static trait dispatch and are skipped.
+///
+/// For concrete specialised impls (empty `type_params`, non-empty
+/// `self_type_concrete_args`), the key self-type name is the mangled form
+/// incorporating the concrete args — e.g. `"Wrapper$$i64"` for
+/// `impl Describe for Wrapper<i64>`. This ensures `impl Describe for Wrapper<i64>`
+/// and `impl Describe for Wrapper<string>` produce distinct keys and never
+/// collide in the index.
 #[must_use]
 pub fn build_trait_impl_method_index(
     items: &[HirItem],
@@ -55,6 +62,15 @@ pub fn build_trait_impl_method_index(
         if block.trait_name.is_none() {
             continue;
         }
+        // Key self-type name: bare for generic impls (type_params non-empty)
+        // or impls with no target type args; mangled for concrete specialised
+        // impls (`impl Trait for Wrapper<i64>` → `"Wrapper$$i64"`).
+        let key_self_type =
+            if block.type_params.is_empty() && !block.self_type_concrete_args.is_empty() {
+                crate::monomorph::mangle(&block.self_type_name, &block.self_type_concrete_args)
+            } else {
+                block.self_type_name.clone()
+            };
         // `method_names` and `method_symbols` are produced together in
         // `lower_impl_block` and MUST be parallel. Defensive zip: any
         // length mismatch indicates upstream HIR construction drift and
@@ -67,7 +83,7 @@ pub fn build_trait_impl_method_index(
         {
             let key = (
                 declaring_trait.clone(),
-                block.self_type_name.clone(),
+                key_self_type.clone(),
                 method_name.clone(),
             );
             index.insert(
@@ -93,13 +109,50 @@ pub fn build_trait_impl_method_index(
 /// nominal the impl block declared. Look up the key as given first, then retry
 /// with the bare leaf so an imported generic adapter resolves the same way it
 /// does in its defining module.
+///
+/// `self_type_concrete_args` carries the resolved type arguments of the receiver
+/// at the call site (e.g. `[ResolvedTy::I64]` for a `Wrapper<i64>` receiver).
+/// When non-empty, the lookup first tries the mangled self-type key
+/// (`"Wrapper$$i64"`) to find a concrete specialised impl, then falls back to
+/// the bare name for a generic impl (`impl<U> Trait for Wrapper<U>`). This
+/// ensures two concrete instantiations with distinct args resolve to their own
+/// impl entries rather than colliding on the bare name.
 #[must_use]
 pub fn lookup_trait_impl_entry<'a, S: std::hash::BuildHasher>(
     index: &'a HashMap<TraitImplKey, TraitImplMethodEntry, S>,
     declaring_trait: &str,
     self_type_name: &str,
     method_name: &str,
+    self_type_concrete_args: &[hew_types::ResolvedTy],
 ) -> Option<&'a TraitImplMethodEntry> {
+    // 1. When the receiver has concrete type args, try the mangled concrete key
+    //    first — this matches `impl Describe for Wrapper<i64>` over
+    //    `impl<U> Describe for Wrapper<U>` when both are present.
+    if !self_type_concrete_args.is_empty() {
+        let mangled = crate::monomorph::mangle(self_type_name, self_type_concrete_args);
+        let concrete_key = (
+            declaring_trait.to_string(),
+            mangled.clone(),
+            method_name.to_string(),
+        );
+        if let Some(entry) = index.get(&concrete_key) {
+            return Some(entry);
+        }
+        // Also try bare-leaf of the mangled name for module-qualified receivers.
+        let bare_mangled = mangled.rsplit('.').next().unwrap_or(&mangled);
+        if bare_mangled != mangled {
+            let bare_concrete_key = (
+                declaring_trait.to_string(),
+                bare_mangled.to_string(),
+                method_name.to_string(),
+            );
+            if let Some(entry) = index.get(&bare_concrete_key) {
+                return Some(entry);
+            }
+        }
+    }
+    // 2. Fall back to bare self_type_name (generic impls and impls without
+    //    target type args — the common case prior to this fix).
     let key = (
         declaring_trait.to_string(),
         self_type_name.to_string(),

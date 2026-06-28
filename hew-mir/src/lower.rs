@@ -8163,6 +8163,40 @@ fn is_unit_send_error_result(ty: &ResolvedTy) -> bool {
     )
 }
 
+/// Recognise the checker-recorded `Result<(), CloseError>` shape that
+/// `SendHalf`/`RecvHalf`/`Duplex` `.close()` produces. The half-close
+/// materialises this from the runtime's i32 status, so the MIR producer
+/// must consume the recorded type (`checker-authority`) rather than infer it.
+fn is_unit_close_error_result(ty: &ResolvedTy) -> bool {
+    let ResolvedTy::Named { name, args, .. } = ty else {
+        return false;
+    };
+    if name != "Result" {
+        return false;
+    }
+    matches!(
+        args.as_slice(),
+        [ResolvedTy::Unit, ResolvedTy::Named { name: err, .. }] if err == "CloseError"
+    )
+}
+
+/// Extract the `Result<R, RecvError>` payload type the recv producers
+/// materialise. Returns `None` for any other shape so the producer fails
+/// closed on a checker contract drift rather than mis-sizing the payload
+/// slot (`checker-authority`, `boundary-fail-closed`).
+fn recv_result_payload_ty(ty: &ResolvedTy) -> Option<&ResolvedTy> {
+    let ResolvedTy::Named { name, args, .. } = ty else {
+        return None;
+    };
+    if name != "Result" {
+        return None;
+    }
+    match args.as_slice() {
+        [payload, ResolvedTy::Named { name: err, .. }] if err == "RecvError" => Some(payload),
+        _ => None,
+    }
+}
+
 fn runtime_symbol_for_call_expr(
     expr: &HirExpr,
 ) -> Option<(String, &[hew_hir::HirExpr], hew_hir::SiteId)> {
@@ -21695,6 +21729,19 @@ impl Builder {
             "hew_duplex_pair" => self.lower_duplex_pair(hir_args, site),
             "hew_duplex_send" => self.lower_duplex_send(hir_args, site, context, result_ty),
             "hew_duplex_close" => self.lower_duplex_close(hir_args, site, context, result_ty),
+            "hew_duplex_send_half" | "hew_duplex_recv_half" => {
+                self.lower_duplex_half_extract(symbol, hir_args, site, result_ty)
+            }
+            "hew_send_half_send" | "hew_send_half_try_send" => {
+                self.lower_half_send(symbol, hir_args, site, context, result_ty)
+            }
+            "hew_recv_half_recv"
+            | "hew_recv_half_try_recv"
+            | "hew_duplex_recv"
+            | "hew_duplex_try_recv" => {
+                self.lower_duplex_recv(symbol, hir_args, site, context, result_ty)
+            }
+            "hew_duplex_close_half" => self.lower_half_close(hir_args, site, context, result_ty),
             "hew_supervisor_stop" => self.lower_supervisor_stop(hir_args, site),
             "hew_actor_link" | "hew_actor_monitor" => {
                 self.lower_actor_link_or_monitor(symbol, hir_args, site, context, result_ty)
@@ -23850,27 +23897,346 @@ impl Builder {
                 None
             }
         } else {
-            // Raw Duplex explicit close is not yet lowered by this producer.
-            // The scope-exit implicit close goes through drop elaboration
-            // (`place_aware_drop_fn` → DuplexClose) and is already correct.
-            // This path fires only for an explicit `handle.close()` on a raw
-            // `Duplex<S,R>` binding; it is uncommon and will land in a
-            // follow-on slice. Fail closed so the pipeline does not silently
-            // skip the close.
+            // Explicit `handle.close()` on a raw `Duplex<S,R>` binding routes
+            // through drop elaboration, not a value-position call: codegen's
+            // close arm is the drop ritual's responsibility (it pairs the
+            // `hew_duplex_close` call with the alloca-zero so a later drop
+            // cannot re-close). The unified handle's scope-exit drop already
+            // emits exactly that ritual, so an explicit raw close is redundant
+            // with the RAII close and fails closed here rather than emit a
+            // value-position call codegen refuses. The half-handle close
+            // (`hew_duplex_close_half`) has a dedicated value-position arm
+            // because its direction discriminant is not a drop-ritual concern.
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: format!(
-                        "explicit Duplex::close() on non-lambda handle ({recv_place:?})"
-                    ),
+                    construct: format!("explicit Duplex::close() on a raw handle ({recv_place:?})"),
                     site,
                 },
-                note: "explicit `Duplex::close()` on a raw `Duplex<S,R>` binding is not yet \
-                       lowered; the handle is closed implicitly at scope exit by drop \
-                       elaboration. Remove the explicit `.close()` call to compile."
+                note: "explicit `Duplex::close()` on a raw `Duplex<S,R>` binding is closed \
+                       implicitly at scope exit by drop elaboration; remove the explicit \
+                       `.close()` call. Split the handle and close a half \
+                       (`SendHalf`/`RecvHalf`) for an explicit per-direction close."
                     .to_string(),
             });
             None
         }
+    }
+
+    /// Lower `.send_half()` / `.recv_half()` on a unified `Duplex<S, R>`.
+    ///
+    /// HIR shape (E1 bridge): `Call { callee: BindingRef(symbol), args:
+    /// [receiver_expr] }`. The checker marks the call consuming, so the
+    /// `receiver_expr` carries `IntentKind::Consume`; `lower_value` emits the
+    /// `Use { Consume }` that transitions the unified `DuplexHandle` binding to
+    /// `Consumed` and drops it out of `owned_locals`, so its scope-exit close is
+    /// suppressed and the extracted half is the only live handle on that
+    /// direction (`raii-null-after-move`, `cleanup-all-exits`).
+    ///
+    /// MIR emission:
+    ///   1. Lower `receiver_expr` → the unified `DuplexHandle` Place (consuming).
+    ///   2. Allocate a fresh backing local typed `SendHalf<S>` / `RecvHalf<R>`
+    ///      (the checker-recorded result type) and wrap it as the matching
+    ///      half `Place`. The `Place` variant is the authority codegen reads to
+    ///      pick the per-direction close ABI at drop, so it must match the
+    ///      extracted direction (`codegen-abi-authority`).
+    ///   3. Emit `CallRuntimeAbi { symbol, args: [duplex], dest: Some(half) }` —
+    ///      the half ABIs RETURN the new handle pointer (unlike `hew_duplex_pair`,
+    ///      which writes out-params), so the half Place is the call dest.
+    ///   4. Return the half Place; the enclosing `Let` registers it in
+    ///      `binding_locals` + `owned_locals` for its own scope-exit close.
+    fn lower_duplex_half_extract(
+        &mut self,
+        symbol: &str,
+        hir_args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+        result_ty: Option<&ResolvedTy>,
+    ) -> Option<Place> {
+        let Some(receiver_expr) = hir_args.first() else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!("{symbol} with no receiver arg"),
+                    site,
+                },
+                note: format!("`{symbol}` requires the Duplex receiver argument"),
+            });
+            return None;
+        };
+        // Consuming receiver: the recorded `IntentKind::Consume` drives the
+        // move-mark inside `lower_value`.
+        let recv_place = self.lower_value(receiver_expr)?;
+
+        // The result type is the half handle type (`SendHalf<S>` / `RecvHalf<R>`);
+        // consume it as the backing local's type so the handle's element layout is
+        // recorded for codegen (`checker-authority`).
+        let half_ty = result_ty.map_or(
+            ResolvedTy::Named {
+                name: if symbol == "hew_duplex_send_half" {
+                    "SendHalf".to_string()
+                } else {
+                    "RecvHalf".to_string()
+                },
+                args: vec![],
+                builtin: None,
+                is_opaque: true,
+            },
+            |ty| self.subst_ty(ty),
+        );
+        let backing = self.alloc_local(half_ty);
+        let Place::Local(n) = backing else {
+            unreachable!("alloc_local returns Place::Local");
+        };
+        let half_place = if symbol == "hew_duplex_send_half" {
+            Place::SendHalf(n)
+        } else {
+            Place::RecvHalf(n)
+        };
+
+        self.push_instr(Instr::CallRuntimeAbi(
+            crate::model::RuntimeCall::new(symbol, vec![recv_place], Some(half_place))
+                .expect("half-extract symbol is an allowlisted runtime symbol"),
+        ));
+
+        Some(half_place)
+    }
+
+    /// Lower `.send(msg)` / `.try_send(msg)` on a `SendHalf<S>`.
+    ///
+    /// Mirrors `lower_duplex_send`'s `(handle, msg_ptr, len)` ABI: the receiver
+    /// is a borrowing `SendHalf` Place (NON-consuming — a half is sent on many
+    /// times before its own close), the message spills into the fixed 8-byte
+    /// integer slot, and the runtime's i32 status materialises into the
+    /// checker-recorded `Result<(), SendError>` in value context (discarded in
+    /// statement context). Any other recorded shape fails closed
+    /// (`checker-authority`, `boundary-fail-closed`).
+    fn lower_half_send(
+        &mut self,
+        symbol: &str,
+        hir_args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+        context: RuntimeCallContext,
+        result_ty: Option<&ResolvedTy>,
+    ) -> Option<Place> {
+        if hir_args.len() < 2 {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!("{symbol} with fewer than 2 args"),
+                    site,
+                },
+                note: format!("`{symbol}` requires receiver + message arguments"),
+            });
+            return None;
+        }
+        // args[0] = SendHalf receiver (borrow; no Move emitted).
+        let recv_place = self.lower_value(&hir_args[0]);
+        // args[1] = message value.
+        let msg_place = self.lower_value(&hir_args[1]);
+        let (Some(recv_place), Some(msg_place)) = (recv_place, msg_place) else {
+            return None;
+        };
+
+        let resolved_result = result_ty.map(|ty| self.subst_ty(ty));
+        if !resolved_result
+            .as_ref()
+            .is_some_and(is_unit_send_error_result)
+        {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!("`{symbol}` whose result is not Result<(), SendError>"),
+                    site,
+                },
+                note: format!(
+                    "`{symbol}` materializes only `Result<(), SendError>`; got \
+                     {resolved_result:?}"
+                ),
+            });
+            return None;
+        }
+        let dest = match context {
+            RuntimeCallContext::ValueNeeded => Some(self.alloc_local(
+                resolved_result.expect("tell-shaped result is Some after the guard above"),
+            )),
+            RuntimeCallContext::Discarded => None,
+        };
+
+        // The fixed 8-byte integer payload length (mirrors `lower_duplex_send`).
+        // SHIM: the integer spine always uses 8-byte i64 values, so the length
+        // is a compile-time constant for the scalar message shape.
+        // WHEN obsolete: when the typed-message ABI lands a per-type payload size.
+        // WHAT: replace with a sizeof/alignof expression or a typed ABI.
+        let len_place = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::ConstI64 {
+            dest: len_place,
+            value: 8,
+        });
+
+        self.push_instr(Instr::CallRuntimeAbi(
+            crate::model::RuntimeCall::new(symbol, vec![recv_place, msg_place, len_place], dest)
+                .expect("half-send symbol is an allowlisted runtime symbol"),
+        ));
+
+        dest
+    }
+
+    /// Lower the recv family: `.recv()` / `.try_recv()` on a `RecvHalf<R>` and
+    /// `.recv()` / `.try_recv()` on a unified `Duplex<S, R>` (channel mode).
+    ///
+    /// Every symbol shares the `(handle, out_ptr, out_len) -> i32` runtime ABI:
+    /// the runtime writes the received payload into caller out-params and returns
+    /// a `RecvError` status. The receiver is a borrowing handle Place
+    /// (NON-consuming — recv is called repeatedly until close). The checker
+    /// records `Result<R, RecvError>`; this producer allocates the dest typed
+    /// from that recorded shape and lets codegen materialise the tagged union
+    /// from the out-params + status (the recv codegen arm owns the payload copy
+    /// and `hew_duplex_payload_free`). Fails closed on any non-recv-Result shape
+    /// (`checker-authority`, `boundary-fail-closed`).
+    fn lower_duplex_recv(
+        &mut self,
+        symbol: &str,
+        hir_args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+        context: RuntimeCallContext,
+        result_ty: Option<&ResolvedTy>,
+    ) -> Option<Place> {
+        let Some(receiver_expr) = hir_args.first() else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!("{symbol} with no receiver arg"),
+                    site,
+                },
+                note: format!("`{symbol}` requires the receiver handle argument"),
+            });
+            return None;
+        };
+        // Borrowing receiver (recv is non-consuming).
+        let recv_place = self.lower_value(receiver_expr)?;
+
+        let resolved_result = result_ty.map(|ty| self.subst_ty(ty));
+        let Some(resolved_result) = resolved_result else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!("{symbol} with no recorded result type"),
+                    site,
+                },
+                note: format!("`{symbol}` requires a checker-recorded `Result<R, RecvError>`"),
+            });
+            return None;
+        };
+        if recv_result_payload_ty(&resolved_result).is_none() {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!("`{symbol}` whose result is not Result<R, RecvError>"),
+                    site,
+                },
+                note: format!(
+                    "`{symbol}` materializes only `Result<R, RecvError>`; got \
+                     {resolved_result:?}"
+                ),
+            });
+            return None;
+        }
+
+        // The recv runtime ABI always writes its payload out-params and returns a
+        // status; codegen materialises the Result from those, so a dest is
+        // required even in statement context (the status carries the closed/empty
+        // signal the user discards but the codegen arm still consumes). Allocate
+        // the dest from the checker-recorded shape unconditionally.
+        let dest = self.alloc_local(resolved_result);
+        self.push_instr(Instr::CallRuntimeAbi(
+            crate::model::RuntimeCall::new(symbol, vec![recv_place], Some(dest))
+                .expect("recv symbol is an allowlisted runtime symbol"),
+        ));
+
+        match context {
+            RuntimeCallContext::ValueNeeded => Some(dest),
+            RuntimeCallContext::Discarded => None,
+        }
+    }
+
+    /// Lower `.close()` on a `SendHalf<S>` / `RecvHalf<R>`.
+    ///
+    /// The checker rewrites half-close to `hew_duplex_close_half` and marks the
+    /// receiver consuming, so `lower_value` transitions the half binding to
+    /// `Consumed` and suppresses its scope-exit close — this call is the single
+    /// close on the consuming path (the runtime's `AtomicBool` guard keeps a
+    /// re-entrant close safe). The runtime ABI is `(half_ptr, direction) -> i32`
+    /// with `direction` SendHalf=0 / RecvHalf=1; the direction is carried by the
+    /// receiver's `Place` variant (`codegen-abi-authority`), and codegen
+    /// materialises the discriminant at the call from that variant exactly as
+    /// the drop-elaboration close already does. The i32 status materialises into
+    /// the checker-recorded `Result<(), CloseError>`; any other shape fails
+    /// closed.
+    fn lower_half_close(
+        &mut self,
+        hir_args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+        context: RuntimeCallContext,
+        result_ty: Option<&ResolvedTy>,
+    ) -> Option<Place> {
+        let Some(receiver_expr) = hir_args.first() else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "hew_duplex_close_half with no receiver arg".to_string(),
+                    site,
+                },
+                note: "`hew_duplex_close_half` requires the half-handle argument".to_string(),
+            });
+            return None;
+        };
+        // Consuming receiver: recorded `IntentKind::Consume` drives the move-mark.
+        let recv_place = self.lower_value(receiver_expr)?;
+
+        // The receiver must be a half Place — that variant is the direction
+        // authority codegen reads. A non-half Place is a producer-contract
+        // violation; fail closed rather than emit a mis-directed close.
+        if !matches!(recv_place, Place::SendHalf(_) | Place::RecvHalf(_)) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!("hew_duplex_close_half on non-half handle ({recv_place:?})"),
+                    site,
+                },
+                note: "`hew_duplex_close_half` requires a SendHalf/RecvHalf receiver; the \
+                       direction discriminant is selected from the Place variant"
+                    .to_string(),
+            });
+            return None;
+        }
+
+        let resolved_result = result_ty.map(|ty| self.subst_ty(ty));
+        if !resolved_result
+            .as_ref()
+            .is_some_and(is_unit_close_error_result)
+        {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "`half.close` whose result is not Result<(), CloseError>"
+                        .to_string(),
+                    site,
+                },
+                note: format!(
+                    "half-handle `.close()` materializes only `Result<(), CloseError>`; \
+                     got {resolved_result:?}"
+                ),
+            });
+            return None;
+        }
+        let dest =
+            match context {
+                RuntimeCallContext::ValueNeeded => Some(self.alloc_local(
+                    resolved_result.expect("close result is Some after the guard above"),
+                )),
+                RuntimeCallContext::Discarded => None,
+            };
+
+        // The direction discriminant is a codegen-side projection of the
+        // receiver `Place` variant (SendHalf=0 / RecvHalf=1), mirroring the
+        // drop-elaboration half-close. The producer passes only the handle; the
+        // codegen arm appends the discriminant from the Place.
+        self.push_instr(Instr::CallRuntimeAbi(
+            crate::model::RuntimeCall::new("hew_duplex_close_half", vec![recv_place], dest)
+                .expect("hew_duplex_close_half is an allowlisted runtime symbol"),
+        ));
+
+        dest
     }
 
     fn lower_actor_payload(

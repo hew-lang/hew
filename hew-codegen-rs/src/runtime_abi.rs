@@ -298,6 +298,188 @@ pub(crate) fn lower_call_runtime_abi(
             }
             let _ = (i32_ty, ptr_ty);
         }
+        // ── Channel-Duplex split: half extraction ─────────────────────────
+        //
+        // hew_duplex_send_half(d) -> *mut HewSendHalfHandle
+        // hew_duplex_recv_half(d) -> *mut HewRecvHalfHandle
+        // Consume the unified handle and RETURN the direction-only half pointer.
+        // arg0: the unified `DuplexHandle` Place — load the raw ptr from its
+        // alloca. dest: the half Place (`SendHalf`/`RecvHalf`) — store the
+        // returned half pointer into its alloca. The MIR producer consumed the
+        // source binding, so the unified alloca is no longer drop-scheduled.
+        F::DuplexSendHalf | F::DuplexRecvHalf => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi({symbol}): expected 1 arg (duplex), got {}",
+                    args.len()
+                )));
+            }
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "{symbol}: producer must supply a half dest place"
+                ))
+            })?;
+            let duplex = load_duplex_handle(fn_ctx, args[0], "duplex_half_extract arg0")?;
+            let half_ptr = fn_ctx.call_runtime_ptr(
+                symbol,
+                &[duplex.into()],
+                "duplex_half_extract_call",
+                "duplex half extract call",
+            )?;
+            let (dest_slot, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_slot, half_ptr)
+                .llvm_ctx("duplex half-extract store")?;
+            let _ = (i32_ty, ptr_ty);
+        }
+        // ── SendHalf send / try_send ──────────────────────────────────────
+        //
+        // hew_send_half_send(half, msg: *const u8, len: usize) -> i32
+        // hew_send_half_try_send(half, msg, len) -> i32
+        // Same ABI shape as hew_duplex_send: load the half ptr (borrow), spill
+        // the integer message into a fresh i64 alloca, pass `(ptr, len)`, and
+        // materialise `Result<(), SendError>` from the i32 status in value
+        // context (discard in statement context).
+        F::SendHalfSend | F::SendHalfTrySend => {
+            if args.len() != 3 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi({symbol}): expected 3 args (half, msg, len), got {}",
+                    args.len()
+                )));
+            }
+            let half = load_duplex_handle(fn_ctx, args[0], "half_send arg0")?;
+            let msg_ptr = spill_int_arg_as_ptr(fn_ctx, args[1], i64_ty, "half_send_msg")?;
+            let len = load_int_arg(fn_ctx, args[2], i64_ty, "half_send_len")?;
+            let llvm_args: [BasicMetadataValueEnum; 3] =
+                [half.into(), msg_ptr.into(), len.into()];
+            let call_site = fn_ctx.call_runtime(
+                symbol,
+                &llvm_args,
+                "half_send_call",
+                "send-half send call",
+            )?;
+            if let Some(d) = dest {
+                let status = call_site
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed(format!(
+                            "{symbol} returned void — expected i32 status"
+                        ))
+                    })?
+                    .into_int_value();
+                emit_send_result_from_rc(fn_ctx, status, d, "send_half_send")?;
+            }
+            let _ = (i32_ty, ptr_ty);
+        }
+        // ── Recv family: RecvHalf recv / try_recv + unified Duplex recv ───
+        //
+        // hew_recv_half_recv(half, out_ptr, out_len) -> i32
+        // hew_recv_half_try_recv(half, out_ptr, out_len) -> i32
+        // hew_duplex_recv(d, out_ptr, out_len) -> i32
+        // hew_duplex_try_recv(d, out_ptr, out_len) -> i32
+        // The runtime writes the received payload to caller out-params and
+        // returns a RecvError status. Materialise `Result<R, RecvError>`: on
+        // status Ok copy the exact payload bytes into Result::Ok then free the
+        // payload buffer; on any non-Ok status build Result::Err(<mapped
+        // RecvError>). The producer supplies a dest (required — the status
+        // carries the closed/empty signal even when the user discards it).
+        F::RecvHalfRecv | F::RecvHalfTryRecv | F::DuplexRecv | F::DuplexTryRecv => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi({symbol}): expected 1 arg (handle), got {}",
+                    args.len()
+                )));
+            }
+            let d = dest.ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "{symbol}: producer must supply a Result dest place"
+                ))
+            })?;
+            let handle = load_duplex_handle(fn_ctx, args[0], "duplex_recv arg0")?;
+            // Fresh out-param slots: `*mut u8` payload ptr + `usize` length.
+            let out_ptr_slot = fn_ctx
+                .builder
+                .build_alloca(ptr_ty, "duplex_recv_out_ptr")
+                .llvm_ctx("duplex recv out_ptr alloca")?;
+            let out_len_slot = fn_ctx
+                .builder
+                .build_alloca(i64_ty, "duplex_recv_out_len")
+                .llvm_ctx("duplex recv out_len alloca")?;
+            let status = fn_ctx
+                .call_runtime(
+                    symbol,
+                    &[handle.into(), out_ptr_slot.into(), out_len_slot.into()],
+                    "duplex_recv_call",
+                    "duplex recv call",
+                )?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "{symbol} returned void — expected i32 status"
+                    ))
+                })?
+                .into_int_value();
+            emit_recv_result_from_out_params(
+                fn_ctx,
+                status,
+                out_ptr_slot,
+                out_len_slot,
+                d,
+                symbol,
+            )?;
+            let _ = (i32_ty, ptr_ty);
+        }
+        // ── Half close (explicit) ─────────────────────────────────────────
+        //
+        // hew_duplex_close_half(half, direction: i32) -> i32
+        // The direction (SendHalf=0 / RecvHalf=1) is selected from the
+        // receiver `Place` variant — the same authority drop elaboration uses.
+        // The i32 status materialises into `Result<(), CloseError>` in value
+        // context; statement context discards it. The runtime's AtomicBool
+        // double-close guard keeps a later scope-exit drop safe even though the
+        // MIR producer consumed the half (so no scope-exit close is scheduled).
+        F::DuplexCloseHalf => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_duplex_close_half): expected 1 arg (half), got {}",
+                    args.len()
+                )));
+            }
+            let direction = match args[0] {
+                Place::SendHalf(_) => 0u64,
+                Place::RecvHalf(_) => 1u64,
+                other => {
+                    return Err(CodegenError::FailClosed(format!(
+                        "hew_duplex_close_half: receiver must be a SendHalf/RecvHalf place \
+                         (the direction authority), got {other:?}"
+                    )));
+                }
+            };
+            let half = load_duplex_handle(fn_ctx, args[0], "half_close arg0")?;
+            let direction_val = i32_ty.const_int(direction, false);
+            let call_site = fn_ctx.call_runtime(
+                symbol,
+                &[half.into(), direction_val.into()],
+                "half_close_call",
+                "half close call",
+            )?;
+            if let Some(d) = dest {
+                let status = call_site
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "hew_duplex_close_half returned void — expected i32 status".into(),
+                        )
+                    })?
+                    .into_int_value();
+                emit_close_result_from_rc(fn_ctx, status, d, "hew_duplex_close_half")?;
+            }
+            let _ = (i32_ty, ptr_ty);
+        }
         // ── M2 lambda-actor send/ask/release/new ──────────────────────────
         //
         // hew_lambda_actor_send(actor: *mut HewLambdaActorHandle,
@@ -3292,12 +3474,7 @@ pub(crate) fn lower_call_runtime_abi(
         | F::ChannelSenderClose
         | F::ChannelReceiverClose
         | F::DuplexClone
-        | F::DuplexCloseHalf
         | F::DuplexPayloadFree
-        | F::DuplexRecv
-        | F::DuplexRecvHalf
-        | F::DuplexSendHalf
-        | F::DuplexTryRecv
         | F::DuplexTrySend
         | F::DynBoxAlloc
         | F::DynBoxFree
@@ -3337,8 +3514,6 @@ pub(crate) fn lower_call_runtime_abi(
         | F::MetricVecWith
         | F::NodeLookup
         | F::RcNew
-        | F::RecvHalfRecv
-        | F::RecvHalfTryRecv
         | F::RegexCompile
         | F::RemotePidTell
         | F::ReplyChannelCancel
@@ -3347,8 +3522,6 @@ pub(crate) fn lower_call_runtime_abi(
         | F::ReplyPayloadFree
         | F::ReplyWait
         | F::SelectFirst
-        | F::SendHalfSend
-        | F::SendHalfTrySend
         | F::SinkClose
         | F::SinkWrite(_)
         | F::SinkTryWrite(_)

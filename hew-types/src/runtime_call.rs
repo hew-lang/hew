@@ -1033,6 +1033,13 @@ impl RuntimeCallFamily {
                 | Self::ChannelReceiverClose
                 | Self::DuplexClose
                 | Self::DuplexCloseHalf
+                // The half-extract methods move the unified `Duplex` handle out:
+                // after `.send_half()` / `.recv_half()` the source `Duplex`
+                // binding is dead and only the extracted half drops. Without the
+                // consume mark the parent `Duplex` stays in the scope-exit drop
+                // set and closes a direction the half now owns — a double-close.
+                | Self::DuplexSendHalf
+                | Self::DuplexRecvHalf
                 | Self::LambdaActorRelease
         )
     }
@@ -1697,15 +1704,17 @@ mod tests {
     }
 
     /// `consumes_receiver` is anchored by an INDEPENDENT hard-coded
-    /// 7-symbol set. `builtin_names::runtime_symbol_consumes_receiver`
+    /// symbol set. `builtin_names::runtime_symbol_consumes_receiver`
     /// now delegates to this catalog, so asserting against that function
     /// would be circular — the literal set below is the sole external
-    /// anchor: a close family losing its consume mark (leak) or a
-    /// non-close family gaining one (double-free) fails here.
+    /// anchor: a consuming family losing its consume mark (leak) or a
+    /// non-consuming family gaining one (double-free) fails here. The set
+    /// covers the close family plus the two half-extract methods, which
+    /// move the unified `Duplex` handle out (leaving only the half live).
     #[test]
     fn consumes_receiver_mirrors_builtin_names() {
         use std::collections::HashSet;
-        // The canonical 7-set, written out literally (NOT derived from
+        // The canonical set, written out literally (NOT derived from
         // any function under test).
         let expected: HashSet<&'static str> = [
             "hew_stream_close",
@@ -1714,6 +1723,8 @@ mod tests {
             "hew_channel_receiver_close",
             "hew_duplex_close",
             "hew_duplex_close_half",
+            "hew_duplex_send_half",
+            "hew_duplex_recv_half",
             "hew_lambda_actor_release",
         ]
         .into_iter()

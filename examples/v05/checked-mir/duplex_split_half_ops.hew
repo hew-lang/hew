@@ -1,0 +1,37 @@
+// MIR-corpus fixture: channel-Duplex split user surface.
+//
+// Pins the half-extract producers (`hew_duplex_send_half` /
+// `hew_duplex_recv_half`, each consuming the unified handle), the half
+// send/recv/try ops (`hew_send_half_send` / `hew_send_half_try_send` /
+// `hew_recv_half_recv` / `hew_recv_half_try_recv`), the half-close
+// (`hew_duplex_close_half` with its direction discriminant), and the
+// unified channel-mode recv (`hew_duplex_recv` / `hew_duplex_try_recv`).
+fn main() {
+    let (a, b) = duplex_pair<i64, i64>(4);
+    let tx = a.send_half();
+    let rx = b.recv_half();
+    match tx.send(7) {
+        Ok(_) => {},
+        Err(_) => {},
+    }
+    match tx.try_send(8) {
+        Ok(_) => {},
+        Err(_) => {},
+    }
+    match rx.recv() {
+        Ok(_) => {},
+        Err(_) => {},
+    }
+    match rx.try_recv() {
+        Ok(_) => {},
+        Err(_) => {},
+    }
+    match tx.close() {
+        Ok(_) => {},
+        Err(_) => {},
+    }
+    match rx.close() {
+        Ok(_) => {},
+        Err(_) => {},
+    }
+}

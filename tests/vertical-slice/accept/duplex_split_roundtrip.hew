@@ -1,0 +1,28 @@
+// Accept + run: the channel-Duplex split round-trip delivers the exact value.
+// Split a symmetric pair into a SendHalf and the paired RecvHalf, send 7 on
+// the send-half, receive it on the recv-half, and carry the received value in
+// the exit code. The unified handles are consumed by the split (no double
+// close); the halves close explicitly. Exit code 7 proves the value crossed
+// the split intact, distinct from the EOF/error path (which would exit 1).
+fn main() -> i64 {
+    let (a, b) = duplex_pair<i64, i64>(4);
+    let tx = a.send_half();
+    let rx = b.recv_half();
+    match tx.send(7) {
+        Ok(_) => {},
+        Err(_) => return 1,
+    }
+    let received = match rx.recv() {
+        Ok(v) => v,
+        Err(_) => return 1,
+    };
+    match tx.close() {
+        Ok(_) => {},
+        Err(_) => return 1,
+    }
+    match rx.close() {
+        Ok(_) => {},
+        Err(_) => return 1,
+    }
+    return received;
+}

@@ -1,0 +1,13 @@
+// Reject fixture: the consume-on-split affine discipline.
+// `.send_half()` moves the unified `Duplex` handle out; using the source
+// binding again must fail the move-checker with "use of moved value". This
+// guards the affine discipline against a regression in the MIR producer
+// wiring (a missed consume mark would silently allow a double-extract /
+// double-close).
+// Expected: type error "use of moved value `a`".
+fn main() {
+    let (a, b) = duplex_pair<i64, i64>(4);
+    let _tx = a.send_half();
+    let _tx2 = a.send_half();
+    let _rx = b.recv_half();
+}

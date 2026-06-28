@@ -555,8 +555,8 @@ pub fn runtime_symbol_consumes_receiver(c_symbol: &str) -> bool {
     // `RuntimeCallFamily::consumes_receiver` (one authority, exhaustively
     // matchable). A string outside the catalog maps to `None` → borrowing,
     // preserving the fail-closed leak-not-double-free default for open-set
-    // `#[extern_symbol]` strings. The independent 7-symbol anchor lives in
-    // the `consumes_receiver_mirrors_builtin_names` parity test.
+    // `#[extern_symbol]` strings. The independent literal-symbol anchor lives
+    // in the `consumes_receiver_mirrors_builtin_names` parity test.
     crate::runtime_call::RuntimeCallFamily::from_c_symbol(c_symbol)
         .is_some_and(crate::runtime_call::RuntimeCallFamily::consumes_receiver)
 }

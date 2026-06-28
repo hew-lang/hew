@@ -3340,14 +3340,12 @@ pub struct JoinBranch {
 /// only that direction; the Duplex itself ceases when both halves
 /// (or the last unified handle) are gone.
 ///
-/// The HIR currently has no construction surface for `LambdaActor` /
-/// `Duplex` (the parser flip lives in slice 1, the HIR-lower for it
-/// lands later). These variants exist so the drop-elaboration plan
-/// and codegen seam don't have to retrofit `Place` when the
-/// construction surface lands. The pattern matches the four other
-/// declared-but-never-constructed scaffold variants already in this
-/// model (`Terminator::Yield`/`Send`, `MirCheck::Aliasing` /
-/// `GeneratorBorrowAcrossYield` / `ActorSendEscape`).
+/// `lower_duplex_half_extract` allocates these places: `.send_half()` /
+/// `.recv_half()` consume the unified `DuplexHandle` and bind a fresh
+/// `SendHalf` / `RecvHalf` whose carried `u32` is the half binding's own
+/// backing local. Codegen reads the `Place` variant to select the
+/// per-direction close ABI (`hew_duplex_close_half` with the `SendHalf=0`
+/// / `RecvHalf=1` direction discriminant) at drop elaboration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Place {
     Local(u32),

@@ -2412,6 +2412,36 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // direction; codegen materialises the discriminant at the
         // `lower_drop` call site (see direction special-case there).
         "hew_duplex_close_half" => i32_ty.fn_type(&[ptr_ty.into(), i32_ty.into()], false),
+        // hew_duplex_send_half(d: *mut HewDuplexHandle) -> *mut HewSendHalfHandle
+        // hew_duplex_recv_half(d: *mut HewDuplexHandle) -> *mut HewRecvHalfHandle
+        // (`hew-runtime/src/duplex.rs:1189`, `:1235`). Consume the unified
+        // handle and return the direction-only half pointer (null on a lost
+        // consume/close race; the caller honours the consume contract). The
+        // half pointer is the call's value, written into the MIR half Place.
+        "hew_duplex_send_half" | "hew_duplex_recv_half" => ptr_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_send_half_send(half, msg: *const u8, len: usize) -> i32
+        // hew_send_half_try_send(half, msg, len) -> i32
+        // (`hew-runtime/src/duplex.rs:1279`, `:1320`). Same ABI shape as
+        // hew_duplex_send; the i32 is the SendError discriminant.
+        "hew_send_half_send" | "hew_send_half_try_send" => {
+            i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), i64_ty.into()], false)
+        }
+        // hew_recv_half_recv(half, out_ptr: *mut *mut u8, out_len: *mut usize) -> i32
+        // hew_recv_half_try_recv(half, out_ptr, out_len) -> i32
+        // hew_duplex_recv(d, out_ptr, out_len) -> i32
+        // hew_duplex_try_recv(d, out_ptr, out_len) -> i32
+        // (`hew-runtime/src/duplex.rs:1362`, `:1421`, `:953`, `:1031`). The
+        // payload is written to the out-params; the i32 is the RecvError status.
+        "hew_recv_half_recv" | "hew_recv_half_try_recv" | "hew_duplex_recv"
+        | "hew_duplex_try_recv" => {
+            i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false)
+        }
+        // hew_duplex_payload_free(ptr: *mut u8, len: usize) -> void
+        // (`hew-runtime/src/duplex.rs`). Releases a recv'd payload buffer; the
+        // recv codegen arm calls it after copying the bytes into Result::Ok.
+        "hew_duplex_payload_free" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), i64_ty.into()], false),
         // hew_lambda_actor_release(actor: *mut HewLambdaActorHandle) -> i32
         // (`hew-runtime/src/lambda_actor.rs:411`). Same signature shape
         // as hew_duplex_close — one ptr arg, i32 result discarded.
@@ -4658,7 +4688,7 @@ pub(crate) fn primitive_to_llvm<'ctx>(
         ResolvedTy::Named { name, .. }
             if matches!(
                 name.as_str(),
-                "Duplex" | "LambdaPid" | "LocalPid" | "Stream" | "Sink"
+                "Duplex" | "LambdaPid" | "LocalPid" | "Stream" | "Sink" | "SendHalf" | "RecvHalf"
             ) =>
         {
             // M2 substrate handle. The producer (`hew-mir/src/lower.rs`
@@ -4666,12 +4696,16 @@ pub(crate) fn primitive_to_llvm<'ctx>(
             // `ResolvedTy::Named { name: "Duplex", .. }` local for every
             // duplex handle; the lambda-actor producer allocates a
             // `ResolvedTy::Named { name: "LambdaPid", .. }` local re-tagged as
-            // `Place::LambdaActorHandle`. Codegen materialises both slots as a
-            // raw opaque `ptr` (`*mut HewDuplexHandle` / `*mut
-            // HewLambdaActorHandle` in the runtime C-ABI). The `hew_duplex_pair`
-            // out-param protocol writes through this alloca; `hew_duplex_send` /
-            // `hew_lambda_actor_send` loads from it. LESSONS:
-            // exhaustive-traversal-and-lowering, boundary-fail-closed.
+            // `Place::LambdaActorHandle`. The half-extract producer
+            // (`lower_duplex_half_extract`) allocates a `SendHalf<S>` /
+            // `RecvHalf<R>` local re-tagged as `Place::SendHalf` /
+            // `Place::RecvHalf`. Codegen materialises every slot as a raw
+            // opaque `ptr` (`*mut HewDuplexHandle` / `*mut
+            // HewLambdaActorHandle` / `*mut HewSendHalfHandle` / `*mut
+            // HewRecvHalfHandle` in the runtime C-ABI). The half-extract call
+            // writes its returned pointer into this alloca; the send/recv/close
+            // ABIs load from it. LESSONS: exhaustive-traversal-and-lowering,
+            // boundary-fail-closed.
             Ok(ctx.ptr_type(AddressSpace::default()).into())
         }
         ResolvedTy::Named { name, .. } if name == "Vec" => {
@@ -4778,6 +4812,36 @@ pub(crate) fn primitive_to_llvm<'ctx>(
             builtin: Some(hew_types::BuiltinType::Instant),
             ..
         } => Ok(ctx.i64_type().into()),
+        // `RecvError` is the recv-family error marker. It is intentionally a
+        // variant-blind `Ty::Named` in the checker (no enumerated TypeDef —
+        // language-level exhaustiveness over its variants is deferred until
+        // `RecvError` is registered as a Hew enum), so it never registers an
+        // enum layout. The recv
+        // codegen arm materialises `Result<R, RecvError>` and stores the
+        // runtime `RecvError` discriminant (Closed=1 / Empty=2 /
+        // PartitionDetected=3) into this slot, so its ABI representation is the
+        // i32 discriminant the runtime returns. Dispatched on the `builtin`
+        // discriminant so a user `type RecvError` (builtin: None) still hits
+        // the D10 fail-closed arm below. Mirrors the `instant` builtin-marker
+        // arm above (a marker lowered to its backing scalar).
+        ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::RecvError),
+            ..
+        } => Ok(ctx.i32_type().into()),
+        // `CloseError` is the channel close-family error marker (the
+        // `BuiltinType::CloseError` the checker stamps on `Duplex`/half
+        // `.close()` results — distinct from the std `Closable` trait's
+        // `CloseError` enum; the two are unified in a later stdlib change). Like
+        // `RecvError` it is a variant-blind builtin marker with no registered
+        // enum layout; the close codegen arm stores the user-visible
+        // discriminant (AlreadyClosed=1 on a non-success close) into this slot,
+        // so its ABI representation is the i32 discriminant. Dispatched on the
+        // `builtin` discriminant so a user `type CloseError` (builtin: None)
+        // still hits the D10 fail-closed arm below.
+        ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::CloseError),
+            ..
+        } => Ok(ctx.i32_type().into()),
         ResolvedTy::Named { name, .. } => Err(CodegenError::FailClosed(format!(
             "D10 violation: Named/user type `{name}` reached the LLVM emitter; \
              the MIR D10 gate should have rejected this earlier"
@@ -26174,6 +26238,345 @@ pub(crate) fn emit_send_result_from_rc<'ctx>(
         .llvm_ctx_with(|| format!("{helper} err br merge"))?;
 
     // ── Merge: subsequent instructions resume here. ──
+    fn_ctx.builder.position_at_end(merge_bb);
+    Ok(())
+}
+
+/// Materialize the runtime `i32` close status into a user-visible
+/// `Result<(), CloseError>` stored at `dest`.
+///
+/// The close ABIs (`hew_duplex_close` / `hew_duplex_close_half`) return
+/// `0` on success and a non-zero `SendError`-space status (`DoubleClose`
+/// is the only reachable failure on the consuming path; the runtime's
+/// AtomicBool guard turns any redundant close into `DoubleClose`). The
+/// user-visible `CloseError` enum (`std/io/closable.hew`) is
+/// `{ Io(IoError) = 0, AlreadyClosed = 1 }`. The mapping is:
+///
+/// * `rc == 0` → `Result::Ok(())`
+/// * every nonzero rc → `Result::Err(CloseError::AlreadyClosed)` — a
+///   non-success close on a move-only handle is the already-released case;
+///   the `Io` payload variant is never synthesised from a bare i32.
+///
+/// The raw rc is never stored as a discriminant — it is mapped to the
+/// fixed user-visible variant index (`boundary-fail-closed`).
+pub(crate) fn emit_close_result_from_rc<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    status: IntValue<'ctx>,
+    dest: Place,
+    helper: &str,
+) -> CodegenResult<()> {
+    let dest_local = composite_dest_local(dest, helper)?;
+    let i32_ty = fn_ctx.ctx.i32_type();
+    if status.get_type().get_bit_width() != 32 {
+        return Err(CodegenError::FailClosed(format!(
+            "{helper}: close status must be i32 (runtime ABI contract), got {}-bit",
+            status.get_type().get_bit_width()
+        )));
+    }
+
+    let zero_i32 = i32_ty.const_zero();
+    let is_ok = fn_ctx
+        .builder
+        .build_int_compare(IntPredicate::EQ, status, zero_i32, "close_status_is_ok")
+        .llvm_ctx_with(|| format!("{helper} status is_ok icmp"))?;
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| CodegenError::FailClosed(format!("{helper}: no parent function")))?;
+    let ok_bb = fn_ctx.ctx.append_basic_block(parent, "close_result_ok");
+    let err_bb = fn_ctx.ctx.append_basic_block(parent, "close_result_err");
+    let merge_bb = fn_ctx.ctx.append_basic_block(parent, "close_result_merge");
+    fn_ctx
+        .builder
+        .build_conditional_branch(is_ok, ok_bb, err_bb)
+        .llvm_ctx_with(|| format!("{helper} status cond br"))?;
+
+    // ── Ok branch: Result tag = 0, payload `()`. ──
+    fn_ctx.builder.position_at_end(ok_bb);
+    store_composite_tag(fn_ctx, dest_local, 0, helper)?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(merge_bb)
+        .llvm_ctx_with(|| format!("{helper} ok br merge"))?;
+
+    // ── Err branch: Result tag = 1, payload = CloseError::AlreadyClosed. ──
+    fn_ctx.builder.position_at_end(err_bb);
+    store_composite_tag(fn_ctx, dest_local, 1, helper)?;
+    const CLOSEERR_ALREADY_CLOSED: u64 = 1; // CloseError::AlreadyClosed
+    let (close_err_ptr, close_err_ty) = place_pointer(
+        fn_ctx,
+        Place::MachineVariant {
+            local: dest_local,
+            variant_idx: 1,
+            field_idx: 0,
+        },
+    )?;
+    match close_err_ty {
+        // Single-int representation: the CloseError discriminant IS the slot.
+        BasicTypeEnum::IntType(int_ty) => {
+            fn_ctx
+                .builder
+                .build_store(
+                    close_err_ptr,
+                    int_ty.const_int(CLOSEERR_ALREADY_CLOSED, false),
+                )
+                .llvm_ctx_with(|| format!("{helper} store CloseError discriminant"))?;
+        }
+        // Tagged-union representation (CloseError carries an `Io(IoError)`
+        // payload variant): zero-init the outer struct (defines payload
+        // padding), then patch field 0 (the discriminant tag) to AlreadyClosed.
+        BasicTypeEnum::StructType(st) => {
+            fn_ctx
+                .builder
+                .build_store(close_err_ptr, st.const_zero())
+                .llvm_ctx_with(|| format!("{helper} zero CloseError struct"))?;
+            let tag_field_ptr = fn_ctx
+                .builder
+                .build_struct_gep(st, close_err_ptr, 0, "close_err_tag_ptr")
+                .llvm_ctx_with(|| format!("{helper} CloseError tag gep"))?;
+            let tag_field_ty = st.get_field_type_at_index(0).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "{helper}: CloseError struct has no field 0 (tag)"
+                ))
+            })?;
+            let BasicTypeEnum::IntType(tag_int_ty) = tag_field_ty else {
+                return Err(CodegenError::FailClosed(format!(
+                    "{helper}: CloseError tag field must be an integer, got {tag_field_ty:?}"
+                )));
+            };
+            fn_ctx
+                .builder
+                .build_store(
+                    tag_field_ptr,
+                    tag_int_ty.const_int(CLOSEERR_ALREADY_CLOSED, false),
+                )
+                .llvm_ctx_with(|| format!("{helper} store CloseError tag"))?;
+        }
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "{helper}: Err payload (CloseError) must be a struct or int, got {other:?}"
+            )));
+        }
+    }
+    fn_ctx
+        .builder
+        .build_unconditional_branch(merge_bb)
+        .llvm_ctx_with(|| format!("{helper} err br merge"))?;
+
+    fn_ctx.builder.position_at_end(merge_bb);
+    Ok(())
+}
+
+/// Materialize a recv runtime call's out-params + `i32` status into a
+/// user-visible `Result<R, RecvError>` stored at `dest`.
+///
+/// The recv ABIs (`hew_recv_half_recv` / `hew_recv_half_try_recv` /
+/// `hew_duplex_recv` / `hew_duplex_try_recv`) write the received payload to
+/// `(out_ptr_slot, out_len_slot)` and return a `RecvError`-space status
+/// (`{ Ok = 0, Closed = 1, Empty = 2, PartitionDetected = 3 }`). The
+/// user-visible `RecvError` enum shares those discriminants. The mapping is:
+///
+/// * `rc == 0` → `Result::Ok(R)` — copy exactly `R`'s ABI byte width out of
+///   the payload buffer into the Ok slot, then free the payload buffer via
+///   `hew_duplex_payload_free`. Empty data (a zero-length payload with a
+///   non-null buffer) is valid `Ok`, distinct from the closed EOF (rc != 0).
+/// * `rc != 0` → `Result::Err(RecvError::<rc>)` — store the rc as the
+///   RecvError discriminant directly (the spaces coincide); the runtime
+///   guarantees null/0 out-params on the error path, so no payload is read
+///   or freed.
+///
+/// The payload is copied with an exact-width `memcpy` (never a wide load),
+/// matching the lambda-ask reply precedent; a zero-width Ok payload (`R =
+/// ()`) skips the copy entirely.
+pub(crate) fn emit_recv_result_from_out_params<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    status: IntValue<'ctx>,
+    out_ptr_slot: PointerValue<'ctx>,
+    out_len_slot: PointerValue<'ctx>,
+    dest: Place,
+    helper: &str,
+) -> CodegenResult<()> {
+    let dest_local = composite_dest_local(dest, helper)?;
+    let i32_ty = fn_ctx.ctx.i32_type();
+    let i64_ty = fn_ctx.ctx.i64_type();
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    if status.get_type().get_bit_width() != 32 {
+        return Err(CodegenError::FailClosed(format!(
+            "{helper}: recv status must be i32 (runtime ABI contract), got {}-bit",
+            status.get_type().get_bit_width()
+        )));
+    }
+
+    let zero_i32 = i32_ty.const_zero();
+    let is_ok = fn_ctx
+        .builder
+        .build_int_compare(IntPredicate::EQ, status, zero_i32, "recv_status_is_ok")
+        .llvm_ctx_with(|| format!("{helper} status is_ok icmp"))?;
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| CodegenError::FailClosed(format!("{helper}: no parent function")))?;
+    let ok_bb = fn_ctx.ctx.append_basic_block(parent, "recv_result_ok");
+    let err_bb = fn_ctx.ctx.append_basic_block(parent, "recv_result_err");
+    let merge_bb = fn_ctx.ctx.append_basic_block(parent, "recv_result_merge");
+    fn_ctx
+        .builder
+        .build_conditional_branch(is_ok, ok_bb, err_bb)
+        .llvm_ctx_with(|| format!("{helper} status cond br"))?;
+
+    // ── Ok branch: copy R out of the payload buffer, then free it. ──
+    fn_ctx.builder.position_at_end(ok_bb);
+    store_composite_tag(fn_ctx, dest_local, 0, helper)?;
+    let result_layout = crate::layout::machine_layout_for_local(fn_ctx, dest_local)?;
+    let ok_fields = result_layout.variant_field_tys.first().ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "{helper}: dest local {dest_local} has no Ok variant in its Result layout"
+        ))
+    })?;
+    if ok_fields.len() > 1 {
+        return Err(CodegenError::FailClosed(format!(
+            "{helper}: Result::Ok variant for dest local {dest_local} has {} fields; \
+             expected unit or single payload",
+            ok_fields.len()
+        )));
+    }
+    if !ok_fields.is_empty() {
+        let (ok_field_ptr, ok_field_ty) = place_pointer(
+            fn_ctx,
+            Place::MachineVariant {
+                local: dest_local,
+                variant_idx: 0,
+                field_idx: 0,
+            },
+        )?;
+        let (payload_width, _align) = abi_size_align(ok_field_ty, Some(fn_ctx.target_data))?;
+        if payload_width > 0 {
+            let payload_ptr = fn_ctx
+                .builder
+                .build_load(ptr_ty, out_ptr_slot, "recv_payload_ptr_load")
+                .llvm_ctx_with(|| format!("{helper} payload ptr load"))?
+                .into_pointer_value();
+            fn_ctx
+                .builder
+                .build_memcpy(
+                    ok_field_ptr,
+                    1,
+                    payload_ptr,
+                    1,
+                    i64_ty.const_int(payload_width, false),
+                )
+                .llvm_ctx_with(|| format!("{helper} Result::Ok payload memcpy"))?;
+        }
+    }
+    // Free the runtime-published payload buffer (no-op on null / zero-len).
+    let payload_ptr_for_free = fn_ctx
+        .builder
+        .build_load(ptr_ty, out_ptr_slot, "recv_free_ptr_load")
+        .llvm_ctx_with(|| format!("{helper} free ptr load"))?
+        .into_pointer_value();
+    let payload_len_for_free = fn_ctx
+        .builder
+        .build_load(i64_ty, out_len_slot, "recv_free_len_load")
+        .llvm_ctx_with(|| format!("{helper} free len load"))?
+        .into_int_value();
+    let free_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_duplex_payload_free",
+    )?;
+    fn_ctx
+        .builder
+        .build_call(
+            free_fn,
+            &[payload_ptr_for_free.into(), payload_len_for_free.into()],
+            "recv_payload_free_call",
+        )
+        .llvm_ctx_with(|| format!("{helper} payload free call"))?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(merge_bb)
+        .llvm_ctx_with(|| format!("{helper} ok br merge"))?;
+
+    // ── Err branch: Result tag = 1, payload = RecvError::<rc>. The runtime
+    //              and user-visible RecvError discriminant spaces coincide
+    //              (Closed=1, Empty=2, PartitionDetected=3), and we are on
+    //              the rc != 0 path, so the rc IS the user-visible variant. ──
+    fn_ctx.builder.position_at_end(err_bb);
+    store_composite_tag(fn_ctx, dest_local, 1, helper)?;
+    let (recv_err_ptr, recv_err_ty) = place_pointer(
+        fn_ctx,
+        Place::MachineVariant {
+            local: dest_local,
+            variant_idx: 1,
+            field_idx: 0,
+        },
+    )?;
+    match recv_err_ty {
+        BasicTypeEnum::IntType(int_ty) => {
+            // Width-match the rc to the RecvError slot (status is i32).
+            let tag = match int_ty.get_bit_width().cmp(&32) {
+                std::cmp::Ordering::Equal => status,
+                std::cmp::Ordering::Less => fn_ctx
+                    .builder
+                    .build_int_truncate(status, int_ty, "recv_err_tag_trunc")
+                    .llvm_ctx_with(|| format!("{helper} RecvError tag trunc"))?,
+                std::cmp::Ordering::Greater => fn_ctx
+                    .builder
+                    .build_int_z_extend(status, int_ty, "recv_err_tag_zext")
+                    .llvm_ctx_with(|| format!("{helper} RecvError tag zext"))?,
+            };
+            fn_ctx
+                .builder
+                .build_store(recv_err_ptr, tag)
+                .llvm_ctx_with(|| format!("{helper} store RecvError discriminant"))?;
+        }
+        BasicTypeEnum::StructType(st) => {
+            fn_ctx
+                .builder
+                .build_store(recv_err_ptr, st.const_zero())
+                .llvm_ctx_with(|| format!("{helper} zero RecvError struct"))?;
+            let tag_field_ptr = fn_ctx
+                .builder
+                .build_struct_gep(st, recv_err_ptr, 0, "recv_err_tag_ptr")
+                .llvm_ctx_with(|| format!("{helper} RecvError tag gep"))?;
+            let tag_field_ty = st.get_field_type_at_index(0).ok_or_else(|| {
+                CodegenError::FailClosed(format!("{helper}: RecvError struct has no field 0 (tag)"))
+            })?;
+            let BasicTypeEnum::IntType(tag_int_ty) = tag_field_ty else {
+                return Err(CodegenError::FailClosed(format!(
+                    "{helper}: RecvError tag field must be an integer, got {tag_field_ty:?}"
+                )));
+            };
+            let tag = match tag_int_ty.get_bit_width().cmp(&32) {
+                std::cmp::Ordering::Equal => status,
+                std::cmp::Ordering::Less => fn_ctx
+                    .builder
+                    .build_int_truncate(status, tag_int_ty, "recv_err_struct_tag_trunc")
+                    .llvm_ctx_with(|| format!("{helper} RecvError struct tag trunc"))?,
+                std::cmp::Ordering::Greater => fn_ctx
+                    .builder
+                    .build_int_z_extend(status, tag_int_ty, "recv_err_struct_tag_zext")
+                    .llvm_ctx_with(|| format!("{helper} RecvError struct tag zext"))?,
+            };
+            fn_ctx
+                .builder
+                .build_store(tag_field_ptr, tag)
+                .llvm_ctx_with(|| format!("{helper} store RecvError tag"))?;
+        }
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "{helper}: Err payload (RecvError) must be a struct or int, got {other:?}"
+            )));
+        }
+    }
+    fn_ctx
+        .builder
+        .build_unconditional_branch(merge_bb)
+        .llvm_ctx_with(|| format!("{helper} err br merge"))?;
+
     fn_ctx.builder.position_at_end(merge_bb);
     Ok(())
 }

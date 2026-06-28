@@ -1,0 +1,121 @@
+//! Channel-`Duplex<S, R>` split user surface: `.send_half()` / `.recv_half()`
+//! extraction, half `.send()` / `.recv()` / `.try_send()` / `.try_recv()`,
+//! half `.close()` graceful EOF, the asymmetric `S != R` pair, and the
+//! unified-handle channel-mode `.recv()`.
+
+import std::testing;
+
+/// Split a symmetric pair, send on the send-half, receive on the paired
+/// recv-half, and assert the exact value crossed the split intact.
+#[test]
+fn test_split_roundtrip_delivers_exact_value() {
+    let (a, b) = duplex_pair<i64, i64>(4);
+    let tx = a.send_half();
+    let rx = b.recv_half();
+    match tx.send(7) {
+        Ok(_) => {},
+        Err(_) => panic("send on SendHalf should succeed"),
+    }
+    match rx.recv() {
+        Ok(v) => testing.assert_eq(v, 7),
+        Err(_) => panic("recv on RecvHalf should deliver the sent value"),
+    }
+}
+
+/// Asymmetric `S != R`: `a: Duplex<i64, bool>` splits to `SendHalf<i64>`;
+/// the paired `b: Duplex<bool, i64>` splits to `RecvHalf<i64>`. The i64 sent
+/// on a's send-direction arrives on b's recv-direction. Proves the asymmetric
+/// monomorphisation resolves and the cross-half delivery preserves the value.
+#[test]
+fn test_asymmetric_split_delivers_exact_value() {
+    let (a, b) = duplex_pair<i64, bool>(4);
+    let tx = a.send_half();
+    let rx = b.recv_half();
+    match tx.send(42) {
+        Ok(_) => {},
+        Err(_) => panic("send on asymmetric SendHalf should succeed"),
+    }
+    match rx.recv() {
+        Ok(v) => testing.assert_eq(v, 42),
+        Err(_) => panic("recv on asymmetric RecvHalf should deliver the value"),
+    }
+}
+
+/// Half-close → paired EOF: a recv succeeds before the send-half closes, and
+/// the next recv after close returns `Err` (the graceful EOF). The Ok-with-
+/// value vs Err split is the test-with-teeth: it distinguishes a delivered
+/// payload from end-of-stream.
+#[test]
+fn test_half_close_signals_paired_eof() {
+    let (a, b) = duplex_pair<i64, i64>(4);
+    let tx = a.send_half();
+    let rx = b.recv_half();
+    match tx.send(5) {
+        Ok(_) => {},
+        Err(_) => panic("send before close should succeed"),
+    }
+    match rx.recv() {
+        Ok(v) => testing.assert_eq(v, 5),
+        Err(_) => panic("recv before close should deliver the value"),
+    }
+    match tx.close() {
+        Ok(_) => {},
+        Err(_) => panic("graceful close of SendHalf should succeed"),
+    }
+    match rx.recv() {
+        Ok(_) => panic("recv after the send-half closed must report EOF"),
+        Err(_) => testing.assert_true(true),
+    }
+}
+
+/// Empty payload is valid data, distinct from EOF: a zero-length send is
+/// received as `Ok`, not mistaken for the closed sentinel. Guards the §6.5
+/// "empty is data, EOF is end-of-stream only" contract on the duplex surface.
+#[test]
+fn test_empty_payload_is_valid_data_not_eof() {
+    let (a, b) = duplex_pair<i64, i64>(4);
+    let tx = a.send_half();
+    let rx = b.recv_half();
+    match tx.send(0) {
+        Ok(_) => {},
+        Err(_) => panic("send of zero should succeed"),
+    }
+    match rx.recv() {
+        Ok(v) => testing.assert_eq(v, 0),
+        Err(_) => panic("a zero value is valid data, not EOF"),
+    }
+}
+
+/// Unified channel-mode recv: the unified `Duplex` handle receives a message
+/// sent on the paired handle's send-half. Proves the unified `.recv()`
+/// producer materializes the value correctly.
+#[test]
+fn test_unified_recv_delivers_exact_value() {
+    let (a, b) = duplex_pair<i64, i64>(4);
+    let tx = a.send_half();
+    match tx.send(55) {
+        Ok(_) => {},
+        Err(_) => panic("send on SendHalf should succeed"),
+    }
+    match b.recv() {
+        Ok(v) => testing.assert_eq(v, 55),
+        Err(_) => panic("unified Duplex recv should deliver the sent value"),
+    }
+}
+
+/// Non-blocking half ops: `try_send` then `try_recv` round-trips the exact
+/// value when the buffer has space and an item is ready.
+#[test]
+fn test_try_send_try_recv_roundtrip() {
+    let (a, b) = duplex_pair<i64, i64>(4);
+    let tx = a.send_half();
+    let rx = b.recv_half();
+    match tx.try_send(11) {
+        Ok(_) => {},
+        Err(_) => panic("try_send into an empty bounded queue should succeed"),
+    }
+    match rx.try_recv() {
+        Ok(v) => testing.assert_eq(v, 11),
+        Err(_) => panic("try_recv with a ready item should deliver it"),
+    }
+}

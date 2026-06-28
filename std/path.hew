@@ -12,7 +12,7 @@
 //!     let dir = path.dirname("/home/user/file.txt");
 //!     let ext = path.extension("photo.jpg");
 //!     let result = path.glob("*.hew");
-//!     for i in 0..result.count() {
+//!     for i in 0..result.len() {
 //!         println(result.get(i));
 //!     }
 //!     result.free();
@@ -30,7 +30,7 @@ pub type GlobResult {
 /// Methods available on a `GlobResult`.
 trait GlobResultMethods {
     /// Return the number of matched paths.
-    fn count(self) -> i64;
+    fn len(self) -> i64;
 
     /// Return the matched path at the given index.
     fn get(self, index: i64) -> string;
@@ -41,7 +41,7 @@ trait GlobResultMethods {
 
 impl GlobResultMethods for GlobResult {
     /// Return the number of matched paths.
-    fn count(res: GlobResult) -> i64 {
+    fn len(res: GlobResult) -> i64 {
         unsafe {
             hew_glob_count(res) as i64
         }

@@ -559,7 +559,7 @@ pub enum TypeErrorKind {
     UseAfterMove,
     /// Yield used outside a generator function
     YieldOutsideGenerator,
-    /// Actor types form a reference cycle via `ActorRef` fields
+    /// Actor types form a reference cycle via `LocalPid` fields
     ActorRefCycle,
     /// A value-typed enum/record/struct contains itself by value, directly or
     /// through another inline value type, making its layout infinitely sized.

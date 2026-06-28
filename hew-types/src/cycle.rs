@@ -1,6 +1,6 @@
 //! Compile-time detection of actor reference cycles.
 //!
-//! Builds a directed graph of actor-to-actor references via `ActorRef<X>`
+//! Builds a directed graph of actor-to-actor references via `LocalPid<X>`
 //! fields and runs Tarjan's SCC algorithm to find strongly connected
 //! components (cycles). Actors in cycles are returned as "cycle-capable"
 //! so the runtime can selectively enable cycle scanning for them.
@@ -505,7 +505,7 @@ fn is_value_type_node(td: &TypeDef) -> bool {
         )
 }
 
-/// Recursively collect actor names referenced via `ActorRef<X>` in a type,
+/// Recursively collect actor names referenced via `LocalPid<X>` in a type,
 /// looking through containers (`Vec`, `Array`, `Slice`, `Tuple`, `Option`,
 /// `Result`, `HashMap`) and transitively through struct fields.
 fn collect_actor_refs<'a>(
@@ -528,11 +528,8 @@ fn collect_actor_refs<'a>(
             args,
             builtin,
         } => {
-            if matches!(
-                builtin,
-                Some(crate::BuiltinType::ActorRef | crate::BuiltinType::LocalPid)
-            ) {
-                // ActorRef<X> / LocalPid<X> — record X if it's a known actor
+            if matches!(builtin, Some(crate::BuiltinType::LocalPid)) {
+                // LocalPid<X> — record X if it's a known actor
                 if let Some(Ty::Named {
                     name: actor_name, ..
                 }) = args.first()
@@ -569,7 +566,7 @@ fn collect_actor_refs<'a>(
                         }
                     }
                 }
-                // Also check type arguments (e.g. Vec<ActorRef<B>>)
+                // Also check type arguments (e.g. Vec<LocalPid<B>>)
                 for arg in args {
                     collect_actor_refs(arg, type_defs, out, visited_structs);
                 }
@@ -697,8 +694,8 @@ mod tests {
         )
     }
 
-    fn actor_ref(name: &str) -> Ty {
-        Ty::actor_ref(Ty::Named {
+    fn local_pid(name: &str) -> Ty {
+        Ty::local_pid(Ty::Named {
             builtin: None,
             name: name.to_string(),
             args: vec![],
@@ -761,8 +758,8 @@ mod tests {
     fn no_cycles_linear() {
         // A -> B -> C (no cycle)
         let type_defs: HashMap<String, TypeDef> = [
-            make_actor("A", HashMap::from([("b".to_string(), actor_ref("B"))])),
-            make_actor("B", HashMap::from([("c".to_string(), actor_ref("C"))])),
+            make_actor("A", HashMap::from([("b".to_string(), local_pid("B"))])),
+            make_actor("B", HashMap::from([("c".to_string(), local_pid("C"))])),
             make_actor("C", HashMap::from([("x".to_string(), Ty::I32)])),
         ]
         .into_iter()
@@ -918,10 +915,10 @@ mod tests {
 
     #[test]
     fn simple_two_actor_cycle() {
-        // A has ActorRef<B>, B has ActorRef<A>
+        // A has LocalPid<B>, B has LocalPid<A>
         let type_defs: HashMap<String, TypeDef> = [
-            make_actor("A", HashMap::from([("b".to_string(), actor_ref("B"))])),
-            make_actor("B", HashMap::from([("a".to_string(), actor_ref("A"))])),
+            make_actor("A", HashMap::from([("b".to_string(), local_pid("B"))])),
+            make_actor("B", HashMap::from([("a".to_string(), local_pid("A"))])),
         ]
         .into_iter()
         .collect();
@@ -934,10 +931,10 @@ mod tests {
 
     #[test]
     fn self_referential() {
-        // A has ActorRef<A>
+        // A has LocalPid<A>
         let type_defs: HashMap<String, TypeDef> = [make_actor(
             "A",
-            HashMap::from([("me".to_string(), actor_ref("A"))]),
+            HashMap::from([("me".to_string(), local_pid("A"))]),
         )]
         .into_iter()
         .collect();
@@ -949,7 +946,7 @@ mod tests {
 
     #[test]
     fn transitive_through_struct() {
-        // A has field of struct S, S has ActorRef<B>, B has ActorRef<A>
+        // A has field of struct S, S has LocalPid<B>, B has LocalPid<A>
         let type_defs: HashMap<String, TypeDef> = [
             make_actor(
                 "A",
@@ -962,8 +959,8 @@ mod tests {
                     },
                 )]),
             ),
-            make_struct("S", HashMap::from([("b".to_string(), actor_ref("B"))])),
-            make_actor("B", HashMap::from([("a".to_string(), actor_ref("A"))])),
+            make_struct("S", HashMap::from([("b".to_string(), local_pid("B"))])),
+            make_actor("B", HashMap::from([("a".to_string(), local_pid("A"))])),
         ]
         .into_iter()
         .collect();
@@ -976,13 +973,13 @@ mod tests {
 
     #[test]
     fn through_option() {
-        // A has Option<ActorRef<B>>, B has ActorRef<A>
+        // A has Option<LocalPid<B>>, B has LocalPid<A>
         let type_defs: HashMap<String, TypeDef> = [
             make_actor(
                 "A",
-                HashMap::from([("b".to_string(), Ty::option(actor_ref("B")))]),
+                HashMap::from([("b".to_string(), Ty::option(local_pid("B")))]),
             ),
-            make_actor("B", HashMap::from([("a".to_string(), actor_ref("A"))])),
+            make_actor("B", HashMap::from([("a".to_string(), local_pid("A"))])),
         ]
         .into_iter()
         .collect();
@@ -994,8 +991,8 @@ mod tests {
 
     #[test]
     fn through_vec_named_type() {
-        // A has Vec<ActorRef<B>> (as Named { name: "Vec", args: [ActorRef<B>] })
-        // B has ActorRef<A>
+        // A has Vec<LocalPid<B>> (as Named { name: "Vec", args: [LocalPid<B>] })
+        // B has LocalPid<A>
         let type_defs: HashMap<String, TypeDef> = [
             make_actor(
                 "A",
@@ -1004,11 +1001,11 @@ mod tests {
                     Ty::Named {
                         builtin: None,
                         name: "Vec".to_string(),
-                        args: vec![actor_ref("B")],
+                        args: vec![local_pid("B")],
                     },
                 )]),
             ),
-            make_actor("B", HashMap::from([("a".to_string(), actor_ref("A"))])),
+            make_actor("B", HashMap::from([("a".to_string(), local_pid("A"))])),
         ]
         .into_iter()
         .collect();
@@ -1020,13 +1017,13 @@ mod tests {
 
     #[test]
     fn through_array() {
-        // A has [ActorRef<B>; 3], B has ActorRef<A>
+        // A has [LocalPid<B>; 3], B has LocalPid<A>
         let type_defs: HashMap<String, TypeDef> = [
             make_actor(
                 "A",
-                HashMap::from([("bs".to_string(), Ty::Array(Box::new(actor_ref("B")), 3))]),
+                HashMap::from([("bs".to_string(), Ty::Array(Box::new(local_pid("B")), 3))]),
             ),
-            make_actor("B", HashMap::from([("a".to_string(), actor_ref("A"))])),
+            make_actor("B", HashMap::from([("a".to_string(), local_pid("A"))])),
         ]
         .into_iter()
         .collect();
@@ -1040,9 +1037,9 @@ mod tests {
     fn three_actor_cycle() {
         // A -> B -> C -> A
         let type_defs: HashMap<String, TypeDef> = [
-            make_actor("A", HashMap::from([("b".to_string(), actor_ref("B"))])),
-            make_actor("B", HashMap::from([("c".to_string(), actor_ref("C"))])),
-            make_actor("C", HashMap::from([("a".to_string(), actor_ref("A"))])),
+            make_actor("A", HashMap::from([("b".to_string(), local_pid("B"))])),
+            make_actor("B", HashMap::from([("c".to_string(), local_pid("C"))])),
+            make_actor("C", HashMap::from([("a".to_string(), local_pid("A"))])),
         ]
         .into_iter()
         .collect();
@@ -1058,9 +1055,9 @@ mod tests {
     fn mixed_cycle_and_no_cycle() {
         // A <-> B cycle, C -> D no cycle
         let type_defs: HashMap<String, TypeDef> = [
-            make_actor("A", HashMap::from([("b".to_string(), actor_ref("B"))])),
-            make_actor("B", HashMap::from([("a".to_string(), actor_ref("A"))])),
-            make_actor("C", HashMap::from([("d".to_string(), actor_ref("D"))])),
+            make_actor("A", HashMap::from([("b".to_string(), local_pid("B"))])),
+            make_actor("B", HashMap::from([("a".to_string(), local_pid("A"))])),
+            make_actor("C", HashMap::from([("d".to_string(), local_pid("D"))])),
             make_actor("D", HashMap::from([("x".to_string(), Ty::I32)])),
         ]
         .into_iter()
@@ -1076,7 +1073,7 @@ mod tests {
 
     #[test]
     fn struct_without_actor_ref_no_false_positive() {
-        // A has struct S with only i32 fields, no ActorRef
+        // A has struct S with only i32 fields, no LocalPid
         let type_defs: HashMap<String, TypeDef> = [
             make_actor(
                 "A",
@@ -1110,7 +1107,7 @@ mod tests {
                 bounds: HashMap::new(),
                 fields: HashMap::from([(
                     "target".to_string(),
-                    Ty::actor_ref(Ty::Named {
+                    Ty::local_pid(Ty::Named {
                         builtin: None,
                         name: "T".to_string(),
                         args: vec![],
@@ -1140,7 +1137,7 @@ mod tests {
                     },
                 )]),
             ),
-            make_actor("B", HashMap::from([("a".to_string(), actor_ref("A"))])),
+            make_actor("B", HashMap::from([("a".to_string(), local_pid("A"))])),
         ]
         .into_iter()
         .collect();
@@ -1157,7 +1154,7 @@ mod tests {
         // Regression for dedup-by-bare-name: prior code keyed visited_structs
         // on `"Wrapper"` alone, so the second encounter of `Wrapper<_>` was
         // skipped *within a single traversal*. With args-dependent substitution
-        // that meant ActorRef<C> was never recorded. Key is now (name, args)
+        // that meant LocalPid<C> was never recorded. Key is now (name, args)
         // so both instantiations are followed.
         //
         // The two `Wrapper<_>` instantiations MUST share a single
@@ -1172,7 +1169,7 @@ mod tests {
                 bounds: HashMap::new(),
                 fields: HashMap::from([(
                     "target".to_string(),
-                    Ty::actor_ref(Ty::Named {
+                    Ty::local_pid(Ty::Named {
                         builtin: None,
                         name: "T".to_string(),
                         args: vec![],
@@ -1214,7 +1211,7 @@ mod tests {
                 )]),
             ),
             make_actor("B", HashMap::new()),
-            make_actor("C", HashMap::from([("a".to_string(), actor_ref("A"))])),
+            make_actor("C", HashMap::from([("a".to_string(), local_pid("A"))])),
         ]
         .into_iter()
         .collect();
@@ -1223,7 +1220,7 @@ mod tests {
 
         // A→Wrapper<C>→C→A cycle must be detected. Before the fix, the
         // Tuple traversal visited Wrapper<B> first, poisoning the bare-name
-        // key and skipping Wrapper<C>, so ActorRef<C> was never recorded
+        // key and skipping Wrapper<C>, so LocalPid<C> was never recorded
         // and no cycle was found.
         assert!(capable.contains("A"));
         assert!(capable.contains("C"));

@@ -473,9 +473,7 @@ fn signed_min_value(ty: &ResolvedTy, ptr_width: PointerWidth) -> Option<i64> {
 
 fn actor_name_from_handle_ty(ty: &ResolvedTy) -> Option<&str> {
     match ty {
-        ResolvedTy::Named { name, args, .. }
-            if matches!(name.as_str(), "LocalPid" | "ActorRef" | "Actor") && args.len() == 1 =>
-        {
+        ResolvedTy::Named { name, args, .. } if name.as_str() == "LocalPid" && args.len() == 1 => {
             match &args[0] {
                 ResolvedTy::Named { name, args, .. } if args.is_empty() => Some(name.as_str()),
                 _ => None,
@@ -7226,12 +7224,7 @@ fn push_unknown_type_diagnostics(
 fn is_phantom_arg_pid(builtin: Option<BuiltinType>) -> bool {
     matches!(
         builtin,
-        Some(
-            BuiltinType::LocalPid
-                | BuiltinType::RemotePid
-                | BuiltinType::Pid
-                | BuiltinType::ActorRef
-        )
+        Some(BuiltinType::LocalPid | BuiltinType::RemotePid)
     )
 }
 
@@ -26237,7 +26230,7 @@ impl Builder {
         //     self reference preserves stop-on-last-external-handle-drop.
         //   - Strong BitCopy scalar: the field store copies the value;
         //     the caller's binding stays live and untouched.
-        //   - Strong pid (`LocalPid`/`ActorRef`): a BitCopy alias of an
+        //   - Strong pid (`LocalPid`): a BitCopy alias of an
         //     opaque identity reference with no drop glue. The field store
         //     copies the handle word; the caller's binding stays live and
         //     the env field gets no retain and no release — the actor's
@@ -26318,7 +26311,7 @@ impl Builder {
                         | ResolvedTy::Bool
                         | ResolvedTy::Char
                         | ResolvedTy::Named {
-                            builtin: Some(BuiltinType::LocalPid | BuiltinType::ActorRef),
+                            builtin: Some(BuiltinType::LocalPid),
                             ..
                         },
                     ) => crate::model::LambdaEnvFieldDrop::None,
@@ -27504,11 +27497,7 @@ impl Builder {
             {
                 true
             }
-            ResolvedTy::Named { name, .. }
-                if matches!(name.as_str(), "LocalPid" | "ActorRef" | "Actor") =>
-            {
-                true
-            }
+            ResolvedTy::Named { name, .. } if name.as_str() == "LocalPid" => true,
             // `Generator<Y, R>` is the checker-supplied type for a gen-block
             // expression. The S3a shell allocates a local of this type as a
             // placeholder; S3b replaces it with the real state-record type.

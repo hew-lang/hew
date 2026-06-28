@@ -337,7 +337,7 @@ pub struct TypeCheckOutput {
     ///
     /// Keyed by the `SpanKey` of the field-access expression (e.g. the span of
     /// `app.cache` in `app.cache.query(req)`). Populated during type-checking
-    /// of field-access expressions whose object resolves to an `ActorRef<S>`
+    /// of field-access expressions whose object resolves to a `LocalPid<S>`
     /// where `S` is a known supervisor type.
     ///
     /// The `index` field is the position of the child within its own slot space:

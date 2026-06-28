@@ -893,8 +893,8 @@ impl<'a> ProfileChecker<'a> {
 
         // Actor asks: `await ref.handler(...)` where `handler` is a declared
         // receive function AND the receiver is a handle to an admitted actor.
-        // Type-check the receiver: actor handles are `LocalPid<ActorName>` or
-        // `ActorRef` where `ActorName` is in the program's declared actors set.
+        // Type-check the receiver: an actor handle is `LocalPid<ActorName>`
+        // where `ActorName` is in the program's declared actors set.
         // A name-only check without the receiver type would admit spurious method
         // calls on non-actor receivers that happen to share a handler name.
         if self.actor_methods.contains(method) {
@@ -962,16 +962,13 @@ impl<'a> ProfileChecker<'a> {
     }
 
     /// True if `ty` is an actor handle type for a declared actor in this program.
-    /// Actor handles are `LocalPid<ActorName>` (the standard actor ref type) or
-    /// `Named { name: ActorName }` when the typechecker inlines the actor type
-    /// directly. Both are present in practice depending on the call site.
+    /// Actor handles are `LocalPid<ActorName>` (the standard actor handle type)
+    /// or `Named { name: ActorName }` when the typechecker inlines the actor
+    /// type directly. Both are present in practice depending on the call site.
     fn ty_is_actor_handle(&self, ty: &Ty) -> bool {
         match ty.materialize_literal_defaults() {
             // `LocalPid<ActorName>` — the standard form from `spawn Actor(...)`.
-            Ty::Named { name, args, .. }
-                if (name == "LocalPid" || name == "Pid" || name == "ActorRef")
-                    && args.len() == 1 =>
-            {
+            Ty::Named { name, args, .. } if name == "LocalPid" && args.len() == 1 => {
                 if let Ty::Named {
                     name: actor_name, ..
                 } = &args[0]

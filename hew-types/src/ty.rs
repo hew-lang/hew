@@ -33,15 +33,12 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::Vec
             | BuiltinType::HashMap
             | BuiltinType::HashSet
-            | BuiltinType::ActorRef
-            | BuiltinType::Actor
             | BuiltinType::Task
             | BuiltinType::StreamPair
             | BuiltinType::Generator
             | BuiltinType::AsyncGenerator
             | BuiltinType::Range
             | BuiltinType::Rc
-            | BuiltinType::Pid
             | BuiltinType::HewActor
             | BuiltinType::HewDuplex
             | BuiltinType::HewSendHalf
@@ -803,12 +800,6 @@ impl Ty {
         Self::builtin_named(BuiltinType::Result, vec![ok, err])
     }
 
-    /// Construct `ActorRef<inner>`.
-    #[must_use]
-    pub fn actor_ref(inner: Ty) -> Ty {
-        Self::builtin_named(BuiltinType::ActorRef, vec![inner])
-    }
-
     /// Construct `LocalPid<inner>` — actor pid in this process, returned by `spawn`.
     #[must_use]
     pub fn local_pid(inner: Ty) -> Ty {
@@ -1045,19 +1036,6 @@ impl Ty {
         }
     }
 
-    /// If this is `ActorRef<T>`, return `Some(&T)`.
-    #[must_use]
-    pub fn as_actor_ref(&self) -> Option<&Ty> {
-        match self {
-            Ty::Named {
-                builtin: Some(BuiltinType::ActorRef),
-                args,
-                ..
-            } if args.len() == 1 => Some(&args[0]),
-            _ => None,
-        }
-    }
-
     /// If this is `LocalPid<T>`, return `Some(&T)`.
     #[must_use]
     pub fn as_local_pid(&self) -> Option<&Ty> {
@@ -1084,10 +1062,10 @@ impl Ty {
         }
     }
 
-    /// If this is a local actor handle (`ActorRef<T>`, `Actor<T>`, or `LocalPid<T>`), return `Some(&T)`.
+    /// If this is a local actor handle (`LocalPid<T>`), return `Some(&T)`.
     ///
-    /// `LocalPid<T>` is the default spawn-return type. `ActorRef<T>` remains
-    /// recognized for legacy local references. `RemotePid<T>` is intentionally
+    /// `LocalPid<T>` is the spawn-return type and the single-argument carrier
+    /// of the `ActorDispatchLocal` role. `RemotePid<T>` is intentionally
     /// excluded — it is a distinct type that does not participate in the local
     /// supervisor graph.
     #[must_use]

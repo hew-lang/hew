@@ -1679,21 +1679,21 @@ fn actor_decl_registers_rcfree_members_for_collection_checks() {
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let _ = checker.check_program(&parsed.program);
-    let actor_ref_ty = Ty::actor_ref(Ty::Named {
+    let local_pid_ty = Ty::local_pid(Ty::Named {
         builtin: None,
         name: "Worker".to_string(),
         args: vec![],
     });
 
     assert!(
-        checker.reject_rc_collection_element("HashSet", &actor_ref_ty, &(0..0)),
-        "ActorRef<Worker> should pass RcFree collection admissibility even when Worker stores Rc"
+        checker.reject_rc_collection_element("HashSet", &local_pid_ty, &(0..0)),
+        "LocalPid<Worker> should pass RcFree collection admissibility even when Worker stores Rc"
     );
     assert!(
         !checker.errors.iter().any(|err| {
             err.kind == TypeErrorKind::UnsafeCollectionElement && err.message.contains("HashSet")
         }),
-        "ActorRef<Worker> should not emit a HashSet UnsafeCollectionElement error, got: {:?}",
+        "LocalPid<Worker> should not emit a HashSet UnsafeCollectionElement error, got: {:?}",
         checker.errors
     );
 }

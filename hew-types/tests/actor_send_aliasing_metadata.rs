@@ -86,11 +86,11 @@ fn actor_send_aliasing_map_populated_for_copy_send() {
 }
 
 /// Receive-method dispatch through a *bare actor field* (typed as the
-/// actor name, e.g. `let target: Printer`, not `ActorRef<Printer>`) routes
-/// through `check_named_method_fallback` rather than the `ActorRef` path.
-/// That fallback used to skip `enforce_actor_boundary_send`, leaving the
-/// `actor_send_aliasing` map empty for those sites — a producer gap that
-/// blocks the codegen-side fail-closed lookup.
+/// actor name, e.g. `let target: Printer`, not `LocalPid<Printer>`) routes
+/// through `check_named_method_fallback` rather than the handle path.
+/// That fallback must run `enforce_actor_boundary_send` so the
+/// `actor_send_aliasing` map is populated for those sites — otherwise a
+/// producer gap blocks the codegen-side fail-closed lookup.
 ///
 /// This test pins the fix: every arg of a receive-method dispatch on a
 /// named-actor field must produce an entry in `actor_send_aliasing`.
@@ -126,7 +126,7 @@ fn actor_send_aliasing_records_named_actor_field_receive_dispatch() {
     // Four accepted send sites in this program:
     //   1. `amount: 10` arg in `spawn Adder(...)` (spawn args)
     //   2. `target: printer` arg in `spawn Adder(...)` (spawn args)
-    //   3. `adder.add(5)` from main (ActorRef receive dispatch)
+    //   3. `adder.add(5)` from main (LocalPid receive dispatch)
     //   4. `target.print_result(result)` from inside Adder::add (the
     //      named-actor field receive dispatch — the gap this test pins).
     //

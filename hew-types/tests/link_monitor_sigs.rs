@@ -1,8 +1,8 @@
 //! Type-checker signature tests for `link(handle)` and `monitor(handle)`.
 //!
 //! B2 slice: pins that
-//!   - `link(actor_ref)` → `Result<(), LinkError>`
-//!   - `monitor(actor_ref)` → `MonitorRef`
+//!   - `link(handle)` → `Result<(), LinkError>`
+//!   - `monitor(handle)` → `MonitorRef`
 //!   - `link(non_actor)` → `TYPE_MISMATCH`
 //!   - `monitor(non_actor)` → `TYPE_MISMATCH`
 
@@ -120,7 +120,7 @@ fn monitor_ref_not_assignable_to_int() {
 
 #[test]
 fn link_non_actor_produces_mismatch() {
-    // `link` requires `ActorRef<_>`; passing a plain `i64` must be rejected.
+    // `link` requires `LocalPid<_>`; passing a plain `i64` must be rejected.
     let src = r"
 fn main() {
     let x: i64 = 42;
@@ -142,7 +142,7 @@ fn main() {
 
 #[test]
 fn monitor_non_actor_produces_mismatch() {
-    // `monitor` requires `ActorRef<_>`; passing a `string` must be rejected.
+    // `monitor` requires `LocalPid<_>`; passing a `string` must be rejected.
     let src = r#"
 fn main() {
     let s: string = "hello";

@@ -1125,9 +1125,9 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_vec_push_str",
         },
     ),
-    // Pointer-shaped element family (`Vec<LocalPid<T>>` / `Vec<ActorRef<T>>` /
-    // `Vec<Actor<T>>`): the actor-handle builtins lower to a single
-    // pointer-sized word (`*mut HewActor`) and the checker classifies them via
+    // Pointer-shaped element family (`Vec<LocalPid<T>>`): the local actor-handle
+    // builtin lowers to a single pointer-sized word (`*mut HewActor`) and the
+    // checker classifies it via
     // `BuiltinType::lowers_as_pointer_vec_element` → `"ptr"`. The runtime ABI
     // (`hew_vec_new_ptr` + `hew_vec_{push,get,set,pop}_ptr`) already exists;
     // these rows register the symbols with HIR's `fn_registry` and codegen's

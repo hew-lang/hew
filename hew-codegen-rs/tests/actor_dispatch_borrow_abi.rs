@@ -29,7 +29,7 @@ use hew_mir::{
     BasicBlock, EnumLayout, FunctionCallConv, Instr, IrPipeline, MachineVariantLayout, Place,
     RawMirFunction, Terminator,
 };
-use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
+use hew_types::{module_registry::ModuleRegistry, BuiltinType, Checker, ResolvedTy};
 
 fn pipeline_from_source(source: &str) -> hew_mir::IrPipeline {
     let parsed = hew_parser::parse(source);
@@ -765,15 +765,14 @@ fn receive_handler_move_into_owned_aggregate_retains_under_live_borrow() {
 /// original envelope still owns. Hand-assembled so the `Terminator::Send` is
 /// exercised directly without the actor-method-call lowering surface.
 fn relay_resend_recv_pipeline() -> IrPipeline {
-    let actor_ty = ResolvedTy::Named {
-        name: "Actor".to_string(),
-        args: vec![],
-        builtin: None,
-        is_opaque: false,
-    };
+    // `LocalPid<Unit>` is the canonical actor-dispatch-local handle — the
+    // unit inner type is irrelevant for the ABI shape (it only determines
+    // the message-type layout, not the handle alloca).
+    let actor_ty =
+        ResolvedTy::named_builtin("LocalPid", BuiltinType::LocalPid, vec![ResolvedTy::Unit]);
     // Receive handler `Relay.forward(s: string)`:
-    //   local 0: string  // borrowed receive param (taint root)
-    //   local 1: Actor    // opaque actor handle (the re-send target)
+    //   local 0: string      // borrowed receive param (taint root)
+    //   local 1: LocalPid    // canonical actor-local handle (the re-send target)
     // Block 0: EnterContext; Send { actor: ActorHandle(1), value: Local(0) }
     // Block 1: ExitContext; Return
     let handler = RawMirFunction {
@@ -781,7 +780,7 @@ fn relay_resend_recv_pipeline() -> IrPipeline {
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::ActorHandler,
         params: vec![ResolvedTy::String],
-        locals: vec![ResolvedTy::String, actor_ty],
+        locals: vec![ResolvedTy::String, actor_ty], // local 0: string (taint root), local 1: LocalPid
         local_names: Vec::new(),
         local_scopes: Vec::new(),
         local_decl_bytes: Vec::new(),

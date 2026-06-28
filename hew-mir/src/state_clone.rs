@@ -29,7 +29,7 @@
 //! "Connection", args: [] }`. The classifier therefore looks
 //! `record_layouts` up FIRST for every `Named` arm; only when the name
 //! is not user-shadowed does it fall through to the builtin-name match
-//! (`Connection` / `ActorRef` / `Vec` / `HashMap` / `HashSet` /
+//! (`Connection` / `LocalPid` / `Vec` / `HashMap` / `HashSet` /
 //! `string` / `bytes`).
 //!
 //! This is the local mitigation for dispatch-invariant #10
@@ -986,7 +986,7 @@ fn classify_named(
     // Connection { ... }` and the runtime builtin `net.Connection` both reach
     // this function as `Named { name: "Connection", args: [] }`. Routing on
     // name alone would silently misclassify a user record named after
-    // a builtin (Connection / Vec / HashMap / HashSet / ActorRef /
+    // a builtin (Connection / Vec / HashMap / HashSet / LocalPid /
     // string / bytes) — bypassing the recursive-record arm and the
     // owned-heap drop helpers, which would leak (Stage 3) or UAF
     // (post-Q185(c) lift, plan §8.8).
@@ -1055,19 +1055,11 @@ fn classify_named(
     // an emitted generic instantiation layout has `builtin: None` and
     // must NOT collapse to BitCopy — its type args must be inspected for
     // opaques. Only a real builtin handle (stamped
-    // `builtin: Some(ActorRef|Actor|LocalPid)` by the checker) earns
-    // the bit-copy skip. Generic user shadows with no layout reached
-    // this arm previously (the record_layouts lookup at line ~916 missed
-    // the absent mangled key); the discriminator closes that gap without
-    // requiring the layout to exist.
-    if matches!(
-        builtin,
-        Some(
-            hew_types::BuiltinType::ActorRef
-                | hew_types::BuiltinType::Actor
-                | hew_types::BuiltinType::LocalPid
-        )
-    ) {
+    // `builtin: Some(LocalPid)` by the checker) earns the bit-copy skip.
+    // Generic user shadows with no layout reach this arm only with
+    // `builtin: None`; the discriminator closes that gap without requiring
+    // the layout to exist.
+    if matches!(builtin, Some(hew_types::BuiltinType::LocalPid)) {
         return Ok(StateFieldCloneKind::BitCopy { size_bytes: 0 });
     }
 
@@ -1497,25 +1489,21 @@ mod tests {
     }
 
     #[test]
-    fn actor_ref_classifies_as_bitcopy_per_audit_section_1() {
-        // Plan §4.5 A: `HewActorRef` is `#[repr(C)]` bit-copyable, NOT
-        // refcount-bump. This test pins the contract — if a future
-        // change reintroduces a dedicated `ActorRef` variant, this test
-        // breaks and forces a re-read of plan §4.5 A.
+    fn local_pid_classifies_as_bitcopy() {
+        // A `LocalPid<T>` lowers to the `#[repr(C)]` bit-copyable runtime handle
+        // word, NOT a refcount-bump. The classifier routes on the `builtin`
+        // discriminator the checker stamps, so a real `LocalPid<T>` must reach
+        // the bit-copy skip regardless of its name string.
         let mut v = HashSet::new();
-        // `builtin: Some(ActorRef)` is the discriminator the HIR checker stamps
-        // on real `ActorRef<T>` types. The classifier now routes on this field
-        // rather than the name string, so the `builtin` discriminator must
-        // accurately reflect the type identity.
         let ty = ResolvedTy::Named {
-            name: "ActorRef".to_string(),
+            name: "LocalPid".to_string(),
             args: vec![ResolvedTy::Named {
                 name: "SomeActor".to_string(),
                 args: vec![],
                 builtin: None,
                 is_opaque: false,
             }],
-            builtin: Some(hew_types::BuiltinType::ActorRef),
+            builtin: Some(hew_types::BuiltinType::LocalPid),
             is_opaque: false,
         };
         assert_eq!(

@@ -129,9 +129,6 @@ const BUILTIN_TYPE_REGISTRATIONS: &[BuiltinTypeRegistration] = &[
     registration!(HashMap, BuiltinTypeShape::Opaque),
     registration!(HashSet, BuiltinTypeShape::Opaque),
     registration!(CancellationToken, BuiltinTypeShape::Opaque),
-    registration!(ActorRef, BuiltinTypeShape::Opaque),
-    registration!(Actor, BuiltinTypeShape::Opaque),
-    registration!(Pid, BuiltinTypeShape::Opaque),
     registration!(LocalPid, BuiltinTypeShape::Opaque),
     registration!(RemotePid, BuiltinTypeShape::Opaque),
     registration!(HewActor, BuiltinTypeShape::Opaque),
@@ -395,21 +392,8 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "table-driven registry coverage keeps each handle fact visible"
-    )]
     fn handle_and_project_cap_registrations_carry_shape_marker_and_roles() {
         let expected = [
-            (
-                BuiltinType::Pid,
-                ResourceMarker::None,
-                None,
-                BuiltinTypeShape::Opaque,
-                Some(BuiltinHandleFamily::ActorPid),
-                0,
-                &[][..],
-            ),
             (
                 BuiltinType::LocalPid,
                 ResourceMarker::Resource,

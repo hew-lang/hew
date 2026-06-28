@@ -855,7 +855,7 @@ yieldExpr
 //  Built-in generic types (Task<T>, Vec<T>, HashMap<K,V>, etc.)
 //  are syntactically just ident typeArgs?, so they are folded
 //  into the first alternative.  Listed in comments for reference:
-//    Task<T>, ActorRef<T>, Actor<M,R>, Arc<T>, Rc<T>,
+//    Task<T>, LocalPid<A>, RemotePid<A>, LambdaPid<M,R>, Arc<T>, Rc<T>,
 //    Weak<T>, Result<T,E>, Option<T>, Generator<Y>,
 //    AsyncGenerator<Y>, Vec<T>, HashMap<K,V>
 // ----------------------------------------------------------------

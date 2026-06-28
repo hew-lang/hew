@@ -43,7 +43,7 @@ fn spawn_returns_local_pid() {
         })
         .expect("no spawn expression in let");
     let key = hew_types::check::SpanKey::from(&spawn_span);
-    // spawn should produce LocalPid<Counter>, not ActorRef<Counter>.
+    // spawn should produce LocalPid<Counter>.
     // Scan all expr_types for any LocalPid entry if the exact span is off.
     let ty = output.expr_types.get(&key).cloned().unwrap_or_else(|| {
         output
@@ -111,10 +111,15 @@ fn remote_pid_is_send_sync_copy() {
     }
 }
 
-// ── Unification: LocalPid and ActorRef are distinct nominal types ─────────────
+// ── Unification: LocalPid and RemotePid are distinct nominal types ────────────
 
 #[test]
-fn localpid_actorref_no_longer_unify() {
+fn local_pid_and_remote_pid_do_not_unify() {
+    // The local and remote handle families are distinct nominal types over the
+    // same actor: a `LocalPid<T>` must never be accepted where a `RemotePid<T>`
+    // is expected, and vice versa. Their discriminators carry different ABI
+    // shapes (`*mut HewActor` vs a packed `i64`), so a silent unify would be a
+    // miscompile.
     use hew_types::ty::Substitution;
     use hew_types::unify::unify;
     let actor = Ty::Named {
@@ -123,46 +128,17 @@ fn localpid_actorref_no_longer_unify() {
         args: vec![],
     };
     let local_pid = Ty::local_pid(actor.clone());
-    let actor_ref = Ty::actor_ref(actor);
+    let remote_pid = Ty::remote_pid(actor);
 
     let mut subst = Substitution::new();
     assert!(
-        unify(&mut subst, &local_pid, &actor_ref).is_err(),
-        "LocalPid<T> must not unify with ActorRef<T>"
+        unify(&mut subst, &local_pid, &remote_pid).is_err(),
+        "LocalPid<T> must not unify with RemotePid<T>"
     );
     let mut subst = Substitution::new();
     assert!(
-        unify(&mut subst, &actor_ref, &local_pid).is_err(),
-        "ActorRef<T> must not unify with LocalPid<T>"
-    );
-}
-
-// ── Unification: RemotePid does NOT unify with ActorRef ──────────────────────
-
-#[test]
-fn remote_pid_does_not_unify_with_actor_ref() {
-    // RemotePid<T> must not be accepted where ActorRef<T> is expected.
-    // The test verifies the discriminator is preserved.
-    //
-    // We can't construct a RemotePid<T> at the Hew source level yet
-    // (from_raw requires SHIM wiring); test via the Rust type API instead.
-    use hew_types::ty::Substitution;
-    use hew_types::unify::unify;
-    let mut subst = Substitution::new();
-    let actor_ref = Ty::actor_ref(Ty::Named {
-        builtin: None,
-        name: "Counter".into(),
-        args: vec![],
-    });
-    let remote_pid = Ty::remote_pid(Ty::Named {
-        builtin: None,
-        name: "Counter".into(),
-        args: vec![],
-    });
-    let result = unify(&mut subst, &remote_pid, &actor_ref);
-    assert!(
-        result.is_err(),
-        "RemotePid<T> must NOT unify with ActorRef<T>; got Ok"
+        unify(&mut subst, &remote_pid, &local_pid).is_err(),
+        "RemotePid<T> must not unify with LocalPid<T>"
     );
 }
 

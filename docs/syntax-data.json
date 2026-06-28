@@ -311,7 +311,9 @@
       "None"
     ],
     "concurrency": [
-      "ActorRef",
+      "LocalPid",
+      "RemotePid",
+      "LambdaPid",
       "Stream",
       "Sink",
       "Task",

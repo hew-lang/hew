@@ -174,10 +174,10 @@ fn string_is_not_frozen() {
 }
 
 #[test]
-fn actor_ref_is_frozen() {
+fn local_pid_is_frozen() {
     let reg = TraitRegistry::new();
-    let aref = Ty::actor_ref(named("MyActor"));
-    assert!(reg.is_frozen(&aref));
+    let pid = Ty::local_pid(named("MyActor"));
+    assert!(reg.is_frozen(&pid));
 }
 
 // ===========================================================================
@@ -749,17 +749,17 @@ fn method_sig_mutable_self() {
 }
 
 // ===========================================================================
-// ActorRef special handling
+// Actor-handle marker traits
 // ===========================================================================
 
 #[test]
-fn actor_ref_is_copy_clone_debug() {
+fn local_pid_is_copy_clone_debug() {
     let reg = TraitRegistry::new();
-    let aref = Ty::actor_ref(named("Logger"));
-    assert!(reg.implements_marker(&aref, MarkerTrait::Copy));
-    assert!(reg.implements_marker(&aref, MarkerTrait::Clone));
-    assert!(reg.implements_marker(&aref, MarkerTrait::Debug));
-    assert!(!reg.implements_marker(&aref, MarkerTrait::Eq));
+    let pid = Ty::local_pid(named("Logger"));
+    assert!(reg.implements_marker(&pid, MarkerTrait::Copy));
+    assert!(reg.implements_marker(&pid, MarkerTrait::Clone));
+    assert!(reg.implements_marker(&pid, MarkerTrait::Debug));
+    assert!(!reg.implements_marker(&pid, MarkerTrait::Eq));
 }
 
 // ===========================================================================

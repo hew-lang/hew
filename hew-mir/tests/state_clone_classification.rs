@@ -163,18 +163,18 @@ fn classification_is_paired_some_some_or_none_none() {
 // ─── Per-actor representative classifications (audit §3) ────────────
 
 #[test]
-fn chatroom_shape_classifies_vec_of_string_and_vec_of_actor_ref() {
-    // Audit row #1 of stdlib-supervision-relevant shapes:
-    // `ChatRoom { handlers: Vec<ActorRef<ClientHandler>>, names: Vec<string> }`.
-    // The classifier sees `Vec<ActorRef<ClientHandler>>` (Vec of
-    // BitCopy because ActorRef is repr(C) bit-copy per audit §1) and
+fn chatroom_shape_classifies_vec_of_string_and_vec_of_local_pid() {
+    // Stdlib-supervision-relevant shape:
+    // `ChatRoom { handlers: Vec<LocalPid<ClientHandler>>, names: Vec<string> }`.
+    // The classifier sees `Vec<LocalPid<ClientHandler>>` (Vec of BitCopy
+    // because a LocalPid is a repr(C) bit-copy handle word) and
     // `Vec<string>` (Vec of String, needs per-element deep clone).
     let src = r"
         actor ClientHandler {
             receive fn msg(text: string) {}
         }
         actor ChatRoom {
-            let handlers: Vec<ActorRef<ClientHandler>>;
+            let handlers: Vec<LocalPid<ClientHandler>>;
             let names: Vec<string>;
         }
     ";
@@ -192,9 +192,9 @@ fn chatroom_shape_classifies_vec_of_string_and_vec_of_actor_ref() {
     assert_eq!(kinds.len(), 2);
     match &kinds[0] {
         StateFieldCloneKind::Vec { elem } => match elem.as_ref() {
-            // ActorRef collapses to BitCopy per plan §4.5 A.
+            // A LocalPid handle word is a repr(C) bit-copy.
             StateFieldCloneKind::BitCopy { .. } => {}
-            other => panic!("Vec<ActorRef<...>> element should be BitCopy, got {other:?}"),
+            other => panic!("Vec<LocalPid<...>> element should be BitCopy, got {other:?}"),
         },
         other => panic!("field 0 should be Vec, got {other:?}"),
     }
@@ -323,20 +323,21 @@ fn user_type_named_vec_does_not_route_to_container_arm() {
 }
 
 #[test]
-fn user_type_named_actor_ref_does_not_route_to_bitcopy_arm() {
-    // Same hazard for the handle-typed builtins (ActorRef / Actor /
-    // LocalPid). A user record shadowing one of these names must NOT
-    // collapse to BitCopy — that would skip the per-field drop of any
-    // owned fields the user declared.
+fn user_type_named_local_pid_does_not_route_to_bitcopy_arm() {
+    // Same hazard for the local actor-handle builtin (`LocalPid`). A user
+    // record shadowing that name with `builtin: None` must NOT collapse to
+    // BitCopy — that would skip the per-field drop of any owned fields the
+    // user declared. The classifier routes on the `builtin` discriminator,
+    // not the name string, so the shadow stays a UserRecord.
     let mut visited = HashSet::new();
     let records = vec![hew_mir::model::RecordLayout {
-        name: "ActorRef".to_string(),
+        name: "LocalPid".to_string(),
         field_tys: vec![ResolvedTy::String],
         field_names: vec![],
     }];
     let result = hew_mir::classify_state_field(
         &ResolvedTy::Named {
-            name: "ActorRef".to_string(),
+            name: "LocalPid".to_string(),
             args: vec![],
             builtin: None,
             is_opaque: false,
@@ -348,7 +349,7 @@ fn user_type_named_actor_ref_does_not_route_to_bitcopy_arm() {
     assert_eq!(
         result,
         StateFieldCloneKind::UserRecord {
-            name: "ActorRef".to_string(),
+            name: "LocalPid".to_string(),
         },
     );
 }
@@ -372,7 +373,7 @@ fn router_shape_vec_of_user_connection_carries_user_record_through() {
         }
         actor Router {
             let conns: Vec<Connection>;
-            let clients: Vec<ActorRef<Client>>;
+            let clients: Vec<LocalPid<Client>>;
             let qos: Vec<i32>;
         }
     ";
@@ -396,7 +397,7 @@ fn router_shape_vec_of_user_connection_carries_user_record_through() {
     match &kinds[1] {
         StateFieldCloneKind::Vec { elem } => assert!(
             matches!(elem.as_ref(), StateFieldCloneKind::BitCopy { .. }),
-            "Vec<ActorRef<Client>> element should be BitCopy, got {elem:?}",
+            "Vec<LocalPid<Client>> element should be BitCopy, got {elem:?}",
         ),
         other => panic!("field 1 should be Vec, got {other:?}"),
     }
@@ -528,7 +529,7 @@ fn coverage_report_against_audit_representatives() {
     //   trivial-state             → Counter      (89 actors in class)
     //   string + Vec<String>      → ChatRoom-like (covered in §1 test)
     //   Vec<Connection>           → Router-like   (covered in §1 test)
-    //   ActorRef in state         → Router/Listener (covered in §1)
+    //   LocalPid in state         → Router/Listener (covered in §1)
     //   nested user record        → Workspace fixture (covered above)
     //
     // The substrate-level claim is: "if Stage 0's 110-actor enumeration
@@ -942,7 +943,7 @@ fn generic_machine_record_field_admits() {
 
 // ─── LocalPid<T> phantom-arg fix (chat_server regression) ───────────────────
 //
-// `LocalPid<T>`, `ActorRef<T>`, and `Actor<T>` are bit-copy actor handles; T
+// `LocalPid<T>` is a bit-copy actor handle; T
 // is a phantom actor-name tag, not a value stored inside the handle.
 // `ty_contains_unclonable_opaque_inner` must NOT recurse into that arg — doing
 // so walks the actor's OWN state-mirror record and finds any #[opaque] fields

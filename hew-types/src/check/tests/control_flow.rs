@@ -970,9 +970,9 @@ mod for_loop_iterable_fail_closed {
 
     #[test]
     fn closure_captures_duplex_handle_does_not_affect_pid_captures() {
-        // Regression guard: the new Duplex gate must NOT fire for ActorRef/LocalPid
-        // captures. A closure capturing a declared-actor's pid is accepted (the
-        // main feature of this PR). Only Duplex (lambda-actor handles) is refused.
+        // Regression guard: the Duplex gate must NOT fire for LocalPid captures.
+        // A closure capturing a declared-actor's pid is accepted; only Duplex
+        // (lambda-actor handles) is refused.
         let output = check_source(
             r"
             actor Counter {
@@ -991,7 +991,7 @@ mod for_loop_iterable_fail_closed {
                 .errors
                 .iter()
                 .any(|e| matches!(&e.kind, TypeErrorKind::ClosureCapturesDuplexHandle { .. })),
-            "pid (ActorRef) captures must NOT trip ClosureCapturesDuplexHandle; got: {:#?}",
+            "LocalPid captures must NOT trip ClosureCapturesDuplexHandle; got: {:#?}",
             output.errors
         );
     }

@@ -353,17 +353,12 @@ fn canonical_lowering_name_round_trips_through_from_name() {
 
 #[test]
 fn actor_handle_accessor() {
-    // ActorRef<T> is an actor handle
-    let ty = Ty::actor_ref(Ty::I32);
+    // LocalPid<T> is the local actor handle.
+    let ty = Ty::local_pid(Ty::I32);
     assert_eq!(ty.as_actor_handle(), Some(&Ty::I32));
 
-    // Actor<T> is also an actor handle
-    let actor = Ty::Named {
-        builtin: Some(hew_types::BuiltinType::Actor),
-        name: "Actor".to_string(),
-        args: vec![Ty::Bool],
-    };
-    assert_eq!(actor.as_actor_handle(), Some(&Ty::Bool));
+    // RemotePid<T> is a distinct remote handle — NOT a local actor handle.
+    assert_eq!(Ty::remote_pid(Ty::Bool).as_actor_handle(), None);
 
     // Non-actor returns None
     assert_eq!(Ty::I32.as_actor_handle(), None);
@@ -408,14 +403,15 @@ fn accessor_wrong_arity_returns_none() {
     };
     assert_eq!(bad_async_gen.as_async_generator(), None);
 
-    // ActorRef with wrong arity
-    let bad_actor = Ty::Named {
-        builtin: None,
-        name: "ActorRef".to_string(),
+    // LocalPid with wrong arity — the accessor's arity guard rejects it even
+    // when the builtin discriminator is stamped.
+    let bad_pid = Ty::Named {
+        builtin: Some(hew_types::BuiltinType::LocalPid),
+        name: "LocalPid".to_string(),
         args: vec![Ty::I32, Ty::Bool],
     };
-    assert_eq!(bad_actor.as_actor_ref(), None);
-    assert_eq!(bad_actor.as_actor_handle(), None);
+    assert_eq!(bad_pid.as_local_pid(), None);
+    assert_eq!(bad_pid.as_actor_handle(), None);
 
     // Stream/Sink with wrong arity
     let bad_stream = Ty::Named {

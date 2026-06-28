@@ -307,7 +307,7 @@ builtin_named_types! {
     //
     // A `LocalPid<T>` is process-local: it refers to an actor running in the current
     // node. Built-in actor functions (`close`, `link`, `monitor`, etc.) use
-    // `LocalPid<T>` directly; it is nominally distinct from `ActorRef<T>`.
+    // `LocalPid<T>` directly; it is nominally distinct from `RemotePid<T>`.
     //
     // Methods (`.tell`) are declared in `std/builtins.hew` as `impl LocalPid<T>` and
     // resolved via the normal user-type method dispatch path.
@@ -321,7 +321,7 @@ builtin_named_types! {
     // RemotePid<T>: actor pid on a remote node.
     //
     // A `RemotePid<T>` is produced by peer-discovery or explicit construction
-    // (`RemotePid::from_raw`). It does NOT unify with `ActorRef<T>` or `LocalPid<T>`.
+    // (`RemotePid::from_raw`). It does NOT unify with `LocalPid<T>`.
     // Coercion from local → remote is explicit: `local_pid.to_remote_via(node_handle)`.
     //
     // `.tell` returns Result<(), SendError> and fails closed until actual routing arrives.
@@ -371,15 +371,12 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::Vec
             | BuiltinType::HashMap
             | BuiltinType::HashSet
-            | BuiltinType::ActorRef
-            | BuiltinType::Actor
             | BuiltinType::Task
             | BuiltinType::StreamPair
             | BuiltinType::Generator
             | BuiltinType::AsyncGenerator
             | BuiltinType::Range
             | BuiltinType::Rc
-            | BuiltinType::Pid
             | BuiltinType::HewActor
             | BuiltinType::HewDuplex
             | BuiltinType::HewSendHalf

@@ -508,7 +508,38 @@ impl Parser<'_> {
         let type_params = self.parse_opt_type_params()?;
 
         self.expect(&Token::LeftParen)?;
-        let params = self.parse_params_with_implicit_self(self.allow_implicit_self_params);
+        // Inherent-impl methods (where `self` receivers are allowed) may declare
+        // a `consuming self` receiver — the terminal single-consume surface
+        // (`fn build(consuming self) -> T`, a `#[linear]` type's consuming
+        // method). The receiver is lowered as the by-value `self` parameter; the
+        // `consumes_self` fact drives the checker's consume-receiver marking. A
+        // `consuming self` outside the first position, or in a context that does
+        // not allow `self` receivers (a free function), falls through to the
+        // regular param path and is rejected there.
+        let consuming_self_span = self.peek_span();
+        let consumes_self = self.allow_implicit_self_params && self.eat_consuming_self_receiver();
+        let mut params = self.parse_params_with_implicit_self(self.allow_implicit_self_params);
+        // A `consuming self` receiver is materialised as a leading by-value
+        // `self: Self` parameter so the checker's receiver binding and HIR's
+        // method-symbol minting treat it identically to a bare `self` receiver;
+        // the move (consume) semantics ride on `consumes_self`, not on the
+        // parameter shape.
+        if consumes_self {
+            params.insert(
+                0,
+                Param {
+                    name: "self".to_string(),
+                    ty: (
+                        TypeExpr::Named {
+                            name: "Self".to_string(),
+                            type_args: None,
+                        },
+                        consuming_self_span,
+                    ),
+                    is_mutable: false,
+                },
+            );
+        }
         self.expect(&Token::RightParen)?;
 
         let return_type = self.parse_opt_return_type()?;
@@ -552,6 +583,7 @@ impl Parser<'_> {
             decl_span: decl_start..decl_end,
             fn_span: fn_start..fn_end,
             intrinsic,
+            consumes_self,
         })
     }
 
@@ -596,6 +628,7 @@ impl Parser<'_> {
             decl_span: decl_start..decl_end,
             fn_span: fn_start..fn_end,
             intrinsic: None,
+            consumes_self: has_consuming_self,
         };
         Some((decl, has_consuming_self))
     }

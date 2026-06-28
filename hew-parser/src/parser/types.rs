@@ -632,33 +632,47 @@ impl Parser<'_> {
         &mut self,
         allow_consuming_self: bool,
     ) -> (Vec<Param>, bool) {
-        let mut has_consuming_self = false;
-
         // Check for `consuming self` at the first-parameter position.
-        if allow_consuming_self && !self.at_end() && self.peek() != Some(&Token::RightParen) {
-            // `consuming` lexes as Token::Identifier("consuming").
-            let is_consuming_kw =
-                matches!(self.peek(), Some(Token::Identifier(s)) if *s == "consuming");
-            if is_consuming_kw {
-                // Peek one further to check for `self`.
-                let next_is_self = matches!(
-                    self.tokens.get(self.pos + 1),
-                    Some((Token::Identifier(s), _)) if *s == "self"
-                );
-                if next_is_self {
-                    // Consume both tokens.
-                    self.advance(); // consuming
-                    self.advance(); // self
-                    has_consuming_self = true;
-                    // Skip optional trailing comma before further params.
-                    self.eat(&Token::Comma);
-                }
-            }
-        }
+        let has_consuming_self = allow_consuming_self && self.eat_consuming_self_receiver();
 
         // Parse remaining ordinary parameters.
         let params = self.parse_params();
         (params, has_consuming_self)
+    }
+
+    /// Recognise and consume a `consuming self` receiver at the current
+    /// (first-parameter) position, returning `true` when one was eaten.
+    ///
+    /// `consuming` lexes as `Token::Identifier("consuming")`, so the receiver is
+    /// the two-token sequence `consuming self`. The optional trailing comma is
+    /// also consumed so the following ordinary parameters parse cleanly. When the
+    /// current position is not a `consuming self` receiver, no tokens are
+    /// consumed and `false` is returned — the caller proceeds to parse ordinary
+    /// parameters (which rejects a stray `consuming` elsewhere in the list).
+    ///
+    /// Shared by `parse_params_with_receiver` (type-body methods) and
+    /// `parse_function` (inherent-impl methods) so both surfaces recognise the
+    /// receiver identically.
+    pub(crate) fn eat_consuming_self_receiver(&mut self) -> bool {
+        if self.at_end() || self.peek() == Some(&Token::RightParen) {
+            return false;
+        }
+        let is_consuming_kw =
+            matches!(self.peek(), Some(Token::Identifier(s)) if *s == "consuming");
+        if !is_consuming_kw {
+            return false;
+        }
+        let next_is_self = matches!(
+            self.tokens.get(self.pos + 1),
+            Some((Token::Identifier(s), _)) if *s == "self"
+        );
+        if !next_is_self {
+            return false;
+        }
+        self.advance(); // consuming
+        self.advance(); // self
+        self.eat(&Token::Comma); // optional trailing comma before further params
+        true
     }
 
     /// Returns true if the expression is a block-like construct that doesn't need a trailing semicolon.

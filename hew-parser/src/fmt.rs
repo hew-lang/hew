@@ -1704,12 +1704,31 @@ impl<'a> Formatter<'a> {
         }
         self.write("fn ");
         self.write(&decl.name);
-        self.format_fn_signature(
-            decl.type_params.as_ref(),
-            &decl.params,
-            decl.return_type.as_ref(),
-            decl.where_clause.as_ref(),
-        );
+        // An inherent-impl `consuming self` receiver is materialised as the
+        // leading `self: Self` parameter; emit the `consuming self` spelling and
+        // skip that synthetic first parameter, mirroring the type-body formatter.
+        if decl.consumes_self {
+            self.format_opt_type_params(decl.type_params.as_ref());
+            self.write("(consuming self");
+            let rest = decl.params.get(1..).unwrap_or(&[]);
+            if !rest.is_empty() {
+                self.write(", ");
+            }
+            self.format_params(rest);
+            self.write(")");
+            if let Some(ret) = decl.return_type.as_ref() {
+                self.write(" -> ");
+                self.format_type_expr(&ret.0);
+            }
+            self.format_opt_where_clause(decl.where_clause.as_ref());
+        } else {
+            self.format_fn_signature(
+                decl.type_params.as_ref(),
+                &decl.params,
+                decl.return_type.as_ref(),
+                decl.where_clause.as_ref(),
+            );
+        }
         self.write(" ");
         self.format_block(&decl.body, span_end);
         self.newline();

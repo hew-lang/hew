@@ -26651,10 +26651,14 @@ pub(crate) fn remote_ask_dispatch_ptr<'ctx>(
 ///     `actor_payload_ptr_size`.
 ///   * Call `hew_actor_send_by_id(pid, msg_type, ptr, size) -> i32`.
 ///   * `rc == 0` → tag=0 (Ok), payload = `()` (no field store).
-///   * `rc != 0` → tag=1 (Err), payload = `SendError::NodeRoutingNotWired`
-///     (variant 2). The runtime currently collapses all failure modes into
-///     a single `-1` rc, so any failure maps to the broadest "transport
-///     unavailable" variant; narrowing requires a new runtime ABI.
+///   * `rc == HEW_ERR_STALE_REF` (-16) → tag=1 (Err), payload =
+///     `SendError::StaleRef` (variant 4) — the captured `RemotePid<T>` names a
+///     registration superseded by a re-registration to a different actor.
+///   * any other `rc != 0` → tag=1 (Err), payload =
+///     `SendError::NodeRoutingNotWired` (variant 2). The runtime collapses the
+///     remaining failure modes into a single `-1` rc, so they map to the broadest
+///     "transport unavailable" variant; narrowing further requires a new runtime
+///     ABI.
 ///
 /// Dispatch is by callee name (not a new `FnSymbol` variant), matching the
 /// Node::lookup precedent (R82-era generalisation).
@@ -26877,7 +26881,7 @@ fn emit_remote_pid_tell_call<'ctx>(
         .build_unconditional_branch(next_bb)
         .llvm_ctx("remote_tell ok br next")?;
 
-    // --- Err branch: tag=1, payload = SendError::NodeRoutingNotWired ---------
+    // --- Err branch: tag=1, payload = SendError::<mapped> --------------------
     fn_ctx.builder.position_at_end(err_bb);
     let (tag_ptr_err, tag_ty_err) = place_pointer(fn_ctx, Place::MachineTag(dest_local))?;
     let tag_int_ty_err = match tag_ty_err {
@@ -26893,9 +26897,30 @@ fn emit_remote_pid_tell_call<'ctx>(
         .build_store(tag_ptr_err, tag_int_ty_err.const_int(1, false))
         .llvm_ctx("store Err tag")?;
     // Result<(), SendError>: variant 1 is the Err arm, field 0 is the
-    // SendError outer struct.  SendError is a 3-variant payload-less enum
-    // (Full=0, Closed=1, NodeRoutingNotWired=2); we write the SendError
-    // tag into its first slot.
+    // SendError outer struct. We are on the Err branch, so rc != 0. Map the
+    // distinct StaleRef rc to `SendError::StaleRef` (variant 4); every other
+    // nonzero rc maps to the broad `NodeRoutingNotWired` (variant 2). The
+    // discriminant is computed once via select and reused for both the int- and
+    // struct-representation writes.
+    //
+    // `HEW_ERR_STALE_REF` MUST stay in sync with the runtime constant
+    // (`hew-runtime/src/hew_node.rs`); the cross-crate parity test guards it.
+    const HEW_ERR_STALE_REF: i64 = -16;
+    let stale_rc = rc.get_type().const_int(HEW_ERR_STALE_REF as u64, true);
+    let is_stale = fn_ctx
+        .builder
+        .build_int_compare(IntPredicate::EQ, rc, stale_rc, "remote_tell_is_stale")
+        .llvm_ctx("remote_tell stale icmp")?;
+    let send_err_disc = |ity: inkwell::types::IntType<'ctx>| -> CodegenResult<IntValue<'ctx>> {
+        // SendError::StaleRef = 4, SendError::NodeRoutingNotWired = 2.
+        let stale = ity.const_int(4, false);
+        let routing = ity.const_int(2, false);
+        let selected = fn_ctx
+            .builder
+            .build_select(is_stale, stale, routing, "send_err_disc")
+            .llvm_ctx("send_err discriminant select")?;
+        Ok(selected.into_int_value())
+    };
     let (send_err_ptr, send_err_ty) = place_pointer(
         fn_ctx,
         Place::MachineVariant {
@@ -26904,22 +26929,20 @@ fn emit_remote_pid_tell_call<'ctx>(
             field_idx: 0,
         },
     )?;
-    // The SendError outer struct's first integer slot is its discriminant
-    // tag. Writing `2` (NodeRoutingNotWired) followed by a zero-init of any
-    // padding is the same shape `LookupError::NotFound` writes via
-    // `const_zero` in emit_node_lookup_call, except SendError carries a
-    // non-zero discriminant.  We zero-initialise the outer struct (so any
-    // payload field after the tag is well-defined) and then patch the tag
-    // through a tag-slot projection equivalent.  Because SendError has no
-    // payload, a const struct with tag=2 + zeroed padding is sufficient.
+    // The SendError outer struct's first integer slot is its discriminant tag.
+    // We zero-initialise the outer struct (so any padding is well-defined) and
+    // then write the mapped discriminant; because SendError is payload-less, a
+    // tag + zeroed padding is sufficient (same shape as
+    // `LookupError::NotFound` in emit_node_lookup_call).
     let send_err_struct_ty = match send_err_ty {
         BasicTypeEnum::StructType(st) => st,
         BasicTypeEnum::IntType(_) => {
-            // Single-int representation: write the discriminant directly.
+            // Single-int representation: write the mapped discriminant directly.
             let int_ty = send_err_ty.into_int_type();
+            let disc = send_err_disc(int_ty)?;
             fn_ctx
                 .builder
-                .build_store(send_err_ptr, int_ty.const_int(2, false))
+                .build_store(send_err_ptr, disc)
                 .llvm_ctx("store SendError discriminant")?;
             fn_ctx
                 .builder
@@ -26934,15 +26957,10 @@ fn emit_remote_pid_tell_call<'ctx>(
             )));
         }
     };
-    // Zero-initialise SendError struct, then overwrite the tag field with 2.
     fn_ctx
         .builder
         .build_store(send_err_ptr, send_err_struct_ty.const_zero())
         .llvm_ctx("zero SendError struct")?;
-    // SendError's tag is at MachineTag of the dest's variant 1 field 0
-    // local. For payload-less enums the layout is just a tag (no
-    // MachineVariant projection needed), so we GEP into the struct's
-    // first element.
     let tag_field_ptr = fn_ctx
         .builder
         .build_struct_gep(send_err_struct_ty, send_err_ptr, 0, "send_err_tag_ptr")
@@ -26958,9 +26976,10 @@ fn emit_remote_pid_tell_call<'ctx>(
             )));
         }
     };
+    let disc = send_err_disc(tag_field_int_ty)?;
     fn_ctx
         .builder
-        .build_store(tag_field_ptr, tag_field_int_ty.const_int(2, false))
+        .build_store(tag_field_ptr, disc)
         .llvm_ctx("store SendError tag")?;
     fn_ctx
         .builder

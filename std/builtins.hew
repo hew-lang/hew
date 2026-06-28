@@ -225,10 +225,14 @@ impl<T> RemotePid<T> {
     // peer transport is decided.
     /// Construct a remote pid from raw node/serial components.
     ///
-    /// SHIM: fail-closed stub. Used in tests to surface a `RemotePid<T>`
-    /// value without a live peer-discovery mechanism. The empty body keeps
-    /// codegen fail-closed (no self-recursive stack overflow). Replace when
-    /// the peer API lands.
+    /// Test-only raw constructor. The production path to a `RemotePid<T>` is
+    /// `Node::lookup<T>(name) -> Result<RemotePid<T>, LookupError>`, which
+    /// snapshots the registration the StaleRef boundary this pid tracks; a
+    /// `from_raw` pid carries no registration provenance and so is not subject
+    /// to the supersession check. It exists for fixtures that need to fabricate
+    /// a `(node_id, serial)` pid directly (e.g. the multi-arg-remote reject
+    /// cases). Codegen lowers it via `hew_remote_pid_from_raw`
+    /// (`hew_pid_make`), so it is functional, not a stub.
     fn from_raw(node_id: u64, serial: u64) -> RemotePid<T> {}
 }
 

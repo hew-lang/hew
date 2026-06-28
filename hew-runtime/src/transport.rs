@@ -91,12 +91,20 @@ unsafe impl Sync for HewTransport {}
 // ---------------------------------------------------------------------------
 
 /// Remote portion of an actor reference.
+///
+/// `incarnation` is the actor-slot / registration incarnation captured for this
+/// reference — the explicit identity carrier of the spec's `(NodeId, slot,
+/// incarnation)` tuple. It is a SEPARATE dimension from the packed `actor_id`
+/// (whose 64 bits are fully consumed by `(node_id, serial)`), never bit-stolen
+/// from the serial. `0` means "no incarnation tracked" (the fresh-registration
+/// default). It is distinct from the node-level SWIM peer incarnation.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct HewActorRefRemote {
     pub actor_id: u64,
     pub conn: c_int,
     pub transport: *mut HewTransport,
+    pub incarnation: u32,
 }
 
 /// Data payload of an actor reference (union).
@@ -141,6 +149,10 @@ pub unsafe extern "C" fn hew_actor_ref_local(actor: *mut HewActor) -> HewActorRe
 
 /// Create a remote actor reference.
 ///
+/// `incarnation` is the captured actor-slot / registration incarnation (the
+/// spec's `(NodeId, slot, incarnation)` carrier); pass `0` when none is
+/// tracked.
+///
 /// # Safety
 ///
 /// `transport` must be a valid pointer to a live [`HewTransport`].
@@ -149,6 +161,7 @@ pub unsafe extern "C" fn hew_actor_ref_remote(
     actor_id: u64,
     conn: c_int,
     transport: *mut HewTransport,
+    incarnation: u32,
 ) -> HewActorRef {
     HewActorRef {
         kind: ACTOR_REF_REMOTE,
@@ -157,6 +170,7 @@ pub unsafe extern "C" fn hew_actor_ref_remote(
                 actor_id,
                 conn,
                 transport,
+                incarnation,
             },
         },
     }

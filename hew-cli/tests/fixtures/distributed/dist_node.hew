@@ -31,8 +31,14 @@ import std::link_monitor;
 // Self-stop FFI: the cross-node clean-exit scenario drives the remote actor to
 // the Stopped terminal state from within its own handler. `stop(self)` is not a
 // working surface yet, so the actor calls the runtime self-stop directly.
+//
+// hew_node_api_unregister: the stale_ref scenario re-points a registered name to
+// a DIFFERENT actor (unregister + re-register), superseding the old serial so a
+// captured RemotePid fails closed with StaleRef. `Node::unregister` is not yet a
+// Hew surface, so the server calls the runtime api directly.
 extern "C" {
     fn hew_actor_self_stop();
+    fn hew_node_api_unregister(name: string) -> i32;
 }
 
 // `record` is Serializable — required for RemotePid messaging across the wire.
@@ -191,6 +197,7 @@ extern "C" {
 actor Linker {
     // 0 = CrashLinked (the linked actor crashes); 1 = MonitorLost (non-fatal).
     let policy_sel: i64;
+
     // Establish the cross-node link from inside this actor's own handler so the
     // implicit `self` subject of `link_remote` is THIS actor. The remote peer is
     // passed as a message argument (a RemotePid is an opaque i64 pid; storing it
@@ -212,7 +219,9 @@ actor Linker {
         // large, so the caller must test `== 0`, never `< 0`. The probe casts to
         // u64, so a negative-as-i64 id round-trips correctly.
         if ok {
-            unsafe { hew_actor_self_id() }
+            unsafe {
+                hew_actor_self_id()
+            }
         } else {
             0
         }
@@ -281,7 +290,6 @@ fn run_server(port: string, scenario: string) {
     // Readiness signal: emitted ONLY after the actors are registered, so the
     // harness never launches the client against a half-started node.
     println(f"READY {port}");
-
     if scenario == "monitor_watcher_node_death" {
         // For this scenario the server drives the assertion: poll the watcher
         // count until it drops to 0 (prune fired) and print the result.
@@ -293,8 +301,27 @@ fn run_server(port: string, scenario: string) {
             // the client closes its cross-node monitor (CTRL_DEMONITOR received).
             scenario_server_monitor_close_reclaim();
         } else {
-            // All other scenarios: stay alive until the harness kills us.
-            sleep(2m);
+            if scenario == "stale_ref" {
+                // StaleRef scenario: after a settle window (long enough for the
+                // client to look up "kv" and capture the original actor's pid),
+                // re-point "kv" to a DIFFERENT actor. The unregister + register
+                // bumps the registration incarnation and supersedes the original
+                // serial; the removal+add gossip propagates the re-point so the
+                // client supersedes its captured serial. The client then observes
+                // StaleRef on the captured ref.
+                sleep(1s);
+                let _ = unsafe {
+                    hew_node_api_unregister("kv")
+                };
+                let s2: HashMap<string, string> = HashMap::new();
+                let kv2 = spawn KeyValue(store: s2);
+                Node::register("kv", kv2);
+                println("SERVER_REPOINTED stale_ref");
+                sleep(2m);
+            } else {
+                // All other scenarios: stay alive until the harness kills us.
+                sleep(2m);
+            }
         }
     }
     Node::shutdown();
@@ -623,6 +650,78 @@ fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
     }
 }
 
+// Scenario: stale_ref
+//
+// StaleRef identity-hardening proof: the client looks up "kv" and
+// captures a RemotePid for the ORIGINAL actor. The server then re-points "kv" to
+// a DIFFERENT actor (unregister + re-register), which supersedes the original
+// serial. Once the re-point gossip propagates, the client's CAPTURED ref must
+// fail closed with StaleRef on BOTH tell and ask — never silently deliver to the
+// replacement, never a generic routing error.
+//
+// Teeth: the test fails if the captured ref ever succeeds (delivered to the new
+// actor) and requires the EXACT StaleRef discriminant on both verbs.
+fn scenario_stale_ref(kv: RemotePid<KeyValue>) -> i64 {
+    // Poll the captured ref until the re-point supersedes it. Bounded: ~60
+    // attempts at 100 ms = 6 s, generous for the 1 s server settle + gossip
+    // while still failing closed if StaleRef never fires.
+    var attempts: i64 = 0;
+    loop {
+        let probe = kv.tell(KvReq::Put(KvPut { key: "x", val: "y" }));
+        match probe {
+            Result::Ok(_) => {
+                // Still routing to the original (pre-re-point) — retry until the
+                // supersession propagates. A success AFTER the deadline is a
+                // failure: the captured ref must go stale.
+                attempts = attempts + 1;
+                if attempts >= 60 {
+                    println("FAIL stale_ref tell-never-stale");
+                    return 2;
+                }
+                sleep(100ms);
+            },
+            Result::Err(e) => {
+                match e {
+                    SendError::StaleRef => {
+                        // tell is stale; now require ask to be stale too (the
+                        // shared gate fires on every verb).
+                        let ask_probe = kv.ask(KvReq::GetKey("x"), 2000);
+                        match ask_probe {
+                            Result::Ok(_) => {
+                                println("FAIL stale_ref ask-succeeded-after-tell-stale");
+                                return 3;
+                            },
+                            Result::Err(ae) => {
+                                match ae {
+                                    AskError::StaleRef => {
+                                        println("PASS stale_ref tell=stale ask=stale");
+                                        return 0;
+                                    },
+                                    _ => {
+                                        println("FAIL stale_ref ask-wrong-error");
+                                        return 4;
+                                    },
+                                }
+                            },
+                        }
+                    },
+                    _ => {
+                        // Any non-StaleRef error before supersession is a routing
+                        // race (the re-point removal may transiently drop the
+                        // route); retry within the deadline rather than accept it.
+                        attempts = attempts + 1;
+                        if attempts >= 60 {
+                            println("FAIL stale_ref tell-wrong-error");
+                            return 5;
+                        }
+                        sleep(100ms);
+                    },
+                }
+            },
+        }
+    }
+}
+
 // Scenario: monitor_watcher_node_death
 //
 // Two-process fixture: the watcher node dies and the target-side
@@ -646,7 +745,9 @@ fn scenario_server_watcher_node_death(_kv_serial: i64) {
     var registered: i64 = 0;
     var wait_attempts: i64 = 0;
     loop {
-        let c = unsafe { hew_dist_monitor_remote_watcher_count() };
+        let c = unsafe {
+            hew_dist_monitor_remote_watcher_count()
+        };
         if c > 0 {
             registered = c;
             // Signal that the monitor registration has been received and processed.
@@ -663,11 +764,12 @@ fn scenario_server_watcher_node_death(_kv_serial: i64) {
         }
         sleep(100ms);
     }
-
     // Phase 2: poll until the count drops back to 0 (prune fired on connection-drop).
     var prune_attempts: i64 = 0;
     loop {
-        let c = unsafe { hew_dist_monitor_remote_watcher_count() };
+        let c = unsafe {
+            hew_dist_monitor_remote_watcher_count()
+        };
         if c == 0 {
             // Table is empty: the prune fired correctly.
             println(f"PASS monitor_watcher_node_death pruned={registered}");
@@ -753,7 +855,9 @@ fn link_cascade_common(kv: RemotePid<KeyValue>, scenario: string, drive: string)
     // elapses). The probe returns the recorded terminal reason or -999 while live.
     var attempts: i64 = 0;
     loop {
-        let st = unsafe { hew_link_probe_terminal_state(lid) };
+        let st = unsafe {
+            hew_link_probe_terminal_state(lid)
+        };
         if st == 5 {
             println(f"PASS {scenario} linker-crashed reason={st}");
             return 0;
@@ -814,7 +918,9 @@ fn scenario_link_remote_non_crashlinked(kv: RemotePid<KeyValue>) -> i64 {
     // Give the cross-node link-down ample time to (wrongly) crash the linker.
     sleep(1500ms);
     // The probe must NOT report a terminal state — the linker survived.
-    let st = unsafe { hew_link_probe_terminal_state(lid) };
+    let st = unsafe {
+        hew_link_probe_terminal_state(lid)
+    };
     if st >= 0 {
         println(f"FAIL link_remote_non_crashlinked linker-crashed reason={st}");
         return 5;
@@ -845,7 +951,9 @@ fn scenario_server_monitor_close_reclaim() {
     var registered: i64 = 0;
     var wait_attempts: i64 = 0;
     loop {
-        let c = unsafe { hew_dist_monitor_remote_watcher_count() };
+        let c = unsafe {
+            hew_dist_monitor_remote_watcher_count()
+        };
         if c > 0 {
             registered = c;
             println(f"READY_SERVER_WATCHER_REGISTERED cross_node_monitor_close_reclaim count={registered}");
@@ -860,7 +968,9 @@ fn scenario_server_monitor_close_reclaim() {
     }
     var reclaim_attempts: i64 = 0;
     loop {
-        let c = unsafe { hew_dist_monitor_remote_watcher_count() };
+        let c = unsafe {
+            hew_dist_monitor_remote_watcher_count()
+        };
         if c == 0 {
             println(f"PASS cross_node_monitor_close_reclaim reclaimed={registered}");
             return;
@@ -904,34 +1014,47 @@ fn scenario_quarantine_rejoin() -> i64 {
     let peer: u16 = 4242;
     let alive: i32 = 0;
     let dead: i32 = 2;
-
     // Establish the peer ALIVE at incarnation 5, then bury it (DEAD at 5). The
     // DEAD verdict quarantines it at incarnation 5.
-    unsafe { hew_dist_inject_swim_gossip(peer, alive, 5) };
-    unsafe { hew_dist_inject_swim_gossip(peer, dead, 5) };
-
-    let state_after_verdict = unsafe { hew_dist_member_state(peer) };
+    unsafe {
+        hew_dist_inject_swim_gossip(peer, alive, 5)
+    };
+    unsafe {
+        hew_dist_inject_swim_gossip(peer, dead, 5)
+    };
+    let state_after_verdict = unsafe {
+        hew_dist_member_state(peer)
+    };
     if state_after_verdict != 2 {
         println("FAIL quarantine_rejoin not-dead-after-verdict");
         return 2;
     }
-    let quarantined_after_verdict = unsafe { hew_dist_quarantine_contains(peer) };
+    let quarantined_after_verdict = unsafe {
+        hew_dist_quarantine_contains(peer)
+    };
     if quarantined_after_verdict != 1 {
         println("FAIL quarantine_rejoin not-quarantined-after-verdict");
         return 3;
     }
-
     // Negative half (the resurrection guard): a stale ALIVE replay at an
     // incarnation <= the buried one must NOT resurrect the peer. Try equal (5) and
     // lower (4); after each the peer must stay DEAD and quarantined.
-    unsafe { hew_dist_inject_swim_gossip(peer, alive, 5) };
-    unsafe { hew_dist_inject_swim_gossip(peer, alive, 4) };
-    let state_after_stale = unsafe { hew_dist_member_state(peer) };
+    unsafe {
+        hew_dist_inject_swim_gossip(peer, alive, 5)
+    };
+    unsafe {
+        hew_dist_inject_swim_gossip(peer, alive, 4)
+    };
+    let state_after_stale = unsafe {
+        hew_dist_member_state(peer)
+    };
     if state_after_stale != 2 {
         println("FAIL quarantine_rejoin resurrected-by-stale");
         return 4;
     }
-    let quarantined_after_stale = unsafe { hew_dist_quarantine_contains(peer) };
+    let quarantined_after_stale = unsafe {
+        hew_dist_quarantine_contains(peer)
+    };
     if quarantined_after_stale != 1 {
         println("FAIL quarantine_rejoin quarantine-cleared-by-stale");
         return 5;
@@ -940,13 +1063,19 @@ fn scenario_quarantine_rejoin() -> i64 {
 
     // Positive half: a strictly-higher-incarnation rejoin (6 > 5) IS admitted;
     // the peer returns ALIVE and the quarantine entry is evicted.
-    unsafe { hew_dist_inject_swim_gossip(peer, alive, 6) };
-    let state_after_rejoin = unsafe { hew_dist_member_state(peer) };
+    unsafe {
+        hew_dist_inject_swim_gossip(peer, alive, 6)
+    };
+    let state_after_rejoin = unsafe {
+        hew_dist_member_state(peer)
+    };
     if state_after_rejoin != 0 {
         println("FAIL quarantine_rejoin not-readmitted-at-higher");
         return 6;
     }
-    let quarantined_after_rejoin = unsafe { hew_dist_quarantine_contains(peer) };
+    let quarantined_after_rejoin = unsafe {
+        hew_dist_quarantine_contains(peer)
+    };
     if quarantined_after_rejoin != 0 {
         println("FAIL quarantine_rejoin not-evicted-after-readmission");
         return 7;
@@ -1002,26 +1131,30 @@ fn run_client(port: string, scenario: string) -> i64 {
                                 if scenario == "partition_ask" {
                                     scenario_partition_ask(kv)
                                 } else {
-                                    if scenario == "monitor_watcher_node_death" {
-                                        scenario_client_watcher_node_death(kv)
+                                    if scenario == "stale_ref" {
+                                        scenario_stale_ref(kv)
                                     } else {
-                                        if scenario == "link_remote_clean_exit" {
-                                            scenario_link_remote_clean_exit(kv)
+                                        if scenario == "monitor_watcher_node_death" {
+                                            scenario_client_watcher_node_death(kv)
                                         } else {
-                                            if scenario == "link_remote_crash" {
-                                                scenario_link_remote_crash(kv)
+                                            if scenario == "link_remote_clean_exit" {
+                                                scenario_link_remote_clean_exit(kv)
                                             } else {
-                                                if scenario == "link_remote_partition" {
-                                                    scenario_link_remote_partition(kv)
+                                                if scenario == "link_remote_crash" {
+                                                    scenario_link_remote_crash(kv)
                                                 } else {
-                                                    if scenario == "link_remote_non_crashlinked" {
-                                                        scenario_link_remote_non_crashlinked(kv)
+                                                    if scenario == "link_remote_partition" {
+                                                        scenario_link_remote_partition(kv)
                                                     } else {
-                                                        if scenario == "cross_node_monitor_close_reclaim" {
-                                                            scenario_client_monitor_close_reclaim(kv)
+                                                        if scenario == "link_remote_non_crashlinked" {
+                                                            scenario_link_remote_non_crashlinked(kv)
                                                         } else {
-                                                            println(f"FAIL {scenario} unknown-scenario");
-                                                            90
+                                                            if scenario == "cross_node_monitor_close_reclaim" {
+                                                                scenario_client_monitor_close_reclaim(kv)
+                                                            } else {
+                                                                println(f"FAIL {scenario} unknown-scenario");
+                                                                90
+                                                            }
                                                         }
                                                     }
                                                 }

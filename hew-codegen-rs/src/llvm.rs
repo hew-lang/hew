@@ -45968,6 +45968,104 @@ mod tests {
         );
     }
 
+    /// DIV-2: codegen's owned-Vec element walker
+    /// (`resolved_ty_element_owns_heap_for_owned_vec` → the unified
+    /// `resolved_ty_contains_heap_leaf` → `hew_mir::ty_owns_heap`) must classify
+    /// a `CancellationToken` / `Generator` / `AsyncGenerator` as a heap-owning
+    /// leaf, matching the MIR drop elaborator's authority. Before the walkers
+    /// were unified codegen had no token/generator arm and answered `false` for
+    /// a bare handle, while the MIR side answered `true` — the asymmetry that
+    /// makes a handle-bearing tuple's owned-Vec element ABI disagree between the
+    /// constructor and the elaborator's drop_fn (the #2191/#2150 class).
+    #[test]
+    fn owned_vec_element_walker_treats_tokens_and_generators_as_heap_owning() {
+        let ctx = Context::create();
+        let llvm_mod = ctx.create_module("div2_leaf_test");
+        let harness = build_harness(&ctx, &[], &[]);
+        let fn_ctx = make_test_fn_ctx(&ctx, &llvm_mod, &harness, "div2_leaf_probe");
+
+        let generator = ResolvedTy::Named {
+            name: "Generator".to_string(),
+            args: vec![ResolvedTy::I64, ResolvedTy::Unit],
+            builtin: Some(hew_types::BuiltinType::Generator),
+            is_opaque: false,
+        };
+        let async_generator = ResolvedTy::Named {
+            name: "AsyncGenerator".to_string(),
+            args: vec![ResolvedTy::I64],
+            builtin: Some(hew_types::BuiltinType::AsyncGenerator),
+            is_opaque: false,
+        };
+
+        // The exact DIV-2 element shape: `(Generator<i64,()>, i64)`.
+        let gen_tuple = ResolvedTy::Tuple(vec![generator, ResolvedTy::I64]);
+        assert!(
+            resolved_ty_element_owns_heap_for_owned_vec(&fn_ctx, &gen_tuple),
+            "a tuple carrying a Generator handle must own heap on the codegen owned-Vec path \
+             so its element ABI matches the MIR drop elaborator's"
+        );
+        let async_tuple = ResolvedTy::Tuple(vec![async_generator, ResolvedTy::I64]);
+        assert!(
+            resolved_ty_element_owns_heap_for_owned_vec(&fn_ctx, &async_tuple),
+            "a tuple carrying an AsyncGenerator handle must own heap on the codegen owned-Vec \
+             path"
+        );
+        let token_tuple = ResolvedTy::Tuple(vec![ResolvedTy::CancellationToken, ResolvedTy::I64]);
+        assert!(
+            resolved_ty_element_owns_heap_for_owned_vec(&fn_ctx, &token_tuple),
+            "a tuple carrying a CancellationToken must own heap on the codegen owned-Vec path"
+        );
+        // Guard against over-broad classification: a plain `(i64, bool)` tuple
+        // still owns no heap.
+        let plain_tuple = ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::Bool]);
+        assert!(
+            !resolved_ty_element_owns_heap_for_owned_vec(&fn_ctx, &plain_tuple),
+            "an all-BitCopy tuple must not be classified heap-owning"
+        );
+    }
+
+    /// DIV-1 at the codegen layer: the unified `resolved_ty_contains_heap_leaf`
+    /// consults record fields through the `CgHeapLayouts` adapter, so a record
+    /// carrying a heap field (`Boxed { payload: Vec<i64> }`) is classified
+    /// heap-owning even when reached as a tuple element. Before unification the
+    /// MIR side could classify such a tuple owned while a record-blind codegen
+    /// walker disagreed; both now share the one authority.
+    #[test]
+    fn owned_vec_element_walker_is_record_aware() {
+        use std::collections::HashMap;
+
+        let ctx = Context::create();
+        let llvm_mod = ctx.create_module("div1_codegen_test");
+        let mut harness = build_harness(&ctx, &[], &[]);
+        // Register `Boxed { payload: Vec<i64> }` in the codegen record registry.
+        let mut record_field_resolved_tys: HashMap<String, Vec<ResolvedTy>> = HashMap::new();
+        record_field_resolved_tys.insert(
+            "Boxed".to_string(),
+            vec![ResolvedTy::Named {
+                name: "Vec".to_string(),
+                args: vec![ResolvedTy::I64],
+                builtin: Some(hew_types::BuiltinType::Vec),
+                is_opaque: false,
+            }],
+        );
+        harness.record_field_resolved_tys = record_field_resolved_tys;
+        let fn_ctx = make_test_fn_ctx(&ctx, &llvm_mod, &harness, "div1_codegen_probe");
+
+        let boxed = ResolvedTy::Named {
+            name: "Boxed".to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: false,
+        };
+        // `(Boxed, i64)` — the exact runtime-confirmed DIV-1 leak shape.
+        let boxed_tuple = ResolvedTy::Tuple(vec![boxed, ResolvedTy::I64]);
+        assert!(
+            resolved_ty_element_owns_heap_for_owned_vec(&fn_ctx, &boxed_tuple),
+            "a tuple carrying a record whose field owns heap must be classified heap-owning \
+             through the record-aware authority (DIV-1)"
+        );
+    }
+
     #[test]
     fn hashmap_layout_ops_get_emits_clone_call_and_option_branches() {
         let ctx = Context::create();

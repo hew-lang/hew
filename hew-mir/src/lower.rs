@@ -32362,6 +32362,25 @@ fn derive_owned_record_drop_allowed(
 
     let mut excluded_roots: HashSet<u32> = HashSet::new();
 
+    // Interior-alias exclusion (hard double-free): a record binding bound from an
+    // ALIASING container getter — `let a = xs[i]` lowers to `hew_vec_get_owned`,
+    // which returns an interior pointer into the still-live `Vec<Boxed>`'s element
+    // slot (NOT a fresh owner; `is_vec_interior_borrow_getter` /
+    // `hew-runtime/src/vec.rs`) — does NOT solely own its heap fields. The
+    // parent Vec's `hew_vec_free_owned` runs the per-element record drop thunk and
+    // frees each element's owned fields; admitting the alias `a` to its OWN
+    // `RecordInPlace` would free the same buffer a second time. Over-exclude every
+    // interior-alias-tainted candidate up front (fail-closed) so the borrow-aware
+    // field-read exemption below can never re-admit an aliased element to drop.
+    // This is the record analogue of the taint the COLLECTION sole-owner provers
+    // already apply (`compute_collection_interior_alias_taint`).
+    let interior_alias_tainted = compute_collection_interior_alias_taint(blocks);
+    for &local in candidate_local_to_binding.keys() {
+        if interior_alias_tainted.contains(&local) {
+            excluded_roots.insert(local);
+        }
+    }
+
     // Defect 1 (hard double-free), record analogue of the tuple seed: an owned
     // field extracted out of the record into a binding with its OWN release path
     // (`let g = rec.gen`, where `g` is dropped standalone via `owned_locals`, or
@@ -32451,6 +32470,14 @@ fn derive_owned_record_drop_allowed(
             // Non-Move owning-sink reads. A `RecordFieldLoad` reading the record
             // base is interior (exempt); every other instruction reading a whole
             // alias member or a field binder is an escape. Fail-closed.
+            //
+            // Exception: a field binder read ONLY as the borrowed receiver
+            // (arg[0]) of a collection-borrow call (`hew_vec_len` / `xs[i]` /
+            // `m.get(k)` lowered as `Instr::CallRuntimeAbi`) is an interior
+            // borrow, not an escape — `binder_read_is_borrow_safe_instr` clears
+            // it, mirroring the borrowing-string exemption and the
+            // collection-LOCAL scan's arg[0] rule (one receiver-borrow authority,
+            // DI-017).
             if !matches!(
                 instr,
                 Instr::Move { .. }
@@ -32471,7 +32498,8 @@ fn derive_owned_record_drop_allowed(
                         {
                             note_alias_escape(l, &mut excluded_roots);
                         }
-                        if field_binders.contains(&l) {
+                        if field_binders.contains(&l) && !binder_read_is_borrow_safe_instr(instr, l)
+                        {
                             note_field_escape(&mut excluded_roots);
                         }
                     }
@@ -32479,13 +32507,15 @@ fn derive_owned_record_drop_allowed(
             }
         }
         // Terminator reads. A return / send / ask of a whole record or an owned
-        // field binder escapes. `print`/`println` borrows its string arg, so a
-        // field binder passed there is a transient read, not an escape.
+        // field binder escapes. `print`/`println` borrows its string arg, and a
+        // collection-borrow call (`.len()` / `.get(i)`) borrows its receiver, so
+        // a field binder read only as such a borrowed arg is a transient read,
+        // not an escape (`binder_read_is_borrow_safe_terminator`).
         for p in terminator_source_places(&block.terminator, suspend_kinds.get(&block.id)) {
             if let Some(l) = base_local(p) {
                 if alias_of.contains_key(&l)
                     && matches!(p, Place::Local(_) | Place::ReturnSlot)
-                    && !retained_string_terminator_drop_safe(
+                    && !binder_read_is_borrow_safe_terminator(
                         &block.terminator,
                         suspend_kinds.get(&block.id),
                         l,
@@ -32494,7 +32524,7 @@ fn derive_owned_record_drop_allowed(
                     note_alias_escape(l, &mut excluded_roots);
                 }
                 if field_binders.contains(&l)
-                    && !retained_string_terminator_drop_safe(
+                    && !binder_read_is_borrow_safe_terminator(
                         &block.terminator,
                         suspend_kinds.get(&block.id),
                         l,
@@ -33193,6 +33223,22 @@ fn derive_tuple_composite_drop_allowed(
 
     let mut excluded_roots: HashSet<u32> = HashSet::new();
 
+    // Interior-alias exclusion (hard double-free), tuple analogue of the record
+    // seed: a tuple binding bound from an ALIASING container getter
+    // (`let p = xs[i]` where `xs: Vec<(Vec<i64>, i64)>` → `hew_vec_get_owned`
+    // returns an interior pointer into the still-live Vec element slot) does NOT
+    // solely own its members. The parent Vec's `hew_vec_free_owned` frees each
+    // element's owned members; admitting the alias to its own `TupleInPlace` would
+    // double-free. Over-exclude every interior-alias-tainted candidate up front
+    // (fail-closed) so the borrow-aware member-read exemption below cannot
+    // re-admit an aliased element to drop (`compute_collection_interior_alias_taint`).
+    let interior_alias_tainted = compute_collection_interior_alias_taint(blocks);
+    for &local in candidate_local_to_binding.keys() {
+        if interior_alias_tainted.contains(&local) {
+            excluded_roots.insert(local);
+        }
+    }
+
     // Defect 1 (hard double-free): an owned element extracted out of the tuple
     // into a binding that carries its OWN release path. `let g = pair.0` (g a
     // `Generator`/`CancellationToken`/owned handle) loads element 0 into `g`'s
@@ -33311,6 +33357,12 @@ fn derive_tuple_composite_drop_allowed(
             // Non-Move owning-sink reads. A `TupleFieldLoad` reading the tuple
             // base is interior (exempt); every other instruction reading a
             // whole alias member or an element binder is an escape. Fail-closed.
+            //
+            // Exception: an element binder read ONLY as the borrowed receiver
+            // (arg[0]) of a collection-borrow call (`p.0.len()` / `p.0[i]`
+            // lowered as `Instr::CallRuntimeAbi`) is an interior borrow, not an
+            // escape — `binder_read_is_borrow_safe_instr` clears it (the tuple
+            // analogue of the record field-binder exemption, DI-017).
             if !matches!(
                 instr,
                 Instr::Move { .. } | Instr::Drop { .. } | Instr::TupleFieldLoad { .. }
@@ -33322,7 +33374,8 @@ fn derive_tuple_composite_drop_allowed(
                         {
                             note_alias_escape(l, &mut excluded_roots);
                         }
-                        if elem_binders.contains(&l) {
+                        if elem_binders.contains(&l) && !binder_read_is_borrow_safe_instr(instr, l)
+                        {
                             note_elem_escape(&mut excluded_roots);
                         }
                     }
@@ -33330,13 +33383,15 @@ fn derive_tuple_composite_drop_allowed(
             }
         }
         // Terminator reads. A return / send / ask of a whole tuple or an owned
-        // element binder escapes. `print`/`println` borrows its string arg, so
-        // an element binder passed there is a transient read, not an escape.
+        // element binder escapes. `print`/`println` borrows its string arg, and a
+        // collection-borrow call (`.len()` / `.get(i)`) borrows its receiver, so
+        // an element binder read only as such a borrowed arg is a transient read,
+        // not an escape (`binder_read_is_borrow_safe_terminator`).
         for p in terminator_source_places(&block.terminator, suspend_kinds.get(&block.id)) {
             if let Some(l) = base_local(p) {
                 if alias_of.contains_key(&l)
                     && matches!(p, Place::Local(_) | Place::ReturnSlot)
-                    && !retained_string_terminator_drop_safe(
+                    && !binder_read_is_borrow_safe_terminator(
                         &block.terminator,
                         suspend_kinds.get(&block.id),
                         l,
@@ -33345,7 +33400,7 @@ fn derive_tuple_composite_drop_allowed(
                     note_alias_escape(l, &mut excluded_roots);
                 }
                 if elem_binders.contains(&l)
-                    && !retained_string_terminator_drop_safe(
+                    && !binder_read_is_borrow_safe_terminator(
                         &block.terminator,
                         suspend_kinds.get(&block.id),
                         l,
@@ -36318,6 +36373,70 @@ fn is_collection_receiver_borrow_callee(callee: &str) -> bool {
 /// excluding their source (`container-ingress-ownership-is-per-container`).
 fn is_vec_copy_in_element_store_symbol(callee: &str) -> bool {
     matches!(callee, "hew_vec_push_owned" | "hew_vec_set_owned")
+}
+
+/// True for a runtime symbol that borrows a heap-owning COLLECTION handle as its
+/// receiver (arg[0]) without freeing it — the `Vec` / `HashMap` / `HashSet` read
+/// family (`hew_vec_len`, `hew_vec_get_*`, `hew_vec_contains_*`,
+/// `hew_vec_slice_range_*`, the hashmap/hashset inspectors). Unifies the two
+/// receiver-borrow authorities the collection-LOCAL escape scan already consults
+/// (`is_vec_receiver_borrow_symbol` + `is_collection_receiver_borrow_callee`)
+/// behind one predicate so the composite (record / tuple) field-binder escape
+/// scans share the SAME borrow classification — one authority, not a third
+/// parallel walker (DI-017). A handle read only as such a borrowed receiver is an
+/// interior read, never an ownership escape.
+fn is_collection_borrow_receiver_symbol(callee: &str) -> bool {
+    is_vec_receiver_borrow_symbol(callee) || is_collection_receiver_borrow_callee(callee)
+}
+
+/// True when every source-Place reference to `binder` in `term` is the borrowed
+/// receiver (arg[0]) of a collection-borrow call — i.e. reading `binder` here is
+/// an interior borrow, not an ownership escape of the composite that owns it. A
+/// borrowing STRING call (or `print`/`println`) is also drop-safe via
+/// [`retained_string_terminator_drop_safe`]; this extends that exemption to the
+/// collection-borrow family so a `Vec`/`HashMap` field/element binder read by
+/// `.len()` / `.get(i)` / `m.contains_key(..)` keeps its composite's in-place
+/// drop. Conservative: `false` (treat as escape) unless the read is provably the
+/// borrowed receiver, mirroring the collection-LOCAL scan's arg[0] exemption.
+fn binder_read_is_borrow_safe_terminator(
+    term: &Terminator,
+    suspend_kind: Option<&SuspendKind>,
+    binder: u32,
+) -> bool {
+    // The string-borrow / print exemption already covers its callees.
+    if retained_string_terminator_drop_safe(term, suspend_kind, binder) {
+        return true;
+    }
+    // A collection-borrow call borrows arg[0] in place; only a read in the
+    // by-value tail (arg[1..]) genuinely escapes. `binder` is borrow-safe iff it
+    // never appears past arg[0].
+    if let Terminator::Call { callee, args, .. } = term {
+        if is_collection_borrow_receiver_symbol(callee) {
+            return !args
+                .iter()
+                .skip(1)
+                .any(|arg| place_refs_local(*arg, binder));
+        }
+    }
+    false
+}
+
+/// Instruction analogue of [`binder_read_is_borrow_safe_terminator`]. The `xs[i]`
+/// bounds-check + getter path lowers `hew_vec_len` / `hew_vec_get_*` as
+/// `Instr::CallRuntimeAbi` (not a terminator), so a field/element binder read
+/// there must get the SAME arg[0] receiver-borrow exemption. Conservative:
+/// `false` unless the only references to `binder` are the borrowed receiver.
+fn binder_read_is_borrow_safe_instr(instr: &Instr, binder: u32) -> bool {
+    if let Instr::CallRuntimeAbi(call) = instr {
+        if is_collection_borrow_receiver_symbol(call.symbol()) {
+            return !call
+                .args()
+                .iter()
+                .skip(1)
+                .any(|arg| place_refs_local(*arg, binder));
+        }
+    }
+    false
 }
 
 /// Build the elaborated block list + per-`ExitPath` drop plans for a

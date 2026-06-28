@@ -1752,6 +1752,7 @@ fn test_file_import_private_items_not_visible() {
         decl_span: 0..0,
         fn_span: 0..0,
         intrinsic: None,
+        consumes_self: false,
     });
 
     let private_const = Item::Const(ConstDecl {

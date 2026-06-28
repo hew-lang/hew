@@ -132,6 +132,7 @@ pub(super) fn make_pub_fn(name: &str, params: Vec<Param>, ret: Option<TypeExpr>)
         decl_span: 0..0,
         fn_span: 0..0,
         intrinsic: None,
+        consumes_self: false,
     }
 }
 
@@ -161,6 +162,7 @@ pub(super) fn make_priv_fn(name: &str) -> FnDecl {
         decl_span: 0..0,
         fn_span: 0..0,
         intrinsic: None,
+        consumes_self: false,
     }
 }
 

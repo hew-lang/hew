@@ -31,6 +31,7 @@ fn module_graph_body_type_error_is_reported() {
         decl_span: 0..0,
         fn_span: 0..0,
         intrinsic: None,
+        consumes_self: false,
     };
 
     let program = make_program_with_module_graph(vec![(Item::Function(bad_fn), 0..10)]);
@@ -79,6 +80,7 @@ fn module_graph_body_infer_return_resolves_without_error() {
         decl_span: 0..0,
         fn_span: 0..0,
         intrinsic: None,
+        consumes_self: false,
     };
 
     let program = make_program_with_module_graph(vec![(Item::Function(inferred_fn), 0..10)]);
@@ -140,6 +142,7 @@ fn module_graph_body_local_binding_named_like_module_still_resolves_methods() {
         decl_span: 0..0,
         fn_span: 0..0,
         intrinsic: None,
+        consumes_self: false,
     };
 
     let program = make_program_with_module_graph(vec![(Item::Function(ok_fn), 0..30)]);
@@ -280,6 +283,7 @@ fn module_graph_body_private_local_type_is_available() {
         decl_span: 0..0,
         fn_span: 0..0,
         intrinsic: None,
+        consumes_self: false,
     };
 
     let program = make_program_with_module_graph(vec![
@@ -329,6 +333,7 @@ fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() 
         decl_span: 0..0,
         fn_span: 0..0,
         intrinsic: None,
+        consumes_self: false,
     };
 
     let ok_fn = FnDecl {
@@ -357,6 +362,7 @@ fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() 
         decl_span: 0..0,
         fn_span: 0..0,
         intrinsic: None,
+        consumes_self: false,
     };
 
     let helper_string = FnDecl {
@@ -380,6 +386,7 @@ fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() 
         decl_span: 0..0,
         fn_span: 0..0,
         intrinsic: None,
+        consumes_self: false,
     };
 
     let root_id = ModuleId::root();
@@ -492,6 +499,7 @@ fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() 
         decl_span: 0..0,
         fn_span: 0..0,
         intrinsic: None,
+        consumes_self: false,
     };
     let extern_string = ExternBlock {
         abi: "C".to_string(),
@@ -620,6 +628,7 @@ mod module_body_diagnostic_envelope {
             decl_span: 0..0,
             fn_span: 0..0,
             intrinsic: None,
+            consumes_self: false,
         };
         (Item::Function(fn_decl), 0..20)
     }
@@ -678,6 +687,7 @@ mod module_body_diagnostic_envelope {
             decl_span: 0..0,
             fn_span: 0..0,
             intrinsic: None,
+            consumes_self: false,
         };
         let program = Program {
             module_graph: None,
@@ -731,6 +741,7 @@ mod module_body_diagnostic_envelope {
                 decl_span: 0..0,
                 fn_span: 0..0,
                 intrinsic: None,
+                consumes_self: false,
             };
             (Item::Function(fd), 0..20)
         };
@@ -844,6 +855,7 @@ mod module_body_diagnostic_envelope {
             decl_span: 0..0,
             fn_span: 0..0,
             intrinsic: None,
+            consumes_self: false,
         };
 
         let program =
@@ -900,6 +912,7 @@ mod module_body_diagnostic_envelope {
             decl_span: 0..0,
             fn_span: 0..0,
             intrinsic: None,
+            consumes_self: false,
         };
 
         let program =
@@ -1046,6 +1059,7 @@ mod warning_source_attribution {
             decl_span: 0..0,
             fn_span: 0..0,
             intrinsic: None,
+            consumes_self: false,
         }
     }
 
@@ -1072,6 +1086,7 @@ mod warning_source_attribution {
             decl_span: 0..0,
             fn_span: 0..0,
             intrinsic: None,
+            consumes_self: false,
         };
         let root_id = ModuleId::root();
         let module_id = ModuleId::new(vec![module_name.to_string()]);
@@ -1431,6 +1446,7 @@ mod warning_source_attribution {
             decl_span: 0..0,
             fn_span: 0..0,
             intrinsic: None,
+            consumes_self: false,
         };
 
         // caller() body: `fakemod.helper()` expressed as a MethodCall statement.
@@ -1463,6 +1479,7 @@ mod warning_source_attribution {
             decl_span: 150..200,
             fn_span: 0..0,
             intrinsic: None,
+            consumes_self: false,
         };
 
         // Import of fakemod in mod_a must carry resolved_items that include

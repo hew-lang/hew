@@ -56,6 +56,7 @@ fn test_yield_outside_generator() {
         decl_span: 0..0,
         fn_span: 0..0,
         intrinsic: None,
+        consumes_self: false,
     };
     let program = Program {
         module_graph: None,
@@ -317,6 +318,7 @@ fn test_stream_annotation_resolves_to_stream_type() {
         decl_span: 0..0,
         fn_span: 0..0,
         intrinsic: None,
+        consumes_self: false,
     };
 
     let program = Program {
@@ -369,6 +371,7 @@ fn test_actor_stream_name_no_longer_aliases_stream() {
         decl_span: 0..0,
         fn_span: 0..0,
         intrinsic: None,
+        consumes_self: false,
     };
 
     let program = Program {
@@ -431,6 +434,7 @@ fn test_stream_canonical_name_still_resolves_after_actor_stream_removal() {
         decl_span: 0..0,
         fn_span: 0..0,
         intrinsic: None,
+        consumes_self: false,
     };
 
     let program = Program {

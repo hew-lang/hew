@@ -49,6 +49,7 @@ fn make_pub_fn(name: &str) -> FnDecl {
         decl_span: 0..0,
         fn_span: 0..0,
         intrinsic: None,
+        consumes_self: false,
     }
 }
 
@@ -368,6 +369,7 @@ fn test_private_items_not_visible() {
         decl_span: 0..0,
         fn_span: 0..0,
         intrinsic: None,
+        consumes_self: false,
     };
     let public_fn = make_pub_fn("public_fn");
 
@@ -688,6 +690,7 @@ fn qualified_param_type_carries_module_into_resolved_sig() {
         decl_span: 0..0,
         fn_span: 0..0,
         intrinsic: None,
+        consumes_self: false,
     };
     let program = Program {
         items: vec![
@@ -856,6 +859,7 @@ fn unqualified_ambiguous_type_is_typed_error() {
         decl_span: 0..0,
         fn_span: 0..0,
         intrinsic: None,
+        consumes_self: false,
     };
     let program = Program {
         items: vec![
@@ -931,6 +935,7 @@ fn unqualified_unpublished_type_is_not_in_scope_not_ambiguous() {
         decl_span: 0..0,
         fn_span: 0..0,
         intrinsic: None,
+        consumes_self: false,
     };
     let program = Program {
         items: vec![

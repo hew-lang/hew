@@ -2161,6 +2161,22 @@ pub struct FnSig {
     /// signatures whose receiver was declared by-value, and for free
     /// functions whose first parameter happens to be named `self`.
     pub requires_mutable_receiver: bool,
+    /// `true` iff this signature was declared with a `consuming self` receiver
+    /// (the terminal single-consume surface: `fn build(consuming self) -> T`, a
+    /// `#[linear]` type's consuming method).
+    ///
+    /// Populated by the registration pass from [`hew_parser::ast::FnDecl`]'s
+    /// `consumes_self` flag. Consumed by the inherent-method dispatch site to
+    /// mark the receiver moved (a later use surfaces `UseAfterMove`) and to
+    /// record the per-call-site `method_call_consumes_receiver` flag so HIR
+    /// lowers the receiver with `IntentKind::Consume` and the move-checker
+    /// counts a `#[linear]` binding as exhausted. Distinct from
+    /// `requires_mutable_receiver` — a consuming receiver is an ownership-move
+    /// (`by-value self`), never an in-place mutation (`var self`); the two are
+    /// mutually exclusive on a single receiver.
+    ///
+    /// Default `false` for every signature without a consuming receiver.
+    pub consumes_receiver: bool,
     /// `true` iff this `fn_sig` was registered for a builtin enum variant
     /// (e.g. `LookupError::NotFound`, `SendError::Timeout`).
     ///
@@ -2193,6 +2209,7 @@ impl Default for FnSig {
             doc_comment: None,
             extern_symbol: None,
             requires_mutable_receiver: false,
+            consumes_receiver: false,
             is_builtin_variant: false,
         }
     }

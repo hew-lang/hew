@@ -5013,6 +5013,7 @@ impl Checker {
             decl_span: span.clone(),
             fn_span: 0..0,
             intrinsic: None,
+            consumes_self: false,
         };
 
         let prev_trait_self = self
@@ -5701,10 +5702,22 @@ impl Checker {
                 .params
                 .first()
                 .is_some_and(|p| self.is_receiver_param(p) && p.is_mutable),
+            consumes_receiver: method.consumes_self,
             ..FnSig::default()
         };
         if let Some(td) = self.lookup_type_def_mut(type_name) {
             td.methods.insert(method.name.clone(), sig.clone());
+        }
+        // A `consuming self` inherent method moves its receiver at every call
+        // site. Register the qualified `Type::method` name into the
+        // consume-receiver set so the dispatch site marks the receiver moved
+        // (a later use surfaces `UseAfterMove`) and records the per-call-site
+        // flag HIR lowers as `IntentKind::Consume`. This is the single
+        // authority the move-checker reads (`checker-output-boundary`); keyed
+        // on the resolved-method consume fact, never re-inferred from AST shape
+        // downstream.
+        if method.consumes_self {
+            self.consume_receiver_methods.insert(method_key.clone());
         }
         sig
     }

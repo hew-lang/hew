@@ -22,10 +22,7 @@ use inkwell::types::{BasicTypeEnum, StructType};
 use inkwell::values::{FunctionValue, PointerValue};
 use inkwell::AddressSpace;
 
-use hew_mir::{
-    ty_contains_heap_owning, EnumLayout, MachineLayout, MachineVariantLayout, RecordLayout,
-    StateFieldCloneKind,
-};
+use hew_mir::{EnumLayout, MachineLayout, MachineVariantLayout, RecordLayout, StateFieldCloneKind};
 use hew_types::ResolvedTy;
 
 #[allow(unused_imports)]
@@ -749,19 +746,22 @@ pub(crate) fn enum_layout_key_for_ty(
     })
 }
 
-/// True when `ty` is an inline tagged-union enum composite whose active
-/// variant can own heap (`Result<T, string>`, `Option<string>`, a user enum
-/// with an owned-payload variant). This is the W5.020 caller-side drop's
-/// coverage predicate: the composite-return boundary admits exactly these
-/// shapes (the MIR elaborator emits a matching `DropKind::EnumInPlace`), and
-/// fails closed for every other heap-owning composite (tuples, records, and —
-/// caught earlier by the checker — recursive value types). Mirrors the MIR
-/// `ty_is_heap_owning_enum_composite`; indirect (heap-boxed) enums are excluded
-/// because their payload drop runs through the boxed-storage release path.
-pub(crate) fn is_heap_owning_enum_composite_return(
-    ty: &ResolvedTy,
-    enum_layouts: &[EnumLayout],
-) -> bool {
+/// True when `ty` is an inline (non-indirect) tagged-union enum composite — the
+/// SHAPE the W5.020 caller-side drop covers (`Result<T, string>`,
+/// `Option<string>`, a user enum with an owned-payload variant; the MIR
+/// elaborator emits a matching `DropKind::EnumInPlace`). Indirect (heap-boxed)
+/// enums are excluded — their payload drop runs through the boxed-storage release
+/// path.
+///
+/// SHAPE-ONLY: the heap-ownership decision is made ONCE at the composite-return
+/// gate via the record-aware `resolved_ty_contains_heap_leaf`
+/// (`hew_mir::ty_owns_heap` over `CgHeapLayouts`), so an enum owning heap only
+/// through a nested record field is seen — the record-blind enum-layouts walk
+/// missed it, leaving the gate and the MIR drop elaborator agreeing by
+/// coincidence (`dedup-semantic-boundary`). This predicate only confirms the
+/// shape is a supported inline enum; the gate's outer guard already established
+/// "owns heap".
+pub(crate) fn is_inline_enum_composite_shape(ty: &ResolvedTy, enum_layouts: &[EnumLayout]) -> bool {
     let ResolvedTy::Named { name, args, .. } = ty else {
         return false;
     };
@@ -779,30 +779,24 @@ pub(crate) fn is_heap_owning_enum_composite_return(
     let Some(layout) = layout else {
         return false;
     };
-    if layout.is_indirect {
-        return false;
-    }
-    ty_contains_heap_owning(ty, enum_layouts)
+    !layout.is_indirect
 }
 
-/// True when a function return type is a heap-owning **tuple** composite whose
+/// True when a function return type is a **tuple** composite — the SHAPE whose
 /// per-element drop the W5.021 spine emits (`DropKind::TupleInPlace` +
 /// `__hew_tuple_drop_inplace_<key>`). The caller's tuple binding (or the
 /// `__tuple_N` destructure temp's element bindings) assumes the per-element drop
-/// obligation, so the composite-return boundary admits exactly this shape.
+/// obligation, so the composite-return boundary admits this shape.
 ///
-/// Keyed on the SEMANTIC property — a `ResolvedTy::Tuple` carrying at least one
-/// heap-owning element via the single `ty_contains_heap_owning` authority — not
-/// an incidental LLVM-shape proxy, so MIR (`ty_is_heap_owning_tuple`) and
-/// codegen agree on exactly which returns own heap (LESSONS:
-/// dedup-semantic-boundary, boundary-fail-closed). A tuple whose elements are
-/// all BitCopy never reaches here (`ty_contains_heap_owning` is false), and the
-/// gate's `StructType` arm only fires for heap-owning shapes anyway.
-pub(crate) fn is_heap_owning_tuple_composite_return(
-    ty: &ResolvedTy,
-    enum_layouts: &[EnumLayout],
-) -> bool {
-    matches!(ty, ResolvedTy::Tuple(_)) && ty_contains_heap_owning(ty, enum_layouts)
+/// SHAPE-ONLY: the heap-ownership decision is made ONCE at the composite-return
+/// gate via the record-aware `resolved_ty_contains_heap_leaf`, so a tuple whose
+/// only heap is a nested record field (`(Boxed, i64)` where `Boxed { payload:
+/// Vec }`) is recognised — the record-blind tuple-element walk missed it. A
+/// BitCopy-only tuple never reaches the gate's inner checks (the outer guard's
+/// record-aware "owns heap" is false), and the gate's `StructType` arm only fires
+/// for heap-owning shapes anyway.
+pub(crate) fn is_tuple_composite_shape(ty: &ResolvedTy) -> bool {
+    matches!(ty, ResolvedTy::Tuple(_))
 }
 
 /// Returns `true` when the named enum registered in `enum_layouts` has

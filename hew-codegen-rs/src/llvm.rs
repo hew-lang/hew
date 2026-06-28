@@ -4314,7 +4314,6 @@ fn is_single_heap_owning_leaf_return(ty: &ResolvedTy) -> bool {
 fn is_heap_owning_record_composite_return(
     ty: &ResolvedTy,
     record_layouts: &RecordLayoutMap<'_>,
-    enum_layouts: &[EnumLayout],
 ) -> bool {
     let ResolvedTy::Named {
         name,
@@ -4358,9 +4357,17 @@ fn is_heap_owning_record_composite_return(
         if record_layouts.opaque.contains(name.as_str()) || record_layouts.opaque.contains(short) {
             return false;
         }
-        return false; // unknown type — not a heap-owning record
+        return false; // unknown type — not a registered user record
     }
-    is_record && ty_contains_heap_owning(ty, enum_layouts)
+    // SHAPE-ONLY: this confirms `ty` is a registered user-record composite-return
+    // shape (the `RecordInPlace` spine covers it). The heap-ownership decision is
+    // made ONCE at the composite-return gate via the record-aware
+    // `resolved_ty_contains_heap_leaf` (`hew_mir::ty_owns_heap` over
+    // `CgHeapLayouts`), so a record owning heap only through its own fields
+    // (`Boxed { payload: Vec }`) is correctly admitted and the gate agrees with
+    // the MIR drop elaborator (`dedup-semantic-boundary`). The record-blind
+    // enum-layouts walk this predicate previously used could not see such a field.
+    is_record
 }
 
 /// Resolve the "struct base pointer" for a machine/enum local — the
@@ -4417,15 +4424,6 @@ fn resolve_machine_base_ptr<'ctx>(
         Ok(slot)
     }
 }
-
-/// Codegen-side handle to the single heap-owning predicate authority, which
-/// lives in `hew-mir` so the MIR drop elaborator and this composite-return
-/// boundary can never disagree about which return/binding shapes own heap
-/// memory (LESSONS: dedup-semantic-boundary). The boundary previously owned a
-/// private copy of this walk; it was hoisted to `hew_mir::ty_contains_heap_owning`
-/// when the MIR elaborator grew the matching `DropKind::EnumInPlace` decision
-/// (W5.020).
-use hew_mir::ty_contains_heap_owning;
 
 /// Resolve any `ResolvedTy` to its LLVM `BasicTypeEnum`, consulting the
 /// record-layout map first for named user records. This is the codegen-side
@@ -35143,9 +35141,18 @@ fn lower_function<'ctx>(
     // return boundary and emits a per-element `DropKind::TupleInPlace` /
     // per-field `DropKind::RecordInPlace` caller-side drop, so the caller's
     // binding (or destructure-temp element bindings) frees each member exactly
-    // once. The admit predicates key on the same `ty_contains_heap_owning`
-    // authority the MIR side uses, so the two can never disagree on which
-    // returns own heap (`dedup-semantic-boundary`).
+    // once.
+    //
+    // The "owns heap" decision routes through the record-aware
+    // `resolved_ty_contains_heap_leaf` (`hew_mir::ty_owns_heap` over
+    // `CgHeapLayouts`), the SAME record/enum/machine-aware authority the MIR drop
+    // elaborator uses, so the gate and the elaborator agree on exactly which
+    // returns own heap — including a composite owning heap only through a nested
+    // record field (`(Boxed, i64)` / `Boxed { payload: Vec }`), which the
+    // record-blind enum-layouts walk missed (`dedup-semantic-boundary`). The
+    // shape predicates below are SHAPE-ONLY now (the heap decision is this one
+    // guard), so making the guard record-aware and a shape predicate record-blind
+    // can no longer disagree.
     //
     // Every OTHER heap-owning composite return — arrays carrying owned heap, a
     // generic record instantiation, and (caught earlier by the checker)
@@ -35154,21 +35161,11 @@ fn lower_function<'ctx>(
     // payloads (i64, f64, bool, …) carry no ownership and are unaffected.
     // LESSONS: boundary-fail-closed, migration-completeness.
     if matches!(return_ty_llvm, BasicTypeEnum::StructType(_))
-        && ty_contains_heap_owning(&func.return_ty, fn_ctx.enum_layouts)
-        && !crate::layout::is_heap_owning_enum_composite_return(
-            &func.return_ty,
-            fn_ctx.enum_layouts,
-        )
+        && resolved_ty_contains_heap_leaf(&fn_ctx, &func.return_ty, &mut HashSet::new())
+        && !crate::layout::is_inline_enum_composite_shape(&func.return_ty, fn_ctx.enum_layouts)
         && !is_single_heap_owning_leaf_return(&func.return_ty)
-        && !crate::layout::is_heap_owning_tuple_composite_return(
-            &func.return_ty,
-            fn_ctx.enum_layouts,
-        )
-        && !is_heap_owning_record_composite_return(
-            &func.return_ty,
-            fn_ctx.record_layouts,
-            fn_ctx.enum_layouts,
-        )
+        && !crate::layout::is_tuple_composite_shape(&func.return_ty)
+        && !is_heap_owning_record_composite_return(&func.return_ty, fn_ctx.record_layouts)
     {
         return Err(CodegenError::FailClosed(format!(
             "composite return of heap-owning payload `{}` requires tag-aware \
@@ -49634,13 +49631,17 @@ fn main() {
     // stdlib), so the producer↔codegen-carrier contract is pinned by the example
     // programs rather than an in-crate unit fixture.
 
-    /// Slice 4 — `is_heap_owning_record_composite_return` admits a generic
-    /// record INSTANTIATION carrying heap, keyed on the same mangled registry
-    /// key the MIR admit authority uses, so MIR and codegen admit the identical
-    /// set of composite returns (R3 — no admit disagreement). A generic
-    /// instantiation NOT registered, or one carrying no heap, is excluded.
+    /// Slice 4 — `is_heap_owning_record_composite_return` is the SHAPE predicate:
+    /// it admits a registered user-record composite-return shape (monomorphic or a
+    /// generic INSTANTIATION) keyed on the same mangled registry key the MIR admit
+    /// authority uses, so MIR and codegen admit the identical set of record shapes
+    /// (R3 — no admit disagreement). An UNregistered instantiation is excluded
+    /// (fail-closed). The heap-ownership decision is the composite-return gate's
+    /// record-aware `resolved_ty_contains_heap_leaf`, not this predicate, so a
+    /// registered all-BitCopy record IS a valid shape here (the gate's outer guard
+    /// excludes it for owning no heap).
     #[test]
-    fn heap_owning_record_composite_return_admits_generic_instantiation() {
+    fn heap_owning_record_composite_return_admits_registered_record_shape() {
         let ctx = Context::create();
         let mut record_layouts: RecordLayoutMap<'_> = RecordLayoutMap::new();
         // Register the per-instantiation struct under its mangled key, mirroring
@@ -49656,31 +49657,31 @@ fn main() {
         );
         record_layouts.structs.insert(key.clone(), st);
 
-        // Heap-owning generic instantiation (owns the `string` arg) is admitted.
+        // A registered generic record instantiation is a valid record shape.
         assert!(
             is_heap_owning_record_composite_return(
                 &ResolvedTy::named_user("Pair", vec![ResolvedTy::I64, ResolvedTy::String]),
                 &record_layouts,
-                &[],
             ),
-            "a registered heap-owning generic record instantiation must be \
-             admitted as a composite return"
+            "a registered generic record instantiation must be admitted as a \
+             record composite-return shape"
         );
 
-        // A generic instantiation that owns no heap (all-BitCopy args) is not a
-        // heap-owning composite return.
+        // A registered all-BitCopy instantiation is STILL a valid record shape:
+        // the heap decision belongs to the gate's record-aware outer guard, which
+        // excludes it for owning no heap. (Pre-split this predicate folded the
+        // heap check in; the gate now owns it — `dedup-semantic-boundary`.)
         let bc_key = mangle("Pair", &[ResolvedTy::I64, ResolvedTy::I64]);
         let bc_st = ctx.opaque_struct_type(&bc_key);
         bc_st.set_body(&[ctx.i64_type().into(), ctx.i64_type().into()], false);
         record_layouts.structs.insert(bc_key, bc_st);
         assert!(
-            !is_heap_owning_record_composite_return(
+            is_heap_owning_record_composite_return(
                 &ResolvedTy::named_user("Pair", vec![ResolvedTy::I64, ResolvedTy::I64]),
                 &record_layouts,
-                &[],
             ),
-            "an all-BitCopy generic instantiation owns no heap and must not be \
-             a heap-owning composite return"
+            "a registered record instantiation is a valid shape regardless of heap \
+             ownership — the gate's outer guard makes the heap decision"
         );
 
         // An UNregistered generic instantiation is excluded (fail-closed).
@@ -49688,7 +49689,6 @@ fn main() {
             !is_heap_owning_record_composite_return(
                 &ResolvedTy::named_user("Pair", vec![ResolvedTy::String, ResolvedTy::Bytes]),
                 &record_layouts,
-                &[],
             ),
             "an unregistered generic instantiation must not be admitted"
         );

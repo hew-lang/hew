@@ -7782,9 +7782,10 @@ struct Builder {
     machine_layout_names: HashSet<String>,
     /// Monomorphised tagged-union enum layouts, cloned from the pipeline-wide
     /// `enum_layouts` at builder construction. The drop elaborator consults
-    /// these via `ty_contains_heap_owning` (the single MIR/codegen authority)
-    /// to decide whether an enum-composite binding owns a heap payload and so
-    /// earns a tag-aware `DropKind::EnumInPlace` scope-exit drop (W5.020).
+    /// these through the single record-aware heap-ownership authority
+    /// `ty_owns_heap` (via `ty_owns_heap_mir`) to decide whether an
+    /// enum-composite binding owns a heap payload and so earns a tag-aware
+    /// `DropKind::EnumInPlace` scope-exit drop (W5.020).
     /// Empty for builders constructed before layout collection (synthetic
     /// test pipelines) — such bodies simply never elaborate the enum-in-place
     /// drop, matching the pre-W5.020 leak-not-double-free posture.

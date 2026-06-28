@@ -3383,6 +3383,16 @@ pub fn lower_program_with_mono_cap(
                                 // gaps. Lifting the signature restriction needs
                                 // imported user-type/trait registration at the
                                 // MIR boundary — a separate lane.
+                                // Generic type parameters in scope on the impl
+                                // block. A signature naming one (`Option<B>` on
+                                // `impl<I, A, B> Iterator for Map<I, A, B>`) is a
+                                // carrier resolved at monomorphisation time, not a
+                                // concrete type the importer must already know.
+                                let impl_generic_params: HashSet<String> = impl_decl
+                                    .type_params
+                                    .as_ref()
+                                    .map(|tps| tps.iter().map(|tp| tp.name.clone()).collect())
+                                    .unwrap_or_default();
                                 let mut skip_methods: HashSet<String> = HashSet::new();
                                 for method in &impl_decl.methods {
                                     let body_unresolvable = collect_all_bare_call_names(
@@ -3405,6 +3415,14 @@ pub fn lower_program_with_mono_cap(
                                             && !same_module_fn_rewrites.contains_key(&callee)
                                             && !ctx.fn_registry.contains_key(&callee)
                                     });
+                                    // The generic params in scope for this method:
+                                    // the impl-block params plus the method's own.
+                                    let mut method_generic_params = impl_generic_params.clone();
+                                    if let Some(tps) = &method.type_params {
+                                        for tp in tps {
+                                            method_generic_params.insert(tp.name.clone());
+                                        }
+                                    }
                                     // A user type in a signature is safe iff its
                                     // backing declaration was registered at the
                                     // MIR boundary by the imported-module
@@ -3423,6 +3441,7 @@ pub fn lower_program_with_mono_cap(
                                             !imported_impl_signature_type_is_safe(
                                                 ty,
                                                 self_type_name,
+                                                &method_generic_params,
                                                 &is_known_registered_type,
                                             )
                                         });
@@ -3977,13 +3996,15 @@ fn closure_under_substitution(
                 continue;
             };
             // Structured registry lookup. The key is built from HIR-side
-            // structured fields only — no symbol-name parsing.
-            let key = (
-                tms.declaring_trait.clone(),
-                self_type_name.clone(),
-                tms.method_name.clone(),
-            );
-            let Some(entry) = impl_index.get(&key) else {
+            // structured fields only — no symbol-name parsing. Tolerant of a
+            // module-qualified receiver name: an imported generic adapter
+            // (`iter.Map`) keys its impl block on the bare `Map`.
+            let Some(entry) = crate::dispatch::lookup_trait_impl_entry(
+                &impl_index,
+                &tms.declaring_trait,
+                &self_type_name,
+                &tms.method_name,
+            ) else {
                 continue;
             };
             // Non-generic impl methods need no per-instantiation
@@ -6134,10 +6155,11 @@ fn method_signature_type_exprs(method: &FnDecl) -> impl Iterator<Item = &TypeExp
 
 /// Whether a `TypeExpr` appearing in an imported impl-method signature is safe
 /// to lower cross-module: it must reference only primitives/builtins, the impl's
-/// own self type, or an imported public type whose backing declaration the
-/// imported-module pre-pass already registered at the MIR boundary. A user type
-/// or a user trait used as a generic argument is rejected, because lowering a
-/// method that names one trips `unknown type` / D10 at MIR time.
+/// own self type, a generic type parameter in scope on the impl or method, or an
+/// imported public type whose backing declaration the imported-module pre-pass
+/// already registered at the MIR boundary. A user type or a user trait used as a
+/// generic argument is rejected, because lowering a method that names one trips
+/// `unknown type` / D10 at MIR time.
 ///
 /// `is_known_registered_type` answers whether a type name resolves to a
 /// declaration the lowering context has registered (e.g. dotted `fs.IoError` or
@@ -6145,17 +6167,46 @@ fn method_signature_type_exprs(method: &FnDecl) -> impl Iterator<Item = &TypeExp
 /// checker/lowering authority — the gate consults it rather than re-inferring
 /// safety from syntax alone.
 ///
-/// Conservative by design: it admits the fluent-builder shape (scalar params +
-/// opaque self return) and ADT-returning methods (`Result<_, fs.IoError>`)
-/// while excluding signatures naming a type the importer cannot resolve.
-/// Composite forms recurse into their components.
+/// `generic_params` are the type-parameter names in scope for this method (the
+/// impl-block params plus the method's own). A name matching one of them is a
+/// generic carrier resolved by substitution at monomorphisation time, not a
+/// concrete type the importer must already know — admitting it is what lets a
+/// generic adapter impl-method (`impl<I, A, B> Iterator for Map<I, A, B>`'s
+/// `next(var self) -> Option<B>`) lower as a per-instantiation origin.
+///
+/// Conservative by design for non-generic carriers: it admits the fluent-builder
+/// shape (scalar params + opaque self return) and ADT-returning methods
+/// (`Result<_, fs.IoError>`) while excluding signatures naming a type the
+/// importer cannot resolve. Composite forms recurse into their components.
+#[allow(
+    clippy::too_many_lines,
+    reason = "flat structural recursion over every composite TypeExpr variant; \
+              each arm is the same recursive call, splitting it obscures the shape"
+)]
 fn imported_impl_signature_type_is_safe(
     ty: &TypeExpr,
     self_type_name: &str,
+    generic_params: &HashSet<String>,
     is_known_registered_type: &impl Fn(&str) -> bool,
 ) -> bool {
     match ty {
         TypeExpr::Named { name, type_args } => {
+            // A generic type parameter in scope on the impl or method is a
+            // carrier resolved at monomorphisation time; admit it (and recurse
+            // into any args, e.g. `Vec<A>`). Checked before the registered-type
+            // gate because a type param never has a backing declaration.
+            if generic_params.contains(name) {
+                return type_args.as_ref().is_none_or(|args| {
+                    args.iter().all(|arg| {
+                        imported_impl_signature_type_is_safe(
+                            &arg.0,
+                            self_type_name,
+                            generic_params,
+                            is_known_registered_type,
+                        )
+                    })
+                });
+            }
             // A user-type reference is resolvable only when its backing
             // declaration was registered at the MIR boundary by the
             // imported-module pre-pass. Otherwise it is rejected.
@@ -6169,6 +6220,7 @@ fn imported_impl_signature_type_is_safe(
                         imported_impl_signature_type_is_safe(
                             &arg.0,
                             self_type_name,
+                            generic_params,
                             is_known_registered_type,
                         )
                     })
@@ -6194,37 +6246,77 @@ fn imported_impl_signature_type_is_safe(
                     imported_impl_signature_type_is_safe(
                         &arg.0,
                         self_type_name,
+                        generic_params,
                         is_known_registered_type,
                     )
                 })
             })
         }
         TypeExpr::Option(inner) | TypeExpr::Slice(inner) | TypeExpr::Borrow(inner) => {
-            imported_impl_signature_type_is_safe(&inner.0, self_type_name, is_known_registered_type)
+            imported_impl_signature_type_is_safe(
+                &inner.0,
+                self_type_name,
+                generic_params,
+                is_known_registered_type,
+            )
         }
         TypeExpr::Array { element, .. } => imported_impl_signature_type_is_safe(
             &element.0,
             self_type_name,
+            generic_params,
             is_known_registered_type,
         ),
         TypeExpr::Pointer { pointee, .. } => imported_impl_signature_type_is_safe(
             &pointee.0,
             self_type_name,
+            generic_params,
             is_known_registered_type,
         ),
         TypeExpr::Result { ok, err } => {
-            imported_impl_signature_type_is_safe(&ok.0, self_type_name, is_known_registered_type)
-                && imported_impl_signature_type_is_safe(
-                    &err.0,
-                    self_type_name,
-                    is_known_registered_type,
-                )
+            imported_impl_signature_type_is_safe(
+                &ok.0,
+                self_type_name,
+                generic_params,
+                is_known_registered_type,
+            ) && imported_impl_signature_type_is_safe(
+                &err.0,
+                self_type_name,
+                generic_params,
+                is_known_registered_type,
+            )
         }
         TypeExpr::Tuple(elems) => elems.iter().all(|elem| {
-            imported_impl_signature_type_is_safe(&elem.0, self_type_name, is_known_registered_type)
+            imported_impl_signature_type_is_safe(
+                &elem.0,
+                self_type_name,
+                generic_params,
+                is_known_registered_type,
+            )
         }),
-        // Function-typed params, trait objects, and any other composite carry
-        // user-type identity that the importer cannot resolve — reject.
+        // A function-typed signature element (`fn(A) -> B`) is the closure the
+        // adapter stores and invokes; its components are safe iff each is. A
+        // generic adapter's field/param closure types name only the impl's
+        // generic params, which the carrier check above admits.
+        TypeExpr::Function {
+            params,
+            return_type,
+        } => {
+            params.iter().all(|p| {
+                imported_impl_signature_type_is_safe(
+                    &p.0,
+                    self_type_name,
+                    generic_params,
+                    is_known_registered_type,
+                )
+            }) && imported_impl_signature_type_is_safe(
+                &return_type.0,
+                self_type_name,
+                generic_params,
+                is_known_registered_type,
+            )
+        }
+        // Trait objects and any other composite carry user-type identity that
+        // the importer cannot resolve — reject.
         _ => false,
     }
 }
@@ -29360,9 +29452,11 @@ mod tests {
     #[test]
     fn imported_impl_self_receiver_is_admitted() {
         let no_registered_types = |_: &str| false;
+        let no_generics = HashSet::new();
         assert!(imported_impl_signature_type_is_safe(
             &named_type("Self"),
             "Result",
+            &no_generics,
             &no_registered_types,
         ));
     }
@@ -29373,9 +29467,11 @@ mod tests {
     #[test]
     fn imported_impl_unregistered_user_type_stays_rejected() {
         let no_registered_types = |_: &str| false;
+        let no_generics = HashSet::new();
         assert!(!imported_impl_signature_type_is_safe(
             &named_type("SomeUnregisteredImportedType"),
             "Result",
+            &no_generics,
             &no_registered_types,
         ));
         // The full signature [Self, Unregistered] is unsafe as a whole: the
@@ -29387,8 +29483,43 @@ mod tests {
         assert!(sig.iter().any(|ty| !imported_impl_signature_type_is_safe(
             ty,
             "Result",
+            &no_generics,
             &no_registered_types,
         )));
+    }
+
+    /// A generic type parameter in scope on the impl block (`B` on
+    /// `impl<I, A, B> Iterator for Map<I, A, B>`) is a carrier resolved at
+    /// monomorphisation time — admit it even though it has no backing
+    /// declaration, so a generic adapter impl-method (`next -> Option<B>`)
+    /// lowers as a per-instantiation origin instead of being skip-listed.
+    #[test]
+    fn imported_impl_generic_param_is_admitted() {
+        let no_registered_types = |_: &str| false;
+        let generics: HashSet<String> = ["I", "A", "B"].iter().map(|s| (*s).to_string()).collect();
+        // Bare carrier `B`.
+        assert!(imported_impl_signature_type_is_safe(
+            &named_type("B"),
+            "Map",
+            &generics,
+            &no_registered_types,
+        ));
+        // `Option<B>` — the actual `next` return shape: composite over a carrier.
+        let option_b = TypeExpr::Option(Box::new((named_type("B"), 0..0)));
+        assert!(imported_impl_signature_type_is_safe(
+            &option_b,
+            "Map",
+            &generics,
+            &no_registered_types,
+        ));
+        // A carrier NOT in scope is still rejected: admission is gated on the
+        // declared param set, not on being a single uppercase letter.
+        assert!(!imported_impl_signature_type_is_safe(
+            &named_type("C"),
+            "Map",
+            &generics,
+            &no_registered_types,
+        ));
     }
 
     /// A user record sharing a prelude generic enum's name (`type Result {

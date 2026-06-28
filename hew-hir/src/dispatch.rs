@@ -82,6 +82,44 @@ pub fn build_trait_impl_method_index(
     index
 }
 
+/// Resolve a `(declaring_trait, self_type_name, method_name)` key against the
+/// static-dispatch index, tolerating a module-qualified `self_type_name`.
+///
+/// The index is keyed on the impl block's bare `self_type_name` (`Map`), but a
+/// receiver observed at a cross-module call site carries its module-qualified
+/// spelling (`iter.Map`). The qualifier is an outer-identity concern
+/// (`per-module-type-identity`): two adapters of the same bare name in different
+/// modules are distinct user types, but the impl-method dispatch key is the bare
+/// nominal the impl block declared. Look up the key as given first, then retry
+/// with the bare leaf so an imported generic adapter resolves the same way it
+/// does in its defining module.
+#[must_use]
+pub fn lookup_trait_impl_entry<'a, S: std::hash::BuildHasher>(
+    index: &'a HashMap<TraitImplKey, TraitImplMethodEntry, S>,
+    declaring_trait: &str,
+    self_type_name: &str,
+    method_name: &str,
+) -> Option<&'a TraitImplMethodEntry> {
+    let key = (
+        declaring_trait.to_string(),
+        self_type_name.to_string(),
+        method_name.to_string(),
+    );
+    if let Some(entry) = index.get(&key) {
+        return Some(entry);
+    }
+    let bare = self_type_name.rsplit('.').next().unwrap_or(self_type_name);
+    if bare == self_type_name {
+        return None;
+    }
+    let bare_key = (
+        declaring_trait.to_string(),
+        bare.to_string(),
+        method_name.to_string(),
+    );
+    index.get(&bare_key)
+}
+
 /// Canonical impl-self-type-name + type-arg vector for a substituted
 /// receiver `ResolvedTy`. Used to drive the structured registry lookup.
 ///

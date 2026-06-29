@@ -8,7 +8,7 @@ For the curated language-only playground snippets, start with [`../examples/play
 
 ## Builtins — auto-imported, plain function calls
 
-`println`, `print`, `sleep_ms`, `exit`, and `panic` are **ordinary function calls** auto-imported into every Hew file — no `!` suffix, no special syntax.
+`println`, `print`, `sleep`, `exit`, and `panic` are **ordinary function calls** auto-imported into every Hew file — no `!` suffix, no special syntax.
 
 ```hew
 fn main() {
@@ -46,7 +46,7 @@ Every shipped module under `std/` should appear here.
 
 | Module | Import | Use for |
 | --- | --- | --- |
-| [`builtins`](builtins.hew) | _(auto-imported)_ | `println`, `print`, `sleep_ms`, `exit`, and `panic` |
+| [`builtins`](builtins.hew) | _(auto-imported)_ | `println`, `print`, `sleep`, `exit`, and `panic` |
 | [`string`](string.hew) | `std::string` | String conversion and manipulation utilities |
 | [`fmt`](fmt/fmt.hew) | `std::fmt` | Number formatting, padding, and repetition helpers |
 | [`option`](option.hew) | `std::option` | Helper functions for common `Option<T>` patterns |

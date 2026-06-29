@@ -3564,6 +3564,147 @@ fn warn_dead_code_self_recursive_function() {
 }
 
 // -----------------------------------------------------------------------
+// must_use lint
+// -----------------------------------------------------------------------
+
+fn count_must_use(diags: &[TypeError]) -> usize {
+    diags
+        .iter()
+        .filter(|d| d.kind == TypeErrorKind::Lint(LintId::MustUse))
+        .count()
+}
+
+/// A local `WriteError`/`SendError` plus a fn returning each as a `Result` error
+/// arm — enough to exercise the lint without loading the stdlib (the lint keys
+/// on the canonical type name, which matches both the stdlib and these locals).
+const MUST_USE_PRELUDE: &str = "enum WriteError { Disconnected(i64); }\n\
+     enum SendError { Closed; }\n\
+     fn w() -> Result<(), WriteError> { Ok(()) }\n\
+     fn s() -> Result<(), SendError> { Ok(()) }\n";
+
+#[test]
+fn must_use_flags_discarded_write_result() {
+    let src = format!("{MUST_USE_PRELUDE}fn caller() {{ w(); }}");
+    let (errors, warnings) = parse_and_check(&src);
+    assert!(errors.is_empty(), "fixture should type-check: {errors:?}");
+    let hit = warnings
+        .iter()
+        .find(|w| w.kind == TypeErrorKind::Lint(LintId::MustUse))
+        .expect("a discarded Result<(), WriteError> must fire must_use");
+    assert!(hit.message.contains("WriteError"), "msg: {}", hit.message);
+}
+
+#[test]
+fn must_use_flags_discarded_send_result() {
+    let src = format!("{MUST_USE_PRELUDE}fn caller() {{ s(); }}");
+    let (_, warnings) = parse_and_check(&src);
+    let hit = warnings
+        .iter()
+        .find(|w| w.kind == TypeErrorKind::Lint(LintId::MustUse))
+        .expect("a discarded Result<(), SendError> must fire must_use");
+    assert!(hit.message.contains("SendError"), "msg: {}", hit.message);
+}
+
+#[test]
+fn must_use_flags_bare_error_value() {
+    let src = "enum WriteError { Disconnected(i64); }\n\
+         fn make() -> WriteError { WriteError::Disconnected(1) }\n\
+         fn caller() { make(); }";
+    let (_, warnings) = parse_and_check(src);
+    assert_eq!(
+        count_must_use(&warnings),
+        1,
+        "a bare discarded WriteError must fire, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn must_use_not_flagged_when_handled_by_question() {
+    let src = format!("{MUST_USE_PRELUDE}fn caller() -> Result<(), WriteError> {{ w()?; Ok(()) }}");
+    let (_, warnings) = parse_and_check(&src);
+    assert_eq!(
+        count_must_use(&warnings),
+        0,
+        "`?` consumes the Result, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn must_use_not_flagged_when_explicitly_bound() {
+    let src = format!("{MUST_USE_PRELUDE}fn caller() {{ let _ = w(); }}");
+    let (_, warnings) = parse_and_check(&src);
+    assert_eq!(
+        count_must_use(&warnings),
+        0,
+        "`let _ =` is the documented opt-out, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn must_use_not_flagged_in_tail_position() {
+    // The trailing expression is the block's value (used), not a discard.
+    let src = format!("{MUST_USE_PRELUDE}fn caller() -> Result<(), WriteError> {{ w() }}");
+    let (_, warnings) = parse_and_check(&src);
+    assert_eq!(
+        count_must_use(&warnings),
+        0,
+        "a tail Result is the function's value, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn must_use_not_flagged_when_matched() {
+    let src =
+        format!("{MUST_USE_PRELUDE}fn caller() {{ match w() {{ Ok(_) => {{}} Err(_) => {{}} }} }}");
+    let (_, warnings) = parse_and_check(&src);
+    assert_eq!(
+        count_must_use(&warnings),
+        0,
+        "a matched Result is handled, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn must_use_not_flagged_for_ordinary_result() {
+    // Only WriteError/SendError are must-use; an unrelated error is left alone.
+    let src = "fn g() -> Result<(), i64> { Ok(()) }\nfn caller() { g(); }";
+    let (_, warnings) = parse_and_check(src);
+    assert_eq!(
+        count_must_use(&warnings),
+        0,
+        "a non-must-use error must not fire, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn must_use_deny_routes_to_errors() {
+    let src = format!("{MUST_USE_PRELUDE}fn caller() {{ w(); }}");
+    let out = check_with_lint_level(&src, LintId::MustUse, LintLevel::Deny);
+    assert_eq!(count_must_use(&out.errors), 1, "errors: {:?}", out.errors);
+    assert_eq!(count_must_use(&out.warnings), 0);
+}
+
+#[test]
+fn must_use_allow_suppresses() {
+    let src = format!("{MUST_USE_PRELUDE}fn caller() {{ w(); }}");
+    let out = check_with_lint_level(&src, LintId::MustUse, LintLevel::Allow);
+    assert_eq!(count_must_use(&out.warnings), 0);
+    assert_eq!(count_must_use(&out.errors), 0);
+}
+
+#[test]
+fn must_use_suppressed_by_directive() {
+    let src = format!("{MUST_USE_PRELUDE}fn caller() {{\n    // hew:allow(must_use)\n    w();\n}}");
+    let out = check_with_lint_level(&src, LintId::MustUse, LintLevel::Warn);
+    assert_eq!(
+        count_must_use(&out.warnings),
+        0,
+        "a directive above the discard must suppress, warnings: {:?}",
+        out.warnings
+    );
+}
+
+// -----------------------------------------------------------------------
 // Module namespacing tests
 // -----------------------------------------------------------------------
 

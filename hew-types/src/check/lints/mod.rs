@@ -44,6 +44,7 @@ use crate::ty::{Substitution, Ty};
 use super::types::SpanKey;
 
 mod len_zero_comparison;
+mod must_use;
 mod needless_bool;
 mod needless_match_to_if_let;
 mod needless_range_loop;
@@ -82,6 +83,12 @@ pub enum LintId {
     /// is overwritten or goes out of scope — the store is dead. Emitted by the
     /// MIR-stage liveness pass (`hew-mir`), not the HIR checker sweep.
     DeadStore,
+    /// A discarded value carries a write/send error that must not be ignored —
+    /// `WriteError` / `SendError`, bare or as the error arm of a `Result`. A
+    /// statement-position discard fails open (a dropped backpressure /
+    /// disconnect signal, an unnoticed undelivered send); handle it or bind
+    /// `let _ = …`.
+    MustUse,
     // NOTE: a `clean_counter` lint (a loop-carried accumulator that is
     // incremented but never read after the loop) is deliberately NOT registered
     // here. It has no emission code yet, and registering an un-emitted lint
@@ -105,6 +112,7 @@ impl LintId {
         LintId::CloneOnCopy,
         LintId::DeadCode,
         LintId::DeadStore,
+        LintId::MustUse,
     ];
 
     /// The stable, lowercase string name for this lint.
@@ -123,6 +131,7 @@ impl LintId {
             LintId::CloneOnCopy => "clone_on_copy",
             LintId::DeadCode => "dead_code",
             LintId::DeadStore => "dead_store",
+            LintId::MustUse => "must_use",
         }
     }
 
@@ -147,7 +156,8 @@ impl LintId {
             | LintId::NeedlessBool
             | LintId::CloneOnCopy
             | LintId::DeadCode
-            | LintId::DeadStore => LintLevel::Warn,
+            | LintId::DeadStore
+            | LintId::MustUse => LintLevel::Warn,
         }
     }
 }
@@ -413,6 +423,7 @@ pub(super) fn lint_block(
     needless_match_to_if_let::check(ctx, levels, body, out);
     len_zero_comparison::check(ctx, levels, body, out);
     needless_bool::check(ctx, levels, body, out);
+    must_use::check(ctx, levels, body, out);
 }
 
 // ── shared read-only body walker ─────────────────────────────────────

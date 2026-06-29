@@ -1499,6 +1499,13 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// Module-wide enum layout descriptors. Used by the heap-owning
     /// composite return boundary check to inspect variant field types.
     pub(crate) enum_layouts: &'a [EnumLayout],
+    /// #46: locals admitted for a scope-exit `DropKind::IndirectEnum` recursive
+    /// free — the proven sole owners of an indirect-enum node. Consulted by the
+    /// `Instr::Move { dest: Local, .. }` lowering to release the prior node when an
+    /// owner binding is reassigned (`var t = ...; loop { t = ... }`). Empty for
+    /// functions with no indirect-enum owners. Membership guarantees the binding is
+    /// never consumed/aliased, so the release is fail-closed against double-free.
+    pub(crate) indirect_enum_owned_locals: HashSet<u32>,
     /// Per-record field-resolved-type table, keyed by record name. Built
     /// once in `build_module` from `pipeline.record_layouts` and shared by
     /// every per-function lowering context. The synthesis-side hash thunk
@@ -11661,6 +11668,153 @@ fn indirect_enum_layout_by_key<'a, 'ctx>(
         })
 }
 
+/// Emit the construction-site heap allocation for an `indirect enum` node and
+/// store it into `local`'s pointer slot.
+///
+/// Called from `Instr::Move` lowering when the destination is the tag place
+/// (`MachineTag`/`EnumTag`) of an indirect-enum local — the first write of a
+/// `MachineVariantCtor` construction (the tag store precedes every payload
+/// store; the tag-dominance invariant in hew-mir/src/lower.rs). Allocating here
+/// places the `hew_alloc` INSIDE the block that constructs the node, so a node
+/// built in a loop body gets a fresh allocation on every iteration.
+///
+/// WHY NOT an entry-block prologue (the #46 fix): a single function-entry
+/// `hew_alloc` is hoisted out of the loop. The scope-exit `DropKind::IndirectEnum`
+/// recursive free runs each iteration and `hew_dealloc`s that one node; the next
+/// iteration's tag store then writes through the freed pointer — a use-after-free
+/// that corrupts the allocator (`EXC_BAD_ACCESS` in the allocator fast-path, a
+/// double free under `MallocScribble`). A per-construction allocation gives each
+/// iteration its own node, reclaimed exactly once by that iteration's drop.
+///
+/// Size/align come from the SAME `indirect_enum_layout_by_key` outer-struct path
+/// `emit_indirect_enum_free_body_only` uses for the matching `hew_dealloc`, so
+/// alloc and free can never disagree on (size, align) — the runtime allocator
+/// asserts they match.
+///
+/// No-op for any local whose type is not an indirect enum: a machine `self`
+/// state-tag transition and an inline (non-indirect) user-enum tag store both
+/// write their tag in place, with no heap node.
+///
+/// LESSONS: cleanup-all-exits, raii-null-after-move, boundary-fail-closed.
+fn emit_indirect_enum_node_alloc(fn_ctx: &FnCtx<'_, '_>, local: u32) -> CodegenResult<()> {
+    let Some(ty) = fn_ctx.local_tys.get(&local) else {
+        return Ok(());
+    };
+    let ResolvedTy::Named { name, .. } = ty else {
+        return Ok(());
+    };
+    if !crate::layout::is_indirect_enum(name, fn_ctx.enum_layouts) {
+        return Ok(());
+    }
+    let enum_name = crate::layout::enum_layout_key_for_ty(fn_ctx, ty)?;
+    let outer_struct = indirect_enum_layout_by_key(fn_ctx, &enum_name)?.outer_struct;
+
+    // Size/align from an anonymous mirror of the outer struct — the same
+    // host_target_data-safe sizing `emit_indirect_enum_free_body_only` uses, so
+    // this allocation and the matching `hew_dealloc` agree on (size, align).
+    let anon_outer = fn_ctx
+        .ctx
+        .struct_type(&outer_struct.get_field_types(), false);
+    let size_bytes = fn_ctx.target_data.get_abi_size(&anon_outer);
+    let align_bytes = fn_ctx.target_data.get_abi_alignment(&anon_outer);
+    if size_bytes == 0 {
+        return Err(CodegenError::FailClosed(format!(
+            "indirect enum `{enum_name}`: cannot compute ABI size for construction-site \
+             heap allocation — anonymous struct has 0 bytes (variant layout or \
+             target-data mismatch)"
+        )));
+    }
+    let i64_ty = fn_ctx.ctx.i64_type();
+    let size_val = i64_ty.const_int(size_bytes, false);
+    let align_val = i64_ty.const_int(u64::from(align_bytes), false);
+    let heap_ptr = fn_ctx.call_runtime_ptr(
+        "hew_alloc",
+        &[size_val.into(), align_val.into()],
+        "indirect_enum_alloc",
+        "hew_alloc for indirect-enum construction site",
+    )?;
+    let (slot, _) = fn_ctx.locals.get(&local).copied().ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "indirect-enum construction-site local {local} has no alloca slot"
+        ))
+    })?;
+    fn_ctx
+        .builder
+        .build_store(slot, heap_ptr)
+        .llvm_ctx("store fresh indirect-enum node into construction-site slot")?;
+    Ok(())
+}
+
+/// Release the indirect-enum node currently held in an OWNED binding's slot
+/// before that slot is overwritten by a reassignment (the #46 var-overwrite fix).
+///
+/// Called from `Instr::Move { dest: Local(L), .. }` lowering when `L` is in
+/// `fn_ctx.indirect_enum_owned_locals` — a binding the MIR elaborator admitted for
+/// a scope-exit `DropKind::IndirectEnum` free, i.e. a proven sole owner that is
+/// never consumed or aliased. A `var t = <node>; loop { t = <node> }` reassigns
+/// `t` each iteration; with construction-site allocation the right-hand side mints
+/// a FRESH node, so the prior node `t` held must be freed here or it leaks one
+/// tree per iteration (the eager-prologue design reused a single node and hid
+/// this). The free is the SAME recursive thunk + `hew_dealloc` the scope-exit drop
+/// uses, so the prior value is reclaimed identically.
+///
+/// The thunk null-checks internally, so this is a harmless no-op when the slot is
+/// already null: the FIRST assignment to `t` (slot null-initialised in the
+/// prologue) and the loop-`let` shape (slot nulled by the prior iteration's
+/// per-iteration scope-exit drop) both read null and free nothing — only a still
+/// live `var` value is actually released. Gating on the owned set keeps this
+/// fail-closed: it can never fire for a consumed, aliased, or non-owning local, so
+/// it cannot double-free.
+///
+/// LESSONS: cleanup-all-exits, raii-null-after-move, boundary-fail-closed.
+fn emit_indirect_enum_overwrite_release(fn_ctx: &FnCtx<'_, '_>, local: u32) -> CodegenResult<()> {
+    let Some(ty) = fn_ctx.local_tys.get(&local) else {
+        return Ok(());
+    };
+    let ResolvedTy::Named { name, .. } = ty else {
+        return Ok(());
+    };
+    if !crate::layout::is_indirect_enum(name, fn_ctx.enum_layouts) {
+        return Ok(());
+    }
+    let enum_name = crate::layout::enum_layout_key_for_ty(fn_ctx, ty)?;
+    // Synthesise the recursive free body on first reference, then resolve it —
+    // the same path the scope-exit `DropKind::IndirectEnum` arm uses, so the
+    // overwrite-release and the scope-exit drop share one thunk per enum.
+    emit_indirect_enum_free_body_only(fn_ctx, &enum_name)?;
+    let helper = get_or_declare_indirect_enum_free(fn_ctx.ctx, fn_ctx.llvm_mod, &enum_name);
+    if helper.count_basic_blocks() == 0 {
+        return Err(CodegenError::FailClosed(format!(
+            "indirect-enum overwrite-release for enum `{enum_name}` resolved \
+             `__hew_indirect_enum_free_{enum_name}`, but it has no body after \
+             synthesis; refusing to emit a dangling helper call (LESSONS: \
+             boundary-fail-closed)."
+        )));
+    }
+    let (slot, _) = fn_ctx.locals.get(&local).copied().ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "indirect-enum overwrite-release: owner local {local} has no alloca slot"
+        ))
+    })?;
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    let prior = fn_ctx
+        .builder
+        .build_load(ptr_ty, slot, "indirect_enum_overwrite_prior")
+        .llvm_ctx("load prior indirect-enum node for overwrite-release")?
+        .into_pointer_value();
+    fn_ctx
+        .builder
+        .build_call(helper, &[prior.into()], "indirect_enum_overwrite_free")
+        .llvm_ctx("indirect enum overwrite-release free call")?;
+    // raii-null-after-move: leave the slot null so the imminent reassignment store
+    // (and any later drop) cannot observe a freed pointer.
+    fn_ctx
+        .builder
+        .build_store(slot, ptr_ty.const_null())
+        .llvm_ctx("null-store indirect-enum slot after overwrite-release")?;
+    Ok(())
+}
+
 /// Synthesise the `__hew_indirect_enum_free_<enum_name>` recursive heap-node
 /// free body on first reference (idempotent — returns early if a body already
 /// exists). Recurses into owned child indirect-enum pointers, then
@@ -15746,6 +15900,33 @@ fn lower_instruction(
             let _ = ctx;
         }
         Instr::Move { dest, src } => {
+            // #46: allocate an `indirect enum` node at its construction site
+            // (the tag store) rather than in an entry-block prologue. This puts
+            // the `hew_alloc` inside whatever block constructs the node —
+            // crucially a loop body — so a build-and-consume loop mints a fresh
+            // node per iteration instead of reusing (and re-writing through) one
+            // entry node that the prior iteration's scope-exit free already
+            // reclaimed (the use-after-free #46 fixes). No-op for non-indirect
+            // tag writes (machine-state transitions, inline user enums).
+            if let Place::MachineTag(l) | Place::EnumTag(l) = dest {
+                emit_indirect_enum_node_alloc(fn_ctx, *l)?;
+            }
+            // #46 var-overwrite: before overwriting an OWNED indirect-enum binding
+            // slot, free the prior node it held. Construction-site allocation mints
+            // a fresh node for the right-hand side, so without this a
+            // `var t = <node>; loop { t = <node> }` orphans one tree per iteration
+            // (the eager-prologue design reused a single node and hid the leak).
+            // Gated on `indirect_enum_owned_locals` — the MIR-admitted sole owners
+            // — so it never fires for a destructure binder, an alias, a consumed
+            // binding, or a construction temp. The free thunk null-checks, so the
+            // FIRST assignment (slot null-initialised) and the loop-`let` shape
+            // (slot nulled by the per-iteration scope-exit drop) are no-ops; only a
+            // live `var` value is released.
+            if let Place::Local(l) = dest {
+                if fn_ctx.indirect_enum_owned_locals.contains(l) {
+                    emit_indirect_enum_overwrite_release(fn_ctx, *l)?;
+                }
+            }
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
             let (src_ptr, src_ty) = place_pointer(fn_ctx, *src)?;
             if dest_ty != src_ty {
@@ -35635,80 +35816,53 @@ fn lower_function<'ctx>(
         local_tys.insert(idx_u32, ty.clone());
     }
 
-    // Indirect-enum heap-allocation prologue.
+    // Indirect-enum slots: null-init + lazy construction-site allocation.
     //
-    // For `indirect enum` types (spec §3.7.4), every variable holds a
-    // pointer to a heap-allocated tagged-union struct rather than an
-    // inline struct value.  `resolve_ty` maps such types to `ptr` alloca
-    // slots (via `opaque_handle_names`).  Non-parameter locals whose type
-    // is an indirect enum therefore start with an uninitialised `ptr` slot.
+    // For `indirect enum` types (spec §3.7.4) every value is a pointer to a
+    // heap-allocated tagged-union node rather than an inline struct; `resolve_ty`
+    // maps such locals to `ptr` alloca slots. The heap node itself is minted
+    // LAZILY at the construction site — the `Move { dest: MachineTag/EnumTag, .. }`
+    // that begins a `MachineVariantCtor` — by `emit_indirect_enum_node_alloc`,
+    // called from the `Instr::Move` lowering. The tag store dominates every
+    // payload store (tag-dominance invariant, hew-mir/src/lower.rs), so the node
+    // exists before any GEP into it.
     //
-    // To avoid a use-before-alloc crash on the first tag/variant write, we
-    // eagerly allocate heap storage for each such local at function entry.
-    // Parameters are excluded — their ptr values come from the caller.
+    // WHY lazy, not an entry-block prologue (the #46 fix): an entry `hew_alloc`
+    // is hoisted out of any loop that builds the node. The scope-exit
+    // `DropKind::IndirectEnum` recursive free (`__hew_indirect_enum_free_<Enum>`
+    // thunk + `hew_dealloc`) runs every iteration and frees that one node; the
+    // next iteration's tag store then writes through the freed pointer — a
+    // use-after-free that corrupts the allocator. A per-construction allocation
+    // gives each iteration its own node, reclaimed exactly once by the sole-owner
+    // drop `derive_indirect_enum_drop_allowed` admits. A binding the prover
+    // cannot positively clear is simply not freed (fail-closed, never a
+    // double-free).
     //
-    // WHY eager (not lazy): MIR's `MachineVariantCtor` emits a sequence
-    //   of `Move { dest: MachineTag, .. }` and `Move { dest: MachineVariant,
-    //   .. }` instructions that write through `resolve_machine_base_ptr`.
-    //   Inserting an alloc inside that emit path would require detecting
-    //   "first write", which has no clean codegen-level marker.  An up-front
-    //   alloc at function entry is simple and dominates every use.
+    // This prologue NULL-INITIALISES every non-parameter indirect-enum slot as a
+    // fail-closed safety net. Two consumers depend on a null start state:
     //
-    // LIFECYCLE: the eager node is reclaimed by the drop elaborator's
-    //   `DropKind::IndirectEnum` scope-exit free (the recursive
-    //   `__hew_indirect_enum_free_<Enum>` thunk + `hew_dealloc`), emitted for
-    //   exactly one sole-owner binding per node (`derive_indirect_enum_drop_
-    //   allowed`). A binding the prover cannot positively clear leaks (e.g. a
-    //   node returned to the caller, whose caller-side binding is not a
-    //   construction site) — fail-closed, never a double-free. The remaining
-    //   call-result-owns-a-returned-node leak is a tracked follow-on, not a
-    //   memory-safety gap.
-    // Construction-site set: the non-parameter indirect-enum locals that are
-    // actually CONSTRUCTED in this function — i.e. written through a
-    // tag/variant place (`Move { dest: MachineTag/MachineVariant/EnumTag/
-    // EnumVariant(local), .. }`). Only these need a fresh heap node from the
-    // eager prologue: a tag/variant write GEPs into the node, so the node must
-    // already exist (the use-before-alloc the prologue guards against).
+    //   1. A stray drop of an as-yet-unconstructed slot hits the free thunk's
+    //      null-check (a no-op) instead of freeing uninitialised alloca bytes.
     //
-    // WHY this gate (the over-allocation leak fix): an indirect-enum local that
-    // is only ever WRITTEN by a plain `Move { dest: Local(N), src: <ptr> }`
-    // (a destructure binder `l/r = move mvar.payload`, a move-temp `_t = move
-    // _src`, or a call-result binding) RECEIVES an already-owned heap pointer —
-    // it never constructs a node. Eagerly allocating it produced a heap node
-    // that the very next instruction OVERWRITES with the received pointer,
-    // orphaning the eager alloc — a per-binding leak that no scope-exit drop can
-    // reclaim (the original pointer is gone by the time any drop runs). Gating
-    // on the construction set stops minting those doomed nodes.
+    //   2. The #46 var-overwrite release (`emit_indirect_enum_overwrite_release`,
+    //      fired from `Instr::Move { dest: Local(owner), .. }`) loads the slot and
+    //      recursively frees the PRIOR node before the reassignment overwrites it.
+    //      On the FIRST assignment to an owner binding the slot must read null so
+    //      that release is a no-op rather than a wild free of uninitialised bytes.
+    //      A binding local receives its value via a plain `Move { dest: Local, .. }`
+    //      (never a tag/variant store), so the construction-site alloc does not
+    //      touch it — the null-init here is its only initialisation before the
+    //      first overwrite-release reads it.
     //
-    // FAIL-CLOSED direction: under-including this set crashes loudly
-    // (use-before-alloc: a tag/variant GEP through a null/uninitialised slot),
-    // never silently corrupts — so the conservative error is to allocate too
-    // FEW, which surfaces immediately, not too many (the prior silent leak).
-    // The classifier is the exhaustive `Move`-dest match below; a future
-    // construction-shaped Place must be added here or its first use crashes.
-    let mut indirect_enum_construction_sites: std::collections::HashSet<u32> =
-        std::collections::HashSet::new();
-    for block in &func.blocks {
-        for instr in &block.instructions {
-            if let Instr::Move { dest, .. } = instr {
-                let constructed_local = match dest {
-                    Place::MachineTag(l)
-                    | Place::EnumTag(l)
-                    | Place::MachineVariant { local: l, .. }
-                    | Place::EnumVariant { local: l, .. } => Some(*l),
-                    _ => None,
-                };
-                if let Some(l) = constructed_local {
-                    indirect_enum_construction_sites.insert(l);
-                }
-            }
-        }
-    }
-
+    // Every such local is written before any meaningful read (a construction site
+    // is overwritten by `emit_indirect_enum_node_alloc` at its tag store; a binding
+    // or move-temp is overwritten by its defining `Move`), so null-initialising all
+    // of them is always safe — only the overwrite-release and any stray drop ever
+    // observe the null, both of which want it.
     let param_count = func.params.len();
-    let mut prologue_decls: RuntimeDeclMap<'ctx> = RuntimeDeclMap::new();
     for (idx, ty) in func.locals.iter().enumerate() {
-        // Only non-parameter locals need heap pre-allocation.
+        // Only non-parameter locals are constructed locally; a parameter's node
+        // pointer comes from the caller.
         if idx < param_count {
             continue;
         }
@@ -35720,84 +35874,15 @@ fn lower_function<'ctx>(
         if !crate::layout::is_indirect_enum(ty_name, enum_layouts) {
             continue;
         }
-        // Skip locals that are never constructed here (only receive a pointer
-        // via a plain `Move`): pre-allocating them mints a node the next
-        // instruction overwrites, leaking the eager alloc. See the
-        // construction-site comment above.
-        let idx_u32_gate = u32::try_from(idx).expect("local index fits u32");
-        if !indirect_enum_construction_sites.contains(&idx_u32_gate) {
-            continue;
-        }
-        // Locate the outer struct type for the indirect enum.
-        let outer_struct = match record_layouts.get(ty_name) {
-            Some(st) => *st,
-            None => {
-                // JUSTIFIED: layout registration must mirror every indirect enum local;
-                // failing closed prevents an uninitialised pointer local from reaching codegen.
-                return Err(CodegenError::FailClosed(format!(
-                    "indirect enum local `{ty_name}` has no registered layout"
-                )));
-            }
-        };
         let idx_u32 = u32::try_from(idx).expect("local index fits u32");
+        // Null-init the slot; the real node is minted at the tag store
+        // (`emit_indirect_enum_node_alloc`) so a build-and-consume LOOP gets a
+        // fresh node per iteration, and the overwrite-release sees null on first
+        // assignment. See the note above.
         let (slot, _) = *locals.get(&idx_u32).expect("local slot allocated above");
-        // Compute ABI size and alignment for the heap allocation.
-        //
-        // WHY anonymous struct: `TargetData::get_abi_size` on a named LLVM
-        // struct type returns 0 when the `TargetData` is constructed as a
-        // standalone layout string (the `host_target_data()` path, used by
-        // test harnesses where `target_machine == None`) rather than from a
-        // `TargetMachine` linked to a module context. Named structs are
-        // resolved through the LLVMContext; a layout-string-only `TargetData`
-        // cannot walk the context's type table. Primitive types and anonymous
-        // structs (which inline their field list) are sized correctly.
-        //
-        // In the `hew run` path the `TargetMachine`-linked `TargetData` is
-        // used (`build_module`'s `target_data` argument), where named structs
-        // size correctly (named == anon, measured). This anonymous-struct
-        // indirection is therefore DEFENSIVE for the `target_machine == None`
-        // harness paths, not load-bearing in the shipped run path.
-        //
-        // Fix: mirror the named struct's field list into a fresh anonymous
-        // struct (`packed = false`, same fields) and call `get_abi_size` on
-        // that. The ABI layout is identical: `{ tag_int, payload_array }` has
-        // the same field offsets and total size whether named or anonymous.
-        //
-        // WHEN-OBSOLETE: if the codegen pipeline is restructured so that all
-        // `TargetData` instances come from a `TargetMachine` (rather than
-        // `host_target_data()`), this anonymous-struct indirection can be
-        // removed and replaced with a direct `get_abi_size(&outer_struct)`.
-        let anon_outer = ctx.struct_type(&outer_struct.get_field_types(), false);
-        let size_bytes = target_data.get_abi_size(&anon_outer);
-        let align_bytes = target_data.get_abi_alignment(&anon_outer);
-        if size_bytes == 0 {
-            return Err(CodegenError::FailClosed(format!(
-                "indirect enum `{ty_name}`: cannot compute ABI size for heap allocation — \
-                 anonymous struct has 0 bytes (variant layout or target-data mismatch)"
-            )));
-        }
-        let size_val = ctx.i64_type().const_int(size_bytes, false);
-        let align_val = ctx.i64_type().const_int(u64::from(align_bytes), false);
-        // Declare and call `hew_alloc(size: i64, align: i64) -> ptr`.
-        let alloc_fn = intern_runtime_decl(ctx, llvm_mod, &mut prologue_decls, "hew_alloc")?;
-        let heap_ptr = builder
-            .build_call(
-                alloc_fn,
-                &[size_val.into(), align_val.into()],
-                "indirect_enum_alloc",
-            )
-            .llvm_ctx_with(|| format!("hew_alloc for indirect enum local {idx}"))?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| {
-                CodegenError::FailClosed(format!(
-                    "hew_alloc for indirect enum local {idx} returned void — expected ptr"
-                ))
-            })?
-            .into_pointer_value();
         builder
-            .build_store(slot, heap_ptr)
-            .llvm_ctx_with(|| format!("store indirect-enum heap ptr into local_{idx}"))?;
+            .build_store(slot, ctx.ptr_type(AddressSpace::default()).const_null())
+            .llvm_ctx_with(|| format!("null-init indirect-enum slot local_{idx}"))?;
     }
 
     // Parameter prologue: store each LLVM function argument into the
@@ -36105,6 +36190,32 @@ fn lower_function<'ctx>(
     let install_runtime_at_entry =
         func.name == "main" && !emit_wasm_entry_alias && module_uses_runtime;
 
+    // #46 var-overwrite owner set. Collect the locals the MIR elaborator admitted
+    // for a scope-exit `DropKind::IndirectEnum` recursive free — i.e. the proven
+    // sole owners of an indirect-enum node. `derive_indirect_enum_drop_allowed`
+    // already excluded destructure binders and aliased fan-out members, and the
+    // dataflow pass removed any binding ever Consumed/MaybeConsumed, so this set is
+    // exactly the bindings that are freed exactly once at scope exit and never
+    // moved out. `Instr::Move { dest: Local(owner), .. }` consults it to release
+    // the PRIOR node on reassignment (`var t = ...; loop { t = ... }`); gating on
+    // this set keeps the release fail-closed — it can never fire for a consumed,
+    // aliased, or non-owning local, so it cannot introduce a double-free.
+    let indirect_enum_owned_locals: HashSet<u32> = elab
+        .map(|e| {
+            let mut owners = HashSet::new();
+            for (_, plan) in &e.drop_plans {
+                for drop in &plan.drops {
+                    if drop.kind == hew_mir::DropKind::IndirectEnum {
+                        if let Place::Local(l) = drop.place {
+                            owners.insert(l);
+                        }
+                    }
+                }
+            }
+            owners
+        })
+        .unwrap_or_default();
+
     let fn_ctx = FnCtx {
         ctx,
         llvm_mod,
@@ -36131,6 +36242,7 @@ fn lower_function<'ctx>(
         actor_layouts,
         machine_layouts,
         enum_layouts,
+        indirect_enum_owned_locals,
         record_field_resolved_tys,
         dyn_vtable_registry,
         const_globals,
@@ -46356,6 +46468,7 @@ mod tests {
             actor_layouts: &harness.actor_layouts,
             machine_layouts: &harness.machine_layouts,
             enum_layouts: &[],
+            indirect_enum_owned_locals: HashSet::new(),
             record_field_resolved_tys: &harness.record_field_resolved_tys,
             // Composite-helper unit tests never lower an
             // `Instr::CoerceToDynTrait`; carry an empty slice so the

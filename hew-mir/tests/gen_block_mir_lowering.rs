@@ -384,6 +384,66 @@ fn gen_block_capturing_opaque_handle_fails_closed() {
     );
 }
 
+/// The single-diagnostic guarantee for an inadmissible generator capture: the
+/// root `NotYetImplemented` is the ONLY diagnostic. The synthetic body still
+/// names the rejected capture as a free variable, but `lower_gen_block` poisons
+/// its binding id, so the body sub-builder suppresses the two cascade
+/// secondaries it would otherwise stack on the root — a `MirStatement::Use` of
+/// an un-`Bind`-ed binding (→ dataflow `InitialisedBeforeUse`) and an
+/// `UnresolvedPlace` (no backend slot). Only the actionable rejection surfaces.
+#[test]
+fn gen_block_inadmissible_capture_emits_single_diagnostic() {
+    let pipeline = lower_checked(
+        r#"
+        #[opaque]
+        type Dq {}
+
+        extern "C" {
+            fn hew_deque_new() -> Dq;
+            fn hew_deque_len(dq: Dq) -> i64;
+        }
+
+        fn main() {
+            let dq = unsafe { hew_deque_new() };
+            let g = gen { yield unsafe { hew_deque_len(dq) }; };
+        }
+        "#,
+    );
+
+    assert_eq!(
+        pipeline.diagnostics.len(),
+        1,
+        "an inadmissible gen capture must emit exactly one diagnostic (the root \
+         NotYetImplemented); the InitialisedBeforeUse/UnresolvedPlace cascade must \
+         be suppressed; got: {:#?}",
+        pipeline.diagnostics
+    );
+    assert!(
+        matches!(
+            &pipeline.diagnostics[0].kind,
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct.contains("opaque/owned value")
+        ),
+        "the single diagnostic must be the root NotYetImplemented capture \
+         rejection; got: {:#?}",
+        pipeline.diagnostics[0]
+    );
+    // Defence in depth: neither cascade secondary may appear anywhere in the
+    // pipeline diagnostics, even if the count assertion above is later relaxed.
+    let cascade = pipeline.diagnostics.iter().find(|d| {
+        matches!(
+            &d.kind,
+            MirDiagnosticKind::InitialisedBeforeUse { .. }
+                | MirDiagnosticKind::UnresolvedPlace { .. }
+        )
+    });
+    assert!(
+        cascade.is_none(),
+        "no InitialisedBeforeUse/UnresolvedPlace cascade may follow the root \
+         capture rejection; got: {cascade:#?}",
+    );
+}
+
 /// Regression companion to the opaque-capture gate: a plain `BitCopy` scalar
 /// capture (`i64`) must STILL be admitted — the tightened predicate
 /// (`gen_env_capture_admissible`) must not over-reject the supported path. No

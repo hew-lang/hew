@@ -7966,6 +7966,20 @@ struct Builder {
     /// "a diagnostic was emitted" so a genuinely-unresolved binding (a real bug
     /// with no prior error) still reports.
     poisoned_let_bindings: HashSet<BindingId>,
+    /// Generator/`gen fn` capture bindings the enclosing `lower_gen_block`
+    /// rejected with a root `NotYetImplemented` (an inadmissible opaque/owned
+    /// value that cannot cross the generator's thread boundary). The synthetic
+    /// body still names the capture as a free variable, but it was never
+    /// materialised into the env record — so its body-side `BindingRef` would
+    /// otherwise stack two cascade secondaries on the root: a
+    /// `MirStatement::Use` of an un-`Bind`-ed binding (→ dataflow
+    /// `InitialisedBeforeUse`) and an `UnresolvedPlace` (no backend slot). The
+    /// `BindingRef` resolver consults this set and returns `None` silently for a
+    /// poisoned capture, so only the actionable root rejection surfaces. Scoped
+    /// to the body sub-builder: it carries only the specific failing capture
+    /// ids, never the enclosing frame's bindings, and the body's own `let`
+    /// bindings have distinct ids so they are unaffected.
+    poisoned_capture_ids: HashSet<BindingId>,
     /// Transient: set by `lower_closure_literal` to the just-lowered closure's
     /// body-suspends verdict (derived from its shim's MIR carriers) so the `Let`
     /// handler can attribute it to the bound binding. Reset around each closure
@@ -11280,6 +11294,19 @@ impl Builder {
                             .push(Instr::ActorStateFieldLoad { field_offset, dest });
                         return Some(dest);
                     }
+                }
+                // A `gen`/`gen fn` capture the enclosing `lower_gen_block`
+                // already rejected with a root `NotYetImplemented` (an
+                // inadmissible opaque/owned value). The synthetic body still
+                // references the capture, but it was never materialised into the
+                // env record, so resolving it here would stack two cascade
+                // secondaries on the root: the `MirStatement::Use` below would
+                // read an un-`Bind`-ed binding (→ dataflow
+                // `InitialisedBeforeUse`), and place resolution would emit
+                // `UnresolvedPlace` (no backend slot). Both are pure cascade;
+                // only the root capture rejection is actionable. Fail silent.
+                if self.poisoned_capture_ids.contains(id) {
+                    return None;
                 }
                 let use_ty = self.subst_ty(&expr.ty);
                 // Skip `MirStatement::Use` for captured bindings: the
@@ -27665,6 +27692,11 @@ impl Builder {
         let mut env_place: Option<Place> = None;
         let mut env_ty: Option<ResolvedTy> = None;
         let mut env_capture_field_tys: Vec<ResolvedTy> = Vec::new();
+        // Capture bindings rejected below as inadmissible to the flat env. Each
+        // gets a root `NotYetImplemented`; the body sub-builder reads this set
+        // to suppress the downstream `InitialisedBeforeUse`/`UnresolvedPlace`
+        // cascade for the same bindings (only the root rejection is actionable).
+        let mut poisoned_captures: HashSet<BindingId> = HashSet::new();
         if !captures.is_empty() {
             let mut field_tys: Vec<ResolvedTy> = Vec::with_capacity(captures.len());
             let mut init_fields: Vec<(FieldOffset, Place)> = Vec::new();
@@ -27744,6 +27776,13 @@ impl Builder {
                                 ty.user_facing()
                             ),
                         });
+                        // Poison this capture's binding id: the root
+                        // `NotYetImplemented` above is the one actionable
+                        // diagnostic. The body sub-builder's `BindingRef`
+                        // resolution consults `poisoned_capture_ids` and stays
+                        // silent, suppressing the `InitialisedBeforeUse` +
+                        // `UnresolvedPlace` cascade for this binding.
+                        poisoned_captures.insert(capture.binding);
                         all_materialisable = false;
                     }
                     _ => {
@@ -27803,6 +27842,12 @@ impl Builder {
             in_gen_body: true,
             ..Builder::default()
         };
+        // Propagate the inadmissible-capture poison set into the body builder so
+        // its `BindingRef` resolution stays silent for those bindings — the root
+        // rejection already fired in the enclosing frame, and the un-materialised
+        // capture would otherwise cascade into `InitialisedBeforeUse` +
+        // `UnresolvedPlace`.
+        body_builder.poisoned_capture_ids = poisoned_captures;
 
         // Prepend the coroutine-ramp parameters. The generator body is lowered
         // as an `llvm.coro.*` switched-resume coroutine ramp (the same substrate

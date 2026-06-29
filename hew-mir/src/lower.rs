@@ -35559,6 +35559,14 @@ fn detect_unproven_aggregate_handle_double_free(
 /// borrow reads the fixpoint and tally already account for — including
 /// `CallRuntimeAbi`, whose operands are the *container* being read (`hew_vec_len`
 /// / `hew_vec_get_ptr`), never an owned-handle leaf aliased out.
+#[allow(
+    clippy::match_same_arms,
+    reason = "the closure-env-field arms intentionally share the empty-escape \
+              result of the `_` arm but are named explicitly so the closure \
+              write-back/read path's escape classification is visible on the \
+              diff and is forced to be re-examined if the `#1'` BitCopy gate is \
+              ever loosened to owned captures (exhaustive-traversal-and-lowering)"
+)]
 fn instr_escape_places(instr: &Instr) -> Vec<Place> {
     match instr {
         // A value stored into a still-live aggregate / actor state is aliased
@@ -35582,6 +35590,19 @@ fn instr_escape_places(instr: &Instr) -> Vec<Place> {
             places
         }
         Instr::CoerceToDynTrait { value, .. } => vec![*value],
+        // Closure-env field write-back (`#1'`) stores a BitCopy scalar: the
+        // store is gated to `ValueClass::BitCopy`, and an owned capture
+        // reassignment fails closed with NotYetImplemented. A scalar `src`
+        // carries no owned handle, so nothing is aliased out of the tracked
+        // dataflow — no escape place. If that gate is ever loosened to admit
+        // owned captures, `src` would alias into the env's independently-dropped
+        // storage and MUST surface here as `vec![*src]`, mirroring
+        // `RecordFieldStore` above. Named explicitly (not left to the `_` arm)
+        // so this invariant is visible on the closure path (exhaustive-traversal).
+        Instr::ClosureEnvFieldStore { .. } => Vec::new(),
+        // Reading a field OUT of the env is a borrow into tracked dataflow, not
+        // an alias of an owned handle into untracked storage — no escape place.
+        Instr::ClosureEnvFieldLoad { .. } => Vec::new(),
         // Dispatched calls take their arguments (and the receiver) by value.
         Instr::CallClosure { args, .. } => args.clone(),
         Instr::CallTraitMethod {

@@ -1291,6 +1291,13 @@ run_accept_expect_status "bytes_contains" 0
 run_accept_expect_status "bytes_clear" 0
 run_accept_expect_status "bytes_append" 0
 
+# Bytes mutators in match-arm (value) position: push/set/clear/append each
+# type as unit, so binding the match result must materialise a fresh () in
+# MIR rather than fail closed, with write-back identical to statement
+# position. Drives all four from match arms and reads back exact bytes;
+# exits 0 only when every assertion holds.
+run_accept_expect_status "bytes_unitop_match_value" 0
+
 # Fail-closed negatives: pop on an empty buffer and set past the end abort via
 # the bytes runtime trap (exit 134 = SIGABRT+128), the same fail-closed
 # termination as bytes_index_oob_traps.

@@ -1,0 +1,31 @@
+// Cross-module chained generic-adapter monomorphisation: `Take` + `fold`.
+//
+// `iter::take` builds a `Take<Countdown, i64>` adapter over the imported
+// iterator and `iter::fold` reduces it to a single accumulated value. The
+// projection-only item param pins from the struct args, so the generic fold
+// terminal monomorphises and lowers across the import boundary.
+//
+// Countdown{5} yields [5,4,3,2,1]; take(3) yields [5,4,3]; fold (+) = 12.
+import std::iter;
+
+type Countdown {
+    n: i64;
+}
+
+impl Iterator for Countdown {
+    type Item = i64;
+    fn next(var self) -> Option<i64> {
+        if self.n <= 0 {
+            None
+        } else {
+            let cur = self.n;
+            self.n = self.n - 1;
+            Some(cur)
+        }
+    }
+}
+
+pub fn main() -> i64 {
+    let t = iter::take(Countdown { n: 5 }, 3);
+    iter::fold(t, 0, |acc: i64, x: i64| acc + x)
+}

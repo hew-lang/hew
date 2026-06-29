@@ -385,6 +385,20 @@ run_accept_expect_status "iter_xmod_map_collect" 12
 # fact resolved. Countdown{4} mapped by +bump(10) then counted → 4.
 run_accept_expect_status "iter_xmod_captured_closure" 4
 
+# Take/Skip carry their item type as a direct struct param (like Map/Filter),
+# so the projection-only `A` pins from the struct args at a cross-module call
+# site and the imported adapter method lowers per instantiation. This closes
+# the matrix: count/collect/fold each compose with take and skip across the
+# import boundary the same way they do with map. Countdown{5} = [5,4,3,2,1].
+# take(3) → [5,4,3]: count 3, collect sum 12, fold 12.
+run_accept_expect_status "iter_xmod_take_count" 3
+run_accept_expect_status "iter_xmod_take_collect" 12
+run_accept_expect_status "iter_xmod_take_fold" 12
+# skip(3) → [2,1]: count 2, collect sum 3, fold 3.
+run_accept_expect_status "iter_xmod_skip_count" 2
+run_accept_expect_status "iter_xmod_skip_collect" 3
+run_accept_expect_status "iter_xmod_skip_fold" 3
+
 # where-clause-projection monomorphisation (CLOSED): a generic terminal whose
 # type param appears only in a `where I: Iterator<Item = A>` projection now
 # pins that param from the iterator's concrete associated type and lowers

@@ -7,15 +7,14 @@
 //! and the adapter is transparent to the inner stream.
 //!
 //! The fixture-local `Skip<I, A>` carries `A` as a direct type parameter
-//! (unlike `std/iter.hew`'s `Skip<I>`) so the monomorphisation site can
-//! pin `A = i64` directly. This is required by the current MIR substrate:
-//! a type parameter appearing ONLY in a where-clause projection cannot be
-//! pinned by the monomorphisation collector (mir-gap-where-clause-proj-
-//! monomorph). The body logic is identical to `std/iter.hew::Skip::next`.
+//! (matching `std/iter.hew`'s `Skip<I, A>`) so the monomorphisation site
+//! can pin `A = i64` directly: a type parameter appearing ONLY in a
+//! where-clause projection cannot be pinned by the collector. The body
+//! logic is identical to `std/iter.hew::Skip::next`.
 //!
-//! Inlined and fully monomorphised: cross-module generic instantiation
-//! of `std::iter` does not yet lower through MIR (a separate backend
-//! lane), so the adapter types are defined locally.
+//! Self-contained (no `import std::iter`) so this fixture asserts the
+//! skip semantics on their own; `iter_xmod_skip_*` covers the imported
+//! chain through `count`/`collect`/`fold`.
 //!
 //! Expected exit code: 6 — sum of items after skipping 2 from
 //! Countdown{n:5}: [3, 2, 1]. Any internal mismatch returns a

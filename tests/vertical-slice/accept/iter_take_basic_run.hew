@@ -6,15 +6,14 @@
 //! exactly after `n` items regardless of inner stream depth.
 //!
 //! The fixture-local `Take<I, A>` carries `A` as a direct type parameter
-//! (unlike `std/iter.hew`'s `Take<I>`) so the monomorphisation site can
-//! pin `A = i64` directly. This is required by the current MIR substrate:
-//! a type parameter appearing ONLY in a where-clause projection cannot be
-//! pinned by the monomorphisation collector (mir-gap-where-clause-proj-
-//! monomorph). The body logic is identical to `std/iter.hew::Take::next`.
+//! (matching `std/iter.hew`'s `Take<I, A>`) so the monomorphisation site
+//! can pin `A = i64` directly: a type parameter appearing ONLY in a
+//! where-clause projection cannot be pinned by the collector. The body
+//! logic is identical to `std/iter.hew::Take::next`.
 //!
-//! Inlined and fully monomorphised: cross-module generic instantiation
-//! of `std::iter` does not yet lower through MIR (a separate backend
-//! lane), so the adapter types are defined locally.
+//! Self-contained (no `import std::iter`) so this fixture asserts the
+//! take semantics on their own; `iter_xmod_take_*` covers the imported
+//! chain through `count`/`collect`/`fold`.
 //!
 //! Expected exit code: 12 — sum of the first 3 items from
 //! Countdown{n:5}: [5, 4, 3]. Any internal mismatch returns a

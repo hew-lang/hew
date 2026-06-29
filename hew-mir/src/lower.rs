@@ -36666,9 +36666,23 @@ fn derive_indirect_enum_drop_allowed(
                         }
                     }
                     Place::Local(dl) => {
-                        if let Some(sl) = base_local(*src) {
-                            if sl != *dl {
-                                move_edges.push((sl, *dl));
+                        // Node-pointer FLOW edge — only a whole-value `Place::Local`
+                        // src aliases the same node into `dl`. A SUB-place src
+                        // (`l = move parent.payload.0`, src = MachineVariant/
+                        // EnumVariant; or a tag read, src = MachineTag/EnumTag)
+                        // COPIES a CHILD pointer the parent node still owns — it is
+                        // NOT a whole-value alias of the parent. Seeding a flow edge
+                        // from such a sub-place would (a) misclassify the child
+                        // binder as a node owner (Pass 2) and (b) drag it into the
+                        // parent's Pass-4 fan-out component, collapsing the parent's
+                        // sole-owner free — the inline match-destructure leak (#46).
+                        // The parent's recursive free already reclaims that child, so
+                        // restricting to a whole-value `Local` src is fail-closed:
+                        // whole-value rebinds (`let u = t;`) still flow and still
+                        // collapse; destructure binders no longer entangle the parent.
+                        if let Place::Local(sl) = src {
+                            if *sl != *dl {
+                                move_edges.push((*sl, *dl));
                             }
                         }
                     }

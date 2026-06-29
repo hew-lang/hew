@@ -143,9 +143,36 @@ pub(crate) fn mir_diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'stat
     }
 }
 
+/// Map a codegen-front `CodegenError` to its stable, structured diagnostic
+/// code. Mirrors `mir_diagnostic_prefix`/`hir_diagnostic_prefix`: every variant
+/// gets a distinct machine-greppable code so tooling (and humans) can branch on
+/// the failure class instead of substring-matching the free-form Display text.
+///
+/// All codes are namespaced under the `E_CODEGEN_FRONT` family — the stable
+/// gate identity that the check/compile e2e suites and the vertical-slice /
+/// pkg-import harnesses grep for — so widening the flat code into per-variant
+/// codes does not break the family contract. The match is exhaustive on
+/// purpose: a new `CodegenError` variant must be classified here rather than
+/// silently inheriting a generic code.
+pub(crate) fn codegen_diagnostic_prefix(error: &hew_codegen_rs::CodegenError) -> &'static str {
+    match error {
+        hew_codegen_rs::CodegenError::Llvm(_) => "E_CODEGEN_FRONT_LLVM",
+        hew_codegen_rs::CodegenError::Unsupported(_) => "E_CODEGEN_FRONT_UNSUPPORTED",
+        hew_codegen_rs::CodegenError::FailClosed(_) => "E_CODEGEN_FRONT_FAIL_CLOSED",
+        hew_codegen_rs::CodegenError::LlvmVerify(_) => "E_CODEGEN_FRONT_LLVM_VERIFY",
+        hew_codegen_rs::CodegenError::TargetSetup { .. } => "E_CODEGEN_FRONT_TARGET_SETUP",
+        hew_codegen_rs::CodegenError::Link(_) => "E_CODEGEN_FRONT_LINK",
+        hew_codegen_rs::CodegenError::Io(_) => "E_CODEGEN_FRONT_IO",
+        hew_codegen_rs::CodegenError::WasmUnsupportedSubstrate { .. } => {
+            "E_CODEGEN_FRONT_WASM_UNSUPPORTED"
+        }
+    }
+}
+
 pub(crate) fn render_codegen_front_diagnostic(error: &hew_codegen_rs::CodegenError) {
     emit_plain_diagnostic_line(&format!(
-        "E_CODEGEN_FRONT: codegen-front validation failed: {error}"
+        "{}: codegen-front validation failed: {error}",
+        codegen_diagnostic_prefix(error),
     ));
 }
 

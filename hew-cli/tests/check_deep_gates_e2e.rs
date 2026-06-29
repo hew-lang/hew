@@ -175,6 +175,11 @@ fn check_fails_on_codegen_front_gate_before_ok_without_artifacts() {
         "codegen-front failure should use a stable diagnostic family; got:\n{stderr}",
     );
     assert!(
+        stderr.contains("E_CODEGEN_FRONT_UNSUPPORTED"),
+        "codegen-front failure should carry a structured per-variant code \
+         (the array return type maps to CodegenError::Unsupported); got:\n{stderr}",
+    );
+    assert!(
         stderr.contains("unsupported construct"),
         "codegen-front failure should render CodegenError Display, not Debug; got:\n{stderr}",
     );

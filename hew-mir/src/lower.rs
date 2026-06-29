@@ -33155,6 +33155,29 @@ fn derive_owned_record_drop_allowed(
     // `owned_locals` binding PLUS every local that is the place of an inline
     // `Instr::Drop { drop_fn: Some(_) }` already emitted into the finalized MIR
     // (the for-in iterator / loop-scope / break-continue release).
+    //
+    // The spliced `hew_string_drop` for a `string` `*FieldLoad` dest
+    // (`apply_nested_fresh_string_temp_drops`, the #54 clone-out balance) releases
+    // a FRESH, codegen-cloned (`retain_string_field_load` → `hew_string_clone`)
+    // refcount of the field — NOT the record's original `+1`. Counting it as a
+    // `release_owner_base` would treat a benign borrowing READ of a record field
+    // (`println(user.name)`, `user.name.len()`, a cloned record's `q.a.len()`) as
+    // a field-ownership EXTRACTION and wrongly drop the whole record's
+    // `RecordInPlace` — the #54 regression that leaked the record's own field
+    // buffer (verified: 4 leaks / 128 bytes on a plain owned record; 128 nodes on
+    // the generic-record clone fixture once the control's masking floor is
+    // removed). These read-temps NEVER seed `release_owner_bases`: the record (or
+    // clone) still solely owns its original `+1` and keeps its sole-owner
+    // `RecordInPlace`. A NON-string field extracted into an owning binding (a
+    // generator handle `let g = pair.0`, an owned nested record `let inner =
+    // b.inner`) — which moves the ORIGINAL owner out and DOES need the record
+    // excluded — is not a `string_field_load_producer_dest` and still seeds.
+    let exempt_read_temp_locals: HashSet<u32> = blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter_map(|instr| string_field_load_producer_dest(instr, local_tys))
+        .filter_map(base_local)
+        .collect();
     let mut release_owner_bases: HashSet<u32> = owned_locals
         .iter()
         .filter_map(|(binding, _, _)| binding_locals.get(binding).and_then(|p| base_local(*p)))
@@ -33168,6 +33191,9 @@ fn derive_owned_record_drop_allowed(
             } = instr
             {
                 if let Some(l) = base_local(*place) {
+                    if exempt_read_temp_locals.contains(&l) {
+                        continue;
+                    }
                     release_owner_bases.insert(l);
                 }
             }
@@ -33251,6 +33277,19 @@ fn derive_owned_record_drop_allowed(
                     // lowering to release overridden fields; the surrounding record
                     // binding is still live (and should receive its composite drop).
                     | Instr::RecordFieldDrop { .. }
+                    // `RecordCloneInplace` (`let q = clone p`) reads `src` (`p`) as
+                    // a DEEP copy: it `memcpy`s then deep-clones each owned field
+                    // into `dest`, leaving `src` in sole ownership of its own
+                    // original buffers (`lower_record_clone_inplace_instr`,
+                    // `hew-codegen-rs/src/llvm.rs`). So reading the record as a clone
+                    // source is NOT an ownership escape — `p` must keep its
+                    // `RecordInPlace` drop, exactly as an interior `RecordFieldLoad`
+                    // does. The fresh `dest` is a write, not a source-read, and
+                    // earns its OWN independent `RecordInPlace` (the deep clone is a
+                    // disjoint owner). Without this exemption the clone source leaks
+                    // its original field buffers (the #54 regression, masked at the
+                    // tip because the no-clone control leaked the identical floor).
+                    | Instr::RecordCloneInplace { .. }
             ) {
                 for p in instr_source_places(instr) {
                     if let Some(l) = base_local(p) {

@@ -77,6 +77,14 @@ pub(super) fn cast_is_valid(actual: &Ty, target: &Ty) -> bool {
     (actual.is_numeric() && target.is_numeric())
         || (*actual == Ty::Bool && target.is_integer())
         || (actual.is_integer() && *target == Ty::Bool)
+        // `char as <integer>` yields the Unicode scalar value (codepoint).
+        // A `char` is a u32 codepoint (U+0000..U+10FFFF); casting to an
+        // integer follows the standard numeric-cast width rules — zero-extend
+        // to wider targets, truncate to narrower ones (matching `c as u8`).
+        // The reverse (`<integer> as char`) is deliberately NOT admitted: not
+        // every integer is a valid scalar value, so it would need a checked
+        // conversion rather than an `as` cast.
+        || (*actual == Ty::Char && target.is_integer())
 }
 
 impl Checker {

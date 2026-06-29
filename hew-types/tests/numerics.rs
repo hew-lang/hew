@@ -237,6 +237,32 @@ fn resolved_numeric_cast_matrix_matches_checker_admission() {
         );
     }
 
+    // `char as <integer>` extracts the Unicode scalar value and is admitted
+    // for every integer width. The reverse (`<integer> as char`) stays
+    // closed: not every integer is a valid scalar value, so it needs a
+    // checked conversion rather than an `as` cast.
+    for integer in numeric.iter().filter(|ty| ty.is_integer()) {
+        assert!(
+            ResolvedTy::Char.can_explicitly_numeric_cast_to(integer),
+            "char -> {integer:?} must be admitted (codepoint cast)"
+        );
+        assert!(
+            !integer.can_explicitly_numeric_cast_to(&ResolvedTy::Char),
+            "{integer:?} -> char must stay outside the checker matrix"
+        );
+    }
+
+    // `char -> float` and `char -> bool` are NOT admitted: the codepoint cast
+    // only targets integers (a float target would need `c as u32 as f64`).
+    for float in numeric.iter().filter(|ty| ty.is_float()) {
+        assert!(
+            !ResolvedTy::Char.can_explicitly_numeric_cast_to(float),
+            "char -> {float:?} must stay outside the checker matrix"
+        );
+    }
+    assert!(!ResolvedTy::Char.can_explicitly_numeric_cast_to(&ResolvedTy::Bool));
+    assert!(!ResolvedTy::Bool.can_explicitly_numeric_cast_to(&ResolvedTy::Char));
+
     assert!(!ResolvedTy::String.can_explicitly_numeric_cast_to(&ResolvedTy::I64));
     assert!(!ResolvedTy::I64.can_explicitly_numeric_cast_to(&ResolvedTy::String));
 }

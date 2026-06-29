@@ -2694,6 +2694,77 @@ fn returned_closure_survives_stack_clobber() {
     assert_eq!(actual, "15\n", "expected 15; got: {actual:?}");
 }
 
+/// Nested closure captures the OUTER closure literal's own parameter.
+///
+/// Previously `E_HIR` `DanglingRef`: the HIR verifier walked a closure literal's
+/// body without first registering the literal's own parameters as declared
+/// bindings (only named-fn and actor-method params were registered), so the
+/// inner literal's capture of the outer param resolved to a binding the
+/// verifier believed undeclared.
+#[test]
+fn closure_nested_captures_outer_param_runs() {
+    require_codegen();
+
+    let source =
+        repo_root().join("tests/vertical-slice/accept/closure_nested_captures_outer_param.hew");
+    let output = run_bounded_hew_run(&source, repo_root());
+    assert!(
+        output.status.success(),
+        "closure_nested_captures_outer_param should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, "15\n", "expected 15; got: {actual:?}");
+}
+
+/// A closure captures another closure BINDING from the enclosing scope and
+/// dispatches it as a bare-identifier callee.
+///
+/// Previously `E_HIR` `CheckerBoundaryViolation`: the call checker resolved a
+/// bare-identifier closure callee directly, without recording the
+/// `ClosureCaptureFact` the identifier-read path records, so HIR capture
+/// materialization found the captured binding with no checker metadata.
+#[test]
+fn closure_captures_closure_binding_runs() {
+    require_codegen();
+
+    let source =
+        repo_root().join("tests/vertical-slice/accept/closure_captures_closure_binding.hew");
+    let output = run_bounded_hew_run(&source, repo_root());
+    assert!(
+        output.status.success(),
+        "closure_captures_closure_binding should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, "42\n", "expected 42; got: {actual:?}");
+}
+
+/// A non-capturing closure literal nested inside another closure's body.
+///
+/// Previously `E_NOT_YET_IMPLEMENTED` (missing closure invoke shim): the nested
+/// literal's invoke shim is produced while the parent shim is being lowered, so
+/// it lands in the parent's `generated.generated`, and the module driver
+/// flattened only one level — `MakeClosure` then referenced a shim symbol
+/// codegen never emitted. The driver now flattens the generated tree fully.
+#[test]
+fn closure_nested_noncapturing_runs() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/closure_nested_noncapturing.hew");
+    let output = run_bounded_hew_run(&source, repo_root());
+    assert!(
+        output.status.success(),
+        "closure_nested_noncapturing should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, "16\n", "expected 16; got: {actual:?}");
+}
+
 /// `Vec<fn(i64) -> i64>` storage surface: array literal, indexing, push,
 /// get, and pop over boxed-pair elements riding the pointer-element ABI.
 #[test]

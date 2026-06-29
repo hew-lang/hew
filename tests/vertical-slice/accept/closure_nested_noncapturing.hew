@@ -1,0 +1,16 @@
+// A non-capturing closure literal nested inside another closure's body. The
+// inner `|y| y * 2` captures nothing; it is created and called entirely within
+// the outer closure's shim.
+//
+// Previously failed with E_NOT_YET_IMPLEMENTED (missing closure invoke shim):
+// the nested literal's invoke shim is produced while the parent shim is being
+// lowered, so it lands in the parent's `generated.generated`, and the module
+// driver flattened only one level — `MakeClosure` then referenced a shim symbol
+// codegen never emitted.
+fn main() {
+    let outer = |x: i64| {
+        let g = |y: i64| y * 2;
+        g(x)
+    };
+    println(outer(8)); // 16
+}

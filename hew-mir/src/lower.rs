@@ -2519,19 +2519,16 @@ pub fn lower_hir_module_with_facts(
                 checked_mir.push(lowered.checked);
                 elaborated_mir.push(lowered.elaborated);
                 record_layouts.extend(lowered.record_layouts);
-                for generated in lowered.generated {
-                    if generated.raw.name.starts_with("__hew_named_fn_invoke_")
-                        && !emitted_named_fn_shims.insert(generated.raw.name.clone())
-                    {
-                        continue; // duplicate shim from a second use-site — body already emitted
-                    }
-                    thir.push(generated.thir);
-                    raw_mir.push(generated.raw);
-                    checked_mir.push(generated.checked);
-                    elaborated_mir.push(generated.elaborated);
-                    diagnostics.extend(generated.diagnostics);
-                    record_layouts.extend(generated.record_layouts);
-                }
+                flatten_generated_functions(
+                    lowered.generated,
+                    &mut thir,
+                    &mut raw_mir,
+                    &mut checked_mir,
+                    &mut elaborated_mir,
+                    &mut diagnostics,
+                    &mut record_layouts,
+                    &mut emitted_named_fn_shims,
+                );
                 diagnostics.extend(lowered.diagnostics);
             }
             HirItem::Actor(actor) => {
@@ -2561,19 +2558,16 @@ pub fn lower_hir_module_with_facts(
                     checked_mir.push(lowered.checked);
                     elaborated_mir.push(lowered.elaborated);
                     record_layouts.extend(lowered.record_layouts);
-                    for generated in lowered.generated {
-                        if generated.raw.name.starts_with("__hew_named_fn_invoke_")
-                            && !emitted_named_fn_shims.insert(generated.raw.name.clone())
-                        {
-                            continue; // duplicate shim — body already emitted
-                        }
-                        thir.push(generated.thir);
-                        raw_mir.push(generated.raw);
-                        checked_mir.push(generated.checked);
-                        elaborated_mir.push(generated.elaborated);
-                        diagnostics.extend(generated.diagnostics);
-                        record_layouts.extend(generated.record_layouts);
-                    }
+                    flatten_generated_functions(
+                        lowered.generated,
+                        &mut thir,
+                        &mut raw_mir,
+                        &mut checked_mir,
+                        &mut elaborated_mir,
+                        &mut diagnostics,
+                        &mut record_layouts,
+                        &mut emitted_named_fn_shims,
+                    );
                     diagnostics.extend(lowered.diagnostics);
                 }
             }
@@ -2604,19 +2598,16 @@ pub fn lower_hir_module_with_facts(
                     checked_mir.push(lowered.checked);
                     elaborated_mir.push(lowered.elaborated);
                     record_layouts.extend(lowered.record_layouts);
-                    for generated in lowered.generated {
-                        if generated.raw.name.starts_with("__hew_named_fn_invoke_")
-                            && !emitted_named_fn_shims.insert(generated.raw.name.clone())
-                        {
-                            continue; // duplicate shim — body already emitted
-                        }
-                        thir.push(generated.thir);
-                        raw_mir.push(generated.raw);
-                        checked_mir.push(generated.checked);
-                        elaborated_mir.push(generated.elaborated);
-                        diagnostics.extend(generated.diagnostics);
-                        record_layouts.extend(generated.record_layouts);
-                    }
+                    flatten_generated_functions(
+                        lowered.generated,
+                        &mut thir,
+                        &mut raw_mir,
+                        &mut checked_mir,
+                        &mut elaborated_mir,
+                        &mut diagnostics,
+                        &mut record_layouts,
+                        &mut emitted_named_fn_shims,
+                    );
                     diagnostics.extend(lowered.diagnostics);
                 }
             }
@@ -2745,19 +2736,16 @@ pub fn lower_hir_module_with_facts(
         checked_mir.push(lowered.checked);
         elaborated_mir.push(lowered.elaborated);
         record_layouts.extend(lowered.record_layouts);
-        for generated in lowered.generated {
-            if generated.raw.name.starts_with("__hew_named_fn_invoke_")
-                && !emitted_named_fn_shims.insert(generated.raw.name.clone())
-            {
-                continue; // duplicate shim — body already emitted
-            }
-            thir.push(generated.thir);
-            raw_mir.push(generated.raw);
-            checked_mir.push(generated.checked);
-            elaborated_mir.push(generated.elaborated);
-            diagnostics.extend(generated.diagnostics);
-            record_layouts.extend(generated.record_layouts);
-        }
+        flatten_generated_functions(
+            lowered.generated,
+            &mut thir,
+            &mut raw_mir,
+            &mut checked_mir,
+            &mut elaborated_mir,
+            &mut diagnostics,
+            &mut record_layouts,
+            &mut emitted_named_fn_shims,
+        );
         diagnostics.extend(lowered.diagnostics);
     }
 
@@ -6544,6 +6532,62 @@ struct LoweredFunction {
     diagnostics: Vec<MirDiagnostic>,
     generated: Vec<LoweredFunction>,
     record_layouts: Vec<crate::model::RecordLayout>,
+}
+
+/// Recursively drain a `LoweredFunction::generated` tree into the module
+/// output vectors.
+///
+/// A generated function (a closure invoke shim, a named-fn reference shim, an
+/// ask-reply thunk, …) can itself produce generated functions: a *nested*
+/// closure literal's invoke shim is lowered while the *parent* shim is being
+/// built, so it lands in the parent's `builder.generated_functions` — i.e.
+/// `generated.generated`, depth 2. A single-level `for g in lowered.generated`
+/// loop (the historical shape at every dispatch site) surfaces only depth 1,
+/// so a `MakeClosure` for the inner literal references a shim symbol codegen
+/// never emitted (`E_NOT_YET_IMPLEMENTED: missing closure invoke shim`).
+///
+/// Walk the whole tree so EVERY generated function at EVERY depth is surfaced
+/// exactly once (`exhaustive-coverage`). The `__hew_named_fn_invoke_` dedup is
+/// preserved: a duplicate shim (and the subtree below it, which is the same
+/// already-emitted bodies) is skipped wholesale.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "threads the same module-output sinks the four dispatch sites already hold as locals"
+)]
+fn flatten_generated_functions(
+    generated: Vec<LoweredFunction>,
+    thir: &mut Vec<ThirFunction>,
+    raw_mir: &mut Vec<RawMirFunction>,
+    checked_mir: &mut Vec<CheckedMirFunction>,
+    elaborated_mir: &mut Vec<ElaboratedMirFunction>,
+    diagnostics: &mut Vec<MirDiagnostic>,
+    record_layouts: &mut Vec<crate::model::RecordLayout>,
+    emitted_named_fn_shims: &mut HashSet<String>,
+) {
+    for generated in generated {
+        if generated.raw.name.starts_with("__hew_named_fn_invoke_")
+            && !emitted_named_fn_shims.insert(generated.raw.name.clone())
+        {
+            continue; // duplicate shim from a second use-site — body (and its subtree) already emitted
+        }
+        let nested = generated.generated;
+        thir.push(generated.thir);
+        raw_mir.push(generated.raw);
+        checked_mir.push(generated.checked);
+        elaborated_mir.push(generated.elaborated);
+        diagnostics.extend(generated.diagnostics);
+        record_layouts.extend(generated.record_layouts);
+        flatten_generated_functions(
+            nested,
+            thir,
+            raw_mir,
+            checked_mir,
+            elaborated_mir,
+            diagnostics,
+            record_layouts,
+            emitted_named_fn_shims,
+        );
+    }
 }
 
 /// Insert execution-context carrier markers into a context-bearing CFG.
@@ -26409,7 +26453,20 @@ impl Builder {
             .next_closure_id
             .checked_add(1)
             .expect("closure id overflow");
-        let owner = Self::sanitize_symbol_component(&self.current_function_symbol);
+        // A NESTED closure literal is lowered while `current_function_symbol`
+        // is the PARENT closure's invoke shim (`__hew_closure_invoke_<path>`).
+        // Using it verbatim as the owner re-prefixes the symbol on every level
+        // (`__hew_closure_invoke___hew_closure_invoke_main_0_0`) — redundant and
+        // unbounded in nesting depth. Strip the shim prefix so the owner is the
+        // stable nesting PATH (`main_0`): child builders reset `next_closure_id`
+        // to 0, so the parent path is what keeps sibling/cross-level shim names
+        // unique. The `MakeClosure` and the shim both derive their symbol from
+        // this single site, so they stay in lockstep.
+        let owner_src = self
+            .current_function_symbol
+            .strip_prefix("__hew_closure_invoke_")
+            .unwrap_or(&self.current_function_symbol);
+        let owner = Self::sanitize_symbol_component(owner_src);
         let env_name = format!("__hew_closure_env_{owner}_{closure_id}");
         let shim_name = format!("__hew_closure_invoke_{owner}_{closure_id}");
         let env_ty = ResolvedTy::Named {

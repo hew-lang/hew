@@ -1313,6 +1313,11 @@ impl Checker {
             }
 
             let func_ty = binding.ty.clone();
+            // Captured-closure-as-callee identity, snapshotted while `binding`
+            // is still borrowable (the mutable `self` operations below end its
+            // borrow). Used by the capture-fact push after the LambdaPid gate.
+            let callee_binding_id = binding.id;
+            let callee_def_span = binding.def_span.clone();
 
             // Explicit fail-closed gate: a regular fn-closure must not capture a
             // lambda-actor handle (`LambdaPid<M,R>`) and call it with call syntax.
@@ -1356,6 +1361,42 @@ impl Checker {
                         );
                         return Ty::Error;
                     }
+                }
+            }
+
+            // A captured CLOSURE used as a call callee (`|y| base(y)` where
+            // `base` is a closure binding from an enclosing scope) is a capture
+            // exactly as reading its identifier would be — but the call
+            // dispatch resolves the bare callee HERE rather than through
+            // `check_identifier`, so without this push the capture fact is never
+            // recorded and HIR's `materialize_closure_captures` later finds the
+            // binding with no metadata (E_HIR CheckerBoundaryViolation). Record
+            // it now, mirroring the identifier path; `check_lambda` refines the
+            // placeholder mode from a body scan. LambdaPid handles are excluded:
+            // their capture is rejected (above) or routed through the dedicated
+            // lambda-actor protocol, never the closure-env protocol.
+            if let Some(capture_depth) = self.lambda_capture_depth {
+                if binding_depth < capture_depth
+                    && !matches!(
+                        &resolved_func_ty,
+                        Ty::Named {
+                            builtin: Some(crate::BuiltinType::LambdaPid),
+                            ..
+                        }
+                    )
+                {
+                    self.lambda_captures.push(func_ty.clone());
+                    self.lambda_capture_facts.push(ClosureCaptureFact {
+                        binding_id: callee_binding_id,
+                        name: func_name.clone(),
+                        ty: func_ty.clone(),
+                        mode: ClosureCaptureMode::Borrow,
+                        mode_origin: CaptureModeOrigin::InferredBorrow,
+                        is_send: false,
+                        is_sync: false,
+                        use_span: span.clone(),
+                        def_span: callee_def_span.clone(),
+                    });
                 }
             }
 

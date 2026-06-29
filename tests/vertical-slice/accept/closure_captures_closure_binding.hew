@@ -1,0 +1,13 @@
+// A closure captures another closure BINDING and calls it. `wrap` captures
+// `base` (itself a closure) from the enclosing scope and dispatches it as
+// `base(y)`.
+//
+// Previously failed with E_HIR CheckerBoundaryViolation: the call checker
+// resolved a bare-identifier closure callee directly, without recording the
+// `ClosureCaptureFact` that the identifier-read path records — so HIR's capture
+// materialization found the captured binding with no checker metadata.
+fn main() {
+    let base = |x: i64| x + 1;
+    let wrap = |y: i64| base(y);
+    println(wrap(41)); // 42
+}

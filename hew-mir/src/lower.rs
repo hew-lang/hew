@@ -32252,7 +32252,27 @@ fn collect_nested_fresh_string_temp_drops(
         // block-terminating producer (transform / Vec getter).
         let mut defs: Vec<(u32, NestedDefSite)> = Vec::new();
         for (idx, instr) in block.instructions.iter().enumerate() {
-            if let Some(dest) = fresh_string_producer_dest(instr) {
+            // A runtime-ABI fresh producer (`hew_string_concat`/`…_to_uppercase`/…)
+            // OR a retained string `*FieldLoad` dest — the #54 interior-alias
+            // clone-out. `r.name` loaded out of a match-bound nested-record payload
+            // is retained by codegen (`retain_string_field_load` →
+            // `hew_string_clone`, a `+1` owner of the field's buffer); when it is
+            // consumed only by a borrowing transform (`r.name.to_upper()` feeds
+            // `hew_string_to_uppercase`, which reads its operand and allocates a
+            // fresh result) the field-load temp keeps an unbalanced `+1` and leaks.
+            // The parent composite's `EnumInPlace` drop frees the OTHER share (the
+            // payload buffer), so this `+1` retain needs its own single balancing
+            // drop. It is the identical fresh-`+1`-used-by-a-borrow shape this
+            // collector already releases for runtime producers; admit it under the
+            // SAME fail-closed rules (single def, at-most-one borrowing use, def
+            // dominates the drop), so a temp that escapes
+            // (Move/store/return/owning call) stays excluded (leak, never
+            // double-free). `string_field_load_producer_dest`'s `string` type gate
+            // is the exact congruence with the codegen retain — a non-string field
+            // load is never seeded.
+            if let Some(dest) = fresh_string_producer_dest(instr)
+                .or_else(|| string_field_load_producer_dest(instr, locals))
+            {
                 if let Some(t) = base_local(dest) {
                     defs.push((
                         t,
@@ -32736,6 +32756,36 @@ fn derive_enum_composite_drop_allowed(
                         }
                     }
                 }
+                // Nested-record/tuple field binders. When the active payload is
+                // itself a record/tuple (`Some(r)` where `r: Row`), a heap-owning
+                // field loaded out of it (`r.name`) is part of the payload the
+                // composite still owns. Seed the loaded field as a payload binder
+                // so its ONWARD escape (Move into a surviving outer binding, store,
+                // return, owning call) still excludes the composite — while the
+                // interior LOAD itself is exempted from the escape scan below.
+                // The loaded dest inherits the SOURCE binder's scope so the
+                // same-scope discipline above governs any further hand-off out of
+                // it (a field cloned into an outer-scope `carry` is a payload
+                // escape, not a benign in-arm read). Only heap-owning fields are
+                // seeded (a bitcopy field carries no owner). Mirrors the
+                // owned-field-binder seeding in `derive_owned_record_drop_allowed`.
+                if let Instr::RecordFieldLoad { record, dest, .. }
+                | Instr::TupleFieldLoad {
+                    tuple: record,
+                    dest,
+                    ..
+                } = instr
+                {
+                    if let (Some(sl), Some(dl)) = (base_local(*record), base_local(*dest)) {
+                        if let Some(&src_scope) = payload_binders.get(&sl) {
+                            if local_is_heap_owning(dl) && !payload_binders.contains_key(&dl) {
+                                payload_binders
+                                    .insert(dl, local_scope.get(&dl).copied().or(src_scope));
+                                changed = true;
+                            }
+                        }
+                    }
+                }
             }
         }
         if !changed {
@@ -32827,7 +32877,32 @@ fn derive_enum_composite_drop_allowed(
             // always an owning use here (a runtime call that consumes it, an
             // aggregate construction, an arithmetic op on a non-string — the
             // last cannot occur for a heap binder). Fail-closed: exclude.
-            if !matches!(instr, Instr::Move { .. } | Instr::Drop { .. }) {
+            //
+            // EXEMPT the interior projection LOADS (`RecordFieldLoad` /
+            // `TupleFieldLoad`) and the interior `RecordFieldDrop`: when the
+            // active payload is itself a nested record/tuple (`Some(r)` where
+            // `r: Row`), loading one of its fields (`r.name`) is an INTERIOR read
+            // that does not transfer ownership of the payload out of the
+            // composite — exactly as the owned-record escape scan
+            // (`derive_owned_record_drop_allowed`) already exempts them. Without
+            // this, `match opt { Some(r) => r.name.to_upper() }` over a
+            // freshly-cloned `Option<Row>` (from `rows.get(i)` → `hew_vec_get_clone`,
+            // a sole owner) wrongly excluded the composite from its `EnumInPlace`
+            // drop and leaked the whole `Some(Row)` payload (the #54 interior-alias
+            // clone-out: the parent composite is the single owner, `r` is itself
+            // interior-alias-tainted out of its own `RecordInPlace`, so the
+            // `EnumInPlace` is the ONE balancing drop — no double-free). The loaded
+            // field is seeded as a payload binder in the loop above, so if it
+            // ESCAPES onward (Move/store/return/owning call) the composite is still
+            // excluded — fail-closed.
+            if !matches!(
+                instr,
+                Instr::Move { .. }
+                    | Instr::Drop { .. }
+                    | Instr::RecordFieldLoad { .. }
+                    | Instr::TupleFieldLoad { .. }
+                    | Instr::RecordFieldDrop { .. }
+            ) {
                 for p in instr_source_places(instr) {
                     if let Some(l) = base_local(p) {
                         if alias_of.contains_key(&l)
@@ -37553,6 +37628,53 @@ fn enumerate_exits(
             .collect()
     };
 
+    // Scope-close drops on a forward (non-back-edge) `Goto`. A binding bound on
+    // ONLY ONE arm of a `match`/`if` is `Live` at the arm's closing `Goto` but
+    // goes OUT OF SCOPE crossing the join: at the join target's entry the dataflow
+    // meets this arm's `Live` with the sibling arm's `Uninit`, yielding `Uninit`
+    // (absent). The function-exit `Return`/`Trap` pass therefore never fires its
+    // drop — the binding leaks on the normal path (it WAS correctly released on
+    // the `cancel` cleanup path, which uses the source-block exit-state). This
+    // closes that gap: a binding `Live` at the `Goto` source-exit but NOT `Live`
+    // at the target-entry is released here, exactly where it was last provably the
+    // live sole owner.
+    //
+    // Double-free safety (fail-closed): a binding still `Live` /
+    // `MaybeConsumed` / `AliasedIntoAggregate` at the target-entry is NOT dropped
+    // here — it stays in scope past the join, so its eventual `Return`/`Trap` exit
+    // owns the single release. A binding `Consumed` / `Uninit` at the source-exit
+    // is already excluded by `drops_for_exit`'s state filter (never freeing a
+    // moved-out or uninitialised slot). So the release fires on exactly the path
+    // where the binding is the live sole owner and on no other.
+    let target_entry_keeps_alive = |target: u32, binding: &BindingId| -> bool {
+        entry_states
+            .get(&target)
+            .and_then(|state_map| state_map.get(binding))
+            .copied()
+            .is_some_and(|state| {
+                matches!(
+                    state,
+                    dataflow::BindingState::Live
+                        | dataflow::BindingState::MaybeConsumed(_)
+                        | dataflow::BindingState::AliasedIntoAggregate(_)
+                )
+            })
+    };
+    let drops_for_scope_close_goto = |block_id: u32, target: u32| -> Vec<ElabDrop> {
+        drops_for_exit(block_id)
+            .into_iter()
+            .filter(|drop| match place_to_binding.get(&drop.place) {
+                // Drop here only when the binding leaves scope crossing this
+                // edge (not kept alive at the target). Kept-alive → its later
+                // exit owns the release (no double-free).
+                Some(binding) => !target_entry_keeps_alive(target, binding),
+                // No binding mapping → conservatively skip (leak-not-double-free,
+                // matching the back-edge None arm).
+                None => false,
+            })
+            .collect()
+    };
+
     for block in blocks {
         let block_id = block.id;
         let plan = match &block.terminator {
@@ -37563,15 +37685,16 @@ fn enumerate_exits(
                 },
             ),
             Terminator::Goto { target } => {
-                // Per-iteration drops fire on loop-body back-edges; ordinary
-                // `Goto`s (block-scope close, sequential CFG join, post-loop
-                // continuation) keep the default empty plan because their
-                // bindings either self-drop via scope-exit, are still Live on
-                // a join (and drop at the eventual exit), or belong to the
-                // outer-scope function-exit window.
+                // Per-iteration drops fire on loop-body back-edges; a forward
+                // `Goto` that closes an inner (match/if-arm/block) scope releases
+                // the bindings that leave scope crossing the join
+                // (`drops_for_scope_close_goto`) — the bindings whose drop the
+                // function-exit pass would otherwise miss because the join meets
+                // them to `Uninit`. Bindings still live on the join stay for the
+                // eventual exit.
                 let drops = match loop_back_edge_blocks.get(&block_id) {
                     Some(&body_scope) => drops_for_back_edge(block_id, body_scope),
-                    None => Vec::new(),
+                    None => drops_for_scope_close_goto(block_id, *target),
                 };
                 (
                     ExitPath::Goto {

@@ -22,5 +22,5 @@ fn main() {
     c.increment(10);
     c.increment(20);
     c.increment(12);
-    await c.print_total();
+    let _ = await c.print_total();
 }

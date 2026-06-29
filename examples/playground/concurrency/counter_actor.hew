@@ -12,10 +12,13 @@ actor Counter {
 
 fn main() {
     let c = spawn Counter(count: 0);
-    // Statement-position match is not yet sandbox-admitted, so the first
-    // two replies are awaited bare and the last is an expression match
-    // (-1 marks a failed ask).
+    // Statement-position match is not yet sandbox-admitted, so the first two
+    // replies are awaited bare (with an explicit must_use allow for the
+    // discarded ask reply) and the last is an expression match (-1 marks a
+    // failed ask).
+    // hew:allow(must_use)
     await c.increment(5);
+    // hew:allow(must_use)
     await c.increment(3);
     let total = match await c.increment(12) {
         Ok(v) => v,

@@ -136,8 +136,8 @@ fn main() {
     sleep(100ms);
     println("");
     println("--- Worker stats ---");
-    await w1.stats();
-    await w2.stats();
+    let _ = await w1.stats();
+    let _ = await w2.stats();
     println("");
     println("Rate limiting complete. No mutexes, no channels — just actors.");
 }

@@ -111,10 +111,10 @@ fn main() {
     // ── Collect stats ──
     println("");
     println("--- Stats ---");
-    await broker.stats();
-    await alice.count();
-    await bob.count();
-    await carol.count();
+    let _ = await broker.stats();
+    let _ = await alice.count();
+    let _ = await bob.count();
+    let _ = await carol.count();
     println("");
     println("Pub/sub complete. No channels, no mutexes, no select loops.");
     println("The broker actor serialises all routing — data-race free.");

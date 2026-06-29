@@ -104,10 +104,9 @@ fn main() {
     let breaker = spawn CircuitBreaker(backend: backend, state: 0, failure_count: 0, max_failures: 3);
     // ── Normal operation: requests succeed ──
     println("--- Normal operation ---");
-    await breaker.request(1);
-    await breaker.request(2);
-    await breaker.request(3);
-
+    let _ = await breaker.request(1);
+    let _ = await breaker.request(2);
+    let _ = await breaker.request(3);
     // ── Backend degrades ──
     println("");
     println("--- Backend goes down ---");
@@ -115,10 +114,9 @@ fn main() {
     sleep(20ms);
 
     // Three failures trip the breaker (max_failures=3)
-    await breaker.request(4);
-    await breaker.request(5);
-    await breaker.request(6);
-
+    let _ = await breaker.request(4);
+    let _ = await breaker.request(5);
+    let _ = await breaker.request(6);
     // Breaker is now open — requests rejected immediately
     println("");
     println("--- Breaker is open (fast-fail) ---");
@@ -142,8 +140,8 @@ fn main() {
     // Breaker should be closed again — normal operation resumes
     println("");
     println("--- Back to normal ---");
-    await breaker.request(10);
-    await breaker.request(11);
+    let _ = await breaker.request(10);
+    let _ = await breaker.request(11);
     let final_state = await breaker.get_state();
     println(f"Final breaker state: {final_state} (0=Closed)");
     println("");

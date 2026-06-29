@@ -114,15 +114,13 @@ fn main() {
     println("--- All services healthy ---");
     await monitor.check_all();
     sleep(30ms);
-    await monitor.report();
-
+    let _ = await monitor.report();
     // ── Normal traffic ──
     println("");
     println("--- Normal traffic ---");
-    await auth.handle(1);
-    await api.handle(2);
-    await cache.handle(3);
-
+    let _ = await auth.handle(1);
+    let _ = await api.handle(2);
+    let _ = await cache.handle(3);
     // ── Make cache unhealthy ──
     println("");
     println("--- Cache goes down ---");
@@ -130,13 +128,12 @@ fn main() {
     sleep(30ms);
     await monitor.check_all();
     sleep(600ms);
-    await monitor.report();
-
+    let _ = await monitor.report();
     // ── Remaining services still serve traffic ──
     println("");
     println("--- Healthy services still operational ---");
-    await auth.handle(4);
-    await api.handle(5);
+    let _ = await auth.handle(4);
+    let _ = await api.handle(5);
     println("");
     println("Health monitoring complete. The select timeout detects");
     println("unresponsive services without blocking the monitor.");

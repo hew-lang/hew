@@ -129,6 +129,7 @@ fn pipeline_with(actors: Vec<ActorLayout>, records: Vec<RecordLayout>) -> IrPipe
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
+        resource_record_close: vec![],
     }
 }
 

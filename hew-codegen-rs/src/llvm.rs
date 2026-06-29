@@ -1477,6 +1477,13 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// is shared (read-only) — no new declarations are added during body
     /// lowering.
     pub(crate) fn_symbols: &'a FnSymbolMap<'ctx>,
+    /// Field-bearing `#[resource]` record → `<Type>::close` symbol registry
+    /// (`IrPipeline::resource_record_close`). Consulted by the on-demand
+    /// record-drop thunk synthesis in `emit_aggregate_recursive_drop` so a
+    /// `#[resource]` record reached as a tuple/array element gets the SAME
+    /// close-then-teardown thunk the up-front synthesis pass emits — the two
+    /// synthesis points cannot diverge on whether close fires (spec §3.7.3).
+    pub(crate) resource_record_close: &'a [(String, String)],
     /// Module-wide actor layouts keyed by `ActorLayout.name` at use sites.
     /// Spawn lowering consumes these layouts to emit the WASM bridge metadata
     /// producer before calling into the runtime spawn ABI.
@@ -8694,6 +8701,7 @@ fn emit_state_clone_drop_synthesis<'ctx>(
     target_data: Option<&TargetData>,
     enum_inplace_drop_seeds: &[String],
     vec_owned_record_seeds: &[String],
+    resource_record_close: &[(String, String)],
 ) -> CodegenResult<()> {
     // Per-record AND per-enum helpers must exist before the per-actor body
     // that calls them is emitted. Collect-then-emit two passes. The
@@ -8711,6 +8719,14 @@ fn emit_state_clone_drop_synthesis<'ctx>(
         enum_inplace_drop_seeds,
         vec_owned_record_seeds,
     )?;
+    // Resource-record close-symbol lookup (spec §3.7.3). A `#[resource]`
+    // record's recursive drop thunk must run the user `close(self)` FIRST,
+    // before the field-wise teardown — so a `#[resource]` field at any depth
+    // gets its RAII close through the same thunk that frees its heap leaves.
+    let resource_close_by_record: HashMap<&str, &str> = resource_record_close
+        .iter()
+        .map(|(record, symbol)| (record.as_str(), symbol.as_str()))
+        .collect();
     for (record_name, kinds) in &record_classifications {
         let record_struct = record_struct_map.get(record_name).copied().ok_or_else(|| {
             CodegenError::FailClosed(format!(
@@ -8719,7 +8735,14 @@ fn emit_state_clone_drop_synthesis<'ctx>(
             ))
         })?;
         emit_record_clone_inplace_body(ctx, llvm_mod, record_name, record_struct, kinds)?;
-        emit_record_drop_inplace_body(ctx, llvm_mod, record_name, record_struct, kinds)?;
+        emit_record_drop_inplace_body(
+            ctx,
+            llvm_mod,
+            record_name,
+            record_struct,
+            kinds,
+            resource_close_by_record.get(record_name.as_str()).copied(),
+        )?;
     }
     for (enum_name, variant_kinds) in &enum_classifications {
         let layout = machine_layout_map.get(enum_name).ok_or_else(|| {
@@ -10032,6 +10055,7 @@ fn emit_record_drop_inplace_body<'ctx>(
     record_name: &str,
     record_struct: StructType<'ctx>,
     kinds: &[StateFieldCloneKind],
+    resource_close_symbol: Option<&str>,
 ) -> CodegenResult<()> {
     let f = get_or_declare_record_drop_inplace(ctx, llvm_mod, record_name);
     if f.count_basic_blocks() > 0 {
@@ -10040,7 +10064,14 @@ fn emit_record_drop_inplace_body<'ctx>(
              already has a body — duplicate synthesis is a substrate invariant violation"
         )));
     }
-    emit_aggregate_drop_inplace_body(ctx, llvm_mod, f, record_struct, kinds)
+    emit_aggregate_drop_inplace_body_with_close(
+        ctx,
+        llvm_mod,
+        f,
+        record_struct,
+        kinds,
+        resource_close_symbol,
+    )
 }
 
 /// Emit the reverse-order per-field drop body into a pre-declared `fn(*mut)`
@@ -10052,6 +10083,35 @@ pub(crate) fn emit_aggregate_drop_inplace_body<'ctx>(
     f: FunctionValue<'ctx>,
     record_struct: StructType<'ctx>,
     kinds: &[StateFieldCloneKind],
+) -> CodegenResult<()> {
+    // Tuples and the non-resource record path carry no user `close`.
+    emit_aggregate_drop_inplace_body_with_close(ctx, llvm_mod, f, record_struct, kinds, None)
+}
+
+/// `emit_aggregate_drop_inplace_body`, plus an optional user `#[resource]`
+/// `close(self)` call emitted as the FIRST step of the do-drop block — before
+/// the reverse-order field teardown (spec §3.7.3 / §10(d): the resource's own
+/// close runs, then fields drop in reverse declaration order).
+///
+/// `resource_close_symbol` is `Some("<Type>::close")` ONLY for a field-bearing
+/// `#[resource]` record (seeded from `IrPipeline::resource_record_close`); the
+/// symbol must already be declared (every user `impl` method reaches
+/// `declare_function` before drop-thunk synthesis). The close receives the
+/// loaded aggregate `self` by value, exactly like a normal user call and like
+/// the `AffineResource` `lower_drop_user_fn` path — it operates on the external
+/// resource and never frees the record's heap fields, so the subsequent
+/// field-wise teardown frees each heap leaf exactly once (no double-free). A
+/// nested `#[resource]` field's close fires through ITS own thunk, reached by
+/// the recursive `UserRecord` field-drop step (raii-null-after-move: the
+/// teardown is null-guarded; a moved-out / consumed record routes through the
+/// consume-gated `AffineResource` path and never reaches this thunk).
+fn emit_aggregate_drop_inplace_body_with_close<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    f: FunctionValue<'ctx>,
+    record_struct: StructType<'ctx>,
+    kinds: &[StateFieldCloneKind],
+    resource_close_symbol: Option<&str>,
 ) -> CodegenResult<()> {
     let i64_ty = ctx.i64_type();
     let builder = ctx.create_builder();
@@ -10079,6 +10139,41 @@ pub(crate) fn emit_aggregate_drop_inplace_body<'ctx>(
         .llvm_ctx("record drop null branch")?;
 
     builder.position_at_end(do_drop_bb);
+    // Spec §3.7.3 / §10(d): a `#[resource]` record runs its user `close(self)`
+    // BEFORE field teardown. Load the aggregate by value (the `<Type>::close`
+    // calling convention — same as `lower_drop_user_fn` and a normal user
+    // call) and call it. close operates on the external resource only; the
+    // field-wise teardown below frees the heap leaves, so each heap allocation
+    // is released exactly once.
+    if let Some(close_symbol) = resource_close_symbol {
+        let close_fn = llvm_mod.get_function(close_symbol).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "resource-record drop synthesis: user close `{close_symbol}` is not \
+                 declared; every `#[resource]` `close` body must reach `declare_function` \
+                 before drop-thunk synthesis (LESSONS: boundary-fail-closed, \
+                 lifecycle-symmetry)"
+            ))
+        })?;
+        let params = close_fn.get_type().get_param_types();
+        if params.len() != 1 {
+            return Err(CodegenError::FailClosed(format!(
+                "resource-record drop synthesis: user close `{close_symbol}` has {} \
+                 params; a `#[resource]` `close(self)` takes exactly one (the value) — \
+                 refusing to emit a mismatched call (LESSONS: boundary-fail-closed)",
+                params.len(),
+            )));
+        }
+        let loaded_self = builder
+            .build_load(record_struct, state, &format!("{close_symbol}_self"))
+            .llvm_ctx_with(|| format!("{close_symbol} self load"))?;
+        builder
+            .build_call(
+                close_fn,
+                &[metadata_value_from_basic(loaded_self)],
+                &format!("{close_symbol}_call"),
+            )
+            .llvm_ctx_with(|| format!("{close_symbol} call"))?;
+    }
     for (idx, kind) in kinds.iter().enumerate().rev() {
         if matches!(kind, StateFieldCloneKind::BitCopy { .. }) {
             continue;
@@ -11502,6 +11597,269 @@ fn emit_enum_drop_inplace_body<'ctx>(
 
     builder.position_at_end(done_bb);
     builder.build_return(None).llvm_ctx("enum drop ret")?;
+    Ok(())
+}
+
+// ── Indirect-enum recursive heap-node free synthesis (spec §3.7.4) ────────
+//
+// An `indirect enum` value is a heap pointer to a tagged-union node
+// `{ tag: iW, payload: [...] }`. Freeing it is a recursive walk:
+//   1. null-check the node pointer (a moved-out / null slot is a no-op),
+//   2. tag-dispatch to the active variant,
+//   3. recurse into every owned CHILD indirect-enum pointer the variant's
+//      payload holds (a `Node(Tree, Tree)`'s two children), freeing each
+//      subtree FIRST so the post-order leaves no dangling parent reference,
+//   4. `hew_dealloc` the node itself with the size/align of its outer struct.
+//
+// The thunk is `void __hew_indirect_enum_free_<key>(ptr)`. Self-recursive
+// enums call themselves; mutually-recursive `indirect enum` pairs (A ↔ B)
+// call each other's thunk (resolved by the child field's type), so the
+// emitter synthesises each referenced thunk on first reference and the bodies
+// are mutually visible by the time any is called. Only indirect-enum payload
+// fields are recursed into — inline (BitCopy / leaf) payload bytes live inside
+// the node and are reclaimed by the single `hew_dealloc`.
+//
+// FAIL-CLOSED: an out-of-range tag traps (the same exhaustiveness-fallthrough
+// trap the inline enum drop uses); an unregistered layout fails closed before
+// any body is emitted. Memory safety is the post-order + null-check + the MIR
+// elaborator's sole-owner admission (each node has exactly one freeing owner).
+// LESSONS: boundary-fail-closed, cleanup-all-exits, raii-null-after-move.
+
+/// Lookup-or-declare the `void __hew_indirect_enum_free_<key>(ptr)` recursive
+/// heap-node free thunk for an indirect enum.
+pub(crate) fn get_or_declare_indirect_enum_free<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    enum_name: &str,
+) -> FunctionValue<'ctx> {
+    let sym = format!("__hew_indirect_enum_free_{enum_name}");
+    if let Some(fv) = llvm_mod.get_function(&sym) {
+        return fv;
+    }
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let fn_ty = ctx.void_type().fn_type(&[ptr_ty.into()], false);
+    llvm_mod.add_function(&sym, fn_ty, Some(Linkage::Internal))
+}
+
+/// Resolve the registered `MachineCodegenLayout` for an enum-layout key,
+/// trying the bare key then the short name (the same fallback
+/// `machine_layout_for_local` uses for module-qualified names).
+fn indirect_enum_layout_by_key<'a, 'ctx>(
+    fn_ctx: &'a FnCtx<'_, 'ctx>,
+    enum_name: &str,
+) -> CodegenResult<&'a MachineCodegenLayout<'ctx>> {
+    fn_ctx
+        .machine_layouts
+        .get(enum_name)
+        .or_else(|| fn_ctx.machine_layouts.get(short_name(enum_name)))
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "indirect-enum free synthesis: enum `{enum_name}` is not in \
+                 IrPipeline.machine_layouts — registration mismatch between MIR \
+                 producer and codegen"
+            ))
+        })
+}
+
+/// Synthesise the `__hew_indirect_enum_free_<enum_name>` recursive heap-node
+/// free body on first reference (idempotent — returns early if a body already
+/// exists). Recurses into owned child indirect-enum pointers, then
+/// `hew_dealloc`s the node.
+pub(crate) fn emit_indirect_enum_free_body_only<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    enum_name: &str,
+) -> CodegenResult<()> {
+    let ctx = fn_ctx.ctx;
+    let llvm_mod = fn_ctx.llvm_mod;
+    let f = get_or_declare_indirect_enum_free(ctx, llvm_mod, enum_name);
+    if f.count_basic_blocks() > 0 {
+        return Ok(());
+    }
+
+    // Resolve this enum's tagged-union layout (outer struct, tag int type,
+    // per-variant payload struct types) and the MIR-side variant field types
+    // (to know which payload fields are indirect-enum children to recurse into).
+    let layout = indirect_enum_layout_by_key(fn_ctx, enum_name)?.clone();
+    let outer_struct = layout.outer_struct;
+    let tag_int_ty = layout.tag_int_ty;
+
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.i64_type();
+
+    // Append the basic-block skeleton BEFORE recursing into child thunks. This
+    // makes `f.count_basic_blocks() > 0` true for the in-progress thunk, so a
+    // mutually-recursive partner (`A` whose payload holds `B` whose payload
+    // holds `A`) that re-enters synthesis of `A` short-circuits at the early
+    // return above instead of recursing forever (the compile-time stack
+    // overflow the naive pre-synthesis caused). The blocks are positioned and
+    // filled only after the child recursion completes.
+    let entry_bb = ctx.append_basic_block(f, "entry");
+    let body_bb = ctx.append_basic_block(f, "free_body");
+    let dealloc_bb = ctx.append_basic_block(f, "dealloc");
+    let done_bb = ctx.append_basic_block(f, "done");
+    let trap_bb = ctx.append_basic_block(f, "tag_oob_trap");
+
+    // Synthesise the thunks for every distinct CHILD indirect-enum type this
+    // enum's variants recurse into (self-recursion reuses `f`, already
+    // block-skeletoned above; mutually-recursive partners get declared+bodied
+    // here so the call below resolves to a real define). Collect the child enum
+    // keys first to avoid borrowing issues while emitting.
+    let mut child_enum_keys: Vec<String> = Vec::new();
+    for field_tys in &layout.variant_field_tys {
+        for fty in field_tys {
+            if let ResolvedTy::Named { name, .. } = fty {
+                if crate::layout::is_indirect_enum(name, fn_ctx.enum_layouts) {
+                    let child_key = crate::layout::enum_layout_key_for_ty(fn_ctx, fty)?;
+                    if child_key != enum_name && !child_enum_keys.contains(&child_key) {
+                        child_enum_keys.push(child_key);
+                    }
+                }
+            }
+        }
+    }
+    for child_key in &child_enum_keys {
+        emit_indirect_enum_free_body_only(fn_ctx, child_key)?;
+    }
+
+    let builder = ctx.create_builder();
+
+    let node = f
+        .get_nth_param(0)
+        .expect("indirect-enum free param")
+        .into_pointer_value();
+
+    // entry: null-check the node pointer — a moved-out / null slot is a no-op.
+    builder.position_at_end(entry_bb);
+    let is_null = builder
+        .build_is_null(node, "indirect_free_is_null")
+        .llvm_ctx("indirect enum free null check")?;
+    builder
+        .build_conditional_branch(is_null, done_bb, body_bb)
+        .llvm_ctx("indirect enum free null branch")?;
+
+    // free_body: load the tag, switch to the active variant.
+    builder.position_at_end(body_bb);
+    let tag_ptr = builder
+        .build_struct_gep(outer_struct, node, 0, "indirect_free_tag_ptr")
+        .llvm_ctx("indirect enum free tag gep")?;
+    let tag = builder
+        .build_load(tag_int_ty, tag_ptr, "indirect_free_tag")
+        .llvm_ctx("indirect enum free tag load")?
+        .into_int_value();
+
+    let mut variant_bbs: Vec<inkwell::basic_block::BasicBlock<'ctx>> =
+        Vec::with_capacity(layout.variant_struct_tys.len());
+    let mut cases: Vec<(IntValue<'ctx>, inkwell::basic_block::BasicBlock<'ctx>)> =
+        Vec::with_capacity(layout.variant_struct_tys.len());
+    for idx in 0..layout.variant_struct_tys.len() {
+        let bb = ctx.append_basic_block(f, &format!("indirect_free_variant_{idx}"));
+        cases.push((tag_int_ty.const_int(idx as u64, false), bb));
+        variant_bbs.push(bb);
+    }
+    builder
+        .build_switch(tag, trap_bb, &cases)
+        .llvm_ctx("indirect enum free tag switch")?;
+
+    builder.position_at_end(trap_bb);
+    emit_trap_with_code_raw(
+        ctx,
+        llvm_mod,
+        &builder,
+        HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH as u64,
+        "indirect_free_tag_oob",
+    )?;
+
+    // Per-variant: recurse into each owned child indirect-enum pointer field,
+    // then fall through to the shared dealloc block.
+    for (idx, variant_struct) in layout.variant_struct_tys.iter().enumerate() {
+        builder.position_at_end(variant_bbs[idx]);
+        let payload = builder
+            .build_struct_gep(
+                outer_struct,
+                node,
+                1,
+                &format!("indirect_free_payload_{idx}"),
+            )
+            .llvm_ctx("indirect enum free payload gep")?;
+        let field_tys = layout
+            .variant_field_tys
+            .get(idx)
+            .map_or(&[][..], |v| v.as_slice());
+        for (field_idx, fty) in field_tys.iter().enumerate() {
+            let ResolvedTy::Named { name, .. } = fty else {
+                continue;
+            };
+            if !crate::layout::is_indirect_enum(name, fn_ctx.enum_layouts) {
+                continue;
+            }
+            // Bounds-guard against layout/field drift before GEP-ing.
+            if field_idx >= variant_struct.count_fields() as usize {
+                return Err(CodegenError::FailClosed(format!(
+                    "indirect-enum free synthesis: `{enum_name}` variant {idx} field \
+                     {field_idx} is out of range — variant struct has {} fields \
+                     (classifier/layout drift)",
+                    variant_struct.count_fields()
+                )));
+            }
+            let child_field_ptr = builder
+                .build_struct_gep(
+                    *variant_struct,
+                    payload,
+                    field_idx as u32,
+                    "indirect_free_child_field_ptr",
+                )
+                .llvm_ctx("indirect enum free child field gep")?;
+            let child_ptr = builder
+                .build_load(ptr_ty, child_field_ptr, "indirect_free_child_ptr")
+                .llvm_ctx("indirect enum free child load")?
+                .into_pointer_value();
+            // Resolve the child's own free thunk (self for `Node(Tree,Tree)`,
+            // the partner thunk for a mutually-recursive pair). Both were
+            // declared+bodied above, so this resolves to a real define.
+            let child_key = crate::layout::enum_layout_key_for_ty(fn_ctx, fty)?;
+            let child_thunk = get_or_declare_indirect_enum_free(ctx, llvm_mod, &child_key);
+            builder
+                .build_call(child_thunk, &[child_ptr.into()], "indirect_free_child_call")
+                .llvm_ctx("indirect enum free child call")?;
+        }
+        builder
+            .build_unconditional_branch(dealloc_bb)
+            .llvm_ctx("indirect enum free variant->dealloc br")?;
+    }
+
+    // dealloc: free the node itself. Size/align come from an anonymous mirror
+    // of the outer struct (the same `host_target_data`-safe sizing the eager
+    // allocation prologue uses, so alloc and free agree on (size, align)).
+    builder.position_at_end(dealloc_bb);
+    let anon_outer = ctx.struct_type(&outer_struct.get_field_types(), false);
+    let size_bytes = fn_ctx.target_data.get_abi_size(&anon_outer);
+    let align_bytes = fn_ctx.target_data.get_abi_alignment(&anon_outer);
+    if size_bytes == 0 {
+        return Err(CodegenError::FailClosed(format!(
+            "indirect-enum free synthesis: `{enum_name}` outer struct has 0 bytes \
+             (variant layout or target-data mismatch) — refusing to emit a \
+             zero-size hew_dealloc"
+        )));
+    }
+    let size_val = i64_ty.const_int(size_bytes, false);
+    let align_val = i64_ty.const_int(u64::from(align_bytes), false);
+    let mut decls: RuntimeDeclMap<'ctx> = RuntimeDeclMap::new();
+    let dealloc_fn = intern_runtime_decl(ctx, llvm_mod, &mut decls, "hew_dealloc")?;
+    builder
+        .build_call(
+            dealloc_fn,
+            &[node.into(), size_val.into(), align_val.into()],
+            "indirect_enum_dealloc",
+        )
+        .llvm_ctx("indirect enum free hew_dealloc call")?;
+    builder
+        .build_unconditional_branch(done_bb)
+        .llvm_ctx("indirect enum free dealloc->done br")?;
+
+    builder.position_at_end(done_bb);
+    builder
+        .build_return(None)
+        .llvm_ctx("indirect enum free ret")?;
     Ok(())
 }
 
@@ -25003,6 +25361,66 @@ fn emit_one_elab_drop_unguarded(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> Code
             }
             lower_dyn_trait_vtable_drop(fn_ctx, drop.place, true)
         }
+        // `indirect enum` heap-node free (spec §3.7.4). The binding's alloca
+        // holds a `ptr` to a tagged-union node `{ tag, payload }`; the node, and
+        // any owned child nodes its active variant carries (`Node(Tree, Tree)`),
+        // are the heap owners transferred to whichever binding owns the node at
+        // scope exit. Load the node pointer, null-check it, and call the
+        // synthesised `__hew_indirect_enum_free_<key>` recursive thunk (frees
+        // owned child nodes first by tag-dispatch, then `hew_dealloc`s the node),
+        // then null-store the slot so a second drop of the same slot is a no-op
+        // (`raii-null-after-move`). The MIR elaborator emits this kind ONLY for a
+        // binding its fail-closed sole-owner derivation proved constructed and
+        // still solely owns its node, so this frees the node exactly once.
+        // LESSONS: boundary-fail-closed, cleanup-all-exits, raii-null-after-move.
+        hew_mir::DropKind::IndirectEnum => {
+            if drop.drop_fn.is_some() {
+                return Err(CodegenError::FailClosed(format!(
+                    "IndirectEnum ElabDrop @ {place:?} unexpectedly carries \
+                     ElabDrop::drop_fn = {df:?}; it must carry none — the recursive \
+                     free thunk is resolved from ElabDrop::ty (LESSONS: \
+                     boundary-fail-closed).",
+                    place = drop.place,
+                    df = drop.drop_fn,
+                )));
+            }
+            let enum_name = crate::layout::enum_layout_key_for_ty(fn_ctx, &drop.ty)?;
+            // Synthesise the recursive free body on first reference, then resolve
+            // it. A declaration with no body would link-fail; refuse a dangling
+            // call.
+            emit_indirect_enum_free_body_only(fn_ctx, &enum_name)?;
+            let helper = get_or_declare_indirect_enum_free(fn_ctx.ctx, fn_ctx.llvm_mod, &enum_name);
+            if helper.count_basic_blocks() == 0 {
+                return Err(CodegenError::FailClosed(format!(
+                    "IndirectEnum ElabDrop @ {place:?} for enum `{enum_name}` resolved \
+                     `__hew_indirect_enum_free_{enum_name}`, but it has no body after \
+                     synthesis; refusing to emit a dangling helper call (LESSONS: \
+                     boundary-fail-closed).",
+                    place = drop.place,
+                )));
+            }
+            // Load the node pointer from the binding's alloca slot.
+            let (slot, _) = place_pointer(fn_ctx, drop.place)?;
+            let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+            let node_ptr = fn_ctx
+                .builder
+                .build_load(ptr_ty, slot, "indirect_enum_node_ptr")
+                .llvm_ctx("load indirect-enum node pointer for drop")?
+                .into_pointer_value();
+            // The thunk null-checks internally, so an already-null slot (moved
+            // out) calls it harmlessly; the call returns immediately. Pass the
+            // loaded node pointer; the thunk owns the recursion + dealloc.
+            fn_ctx
+                .builder
+                .build_call(helper, &[node_ptr.into()], "indirect_enum_free")
+                .llvm_ctx("indirect enum free call")?;
+            // raii-null-after-move: a second drop of this slot must be a no-op.
+            fn_ctx
+                .builder
+                .build_store(slot, ptr_ty.const_null())
+                .llvm_ctx("null-store indirect-enum slot after free")?;
+            Ok(())
+        }
     }
 }
 
@@ -25558,12 +25976,23 @@ fn emit_heap_slot_drop<'ctx>(
                 if helper.count_basic_blocks() == 0 {
                     let record_struct = record_struct_for(fn_ctx, ty)?;
                     let field_kinds = classify_record_drop_fields_for_key(fn_ctx, &name)?;
+                    // A `#[resource]` record reached as a tuple/array element
+                    // gets the SAME close-then-teardown thunk the up-front
+                    // synthesis pass emits — keyed off the shared registry so
+                    // the two synthesis points cannot diverge on whether the
+                    // user `close(self)` fires (spec §3.7.3).
+                    let resource_close = fn_ctx
+                        .resource_record_close
+                        .iter()
+                        .find(|(record, _)| record == &name)
+                        .map(|(_, symbol)| symbol.as_str());
                     emit_record_drop_inplace_body(
                         fn_ctx.ctx,
                         fn_ctx.llvm_mod,
                         &name,
                         record_struct,
                         &field_kinds,
+                        resource_close,
                     )?;
                 }
                 fn_ctx
@@ -34802,6 +35231,7 @@ fn lower_function<'ctx>(
     record_field_names: &HashMap<String, Vec<String>>,
     dyn_vtable_registry: &[DynVtableInstance],
     const_globals: &ConstGlobalMap<'ctx>,
+    resource_record_close: &[(String, String)],
     emit_wasm_entry_alias: bool,
     has_supervisors: bool,
     module_uses_runtime: bool,
@@ -35224,15 +35654,57 @@ fn lower_function<'ctx>(
     //   "first write", which has no clean codegen-level marker.  An up-front
     //   alloc at function entry is simple and dominates every use.
     //
-    // WHY not leak: indirect-enum drops emit `hew_dealloc` (added via
-    //   DropKind::IndirectEnum).  Until the drop elaborator wires that,
-    //   the heap allocation leaks — an acceptable interim gap (the value
-    //   type is correct; memory safety is preserved; the only cost is the
-    //   leak, which ASAN/valgrind will flag).
+    // LIFECYCLE: the eager node is reclaimed by the drop elaborator's
+    //   `DropKind::IndirectEnum` scope-exit free (the recursive
+    //   `__hew_indirect_enum_free_<Enum>` thunk + `hew_dealloc`), emitted for
+    //   exactly one sole-owner binding per node (`derive_indirect_enum_drop_
+    //   allowed`). A binding the prover cannot positively clear leaks (e.g. a
+    //   node returned to the caller, whose caller-side binding is not a
+    //   construction site) — fail-closed, never a double-free. The remaining
+    //   call-result-owns-a-returned-node leak is a tracked follow-on, not a
+    //   memory-safety gap.
+    // Construction-site set: the non-parameter indirect-enum locals that are
+    // actually CONSTRUCTED in this function — i.e. written through a
+    // tag/variant place (`Move { dest: MachineTag/MachineVariant/EnumTag/
+    // EnumVariant(local), .. }`). Only these need a fresh heap node from the
+    // eager prologue: a tag/variant write GEPs into the node, so the node must
+    // already exist (the use-before-alloc the prologue guards against).
     //
-    // WHEN-OBSOLETE: when drop elaboration for `indirect enum` locals is
-    //   wired end-to-end (DropKind::IndirectEnum + codegen arm), this
-    //   comment should note that drops now free the allocation.
+    // WHY this gate (the over-allocation leak fix): an indirect-enum local that
+    // is only ever WRITTEN by a plain `Move { dest: Local(N), src: <ptr> }`
+    // (a destructure binder `l/r = move mvar.payload`, a move-temp `_t = move
+    // _src`, or a call-result binding) RECEIVES an already-owned heap pointer —
+    // it never constructs a node. Eagerly allocating it produced a heap node
+    // that the very next instruction OVERWRITES with the received pointer,
+    // orphaning the eager alloc — a per-binding leak that no scope-exit drop can
+    // reclaim (the original pointer is gone by the time any drop runs). Gating
+    // on the construction set stops minting those doomed nodes.
+    //
+    // FAIL-CLOSED direction: under-including this set crashes loudly
+    // (use-before-alloc: a tag/variant GEP through a null/uninitialised slot),
+    // never silently corrupts — so the conservative error is to allocate too
+    // FEW, which surfaces immediately, not too many (the prior silent leak).
+    // The classifier is the exhaustive `Move`-dest match below; a future
+    // construction-shaped Place must be added here or its first use crashes.
+    let mut indirect_enum_construction_sites: std::collections::HashSet<u32> =
+        std::collections::HashSet::new();
+    for block in &func.blocks {
+        for instr in &block.instructions {
+            if let Instr::Move { dest, .. } = instr {
+                let constructed_local = match dest {
+                    Place::MachineTag(l)
+                    | Place::EnumTag(l)
+                    | Place::MachineVariant { local: l, .. }
+                    | Place::EnumVariant { local: l, .. } => Some(*l),
+                    _ => None,
+                };
+                if let Some(l) = constructed_local {
+                    indirect_enum_construction_sites.insert(l);
+                }
+            }
+        }
+    }
+
     let param_count = func.params.len();
     let mut prologue_decls: RuntimeDeclMap<'ctx> = RuntimeDeclMap::new();
     for (idx, ty) in func.locals.iter().enumerate() {
@@ -35246,6 +35718,14 @@ fn lower_function<'ctx>(
             continue;
         };
         if !crate::layout::is_indirect_enum(ty_name, enum_layouts) {
+            continue;
+        }
+        // Skip locals that are never constructed here (only receive a pointer
+        // via a plain `Move`): pre-allocating them mints a node the next
+        // instruction overwrites, leaking the eager alloc. See the
+        // construction-site comment above.
+        let idx_u32_gate = u32::try_from(idx).expect("local index fits u32");
+        if !indirect_enum_construction_sites.contains(&idx_u32_gate) {
             continue;
         }
         // Locate the outer struct type for the indirect enum.
@@ -35647,6 +36127,7 @@ fn lower_function<'ctx>(
         runtime_decls: RefCell::new(HashMap::new()),
         record_layouts,
         fn_symbols,
+        resource_record_close,
         actor_layouts,
         machine_layouts,
         enum_layouts,
@@ -36598,6 +37079,7 @@ fn build_module_for_target<'ctx>(
         Some(&target_data),
         &enum_inplace_drop_seeds,
         &vec_owned_record_seeds,
+        &pipeline.resource_record_close,
     )?;
     // Supervisor bootstraps replace the MIR-side synthesised body wholesale
     // with the canonical `hew_supervisor_new` → `add_child_spec` × N →
@@ -36676,6 +37158,7 @@ fn build_module_for_target<'ctx>(
             &record_field_names,
             &pipeline.dyn_vtable_registry,
             &const_globals,
+            &pipeline.resource_record_close,
             emit_wasm_entry_alias,
             !pipeline.supervisor_layouts.is_empty(),
             module_uses_runtime,
@@ -41574,6 +42057,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         }
     }
 
@@ -42083,6 +42567,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         };
 
         let ctx = Context::create();
@@ -42175,6 +42660,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         }
     }
 
@@ -42305,6 +42791,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         }
     }
 
@@ -42419,6 +42906,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         }
     }
 
@@ -42553,6 +43041,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         }
     }
 
@@ -42687,6 +43176,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "handler_ctx_test")
@@ -42773,6 +43263,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "ctx_field_test")
@@ -42853,6 +43344,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         };
         let ctx = Context::create();
         let m =
@@ -43136,6 +43628,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         }
     }
 
@@ -43351,6 +43844,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         }
     }
 
@@ -44141,6 +44635,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         };
 
         let ctx = Context::create();
@@ -44236,6 +44731,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "gen_yield_codegen_test")
@@ -44397,6 +44893,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "make_generator_codegen_test")
@@ -44485,6 +44982,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "cancel_token_is_cancelled_codegen_test")
@@ -44759,6 +45257,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         };
         let syms = empty_fn_symbols();
         let err = verify_drop_dispatch_resolves(&pipeline, &syms)
@@ -44830,6 +45329,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         };
         let syms = empty_fn_symbols();
         verify_drop_dispatch_resolves(&pipeline, &syms)
@@ -44887,6 +45387,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         };
         let found = uses_wasm_excluded_symbol(&pipeline)
             .expect("Duplex::close ElabDrop must be flagged as WASM-excluded");
@@ -44922,6 +45423,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         }
     }
 
@@ -45538,6 +46040,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         };
         assert!(
             uses_wasm_excluded_symbol(&pipeline).is_none(),
@@ -45849,6 +46352,7 @@ mod tests {
             runtime_decls: RefCell::new(HashMap::new()),
             record_layouts: &harness.record_layouts,
             fn_symbols: &harness.fn_symbols,
+            resource_record_close: &[],
             actor_layouts: &harness.actor_layouts,
             machine_layouts: &harness.machine_layouts,
             enum_layouts: &[],
@@ -47804,6 +48308,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         };
         let tmp = tempfile::Builder::new()
             .prefix("hew-dyn-coerce-ok-")
@@ -47955,6 +48460,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         };
         let tmp = tempfile::Builder::new()
             .prefix("hew-dyn-coerce-miss-")
@@ -48346,6 +48852,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         };
         let tmp = tempfile::Builder::new()
             .prefix("hew-frame-owned-drop-fail-")
@@ -48632,6 +49139,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         }
     }
 
@@ -48862,6 +49370,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         }
     }
 
@@ -49058,6 +49567,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         }
     }
 
@@ -49251,6 +49761,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         };
 
         let ctx = Context::create();
@@ -49460,6 +49971,7 @@ mod tests {
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
+            resource_record_close: vec![],
         }
     }
 

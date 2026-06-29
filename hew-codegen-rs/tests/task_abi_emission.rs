@@ -114,6 +114,7 @@ fn pipeline_with_task_abi_call(
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
+        resource_record_close: vec![],
     }
 }
 
@@ -229,6 +230,7 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
+        resource_record_close: vec![],
     }
 }
 
@@ -335,6 +337,7 @@ fn pipeline_with_spawn_task_direct_target_without_context() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
+        resource_record_close: vec![],
     }
 }
 
@@ -465,6 +468,7 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
+        resource_record_close: vec![],
     }
 }
 
@@ -680,6 +684,7 @@ fn task_abi_emission_task_scope_spawn_paired_with_task_new() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
+        resource_record_close: vec![],
     };
 
     let tmp = std::env::temp_dir().join("hew-task-abi-task-scope-spawn-paired");

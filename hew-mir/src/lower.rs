@@ -2824,6 +2824,42 @@ pub fn lower_hir_module_with_facts(
     // to run after drop elaboration so a `Drop`'s read of the local is modelled.
     let lint_warnings = crate::liveness::run_mir_lints(&raw_mir);
 
+    // Field-bearing `#[resource]` record → `<Type>::close` symbol registry
+    // (spec §3.7.3). A `#[resource]` record that owns a heap/aggregate field
+    // is admitted to `owned_record_drop_allowed` and routes to the recursive
+    // `__hew_record_drop_inplace_<R>` thunk, which frees heap leaves but would
+    // otherwise skip the RAII `close()` contract. Seed the thunk synthesis with
+    // each such record's user close symbol so codegen calls `close(self)` as
+    // the first step of the record's (and any nested resource field's) drop.
+    //
+    // Keyed off `record_layouts` so only records with a real layout (the ones
+    // the thunk is synthesised for) are listed; a single-handle `#[resource]`
+    // with no record layout never reaches the thunk and is excluded. The close
+    // method name comes from the SAME `type_classes` entry `resource_drop_fn`
+    // reads, and the `<Type>::close` symbol matches `declare_function`'s
+    // flattened `<Self>::<method>` mangling, so MIR and codegen agree without
+    // translation glue.
+    let resource_record_close: Vec<(String, String)> = record_layouts
+        .iter()
+        .filter_map(|layout| {
+            let short = short_name(&layout.name);
+            let entry = module
+                .type_classes
+                .get(layout.name.as_str())
+                .or_else(|| module.type_classes.get(short))?;
+            let (marker, close) = entry;
+            if !matches!(marker, ResourceMarker::Resource) {
+                return None;
+            }
+            let close_method = close.as_ref()?;
+            // The close symbol is `<short type name>::<method>` — the same
+            // flattening `HirImplBlock::method_symbol` / `declare_function`
+            // and `resource_drop_fn`'s `UserClose` spelling use.
+            let symbol = format!("{short}::{close_method}");
+            Some((layout.name.clone(), symbol))
+        })
+        .collect();
+
     IrPipeline {
         thir,
         raw_mir,
@@ -2877,6 +2913,7 @@ pub fn lower_hir_module_with_facts(
         // here so the lowerer does not depend on `TypeCheckOutput` directly.
         user_clone_record_seeds: Vec::new(),
         lint_warnings,
+        resource_record_close,
     }
 }
 
@@ -29449,6 +29486,31 @@ fn elaborate(
         }
     }
 
+    // Indirect-enum heap-node sole-owner allow-set (spec §3.7.4). A constructed
+    // indirect-enum node earns its recursive `hew_dealloc` release UNLESS the
+    // fail-closed structural proof shows it is an alias (a destructure binder),
+    // a child handed to a parent node, returned, or consumed. Because indirect
+    // enums are borrow-on-use everywhere (`intent = Read`), the consume-dataflow
+    // alone cannot prove sole ownership — this derivation supplies the
+    // construction-site + parent-ingress proof; the `returned_aggregate_members`
+    // skip and the `Consumed`/`MaybeConsumed` exit filter below complete it.
+    let mut indirect_enum_drop_allowed = derive_indirect_enum_drop_allowed(
+        &checked.blocks,
+        &builder.owned_locals,
+        &builder.binding_locals,
+        &builder.enum_layouts,
+    );
+    for states in dataflow_result.exit_states.values() {
+        for (binding, state) in states {
+            if matches!(
+                state,
+                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+            ) {
+                indirect_enum_drop_allowed.remove(binding);
+            }
+        }
+    }
+
     let lifo_drops = build_lifo_drops(
         &builder.owned_locals,
         &builder.binding_locals,
@@ -29468,6 +29530,7 @@ fn elaborate(
         &closure_pair_drop_allowed,
         &closure_vec_drop_allowed,
         &plain_vec_drop_allowed,
+        &indirect_enum_drop_allowed,
         &builder.resource_drop_flags,
     );
     let (elab_blocks, drop_plans) = enumerate_exits(
@@ -29483,6 +29546,7 @@ fn elaborate(
             .collect::<HashSet<_>>(),
         &builder.binding_scope,
         &builder.loop_back_edge_blocks,
+        &builder.locals,
     );
 
     ElaboratedMirFunction {
@@ -29734,6 +29798,23 @@ fn expected_drop_kind_for_validation(drop: &ElabDrop) -> DropKind {
         DropKind::ClosurePair => {
             if matches!(drop.place, Place::Local(_)) && ty_is_closure_pair(&drop.ty) {
                 DropKind::ClosurePair
+            } else {
+                drop_kind_for(drop.place, &drop.ty, None)
+            }
+        }
+        // Indirect-enum heap-node drops are keyed by both kind and
+        // `ElabDrop::ty` (the enum identity selects the node size/align and the
+        // recursive child-free walk), while the place is an ordinary stack
+        // `Local` holding the heap pointer. `drop_kind_for` is layout-blind (it
+        // has no `enum_layouts` to tell an indirect enum from an inline one), so
+        // the indirect-enum kind is validated here by shape rather than
+        // re-derived through the dispatcher: accept the dedicated kind on a local
+        // `Named` place; any other shape re-derives via the dispatcher so a
+        // non-indirect-enum place cannot silently carry an `IndirectEnum` kind.
+        DropKind::IndirectEnum => {
+            if matches!(drop.place, Place::Local(_)) && matches!(&drop.ty, ResolvedTy::Named { .. })
+            {
+                DropKind::IndirectEnum
             } else {
                 drop_kind_for(drop.place, &drop.ty, None)
             }
@@ -32138,7 +32219,27 @@ fn collect_nested_fresh_string_temp_drops(
         // block-terminating producer (transform / Vec getter).
         let mut defs: Vec<(u32, NestedDefSite)> = Vec::new();
         for (idx, instr) in block.instructions.iter().enumerate() {
-            if let Some(dest) = fresh_string_producer_dest(instr) {
+            // A runtime-ABI fresh producer (`hew_string_concat`/`…_to_uppercase`/…)
+            // OR a retained string `*FieldLoad` dest — the #54 interior-alias
+            // clone-out. `r.name` loaded out of a match-bound nested-record payload
+            // is retained by codegen (`retain_string_field_load` →
+            // `hew_string_clone`, a `+1` owner of the field's buffer); when it is
+            // consumed only by a borrowing transform (`r.name.to_upper()` feeds
+            // `hew_string_to_uppercase`, which reads its operand and allocates a
+            // fresh result) the field-load temp keeps an unbalanced `+1` and leaks.
+            // The parent composite's `EnumInPlace` drop frees the OTHER share (the
+            // payload buffer), so this `+1` retain needs its own single balancing
+            // drop. It is the identical fresh-`+1`-used-by-a-borrow shape this
+            // collector already releases for runtime producers; admit it under the
+            // SAME fail-closed rules (single def, at-most-one borrowing use, def
+            // dominates the drop), so a temp that escapes
+            // (Move/store/return/owning call) stays excluded (leak, never
+            // double-free). `string_field_load_producer_dest`'s `string` type gate
+            // is the exact congruence with the codegen retain — a non-string field
+            // load is never seeded.
+            if let Some(dest) = fresh_string_producer_dest(instr)
+                .or_else(|| string_field_load_producer_dest(instr, locals))
+            {
                 if let Some(t) = base_local(dest) {
                     defs.push((
                         t,
@@ -32622,6 +32723,36 @@ fn derive_enum_composite_drop_allowed(
                         }
                     }
                 }
+                // Nested-record/tuple field binders. When the active payload is
+                // itself a record/tuple (`Some(r)` where `r: Row`), a heap-owning
+                // field loaded out of it (`r.name`) is part of the payload the
+                // composite still owns. Seed the loaded field as a payload binder
+                // so its ONWARD escape (Move into a surviving outer binding, store,
+                // return, owning call) still excludes the composite — while the
+                // interior LOAD itself is exempted from the escape scan below.
+                // The loaded dest inherits the SOURCE binder's scope so the
+                // same-scope discipline above governs any further hand-off out of
+                // it (a field cloned into an outer-scope `carry` is a payload
+                // escape, not a benign in-arm read). Only heap-owning fields are
+                // seeded (a bitcopy field carries no owner). Mirrors the
+                // owned-field-binder seeding in `derive_owned_record_drop_allowed`.
+                if let Instr::RecordFieldLoad { record, dest, .. }
+                | Instr::TupleFieldLoad {
+                    tuple: record,
+                    dest,
+                    ..
+                } = instr
+                {
+                    if let (Some(sl), Some(dl)) = (base_local(*record), base_local(*dest)) {
+                        if let Some(&src_scope) = payload_binders.get(&sl) {
+                            if local_is_heap_owning(dl) && !payload_binders.contains_key(&dl) {
+                                payload_binders
+                                    .insert(dl, local_scope.get(&dl).copied().or(src_scope));
+                                changed = true;
+                            }
+                        }
+                    }
+                }
             }
         }
         if !changed {
@@ -32713,7 +32844,32 @@ fn derive_enum_composite_drop_allowed(
             // always an owning use here (a runtime call that consumes it, an
             // aggregate construction, an arithmetic op on a non-string — the
             // last cannot occur for a heap binder). Fail-closed: exclude.
-            if !matches!(instr, Instr::Move { .. } | Instr::Drop { .. }) {
+            //
+            // EXEMPT the interior projection LOADS (`RecordFieldLoad` /
+            // `TupleFieldLoad`) and the interior `RecordFieldDrop`: when the
+            // active payload is itself a nested record/tuple (`Some(r)` where
+            // `r: Row`), loading one of its fields (`r.name`) is an INTERIOR read
+            // that does not transfer ownership of the payload out of the
+            // composite — exactly as the owned-record escape scan
+            // (`derive_owned_record_drop_allowed`) already exempts them. Without
+            // this, `match opt { Some(r) => r.name.to_upper() }` over a
+            // freshly-cloned `Option<Row>` (from `rows.get(i)` → `hew_vec_get_clone`,
+            // a sole owner) wrongly excluded the composite from its `EnumInPlace`
+            // drop and leaked the whole `Some(Row)` payload (the #54 interior-alias
+            // clone-out: the parent composite is the single owner, `r` is itself
+            // interior-alias-tainted out of its own `RecordInPlace`, so the
+            // `EnumInPlace` is the ONE balancing drop — no double-free). The loaded
+            // field is seeded as a payload binder in the loop above, so if it
+            // ESCAPES onward (Move/store/return/owning call) the composite is still
+            // excluded — fail-closed.
+            if !matches!(
+                instr,
+                Instr::Move { .. }
+                    | Instr::Drop { .. }
+                    | Instr::RecordFieldLoad { .. }
+                    | Instr::TupleFieldLoad { .. }
+                    | Instr::RecordFieldDrop { .. }
+            ) {
                 for p in instr_source_places(instr) {
                     if let Some(l) = base_local(p) {
                         if alias_of.contains_key(&l)
@@ -32966,6 +33122,29 @@ fn derive_owned_record_drop_allowed(
     // `owned_locals` binding PLUS every local that is the place of an inline
     // `Instr::Drop { drop_fn: Some(_) }` already emitted into the finalized MIR
     // (the for-in iterator / loop-scope / break-continue release).
+    //
+    // The spliced `hew_string_drop` for a `string` `*FieldLoad` dest
+    // (`apply_nested_fresh_string_temp_drops`, the #54 clone-out balance) releases
+    // a FRESH, codegen-cloned (`retain_string_field_load` → `hew_string_clone`)
+    // refcount of the field — NOT the record's original `+1`. Counting it as a
+    // `release_owner_base` would treat a benign borrowing READ of a record field
+    // (`println(user.name)`, `user.name.len()`, a cloned record's `q.a.len()`) as
+    // a field-ownership EXTRACTION and wrongly drop the whole record's
+    // `RecordInPlace` — the #54 regression that leaked the record's own field
+    // buffer (verified: 4 leaks / 128 bytes on a plain owned record; 128 nodes on
+    // the generic-record clone fixture once the control's masking floor is
+    // removed). These read-temps NEVER seed `release_owner_bases`: the record (or
+    // clone) still solely owns its original `+1` and keeps its sole-owner
+    // `RecordInPlace`. A NON-string field extracted into an owning binding (a
+    // generator handle `let g = pair.0`, an owned nested record `let inner =
+    // b.inner`) — which moves the ORIGINAL owner out and DOES need the record
+    // excluded — is not a `string_field_load_producer_dest` and still seeds.
+    let exempt_read_temp_locals: HashSet<u32> = blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter_map(|instr| string_field_load_producer_dest(instr, local_tys))
+        .filter_map(base_local)
+        .collect();
     let mut release_owner_bases: HashSet<u32> = owned_locals
         .iter()
         .filter_map(|(binding, _, _)| binding_locals.get(binding).and_then(|p| base_local(*p)))
@@ -32979,6 +33158,9 @@ fn derive_owned_record_drop_allowed(
             } = instr
             {
                 if let Some(l) = base_local(*place) {
+                    if exempt_read_temp_locals.contains(&l) {
+                        continue;
+                    }
                     release_owner_bases.insert(l);
                 }
             }
@@ -33062,6 +33244,19 @@ fn derive_owned_record_drop_allowed(
                     // lowering to release overridden fields; the surrounding record
                     // binding is still live (and should receive its composite drop).
                     | Instr::RecordFieldDrop { .. }
+                    // `RecordCloneInplace` (`let q = clone p`) reads `src` (`p`) as
+                    // a DEEP copy: it `memcpy`s then deep-clones each owned field
+                    // into `dest`, leaving `src` in sole ownership of its own
+                    // original buffers (`lower_record_clone_inplace_instr`,
+                    // `hew-codegen-rs/src/llvm.rs`). So reading the record as a clone
+                    // source is NOT an ownership escape — `p` must keep its
+                    // `RecordInPlace` drop, exactly as an interior `RecordFieldLoad`
+                    // does. The fresh `dest` is a write, not a source-read, and
+                    // earns its OWN independent `RecordInPlace` (the deep clone is a
+                    // disjoint owner). Without this exemption the clone source leaks
+                    // its original field buffers (the #54 regression, masked at the
+                    // tip because the no-clone control leaked the identical floor).
+                    | Instr::RecordCloneInplace { .. }
             ) {
                 for p in instr_source_places(instr) {
                     if let Some(l) = base_local(p) {
@@ -36092,6 +36287,199 @@ fn dedup_whole_value_handoff(
     }
 }
 
+/// True when `name` is an `indirect enum` registered in `enum_layouts` — the
+/// MIR-side mirror of the codegen `is_indirect_enum` authority. An indirect
+/// enum is heap-boxed: every binding of the type holds a `ptr` to a tagged-union
+/// node, so its scope-exit release is a `hew_dealloc` of that node (recursing
+/// into owned child nodes), not an inline composite drop.
+#[must_use]
+fn name_is_indirect_enum(name: &str, enum_layouts: &[crate::model::EnumLayout]) -> bool {
+    let short = short_name(name);
+    enum_layouts
+        .iter()
+        .find(|el| el.name == name || short_name(&el.name) == short)
+        .is_some_and(|el| el.is_indirect)
+}
+
+/// True when `ty` is an `indirect enum` type.
+#[must_use]
+fn ty_is_indirect_enum(ty: &ResolvedTy, enum_layouts: &[crate::model::EnumLayout]) -> bool {
+    matches!(ty, ResolvedTy::Named { name, .. } if name_is_indirect_enum(name, enum_layouts))
+}
+
+/// Fail-closed sole-owner allow-set for `indirect enum` heap-node bindings
+/// (spec §3.7.4). An indirect-enum local is a single heap `ptr` to a
+/// tagged-union node; its scope-exit release (`DropKind::IndirectEnum`) frees
+/// that node and recurses into owned child nodes. Because the move-checker
+/// treats every by-value indirect-enum use as a borrow (`intent = Read`
+/// everywhere — neither a return nor a call-argument marks the binding
+/// `Consumed`), the consume-dataflow alone cannot prove sole ownership; this
+/// derivation supplies the structural proof, defaulting every unproven binding
+/// to EXCLUSION (leak, never double-free).
+///
+/// A binding is admitted ONLY IF all hold:
+///
+///  1. it has a `Place::Local` slot whose type is an indirect enum, AND
+///  2. its local is a CONSTRUCTION site — it is written through a tag/variant
+///     place (`Move { dest: MachineTag/MachineVariant/EnumTag/EnumVariant
+///     (local), .. }`), i.e. THIS binding allocated and populated the node.
+///     A binding that only RECEIVES a pointer (a destructure binder
+///     `l = move mvar.payload`, a move-temp, a call-result binding) is not a
+///     construction site and is excluded: it aliases a node another owner (the
+///     parent node, or the callee) is responsible for, AND
+///  3. its node is NOT moved INTO a parent node's variant payload
+///     (`Move { dest: MachineVariant/EnumVariant { parent, .. }, src: this }`):
+///     a child wired into a parent `Node(child, …)` is owned by the parent now
+///     — the parent's recursive free reclaims it, so the child must not also
+///     fire its own free (the recursive-free double-free this rule prevents).
+///
+/// The caller (`elaborate`) folds in the remaining fail-closed filters that
+/// every other drop class shares: the `returned_aggregate_members` skip
+/// (a node handed to the caller through the `ReturnSlot` or a returned
+/// aggregate), and the dataflow `Consumed`/`MaybeConsumed` exit-state removal.
+///
+/// Every classifier consulted (`instr_*` Move-dest shapes) is a
+/// compiler-exhaustive match over `Instr`, so a future construction- or
+/// ingress-shaped instruction cannot be introduced without a classification
+/// decision whose default direction is exclusion (a leak, never a double-free).
+///
+/// LESSONS: drop-allowset-from-value-flow (P0 — the default is no-drop; a drop
+/// is earned only by a positive sole-owner proof), boundary-fail-closed,
+/// cleanup-all-exits, raii-null-after-move.
+#[must_use]
+fn derive_indirect_enum_drop_allowed(
+    blocks: &[BasicBlock],
+    owned_locals: &[(BindingId, String, ResolvedTy)],
+    binding_locals: &HashMap<BindingId, Place>,
+    enum_layouts: &[crate::model::EnumLayout],
+) -> HashSet<BindingId> {
+    // Pass 1 — classify the construction sites, the parent-ingress sources, and
+    // the whole-value Move edges. A constructed node lands in a tag/variant
+    // place's local, but the BINDING's slot is usually a later SSA local the
+    // node is `Move`d into (`_ctor = Node(..); _binding = move _ctor`), so node
+    // ownership must be PROPAGATED forward through Move to find the binding's
+    // resting slot.
+    let mut construction_sites: HashSet<u32> = HashSet::new();
+    let mut moved_into_parent_node: HashSet<u32> = HashSet::new();
+    // Whole-value Move edges `src -> dest` between plain locals (the node-pointer
+    // flow graph). Tag/variant writes are construction, not flow, so excluded.
+    let mut move_edges: Vec<(u32, u32)> = Vec::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            if let Instr::Move { dest, src } = instr {
+                match dest {
+                    Place::MachineTag(l)
+                    | Place::EnumTag(l)
+                    | Place::MachineVariant { local: l, .. }
+                    | Place::EnumVariant { local: l, .. } => {
+                        construction_sites.insert(*l);
+                        // The SOURCE of a variant-payload store is a child node
+                        // wired into the parent `*l`'s node — the parent owns it.
+                        if matches!(
+                            dest,
+                            Place::MachineVariant { .. } | Place::EnumVariant { .. }
+                        ) {
+                            if let Some(child) = base_local(*src) {
+                                moved_into_parent_node.insert(child);
+                            }
+                        }
+                    }
+                    Place::Local(dl) => {
+                        if let Some(sl) = base_local(*src) {
+                            if sl != *dl {
+                                move_edges.push((sl, *dl));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // Pass 2 — forward-propagate node ownership from each construction-site
+    // local along the Move edges to a fixpoint. `owns_node` is the set of
+    // locals that hold a freshly-constructed node (the node's flow closure).
+    let mut owns_node: HashSet<u32> = construction_sites.clone();
+    loop {
+        let mut changed = false;
+        for &(sl, dl) in &move_edges {
+            if owns_node.contains(&sl) && owns_node.insert(dl) {
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // Pass 3 — the locals that own a binding's resting slot. Only locals that
+    // back an owned indirect-enum binding are candidates.
+    let mut local_to_binding: HashMap<u32, BindingId> = HashMap::new();
+    for (binding, _name, ty) in owned_locals {
+        if !ty_is_indirect_enum(ty, enum_layouts) {
+            continue;
+        }
+        if let Some(place) = binding_locals.get(binding) {
+            if let Some(local) = base_local(*place) {
+                local_to_binding.insert(local, *binding);
+            }
+        }
+    }
+
+    let mut allowed: HashSet<BindingId> = HashSet::new();
+    for (&local, &binding) in &local_to_binding {
+        // (a) the binding's slot must hold a freshly-constructed node, AND
+        // (b) that node must not have been handed to a parent node (the parent's
+        //     recursive free owns it). A binding whose node was moved into a
+        //     parent (a child `let left = ...; Node(left, right)`) is excluded.
+        if !owns_node.contains(&local) || moved_into_parent_node.contains(&local) {
+            continue;
+        }
+        allowed.insert(binding);
+    }
+
+    // Pass 4 — fan-out / hand-off collapse (fail-closed). If the SAME node flows
+    // into two admitted binding slots (whole-value rebind `let u = t;`, or a
+    // construction-site local that is itself a separate admitted binding), only
+    // one may free it and we cannot prove which — so drop BOTH (leak, never
+    // double-free). Union-find over the undirected Move graph restricted to
+    // admitted bindings' locals.
+    let admitted_locals: HashMap<u32, BindingId> = allowed
+        .iter()
+        .filter_map(|b| {
+            binding_locals
+                .get(b)
+                .and_then(|p| base_local(*p))
+                .map(|l| (l, *b))
+        })
+        .collect();
+    if admitted_locals.len() > 1 {
+        let mut parent: HashMap<u32, u32> = HashMap::new();
+        for &(s, d) in &move_edges {
+            let rs = move_component_root(&mut parent, s);
+            let rd = move_component_root(&mut parent, d);
+            if rs != rd {
+                parent.insert(rs, rd);
+            }
+        }
+        let mut component_admitted: HashMap<u32, Vec<BindingId>> = HashMap::new();
+        for (&local, &binding) in &admitted_locals {
+            let root = move_component_root(&mut parent, local);
+            component_admitted.entry(root).or_default().push(binding);
+        }
+        for bindings in component_admitted.values() {
+            if bindings.len() > 1 {
+                for binding in bindings {
+                    allowed.remove(binding);
+                }
+            }
+        }
+    }
+
+    allowed
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "drop elaboration threads the binding ledgers, the per-class \
@@ -36123,6 +36511,7 @@ fn build_lifo_drops(
     closure_pair_drop_allowed: &HashSet<BindingId>,
     closure_vec_drop_allowed: &HashSet<BindingId>,
     plain_vec_drop_allowed: &HashSet<BindingId>,
+    indirect_enum_drop_allowed: &HashSet<BindingId>,
     resource_drop_flags: &HashMap<BindingId, Place>,
 ) -> Vec<ElabDrop> {
     let mut drops = Vec::new();
@@ -36341,6 +36730,38 @@ fn build_lifo_drops(
                 ty: ty.clone(),
                 drop_fn: None,
                 kind: DropKind::EnumInPlace,
+                guard: None,
+            });
+            continue;
+        }
+        // `indirect enum` heap-node local (spec §3.7.4). An indirect enum is a
+        // single heap `ptr` to a tagged-union node, so it is `ValueClass::
+        // Unknown` and would otherwise fall into the no-drop arm below (leak the
+        // heap node — and, for a recursive `Node(Tree, Tree)`, every child node
+        // too). Intercept BEFORE the value-class match (mirroring the
+        // enum-composite arm) and emit the recursive `DropKind::IndirectEnum`
+        // free ONLY when the fail-closed sole-owner derivation proved this
+        // binding constructed and still solely owns its node at scope exit
+        // (`indirect_enum_drop_allowed`): a destructure/alias binder, a child
+        // wired into a parent node, a returned node, and a consumed node are all
+        // excluded so the node is freed by exactly one owner. A binding the
+        // prover did not clear leaks (as before this kind); it never
+        // double-frees.
+        // LESSONS: drop-allowset-from-value-flow, cleanup-all-exits,
+        // raii-null-after-move, boundary-fail-closed.
+        if indirect_enum_drop_allowed.contains(binding) && ty_is_indirect_enum(ty, enum_layouts) {
+            let place = *binding_locals.get(binding).unwrap_or_else(|| {
+                panic!(
+                    "build_lifo_drops invariant: indirect-enum binding {binding:?} is in \
+                     owned_locals but missing from binding_locals; lowering must wire a \
+                     Place before the drop-elaboration pass observes the binding"
+                )
+            });
+            drops.push(ElabDrop {
+                place,
+                ty: ty.clone(),
+                drop_fn: None,
+                kind: DropKind::IndirectEnum,
                 guard: None,
             });
             continue;
@@ -37089,6 +37510,7 @@ fn enumerate_exits(
     cancellation_blocks: &HashSet<u32>,
     binding_scope: &HashMap<BindingId, ScopeId>,
     loop_back_edge_blocks: &HashMap<u32, ScopeId>,
+    locals: &[ResolvedTy],
 ) -> (Vec<ElabBlock>, Vec<(ExitPath, DropPlan)>) {
     // Track the highest block id observed so cleanup-block ids can
     // start past it. Slice 2 onwards may emit multiple non-trivial
@@ -37213,6 +37635,88 @@ fn enumerate_exits(
             .collect()
     };
 
+    // Scope-close drops on a forward (non-back-edge) `Goto`. A binding bound on
+    // ONLY ONE arm of a `match`/`if` is `Live` at the arm's closing `Goto` but
+    // goes OUT OF SCOPE crossing the join: at the join target's entry the dataflow
+    // meets this arm's `Live` with the sibling arm's `Uninit`, yielding `Uninit`
+    // (absent). The function-exit `Return`/`Trap` pass therefore never fires its
+    // drop — the binding leaks on the normal path (it WAS correctly released on
+    // the `cancel` cleanup path, which uses the source-block exit-state). This
+    // closes that gap: a binding `Live` at the `Goto` source-exit but NOT `Live`
+    // at the target-entry is released here, exactly where it was last provably the
+    // live sole owner.
+    //
+    // Double-free safety (fail-closed): a binding still `Live` /
+    // `MaybeConsumed` / `AliasedIntoAggregate` at the target-entry is NOT dropped
+    // here — it stays in scope past the join, so its eventual `Return`/`Trap` exit
+    // owns the single release. A binding `Consumed` / `Uninit` at the source-exit
+    // is already excluded by `drops_for_exit`'s state filter (never freeing a
+    // moved-out or uninitialised slot). So the release fires on exactly the path
+    // where the binding is the live sole owner and on no other.
+    let target_entry_keeps_alive = |target: u32, binding: &BindingId| -> bool {
+        entry_states
+            .get(&target)
+            .and_then(|state_map| state_map.get(binding))
+            .copied()
+            .is_some_and(|state| {
+                matches!(
+                    state,
+                    dataflow::BindingState::Live
+                        | dataflow::BindingState::MaybeConsumed(_)
+                        | dataflow::BindingState::AliasedIntoAggregate(_)
+                )
+            })
+    };
+    // Projection-alias taint: a binding that is a non-owning interior alias of a
+    // composite (a match/if-let payload binder destructured out of an enum
+    // scrutinee — `Ok(inner)` / `Some(s)` — or a `*FieldLoad` interior pointer).
+    // Such a binding NEVER solely owns its value; the OWNING composite frees it
+    // through its recursive `EnumInPlace` / `RecordInPlace` / `TupleInPlace` drop.
+    // A scope-close `Goto` must NOT fire a drop for one: when `Ok(inner)` is bound
+    // and the inner `Option<string>` (`inner`) leaves scope crossing the join, the
+    // outer `Result` composite is STILL live past the join and frees `inner`
+    // recursively at the eventual `Return`. Dropping `inner` on the goto here AND
+    // letting the composite free it at the return double-frees the payload string
+    // (DI-020). The taint exactly identifies these non-sole-owner aliases, so the
+    // scope-close release stays limited to genuinely sole-owned bindings that
+    // leave scope (a resource handle, a leaf cow owner) — the leak the
+    // scope-close pass exists to close — while a payload alias is left to its
+    // composite's single recursive free.
+    //
+    // The REAL `locals` table is threaded through (not an empty slice) so the
+    // `string` `RecordFieldLoad`/`TupleFieldLoad` exemption stays active: a
+    // `let name = r.name` reads a fresh `+1`-retained string owner that the
+    // composite does NOT recursively free, so it must drop on the scope-close
+    // edge. Tainting it (empty `locals` disables the exemption) would strand its
+    // release at a join → `Uninit` → no `Return` recovery → leak. Enum/tuple
+    // payload destructures stay tainted via the `Move`-from-interior arm
+    // regardless of `locals`, so the double-free fix is unaffected.
+    let scope_close_alias_tainted = compute_projection_alias_taint(blocks, &HashSet::new(), locals);
+    let drops_for_scope_close_goto = |block_id: u32, target: u32| -> Vec<ElabDrop> {
+        drops_for_exit(block_id)
+            .into_iter()
+            .filter(|drop| {
+                // A projection-alias payload binder is owned by its composite,
+                // which frees it recursively at its own exit — never drop it on a
+                // scope-close edge (no double-free).
+                if let Some(l) = base_local(drop.place) {
+                    if scope_close_alias_tainted.contains(&l) {
+                        return false;
+                    }
+                }
+                match place_to_binding.get(&drop.place) {
+                    // Drop here only when the binding leaves scope crossing this
+                    // edge (not kept alive at the target). Kept-alive → its later
+                    // exit owns the release (no double-free).
+                    Some(binding) => !target_entry_keeps_alive(target, binding),
+                    // No binding mapping → conservatively skip (leak-not-double-free,
+                    // matching the back-edge None arm).
+                    None => false,
+                }
+            })
+            .collect()
+    };
+
     for block in blocks {
         let block_id = block.id;
         let plan = match &block.terminator {
@@ -37223,15 +37727,16 @@ fn enumerate_exits(
                 },
             ),
             Terminator::Goto { target } => {
-                // Per-iteration drops fire on loop-body back-edges; ordinary
-                // `Goto`s (block-scope close, sequential CFG join, post-loop
-                // continuation) keep the default empty plan because their
-                // bindings either self-drop via scope-exit, are still Live on
-                // a join (and drop at the eventual exit), or belong to the
-                // outer-scope function-exit window.
+                // Per-iteration drops fire on loop-body back-edges; a forward
+                // `Goto` that closes an inner (match/if-arm/block) scope releases
+                // the bindings that leave scope crossing the join
+                // (`drops_for_scope_close_goto`) — the bindings whose drop the
+                // function-exit pass would otherwise miss because the join meets
+                // them to `Uninit`. Bindings still live on the join stay for the
+                // eventual exit.
                 let drops = match loop_back_edge_blocks.get(&block_id) {
                     Some(&body_scope) => drops_for_back_edge(block_id, body_scope),
-                    None => Vec::new(),
+                    None => drops_for_scope_close_goto(block_id, *target),
                 };
                 (
                     ExitPath::Goto {
@@ -38078,6 +38583,7 @@ mod slice3_invariants {
                     | DropKind::EnumInPlace
                     | DropKind::TupleInPlace
                     | DropKind::ClosurePair
+                    | DropKind::IndirectEnum
                     | DropKind::TraitObject { .. } => {}
                 }
             }
@@ -38742,7 +39248,7 @@ mod slice3_narrowing_proptests {
             let exit_states = build_exit_states(n, &moved_out);
             let binding_locals = build_binding_locals(n);
 
-            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
+            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new(), &[]);
 
             // Exactly one Return plan for the single block.
             prop_assert_eq!(plans.len(), 1);
@@ -38797,7 +39303,7 @@ mod slice3_narrowing_proptests {
             let lifo = build_lifo(n);
             let binding_locals = build_binding_locals(n);
 
-            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
+            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new(), &[]);
             let (_, plan) = &plans[0];
 
             // Expected: every binding NOT Consumed survives in the drop
@@ -38836,8 +39342,8 @@ mod slice3_narrowing_proptests {
             let exit_states = build_exit_states(n, &moved_out);
             let binding_locals = build_binding_locals(n);
 
-            let (b1, p1) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
-            let (b2, p2) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
+            let (b1, p1) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new(), &[]);
+            let (b2, p2) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new(), &[]);
 
             prop_assert_eq!(b1.len(), b2.len());
             prop_assert_eq!(p1.len(), p2.len());
@@ -38863,7 +39369,7 @@ mod slice3_narrowing_proptests {
             let exit_states = build_exit_states(n, &moved_out);
             let binding_locals = build_binding_locals(n);
 
-            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
+            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new(), &[]);
             let (_, plan) = &plans[0];
 
             for d in &plan.drops {

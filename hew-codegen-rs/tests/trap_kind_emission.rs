@@ -144,6 +144,7 @@ fn emit_trap_kind_ll(kind: TrapKind, module_name: &str) -> String {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
+        resource_record_close: vec![],
     };
     let tmp = std::env::temp_dir().join(format!("hew-trap-kind-{module_name}"));
     std::fs::create_dir_all(&tmp).expect("create out_dir");

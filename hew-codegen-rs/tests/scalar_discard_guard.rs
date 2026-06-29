@@ -134,6 +134,7 @@ fn pipeline_discard_extern(
         polymorphic_mir: vec![],
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
+        resource_record_close: vec![],
     }
 }
 

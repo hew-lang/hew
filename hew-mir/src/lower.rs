@@ -10963,6 +10963,14 @@ impl Builder {
                 ..
             } => {
                 if let Some(dest) = self.binding_locals.get(binding).copied() {
+                    // #53: release the prior heap-owning value before the slot is
+                    // overwritten. Gated on the binding still owning live heap
+                    // (owned_locals membership) -- a self-reassign r = T{..r} or a
+                    // move-out RHS already consumed it (removed from owned_locals),
+                    // so this is skipped and never double-frees.
+                    if self.owned_locals.iter().any(|(b, _, _)| b == binding) {
+                        self.emit_local_overwrite_release(dest, &target.ty);
+                    }
                     self.push_instr(Instr::Move { dest, src });
                     // A simple-variable assignment RE-DEFINES its target: after
                     // `h = <rhs>` the binding `h` holds a fresh value and is
@@ -15920,6 +15928,75 @@ impl Builder {
                 }
             })
             .collect()
+    }
+
+    /// Release the heap-owning OLD value of a `var`-local slot before a
+    /// reassignment store overwrites it, mirroring the actor state-field
+    /// overwrite release. Without this, `r = make()` in a loop leaks the prior
+    /// record every iteration: the bare `Instr::Move` blindly overwrites `dest`
+    /// and only the final value is freed at scope exit (#53). State fields ride
+    /// `__hew_record_overwrite_release` via `ActorStateFieldStore`; this is the
+    /// var-local analogue, built from the same per-leaf release symbols the
+    /// functional-update override-drop uses so codegen's congruence assert
+    /// agrees.
+    ///
+    /// Caller-proven precondition: the binding is in `owned_locals` (the live
+    /// sole owner) so a `..base`/move-out RHS that consumed it has already
+    /// removed it and this never runs (no double-free). Fail-open: a shape with
+    /// no congruent leaf symbol (enum, nested aggregate field) emits nothing and
+    /// leaks as before -- never a partial or wrong-ABI free.
+    fn emit_local_overwrite_release(&mut self, dest: Place, target_ty: &ResolvedTy) {
+        let ty = self.subst_ty(target_ty);
+        // Single-pointer / fat-triple COW leaf (string / Vec / HashMap /
+        // HashSet / Generator / bytes): drop the whole slot in place.
+        if let Some(symbol) = self.project_field_inline_drop_symbol(&ty) {
+            self.push_instr(Instr::Drop {
+                place: dest,
+                ty,
+                drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
+            });
+            return;
+        }
+        // User record: release every owned field in declaration order, the same
+        // per-field route the functional-update override-drop takes. Skip the
+        // whole release unless EVERY owned field has a known leaf symbol -- a
+        // nested record/enum field has none, and a partial free would leak the
+        // rest while risking a wrong-ABI release.
+        if user_record_layout_key(&ty).is_some() {
+            let owned = self.project_record_owned_field_list(&ty);
+            if owned
+                .iter()
+                .any(|(_, fty)| self.project_field_inline_drop_symbol(fty).is_none())
+            {
+                return;
+            }
+            for (idx, fty) in owned {
+                let Some(symbol) = self.project_field_inline_drop_symbol(&fty) else {
+                    continue;
+                };
+                let offset = FieldOffset(idx);
+                if field_override_uses_record_field_drop(&fty) {
+                    self.push_instr(Instr::RecordFieldDrop {
+                        record: dest,
+                        field_offset: offset,
+                        ty: fty,
+                        drop_fn: crate::model::DropFnSpec::Release(symbol),
+                    });
+                } else {
+                    let old_val = self.alloc_local(fty.clone());
+                    self.push_instr(Instr::RecordFieldLoad {
+                        record: dest,
+                        field_offset: offset,
+                        dest: old_val,
+                    });
+                    self.push_instr(Instr::Drop {
+                        place: old_val,
+                        ty: fty,
+                        drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
+                    });
+                }
+            }
+        }
     }
 
     fn project_tuple_owned_field_list(&self, ty: &ResolvedTy) -> Vec<(u32, ResolvedTy)> {

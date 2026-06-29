@@ -1164,6 +1164,7 @@ fn typecheck_actor_receive_fn_registered() {
                 0..0,
             ),
             is_mutable: false,
+            is_consume: false,
         }],
         return_type: None,
         body: Block {

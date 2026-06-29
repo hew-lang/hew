@@ -9010,8 +9010,7 @@ impl LowerCtx {
         );
         let mut params = Vec::new();
         for param in &func.params {
-            let ty = self.lower_type(&param.ty);
-            let binding = self.bind(param.name.clone(), ty, param.is_mutable, param.ty.1.clone());
+            let binding = self.bind_param(param);
             params.push(binding);
         }
 
@@ -9490,10 +9489,7 @@ impl LowerCtx {
         let params: Vec<HirBinding> = decl
             .params
             .iter()
-            .map(|param| {
-                let ty = self.lower_type(&param.ty);
-                self.bind(param.name.clone(), ty, param.is_mutable, param.ty.1.clone())
-            })
+            .map(|param| self.bind_param(param))
             .collect();
 
         // Assign slot indices by partitioning children into static and pool spaces.
@@ -10333,13 +10329,7 @@ impl LowerCtx {
                 field.span.clone(),
             );
         }
-        let params = params
-            .iter()
-            .map(|p| {
-                let ty = self.lower_type(&p.ty);
-                self.bind(p.name.clone(), ty, p.is_mutable, p.ty.1.clone())
-            })
-            .collect();
+        let params = params.iter().map(|p| self.bind_param(p)).collect();
         let body = self.with_current_return_type(expected_ty.clone(), |ctx| {
             ctx.lower_block(body, expected_ty)
         });
@@ -10377,13 +10367,7 @@ impl LowerCtx {
                 field.span.clone(),
             );
         }
-        let params = params
-            .iter()
-            .map(|p| {
-                let ty = self.lower_type(&p.ty);
-                self.bind(p.name.clone(), ty, p.is_mutable, p.ty.1.clone())
-            })
-            .collect();
+        let params = params.iter().map(|p| self.bind_param(p)).collect();
 
         self.generator_yield_tys.push(yield_ty.clone());
         let gen_body = self.with_current_return_type(gen_return_ty.clone(), |ctx| {
@@ -20781,7 +20765,21 @@ impl LowerCtx {
             ty,
             mutable,
             span,
+            is_consume: false,
         }
+    }
+
+    /// Lower an AST function value parameter to its `HirBinding`, carrying the
+    /// `consume` modifier (`param.is_consume`) onto the binding so the
+    /// param-ownership classifier can pin its by-move disposition. Mirrors
+    /// `bind` for the type/mutability/scope-registration mechanics; the only
+    /// addition is propagating the consume annotation, which `bind` (shared by
+    /// every non-param binder) always leaves `false`.
+    fn bind_param(&mut self, param: &Param) -> HirBinding {
+        let ty = self.lower_type(&param.ty);
+        let mut binding = self.bind(param.name.clone(), ty, param.is_mutable, param.ty.1.clone());
+        binding.is_consume = param.is_consume;
+        binding
     }
 
     /// Register a pre-allocated `BindingId` in the current scope under `name`.

@@ -1044,6 +1044,14 @@ pub struct HirBinding {
     pub ty: ResolvedTy,
     pub mutable: bool,
     pub span: Span,
+    /// `true` when this binding is a function value parameter declared with the
+    /// `consume` modifier (`fn sink(consume c: Conn)`). Pins the by-move
+    /// ownership disposition for the param-ownership classifier: the param is
+    /// owned by the callee (auto-dropped at callee scope-exit unless moved out)
+    /// and the call site consumes the caller's argument. Always `false` for
+    /// non-param bindings (`let`/match/loop binders) and for params without the
+    /// modifier — those take the inferred borrow/consume disposition.
+    pub is_consume: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

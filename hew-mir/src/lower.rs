@@ -262,6 +262,7 @@ fn build_exit_hook_body(body: HirBlock, note_param: &HirBinding) -> HirBlock {
                 ty: crash_notification_ty,
                 mutable: false,
                 span: span.clone(),
+                is_consume: false,
             },
             Some(match_expr),
         ),
@@ -3435,6 +3436,7 @@ fn lower_actor_lifecycle_handlers(
                                     ty: ResolvedTy::I64,
                                     mutable: false,
                                     span: p.span.clone(),
+                                    is_consume: false,
                                 },
                                 HirBinding {
                                     id: SENTINEL_CRASH_MESSAGE_BINDING,
@@ -3442,6 +3444,7 @@ fn lower_actor_lifecycle_handlers(
                                     ty: ResolvedTy::String,
                                     mutable: false,
                                     span: p.span.clone(),
+                                    is_consume: false,
                                 },
                             ]
                         } else {
@@ -3547,6 +3550,7 @@ fn lower_actor_lifecycle_handlers(
                                 ty: crash_info_ty,
                                 mutable: false,
                                 span: info_param.span.clone(),
+                                is_consume: false,
                             },
                             Some(struct_init),
                         ),
@@ -3658,6 +3662,7 @@ fn lower_actor_lifecycle_handlers(
                                     ty: ResolvedTy::U64,
                                     mutable: false,
                                     span: p.span.clone(),
+                                    is_consume: false,
                                 },
                                 HirBinding {
                                     id: SENTINEL_EXIT_KIND_TAG_BINDING,
@@ -3665,6 +3670,7 @@ fn lower_actor_lifecycle_handlers(
                                     ty: ResolvedTy::I32,
                                     mutable: false,
                                     span: p.span.clone(),
+                                    is_consume: false,
                                 },
                             ]
                         } else {
@@ -5013,6 +5019,7 @@ fn lower_supervisor_bootstrap(
             ty: handle_ty.clone(),
             mutable: false,
             span: sup.span.clone(),
+            is_consume: false,
         };
         child_bindings.insert(child.name.clone(), (binding.id, handle_ty));
 
@@ -5062,6 +5069,7 @@ fn lower_supervisor_bootstrap(
                 ty: param.ty.clone(),
                 mutable: false,
                 span: sup.span.clone(),
+                is_consume: false,
             }]
         })
         .unwrap_or_default();

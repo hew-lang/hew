@@ -159,6 +159,25 @@ impl<'src> Parser<'src> {
                 .is_some_and(token_begins_clone_operand)
     }
 
+    /// Whether the current position begins a `consume <param>` modifier inside a
+    /// parameter list. `consume` is a contextual keyword (lexed as an ordinary
+    /// identifier, like `clone`): it carries the by-move modifier meaning only
+    /// when it *leads* a parameter declaration — i.e. it is immediately followed
+    /// by `var`, the receiver `self`, or the parameter name (another
+    /// identifier). A bare `consume:` / `consume,` / `consume)` is an ordinary
+    /// parameter *named* `consume`, so `fn f(consume: T)`, `x.consume()`, and
+    /// `fn consume(...)` are all unaffected. The adjacency check is
+    /// precedence-free: two adjacent identifiers (`consume name`) were never a
+    /// valid single parameter before, so repurposing the lead identifier cannot
+    /// change the meaning of any previously valid program.
+    pub(crate) fn peek_is_consume_param_modifier(&self) -> bool {
+        matches!(self.peek(), Some(Token::Identifier(name)) if *name == "consume")
+            && matches!(
+                self.peek_at(self.pos + 1),
+                Some(Token::Var | Token::Identifier(_))
+            )
+    }
+
     /// Check whether the current token starts with `>` (i.e. is `>`, `>>`, `>=`, or `>>=`).
     /// Used in type-argument / type-parameter parsing so that `Vec<Vec<i32>>`
     /// works without requiring a space before `>>`.

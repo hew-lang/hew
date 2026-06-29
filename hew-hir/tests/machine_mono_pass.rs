@@ -191,6 +191,7 @@ fn machine_mono_fails_closed_when_unresolved_type_var_survives() {
         ty: holder_t.clone(),
         mutable: false,
         span: 0..0,
+        is_consume: false,
     };
     let value_expr = HirExpr {
         node: HirNodeId(1),
@@ -432,6 +433,7 @@ fn machine_mono_emits_cap_diagnostic_when_distinct_instantiations_exceed_cap() {
         ty: m_of_t.clone(),
         mutable: false,
         span: 0..0,
+        is_consume: false,
     };
     let value_expr = HirExpr {
         node: HirNodeId(1),

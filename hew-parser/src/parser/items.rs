@@ -537,6 +537,7 @@ impl Parser<'_> {
                         consuming_self_span,
                     ),
                     is_mutable: false,
+                    is_consume: false,
                 },
             );
         }

@@ -5839,15 +5839,18 @@ impl LowerCtx {
         let key = self.mk_key(call_span);
         let Some(type_args_raw) = self.call_type_args.get(&key).cloned() else {
             // Generic callee with no recorded type args at this site.
-            // The checker records every generic call site — inferred or
-            // explicit-turbofish — whose resolved type args came back fully
-            // concrete (`apply_instantiated_call_signature_with_assoc` records
-            // unconditionally; `record_concrete_call_type_args` drops any entry
-            // that still carries an inference var). So the only ways to reach
-            // this early return are:
+            // The checker records every generic call site — inferred,
+            // return-type-polymorphic, or explicit-turbofish — by snapshotting
+            // its resolved type args (`apply_instantiated_call_signature_with_assoc`
+            // records unconditionally; `record_concrete_call_type_args` defers,
+            // re-resolving the snapshot at the `check_program` output boundary and
+            // pruning any entry that is still an inference var there). So the only
+            // ways to reach this early return are:
             // (a) the call failed to type-check, or
-            // (b) a turbofish whose resolved arg is still under inference (the
-            //     fail-closed guard correctly excluded it).
+            // (b) a call whose type parameter never got pinned (neither by an
+            //     argument, an enclosing/expected return type, nor a turbofish) —
+            //     the output-boundary fail-closed prune correctly excluded it,
+            //     and the checker already reported the inference failure.
             // Both cases are non-monomorphisable here; skip the registry entry.
             return;
         };

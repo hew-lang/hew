@@ -323,31 +323,120 @@ fn multi_param_turbofish_records_all_call_type_args() {
     );
 }
 
-/// F4 boundary: the unconditional recorder still fails closed — a resolved
-/// type argument that is still an unbound inference var must never reach
-/// `call_type_args` (the invariant HIR/MIR depend on: no `Ty::Var` crosses
-/// the checker output boundary).
+/// F7: a return-type-polymorphic generic constructor call records its resolved
+/// type argument in `call_type_args` even though `T` is determined by the
+/// EXPECTED RETURN TYPE (here the `let` annotation), not by any argument. The
+/// recorder runs inside `synthesize` while `T` is still an unbound inference
+/// var; deferring the snapshot to the output boundary — where it is re-resolved
+/// after `check_against` unifies the annotation in — is what makes the entry
+/// concrete. Without it, HIR/MIR find no monomorphisation data and MIR falls
+/// through to the "function call NYI" diagnostic. Covers both the inherent-impl
+/// associated fn (`Stack::new()`) and the free fn (`new_stack()`).
 #[test]
-fn turbofish_recorder_excludes_inference_var_args() {
+fn return_type_polymorphic_call_records_call_type_args() {
+    let source = r"
+        type Stack<T> { items: Vec<T>; }
+        impl<T> Stack<T> {
+            fn new() -> Stack<T> { Stack { items: Vec::new() } }
+        }
+        fn new_stack<T>() -> Stack<T> { Stack { items: Vec::new() } }
+        fn main() {
+            let a: Stack<i64> = Stack::new();
+            let b: Stack<string> = new_stack();
+        }
+    ";
+
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    // The two let-bound generic-ctor call spans, in declaration order.
+    let call_spans: Vec<_> = result
+        .program
+        .items
+        .iter()
+        .find_map(|(item, _)| match item {
+            Item::Function(fd) if fd.name == "main" => Some(
+                fd.body
+                    .stmts
+                    .iter()
+                    .filter_map(|(stmt, _)| match stmt {
+                        Stmt::Let {
+                            value: Some((Expr::Call { .. }, span)),
+                            ..
+                        } => Some(span.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+            _ => None,
+        })
+        .expect("main should hold two let-bound generic-ctor calls");
+    assert_eq!(call_spans.len(), 2, "expected two ctor call sites");
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output.errors.is_empty(),
+        "type check errors: {:?}",
+        output.errors
+    );
+
+    // assoc-fn `Stack::new()` records T=i64 from the `let` annotation.
+    assert_eq!(
+        output.call_type_args.get(&SpanKey::from(&call_spans[0])),
+        Some(&vec![Ty::I64]),
+        "return-type-polymorphic `Stack::new()` must record T=i64; got {:?}",
+        output.call_type_args
+    );
+    // free-fn `new_stack()` records T=string from the `let` annotation.
+    assert_eq!(
+        output.call_type_args.get(&SpanKey::from(&call_spans[1])),
+        Some(&vec![Ty::String]),
+        "return-type-polymorphic `new_stack()` must record T=string; got {:?}",
+        output.call_type_args
+    );
+}
+
+/// F7 boundary: the call-type-arg recorder now **defers** instead of dropping.
+/// A type argument that is still an unbound inference var at recording time is
+/// snapshotted so a later binding — via the expected return type, which
+/// `check_against` unifies in only *after* `synthesize` already ran this
+/// recording — propagates at the `check_program` output boundary. The
+/// fail-closed invariant (no `Ty::Var` crosses into HIR/MIR) is preserved by
+/// `validate_call_type_args_output_contract`; see
+/// `validate_call_type_args_output_contract_prunes_leaked_inference_vars`.
+#[test]
+fn call_type_arg_recorder_defers_inference_var_then_reresolves() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let span = 0..0;
     let var = TypeVar::fresh();
 
-    // An unresolved var arg must be dropped.
+    // An unresolved var arg is snapshotted (deferred), not dropped: the
+    // return-type-polymorphic constructor pattern (`let s: Stack<i64> =
+    // Stack::new()`) depends on this entry surviving until the expected type
+    // pins `T` at the output boundary.
     checker.record_concrete_call_type_args(&span, &[Ty::Var(var)]);
-    assert!(
-        checker.call_type_args.is_empty(),
-        "unresolved inference-var arg must not be recorded: {:?}",
+    assert_eq!(
+        checker.call_type_args.values().next(),
+        Some(&vec![Ty::Var(var)]),
+        "unresolved inference-var arg must be snapshotted for boundary re-resolution: {:?}",
         checker.call_type_args
     );
 
-    // Once the var resolves to a concrete type, recording succeeds.
+    // Once the var resolves to a concrete type, the recorder snapshots that
+    // concrete type — the same value the boundary re-resolution in
+    // `check_program` (`subst.resolve` + `materialize_literal_defaults`)
+    // computes for a still-`Ty::Var` snapshot taken earlier.
     checker.subst.insert(var, &Ty::I64).unwrap();
     checker.record_concrete_call_type_args(&span, &[Ty::Var(var)]);
     assert_eq!(
         checker.call_type_args.values().next(),
         Some(&vec![Ty::I64]),
-        "resolved var arg must be recorded as its concrete type: {:?}",
+        "resolved var arg must snapshot as its concrete type: {:?}",
         checker.call_type_args
     );
 }

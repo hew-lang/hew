@@ -194,3 +194,38 @@ fn generic_record_with_owned_field_admits_and_runs() {
         "the admit path must not surface a Rust panic; stderr: {stderr}"
     );
 }
+
+/// F7: a return-type-polymorphic generic constructor — where `T` is determined
+/// by the EXPECTED RETURN TYPE at the call site (a `let` annotation, an
+/// enclosing fn's return type, or argument position) rather than by any call
+/// argument — monomorphises and runs through both the inherent-impl associated
+/// fn (`Stack::new()`) and the free fn (`new_stack()`). Until the checker
+/// deferred call-type-arg recording to the output boundary, the recorder ran
+/// inside `synthesize` while `T` was still an unbound inference var (the
+/// expected type is unified in only afterwards, by `check_against`), so no
+/// monomorphisation entry was registered and MIR failed closed with "MIR
+/// lowering for function call is not implemented yet". This is THE canonical
+/// `Container::new()` pattern; the argument-driven case (`singleton(99)`)
+/// already worked because its `T` was pinned by an argument at recording time,
+/// proving the gap was the recording gate, not the MIR call arm. Instantiating
+/// at i64 and string proves genuine polymorphism through the return-type
+/// surface, and the nested `Stack<Stack<i64>>` case proves the outer and inner
+/// ctors both route through the same machinery.
+#[test]
+fn return_type_polymorphic_ctor_lowers_and_runs() {
+    require_codegen();
+
+    let output = run_fixture("generic_ctor_return_type_mono.hew");
+    assert!(
+        output.status.success(),
+        "expected the return-type-polymorphic generic constructor to lower and run; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(
+        lines,
+        ["2", "1", "3", "1", "4"],
+        "return-type-polymorphic ctor output mismatch; stdout: {stdout}"
+    );
+}

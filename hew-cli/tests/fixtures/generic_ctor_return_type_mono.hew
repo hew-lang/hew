@@ -1,0 +1,76 @@
+// F7: return-type-polymorphic generic constructors. The type parameter `T` is
+// determined by the EXPECTED RETURN TYPE at the call site (a `let` annotation,
+// an enclosing fn's return type, or an argument position) — not by any call
+// argument. Both the inherent-impl associated fn (`Stack::new()`) and the free
+// fn (`new_stack()`) hit this. Until the checker deferred call-type-arg
+// recording to the output boundary, `T` was still an unbound inference var when
+// the recorder ran inside `synthesize` (the expected type is unified in only
+// afterwards, by `check_against`), so no monomorphisation was registered and
+// MIR failed closed with "MIR lowering for function call is not implemented
+// yet". Instantiating at i64 and string proves genuine polymorphism through the
+// return-type surface (string also exercises the owned-element drop spine), and
+// the nested `Stack<Stack<i64>>` case proves the outer and inner ctors both
+// resolve through the same machinery.
+type Stack<T> {
+    items: Vec<T>;
+}
+
+impl<T> Stack<T> {
+    fn new() -> Stack<T> {
+        Stack { items: Vec::new() }
+    }
+    fn push(self, x: T) {
+        self.items.push(x);
+    }
+    fn len(self) -> i64 {
+        self.items.len()
+    }
+}
+
+fn new_stack<T>() -> Stack<T> {
+    Stack { items: Vec::new() }
+}
+
+// Return-position inference: `T` comes from the enclosing fn's return type.
+fn make_strings() -> Stack<string> {
+    Stack::new()
+}
+
+fn main() {
+    // assoc-fn ctor, `T` (= i64) from the `let` annotation
+    let a: Stack<i64> = Stack::new();
+    a.push(1);
+    a.push(2);
+    println(a.len());
+
+    // free-fn ctor, `T` (= i64) from the `let` annotation
+    let b: Stack<i64> = new_stack();
+    b.push(3);
+    println(b.len());
+
+    // assoc-fn ctor at a DIFFERENT type (string), via return-position inference
+    let s = make_strings();
+    s.push("x");
+    s.push("y");
+    s.push("z");
+    println(s.len());
+
+    // nested: Stack<Stack<i64>> — both the outer and inner ctor are
+    // return-type-polymorphic
+    let outer: Stack<Stack<i64>> = Stack::new();
+    let inner: Stack<i64> = Stack::new();
+    inner.push(10);
+    outer.push(inner);
+    println(outer.len());
+
+    // turbofish: `T` (= i64) supplied explicitly via Stack::<i64>::new() — the
+    // type parameter is pinned at the call site, not by the expected type. This
+    // surface already lowered before the F7 fix; pinning it here guards the
+    // whole constructor family against regression.
+    let t = Stack::<i64>::new();
+    t.push(100);
+    t.push(200);
+    t.push(300);
+    t.push(400);
+    println(t.len());
+}

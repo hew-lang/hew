@@ -177,12 +177,36 @@ impl Checker {
         Some(result_ty)
     }
 
+    /// Record the resolved type arguments for a generic function call site so
+    /// HIR/MIR can mangle and dispatch the monomorphised symbol.
+    ///
+    /// Snapshot through `subst.resolve` and store **unconditionally**, even when
+    /// an argument still carries a `Ty::Var`. A return-type-polymorphic call
+    /// (`let s: Stack<i64> = new_stack()` / `Stack::new()`) determines its type
+    /// parameters from the *expected return type*, which `check_against` only
+    /// unifies in *after* `synthesize` already ran this recording inside
+    /// `apply_instantiated_call_signature_with_assoc`. Dropping the entry here
+    /// while `T` is still an inference var (the old eager guard) starved the
+    /// monomorphisation pipeline and tripped the function-call NYI arm — the
+    /// argument-driven case (`singleton(99)`) worked only because its `T` was
+    /// already pinned by an argument at recording time.
+    ///
+    /// Discipline mirrors [`Self::record_concrete_record_init_type_args`]: the
+    /// snapshot stores the substitution representative, so a later binding of
+    /// that var propagates at the `check_program` output boundary (where every
+    /// entry is re-resolved through `subst.resolve` + `materialize_literal_defaults`).
+    /// The fail-closed invariant (no `Ty::Var` crosses into HIR) is preserved —
+    /// [`Self::validate_call_type_args_output_contract`] prunes any entry that is
+    /// still partial after inference settles, exactly as it did before; it is
+    /// just enforced at the output boundary rather than at emission, parallel to
+    /// how `expr_types` works.
     pub(super) fn record_concrete_call_type_args(&mut self, span: &Span, type_args: &[Ty]) {
-        let concrete: Vec<Ty> = type_args.iter().map(|ty| self.subst.resolve(ty)).collect();
-        if concrete.iter().all(|ty| !ty.has_inference_var()) {
-            self.call_type_args
-                .insert(SpanKey::in_module(span, self.current_module_idx), concrete);
+        if type_args.is_empty() {
+            return;
         }
+        let snapshot: Vec<Ty> = type_args.iter().map(|ty| self.subst.resolve(ty)).collect();
+        self.call_type_args
+            .insert(SpanKey::in_module(span, self.current_module_idx), snapshot);
     }
 
     /// Record the resolved type arguments for a record (or enum-struct-variant)
@@ -1245,13 +1269,13 @@ impl Checker {
                     module_qualified: false,
                 },
                 // Record the resolved type arguments at every generic call
-                // site — whether the args were inferred or supplied via
-                // explicit turbofish (`id<i64>(5)`). Turbofish args resolve
-                // to fully-concrete `Ty` through `instantiate_fn_sig_for_call`,
-                // and `record_concrete_call_type_args` stays fail-closed on any
-                // residual inference var, so recording is always safe. HIR and
-                // MIR consume this side-table to emit and dispatch the
-                // monomorphised symbol; skipping turbofish sites starved that
+                // site — whether the args were inferred (from an argument or
+                // the expected return type), or supplied via explicit turbofish
+                // (`id<i64>(5)`). `record_concrete_call_type_args` snapshots the
+                // args (deferring any still-`Ty::Var` to the output-boundary
+                // re-resolve + fail-closed prune), so recording is always safe.
+                // HIR and MIR consume this side-table to emit and dispatch the
+                // monomorphised symbol; skipping these sites starved that
                 // pipeline and tripped the NYI function-call lowering arm.
                 true,
             );
@@ -1304,9 +1328,10 @@ impl Checker {
                             module_qualified: false,
                         },
                         // Record at every generic call site, turbofish or
-                        // inferred — see the resolved-fn path above. The
-                        // `record_concrete_call_type_args` inference-var guard
-                        // keeps the boundary fail-closed.
+                        // inferred — see the resolved-fn path above.
+                        // `record_concrete_call_type_args` defers any
+                        // still-`Ty::Var` arg to the output-boundary prune, which
+                        // keeps the checker output fail-closed.
                         true,
                     )
                     .return_type;

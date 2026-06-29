@@ -646,6 +646,11 @@ const MESH_KEYFILE_MAGIC: &[u8] = b"HEWMESHKEY1\0";
 const MAX_KEYFILE_CERT_BYTES: usize = 8192;
 /// Maximum accepted PKCS8 key DER size.
 const MAX_KEYFILE_KEY_BYTES: usize = 8192;
+/// Hard cap on the whole keyfile: `MAGIC | cert_len | cert | key_len | key`.
+/// `mesh_identity_load_or_create` refuses to read past this so a giant file
+/// can't drive an unbounded allocation before the frame parser runs.
+const MAX_KEYFILE_BYTES: usize =
+    MESH_KEYFILE_MAGIC.len() + 4 + MAX_KEYFILE_CERT_BYTES + 4 + MAX_KEYFILE_KEY_BYTES;
 
 /// Process-global mesh TLS identity override, populated by `Node::load_keys`.
 ///
@@ -747,6 +752,11 @@ impl MeshTls {
             return Err(MeshError::Tls("keyfile: key length out of range".into()));
         }
         let key = take_bytes(bytes, &mut pos, key_len)?;
+        // Fail-closed: the frame is exactly MAGIC|cert|key. Trailing bytes mean
+        // a malformed or padded file; reject rather than silently ignore them.
+        if pos != bytes.len() {
+            return Err(MeshError::Tls("keyfile: trailing bytes after key".into()));
+        }
         let spki = extract_spki_from_cert_der(&cert)?;
         let tls = MeshTls {
             cert_chain: vec![CertificateDer::from(cert)],
@@ -769,18 +779,53 @@ impl MeshTls {
 /// frame is malformed, or if a fresh identity cannot be minted.
 pub fn mesh_identity_load_or_create(path: &std::path::Path) -> Result<Vec<u8>, MeshError> {
     if path.exists() {
-        let bytes = std::fs::read(path)
-            .map_err(|e| MeshError::Tls(format!("load_keys: read {}: {e}", path.display())))?;
+        let bytes = read_keyfile_bounded(path)?;
         let (tls, spki) = MeshTls::from_keyfile_bytes(&bytes)?;
         mesh_identity_set(tls, spki.clone());
         return Ok(spki);
     }
     let (tls, spki) = MeshTls::self_signed(vec!["hew-mesh.local".into(), "localhost".into()])?;
     let frame = tls.to_keyfile_bytes()?;
-    std::fs::write(path, frame)
-        .map_err(|e| MeshError::Tls(format!("load_keys: write {}: {e}", path.display())))?;
+    write_keyfile_owner_only(path, &frame)?;
     mesh_identity_set(tls, spki.clone());
     Ok(spki)
+}
+
+/// Read a keyfile capped at [`MAX_KEYFILE_BYTES`]. Bounding the read means a
+/// giant or truncated-but-huge file cannot drive an unbounded allocation; an
+/// over-cap file is rejected before the frame parser runs.
+fn read_keyfile_bounded(path: &std::path::Path) -> Result<Vec<u8>, MeshError> {
+    use std::io::Read;
+    let file = std::fs::File::open(path)
+        .map_err(|e| MeshError::Tls(format!("load_keys: read {}: {e}", path.display())))?;
+    let mut buf = Vec::new();
+    file.take((MAX_KEYFILE_BYTES + 1) as u64)
+        .read_to_end(&mut buf)
+        .map_err(|e| MeshError::Tls(format!("load_keys: read {}: {e}", path.display())))?;
+    if buf.len() > MAX_KEYFILE_BYTES {
+        return Err(MeshError::Tls("load_keys: keyfile exceeds bound".into()));
+    }
+    Ok(buf)
+}
+
+/// Write a freshly minted keyfile owner-only (mode 0600 on unix) and refuse to
+/// clobber an existing path. Private-key material must never inherit a wide
+/// umask; `create_new` keeps a racing creator from being silently overwritten.
+fn write_keyfile_owner_only(path: &std::path::Path, frame: &[u8]) -> Result<(), MeshError> {
+    use std::io::Write;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut file = opts
+        .open(path)
+        .map_err(|e| MeshError::Tls(format!("load_keys: write {}: {e}", path.display())))?;
+    file.write_all(frame)
+        .map_err(|e| MeshError::Tls(format!("load_keys: write {}: {e}", path.display())))?;
+    Ok(())
 }
 
 struct QuicMeshConn {
@@ -2387,6 +2432,56 @@ mod tests {
             MeshTls::from_keyfile_bytes(&frame).is_err(),
             "truncated body"
         );
+        // Trailing bytes after a complete frame are rejected, not ignored.
+        let mut padded = tls.to_keyfile_bytes().unwrap();
+        padded.push(0x00);
+        assert!(
+            MeshTls::from_keyfile_bytes(&padded).is_err(),
+            "trailing bytes after key must be rejected"
+        );
+    }
+
+    /// CAP-12: a keyfile larger than the hard cap is rejected before parse,
+    /// bounding allocation. Fail-closed, no fabricated identity.
+    #[test]
+    fn load_keys_rejects_oversize_keyfile() {
+        let _g = TEST_ALLOWLIST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        mesh_identity_clear();
+        let dir = std::env::temp_dir().join(format!("cap12-oversize-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("big.key");
+        // Magic-prefixed so it isn't a magic miss; bulk pushes it over the cap.
+        let mut blob = MESH_KEYFILE_MAGIC.to_vec();
+        blob.resize(MAX_KEYFILE_BYTES + 64, 0u8);
+        std::fs::write(&path, &blob).unwrap();
+        assert!(
+            mesh_identity_load_or_create(&path).is_err(),
+            "an over-cap keyfile must be rejected, not loaded"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// CAP-12 (unix): a minted keyfile carries private-key material, so it is
+    /// created owner-only (0600), never inheriting a wide umask.
+    #[cfg(unix)]
+    #[test]
+    fn load_keys_writes_owner_only_perms() {
+        use std::os::unix::fs::PermissionsExt;
+        let _g = TEST_ALLOWLIST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        mesh_identity_clear();
+        let dir = std::env::temp_dir().join(format!("cap12-perms-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("node.key");
+        let _ = std::fs::remove_file(&path);
+        mesh_identity_load_or_create(&path).expect("mint+persist");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "keyfile must be owner-only rw");
+        mesh_identity_clear();
+        let _ = std::fs::remove_file(&path);
     }
 
     /// CAP-12: `load_keys` creates a stable, persisted identity that

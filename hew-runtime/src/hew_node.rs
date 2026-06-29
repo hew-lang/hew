@@ -4120,11 +4120,22 @@ pub unsafe extern "C" fn hew_node_api_allow_peer(spki_hex: *const c_char) -> c_i
     }
 }
 
+/// Upper bound on a decoded peer SPKI, mirroring `quic_mesh::MAX_SPKI_BYTES`
+/// (4 KiB). The mesh allowlist re-enforces this, but `decode_hex` checks it
+/// *before* allocating so an oversize hex argument can't force a large up-front
+/// `Vec`. A well-formed RSA-4096 SPKI is under 1 KiB; anything larger is junk.
+const MAX_SPKI_DECODE_BYTES: usize = 4096;
+
 /// Decode a lowercase/uppercase hex string to bytes. Returns `None` on an odd
-/// length or any non-hex digit — fail-closed, no partial decode.
+/// length, oversize input, or any non-hex digit — fail-closed, no partial decode.
 fn decode_hex(s: &str) -> Option<Vec<u8>> {
     let s = s.as_bytes();
     if s.is_empty() || !s.len().is_multiple_of(2) {
+        return None;
+    }
+    // Bound before allocating: reject anything that would decode past the SPKI
+    // cap so a huge argument can't drive a large `with_capacity`.
+    if s.len() / 2 > MAX_SPKI_DECODE_BYTES {
         return None;
     }
     let nibble = |b: u8| -> Option<u8> {
@@ -4586,6 +4597,14 @@ mod tests {
         assert_eq!(decode_hex(""), None);
         assert_eq!(decode_hex("abc"), None);
         assert_eq!(decode_hex("zz"), None);
+        // Oversize: a hex string decoding past the SPKI cap is rejected before
+        // any allocation. 4096 bytes is the bound; (4097)*2 hex chars overflows.
+        let oversize = "00".repeat(MAX_SPKI_DECODE_BYTES + 1);
+        assert_eq!(decode_hex(&oversize), None, "oversize hex must be rejected");
+        assert!(
+            decode_hex(&"ab".repeat(MAX_SPKI_DECODE_BYTES)).is_some(),
+            "exactly the cap still decodes"
+        );
     }
 
     #[test]

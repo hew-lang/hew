@@ -26386,7 +26386,7 @@ impl Builder {
                 id: crate::closure_env::CaptureId(
                     u32::try_from(idx).expect("closure capture count exceeds u32::MAX"),
                 ),
-                ty: cap.ty.clone(),
+                ty: self.subst_ty(&cap.ty),
                 mode: cap.mode,
                 is_sync: cap.is_sync,
             })
@@ -26476,10 +26476,23 @@ impl Builder {
             is_opaque: false,
         };
 
+        // Each capture field's `ResolvedTy` is substituted through the
+        // per-monomorphisation map: a closure inside `fn f<T>(x: T)` that
+        // captures `x` records the env field as the CONCRETE argument (`i64`,
+        // `string`, …), never the bare type-parameter `T`. The env record
+        // layout is walked verbatim by the codegen-readiness diagnostic
+        // (`collect_layout_field_diagnostics`) with no subst map of its own, so
+        // an un-substituted `T` here surfaces as `E_MIR UnknownType T`; it is
+        // also the struct codegen lays out, so the field MUST be concrete for a
+        // correct ABI. A non-generic origin takes the identity-map fast path.
+        let env_field_tys: Vec<ResolvedTy> = captures
+            .iter()
+            .map(|capture| self.subst_ty(&capture.ty))
+            .collect();
         self.closure_record_layouts
             .push(crate::model::RecordLayout {
                 name: env_name,
-                field_tys: captures.iter().map(|capture| capture.ty.clone()).collect(),
+                field_tys: env_field_tys,
                 // Compiler-internal closure-env record: positional `-g` names.
                 field_names: Vec::new(),
             });
@@ -26633,6 +26646,14 @@ impl Builder {
         body: &HirExpr,
         captures: &[hew_hir::HirClosureCapture],
     ) -> LoweredFunction {
+        // Resolve the shim's return type through the per-monomorphisation subst
+        // map: a closure in `fn f<T>() -> T` lowers its invoke shim with the
+        // CONCRETE return ABI, never the bare `T`. The child builder inherits
+        // `subst`, so the body's locals already substitute via `alloc_local`;
+        // the shim's raw `return_ty`/`params` are built directly here and must
+        // be substituted explicitly so codegen sees a concrete ABI.
+        let ret_ty_subst = self.subst_ty(ret_ty);
+        let ret_ty = &ret_ty_subst;
         let env_ptr_ty = Self::closure_env_pointer_ty(env_ty);
         // `child_builder_tables` carries the full shared-table list — notably
         // `actor_layouts`, so a closure body that sends to a captured pid
@@ -26655,7 +26676,7 @@ impl Builder {
                     field_offset: FieldOffset(
                         u32::try_from(idx).expect("closure capture count exceeds u32::MAX"),
                     ),
-                    ty: capture.ty.clone(),
+                    ty: self.subst_ty(&capture.ty),
                 },
             );
         }
@@ -26687,7 +26708,7 @@ impl Builder {
         };
         let mut raw_params = Vec::with_capacity(params.len() + 1);
         raw_params.push(env_ptr_ty);
-        raw_params.extend(params.iter().map(|param| param.ty.clone()));
+        raw_params.extend(params.iter().map(|param| self.subst_ty(&param.ty)));
         let raw = RawMirFunction {
             name: shim_name.to_string(),
             return_ty: ret_ty.clone(),

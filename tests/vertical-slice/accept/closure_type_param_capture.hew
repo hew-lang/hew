@@ -1,0 +1,24 @@
+// Type-parameterized closure capture (#6). A closure inside a generic function
+// captures a value whose type is the function's type parameter `T`, and the
+// closure's return type is also `T`. Each monomorphisation substitutes `T` to
+// the concrete argument type in BOTH the closure env record layout and the
+// invoke shim's ABI.
+//
+// Previously failed with E_MIR UnknownType `T`: the env field type and the
+// shim return ABI were left as the bare type-parameter symbol, which the
+// codegen-readiness walk (which has no per-monomorphisation subst map of its
+// own) rejected at the MIR boundary.
+//
+// Instantiated at two concrete types so two distinct monomorphised invoke
+// shims are emitted: `i64` (a `BitCopy` capture, copied into the env) and
+// `string` (an OWNED capture, whose heap buffer the escaping env free thunk
+// must release — see closure_env_drop_leak_oracle).
+fn pick<T>(x: T) -> T {
+    let get = || x;
+    get()
+}
+
+fn main() {
+    println(pick(42));        // i64 monomorphisation
+    println(pick("closure")); // string monomorphisation (owned capture)
+}

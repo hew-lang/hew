@@ -2765,7 +2765,54 @@ fn closure_nested_noncapturing_runs() {
     assert_eq!(actual, "16\n", "expected 16; got: {actual:?}");
 }
 
-/// `Vec<fn(i64) -> i64>` storage surface: array literal, indexing, push,
+/// Type-parameterized closure capture: a closure inside `fn pick<T>(x: T) -> T`
+/// captures the type-parameter-typed value and returns it, instantiated at two
+/// concrete types.
+///
+/// Previously `E_MIR` `UnknownType` `T`: the closure env field type and the
+/// invoke shim's return ABI were left as the bare type-parameter symbol. The
+/// codegen-readiness walk over the env record layout has no per-monomorphisation
+/// subst map, so an un-substituted `T` was rejected at the MIR boundary. The
+/// closure-literal lowering now substitutes capture/param/return types through
+/// the monomorphisation map. The `string` instantiation also exercises an OWNED
+/// capture (heap buffer released by the escaping env free thunk).
+#[test]
+fn closure_type_param_capture_runs() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/closure_type_param_capture.hew");
+    let output = run_bounded_hew_run(&source, repo_root());
+    assert!(
+        output.status.success(),
+        "closure_type_param_capture should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(
+        actual, "42\nclosure\n",
+        "expected 42 then closure; got: {actual:?}"
+    );
+}
+
+/// Type-parameterized closure capture with TWO type parameters captured by the
+/// same closure env. Each capture field substitutes to its concrete type
+/// independently (`i64`, `string`).
+#[test]
+fn closure_type_param_multi_runs() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/closure_type_param_multi.hew");
+    let output = run_bounded_hew_run(&source, repo_root());
+    assert!(
+        output.status.success(),
+        "closure_type_param_multi should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, "99\n", "expected 99; got: {actual:?}");
+}
 /// get, and pop over boxed-pair elements riding the pointer-element ABI.
 #[test]
 fn vec_of_fn_storage_ops_run() {

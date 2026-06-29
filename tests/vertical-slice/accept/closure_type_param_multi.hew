@@ -1,0 +1,20 @@
+// Type-parameterized closure capture (#6) with TWO type parameters captured by
+// the same closure. The closure captures `a: A` and `b: B` (both type-parameter
+// typed) and returns a concrete `i64`. Each capture field is substituted to its
+// concrete type in the env record layout independently.
+//
+// Exercises the multi-type-parameter substitution path: a single closure env
+// whose fields resolve to a heterogeneous concrete tuple (`i64`, `string`)
+// rather than the bare `A`/`B` symbols.
+fn combine<A, B>(a: A, b: B, n: i64) -> i64 {
+    let f = || {
+        let _x = a;
+        let _y = b;
+        n
+    };
+    f()
+}
+
+fn main() {
+    println(combine(1, "two", 99)); // 99
+}

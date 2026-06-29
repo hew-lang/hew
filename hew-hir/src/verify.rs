@@ -480,7 +480,23 @@ impl Verifier {
                     }
                 }
             }
-            HirExprKind::Closure { body, captures, .. } => {
+            HirExprKind::Closure {
+                params,
+                body,
+                captures,
+                ..
+            } => {
+                // Register the closure's own parameters BEFORE walking the
+                // body: a nested closure in the body may capture one of these
+                // params (`|x| { |y| x + y }`), and the capture-declared check
+                // below resolves `capture.binding` against `self.bindings`.
+                // Without this the inner capture of an outer-closure param is
+                // a spurious DanglingRef — exactly the path actor methods and
+                // named-fn bodies already register (see the actor-method and
+                // Function arms). Mirrors that registration here.
+                for param in params {
+                    self.binding(param.id, param.span.clone());
+                }
                 self.expr(body);
                 let mut seen = std::collections::HashSet::new();
                 for capture in captures {

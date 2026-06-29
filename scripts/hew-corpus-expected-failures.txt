@@ -100,7 +100,6 @@ examples/v05/vec_unsupported_method_fails.hew
 # deferred-nyi: LSP test fixtures covering NYI language features
 hew-lsp/tests/fixtures/v05_async_await.hew
 hew-lsp/tests/fixtures/v05_await_deadline.hew
-hew-lsp/tests/fixtures/v05_closures.hew
 hew-lsp/tests/fixtures/v05_cross_module_machine_main.hew
 hew-lsp/tests/fixtures/v05_index_trait.hew
 hew-lsp/tests/fixtures/v05_machine_generics.hew

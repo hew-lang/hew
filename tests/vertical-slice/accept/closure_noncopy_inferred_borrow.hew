@@ -1,0 +1,18 @@
+// Substrate gain: a closure that captures a non-Copy `string` binding WITHOUT
+// the `move` keyword is ACCEPTED. The closure only reads `name`, so the checker
+// infers a read-only Borrow capture and the lowerer materialises a reference —
+// the legacy `ClosureExplicitMoveRequired` diagnostic is dead for this site.
+//
+// Because the capture is a borrow (not a move), the outer binding still owns the
+// string and remains usable after the closure is created: `main` reads `name`
+// again on the last line. The string is freed exactly once at scope exit (the
+// closure env holds only a borrow and has no drop responsibility) — verified
+// 0-leak / no-double-free under the poisoned allocator.
+//
+// This was previously a reject fixture asserting the now-dead diagnostic.
+fn main() {
+    let name: string = "hew";
+    let greet = || println(name);
+    greet();        // hew
+    println(name);  // hew — outer binding still owns it (borrow, not move)
+}

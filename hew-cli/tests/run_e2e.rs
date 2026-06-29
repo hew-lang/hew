@@ -2821,7 +2821,193 @@ fn returned_closure_survives_stack_clobber() {
     assert_eq!(actual, "15\n", "expected 15; got: {actual:?}");
 }
 
-/// `Vec<fn(i64) -> i64>` storage surface: array literal, indexing, push,
+/// Nested closure captures the OUTER closure literal's own parameter.
+///
+/// Previously `E_HIR` `DanglingRef`: the HIR verifier walked a closure literal's
+/// body without first registering the literal's own parameters as declared
+/// bindings (only named-fn and actor-method params were registered), so the
+/// inner literal's capture of the outer param resolved to a binding the
+/// verifier believed undeclared.
+#[test]
+fn closure_nested_captures_outer_param_runs() {
+    require_codegen();
+
+    let source =
+        repo_root().join("tests/vertical-slice/accept/closure_nested_captures_outer_param.hew");
+    let output = run_bounded_hew_run(&source, repo_root());
+    assert!(
+        output.status.success(),
+        "closure_nested_captures_outer_param should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, "15\n", "expected 15; got: {actual:?}");
+}
+
+/// A closure captures another closure BINDING from the enclosing scope and
+/// dispatches it as a bare-identifier callee.
+///
+/// Previously `E_HIR` `CheckerBoundaryViolation`: the call checker resolved a
+/// bare-identifier closure callee directly, without recording the
+/// `ClosureCaptureFact` the identifier-read path records, so HIR capture
+/// materialization found the captured binding with no checker metadata.
+#[test]
+fn closure_captures_closure_binding_runs() {
+    require_codegen();
+
+    let source =
+        repo_root().join("tests/vertical-slice/accept/closure_captures_closure_binding.hew");
+    let output = run_bounded_hew_run(&source, repo_root());
+    assert!(
+        output.status.success(),
+        "closure_captures_closure_binding should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, "42\n", "expected 42; got: {actual:?}");
+}
+
+/// A non-capturing closure literal nested inside another closure's body.
+///
+/// Previously `E_NOT_YET_IMPLEMENTED` (missing closure invoke shim): the nested
+/// literal's invoke shim is produced while the parent shim is being lowered, so
+/// it lands in the parent's `generated.generated`, and the module driver
+/// flattened only one level — `MakeClosure` then referenced a shim symbol
+/// codegen never emitted. The driver now flattens the generated tree fully.
+#[test]
+fn closure_nested_noncapturing_runs() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/closure_nested_noncapturing.hew");
+    let output = run_bounded_hew_run(&source, repo_root());
+    assert!(
+        output.status.success(),
+        "closure_nested_noncapturing should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, "16\n", "expected 16; got: {actual:?}");
+}
+
+/// Type-parameterized closure capture: a closure inside `fn pick<T>(x: T) -> T`
+/// captures the type-parameter-typed value and returns it, instantiated at two
+/// concrete types.
+///
+/// Previously `E_MIR` `UnknownType` `T`: the closure env field type and the
+/// invoke shim's return ABI were left as the bare type-parameter symbol. The
+/// codegen-readiness walk over the env record layout has no per-monomorphisation
+/// subst map, so an un-substituted `T` was rejected at the MIR boundary. The
+/// closure-literal lowering now substitutes capture/param/return types through
+/// the monomorphisation map. The `string` instantiation also exercises an OWNED
+/// capture (heap buffer released by the escaping env free thunk).
+#[test]
+fn closure_type_param_capture_runs() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/closure_type_param_capture.hew");
+    let output = run_bounded_hew_run(&source, repo_root());
+    assert!(
+        output.status.success(),
+        "closure_type_param_capture should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(
+        actual, "42\nclosure\n",
+        "expected 42 then closure; got: {actual:?}"
+    );
+}
+
+/// Type-parameterized closure capture with TWO type parameters captured by the
+/// same closure env. Each capture field substitutes to its concrete type
+/// independently (`i64`, `string`).
+#[test]
+fn closure_type_param_multi_runs() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/closure_type_param_multi.hew");
+    let output = run_bounded_hew_run(&source, repo_root());
+    assert!(
+        output.status.success(),
+        "closure_type_param_multi should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, "99\n", "expected 99; got: {actual:?}");
+}
+
+/// `BorrowMut` write-back (#1′): a closure reassigns a captured scalar `var`.
+///
+/// Previously `E_MIR` `UnresolvedPlace` ("assignment target binding has no MIR
+/// place"): the assignment lowering resolved only `binding_locals` targets, so
+/// a reassigned captured binding (which lives in the closure env, not a local
+/// slot) had no write path. The lowering now emits a `ClosureEnvFieldStore`
+/// into the env field. The env owns the mutable scalar (Option B): `acc`
+/// accumulates 0 -> 5 -> 8 while the caller's original `total` stays 0.
+#[test]
+fn closure_captured_var_writeback_runs() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/closure_captured_var_writeback.hew");
+    let output = run_bounded_hew_run(&source, repo_root());
+    assert!(
+        output.status.success(),
+        "closure_captured_var_writeback should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, "5\n8\n0\n", "expected 5,8,0; got: {actual:?}");
+}
+
+/// `BorrowMut` write-back (#1′) through an ESCAPING heap-boxed env: the stateful
+/// counter-factory idiom. `make_counter` returns a closure capturing its local
+/// `count` by `BorrowMut`, so the env is heap-promoted and each call mutates the
+/// heap field in place, accumulating 1 -> 2 -> 3.
+#[test]
+fn closure_counter_factory_runs() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/closure_counter_factory.hew");
+    let output = run_bounded_hew_run(&source, repo_root());
+    assert!(
+        output.status.success(),
+        "closure_counter_factory should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, "1\n2\n3\n", "expected 1,2,3; got: {actual:?}");
+}
+
+/// A closure that captures a non-Copy `string` binding WITHOUT `move` is
+/// accepted: the checker infers a read-only Borrow capture (the closure only
+/// reads `name`), so the legacy `ClosureExplicitMoveRequired` diagnostic is
+/// dead for this site. Because it is a borrow, the outer binding still owns the
+/// string and `main` reads it again after the closure — the string is freed
+/// exactly once at scope exit. Replaces the stale `closure_explicit_move_required`
+/// reject fixture, which asserted the now-removed reject behaviour.
+#[test]
+fn closure_noncopy_inferred_borrow_runs() {
+    require_codegen();
+
+    let source =
+        repo_root().join("tests/vertical-slice/accept/closure_noncopy_inferred_borrow.hew");
+    let output = run_bounded_hew_run(&source, repo_root());
+    assert!(
+        output.status.success(),
+        "closure_noncopy_inferred_borrow should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, "hew\nhew\n", "expected hew,hew; got: {actual:?}");
+}
 /// get, and pop over boxed-pair elements riding the pointer-element ABI.
 #[test]
 fn vec_of_fn_storage_ops_run() {

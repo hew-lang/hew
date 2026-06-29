@@ -1,0 +1,24 @@
+// BorrowMut write-back (#1′): a closure REASSIGNS a captured scalar `var`. The
+// body's `total = total + n` has no `binding_locals` slot for `total` — the
+// binding lives in the closure env — so the store lands in the env field
+// through the `ClosureEnvFieldStore` write-back twin of `ClosureEnvFieldLoad`.
+//
+// Previously failed with E_MIR UnresolvedPlace ("assignment target binding has
+// no MIR place"): the assignment lowering resolved only `binding_locals`
+// targets, never the captured-env case.
+//
+// Semantics (Option B): the env OWNS the mutable scalar. Mutations accumulate
+// across calls through the persistent env, and the caller's original `total`
+// binding is independent — captures are materialised through the env, never a
+// surface reference. So `acc` accumulates 0 -> 5 -> 8 while the outer `total`
+// stays 0.
+fn main() {
+    var total: i64 = 0;
+    let acc = |n: i64| {
+        total = total + n;
+        total
+    };
+    println(acc(5)); // 5
+    println(acc(3)); // 8
+    println(total);  // 0
+}

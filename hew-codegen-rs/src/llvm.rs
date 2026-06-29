@@ -16678,6 +16678,15 @@ fn lower_instruction(
             lower_closure_env_field_load(fn_ctx, *env, env_ty, *field_offset, *dest)?;
             let _ = ctx;
         }
+        Instr::ClosureEnvFieldStore {
+            env,
+            env_ty,
+            field_offset,
+            src,
+        } => {
+            lower_closure_env_field_store(fn_ctx, *env, env_ty, *field_offset, *src)?;
+            let _ = ctx;
+        }
         Instr::CallClosure {
             callee,
             args,
@@ -19415,6 +19424,64 @@ fn lower_closure_env_field_load(
         .builder
         .build_store(dest_ptr, value)
         .llvm_ctx("ClosureEnvFieldLoad store")?;
+    Ok(())
+}
+
+/// Store one value into a closure invoke shim's environment field — the
+/// write-back twin of [`lower_closure_env_field_load`]. Emitted for `#1′`
+/// BorrowMut write-back (a closure body reassigning a captured scalar `var`).
+/// Mirrors the load's pointer chase (load the env pointer, GEP to the field),
+/// then stores `src` into the field instead of loading out of it. Restricted to
+/// `BitCopy` scalar fields by the MIR lowering, so no overwrite-release of a
+/// prior owned value is needed here.
+fn lower_closure_env_field_store(
+    fn_ctx: &FnCtx<'_, '_>,
+    env: Place,
+    env_ty: &ResolvedTy,
+    field_offset: FieldOffset,
+    src: Place,
+) -> CodegenResult<()> {
+    let env_struct = record_struct_for(fn_ctx, env_ty)?;
+    let (env_slot, env_slot_ty) = place_pointer(fn_ctx, env)?;
+    if !matches!(env_slot_ty, BasicTypeEnum::PointerType(_)) {
+        return Err(CodegenError::FailClosed(format!(
+            "ClosureEnvFieldStore env slot must hold a pointer, got {env_slot_ty:?}"
+        )));
+    }
+    let env_ptr = fn_ctx
+        .builder
+        .build_load(env_slot_ty, env_slot, "closure_env_ptr_load")
+        .llvm_ctx("ClosureEnvFieldStore env load")?
+        .into_pointer_value();
+    let idx = field_offset.0;
+    let idx_usize = usize::try_from(idx).map_err(|_| {
+        CodegenError::FailClosed(format!(
+            "ClosureEnvFieldStore field offset {idx} exceeds usize::MAX — impossible"
+        ))
+    })?;
+    let field_ty = *env_struct.get_field_types().get(idx_usize).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "ClosureEnvFieldStore field offset {idx} out of bounds"
+        ))
+    })?;
+    let (src_ptr, src_ty) = place_pointer(fn_ctx, src)?;
+    if src_ty != field_ty {
+        return Err(CodegenError::FailClosed(format!(
+            "ClosureEnvFieldStore src type {src_ty:?} does not match field type {field_ty:?}"
+        )));
+    }
+    let field_ptr = fn_ctx
+        .builder
+        .build_struct_gep(env_struct, env_ptr, idx, "closure_capture_ptr")
+        .llvm_ctx("ClosureEnvFieldStore gep")?;
+    let value = fn_ctx
+        .builder
+        .build_load(field_ty, src_ptr, "closure_capture_store_val")
+        .llvm_ctx("ClosureEnvFieldStore src load")?;
+    fn_ctx
+        .builder
+        .build_store(field_ptr, value)
+        .llvm_ctx("ClosureEnvFieldStore field store")?;
     Ok(())
 }
 

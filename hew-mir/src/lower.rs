@@ -2519,19 +2519,16 @@ pub fn lower_hir_module_with_facts(
                 checked_mir.push(lowered.checked);
                 elaborated_mir.push(lowered.elaborated);
                 record_layouts.extend(lowered.record_layouts);
-                for generated in lowered.generated {
-                    if generated.raw.name.starts_with("__hew_named_fn_invoke_")
-                        && !emitted_named_fn_shims.insert(generated.raw.name.clone())
-                    {
-                        continue; // duplicate shim from a second use-site — body already emitted
-                    }
-                    thir.push(generated.thir);
-                    raw_mir.push(generated.raw);
-                    checked_mir.push(generated.checked);
-                    elaborated_mir.push(generated.elaborated);
-                    diagnostics.extend(generated.diagnostics);
-                    record_layouts.extend(generated.record_layouts);
-                }
+                flatten_generated_functions(
+                    lowered.generated,
+                    &mut thir,
+                    &mut raw_mir,
+                    &mut checked_mir,
+                    &mut elaborated_mir,
+                    &mut diagnostics,
+                    &mut record_layouts,
+                    &mut emitted_named_fn_shims,
+                );
                 diagnostics.extend(lowered.diagnostics);
             }
             HirItem::Actor(actor) => {
@@ -2561,19 +2558,16 @@ pub fn lower_hir_module_with_facts(
                     checked_mir.push(lowered.checked);
                     elaborated_mir.push(lowered.elaborated);
                     record_layouts.extend(lowered.record_layouts);
-                    for generated in lowered.generated {
-                        if generated.raw.name.starts_with("__hew_named_fn_invoke_")
-                            && !emitted_named_fn_shims.insert(generated.raw.name.clone())
-                        {
-                            continue; // duplicate shim — body already emitted
-                        }
-                        thir.push(generated.thir);
-                        raw_mir.push(generated.raw);
-                        checked_mir.push(generated.checked);
-                        elaborated_mir.push(generated.elaborated);
-                        diagnostics.extend(generated.diagnostics);
-                        record_layouts.extend(generated.record_layouts);
-                    }
+                    flatten_generated_functions(
+                        lowered.generated,
+                        &mut thir,
+                        &mut raw_mir,
+                        &mut checked_mir,
+                        &mut elaborated_mir,
+                        &mut diagnostics,
+                        &mut record_layouts,
+                        &mut emitted_named_fn_shims,
+                    );
                     diagnostics.extend(lowered.diagnostics);
                 }
             }
@@ -2604,19 +2598,16 @@ pub fn lower_hir_module_with_facts(
                     checked_mir.push(lowered.checked);
                     elaborated_mir.push(lowered.elaborated);
                     record_layouts.extend(lowered.record_layouts);
-                    for generated in lowered.generated {
-                        if generated.raw.name.starts_with("__hew_named_fn_invoke_")
-                            && !emitted_named_fn_shims.insert(generated.raw.name.clone())
-                        {
-                            continue; // duplicate shim — body already emitted
-                        }
-                        thir.push(generated.thir);
-                        raw_mir.push(generated.raw);
-                        checked_mir.push(generated.checked);
-                        elaborated_mir.push(generated.elaborated);
-                        diagnostics.extend(generated.diagnostics);
-                        record_layouts.extend(generated.record_layouts);
-                    }
+                    flatten_generated_functions(
+                        lowered.generated,
+                        &mut thir,
+                        &mut raw_mir,
+                        &mut checked_mir,
+                        &mut elaborated_mir,
+                        &mut diagnostics,
+                        &mut record_layouts,
+                        &mut emitted_named_fn_shims,
+                    );
                     diagnostics.extend(lowered.diagnostics);
                 }
             }
@@ -2745,19 +2736,16 @@ pub fn lower_hir_module_with_facts(
         checked_mir.push(lowered.checked);
         elaborated_mir.push(lowered.elaborated);
         record_layouts.extend(lowered.record_layouts);
-        for generated in lowered.generated {
-            if generated.raw.name.starts_with("__hew_named_fn_invoke_")
-                && !emitted_named_fn_shims.insert(generated.raw.name.clone())
-            {
-                continue; // duplicate shim — body already emitted
-            }
-            thir.push(generated.thir);
-            raw_mir.push(generated.raw);
-            checked_mir.push(generated.checked);
-            elaborated_mir.push(generated.elaborated);
-            diagnostics.extend(generated.diagnostics);
-            record_layouts.extend(generated.record_layouts);
-        }
+        flatten_generated_functions(
+            lowered.generated,
+            &mut thir,
+            &mut raw_mir,
+            &mut checked_mir,
+            &mut elaborated_mir,
+            &mut diagnostics,
+            &mut record_layouts,
+            &mut emitted_named_fn_shims,
+        );
         diagnostics.extend(lowered.diagnostics);
     }
 
@@ -6544,6 +6532,62 @@ struct LoweredFunction {
     diagnostics: Vec<MirDiagnostic>,
     generated: Vec<LoweredFunction>,
     record_layouts: Vec<crate::model::RecordLayout>,
+}
+
+/// Recursively drain a `LoweredFunction::generated` tree into the module
+/// output vectors.
+///
+/// A generated function (a closure invoke shim, a named-fn reference shim, an
+/// ask-reply thunk, …) can itself produce generated functions: a *nested*
+/// closure literal's invoke shim is lowered while the *parent* shim is being
+/// built, so it lands in the parent's `builder.generated_functions` — i.e.
+/// `generated.generated`, depth 2. A single-level `for g in lowered.generated`
+/// loop (the historical shape at every dispatch site) surfaces only depth 1,
+/// so a `MakeClosure` for the inner literal references a shim symbol codegen
+/// never emitted (`E_NOT_YET_IMPLEMENTED: missing closure invoke shim`).
+///
+/// Walk the whole tree so EVERY generated function at EVERY depth is surfaced
+/// exactly once (`exhaustive-coverage`). The `__hew_named_fn_invoke_` dedup is
+/// preserved: a duplicate shim (and the subtree below it, which is the same
+/// already-emitted bodies) is skipped wholesale.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "threads the same module-output sinks the four dispatch sites already hold as locals"
+)]
+fn flatten_generated_functions(
+    generated: Vec<LoweredFunction>,
+    thir: &mut Vec<ThirFunction>,
+    raw_mir: &mut Vec<RawMirFunction>,
+    checked_mir: &mut Vec<CheckedMirFunction>,
+    elaborated_mir: &mut Vec<ElaboratedMirFunction>,
+    diagnostics: &mut Vec<MirDiagnostic>,
+    record_layouts: &mut Vec<crate::model::RecordLayout>,
+    emitted_named_fn_shims: &mut HashSet<String>,
+) {
+    for generated in generated {
+        if generated.raw.name.starts_with("__hew_named_fn_invoke_")
+            && !emitted_named_fn_shims.insert(generated.raw.name.clone())
+        {
+            continue; // duplicate shim from a second use-site — body (and its subtree) already emitted
+        }
+        let nested = generated.generated;
+        thir.push(generated.thir);
+        raw_mir.push(generated.raw);
+        checked_mir.push(generated.checked);
+        elaborated_mir.push(generated.elaborated);
+        diagnostics.extend(generated.diagnostics);
+        record_layouts.extend(generated.record_layouts);
+        flatten_generated_functions(
+            nested,
+            thir,
+            raw_mir,
+            checked_mir,
+            elaborated_mir,
+            diagnostics,
+            record_layouts,
+            emitted_named_fn_shims,
+        );
+    }
 }
 
 /// Insert execution-context carrier markers into a context-bearing CFG.
@@ -11074,6 +11118,47 @@ impl Builder {
                         site: target.site,
                         ty: self.subst_ty(&target.ty),
                     });
+                } else if let Some(source) = self.capture_env_sources.get(binding).cloned() {
+                    // #1′ BorrowMut write-back: the assignment target is a
+                    // captured `var` reassigned inside the closure body
+                    // (`var total; |n| { total = total + n; total }`). The
+                    // binding has no `binding_locals` slot — it lives in the
+                    // closure env — so the write lands in the env field via the
+                    // store twin of `ClosureEnvFieldLoad`. The env owns the
+                    // mutable scalar (Option B): mutations accumulate across
+                    // calls through the persistent env pointer, and the caller's
+                    // original binding is independent.
+                    //
+                    // Restricted to `BitCopy` scalar fields. An owned captured
+                    // field (string/Vec/record) would leak its prior value on
+                    // overwrite without an env-field release — out of scope for
+                    // the non-suspend scalar write-back path — so fail closed
+                    // with a spanned diagnostic rather than emit a
+                    // silently-leaking store.
+                    let field_class = ValueClass::of_ty(&source.ty, &self.type_classes);
+                    if field_class == ValueClass::BitCopy {
+                        self.push_instr(Instr::ClosureEnvFieldStore {
+                            env: source.env,
+                            env_ty: source.env_ty,
+                            field_offset: source.field_offset,
+                            src,
+                        });
+                    } else {
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct: format!(
+                                    "reassigning owned captured `{name}` inside a closure"
+                                ),
+                                site: target.site,
+                            },
+                            note: format!(
+                                "captured `{name}` has a non-`BitCopy` type ({:?}); the closure-env \
+                                 write-back supports scalar captures only — an owned field would \
+                                 need an overwrite-release of its prior value",
+                                source.ty
+                            ),
+                        });
+                    }
                 } else {
                     self.diagnostics.push(MirDiagnostic {
                         kind: MirDiagnosticKind::UnresolvedPlace {
@@ -26342,7 +26427,7 @@ impl Builder {
                 id: crate::closure_env::CaptureId(
                     u32::try_from(idx).expect("closure capture count exceeds u32::MAX"),
                 ),
-                ty: cap.ty.clone(),
+                ty: self.subst_ty(&cap.ty),
                 mode: cap.mode,
                 is_sync: cap.is_sync,
             })
@@ -26409,7 +26494,20 @@ impl Builder {
             .next_closure_id
             .checked_add(1)
             .expect("closure id overflow");
-        let owner = Self::sanitize_symbol_component(&self.current_function_symbol);
+        // A NESTED closure literal is lowered while `current_function_symbol`
+        // is the PARENT closure's invoke shim (`__hew_closure_invoke_<path>`).
+        // Using it verbatim as the owner re-prefixes the symbol on every level
+        // (`__hew_closure_invoke___hew_closure_invoke_main_0_0`) — redundant and
+        // unbounded in nesting depth. Strip the shim prefix so the owner is the
+        // stable nesting PATH (`main_0`): child builders reset `next_closure_id`
+        // to 0, so the parent path is what keeps sibling/cross-level shim names
+        // unique. The `MakeClosure` and the shim both derive their symbol from
+        // this single site, so they stay in lockstep.
+        let owner_src = self
+            .current_function_symbol
+            .strip_prefix("__hew_closure_invoke_")
+            .unwrap_or(&self.current_function_symbol);
+        let owner = Self::sanitize_symbol_component(owner_src);
         let env_name = format!("__hew_closure_env_{owner}_{closure_id}");
         let shim_name = format!("__hew_closure_invoke_{owner}_{closure_id}");
         let env_ty = ResolvedTy::Named {
@@ -26419,10 +26517,23 @@ impl Builder {
             is_opaque: false,
         };
 
+        // Each capture field's `ResolvedTy` is substituted through the
+        // per-monomorphisation map: a closure inside `fn f<T>(x: T)` that
+        // captures `x` records the env field as the CONCRETE argument (`i64`,
+        // `string`, …), never the bare type-parameter `T`. The env record
+        // layout is walked verbatim by the codegen-readiness diagnostic
+        // (`collect_layout_field_diagnostics`) with no subst map of its own, so
+        // an un-substituted `T` here surfaces as `E_MIR UnknownType T`; it is
+        // also the struct codegen lays out, so the field MUST be concrete for a
+        // correct ABI. A non-generic origin takes the identity-map fast path.
+        let env_field_tys: Vec<ResolvedTy> = captures
+            .iter()
+            .map(|capture| self.subst_ty(&capture.ty))
+            .collect();
         self.closure_record_layouts
             .push(crate::model::RecordLayout {
                 name: env_name,
-                field_tys: captures.iter().map(|capture| capture.ty.clone()).collect(),
+                field_tys: env_field_tys,
                 // Compiler-internal closure-env record: positional `-g` names.
                 field_names: Vec::new(),
             });
@@ -26576,6 +26687,14 @@ impl Builder {
         body: &HirExpr,
         captures: &[hew_hir::HirClosureCapture],
     ) -> LoweredFunction {
+        // Resolve the shim's return type through the per-monomorphisation subst
+        // map: a closure in `fn f<T>() -> T` lowers its invoke shim with the
+        // CONCRETE return ABI, never the bare `T`. The child builder inherits
+        // `subst`, so the body's locals already substitute via `alloc_local`;
+        // the shim's raw `return_ty`/`params` are built directly here and must
+        // be substituted explicitly so codegen sees a concrete ABI.
+        let ret_ty_subst = self.subst_ty(ret_ty);
+        let ret_ty = &ret_ty_subst;
         let env_ptr_ty = Self::closure_env_pointer_ty(env_ty);
         // `child_builder_tables` carries the full shared-table list — notably
         // `actor_layouts`, so a closure body that sends to a captured pid
@@ -26598,7 +26717,7 @@ impl Builder {
                     field_offset: FieldOffset(
                         u32::try_from(idx).expect("closure capture count exceeds u32::MAX"),
                     ),
-                    ty: capture.ty.clone(),
+                    ty: self.subst_ty(&capture.ty),
                 },
             );
         }
@@ -26630,7 +26749,7 @@ impl Builder {
         };
         let mut raw_params = Vec::with_capacity(params.len() + 1);
         raw_params.push(env_ptr_ty);
-        raw_params.extend(params.iter().map(|param| param.ty.clone()));
+        raw_params.extend(params.iter().map(|param| self.subst_ty(&param.ty)));
         let raw = RawMirFunction {
             name: shim_name.to_string(),
             return_ty: ret_ty.clone(),
@@ -30730,6 +30849,7 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         }
         Instr::MakeClosure { env, dest, .. } => vec![*env, *dest],
         Instr::ClosureEnvFieldLoad { env, dest, .. } => vec![*env, *dest],
+        Instr::ClosureEnvFieldStore { env, src, .. } => vec![*env, *src],
         Instr::CallClosure {
             callee,
             args,
@@ -31120,6 +31240,9 @@ pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
         // read (the aggregate stays live; the value is shared into it).
         Instr::RecordFieldStore { record, src, .. } => vec![*record, *src],
         Instr::ActorStateFieldStore { src, .. } => vec![*src],
+        // Closure-env write-back reads both the env pointer (the aggregate
+        // stays live) and the value being stored into it.
+        Instr::ClosureEnvFieldStore { env, src, .. } => vec![*env, *src],
         Instr::MakeClosure { env, .. } => vec![*env],
         Instr::CallClosure { callee, args, .. } => {
             let mut places = vec![*callee];
@@ -31425,6 +31548,9 @@ fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
         Instr::TupleConstruct { elements, .. } => elements.iter().any(|p| refs(*p)),
         Instr::RecordFieldStore { src, .. } => refs(*src),
         Instr::ActorStateFieldStore { src, .. } => refs(*src),
+        // A closure-env write-back stores `src` into the env; like the other
+        // field stores it escapes the local iff `src` is the tracked local.
+        Instr::ClosureEnvFieldStore { src, .. } => refs(*src),
         Instr::MakeClosure { env, .. } => refs(*env),
         Instr::CoerceToDynTrait { value, .. } => refs(*value),
         Instr::SpawnActor {
@@ -31718,6 +31844,7 @@ fn projection_alias_dest(instr: &Instr) -> Option<Place> {
         | Instr::AutoLockRelease { .. }
         | Instr::MakeClosure { .. }
         | Instr::ActorStateFieldStore { .. }
+        | Instr::ClosureEnvFieldStore { .. }
         | Instr::SpawnActor { .. }
         | Instr::CallClosure { .. }
         | Instr::SpawnTaskDirect { .. }
@@ -35432,6 +35559,14 @@ fn detect_unproven_aggregate_handle_double_free(
 /// borrow reads the fixpoint and tally already account for — including
 /// `CallRuntimeAbi`, whose operands are the *container* being read (`hew_vec_len`
 /// / `hew_vec_get_ptr`), never an owned-handle leaf aliased out.
+#[allow(
+    clippy::match_same_arms,
+    reason = "the closure-env-field arms intentionally share the empty-escape \
+              result of the `_` arm but are named explicitly so the closure \
+              write-back/read path's escape classification is visible on the \
+              diff and is forced to be re-examined if the `#1'` BitCopy gate is \
+              ever loosened to owned captures (exhaustive-traversal-and-lowering)"
+)]
 fn instr_escape_places(instr: &Instr) -> Vec<Place> {
     match instr {
         // A value stored into a still-live aggregate / actor state is aliased
@@ -35455,6 +35590,19 @@ fn instr_escape_places(instr: &Instr) -> Vec<Place> {
             places
         }
         Instr::CoerceToDynTrait { value, .. } => vec![*value],
+        // Closure-env field write-back (`#1'`) stores a BitCopy scalar: the
+        // store is gated to `ValueClass::BitCopy`, and an owned capture
+        // reassignment fails closed with NotYetImplemented. A scalar `src`
+        // carries no owned handle, so nothing is aliased out of the tracked
+        // dataflow — no escape place. If that gate is ever loosened to admit
+        // owned captures, `src` would alias into the env's independently-dropped
+        // storage and MUST surface here as `vec![*src]`, mirroring
+        // `RecordFieldStore` above. Named explicitly (not left to the `_` arm)
+        // so this invariant is visible on the closure path (exhaustive-traversal).
+        Instr::ClosureEnvFieldStore { .. } => Vec::new(),
+        // Reading a field OUT of the env is a borrow into tracked dataflow, not
+        // an alias of an owned handle into untracked storage — no escape place.
+        Instr::ClosureEnvFieldLoad { .. } => Vec::new(),
         // Dispatched calls take their arguments (and the receiver) by value.
         Instr::CallClosure { args, .. } => args.clone(),
         Instr::CallTraitMethod {

@@ -75,14 +75,6 @@ const ANALYSIS_ERROR_FIXTURES: &[&str] = &[
     // rejects them.  The corresponding fail-closed LSP test is
     // `v05_async_await_is_rejected_with_parse_errors`.
     "v05_async_await",
-    // hir-rejected: nested closure captures are not yet materialised in the
-    // checker side-table.  The type checker accepts the fixture, but HIR
-    // lowering surfaces a `CheckerBoundaryViolation` for `twice` (which
-    // captures `inc`, itself a closure variable).  The browser editor must not
-    // show green for code the native compiler rejects at HIR.  Fail-closed per
-    // checker-authority doctrine.  Dedicated test:
-    // `v05_wasm_coverage_closure_hir_gap_surfaces_error`.
-    "v05_closures",
     // accepted (intentional type error): `obj[key]` on a type that does not
     // implement Indexable — type error by design, exercising error-recovery in
     // the index-expression checker.
@@ -174,8 +166,8 @@ fn v05_wasm_coverage_fixture_count() {
     );
     assert_eq!(
         ANALYSIS_ERROR_FIXTURES.len(),
-        10,
-        "ANALYSIS_ERROR_FIXTURES must list exactly 10 known-error fixtures"
+        9,
+        "ANALYSIS_ERROR_FIXTURES must list exactly 9 known-error fixtures"
     );
 }
 
@@ -199,7 +191,7 @@ fn v05_wasm_coverage_type_check_all_api_valid() {
     }
 }
 
-// ── Zero-error: 28 clean fixtures produce no error-severity diagnostics ───
+// ── Zero-error: 29 clean fixtures produce no error-severity diagnostics ───
 
 #[test]
 fn v05_wasm_coverage_analyze_clean_fixtures() {
@@ -261,17 +253,19 @@ fn v05_wasm_coverage_async_await_api_valid() {
     );
 }
 
-/// Nested closure captures that the type-checker leaves unresolved surface as
-/// a `CheckerBoundaryViolation` at HIR lowering.  The browser editor must show
-/// an error for this code: accepting it silently would present the editor as
-/// green for a program that `hew run` rejects.
+/// Nested closure captures (a closure that captures another closure binding —
+/// `let twice = |x: i32| -> i32 { inc(inc(x)) }` where `inc` is itself a
+/// closure variable) now lower cleanly through HIR.  The browser editor must
+/// show this well-formed program as green: `analyze` produces no
+/// error-severity diagnostics and, in particular, no `CheckerBoundaryViolation`.
 ///
-/// Specific repro: `let twice = |x: i32| -> i32 { inc(inc(x)) }` where `inc`
-/// is itself a closure variable — the checker does not materialise capture
-/// metadata for the nested `inc` call, and HIR lowering fires
-/// `CheckerBoundaryViolation`.  Fail-closed per checker-authority doctrine.
+/// Before the C7 closure work this fixture surfaced a `CheckerBoundaryViolation`
+/// at HIR lowering (the checker did not materialise capture metadata for the
+/// nested `inc` call); that gap is now closed and the fixture is part of the
+/// clean set (covered by the zero-error loops, plus this dedicated assertion
+/// that the boundary violation specifically no longer fires).
 #[test]
-fn v05_wasm_coverage_closure_hir_gap_surfaces_error() {
+fn v05_wasm_coverage_closures_analyze_clean() {
     const FIXTURE: &str = "v05_closures";
     let source = include_str!("../../hew-lsp/tests/fixtures/v05_closures.hew");
     let json = hew_wasm::analyze(source)
@@ -281,19 +275,30 @@ fn v05_wasm_coverage_closure_hir_gap_surfaces_error() {
         .as_array()
         .unwrap_or_else(|| panic!("fixture {FIXTURE}: missing diagnostics array"));
 
-    let hir_errors: Vec<&serde_json::Value> = diags
+    // The nested closure capture resolves: no `CheckerBoundaryViolation` at any
+    // phase.  This is the exact diagnostic the pre-C7 gap produced.
+    let boundary_violations: Vec<&serde_json::Value> = diags
         .iter()
-        .filter(|d| {
-            d["severity"].as_str() == Some("error")
-                && d["phase"].as_str() == Some("hir")
-                && d["kind"].as_str() == Some("CheckerBoundaryViolation")
-        })
+        .filter(|d| d["kind"].as_str() == Some("CheckerBoundaryViolation"))
         .collect();
     assert!(
-        !hir_errors.is_empty(),
-        "fixture {FIXTURE}: expected ≥1 hir-phase CheckerBoundaryViolation error diagnostic \
-         for nested closure capture; got {} diagnostics: {diags:?}",
+        boundary_violations.is_empty(),
+        "fixture {FIXTURE}: nested closure capture must lower cleanly — no \
+         CheckerBoundaryViolation expected; got {} diagnostics: {diags:?}",
         diags.len()
+    );
+
+    // And no error-severity diagnostics at all.  Warnings (the escape advisory,
+    // unused-function) are permitted — only errors would present false-green.
+    let errors: Vec<&serde_json::Value> = diags
+        .iter()
+        .filter(|d| d["severity"].as_str() == Some("error"))
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "fixture {FIXTURE}: expected zero error-severity diagnostics for the now-clean \
+         closure fixture; got {} error(s): {errors:?}",
+        errors.len()
     );
 }
 

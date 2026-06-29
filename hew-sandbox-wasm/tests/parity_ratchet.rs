@@ -535,7 +535,15 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "closure / lambda value",
-        probe: "fn main() {\n    let f = |x: i64| x + 1;\n    println(f(2));\n}\n",
+        // The profile rejects `Expr::Lambda { .. }` structurally, before walking
+        // the body — so EVERY closure form is fail-closed-rejected for sandbox
+        // export, including the capturing / nested / type-parameterised /
+        // write-back forms the C7 lane newly admits on native. The probe
+        // captures an outer `var` and reassigns it (the most permissive native
+        // form, #1') to pin that even a mutable capture produces no bytecode:
+        // the sandbox stays strictly more conservative than native, never the
+        // reverse (`native-wasm-parity`).
+        probe: "fn main() {\n    var total = 0;\n    let acc = |n: i64| { total = total + n; total };\n    println(acc(2));\n}\n",
         coverage: Coverage::RejectedByProfile {
             diagnostic_kind: "reserved_runtime_feature",
         },

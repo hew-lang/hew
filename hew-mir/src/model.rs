@@ -4074,6 +4074,26 @@ pub enum Instr {
         /// Destination place receiving the field value.
         dest: Place,
     },
+    /// Store one value into a closure invoke shim's environment field — the
+    /// write-back twin of [`Instr::ClosureEnvFieldLoad`]. Emitted when a closure
+    /// body REASSIGNS a captured `var` (an inferred `BorrowMut` capture): the
+    /// env owns the mutable scalar slot, so the store lands in the env field and
+    /// accumulates across calls through the persistent env pointer. The caller's
+    /// original binding is independent (captures are materialised through the
+    /// env, never a surface reference). Restricted to `BitCopy` scalar fields —
+    /// an owned captured field would need an overwrite-release on the prior
+    /// value, which the lowering fails closed on.
+    ClosureEnvFieldStore {
+        /// Local holding the opaque env pointer parameter.
+        env: Place,
+        /// Named env-record type whose layout defines `field_offset`.
+        env_ty: ResolvedTy,
+        /// Capture field index in first-use order (identical to the matching
+        /// load's offset).
+        field_offset: FieldOffset,
+        /// Place holding the value to store into the field.
+        src: Place,
+    },
     ActorStateFieldLoad {
         field_offset: FieldOffset,
         dest: Place,

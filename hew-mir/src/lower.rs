@@ -11118,6 +11118,47 @@ impl Builder {
                         site: target.site,
                         ty: self.subst_ty(&target.ty),
                     });
+                } else if let Some(source) = self.capture_env_sources.get(binding).cloned() {
+                    // #1′ BorrowMut write-back: the assignment target is a
+                    // captured `var` reassigned inside the closure body
+                    // (`var total; |n| { total = total + n; total }`). The
+                    // binding has no `binding_locals` slot — it lives in the
+                    // closure env — so the write lands in the env field via the
+                    // store twin of `ClosureEnvFieldLoad`. The env owns the
+                    // mutable scalar (Option B): mutations accumulate across
+                    // calls through the persistent env pointer, and the caller's
+                    // original binding is independent.
+                    //
+                    // Restricted to `BitCopy` scalar fields. An owned captured
+                    // field (string/Vec/record) would leak its prior value on
+                    // overwrite without an env-field release — out of this
+                    // lane's scope (the §1′ non-suspend scalar write-back) — so
+                    // fail closed with a spanned diagnostic rather than emit a
+                    // silently-leaking store.
+                    let field_class = ValueClass::of_ty(&source.ty, &self.type_classes);
+                    if field_class == ValueClass::BitCopy {
+                        self.push_instr(Instr::ClosureEnvFieldStore {
+                            env: source.env,
+                            env_ty: source.env_ty,
+                            field_offset: source.field_offset,
+                            src,
+                        });
+                    } else {
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct: format!(
+                                    "reassigning owned captured `{name}` inside a closure"
+                                ),
+                                site: target.site,
+                            },
+                            note: format!(
+                                "captured `{name}` has a non-`BitCopy` type ({:?}); the closure-env \
+                                 write-back supports scalar captures only — an owned field would \
+                                 need an overwrite-release of its prior value",
+                                source.ty
+                            ),
+                        });
+                    }
                 } else {
                     self.diagnostics.push(MirDiagnostic {
                         kind: MirDiagnosticKind::UnresolvedPlace {
@@ -30808,6 +30849,7 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         }
         Instr::MakeClosure { env, dest, .. } => vec![*env, *dest],
         Instr::ClosureEnvFieldLoad { env, dest, .. } => vec![*env, *dest],
+        Instr::ClosureEnvFieldStore { env, src, .. } => vec![*env, *src],
         Instr::CallClosure {
             callee,
             args,
@@ -31198,6 +31240,9 @@ pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
         // read (the aggregate stays live; the value is shared into it).
         Instr::RecordFieldStore { record, src, .. } => vec![*record, *src],
         Instr::ActorStateFieldStore { src, .. } => vec![*src],
+        // Closure-env write-back reads both the env pointer (the aggregate
+        // stays live) and the value being stored into it.
+        Instr::ClosureEnvFieldStore { env, src, .. } => vec![*env, *src],
         Instr::MakeClosure { env, .. } => vec![*env],
         Instr::CallClosure { callee, args, .. } => {
             let mut places = vec![*callee];
@@ -31503,6 +31548,9 @@ fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
         Instr::TupleConstruct { elements, .. } => elements.iter().any(|p| refs(*p)),
         Instr::RecordFieldStore { src, .. } => refs(*src),
         Instr::ActorStateFieldStore { src, .. } => refs(*src),
+        // A closure-env write-back stores `src` into the env; like the other
+        // field stores it escapes the local iff `src` is the tracked local.
+        Instr::ClosureEnvFieldStore { src, .. } => refs(*src),
         Instr::MakeClosure { env, .. } => refs(*env),
         Instr::CoerceToDynTrait { value, .. } => refs(*value),
         Instr::SpawnActor {
@@ -31796,6 +31844,7 @@ fn projection_alias_dest(instr: &Instr) -> Option<Place> {
         | Instr::AutoLockRelease { .. }
         | Instr::MakeClosure { .. }
         | Instr::ActorStateFieldStore { .. }
+        | Instr::ClosureEnvFieldStore { .. }
         | Instr::SpawnActor { .. }
         | Instr::CallClosure { .. }
         | Instr::SpawnTaskDirect { .. }

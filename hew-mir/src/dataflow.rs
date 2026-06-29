@@ -625,6 +625,11 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
             (vec![*record, *src], vec![])
         }
         Instr::ActorStateFieldStore { src, .. } => (vec![*src], vec![]),
+        // Closure-env write-back (#1′): reads the env pointer (to GEP into it)
+        // and the stored value. The env stays Live — only the field bytes are
+        // overwritten through the pointer, opaque to the MIR lattice — so the
+        // env is a read, not a write, exactly like `RecordFieldStore`.
+        Instr::ClosureEnvFieldStore { env, src, .. } => (vec![*env, *src], vec![]),
         Instr::TupleFieldLoad { tuple, dest, .. } => (vec![*tuple], vec![*dest]),
         Instr::TupleConstruct { elements, dest } => (elements.clone(), vec![*dest]),
         Instr::SpawnActor {

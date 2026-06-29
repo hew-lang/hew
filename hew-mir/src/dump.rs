@@ -798,6 +798,18 @@ fn render_instr(instr: &Instr) -> String {
             field_offset.0,
             env_ty.user_facing()
         ),
+        Instr::ClosureEnvFieldStore {
+            env,
+            env_ty,
+            field_offset,
+            src,
+        } => format!(
+            "closure_env_store {}.field[{}] = {} env_ty={}",
+            render_place(env),
+            field_offset.0,
+            render_place(src),
+            env_ty.user_facing()
+        ),
         Instr::ActorStateFieldLoad { field_offset, dest } => {
             format!(
                 "{} = actor_state_load field[{}]",

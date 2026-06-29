@@ -2813,6 +2813,50 @@ fn closure_type_param_multi_runs() {
     let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
     assert_eq!(actual, "99\n", "expected 99; got: {actual:?}");
 }
+
+/// `BorrowMut` write-back (#1′): a closure reassigns a captured scalar `var`.
+///
+/// Previously `E_MIR` `UnresolvedPlace` ("assignment target binding has no MIR
+/// place"): the assignment lowering resolved only `binding_locals` targets, so
+/// a reassigned captured binding (which lives in the closure env, not a local
+/// slot) had no write path. The lowering now emits a `ClosureEnvFieldStore`
+/// into the env field. The env owns the mutable scalar (Option B): `acc`
+/// accumulates 0 -> 5 -> 8 while the caller's original `total` stays 0.
+#[test]
+fn closure_captured_var_writeback_runs() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/closure_captured_var_writeback.hew");
+    let output = run_bounded_hew_run(&source, repo_root());
+    assert!(
+        output.status.success(),
+        "closure_captured_var_writeback should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, "5\n8\n0\n", "expected 5,8,0; got: {actual:?}");
+}
+
+/// `BorrowMut` write-back (#1′) through an ESCAPING heap-boxed env: the stateful
+/// counter-factory idiom. `make_counter` returns a closure capturing its local
+/// `count` by `BorrowMut`, so the env is heap-promoted and each call mutates the
+/// heap field in place, accumulating 1 -> 2 -> 3.
+#[test]
+fn closure_counter_factory_runs() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/closure_counter_factory.hew");
+    let output = run_bounded_hew_run(&source, repo_root());
+    assert!(
+        output.status.success(),
+        "closure_counter_factory should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, "1\n2\n3\n", "expected 1,2,3; got: {actual:?}");
+}
 /// get, and pop over boxed-pair elements riding the pointer-element ABI.
 #[test]
 fn vec_of_fn_storage_ops_run() {

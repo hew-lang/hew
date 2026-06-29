@@ -4050,6 +4050,109 @@ pub unsafe extern "C" fn hew_node_api_set_transport(name: *const c_char) -> c_in
     }
 }
 
+/// `Node::load_keys(path)` — Load (or, if absent, mint-and-persist) this node's
+/// stable mesh TLS identity from `path`. Must be called **before**
+/// `Node::start` so the listener presents the loaded key. Peers pin the
+/// resulting SPKI via `Node::allow_peer`; persisting the key keeps that SPKI
+/// stable across restarts. Native quic-mesh only.
+///
+/// Returns `0` on success, `-1` on a null/invalid path or key I/O failure
+/// (error string available via `hew_last_error`). Never fabricates an identity.
+///
+/// # Safety
+///
+/// `path` must be a valid null-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_api_load_keys(path: *const c_char) -> c_int {
+    // SAFETY: caller guarantees path is a valid C string (or null).
+    let Some(p) = (unsafe { crate::util::cstr_to_str(&path, "Node::load_keys") }) else {
+        return -1;
+    };
+    #[cfg(feature = "quic")]
+    {
+        match crate::quic_mesh::mesh_identity_load_or_create(std::path::Path::new(p)) {
+            Ok(_spki) => 0,
+            Err(err) => {
+                set_last_error(format!("Node::load_keys: {err}"));
+                -1
+            }
+        }
+    }
+    #[cfg(not(feature = "quic"))]
+    {
+        let _ = p;
+        set_last_error("Node::load_keys: quic-mesh transport not built (peer auth unavailable)");
+        -1
+    }
+}
+
+/// `Node::allow_peer(spki_hex)` — Add a peer's certificate SPKI (lowercase hex)
+/// to the fail-closed mesh allowlist. The snapshot is taken at `Node::start`,
+/// so call this before starting. A peer whose SPKI is not pinned is rejected
+/// by the mTLS handshake. Native quic-mesh only.
+///
+/// Returns `0` on success, `-1` on a null/odd/non-hex string or empty/oversize
+/// SPKI. Adds nothing on error.
+///
+/// # Safety
+///
+/// `spki_hex` must be a valid null-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_api_allow_peer(spki_hex: *const c_char) -> c_int {
+    // SAFETY: caller guarantees spki_hex is a valid C string (or null).
+    let Some(s) = (unsafe { crate::util::cstr_to_str(&spki_hex, "Node::allow_peer") }) else {
+        return -1;
+    };
+    let Some(bytes) = decode_hex(s) else {
+        set_last_error("Node::allow_peer: peer key must be hex-encoded SPKI bytes");
+        return -1;
+    };
+    #[cfg(feature = "quic")]
+    {
+        // SAFETY: bytes is a live Vec; ptr+len describe its contents.
+        unsafe { crate::quic_mesh::hew_quic_mesh_peer_spki_add(bytes.as_ptr(), bytes.len()) }
+    }
+    #[cfg(not(feature = "quic"))]
+    {
+        let _ = bytes;
+        set_last_error("Node::allow_peer: quic-mesh transport not built (peer auth unavailable)");
+        -1
+    }
+}
+
+/// Upper bound on a decoded peer SPKI, mirroring `quic_mesh::MAX_SPKI_BYTES`
+/// (4 KiB). The mesh allowlist re-enforces this, but `decode_hex` checks it
+/// *before* allocating so an oversize hex argument can't force a large up-front
+/// `Vec`. A well-formed RSA-4096 SPKI is under 1 KiB; anything larger is junk.
+const MAX_SPKI_DECODE_BYTES: usize = 4096;
+
+/// Decode a lowercase/uppercase hex string to bytes. Returns `None` on an odd
+/// length, oversize input, or any non-hex digit — fail-closed, no partial decode.
+fn decode_hex(s: &str) -> Option<Vec<u8>> {
+    let s = s.as_bytes();
+    if s.is_empty() || !s.len().is_multiple_of(2) {
+        return None;
+    }
+    // Bound before allocating: reject anything that would decode past the SPKI
+    // cap so a huge argument can't drive a large `with_capacity`.
+    if s.len() / 2 > MAX_SPKI_DECODE_BYTES {
+        return None;
+    }
+    let nibble = |b: u8| -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    };
+    let mut out = Vec::with_capacity(s.len() / 2);
+    for pair in s.chunks_exact(2) {
+        out.push((nibble(pair[0])? << 4) | nibble(pair[1])?);
+    }
+    Some(out)
+}
+
 enum RemoteAskSetupResult {
     Ok((u64, Arc<PendingReply>)),
     Error(AskError),
@@ -4485,6 +4588,24 @@ mod tests {
     use std::time::{Duration, Instant};
 
     const TEST_REMOTE_ASK_TIMEOUT_MS: u64 = 250;
+
+    #[test]
+    fn decode_hex_accepts_even_hex_and_rejects_malformed() {
+        assert_eq!(decode_hex("00ff1a"), Some(vec![0x00, 0xff, 0x1a]));
+        assert_eq!(decode_hex("DEADbeef"), Some(vec![0xde, 0xad, 0xbe, 0xef]));
+        // Fail-closed: empty, odd length, and non-hex digits decode to nothing.
+        assert_eq!(decode_hex(""), None);
+        assert_eq!(decode_hex("abc"), None);
+        assert_eq!(decode_hex("zz"), None);
+        // Oversize: a hex string decoding past the SPKI cap is rejected before
+        // any allocation. 4096 bytes is the bound; (4097)*2 hex chars overflows.
+        let oversize = "00".repeat(MAX_SPKI_DECODE_BYTES + 1);
+        assert_eq!(decode_hex(&oversize), None, "oversize hex must be rejected");
+        assert!(
+            decode_hex(&"ab".repeat(MAX_SPKI_DECODE_BYTES)).is_some(),
+            "exactly the cap still decodes"
+        );
+    }
 
     #[test]
     fn quarantine_insert_blocks_then_evict_clears() {

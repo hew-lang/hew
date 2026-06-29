@@ -845,6 +845,12 @@ impl Checker {
         self.register_builtin_fn("Node::shutdown", vec![], Ty::Unit);
         self.register_builtin_fn("Node::connect", vec![Ty::String], Ty::Unit);
         self.register_builtin_fn("Node::set_transport", vec![Ty::String], Ty::Unit);
+        // `Node::load_keys(path: String)` — load/persist this node's mesh
+        // identity. `Node::allow_peer(spki_hex: String)` — pin a peer's SPKI.
+        // Both are pre-start peer-auth setup; codegen routes them through the
+        // shared RuntimeFfiShim path (catalog), like start/connect.
+        self.register_builtin_fn("Node::load_keys", vec![Ty::String], Ty::Unit);
+        self.register_builtin_fn("Node::allow_peer", vec![Ty::String], Ty::Unit);
         // `Node::register<T>(name: String, pid: LocalPid<T>) -> i32`
         // The second argument is tightened to `LocalPid<T>` so that passing a
         // `RemotePid<T>` or bare `u64` is caught at the checker rather than

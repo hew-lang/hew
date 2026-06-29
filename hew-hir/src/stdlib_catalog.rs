@@ -2265,6 +2265,29 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_node_api_shutdown",
         },
     ),
+    // `Node::load_keys(path: String)` — load/persist this node's stable mesh
+    // TLS identity from a keyfile. Same FFI shim shape as set_transport: one
+    // String in, c_int discarded as Unit. Native quic-mesh only.
+    direct(
+        "Node::load_keys",
+        BuiltinClass::ClassB,
+        STRING,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_node_api_load_keys",
+        },
+    ),
+    // `Node::allow_peer(spki_hex: String)` — pin a peer's certificate SPKI in
+    // the fail-closed mesh allowlist. String (lowercase hex) in, c_int as Unit.
+    direct(
+        "Node::allow_peer",
+        BuiltinClass::ClassB,
+        STRING,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_node_api_allow_peer",
+        },
+    ),
     // `Node::register<T>(name: String, pid: LocalPid<T>) -> i32`
     //
     // Per R81, `LocalPid<T>` lowers to a bare `u64` PID at the C-ABI

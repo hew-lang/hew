@@ -8,9 +8,9 @@
 //   Monitor  — aggregates readings, detects anomalies
 //   Logger   — writes events to a log
 //
-// In a distributed deployment each would run on its own node.
-// Node::start/shutdown/register/lookup typecheck today; other Node APIs
-// (for example Node::connect/load_keys/allow_peer) are runtime-only for now.
+// In a distributed deployment each would run on its own node. The Node API —
+// start/shutdown/register/lookup/connect/set_transport/load_keys/allow_peer —
+// typechecks and lowers today; this single-process demo keeps them off.
 actor Logger {
 
     // Simulate temperature with variation

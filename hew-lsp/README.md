@@ -49,8 +49,9 @@ or install it onto your `PATH`:
 cargo install --path hew-lsp
 ```
 
-See [`../editors/README.md`](../editors/README.md) for editor-specific setup
-notes.
+See [`docs/dev/lsp-editor-setup.md`](../docs/dev/lsp-editor-setup.md) for the
+build/launch/VS Code walkthrough, and [`../editors/README.md`](../editors/README.md)
+for editor-specific setup notes.
 
 ## Part of the Hew compiler
 

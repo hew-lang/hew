@@ -2857,6 +2857,30 @@ fn closure_counter_factory_runs() {
     let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
     assert_eq!(actual, "1\n2\n3\n", "expected 1,2,3; got: {actual:?}");
 }
+
+/// A closure that captures a non-Copy `string` binding WITHOUT `move` is
+/// accepted: the checker infers a read-only Borrow capture (the closure only
+/// reads `name`), so the legacy `ClosureExplicitMoveRequired` diagnostic is
+/// dead for this site. Because it is a borrow, the outer binding still owns the
+/// string and `main` reads it again after the closure — the string is freed
+/// exactly once at scope exit. Replaces the stale `closure_explicit_move_required`
+/// reject fixture, which asserted the now-removed reject behaviour.
+#[test]
+fn closure_noncopy_inferred_borrow_runs() {
+    require_codegen();
+
+    let source =
+        repo_root().join("tests/vertical-slice/accept/closure_noncopy_inferred_borrow.hew");
+    let output = run_bounded_hew_run(&source, repo_root());
+    assert!(
+        output.status.success(),
+        "closure_noncopy_inferred_borrow should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, "hew\nhew\n", "expected hew,hew; got: {actual:?}");
+}
 /// get, and pop over boxed-pair elements riding the pointer-element ABI.
 #[test]
 fn vec_of_fn_storage_ops_run() {

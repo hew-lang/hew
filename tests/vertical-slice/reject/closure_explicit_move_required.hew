@@ -1,7 +1,0 @@
-// Reject fixture: ClosureExplicitMoveRequired
-// A closure that captures a non-Copy binding (string) without "move" is rejected.
-// Expected: type error ClosureExplicitMoveRequired
-fn main() {
-    let s: string = "hew";
-    let _f = || s;
-}

@@ -18348,15 +18348,22 @@ impl LowerCtx {
     /// spanned at the call's start/end offsets (zero-width, distinct from each
     /// other and every real span), reproduced byte-for-byte from the checker's
     /// `BuiltinHashMapIntoIter` recording so the span-keyed resolved-call facts
-    /// resolve. The receiver is borrowed once per projection (Read); the
-    /// projections clone every key/value into fresh owned `Vec`s, so each
-    /// yielded `(K, V)` is independently droppable and the source map stays live
-    /// — matching the place-source for-in path.
+    /// resolve. The projections clone every key/value into fresh owned `Vec`s,
+    /// so each yielded `(K, V)` is independently droppable and the source map
+    /// stays live.
+    ///
+    /// A place receiver (identifier/field/index) is re-read once per projection
+    /// — the proven drop-safe path: each read borrows its owner, no second owner
+    /// of the map handle. A non-place rvalue (`make_map().into_iter()`) is bound
+    /// to one temp so the source runs EXACTLY once; both projections borrow the
+    /// temp. This mirrors the `HashMap` for-in single-eval temp; recording
+    /// `keys()` AND `values()` against the same cloned AST would otherwise
+    /// evaluate a side-effectful producer twice.
     fn lower_builtin_hashmap_into_iter(
         &mut self,
         receiver: &Spanned<Expr>,
-        key_ty: ResolvedTy,
-        val_ty: ResolvedTy,
+        key_ty: &ResolvedTy,
+        val_ty: &ResolvedTy,
         span: Span,
     ) -> (HirExprKind, ResolvedTy) {
         let elem_ty = ResolvedTy::Tuple(vec![key_ty.clone(), val_ty.clone()]);
@@ -18366,13 +18373,75 @@ impl LowerCtx {
             builtin: None,
             is_opaque: false,
         };
-        self.register_hashmap_iter_layout(&key_ty, &val_ty, &span);
+        self.register_hashmap_iter_layout(key_ty, val_ty, &span);
         self.register_option_layout(&elem_ty, &span, "HashMapIter::next");
+        if Self::for_in_iterable_is_place(&receiver.0) {
+            // Place source: re-read directly per projection (single owner, drop-safe).
+            let init = self.make_hashmap_iter_init(
+                receiver.0.clone(),
+                key_ty,
+                val_ty,
+                iter_ty.clone(),
+                &span,
+            );
+            return (init.kind, iter_ty);
+        }
+        // Non-place rvalue: bind to one temp so the source evaluates once.
+        let block_scope = self.ids.scope();
+        self.push_scope();
+        let temp_name = format!("__hew_into_iter_src_{}", self.ids.binding().0);
+        let src_ty = ResolvedTy::Named {
+            name: "HashMap".to_string(),
+            args: vec![key_ty.clone(), val_ty.clone()],
+            builtin: Some(BuiltinType::HashMap),
+            is_opaque: false,
+        };
+        let temp_binding = self.bind(temp_name.clone(), src_ty, false, span.clone());
+        let recv_hir = self.lower_expr(receiver, IntentKind::Consume);
+        let init_stmt = HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Let(temp_binding, Some(recv_hir)),
+            span: span.clone(),
+        };
+        let tail = self.make_hashmap_iter_init(
+            Expr::Identifier(temp_name),
+            key_ty,
+            val_ty,
+            iter_ty.clone(),
+            &span,
+        );
+        self.pop_scope();
+        (
+            HirExprKind::Block(HirBlock {
+                node: self.ids.node(),
+                scope: block_scope,
+                statements: vec![init_stmt],
+                tail: Some(Box::new(tail)),
+                ty: iter_ty.clone(),
+                span,
+            }),
+            iter_ty,
+        )
+    }
+
+    /// Build the `HashMapIter<K, V> { ks: recv.keys(), vs: recv.values(), idx: 0 }`
+    /// `StructInit` from a projection receiver. `keys()`/`values()` are spanned at
+    /// the call span's start/end offsets, matching the checker's
+    /// `BuiltinHashMapIntoIter` recording so the span-keyed projection facts
+    /// resolve. The receiver is either re-read (place) or the single-eval temp.
+    fn make_hashmap_iter_init(
+        &mut self,
+        receiver: Expr,
+        key_ty: &ResolvedTy,
+        val_ty: &ResolvedTy,
+        iter_ty: ResolvedTy,
+        span: &Span,
+    ) -> HirExpr {
         let keys_span = span.start..span.start;
         let values_span = span.end..span.end;
         let keys_call = (
             Expr::MethodCall {
-                receiver: Box::new((receiver.0.clone(), keys_span.clone())),
+                receiver: Box::new((receiver.clone(), keys_span.clone())),
                 method: "keys".to_string(),
                 args: Vec::new(),
             },
@@ -18380,7 +18449,7 @@ impl LowerCtx {
         );
         let values_call = (
             Expr::MethodCall {
-                receiver: Box::new((receiver.0.clone(), values_span.clone())),
+                receiver: Box::new((receiver, values_span.clone())),
                 method: "values".to_string(),
                 args: Vec::new(),
             },
@@ -18389,10 +18458,10 @@ impl LowerCtx {
         let keys_hir = self.lower_expr(&keys_call, IntentKind::Consume);
         let values_hir = self.lower_expr(&values_call, IntentKind::Consume);
         let idx = self.make_i64_literal(0, span.clone());
-        let iter_init = self.make_expr(
+        self.make_expr(
             HirExprKind::StructInit {
                 name: "HashMapIter".to_string(),
-                type_args: vec![key_ty, val_ty],
+                type_args: vec![key_ty.clone(), val_ty.clone()],
                 fields: vec![
                     ("ks".to_string(), keys_hir),
                     ("vs".to_string(), values_hir),
@@ -18400,11 +18469,10 @@ impl LowerCtx {
                 ],
                 base: None,
             },
-            iter_ty.clone(),
+            iter_ty,
             IntentKind::Read,
-            span,
-        );
-        (iter_init.kind, iter_ty)
+            span.clone(),
+        )
     }
 
     fn make_vec_iter_init(
@@ -20083,7 +20151,7 @@ impl LowerCtx {
                 self.lower_builtin_vec_into_iter(receiver, elem_ty, span)
             }
             Some(MethodCallRewrite::BuiltinHashMapIntoIter { key_ty, val_ty }) => {
-                self.lower_builtin_hashmap_into_iter(receiver, key_ty, val_ty, span)
+                self.lower_builtin_hashmap_into_iter(receiver, &key_ty, &val_ty, span)
             }
             Some(MethodCallRewrite::BuiltinVecHigherOrder {
                 op,

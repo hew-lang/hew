@@ -427,6 +427,9 @@ run_accept_expect_status "hashmap_into_iter_count" 3
 run_accept_expect_status "hashmap_into_iter_map_fold" 66
 # filter values >= 20 then count: 2 of 3 pass → 2.
 run_accept_expect_status "hashmap_into_iter_filter" 2
+# Single-eval witness: a call-result (non-place) receiver runs make_map() once
+# (bound to a temp before keys()/values()), so stdout is one "MK" not two. → 3.
+run_accept_expect_status_and_stdout "hashmap_into_iter_call_single_eval" 3
 
 # g12-B (CLOSED): `for x in s` over a HashSet snapshots the set's elements into
 # an owned Vec via to_vec() and drives a VecIter cursor.

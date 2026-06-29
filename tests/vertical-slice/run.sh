@@ -418,6 +418,16 @@ run_accept_expect_status "hashmap_for_in_string_key" 12
 # Owned key AND owned value: key lens 6 + value lens 29 → exit 35.
 run_accept_expect_status "hashmap_for_in_owned" 35
 
+# HashMap::into_iter() pipeline form: `m.into_iter()` resolves to a HashMapIter
+# cursor (keys()/values() snapshots), so `iter::map/filter/count` over a map
+# match Vec. The map is shared (Capture), staying live after the pipeline.
+# count 3 entries → 3.
+run_accept_expect_status "hashmap_into_iter_count" 3
+# map (k,v)->k+v then fold: keys 6 + values 60 → 66.
+run_accept_expect_status "hashmap_into_iter_map_fold" 66
+# filter values >= 20 then count: 2 of 3 pass → 2.
+run_accept_expect_status "hashmap_into_iter_filter" 2
+
 # g12-B (CLOSED): `for x in s` over a HashSet snapshots the set's elements into
 # an owned Vec via to_vec() and drives a VecIter cursor.
 # Scalar elements: 10+20+30 → exit 60.

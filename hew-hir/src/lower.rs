@@ -18341,6 +18341,72 @@ impl LowerCtx {
         (iter_expr.kind, iter_expr.ty)
     }
 
+    /// Expand `m.into_iter()` over a `HashMap<K, V>` into the same
+    /// `HashMapIter<K, V> { ks: m.keys(), vs: m.values(), idx: 0 }` cursor the
+    /// `for (k, v) in m` desugar builds — the map twin of
+    /// `lower_builtin_vec_into_iter`. The `keys()` / `values()` projections are
+    /// spanned at the call's start/end offsets (zero-width, distinct from each
+    /// other and every real span), reproduced byte-for-byte from the checker's
+    /// `BuiltinHashMapIntoIter` recording so the span-keyed resolved-call facts
+    /// resolve. The receiver is borrowed once per projection (Read); the
+    /// projections clone every key/value into fresh owned `Vec`s, so each
+    /// yielded `(K, V)` is independently droppable and the source map stays live
+    /// — matching the place-source for-in path.
+    fn lower_builtin_hashmap_into_iter(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        key_ty: ResolvedTy,
+        val_ty: ResolvedTy,
+        span: Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let elem_ty = ResolvedTy::Tuple(vec![key_ty.clone(), val_ty.clone()]);
+        let iter_ty = ResolvedTy::Named {
+            name: "HashMapIter".to_string(),
+            args: vec![key_ty.clone(), val_ty.clone()],
+            builtin: None,
+            is_opaque: false,
+        };
+        self.register_hashmap_iter_layout(&key_ty, &val_ty, &span);
+        self.register_option_layout(&elem_ty, &span, "HashMapIter::next");
+        let keys_span = span.start..span.start;
+        let values_span = span.end..span.end;
+        let keys_call = (
+            Expr::MethodCall {
+                receiver: Box::new((receiver.0.clone(), keys_span.clone())),
+                method: "keys".to_string(),
+                args: Vec::new(),
+            },
+            keys_span,
+        );
+        let values_call = (
+            Expr::MethodCall {
+                receiver: Box::new((receiver.0.clone(), values_span.clone())),
+                method: "values".to_string(),
+                args: Vec::new(),
+            },
+            values_span,
+        );
+        let keys_hir = self.lower_expr(&keys_call, IntentKind::Consume);
+        let values_hir = self.lower_expr(&values_call, IntentKind::Consume);
+        let idx = self.make_i64_literal(0, span.clone());
+        let iter_init = self.make_expr(
+            HirExprKind::StructInit {
+                name: "HashMapIter".to_string(),
+                type_args: vec![key_ty, val_ty],
+                fields: vec![
+                    ("ks".to_string(), keys_hir),
+                    ("vs".to_string(), values_hir),
+                    ("idx".to_string(), idx),
+                ],
+                base: None,
+            },
+            iter_ty.clone(),
+            IntentKind::Read,
+            span,
+        );
+        (iter_init.kind, iter_ty)
+    }
+
     fn make_vec_iter_init(
         &mut self,
         receiver_hir: HirExpr,
@@ -20015,6 +20081,9 @@ impl LowerCtx {
         match rewrite {
             Some(MethodCallRewrite::BuiltinVecIntoIter { elem_ty }) => {
                 self.lower_builtin_vec_into_iter(receiver, elem_ty, span)
+            }
+            Some(MethodCallRewrite::BuiltinHashMapIntoIter { key_ty, val_ty }) => {
+                self.lower_builtin_hashmap_into_iter(receiver, key_ty, val_ty, span)
             }
             Some(MethodCallRewrite::BuiltinVecHigherOrder {
                 op,

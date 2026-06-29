@@ -215,13 +215,15 @@ the precise subset that is actually convertible.
     `!c`. *Guards:* each branch must be exactly one boolean literal (no other statements); the two
     branches must be opposite polarities (a matching pair is a constant, not this lint); `else if`
     chains never collapse the outer `if`. Position-agnostic (the rewrite is valid anywhere).
-  - **`must_use`** — a discarded value carrying a write/send error that must not be ignored:
-    `WriteError` / `SendError`, bare or as the error arm of a `Result<_, E>`. *Guards:* statement
-    position only (a trailing block value, a `let`/`var` binding, a `match`/`if let` scrutinee, and
-    `expr?` are all "used" and never flagged); the resolved type must be exactly the must-use error
-    or a `Result` over it, matched by canonical name so the builtin `SendError` and the stdlib
-    `WriteError` both qualify. Discarding either fails open — a dropped backpressure/disconnect
-    signal or an unnoticed undelivered send. Opt out with `let _ = …` or `// hew:allow(must_use)`.
+  - **`must_use`** — a discarded value carrying a write/send/ask error that must not be ignored:
+    `WriteError` / `SendError` / `AskError`, bare or as the error arm of a `Result<_, E>`.
+    *Guards:* statement position only (a trailing block value, a `let`/`var` binding, a
+    `match`/`if let` scrutinee, and `expr?` are all "used" and never flagged); the resolved type
+    must be exactly a must-use error or a `Result` over it, matched by canonical name so the
+    builtins `SendError` / `AskError` and the stdlib `WriteError` all qualify. Discarding any
+    fails open — a dropped backpressure/disconnect signal, an unnoticed undelivered send, or a
+    timed-out / mailbox-full / stopped-actor `ask` (`await actor.msg()`) mistaken for a reply.
+    Opt out with `let _ = …` or `// hew:allow(must_use)`.
   - **Migrations.** `clone_on_copy` (clone on a Copy/BitCopy type; `hew-types/src/check/methods.rs`)
     and `dead_code` (unreachable functions; `hew-types/src/check/diagnostics.rs`) now emit through
     `Checker::emit_main_pass_lint`, giving them a `LintId` with `default_level() = Warn`. Default

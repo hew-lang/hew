@@ -536,3 +536,57 @@ fn must_use_inline_directive_suppresses() {
         "an in-source `// hew:allow(must_use)` must suppress the lint:\n{stderr}"
     );
 }
+
+// ── checker-stage lint: must_use on a discarded `await actor.msg()` ───
+
+/// A program whose only diagnostic is `must_use`: `await d.process(5)` is
+/// discarded in statement position, dropping the `Result<i64, AskError>` it
+/// returns — a silently lost timeout / full-mailbox / stopped-actor signal.
+const ASK_MUST_USE_DISCARD: &str = "actor Doubler {\n\
+     receive fn process(n: i64) -> i64 { n * 2 }\n\
+     }\n\
+     fn main() {\n\
+     let d = spawn Doubler;\n\
+     await d.process(5);\n\
+     }\n";
+
+/// The same program, but the ask result is explicitly discarded with `let _`,
+/// which the lint treats as a deliberate drop (silent).
+const ASK_MUST_USE_HANDLED: &str = "actor Doubler {\n\
+     receive fn process(n: i64) -> i64 { n * 2 }\n\
+     }\n\
+     fn main() {\n\
+     let d = spawn Doubler;\n\
+     let _ = await d.process(5);\n\
+     }\n";
+
+const ASK_MUST_USE_MESSAGE: &str = "an ignored ask error fails open";
+
+#[test]
+fn must_use_await_ask_warning_renders_by_default() {
+    let output = run_check(ASK_MUST_USE_DISCARD, &[]);
+    let stderr = stderr_of(&output);
+    assert!(
+        output.status.success(),
+        "a must_use warning must not fail the build:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("warning:") && stderr.contains(ASK_MUST_USE_MESSAGE),
+        "expected the discarded-await must_use warning to render:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("AskError"),
+        "the warning should name the AskError type:\n{stderr}"
+    );
+}
+
+#[test]
+fn must_use_await_ask_handled_is_silent() {
+    let output = run_check(ASK_MUST_USE_HANDLED, &[]);
+    let stderr = stderr_of(&output);
+    assert!(output.status.success(), "check should pass:\n{stderr}");
+    assert!(
+        !stderr.contains(ASK_MUST_USE_MESSAGE),
+        "`let _ = await …` must not warn:\n{stderr}"
+    );
+}

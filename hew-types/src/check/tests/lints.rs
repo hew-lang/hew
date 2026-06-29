@@ -3747,6 +3747,91 @@ fn must_use_suppressed_by_directive() {
     );
 }
 
+/// A fieldless actor whose `process` reply makes `await d.process(_)` resolve to
+/// `Result<i64, AskError>` — the ask-shaped must-use case. `AskError` is a
+/// builtin error type, so no prelude enum is needed (unlike WriteError/SendError).
+const ASK_ACTOR: &str = "actor Doubler { receive fn process(n: i64) -> i64 { n * 2 } }\n";
+
+#[test]
+fn must_use_flags_discarded_await_ask() {
+    // A bare `await actor.msg()` in statement position drops a
+    // `Result<_, AskError>` — a lost timeout/full-mailbox/stopped-actor signal.
+    let src = format!("{ASK_ACTOR}fn main() {{ let d = spawn Doubler; await d.process(5); }}");
+    let (errors, warnings) = parse_and_check(&src);
+    assert!(errors.is_empty(), "fixture should type-check: {errors:?}");
+    let hit = warnings
+        .iter()
+        .find(|w| w.kind == TypeErrorKind::Lint(LintId::MustUse))
+        .expect("a discarded `await actor.msg()` (Result<_, AskError>) must fire must_use");
+    assert!(
+        hit.message.contains("AskError") && hit.message.contains("ask error"),
+        "primary message should name AskError and the ask class: {}",
+        hit.message
+    );
+    assert!(
+        hit.suggestions.iter().any(|s| {
+            s.contains("timeout") && s.contains("mailbox") && s.contains("stopped actor")
+        }),
+        "suggestion should name the concrete ask failures: {:?}",
+        hit.suggestions
+    );
+}
+
+#[test]
+fn must_use_not_flagged_when_await_matched() {
+    let src = format!(
+        "{ASK_ACTOR}fn main() {{ let d = spawn Doubler; \
+         match await d.process(5) {{ Ok(_) => {{}} Err(_) => {{}} }} }}"
+    );
+    let (_, warnings) = parse_and_check(&src);
+    assert_eq!(
+        count_must_use(&warnings),
+        0,
+        "a matched await ask is handled, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn must_use_not_flagged_when_await_explicitly_bound() {
+    let src =
+        format!("{ASK_ACTOR}fn main() {{ let d = spawn Doubler; let _ = await d.process(5); }}");
+    let (_, warnings) = parse_and_check(&src);
+    assert_eq!(
+        count_must_use(&warnings),
+        0,
+        "`let _ = await …` is an explicit discard, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn must_use_not_flagged_when_await_in_tail_position() {
+    let src = format!(
+        "{ASK_ACTOR}fn caller() -> Result<i64, AskError> \
+         {{ let d = spawn Doubler; await d.process(5) }}"
+    );
+    let (_, warnings) = parse_and_check(&src);
+    assert_eq!(
+        count_must_use(&warnings),
+        0,
+        "a tail await is the function's value, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn must_use_await_suppressed_by_directive() {
+    let src = format!(
+        "{ASK_ACTOR}fn main() {{\n    let d = spawn Doubler;\n    \
+         // hew:allow(must_use)\n    await d.process(5);\n}}"
+    );
+    let out = check_with_lint_level(&src, LintId::MustUse, LintLevel::Warn);
+    assert_eq!(
+        count_must_use(&out.warnings),
+        0,
+        "a directive above the discarded await must suppress, warnings: {:?}",
+        out.warnings
+    );
+}
+
 // -----------------------------------------------------------------------
 // Module namespacing tests
 // -----------------------------------------------------------------------

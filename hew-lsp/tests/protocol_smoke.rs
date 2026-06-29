@@ -88,25 +88,40 @@ fn recv_until<F: Fn(&Value) -> bool>(rx: &Receiver<Value>, deadline: Instant, pr
     }
 }
 
-fn shutdown(child: &mut Child, stdin: &mut ChildStdin) {
+/// RAII guard that kills and reaps the spawned server on every exit path —
+/// including a panicking assertion or `recv_until` timeout that fires before the
+/// polite `shutdown()` runs. Without it, a failing run would leak an orphaned
+/// `hew-lsp` child. (#2298)
+struct ServerProcess {
+    child: Child,
+}
+
+impl Drop for ServerProcess {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Send the polite shutdown/exit pair; the final kill+reap is the guard's `Drop`.
+fn shutdown(stdin: &mut ChildStdin) {
     send(stdin, &json!({"jsonrpc":"2.0","id":99,"method":"shutdown"}));
     send(stdin, &json!({"jsonrpc":"2.0","method":"exit"}));
-    // Don't depend on graceful exit: reap deterministically so the test can't hang.
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 #[test]
 fn lsp_initialize_didopen_diagnostics_roundtrip() {
-    let mut child = Command::new(server_binary())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn hew-lsp");
+    let mut server = ServerProcess {
+        child: Command::new(server_binary())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn hew-lsp"),
+    };
 
-    let mut stdin = child.stdin.take().expect("child stdin");
-    let rx = spawn_reader(child.stdout.take().expect("child stdout"));
+    let mut stdin = server.child.stdin.take().expect("child stdin");
+    let rx = spawn_reader(server.child.stdout.take().expect("child stdout"));
     let deadline = Instant::now() + SESSION_BUDGET;
     let uri = "file:///protocol_smoke/main.hew";
 
@@ -161,5 +176,5 @@ fn lsp_initialize_didopen_diagnostics_roundtrip() {
         "expected a hew-types diagnostic, got: {diags:?}"
     );
 
-    shutdown(&mut child, &mut stdin);
+    shutdown(&mut stdin);
 }

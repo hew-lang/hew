@@ -1,0 +1,33 @@
+// Cross-module chained generic-adapter monomorphisation: `Skip` + `count`.
+//
+// `iter::skip` builds a `Skip<Countdown, i64>` adapter over the imported
+// iterator and `iter::count` drives it. `Skip` carries its item type as a
+// direct struct param so the projection-only `A` is pinned at the call site,
+// the burn-loop adapter method lowers per instantiation, and the count
+// terminal monomorphises across the import boundary.
+//
+// Countdown{5} yields [5,4,3,2,1]; skip(3) discards [5,4,3] then yields [2,1];
+// count returns 2.
+import std::iter;
+
+type Countdown {
+    n: i64;
+}
+
+impl Iterator for Countdown {
+    type Item = i64;
+    fn next(var self) -> Option<i64> {
+        if self.n <= 0 {
+            None
+        } else {
+            let cur = self.n;
+            self.n = self.n - 1;
+            Some(cur)
+        }
+    }
+}
+
+pub fn main() -> i64 {
+    let s = iter::skip(Countdown { n: 5 }, 3);
+    iter::count(s)
+}

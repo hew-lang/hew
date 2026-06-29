@@ -1,0 +1,37 @@
+// Cross-module chained generic-adapter monomorphisation: `Skip` + `collect`.
+//
+// `iter::skip` builds a `Skip<Countdown, i64>` adapter over the imported
+// iterator and `iter::collect` materialises the tail into a fresh owned
+// `Vec<i64>`. Non-owned `i64` elements keep the drop claim narrow; the
+// projection-only item param pins from the struct args.
+//
+// Countdown{5} yields [5,4,3,2,1]; skip(3) discards [5,4,3] then yields [2,1];
+// collect; sum = 3.
+import std::iter;
+
+type Countdown {
+    n: i64;
+}
+
+impl Iterator for Countdown {
+    type Item = i64;
+    fn next(var self) -> Option<i64> {
+        if self.n <= 0 {
+            None
+        } else {
+            let cur = self.n;
+            self.n = self.n - 1;
+            Some(cur)
+        }
+    }
+}
+
+pub fn main() -> i64 {
+    let s = iter::skip(Countdown { n: 5 }, 3);
+    let v: Vec<i64> = iter::collect(s);
+    var total = 0;
+    for n in v {
+        total = total + n;
+    }
+    total
+}

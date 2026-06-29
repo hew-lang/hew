@@ -21,8 +21,8 @@
 //! |---------------|----------------------|--------------------------------|
 //! | `Map<I,A,B>`  | `map(it, f)`         | `B` from `fn(A) -> B`          |
 //! | `Filter<I,A>` | `filter(it, pred)`   | `A` (subset of inner)          |
-//! | `Take<I>`     | `take(it, n)`        | inner's `Item`                 |
-//! | `Skip<I>`     | `skip(it, n)`        | inner's `Item`                 |
+//! | `Take<I,A>`   | `take(it, n)`        | inner's `Item` (`A`)           |
+//! | `Skip<I,A>`   | `skip(it, n)`        | inner's `Item` (`A`)           |
 //!
 //! Terminal helpers (`fold`, `count`, `collect`) consume any `Iterator`.
 //!
@@ -122,12 +122,20 @@ impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {
 
 /// Lazy take adapter: yields at most `remaining` items from the inner
 /// iterator, then reports `None`.
-pub type Take<I> {
+///
+/// `A` is the inner `Item` type. It is carried as a direct type parameter
+/// (rather than left projection-only in the impl bound) so a concrete site
+/// — `Take<Countdown, i64>` — pins the item type in the struct args, which
+/// is what the cross-module monomorphisation collector keys on. Map/Filter
+/// carry their item type the same way; without it a projection-only `A`
+/// stays free and terminals (`count`/`collect`/`fold`) fail to monomorphise
+/// (mir-gap-where-clause-proj-monomorph).
+pub type Take<I, A> {
     iter: I;
     remaining: i64;
 }
 
-impl<I, A> Iterator for Take<I> where I: Iterator<Item = A> {
+impl<I, A> Iterator for Take<I, A> where I: Iterator<Item = A> {
     type Item = A;
     fn next(var self) -> Option<A> {
 
@@ -155,12 +163,17 @@ impl<I, A> Iterator for Take<I> where I: Iterator<Item = A> {
 
 /// Lazy skip adapter: discards the first `remaining` items, then yields
 /// the rest of the inner iterator unchanged.
-pub type Skip<I> {
+///
+/// `A` is the inner `Item` type, carried as a direct type parameter for
+/// the same monomorphisation reason as `Take` (see above): a projection-
+/// only item param cannot be pinned by the collector, so terminals over
+/// `Skip` fail to monomorphise.
+pub type Skip<I, A> {
     iter: I;
     remaining: i64;
 }
 
-impl<I, A> Iterator for Skip<I> where I: Iterator<Item = A> {
+impl<I, A> Iterator for Skip<I, A> where I: Iterator<Item = A> {
     type Item = A;
     fn next(var self) -> Option<A> {
 
@@ -214,13 +227,13 @@ pub fn filter<I, A>(it: I, pred: fn(A) -> bool) -> Filter<I, A> where I: Iterato
 
 /// Construct a lazy `Take` adapter that yields at most `n` items from
 /// `it`.
-pub fn take<I, A>(it: I, n: i64) -> Take<I> where I: Iterator<Item = A> {
+pub fn take<I, A>(it: I, n: i64) -> Take<I, A> where I: Iterator<Item = A> {
     Take { iter: it, remaining: n }
 }
 
 /// Construct a lazy `Skip` adapter that discards the first `n` items
 /// from `it`.
-pub fn skip<I, A>(it: I, n: i64) -> Skip<I> where I: Iterator<Item = A> {
+pub fn skip<I, A>(it: I, n: i64) -> Skip<I, A> where I: Iterator<Item = A> {
     Skip { iter: it, remaining: n }
 }
 

@@ -1,0 +1,37 @@
+// Cross-module chained generic-adapter monomorphisation: `Take` + `collect`.
+//
+// `iter::take` builds a `Take<Countdown, i64>` adapter over the imported
+// iterator and `iter::collect` materialises it into a fresh owned `Vec<i64>`.
+// This drives the `collect` terminal through the same cross-module chain as the
+// take/count fixture; the collected element is a non-owned `i64`, so the owned
+// heap-element drop is a separate pre-existing concern, not certified here.
+//
+// Countdown{5} yields [5,4,3,2,1]; take(3) yields [5,4,3]; collect; sum = 12.
+import std::iter;
+
+type Countdown {
+    n: i64;
+}
+
+impl Iterator for Countdown {
+    type Item = i64;
+    fn next(var self) -> Option<i64> {
+        if self.n <= 0 {
+            None
+        } else {
+            let cur = self.n;
+            self.n = self.n - 1;
+            Some(cur)
+        }
+    }
+}
+
+pub fn main() -> i64 {
+    let t = iter::take(Countdown { n: 5 }, 3);
+    let v: Vec<i64> = iter::collect(t);
+    var total = 0;
+    for n in v {
+        total = total + n;
+    }
+    total
+}

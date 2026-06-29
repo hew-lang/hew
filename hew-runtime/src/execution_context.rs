@@ -133,6 +133,41 @@ pub fn current_partition_policy() -> PartitionPolicy {
     PartitionPolicy::from_slot(slot.cast_const())
 }
 
+/// Set the partition policy for the current dispatch's execution context.
+///
+/// Mirrors [`current_partition_policy`]: a node configuring a non-default
+/// policy (the `link_remote` write path) stores it in the per-dispatch
+/// [`HewExecutionContext::partition_policy`] slot as a repr-stable integer tag
+/// — never a heap pointer, so no allocation or drop obligation is attached to
+/// the hot dispatch path. Returns `false` (fail-closed) when no execution
+/// context is installed; the policy cannot be configured outside a dispatch.
+#[must_use]
+pub fn set_current_partition_policy(policy: PartitionPolicy) -> bool {
+    let ctx = current_context();
+    if ctx.is_null() {
+        return false;
+    }
+    // SAFETY: `current_context` returned non-null, so it is a live canonical
+    // context installed by the scheduler for this dispatch. The
+    // `partition_policy` field is a plain pointer-width integer tag; writing a
+    // new tag overwrites the old with no allocation, drop, or aliasing.
+    unsafe {
+        (*ctx).partition_policy = policy.to_slot();
+    }
+    true
+}
+
+/// C-ABI surface for configuring the current dispatch's partition policy.
+///
+/// `tag` is a [`PartitionPolicy`] discriminant; an unrecognised tag decodes to
+/// the `FailFast` default rather than fabricating a policy. Returns `false`
+/// when no execution context is installed (the slot cannot be set outside a
+/// dispatch boundary). Symmetric with the reader surface.
+#[no_mangle]
+pub extern "C" fn hew_set_partition_policy(tag: usize) -> bool {
+    set_current_partition_policy(PartitionPolicy::from_slot(tag as *const c_void))
+}
+
 /// Target-architecture-aware byte size of [`HewExecutionContext`].
 ///
 /// Derived from `size_of` rather than a literal so the value is correct on
@@ -833,6 +868,60 @@ mod tests {
         let installed = &raw mut ctx;
         let prev = set_current_context(installed);
         assert_eq!(current_partition_policy(), PartitionPolicy::Deadline);
+        let _ = set_current_context(prev);
+    }
+
+    /// Setting the policy without an installed context fails closed and leaves
+    /// the reader at the `FailFast` default rather than mutating a null context.
+    #[test]
+    fn set_current_partition_policy_without_context_fails_closed() {
+        let _context_guard = ContextResetGuard::new();
+        let _ = set_current_context(ptr::null_mut());
+        assert!(!set_current_partition_policy(PartitionPolicy::Deadline));
+        assert_eq!(current_partition_policy(), PartitionPolicy::FailFast);
+    }
+
+    /// The setter writes the installed context slot for every variant and the
+    /// reader observes it; `FailFast` clears the slot back to the default tag.
+    #[test]
+    fn set_current_partition_policy_round_trips_through_slot() {
+        let _runtime_guard = crate::runtime_test_guard();
+        let _context_guard = ContextResetGuard::new();
+
+        let mut ctx = HewExecutionContext::default();
+        let installed = &raw mut ctx;
+        let prev = set_current_context(installed);
+        for policy in [
+            PartitionPolicy::Deadline,
+            PartitionPolicy::MonitorLost,
+            PartitionPolicy::CrashLinked,
+            PartitionPolicy::Quarantine,
+            PartitionPolicy::FailFast,
+        ] {
+            assert!(set_current_partition_policy(policy));
+            assert_eq!(
+                current_partition_policy(),
+                policy,
+                "{policy:?} did not write through the slot"
+            );
+        }
+        let _ = set_current_context(prev);
+    }
+
+    /// The C-ABI setter decodes the integer tag and writes the installed slot;
+    /// the reader projects the same policy back.
+    #[test]
+    fn hew_set_partition_policy_writes_slot_via_tag() {
+        let _runtime_guard = crate::runtime_test_guard();
+        let _context_guard = ContextResetGuard::new();
+
+        let mut ctx = HewExecutionContext::default();
+        let installed = &raw mut ctx;
+        let prev = set_current_context(installed);
+        assert!(hew_set_partition_policy(
+            PartitionPolicy::Quarantine as usize
+        ));
+        assert_eq!(current_partition_policy(), PartitionPolicy::Quarantine);
         let _ = set_current_context(prev);
     }
 

@@ -2358,6 +2358,56 @@ mod tests {
         unsafe { crate::actor::wake_wasm_actor(actor.cast::<crate::actor::HewActor>()) };
     }
 
+    /// Fixed virtual-clock base (ms) for the timer-wheel tests below.
+    ///
+    /// Non-zero so it never collides with the `request_sleep` deadline==0
+    /// sentinel, and not a multiple of the wheel's 256 ms L1 period so the
+    /// slot/cascade math is exercised generally.
+    const VIRTUAL_BASE_MS: u64 = 100_000;
+
+    /// RAII guard that pins `hew_now_ms()` to a fixed virtual time for the
+    /// duration of a timer-wheel test (wasm32 only), restoring the real clock
+    /// on drop.
+    ///
+    /// WHY: the wasm timer tests drive `hew_wasm_timer_tick` / `drain_timed_work`
+    /// with explicit deadlines derived from `hew_now_ms()`. On the real clock
+    /// the test's anchor `now`, the wheel's `current_ms` captured at lazy
+    /// creation, and `park_actor_sleep`'s `deadline - now` delay are three
+    /// independent monotonic reads that drift apart under CPU load — flipping
+    /// the exact-deadline assertions (the `timer_tick_wakes_at_exact_deadline`
+    /// abort under wasmtime). Pinning a fixed virtual `now` collapses all three
+    /// to one value, making the wake boundary exact without weakening any
+    /// assertion (no tolerance, no sleeps).
+    ///
+    /// WHY wasm32-only: the virtual-clock seam lives in `wasm_stubs` (a
+    /// wasm32-only module) and only the wasm `hew_now_ms` consults it. The wasm
+    /// cooperative harness is single-threaded, so the seam needs no locking.
+    /// Native runs these tests multi-threaded (num-cpus) but reads a different
+    /// clock (`io_time::hew_now_ms`), and the fast native clock already makes
+    /// the boundary reliable — so on native the guard is inert and the real
+    /// clock is left untouched.
+    struct VirtualClock;
+
+    impl VirtualClock {
+        /// Pin `hew_now_ms()` to `base_ms` on wasm32 (inert on native — see the
+        /// type doc). Every read then returns exactly `base_ms` until the guard
+        /// drops; the tests never advance it.
+        fn pinned_at(base_ms: u64) -> Self {
+            #[cfg(target_arch = "wasm32")]
+            crate::wasm_stubs::pin_virtual_clock(base_ms);
+            #[cfg(not(target_arch = "wasm32"))]
+            let _ = base_ms;
+            VirtualClock
+        }
+    }
+
+    impl Drop for VirtualClock {
+        fn drop(&mut self) {
+            #[cfg(target_arch = "wasm32")]
+            crate::wasm_stubs::unpin_virtual_clock();
+        }
+    }
+
     /// Reset all global state between tests.
     ///
     /// # Safety
@@ -2396,6 +2446,13 @@ mod tests {
             // start from a clean slate regardless of test ordering.
             crate::arena::set_current_arena(ptr::null_mut());
         }
+        // Restore the real monotonic clock on wasm32, where the timer-wheel
+        // tests pin a virtual clock via `VirtualClock`; this keeps a clean
+        // baseline even if a prior test aborted before its guard's Drop ran.
+        // Inert on native: the virtual-clock seam is wasm32-only (see
+        // `VirtualClock`), so native tests never touch it.
+        #[cfg(target_arch = "wasm32")]
+        crate::wasm_stubs::unpin_virtual_clock();
     }
 
     /// Read INITIALIZED without creating a shared reference.
@@ -5602,6 +5659,11 @@ mod tests {
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
+        // Pin the virtual clock (wasm32; see VirtualClock): the "b stays asleep
+        // at now+200" boundary needs the wheel baseline and the park delay to
+        // agree with the test's `now`, which holds deterministically only under
+        // the pinned clock.
+        let _clock = VirtualClock::pinned_at(VIRTUAL_BASE_MS);
 
         let mut a = stub_actor();
         let a_ptr: *mut HewActor = (&raw mut a);
@@ -5614,10 +5676,10 @@ mod tests {
         b.actor_state
             .store(HewActorState::Idle as i32, Ordering::Relaxed);
 
-        // Anchor to the real monotonic clock so the wheel receives
-        // deadlines that are strictly in the future relative to its
-        // current_ms at init time.
-        // SAFETY: hew_now_ms has no preconditions.
+        // Anchor to the clock (pinned on wasm32) so the wheel receives deadlines
+        // that are strictly in the future relative to its current_ms at init
+        // time.
+        // SAFETY: hew_now_ms has no preconditions (pinned to VIRTUAL_BASE_MS on wasm32).
         let now = unsafe { hew_now_ms() };
 
         // Park actor `a` 100 ms from now and actor `b` 300 ms from now.
@@ -5674,13 +5736,16 @@ mod tests {
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
+        // Pin the virtual clock (wasm32; see VirtualClock) so the park delay and
+        // the explicit drain deadline share one deterministic `now`.
+        let _clock = VirtualClock::pinned_at(VIRTUAL_BASE_MS);
 
         let mut a = stub_actor();
         let a_ptr: *mut HewActor = (&raw mut a);
         a.actor_state
             .store(HewActorState::Idle as i32, Ordering::Relaxed);
 
-        // SAFETY: hew_now_ms has no preconditions.
+        // SAFETY: hew_now_ms has no preconditions (pinned to VIRTUAL_BASE_MS on wasm32).
         let now = unsafe { hew_now_ms() };
 
         // SAFETY: actor is valid for the duration of the test.
@@ -5726,7 +5791,9 @@ mod tests {
         ) -> *mut c_void {
             DISPATCHED.fetch_add(1, Ordering::Relaxed);
             // Simulate sleep_ms(500): record a deadline 500 ms from now.
-            // In simulated time: now=0, so deadline=500.
+            // Under the wasm32-pinned virtual clock now == VIRTUAL_BASE_MS; on
+            // native it is the real monotonic clock. Either way the recorded
+            // deadline is now + 500.
             // SAFETY: hew_now_ms is safe to call from within dispatch.
             let now = unsafe { hew_now_ms() };
             request_sleep(now + 500);
@@ -5738,6 +5805,11 @@ mod tests {
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
+        // Pin the virtual clock (wasm32; see VirtualClock) so the in-dispatch
+        // request_sleep, the park delay, the wheel baseline, and the test's
+        // `t0` all share one deterministic `now`, making the exact
+        // parked-deadline boundary below reproducible.
+        let _clock = VirtualClock::pinned_at(VIRTUAL_BASE_MS);
         // SAFETY: hew_mailbox_new returns a valid heap-allocated mailbox.
         let mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() };
         let mut a = stub_actor();
@@ -5752,10 +5824,12 @@ mod tests {
         unsafe { queue_wasm_message(a_ptr, 42) };
 
         // Snapshot the clock just before the tick drives the dispatch.
-        // sleeping_dispatch calls request_sleep(now + 500); the wheel entry
-        // is inserted with delay_ms ≈ 500, firing at approximately t0 + 500.
-        // All of this happens in the same millisecond on any modern host.
-        // SAFETY: hew_now_ms has no preconditions.
+        // sleeping_dispatch calls request_sleep(now + 500); the wheel entry is
+        // inserted with delay_ms == 500, firing at exactly t0 + 500. Under the
+        // wasm32-pinned virtual clock every read returns the same value, so t0
+        // equals the dispatch's `now` deterministically; on native the reads are
+        // real-clock but the fast host keeps them within the same millisecond.
+        // SAFETY: hew_now_ms has no preconditions (pinned to VIRTUAL_BASE_MS on wasm32).
         let t0 = unsafe { hew_now_ms() };
 
         // Run one tick.
@@ -5840,16 +5914,22 @@ mod tests {
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
+        // Pin the virtual clock (wasm32; see VirtualClock) so the wheel's
+        // `current_ms` at creation, the `park_actor_sleep` delay computation,
+        // and the test-driven tick values all share one deterministic `now`. On
+        // the real clock these are three independent reads that drift under load
+        // and intermittently abort this exact-deadline assertion.
+        let _clock = VirtualClock::pinned_at(VIRTUAL_BASE_MS);
 
         let mut a = stub_actor();
         let a_ptr: *mut HewActor = (&raw mut a);
         a.actor_state
             .store(HewActorState::Idle as i32, Ordering::Relaxed);
 
-        // Anchor all deadlines relative to the real clock so the wheel's
+        // Anchor all deadlines to the clock (pinned on wasm32) so the wheel's
         // internal current_ms and the test-driven tick values are in the
         // same numeric space.
-        // SAFETY: hew_now_ms has no preconditions.
+        // SAFETY: hew_now_ms has no preconditions (pinned to VIRTUAL_BASE_MS on wasm32).
         let now = unsafe { hew_now_ms() };
 
         // SAFETY: actor valid for duration of test.
@@ -5925,6 +6005,9 @@ mod tests {
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
+        // Pin the virtual clock (wasm32; see VirtualClock) so the park delay and
+        // the post-cancel tick share one deterministic `now`.
+        let _clock = VirtualClock::pinned_at(VIRTUAL_BASE_MS);
 
         let mut a = stub_actor();
         let a_ptr: *mut HewActor = (&raw mut a);
@@ -5932,7 +6015,7 @@ mod tests {
             .store(HewActorState::Idle as i32, Ordering::Relaxed);
 
         // SAFETY: actor is valid; park_actor_sleep requires a live HewActor ptr.
-        // SAFETY: hew_now_ms has no preconditions.
+        // SAFETY: hew_now_ms has no preconditions (pinned to VIRTUAL_BASE_MS on wasm32).
         let now = unsafe { hew_now_ms() };
         // SAFETY: actor is valid; park_actor_sleep requires a live HewActor ptr.
         unsafe { park_actor_sleep(a_ptr, now + 500) };
@@ -6327,6 +6410,9 @@ mod tests {
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
+        // Pin the virtual clock (wasm32; see VirtualClock) so the park delay and
+        // the explicit wake-after-deadline tick share one deterministic `now`.
+        let _clock = VirtualClock::pinned_at(VIRTUAL_BASE_MS);
 
         // SAFETY: hew_mailbox_new returns a valid heap-allocated mailbox.
         let mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() };
@@ -6338,7 +6424,7 @@ mod tests {
         let a_ptr: *mut HewActor = (&raw mut a);
 
         // Park actor directly with a deadline 1 s from now (simulating post-dispatch park).
-        // SAFETY: hew_now_ms has no preconditions.
+        // SAFETY: hew_now_ms has no preconditions (pinned to VIRTUAL_BASE_MS on wasm32).
         let now = unsafe { hew_now_ms() };
         // SAFETY: actor is valid; scheduler is initialized.
         unsafe { park_actor_sleep(a_ptr, now + 1000) };
@@ -6577,6 +6663,12 @@ mod tests {
                 STORED_CH.store(ch.cast(), AOrdering::Relaxed);
 
                 // Schedule a ≈1 ms sleep (real wall-clock time).
+                //
+                // This test intentionally stays on the REAL clock: the reply is
+                // delivered by `actor_ask_wasm_impl`'s internal drive loop,
+                // which advances time only by wall-clock progress. Do NOT pin a
+                // VirtualClock here — a frozen clock would never cross the 1 ms
+                // deadline and the ask loop would spin without ever waking.
                 // SAFETY: hew_now_ms has no preconditions.
                 let now = unsafe { hew_now_ms() };
                 request_sleep(now.saturating_add(1));

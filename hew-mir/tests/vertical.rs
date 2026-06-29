@@ -87,6 +87,24 @@ fn linear_unconsumed_single_exit_fires_must_consume() {
         "MustConsume should fire for unconsumed @linear binding `t`; checks: {:?}",
         func.checks
     );
+    // The caret must anchor at the binding, not the distant exit: `bind_site`
+    // (the `let t = …` introduction) is distinct from `exit_site` (the implicit
+    // tail return). Pointing the diagnostic at the unconsumed binding is the
+    // whole reason both sites are carried.
+    let sites = func.checks.iter().find_map(|check| match check {
+        MirCheck::MustConsume {
+            name,
+            bind_site,
+            exit_site,
+            ..
+        } if name == "t" => Some((*bind_site, *exit_site)),
+        _ => None,
+    });
+    let (bind_site, exit_site) = sites.expect("MustConsume carries bind/exit sites");
+    assert_ne!(
+        bind_site, exit_site,
+        "bind_site must differ from exit_site so the caret lands on the binding"
+    );
     // A declared `#[linear]` type must not produce a spurious UnknownType
     // diagnostic — the MIR layer must honour the HIR checker's type_classes
     // registry rather than treating every Named type as unknown.

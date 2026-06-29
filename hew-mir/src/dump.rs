@@ -1251,10 +1251,11 @@ fn render_mir_check(check: &MirCheck) -> String {
         MirCheck::MustConsume {
             binding,
             name,
+            bind_site,
             exit_site,
             ty,
         } => format!(
-            "MustConsume {binding:?} {name} exit={exit_site:?} ty={}",
+            "MustConsume {binding:?} {name} bind={bind_site:?} exit={exit_site:?} ty={}",
             ty.user_facing()
         ),
         MirCheck::DropPlanUndetermined { block, reason } => {
@@ -1388,10 +1389,11 @@ fn render_diag_kind(kind: &MirDiagnosticKind) -> String {
         MirDiagnosticKind::MustConsume {
             binding,
             name,
+            bind_site,
             exit_site,
             ty,
         } => format!(
-            "MustConsume {binding:?} {name} exit={exit_site:?} ty={}",
+            "MustConsume {binding:?} {name} bind={bind_site:?} exit={exit_site:?} ty={}",
             ty.user_facing()
         ),
         MirDiagnosticKind::UnknownType { name } => format!("UnknownType {name}"),

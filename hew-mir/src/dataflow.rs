@@ -202,7 +202,7 @@ fn transfer_block(
     entry: BTreeMap<BindingId, BindingState>,
     block: &BasicBlock,
     type_classes: &TypeClassTable,
-    linear_bindings: &mut BTreeMap<BindingId, (String, ResolvedTy)>,
+    linear_bindings: &mut BTreeMap<BindingId, (String, ResolvedTy, SiteId)>,
     checks: &mut Vec<MirCheck>,
     use_after_consume_seen: &mut HashSet<(BindingId, SiteId)>,
     init_before_use_seen: &mut HashSet<(BindingId, SiteId)>,
@@ -211,11 +211,14 @@ fn transfer_block(
     for statement in &block.statements {
         match statement {
             MirStatement::Bind {
-                binding, name, ty, ..
+                binding,
+                name,
+                ty,
+                site,
             } => {
                 state.insert(*binding, BindingState::Live);
                 if ValueClass::of_ty(ty, type_classes) == ValueClass::Linear {
-                    linear_bindings.insert(*binding, (name.clone(), ty.clone()));
+                    linear_bindings.insert(*binding, (name.clone(), ty.clone(), *site));
                 }
             }
             MirStatement::Use {
@@ -843,7 +846,7 @@ pub fn analyze(
     // we only evaluate `Use` nodes against states that reflect every
     // reachable path.
     let mut exit_states: HashMap<u32, BTreeMap<BindingId, BindingState>> = HashMap::new();
-    let mut linear_bindings: BTreeMap<BindingId, (String, ResolvedTy)> = BTreeMap::new();
+    let mut linear_bindings: BTreeMap<BindingId, (String, ResolvedTy, SiteId)> = BTreeMap::new();
 
     // Worklist seeded in Reverse Post-Order (RPO). RPO ensures every
     // block's dominators on the acyclic spanning tree are processed
@@ -992,7 +995,7 @@ pub fn analyze(
             continue;
         };
         for (binding, state) in exit_state {
-            let Some((name, ty)) = linear_bindings.get(binding) else {
+            let Some((name, ty, bind_site)) = linear_bindings.get(binding) else {
                 continue;
             };
             let needs_report = matches!(
@@ -1006,6 +1009,7 @@ pub fn analyze(
                 checks.push(MirCheck::MustConsume {
                     binding: *binding,
                     name: name.clone(),
+                    bind_site: *bind_site,
                     exit_site,
                     ty: ty.clone(),
                 });

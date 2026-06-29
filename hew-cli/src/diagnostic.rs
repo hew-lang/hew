@@ -525,7 +525,7 @@ fn mir_primary_site(kind: &hew_mir::MirDiagnosticKind) -> Option<hew_hir::SiteId
         hew_mir::MirDiagnosticKind::DecisionMapTotal { offending_sites } => {
             offending_sites.first().copied()
         }
-        hew_mir::MirDiagnosticKind::MustConsume { exit_site, .. } => Some(*exit_site),
+        hew_mir::MirDiagnosticKind::MustConsume { bind_site, .. } => Some(*bind_site),
         hew_mir::MirDiagnosticKind::SelectArmNotImplemented { site, .. }
         | hew_mir::MirDiagnosticKind::NotYetImplemented { site, .. }
         | hew_mir::MirDiagnosticKind::InvalidActorSpawnArgument { site, .. }

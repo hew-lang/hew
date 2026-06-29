@@ -28936,12 +28936,14 @@ fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
         MirCheck::MustConsume {
             binding,
             name,
+            bind_site,
             exit_site,
             ty,
         } => Some(MirDiagnostic {
             kind: MirDiagnosticKind::MustConsume {
                 binding: *binding,
                 name: name.clone(),
+                bind_site: *bind_site,
                 exit_site: *exit_site,
                 ty: ty.clone(),
             },

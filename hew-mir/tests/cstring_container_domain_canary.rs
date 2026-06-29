@@ -262,10 +262,11 @@ fn vec_string_for_in_branched_body_drops_once_at_join() {
     );
     assert_eq!(
         string_drop_count(&pl),
-        1,
-        "branched body must drop the retained element exactly once at the \
-         branch-join (both arms borrow `line` via concat, so a single \
-         post-body drop balances every fall-through path)",
+        3,
+        "branched body drops the retained `line` once at the branch-join PLUS \
+         the prior `out` value on each arm's `out = out + ...` reassignment \
+         (#53 var-overwrite-release): two arms = two overwrite releases + the \
+         single post-body element drop",
     );
 }
 
@@ -295,9 +296,11 @@ fn vec_string_for_in_continue_drops_on_edge_and_fallthrough() {
     assert!(emits_vec_get_str(&pl));
     assert_eq!(
         string_drop_count(&pl),
-        2,
-        "continue body must emit the continue-edge drop and the fall-through \
-         body-end drop (one per mutually-exclusive iteration-exit path)",
+        3,
+        "continue body emits the continue-edge drop and the fall-through \
+         body-end drop (one per mutually-exclusive iteration-exit path) PLUS \
+         the prior `out` value released on `out = out + line` (#53 \
+         var-overwrite-release)",
     );
 }
 
@@ -323,9 +326,10 @@ fn vec_string_for_in_break_drops_on_edge_and_fallthrough() {
     assert!(emits_vec_get_str(&pl));
     assert_eq!(
         string_drop_count(&pl),
-        2,
-        "break body must emit the break-edge drop and the fall-through \
-         body-end drop (one per mutually-exclusive iteration-exit path)",
+        3,
+        "break body emits the break-edge drop and the fall-through body-end \
+         drop (one per mutually-exclusive iteration-exit path) PLUS the prior \
+         `out` value released on `out = out + line` (#53 var-overwrite-release)",
     );
 }
 

@@ -523,11 +523,12 @@ impl Checker {
             let resolved_arg = self.subst.resolve(type_arg);
             // Skip bound enforcement for unresolved inference variables: the type
             // is not yet known, so we cannot evaluate the bound.  The parallel
-            // guard in `record_concrete_call_type_args` (calls.rs) ensures that
-            // any entry that still carries an inference var is also excluded from
-            // the codegen `call_type_args` output, preventing unresolved holes
-            // from reaching the codegen backend. `drain_deferred_bound_checks`
-            // revisits the deferred entry once post-inference defaulting settles.
+            // output-boundary prune in `validate_call_type_args_output_contract`
+            // (admissibility.rs) ensures that any `call_type_args` entry still
+            // carrying an inference var after inference settles is excluded from
+            // the codegen output, preventing unresolved holes from reaching the
+            // codegen backend. `drain_deferred_bound_checks` revisits the
+            // deferred entry once post-inference defaulting settles.
             if resolved_arg.has_inference_var() {
                 self.deferred_bound_checks.push(DeferredBoundCheck {
                     type_param: param_name.clone(),

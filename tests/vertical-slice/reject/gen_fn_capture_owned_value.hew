@@ -15,9 +15,10 @@
 // Expected: rejected, fail closed (capture of opaque/owned value into a
 // generator); diagnostic cites the NYI capture protocol.
 //
-// Error count: currently 3 (two MIR cascade secondaries + one root NYI).
-// DIAG-L2 (genfn cascade suppress) will reduce this to 1; update the
-// vertical-slice assertion when that lane lands.
+// Error count: exactly 1 — the root NotYetImplemented. The inadmissible
+// capture's binding id is poisoned in `lower_gen_block`, so the synthetic body
+// emits neither the InitialisedBeforeUse nor the UnresolvedPlace cascade
+// secondary; only the actionable root rejection surfaces.
 gen fn drain(s: string) -> i64 {
     yield s.len();
 }

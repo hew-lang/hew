@@ -205,6 +205,38 @@ expect_check_fail_error_count() {
   fi
 }
 
+# Like expect_check_fail_error_count, but ALSO asserts that none of the trailing
+# substrings appear anywhere in the diagnostic output. Used by the gen-capture
+# reject fixtures to pin the single-root-diagnostic guarantee: an inadmissible
+# capture must emit ONLY the root NotYetImplemented, never the downstream
+# InitialisedBeforeUse / UnresolvedPlace cascade the body sub-builder would
+# otherwise stack on it.
+expect_check_fail_error_count_no_cascade() {
+  local fixture_path="$1"
+  local expected_count="$2"
+  local label="$3"
+  shift 3
+  if "${HEW}" check "${fixture_path}" >"${reject_output}" 2>&1; then
+    echo "expected ${label} to fail closed under hew check" >&2
+    exit 1
+  fi
+  local actual_count
+  actual_count="$(grep -Ec '^[^:]+:[0-9]+:[0-9]+: error:' "${reject_output}" || true)"
+  if [[ "${actual_count}" -ne "${expected_count}" ]]; then
+    echo "expected ${label} to emit ${expected_count} error(s), got ${actual_count}" >&2
+    cat "${reject_output}" >&2
+    exit 1
+  fi
+  local forbidden
+  for forbidden in "$@"; do
+    if grep -qF -- "${forbidden}" "${reject_output}"; then
+      echo "expected ${label} to suppress cascade secondary '${forbidden}', but it was present" >&2
+      cat "${reject_output}" >&2
+      exit 1
+    fi
+  done
+}
+
 # Compile a fixture to a native binary (no memory cap — the LLVM codegen +
 # clang/ld.lld link pipeline mmaps the multi-hundred-MB `libhew.a` and needs
 # well over 1 GB of address space), then run ONLY the produced binary under a
@@ -2101,26 +2133,28 @@ expect_check_fail_contains \
 # (use-after-free / double-free at teardown). The gate rejects any value
 # transitively containing an opaque handle, not only non-`BitCopy` heap owners.
 #
-# Error count: currently 3 (two MIR cascade secondaries + one root NYI).
-# DIAG-L2 (genfn cascade suppress) will reduce this to 1 by suppressing the
-# InitialisedBeforeUse + UnresolvedPlace secondaries; update to 1 when that
-# lane lands.
-expect_check_fail_error_count \
+# Error count: exactly 1 — the root NotYetImplemented naming the capture. The
+# enclosing `lower_gen_block` poisons the inadmissible capture's binding id, so
+# the synthetic body's `BindingRef` to it stays silent instead of stacking the
+# InitialisedBeforeUse + UnresolvedPlace cascade secondaries on the root.
+expect_check_fail_error_count_no_cascade \
   "${ROOT}/tests/vertical-slice/reject/gen_fn_capture_opaque_handle.hew" \
-  3 \
-  "gen_fn_capture_opaque_handle"
+  1 \
+  "gen_fn_capture_opaque_handle" \
+  "InitialisedBeforeUse" "UnresolvedPlace"
 
 # Reject: a generator that captures an owned (non-BitCopy) value — specifically
 # a `string` — as a free variable must fail closed. Owned values hold heap state
 # with a unique owner; shallow-copying them across the generator body-thread
 # boundary aliases the caller's heap (double-free / UAF on teardown).
 #
-# Error count: currently 3 (two MIR cascade secondaries + one root NYI).
-# DIAG-L2 (genfn cascade suppress) will reduce this to 1; update when it lands.
-expect_check_fail_error_count \
+# Error count: exactly 1 — the root NotYetImplemented; the cascade secondaries
+# are suppressed by the same capture-poisoning path.
+expect_check_fail_error_count_no_cascade \
   "${ROOT}/tests/vertical-slice/reject/gen_fn_capture_owned_value.hew" \
-  3 \
-  "gen_fn_capture_owned_value"
+  1 \
+  "gen_fn_capture_owned_value" \
+  "InitialisedBeforeUse" "UnresolvedPlace"
 
 # Generator proving-gate (compile + run + stdout-order): the behavioural oracle
 # the generator->coro substrate unification must preserve byte-for-byte.

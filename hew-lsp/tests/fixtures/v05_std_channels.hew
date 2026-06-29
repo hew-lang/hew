@@ -10,7 +10,7 @@ fn std_channels(
 ) -> i32 {
     stream.recv();
     sink.send(std_channels_probe());
-    duplex.send(1);
+    let _ = duplex.send(1);
     channel.close();
     std_channels_probe()
 }

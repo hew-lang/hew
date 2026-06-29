@@ -59,8 +59,7 @@ fn main() {
     room.say("bob", "hey alice!");
     room.say("alice", "how is the weather?");
     room.exit_room("bob");
-    await room.history();
-
+    let _ = await room.history();
     // Node::shutdown();
     println("[main] chat demo complete");
 }

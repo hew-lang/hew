@@ -83,11 +83,12 @@ pub enum LintId {
     /// is overwritten or goes out of scope — the store is dead. Emitted by the
     /// MIR-stage liveness pass (`hew-mir`), not the HIR checker sweep.
     DeadStore,
-    /// A discarded value carries a write/send error that must not be ignored —
-    /// `WriteError` / `SendError`, bare or as the error arm of a `Result`. A
-    /// statement-position discard fails open (a dropped backpressure /
-    /// disconnect signal, an unnoticed undelivered send); handle it or bind
-    /// `let _ = …`.
+    /// A discarded value carries a write/send/ask error that must not be
+    /// ignored — `WriteError` / `SendError` / `AskError`, bare or as the error
+    /// arm of a `Result`. A statement-position discard fails open (a dropped
+    /// backpressure / disconnect signal, an unnoticed undelivered send, or a
+    /// timed-out / mailbox-full / stopped-actor `ask` mistaken for a reply);
+    /// handle it or bind `let _ = …`.
     MustUse,
     // NOTE: a `clean_counter` lint (a loop-carried accumulator that is
     // incremented but never read after the loop) is deliberately NOT registered

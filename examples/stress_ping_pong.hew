@@ -37,9 +37,8 @@ fn main() {
         pinger.ping(ping_value);
         ponger.pong(pong_value);
     }
-    await pinger.report();
-    await ponger.report();
-
+    let _ = await pinger.report();
+    let _ = await ponger.report();
     // Second burst: stress with higher volume
     println("--- Round 2: 5000 rounds ---");
     for j in 0 .. 5000 {
@@ -48,7 +47,7 @@ fn main() {
         pinger.ping(ping_value);
         ponger.pong(pong_value);
     }
-    await pinger.report();
-    await ponger.report();
+    let _ = await pinger.report();
+    let _ = await ponger.report();
     println("PASS: 6000 ping-pong rounds completed");
 }

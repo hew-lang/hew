@@ -1,18 +1,20 @@
 //! The `must_use` lint.
 //!
-//! Flags a *discarded* value whose type carries a write/send failure that must
-//! not be ignored — `WriteError` and `SendError`, the error arms returned by
-//! `Connection.write` and the pid `tell` family. Dropping such a value on the
-//! floor silently fails open: a backpressure or disconnect signal vanishes, an
-//! undelivered message is never noticed. A program should handle it (`?`,
-//! `match`) or discard it explicitly (`let _ = …`).
+//! Flags a *discarded* value whose type carries a failure that must not be
+//! ignored — `WriteError`, `SendError`, and `AskError`, the error arms returned
+//! by `Connection.write`, the pid `tell` family, and an actor `ask`
+//! (`await actor.msg()`). Dropping such a value on the floor silently fails
+//! open: a backpressure or disconnect signal vanishes, an undelivered message
+//! is never noticed, or a timed-out / mailbox-full / stopped-actor ask is
+//! mistaken for a reply. A program should handle it (`?`, `match`) or discard
+//! it explicitly (`let _ = …`).
 //!
 //! The value is flagged in two shapes:
 //!
-//! - the bare error: `WriteError` / `SendError`;
+//! - the bare error: `WriteError` / `SendError` / `AskError`;
 //! - a `Result<_, E>` whose error arm is one of those — the common case, since
-//!   `write()` returns `Result<(), WriteError>` and `tell()` returns
-//!   `Result<(), SendError>`.
+//!   `write()` returns `Result<(), WriteError>`, `tell()` returns
+//!   `Result<(), SendError>`, and an `ask` returns `Result<Reply, AskError>`.
 //!
 //! ## Precision over recall
 //!
@@ -21,9 +23,10 @@
 //!   `var` binding, and a `match` / `if let` scrutinee are all "used" and never
 //!   flagged. `expr?` lands here typed as the unwrapped ok arm, so a handled
 //!   call is silent; only the unhandled discard remains.
-//! - The discarded expression's resolved type must be exactly `WriteError` /
-//!   `SendError` or `Result<_, WriteError|SendError>`, verified through
-//!   [`LintCtx::resolved_type_at`]; an unresolved type stays silent.
+//! - The discarded expression's resolved type must be exactly one of the
+//!   must-use errors (`WriteError` / `SendError` / `AskError`) or a `Result<_,
+//!   E>` over one, verified through [`LintCtx::resolved_type_at`]; an
+//!   unresolved type stays silent.
 //! - `// hew:allow(must_use)` (or an explicit `let _ = …`) is the documented
 //!   opt-out, mirroring the registry's other suppressible lints.
 
@@ -46,8 +49,14 @@ pub(super) fn check(ctx: &LintCtx, levels: &LintLevels, body: &Block, out: &mut 
             levels,
             LintId::MustUse,
             &hit.span,
-            format!("discarded `{}` value; an ignored write/send error fails open", hit.error),
-            format!("handle it (`?`, `match`) or discard explicitly with `let _ = …` — `{}` reports backpressure, disconnect, or undelivered sends", hit.error),
+            format!(
+                "discarded `{}` value; an ignored {} error fails open",
+                hit.error.name, hit.error.class
+            ),
+            format!(
+                "handle it (`?`, `match`) or discard explicitly with `let _ = …` — `{}` reports {}",
+                hit.error.name, hit.error.reports
+            ),
             out,
         );
     }
@@ -55,9 +64,8 @@ pub(super) fn check(ctx: &LintCtx, levels: &LintLevels, body: &Block, out: &mut 
 
 struct Hit {
     span: Span,
-    /// Stable name of the offending error type (`WriteError` / `SendError`),
-    /// used to render the message and suggestion.
-    error: &'static str,
+    /// The must-use error the discarded value carries.
+    error: MustUseError,
 }
 
 struct MustUse<'a> {
@@ -90,23 +98,63 @@ impl NodeVisitor for MustUse<'_> {
     }
 }
 
-/// The stable name of the must-use error a discarded value carries, or `None`.
+/// A must-use error type and the failure it loses when silently discarded.
 ///
-/// Matches the bare error type and a `Result<_, E>` whose error arm is one. The
-/// match is by canonical name so it covers both the builtin `SendError` and the
-/// stdlib `WriteError` enum identically.
-fn must_use_error(ty: &Ty) -> Option<&'static str> {
-    if let Some((_, err)) = ty.as_result() {
-        return error_name(err);
-    }
-    error_name(ty)
+/// `class` keys the primary diagnostic ("an ignored {class} error fails open");
+/// `reports` names the concrete failure in the suggestion. Grouping by class
+/// keeps the message identical for every error that fails the same way.
+#[derive(Clone, Copy)]
+struct MustUseError {
+    /// Stable name of the offending error type, shown in the diagnostic.
+    name: &'static str,
+    /// Error-class phrase for the primary message (`write/send`, `ask`).
+    class: &'static str,
+    /// What the discarded error silently drops, for the suggestion.
+    reports: &'static str,
 }
 
-/// `WriteError` / `SendError` named-type detection.
-fn error_name(ty: &Ty) -> Option<&'static str> {
-    match ty {
-        Ty::Named { name, .. } if name == "WriteError" => Some("WriteError"),
-        Ty::Named { name, .. } if name == "SendError" => Some("SendError"),
+impl MustUseError {
+    /// `WriteError` — backpressure / disconnect from `Connection.write`.
+    const WRITE: Self = Self {
+        name: "WriteError",
+        class: "write/send",
+        reports: "backpressure, disconnect, or undelivered sends",
+    };
+    /// `SendError` — an undelivered message from the pid `tell` family.
+    const SEND: Self = Self {
+        name: "SendError",
+        class: "write/send",
+        reports: "backpressure, disconnect, or undelivered sends",
+    };
+    /// `AskError` — a failed `await actor.msg()` / lambda-actor `ask`.
+    const ASK: Self = Self {
+        name: "AskError",
+        class: "ask",
+        reports: "a timeout, a full mailbox, or a stopped actor",
+    };
+}
+
+/// The must-use error a discarded value carries, or `None`.
+///
+/// Matches the bare error type and a `Result<_, E>` whose error arm is one. The
+/// match is by canonical name so it covers the builtin `SendError` / `AskError`
+/// and the stdlib `WriteError` enum identically.
+fn must_use_error(ty: &Ty) -> Option<MustUseError> {
+    if let Some((_, err)) = ty.as_result() {
+        return error_kind(err);
+    }
+    error_kind(ty)
+}
+
+/// `WriteError` / `SendError` / `AskError` named-type detection.
+fn error_kind(ty: &Ty) -> Option<MustUseError> {
+    let Ty::Named { name, .. } = ty else {
+        return None;
+    };
+    match name.as_str() {
+        "WriteError" => Some(MustUseError::WRITE),
+        "SendError" => Some(MustUseError::SEND),
+        "AskError" => Some(MustUseError::ASK),
         _ => None,
     }
 }

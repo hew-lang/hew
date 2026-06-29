@@ -434,3 +434,74 @@ fn clean_counter_is_unregistered_and_fails_closed() {
         "expected a clear unknown-lint error naming clean_counter:\n{stderr}"
     );
 }
+
+// ── checker-stage lint: must_use ─────────────────────────────────────
+
+/// A program whose only diagnostic is `must_use`: the `Result<(), WriteError>`
+/// returned by `w()` is discarded in statement position, so a write error is
+/// silently dropped. `main` and `w` are both reachable (no `dead_code` noise).
+const MUST_USE_DISCARD: &str = "enum WriteError { Disconnected(i64); }\n\
+     fn w() -> Result<(), WriteError> { Ok(()) }\n\
+     fn main() {\n\
+     w();\n\
+     }\n";
+
+/// The same program with an in-source allow directive on the line above.
+const MUST_USE_SUPPRESSED: &str = "enum WriteError { Disconnected(i64); }\n\
+     fn w() -> Result<(), WriteError> { Ok(()) }\n\
+     fn main() {\n\
+     // hew:allow(must_use)\n\
+     w();\n\
+     }\n";
+
+const MUST_USE_MESSAGE: &str = "an ignored write/send error fails open";
+
+#[test]
+fn must_use_warning_renders_by_default() {
+    let output = run_check(MUST_USE_DISCARD, &[]);
+    let stderr = stderr_of(&output);
+    assert!(
+        output.status.success(),
+        "a must_use warning must not fail the build:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("warning:") && stderr.contains(MUST_USE_MESSAGE),
+        "expected the must_use warning to render:\n{stderr}"
+    );
+}
+
+#[test]
+fn must_use_allow_flag_suppresses() {
+    let output = run_check(MUST_USE_DISCARD, &["--allow", "must_use"]);
+    let stderr = stderr_of(&output);
+    assert!(output.status.success(), "check should pass:\n{stderr}");
+    assert!(
+        !stderr.contains(MUST_USE_MESSAGE),
+        "--allow must_use must suppress the lint:\n{stderr}"
+    );
+}
+
+#[test]
+fn must_use_deny_flag_promotes_to_error() {
+    let output = run_check(MUST_USE_DISCARD, &["--deny", "must_use"]);
+    let stderr = stderr_of(&output);
+    assert!(
+        !output.status.success(),
+        "--deny must_use must fail the build:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("error:") && stderr.contains(MUST_USE_MESSAGE),
+        "--deny must render must_use as an error:\n{stderr}"
+    );
+}
+
+#[test]
+fn must_use_inline_directive_suppresses() {
+    let output = run_check(MUST_USE_SUPPRESSED, &[]);
+    let stderr = stderr_of(&output);
+    assert!(output.status.success(), "check should pass:\n{stderr}");
+    assert!(
+        !stderr.contains(MUST_USE_MESSAGE),
+        "an in-source `// hew:allow(must_use)` must suppress the lint:\n{stderr}"
+    );
+}

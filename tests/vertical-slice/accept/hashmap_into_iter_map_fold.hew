@@ -1,0 +1,18 @@
+// `iter::map(m.into_iter(), ..)` then `iter::fold` — map/fold pipeline over a
+// HashMap. `into_iter` yields `(K, V)` pairs; map projects each to `k + v`;
+// fold sums them. Keys 1+2+3 = 6, values 10+20+30 = 60, so the mapped sum is
+// 66. The map stays live after the pipeline (shared, not consumed). Exit 66.
+import std::iter;
+
+pub fn main() -> i64 {
+    let m: HashMap<i64, i64> = HashMap::new();
+    m.insert(1, 10);
+    m.insert(2, 20);
+    m.insert(3, 30);
+    let mapped = iter::map(m.into_iter(), |kv: (i64, i64)| kv.0 + kv.1);
+    let total = iter::fold(mapped, 0, |acc: i64, x: i64| acc + x);
+    if m.len() != 3 {
+        return 99;
+    }
+    total
+}

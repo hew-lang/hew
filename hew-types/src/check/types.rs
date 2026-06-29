@@ -1452,6 +1452,16 @@ pub enum MethodCallRewrite {
     BuiltinVecIntoIter {
         elem_ty: crate::resolved_ty::ResolvedTy,
     },
+    /// Builtin `HashMap<K, V>::into_iter()` iterator constructor. HIR expands
+    /// this directly to a `HashMapIter<K, V>` record built from `keys()` /
+    /// `values()` snapshots — the same cursor the `for (k, v) in m` desugar
+    /// synthesises — so the pipeline form (`iter::map(m.into_iter(), ..)`)
+    /// matches `Vec`'s without a generic stdlib `impl IntoIterator for HashMap`
+    /// body (which the checker cannot admit on an abstract receiver).
+    BuiltinHashMapIntoIter {
+        key_ty: crate::resolved_ty::ResolvedTy,
+        val_ty: crate::resolved_ty::ResolvedTy,
+    },
     /// Builtin `VecIter<T>::next(var self)` state advance. HIR expands this at
     /// the call site so the caller's mutable iterator binding observes the
     /// cursor update.

@@ -4327,6 +4327,64 @@ impl Checker {
             self.record_resolved_hashmap_call("get", &key_ty, &val_ty, span);
             return Ty::option(val_ty);
         }
+        // `into_iter` resolves to a `HashMapIter<K, V>` cursor so the pipeline
+        // form (`iter::map(m.into_iter(), ..)`) matches `Vec::into_iter` — the
+        // map twin of the `check_vec_method` `into_iter` arm. The cursor is
+        // built (in HIR) from `keys()` / `values()` snapshots, the same proven
+        // clone-on-read path the `for (k, v) in m` desugar uses, so record both
+        // projection facts here: zero-width synthetic spans at the call's
+        // start/end offsets, matching the for-in span derivation and reproduced
+        // byte-for-byte by the HIR rewrite. A standalone `impl IntoIterator for
+        // HashMap` is intentionally absent — its body would project on an
+        // abstract receiver the checker cannot admit (see std/builtins.hew).
+        if method == "into_iter" {
+            self.check_arity(args, 0, "`HashMap::into_iter`", span);
+            let keys_span = span.start..span.start;
+            let values_span = span.end..span.end;
+            let mut iter_ty = Ty::Error;
+            if self.validate_hashmap_projection_element_types(&key_ty, &val_ty, "keys", &keys_span)
+                && self.validate_hashmap_projection_element_types(
+                    &key_ty,
+                    &val_ty,
+                    "values",
+                    &values_span,
+                )
+            {
+                let key_vec = self.make_vec_type(key_ty.clone(), &keys_span);
+                let val_vec = self.make_vec_type(val_ty.clone(), &values_span);
+                self.record_type(&keys_span, &key_vec);
+                self.record_type(&values_span, &val_vec);
+                self.record_resolved_hashmap_call("keys", &key_ty, &val_ty, &keys_span);
+                self.record_resolved_hashmap_call("values", &key_ty, &val_ty, &values_span);
+                let resolved_key = self.subst.resolve(&key_ty);
+                let resolved_val = self.subst.resolve(&val_ty);
+                if let (Ok(key_resolved), Ok(val_resolved)) = (
+                    ResolvedTy::from_ty(&resolved_key),
+                    ResolvedTy::from_ty(&resolved_val),
+                ) {
+                    self.record_method_call_receiver_kind(
+                        span,
+                        MethodCallReceiverKind::PrimitiveTraitImpl {
+                            trait_name: "IntoIterator".to_string(),
+                            canonical_receiver: "HashMap".to_string(),
+                        },
+                    );
+                    self.record_method_call_rewrite(
+                        span,
+                        MethodCallRewrite::BuiltinHashMapIntoIter {
+                            key_ty: key_resolved,
+                            val_ty: val_resolved,
+                        },
+                    );
+                }
+                iter_ty = Ty::Named {
+                    name: "HashMapIter".to_string(),
+                    args: vec![resolved_key, resolved_val],
+                    builtin: None,
+                };
+            }
+            return iter_ty;
+        }
         let cx = CollectionTyCx::hashmap(key_ty, val_ty);
         self.check_collection_method(CollectionKind::HashMap, &cx, method, args, span)
     }

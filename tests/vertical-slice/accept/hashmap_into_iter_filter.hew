@@ -1,0 +1,18 @@
+// `iter::filter(m.into_iter(), ..)` then `iter::count` — filter pipeline over a
+// HashMap. `into_iter` yields `(K, V)` pairs; filter keeps entries whose value
+// is at least 20; count tallies them. Of {1:10, 2:20, 3:30}, two pass → count
+// 2. The map stays live after the pipeline (shared, not consumed). Exit 2.
+import std::iter;
+
+pub fn main() -> i64 {
+    let m: HashMap<i64, i64> = HashMap::new();
+    m.insert(1, 10);
+    m.insert(2, 20);
+    m.insert(3, 30);
+    let kept = iter::filter(m.into_iter(), |kv: (i64, i64)| kv.1 >= 20);
+    let n = iter::count(kept);
+    if m.len() != 3 {
+        return 99;
+    }
+    n
+}

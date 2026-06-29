@@ -1,0 +1,23 @@
+// `iter::count(make_map().into_iter())` — single-eval witness for the pipeline
+// form over a HashMap produced by a CALL (a non-place rvalue).
+//
+// `into_iter` builds a `HashMapIter` from the map's keys()/values() snapshots.
+// A non-place receiver is bound to one temp before projecting, so the producer
+// runs EXACTLY once — projecting keys() and values() off the cloned call AST
+// would run `make_map()` twice (double side effects, two distinct maps). The
+// producer prints "MK" once: stdout MUST be a single line. Three entries →
+// count 3. Exit 3.
+import std::iter;
+
+fn make_map() -> HashMap<i64, i64> {
+    println("MK");
+    let m: HashMap<i64, i64> = HashMap::new();
+    m.insert(1, 10);
+    m.insert(2, 20);
+    m.insert(3, 30);
+    m
+}
+
+pub fn main() -> i64 {
+    iter::count(make_map().into_iter())
+}

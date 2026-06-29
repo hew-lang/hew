@@ -17472,7 +17472,7 @@ impl LowerCtx {
                     ),
                 },
                 span.clone(),
-                "only numeric<->numeric, bool->integer, and integer->bool `as` casts lower to HIR",
+                "only numeric<->numeric, bool->integer, integer->bool, and char->integer `as` casts lower to HIR",
             ));
             return (
                 HirExprKind::Unsupported(format!(

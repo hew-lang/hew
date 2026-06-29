@@ -326,13 +326,19 @@ impl ResolvedTy {
     /// `ResolvedTy`.
     ///
     /// This mirrors `hew-types/src/check/coerce.rs::cast_is_valid`: numeric
-    /// <-> numeric, `bool` -> integer, and integer -> `bool`. Everything else
-    /// stays fail-closed at HIR/MIR/codegen boundaries.
+    /// <-> numeric, `bool` -> integer, integer -> `bool`, and `char` ->
+    /// integer (the Unicode scalar value / codepoint). Everything else stays
+    /// fail-closed at HIR/MIR/codegen boundaries.
     #[must_use]
     pub fn can_explicitly_numeric_cast_to(&self, target: &Self) -> bool {
         (self.is_numeric() && target.is_numeric())
             || (*self == Self::Bool && target.is_integer())
             || (self.is_integer() && *target == Self::Bool)
+            // `char as <integer>` extracts the codepoint as an integer.
+            // Mirrors the `Ty::Char` arm in `cast_is_valid`; lowered by
+            // `lower_numeric_cast`'s dedicated char->int arm (zero-extend /
+            // truncate from the i32 codepoint storage).
+            || (*self == Self::Char && target.is_integer())
     }
 
     /// Convert a checker-internal [`Ty`] into a boundary [`ResolvedTy`].

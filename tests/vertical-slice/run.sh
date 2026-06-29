@@ -2484,6 +2484,15 @@ run_accept_expect_status "string_index_codepoint" 1
 # bytes. A byte-clamping slice would yield 1 byte and either truncate
 # or abort — this fixture proves we walk codepoints.
 run_accept_expect_status "string_slice_multibyte" 2
+# Accept: `char as i64` codepoint cast — the read primitive for text/byte
+# parsers. Reads chars via `s[i]`, casts to integer codepoints, and folds an
+# ASCII digit run into an integer. Stdout: 65, 101, 12345.
+run_accept_expect_stdout "char_cast_codepoint_read"
+# Accept: `char as <integer>` roundtrips through the UTF-8 string for 1/2/3/4-
+# byte forms (recovered codepoint == char-literal codepoint), and pins the
+# integer width rules on '€' (8364): `as u32` preserves, `as u8` truncates
+# to the low byte (172).
+run_accept_expect_stdout "char_cast_roundtrip"
 # Accept (panic semantics): out-of-bounds codepoint slice ABORTS. Exit
 # 134 = SIGABRT (libc::abort from hew_string_slice_codepoints). Q-CS1
 # locks panic-on-OOB; no clamp / null / empty-string fallback.

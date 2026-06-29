@@ -1,0 +1,27 @@
+// `char as <integer>` roundtrips through the UTF-8 string representation:
+// the codepoint recovered from `s[i]` equals the codepoint of the matching
+// char literal, for 1-, 2-, 3-, and 4-byte UTF-8 forms.
+//
+//   "Aé€😀" = A (U+0041, 1B), é (U+00E9, 2B), € (U+20AC, 3B), 😀 (U+1F600, 4B)
+//
+// The first four lines are `1` iff the string-indexed read agrees with the
+// literal — the roundtrip invariant. The last two lines pin the integer
+// width rules on '€' (8364): `as u32` preserves the scalar value, `as u8`
+// truncates to the low byte (8364 & 0xFF = 172).
+
+fn main() -> i64 {
+    let s: string = "Aé€😀";
+    print(if (s[0] as i64) == ('A' as i64) { 1 } else { 0 });
+    println("");
+    print(if (s[1] as i64) == ('é' as i64) { 1 } else { 0 });
+    println("");
+    print(if (s[2] as i64) == ('€' as i64) { 1 } else { 0 });
+    println("");
+    print(if (s[3] as i64) == ('😀' as i64) { 1 } else { 0 });
+    println("");
+    print((s[2] as u32) as i64);
+    println("");
+    print((s[2] as u8) as i64);
+    println("");
+    0
+}

@@ -113,6 +113,8 @@ fn main() {
 
 Use `as` for all numeric conversions — widening, narrowing, int↔float, signed↔unsigned. Float→int truncates toward zero. (Avoid casting negative values to unsigned types.)
 
+`char as <integer>` extracts the Unicode scalar value — the codepoint. `'A' as i64` is `65`, and `s[i] as i64` reads the codepoint of the char at codepoint offset `i` (the read primitive for text/byte parsers). Wider integer targets zero-extend; narrower ones truncate to the low byte (`'€' as u8` is `172`), following the same width rules as above. The reverse — `<integer> as char` — is not an `as` cast (not every integer is a valid scalar value); build a one-character string with `string.from_char(code)` instead.
+
 ### Mixed-width arithmetic requires a cast
 
 ```hew
@@ -1992,7 +1994,7 @@ fn main() {
 }
 ```
 
-Build strings with `+`. `char_at` gives the code point (`i64`); `string.from_char` renders it back. Strings are immutable — concatenation produces new strings.
+Build strings with `+`. `char_at` gives the code point (`i64`); `string.from_char` renders it back. To take the codepoint of a `char` value directly — for instance one read with `s[i]` — cast it: `s[i] as i64`. Strings are immutable — concatenation produces new strings.
 
 ## Traits and stdlib
 

@@ -1,0 +1,29 @@
+// `char as i64` yields the Unicode scalar value — the codepoint. This is
+// the read primitive every text/byte parser needs: pull a `char` out of a
+// string with `s[i]`, then turn it into its integer codepoint.
+//
+// Three reads, one stdout line each:
+//   1. a char literal's codepoint           : 'A' -> 65
+//   2. a string-indexed char's codepoint    : "hello"[1] = 'e' -> 101
+//   3. an ASCII digit run folded to an int  : "12345" -> 12345
+
+fn parse_digits(s: string) -> i64 {
+    var acc: i64 = 0;
+    let zero: i64 = '0' as i64;
+    for i in 0..s.len() {
+        let digit: i64 = (s[i] as i64) - zero;
+        acc = acc * 10 + digit;
+    }
+    acc
+}
+
+fn main() -> i64 {
+    print('A' as i64);
+    println("");
+    let s: string = "hello";
+    print(s[1] as i64);
+    println("");
+    print(parse_digits("12345"));
+    println("");
+    0
+}

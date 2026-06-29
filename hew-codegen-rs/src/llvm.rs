@@ -14128,6 +14128,40 @@ fn lower_numeric_cast(
                 }
             }
         }
+        (ResolvedTy::Char, target) if target.is_integer() => {
+            // `char as <integer>` extracts the Unicode scalar value. A `char`
+            // is stored as an i32 codepoint (U+0000..U+10FFFF — always
+            // non-negative, the high 11 bits are unused). Apply the standard
+            // numeric-cast width rules, treating the codepoint as unsigned:
+            // truncate to a narrower target (matching Rust's `c as u8`),
+            // zero-extend to a wider one. A sign-extend would be wrong here —
+            // the value is never negative, so the i64/u64/isize/usize result
+            // must carry the bare codepoint, not a sign-replicated one.
+            let src_int = expect_int_type(src_storage, "char->int cast source")?;
+            let dest_int = expect_int_type(dest_storage, "char->int cast dest")?;
+            let src_v = fn_ctx
+                .builder
+                .build_load(src_int, src_ptr, "cast_char_src")
+                .llvm_ctx("char cast source load")?
+                .into_int_value();
+            let src_width = src_int.get_bit_width();
+            let dest_width = dest_int.get_bit_width();
+            if src_width == dest_width {
+                src_v.into()
+            } else if src_width > dest_width {
+                fn_ctx
+                    .builder
+                    .build_int_truncate(src_v, dest_int, "cast_char_trunc")
+                    .llvm_ctx("char cast truncate")?
+                    .into()
+            } else {
+                fn_ctx
+                    .builder
+                    .build_int_z_extend(src_v, dest_int, "cast_char_zext")
+                    .llvm_ctx("char cast zero extend")?
+                    .into()
+            }
+        }
         (source, target) if source.is_integer() && target.is_float() => {
             let src_int = expect_int_type(src_storage, "int->float cast source")?;
             let dest_float = expect_float_type(dest_storage, "int->float cast dest")?;

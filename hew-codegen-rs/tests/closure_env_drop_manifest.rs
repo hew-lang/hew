@@ -19,6 +19,12 @@
 //! captures. This is the negative control distinguishing a wired manifest from
 //! a blanket "drop everything" (which would double-free a BitCopy alias).
 //!
+//! The type-parameterised case (`fn make<T>(x: T) -> fn() -> T`) extends this to
+//! the #6 owned-generic capture: after monomorphisation the `T=string`
+//! instantiation's free thunk releases the captured string exactly once while
+//! the `T=i64` instantiation of the same generic function gains no release —
+//! distinct, correctly-keyed per-monomorphisation thunks.
+//!
 //! LESSONS applied:
 //! - `drop-allowset-from-value-flow` (P0): the test asserts the exact emitted
 //!   release symbol against a fix-disabled-equivalent negative control (the
@@ -27,6 +33,9 @@
 //!   owned-field release per capture class.
 //! - `boundary-fail-closed` (P0): absence of the release inside the free thunk
 //!   is the gate condition.
+//! - `monomorphization-site-key-scope` (§6): the type-parameterised test pins
+//!   that the per-monomorphisation free thunk is keyed on the inner capture
+//!   site, so `T=string` and `T=i64` get distinct drop behaviour.
 
 use std::path::Path;
 
@@ -205,5 +214,85 @@ fn bitcopy_capture_has_no_owned_release_in_free_thunk() {
     assert!(
         thunk.contains("hew_dyn_box_free"),
         "the BitCopy-capture free thunk must still free the box. Thunk body:\n{thunk}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Type-parameterised owned capture (#6): a closure inside `fn make<T>(x: T)`
+// captures the generic-`T` value by move and escapes (returned as `fn() -> T`).
+// After monomorphisation the env field `T` is concrete, so the OWNED (`string`)
+// instantiation's free thunk releases the captured handle exactly once, while
+// the BitCopy (`i64`) instantiation of the SAME generic function gains no
+// release. This is the direct release-COUNT proof for the #6 owned-generic
+// capture WITH a built-in negative control (the i64 mono) — not a leak floor.
+//
+// It also pins `monomorphization-site-key-scope`: the per-monomorphisation free
+// thunk is keyed by the inner capture site, so `T=string` and `T=i64` get
+// DISTINCT thunks with DISTINCT drop behaviour. A mono keyed on the outer
+// wrapper would hand both the same thunk — either leaking the string (i64
+// thunk) or double-freeing the i64 alias (string thunk).
+// ---------------------------------------------------------------------------
+
+const TYPE_PARAM_STRING_THUNK: &str = "__hew_closure_env_free___hew_closure_invoke_make__string_0";
+const TYPE_PARAM_I64_THUNK: &str = "__hew_closure_env_free___hew_closure_invoke_make__i64_0";
+
+#[test]
+fn type_param_owned_capture_freed_once_per_monomorphisation() {
+    let ll = emit_ll(
+        "fn make<T>(x: T) -> fn() -> T {\n\
+        \x20   || x\n\
+        }\n\
+        fn main() -> i64 {\n\
+        \x20   let f = make(\"closure\");\n\
+        \x20   let g = make(7);\n\
+        \x20   let _ = f();\n\
+        \x20   g()\n\
+        }\n",
+        "type_param_capture",
+    );
+
+    // OWNED instantiation (`T = string`): the substituted env field is a real
+    // owned handle, released exactly once before the box is freed.
+    let string_thunk = function_body(&ll, TYPE_PARAM_STRING_THUNK);
+    assert!(
+        !string_thunk.is_empty(),
+        "no monomorphised free thunk `{TYPE_PARAM_STRING_THUNK}` emitted for the \
+         escaping `T=string` instantiation; the owned generic-`T` capture must plant \
+         a per-monomorphisation free thunk. Emitted IR:\n{ll}"
+    );
+    assert_eq!(
+        string_thunk.matches("hew_string_drop").count(),
+        1,
+        "the `T=string` env free thunk must release the captured string EXACTLY once \
+         (release-COUNT==1) — a missing release leaks, a doubled release double-frees. \
+         Thunk body:\n{string_thunk}"
+    );
+    assert!(
+        string_thunk.contains("hew_dyn_box_free"),
+        "the `T=string` env free thunk must free the box after releasing the capture. \
+         Thunk body:\n{string_thunk}"
+    );
+
+    // NEGATIVE CONTROL — BitCopy instantiation (`T = i64`) of the SAME generic
+    // function: no owned-field release, box free only. A wrong mono key or a
+    // blanket "drop every field" would emit `hew_string_drop` here and
+    // double-free the BitCopy alias of the caller's live binding.
+    let i64_thunk = function_body(&ll, TYPE_PARAM_I64_THUNK);
+    assert!(
+        !i64_thunk.is_empty(),
+        "no monomorphised free thunk `{TYPE_PARAM_I64_THUNK}` emitted for the escaping \
+         `T=i64` instantiation. Emitted IR:\n{ll}"
+    );
+    assert_eq!(
+        i64_thunk.matches("hew_string_drop").count(),
+        0,
+        "the `T=i64` env free thunk must NOT release any owned handle — `i64` is a \
+         BitCopy capture; a release here would corrupt unrelated memory. This is the \
+         negative control proving the drop manifest is wired per-monomorphisation, not \
+         blanket. Thunk body:\n{i64_thunk}"
+    );
+    assert!(
+        i64_thunk.contains("hew_dyn_box_free"),
+        "the `T=i64` env free thunk must still free the box. Thunk body:\n{i64_thunk}"
     );
 }

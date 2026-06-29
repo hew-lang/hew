@@ -22,6 +22,49 @@ fn warn_unused_variable() {
 }
 
 #[test]
+fn raii_handle_bindings_suppress_unused_lint_but_plain_still_warns() {
+    // A `#[resource]` and a `#[linear]` handle exist to be dropped/consumed:
+    // binding one for its scope-exit drop is the use, so the unused-binding lint
+    // must stay silent. A plain scalar in the same scope must still warn — the
+    // suppression is type-targeted, not a blanket disable.
+    let source = "\
+#[resource]\n\
+type Guard { id: i64; }\n\
+impl Guard { fn close(g: Guard) { } }\n\
+fn open() -> Guard { Guard { id: 1 } }\n\
+#[linear]\n\
+type Txn { id: i64; }\n\
+impl Txn { fn commit(consuming self) -> i64 { 0 } }\n\
+fn mk() -> Txn { Txn { id: 0 } }\n\
+fn main() { let g = open(); let t = mk(); let plain = 42; }\n";
+    let result = hew_parser::parse(source);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(output.errors.is_empty(), "errors: {:?}", output.errors);
+    let unused = |n: &str| {
+        output
+            .warnings
+            .iter()
+            .any(|w| w.message.contains(&format!("unused variable `{n}`")))
+    };
+    assert!(
+        !unused("g"),
+        "resource handle must not warn unused: {:?}",
+        output.warnings
+    );
+    assert!(
+        !unused("t"),
+        "linear handle must not warn unused: {:?}",
+        output.warnings
+    );
+    assert!(
+        unused("plain"),
+        "plain scalar must still warn unused: {:?}",
+        output.warnings
+    );
+}
+
+#[test]
 fn warn_var_never_mutated() {
     let source = "fn main() { var x = 10; println(x); }";
     let result = hew_parser::parse(source);

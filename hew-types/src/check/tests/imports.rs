@@ -1728,6 +1728,61 @@ fn local_type_impl_no_orphan_warning() {
 }
 
 #[test]
+fn local_actor_impl_no_orphan_warning() {
+    use hew_parser::ast::{ActorDecl, TraitBound, Visibility};
+    // A same-file actor declares a nominal type, so `impl ExternalTrait for
+    // Counter` is local-typed — not an orphan. Mirrors the struct case above:
+    // the actor's name must seed `local_type_defs` like any other type.
+    let actor = ActorDecl {
+        visibility: Visibility::Pub,
+        name: "Counter".to_string(),
+        type_params: vec![],
+        super_traits: None,
+        init: None,
+        fields: vec![],
+        receive_fns: vec![],
+        methods: vec![],
+        mailbox_capacity: None,
+        overflow_policy: None,
+        is_isolated: false,
+        doc_comment: None,
+        max_heap_bytes: None,
+    };
+    let impl_decl = ImplDecl {
+        type_params: None,
+        trait_bound: Some(TraitBound {
+            name: "ExternalTrait".to_string(),
+            type_args: None,
+            assoc_type_bindings: vec![],
+        }),
+        target_type: (
+            TypeExpr::Named {
+                name: "Counter".to_string(),
+                type_args: None,
+            },
+            0..0,
+        ),
+        where_clause: None,
+        type_aliases: vec![],
+        methods: vec![],
+    };
+    let output = check_items(vec![
+        (Item::Actor(actor), 0..0),
+        (Item::Impl(impl_decl), 0..0),
+    ]);
+
+    let has_orphan = output
+        .warnings
+        .iter()
+        .any(|w| w.kind == crate::error::TypeErrorKind::OrphanImpl);
+    assert!(
+        !has_orphan,
+        "impl on a locally defined actor must NOT produce an orphan warning; warnings: {:?}",
+        output.warnings
+    );
+}
+
+#[test]
 fn test_file_import_private_items_not_visible() {
     use hew_parser::ast::{
         Block, ConstDecl, Expr, FnDecl, ImportDecl, Item, Literal, Program, Spanned, TypeDecl,

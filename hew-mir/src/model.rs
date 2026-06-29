@@ -4929,6 +4929,9 @@ pub enum MirCheck {
     MustConsume {
         binding: BindingId,
         name: String,
+        /// Where the binding was introduced — the caret anchors here so the
+        /// diagnostic points at the unconsumed binding, not the distant exit.
+        bind_site: SiteId,
         exit_site: SiteId,
         ty: ResolvedTy,
     },
@@ -5674,6 +5677,8 @@ pub enum MirDiagnosticKind {
     MustConsume {
         binding: BindingId,
         name: String,
+        /// The binding's introduction site — diagnostic caret anchor.
+        bind_site: SiteId,
         exit_site: SiteId,
         ty: ResolvedTy,
     },

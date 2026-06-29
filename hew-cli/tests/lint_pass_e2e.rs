@@ -336,6 +336,19 @@ const FOR_RANGE_CLEAN: &str = "fn sum(n: i64) -> i64 {\n\
 
 const DEAD_STORE_MESSAGE: &str = "is never read before it is overwritten";
 
+/// The same shape as `DEAD_STORE`, but the discarded local is `_`-prefixed:
+/// the documented "intentionally unused" idiom. A dead store into an
+/// underscore binding must stay silent — the user already declared the value
+/// disposable — even when `dead_store` is escalated to `-D`.
+const DEAD_STORE_UNDERSCORE: &str = "fn f() -> i64 {\n\
+     var _x = 5;\n\
+     _x = 6;\n\
+     _x\n\
+     }\n\
+     fn main() {\n\
+     let _ = f();\n\
+     }\n";
+
 #[test]
 fn dead_store_warns_by_default() {
     let output = run_check(DEAD_STORE, &[]);
@@ -414,6 +427,24 @@ fn for_range_loop_does_not_trip_dead_store() {
     assert!(
         !stderr.contains(DEAD_STORE_MESSAGE),
         "dead_store must not misfire on a normal counting loop:\n{stderr}"
+    );
+}
+
+#[test]
+fn underscore_local_does_not_trip_dead_store() {
+    // `let _r = t.consume();` keeps the side-effecting call but throws the
+    // result away on purpose. The `_` prefix is the documented discard idiom,
+    // so a dead store into it must stay silent even under -D — nagging the user
+    // to prefix what is already prefixed would be a false positive.
+    let output = run_check(DEAD_STORE_UNDERSCORE, &["-D", "dead_store"]);
+    let stderr = stderr_of(&output);
+    assert!(
+        output.status.success(),
+        "a dead store into an `_`-prefixed local must not fail the build:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains(DEAD_STORE_MESSAGE),
+        "dead_store must not fire on an underscore-prefixed binding:\n{stderr}"
     );
 }
 

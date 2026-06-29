@@ -288,6 +288,15 @@ impl Checker {
         for w in scope_warnings {
             match w.kind {
                 ScopeWarningKind::Unused => {
+                    // A RAII handle (`#[resource]` / `#[linear]` / an owned
+                    // stdlib handle) is bound for the express purpose of being
+                    // dropped or consumed: the scope-exit drop IS the use, and
+                    // an unconsumed linear binding already raises a hard
+                    // MustConsume error. Nagging "prefix with `_`" here is a
+                    // false positive, so suppress the unused-binding lint for it.
+                    if self.is_raii_handle_ty(&w.ty) {
+                        continue;
+                    }
                     self.warnings.push(TypeError {
                         severity: crate::error::Severity::Warning,
                         kind: TypeErrorKind::UnusedVariable,
@@ -314,6 +323,19 @@ impl Checker {
                 }
             }
         }
+    }
+
+    /// Whether a binding of type `ty` is a RAII handle whose entire purpose is
+    /// drop / consume — a `#[resource]` or `#[linear]` user type, or an owned
+    /// stdlib/builtin handle (drop type / handle type). Used to suppress the
+    /// unused-binding lint: such a binding is meaningful even when never read.
+    fn is_raii_handle_ty(&self, ty: &Ty) -> bool {
+        let Ty::Named { name, .. } = ty else {
+            return false;
+        };
+        self.registry.is_resource(name)
+            || self.registry.is_linear(name)
+            || self.canonical_owned_handle_type_name(name).is_some()
     }
 
     #[expect(

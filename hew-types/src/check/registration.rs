@@ -2009,6 +2009,9 @@ impl Checker {
         if td.resource_marker == hew_parser::ast::ResourceMarker::Resource {
             self.registry.register_resource_type(td.name.clone());
         }
+        if td.resource_marker == hew_parser::ast::ResourceMarker::Linear {
+            self.registry.register_linear_type(td.name.clone());
+        }
         let kind = match td.kind {
             TypeDeclKind::Struct => TypeDefKind::Struct,
             TypeDeclKind::Enum => TypeDefKind::Enum,
@@ -2260,6 +2263,9 @@ impl Checker {
         // diagnostics (W3.030); the checker only needs the marker fact here.
         if td.resource_marker == hew_parser::ast::ResourceMarker::Resource {
             self.registry.register_resource_type(td.name.clone());
+        }
+        if td.resource_marker == hew_parser::ast::ResourceMarker::Linear {
+            self.registry.register_linear_type(td.name.clone());
         }
         // Track user-declared `#[opaque]` types so `record_clone_admissibility`
         // can detect opaque fields transitively. The module_registry only

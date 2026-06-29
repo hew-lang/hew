@@ -195,6 +195,11 @@ pub struct TraitRegistry {
     /// user/stdlib `#[resource]` declarations keyed by name. Both are owned by
     /// the registry so the checker no longer keeps a parallel allowlist.
     resource_types: HashSet<String>,
+    /// Names of types declared with the `#[linear]` marker. Single-owner, no
+    /// implicit drop; tracked so the unused-binding lint can treat their handles
+    /// as RAII (suppress) rather than nagging for an `_` prefix. See
+    /// `register_linear_type` / `is_linear`.
+    linear_types: HashSet<String>,
     /// Declared type-parameter names for generic user types.
     ///
     /// Maps a type's declared (bare) name to the ordered list of its type
@@ -578,6 +583,16 @@ impl TraitRegistry {
         self.resource_types.insert(name);
     }
 
+    /// Record `name` as a `#[linear]` type.
+    ///
+    /// Mirrors `register_resource_type`. A `#[linear]` type is single-owner with
+    /// no implicit drop: leaving its handle unconsumed is already a hard
+    /// `MustConsume` error, so the diagnostic layer treats it as a RAII handle and
+    /// suppresses the redundant unused-binding warning. `is_linear` is the query.
+    pub fn register_linear_type(&mut self, name: String) {
+        self.linear_types.insert(name);
+    }
+
     /// Register the declared type-parameter names for a generic type.
     ///
     /// **Must be called alongside `register_type`** at every type, record, or
@@ -620,6 +635,17 @@ impl TraitRegistry {
         }
         let unqualified = name.rsplit_once('.').map_or(name, |(_, suffix)| suffix);
         self.resource_types.contains(unqualified)
+    }
+
+    /// Report whether `name` is a `#[linear]` type. Matches the bare and
+    /// module-qualified-suffix spellings, mirroring `is_resource`.
+    #[must_use]
+    pub fn is_linear(&self, name: &str) -> bool {
+        if self.linear_types.contains(name) {
+            return true;
+        }
+        let unqualified = name.rsplit_once('.').map_or(name, |(_, suffix)| suffix);
+        self.linear_types.contains(unqualified)
     }
 
     /// Register a negative impl (type does NOT implement trait).

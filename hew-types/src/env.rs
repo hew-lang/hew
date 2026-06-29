@@ -41,6 +41,9 @@ pub struct ScopeWarning {
     pub span: Span,
     /// What kind of warning
     pub kind: ScopeWarningKind,
+    /// The bound value's type, so the diagnostic layer can suppress the
+    /// unused-binding lint for RAII handle types (their drop is the use).
+    pub ty: Ty,
 }
 
 /// The kind of scope-level warning.
@@ -176,12 +179,14 @@ impl TypeEnv {
                     name: name.clone(),
                     span: span.clone(),
                     kind: ScopeWarningKind::Unused,
+                    ty: binding.ty.clone(),
                 });
             } else if binding.is_mutable && !binding.is_written {
                 warnings.push(ScopeWarning {
                     name: name.clone(),
                     span: span.clone(),
                     kind: ScopeWarningKind::NeverMutated,
+                    ty: binding.ty.clone(),
                 });
             }
         }

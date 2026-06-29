@@ -686,6 +686,71 @@ fn mesh_identity_clear() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Mesh peer-auth setup failure (fail-closed gate for the listener identity)
+// ---------------------------------------------------------------------------
+
+/// Sticky record of a failed mesh peer-auth setup step — a `Node::load_keys`
+/// that could not load/persist the operator's identity, or a `Node::allow_peer`
+/// that rejected a malformed SPKI. Both are pre-`Node::start` configuration; the
+/// C ABI already surfaces each failure via `hew_last_error` and a `-1` return,
+/// but the Hew call form discards that return (the builtins are `Unit`). Without
+/// this record, a failed step is invisible to `Node::start`, which then binds a
+/// listener with an *ephemeral* self-signed cert (the pinned identity failed to
+/// load) or an *incomplete* peer allowlist — a silent downgrade of the
+/// configured mTLS posture (the F6 fail-open).
+///
+/// Once set, [`QuicMeshTransport::ensure_identity`] refuses to mint or reuse an
+/// identity, so the listener cannot bind (fail-closed). The record is sticky: a
+/// failed identity is not recoverable by retrying `start`; production only
+/// clears it by fixing the configuration and re-running. Tests reset it via
+/// [`mesh_auth_setup_reset`].
+static MESH_AUTH_SETUP_ERROR: LazyLock<RwLock<Option<String>>> =
+    LazyLock::new(|| RwLock::new(None));
+
+/// Record that a mesh peer-auth setup step failed. The recorded reason blocks
+/// the next listener bind (see [`MESH_AUTH_SETUP_ERROR`]). Last failure wins so
+/// the most recently reported cause is echoed at `Node::start`.
+pub fn mesh_auth_record_failure(reason: impl Into<String>) {
+    let reason = reason.into();
+    match MESH_AUTH_SETUP_ERROR.write() {
+        Ok(mut g) => *g = Some(reason),
+        Err(p) => *p.into_inner() = Some(reason),
+    }
+}
+
+/// Returns the recorded peer-auth setup failure reason, if any. `Some` means a
+/// `Node::load_keys` / `Node::allow_peer` step failed and the mesh listener must
+/// refuse to bind (fail-closed).
+#[must_use]
+pub fn mesh_auth_setup_error() -> Option<String> {
+    MESH_AUTH_SETUP_ERROR
+        .read()
+        .map_or_else(|p| p.into_inner().clone(), |s| s.clone())
+}
+
+/// Clear the sticky peer-auth setup failure. Test-only: production never
+/// recovers a failed identity by clearing the record.
+#[cfg(test)]
+pub fn mesh_auth_setup_reset() {
+    match MESH_AUTH_SETUP_ERROR.write() {
+        Ok(mut g) => *g = None,
+        Err(p) => *p.into_inner() = None,
+    }
+}
+
+/// Serialises every test that mutates process-global mesh state — the identity
+/// override ([`mesh_identity_clear`]), the global allowlist, and the sticky
+/// peer-auth setup record ([`MESH_AUTH_SETUP_ERROR`]). These tests live in both
+/// the `quic_mesh` and `hew_node` test modules, which otherwise serialise on
+/// *different* locks (`SchedTestLock`), so this shared mutex is the single
+/// cross-module point that stops one test's recorded failure from poisoning an
+/// unrelated `ensure_identity` mint (which would then fail-closed). Acquire it
+/// as the outermost guard before touching any of that state.
+#[cfg(test)]
+pub(crate) static MESH_GLOBAL_STATE_TEST_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
+
 impl MeshTls {
     /// Serialize this identity to the dependency-free keyfile frame. The mesh
     /// always carries a single leaf cert; serialization rejects any other shape.
@@ -988,6 +1053,16 @@ impl QuicMeshTransport {
     /// transport. Returns a clone of the cached `MeshTls` (without an
     /// allowlist applied) and the local SPKI bytes.
     fn ensure_identity(&self) -> Result<(MeshTls, Vec<u8>), MeshError> {
+        // Fail-closed: a failed `Node::load_keys` / `Node::allow_peer` poisons
+        // the mesh identity. Refuse to mint or reuse any identity so the
+        // listener can never bind with an ephemeral self-signed cert (the
+        // operator's pinned identity failed to load) or an incomplete allowlist.
+        // See `MESH_AUTH_SETUP_ERROR`.
+        if let Some(reason) = mesh_auth_setup_error() {
+            return Err(MeshError::Tls(format!(
+                "peer-auth setup failed; refusing to mint mesh listener identity (fail-closed): {reason}"
+            )));
+        }
         let mut guard = self
             .identity
             .lock()
@@ -2379,11 +2454,6 @@ impl PeerConn {
 mod tests {
     use super::*;
 
-    // Serialise every test that touches the process-global allowlist so that
-    // parallel test threads don't observe each other's mutations.
-    static TEST_ALLOWLIST_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
-        std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
-
     /// Verify that the ASN.1 DER walk correctly extracts the SPKI from a
     /// rcgen-generated certificate.
     #[test]
@@ -2445,7 +2515,7 @@ mod tests {
     /// bounding allocation. Fail-closed, no fabricated identity.
     #[test]
     fn load_keys_rejects_oversize_keyfile() {
-        let _g = TEST_ALLOWLIST_LOCK
+        let _g = MESH_GLOBAL_STATE_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         mesh_identity_clear();
@@ -2469,7 +2539,7 @@ mod tests {
     #[test]
     fn load_keys_writes_owner_only_perms() {
         use std::os::unix::fs::PermissionsExt;
-        let _g = TEST_ALLOWLIST_LOCK
+        let _g = MESH_GLOBAL_STATE_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         mesh_identity_clear();
@@ -2488,10 +2558,11 @@ mod tests {
     /// `ensure_identity` adopts; a second load is byte-identical.
     #[test]
     fn load_keys_persists_and_overrides_identity() {
-        let _g = TEST_ALLOWLIST_LOCK
+        let _g = MESH_GLOBAL_STATE_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         mesh_identity_clear();
+        mesh_auth_setup_reset();
         let dir = std::env::temp_dir().join(format!("cap12-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("node.key");
@@ -2690,7 +2761,7 @@ mod tests {
     /// `MAX_SPKI_BYTES` cap (`DoS` guard for an externally-driven C ABI).
     #[test]
     fn mesh_peer_spki_add_rejects_invalid_lengths() {
-        let _guard = TEST_ALLOWLIST_LOCK.lock().unwrap();
+        let _guard = MESH_GLOBAL_STATE_TEST_LOCK.lock().unwrap();
         mesh_peer_spki_clear();
         assert!(
             !mesh_peer_spki_add(Vec::new()),
@@ -2706,7 +2777,7 @@ mod tests {
     /// Add + remove + clear cycle through the allowlist.
     #[test]
     fn mesh_peer_spki_add_remove_clear_roundtrip() {
-        let _guard = TEST_ALLOWLIST_LOCK.lock().unwrap();
+        let _guard = MESH_GLOBAL_STATE_TEST_LOCK.lock().unwrap();
         mesh_peer_spki_clear();
         let spki = vec![0xAAu8; 64];
         assert!(mesh_peer_spki_add(spki.clone()));
@@ -2733,6 +2804,10 @@ mod tests {
     /// bytes that the eventual `listen` uses).
     #[test]
     fn transport_identity_is_cached() {
+        let _guard = MESH_GLOBAL_STATE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        mesh_auth_setup_reset();
         let rt = Arc::new(
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -2753,7 +2828,8 @@ mod tests {
     /// peers must be trusted; un-registered SPKIs must NOT be trusted.
     #[test]
     fn listen_tls_unions_global_allowlist_with_own_spki() {
-        let _guard = TEST_ALLOWLIST_LOCK.lock().unwrap();
+        let _guard = MESH_GLOBAL_STATE_TEST_LOCK.lock().unwrap();
+        mesh_auth_setup_reset();
         mesh_peer_spki_clear();
         let rt = Arc::new(
             tokio::runtime::Builder::new_current_thread()
@@ -2782,6 +2858,68 @@ mod tests {
             "unregistered SPKI must not be in the snapshot"
         );
         mesh_peer_spki_clear();
+    }
+
+    /// F6 fail-closed: a recorded peer-auth setup failure (a failed
+    /// `Node::load_keys` / `Node::allow_peer`) makes `ensure_identity` refuse to
+    /// mint or reuse an identity, so the mesh listener cannot bind with an
+    /// ephemeral cert or an incomplete allowlist. Clearing the record restores
+    /// the loopback-dev default (a fresh self-signed identity), so the gate only
+    /// fires after an *actual* failure, never when peer-auth was simply never
+    /// configured.
+    #[test]
+    fn recorded_peer_auth_failure_makes_ensure_identity_fail_closed() {
+        let _guard = MESH_GLOBAL_STATE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        mesh_identity_clear();
+        mesh_auth_setup_reset();
+
+        // No failure recorded: the loopback-dev default mints a self-signed
+        // identity (peer-auth was never configured — not a failure).
+        let rt0 = Arc::new(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
+        );
+        assert!(
+            QuicMeshTransport::new(rt0).ensure_identity().is_ok(),
+            "with no recorded failure, ensure_identity mints the dev default"
+        );
+
+        // A recorded failure poisons the identity: ensure_identity fails closed.
+        mesh_auth_record_failure("test: simulated load_keys failure");
+        let rt1 = Arc::new(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
+        );
+        let blocked = QuicMeshTransport::new(rt1).ensure_identity();
+        assert!(
+            blocked.is_err(),
+            "a recorded peer-auth failure must block the listener identity (fail-closed)"
+        );
+        let msg = format!("{}", blocked.unwrap_err());
+        assert!(
+            msg.contains("fail-closed") && msg.contains("simulated load_keys failure"),
+            "the fail-closed error must echo the recorded reason, got: {msg}"
+        );
+
+        // Clearing the record restores the dev default.
+        mesh_auth_setup_reset();
+        let rt2 = Arc::new(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
+        );
+        assert!(
+            QuicMeshTransport::new(rt2).ensure_identity().is_ok(),
+            "clearing the recorded failure restores the dev default"
+        );
+        mesh_identity_clear();
     }
 
     // -----------------------------------------------------------------------

@@ -2228,7 +2228,12 @@ pub const CATALOG: &[BuiltinEntry] = &[
     // them as void-returning and the call is emitted without a destination slot.
     // On x86-64 and arm64 the callee's return value sits in rax/x0 and is
     // harmlessly discarded by the caller — this is the standard C idiom for
-    // ignoring a return value.  Error surfacing is deferred to a follow-on lane.
+    // ignoring a return value.  The runtime still surfaces a peer-auth setup
+    // failure even though the `-1` is discarded: `Node::load_keys` /
+    // `Node::allow_peer` set `hew_last_error`, print a `hew:` stderr diagnostic,
+    // and record a sticky failure so a later `Node::start` refuses to bind a
+    // listener (fail-closed) rather than silently presenting an ephemeral
+    // identity. See `node_peer_auth_setup_failed` in `hew_node.rs`.
     direct(
         "Node::set_transport",
         BuiltinClass::ClassB,

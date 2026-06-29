@@ -461,6 +461,72 @@ fn run_float_comparison_branches_for_f64_and_f32() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "28\n");
 }
 
+/// CAP-12: `Node::load_keys` / `Node::allow_peer` compile and run on the native
+/// QUIC mesh. `load_keys` mints and persists this node's TLS identity (the
+/// keyfile must exist after the run and survive unchanged on a second run);
+/// `allow_peer` pins a peer SPKI in the fail-closed allowlist; the node then
+/// starts, registers, and shuts down. Native quic-mesh; no parity on WASM.
+#[test]
+fn run_node_peer_auth_surface_persists_keys_and_runs() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let path = dir.path().join("node_peer_auth.hew");
+    std::fs::write(
+        &path,
+        r#"
+        actor Counter {
+            var count: i64;
+            receive fn increment(n: i64) { count = count + n; }
+        }
+
+        fn main() {
+            Node::set_transport("quic-mesh");
+            Node::load_keys("node.key");
+            Node::allow_peer("3059301306072a8648ce3d020106082a8648ce3d030107");
+            Node::start("127.0.0.1:0");
+            let counter = spawn Counter(count: 0);
+            Node::register("counter", counter);
+            counter.increment(5);
+            Node::shutdown();
+            println("peer-auth ok");
+        }
+        "#,
+    )
+    .expect("write peer-auth fixture");
+
+    let output = run_bounded_hew_run(&path, dir.path());
+    assert!(
+        output.status.success(),
+        "hew run should complete the peer-auth surface; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        strip_ansi(&String::from_utf8_lossy(&output.stdout)),
+        "peer-auth ok\n"
+    );
+
+    let keyfile = dir.path().join("node.key");
+    let first = std::fs::read(&keyfile).expect("load_keys must persist a keyfile");
+    assert!(
+        first.starts_with(b"HEWMESHKEY1\0"),
+        "keyfile must carry the mesh magic"
+    );
+
+    // Stable identity: a second run loads the existing key, never overwrites.
+    let output2 = run_bounded_hew_run(&path, dir.path());
+    assert!(
+        output2.status.success(),
+        "second run should reuse the persisted key"
+    );
+    let second = std::fs::read(&keyfile).expect("keyfile still present");
+    assert_eq!(
+        first, second,
+        "load_keys must not rotate a persisted identity"
+    );
+}
+
 #[test]
 fn run_generic_vec_into_iter_static_dispatch_outputs_first_value() {
     require_codegen();

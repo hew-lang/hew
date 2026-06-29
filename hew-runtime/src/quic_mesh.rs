@@ -633,6 +633,156 @@ pub fn mesh_peer_spki_len() -> usize {
         .map_or_else(|p| p.into_inner().len(), |s| s.len())
 }
 
+// ---------------------------------------------------------------------------
+// Process-global mesh identity (Node::load_keys)
+// ---------------------------------------------------------------------------
+
+/// Magic prefix for the binary keyfile written/read by [`mesh_identity_load_or_create`].
+/// A self-describing, dependency-free frame: `MAGIC | cert_len(u32 LE) | cert |
+/// key_len(u32 LE) | key`. No PEM/X.509 parser is pulled in — the cert and
+/// PKCS8 key are stored as the same DER bytes the mesh already produces.
+const MESH_KEYFILE_MAGIC: &[u8] = b"HEWMESHKEY1\0";
+/// Maximum accepted single-cert DER size; an rcgen P-256 leaf is well under 1 KiB.
+const MAX_KEYFILE_CERT_BYTES: usize = 8192;
+/// Maximum accepted PKCS8 key DER size.
+const MAX_KEYFILE_KEY_BYTES: usize = 8192;
+
+/// Process-global mesh TLS identity override, populated by `Node::load_keys`.
+///
+/// When `Some`, [`QuicMeshTransport::ensure_identity`] adopts this cert + key
+/// instead of minting a fresh self-signed cert, so a node presents a **stable**
+/// SPKI across restarts — exactly the property peer pinning relies on. The
+/// cached SPKI is the leaf cert's `SubjectPublicKeyInfo`. Sibling of the peer
+/// allowlist; snapshotted by the transport on first identity mint.
+static ACTIVE_MESH_IDENTITY: LazyLock<RwLock<Option<MeshIdentity>>> =
+    LazyLock::new(|| RwLock::new(None));
+
+/// A loaded mesh identity: TLS config plus its leaf SPKI bytes.
+type MeshIdentity = (MeshTls, Vec<u8>);
+
+fn mesh_identity_snapshot() -> Option<MeshIdentity> {
+    ACTIVE_MESH_IDENTITY
+        .read()
+        .map_or_else(|p| p.into_inner().clone(), |s| s.clone())
+}
+
+fn mesh_identity_set(tls: MeshTls, spki: Vec<u8>) {
+    match ACTIVE_MESH_IDENTITY.write() {
+        Ok(mut g) => *g = Some((tls, spki)),
+        Err(p) => *p.into_inner() = Some((tls, spki)),
+    }
+}
+
+#[cfg(test)]
+fn mesh_identity_clear() {
+    match ACTIVE_MESH_IDENTITY.write() {
+        Ok(mut g) => *g = None,
+        Err(p) => *p.into_inner() = None,
+    }
+}
+
+impl MeshTls {
+    /// Serialize this identity to the dependency-free keyfile frame. The mesh
+    /// always carries a single leaf cert; serialization rejects any other shape.
+    fn to_keyfile_bytes(&self) -> Result<Vec<u8>, MeshError> {
+        let [cert] = self.cert_chain.as_slice() else {
+            return Err(MeshError::Tls(
+                "keyfile: expected exactly one leaf certificate".into(),
+            ));
+        };
+        let cert = cert.as_ref();
+        if cert.len() > MAX_KEYFILE_CERT_BYTES
+            || self.private_key_pkcs8.len() > MAX_KEYFILE_KEY_BYTES
+        {
+            return Err(MeshError::Tls("keyfile: cert/key exceeds bound".into()));
+        }
+        let cert_len = u32::try_from(cert.len())
+            .map_err(|_| MeshError::Tls("keyfile: cert too large".into()))?;
+        let key_len = u32::try_from(self.private_key_pkcs8.len())
+            .map_err(|_| MeshError::Tls("keyfile: key too large".into()))?;
+        let mut out = Vec::with_capacity(
+            MESH_KEYFILE_MAGIC.len() + 8 + cert.len() + self.private_key_pkcs8.len(),
+        );
+        out.extend_from_slice(MESH_KEYFILE_MAGIC);
+        out.extend_from_slice(&cert_len.to_le_bytes());
+        out.extend_from_slice(cert);
+        out.extend_from_slice(&key_len.to_le_bytes());
+        out.extend_from_slice(&self.private_key_pkcs8);
+        Ok(out)
+    }
+
+    /// Parse the dependency-free keyfile frame, returning the identity and its
+    /// leaf SPKI. Fail-closed on any length/bound/magic violation.
+    fn from_keyfile_bytes(bytes: &[u8]) -> Result<(Self, Vec<u8>), MeshError> {
+        let mut pos = MESH_KEYFILE_MAGIC.len();
+        if !bytes.starts_with(MESH_KEYFILE_MAGIC) {
+            return Err(MeshError::Tls("keyfile: bad magic".into()));
+        }
+        let take_u32 = |bytes: &[u8], pos: &mut usize| -> Result<usize, MeshError> {
+            let end = pos.checked_add(4).filter(|e| *e <= bytes.len());
+            let end = end.ok_or_else(|| MeshError::Tls("keyfile: truncated length".into()))?;
+            let n = u32::from_le_bytes([
+                bytes[*pos],
+                bytes[*pos + 1],
+                bytes[*pos + 2],
+                bytes[*pos + 3],
+            ]);
+            *pos = end;
+            Ok(n as usize)
+        };
+        let take_bytes = |bytes: &[u8], pos: &mut usize, n: usize| -> Result<Vec<u8>, MeshError> {
+            let end = pos.checked_add(n).filter(|e| *e <= bytes.len());
+            let end = end.ok_or_else(|| MeshError::Tls("keyfile: truncated body".into()))?;
+            let v = bytes[*pos..end].to_vec();
+            *pos = end;
+            Ok(v)
+        };
+        let cert_len = take_u32(bytes, &mut pos)?;
+        if cert_len == 0 || cert_len > MAX_KEYFILE_CERT_BYTES {
+            return Err(MeshError::Tls("keyfile: cert length out of range".into()));
+        }
+        let cert = take_bytes(bytes, &mut pos, cert_len)?;
+        let key_len = take_u32(bytes, &mut pos)?;
+        if key_len == 0 || key_len > MAX_KEYFILE_KEY_BYTES {
+            return Err(MeshError::Tls("keyfile: key length out of range".into()));
+        }
+        let key = take_bytes(bytes, &mut pos, key_len)?;
+        let spki = extract_spki_from_cert_der(&cert)?;
+        let tls = MeshTls {
+            cert_chain: vec![CertificateDer::from(cert)],
+            private_key_pkcs8: key,
+            allowed_peer_spkis: std::collections::HashSet::new(),
+        };
+        Ok((tls, spki))
+    }
+}
+
+/// Load (or, if absent, mint-and-persist) the process-wide mesh identity from
+/// `path`, installing it as the [`ACTIVE_MESH_IDENTITY`] override and returning
+/// the leaf SPKI. This is the runtime behind `Node::load_keys`: peers pin a
+/// stable public key only when the local key survives restarts, so a missing
+/// file is created with a fresh self-signed identity rather than failing.
+///
+/// # Errors
+///
+/// Returns [`MeshError::Tls`] if the keyfile cannot be read/written, if its
+/// frame is malformed, or if a fresh identity cannot be minted.
+pub fn mesh_identity_load_or_create(path: &std::path::Path) -> Result<Vec<u8>, MeshError> {
+    if path.exists() {
+        let bytes = std::fs::read(path)
+            .map_err(|e| MeshError::Tls(format!("load_keys: read {}: {e}", path.display())))?;
+        let (tls, spki) = MeshTls::from_keyfile_bytes(&bytes)?;
+        mesh_identity_set(tls, spki.clone());
+        return Ok(spki);
+    }
+    let (tls, spki) = MeshTls::self_signed(vec!["hew-mesh.local".into(), "localhost".into()])?;
+    let frame = tls.to_keyfile_bytes()?;
+    std::fs::write(path, frame)
+        .map_err(|e| MeshError::Tls(format!("load_keys: write {}: {e}", path.display())))?;
+    mesh_identity_set(tls, spki.clone());
+    Ok(spki)
+}
+
 struct QuicMeshConn {
     peer: PeerConn,
     send: std::sync::Mutex<Option<SendStream>>,
@@ -800,7 +950,13 @@ impl QuicMeshTransport {
         if let Some((tls, spki)) = guard.as_ref() {
             return Ok((tls.clone(), spki.clone()));
         }
-        let (tls, spki) = MeshTls::self_signed(vec!["hew-mesh.local".into(), "localhost".into()])?;
+        // A `Node::load_keys` override pins a stable on-disk identity; adopt it
+        // so the SPKI presented on the wire survives restarts. Falls back to a
+        // fresh self-signed cert (loopback dev default) when none is installed.
+        let (tls, spki) = match mesh_identity_snapshot() {
+            Some(pair) => pair,
+            None => MeshTls::self_signed(vec!["hew-mesh.local".into(), "localhost".into()])?,
+        };
         *guard = Some((tls.clone(), spki.clone()));
         Ok((tls, spki))
     }
@@ -2197,6 +2353,75 @@ mod tests {
             spki, extracted,
             "SPKI extracted from cert must match the one returned by self_signed()"
         );
+    }
+
+    /// CAP-12: keyfile frame round-trips, preserving the leaf SPKI.
+    #[test]
+    fn keyfile_bytes_roundtrip_preserve_spki() {
+        let (tls, spki) = MeshTls::self_signed(vec!["cap12".into()]).unwrap();
+        let frame = tls.to_keyfile_bytes().expect("serialize keyfile");
+        assert!(frame.starts_with(MESH_KEYFILE_MAGIC));
+        let (loaded, loaded_spki) = MeshTls::from_keyfile_bytes(&frame).expect("parse keyfile");
+        assert_eq!(
+            spki, loaded_spki,
+            "leaf SPKI must survive a keyfile round-trip"
+        );
+        assert_eq!(tls.cert_chain, loaded.cert_chain, "cert must survive");
+        assert_eq!(
+            tls.private_key_pkcs8, loaded.private_key_pkcs8,
+            "key must survive"
+        );
+    }
+
+    /// CAP-12: corrupt frames are rejected fail-closed (no fabricated identity).
+    #[test]
+    fn keyfile_rejects_corrupt_frames() {
+        assert!(
+            MeshTls::from_keyfile_bytes(b"not-a-keyfile").is_err(),
+            "bad magic"
+        );
+        let (tls, _) = MeshTls::self_signed(vec!["cap12".into()]).unwrap();
+        let mut frame = tls.to_keyfile_bytes().unwrap();
+        frame.truncate(frame.len() - 4);
+        assert!(
+            MeshTls::from_keyfile_bytes(&frame).is_err(),
+            "truncated body"
+        );
+    }
+
+    /// CAP-12: `load_keys` creates a stable, persisted identity that
+    /// `ensure_identity` adopts; a second load is byte-identical.
+    #[test]
+    fn load_keys_persists_and_overrides_identity() {
+        let _g = TEST_ALLOWLIST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        mesh_identity_clear();
+        let dir = std::env::temp_dir().join(format!("cap12-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("node.key");
+        let _ = std::fs::remove_file(&path);
+
+        let spki1 = mesh_identity_load_or_create(&path).expect("mint+persist");
+        assert!(path.exists(), "keyfile must be written when absent");
+        let spki2 = mesh_identity_load_or_create(&path).expect("reload");
+        assert_eq!(spki1, spki2, "reload must yield the same identity");
+
+        // The transport's ensure_identity must adopt the override, not mint fresh.
+        let rt = std::sync::Arc::new(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
+        );
+        let qmt = QuicMeshTransport::new(rt);
+        let (_tls, adopted) = qmt.ensure_identity().expect("ensure_identity");
+        assert_eq!(
+            adopted, spki1,
+            "ensure_identity must adopt the load_keys override"
+        );
+        mesh_identity_clear();
+        let _ = std::fs::remove_file(&path);
     }
 
     /// Verify that listen + `local_addr` works.

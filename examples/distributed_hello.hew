@@ -1,11 +1,10 @@
 //! Status: runnable
 //! Description: Distributed actors example — demonstrates the Node API.
 
-// Distributed actors example — demonstrates the Node API.
-// This currently compiles as a local actor demo. The Node API
-// functions are available in the runtime but not yet wired into
-// codegen lowering. Only Node::start/shutdown/register/lookup are
-// typechecker builtins today.
+// Distributed actors example — demonstrates the Node API. The Node namespace
+// (start/shutdown/register/lookup/connect/load_keys/allow_peer) is native-only:
+// it links the mesh transport in the native runtime. WASM/sandbox builds carry
+// no networking, so this example is native-only there.
 actor Counter {
     var count: i64;
     receive fn increment(n: i64) {
@@ -15,24 +14,22 @@ actor Counter {
 }
 
 fn main() {
-    // ── Local actor (works today) ────────────────────────────
+    // ── Local actor ──────────────────────────────────────────
     let counter = spawn Counter(count: 0);
     counter.increment(5);
     counter.increment(3);
 
-    // ── Distributed API (runtime ready, codegen pending) ─────
-    // Node::start("0.0.0.0:9000");
-    // Node::register("counter", counter);
-    //
-    // On another node:
-    //   Node::start("0.0.0.0:9001");
-    //   Node::connect("127.0.0.1:9000");  // runtime API, not a typechecker builtin yet
-    //   let remote = Node::lookup("counter");
-    //   remote.increment(42);  // routed cross-node via TCP
-    //   Node::shutdown();
-    //
-    // Security:
-    //   Node::load_keys("node.key");      // runtime API, not a typechecker builtin yet
-    //   Node::allow_peer(peer_public_key); // runtime API, not a typechecker builtin yet
+    // ── Secure distributed node (QUIC mesh, mutual TLS) ──────
+    // load_keys mints (and persists) this node's identity so its public key
+    // stays stable across restarts; allow_peer pins a peer's SPKI in the
+    // fail-closed allowlist. Both run before start so the listener adopts them.
+    Node::set_transport("quic-mesh");
+    Node::load_keys("node.key");
+    Node::allow_peer("3059301306072a8648ce3d020106082a8648ce3d030107");
+    Node::start("127.0.0.1:0");
+    Node::register("counter", counter);
+    // A second node would: Node::connect("127.0.0.1:9000") then
+    // Node::lookup("counter") and message the RemotePid over the mesh.
+    Node::shutdown();
     println("Counter node demo complete");
 }

@@ -2833,6 +2833,25 @@ call when both actors are intentionally local. Full example:
 [`examples/distributed/kv_client.hew`](../examples/distributed/kv_client.hew)
 and [`examples/distributed/kv_server.hew`](../examples/distributed/kv_server.hew).
 
+#### Peer authentication (native quic-mesh)
+
+On the QUIC mesh transport, peers authenticate by mutual TLS with pinned public
+keys. Call these before `Node::start`:
+
+<!-- doctest: skip -->
+```hew
+Node::set_transport("quic-mesh");
+Node::load_keys("node.key");        // mint+persist this node's identity (stable SPKI)
+Node::allow_peer("3059…0107");      // pin a peer's SPKI (lowercase hex); fail-closed
+Node::start("0.0.0.0:9000");
+```
+
+`load_keys` loads the node's TLS identity from the keyfile, creating one on
+first run so the public key stays stable across restarts. `allow_peer` adds a
+peer's certificate SPKI to the fail-closed allowlist — an unpinned peer's
+handshake is rejected. These are native-only; WASM/sandbox builds carry no
+networking. See [`examples/distributed_hello.hew`](../examples/distributed_hello.hew).
+
 ### TLS client — free-function surface (with a v0.5 data-plane caveat)
 
 ```hew

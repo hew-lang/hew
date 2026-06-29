@@ -29580,6 +29580,7 @@ fn elaborate(
             .collect::<HashSet<_>>(),
         &builder.binding_scope,
         &builder.loop_back_edge_blocks,
+        &builder.locals,
     );
 
     ElaboratedMirFunction {
@@ -37543,6 +37544,7 @@ fn enumerate_exits(
     cancellation_blocks: &HashSet<u32>,
     binding_scope: &HashMap<BindingId, ScopeId>,
     loop_back_edge_blocks: &HashMap<u32, ScopeId>,
+    locals: &[ResolvedTy],
 ) -> (Vec<ElabBlock>, Vec<(ExitPath, DropPlan)>) {
     // Track the highest block id observed so cleanup-block ids can
     // start past it. Slice 2 onwards may emit multiple non-trivial
@@ -37714,7 +37716,16 @@ fn enumerate_exits(
     // leave scope (a resource handle, a leaf cow owner) — the leak the
     // scope-close pass exists to close — while a payload alias is left to its
     // composite's single recursive free.
-    let scope_close_alias_tainted = compute_projection_alias_taint(blocks, &HashSet::new(), &[]);
+    //
+    // The REAL `locals` table is threaded through (not an empty slice) so the
+    // `string` `RecordFieldLoad`/`TupleFieldLoad` exemption stays active: a
+    // `let name = r.name` reads a fresh `+1`-retained string owner that the
+    // composite does NOT recursively free, so it must drop on the scope-close
+    // edge. Tainting it (empty `locals` disables the exemption) would strand its
+    // release at a join → `Uninit` → no `Return` recovery → leak. Enum/tuple
+    // payload destructures stay tainted via the `Move`-from-interior arm
+    // regardless of `locals`, so the double-free fix is unaffected.
+    let scope_close_alias_tainted = compute_projection_alias_taint(blocks, &HashSet::new(), locals);
     let drops_for_scope_close_goto = |block_id: u32, target: u32| -> Vec<ElabDrop> {
         drops_for_exit(block_id)
             .into_iter()
@@ -39271,7 +39282,7 @@ mod slice3_narrowing_proptests {
             let exit_states = build_exit_states(n, &moved_out);
             let binding_locals = build_binding_locals(n);
 
-            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
+            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new(), &[]);
 
             // Exactly one Return plan for the single block.
             prop_assert_eq!(plans.len(), 1);
@@ -39326,7 +39337,7 @@ mod slice3_narrowing_proptests {
             let lifo = build_lifo(n);
             let binding_locals = build_binding_locals(n);
 
-            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
+            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new(), &[]);
             let (_, plan) = &plans[0];
 
             // Expected: every binding NOT Consumed survives in the drop
@@ -39365,8 +39376,8 @@ mod slice3_narrowing_proptests {
             let exit_states = build_exit_states(n, &moved_out);
             let binding_locals = build_binding_locals(n);
 
-            let (b1, p1) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
-            let (b2, p2) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
+            let (b1, p1) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new(), &[]);
+            let (b2, p2) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new(), &[]);
 
             prop_assert_eq!(b1.len(), b2.len());
             prop_assert_eq!(p1.len(), p2.len());
@@ -39392,7 +39403,7 @@ mod slice3_narrowing_proptests {
             let exit_states = build_exit_states(n, &moved_out);
             let binding_locals = build_binding_locals(n);
 
-            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
+            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new(), &[]);
             let (_, plan) = &plans[0];
 
             for d in &plan.drops {

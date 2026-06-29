@@ -1451,6 +1451,7 @@ impl Checker {
                         continue;
                     }
                     self.register_actor_decl(ad);
+                    self.local_type_defs.insert(ad.name.clone());
                     self.source_type_defs.insert(ad.name.clone());
                 }
                 Item::TypeAlias(ta) => {

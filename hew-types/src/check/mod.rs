@@ -261,6 +261,14 @@ impl Checker {
                                 self.local_type_defs.insert(event_type_name.clone());
                                 self.source_type_defs.insert(event_type_name);
                             }
+                            Item::Actor(ad) => {
+                                // An actor declares a nominal type; an
+                                // `impl ImportedTrait for ThisActor` is therefore
+                                // local-typed, not an orphan. Seed both sets so the
+                                // orphan rule treats it like any other local type.
+                                self.local_type_defs.insert(ad.name.clone());
+                                self.source_type_defs.insert(ad.name.clone());
+                            }
                             Item::Trait(tr) => {
                                 self.local_trait_defs.insert(tr.name.clone());
                             }

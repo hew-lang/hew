@@ -21852,6 +21852,21 @@ impl Builder {
         }
     }
 
+    /// Materialise the `()` result for a bytes mutator (`push`/`set`/`clear`/
+    /// `append`) used in value/match-arm position. The op already emitted its
+    /// side-effecting `push_runtime_call`; the write-back and drop accounting
+    /// are identical to statement position. In value position the caller binds
+    /// a unit, so allocate a fresh zero-sized Unit and define it; in statement
+    /// position the result is discarded and we return `None`.
+    fn lower_bytes_unit_result(&mut self, context: RuntimeCallContext) -> Option<Place> {
+        if context != RuntimeCallContext::ValueNeeded {
+            return None;
+        }
+        let dest = self.alloc_local(ResolvedTy::Unit);
+        self.push_instr(Instr::UnitLit { dest });
+        Some(dest)
+    }
+
     fn lower_bytes_push(
         &mut self,
         hir_args: &[hew_hir::HirExpr],
@@ -21871,23 +21886,10 @@ impl Builder {
             });
             return None;
         }
-        if context == RuntimeCallContext::ValueNeeded {
-            self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: "runtime call `hew_bytes_push` value result".to_string(),
-                    site,
-                },
-                note: "`hew_bytes_push` returns unit and is currently wired for \
-                       statement-position mutation only"
-                    .to_string(),
-            });
-            return None;
-        }
-
         let bytes = self.lower_value(&hir_args[0])?;
         let byte = self.lower_value(&hir_args[1])?;
         self.push_runtime_call("hew_bytes_push", vec![bytes, byte], None);
-        None
+        self.lower_bytes_unit_result(context)
     }
 
     /// Emit `hew_bytes_pop(&mut BytesTriple) -> i64` for `bytes.pop()`.
@@ -21949,23 +21951,11 @@ impl Builder {
             });
             return None;
         }
-        if context == RuntimeCallContext::ValueNeeded {
-            self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: "runtime call `hew_bytes_set` value result".to_string(),
-                    site,
-                },
-                note: "`hew_bytes_set` returns unit and is wired for statement-position \
-                       mutation only"
-                    .to_string(),
-            });
-            return None;
-        }
         let buf = self.lower_value(&hir_args[0])?;
         let idx = self.lower_value(&hir_args[1])?;
         let byte = self.lower_value(&hir_args[2])?;
         self.push_runtime_call("hew_bytes_set", vec![buf, idx, byte], None);
-        None
+        self.lower_bytes_unit_result(context)
     }
 
     /// Emit `hew_bytes_is_empty(*const BytesTriple) -> bool` for
@@ -22051,21 +22041,9 @@ impl Builder {
             });
             return None;
         }
-        if context == RuntimeCallContext::ValueNeeded {
-            self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: "runtime call `hew_bytes_clear` value result".to_string(),
-                    site,
-                },
-                note: "`hew_bytes_clear` returns unit and is wired for statement-position \
-                       mutation only"
-                    .to_string(),
-            });
-            return None;
-        }
         let buf = self.lower_value(&hir_args[0])?;
         self.push_runtime_call("hew_bytes_clear", vec![buf], None);
-        None
+        self.lower_bytes_unit_result(context)
     }
 
     /// Emit `hew_bytes_append(&mut dst, ...)` for `bytes.append(other)`.
@@ -22096,22 +22074,10 @@ impl Builder {
             });
             return None;
         }
-        if context == RuntimeCallContext::ValueNeeded {
-            self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: "runtime call `hew_bytes_append` value result".to_string(),
-                    site,
-                },
-                note: "`hew_bytes_append` returns unit and is wired for statement-position \
-                       mutation only"
-                    .to_string(),
-            });
-            return None;
-        }
         let dst = self.lower_value(&hir_args[0])?;
         let other = self.lower_value(&hir_args[1])?;
         self.push_runtime_call("hew_bytes_append", vec![dst, other], None);
-        None
+        self.lower_bytes_unit_result(context)
     }
 
     /// Emit `hew_vec_len(buf) -> i64` for `bytes.len()` calls.

@@ -1,0 +1,62 @@
+// bytes mutators (push/set/clear/append) in match-arm (value) position. Each
+// op types as unit; bound as the match result, MIR must materialise a fresh
+// () rather than fail closed, while the buffer write-back stays identical to
+// statement position. Returns 0 only when every read-back assertion holds.
+fn main() -> i64 {
+    let b: bytes = bytes::new();
+    // push from a match arm (3x): the arm yields unit, bound by `let _`.
+    for i in 0..3 {
+        let _ = match i {
+            0 => b.push(10),
+            1 => b.push(20),
+            _ => b.push(30),
+        };
+    }
+    if b.len() != 3 {
+        return 11;
+    }
+    // set from a match arm.
+    let _ = match b.len() {
+        3 => b.set(1, 99),
+        _ => (),
+    };
+    if b[0] != 10 {
+        return 12;
+    }
+    if b[1] != 99 {
+        return 13;
+    }
+    if b[2] != 30 {
+        return 14;
+    }
+    // append from a match arm: source is copied, not consumed.
+    let other: bytes = bytes::new();
+    other.push(40);
+    other.push(50);
+    let _ = match true {
+        true => b.append(other),
+        false => (),
+    };
+    if b.len() != 5 {
+        return 15;
+    }
+    if b[4] != 50 {
+        return 16;
+    }
+    if other.len() != 2 {
+        return 17;
+    }
+    // clear from a match arm: buffer empties and is reusable.
+    let _ = match 1 {
+        1 => b.clear(),
+        _ => (),
+    };
+    if !b.is_empty() {
+        return 18;
+    }
+    b.push(7);
+    if b.len() != 1 {
+        return 19;
+    }
+    0
+}

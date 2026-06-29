@@ -527,6 +527,133 @@ fn run_node_peer_auth_surface_persists_keys_and_runs() {
     );
 }
 
+/// F6 fail-closed: a bad-hex `Node::allow_peer` argument is rejected and
+/// surfaced (`hew_last_error` + a `hew:` stderr diagnostic), and the subsequent
+/// `Node::start` refuses to bind a listener (fail-closed) rather than silently
+/// coming up with an incomplete peer allowlist. The Hew call form discards the
+/// `-1`, so the operator-visible signal is the stderr diagnostic.
+#[test]
+fn run_node_allow_peer_bad_hex_is_surfaced_and_start_fails_closed() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let path = dir.path().join("allow_peer_bad_hex.hew");
+    std::fs::write(
+        &path,
+        r#"
+        fn main() {
+            Node::set_transport("quic-mesh");
+            Node::allow_peer("zznothexzz");
+            Node::start("127.0.0.1:0");
+            println("after-start");
+        }
+        "#,
+    )
+    .expect("write bad-hex fixture");
+
+    let output = run_bounded_hew_run(&path, dir.path());
+    let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+
+    assert!(
+        stderr.contains("Node::allow_peer") && stderr.contains("hex-encoded SPKI"),
+        "bad-hex allow_peer must be surfaced on stderr; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("Node::start: refusing to bind listener") && stderr.contains("fail-closed"),
+        "Node::start must refuse after a failed allow_peer (fail-closed); stderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("after-start"),
+        "program continues past the Unit-returning start; stdout: {stdout}"
+    );
+}
+
+/// F6 fail-closed: a corrupt keyfile makes `Node::load_keys` fail and surface
+/// the error, and `Node::start` then refuses to bind a listener rather than
+/// silently presenting an ephemeral self-signed identity (the operator's pinned
+/// identity failed to load).
+#[test]
+fn run_node_load_keys_corrupt_keyfile_is_surfaced_and_start_fails_closed() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    // A keyfile that exists but is not a valid mesh keyfile frame.
+    std::fs::write(dir.path().join("node.key"), b"not-a-keyfile-frame")
+        .expect("write corrupt keyfile");
+    let path = dir.path().join("load_keys_corrupt.hew");
+    std::fs::write(
+        &path,
+        r#"
+        fn main() {
+            Node::set_transport("quic-mesh");
+            Node::load_keys("node.key");
+            Node::start("127.0.0.1:0");
+            println("after-start");
+        }
+        "#,
+    )
+    .expect("write corrupt-keyfile fixture");
+
+    let output = run_bounded_hew_run(&path, dir.path());
+    let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+
+    assert!(
+        stderr.contains("Node::load_keys") && stderr.contains("fail-closed"),
+        "a corrupt keyfile must be surfaced on stderr; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("Node::start: refusing to bind listener"),
+        "Node::start must refuse after a failed load_keys (fail-closed); stderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("after-start"),
+        "program continues past the Unit-returning start; stdout: {stdout}"
+    );
+}
+
+/// F6 fail-closed: when the keyfile path cannot establish an identity (here, a
+/// parent directory that does not exist, so the fresh identity cannot be
+/// persisted), `Node::load_keys` fails and `Node::start` refuses to bind a
+/// listener — fail-closed without any identity, never an ephemeral fallback.
+#[test]
+fn run_node_start_fails_closed_when_identity_cannot_be_established() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let path = dir.path().join("load_keys_missing_dir.hew");
+    std::fs::write(
+        &path,
+        r#"
+        fn main() {
+            Node::set_transport("quic-mesh");
+            Node::load_keys("no_such_dir/node.key");
+            Node::start("127.0.0.1:0");
+            println("after-start");
+        }
+        "#,
+    )
+    .expect("write missing-keyfile fixture");
+
+    let output = run_bounded_hew_run(&path, dir.path());
+    let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+
+    assert!(
+        stderr.contains("Node::load_keys") && stderr.contains("fail-closed"),
+        "an unestablishable identity must be surfaced on stderr; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("Node::start: refusing to bind listener"),
+        "Node::start must refuse without an identity (fail-closed); stderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("after-start"),
+        "program continues past the Unit-returning start; stdout: {stdout}"
+    );
+}
+
 #[test]
 fn run_generic_vec_into_iter_static_dispatch_outputs_first_value() {
     require_codegen();

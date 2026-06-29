@@ -314,7 +314,13 @@ jobs:
         run: cargo build -p hew-runtime -p hew-lsp --release
 
       - name: Smoke test hew-lsp
-        run: ./target/release/hew-lsp --version
+        # Drive the shipped release binary through a real initialize → didOpen →
+        # publishDiagnostics session, not just --version. HEW_LSP_BIN points the
+        # protocol test at the artifact built above.
+        run: |
+          ./target/release/hew-lsp --version
+          HEW_LSP_BIN="$PWD/target/release/hew-lsp" \
+            cargo nextest run -p hew-lsp --test protocol_smoke
 
       - name: Build WASM runtime
         run: |

@@ -322,6 +322,14 @@ fn dead_store_target_name(func: &RawMirFunction, n: u32, param_count: usize) -> 
     if name.is_empty() {
         return None;
     }
+    // An `_`-prefixed name is the documented "intentionally discarded" idiom
+    // (`let _r = t.commit();` keeps the consuming call but explicitly throws the
+    // value away). Flagging it as a dead store would nag the user for following
+    // the very convention that silences the unused-variable lint, so skip it —
+    // matching the scope-exit unused-binding lint's `_` exemption.
+    if name.starts_with('_') {
+        return None;
+    }
     // Must be a no-drop scalar; anything heap-owning / aggregate / handle is
     // excluded so we never reason about a value a `Drop` could observe.
     match func.locals.get(idx) {

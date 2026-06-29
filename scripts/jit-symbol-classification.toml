@@ -480,6 +480,7 @@ stable = [
   "hew_semaphore_try_acquire",
   "hew_send_half_send",
   "hew_send_half_try_send",
+  "hew_set_partition_policy",
   "hew_sink_close",
   "hew_sink_detach_await",
   "hew_sink_flush",

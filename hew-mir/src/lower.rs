@@ -8108,6 +8108,29 @@ struct Builder {
     /// leak on a not-consumed branch, the pre-#1933 posture, but never
     /// double-frees the non-idempotent close).
     resource_drop_flags: HashMap<BindingId, Place>,
+    /// #2301 (extends #53): runtime drop-flags for an owned
+    /// `var`-local that is BOTH genuinely consumed (`intent=Consume`, a
+    /// move-out such as `let m = r`) on one control-flow path AND reassigned
+    /// (`r = <rhs>`) on another. The path-insensitive `owned_locals` removal at
+    /// the consume would otherwise make the overwrite-release static gate skip
+    /// the release on the NON-consuming path, leaking the still-owned old value
+    /// (~1 block/iteration in a loop). The flag is zero-init at the binding's
+    /// `let` (so it dominates every consume and overwrite, including loop
+    /// back-edges), set to 1 at each `mark_binding_moved`, gates the
+    /// overwrite-release on `flag == 0`, and is reset to 0 after the overwrite
+    /// stores a fresh value. Scope-exit drops are unaffected: owned
+    /// record/string locals are released through the `elaborate` allow-set
+    /// prover (`CowValue` arm), not `owned_locals` / this flag.
+    overwrite_guard_flags: HashMap<BindingId, Place>,
+    /// #2301 per-function pre-pass scratch: `BindingId`s used with
+    /// `intent=Consume` anywhere in the body. Populated by
+    /// `collect_vec_owned_element_keys_from_expr` before lowering; intersected
+    /// with `prepass_reassigned_bindings` + `owned_locals` membership to decide
+    /// which bindings get an `overwrite_guard_flags` entry.
+    prepass_consumed_bindings: HashSet<BindingId>,
+    /// #2301 per-function pre-pass scratch: `BindingId`s that are the target of an
+    /// `Assign` (`r = <rhs>`) anywhere in the body.
+    prepass_reassigned_bindings: HashSet<BindingId>,
     /// Stack of active scope IDs in nesting order (outermost at index 0,
     /// innermost at the end). Pushed when entering a `Block` expression or
     /// `function_body`; popped on exit. Read by `emit_defers_for_return` to
@@ -9989,6 +10012,17 @@ impl Builder {
                     }
                 }
                 HirStmtKind::Assign { target, value } => {
+                    // #2301 -- record a reassigned `var` target so a consumed
+                    // binding that is also overwritten gets an overwrite-release
+                    // drop-flag (the intersection keeps the common no-consume
+                    // overwrite on the zero-churn static gate).
+                    if let HirExprKind::BindingRef {
+                        resolved: ResolvedRef::Binding(id),
+                        ..
+                    } = &target.kind
+                    {
+                        self.prepass_reassigned_bindings.insert(*id);
+                    }
                     self.collect_vec_owned_element_keys_from_expr(target);
                     self.collect_vec_owned_element_keys_from_expr(value);
                 }
@@ -10010,6 +10044,20 @@ impl Builder {
     /// reaches nested blocks (if/match/scope/loop bodies) where an owned-Vec
     /// could be constructed or used.
     fn collect_vec_owned_element_keys_from_expr(&mut self, expr: &HirExpr) {
+        // #2301 -- during this single pre-pass traversal, also harvest genuine
+        // move-out consumes (`intent=Consume` on a `BindingRef`). A binding that
+        // is BOTH consumed here and reassigned (see the `Assign` arm in
+        // `collect_vec_owned_element_keys_from_block`) gets a path-sensitive
+        // overwrite-release drop-flag at its `let`.
+        if expr.intent == IntentKind::Consume {
+            if let HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(id),
+                ..
+            } = &expr.kind
+            {
+                self.prepass_consumed_bindings.insert(*id);
+            }
+        }
         let ty = self.subst_ty(&expr.ty);
         self.harvest_vec_owned_element_key(&ty);
         match &expr.kind {
@@ -10531,6 +10579,7 @@ impl Builder {
                 // scope-exit drop; set to 1 at each consume. A no-op for every
                 // other binding class (see `resource_needs_drop_flag`).
                 self.maybe_alloc_resource_drop_flag(binding.id, &binding_ty);
+                self.maybe_alloc_overwrite_guard_flag(binding);
             }
             HirStmtKind::Let(_, None) => {}
             HirStmtKind::Expr(expr) => {
@@ -10963,15 +11012,35 @@ impl Builder {
                 ..
             } => {
                 if let Some(dest) = self.binding_locals.get(binding).copied() {
-                    // #53: release the prior heap-owning value before the slot is
-                    // overwritten. Gated on the binding still owning live heap
-                    // (owned_locals membership) -- a self-reassign r = T{..r} or a
-                    // move-out RHS already consumed it (removed from owned_locals),
-                    // so this is skipped and never double-frees.
-                    if self.owned_locals.iter().any(|(b, _, _)| b == binding) {
-                        self.emit_local_overwrite_release(dest, &target.ty);
+                    // #53 / #2301: release the prior heap-owning value before
+                    // the slot is overwritten.
+                    if let Some(flag) = self.overwrite_guard_flags.get(binding).copied() {
+                        // #2301 -- `binding` is consumed on one control-flow path
+                        // and overwritten on another. The consume removed it from
+                        // `owned_locals` globally, so the static gate below would
+                        // wrongly SKIP the release on the non-consuming path and
+                        // leak the still-owned old value. Gate on the runtime
+                        // flag instead: release iff `flag == 0`; the consume set
+                        // `flag = 1` to hand the value to its new owner. Reset to
+                        // 0 after the store so the fresh value is released on the
+                        // next overwrite.
+                        self.emit_flag_gated_overwrite_release(dest, &target.ty, flag);
+                        self.push_instr(Instr::Move { dest, src });
+                        self.push_instr(Instr::ConstI64 {
+                            dest: flag,
+                            value: 0,
+                        });
+                    } else {
+                        // #53: gated on the binding still owning live heap
+                        // (`owned_locals` membership) -- a self-reassign
+                        // r = T{..r} or a move-out RHS already consumed it
+                        // (removed from `owned_locals`), so this is skipped and
+                        // never double-frees.
+                        if self.owned_locals.iter().any(|(b, _, _)| b == binding) {
+                            self.emit_local_overwrite_release(dest, &target.ty);
+                        }
+                        self.push_instr(Instr::Move { dest, src });
                     }
-                    self.push_instr(Instr::Move { dest, src });
                     // A simple-variable assignment RE-DEFINES its target: after
                     // `h = <rhs>` the binding `h` holds a fresh value and is
                     // unconditionally Live, regardless of any move/consume the
@@ -28264,6 +28333,80 @@ impl Builder {
         self.resource_drop_flags.insert(binding_id, flag);
     }
 
+    /// #2301 -- allocate a zero-init path-sensitive overwrite-release drop-flag
+    /// for an owned `var`-local that the pre-pass saw both genuinely consumed
+    /// (move-out) AND reassigned. Restricting to that intersection keeps every
+    /// other owned-var overwrite on the zero-churn static gate. Gated on
+    /// `owned_locals` membership so the flag is allocated only for a binding
+    /// whose value `emit_local_overwrite_release` actually releases (the
+    /// general owned-local push already classified the type as heap-owning).
+    /// Zero-init here so the flag dominates every consume and overwrite,
+    /// including loop back-edges (lazy alloc at the consume would be unsound for
+    /// the non-consuming path and for an overwrite that precedes the consume in
+    /// source order but follows it around a back-edge).
+    fn maybe_alloc_overwrite_guard_flag(&mut self, binding: &HirBinding) {
+        if !binding.mutable {
+            return;
+        }
+        if !self.prepass_consumed_bindings.contains(&binding.id) {
+            return;
+        }
+        if !self.prepass_reassigned_bindings.contains(&binding.id) {
+            return;
+        }
+        if !self.owned_locals.iter().any(|(b, _, _)| *b == binding.id) {
+            return;
+        }
+        if self.overwrite_guard_flags.contains_key(&binding.id) {
+            return;
+        }
+        let flag = self.alloc_local(ResolvedTy::I64);
+        self.instructions.push(Instr::ConstI64 {
+            dest: flag,
+            value: 0,
+        });
+        self.overwrite_guard_flags.insert(binding.id, flag);
+    }
+
+    /// #2301 -- emit `if flag == 0 { <release old value of `dest`> }` as a CFG
+    /// diamond, then leave the cursor at the continuation block so the caller's
+    /// `Move` (store of the fresh value) and the `flag = 0` reset land there.
+    /// `flag == 0` means the prior value is still owned on THIS runtime path (a
+    /// consume on some other path set it to 1, handing the value to a new owner
+    /// that drops it -- releasing here too would double-free). The nested
+    /// `emit_local_overwrite_release` only pushes instructions (no terminator),
+    /// so it is safe inside the release block.
+    fn emit_flag_gated_overwrite_release(
+        &mut self,
+        dest: Place,
+        target_ty: &ResolvedTy,
+        flag: Place,
+    ) {
+        let zero = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::ConstI64 {
+            dest: zero,
+            value: 0,
+        });
+        let still_owned = self.alloc_local(ResolvedTy::Bool);
+        self.push_instr(Instr::IntCmp {
+            dest: still_owned,
+            pred: CmpPred::Eq,
+            lhs: flag,
+            rhs: zero,
+        });
+        let release_bb = self.alloc_block();
+        let cont_bb = self.alloc_block();
+        self.finish_current_block(Terminator::Branch {
+            cond: still_owned,
+            then_target: release_bb,
+            else_target: cont_bb,
+        });
+        self.start_block(release_bb);
+        self.emit_local_overwrite_release(dest, target_ty);
+        self.finish_current_block(Terminator::Goto { target: cont_bb });
+        self.start_block(cont_bb);
+    }
+
     fn mark_returned_binding_moved(&mut self, expr: &HirExpr) {
         let HirExprKind::BindingRef {
             resolved: ResolvedRef::Binding(id),
@@ -28276,6 +28419,20 @@ impl Builder {
     }
 
     fn mark_binding_moved(&mut self, id: BindingId) {
+        // #2301 -- record the move-out at runtime for a binding that carries a
+        // path-sensitive overwrite-release flag. Setting the flag on EVERY
+        // `owned_locals` removal (every consume site, not just the primary
+        // `Use{Consume}` lowering) means a later overwrite on a DIFFERENT
+        // control-flow path correctly SKIPS the release (the moved-out value's
+        // new owner drops it), while the non-consuming path keeps `flag == 0`
+        // and releases. The flag is reset to 0 after that overwrite's store. A
+        // no-op for every unflagged binding (the common case).
+        if let Some(flag) = self.overwrite_guard_flags.get(&id).copied() {
+            self.instructions.push(Instr::ConstI64 {
+                dest: flag,
+                value: 1,
+            });
+        }
         self.owned_locals.retain(|(binding, _, _)| *binding != id);
     }
 

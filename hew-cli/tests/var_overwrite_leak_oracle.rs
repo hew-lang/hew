@@ -27,6 +27,19 @@
 //! and assert an exact exit code — an over-eager release frees a buffer the
 //! new value (or the callee) re-owns and the trailing read crashes before the
 //! assertion is reached.
+//!
+//! ## Path-sensitive overwrite release (#2301)
+//!
+//! `owned_locals` is path-INsensitive: a genuine move-out (`let m = r`, the
+//! canonical `intent=Consume`) on ANY arm removes `r` from the set globally, so
+//! the static gate above would wrongly skip the release on a DIFFERENT arm that
+//! reassigns `r` without consuming it — leaking the still-owned old value every
+//! frame. A per-binding runtime drop-flag (`overwrite_guard_flags`) records the
+//! move-out at run time and gates the release on `flag == 0`, so the release
+//! fires on exactly the paths where the old value is still owned. The
+//! `branch_asym_consume_overwrite` slope shape pins the per-frame leak; the
+//! `record_branch_asym_alternating` scribble pin exercises both arms across
+//! iterations and asserts no double-free.
 
 #![cfg(unix)]
 
@@ -92,6 +105,45 @@ fn string_var_overwrite_source(frames: usize) -> String {
     )
 }
 
+/// Branch-asymmetric var overwrite (#2301): a genuine move-out
+/// (`let moved: Rec = r`, the canonical `intent=Consume`) sits on a
+/// statically-present but runtime-unreached arm, while the dominant arm
+/// reassigns `r` without consuming it. Pre-#2301 the consume removed `r` from
+/// `owned_locals` globally, so the path-insensitive static gate SKIPPED the
+/// release on the reassigning arm and leaked the prior record every frame. The
+/// runtime drop-flag releases iff the old value is still owned on the taken
+/// path, so the slope flattens to a single frame-count-independent residual
+/// block (the final value, retained because `r` is now maybe-consumed at scope
+/// exit — the pre-existing `CowValue` fail-closed posture, not a per-frame leak).
+fn branch_asym_consume_overwrite_source(frames: usize) -> String {
+    format!(
+        "record Rec {{\n\
+         \x20   name: string,\n\
+         }}\n\
+         \n\
+         fn make(i: i64) -> Rec {{\n\
+         \x20   Rec {{ name: \"payload-\".to_upper() }}\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   var r: Rec = make(0);\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   var acc: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       if i < 0 {{\n\
+         \x20           let moved: Rec = r;\n\
+         \x20           acc = acc + moved.name.len();\n\
+         \x20           r = make(i);\n\
+         \x20       }} else {{\n\
+         \x20           r = make(i);\n\
+         \x20       }}\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   acc + r.name.len()\n\
+         }}\n"
+    )
+}
+
 /// Self-reassign UAF pin: `r = Rec { n: i, ..r }` byte-copies the old `name`
 /// pointer into the new record, so the old value is consumed and the overwrite
 /// release MUST be skipped. The name is heap-built (`.to_upper()`) so an
@@ -139,6 +191,40 @@ fn main() -> i64 {
     while i < 25 {
         t = t + take(r);
         r = make();
+        i = i + 1;
+    }
+    r.name.len()
+}
+";
+
+/// Branch-asymmetric alternating UAF pin (#2301): the consume arm
+/// (`let moved: Rec = r`) and the non-consume arm both run across iterations.
+/// The runtime drop-flag must skip the overwrite release on the consuming arm
+/// (where `moved`'s scope-exit drop already freed the old value) and fire it on
+/// the non-consuming arm. A flag stuck at 1 leaks per frame; a flag wrongly 0
+/// on the consume arm double-frees the value `moved` released — under the
+/// poisoned triple that crashes before the clean exit. Exit = 8 (`"PAYLOAD-"`).
+const RECORD_BRANCH_ASYM_ALTERNATING_SOURCE: &str = "\
+record Rec {
+    name: string,
+}
+
+fn make() -> Rec {
+    Rec { name: \"payload-\".to_upper() }
+}
+
+fn main() -> i64 {
+    var r: Rec = make();
+    var i: i64 = 0;
+    var acc: i64 = 0;
+    while i < 50 {
+        if i % 2 == 0 {
+            let moved: Rec = r;
+            acc = acc + moved.name.len();
+            r = make();
+        } else {
+            r = make();
+        }
         i = i + 1;
     }
     r.name.len()
@@ -332,4 +418,28 @@ fn record_self_reassign_keeps_aliased_leaf_alive() {
 #[test]
 fn record_consume_then_reassign_no_double_free() {
     assert_scribbled_run_exit("record_consume_reassign", RECORD_CONSUME_REASSIGN_SOURCE, 5);
+}
+
+/// #2301 slope — a move-out on one arm must not suppress the overwrite release
+/// on a sibling arm that reassigns `r` without consuming it. Pre-fix the
+/// reassigning arm leaked one record per frame (path-insensitive `owned_locals`
+/// removal); the runtime drop-flag flattens the slope to a single residual.
+#[test]
+fn branch_asym_consume_overwrite_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance(
+        "branch_asym_consume_overwrite",
+        branch_asym_consume_overwrite_source,
+    );
+}
+
+/// #2301 UAF pin — alternating consume/non-consume arms: the runtime drop-flag
+/// releases on exactly the non-consuming iterations and skips the consuming
+/// ones, so no value is double-freed (final name is `"PAYLOAD-"`, len 8).
+#[test]
+fn record_branch_asym_alternating_no_double_free() {
+    assert_scribbled_run_exit(
+        "record_branch_asym_alternating",
+        RECORD_BRANCH_ASYM_ALTERNATING_SOURCE,
+        8,
+    );
 }

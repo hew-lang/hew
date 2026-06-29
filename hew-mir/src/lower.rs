@@ -11131,9 +11131,9 @@ impl Builder {
                     //
                     // Restricted to `BitCopy` scalar fields. An owned captured
                     // field (string/Vec/record) would leak its prior value on
-                    // overwrite without an env-field release — out of this
-                    // lane's scope (the §1′ non-suspend scalar write-back) — so
-                    // fail closed with a spanned diagnostic rather than emit a
+                    // overwrite without an env-field release — out of scope for
+                    // the non-suspend scalar write-back path — so fail closed
+                    // with a spanned diagnostic rather than emit a
                     // silently-leaking store.
                     let field_class = ValueClass::of_ty(&source.ty, &self.type_classes);
                     if field_class == ValueClass::BitCopy {

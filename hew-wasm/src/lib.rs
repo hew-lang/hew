@@ -508,17 +508,20 @@ struct AnalysisResult {
 struct AnalyzedSource {
     parse_result: hew_parser::ParseResult,
     type_output: Option<hew_types::TypeCheckOutput>,
-    /// Diagnostics from HIR lowering, run after type-checking so that errors
-    /// such as `CheckerBoundaryViolation` (e.g. nested closure captures that
-    /// the checker leaves unresolved) are surfaced in the browser editor.
+    /// Diagnostics from HIR lowering, run after type-checking so that a
+    /// `CheckerBoundaryViolation` — code the type checker accepts but HIR
+    /// lowering rejects — is surfaced in the browser editor instead of shown
+    /// as false-green.
     ///
-    /// WHY: Without HIR lowering the browser checker silently accepts closure
-    /// expressions that `hew run` rejects at lowering time — a false-green.
+    /// WHY: Without HIR lowering the browser checker would silently accept
+    /// constructs that `hew run` rejects at lowering time — a false-green.
     /// Fail-closed per the checker-authority doctrine: the editor must never
     /// show green for code that the native compiler rejects.
     ///
-    /// REAL FIX: once the checker materialises closure capture metadata fully,
-    /// these diagnostics will be empty for well-formed closure code.
+    /// Nested closure captures (a closure that captures another closure
+    /// binding) now lower cleanly, so well-formed closure code produces no
+    /// boundary-violation diagnostics; this gate remains for any construct the
+    /// checker still leaves unresolved at the HIR boundary.
     hir_diagnostics: Vec<hew_hir::HirDiagnostic>,
 }
 

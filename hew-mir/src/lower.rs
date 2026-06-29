@@ -37699,17 +37699,43 @@ fn enumerate_exits(
                 )
             })
     };
+    // Projection-alias taint: a binding that is a non-owning interior alias of a
+    // composite (a match/if-let payload binder destructured out of an enum
+    // scrutinee — `Ok(inner)` / `Some(s)` — or a `*FieldLoad` interior pointer).
+    // Such a binding NEVER solely owns its value; the OWNING composite frees it
+    // through its recursive `EnumInPlace` / `RecordInPlace` / `TupleInPlace` drop.
+    // A scope-close `Goto` must NOT fire a drop for one: when `Ok(inner)` is bound
+    // and the inner `Option<string>` (`inner`) leaves scope crossing the join, the
+    // outer `Result` composite is STILL live past the join and frees `inner`
+    // recursively at the eventual `Return`. Dropping `inner` on the goto here AND
+    // letting the composite free it at the return double-frees the payload string
+    // (DI-020). The taint exactly identifies these non-sole-owner aliases, so the
+    // scope-close release stays limited to genuinely sole-owned bindings that
+    // leave scope (a resource handle, a leaf cow owner) — the leak the
+    // scope-close pass exists to close — while a payload alias is left to its
+    // composite's single recursive free.
+    let scope_close_alias_tainted = compute_projection_alias_taint(blocks, &HashSet::new(), &[]);
     let drops_for_scope_close_goto = |block_id: u32, target: u32| -> Vec<ElabDrop> {
         drops_for_exit(block_id)
             .into_iter()
-            .filter(|drop| match place_to_binding.get(&drop.place) {
-                // Drop here only when the binding leaves scope crossing this
-                // edge (not kept alive at the target). Kept-alive → its later
-                // exit owns the release (no double-free).
-                Some(binding) => !target_entry_keeps_alive(target, binding),
-                // No binding mapping → conservatively skip (leak-not-double-free,
-                // matching the back-edge None arm).
-                None => false,
+            .filter(|drop| {
+                // A projection-alias payload binder is owned by its composite,
+                // which frees it recursively at its own exit — never drop it on a
+                // scope-close edge (no double-free).
+                if let Some(l) = base_local(drop.place) {
+                    if scope_close_alias_tainted.contains(&l) {
+                        return false;
+                    }
+                }
+                match place_to_binding.get(&drop.place) {
+                    // Drop here only when the binding leaves scope crossing this
+                    // edge (not kept alive at the target). Kept-alive → its later
+                    // exit owns the release (no double-free).
+                    Some(binding) => !target_entry_keeps_alive(target, binding),
+                    // No binding mapping → conservatively skip (leak-not-double-free,
+                    // matching the back-edge None arm).
+                    None => false,
+                }
             })
             .collect()
     };

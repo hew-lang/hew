@@ -1918,6 +1918,15 @@ impl<'a> Formatter<'a> {
                 f.write("self");
                 return;
             }
+            // `consume` precedes `var` in the surface grammar
+            // (`fn sink(consume var c: Conn)`); emit it first so the
+            // formatted output reparses to the same ownership disposition.
+            // The `self` fast-path above never reaches here, and `consume
+            // self` is rejected by the parser, so an affine receiver is
+            // never mis-printed with a `consume` modifier.
+            if p.is_consume {
+                f.write("consume ");
+            }
             if p.is_mutable {
                 f.write("var ");
             }
@@ -3914,6 +3923,36 @@ extern \"rt\" {
     fn println(s: string);
     fn print(s: string);
     fn assert(cond: bool);
+}
+";
+        let formatted = roundtrip(src);
+        assert_eq!(formatted, src);
+    }
+
+    #[test]
+    fn preserves_consume_modifier_on_extern_param() {
+        // `consume` pins by-move ownership on an affine boundary parameter;
+        // the formatter must emit it so the surface ownership disposition
+        // survives a format → reparse round-trip. Regression: the modifier
+        // was silently dropped, turning a boundary `consume` into an
+        // inferred borrow and breaking the corpus round-trip (RAII-2 #1295).
+        let src = "\
+extern \"C\" {
+    fn sink(consume c: Conn) -> i32;
+}
+";
+        let formatted = roundtrip(src);
+        assert_eq!(formatted, src);
+    }
+
+    #[test]
+    fn preserves_consume_before_var_param_order() {
+        // Surface grammar is `consume var name: T` — `consume` precedes
+        // `var`. The formatter must reproduce that order so the reparse
+        // recovers both the move disposition and the mutable binding.
+        let src = "\
+fn drain(consume var c: Conn) -> i32 {
+    0
 }
 ";
         let formatted = roundtrip(src);

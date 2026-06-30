@@ -47,11 +47,7 @@ fn main_call_spans(program: &hew_parser::ast::Program) -> Vec<hew_parser::ast::S
         .collect()
 }
 
-fn assert_single_unknown_return_error(
-    output: &hew_types::TypeCheckOutput,
-    context: &str,
-    actual: &str,
-) {
+fn assert_single_unknown_return_error(output: &hew_types::TypeCheckOutput, context: &str) {
     assert_eq!(
         output.errors.len(),
         1,
@@ -59,12 +55,12 @@ fn assert_single_unknown_return_error(
         output.errors
     );
     assert!(
-        output.errors.iter().any(|e| matches!(
-            &e.kind,
-            TypeErrorKind::Mismatch { expected, actual: found }
-                if expected == "UnknownType" && found == actual
-        )),
-        "{context}: expected a single UnknownType/{actual} mismatch, got: {:#?}",
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::UndefinedType
+                && e.message.contains("unknown type `UnknownType`")),
+        "{context}: expected a single `unknown type `UnknownType`` error, got: {:#?}",
         output.errors
     );
 }
@@ -4871,7 +4867,7 @@ fn type_def_method_with_error_return_is_pruned_from_output() {
 #[test]
 fn fn_unknown_return_annotation_single_error() {
     let output = typecheck_inline("fn f() -> UnknownType {}");
-    assert_single_unknown_return_error(&output, "unknown fn return annotation", "()");
+    assert_single_unknown_return_error(&output, "unknown fn return annotation");
 }
 
 #[test]
@@ -4883,7 +4879,7 @@ fn lambda_unknown_return_annotation_single_error() {
         }
         ",
     );
-    assert_single_unknown_return_error(&output, "unknown lambda return annotation", "i64");
+    assert_single_unknown_return_error(&output, "unknown lambda return annotation");
 }
 
 #[test]
@@ -4897,7 +4893,7 @@ fn receive_fn_unknown_return_annotation_single_error() {
         fn main() {}
         ",
     );
-    assert_single_unknown_return_error(&output, "unknown receive-fn return annotation", "()");
+    assert_single_unknown_return_error(&output, "unknown receive-fn return annotation");
 }
 
 #[test]

@@ -1,0 +1,12 @@
+// Reject fixture: unknown_return_type — an undefined type name in return
+// position is reported at the type-name resolution site, not as a downstream
+// "type mismatch". Before this diagnostic, `-> Bogus` was silently accepted,
+// then the body surfaced a confusing `type mismatch: expected `Bogus`, found
+// `()``. The checker now fails closed at the annotation itself with a clear
+// `unknown type `Bogus``.
+//
+// Harness verb: hew check
+// Expected: rejected with `unknown type `Bogus`` at the return annotation.
+fn noop() -> Bogus {}
+
+fn main() {}

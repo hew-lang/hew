@@ -1,6 +1,7 @@
-// Reject: an array that contains a named user type with no known ValueClass.
-// Under D10, nested named types must be rejected at the MIR boundary with
-// UnknownType before Stage 9 textual emission.
+// Reject: an array that contains a named user type that is declared nowhere.
+// F1 reports the undefined element type at the resolution site with `unknown
+// type `Foo``, ahead of the D10 MIR-boundary `UnknownType` fail-closed (which
+// remains as defense-in-depth). It must not panic.
 fn f(x: [Foo; 2]) -> [Foo; 2] {
     return x;
 }

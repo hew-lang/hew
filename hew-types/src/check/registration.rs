@@ -1340,6 +1340,132 @@ impl Checker {
         self.resolve_registered_annotation_ty(type_expr, &mut hole_vars)
     }
 
+    /// Populate `declared_type_param_names` with every type-parameter name
+    /// declared anywhere in the program and its modules — on type / record /
+    /// trait / impl / machine / actor declarations and on every generic method
+    /// (impl method, trait method, actor receive-fn) or free function — and
+    /// `declared_nominal_type_names` with every declared NOMINAL type name
+    /// (type / type-alias / record / trait / actor / supervisor / machine, plus
+    /// the synthesised `<Machine>Event` companion).
+    ///
+    /// The undefined-named-type guard consults both sets. A name declared as a
+    /// type parameter somewhere is intentionally left opaque (`Ty::named`) by
+    /// the resolver and re-resolved at several secondary sites (signature
+    /// rebuilds, receiver probes, trait-conformance checks) WITHOUT its scope
+    /// re-pushed, so it must never be reported as undefined. A nominal type
+    /// declared in an imported `module_graph` module is likewise resolvable even
+    /// while that module's signatures are registered in a pass where the global
+    /// `trait_defs` / `known_types` still hold only the root module's
+    /// declarations. A genuinely undefined type (`Bogus`) is in neither set, so
+    /// it is still caught.
+    pub(super) fn collect_declared_type_param_names(&mut self, program: &Program) {
+        for (item, _) in &program.items {
+            self.collect_item_type_param_names(item);
+            self.collect_item_nominal_type_name(item);
+        }
+        if let Some(mg) = &program.module_graph {
+            for module in mg.modules.values() {
+                for (item, _) in &module.items {
+                    self.collect_item_type_param_names(item);
+                    self.collect_item_nominal_type_name(item);
+                }
+            }
+        }
+        // Harvest trait-level type parameters from every registered trait def.
+        // Built-in and stdlib traits (e.g. `Index<Idx>` from std/builtins.hew)
+        // are registered into `trait_defs` by `register_builtins` rather than
+        // appearing in the walked program AST; their parameter names surface in
+        // user code when a `dyn Trait<...>` annotation pulls the trait's method
+        // signatures through resolution without the trait scope re-pushed.
+        let trait_param_names: Vec<String> = self
+            .trait_defs
+            .values()
+            .flat_map(|trait_def| trait_def.type_params.iter().cloned())
+            .collect();
+        self.declared_type_param_names.extend(trait_param_names);
+    }
+
+    fn collect_item_type_param_names(&mut self, item: &Item) {
+        match item {
+            Item::Function(fd) => self.insert_opt_type_param_names(fd.type_params.as_ref()),
+            Item::TypeDecl(td) => self.insert_opt_type_param_names(td.type_params.as_ref()),
+            Item::Record(rd) => self.insert_opt_type_param_names(rd.type_params.as_ref()),
+            Item::Trait(tr) => {
+                self.insert_opt_type_param_names(tr.type_params.as_ref());
+                for trait_item in &tr.items {
+                    if let TraitItem::Method(method) = trait_item {
+                        self.insert_opt_type_param_names(method.type_params.as_ref());
+                    }
+                }
+            }
+            Item::Impl(id) => {
+                self.insert_opt_type_param_names(id.type_params.as_ref());
+                for method in &id.methods {
+                    self.insert_opt_type_param_names(method.type_params.as_ref());
+                }
+            }
+            Item::Machine(md) => self.insert_type_param_names(&md.type_params),
+            Item::Actor(ad) => {
+                self.insert_type_param_names(&ad.type_params);
+                for receive_fn in &ad.receive_fns {
+                    self.insert_opt_type_param_names(receive_fn.type_params.as_ref());
+                }
+                for method in &ad.methods {
+                    self.insert_opt_type_param_names(method.type_params.as_ref());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn insert_opt_type_param_names(&mut self, tps: Option<&Vec<TypeParam>>) {
+        if let Some(tps) = tps {
+            self.insert_type_param_names(tps);
+        }
+    }
+
+    /// Record the nominal type name a top-level item declares (if any) into
+    /// `declared_nominal_type_names`. Mirrors the type-name registration in
+    /// `collect_types`, but is a program-wide harvest the undefined-named-type
+    /// guard consults so an imported module's own types/traits resolve even in
+    /// the pass that registers that module's signatures.
+    fn collect_item_nominal_type_name(&mut self, item: &Item) {
+        match item {
+            Item::TypeDecl(td) => {
+                self.declared_nominal_type_names.insert(td.name.clone());
+            }
+            Item::TypeAlias(ta) => {
+                self.declared_nominal_type_names.insert(ta.name.clone());
+            }
+            Item::Trait(tr) => {
+                self.declared_nominal_type_names.insert(tr.name.clone());
+            }
+            Item::Actor(ad) => {
+                self.declared_nominal_type_names.insert(ad.name.clone());
+            }
+            Item::Supervisor(sd) => {
+                self.declared_nominal_type_names.insert(sd.name.clone());
+            }
+            Item::Record(rd) => {
+                self.declared_nominal_type_names.insert(rd.name.clone());
+            }
+            Item::Machine(md) => {
+                self.declared_nominal_type_names.insert(md.name.clone());
+                // The checker synthesises a `<Machine>Event` companion type for
+                // every machine; it is a writable type spelling in user code.
+                self.declared_nominal_type_names
+                    .insert(format!("{}Event", md.name));
+            }
+            _ => {}
+        }
+    }
+
+    fn insert_type_param_names(&mut self, tps: &[TypeParam]) {
+        for tp in tps {
+            self.declared_type_param_names.insert(tp.name.clone());
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "type registration handles all root item variants in one place"
@@ -1572,6 +1698,17 @@ impl Checker {
     pub(super) fn reresolve_member_types_after_imports(&mut self, program: &Program) {
         let errors_before = self.errors.len();
         let warnings_before = self.warnings.len();
+        // Member re-resolution is a secondary fix-up pass (it overwrites the
+        // member types computed during `collect_types` once imports are
+        // visible) and runs with `type_decls_registered` already true. Suppress
+        // the undefined-named-type guard for its duration: a type declaration's
+        // members are out of the F1 diagnostic's remit (they keep the existing
+        // `E_MIR: unknown type` path), and emitting here would also let the
+        // guard substitute `Ty::Error` for the member type, overwriting the
+        // good type computed during `collect_types` and tripping the HIR
+        // field-access checker-boundary conversion downstream.
+        let prev_suppress = self.suppress_undefined_type_report;
+        self.suppress_undefined_type_report = true;
 
         if let Some(ref mg) = program.module_graph {
             for mod_id in &mg.topo_order {
@@ -1605,6 +1742,7 @@ impl Checker {
 
         self.errors.truncate(errors_before);
         self.warnings.truncate(warnings_before);
+        self.suppress_undefined_type_report = prev_suppress;
     }
 
     /// Seed `local_type_defs`/`source_type_defs` with the current scope's own

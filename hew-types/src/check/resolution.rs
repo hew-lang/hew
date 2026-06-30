@@ -1121,6 +1121,120 @@ impl Checker {
         }
     }
 
+    /// Whether a resolved type NAME refers to something that exists: a
+    /// registered user type (record / enum / actor / machine, bare or
+    /// module-qualified), a known type name (machine companion / event /
+    /// import binding), a declared trait, a registered type alias, the `Self`
+    /// keyword, or a name declared as a generic type parameter anywhere in the
+    /// program. Used by the undefined-named-type guard in
+    /// `resolve_type_expr_tracking_holes` to decide whether a name that fell
+    /// through every concrete resolution arm is genuinely undefined.
+    ///
+    /// Primitives and aliases are resolved by the caller before its guard
+    /// consults this helper, so they are intentionally not re-checked here. A
+    /// bare trait used in type position is reported by a separate path (and
+    /// still leaks `E_MIR: unknown type` for now); treating it as "resolvable"
+    /// keeps that behaviour untouched rather than relabelling it.
+    pub(super) fn named_type_is_resolvable(&self, name: &str) -> bool {
+        // `Self` is a contextual keyword type that the resolver rewrites to the
+        // enclosing impl/trait target (substituted via `current_self_type`). In
+        // some primitive trait-impl contexts the substitution has not run by the
+        // time a signature is re-resolved, so a bare `Self` reaches this check;
+        // it is never a genuinely undefined user type, so always treat it as
+        // resolvable rather than reporting `unknown type `Self``.
+        if name == "Self" {
+            return true;
+        }
+        if self.lookup_type_def(name).is_some() {
+            return true;
+        }
+        if self.known_types.contains(name)
+            || self.trait_defs.contains_key(name)
+            || self.type_aliases.contains_key(name)
+        {
+            return true;
+        }
+        // Supervisor declarations register their name in `supervisor_children`
+        // (keyed by the supervisor name), not in `known_types` like actors do.
+        // A supervisor name is nonetheless a valid type spelling — it appears as
+        // `spawn App` and as the parameter of a `LocalPid<App>` handle — so it
+        // must not be reported as an unknown type.
+        if self.supervisor_children.contains_key(name) {
+            return true;
+        }
+        // Module-local declaration tables. While the body of a non-root
+        // module_graph module is being checked, that module's own types/traits
+        // are seeded into these module-scoped sets (see the body-check loop in
+        // `check_program`) rather than the global `known_types` / `trait_defs`,
+        // which carry the root module's declarations. A `LocalPid<ConnectionHandler>`
+        // inside an imported `std::net` therefore resolves against `local_trait_defs`,
+        // not `trait_defs`. Consulting these sets only ever recognises an
+        // already-declared name, so a genuinely undefined `Bogus` is still caught.
+        if self.local_type_defs.contains(name)
+            || self.source_type_defs.contains(name)
+            || self.local_trait_defs.contains(name)
+        {
+            return true;
+        }
+        // A name declared as a type parameter anywhere in the program (collected
+        // by `collect_declared_type_param_names`). The resolver intentionally
+        // leaves a generic parameter opaque (`Ty::named`) and re-resolves it at
+        // several secondary sites (signature rebuilds, receiver probes,
+        // trait-conformance checks) without re-pushing its scope, so a
+        // scope-local check alone false-positives at those sites. Consulting the
+        // program-wide set covers them uniformly; the in-scope checks below stay
+        // as defense-in-depth for names that are valid only locally.
+        if self.declared_type_param_names.contains(name) {
+            return true;
+        }
+        // A nominal type declared anywhere in the program or its module_graph
+        // (collected by `collect_declared_type_param_names`). This covers an
+        // imported module's own types/traits while that module's signatures are
+        // registered in a pass where the global `trait_defs` / `known_types`
+        // still hold only the root module's declarations (e.g. a
+        // `LocalPid<ConnectionHandler>` inside `std::net`). A genuinely
+        // undefined name is in neither declared set, so it is still caught.
+        if self.declared_nominal_type_names.contains(name) {
+            return true;
+        }
+        // A generic type parameter in scope — impl / trait / fn / machine `<T>` —
+        // is deliberately left opaque (`Ty::named`) by the resolver so
+        // `substitute_named_param` can replace it with a concrete argument at
+        // call sites. Such a name is resolvable and must not be reported as
+        // undefined. Enclosing scopes push their params onto
+        // `current_type_param_bounds` (impl methods via `register_impl_method`,
+        // fn signatures via `register_fn_sig_with_name`, impl/trait bodies via
+        // `enter_impl_scope`); the in-progress function's own signature params
+        // are consulted directly for the body-checking pass, where the function
+        // is current but its param scope is reconstructed from the cached sig.
+        if self
+            .current_type_param_bounds
+            .iter()
+            .any(|frame| frame.bounds.contains_key(name))
+        {
+            return true;
+        }
+        if let Some(fn_name) = &self.current_function {
+            if let Some(sig) = self.fn_sigs.get(fn_name) {
+                if sig.type_params.iter().any(|param| param == name) {
+                    return true;
+                }
+            }
+        }
+        // Module-qualified spellings (`mod.Trait`, `mod.Alias`, `mod.Event`)
+        // whose tables key on the unqualified short name.
+        if let Some(unqualified) = self.strip_module_prefix(name) {
+            if self.known_types.contains(unqualified)
+                || self.trait_defs.contains_key(unqualified)
+                || self.type_aliases.contains_key(unqualified)
+                || self.supervisor_children.contains_key(unqualified)
+            {
+                return true;
+            }
+        }
+        false
+    }
+
     pub(super) fn resolve_type_expr(&mut self, te: &Spanned<TypeExpr>) -> Ty {
         let mut ignored_hole_vars = Vec::new();
         let ty = self.resolve_type_expr_tracking_holes(te, &mut ignored_hole_vars);
@@ -1432,6 +1546,26 @@ impl Checker {
                         );
                         return Ty::Error;
                     }
+                    "Unit"
+                        if !self.local_type_defs.contains("Unit")
+                            && !self.source_type_defs.contains("Unit") =>
+                    {
+                        // `Unit` is Kotlin / Swift muscle memory; Hew's unit type
+                        // is the empty tuple `()`. `BuiltinType::Unit` is an
+                        // internal carrier with no user-writable spelling, so a
+                        // source `-> Unit` would otherwise resolve to that opaque
+                        // builtin and fail downstream as a confusing
+                        // `type mismatch: expected `Unit`, found `()``. Reject it
+                        // here with the canonical hint. A user-declared
+                        // `type Unit` shadows this reservation (local-shadows-global).
+                        self.report_error_with_suggestions(
+                            TypeErrorKind::UndefinedType,
+                            &te.1,
+                            "unknown type `Unit`".to_string(),
+                            vec!["the unit type is written `()`".to_string()],
+                        );
+                        return Ty::Error;
+                    }
                     _ => {}
                 }
                 // Check for primitive types first
@@ -1620,6 +1754,52 @@ impl Checker {
                     builtin.is_some_and(|kind| kind.is_collection() || kind.is_substrate_handle());
                 let local_source_type_def = self.source_type_defs.contains(resolved_name.as_str())
                     && !builtin_overrides_source_decl;
+                // F1: a named type that resolved to nothing — not a builtin, not
+                // a registered user type / trait / alias, and not a generic type
+                // parameter (those all returned earlier) — is genuinely
+                // undefined. Before this guard the name fell through to an opaque
+                // `Ty::named`, surfacing only downstream as a confusing
+                // `type mismatch: expected `Bogus`, found `()`` (return / let
+                // position) or `E_MIR: unknown type` at the MIR boundary
+                // (parameter position). Reject it at the resolution site with a
+                // direct diagnostic and an error sentinel so unification
+                // suppresses any cascade.
+                //
+                // Gated on `type_decls_registered` so the registration pass —
+                // which resolves record / enum / machine members before every
+                // sibling type is registered — does not false-positive on legal
+                // forward references. The dedup set keeps a single user-facing
+                // error stable across the two resolution visits a function
+                // parameter annotation receives (signature registration in
+                // `collect_functions` + body checking in `resolve_param_binding_ty`).
+                // Module-qualified names (`mod.Type`) reach this fall-through
+                // when their type lives in another module and resolves through
+                // the module registry to an opaque carrier rather than a locally
+                // registered name. Verifying those would require replicating the
+                // registry's qualified-resolution path here; they are also
+                // outside this diagnostic's remit (the reported gap was bare
+                // names like `Unit` / `Bogus`). Leave them on the existing opaque
+                // path so a genuine cross-module type still resolves and a
+                // genuinely missing one keeps its current downstream diagnostic.
+                if builtin.is_none()
+                    && self.type_decls_registered
+                    && !self.suppress_undefined_type_report
+                    && !resolved_name.contains('.')
+                    && !self.named_type_is_resolvable(&resolved_name)
+                {
+                    let span_key = SpanKey::in_module(&te.1, self.current_module_idx);
+                    if self
+                        .reported_undefined_named_types
+                        .insert((resolved_name.clone(), span_key))
+                    {
+                        self.report_error(
+                            TypeErrorKind::UndefinedType,
+                            &te.1,
+                            format!("unknown type `{name}`"),
+                        );
+                    }
+                    return Ty::Error;
+                }
                 if builtin.is_some() && !local_source_type_def {
                     Ty::normalize_named(resolved_name, args)
                 } else {

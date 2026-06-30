@@ -1,6 +1,7 @@
-// Reject: a function that uses a named user type with no known ValueClass.
-// Under D10, this must be rejected at the MIR boundary with UnknownType,
-// never reaching codegen with an "UnknownBlocked" value decision.
+// Reject: a function that uses a named user type that is declared nowhere.
+// F1 reports it at the type-name resolution site with `unknown type `Foo``,
+// rather than admitting it and later failing closed at the MIR D10 boundary
+// with `UnknownType` (that boundary check remains as defense-in-depth).
 fn f(x: Foo) -> Foo {
     return x;
 }

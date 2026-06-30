@@ -2690,6 +2690,59 @@ pub struct Checker {
     /// duplicate `E_VISIBILITY` errors when the same private/package type appears in
     /// multiple positions (e.g. both a parameter and the return type of one fn).
     pub(super) reported_type_visibility_violations: HashSet<String>,
+    /// `(resolved_name, span)` pairs for which an `unknown type` diagnostic has
+    /// already been emitted, so a named type that resolves to nothing is reported
+    /// exactly once even though signature resolution (`collect_functions`) and
+    /// body resolution (`resolve_param_binding_ty`) both visit the same parameter
+    /// annotation.
+    pub(super) reported_undefined_named_types: HashSet<(String, SpanKey)>,
+    /// `false` until `collect_types` has registered every type declaration.
+    /// The undefined-named-type guard in `resolve_type_expr_tracking_holes`
+    /// only fires once this is `true`: type-declaration member resolution runs
+    /// during registration, before forward-referenced sibling types are known,
+    /// so emitting there would false-positive on legal forward references.
+    /// Signature and body resolution run strictly after registration completes.
+    pub(super) type_decls_registered: bool,
+    /// When `true`, the undefined-named-type guard in
+    /// `resolve_type_expr_tracking_holes` resolves an unknown name to an
+    /// opaque `Ty::named` (its pre-F1 behaviour) WITHOUT emitting a diagnostic
+    /// or substituting `Ty::Error`. Set around `reresolve_member_types_after_imports`,
+    /// the secondary pass that recomputes type-declaration MEMBER types once
+    /// imports are visible: a declaration's members are out of this diagnostic's
+    /// remit (they keep the existing `E_MIR: unknown type` path), and emitting
+    /// there would also let the guard overwrite a member's already-computed type
+    /// with `Ty::Error`, corrupting it and tripping the HIR field-access
+    /// checker-boundary conversion downstream.
+    pub(super) suppress_undefined_type_report: bool,
+    /// Every type-parameter name declared anywhere in the program — on type /
+    /// record / trait / impl / machine / actor declarations and on every
+    /// generic method or free function. The undefined-named-type guard treats
+    /// a name in this set as resolvable: the resolver intentionally leaves a
+    /// generic type parameter opaque (`Ty::named`) and re-resolves it at
+    /// several secondary sites (signature rebuilds, receiver probes,
+    /// trait-conformance checks) without re-pushing its scope, so it must
+    /// never be reported as undefined. A genuinely undefined type is a type
+    /// parameter nowhere, so it is still caught. Populated once, after
+    /// `collect_types`, before the guard is armed.
+    pub(super) declared_type_param_names: HashSet<String>,
+    /// Every NOMINAL type name declared anywhere in the program and its
+    /// `module_graph` — type / type-alias / record / trait / actor / supervisor /
+    /// machine declarations (plus the synthesised `<Machine>Event` companion).
+    /// The undefined-named-type guard treats a name in this set as resolvable.
+    ///
+    /// The guard runs after the root module's `collect_types`, but signatures of
+    /// imported `module_graph` modules are registered in a LATER pass where that
+    /// module's own traits/types are not in the active `trait_defs` / `known_types`
+    /// (those carry the root module's declarations) nor yet in the module-scoped
+    /// `local_*` sets. A `LocalPid<ConnectionHandler>` inside an imported
+    /// `std::net` would therefore false-positive against the per-pass tables.
+    /// Consulting this program-wide set makes any declared nominal type resolve
+    /// uniformly regardless of which pass is running. A genuinely undefined type
+    /// (`Bogus`) is declared nowhere, so it is still caught; cross-module import
+    /// VISIBILITY (is the name imported into this scope) is a separate check that
+    /// this diagnostic does not own. Populated once, after `collect_types`,
+    /// before the guard is armed.
+    pub(super) declared_nominal_type_names: HashSet<String>,
     /// Maps (`owner_module`, `unqualified_name`) to the module short name the name
     /// was imported from.  Used to mark the owning import as used when an
     /// unqualified function/type is referenced.
@@ -3165,6 +3218,11 @@ impl Checker {
             module_fn_exports: HashSet::new(),
             module_type_exports: HashMap::new(),
             reported_type_visibility_violations: HashSet::new(),
+            reported_undefined_named_types: HashSet::new(),
+            type_decls_registered: false,
+            suppress_undefined_type_report: false,
+            declared_type_param_names: HashSet::new(),
+            declared_nominal_type_names: HashSet::new(),
             unqualified_to_module: HashMap::new(),
             published_bare_type_owners: HashMap::new(),
             published_bare_trait_owners: HashMap::new(),

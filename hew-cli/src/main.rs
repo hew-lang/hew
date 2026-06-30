@@ -484,7 +484,7 @@ fn run_check_deep_gates(
     let lint_denied = render_pipeline_mir_lints(&state.source, input, &pipeline, levels);
 
     if let Err(error) = hew_codegen_rs::validate_codegen_front(&pipeline) {
-        diagnostic::render_codegen_front_diagnostic(&error);
+        diagnostic::render_codegen_front_diagnostic(&error, &state.source, input);
         return Err(());
     }
 
@@ -502,6 +502,7 @@ fn emit_module(
     emit_target: CompileEmitTarget,
     link_freestanding_wasm: bool,
     opt_level: hew_codegen_rs::OptLevel,
+    source_path: Option<&Path>,
 ) -> Result<hew_codegen_rs::EmitArtefacts, ()> {
     emit_module_with_triple(
         pipeline,
@@ -512,7 +513,7 @@ fn emit_module(
         link_freestanding_wasm,
         false,
         opt_level,
-        None,
+        source_path,
     )
 }
 
@@ -554,12 +555,23 @@ fn emit_module_with_triple(
     };
     match result {
         Ok(artefacts) => Ok(artefacts),
-        Err(e @ hew_codegen_rs::CodegenError::WasmUnsupportedSubstrate { .. }) => {
-            eprintln!("error: {e}");
-            Err(())
-        }
         Err(e) => {
-            eprintln!("E_NOT_YET_IMPLEMENTED: {e}");
+            // #2091: render through the source-attributed diagnostic path so a
+            // fail-closed codegen error points at the user's code instead of a
+            // bare, locationless line. The failing function's span rides on the
+            // error (attached at the MIR body-lowering boundary); resolve the
+            // source text from the same path codegen emitted against. No path,
+            // or unreadable/spanless source, degrades to the historical bare
+            // line inside `render_codegen_emit_error`.
+            let (source, filename) = source_path
+                .map(|p| {
+                    (
+                        std::fs::read_to_string(p).unwrap_or_default(),
+                        p.display().to_string(),
+                    )
+                })
+                .unwrap_or_default();
+            diagnostic::render_codegen_emit_error(&e, &source, &filename);
             Err(())
         }
     }
@@ -635,6 +647,7 @@ pub(crate) fn compile_native_binary(input: &Path, bin_path: &Path) -> Result<(),
         CompileEmitTarget::Native,
         true,
         hew_codegen_rs::OptLevel::O0,
+        Some(input),
     )?;
     let obj = artefacts.native_obj_path.as_deref().ok_or_else(|| {
         eprintln!("E_NOT_YET_IMPLEMENTED: native codegen did not produce an object");
@@ -746,6 +759,12 @@ pub(crate) fn compile_native_from_program(
         emit_target,
         false,
         hew_codegen_rs::OptLevel::O0,
+        // `source_label` is a diagnostic label (REPL/eval snippet), not a
+        // guaranteed on-disk path — reading it could render against unrelated
+        // file content, so pass no source path. A codegen error here keeps the
+        // historical bare line (no regression); the file-based `build`/`run`/
+        // `check` paths carry a real path and render with a source span (#2091).
+        None,
     )?;
 
     match emit_target {
@@ -1068,6 +1087,7 @@ fn cmd_compile(a: &args::CompileArgs) {
         emit_target,
         true,
         opt_level,
+        Some(a.input.as_path()),
     )
     .unwrap_or_else(|()| {
         if json {

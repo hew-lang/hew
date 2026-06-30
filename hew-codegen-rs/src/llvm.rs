@@ -172,6 +172,71 @@ pub enum CodegenError {
     /// deliberately fail-closed on, the wasm32 build. Omit the WASM target to
     /// produce a native binary instead.
     WasmUnsupportedSubstrate { symbol: String },
+    /// Any of the above errors annotated with the source byte-span the
+    /// diagnostic should point at — `(start, end)` offsets into the originating
+    /// module source, threaded from [`RawMirFunction::span`] at the MIR
+    /// body-lowering boundary (`build_module_for_target`). The CLI renders the
+    /// inner error's message through the source-attributed diagnostic path using
+    /// this span, so a fail-closed codegen error points at the user's code
+    /// instead of a bare, locationless line (#2091).
+    ///
+    /// WHY an envelope variant and not a span field on each variant:
+    /// `FailClosed` alone has ~1.3k construction sites. An envelope threads an
+    /// optional span through the whole error type without touching any of them,
+    /// and — because the boundary only wraps when a function carries a faithful
+    /// span — every existing `match CodegenError::FailClosed(_)` site keeps
+    /// matching for the spanless case (synthesised functions, hand-built test
+    /// MIR). Construct via [`CodegenError::with_source_span`]; never nest.
+    Spanned {
+        span: (u32, u32),
+        inner: Box<CodegenError>,
+    },
+}
+
+impl CodegenError {
+    /// Annotate this error with the source byte-span the diagnostic should point
+    /// at, unless it already carries one (or is whole-program guidance that has
+    /// no single source point). Used at the body-lowering boundary to attach the
+    /// failing function's [`RawMirFunction::span`].
+    #[must_use]
+    pub fn with_source_span(self, span: (u32, u32)) -> Self {
+        match self {
+            // Already located — keep the innermost (most specific) span.
+            Self::Spanned { .. } => self,
+            // `WasmUnsupportedSubstrate` carries whole-program guidance ("omit
+            // the WASM target"), not a source point; the CLI renders it via its
+            // own arm. Leave it unwrapped so that arm keeps matching.
+            Self::WasmUnsupportedSubstrate { .. } => self,
+            inner => Self::Spanned {
+                span,
+                inner: Box::new(inner),
+            },
+        }
+    }
+
+    /// The source byte-span `(start, end)` this error should be rendered
+    /// against, if one was threaded from MIR. `None` for errors with no faithful
+    /// source location (synthesised functions, hand-built test MIR,
+    /// infrastructure failures).
+    #[must_use]
+    pub fn source_span(&self) -> Option<(u32, u32)> {
+        match self {
+            Self::Spanned { span, .. } => Some(*span),
+            _ => None,
+        }
+    }
+
+    /// The underlying error, looking through any source-span envelope. Lets
+    /// variant-specific handling (CLI exit-code / diagnostic-family mapping)
+    /// stay span-agnostic — `Spanned` is never constructed nested, so this is a
+    /// single unwrap.
+    #[must_use]
+    pub fn unspanned(&self) -> &CodegenError {
+        match self {
+            Self::Spanned { inner, .. } => inner,
+            other => other,
+        }
+    }
 }
 
 impl std::fmt::Display for CodegenError {
@@ -220,6 +285,9 @@ impl std::fmt::Display for CodegenError {
                      {tracking}); omit the WASM target to produce a native binary instead"
                 )
             }
+            // The span is a rendering concern, not message text: delegate to the
+            // inner error so `{e}` stays identical with or without a span.
+            Self::Spanned { inner, .. } => write!(f, "{inner}"),
         }
     }
 }
@@ -37822,7 +37890,17 @@ fn build_module_for_target<'ctx>(
             !pipeline.supervisor_layouts.is_empty(),
             module_uses_runtime,
             fn_debug_ctx.as_ref(),
-        )?;
+        )
+        // #2091: attach the failing function's source span so the CLI renders a
+        // fail-closed codegen error at the user's code rather than a bare,
+        // locationless line. `func.span` is `None` for synthesised functions and
+        // hand-built test MIR — those stay unwrapped, preserving every
+        // `match CodegenError::FailClosed(_)` site that exercises codegen
+        // fail-closed paths with spanless MIR.
+        .map_err(|e| match func.span {
+            Some(span) => e.with_source_span(span),
+            None => e,
+        })?;
     }
     // Emit the cross-node payload codec thunks + registration constructor so a
     // Serializable actor message survives a process hop. The cross-node codec is

@@ -274,3 +274,109 @@ fn unknown_floor_intrinsic_id_fails_closed() {
         ),
     }
 }
+
+/// #2091: a fail-closed codegen error carries the source span of the function it
+/// fired in, so the CLI can render it at the user's code instead of a bare,
+/// locationless line. The body-lowering boundary (`build_module_for_target`)
+/// attaches `RawMirFunction::span` to any error from `lower_function` when the
+/// function carries a faithful span. This drives the same unknown-intrinsic
+/// fail-closed path as `unknown_floor_intrinsic_id_fails_closed`, but with a
+/// span set, and asserts the span rides out on the error.
+#[test]
+fn floor_intrinsic_fail_closed_carries_function_source_span() {
+    let mut pipeline = floor_pipeline(
+        "mem$bogus",
+        "mem.bogus",
+        vec![ResolvedTy::U64],
+        mut_u8_ptr(),
+    );
+    // A distinctive byte-range standing in for `fn mem$bogus(...)`'s declaration
+    // extent in the originating source. The boundary threads this verbatim.
+    let span = (4242, 4271);
+    pipeline.raw_mir[0].span = Some(span);
+
+    let tmp = std::env::temp_dir().join("hew-mem-floor-unknown-spanned");
+    std::fs::create_dir_all(&tmp).expect("create out_dir");
+    let options = EmitOptions {
+        module_name: "mem_unknown_spanned",
+        out_dir: &tmp,
+        native: false,
+        wasm: false,
+        target_triple: None,
+        debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
+        source_path: None,
+    };
+    match emit_module(&pipeline, &options) {
+        Err(err) => {
+            assert_eq!(
+                err.source_span(),
+                Some(span),
+                "the failing function's source span must ride out on the error so \
+                 the CLI can point the diagnostic at the user's code (#2091); got \
+                 {err:?}"
+            );
+            assert!(
+                matches!(err.unspanned(), CodegenError::FailClosed(msg) if msg.contains("mem.bogus")),
+                "looking through the span envelope must recover the original \
+                 FailClosed naming the unwired id; got {err:?}"
+            );
+            // The span is a rendering concern — `Display` must read identically
+            // to the unwrapped error, with no `(start, end)` noise leaking in.
+            assert_eq!(
+                err.to_string(),
+                err.unspanned().to_string(),
+                "Display must delegate through the span envelope unchanged"
+            );
+        }
+        Ok(_) => {
+            panic!("expected codegen to fail closed on an unknown floor intrinsic id; got Ok(_)")
+        }
+    }
+}
+
+/// A function with no faithful source span (synthesised function / hand-built
+/// test MIR) must NOT be wrapped — the error stays a bare `FailClosed` so every
+/// existing `match CodegenError::FailClosed(_)` codegen test keeps matching.
+/// This is the invariant that lets #2091 add span-carrying without touching the
+/// ~1.3k `FailClosed` construction sites or the suites that assert on them.
+#[test]
+fn spanless_function_fail_closed_is_not_wrapped() {
+    let pipeline = floor_pipeline(
+        "mem$bogus",
+        "mem.bogus",
+        vec![ResolvedTy::U64],
+        mut_u8_ptr(),
+    );
+    assert_eq!(
+        pipeline.raw_mir[0].span, None,
+        "precondition: floor_pipeline builds spanless MIR"
+    );
+    let tmp = std::env::temp_dir().join("hew-mem-floor-unknown-spanless");
+    std::fs::create_dir_all(&tmp).expect("create out_dir");
+    let options = EmitOptions {
+        module_name: "mem_unknown_spanless",
+        out_dir: &tmp,
+        native: false,
+        wasm: false,
+        target_triple: None,
+        debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
+        source_path: None,
+    };
+    match emit_module(&pipeline, &options) {
+        Err(err) => {
+            assert_eq!(
+                err.source_span(),
+                None,
+                "spanless MIR must yield a spanless error"
+            );
+            assert!(
+                matches!(err, CodegenError::FailClosed(_)),
+                "a spanless fail-closed error must stay a bare FailClosed, not a \
+                 span envelope; got {err:?}"
+            );
+        }
+        Ok(_) => panic!("expected fail-closed on unknown floor intrinsic id; got Ok(_)"),
+    }
+}

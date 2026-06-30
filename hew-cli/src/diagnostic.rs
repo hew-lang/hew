@@ -166,14 +166,78 @@ pub(crate) fn codegen_diagnostic_prefix(error: &hew_codegen_rs::CodegenError) ->
         hew_codegen_rs::CodegenError::WasmUnsupportedSubstrate { .. } => {
             "E_CODEGEN_FRONT_WASM_UNSUPPORTED"
         }
+        // A span envelope classifies as its inner error: a spanned `FailClosed`
+        // is still `E_CODEGEN_FRONT_FAIL_CLOSED`. The span is a rendering
+        // concern, never a new failure class.
+        hew_codegen_rs::CodegenError::Spanned { inner, .. } => codegen_diagnostic_prefix(inner),
     }
 }
 
-pub(crate) fn render_codegen_front_diagnostic(error: &hew_codegen_rs::CodegenError) {
-    emit_plain_diagnostic_line(&format!(
+/// Render a `CodegenError` carrying a source span (if any) through the
+/// source-attributed diagnostic path, else as a single bare line.
+///
+/// `message` is the fully-composed user-facing line (family code + Display
+/// text). When the error carries a span — threaded from [`RawMirFunction::span`]
+/// at the codegen body-lowering boundary — and `source` is non-empty, the line
+/// renders with a `filename:line:col` header and a `^^^` underline, identical in
+/// shape to a type-check diagnostic. Without a span (synthesised functions,
+/// hand-built test MIR, infrastructure failures) or without source text, it
+/// degrades to the historical single line so no path regresses to silence.
+fn render_codegen_error_message(
+    error: &hew_codegen_rs::CodegenError,
+    source: &str,
+    filename: &str,
+    message: &str,
+) {
+    match error.source_span() {
+        Some((start, end)) if !source.is_empty() => {
+            render_diagnostic(
+                source,
+                filename,
+                &(start as usize..end as usize),
+                message,
+                &[],
+                &[],
+            );
+        }
+        _ => emit_plain_diagnostic_line(message),
+    }
+}
+
+/// Render a codegen-front (`hew check` / pre-emit gate) validation failure.
+///
+/// Source-attributed when the error carries a span (#2091); otherwise the
+/// historical bare `E_CODEGEN_FRONT_*: codegen-front validation failed: …` line.
+pub(crate) fn render_codegen_front_diagnostic(
+    error: &hew_codegen_rs::CodegenError,
+    source: &str,
+    filename: &str,
+) {
+    let message = format!(
         "{}: codegen-front validation failed: {error}",
         codegen_diagnostic_prefix(error),
-    ));
+    );
+    render_codegen_error_message(error, source, filename, &message);
+}
+
+/// Render a `hew build` / `hew run` codegen-emit failure (#2091).
+///
+/// When the error carries a source span and source text is available, the
+/// message points at the user's code through the same renderer a type error
+/// uses; otherwise it degrades to the historical bare line. The
+/// `WasmUnsupportedSubstrate` arm keeps its whole-program "omit the WASM target"
+/// phrasing (it carries no source point); every other error keeps the
+/// greppable `E_NOT_YET_IMPLEMENTED` family token.
+pub(crate) fn render_codegen_emit_error(
+    error: &hew_codegen_rs::CodegenError,
+    source: &str,
+    filename: &str,
+) {
+    let message = match error.unspanned() {
+        hew_codegen_rs::CodegenError::WasmUnsupportedSubstrate { .. } => format!("error: {error}"),
+        _ => format!("E_NOT_YET_IMPLEMENTED: {error}"),
+    };
+    render_codegen_error_message(error, source, filename, &message);
 }
 
 // ANSI colour helpers
@@ -1296,6 +1360,100 @@ mod tests {
             "captured diagnostics must not contain ANSI escapes: {captured:?}"
         );
         assert!(captured.contains("main.hew:1:1: error: bad call"));
+    }
+
+    #[test]
+    fn codegen_emit_error_with_span_renders_source_attributed() {
+        // #2091: a fail-closed codegen error that carries the source span of the
+        // offending function must render at the user's code — `filename:line:col`
+        // header, the source line, and a `^^^` underline — not the bare,
+        // locationless `E_NOT_YET_IMPLEMENTED` line dogfooding flagged as the
+        // single most-disorienting failure mode.
+        let source = "fn main() {\n    mem.bogus()\n}\n";
+        // `mem.bogus()` occupies bytes 16..27 → line 2, col 5.
+        let error = hew_codegen_rs::CodegenError::FailClosed(
+            "intrinsic 'mem.bogus' has no registered lowering".to_string(),
+        )
+        .with_source_span((16, 27));
+
+        start_diagnostic_capture();
+        render_codegen_emit_error(&error, source, "main.hew");
+        let captured = finish_diagnostic_capture();
+
+        assert!(
+            captured.contains("main.hew:2:5:"),
+            "a spanned emit error must render a source-attributed header; got: {captured:?}"
+        );
+        assert!(
+            captured.contains("error: E_NOT_YET_IMPLEMENTED"),
+            "the greppable family token must survive the source-attributed path; got: {captured:?}"
+        );
+        assert!(
+            captured.contains("mem.bogus"),
+            "the message must still name the unwired seam; got: {captured:?}"
+        );
+        assert!(
+            captured.contains("2 |") && captured.contains("^^^"),
+            "the offending source line and a caret underline must be shown; got: {captured:?}"
+        );
+    }
+
+    #[test]
+    fn codegen_emit_error_without_span_renders_bare_line() {
+        // Without a span (synthesised function / infrastructure failure) the emit
+        // error keeps its historical single bare line — no fabricated source
+        // header, no underline — so no path regresses and the family token is
+        // preserved for the tools that grep it.
+        let source = "fn main() {\n    mem.bogus()\n}\n";
+        let error = hew_codegen_rs::CodegenError::FailClosed(
+            "intrinsic 'mem.bogus' has no registered lowering".to_string(),
+        );
+
+        start_diagnostic_capture();
+        render_codegen_emit_error(&error, source, "main.hew");
+        let captured = finish_diagnostic_capture();
+
+        assert!(
+            captured.contains("E_NOT_YET_IMPLEMENTED: fail-closed: intrinsic 'mem.bogus'"),
+            "a spanless emit error must keep the historical bare line; got: {captured:?}"
+        );
+        assert!(
+            !captured.contains("main.hew:"),
+            "a spanless error must not fabricate a source location; got: {captured:?}"
+        );
+        assert!(
+            !captured.contains('^'),
+            "a spanless error must not render a source underline; got: {captured:?}"
+        );
+    }
+
+    #[test]
+    fn codegen_front_diagnostic_with_span_renders_source_attributed() {
+        // The `hew check` / pre-emit gate path is source-attributed too: a spanned
+        // codegen-front failure points at the user's code and keeps its greppable
+        // `E_CODEGEN_FRONT_*` family token.
+        let source = "fn main() {\n    mem.bogus()\n}\n";
+        let error = hew_codegen_rs::CodegenError::FailClosed(
+            "intrinsic 'mem.bogus' has no registered lowering".to_string(),
+        )
+        .with_source_span((16, 27));
+
+        start_diagnostic_capture();
+        render_codegen_front_diagnostic(&error, source, "main.hew");
+        let captured = finish_diagnostic_capture();
+
+        assert!(
+            captured.contains("main.hew:2:5:"),
+            "a spanned codegen-front failure must render a source header; got: {captured:?}"
+        );
+        assert!(
+            captured.contains("E_CODEGEN_FRONT_FAIL_CLOSED"),
+            "the codegen-front path must keep its family token; got: {captured:?}"
+        );
+        assert!(
+            captured.contains("^^^"),
+            "the offending source line must be underlined; got: {captured:?}"
+        );
     }
 
     #[test]

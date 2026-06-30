@@ -227,6 +227,39 @@ pub enum StateFieldCloneKind {
     /// enum construction moves (not aliases) the handle — exactly one owner
     /// holds it. No refcount; no dup.
     OpaqueHandle { name: String },
+
+    /// `#[resource]` runtime handle that carries a user `close(self)` /
+    /// `free(self)` ritual (RAII-1). The single-slot opaque flavour —
+    /// `#[resource] #[opaque]` (e.g. `regex.Pattern` once F9 stamps it a
+    /// resource). Unlike a bare [`OpaqueHandle`] (no-op drop / documented
+    /// leak), a `Resource` field carries the `<Type>::<method>` close
+    /// `close_symbol` so the OWNING aggregate's drop spine runs the user close
+    /// EXACTLY ONCE on every exit path (sync return, task cancel, actor
+    /// shutdown), then null-stores the slot.
+    ///
+    /// **Drop**: `emit_field_drop_step` loads the handle pointer, calls
+    /// `close_symbol(handle)` (a `void(ptr)`, Unit-returning per W3.030), then
+    /// null-stores the field slot so a structurally-reachable second drop
+    /// (cancel-into-trap after a normal exit) short-circuits
+    /// (raii-null-after-move).
+    ///
+    /// **Clone**: refused at runtime — branch to the clone rollback chain and
+    /// return the protocol failure code, mirroring [`ClosurePair`]. A
+    /// `#[resource]`/affine handle has no dup helper and must not be aliased (a
+    /// shallow copy would create two owners → double-close at the two drops).
+    /// Reachable clone sites are rejected at compile time by the move-checker;
+    /// this arm is the defensive runtime backstop.
+    ///
+    /// Only single-slot opaque resources reach this arm. A non-opaque
+    /// `#[resource]` RECORD has its own record layout, classifies as
+    /// [`UserRecord`], and runs its `close` through the `resource_record_close`
+    /// registry (the up-front / on-demand record-drop thunk) — it is never a
+    /// `Resource` kind.
+    ///
+    /// [`OpaqueHandle`]: StateFieldCloneKind::OpaqueHandle
+    /// [`ClosurePair`]: StateFieldCloneKind::ClosurePair
+    /// [`UserRecord`]: StateFieldCloneKind::UserRecord
+    Resource { name: String, close_symbol: String },
 }
 
 impl StateFieldCloneKind {
@@ -266,6 +299,7 @@ impl StateFieldCloneKind {
             | StateFieldCloneKind::IoHandle { .. }
             | StateFieldCloneKind::UserRecord { .. }
             | StateFieldCloneKind::Enum { .. }
+            | StateFieldCloneKind::Resource { .. }
             | StateFieldCloneKind::ClosurePair => false,
         }
     }
@@ -302,7 +336,54 @@ impl StateFieldCloneKind {
             | StateFieldCloneKind::IoHandle { .. }
             | StateFieldCloneKind::UserRecord { .. }
             | StateFieldCloneKind::Enum { .. }
+            | StateFieldCloneKind::Resource { .. }
             | StateFieldCloneKind::OpaqueHandle { .. } => false,
+        }
+    }
+
+    /// True when this kind is, or transitively contains, a [`Resource`].
+    ///
+    /// Fail-closed scoping authority for RAII-1: a `#[resource]` handle is
+    /// admitted to the owned-aggregate drop spine ONLY as a direct or
+    /// nested-record field, where the owning record's `__hew_record_drop_
+    /// inplace_<R>` thunk runs its close exactly once. The container
+    /// classifiers (Tuple / Array, and — via `supports_value_class_drop_spine`
+    /// — `Vec` / `HashMap` / `HashSet`) and the enum classifier consult this to
+    /// REJECT a resource carried directly in a tuple/array/collection element
+    /// or enum payload, where the exactly-once close contract is not yet wired
+    /// (a managed/tag-aware clone would shallow-copy the handle and double-close
+    /// at the two owners' drops). Mirrors [`contains_closure_pair`].
+    ///
+    /// Like the sibling predicates, the `UserRecord` / `Enum` arms return
+    /// `false` here: they carry only a registry key, and a nested resource is
+    /// re-discovered (and either admitted via the record spine or rejected at
+    /// the `ResolvedTy` authority `ty_contains_unclonable_opaque`) when codegen
+    /// re-classifies the nested fields/payloads.
+    ///
+    /// [`Resource`]: StateFieldCloneKind::Resource
+    /// [`contains_closure_pair`]: StateFieldCloneKind::contains_closure_pair
+    #[must_use]
+    pub fn contains_resource(&self) -> bool {
+        match self {
+            StateFieldCloneKind::Resource { .. } => true,
+            StateFieldCloneKind::Vec { elem } | StateFieldCloneKind::HashSet { elem } => {
+                elem.contains_resource()
+            }
+            StateFieldCloneKind::Tuple { elems } => {
+                elems.iter().any(StateFieldCloneKind::contains_resource)
+            }
+            StateFieldCloneKind::Array { elem, .. } => elem.contains_resource(),
+            StateFieldCloneKind::HashMap { key, val } => {
+                key.contains_resource() || val.contains_resource()
+            }
+            StateFieldCloneKind::BitCopy { .. }
+            | StateFieldCloneKind::String
+            | StateFieldCloneKind::Bytes
+            | StateFieldCloneKind::IoHandle { .. }
+            | StateFieldCloneKind::UserRecord { .. }
+            | StateFieldCloneKind::Enum { .. }
+            | StateFieldCloneKind::OpaqueHandle { .. }
+            | StateFieldCloneKind::ClosurePair => false,
         }
     }
 
@@ -368,23 +449,37 @@ impl StateFieldCloneKind {
             | StateFieldCloneKind::IoHandle { .. }
             | StateFieldCloneKind::UserRecord { .. }
             | StateFieldCloneKind::Enum { .. }
+            // Resource joins the leaf-admitted set DROP-ONLY, exactly like
+            // ClosurePair: the owning record's synthesised drop body runs the
+            // user `close(self)` and null-stores the slot; the clone arm is a
+            // protocol-conformant runtime refusal (rollback + failure code).
+            // Admitting it here is the whole point of RAII-1 — a record
+            // carrying a `#[resource]` field earns its `RecordInPlace` drop
+            // spine so the handle is closed exactly once on every exit path.
+            | StateFieldCloneKind::Resource { .. }
             | StateFieldCloneKind::ClosurePair => true,
             // Containers: supported iff they carry no opaque handle (the managed
             // clone/free witness fails closed on an opaque-bearing container),
             // no closure pair (the managed clone would shallow-copy the pair
             // and alias its sole-owner environment; closure-pair Vecs ride the
             // dedicated `hew_vec_free_closure_pairs` release, not the managed
-            // witness), and the element/key/value kind is itself supported.
+            // witness), no `#[resource]` handle (RAII-1 wires the exactly-once
+            // close only for direct/nested-record fields, not for a managed
+            // collection element / tuple member whose tag-aware clone would
+            // alias the handle), and the element/key/value kind is itself
+            // supported.
             StateFieldCloneKind::Vec { elem }
             | StateFieldCloneKind::HashSet { elem }
             | StateFieldCloneKind::Array { elem, .. } => {
                 !self.contains_opaque_handle()
                     && !self.contains_closure_pair()
+                    && !self.contains_resource()
                     && elem.supports_value_class_drop_spine()
             }
             StateFieldCloneKind::Tuple { elems } => {
                 !self.contains_opaque_handle()
                     && !self.contains_closure_pair()
+                    && !self.contains_resource()
                     && elems
                         .iter()
                         .all(StateFieldCloneKind::supports_value_class_drop_spine)
@@ -392,6 +487,7 @@ impl StateFieldCloneKind {
             StateFieldCloneKind::HashMap { key, val } => {
                 !self.contains_opaque_handle()
                     && !self.contains_closure_pair()
+                    && !self.contains_resource()
                     && key.supports_value_class_drop_spine()
                     && val.supports_value_class_drop_spine()
             }
@@ -610,15 +706,46 @@ pub fn classify_actor_state_fields_with_opaque_handles(
     enum_layouts: &[EnumLayout],
     opaque_handle_names: &[String],
 ) -> Result<Vec<StateFieldCloneKind>, ClassificationError> {
+    classify_actor_state_fields_with_resource_handles(
+        state_field_tys,
+        record_layouts,
+        enum_layouts,
+        opaque_handle_names,
+        &[],
+    )
+}
+
+/// RAII-1 resource-aware companion to
+/// [`classify_actor_state_fields_with_opaque_handles`].
+///
+/// Identical, but additionally consults `resource_close` so a `#[resource]`
+/// single-slot handle field classifies as [`StateFieldCloneKind::Resource`]
+/// (RAII drop spine) rather than [`StateFieldCloneKind::OpaqueHandle`]. The MIR
+/// owned-aggregate admission gate (`owned_aggregate_record_field_kinds_for_key`)
+/// and the codegen drop-synthesis collector (`collect_reachable_clone_targets`)
+/// both call this with the same `lower.rs`-built registry so admission and
+/// drop-body synthesis classify a resource-bearing record identically.
+///
+/// # Errors
+///
+/// Same conditions as [`classify_actor_state_fields_with_opaque_handles`].
+pub fn classify_actor_state_fields_with_resource_handles(
+    state_field_tys: &[ResolvedTy],
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    opaque_handle_names: &[String],
+    resource_close: &[(String, String)],
+) -> Result<Vec<StateFieldCloneKind>, ClassificationError> {
     let mut visited: HashSet<String> = HashSet::new();
     state_field_tys
         .iter()
         .map(|ty| {
-            classify_state_field_full(
+            classify_state_field_full_impl(
                 ty,
                 record_layouts,
                 enum_layouts,
                 opaque_handle_names,
+                resource_close,
                 &mut visited,
             )
         })
@@ -658,6 +785,7 @@ pub fn classify_owned_string_record_fields(
             | StateFieldCloneKind::UserRecord { .. }
             | StateFieldCloneKind::Enum { .. }
             | StateFieldCloneKind::ClosurePair
+            | StateFieldCloneKind::Resource { .. }
             | StateFieldCloneKind::OpaqueHandle { .. } => return Ok(None),
         }
     }
@@ -729,6 +857,47 @@ pub fn classify_state_field_full(
         record_layouts,
         enum_layouts,
         opaque_handle_names,
+        &[],
+        visited,
+    )
+}
+
+/// RAII-1 resource-aware companion to [`classify_state_field_full`].
+///
+/// Identical to [`classify_state_field_full`] but also consults
+/// `resource_close` — a `(type-name, "<Type>::<close-method>")` registry of
+/// every single-slot `#[resource]` (`#[resource] #[opaque]`) handle that
+/// carries a user close ritual — so such a field classifies as
+/// [`StateFieldCloneKind::Resource`] (RAII drop spine, exactly-once close)
+/// rather than [`StateFieldCloneKind::OpaqueHandle`] (no-op drop / leak). The
+/// registry is built by `lower.rs::resource_opaque_close_registry` from
+/// `module.type_classes` and threaded identically at MIR admission and codegen
+/// drop-synthesis so the two sides cannot drift. Codegen drop-body synthesis
+/// (the on-demand record/tuple/enum drop paths) calls this so a record holding
+/// a resource gets the SAME `Resource` classification the MIR admission gate
+/// used.
+///
+/// # Errors
+///
+/// Same conditions as [`classify_state_field_full`].
+#[allow(
+    clippy::implicit_hasher,
+    reason = "the substrate is internally-consumed; callers don't pick the hasher"
+)]
+pub fn classify_state_field_with_resource_handles(
+    ty: &ResolvedTy,
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    opaque_handle_names: &[String],
+    resource_close: &[(String, String)],
+    visited: &mut HashSet<String>,
+) -> Result<StateFieldCloneKind, ClassificationError> {
+    classify_state_field_full_impl(
+        ty,
+        record_layouts,
+        enum_layouts,
+        opaque_handle_names,
+        resource_close,
         visited,
     )
 }
@@ -739,7 +908,7 @@ fn classify_state_field_impl(
     enum_layouts: &[EnumLayout],
     visited: &mut HashSet<String>,
 ) -> Result<StateFieldCloneKind, ClassificationError> {
-    classify_state_field_full_impl(ty, record_layouts, enum_layouts, &[], visited)
+    classify_state_field_full_impl(ty, record_layouts, enum_layouts, &[], &[], visited)
 }
 
 fn classify_state_field_full_impl(
@@ -747,6 +916,7 @@ fn classify_state_field_full_impl(
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
     opaque_handle_names: &[String],
+    resource_close: &[(String, String)],
     visited: &mut HashSet<String>,
 ) -> Result<StateFieldCloneKind, ClassificationError> {
     match ty {
@@ -785,14 +955,16 @@ fn classify_state_field_full_impl(
                         record_layouts,
                         enum_layouts,
                         opaque_handle_names,
+                        resource_close,
                         visited,
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            if kinds
-                .iter()
-                .any(|kind| kind.contains_opaque_handle() || kind.contains_closure_pair())
-            {
+            if kinds.iter().any(|kind| {
+                kind.contains_opaque_handle()
+                    || kind.contains_closure_pair()
+                    || kind.contains_resource()
+            }) {
                 return Err(ClassificationError::Unsupported {
                     rendered: format!("{ty:?}"),
                 });
@@ -805,9 +977,13 @@ fn classify_state_field_full_impl(
                 record_layouts,
                 enum_layouts,
                 opaque_handle_names,
+                resource_close,
                 visited,
             )?;
-            if elem_kind.contains_opaque_handle() || elem_kind.contains_closure_pair() {
+            if elem_kind.contains_opaque_handle()
+                || elem_kind.contains_closure_pair()
+                || elem_kind.contains_resource()
+            {
                 return Err(ClassificationError::Unsupported {
                     rendered: format!("{ty:?}"),
                 });
@@ -832,6 +1008,7 @@ fn classify_state_field_full_impl(
             record_layouts,
             enum_layouts,
             opaque_handle_names,
+            resource_close,
             visited,
         ),
 
@@ -913,6 +1090,7 @@ fn classify_named(
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
     opaque_handle_names: &[String],
+    resource_close: &[(String, String)],
     visited: &mut HashSet<String>,
 ) -> Result<StateFieldCloneKind, ClassificationError> {
     // Non-opaque user records/enums still shadow builtin names. Keep that
@@ -925,6 +1103,7 @@ fn classify_named(
                 record_layouts,
                 enum_layouts,
                 opaque_handle_names,
+                resource_close,
                 visited,
             );
         }
@@ -934,6 +1113,7 @@ fn classify_named(
                 record_layouts,
                 enum_layouts,
                 opaque_handle_names,
+                resource_close,
                 visited,
             );
         }
@@ -946,6 +1126,34 @@ fn classify_named(
     if args.is_empty() && name == "Connection" {
         return Ok(StateFieldCloneKind::IoHandle {
             kind: IoHandleKind::Connection,
+        });
+    }
+
+    // ── resource-handle discriminator (RAII-1, checked BEFORE is_opaque) ──
+    //
+    // A single-slot `#[resource]` handle (`#[resource] #[opaque]`, e.g.
+    // `regex.Pattern` once F9 stamps it a resource) whose `<Type>::<close>`
+    // symbol is in the `resource_close` registry classifies as `Resource`,
+    // carrying that symbol, so the owning aggregate's drop spine runs the user
+    // close exactly once on every exit path. This MUST precede the `is_opaque`
+    // arm below: such a type arrives with `is_opaque == true` and would
+    // otherwise classify as a no-op-drop `OpaqueHandle` (the W3.029 leak the
+    // bare opaque arm documents). The registry is built ONLY for opaque
+    // single-slot resources (lower.rs `resource_opaque_close_registry`), so a
+    // non-opaque `#[resource]` RECORD — which has a record layout and was
+    // already routed to `classify_user_record` above — is never in it and keeps
+    // its existing `resource_record_close` thunk path. The field name may be
+    // qualified (`regex.Pattern`) while the registry key is the unqualified
+    // decl name (`Pattern`); match both spellings, mirroring the opaque
+    // name-set fallback below.
+    let resource_short = name.rsplit_once('.').map_or(name, |(_, s)| s);
+    if let Some((_, close_symbol)) = resource_close
+        .iter()
+        .find(|(n, _)| n == name || n == resource_short)
+    {
+        return Ok(StateFieldCloneKind::Resource {
+            name: name.to_string(),
+            close_symbol: close_symbol.clone(),
         });
     }
 
@@ -1139,6 +1347,7 @@ fn classify_named(
                 record_layouts,
                 enum_layouts,
                 opaque_handle_names,
+                resource_close,
                 visited,
             )?;
             Ok(StateFieldCloneKind::Vec {
@@ -1164,6 +1373,7 @@ fn classify_named(
                 record_layouts,
                 enum_layouts,
                 opaque_handle_names,
+                resource_close,
                 visited,
             )?;
             let val_kind = classify_state_field_full_impl(
@@ -1171,6 +1381,7 @@ fn classify_named(
                 record_layouts,
                 enum_layouts,
                 opaque_handle_names,
+                resource_close,
                 visited,
             )?;
             Ok(StateFieldCloneKind::HashMap {
@@ -1190,6 +1401,7 @@ fn classify_named(
                 record_layouts,
                 enum_layouts,
                 opaque_handle_names,
+                resource_close,
                 visited,
             )?;
             Ok(StateFieldCloneKind::HashSet {
@@ -1213,6 +1425,7 @@ fn classify_named(
                     record_layouts,
                     enum_layouts,
                     opaque_handle_names,
+                    resource_close,
                     visited,
                 );
             }
@@ -1229,6 +1442,7 @@ fn classify_named(
                 record_layouts,
                 enum_layouts,
                 opaque_handle_names,
+                resource_close,
                 visited,
             )
         }
@@ -1327,6 +1541,7 @@ fn classify_enum(
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
     opaque_handle_names: &[String],
+    resource_close: &[(String, String)],
     visited: &mut HashSet<String>,
 ) -> Result<StateFieldCloneKind, ClassificationError> {
     if !visited.insert(layout.name.clone()) {
@@ -1355,6 +1570,7 @@ fn classify_enum(
                 record_layouts,
                 enum_layouts,
                 opaque_handle_names,
+                resource_close,
                 visited,
             )?;
             // Closure-pair enum payloads stay fail-closed: the tag-aware
@@ -1378,6 +1594,27 @@ fn classify_enum(
                     ),
                 });
             }
+            // `#[resource]` enum payloads stay fail-closed (RAII-1 scope): the
+            // exactly-once close spine is wired for record fields only. A
+            // resource carried DIRECTLY in an enum payload would need the
+            // tag-aware enum drop to run its close on exactly the active
+            // variant — not yet proven — and the enum clone would shallow-copy
+            // the handle (double-close at the two owners' drops). Reject here
+            // so an `Option<Pattern>`-shaped enum never reaches codegen with a
+            // payload the drop/clone walk cannot handle safely. (A resource
+            // nested inside a RECORD payload is admitted: the kind is
+            // `UserRecord`, whose own drop thunk runs the close — that is the
+            // intended RAII-1 record spine, not a direct enum payload.)
+            if matches!(kind, StateFieldCloneKind::Resource { .. }) {
+                return Err(ClassificationError::Unsupported {
+                    rendered: format!(
+                        "enum `{}` variant `{}` carries a `#[resource]` payload field \
+                         ({field_ty:?}); a resource handle directly in an enum payload \
+                         is not yet supported — wrap it in a record",
+                        layout.name, variant.name
+                    ),
+                });
+            }
         }
     }
     visited.remove(&layout.name);
@@ -1391,6 +1628,7 @@ fn classify_user_record(
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
     opaque_handle_names: &[String],
+    resource_close: &[(String, String)],
     visited: &mut HashSet<String>,
 ) -> Result<StateFieldCloneKind, ClassificationError> {
     if !visited.insert(name.to_string()) {
@@ -1418,6 +1656,7 @@ fn classify_user_record(
             record_layouts,
             enum_layouts,
             opaque_handle_names,
+            resource_close,
             visited,
         )?;
     }
@@ -1579,6 +1818,123 @@ mod tests {
                 kind: IoHandleKind::Connection,
             },
         );
+    }
+
+    #[test]
+    fn resource_opaque_field_classifies_as_resource() {
+        // A `#[resource] #[opaque]` single-slot handle whose `<Type>::<close>`
+        // symbol is in the registry classifies as `Resource` (RAII drop spine),
+        // NOT the no-op-drop `OpaqueHandle` leak — checked BEFORE the is_opaque
+        // discriminator. This is the RAII-1 admission primitive.
+        let mut v = HashSet::new();
+        let ty = ResolvedTy::Named {
+            name: "Pattern".to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: true,
+        };
+        let registry = vec![("Pattern".to_string(), "Pattern::free".to_string())];
+        assert_eq!(
+            classify_state_field_with_resource_handles(
+                &ty,
+                &no_records(),
+                &[],
+                &["Pattern".to_string()],
+                &registry,
+                &mut v,
+            )
+            .unwrap(),
+            StateFieldCloneKind::Resource {
+                name: "Pattern".to_string(),
+                close_symbol: "Pattern::free".to_string(),
+            },
+        );
+    }
+
+    #[test]
+    fn resource_opaque_field_without_registry_stays_opaque_handle() {
+        // Without a registry entry (e.g. a `#[resource]` with no close method,
+        // or a plain `#[opaque]`), the same type classifies as `OpaqueHandle` —
+        // status-quo no-op drop. The registry is the sole gate that promotes an
+        // opaque handle to the RAII drop spine, so MIR admission and codegen
+        // synthesis (both threading the SAME registry) cannot disagree.
+        let mut v = HashSet::new();
+        let ty = ResolvedTy::Named {
+            name: "Pattern".to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: true,
+        };
+        assert_eq!(
+            classify_state_field_with_resource_handles(
+                &ty,
+                &no_records(),
+                &[],
+                &["Pattern".to_string()],
+                &[],
+                &mut v,
+            )
+            .unwrap(),
+            StateFieldCloneKind::OpaqueHandle {
+                name: "Pattern".to_string(),
+            },
+        );
+    }
+
+    #[test]
+    fn resource_qualified_field_name_matches_short_registry_key() {
+        // The field type may be qualified (`regex.Pattern`) while the registry
+        // key is the unqualified decl name (`Pattern`). Both spellings must
+        // match, mirroring the opaque name-set fallback.
+        let mut v = HashSet::new();
+        let ty = ResolvedTy::Named {
+            name: "regex.Pattern".to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: true,
+        };
+        let registry = vec![("Pattern".to_string(), "Pattern::free".to_string())];
+        assert!(matches!(
+            classify_state_field_with_resource_handles(
+                &ty,
+                &no_records(),
+                &[],
+                &["Pattern".to_string()],
+                &registry,
+                &mut v,
+            )
+            .unwrap(),
+            StateFieldCloneKind::Resource { .. }
+        ));
+    }
+
+    #[test]
+    fn resource_kind_predicates_and_drop_spine() {
+        let res = StateFieldCloneKind::Resource {
+            name: "Pattern".to_string(),
+            close_symbol: "Pattern::free".to_string(),
+        };
+        // A bare resource leaf IS admitted to the owned-aggregate drop spine
+        // (the close fires in the owning record's drop body) and is a resource.
+        assert!(res.contains_resource());
+        assert!(res.supports_value_class_drop_spine());
+        // It is neither an opaque handle nor a closure pair.
+        assert!(!res.contains_opaque_handle());
+        assert!(!res.contains_closure_pair());
+        // A resource carried DIRECTLY in a container is fail-closed (the managed
+        // /tag-aware clone would alias the handle → double-close): the container
+        // does not support the drop spine, so a record holding it stays at the
+        // W3.029 reject.
+        let vec_of_res = StateFieldCloneKind::Vec {
+            elem: Box::new(res.clone()),
+        };
+        assert!(vec_of_res.contains_resource());
+        assert!(!vec_of_res.supports_value_class_drop_spine());
+        let tuple_of_res = StateFieldCloneKind::Tuple {
+            elems: vec![StateFieldCloneKind::BitCopy { size_bytes: 8 }, res],
+        };
+        assert!(tuple_of_res.contains_resource());
+        assert!(!tuple_of_res.supports_value_class_drop_spine());
     }
 
     #[test]

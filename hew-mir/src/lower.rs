@@ -2848,6 +2848,15 @@ pub fn lower_hir_module_with_facts(
         })
         .collect();
 
+    // RAII-1 complement of `resource_record_close`: the close registry for
+    // single-slot `#[resource] #[opaque]` HANDLES (no record layout, hence
+    // excluded above). Built from the SAME `opaque_handle_names` +
+    // `module.type_classes` the lowering `Builder` ctor used for the admission
+    // gate (`resource_opaque_close_registry`), so codegen's drop-body synthesis
+    // classifies a resource-bearing record identically to MIR admission.
+    let resource_opaque_close =
+        resource_opaque_close_registry(&opaque_handle_names, &module.type_classes);
+
     IrPipeline {
         thir,
         raw_mir,
@@ -2902,6 +2911,7 @@ pub fn lower_hir_module_with_facts(
         user_clone_record_seeds: Vec::new(),
         lint_warnings,
         resource_record_close,
+        resource_opaque_close,
     }
 }
 
@@ -6655,6 +6665,7 @@ fn lower_function(
         machine_layout_names: machine_layout_names.clone(),
         enum_layouts: enum_layouts.to_vec(),
         opaque_handle_names: opaque_handle_names.to_vec(),
+        resource_opaque_close: resource_opaque_close_registry(opaque_handle_names, type_classes),
         supervisor_layout_map: supervisor_layout_map.clone(),
         current_actor_state_fields: current_actor_name
             .and_then(|name| actor_layouts.get(name))
@@ -6942,6 +6953,32 @@ fn lower_function(
         &builder.enum_layouts,
         &source_excluded,
         &composite_drop_allowed,
+    ) {
+        if let Some(diag) = check_to_diagnostic(&check) {
+            diagnostics.push(diag);
+        }
+    }
+    // RAII-1 fail-closed gate: refuse the two unsupported aggregate operations on
+    // a `#[resource] #[opaque]` field — projecting it OUT of the record
+    // (`let d = h.dq`, `h.dq.close()`, `f(h.dq)`) and OVERWRITING it in place
+    // (`h.dq = src`). The recursive `__hew_record_drop_inplace_<R>` thunk frees
+    // the field's runtime context exactly once on every exit path; an extraction
+    // byte-copies the pointer-width handle with NO null-after-move so the thunk
+    // AND the extracted consumer both free it (double-free), and an overwrite
+    // raw-stores over the slot so the OLD handle leaks (no `close`) while `src`
+    // becomes a second owner. Until overwrite-release + source-slot
+    // null-after-move land (RAII-2), the compiler refuses both rather than emit
+    // the leak / double-free (LESSONS boundary-fail-closed, raii-null-after-move).
+    let opaque_resource_names: HashSet<String> = builder
+        .resource_opaque_close
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect();
+    for check in detect_opaque_resource_field_misuse(
+        &raw.blocks,
+        &builder.locals,
+        &builder.binding_locals,
+        &opaque_resource_names,
     ) {
         if let Some(diag) = check_to_diagnostic(&check) {
             diagnostics.push(diag);
@@ -7879,6 +7916,16 @@ struct Builder {
     /// every Builder construction site that may reach
     /// `owned_aggregate_record_field_kinds_for_key`.
     opaque_handle_names: Vec<String>,
+    /// RAII-1 opaque-resource close registry — `(opaque_type, "<Type>::<close>")`
+    /// for every single-slot `#[resource] #[opaque]` handle (see
+    /// `resource_opaque_close_registry`). Threaded into
+    /// `classify_actor_state_fields_with_resource_handles` at the owned-aggregate
+    /// admission gate so a resource-bearing record field classifies as
+    /// `StateFieldCloneKind::Resource` (RAII drop spine) instead of the
+    /// no-op-drop `OpaqueHandle` (the W3.029 leak). Built from
+    /// `opaque_handle_names` + `type_classes` in the Builder ctor; `IrPipeline`
+    /// rebuilds the identical registry for codegen so the two never drift.
+    resource_opaque_close: Vec<(String, String)>,
     current_actor_state_fields: HashMap<String, (FieldOffset, ResolvedTy)>,
     /// Names of every user-defined function declared in the module. Used by
     /// `lower_value` `HirExprKind::Call` to distinguish user-fn callees
@@ -8597,11 +8644,12 @@ impl Builder {
             .map(|(_, ty)| self.normalize_machine_field_ty(ty))
             .collect();
         let record_layouts = self.record_layouts_for_classification();
-        let kinds = crate::state_clone::classify_actor_state_fields_with_opaque_handles(
+        let kinds = crate::state_clone::classify_actor_state_fields_with_resource_handles(
             &field_tys,
             &record_layouts,
             &self.enum_layouts,
             &self.opaque_handle_names,
+            &self.resource_opaque_close,
         )?;
         // Fail closed at the value-class gate, not late at codegen. An admitted
         // owned-aggregate record is seeded for `DropKind::RecordInPlace`, which
@@ -26646,6 +26694,11 @@ impl Builder {
             supervisor_layout_map: self.supervisor_layout_map.clone(),
             enum_layouts: self.enum_layouts.clone(),
             opaque_handle_names: self.opaque_handle_names.clone(),
+            // Inherit the resource registry so a resource-bearing record dropped
+            // inside a closure shim / lambda-actor / gen body classifies the
+            // handle as `Resource` (runs its close), not the empty-registry
+            // `OpaqueHandle` no-op that would leak it.
+            resource_opaque_close: self.resource_opaque_close.clone(),
             machine_layout_names: self.machine_layout_names.clone(),
             module_fn_names: self.module_fn_names.clone(),
             module_generic_fn_names: self.module_generic_fn_names.clone(),
@@ -29383,11 +29436,15 @@ fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
             note: "context-derived MIR place escapes past ExitContext".to_string(),
         }),
         MirCheck::OwnedHandleAggregateDoubleFree {
-            name, handle_ty, ..
+            name,
+            handle_ty,
+            overwrite,
+            ..
         } => Some(MirDiagnostic {
             kind: MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported {
                 name: name.clone(),
                 handle_ty: handle_ty.clone(),
+                overwrite: *overwrite,
             },
             note: "the drop analysis could not prove this owned handle is freed \
                    exactly once after aggregate extraction; the compiler refuses \
@@ -35545,7 +35602,158 @@ fn detect_unproven_aggregate_handle_double_free(
             binding: *binding,
             name,
             handle_ty: render_owned_handle_ty(&ty),
+            overwrite: false,
         });
+    }
+    findings
+}
+
+/// RAII-1 fail-closed gate: refuse any unsupported aggregate operation on a
+/// `#[resource] #[opaque]` handle FIELD — both PROJECTING it OUT of its owning
+/// record (`let d = h.dq`, `h.dq.close()`, `f(h.dq)`; a `RecordFieldLoad`) and
+/// OVERWRITING it in place (`h.dq = src`; a `RecordFieldStore`).
+///
+/// A field-bearing record with an opaque-resource field is admitted to the
+/// owned-aggregate set and freed by the recursive `__hew_record_drop_inplace_<R>`
+/// thunk, which runs the field's user `close(self)` exactly once on every exit
+/// path. Two user operations defeat that exactly-once contract, both because the
+/// handle is a pointer-width value the M-COW spine copies with NO null-after-move
+/// on the source slot:
+///   * EXTRACTION (`let d = h.dq`): the record's thunk AND the extracted handle's
+///     consumer / scope-exit drop both free the one runtime context — a
+///     double-free (abort under `MallocScribble`).
+///   * OVERWRITE (`h.dq = src`): the store raw-overwrites the slot, so the OLD
+///     handle is lost without its `close` (a leak) and `src` is byte-copied in
+///     with no move/null discipline (a second owner that double-frees at its own
+///     drop).
+///
+/// Until overwrite-release + source-slot null-after-move lands (RAII-2), the
+/// compiler refuses both rather than emit the leak / double-free.
+///
+/// Narrow by construction: keyed on the opaque-resource type being the LOADED
+/// field (`RecordFieldLoad.dest`) or the STORED value (`RecordFieldStore.src`,
+/// which for a well-typed store IS the field type) — the W3.029-admitted set
+/// carried in `resource_opaque_close` — so a plain `#[opaque]` handle with no
+/// close (`json.Value`) and every non-resource field access are untouched.
+/// `RecordInit` construction, whole-record move, and the codegen-synthesised
+/// drop thunk never produce these field-load/store instrs, so the auto-drop spine
+/// never trips this gate — only a user-written extraction or reassignment of the
+/// resource leaf does. Reuses the W3.053 aggregate diagnostic
+/// (`OwnedHandleAggregateExtractionUnsupported`, with `overwrite` selecting the
+/// wording): the failure mode and the fail-closed rationale are identical.
+///
+/// LESSONS: boundary-fail-closed, raii-null-after-move; sibling of the
+/// builtin-handle W3.053 gate [`detect_unproven_aggregate_handle_double_free`].
+fn detect_opaque_resource_field_misuse(
+    blocks: &[BasicBlock],
+    local_tys: &[ResolvedTy],
+    binding_locals: &HashMap<BindingId, Place>,
+    opaque_resource_names: &HashSet<String>,
+) -> Vec<MirCheck> {
+    if opaque_resource_names.is_empty() {
+        return Vec::new();
+    }
+    let is_user_opaque_resource = |ty: &ResolvedTy| -> bool {
+        // The registry (`resource_opaque_close`) is the authoritative
+        // opaque-resource set — already filtered to `#[opaque]` ∩
+        // `ResourceMarker::Resource` ∩ user-`close`. A MIR local's `is_opaque`
+        // flag is NOT reliably propagated (the field-load dest arrives as
+        // `is_opaque: false` even for a `#[opaque]` type), so match on the
+        // resolved type NAME against the registry, not the flag: within a
+        // compilation a name resolves to exactly one type, so a `Named` whose
+        // name is in the registry IS that opaque resource. Full-name match with
+        // a short-name fallback bridges any module-prefix asymmetry; the only
+        // residual (a cross-module short-name twin) over-refuses — a compile
+        // error, never a double-free (boundary-fail-closed).
+        matches!(
+            ty,
+            ResolvedTy::Named { name, .. }
+                if opaque_resource_names.contains(name.as_str())
+                    || opaque_resource_names.contains(short_name(name))
+        )
+    };
+    // local → the user binding it carries (for the diagnostic name): the
+    // extracted dest for a load, the mutated record for a store.
+    let mut local_to_binding: HashMap<u32, BindingId> = HashMap::new();
+    for (binding, place) in binding_locals {
+        if let Some(local) = base_local(*place) {
+            local_to_binding.entry(local).or_insert(*binding);
+        }
+    }
+    let mut bind_names: HashMap<BindingId, String> = HashMap::new();
+    for block in blocks {
+        for stmt in &block.statements {
+            if let MirStatement::Bind { binding, name, .. } = stmt {
+                bind_names.entry(*binding).or_insert_with(|| name.clone());
+            }
+        }
+    }
+    // Resolve a stable binding id + human name for `local`, falling back to the
+    // rendered handle type when the local carries no user binding (a temporary).
+    let name_for = |local: u32, ty: &ResolvedTy| -> (BindingId, String) {
+        let binding = local_to_binding
+            .get(&local)
+            .copied()
+            .unwrap_or(BindingId(local));
+        let name = local_to_binding
+            .get(&local)
+            .and_then(|b| bind_names.get(b))
+            .cloned()
+            .unwrap_or_else(|| render_owned_handle_ty(ty));
+        (binding, name)
+    };
+    let mut findings = Vec::new();
+    let mut seen_load: HashSet<u32> = HashSet::new();
+    let mut seen_store: HashSet<u32> = HashSet::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            match instr {
+                // Projecting the resource leaf OUT of the record.
+                Instr::RecordFieldLoad { dest, .. } => {
+                    let Some(dl) = base_local(*dest) else {
+                        continue;
+                    };
+                    let Some(ty) = local_tys.get(dl as usize) else {
+                        continue;
+                    };
+                    if !is_user_opaque_resource(ty) || !seen_load.insert(dl) {
+                        continue;
+                    }
+                    let (binding, name) = name_for(dl, ty);
+                    findings.push(MirCheck::OwnedHandleAggregateDoubleFree {
+                        binding,
+                        name,
+                        handle_ty: render_owned_handle_ty(ty),
+                        overwrite: false,
+                    });
+                }
+                // Overwriting the resource leaf IN PLACE within the record.
+                // The stored value's type IS the field type for a well-typed
+                // `h.dq = src` (nominal: `src` must be the field's opaque
+                // resource). Name the violation by the MUTATED record — the
+                // aggregate whose old field handle is dropped on the floor.
+                Instr::RecordFieldStore { record, src, .. } => {
+                    let Some(sl) = base_local(*src) else {
+                        continue;
+                    };
+                    let Some(ty) = local_tys.get(sl as usize) else {
+                        continue;
+                    };
+                    if !is_user_opaque_resource(ty) || !seen_store.insert(sl) {
+                        continue;
+                    }
+                    let name_local = base_local(*record).unwrap_or(sl);
+                    let (binding, name) = name_for(name_local, ty);
+                    findings.push(MirCheck::OwnedHandleAggregateDoubleFree {
+                        binding,
+                        name,
+                        handle_ty: render_owned_handle_ty(ty),
+                        overwrite: true,
+                    });
+                }
+                _ => {}
+            }
+        }
     }
     findings
 }
@@ -36207,6 +36415,56 @@ fn drop_kind_for(
         | Place::EnumTag(_)
         | Place::EnumVariant { .. } => DropKind::Resource,
     }
+}
+
+/// RAII-1 opaque-resource close registry: `(opaque_type_name, "<Type>::<close>")`
+/// for every single-slot `#[resource] #[opaque]` handle whose close is a USER
+/// method.
+///
+/// Parallel to the `resource_record_close` registry (which keys off
+/// `record_layouts` for `#[resource]` RECORDS): a single-handle opaque
+/// `#[resource]` has no record layout, so it is excluded from
+/// `resource_record_close` — that exclusion is exactly the W3.029 leak this
+/// registry closes. The classifier (`classify_named`) consults it to route such
+/// a handle to [`StateFieldCloneKind::Resource`] instead of the no-op-drop
+/// `OpaqueHandle`, and codegen reads the carried symbol to call `close(self)`
+/// on the owning aggregate's drop spine.
+///
+/// Built identically at the MIR admission gate (the lowering `Builder`) and at
+/// `IrPipeline` construction (for codegen) from the same `opaque_handle_names`
+/// and `type_classes`, so MIR and codegen classify a resource-bearing record
+/// the same way (no drift). The `<short>::<method>` symbol matches
+/// `declare_function`'s flattened `<Self>::<method>` mangling and the spelling
+/// `resource_record_close` / `resource_drop_fn` use.
+///
+/// Runtime-descriptor closes (where `RuntimeDropDescriptor::from_drop_fn_name`
+/// matches, e.g. a builtin handle with a C-ABI release) are excluded: the
+/// `Resource` drop arm calls the close as a user LLVM function, which a C-ABI
+/// runtime symbol would not resolve to. Those keep their existing path.
+fn resource_opaque_close_registry(
+    opaque_handle_names: &[String],
+    type_classes: &hew_hir::TypeClassTable,
+) -> Vec<(String, String)> {
+    use hew_types::runtime_call::RuntimeDropDescriptor;
+    opaque_handle_names
+        .iter()
+        .filter_map(|name| {
+            let short = short_name(name);
+            let (_, close) = type_classes
+                .get(name.as_str())
+                .or_else(|| type_classes.get(short))
+                .and_then(|entry| matches!(entry.0, ResourceMarker::Resource).then_some(entry))?;
+            let close_method = close.as_ref()?;
+            let symbol = format!("{short}::{close_method}");
+            // Open-set USER close only: a builtin runtime-descriptor close is a
+            // C-ABI symbol the `Resource` drop arm cannot call via
+            // `get_function`, so leave such a type on its existing path.
+            if RuntimeDropDescriptor::from_drop_fn_name(&symbol).is_some() {
+                return None;
+            }
+            Some((name.clone(), symbol))
+        })
+        .collect()
 }
 
 fn resource_drop_fn(

@@ -339,6 +339,22 @@ pub struct IrPipeline {
     /// boundary; codegen consumes pipeline fields, never the HIR `type_classes`
     /// table. Mirrors `opaque_handle_names` / `user_clone_record_seeds`.
     pub resource_record_close: Vec<(String, String)>,
+    /// RAII-1 opaque-resource close registry — `(opaque_type, "<Type>::<close>")`
+    /// for every single-slot `#[resource] #[opaque]` handle (see
+    /// `resource_opaque_close_registry`). The COMPLEMENT of
+    /// `resource_record_close`: a single-handle opaque `#[resource]` has no
+    /// record layout, so it is excluded from `resource_record_close` — that
+    /// exclusion is exactly the W3.029 leak this closes.
+    ///
+    /// Codegen's record-drop thunk synthesis (`collect_reachable_clone_targets`
+    /// and the on-demand `emit_aggregate_recursive_drop` named-leaf) consumes
+    /// this so a resource handle embedded in an owned record classifies as
+    /// `StateFieldCloneKind::Resource` and the owning record's drop spine runs
+    /// the handle's `close(self)` exactly once on every exit path. It MUST match
+    /// the registry the MIR admission gate used (both built by
+    /// `resource_opaque_close_registry` from the same inputs) or admission and
+    /// drop-body synthesis would disagree.
+    pub resource_opaque_close: Vec<(String, String)>,
 }
 
 /// A single warning-severity finding from the MIR-stage lint pass.
@@ -5018,6 +5034,14 @@ pub enum MirCheck {
         binding: BindingId,
         name: String,
         handle_ty: String,
+        /// `false` = the handle is projected OUT of the aggregate (a
+        /// `RecordFieldLoad` / element read — `let d = h.dq`); `true` = the
+        /// handle field is OVERWRITTEN in place (a `RecordFieldStore` —
+        /// `h.dq = src`), which drops the old handle on the floor (leak) and
+        /// byte-copies `src` in with no move/null discipline (double-owner).
+        /// Both are the SAME unprovable-exactly-once gate; the flag only
+        /// selects the user-facing remediation wording.
+        overwrite: bool,
     },
 }
 
@@ -5895,13 +5919,20 @@ pub enum MirDiagnosticKind {
         reason: String,
     },
     /// W3.053 fail-closed gate (projected from
-    /// [`MirCheck::OwnedHandleAggregateDoubleFree`]): extracting an owned handle
-    /// (Generator / Stream / Sink / Duplex / Cancellation token / actor handle)
-    /// out of a local aggregate in a shape whose exactly-once free the drop
-    /// analysis cannot prove. The compiler refuses rather than emitting a
-    /// double-free; full aggregate-extraction support lands in v0.5.1. `name` is
-    /// the source binding; `handle_ty` is its rendered type.
-    OwnedHandleAggregateExtractionUnsupported { name: String, handle_ty: String },
+    /// [`MirCheck::OwnedHandleAggregateDoubleFree`]): an owned handle
+    /// (Generator / Stream / Sink / Duplex / Cancellation token / actor handle,
+    /// or a user `#[resource] #[opaque]` handle) is projected OUT of a local
+    /// aggregate (`let d = h.dq`) — or, when `overwrite` is set, OVERWRITTEN in
+    /// place within one (`h.dq = src`) — in a shape whose exactly-once free the
+    /// drop analysis cannot prove. The compiler refuses rather than emitting a
+    /// double-free / leak; full aggregate field-handle support lands in v0.5.1.
+    /// `name` is the source/record binding; `handle_ty` is its rendered type;
+    /// `overwrite` selects the remediation wording (move-out vs. reassignment).
+    OwnedHandleAggregateExtractionUnsupported {
+        name: String,
+        handle_ty: String,
+        overwrite: bool,
+    },
     /// Sole-owner closure-pair ingress gate: a function value flowing into an
     /// owning container position (record field, Vec element, machine payload,
     /// tuple element) is a borrow — a parameter, a collection-element or

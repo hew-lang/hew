@@ -932,7 +932,12 @@ pub(crate) fn collection_layout_witness(
         // ClosurePair is not a runtime-managed collection: its drop is the
         // env free-thunk dispatch in `emit_field_drop_step`'s dedicated arm
         // and its clone is the rollback refusal in `emit_field_clone_step`.
-        | StateFieldCloneKind::ClosurePair => None,
+        | StateFieldCloneKind::ClosurePair
+        // Resource (`#[resource] #[opaque]` handle) is not a runtime-managed
+        // collection: its drop is the user close-symbol call in
+        // `emit_field_drop_step`'s dedicated arm and its clone is the rollback
+        // refusal in `emit_field_clone_step`.
+        | StateFieldCloneKind::Resource { .. } => None,
     })
 }
 

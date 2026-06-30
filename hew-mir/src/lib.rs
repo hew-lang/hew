@@ -73,8 +73,9 @@ pub use ownership::{
 pub use runtime_symbols::UnknownRuntimeSymbol;
 pub use state_clone::{
     classify_actor_state_fields, classify_actor_state_fields_with_enum_layouts,
-    classify_actor_state_fields_with_opaque_handles, classify_owned_string_record_fields,
+    classify_actor_state_fields_with_opaque_handles,
+    classify_actor_state_fields_with_resource_handles, classify_owned_string_record_fields,
     classify_state_field, classify_state_field_full, classify_state_field_with_enum_layouts,
-    mangle_actor_state_clone_fn, mangle_actor_state_drop_fn, ClassificationError, IoHandleKind,
-    StateFieldCloneKind,
+    classify_state_field_with_resource_handles, mangle_actor_state_clone_fn,
+    mangle_actor_state_drop_fn, ClassificationError, IoHandleKind, StateFieldCloneKind,
 };

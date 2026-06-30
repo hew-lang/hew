@@ -1484,6 +1484,17 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// close-then-teardown thunk the up-front synthesis pass emits — the two
     /// synthesis points cannot diverge on whether close fires (spec §3.7.3).
     pub(crate) resource_record_close: &'a [(String, String)],
+    /// RAII-1 opaque-resource close registry — `(opaque_type, "<Type>::<close>")`
+    /// for single-slot `#[resource] #[opaque]` handles
+    /// (`IrPipeline::resource_opaque_close`). The COMPLEMENT of
+    /// `resource_record_close`. Consulted by the on-demand record-drop thunk
+    /// synthesis in `emit_aggregate_recursive_drop` (via
+    /// `classify_record_drop_fields_for_key`) so a record holding a resource
+    /// handle, reached as a tuple/array element, gets the SAME
+    /// `Resource`-classified close-then-teardown body the up-front synthesis
+    /// pass emits — the two synthesis points cannot diverge on whether the
+    /// handle's `close(self)` fires.
+    pub(crate) resource_opaque_close: &'a [(String, String)],
     /// Module-wide actor layouts keyed by `ActorLayout.name` at use sites.
     /// Spawn lowering consumes these layouts to emit the WASM bridge metadata
     /// producer before calling into the runtime spawn ABI.
@@ -8382,6 +8393,18 @@ fn clone_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Clo
              dispatch separately"
                 .into(),
         )),
+        // Resource (`#[resource] #[opaque]` handle) clone is a structural
+        // refusal, not a runtime extern: `emit_field_clone_step` intercepts the
+        // kind and branches to the rollback/fail path (an affine handle has no
+        // dup helper and must not be aliased — double-close at the two owners'
+        // drops). Reaching this per-kind helper means a caller skipped that
+        // interception — fail closed (mirrors ClosurePair).
+        StateFieldCloneKind::Resource { name, .. } => Err(CodegenError::FailClosed(format!(
+            "Resource `{name}` clone reached the per-kind helper; an affine \
+             `#[resource]` handle has no dup helper and the clone refusal is \
+             emitted caller-side in emit_field_clone_step — caller must dispatch \
+             separately (LESSONS: boundary-fail-closed)."
+        ))),
     }
 }
 
@@ -8498,6 +8521,19 @@ fn drop_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Drop
              dispatch separately"
                 .into(),
         )),
+        // Resource (`#[resource] #[opaque]` handle) drop is the user
+        // `close_symbol(self)` call (load the handle ptr, call the
+        // type's close, null-store the slot), emitted by the dedicated arm in
+        // `emit_field_drop_step` — the symbol is per-type (carried in the kind),
+        // not a single named runtime extern, so it cannot be a fixed
+        // `DropHelper`. Fail closed if a caller skipped that interception
+        // (mirrors ClosurePair).
+        StateFieldCloneKind::Resource { name, .. } => Err(CodegenError::FailClosed(format!(
+            "Resource `{name}` drop reached the per-kind helper; the user \
+             close-symbol call is emitted caller-side in emit_field_drop_step \
+             (the close symbol is per-type, not a fixed runtime extern) — caller \
+             must dispatch separately (LESSONS: boundary-fail-closed)."
+        ))),
     }
 }
 
@@ -8709,6 +8745,7 @@ fn emit_state_clone_drop_synthesis<'ctx>(
     enum_inplace_drop_seeds: &[String],
     vec_owned_record_seeds: &[String],
     resource_record_close: &[(String, String)],
+    resource_opaque_close: &[(String, String)],
 ) -> CodegenResult<()> {
     // Per-record AND per-enum helpers must exist before the per-actor body
     // that calls them is emitted. Collect-then-emit two passes. The
@@ -8725,6 +8762,7 @@ fn emit_state_clone_drop_synthesis<'ctx>(
         opaque_handle_names,
         enum_inplace_drop_seeds,
         vec_owned_record_seeds,
+        resource_opaque_close,
     )?;
     // Resource-record close-symbol lookup (spec §3.7.3). A `#[resource]`
     // record's recursive drop thunk must run the user `close(self)` FIRST,
@@ -9362,6 +9400,29 @@ fn emit_field_clone_step<'ctx>(
                 .llvm_ctx_with(|| format!("closure pair clone store term f{field_idx}"))?;
             return Ok(());
         }
+        StateFieldCloneKind::Resource { name, .. } => {
+            // Affine `#[resource] #[opaque]` handle: clone refusal. The
+            // handle owns an external resource (fd/socket/regex program) with
+            // no retain/dup primitive — aliasing it would make two owners
+            // each call `close` at their drop (double-free / double-close).
+            // Branch straight to this step's rollback block: fields cloned by
+            // earlier steps are released by the rollback chain and the
+            // aggregate clone returns the protocol's failure code. Every
+            // reachable caller of a resource-bearing aggregate clone is
+            // refused; this arm is the runtime backstop that refuses instead
+            // of aliasing the handle (`raii-affine-no-dup`).
+            let _ = name;
+            builder
+                .build_unconditional_branch(rollback_bb)
+                .llvm_ctx_with(|| format!("resource clone refusal f{field_idx}"))?;
+            // The caller pre-allocated store_bb for this step; terminate it
+            // (no predecessor, but every block must end in a terminator).
+            builder.position_at_end(store_bb);
+            builder
+                .build_unconditional_branch(next_bb)
+                .llvm_ctx_with(|| format!("resource clone store term f{field_idx}"))?;
+            return Ok(());
+        }
         _ => {}
     }
 
@@ -9667,9 +9728,98 @@ pub(crate) fn emit_field_drop_step<'ctx>(
             builder.position_at_end(cont_bb);
             Ok(())
         }
-        // Bytes: a `bytes` field is a `BytesTriple { ptr, i32, i32 }` embedded
-        // in the parent struct (record field, enum variant payload field, or
-        // actor state field). The data buffer's sole release is
+        // Resource (`#[resource] #[opaque]` handle): the field slot holds the
+        // opaque handle pointer by value. Its sole release is the type's user
+        // `close(self)` method (validated to consume self and return Unit at
+        // MIR registry-build time — Q-β-C, W3.030). Load the handle, and on
+        // a non-null handle call `close_symbol(handle)` then null-store the
+        // slot so any structurally-reachable second drop (cancel-into-trap
+        // after a normal exit, actor-shutdown after a sync drop) lands on
+        // `null` and short-circuits — the same idempotency posture the Bytes
+        // and ClosurePair arms use (LESSONS: raii-null-after-move,
+        // lifecycle-symmetry, dedup-semantic-boundary). The null guard is
+        // load-bearing here (unlike the runtime `*_drop` symbols, a USER
+        // `close` body is not guaranteed null-tolerant), so the close call is
+        // gated behind an explicit is-null branch.
+        //
+        // Symbol resolution: `close_symbol` is the flattened `<Self>::<method>`
+        // name `declare_function` registers the LLVM function under
+        // (`func.name`), so `get_function` finds it directly. Absence means the
+        // `#[resource]`'s `close` body never reached `declare_function` — fail
+        // closed rather than silently no-op a resource drop (the same posture
+        // as `resolve_drop_fn`'s UserClose arm). A param-count != 1 means the
+        // close ABI drifted from `void(self)` (e.g. a non-Unit return added an
+        // sret param) — fail closed instead of calling with a mismatched ABI.
+        StateFieldCloneKind::Resource { name, close_symbol } => {
+            let close_fn = llvm_mod.get_function(close_symbol).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "resource `{name}` field drop: no LLVM function for close symbol \
+                     `{close_symbol}` is registered. A `#[resource]`'s `close` body \
+                     must be declared in an inherent `impl` block whose flattened \
+                     `<Self>::<method>` symbol reaches `declare_function` before drop \
+                     synthesis (W3.030). Refusing to silently no-op a resource drop \
+                     (LESSONS: boundary-fail-closed, no-silent-no-op-stubs, \
+                     lifecycle-symmetry)."
+                ))
+            })?;
+            if close_fn.count_params() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "resource `{name}` field drop: close symbol `{close_symbol}` has \
+                     {} params, expected exactly 1 (the consumed `self` handle). A \
+                     non-Unit return (hidden sret param) or an extra parameter means \
+                     the close ABI drifted from `void(self)` (Q-β-C requires close to \
+                     consume self and return Unit). Refusing to call with a mismatched \
+                     ABI (LESSONS: boundary-fail-closed, ffi-abi-width-mirror).",
+                    close_fn.count_params()
+                )));
+            }
+            let field_ptr = builder
+                .build_struct_gep(
+                    st_ty,
+                    state,
+                    field_idx,
+                    &format!("drop_resource_f{field_idx}_ptr"),
+                )
+                .llvm_ctx_with(|| format!("drop resource gep f{field_idx}"))?;
+            let handle = builder
+                .build_load(
+                    ptr_ty,
+                    field_ptr,
+                    &format!("drop_resource_f{field_idx}_handle"),
+                )
+                .llvm_ctx_with(|| format!("drop resource load f{field_idx}"))?
+                .into_pointer_value();
+            let parent = builder
+                .get_insert_block()
+                .and_then(|bb| bb.get_parent())
+                .ok_or_else(|| {
+                    CodegenError::Llvm("resource field drop has no parent function".into())
+                })?;
+            let close_bb = ctx.append_basic_block(parent, &format!("resource_f{field_idx}_close"));
+            let cont_bb = ctx.append_basic_block(parent, &format!("resource_f{field_idx}_cont"));
+            let is_null = builder
+                .build_is_null(handle, &format!("resource_f{field_idx}_is_null"))
+                .llvm_ctx_with(|| format!("drop resource null check f{field_idx}"))?;
+            builder
+                .build_conditional_branch(is_null, cont_bb, close_bb)
+                .llvm_ctx_with(|| format!("drop resource branch f{field_idx}"))?;
+            builder.position_at_end(close_bb);
+            builder
+                .build_call(
+                    close_fn,
+                    &[handle.into()],
+                    &format!("resource_f{field_idx}_close_call"),
+                )
+                .llvm_ctx_with(|| format!("drop resource close call f{field_idx}"))?;
+            builder
+                .build_store(field_ptr, ptr_ty.const_null())
+                .llvm_ctx_with(|| format!("drop resource null store f{field_idx}"))?;
+            builder
+                .build_unconditional_branch(cont_bb)
+                .llvm_ctx_with(|| format!("drop resource cont branch f{field_idx}"))?;
+            builder.position_at_end(cont_bb);
+            Ok(())
+        }
         // `hew_bytes_drop(data_ptr)` — `data_ptr` is the FIRST field of the
         // triple (`hew-runtime/src/bytes.rs`'s refcount-decrement-and-free-at-
         // zero entry, null-tolerant).
@@ -11061,6 +11211,7 @@ fn collect_reachable_clone_targets(
     opaque_handle_names: &[String],
     extra_enum_seeds: &[String],
     extra_record_seeds: &[String],
+    resource_opaque_close: &[(String, String)],
 ) -> CodegenResult<(
     Vec<(String, Vec<StateFieldCloneKind>)>,
     Vec<(String, EnumVariantKinds)>,
@@ -11142,11 +11293,12 @@ fn collect_reachable_clone_targets(
                      have rejected this with MissingRecordLayout"
                     ))
                 })?;
-            let kinds = hew_mir::classify_actor_state_fields_with_opaque_handles(
+            let kinds = hew_mir::classify_actor_state_fields_with_resource_handles(
                 &record.field_tys,
                 pipeline_records,
                 enum_layouts,
                 opaque_handle_names,
+                resource_opaque_close,
             )
             .map_err(|e| {
                 CodegenError::FailClosed(format!(
@@ -11184,11 +11336,12 @@ fn collect_reachable_clone_targets(
                 for field_ty in &variant.field_tys {
                     let mut visited: std::collections::HashSet<String> =
                         std::collections::HashSet::new();
-                    let kind = hew_mir::classify_state_field_full(
+                    let kind = hew_mir::classify_state_field_with_resource_handles(
                         field_ty,
                         pipeline_records,
                         enum_layouts,
                         opaque_handle_names,
+                        resource_opaque_close,
                         &mut visited,
                     )
                     .map_err(|e| {
@@ -11276,7 +11429,11 @@ fn collect_clone_target_names(
         // ClosurePair has no synthesised per-type helper: its drop is the
         // inline env free-thunk dispatch and its clone is the inline
         // rollback refusal. Nothing to enqueue.
-        | StateFieldCloneKind::ClosurePair => {}
+        | StateFieldCloneKind::ClosurePair
+        // Resource has no synthesised per-type clone/drop helper: its drop is
+        // the inline user close-symbol call and its clone is the inline
+        // rollback refusal. Nothing to enqueue.
+        | StateFieldCloneKind::Resource { .. } => {}
     }
 }
 
@@ -12144,6 +12301,9 @@ fn overwrite_heap_leaf_capacity(
             StateFieldCloneKind::BitCopy { .. }
             | StateFieldCloneKind::IoHandle { .. }
             | StateFieldCloneKind::OpaqueHandle { .. }
+            // Resource clone is refused, so an affine handle can never alias a
+            // new value's leaf — it contributes no neutralise-tracked slot.
+            | StateFieldCloneKind::Resource { .. }
             | StateFieldCloneKind::ClosurePair => 0,
         };
     }
@@ -12316,6 +12476,9 @@ fn emit_overwrite_collect_leaves<'ctx>(
             StateFieldCloneKind::BitCopy { .. }
             | StateFieldCloneKind::IoHandle { .. }
             | StateFieldCloneKind::OpaqueHandle { .. }
+            // Resource contributes no collected leaf (clone refused → cannot
+            // alias); the drop spine closes it directly.
+            | StateFieldCloneKind::Resource { .. }
             | StateFieldCloneKind::ClosurePair => None,
         };
         if let Some(slot_src) = leaf_slot {
@@ -12660,6 +12823,22 @@ fn emit_overwrite_neutralize_leaves<'ctx>(
                 builder
                     .build_store(env_slot, ptr_ty.const_null())
                     .llvm_ctx_with(|| format!("{label} closure env null store"))?;
+            }
+            StateFieldCloneKind::Resource { .. } => {
+                // Resource clone is refused, so the old handle cannot be
+                // aliased through a dup — but a move-and-restore could
+                // re-store the same pointer with no retain to compare
+                // against. Leak-over-UAF: null the handle slot so the drop
+                // spine's close call no-ops (the close symbol is
+                // null-guarded), matching the IoHandle/ClosurePair overwrite
+                // posture. The final actor-shutdown drop still closes a live
+                // (non-overwritten) handle.
+                let slot = builder
+                    .build_struct_gep(st_ty, base, idx_u, &format!("{label}_resource_ptr"))
+                    .llvm_ctx_with(|| format!("{label} resource gep"))?;
+                builder
+                    .build_store(slot, ptr_ty.const_null())
+                    .llvm_ctx_with(|| format!("{label} resource null store"))?;
             }
             StateFieldCloneKind::BitCopy { .. } | StateFieldCloneKind::OpaqueHandle { .. } => {}
         }
@@ -17856,6 +18035,12 @@ fn lower_actor_state_field_store(
             // time by the transitive closure-field walk, so no overwrite
             // reaches this store; grouped with the no-release kinds.
             | StateFieldCloneKind::ClosurePair
+            // Resource: leak-over-UAF on overwrite (clone refused; a
+            // move-and-restore could alias with no retain to compare). The
+            // neutralise step already nulled the slot; grouped with the
+            // no-release kinds. The final actor-shutdown drop closes a live
+            // handle.
+            | StateFieldCloneKind::Resource { .. }
             | StateFieldCloneKind::OpaqueHandle { .. } => {}
         }
     }
@@ -19813,6 +19998,7 @@ fn state_kind_key_fragment(kind: &StateFieldCloneKind) -> String {
         StateFieldCloneKind::UserRecord { name } => format!("record_{name}"),
         StateFieldCloneKind::Enum { name } => format!("enum_{name}"),
         StateFieldCloneKind::ClosurePair => "closure_pair".to_string(),
+        StateFieldCloneKind::Resource { name, .. } => format!("resource_{name}"),
         StateFieldCloneKind::OpaqueHandle { name } => format!("opaque_{name}"),
     }
 }
@@ -25227,6 +25413,32 @@ fn record_inplace_drop_name(ty: &ResolvedTy) -> CodegenResult<String> {
     }
 }
 
+/// True when `ty` is a non-owning actor-pid leaf (`LocalPid` / `RemotePid`):
+/// an `ActorPid`-family builtin handle whose `close_method()` is `None`.
+///
+/// Such a handle carries the `Resource` affine marker (so the move-checker
+/// tracks it) but owns NO runtime context — its drop frees nothing: there is
+/// no `hew_pid_*` release ABI, and the MIR producer's `resource_drop_fn`
+/// correctly yields `None`. It is the ONLY `DropKind::Resource` shape the MIR
+/// emits with `ElabDrop::drop_fn = None` on a coherent path, hence the ONLY
+/// type the `Resource` drop arm may lower to a genuine no-op.
+///
+/// Mirrors the MIR-side single-source-of-truth `ty_is_nonowning_handle_leaf`
+/// (`hew-mir/src/lower.rs`). The `close_method().is_none()` guard keeps the
+/// exemption executable: a future pid-like builtin that gains a release ABI
+/// would no longer match here and would fall through to the `DropKind::Resource`
+/// fail-closed arm rather than silently no-op'ing a drop that now needs a close.
+fn ty_is_nonowning_pid_leaf(ty: &ResolvedTy) -> bool {
+    matches!(
+        ty,
+        ResolvedTy::Named { builtin: Some(b), .. }
+            if matches!(
+                b.handle_family(),
+                Some(hew_types::builtin_type::BuiltinHandleFamily::ActorPid)
+            ) && b.close_method().is_none()
+    )
+}
+
 fn emit_one_elab_drop_unguarded(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> CodegenResult<()> {
     // catch-all: a future drop-kind variant must force a compile error
     // here so a new heap-owning class can never be silently folded into
@@ -25606,13 +25818,59 @@ fn emit_one_elab_drop_unguarded(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> Code
             fn_ctx.builder.position_at_end(cont_bb);
             Ok(())
         }
-        // The pre-W5.011 kinds (`@resource` close, Duplex close protocols,
-        // lambda-actor release) all dispatch through the `ElabDrop::drop_fn`
-        // close-symbol path — `Some` calls the type's close ritual via
-        // `lower_drop`; `None` is a genuine trivial drop (a value class with
-        // no side-effecting close).
-        hew_mir::DropKind::Resource
-        | hew_mir::DropKind::DuplexClose
+        // `@resource` scope-exit drop. `Some(drop_fn)` dispatches the type's
+        // close ritual — a runtime-substrate C-ABI symbol or a user
+        // `#[resource]` `close` — through `lower_drop` / `resolve_drop_fn`.
+        //
+        // `drop_fn: None` is legitimate for EXACTLY ONE shape: a non-owning
+        // actor-pid leaf (`LocalPid` / `RemotePid`). Such a handle carries the
+        // `Resource` affine marker (for move-tracking) but owns NO runtime
+        // context — there is no `hew_pid_*` release ABI, so the MIR producer's
+        // `resource_drop_fn` correctly yields `None` (`build_lifo_drops`
+        // `AffineResource` arm). Its drop frees nothing; the no-op IS the
+        // intended cleanup, made explicit here via `ty_is_nonowning_pid_leaf`.
+        //
+        // EVERY other `(Resource, None)` is a LOST CLOSE: an owned resource
+        // that DOES own a `close`/`release` — a user `#[resource]`, an opaque
+        // `#[resource]` handle, `CancellationToken`, a builtin stream/sink/
+        // duplex handle — reached codegen with its `drop_fn` dropped, OR an
+        // unrecognised structural `Place` fell through `drop_kind_for`'s
+        // catch-all to `DropKind::Resource` (`hew-mir/src/lower.rs` emits that
+        // shape deliberately as a backstop, deferring the diagnostic to HERE).
+        // Silently no-op'ing it would skip a close the resource needs — an
+        // under-drop leak, or a runtime context left open. Fail closed instead:
+        // over-drop >> under-drop, and never a silent non-drop on a path that
+        // needs a close.
+        // LESSONS: boundary-fail-closed, no-silent-no-op-stubs, lifecycle-symmetry.
+        hew_mir::DropKind::Resource => match drop.drop_fn {
+            Some(ref drop_fn) => lower_drop(fn_ctx, drop.place, drop_fn),
+            None if ty_is_nonowning_pid_leaf(&drop.ty) => Ok(()),
+            None => Err(CodegenError::FailClosed(format!(
+                "DropKind::Resource @ {place:?}: an owned `@resource` of type \
+                 {ty:?} reached codegen with `ElabDrop::drop_fn = None`, but only \
+                 a non-owning actor-pid leaf (`LocalPid`/`RemotePid` — `ActorPid` \
+                 handle family with no `close_method`) may drop to a no-op. A \
+                 resource that owns a `close`/`release` ritual must carry its \
+                 drop_fn to the close-symbol dispatch; reaching here with `None` \
+                 means the close was lost during MIR drop elaboration, or an \
+                 unrecognised `Place` fell through `drop_kind_for`'s catch-all to \
+                 `DropKind::Resource`. Refusing to silently skip the drop — that \
+                 would leak the resource or leave its runtime context open \
+                 (LESSONS: boundary-fail-closed, no-silent-no-op-stubs, \
+                 lifecycle-symmetry).",
+                place = drop.place,
+                ty = drop.ty,
+            ))),
+        },
+        // M2 substrate handle drops: Duplex close-both-directions, half-handle
+        // close-one-direction, lambda-actor release. The production MIR always
+        // carries the matching `Runtime`-descriptor `drop_fn` here (`Some` →
+        // `lower_drop`); the `None => Ok(())` path is retained for the
+        // refcounted / null-tolerant handle shapes the drop-plan validator
+        // admits with no drop_fn. The `DropKind::Resource` fail-closed split
+        // above is intentionally scoped to the generic `@resource` close arm
+        // and leaves these M2 kinds unchanged.
+        hew_mir::DropKind::DuplexClose
         | hew_mir::DropKind::DuplexHalfClose(_)
         | hew_mir::DropKind::LambdaActorRelease => match drop.drop_fn {
             Some(ref drop_fn) => lower_drop(fn_ctx, drop.place, drop_fn),
@@ -25999,10 +26257,12 @@ fn classify_record_drop_fields_for_key(
         .iter()
         .map(|field_ty| {
             let mut visited = HashSet::new();
-            hew_mir::classify_state_field_with_enum_layouts(
+            hew_mir::classify_state_field_with_resource_handles(
                 field_ty,
                 &record_layouts,
                 fn_ctx.enum_layouts,
+                &[],
+                fn_ctx.resource_opaque_close,
                 &mut visited,
             )
             .map_err(|e| {
@@ -35565,6 +35825,7 @@ fn lower_function<'ctx>(
     dyn_vtable_registry: &[DynVtableInstance],
     const_globals: &ConstGlobalMap<'ctx>,
     resource_record_close: &[(String, String)],
+    resource_opaque_close: &[(String, String)],
     emit_wasm_entry_alias: bool,
     has_supervisors: bool,
     module_uses_runtime: bool,
@@ -36406,6 +36667,7 @@ fn lower_function<'ctx>(
         record_layouts,
         fn_symbols,
         resource_record_close,
+        resource_opaque_close,
         actor_layouts,
         machine_layouts,
         enum_layouts,
@@ -37359,6 +37621,7 @@ fn build_module_for_target<'ctx>(
         &enum_inplace_drop_seeds,
         &vec_owned_record_seeds,
         &pipeline.resource_record_close,
+        &pipeline.resource_opaque_close,
     )?;
     // Supervisor bootstraps replace the MIR-side synthesised body wholesale
     // with the canonical `hew_supervisor_new` → `add_child_spec` × N →
@@ -37438,6 +37701,7 @@ fn build_module_for_target<'ctx>(
             &pipeline.dyn_vtable_registry,
             &const_globals,
             &pipeline.resource_record_close,
+            &pipeline.resource_opaque_close,
             emit_wasm_entry_alias,
             !pipeline.supervisor_layouts.is_empty(),
             module_uses_runtime,
@@ -42337,6 +42601,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         }
     }
 
@@ -42847,6 +43112,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         };
 
         let ctx = Context::create();
@@ -42940,6 +43206,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         }
     }
 
@@ -43071,6 +43338,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         }
     }
 
@@ -43186,6 +43454,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         }
     }
 
@@ -43321,6 +43590,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         }
     }
 
@@ -43456,6 +43726,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "handler_ctx_test")
@@ -43543,6 +43814,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "ctx_field_test")
@@ -43624,6 +43896,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         };
         let ctx = Context::create();
         let m =
@@ -43908,6 +44181,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         }
     }
 
@@ -44124,6 +44398,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         }
     }
 
@@ -44915,6 +45190,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         };
 
         let ctx = Context::create();
@@ -45011,6 +45287,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "gen_yield_codegen_test")
@@ -45173,6 +45450,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "make_generator_codegen_test")
@@ -45262,6 +45540,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "cancel_token_is_cancelled_codegen_test")
@@ -45537,6 +45816,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         };
         let syms = empty_fn_symbols();
         let err = verify_drop_dispatch_resolves(&pipeline, &syms)
@@ -45609,6 +45889,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         };
         let syms = empty_fn_symbols();
         verify_drop_dispatch_resolves(&pipeline, &syms)
@@ -45667,6 +45948,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         };
         let found = uses_wasm_excluded_symbol(&pipeline)
             .expect("Duplex::close ElabDrop must be flagged as WASM-excluded");
@@ -45703,6 +45985,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         }
     }
 
@@ -46320,6 +46603,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         };
         assert!(
             uses_wasm_excluded_symbol(&pipeline).is_none(),
@@ -46632,6 +46916,7 @@ mod tests {
             record_layouts: &harness.record_layouts,
             fn_symbols: &harness.fn_symbols,
             resource_record_close: &[],
+            resource_opaque_close: &[],
             actor_layouts: &harness.actor_layouts,
             machine_layouts: &harness.machine_layouts,
             enum_layouts: &[],
@@ -48589,6 +48874,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         };
         let tmp = tempfile::Builder::new()
             .prefix("hew-dyn-coerce-ok-")
@@ -48741,6 +49027,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         };
         let tmp = tempfile::Builder::new()
             .prefix("hew-dyn-coerce-miss-")
@@ -49133,6 +49420,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         };
         let tmp = tempfile::Builder::new()
             .prefix("hew-frame-owned-drop-fail-")
@@ -49160,6 +49448,236 @@ mod tests {
             other => panic!("expected FailClosed for FrameOwned + drop_fn=Some; got {other:?}"),
         }
         drop(tmp);
+    }
+
+    // -----------------------------------------------------------------
+    // RAII fail-closed split (`DropKind::Resource`, `drop_fn: None`).
+    //
+    // A `DropKind::Resource` with `ElabDrop::drop_fn = None` is a genuine
+    // no-op ONLY for a non-owning actor-pid leaf (`LocalPid`/`RemotePid`).
+    // An owned resource that OWNS a `close`/`release` reaching codegen with
+    // `drop_fn: None` is a LOST CLOSE — codegen must fail closed rather than
+    // silently skip the drop. Previously this arm folded the `None` case to
+    // `Ok(())` for every kind, masking exactly this hazard: over-drop >>
+    // under-drop, never a silent non-drop on a path that needs a close.
+    // LESSONS: boundary-fail-closed, no-silent-no-op-stubs, lifecycle-symmetry.
+    // -----------------------------------------------------------------
+
+    /// Build the textual-IR emit options for a fail-closed drop probe.
+    fn resource_drop_probe_options<'a>(
+        module_name: &'a str,
+        out_dir: &'a std::path::Path,
+    ) -> EmitOptions<'a> {
+        EmitOptions {
+            module_name,
+            out_dir,
+            native: false,
+            wasm: false,
+            target_triple: None,
+            debug: false,
+            opt_level: OptLevel::O0,
+            source_path: None,
+        }
+    }
+
+    /// A minimal `IrPipeline` whose sole function `name` declares one local of
+    /// type `resource_ty`, an empty body, and a `Return`-exit drop plan that
+    /// drops `Place::Local(0)` as `(DropKind::Resource, drop_fn: None)`.
+    fn single_resource_drop_pipeline(name: &str, resource_ty: ResolvedTy) -> IrPipeline {
+        use hew_mir::{
+            BasicBlock, DropKind, DropPlan, ElabDrop, ElaboratedMirFunction, ExitPath,
+            FunctionCallConv, Terminator,
+        };
+        let raw = RawMirFunction {
+            name: name.to_string(),
+            return_ty: ResolvedTy::Unit,
+            call_conv: FunctionCallConv::Default,
+            params: vec![],
+            locals: vec![resource_ty.clone()],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
+            blocks: vec![BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Return,
+            }],
+            decisions: vec![],
+            intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
+            lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::BTreeMap::new(),
+        };
+        let elab = ElaboratedMirFunction {
+            name: name.to_string(),
+            return_ty: ResolvedTy::Unit,
+            statements: vec![],
+            decisions: vec![],
+            blocks: vec![],
+            drop_plans: vec![(
+                ExitPath::Return { block: 0 },
+                DropPlan {
+                    drops: vec![ElabDrop {
+                        place: Place::Local(0),
+                        ty: resource_ty,
+                        drop_fn: None,
+                        kind: DropKind::Resource,
+                        guard: None,
+                    }],
+                },
+            )],
+            coroutine: None,
+            lambda_captures: vec![],
+        };
+        IrPipeline {
+            thir: vec![],
+            raw_mir: vec![raw],
+            checked_mir: vec![],
+            elaborated_mir: vec![elab],
+            diagnostics: vec![],
+            wire_layouts: std::sync::Arc::default(),
+            opaque_handle_names: vec![],
+            record_layouts: vec![],
+            actor_layouts: vec![],
+            supervisor_layouts: vec![],
+            machine_layouts: vec![],
+            enum_layouts: vec![],
+            regex_literals: vec![],
+            user_consts: Vec::new(),
+            extern_decls: vec![],
+            dyn_vtable_registry: vec![],
+            hashmap_lowering_facts: vec![],
+            hashset_lowering_facts: vec![],
+            actor_send_aliasing: std::collections::HashMap::new(),
+            polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
+            lint_warnings: vec![],
+            resource_record_close: vec![],
+            resource_opaque_close: vec![],
+        }
+    }
+
+    /// A `CancellationToken` owns a `release` close. Reaching codegen as a
+    /// `(DropKind::Resource, drop_fn: None)` drop is a lost close — emit must
+    /// fail closed, not silently skip the release.
+    #[test]
+    fn resource_drop_none_drop_fn_owning_close_fails_closed() {
+        let pipeline = single_resource_drop_pipeline("lost_close", ResolvedTy::CancellationToken);
+        let tmp = tempfile::Builder::new()
+            .prefix("hew-resource-lost-close-")
+            .tempdir()
+            .expect("create out_dir");
+        let options = resource_drop_probe_options("lost_close", tmp.path());
+        let err = emit_module(&pipeline, &options).expect_err(
+            "(DropKind::Resource, drop_fn=None) on a close-owning type must fail closed",
+        );
+        match err {
+            CodegenError::FailClosed(msg) => {
+                assert!(
+                    msg.contains("DropKind::Resource") && msg.contains("drop_fn = None"),
+                    "fail-closed message must name the kind + the lost drop_fn; got:\n{msg}"
+                );
+                assert!(
+                    msg.contains("non-owning actor-pid leaf"),
+                    "fail-closed message must explain the only legitimate no-op shape; got:\n{msg}"
+                );
+                assert!(
+                    msg.contains("CancellationToken"),
+                    "fail-closed message must name the offending resource type; got:\n{msg}"
+                );
+            }
+            other => panic!(
+                "expected FailClosed for (Resource, None) on a close-owning type; got {other:?}"
+            ),
+        }
+        drop(tmp);
+    }
+
+    /// A `LocalPid` is a non-owning actor-pid leaf: it owns no runtime context
+    /// and has no release ABI, so `(DropKind::Resource, drop_fn: None)` is its
+    /// intended no-op. The fail-closed split must PRESERVE this — emit cleanly.
+    #[test]
+    fn resource_drop_none_drop_fn_pid_leaf_is_noop() {
+        let pid_ty = ResolvedTy::Named {
+            name: "LocalPid".to_string(),
+            args: vec![ResolvedTy::I64],
+            builtin: Some(BuiltinType::LocalPid),
+            is_opaque: false,
+        };
+        let pipeline = single_resource_drop_pipeline("pid_noop", pid_ty);
+        let tmp = tempfile::Builder::new()
+            .prefix("hew-resource-pid-noop-")
+            .tempdir()
+            .expect("create out_dir");
+        let options = resource_drop_probe_options("pid_noop", tmp.path());
+        emit_module(&pipeline, &options).expect(
+            "(DropKind::Resource, drop_fn=None) on a non-owning pid leaf must stay a no-op \
+             and emit cleanly",
+        );
+        drop(tmp);
+    }
+
+    /// `ty_is_nonowning_pid_leaf` is the discriminator that splits the
+    /// intentional-no-op handles from the lost-close fail-closed path. It must
+    /// admit ONLY the `ActorPid`-family leaves with no `close_method`
+    /// (`LocalPid`/`RemotePid`) and reject everything that owns a close —
+    /// including `LambdaPid`, which is `ActorPid`-family but DOES carry a
+    /// `close`, and a `CancellationToken` / user `#[resource]` named type.
+    #[test]
+    fn ty_is_nonowning_pid_leaf_admits_only_no_close_actor_pids() {
+        let local_pid = ResolvedTy::Named {
+            name: "LocalPid".to_string(),
+            args: vec![ResolvedTy::I64],
+            builtin: Some(BuiltinType::LocalPid),
+            is_opaque: false,
+        };
+        let remote_pid = ResolvedTy::Named {
+            name: "RemotePid".to_string(),
+            args: vec![ResolvedTy::I64],
+            builtin: Some(BuiltinType::RemotePid),
+            is_opaque: false,
+        };
+        assert!(
+            ty_is_nonowning_pid_leaf(&local_pid),
+            "LocalPid is a non-owning actor-pid leaf (no close ABI)"
+        );
+        assert!(
+            ty_is_nonowning_pid_leaf(&remote_pid),
+            "RemotePid is a non-owning actor-pid leaf (no close ABI)"
+        );
+
+        // LambdaPid IS `ActorPid`-family but owns a `close` — it must NOT be
+        // exempted (the `close_method().is_none()` guard is load-bearing).
+        let lambda_pid = ResolvedTy::Named {
+            name: "LambdaPid".to_string(),
+            args: vec![ResolvedTy::I64, ResolvedTy::I64],
+            builtin: Some(BuiltinType::LambdaPid),
+            is_opaque: false,
+        };
+        assert!(
+            !ty_is_nonowning_pid_leaf(&lambda_pid),
+            "LambdaPid owns a `close`; it must fall through to the fail-closed arm"
+        );
+        // A builtin handle that owns a close but is not pid-family.
+        assert!(
+            !ty_is_nonowning_pid_leaf(&ResolvedTy::CancellationToken),
+            "CancellationToken owns a `release` ritual; not a no-op leaf"
+        );
+        // A user `#[resource]` named type (no builtin discriminator).
+        let user_resource = ResolvedTy::Named {
+            name: "DbConn".to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: false,
+        };
+        assert!(
+            !ty_is_nonowning_pid_leaf(&user_resource),
+            "a user named type is never a builtin pid leaf"
+        );
     }
 
     // ---- LlvmResultExt / llvm_err! text-identity tests ---------------------
@@ -49420,6 +49938,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         }
     }
 
@@ -49651,6 +50170,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         }
     }
 
@@ -49848,6 +50368,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         }
     }
 
@@ -50042,6 +50563,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         };
 
         let ctx = Context::create();
@@ -50252,6 +50774,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         }
     }
 

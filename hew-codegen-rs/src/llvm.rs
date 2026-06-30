@@ -8382,6 +8382,18 @@ fn clone_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Clo
              dispatch separately"
                 .into(),
         )),
+        // Resource (`#[resource] #[opaque]` handle) clone is a structural
+        // refusal, not a runtime extern: `emit_field_clone_step` intercepts the
+        // kind and branches to the rollback/fail path (an affine handle has no
+        // dup helper and must not be aliased — double-close at the two owners'
+        // drops). Reaching this per-kind helper means a caller skipped that
+        // interception — fail closed (mirrors ClosurePair).
+        StateFieldCloneKind::Resource { name, .. } => Err(CodegenError::FailClosed(format!(
+            "Resource `{name}` clone reached the per-kind helper; an affine \
+             `#[resource]` handle has no dup helper and the clone refusal is \
+             emitted caller-side in emit_field_clone_step — caller must dispatch \
+             separately (LESSONS: boundary-fail-closed)."
+        ))),
     }
 }
 
@@ -8498,6 +8510,19 @@ fn drop_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Drop
              dispatch separately"
                 .into(),
         )),
+        // Resource (`#[resource] #[opaque]` handle) drop is the user
+        // `close_symbol(self)` call (load the handle ptr, call the
+        // type's close, null-store the slot), emitted by the dedicated arm in
+        // `emit_field_drop_step` — the symbol is per-type (carried in the kind),
+        // not a single named runtime extern, so it cannot be a fixed
+        // `DropHelper`. Fail closed if a caller skipped that interception
+        // (mirrors ClosurePair).
+        StateFieldCloneKind::Resource { name, .. } => Err(CodegenError::FailClosed(format!(
+            "Resource `{name}` drop reached the per-kind helper; the user \
+             close-symbol call is emitted caller-side in emit_field_drop_step \
+             (the close symbol is per-type, not a fixed runtime extern) — caller \
+             must dispatch separately (LESSONS: boundary-fail-closed)."
+        ))),
     }
 }
 
@@ -9362,6 +9387,29 @@ fn emit_field_clone_step<'ctx>(
                 .llvm_ctx_with(|| format!("closure pair clone store term f{field_idx}"))?;
             return Ok(());
         }
+        StateFieldCloneKind::Resource { name, .. } => {
+            // Affine `#[resource] #[opaque]` handle: clone refusal. The
+            // handle owns an external resource (fd/socket/regex program) with
+            // no retain/dup primitive — aliasing it would make two owners
+            // each call `close` at their drop (double-free / double-close).
+            // Branch straight to this step's rollback block: fields cloned by
+            // earlier steps are released by the rollback chain and the
+            // aggregate clone returns the protocol's failure code. Every
+            // reachable caller of a resource-bearing aggregate clone is
+            // refused; this arm is the runtime backstop that refuses instead
+            // of aliasing the handle (`raii-affine-no-dup`).
+            let _ = name;
+            builder
+                .build_unconditional_branch(rollback_bb)
+                .llvm_ctx_with(|| format!("resource clone refusal f{field_idx}"))?;
+            // The caller pre-allocated store_bb for this step; terminate it
+            // (no predecessor, but every block must end in a terminator).
+            builder.position_at_end(store_bb);
+            builder
+                .build_unconditional_branch(next_bb)
+                .llvm_ctx_with(|| format!("resource clone store term f{field_idx}"))?;
+            return Ok(());
+        }
         _ => {}
     }
 
@@ -9667,9 +9715,98 @@ pub(crate) fn emit_field_drop_step<'ctx>(
             builder.position_at_end(cont_bb);
             Ok(())
         }
-        // Bytes: a `bytes` field is a `BytesTriple { ptr, i32, i32 }` embedded
-        // in the parent struct (record field, enum variant payload field, or
-        // actor state field). The data buffer's sole release is
+        // Resource (`#[resource] #[opaque]` handle): the field slot holds the
+        // opaque handle pointer by value. Its sole release is the type's user
+        // `close(self)` method (validated to consume self and return Unit at
+        // MIR registry-build time — Q-β-C, W3.030). Load the handle, and on
+        // a non-null handle call `close_symbol(handle)` then null-store the
+        // slot so any structurally-reachable second drop (cancel-into-trap
+        // after a normal exit, actor-shutdown after a sync drop) lands on
+        // `null` and short-circuits — the same idempotency posture the Bytes
+        // and ClosurePair arms use (LESSONS: raii-null-after-move,
+        // lifecycle-symmetry, dedup-semantic-boundary). The null guard is
+        // load-bearing here (unlike the runtime `*_drop` symbols, a USER
+        // `close` body is not guaranteed null-tolerant), so the close call is
+        // gated behind an explicit is-null branch.
+        //
+        // Symbol resolution: `close_symbol` is the flattened `<Self>::<method>`
+        // name `declare_function` registers the LLVM function under
+        // (`func.name`), so `get_function` finds it directly. Absence means the
+        // `#[resource]`'s `close` body never reached `declare_function` — fail
+        // closed rather than silently no-op a resource drop (the same posture
+        // as `resolve_drop_fn`'s UserClose arm). A param-count != 1 means the
+        // close ABI drifted from `void(self)` (e.g. a non-Unit return added an
+        // sret param) — fail closed instead of calling with a mismatched ABI.
+        StateFieldCloneKind::Resource { name, close_symbol } => {
+            let close_fn = llvm_mod.get_function(close_symbol).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "resource `{name}` field drop: no LLVM function for close symbol \
+                     `{close_symbol}` is registered. A `#[resource]`'s `close` body \
+                     must be declared in an inherent `impl` block whose flattened \
+                     `<Self>::<method>` symbol reaches `declare_function` before drop \
+                     synthesis (W3.030). Refusing to silently no-op a resource drop \
+                     (LESSONS: boundary-fail-closed, no-silent-no-op-stubs, \
+                     lifecycle-symmetry)."
+                ))
+            })?;
+            if close_fn.count_params() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "resource `{name}` field drop: close symbol `{close_symbol}` has \
+                     {} params, expected exactly 1 (the consumed `self` handle). A \
+                     non-Unit return (hidden sret param) or an extra parameter means \
+                     the close ABI drifted from `void(self)` (Q-β-C requires close to \
+                     consume self and return Unit). Refusing to call with a mismatched \
+                     ABI (LESSONS: boundary-fail-closed, ffi-abi-width-mirror).",
+                    close_fn.count_params()
+                )));
+            }
+            let field_ptr = builder
+                .build_struct_gep(
+                    st_ty,
+                    state,
+                    field_idx,
+                    &format!("drop_resource_f{field_idx}_ptr"),
+                )
+                .llvm_ctx_with(|| format!("drop resource gep f{field_idx}"))?;
+            let handle = builder
+                .build_load(
+                    ptr_ty,
+                    field_ptr,
+                    &format!("drop_resource_f{field_idx}_handle"),
+                )
+                .llvm_ctx_with(|| format!("drop resource load f{field_idx}"))?
+                .into_pointer_value();
+            let parent = builder
+                .get_insert_block()
+                .and_then(|bb| bb.get_parent())
+                .ok_or_else(|| {
+                    CodegenError::Llvm("resource field drop has no parent function".into())
+                })?;
+            let close_bb = ctx.append_basic_block(parent, &format!("resource_f{field_idx}_close"));
+            let cont_bb = ctx.append_basic_block(parent, &format!("resource_f{field_idx}_cont"));
+            let is_null = builder
+                .build_is_null(handle, &format!("resource_f{field_idx}_is_null"))
+                .llvm_ctx_with(|| format!("drop resource null check f{field_idx}"))?;
+            builder
+                .build_conditional_branch(is_null, cont_bb, close_bb)
+                .llvm_ctx_with(|| format!("drop resource branch f{field_idx}"))?;
+            builder.position_at_end(close_bb);
+            builder
+                .build_call(
+                    close_fn,
+                    &[handle.into()],
+                    &format!("resource_f{field_idx}_close_call"),
+                )
+                .llvm_ctx_with(|| format!("drop resource close call f{field_idx}"))?;
+            builder
+                .build_store(field_ptr, ptr_ty.const_null())
+                .llvm_ctx_with(|| format!("drop resource null store f{field_idx}"))?;
+            builder
+                .build_unconditional_branch(cont_bb)
+                .llvm_ctx_with(|| format!("drop resource cont branch f{field_idx}"))?;
+            builder.position_at_end(cont_bb);
+            Ok(())
+        }
         // `hew_bytes_drop(data_ptr)` — `data_ptr` is the FIRST field of the
         // triple (`hew-runtime/src/bytes.rs`'s refcount-decrement-and-free-at-
         // zero entry, null-tolerant).
@@ -11276,7 +11413,11 @@ fn collect_clone_target_names(
         // ClosurePair has no synthesised per-type helper: its drop is the
         // inline env free-thunk dispatch and its clone is the inline
         // rollback refusal. Nothing to enqueue.
-        | StateFieldCloneKind::ClosurePair => {}
+        | StateFieldCloneKind::ClosurePair
+        // Resource has no synthesised per-type clone/drop helper: its drop is
+        // the inline user close-symbol call and its clone is the inline
+        // rollback refusal. Nothing to enqueue.
+        | StateFieldCloneKind::Resource { .. } => {}
     }
 }
 
@@ -12144,6 +12285,9 @@ fn overwrite_heap_leaf_capacity(
             StateFieldCloneKind::BitCopy { .. }
             | StateFieldCloneKind::IoHandle { .. }
             | StateFieldCloneKind::OpaqueHandle { .. }
+            // Resource clone is refused, so an affine handle can never alias a
+            // new value's leaf — it contributes no neutralise-tracked slot.
+            | StateFieldCloneKind::Resource { .. }
             | StateFieldCloneKind::ClosurePair => 0,
         };
     }
@@ -12316,6 +12460,9 @@ fn emit_overwrite_collect_leaves<'ctx>(
             StateFieldCloneKind::BitCopy { .. }
             | StateFieldCloneKind::IoHandle { .. }
             | StateFieldCloneKind::OpaqueHandle { .. }
+            // Resource contributes no collected leaf (clone refused → cannot
+            // alias); the drop spine closes it directly.
+            | StateFieldCloneKind::Resource { .. }
             | StateFieldCloneKind::ClosurePair => None,
         };
         if let Some(slot_src) = leaf_slot {
@@ -12660,6 +12807,22 @@ fn emit_overwrite_neutralize_leaves<'ctx>(
                 builder
                     .build_store(env_slot, ptr_ty.const_null())
                     .llvm_ctx_with(|| format!("{label} closure env null store"))?;
+            }
+            StateFieldCloneKind::Resource { .. } => {
+                // Resource clone is refused, so the old handle cannot be
+                // aliased through a dup — but a move-and-restore could
+                // re-store the same pointer with no retain to compare
+                // against. Leak-over-UAF: null the handle slot so the drop
+                // spine's close call no-ops (the close symbol is
+                // null-guarded), matching the IoHandle/ClosurePair overwrite
+                // posture. The final actor-shutdown drop still closes a live
+                // (non-overwritten) handle.
+                let slot = builder
+                    .build_struct_gep(st_ty, base, idx_u, &format!("{label}_resource_ptr"))
+                    .llvm_ctx_with(|| format!("{label} resource gep"))?;
+                builder
+                    .build_store(slot, ptr_ty.const_null())
+                    .llvm_ctx_with(|| format!("{label} resource null store"))?;
             }
             StateFieldCloneKind::BitCopy { .. } | StateFieldCloneKind::OpaqueHandle { .. } => {}
         }
@@ -17856,6 +18019,12 @@ fn lower_actor_state_field_store(
             // time by the transitive closure-field walk, so no overwrite
             // reaches this store; grouped with the no-release kinds.
             | StateFieldCloneKind::ClosurePair
+            // Resource: leak-over-UAF on overwrite (clone refused; a
+            // move-and-restore could alias with no retain to compare). The
+            // neutralise step already nulled the slot; grouped with the
+            // no-release kinds. The final actor-shutdown drop closes a live
+            // handle.
+            | StateFieldCloneKind::Resource { .. }
             | StateFieldCloneKind::OpaqueHandle { .. } => {}
         }
     }
@@ -19813,6 +19982,7 @@ fn state_kind_key_fragment(kind: &StateFieldCloneKind) -> String {
         StateFieldCloneKind::UserRecord { name } => format!("record_{name}"),
         StateFieldCloneKind::Enum { name } => format!("enum_{name}"),
         StateFieldCloneKind::ClosurePair => "closure_pair".to_string(),
+        StateFieldCloneKind::Resource { name, .. } => format!("resource_{name}"),
         StateFieldCloneKind::OpaqueHandle { name } => format!("opaque_{name}"),
     }
 }

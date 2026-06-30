@@ -3,6 +3,8 @@
     reason = "shared integration-test helpers are not used by every test target"
 )]
 
+pub mod leak_slope;
+
 use fd_lock::RwLock;
 use hew_testutil::{BoundedExecError, DEFAULT_EXEC_TIMEOUT};
 use std::ffi::OsStr;

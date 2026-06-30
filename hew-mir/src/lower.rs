@@ -6958,6 +6958,30 @@ fn lower_function(
             diagnostics.push(diag);
         }
     }
+    // RAII-1 fail-closed gate: refuse projecting a `#[resource] #[opaque]` field
+    // OUT of its owning record. The recursive `__hew_record_drop_inplace_<R>`
+    // thunk frees the field's runtime context exactly once on every exit path;
+    // an extraction (`let d = h.dq`, `h.dq.close()`, `f(h.dq)`) byte-copies the
+    // pointer-width handle with NO null-after-move on the source slot, so the
+    // thunk AND the extracted handle's consumer/drop both free it — a
+    // double-free. Until the source-slot null-after-move lands (RAII-2), the
+    // compiler refuses the projection rather than emit it (LESSONS
+    // boundary-fail-closed, raii-null-after-move).
+    let opaque_resource_names: HashSet<String> = builder
+        .resource_opaque_close
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect();
+    for check in detect_opaque_resource_field_extraction(
+        &raw.blocks,
+        &builder.locals,
+        &builder.binding_locals,
+        &opaque_resource_names,
+    ) {
+        if let Some(diag) = check_to_diagnostic(&check) {
+            diagnostics.push(diag);
+        }
+    }
 
     LoweredFunction {
         thir,
@@ -35573,6 +35597,107 @@ fn detect_unproven_aggregate_handle_double_free(
             name,
             handle_ty: render_owned_handle_ty(&ty),
         });
+    }
+    findings
+}
+
+/// RAII-1 fail-closed gate: refuse PROJECTING a `#[resource] #[opaque]` field
+/// OUT of its owning record (`let d = h.dq`, `h.dq.close()`, `f(h.dq)`).
+///
+/// A field-bearing record with an opaque-resource field is admitted to the
+/// owned-aggregate set and freed by the recursive `__hew_record_drop_inplace_<R>`
+/// thunk, which runs the field's user `close(self)` exactly once on every exit
+/// path. Projecting the field out byte-copies the pointer-width handle into a
+/// second binding with NO null-after-move on the source slot (the M-COW spine
+/// emits no retain, and full aggregate-extraction null-after-move is RAII-2
+/// territory): the record's thunk AND the extracted handle's consumer / scope-exit
+/// drop then both free the one runtime context — a double-free (abort under
+/// `MallocScribble`). Until the source-slot null-after-move lands, the compiler
+/// refuses the projection rather than emit the double-free.
+///
+/// Narrow by construction: keyed on the LOADED field's type being a USER
+/// opaque-resource (the W3.029-admitted set carried in `resource_opaque_close`),
+/// so a plain `#[opaque]` handle with no close (`json.Value`) and every
+/// non-resource field read are untouched. The recursive drop thunk and the
+/// state-clone/drop synthesis are codegen-level (not MIR `RecordFieldLoad`), so
+/// the auto-drop spine never trips this gate — only a user-written projection of
+/// the resource leaf does. Reuses the W3.053 aggregate-extraction diagnostic
+/// (`OwnedHandleAggregateExtractionUnsupported`): the failure mode and the
+/// fail-closed rationale are identical.
+///
+/// LESSONS: boundary-fail-closed, raii-null-after-move; sibling of the
+/// builtin-handle W3.053 gate [`detect_unproven_aggregate_handle_double_free`].
+fn detect_opaque_resource_field_extraction(
+    blocks: &[BasicBlock],
+    local_tys: &[ResolvedTy],
+    binding_locals: &HashMap<BindingId, Place>,
+    opaque_resource_names: &HashSet<String>,
+) -> Vec<MirCheck> {
+    if opaque_resource_names.is_empty() {
+        return Vec::new();
+    }
+    let is_user_opaque_resource = |ty: &ResolvedTy| -> bool {
+        // The registry (`resource_opaque_close`) is the authoritative
+        // opaque-resource set — already filtered to `#[opaque]` ∩
+        // `ResourceMarker::Resource` ∩ user-`close`. A MIR local's `is_opaque`
+        // flag is NOT reliably propagated (the field-load dest arrives as
+        // `is_opaque: false` even for a `#[opaque]` type), so match on the
+        // resolved type NAME against the registry, not the flag: within a
+        // compilation a name resolves to exactly one type, so a `Named` whose
+        // name is in the registry IS that opaque resource. Full-name match with
+        // a short-name fallback bridges any module-prefix asymmetry; the only
+        // residual (a cross-module short-name twin) over-refuses — a compile
+        // error, never a double-free (boundary-fail-closed).
+        matches!(
+            ty,
+            ResolvedTy::Named { name, .. }
+                if opaque_resource_names.contains(name.as_str())
+                    || opaque_resource_names.contains(short_name(name))
+        )
+    };
+    // dest local → the user binding receiving it (for the diagnostic name).
+    let mut local_to_binding: HashMap<u32, BindingId> = HashMap::new();
+    for (binding, place) in binding_locals {
+        if let Some(local) = base_local(*place) {
+            local_to_binding.entry(local).or_insert(*binding);
+        }
+    }
+    let mut bind_names: HashMap<BindingId, String> = HashMap::new();
+    for block in blocks {
+        for stmt in &block.statements {
+            if let MirStatement::Bind { binding, name, .. } = stmt {
+                bind_names.entry(*binding).or_insert_with(|| name.clone());
+            }
+        }
+    }
+    let mut findings = Vec::new();
+    let mut seen: HashSet<u32> = HashSet::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            let Instr::RecordFieldLoad { dest, .. } = instr else {
+                continue;
+            };
+            let Some(dl) = base_local(*dest) else {
+                continue;
+            };
+            let Some(ty) = local_tys.get(dl as usize) else {
+                continue;
+            };
+            if !is_user_opaque_resource(ty) || !seen.insert(dl) {
+                continue;
+            }
+            let binding = local_to_binding.get(&dl).copied().unwrap_or(BindingId(dl));
+            let name = local_to_binding
+                .get(&dl)
+                .and_then(|b| bind_names.get(b))
+                .cloned()
+                .unwrap_or_else(|| render_owned_handle_ty(ty));
+            findings.push(MirCheck::OwnedHandleAggregateDoubleFree {
+                binding,
+                name,
+                handle_ty: render_owned_handle_ty(ty),
+            });
+        }
     }
     findings
 }

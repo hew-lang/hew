@@ -1,8 +1,8 @@
 //! Hew standard library — the Rust-backed FFI surface for every `std` module.
 //!
-//! This crate folds the formerly-separate per-module std crates into a single
-//! `hew-std` crate so the workspace builds one staticlib (`libhew_std.a`) and
-//! `hew-lib` carries one stdlib dependency. Each module keeps its own
+//! This crate contains the Rust-backed implementation for all std modules, so
+//! the workspace builds one staticlib (`libhew_std.a`) and `hew-lib` carries one
+//! stdlib dependency. Each module keeps its own
 //! `#[no_mangle]` C ABI symbols (`hew_json_*`, `hew_http_*`, `hew_cron_*`, …) in
 //! the shared global namespace; the linker's per-function dead-strip prunes
 //! whichever modules a program does not reference, so consolidation is

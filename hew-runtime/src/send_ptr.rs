@@ -3,13 +3,7 @@
 //! Several runtime subsystems need to keep a `*mut T` inside a container that
 //! must itself be `Send` (e.g. a `HashMap` shared between profiler threads, a
 //! crossbeam queue exercised from multiple producer threads, or a registry
-//! reachable from a worker thread).  Each subsystem previously open-coded the
-//! same wrapper:
-//!
-//! ```ignore
-//! struct SendPtr(*mut T);
-//! unsafe impl Send for SendPtr {}
-//! ```
+//! reachable from a worker thread).
 //!
 //! This helper centralizes the marker boilerplate while keeping the safety
 //! discipline local.  The constructor is `unsafe` and the inner pointer is

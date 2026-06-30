@@ -380,11 +380,10 @@ pub unsafe extern "C" fn hew_hashset_to_vec_layout(set: *const HewLayoutHashSet)
 /// element layout's clone discipline and fails closed on unsupported
 /// layout-managed key paths.
 ///
-/// Pairs with [`hew_hashset_free_layout`]. Using the retired legacy
-/// `hew_hashset_clone` against a `HewLayoutHashSet*` would reinterpret the
+/// Pairs with [`hew_hashset_free_layout`]. Layout-backed sets must not be
+/// cloned through the non-layout `hew_hashset_clone` ABI: that would reinterpret
 /// 16-byte-stride layout entries as 48-byte `HewMapEntry` records (W4.045
-/// use-after-free, `lifecycle-symmetry` / `codegen-abi-authority` P0) —
-/// that symbol is no longer exported (W5.003).
+/// use-after-free, `lifecycle-symmetry` / `codegen-abi-authority` P0).
 ///
 /// # Safety
 ///

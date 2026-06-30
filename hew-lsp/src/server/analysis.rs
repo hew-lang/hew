@@ -41,9 +41,8 @@ pub(super) fn source_for_path(
 /// Recursively populate `ImportDecl::resolved_items` for user and file imports.
 ///
 /// After parsing a document the `resolved_items` field on every `ImportDecl`
-/// is `None`.  The CLI fills these in by reading files from disk; the LSP
-/// historically skipped this step, so imported modules were only resolved via
-/// the stdlib `ModuleRegistry` and not from the project tree.
+/// is `None`. The LSP must resolve imported modules from the project tree, not
+/// just through the stdlib `ModuleRegistry`.
 ///
 /// This function walks `items`, finds unresolved `Import` nodes, locates the
 /// corresponding `.hew` file relative to `source_dir`, reads it — **preferring

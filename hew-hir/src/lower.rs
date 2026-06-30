@@ -456,15 +456,11 @@ const SYNTHETIC_STREAM_TRY_NEXT_LAYOUT_ITEM: ItemId = ItemId(u32::MAX / 2 - 16);
 const SYNTHETIC_STREAM_SEND_LAYOUT_ITEM: ItemId = ItemId(u32::MAX / 2 - 17);
 
 // NB the synthetic-builtin sentinel band (`u32::MAX / 2 - N`) is
-// documentation/segregation only since `ResolvedRef::Builtin` landed: MIR
-// no longer consults a band predicate to decide whether an Item-resolved
-// name may reach a user-name → C-symbol bridge (that bridge is deleted;
-// the typed family travels on the resolution itself). The former
-// `SYNTHETIC_BUILTIN_ITEM_FLOOR` constant had no remaining consumers and
-// was removed; the load-bearing invariant — every minted sentinel id is
-// pairwise distinct (two colliding ids silently overwrite each other's
-// `fn_registry` row) — is pinned by
-// `synthetic_builtin_sentinel_ids_are_pairwise_distinct`.
+// documentation/segregation only. Item-resolved builtin names carry their
+// typed family on the resolution itself, not through a numeric band predicate.
+// The load-bearing invariant — every minted sentinel id is pairwise distinct
+// (two colliding ids silently overwrite each other's `fn_registry` row) — is
+// pinned by `synthetic_builtin_sentinel_ids_are_pairwise_distinct`.
 
 /// Bare-name variants of built-in tagged unions. Counted into the pre-pass's
 /// `bare_counts` so a user enum that redeclares one of them correctly marks
@@ -1669,8 +1665,8 @@ pub fn lower_program_with_mono_cap(
                 // Register methods of any V0b-acceptable impl block under the
                 // qualified `<SelfType>::<method>` name so call sites can
                 // resolve them in the second pass. The Index special-case is
-                // a subset of this — its methods landed in `fn_registry`
-                // historically via the same key shape.
+                // a subset of this because its methods use the same
+                // `fn_registry` key shape.
                 if let TypeExpr::Named {
                     name,
                     type_args: target_type_args,
@@ -3381,11 +3377,9 @@ pub fn lower_program_with_mono_cap(
                             {
                                 // Conservatively lower only the imported impl
                                 // methods that are provably safe cross-module;
-                                // skip the rest so they stay dropped exactly as
-                                // before this change (the module still imports
-                                // cleanly, and an actual call to a skipped method
-                                // fails closed downstream just as it did on the
-                                // prior, drop-everything path).
+                                // skip the rest so the module still imports
+                                // cleanly and an actual call to a skipped method
+                                // fails closed downstream.
                                 //
                                 // A method is skipped when EITHER:
                                 //  - its body calls a bare name that resolves in

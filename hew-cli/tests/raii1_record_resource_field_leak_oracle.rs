@@ -146,6 +146,18 @@ fn main() {\n\
     h.dq.close();\n\
 }\n";
 
+/// R8 reject control: OVERWRITING the resource field in place (`h.dq = src`)
+/// raw-stores over the slot — the OLD handle leaks (its `close` never runs) and
+/// `src` becomes a second owner of a context the record's drop thunk will also
+/// free. A distinct escape vector from extraction (a store, not a load); must be
+/// REFUSED at compile time until overwrite-release lands (RAII-2).
+const OVERWRITE_BODY: &str = "\
+fn main() {\n\
+    var h = Holder { dq: unsafe { hew_deque_new() } };\n\
+    h.dq = unsafe { hew_deque_new() };\n\
+    println(\"reassigned\");\n\
+}\n";
+
 /// Acceptance target: the bare resource-field record must ADMIT (no W3.029).
 const ADMIT_BODY: &str = "\
 fn main() {\n\
@@ -283,6 +295,43 @@ fn assert_extraction_rejected(name: &str, source: &str) {
     assert!(
         combined.contains("extracting an owned handle") || combined.contains("out of an aggregate"),
         "{name}: expected the owned-handle aggregate-extraction refusal, got:\n{combined}"
+    );
+}
+
+/// Assert that overwriting a `#[resource]` field in place (`h.dq = src`,
+/// lowering to `Instr::RecordFieldStore`) is REFUSED at compile time with the
+/// overwrite-specific wording. The store vector is distinct from extraction: the
+/// store gate keys on the stored value's opaque-resource type, not a field load.
+fn assert_overwrite_rejected(name: &str, source: &str) {
+    let dir = tempfile::Builder::new()
+        .prefix(&format!("raii1-overwrite-{name}-"))
+        .tempdir()
+        .expect("tempdir");
+    let hew_src = dir.path().join(format!("{name}.hew"));
+    std::fs::write(&hew_src, source).expect("write hew source");
+
+    let output = Command::new(hew_binary())
+        .args(["check", hew_src.to_str().expect("hew src utf-8")])
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew check");
+
+    assert!(
+        !output.status.success(),
+        "{name}: overwriting a `#[resource]` field in place must be REFUSED (the old \
+         field handle leaks — its `close` never runs — and the stored value is \
+         double-owned with the record's drop thunk), but compile succeeded:\n{}",
+        describe_output(&output)
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("overwriting an owned handle field"),
+        "{name}: expected the owned-handle overwrite refusal (distinct from the \
+         extraction wording), got:\n{combined}"
     );
 }
 
@@ -453,6 +502,14 @@ fn raii1_record_resource_field_extraction_via_bind_rejected() {
 #[test]
 fn raii1_record_resource_field_extraction_via_method_rejected() {
     assert_extraction_rejected("extract_method", &src(EXTRACT_VIA_METHOD_BODY));
+}
+
+/// R8 reject control: overwriting the field in place (`h.dq = src`) is REFUSED.
+/// Closes the drop-safety hole where `Instr::RecordFieldStore` raw-stored over an
+/// opaque-resource slot — leaking the old handle and double-owning the new one.
+#[test]
+fn raii1_record_resource_field_overwrite_rejected() {
+    assert_overwrite_rejected("overwrite_assign", &src(OVERWRITE_BODY));
 }
 
 /// Acceptance target: the bare resource-field record ADMITS (no W3.029).

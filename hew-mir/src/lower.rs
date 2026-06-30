@@ -6958,21 +6958,23 @@ fn lower_function(
             diagnostics.push(diag);
         }
     }
-    // RAII-1 fail-closed gate: refuse projecting a `#[resource] #[opaque]` field
-    // OUT of its owning record. The recursive `__hew_record_drop_inplace_<R>`
-    // thunk frees the field's runtime context exactly once on every exit path;
-    // an extraction (`let d = h.dq`, `h.dq.close()`, `f(h.dq)`) byte-copies the
-    // pointer-width handle with NO null-after-move on the source slot, so the
-    // thunk AND the extracted handle's consumer/drop both free it — a
-    // double-free. Until the source-slot null-after-move lands (RAII-2), the
-    // compiler refuses the projection rather than emit it (LESSONS
-    // boundary-fail-closed, raii-null-after-move).
+    // RAII-1 fail-closed gate: refuse the two unsupported aggregate operations on
+    // a `#[resource] #[opaque]` field — projecting it OUT of the record
+    // (`let d = h.dq`, `h.dq.close()`, `f(h.dq)`) and OVERWRITING it in place
+    // (`h.dq = src`). The recursive `__hew_record_drop_inplace_<R>` thunk frees
+    // the field's runtime context exactly once on every exit path; an extraction
+    // byte-copies the pointer-width handle with NO null-after-move so the thunk
+    // AND the extracted consumer both free it (double-free), and an overwrite
+    // raw-stores over the slot so the OLD handle leaks (no `close`) while `src`
+    // becomes a second owner. Until overwrite-release + source-slot
+    // null-after-move land (RAII-2), the compiler refuses both rather than emit
+    // the leak / double-free (LESSONS boundary-fail-closed, raii-null-after-move).
     let opaque_resource_names: HashSet<String> = builder
         .resource_opaque_close
         .iter()
         .map(|(name, _)| name.clone())
         .collect();
-    for check in detect_opaque_resource_field_extraction(
+    for check in detect_opaque_resource_field_misuse(
         &raw.blocks,
         &builder.locals,
         &builder.binding_locals,
@@ -29434,11 +29436,15 @@ fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
             note: "context-derived MIR place escapes past ExitContext".to_string(),
         }),
         MirCheck::OwnedHandleAggregateDoubleFree {
-            name, handle_ty, ..
+            name,
+            handle_ty,
+            overwrite,
+            ..
         } => Some(MirDiagnostic {
             kind: MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported {
                 name: name.clone(),
                 handle_ty: handle_ty.clone(),
+                overwrite: *overwrite,
             },
             note: "the drop analysis could not prove this owned handle is freed \
                    exactly once after aggregate extraction; the compiler refuses \
@@ -35596,38 +35602,49 @@ fn detect_unproven_aggregate_handle_double_free(
             binding: *binding,
             name,
             handle_ty: render_owned_handle_ty(&ty),
+            overwrite: false,
         });
     }
     findings
 }
 
-/// RAII-1 fail-closed gate: refuse PROJECTING a `#[resource] #[opaque]` field
-/// OUT of its owning record (`let d = h.dq`, `h.dq.close()`, `f(h.dq)`).
+/// RAII-1 fail-closed gate: refuse any unsupported aggregate operation on a
+/// `#[resource] #[opaque]` handle FIELD — both PROJECTING it OUT of its owning
+/// record (`let d = h.dq`, `h.dq.close()`, `f(h.dq)`; a `RecordFieldLoad`) and
+/// OVERWRITING it in place (`h.dq = src`; a `RecordFieldStore`).
 ///
 /// A field-bearing record with an opaque-resource field is admitted to the
 /// owned-aggregate set and freed by the recursive `__hew_record_drop_inplace_<R>`
 /// thunk, which runs the field's user `close(self)` exactly once on every exit
-/// path. Projecting the field out byte-copies the pointer-width handle into a
-/// second binding with NO null-after-move on the source slot (the M-COW spine
-/// emits no retain, and full aggregate-extraction null-after-move is RAII-2
-/// territory): the record's thunk AND the extracted handle's consumer / scope-exit
-/// drop then both free the one runtime context — a double-free (abort under
-/// `MallocScribble`). Until the source-slot null-after-move lands, the compiler
-/// refuses the projection rather than emit the double-free.
+/// path. Two user operations defeat that exactly-once contract, both because the
+/// handle is a pointer-width value the M-COW spine copies with NO null-after-move
+/// on the source slot:
+///   * EXTRACTION (`let d = h.dq`): the record's thunk AND the extracted handle's
+///     consumer / scope-exit drop both free the one runtime context — a
+///     double-free (abort under `MallocScribble`).
+///   * OVERWRITE (`h.dq = src`): the store raw-overwrites the slot, so the OLD
+///     handle is lost without its `close` (a leak) and `src` is byte-copied in
+///     with no move/null discipline (a second owner that double-frees at its own
+///     drop).
 ///
-/// Narrow by construction: keyed on the LOADED field's type being a USER
-/// opaque-resource (the W3.029-admitted set carried in `resource_opaque_close`),
-/// so a plain `#[opaque]` handle with no close (`json.Value`) and every
-/// non-resource field read are untouched. The recursive drop thunk and the
-/// state-clone/drop synthesis are codegen-level (not MIR `RecordFieldLoad`), so
-/// the auto-drop spine never trips this gate — only a user-written projection of
-/// the resource leaf does. Reuses the W3.053 aggregate-extraction diagnostic
-/// (`OwnedHandleAggregateExtractionUnsupported`): the failure mode and the
-/// fail-closed rationale are identical.
+/// Until overwrite-release + source-slot null-after-move lands (RAII-2), the
+/// compiler refuses both rather than emit the leak / double-free.
+///
+/// Narrow by construction: keyed on the opaque-resource type being the LOADED
+/// field (`RecordFieldLoad.dest`) or the STORED value (`RecordFieldStore.src`,
+/// which for a well-typed store IS the field type) — the W3.029-admitted set
+/// carried in `resource_opaque_close` — so a plain `#[opaque]` handle with no
+/// close (`json.Value`) and every non-resource field access are untouched.
+/// `RecordInit` construction, whole-record move, and the codegen-synthesised
+/// drop thunk never produce these field-load/store instrs, so the auto-drop spine
+/// never trips this gate — only a user-written extraction or reassignment of the
+/// resource leaf does. Reuses the W3.053 aggregate diagnostic
+/// (`OwnedHandleAggregateExtractionUnsupported`, with `overwrite` selecting the
+/// wording): the failure mode and the fail-closed rationale are identical.
 ///
 /// LESSONS: boundary-fail-closed, raii-null-after-move; sibling of the
 /// builtin-handle W3.053 gate [`detect_unproven_aggregate_handle_double_free`].
-fn detect_opaque_resource_field_extraction(
+fn detect_opaque_resource_field_misuse(
     blocks: &[BasicBlock],
     local_tys: &[ResolvedTy],
     binding_locals: &HashMap<BindingId, Place>,
@@ -35655,7 +35672,8 @@ fn detect_opaque_resource_field_extraction(
                     || opaque_resource_names.contains(short_name(name))
         )
     };
-    // dest local → the user binding receiving it (for the diagnostic name).
+    // local → the user binding it carries (for the diagnostic name): the
+    // extracted dest for a load, the mutated record for a store.
     let mut local_to_binding: HashMap<u32, BindingId> = HashMap::new();
     for (binding, place) in binding_locals {
         if let Some(local) = base_local(*place) {
@@ -35670,33 +35688,71 @@ fn detect_opaque_resource_field_extraction(
             }
         }
     }
+    // Resolve a stable binding id + human name for `local`, falling back to the
+    // rendered handle type when the local carries no user binding (a temporary).
+    let name_for = |local: u32, ty: &ResolvedTy| -> (BindingId, String) {
+        let binding = local_to_binding
+            .get(&local)
+            .copied()
+            .unwrap_or(BindingId(local));
+        let name = local_to_binding
+            .get(&local)
+            .and_then(|b| bind_names.get(b))
+            .cloned()
+            .unwrap_or_else(|| render_owned_handle_ty(ty));
+        (binding, name)
+    };
     let mut findings = Vec::new();
-    let mut seen: HashSet<u32> = HashSet::new();
+    let mut seen_load: HashSet<u32> = HashSet::new();
+    let mut seen_store: HashSet<u32> = HashSet::new();
     for block in blocks {
         for instr in &block.instructions {
-            let Instr::RecordFieldLoad { dest, .. } = instr else {
-                continue;
-            };
-            let Some(dl) = base_local(*dest) else {
-                continue;
-            };
-            let Some(ty) = local_tys.get(dl as usize) else {
-                continue;
-            };
-            if !is_user_opaque_resource(ty) || !seen.insert(dl) {
-                continue;
+            match instr {
+                // Projecting the resource leaf OUT of the record.
+                Instr::RecordFieldLoad { dest, .. } => {
+                    let Some(dl) = base_local(*dest) else {
+                        continue;
+                    };
+                    let Some(ty) = local_tys.get(dl as usize) else {
+                        continue;
+                    };
+                    if !is_user_opaque_resource(ty) || !seen_load.insert(dl) {
+                        continue;
+                    }
+                    let (binding, name) = name_for(dl, ty);
+                    findings.push(MirCheck::OwnedHandleAggregateDoubleFree {
+                        binding,
+                        name,
+                        handle_ty: render_owned_handle_ty(ty),
+                        overwrite: false,
+                    });
+                }
+                // Overwriting the resource leaf IN PLACE within the record.
+                // The stored value's type IS the field type for a well-typed
+                // `h.dq = src` (nominal: `src` must be the field's opaque
+                // resource). Name the violation by the MUTATED record — the
+                // aggregate whose old field handle is dropped on the floor.
+                Instr::RecordFieldStore { record, src, .. } => {
+                    let Some(sl) = base_local(*src) else {
+                        continue;
+                    };
+                    let Some(ty) = local_tys.get(sl as usize) else {
+                        continue;
+                    };
+                    if !is_user_opaque_resource(ty) || !seen_store.insert(sl) {
+                        continue;
+                    }
+                    let name_local = base_local(*record).unwrap_or(sl);
+                    let (binding, name) = name_for(name_local, ty);
+                    findings.push(MirCheck::OwnedHandleAggregateDoubleFree {
+                        binding,
+                        name,
+                        handle_ty: render_owned_handle_ty(ty),
+                        overwrite: true,
+                    });
+                }
+                _ => {}
             }
-            let binding = local_to_binding.get(&dl).copied().unwrap_or(BindingId(dl));
-            let name = local_to_binding
-                .get(&dl)
-                .and_then(|b| bind_names.get(b))
-                .cloned()
-                .unwrap_or_else(|| render_owned_handle_ty(ty));
-            findings.push(MirCheck::OwnedHandleAggregateDoubleFree {
-                binding,
-                name,
-                handle_ty: render_owned_handle_ty(ty),
-            });
         }
     }
     findings

@@ -27,13 +27,13 @@
 //! `true`; a closure env is [`OwnsHeap`] yet `ty_owns_heap` answers `false`. So
 //! the seed must travel with the value, making [`ValueOwnership::owns_heap`] `≡`
 //! `ty_owns_heap` and [`ValueOwnership::to_value_class`] `≡` `ValueClass::of_ty`
-//! **exactly**, for every shape — the contract Phase 1 relies on when it swaps a
+//! **exactly**, for every shape — the contract the consolidation relies on when it swaps a
 //! seam's direct authority call for the projection.
 //!
-//! This Phase-0 landing is **additive and unused**: it defines the types, the
+//! This landing is **additive and unused**: it defines the types, the
 //! [`ValueOwnership::classify`] / [`OwnershipDecision::classify`] constructor
 //! scaffold, the seed conversions, and the totality + round-trip tests. It
-//! switches **no** production call site — Phases 1A-1D route the existing
+//! switches **no** production call site — the release-bucket consolidation routes the existing
 //! authorities through it.
 //!
 //! # Subsumes (does not reinvent) the existing seeds
@@ -45,6 +45,31 @@
 //! | [`ValueClass`] | `value_class.rs` | Carried verbatim — [`ValueOwnership::to_value_class`] returns it (`≡`); `classify` also consumes it for the marker seed. |
 //! | [`Strategy::UnknownBlocked`] | `model.rs` | The fail-closed move strategy — [`Unsupported`] projects to it ([`OwnershipDecision::move_strategy_floor`]). |
 //! | `DropPlanUndetermined` | `lower.rs` | The fail-closed diagnostic — [`Unsupported`]'s [`FailClosedReason`] names the cause. |
+//!
+//! # Walker inventory
+//!
+//! The shape-specialised ownership/drop/ABI walkers that re-answer the heap /
+//! release / ABI question by matching on [`ResolvedTy`] at their own call site,
+//! with their disposition. This list is the consolidation worklist:
+//! every `bypasses` row is a seam the release-bucket consolidation routes through [`ValueOwnership`]
+//! / the single authority. The `_ => false` / `_ => None` fall-through arms are
+//! the leak surface (an unenumerated heap shape silently classified non-owning).
+//!
+//! | Walker | Crate · entry | Re-derives | Status |
+//! |---|---|---|---|
+//! | `ty_owns_heap` / `ty_owns_heap_inner` | `hew-mir` · `model.rs` | heap-ownership leaf set + structural recursion | **AUTHORITY** — the single source of truth; [`OwnershipDecision::classify`] and every routed walker resolve the heap axis here. |
+//! | `cbor_ty_owns_heap` | `hew-codegen-rs` · `llvm.rs` | CBOR `Vec` element heap probe (own leaf set, divergent `_ => false`) | **RETIRED** — now a `#[deprecated]` shim delegating to `ty_owns_heap` via `CborHeapLayouts`; sole caller `cbor_vec_elem_kind` is `#[allow(deprecated)]`-listed. The workspace `clippy -D warnings` CI step guards re-entry. Fixed a latent `CancellationToken` / tuple-field under-drop for free. |
+//! | owned-locals seed gate (`ValueClass::of_ty(ty) != BitCopy`) | `hew-mir` · `lower.rs` → `hew-hir` · `value_class.rs` | which locals enter drop elaboration | **PENDING (release-bucket consolidation)** — record-blind via [`ValueClass`]; the consolidation seeds from [`ValueOwnership`] instead. Not yet switched. |
+//! | `cow_value_leaf_drop_symbol` | `hew-mir` · `lower.rs` | scalar-leaf release symbol (`string` → `hew_string_drop`, else `None`) | **PENDING (release-bucket consolidation)** — a release bucket; see the partition-totality test below. |
+//! | `binding_ty_is_plain_vec` · `binding_ty_is_owned_element_vec` · `is_owned_vec_element` · `tuple_is_all_bitcopy` | `hew-mir` · `lower.rs` | `Vec<E>` release partition (plain-BitCopy vs owned-element) | **PENDING (release-bucket consolidation)** — release buckets; their UNION must be total vs the authority leaf set (the `Vec<bytes>` gap is pinned by the partition-totality test below). |
+//! | `ty_is_closure_pair_vec` · `ty_is_local_collection_handle` | `hew-mir` · `lower.rs` | closure-pair / collection-handle release | **PENDING (release-bucket consolidation)** — release buckets. |
+//! | `cow_heap_release_symbol` | `hew-codegen-rs` · `llvm.rs` | codegen-side release-symbol picker | **PENDING (release-bucket consolidation)** — the codegen sibling the MIR release buckets must agree with (`dedup-semantic-boundary`). |
+//!
+//! The boundary-totality tests pin both axes: [`OwnershipDecision::classify`] is
+//! total over the twelve canonical shapes (`classify_is_total_over_the_twelve_shapes`),
+//! and the release-bucket predicates' union is total vs the authority leaf set
+//! (`release_bucket_partition_is_total_over_vec_elements` in `lower.rs`, which
+//! surfaces the `Vec<bytes>` partition gap).
 //!
 //! [`NoHeap`]: OwnershipDecision::NoHeap
 //! [`OwnsHeap`]: OwnershipDecision::OwnsHeap
@@ -123,7 +148,7 @@ pub enum OwnershipDecision {
 
     /// The ownership fact could not be decided. The single fail-closed sink: a
     /// heap-bearing value whose release protocol no arm could name reaches here,
-    /// and Phase 1 routes it to [`Strategy::UnknownBlocked`] /
+    /// and the consolidation routes it to [`Strategy::UnknownBlocked`] /
     /// `MirCheck::DropPlanUndetermined` instead of silently leaking or
     /// double-freeing. `reason` names *why* so the diagnostic is actionable.
     Unsupported {
@@ -135,13 +160,13 @@ pub enum OwnershipDecision {
 // ──────────────────────── drop protocol (subsumes DropKind) ───────────────
 
 /// Release-protocol family for an [`OwnsHeap`](OwnershipDecision::OwnsHeap)
-/// value. A Phase-0 mirror of [`DropKind`] that carries no codegen-only payload
+/// value. A scaffold mirror of [`DropKind`] that carries no codegen-only payload
 /// except the discriminators that *are* the classification ([`Direction`],
 /// [`TraitObjectStorage`], the [`HeapLeaf`]).
 ///
 /// Every [`DropKind`] maps to exactly one `DropClass`
 /// (`TryFrom<DropKind>`) and every `DropClass` maps back to a canonical
-/// [`DropKind`] ([`DropClass::canonical_drop_kind`]), so Phase 1 can route the
+/// [`DropKind`] ([`DropClass::canonical_drop_kind`]), so the consolidation can route the
 /// existing dispatcher (`drop_kind_for`) through this axis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DropClass {
@@ -256,7 +281,7 @@ pub enum LayoutClass {
 // ──────────────────────────────── fail-closed ────────────────────────────
 
 /// Why an [`OwnershipDecision::Unsupported`] failed closed. Each reason maps to
-/// the actionable diagnostic Phase 1 emits instead of a silent leak; see
+/// the actionable diagnostic the consolidation emits instead of a silent leak; see
 /// [`FailClosedReason::diagnostic_note`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FailClosedReason {
@@ -282,7 +307,7 @@ pub enum FailClosedReason {
     LinearConsumeOnce,
     /// A `dyn Trait` whose `TraitObjectStorage` (`FrameOwned` vs `HeapBoxed`) is
     /// not available to the classifier (the `dyn_trait_storage` side table
-    /// Phase 1 threads). Fail-closed rather than guessing the release ritual.
+    /// the consolidation threads). Fail-closed rather than guessing the release ritual.
     DynStorageUnresolved,
     /// A heap-owning aggregate whose exactly-once free the drop analysis cannot
     /// prove (e.g. owned-handle aggregate extraction). Mirrors
@@ -292,7 +317,7 @@ pub enum FailClosedReason {
 
 // ──────────────────────────────── provenance ─────────────────────────────
 
-/// A MIR storage location an ownership fact can be anchored to. The Phase-0
+/// A MIR storage location an ownership fact can be anchored to. The scaffold
 /// place-provenance carrier — a thin, [`Place`]-convertible family so a
 /// [`Borrowed`](OwnershipDecision::Borrowed) /
 /// [`InteriorAlias`](OwnershipDecision::InteriorAlias) decision names its owner
@@ -314,7 +339,7 @@ pub enum PlaceProvenance {
         role: HandleRole,
     },
     /// The place is known to exist but not yet threaded through (scaffold
-    /// sentinel; Phase 1 replaces with the concrete place).
+    /// sentinel; the consolidation replaces with the concrete place).
     Unanchored,
 }
 
@@ -466,7 +491,7 @@ impl From<Place> for PlaceProvenance {
 // ─────────────────────────── classify context + scaffold ─────────────────
 
 /// Layout + value-class registries the [`OwnershipDecision::classify`] scaffold
-/// reads, mirroring exactly what the MIR `Builder` holds. Phase 1 wires
+/// reads, mirroring exactly what the MIR `Builder` holds. The consolidation wires
 /// `classify` by building one of these from the `Builder` — no new registry is
 /// introduced.
 #[derive(Debug)]
@@ -512,14 +537,20 @@ impl OwnershipDecision {
     /// Classify the ownership/drop/ABI decision for a value of type `ty` held in
     /// `place`.
     ///
-    /// **Phase-0 scaffold: lands unused.** It is the constructor every Phase-1
+    /// **Scaffold (lands unused).** It is the constructor every consolidation
     /// call site will route through; the coarse arms (e.g. picking the plain
-    /// `Vec` release symbol, deferring `dyn Trait` storage) are refined in
-    /// Phase 1. It is **total** in the load-bearing sense: the type-driven match
+    /// `Vec` release symbol, deferring `dyn Trait` storage) are refined by
+    /// the consolidation. It is **total** in the load-bearing sense: the type-driven match
     /// is exhaustive over [`ResolvedTy`] (no `_ => …` fallthrough), so a new
     /// `ResolvedTy` variant is a compile error here, and every shape resolves to
     /// a non-`Unsupported` decision or to a *tracked* [`Unsupported`] naming a
     /// [`FailClosedReason`].
+    ///
+    /// This is the **typed inventory boundary** the walker inventory (module
+    /// doc) routes the shape-specialised classifiers onto: its heap axis is the
+    /// [`ty_owns_heap`] authority (`≡`, carried by
+    /// [`ValueOwnership`]), so a future consolidation seam swapping a direct authority
+    /// call for this typed decision is byte-identical by construction.
     ///
     /// [`Unsupported`]: OwnershipDecision::Unsupported
     #[must_use]
@@ -611,7 +642,7 @@ impl OwnershipDecision {
             }
 
             // `dyn Trait` release needs the `FrameOwned`/`HeapBoxed` storage hint
-            // the scaffold does not carry — tracked-Unsupported (Phase 1 threads
+            // the scaffold does not carry — tracked-Unsupported (the consolidation threads
             // it).
             ResolvedTy::TraitObject { .. } => OwnershipDecision::Unsupported {
                 reason: FailClosedReason::DynStorageUnresolved,
@@ -965,7 +996,7 @@ impl OwnershipDecision {
 /// a `Generator` is `OwnsHeap { CowHeapLeaf }` yet `AffineResource`). Because the
 /// facts are carried, [`owns_heap`](Self::owns_heap) `≡` `ty_owns_heap` and
 /// [`to_value_class`](Self::to_value_class) `≡` `ValueClass::of_ty` **exactly**,
-/// so a Phase-1 seam can swap its direct authority call for the projection with
+/// so a future consolidation seam can swap its direct authority call for the projection with
 /// byte-identical behaviour.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValueOwnership {
@@ -1012,7 +1043,7 @@ impl ValueOwnership {
 
     /// The carried `ty_owns_heap` seed — equal to `ty_owns_heap(ty, …)` for the
     /// classified `ty` **by construction**. This is the exact projection a
-    /// Phase-1 seam reads instead of re-walking the type.
+    /// future consolidation seam reads instead of re-walking the type.
     #[must_use]
     pub fn owns_heap(&self) -> bool {
         self.owns_heap
@@ -1045,7 +1076,7 @@ impl ValueOwnership {
 }
 
 impl FailClosedReason {
-    /// The actionable diagnostic note Phase 1 attaches when this reason reaches
+    /// The actionable diagnostic note the consolidation attaches when this reason reaches
     /// the `MirCheck::DropPlanUndetermined` / `Strategy::UnknownBlocked` path.
     #[must_use]
     pub fn diagnostic_note(self) -> &'static str {
@@ -1422,7 +1453,7 @@ mod tests {
         );
     }
 
-    /// The shapes that are *tracked* `Unsupported` in Phase 0: each carries a
+    /// The shapes that are *tracked* `Unsupported`: each carries a
     /// reason (no silent `_ => false`), and each names a real ownership mode the
     /// 5-variant decision does not model yet. This is the explicit complement to
     /// the totality test — the only legal way to be `Unsupported`.
@@ -1596,7 +1627,7 @@ mod tests {
     }
 
     /// Assert the carried seed projections of `ty` (held in `place`) equal the
-    /// **live** authorities for the same `ty` — the exact contract Phase 1 swaps
+    /// **live** authorities for the same `ty` — the exact contract the consolidation swaps
     /// a seam's `ty_owns_heap(ty)` / `ValueClass::of_ty(ty)` call for.
     fn assert_carries_live_seeds(
         label: &str,

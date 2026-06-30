@@ -1,0 +1,24 @@
+//! `bytes` parameter passing now matches `Vec` parameter passing: a callee
+//! mutation is visible to the caller for BOTH collection value types. This
+//! fixture runs the identical "push in callee, read length in caller" shape
+//! over a `Vec<i64>` and a `bytes`, then prints both lengths. Before the
+//! by-reference fix the `bytes` length read back as 0 (the push mutated a
+//! discarded copy) while the `Vec` read back as 1; now both read 1, so the two
+//! value types are consistent. A successful run prints `vec_len=1 bytes_len=1`.
+
+fn fill_vec(v: Vec<i64>) {
+    v.push(7);
+}
+
+fn fill_bytes(b: bytes) {
+    b.push(7);
+}
+
+fn main() -> i64 {
+    let v: Vec<i64> = Vec::new();
+    fill_vec(v);
+    let b: bytes = bytes::new();
+    fill_bytes(b);
+    println(f"vec_len={v.len()} bytes_len={b.len()}");
+    0
+}

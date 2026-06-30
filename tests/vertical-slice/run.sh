@@ -1315,6 +1315,20 @@ run_check_run_expect_stdout "const_ref_init"
 # and exact stdout `Hi\n`.
 run_accept_expect_stdout "bytes_push_round_trip"
 
+# bytes parameters are pass-by-reference (the address of the caller's
+# BytesTriple is passed for parameters that are never reassigned), so a callee
+# mutation writes through to the caller — the same shared-handle semantics
+# Vec/HashMap/string parameters already have. Three behavioural proofs:
+#   - push in a callee is visible to the caller, including transitively through
+#     a forwarded parameter (Hi! len=3);
+#   - bytes now behaves identically to Vec under the same push-in-callee shape
+#     (vec_len=1 bytes_len=1);
+#   - write-back onto a non-empty buffer reflects the realloc into the caller's
+#     triple and stays drop-safe — the callee borrows, never frees (hello world).
+run_accept_expect_stdout "bytes_param_push_writeback"
+run_accept_expect_stdout "bytes_param_matches_vec"
+run_accept_expect_stdout "bytes_param_append_nonempty"
+
 # W3 collections-sugar S2: bytes range slices. Each fixture asserts both the
 # runtime-derived slice length (process status) and contents (`to_string()`).
 run_accept_expect_status_and_stdout "bytes_slice_closed" 2

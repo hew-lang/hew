@@ -71,7 +71,8 @@ use hew_hir::{BindingId, IntentKind, SiteId, TypeClassTable, ValueClass};
 use hew_types::ResolvedTy;
 
 use crate::model::{
-    BasicBlock, CooperateKind, CooperateSite, Instr, MirCheck, MirStatement, Place, Terminator,
+    BasicBlock, CooperateKind, CooperateSite, Instr, MirCheck, MirStatement, Place, RawMirFunction,
+    Terminator,
 };
 
 /// Per-binding state in the four-state lattice. `Uninit` is the
@@ -665,6 +666,112 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
             src_local, dest, ..
         } => (vec![Place::Local(*src_local)], vec![*dest]),
     }
+}
+
+/// The backing MIR local a write `Place` addresses, or `None` for the return
+/// slot (which is not a local register). Exhaustive by construction
+/// (fail-closed): a new `Place` variant forces a decision here rather than
+/// silently escaping the write-set model. Mirrors `liveness::place_local`,
+/// kept local to avoid widening that helper's module-private visibility.
+fn write_place_local(place: Place) -> Option<u32> {
+    match place {
+        Place::Local(n)
+        | Place::DuplexHandle(n)
+        | Place::LambdaActorHandle(n)
+        | Place::ActorHandle(n)
+        | Place::SendHalf(n)
+        | Place::RecvHalf(n)
+        | Place::MachineTag(n)
+        | Place::EnumTag(n) => Some(n),
+        Place::MachineVariant { local, .. } | Place::EnumVariant { local, .. } => Some(local),
+        Place::ReturnSlot => None,
+    }
+}
+
+/// The write (def) slots of a `Terminator` — the complement of
+/// [`crate::lower::terminator_source_places`], which classifies the read
+/// operands. Exhaustive over every variant (fail-closed: a new terminator
+/// forces a write-classification decision rather than silently dropping a
+/// def). Each arm collects exactly the slots `terminator_source_places`
+/// documents as writes (a `Call`'s `dest`, an `Ask`/`RemoteAsk`'s
+/// result/reply/error dests, a `Select` arm's binding, a `Join`'s `result`
+/// and per-branch `reply_dest`, a generator / lambda-actor handle `dest`).
+///
+/// `Suspend` / `SuspendingScopeDeadline` carry their resume-edge write dests
+/// in the `SuspendKind` side-table (always freshly-allocated result/reply
+/// temps, never a parameter local) and appear only in coroutine functions.
+/// The sole caller that reasons about parameter writes
+/// ([`local_is_written_in_body`], consumed by codegen's `bytes` aliasing
+/// decision) gates coroutine functions out before consulting this, so the
+/// empty set returned for the suspend carriers is sound for that use.
+fn terminator_write_places(term: &Terminator) -> Vec<Place> {
+    match term {
+        Terminator::Return
+        | Terminator::Goto { .. }
+        | Terminator::Trap { .. }
+        | Terminator::Branch { .. }
+        | Terminator::Yield { .. }
+        | Terminator::Send { .. }
+        | Terminator::Suspend { .. }
+        | Terminator::SuspendingScopeDeadline { .. } => Vec::new(),
+        Terminator::Call { dest, .. } => dest.iter().copied().collect(),
+        Terminator::MakeGenerator { dest, .. } | Terminator::MakeLambdaActor { dest, .. } => {
+            vec![*dest]
+        }
+        Terminator::Ask {
+            result_dest,
+            reply_dest,
+            error_dest,
+            ..
+        }
+        | Terminator::RemoteAsk {
+            result_dest,
+            reply_dest,
+            error_dest,
+            ..
+        } => vec![*result_dest, *reply_dest, *error_dest],
+        Terminator::Select { arms, .. } | Terminator::SuspendingSelect { arms, .. } => {
+            arms.iter().filter_map(|arm| arm.binding).collect()
+        }
+        Terminator::Join {
+            branches, result, ..
+        } => {
+            let mut places = Vec::with_capacity(branches.len() + 1);
+            places.push(*result);
+            places.extend(branches.iter().map(|branch| branch.reply_dest));
+            places
+        }
+    }
+}
+
+/// True when MIR `local` is ever WRITTEN (defined / reassigned) anywhere in
+/// `func` — across every instruction (via [`instr_reads_writes`]) and every
+/// terminator write slot (via [`terminator_write_places`]). Conservative and
+/// fail-closed: any write whose backing local is `local` counts, and the
+/// place→local map ([`write_place_local`]) is exhaustive so an unmodelled
+/// place cannot hide a write.
+///
+/// Codegen consults this to decide whether a `bytes` parameter may be ALIASED
+/// to the caller's triple (the pass-by-pointer write-back that makes a callee
+/// mutation visible to the caller). A parameter that is only ever read is safe
+/// to alias; one that is reassigned (`var b: bytes; b = ..`, which lowers to a
+/// fresh temp plus an `Instr::Move` into the parameter local) must fall back
+/// to a by-value copy so the reassignment stores into the callee's own slot
+/// rather than clobbering the caller's.
+#[must_use]
+pub fn local_is_written_in_body(func: &RawMirFunction, local: u32) -> bool {
+    func.blocks.iter().any(|block| {
+        block.instructions.iter().any(|instr| {
+            instr_reads_writes(instr)
+                .1
+                .into_iter()
+                .filter_map(write_place_local)
+                .any(|written| written == local)
+        }) || terminator_write_places(&block.terminator)
+            .into_iter()
+            .filter_map(write_place_local)
+            .any(|written| written == local)
+    })
 }
 
 fn transfer_context_flow(

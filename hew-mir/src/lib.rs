@@ -16,6 +16,7 @@ pub mod runtime_call;
 pub mod runtime_symbols;
 pub mod state_clone;
 
+pub use dataflow::local_is_written_in_body;
 pub use lower::{
     bracket_actor_handler_blocks, build_const_descriptors, instr_source_places, lower_hir_module,
     lower_hir_module_with_facts, terminator_source_places,

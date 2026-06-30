@@ -34266,6 +34266,48 @@ fn is_coroutine_function(func: &RawMirFunction) -> bool {
         })
 }
 
+/// True when `func`'s `param_idx`-th parameter is a `bytes` value that may be
+/// ALIASED to the caller's triple — declared `ptr` and passed the caller's
+/// alloca ADDRESS — so a callee mutation (`b.push(..)`) writes through to the
+/// caller's `{ptr,i32,i32}`. This gives `bytes` the same shared-handle,
+/// callee-mutations-visible semantics `Vec`/`HashMap`/`string` already have
+/// (those are heap handles whose by-value copy still aliases the same backing
+/// store; `bytes` is a by-value inline triple, so it needs the explicit
+/// by-pointer alias to match).
+///
+/// Aliasing is sound only when ALL hold:
+///   - the parameter is `bytes`;
+///   - the function uses the ordinary `Default` call convention and is not a
+///     coroutine — both guarantee the call site flows through the generic
+///     `Terminator::Call` arm, whose by-pointer branch passes the caller's
+///     alloca address precisely because this parameter is declared `ptr`.
+///     Actor / lambda-actor / closure / coroutine call sites use distinct
+///     ABIs that deliver the triple by value, so aliasing there would
+///     reinterpret value bits as a pointer;
+///   - the parameter local is never reassigned in the body. A reassignment
+///     (`var b: bytes; b = ..`) lowers to an `Instr::Move` into the parameter
+///     local; aliasing would make that store clobber the caller's slot, so
+///     such parameters fall back to a by-value copy (no write-back, but no
+///     regression versus today's pass-by-copy). `bytes` parameters are
+///     borrows the callee never drops (the `by-value-heap-params-are-borrows`
+///     invariant), so the alias can never double-free the caller's buffer.
+///
+/// `declare_function` and the `lower_function` parameter prologue both derive
+/// the parameter ABI from this single predicate, so the declared parameter
+/// type and the prologue's alias-vs-copy choice can never disagree.
+fn bytes_param_is_aliasable(func: &RawMirFunction, param_idx: usize) -> bool {
+    if func.call_conv != FunctionCallConv::Default || is_coroutine_function(func) {
+        return false;
+    }
+    if !matches!(func.params.get(param_idx), Some(ResolvedTy::Bytes)) {
+        return false;
+    }
+    let Ok(local) = u32::try_from(param_idx) else {
+        return false;
+    };
+    !hew_mir::local_is_written_in_body(func, local)
+}
+
 // ---------------------------------------------------------------------------
 // Per-function declaration + body lowering
 // ---------------------------------------------------------------------------
@@ -34357,7 +34399,16 @@ fn declare_function<'ctx>(
     if func.call_conv.carries_execution_context() {
         param_tys.push(ctx_ptr_ty.into());
     }
-    for param_ty in &func.params {
+    for (param_idx, param_ty) in func.params.iter().enumerate() {
+        if bytes_param_is_aliasable(func, param_idx) {
+            // Pass this `bytes` parameter by pointer. Declaring it `ptr` makes
+            // the generic `Terminator::Call` arm's by-pointer branch hand the
+            // caller's triple ADDRESS, and the `lower_function` prologue
+            // aliases the local slot to that incoming pointer (no copy-in), so
+            // callee mutations write through to the caller's `{ptr,i32,i32}`.
+            param_tys.push(ctx_ptr_ty.into());
+            continue;
+        }
         let llvm_ty = resolve_value_ty(param_ty)?;
         param_tys.push(metadata_type_from_basic(llvm_ty));
     }
@@ -36006,12 +36057,27 @@ fn lower_function<'ctx>(
                     func.name
                 ))
             })?;
-        let (slot, _slot_ty) = *locals.get(&param_idx_u32).ok_or_else(|| {
+        let (slot, slot_ty) = *locals.get(&param_idx_u32).ok_or_else(|| {
             CodegenError::FailClosed(format!(
                 "function `{}` has no local slot for param index {param_idx}",
                 func.name
             ))
         })?;
+        if bytes_param_is_aliasable(func, param_idx) {
+            // ALIAS the local slot to the caller's triple. `llvm_param` is the
+            // `ptr` the caller passed (the address of its `{ptr,i32,i32}`), so
+            // rebinding `locals[param_idx]` to it makes every
+            // `place_pointer(Local(param_idx))` address the caller's triple:
+            // `b.push(..)` / `b.pop()` mutate the caller's bytes, and
+            // forwarding `b` to a further callee passes the same caller
+            // address (transitive write-back). No copy-in store; the by-value
+            // triple alloca minted in the local prologue is simply left
+            // unused. `slot_ty` (the `{ptr,i32,i32}` struct) stays the slot's
+            // pointee type so loads/stores/GEPs keep the triple layout.
+            let incoming_ptr = llvm_param.into_pointer_value();
+            locals.insert(param_idx_u32, (incoming_ptr, slot_ty));
+            continue;
+        }
         builder
             .build_store(slot, llvm_param)
             .llvm_ctx_with(|| format!("param store {param_idx}"))?;

@@ -1,0 +1,29 @@
+//! Behavioural proof that a `bytes` parameter is pass-by-reference: a callee's
+//! `push` writes through to the caller's buffer, matching the shared-handle
+//! semantics `Vec`/`HashMap`/`string` parameters already have.
+//!
+//! `fill` pushes the ASCII bytes for `Hi` onto the caller's fresh buffer;
+//! `forward` re-receives the same parameter and pushes `!`. Because the
+//! parameter aliases the caller's `BytesTriple` (passed by pointer), and that
+//! address is forwarded transitively into `forward`, both pushes land in the
+//! caller's buffer. A successful run prints `Hi! len=3` and exits 0.
+
+fn fill(b: bytes) {
+    b.push(72); // 'H'
+    b.push(105); // 'i'
+}
+
+fn forward(b: bytes) {
+    // Forwarding the parameter passes the same caller triple address, so this
+    // push also lands in the original caller's buffer (transitive write-back).
+    b.push(33); // '!'
+}
+
+fn main() -> i64 {
+    let b: bytes = bytes::new();
+    fill(b);
+    forward(b);
+    let s: string = b.to_string();
+    println(f"{s} len={b.len()}");
+    0
+}

@@ -1,0 +1,23 @@
+//! `bytes` parameter write-back onto a NON-EMPTY caller buffer, with
+//! drop-safety. `append_world` appends six bytes to the caller's existing
+//! `hello` buffer; the pushes grow the buffer past its initial length, so the
+//! realloc is reflected back into the caller's triple through the alias. The
+//! caller then reads the combined buffer and the runtime frees it exactly once
+//! at scope exit — the callee borrows the parameter and never frees it
+//! (`by-value-heap-params-are-borrows`). A successful run prints `hello world`.
+
+fn append_world(b: bytes) {
+    b.push(32); // ' '
+    b.push(119); // 'w'
+    b.push(111); // 'o'
+    b.push(114); // 'r'
+    b.push(108); // 'l'
+    b.push(100); // 'd'
+}
+
+fn main() -> i64 {
+    let b: bytes = "hello".to_bytes();
+    append_world(b);
+    println(b.to_string());
+    0
+}

@@ -3024,7 +3024,7 @@ pub fn lower_program_with_mono_cap(
                     ctx.lower_supervisor(decl, span.clone()),
                 ));
             }
-            Item::Import(_) | Item::Trait(_) => {
+            Item::Import(_) => {
                 // Imports are frontend-resolved: module-path imports
                 // (`import greeting;`) are lowered from `program.module_graph`
                 // below under their qualified mangled name (e.g. `greeting$hello`).
@@ -3033,14 +3033,32 @@ pub fn lower_program_with_mono_cap(
                 // the loop above.  The residual `Item::Import` stub is kept in
                 // `program.items` for diagnostic source-map attribution (removing
                 // it would require auditing every span consumer — out of scope).
+            }
+            Item::Trait(trait_decl) => {
+                // User-defined `trait` declarations have no runtime artefact —
+                // the type checker harvests their `trait_defs` entry (and any
+                // `#[lang_item("...")]` registry mapping) during its registration
+                // sweep, and impl-side method bodies become flattened
+                // `HirItem::Function` entries via `lower_impl_block`.
                 //
-                // User-defined `trait` declarations likewise have no runtime
-                // artefact — the type checker harvests their `trait_defs`
-                // entry (and any `#[lang_item("...")]` registry mapping)
-                // during its registration sweep, and impl-side method bodies
-                // become flattened `HirItem::Function` entries via
-                // `lower_impl_block`. We accept the trait declaration silently
-                // here rather than fail-closing.
+                // RAII-2 (#1295): a BODYLESS trait method signature is an
+                // invisible-body boundary — a contract whose impls may disagree
+                // on whether a `#[resource]`/`#[linear]` value parameter is
+                // borrowed or consumed, so the disposition must be pinned with
+                // `consume` at the signature. A default-bodied method carries a
+                // visible body the MIR fixpoint can scan, so it is exempt.
+                for trait_item in &trait_decl.items {
+                    if let TraitItem::Method(method) = trait_item {
+                        if method.body.is_none() {
+                            ctx.check_boundary_consume_discipline(
+                                &method.name,
+                                &method.params,
+                                "trait method signature",
+                                &method.span,
+                            );
+                        }
+                    }
+                }
             }
             Item::Const(const_decl) => {
                 items.push(HirItem::Const(ctx.lower_const(const_decl, span.clone())));
@@ -3055,16 +3073,25 @@ pub fn lower_program_with_mono_cap(
                         .iter()
                         .map(|p| ctx.lower_type(&p.ty))
                         .collect::<Vec<_>>();
+                    let param_consume =
+                        func.params.iter().map(|p| p.is_consume).collect::<Vec<_>>();
                     let return_ty = func
                         .return_type
                         .as_ref()
                         .map_or(ResolvedTy::Unit, |ret| ctx.lower_type(ret));
+                    ctx.check_boundary_consume_discipline(
+                        &func.name,
+                        &func.params,
+                        "extern fn",
+                        &func.span,
+                    );
                     items.push(HirItem::ExternFn(crate::node::HirExternFn {
                         id: ctx.ids.item(),
                         node: ctx.ids.node(),
                         name: func.name.clone(),
                         abi: block.abi.clone(),
                         param_tys,
+                        param_consume,
                         return_ty,
                         span: func.span.clone(),
                     }));
@@ -3317,16 +3344,25 @@ pub fn lower_program_with_mono_cap(
                                     .iter()
                                     .map(|p| ctx.lower_type(&p.ty))
                                     .collect::<Vec<_>>();
+                                let param_consume =
+                                    func.params.iter().map(|p| p.is_consume).collect::<Vec<_>>();
                                 let return_ty = func
                                     .return_type
                                     .as_ref()
                                     .map_or(ResolvedTy::Unit, |ret| ctx.lower_type(ret));
+                                ctx.check_boundary_consume_discipline(
+                                    &func.name,
+                                    &func.params,
+                                    "extern fn",
+                                    &func.span,
+                                );
                                 items.push(HirItem::ExternFn(crate::node::HirExternFn {
                                     id: ctx.ids.item(),
                                     node: ctx.ids.node(),
                                     name: func.name.clone(),
                                     abi: block.abi.clone(),
                                     param_tys,
+                                    param_consume,
                                     return_ty,
                                     span: func.span.clone(),
                                 }));
@@ -9153,6 +9189,79 @@ impl LowerCtx {
             span: span.clone(),
         };
         (body, generator_ty)
+    }
+
+    /// Fail-close a `#[resource]`/`#[linear]` value parameter declared at an
+    /// invisible-body boundary (an `extern` fn or a bodyless trait method
+    /// signature) without an explicit `consume` modifier.
+    ///
+    /// Such a parameter has no body to scan, so the interprocedural
+    /// borrow-vs-consume fixpoint in MIR cannot infer its disposition. Leaving
+    /// it unannotated forces a silent guess: a caller that borrows across a body
+    /// which actually consumes double-drops; a caller that moves in across a
+    /// body which only borrows leaks. The ratified surface makes `consume`
+    /// MANDATORY here — pinning the by-move transfer so the callee/ABI owns and
+    /// drops the handle. A receiver (`self` / a `Self`-typed receiver) is never
+    /// flagged: it is not a concrete resource nominal in `type_classes`, and its
+    /// disposition rides the method dispatch surface, not borrow-pass.
+    fn check_boundary_consume_discipline(
+        &mut self,
+        func_name: &str,
+        params: &[hew_parser::ast::Param],
+        boundary: &str,
+        span: &Span,
+    ) {
+        let offenders: Vec<(String, String)> = params
+            .iter()
+            .filter(|p| !p.is_consume)
+            .filter_map(|p| match &p.ty.0 {
+                TypeExpr::Named { name, .. } => {
+                    // Builtin affine handles (LocalPid/RemotePid/LambdaPid,
+                    // channel halves, CancellationToken, MonitorRef, ...) are
+                    // runtime-managed pointer words: their drop is dispatched
+                    // by the runtime on a coherent path, and their disposition
+                    // at a C ABI barrier is a known borrow by construction
+                    // (e.g. a supervisor pid threaded through a restart
+                    // barrier and re-read afterwards). They are NOT part of the
+                    // user `#[resource]`/`#[linear]` borrow/consume surface, so
+                    // they are exempt from boundary-consume discipline — the
+                    // surface-level analog of the `builtin:None` gate that
+                    // free-fn / method arg ownership classification uses. Only
+                    // user-declared resources, whose `close` frees a real
+                    // foreign resource and could double-free across an
+                    // invisible body, must pin `consume` here.
+                    if crate::builtin_type_classes::builtin_type_registration(name).is_some() {
+                        return None;
+                    }
+                    match self.type_classes.get(name) {
+                        Some((ResourceMarker::Resource | ResourceMarker::Linear, _)) => {
+                            Some((p.name.clone(), name.clone()))
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None,
+            })
+            .collect();
+        for (param, ty) in offenders {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::ResourceBoundaryParamMustConsume {
+                    func: func_name.to_string(),
+                    param: param.clone(),
+                    ty: ty.clone(),
+                    boundary: boundary.to_string(),
+                },
+                span.clone(),
+                format!(
+                    "`{ty}` is a `#[resource]`/`#[linear]` handle passed by value to \
+                     {boundary} `{func_name}`, whose body is not visible at the call \
+                     site, so its borrow-vs-consume disposition cannot be inferred; \
+                     annotate `consume {param}: {ty}` to pin the by-move ownership \
+                     transfer (the callee / foreign ABI owns and drops it), or pass an \
+                     owned handle/id by value instead of the resource itself"
+                ),
+            ));
+        }
     }
 
     /// W3.030 Stage 1 — three layered checks on `#[resource]` close:

@@ -1,0 +1,42 @@
+// Reject fixture: extern_resource_param_missing_consume — a `#[resource]`
+// handle passed by value to an `extern` fn must be declared `consume`.
+//
+// An `extern "C"` fn has no visible body, so the interprocedural
+// borrow-vs-consume fixpoint cannot infer whether the foreign ABI takes
+// ownership of the handle (and frees it) or merely borrows it. Leaving the
+// parameter unannotated would force a silent guess: defaulting to borrow across
+// a C function that actually frees the handle double-frees; defaulting to
+// move-in across a C function that only reads it leaks. The ratified RAII-2
+// surface (#1295) makes `consume` MANDATORY at this boundary.
+//
+// `hew_handle_free(consume h: Handle)` is correctly pinned and accepted;
+// `hew_handle_touch(h: Handle)` is not, and is rejected fail-closed.
+//
+// Harness verb: hew check
+// Expected: rejected, fail closed; diagnostic HIR kind
+// `ResourceBoundaryParamMustConsume` cites the unannotated extern parameter.
+
+#[resource]
+#[opaque]
+type Handle {
+}
+
+impl Handle {
+    fn close(self) {
+        unsafe {
+            hew_handle_free(self);
+        }
+    }
+}
+
+extern "C" {
+    fn hew_handle_make() -> Handle;
+    fn hew_handle_free(consume h: Handle);
+    fn hew_handle_touch(h: Handle) -> i64;
+}
+
+fn main() -> i64 {
+    let h = unsafe { hew_handle_make() };
+    let n = unsafe { hew_handle_touch(h) };
+    n
+}

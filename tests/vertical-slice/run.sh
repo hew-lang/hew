@@ -837,6 +837,21 @@ if "${HEW}" compile \
 fi
 grep -q 'ResourceCloseMustReturnUnit' "${reject_output}"
 
+# RAII-2 boundary consume discipline (#1295). A `#[resource]` handle passed by
+# value across an invisible-body boundary — an `extern` fn or a bodyless trait
+# method signature — must be declared `consume`. The interprocedural
+# borrow-vs-consume fixpoint cannot see through these boundaries, so an
+# unannotated resource parameter is rejected fail-closed rather than guessed
+# (a wrong guess double-frees or leaks). The receiver `self` is never flagged.
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/extern_resource_param_missing_consume.hew" \
+    'ResourceBoundaryParamMustConsume' \
+    "extern resource param missing consume"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/trait_sig_resource_param_missing_consume.hew" \
+    'ResourceBoundaryParamMustConsume' \
+    "trait-signature resource param missing consume"
+
 # shellcheck disable=SC2016  # backticks in the pattern are literal — they match
 # the diagnostic text, not a command substitution.
 expect_check_fail_contains \

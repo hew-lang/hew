@@ -104,6 +104,33 @@ pub enum HirDiagnosticKind {
     ResourceMissingClose {
         name: String,
     },
+    /// A `#[resource]`/`#[linear]` value parameter appears at a boundary whose
+    /// body is invisible to the caller — an `extern` fn (no body; a foreign C
+    /// ABI) or a bodyless trait method signature (a contract whose impls may
+    /// diverge) — WITHOUT an explicit `consume` modifier. The borrow-vs-consume
+    /// disposition of such a parameter cannot be inferred (there is no body to
+    /// scan), so the caller cannot know whether to keep ownership and auto-drop
+    /// at the caller scope, or transfer ownership so the callee/ABI owns and
+    /// drops it. Guessing either way is a real drop-safety bug: defaulting to
+    /// borrow across a body that actually consumes double-drops; defaulting to
+    /// move-in across a body that only borrows leaks. Fail closed: an affine
+    /// resource parameter at an invisible-body boundary must be declared
+    /// `consume` (pinning the by-move transfer), or restructured to pass an
+    /// owned handle/id by value instead of the resource itself.
+    ///
+    /// A receiver (`self`, or a `Self`-typed receiver) is never flagged: it is
+    /// not a concrete resource nominal, and its disposition rides the method
+    /// dispatch surface (`consuming self`), not borrow-pass.
+    ResourceBoundaryParamMustConsume {
+        /// Enclosing extern fn / trait method name.
+        func: String,
+        /// The offending parameter name.
+        param: String,
+        /// Resource type name of the offending parameter.
+        ty: String,
+        /// Boundary kind: `"extern fn"` or `"trait method signature"`.
+        boundary: String,
+    },
     /// `#[linear]` type body declares zero `consuming self` methods. A
     /// linear type with no consuming methods cannot be exhausted on an
     /// exit path, which would make `MirCheck::MustConsume` unable to fire

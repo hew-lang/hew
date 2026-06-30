@@ -638,6 +638,7 @@ fn hir_kind_str(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
             "LinearConsumingMethodSourceUnsupported"
         }
         K::ResourceCloseMustReturnUnit { .. } => "ResourceCloseMustReturnUnit",
+        K::ResourceBoundaryParamMustConsume { .. } => "ResourceBoundaryParamMustConsume",
         K::AwaitOutOfPosition => "AwaitOutOfPosition",
         K::AwaitNonTask { .. } => "AwaitNonTask",
         K::ForkChildNotACall => "ForkChildNotACall",

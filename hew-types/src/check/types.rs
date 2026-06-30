@@ -2722,23 +2722,29 @@ pub struct Checker {
     /// (`Ty::named`) and re-resolves it during signature rebuilds, receiver
     /// probes and trait-conformance comparison without re-pushing its scope, so
     /// a scope-local check alone false-positives there. This set is a uniform
-    /// fallback for those sites only — the PRIMARY resolution of a top-level
-    /// function's own signature suppresses it (see `scope_local_type_params_only`)
+    /// fallback for those sites only — the PRIMARY resolution of an item's own
+    /// signature suppresses it (see `scope_local_type_params_only`)
     /// so an out-of-scope generic name is still reported. Populated once, after
     /// `collect_types`, before the guard is armed.
     pub(super) declared_type_param_names: HashSet<String>,
     /// When `true`, the undefined-named-type guard proves a type-parameter name
     /// resolvable ONLY through the in-scope tables (`current_type_param_bounds`
     /// and the current function's registered signature params), ignoring the
-    /// program-wide `declared_type_param_names` fallback. Set around the primary
-    /// resolution of a top-level free function's own signature, where that
-    /// function's type-param scope is reliably reconstructed (its bounds frame
-    /// is pushed before the annotations resolve). The program-wide set is too
-    /// broad to prove a SOURCE annotation valid there: `fn id<T>(x: T)` declares
-    /// `T`, but `fn bad(x: T)` does not, and `bad`'s `T` must be reported as
-    /// unknown rather than silently exempted by `id`'s unrelated `T`. Left
-    /// `false` (the default) at every secondary re-resolution site, which still
-    /// relies on the program-wide fallback.
+    /// program-wide `declared_type_param_names` fallback. Set (via
+    /// `enter_primary_sig_scope` / `exit_primary_sig_scope`) around the PRIMARY
+    /// resolution of EVERY item signature — free functions, actor methods and
+    /// receive fns, inline type-body methods, impl methods, and trait method
+    /// signatures — where the item's own type-param scope is reliably
+    /// reconstructed (its bounds frame is pushed before the annotations resolve,
+    /// and the enclosing container's generics are pushed by the enter helper).
+    /// The program-wide set is too broad to prove a SOURCE annotation valid
+    /// there: `fn id<T>(x: T)` declares `T`, but `fn bad(x: T)` does not, and
+    /// `bad`'s `T` must be reported as unknown rather than silently exempted by
+    /// `id`'s unrelated `T` — the same leak otherwise reaches actor / trait /
+    /// type / impl method signatures, which would only abort downstream as
+    /// `E_MIR: unknown type` at the MIR boundary. Left `false` (the default) at
+    /// every secondary re-resolution site, which still relies on the
+    /// program-wide fallback.
     pub(super) scope_local_type_params_only: bool,
     /// Every NOMINAL type name declared anywhere in the program and its
     /// `module_graph` — type / type-alias / record / trait / actor / supervisor /

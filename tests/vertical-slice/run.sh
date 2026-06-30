@@ -884,6 +884,52 @@ expect_check_fail_contains \
     'unknown type `T`' \
     "out_of_scope_type_param"
 
+# The same scope-aware exemption must hold at EVERY primary item-signature
+# registration path, not just free functions. Each fixture below declares a
+# decoy `fn id<T>` so `T` IS in the program-wide type-param set — the exact
+# condition under which the old program-wide fallback silently exempted an
+# out-of-scope `T`, admitting an opaque `Ty::named` that only aborted later as
+# `E_MIR: unknown type` at the MIR boundary. Every one must reject AT the
+# annotation instead.
+# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/out_of_scope_type_param_actor_method.hew" \
+    'unknown type `T`' \
+    "out_of_scope_type_param_actor_method"
+# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/out_of_scope_type_param_receive_fn.hew" \
+    'unknown type `T`' \
+    "out_of_scope_type_param_receive_fn"
+# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/out_of_scope_type_param_trait_sig.hew" \
+    'unknown type `T`' \
+    "out_of_scope_type_param_trait_sig"
+# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/out_of_scope_type_param_type_method.hew" \
+    'unknown type `T`' \
+    "out_of_scope_type_param_type_method"
+# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/out_of_scope_type_param_impl_method.hew" \
+    'unknown type `T`' \
+    "out_of_scope_type_param_impl_method"
+
+# Complement of the reject sweep: a legitimately in-scope `T` reached through the
+# IMPORT registration path (a generic actor, a generic trait, and a supervisor
+# defined in an imported module) must still resolve — the scope-aware fix pushes
+# the enclosing container's generics, so it must NOT false-flag `unknown type
+# `T`` when the importer checks the module.
+imported_generics_fixture="${ROOT}/tests/vertical-slice/accept/imported_generics_resolve/main.hew"
+"${HEW}" check "${imported_generics_fixture}" >"${accept_output}" 2>&1
+grep -q ": OK$" "${accept_output}" || {
+  echo "imported_generics_resolve: expected hew check to print ': OK' (imported generic actor/trait/supervisor must resolve)" >&2
+  cat "${accept_output}" >&2
+  exit 1
+}
+
 # Reject: `ref.send(msg)` on a named actor with NO `receive fn send` handler is
 # rejected at the type-checker with an actionable UndefinedMethod diagnostic.
 # The anonymous-payload path has no lowerable mailbox slot; the checker now

@@ -1,0 +1,46 @@
+// Imported library module for the `imported_generics_resolve` accept fixture.
+//
+// Defines the nominal/generic surfaces that the scope-aware out-of-scope
+// type-param fix must NOT regress when they are reached through the IMPORT
+// registration path (`register_actor_base` / `register_user_module`), as
+// opposed to the in-module `collect_function_item` path:
+//   - a generic actor (`Worker<T>`) whose method + receive-fn signatures name
+//     the actor-level `T`,
+//   - a generic trait (`Container<T>`) whose method signature names `T`,
+//   - a supervisor (`Pool`) over a non-generic child actor.
+//
+// The fix resolves these signatures scope-locally, pushing the enclosing
+// container's generics, so the legitimate `T` still resolves on import. A
+// regression would surface as a spurious `unknown type `T`` when the importer
+// checks this module.
+pub actor Worker<T> {
+    var value: i64;
+    receive fn id() -> i64 {
+        value
+    }
+    fn helper(x: T) -> T {
+        x
+    }
+}
+
+pub trait Container<T> {
+    fn put(self, x: T) -> i64;
+}
+
+pub actor Echo {
+    var n: i64;
+    receive fn ping() -> i64 {
+        n
+    }
+}
+
+supervisor Pool {
+    strategy: simple_one_for_one;
+    intensity: 5 within 60s;
+
+    pool workers: Echo(count: 2, n: 7);
+}
+
+pub fn entry() -> i64 {
+    0
+}

@@ -1,0 +1,21 @@
+// Reject fixture: out_of_scope_type_param_actor_method — a type-parameter name
+// is in scope only for the item that declares it. `id` declares `<T>`, so `T`
+// is valid inside `id`. The actor method `bad` declares no type params, so its
+// `x: T` names a type that is out of scope. The checker must report it at the
+// annotation with `unknown type `T``, rather than exempt it merely because `id`
+// declares a `T` somewhere program-wide and leak an opaque `Ty::named("T")`
+// that only surfaces downstream as `E_MIR: unknown type` at the MIR boundary.
+//
+// Companion to out_of_scope_type_param (free fn): proves the scope-aware
+// exemption holds on the actor-method signature path, not just free functions.
+//
+// Harness verb: hew check
+// Expected: rejected with `unknown type `T`` at `bad`'s parameter annotation.
+fn id<T>(x: T) -> T { x }
+
+actor Worker {
+    fn bad(x: T) -> i64 { 0 }
+    receive fn run() {}
+}
+
+fn main() -> i64 { 0 }

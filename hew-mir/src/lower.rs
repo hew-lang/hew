@@ -262,6 +262,7 @@ fn build_exit_hook_body(body: HirBlock, note_param: &HirBinding) -> HirBlock {
                 ty: crash_notification_ty,
                 mutable: false,
                 span: span.clone(),
+                is_consume: false,
             },
             Some(match_expr),
         ),
@@ -2413,6 +2414,18 @@ pub fn lower_hir_module_with_facts(
     // it without re-cloning the map.
     let funcupdate_fn_returns_fresh: Rc<HashMap<hew_hir::ItemId, bool>> =
         Rc::new(compute_fn_returns_fresh_owner(&origin_fns));
+    // Module-global RAII-2 (#1295) param-ownership facts: which affine
+    // `#[resource]` free-fn value params are CONSUME vs BORROW, and the
+    // call-arg `SiteId`s whose over-stamped `Consume` intent is downgraded to a
+    // borrowing `Read`. Computed ONCE over every function item (a monotone
+    // least-fixpoint, keyed by origin `ItemId` so monomorphisations share one
+    // verdict) and threaded into every body-lowering builder. `Rc` so child
+    // builders share it without re-cloning.
+    let param_ownership: Rc<ParamOwnershipFacts> = Rc::new(compute_param_ownership(
+        &origin_fns,
+        &module.items,
+        &module.type_classes,
+    ));
     for item in &module.items {
         match item {
             HirItem::Function(func) => {
@@ -2453,6 +2466,7 @@ pub fn lower_hir_module_with_facts(
                         &module_fn_names,
                         &module_generic_fn_names,
                         &funcupdate_fn_returns_fresh,
+                        &param_ownership,
                         &trait_impl_index,
                         &module.call_site_type_args,
                         Some(&module.vec_generic_element_abi),
@@ -2504,6 +2518,7 @@ pub fn lower_hir_module_with_facts(
                     &module_fn_names,
                     &module_generic_fn_names,
                     &funcupdate_fn_returns_fresh,
+                    &param_ownership,
                     &trait_impl_index,
                     &module.call_site_type_args,
                     Some(&module.vec_generic_element_abi),
@@ -2543,6 +2558,7 @@ pub fn lower_hir_module_with_facts(
                     &module_fn_names,
                     &module_generic_fn_names,
                     &funcupdate_fn_returns_fresh,
+                    &param_ownership,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
                     &module.pool_accessor_sites,
@@ -2584,6 +2600,7 @@ pub fn lower_hir_module_with_facts(
                     &module_fn_names,
                     &module_generic_fn_names,
                     &funcupdate_fn_returns_fresh,
+                    &param_ownership,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
                     &module.pool_accessor_sites,
@@ -2656,6 +2673,7 @@ pub fn lower_hir_module_with_facts(
                     &module_fn_names,
                     &module_generic_fn_names,
                     &funcupdate_fn_returns_fresh,
+                    &param_ownership,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
                     actor_send_aliasing,
@@ -2721,6 +2739,7 @@ pub fn lower_hir_module_with_facts(
             &module_fn_names,
             &module_generic_fn_names,
             &funcupdate_fn_returns_fresh,
+            &param_ownership,
             &trait_impl_index,
             &module.call_site_type_args,
             Some(&module.vec_generic_element_abi),
@@ -2930,6 +2949,7 @@ fn lower_actor_receive_handlers(
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
+    param_ownership: &Rc<ParamOwnershipFacts>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     pool_accessor_sites: &HashMap<hew_hir::SiteId, hew_types::PoolAccessor>,
@@ -3029,6 +3049,7 @@ fn lower_actor_receive_handlers(
             module_fn_names,
             module_generic_fn_names,
             funcupdate_fn_returns_fresh,
+            param_ownership,
             &HashMap::new(),
             call_site_type_args,
             None,
@@ -3059,6 +3080,7 @@ fn lower_actor_body_handlers(
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
+    param_ownership: &Rc<ParamOwnershipFacts>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     pool_accessor_sites: &HashMap<hew_hir::SiteId, hew_types::PoolAccessor>,
@@ -3082,6 +3104,7 @@ fn lower_actor_body_handlers(
             module_fn_names,
             module_generic_fn_names,
             funcupdate_fn_returns_fresh,
+            param_ownership,
             call_site_type_args,
             supervisor_child_slots,
             pool_accessor_sites,
@@ -3105,6 +3128,7 @@ fn lower_actor_body_handlers(
         module_fn_names,
         module_generic_fn_names,
         funcupdate_fn_returns_fresh,
+        param_ownership,
         call_site_type_args,
         supervisor_child_slots,
         pool_accessor_sites,
@@ -3125,6 +3149,7 @@ fn lower_actor_body_handlers(
         module_fn_names,
         module_generic_fn_names,
         funcupdate_fn_returns_fresh,
+        param_ownership,
         call_site_type_args,
         supervisor_child_slots,
         pool_accessor_sites,
@@ -3153,6 +3178,7 @@ fn lower_actor_init_handler(
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
+    param_ownership: &Rc<ParamOwnershipFacts>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     pool_accessor_sites: &HashMap<hew_hir::SiteId, hew_types::PoolAccessor>,
@@ -3205,6 +3231,7 @@ fn lower_actor_init_handler(
         module_fn_names,
         module_generic_fn_names,
         funcupdate_fn_returns_fresh,
+        param_ownership,
         &HashMap::new(),
         call_site_type_args,
         None,
@@ -3236,6 +3263,7 @@ fn lower_actor_lifecycle_handlers(
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
+    param_ownership: &Rc<ParamOwnershipFacts>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     pool_accessor_sites: &HashMap<hew_hir::SiteId, hew_types::PoolAccessor>,
@@ -3293,6 +3321,7 @@ fn lower_actor_lifecycle_handlers(
                     module_fn_names,
                     module_generic_fn_names,
                     funcupdate_fn_returns_fresh,
+                    param_ownership,
                     &HashMap::new(),
                     call_site_type_args,
                     None,
@@ -3343,6 +3372,7 @@ fn lower_actor_lifecycle_handlers(
                     module_fn_names,
                     module_generic_fn_names,
                     funcupdate_fn_returns_fresh,
+                    param_ownership,
                     &HashMap::new(),
                     call_site_type_args,
                     None,
@@ -3445,6 +3475,7 @@ fn lower_actor_lifecycle_handlers(
                                     ty: ResolvedTy::I64,
                                     mutable: false,
                                     span: p.span.clone(),
+                                    is_consume: false,
                                 },
                                 HirBinding {
                                     id: SENTINEL_CRASH_MESSAGE_BINDING,
@@ -3452,6 +3483,7 @@ fn lower_actor_lifecycle_handlers(
                                     ty: ResolvedTy::String,
                                     mutable: false,
                                     span: p.span.clone(),
+                                    is_consume: false,
                                 },
                             ]
                         } else {
@@ -3557,6 +3589,7 @@ fn lower_actor_lifecycle_handlers(
                                 ty: crash_info_ty,
                                 mutable: false,
                                 span: info_param.span.clone(),
+                                is_consume: false,
                             },
                             Some(struct_init),
                         ),
@@ -3611,6 +3644,7 @@ fn lower_actor_lifecycle_handlers(
                     module_fn_names,
                     module_generic_fn_names,
                     funcupdate_fn_returns_fresh,
+                    param_ownership,
                     &HashMap::new(),
                     call_site_type_args,
                     None,
@@ -3668,6 +3702,7 @@ fn lower_actor_lifecycle_handlers(
                                     ty: ResolvedTy::U64,
                                     mutable: false,
                                     span: p.span.clone(),
+                                    is_consume: false,
                                 },
                                 HirBinding {
                                     id: SENTINEL_EXIT_KIND_TAG_BINDING,
@@ -3675,6 +3710,7 @@ fn lower_actor_lifecycle_handlers(
                                     ty: ResolvedTy::I32,
                                     mutable: false,
                                     span: p.span.clone(),
+                                    is_consume: false,
                                 },
                             ]
                         } else {
@@ -3716,6 +3752,7 @@ fn lower_actor_lifecycle_handlers(
                     module_fn_names,
                     module_generic_fn_names,
                     funcupdate_fn_returns_fresh,
+                    param_ownership,
                     &HashMap::new(),
                     call_site_type_args,
                     None,
@@ -3903,6 +3940,7 @@ fn synthesize_machine_step_fn(
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
+    param_ownership: &Rc<ParamOwnershipFacts>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
@@ -3952,6 +3990,7 @@ fn synthesize_machine_step_fn(
         module_fn_names: module_fn_names.clone(),
         module_generic_fn_names: module_generic_fn_names.clone(),
         funcupdate_fn_returns_fresh: funcupdate_fn_returns_fresh.clone(),
+        param_ownership: param_ownership.clone(),
         call_site_type_args: call_site_type_args.clone(),
         supervisor_child_slots: supervisor_child_slots.clone(),
         actor_send_aliasing: actor_send_aliasing.clone(),
@@ -4803,6 +4842,7 @@ fn lower_supervisor_bootstrap(
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
+    param_ownership: &Rc<ParamOwnershipFacts>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     pool_accessor_sites: &HashMap<hew_hir::SiteId, hew_types::PoolAccessor>,
@@ -5023,6 +5063,7 @@ fn lower_supervisor_bootstrap(
             ty: handle_ty.clone(),
             mutable: false,
             span: sup.span.clone(),
+            is_consume: false,
         };
         child_bindings.insert(child.name.clone(), (binding.id, handle_ty));
 
@@ -5072,6 +5113,7 @@ fn lower_supervisor_bootstrap(
                 ty: param.ty.clone(),
                 mutable: false,
                 span: sup.span.clone(),
+                is_consume: false,
             }]
         })
         .unwrap_or_default();
@@ -5108,6 +5150,7 @@ fn lower_supervisor_bootstrap(
         module_fn_names,
         module_generic_fn_names,
         funcupdate_fn_returns_fresh,
+        param_ownership,
         &HashMap::new(),
         call_site_type_args,
         None,
@@ -5980,6 +6023,996 @@ fn collect_binding_defs_in_expr<'f>(
     }
 }
 
+/// Module-global RAII-2 (#1295) param-ownership facts. See
+/// [`compute_param_ownership`].
+#[derive(Debug, Default)]
+struct ParamOwnershipFacts {
+    /// `(origin fn ItemId, param index) -> true` iff that affine `#[resource]`
+    /// parameter is CONSUMED — callers move it in, the callee owns it and either
+    /// drops it at scope exit or forwards it onward. `false` = BORROW — callers
+    /// keep ownership and auto-drop at caller scope, and the callee must NOT
+    /// drop. Only affine `Named { builtin: None }` resource params ever appear;
+    /// non-resource and builtin-handle params are absent.
+    param_consume: HashMap<(hew_hir::ItemId, usize), bool>,
+    /// `SiteId`s of free-call arguments whose target parameter is a resource
+    /// BORROW. At the single `MirStatement::Use` emission point such an arg's
+    /// over-stamped `Consume` intent is downgraded to a borrowing `Read`, so the
+    /// caller keeps ownership and the resource is dropped exactly once (at the
+    /// caller's scope exit) instead of being moved into a borrowing callee.
+    borrow_arg_sites: HashSet<hew_hir::SiteId>,
+}
+
+/// True when `ty` is a user-declared affine `#[resource]` type — a
+/// `Named { builtin: None }` whose value class is `AffineResource`. Mirrors the
+/// HIR `checked_span_is_user_resource` predicate (hew-hir `lower.rs`): builtin
+/// runtime handles (`builtin: Some(_)` — channels, cancellation tokens, …) and
+/// the non-`Named` affine variants are EXCLUDED, because those reach borrowing
+/// FFI intrinsics by value and must keep their existing `Read` treatment.
+fn is_user_resource_ty(ty: &ResolvedTy, type_classes: &hew_hir::TypeClassTable) -> bool {
+    matches!(ty, ResolvedTy::Named { builtin: None, .. })
+        && ValueClass::of_ty(ty, type_classes) == ValueClass::AffineResource
+}
+
+/// Resolve a `Call` callee to the module function item it names, or `None` for
+/// any non-statically-resolved callee (a closure value, a fn-pointer parameter,
+/// a method receiver, indirect/dynamic dispatch). Mirrors `callee_is_resolved_item`.
+fn callee_item_id(callee: &HirExpr) -> Option<hew_hir::ItemId> {
+    if let HirExprKind::BindingRef {
+        resolved: ResolvedRef::Item(id),
+        ..
+    } = &callee.kind
+    {
+        Some(*id)
+    } else {
+        None
+    }
+}
+
+/// Classify every affine `#[resource]` free-function value parameter (#1295
+/// RAII-2) as CONSUME or BORROW, and precompute the call-argument `SiteId`s
+/// whose over-stamped `Consume` intent must be downgraded to a borrowing `Read`.
+///
+/// A resource parameter BORROWS BY DEFAULT (the caller keeps ownership and
+/// auto-drops at its own scope exit, mirroring a method receiver). It is promoted
+/// to CONSUME iff it is pinned with the `consume` keyword OR its body uses it in
+/// a consume position. The ONLY positions the borrow recogniser admits are a
+/// `Read`-intent method receiver (a non-consuming method like `is_match`) and a
+/// direct argument to a resolved free function whose target parameter is itself
+/// BORROW; EVERY other use — returned, stored (`let`/assign/struct/tuple),
+/// passed to a consuming method, passed to a CONSUME param, passed to an
+/// unresolved callee, captured by a closure, or any unmodelled position — is a
+/// consume (fail closed).
+///
+/// The borrow-arg-to-borrow-param rule makes the classification interprocedural,
+/// so it is solved as a monotone least-fixpoint seeded from each param's
+/// annotation: a param only ever flips Borrow→Consume. The asymmetry is the
+/// soundness contract — over-classifying as CONSUME is leak-safe (worst case the
+/// callee-drop in `lower_params` frees it once), whereas under-classifying as
+/// BORROW would double-free (caller AND callee both release it). The same table
+/// drives BOTH the call-site intent downgrade and the callee-side drop, so a
+/// parameter is consistently either moved-in-and-callee-drops or
+/// kept-and-caller-drops — never split.
+/// Collect the `ItemId` of every function that is an inherent/trait `impl`
+/// method.
+///
+/// A method's receiver slot must never be relaxed by the borrow downgrade: an
+/// inherent method call lowers to
+/// `HirExprKind::Call { callee: Item(m), args: [recv, ...args] }` with the
+/// receiver carrying its ACCURATE move intent (a borrowing receiver `Read`, a
+/// `self`-consuming receiver `Consume`), whereas an ordinary free-call argument
+/// is over-stamped `Consume` by `arg_move_intent`. Two authorities, unioned for
+/// robustness:
+///   * `method_symbols` from every `impl` block — the authoritative
+///     `<Type>::<method>` Function names. This catches a method that names its
+///     receiver something OTHER than `self` (the stdlib writes
+///     `fn close(child: Child)`), whose destructor-consume of the receiver is
+///     IMPLICIT: its body only reads a field, so the body scan would classify
+///     the receiver BORROW and the explicit `recv.close()` would be downgraded
+///     to a `Read`, leaving the caller to auto-drop a value `close` already
+///     released — a double-free.
+///   * the first-param-named-`self` heuristic — a cheap catch for any method
+///     the symbol scan might miss.
+///
+/// A free function can never carry a `self` receiver and is never an `impl`
+/// `method_symbol`, so its over-stamped `Consume` args stay eligible for the
+/// downgrade. Associated/static `impl` functions are also captured here.
+fn collect_method_item_ids(
+    fns: &HashMap<hew_hir::ItemId, &HirFn>,
+    items: &[HirItem],
+) -> HashSet<hew_hir::ItemId> {
+    let method_symbols: HashSet<&str> = items
+        .iter()
+        .filter_map(|item| match item {
+            HirItem::Impl(b) => Some(b.method_symbols.iter().map(String::as_str)),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    fns.iter()
+        .filter(|(_, f)| {
+            f.params.first().is_some_and(|p| p.name == "self")
+                || method_symbols.contains(f.name.as_str())
+        })
+        .map(|(&id, _)| id)
+        .collect()
+}
+
+/// Force-classify every NON-RECEIVER `#[resource]`/`#[linear]` value parameter
+/// of an `impl`/trait method as CONSUME (callee owns and drops it).
+///
+/// The borrow-site collector never downgrades a method-call argument (a
+/// `recv.m(args)` receiver carries authoritative move intent that must not be
+/// relaxed, so the whole arg list is skipped), so a method's non-receiver
+/// resource argument always reaches the call site with its HIR-over-stamped
+/// `Consume` intent: the caller moves it in and does not auto-drop it. If the
+/// fixpoint left such a parameter BORROW (its body only reads a field),
+/// `lower_params` would not drop it either — NOBODY drops it → leak / split
+/// ownership. Forcing CONSUME adds it to `owned_locals`, so the callee drops it
+/// exactly once, matching the caller's move-in.
+///
+/// The RECEIVER slot is EXCLUDED: its drop disposition rides the accurate
+/// call-site receiver intent (a borrowing `peek` Read kept by the caller, a
+/// consuming `close` Consume); forcing it CONSUME would make a borrowing
+/// receiver drop at BOTH the caller (auto-drop of the still-live binding) and
+/// the callee → double-free. Receiver identity follows the checker's rule
+/// (`is_receiver_param`): the first parameter is the receiver iff its type is
+/// the impl Self type (or the bare `self` sugar). A true associated function
+/// whose first parameter is NOT the Self type has no receiver, so all of its
+/// resource parameters are forced. Borrow-pass INTO a method's non-receiver
+/// parameter is intentionally not offered — the ratified borrow-default surface
+/// is free-function value parameters and method receivers.
+fn force_consume_method_nonreceiver_resource_params(
+    fns: &HashMap<hew_hir::ItemId, &HirFn>,
+    items: &[HirItem],
+    type_classes: &hew_hir::TypeClassTable,
+    methods: &HashSet<hew_hir::ItemId>,
+    param_consume: &mut HashMap<(hew_hir::ItemId, usize), bool>,
+) {
+    let method_self_type: HashMap<&str, &str> = items
+        .iter()
+        .filter_map(|item| match item {
+            HirItem::Impl(b) => Some(
+                b.method_symbols
+                    .iter()
+                    .map(|sym| (sym.as_str(), b.self_type_name.as_str())),
+            ),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    for (&id, &f) in fns {
+        if !methods.contains(&id) {
+            continue;
+        }
+        let receiver_arity = usize::from(f.params.first().is_some_and(|p| {
+            p.name == "self"
+                || method_self_type.get(f.name.as_str()).is_some_and(
+                    |self_ty| matches!(&p.ty, ResolvedTy::Named { name, .. } if name == self_ty),
+                )
+        }));
+        for (i, param) in f.params.iter().enumerate().skip(receiver_arity) {
+            if is_user_resource_ty(&param.ty, type_classes) {
+                param_consume.insert((id, i), true);
+            }
+        }
+    }
+}
+
+fn compute_param_ownership(
+    fns: &HashMap<hew_hir::ItemId, &HirFn>,
+    items: &[HirItem],
+    type_classes: &hew_hir::TypeClassTable,
+) -> ParamOwnershipFacts {
+    // Seed: every resource parameter starts at its `consume` annotation —
+    // pinned CONSUME (`true`) when annotated, BORROW (`false`) otherwise.
+    // Non-resource parameters never enter the map (and so never participate as
+    // a borrow target below). Keyed by ORIGIN ItemId so every monomorphisation
+    // of a generic origin shares one verdict.
+    let mut param_consume: HashMap<(hew_hir::ItemId, usize), bool> = HashMap::new();
+    for (&id, &f) in fns {
+        for (i, param) in f.params.iter().enumerate() {
+            if is_user_resource_ty(&param.ty, type_classes) {
+                param_consume.insert((id, i), param.is_consume);
+            }
+        }
+    }
+    // Method items — every inherent/trait `impl` method (see
+    // `collect_method_item_ids`). A method-call receiver slot carries accurate
+    // move intent and is never relaxed by the borrow downgrade; associated/static
+    // `impl` functions are captured here too.
+    let methods = collect_method_item_ids(fns, items);
+    // Force-consume non-receiver resource params of `impl`/trait methods so the
+    // callee owns and drops them (the borrow collector skips method-call args).
+    force_consume_method_nonreceiver_resource_params(
+        fns,
+        items,
+        type_classes,
+        &methods,
+        &mut param_consume,
+    );
+    // Monotone least-fixpoint: a pass only ever flips a BORROW param to CONSUME;
+    // a flip can only enable further flips (a now-CONSUME target turns its
+    // callers' borrow args into consumes), so iteration converges in at most
+    // (longest borrow-forwarding chain) passes.
+    loop {
+        let mut changed = false;
+        for (&id, &f) in fns {
+            for (i, param) in f.params.iter().enumerate() {
+                let key = (id, i);
+                // Only resource params still classified BORROW can flip.
+                if param_consume.get(&key) != Some(&false) {
+                    continue;
+                }
+                let consumed = {
+                    let cx = ScanCtx {
+                        consume: &param_consume,
+                        methods: &methods,
+                    };
+                    param_consumed_in_body(&f.body, param.id, &cx)
+                };
+                if consumed {
+                    param_consume.insert(key, true);
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    // With the verdict final, collect every free-call argument `SiteId` whose
+    // target parameter is a resource BORROW. The arg's `Use` is then emitted
+    // `Read` instead of the HIR-over-stamped `Consume`, so the caller keeps the
+    // binding live and drops it once at scope exit. Method receiver slots are
+    // excluded — their intent is already accurate.
+    //
+    // The scan must cover EVERY body in the module, not only free functions: a
+    // borrowing call written inside an actor `receive fn` / method / `init` /
+    // lifecycle hook, or a machine entry/exit/transition body, needs its arg
+    // sites downgraded just the same. Classification (above) stays scoped to
+    // `fns` (free fns + impl methods — the only items whose value params take
+    // part in borrow-pass), but if a call site here is NOT scanned its arg keeps
+    // the HIR-over-stamped `Consume`, which is fail-CLOSED (the callee auto-drops
+    // it — no leak, no double-free) but spuriously rejects a borrow-then-reuse
+    // in that body. Scanning all bodies removes that false rejection. Impl
+    // methods are reached via their mirror `HirItem::Function` entries, so the
+    // `Impl` block itself is skipped to avoid a redundant re-scan.
+    let mut borrow_arg_sites: HashSet<hew_hir::SiteId> = HashSet::new();
+    let cx = ScanCtx {
+        consume: &param_consume,
+        methods: &methods,
+    };
+    for item in items {
+        match item {
+            HirItem::Function(f) => {
+                collect_borrow_arg_sites_in_block(&f.body, &cx, &mut borrow_arg_sites);
+            }
+            HirItem::Actor(actor) => {
+                if let Some(init) = &actor.init {
+                    collect_borrow_arg_sites_in_block(&init.body, &cx, &mut borrow_arg_sites);
+                }
+                for handler in &actor.receive_handlers {
+                    collect_borrow_arg_sites_in_block(&handler.body, &cx, &mut borrow_arg_sites);
+                }
+                for method in &actor.methods {
+                    collect_borrow_arg_sites_in_block(&method.body, &cx, &mut borrow_arg_sites);
+                }
+                for hook in &actor.lifecycle_hooks {
+                    collect_borrow_arg_sites_in_block(&hook.body, &cx, &mut borrow_arg_sites);
+                }
+            }
+            HirItem::Machine(machine) => {
+                for state in &machine.states {
+                    if let Some(entry) = &state.entry {
+                        collect_borrow_arg_sites_in_block(entry, &cx, &mut borrow_arg_sites);
+                    }
+                    if let Some(exit) = &state.exit {
+                        collect_borrow_arg_sites_in_block(exit, &cx, &mut borrow_arg_sites);
+                    }
+                }
+                for transition in &machine.transitions {
+                    if let Some(guard) = &transition.guard {
+                        collect_borrow_arg_sites_in_expr(guard, &cx, &mut borrow_arg_sites);
+                    }
+                    collect_borrow_arg_sites_in_expr(&transition.body, &cx, &mut borrow_arg_sites);
+                }
+            }
+            // No call-bearing user bodies: extern fns have none; impl methods
+            // are mirrored as `Function` items (scanned above); records, type
+            // decls, supervisors, and consts carry no free-call argument sites.
+            _ => {}
+        }
+    }
+    ParamOwnershipFacts {
+        param_consume,
+        borrow_arg_sites,
+    }
+}
+
+/// True when `expr` is a bare reference to binding `b_p`.
+fn is_binding_ref(expr: &HirExpr, b_p: BindingId) -> bool {
+    matches!(
+        &expr.kind,
+        HirExprKind::BindingRef { resolved: ResolvedRef::Binding(id), .. } if *id == b_p
+    )
+}
+
+/// Classify the base of a PLACE PROJECTION (`base.field`, `base[i]`, `base.0`,
+/// `base[a..b]`). A projection reads THROUGH its base — it borrows `base`, it
+/// never moves `base` out — so a bare reference to `b_p` as the projection base
+/// is a BORROW (returns `false`, "not consumed"). Only a non-trivial base
+/// expression can bury a consume of `b_p` (e.g. `consume_it(b_p).field`), so
+/// that case recurses. Without this interception the generic leaf rule would
+/// treat every field read (`self.id` in a `#[resource]`'s own `close`/`peek`)
+/// as a consume — wrongly registering the borrowed receiver for a callee-side
+/// drop (a double-free of a by-reference receiver, or infinite `close`-of-self
+/// recursion for the destructor).
+fn projection_base_consumes(base: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) -> bool {
+    if is_binding_ref(base, b_p) {
+        false
+    } else {
+        scan_expr_for_consume(base, b_p, pc)
+    }
+}
+
+/// Shared context for the consume-detection and borrow-site walkers. Bundles
+/// the in-progress ownership verdict (`consume`) with the method-item set
+/// (`methods`) so the `Call` arm can tell an accurate-intent method receiver
+/// slot apart from an over-stamped free-call argument. Threaded by reference;
+/// `consume` is re-borrowed fresh on each fixpoint pass (it mutates between
+/// passes, never during a walk).
+struct ScanCtx<'a> {
+    consume: &'a HashMap<(hew_hir::ItemId, usize), bool>,
+    methods: &'a HashSet<hew_hir::ItemId>,
+}
+
+/// Does any use of resource parameter `b_p` in `block` CONSUME it under the
+/// RAII-2 borrow recogniser (fail closed)? Entry point for
+/// [`compute_param_ownership`]'s body scan.
+fn param_consumed_in_body(block: &HirBlock, b_p: BindingId, pc: &ScanCtx<'_>) -> bool {
+    scan_block_for_consume(block, b_p, pc)
+}
+
+fn scan_block_for_consume(block: &HirBlock, b_p: BindingId, pc: &ScanCtx<'_>) -> bool {
+    for stmt in &block.statements {
+        match &stmt.kind {
+            HirStmtKind::Let(_, init) => {
+                if init
+                    .as_ref()
+                    .is_some_and(|init| scan_expr_for_consume(init, b_p, pc))
+                {
+                    return true;
+                }
+            }
+            HirStmtKind::Assign { target, value } => {
+                if scan_expr_for_consume(target, b_p, pc) || scan_expr_for_consume(value, b_p, pc) {
+                    return true;
+                }
+            }
+            HirStmtKind::Expr(expr) | HirStmtKind::Return(Some(expr)) => {
+                if scan_expr_for_consume(expr, b_p, pc) {
+                    return true;
+                }
+            }
+            HirStmtKind::Return(None) => {}
+            HirStmtKind::Defer { body, .. } => {
+                if scan_expr_for_consume(body, b_p, pc) {
+                    return true;
+                }
+            }
+            HirStmtKind::LetElse {
+                scrutinee,
+                success_prelude,
+                else_body,
+                ..
+            } => {
+                if scan_expr_for_consume(scrutinee, b_p, pc) {
+                    return true;
+                }
+                for prelude_stmt in success_prelude {
+                    if let HirStmtKind::Let(_, Some(value)) = &prelude_stmt.kind {
+                        if scan_expr_for_consume(value, b_p, pc) {
+                            return true;
+                        }
+                    }
+                }
+                if scan_block_for_consume(else_body, b_p, pc) {
+                    return true;
+                }
+            }
+        }
+    }
+    block
+        .tail
+        .as_ref()
+        .is_some_and(|tail| scan_expr_for_consume(tail, b_p, pc))
+}
+
+/// True when `expr` uses parameter `b_p` in a CONSUME position. A bare reference
+/// to `b_p` reached here (by plain recursion from a parent that did NOT classify
+/// it as one of the two recognised borrow slots) IS a consume; the two borrow
+/// slots — a `Read`-intent method receiver and a direct arg to a BORROW param —
+/// are intercepted by their parent arms and never recurse the bare ref. Mirrors
+/// `collect_return_values_in_expr`'s exhaustive child coverage so no buried use
+/// is missed (a missed consume would under-classify a param as Borrow and
+/// double-free); the closure arms DESCEND via the capture ledger because a
+/// captured param escapes the call (a consume).
+#[allow(
+    clippy::too_many_lines,
+    clippy::match_same_arms,
+    reason = "visitor mirrors the sealed HirExprKind surface so consume detection is exhaustive; arms are kept separate to document each position's borrow-vs-consume classification"
+)]
+fn scan_expr_for_consume(expr: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) -> bool {
+    match &expr.kind {
+        // Leaf: a bare reference to `b_p` reached by plain recursion is a
+        // CONSUME (a recognised borrow slot would have intercepted it). A ref to
+        // any OTHER binding contributes nothing.
+        HirExprKind::BindingRef { resolved, .. } => {
+            matches!(resolved, ResolvedRef::Binding(id) if *id == b_p)
+        }
+        // Call. Inherent method calls lower to this form too, with the receiver
+        // as `args[0]`. A direct argument `b_p` in slot `j` BORROWS iff:
+        //  * the callee is a METHOD and slot `j` carries intent `Read` — the
+        //    receiver of a non-consuming method (`peek`). For a method call the
+        //    receiver's intent is authoritative; we never consult `pc` for it,
+        //    because a method's `self` slot may be classified BORROW (an
+        //    empty/borrowing body like `close`) yet still consume at the call
+        //    site, which the `Consume` receiver intent already records.
+        //  * the callee is a FREE function and slot `j`'s target parameter is
+        //    classified BORROW in `pc`.
+        // Every other arg form recurses (and a bare ref to a Consume/unresolved
+        // target bottoms out at the leaf rule → consume). The callee slot is
+        // scanned so a parameter used AS the callee (an indirect call) consumes.
+        HirExprKind::Call { callee, args } => {
+            if scan_expr_for_consume(callee, b_p, pc) {
+                return true;
+            }
+            let callee_item = callee_item_id(callee);
+            let is_method = callee_item.is_some_and(|id| pc.methods.contains(&id));
+            for (j, arg) in args.iter().enumerate() {
+                if is_binding_ref(arg, b_p) {
+                    let borrows = if is_method {
+                        arg.intent == IntentKind::Read
+                    } else {
+                        callee_item.and_then(|id| pc.consume.get(&(id, j))).copied() == Some(false)
+                    };
+                    if !borrows {
+                        return true;
+                    }
+                    // Borrow slot: the arg is a bare ref, nothing more to scan.
+                } else if scan_expr_for_consume(arg, b_p, pc) {
+                    return true;
+                }
+            }
+            false
+        }
+        // Method-call forms. The RECEIVER's own intent already encodes
+        // borrow-vs-consume (a non-consuming method lowers the receiver `Read`, a
+        // `self`-consuming method `Consume`), so a receiver `b_p` BORROWS iff its
+        // intent is `Read`. Method ARGUMENTS carry no per-param classification,
+        // so a resource argument fails closed to consume via the leaf rule.
+        HirExprKind::ResolvedImplCall { receiver, args, .. }
+        | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
+        | HirExprKind::VarSelfMethodCall { receiver, args, .. }
+        | HirExprKind::CallDynMethod { receiver, args, .. } => {
+            if is_binding_ref(receiver, b_p) {
+                if receiver.intent != IntentKind::Read {
+                    return true;
+                }
+            } else if scan_expr_for_consume(receiver, b_p, pc) {
+                return true;
+            }
+            args.iter().any(|arg| scan_expr_for_consume(arg, b_p, pc))
+        }
+        // Closure / lambda-actor: a captured `b_p` escapes into the environment
+        // (the closure may outlive the call) — an ownership move, so consume. The
+        // capture ledger names captured bindings directly; the body is not
+        // descended (its `return` exits the closure, and any inner use of `b_p`
+        // is necessarily through a capture already listed).
+        HirExprKind::Closure { captures, .. } => captures.iter().any(|c| c.binding == b_p),
+        HirExprKind::SpawnLambdaActor { captures, .. } => captures.iter().any(|c| c.binding == b_p),
+        // ---- generic recursion: a bare `b_p` in ANY child slot below is a
+        // ---- consume (return value, store operand, construction field, …). ----
+        HirExprKind::Literal(_)
+        | HirExprKind::RegexLiteralRef { .. }
+        | HirExprKind::AwaitTask { .. }
+        | HirExprKind::ContextReader { .. }
+        | HirExprKind::MachineFieldAccess { .. }
+        | HirExprKind::MachineEventFieldAccess { .. }
+        | HirExprKind::Continue { .. }
+        | HirExprKind::ActorSelf
+        | HirExprKind::Unsupported(_) => false,
+        HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
+            scan_expr_for_consume(left, b_p, pc) || scan_expr_for_consume(right, b_p, pc)
+        }
+        HirExprKind::Unary { operand, .. } | HirExprKind::WireCodec { operand, .. } => {
+            scan_expr_for_consume(operand, b_p, pc)
+        }
+        HirExprKind::ConnAwaitRead { conn, .. } => scan_expr_for_consume(conn, b_p, pc),
+        HirExprKind::AwaitRestart { child } => scan_expr_for_consume(child, b_p, pc),
+        HirExprKind::ListenerAwaitAccept { listener, .. } => {
+            scan_expr_for_consume(listener, b_p, pc)
+        }
+        HirExprKind::StreamRecvAwait { stream, .. } => scan_expr_for_consume(stream, b_p, pc),
+        HirExprKind::NumericCast { value, .. }
+        | HirExprKind::SaturatingWidthCast { value, .. }
+        | HirExprKind::CoerceToDynTrait { value, .. } => scan_expr_for_consume(value, b_p, pc),
+        HirExprKind::TupleLiteral { elements } => {
+            elements.iter().any(|e| scan_expr_for_consume(e, b_p, pc))
+        }
+        HirExprKind::NumericMethod { receiver, arg, .. } => {
+            scan_expr_for_consume(receiver, b_p, pc) || scan_expr_for_consume(arg, b_p, pc)
+        }
+        HirExprKind::SpawnedCall { callee, args, .. } => {
+            scan_expr_for_consume(callee, b_p, pc)
+                || args.iter().any(|a| scan_expr_for_consume(a, b_p, pc))
+        }
+        HirExprKind::Spawn { args, .. } => {
+            args.iter().any(|(_, a)| scan_expr_for_consume(a, b_p, pc))
+        }
+        HirExprKind::ActorSend { receiver, args, .. }
+        | HirExprKind::ActorAsk { receiver, args, .. } => {
+            scan_expr_for_consume(receiver, b_p, pc)
+                || args.iter().any(|a| scan_expr_for_consume(a, b_p, pc))
+        }
+        HirExprKind::RemoteActorAsk {
+            receiver,
+            msg,
+            timeout_ms,
+            ..
+        } => {
+            scan_expr_for_consume(receiver, b_p, pc)
+                || scan_expr_for_consume(msg, b_p, pc)
+                || scan_expr_for_consume(timeout_ms, b_p, pc)
+        }
+        HirExprKind::Block(block)
+        | HirExprKind::Scope { body: block }
+        | HirExprKind::ForkBlock { body: block, .. }
+        | HirExprKind::GenBlock { body: block, .. } => scan_block_for_consume(block, b_p, pc),
+        HirExprKind::Return { value } => value
+            .as_deref()
+            .is_some_and(|v| scan_expr_for_consume(v, b_p, pc)),
+        HirExprKind::Yield { value, .. } | HirExprKind::Break { value, .. } => value
+            .as_deref()
+            .is_some_and(|v| scan_expr_for_consume(v, b_p, pc)),
+        HirExprKind::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            scan_expr_for_consume(condition, b_p, pc)
+                || scan_expr_for_consume(then_expr, b_p, pc)
+                || else_expr
+                    .as_deref()
+                    .is_some_and(|e| scan_expr_for_consume(e, b_p, pc))
+        }
+        HirExprKind::StructInit { fields, base, .. } => {
+            fields
+                .iter()
+                .any(|(_, v)| scan_expr_for_consume(v, b_p, pc))
+                || base
+                    .as_deref()
+                    .is_some_and(|b| scan_expr_for_consume(b, b_p, pc))
+        }
+        HirExprKind::FieldAccess { object, .. } => projection_base_consumes(object, b_p, pc),
+        HirExprKind::ScopeDeadline { duration, body } => {
+            scan_expr_for_consume(duration, b_p, pc) || scan_block_for_consume(body, b_p, pc)
+        }
+        HirExprKind::Select(select) => select.arms.iter().any(|arm| {
+            let in_kind = match &arm.kind {
+                hew_hir::HirSelectArmKind::StreamNext { stream } => {
+                    scan_expr_for_consume(stream, b_p, pc)
+                }
+                hew_hir::HirSelectArmKind::ActorAsk { actor, args, .. } => {
+                    scan_expr_for_consume(actor, b_p, pc)
+                        || args.iter().any(|a| scan_expr_for_consume(a, b_p, pc))
+                }
+                hew_hir::HirSelectArmKind::TaskAwait { task } => {
+                    scan_expr_for_consume(task, b_p, pc)
+                }
+                hew_hir::HirSelectArmKind::ChannelRecv { receiver, .. } => {
+                    scan_expr_for_consume(receiver, b_p, pc)
+                }
+                hew_hir::HirSelectArmKind::AfterTimer { duration } => {
+                    scan_expr_for_consume(duration, b_p, pc)
+                }
+            };
+            in_kind || scan_expr_for_consume(&arm.body, b_p, pc)
+        }),
+        HirExprKind::Join(join) => join.branches.iter().any(|branch| {
+            scan_expr_for_consume(&branch.actor, b_p, pc)
+                || branch
+                    .args
+                    .iter()
+                    .any(|a| scan_expr_for_consume(a, b_p, pc))
+        }),
+        HirExprKind::TupleIndex { tuple, .. } => projection_base_consumes(tuple, b_p, pc),
+        HirExprKind::Index { container, index } => {
+            projection_base_consumes(container, b_p, pc) || scan_expr_for_consume(index, b_p, pc)
+        }
+        HirExprKind::Slice {
+            container,
+            start,
+            end,
+            ..
+        } => {
+            projection_base_consumes(container, b_p, pc)
+                || start
+                    .as_deref()
+                    .is_some_and(|s| scan_expr_for_consume(s, b_p, pc))
+                || end
+                    .as_deref()
+                    .is_some_and(|e| scan_expr_for_consume(e, b_p, pc))
+        }
+        HirExprKind::MachineEmit { fields, .. } => fields
+            .iter()
+            .any(|(_, v)| scan_expr_for_consume(v, b_p, pc)),
+        HirExprKind::MachineStep {
+            receiver, event, ..
+        } => scan_expr_for_consume(receiver, b_p, pc) || scan_expr_for_consume(event, b_p, pc),
+        HirExprKind::ChannelRecvAwait { receiver, .. }
+        | HirExprKind::CancellationTokenIsCancelled { receiver }
+        | HirExprKind::GeneratorNext { receiver, .. }
+        | HirExprKind::MachineStateName { receiver, .. }
+        | HirExprKind::RecordCloneCall { src: receiver, .. } => {
+            scan_expr_for_consume(receiver, b_p, pc)
+        }
+        HirExprKind::MachineVariantCtor { payload, .. } => payload.as_ref().is_some_and(|fields| {
+            fields
+                .iter()
+                .any(|(_, v)| scan_expr_for_consume(v, b_p, pc))
+        }),
+        HirExprKind::While {
+            condition, body, ..
+        } => scan_expr_for_consume(condition, b_p, pc) || scan_block_for_consume(body, b_p, pc),
+        HirExprKind::ForRange {
+            start,
+            end,
+            step,
+            body,
+            ..
+        } => {
+            scan_expr_for_consume(start, b_p, pc)
+                || scan_expr_for_consume(end, b_p, pc)
+                || scan_expr_for_consume(step, b_p, pc)
+                || scan_block_for_consume(body, b_p, pc)
+        }
+        HirExprKind::Match { scrutinee, arms } => {
+            scan_expr_for_consume(scrutinee, b_p, pc)
+                || arms.iter().any(|arm| {
+                    arm.guard
+                        .as_ref()
+                        .is_some_and(|g| scan_expr_for_consume(g, b_p, pc))
+                        || scan_expr_for_consume(&arm.body, b_p, pc)
+                })
+        }
+        HirExprKind::WhileLet {
+            scrutinee, body, ..
+        } => scan_expr_for_consume(scrutinee, b_p, pc) || scan_block_for_consume(body, b_p, pc),
+        HirExprKind::IfLet {
+            scrutinee,
+            body,
+            else_body,
+            ..
+        } => {
+            scan_expr_for_consume(scrutinee, b_p, pc)
+                || scan_block_for_consume(body, b_p, pc)
+                || else_body
+                    .as_ref()
+                    .is_some_and(|eb| scan_block_for_consume(eb, b_p, pc))
+        }
+        HirExprKind::Loop { body, .. } => scan_block_for_consume(body, b_p, pc),
+    }
+}
+
+/// Walk `block` collecting the `SiteId` of every free-call argument that is
+/// passed to a resource BORROW parameter, recursing into all sub-expressions and
+/// nested blocks. These sites' over-stamped `Consume` intents are downgraded to
+/// `Read` at MIR `Use` emission. Mirrors the exhaustive child coverage of the
+/// consume scan; only the `Call` arm records sites, every other arm recurses.
+fn collect_borrow_arg_sites_in_block(
+    block: &HirBlock,
+    pc: &ScanCtx<'_>,
+    out: &mut HashSet<hew_hir::SiteId>,
+) {
+    for stmt in &block.statements {
+        match &stmt.kind {
+            HirStmtKind::Let(_, init) => {
+                if let Some(init) = init {
+                    collect_borrow_arg_sites_in_expr(init, pc, out);
+                }
+            }
+            HirStmtKind::Assign { target, value } => {
+                collect_borrow_arg_sites_in_expr(target, pc, out);
+                collect_borrow_arg_sites_in_expr(value, pc, out);
+            }
+            HirStmtKind::Expr(expr) | HirStmtKind::Return(Some(expr)) => {
+                collect_borrow_arg_sites_in_expr(expr, pc, out);
+            }
+            HirStmtKind::Return(None) => {}
+            HirStmtKind::Defer { body, .. } => {
+                collect_borrow_arg_sites_in_expr(body, pc, out);
+            }
+            HirStmtKind::LetElse {
+                scrutinee,
+                success_prelude,
+                else_body,
+                ..
+            } => {
+                collect_borrow_arg_sites_in_expr(scrutinee, pc, out);
+                for prelude_stmt in success_prelude {
+                    if let HirStmtKind::Let(_, Some(value)) = &prelude_stmt.kind {
+                        collect_borrow_arg_sites_in_expr(value, pc, out);
+                    }
+                }
+                collect_borrow_arg_sites_in_block(else_body, pc, out);
+            }
+        }
+    }
+    if let Some(tail) = &block.tail {
+        collect_borrow_arg_sites_in_expr(tail, pc, out);
+    }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    clippy::match_same_arms,
+    reason = "visitor mirrors the sealed HirExprKind surface so site collection is exhaustive; the Call arm records borrow-arg sites, every other arm recurses its children uniformly"
+)]
+fn collect_borrow_arg_sites_in_expr(
+    expr: &HirExpr,
+    pc: &ScanCtx<'_>,
+    out: &mut HashSet<hew_hir::SiteId>,
+) {
+    macro_rules! go {
+        ($e:expr) => {
+            collect_borrow_arg_sites_in_expr($e, pc, out)
+        };
+    }
+    macro_rules! go_block {
+        ($b:expr) => {
+            collect_borrow_arg_sites_in_block($b, pc, out)
+        };
+    }
+    match &expr.kind {
+        // The only recording arm: a direct argument to a resolved FREE function
+        // whose target param is a resource BORROW has its `SiteId` downgraded.
+        // Method calls are excluded — a method receiver's intent is already
+        // accurate (a borrowing receiver `Read`, a consuming receiver
+        // `Consume`), so it must never be relaxed by the `pc` verdict (a
+        // `close`-style `self` is BORROW in `pc` yet consumes at the call site).
+        HirExprKind::Call { callee, args } => {
+            if let Some(id) = callee_item_id(callee) {
+                if !pc.methods.contains(&id) {
+                    for (j, arg) in args.iter().enumerate() {
+                        if pc.consume.get(&(id, j)).copied() == Some(false) {
+                            out.insert(arg.site);
+                        }
+                    }
+                }
+            }
+            go!(callee);
+            for arg in args {
+                go!(arg);
+            }
+        }
+        HirExprKind::Literal(_)
+        | HirExprKind::RegexLiteralRef { .. }
+        | HirExprKind::BindingRef { .. }
+        | HirExprKind::AwaitTask { .. }
+        | HirExprKind::ContextReader { .. }
+        | HirExprKind::MachineFieldAccess { .. }
+        | HirExprKind::MachineEventFieldAccess { .. }
+        | HirExprKind::Continue { .. }
+        | HirExprKind::ActorSelf
+        | HirExprKind::Unsupported(_) => {}
+        HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
+            go!(left);
+            go!(right);
+        }
+        HirExprKind::Unary { operand, .. } | HirExprKind::WireCodec { operand, .. } => go!(operand),
+        HirExprKind::ConnAwaitRead { conn, .. } => go!(conn),
+        HirExprKind::AwaitRestart { child } => go!(child),
+        HirExprKind::ListenerAwaitAccept { listener, .. } => go!(listener),
+        HirExprKind::StreamRecvAwait { stream, .. } => go!(stream),
+        HirExprKind::NumericCast { value, .. }
+        | HirExprKind::SaturatingWidthCast { value, .. }
+        | HirExprKind::CoerceToDynTrait { value, .. } => go!(value),
+        HirExprKind::TupleLiteral { elements } => {
+            for elem in elements {
+                go!(elem);
+            }
+        }
+        HirExprKind::NumericMethod { receiver, arg, .. } => {
+            go!(receiver);
+            go!(arg);
+        }
+        HirExprKind::SpawnedCall { callee, args, .. } => {
+            go!(callee);
+            for arg in args {
+                go!(arg);
+            }
+        }
+        HirExprKind::Spawn { args, .. } => {
+            for (_, arg) in args {
+                go!(arg);
+            }
+        }
+        HirExprKind::ActorSend { receiver, args, .. }
+        | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::CallDynMethod { receiver, args, .. }
+        | HirExprKind::ResolvedImplCall { receiver, args, .. }
+        | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
+        | HirExprKind::VarSelfMethodCall { receiver, args, .. } => {
+            go!(receiver);
+            for arg in args {
+                go!(arg);
+            }
+        }
+        HirExprKind::RemoteActorAsk {
+            receiver,
+            msg,
+            timeout_ms,
+            ..
+        } => {
+            go!(receiver);
+            go!(msg);
+            go!(timeout_ms);
+        }
+        HirExprKind::Block(block)
+        | HirExprKind::Scope { body: block }
+        | HirExprKind::ForkBlock { body: block, .. }
+        | HirExprKind::GenBlock { body: block, .. } => go_block!(block),
+        HirExprKind::Return { value }
+        | HirExprKind::Yield { value, .. }
+        | HirExprKind::Break { value, .. } => {
+            if let Some(value) = value {
+                go!(value);
+            }
+        }
+        HirExprKind::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            go!(condition);
+            go!(then_expr);
+            if let Some(else_expr) = else_expr {
+                go!(else_expr);
+            }
+        }
+        HirExprKind::StructInit { fields, base, .. } => {
+            for (_, field_expr) in fields {
+                go!(field_expr);
+            }
+            if let Some(base) = base {
+                go!(base);
+            }
+        }
+        HirExprKind::FieldAccess { object, .. } => go!(object),
+        HirExprKind::ScopeDeadline { duration, body } => {
+            go!(duration);
+            go_block!(body);
+        }
+        HirExprKind::Select(select) => {
+            for arm in &select.arms {
+                match &arm.kind {
+                    hew_hir::HirSelectArmKind::StreamNext { stream } => go!(stream),
+                    hew_hir::HirSelectArmKind::ActorAsk { actor, args, .. } => {
+                        go!(actor);
+                        for arg in args {
+                            go!(arg);
+                        }
+                    }
+                    hew_hir::HirSelectArmKind::TaskAwait { task } => go!(task),
+                    hew_hir::HirSelectArmKind::ChannelRecv { receiver, .. } => go!(receiver),
+                    hew_hir::HirSelectArmKind::AfterTimer { duration } => go!(duration),
+                }
+                go!(&arm.body);
+            }
+        }
+        HirExprKind::Join(join) => {
+            for branch in &join.branches {
+                go!(&branch.actor);
+                for arg in &branch.args {
+                    go!(arg);
+                }
+            }
+        }
+        HirExprKind::TupleIndex { tuple, .. } => go!(tuple),
+        HirExprKind::Index { container, index } => {
+            go!(container);
+            go!(index);
+        }
+        HirExprKind::Slice {
+            container,
+            start,
+            end,
+            ..
+        } => {
+            go!(container);
+            if let Some(start) = start {
+                go!(start);
+            }
+            if let Some(end) = end {
+                go!(end);
+            }
+        }
+        HirExprKind::MachineEmit { fields, .. } => {
+            for (_, field_val) in fields {
+                go!(field_val);
+            }
+        }
+        HirExprKind::MachineStep {
+            receiver, event, ..
+        } => {
+            go!(receiver);
+            go!(event);
+        }
+        HirExprKind::ChannelRecvAwait { receiver, .. }
+        | HirExprKind::CancellationTokenIsCancelled { receiver }
+        | HirExprKind::GeneratorNext { receiver, .. }
+        | HirExprKind::MachineStateName { receiver, .. }
+        | HirExprKind::RecordCloneCall { src: receiver, .. } => go!(receiver),
+        HirExprKind::MachineVariantCtor { payload, .. } => {
+            if let Some(fields) = payload {
+                for (_, val) in fields {
+                    go!(val);
+                }
+            }
+        }
+        HirExprKind::While {
+            condition, body, ..
+        } => {
+            go!(condition);
+            go_block!(body);
+        }
+        HirExprKind::ForRange {
+            start,
+            end,
+            step,
+            body,
+            ..
+        } => {
+            go!(start);
+            go!(end);
+            go!(step);
+            go_block!(body);
+        }
+        HirExprKind::Match { scrutinee, arms } => {
+            go!(scrutinee);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    go!(guard);
+                }
+                go!(&arm.body);
+            }
+        }
+        HirExprKind::WhileLet {
+            scrutinee, body, ..
+        } => {
+            go!(scrutinee);
+            go_block!(body);
+        }
+        HirExprKind::IfLet {
+            scrutinee,
+            body,
+            else_body,
+            ..
+        } => {
+            go!(scrutinee);
+            go_block!(body);
+            if let Some(eb) = else_body {
+                go_block!(eb);
+            }
+        }
+        HirExprKind::Loop { body, .. } => go_block!(body),
+        // Closure / lambda-actor bodies ARE lowered and `Use`-emitted, so a
+        // borrowing call inside one still needs its arg sites downgraded.
+        HirExprKind::Closure { body, .. } | HirExprKind::SpawnLambdaActor { body, .. } => go!(body),
+    }
+}
+
 /// Per-function summary for the destructive-funcupdate base gate: does function
 /// `f` provably return a FRESH MATERIALISED owner on EVERY return path — a value
 /// in its own storage that does NOT originate from a by-value heap parameter?
@@ -6645,6 +7678,7 @@ fn lower_function(
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
+    param_ownership: &Rc<ParamOwnershipFacts>,
     trait_impl_index: &HashMap<
         hew_hir::dispatch::TraitImplKey,
         hew_hir::dispatch::TraitImplMethodEntry,
@@ -6693,6 +7727,7 @@ fn lower_function(
         module_fn_names: module_fn_names.clone(),
         module_generic_fn_names: module_generic_fn_names.clone(),
         funcupdate_fn_returns_fresh: funcupdate_fn_returns_fresh.clone(),
+        param_ownership: param_ownership.clone(),
         trait_impl_index: trait_impl_index.clone(),
         subst,
         call_site_type_args: call_site_type_args.clone(),
@@ -7625,6 +8660,13 @@ struct Builder {
     /// builders share it cheaply; the empty default fails every call-base
     /// closed, which is sound. See `compute_fn_returns_fresh_owner`.
     funcupdate_fn_returns_fresh: Rc<HashMap<hew_hir::ItemId, bool>>,
+    /// Module-global RAII-2 param-ownership facts: which affine
+    /// `#[resource]` free-fn params are CONSUME (callee owns + drops) vs
+    /// BORROW (caller keeps + drops), and the call-arg `SiteId`s whose
+    /// over-stamped `Consume` intent is downgraded to a borrowing `Read`.
+    /// `Rc` so child builders share it cheaply; empty default leaves every
+    /// arg `Consume` and drops no param (sound: pre-RAII-2 behaviour).
+    param_ownership: Rc<ParamOwnershipFacts>,
     /// Binding ids of the CURRENT function's by-value parameters, captured in
     /// `lower_params`. A funcupdate base that is (or embeds in a construction) a
     /// WHOLE by-value parameter is NOT a unique owner — the parameter is a
@@ -9161,7 +10203,7 @@ impl Builder {
         // not a unique owner. Captured here so every entry point that lowers a
         // parameterised body through `lower_params` participates.
         self.funcupdate_param_ids = Rc::new(func.params.iter().map(|p| p.id).collect());
-        for param in &func.params {
+        for (i, param) in func.params.iter().enumerate() {
             let slot = self.alloc_local(param.ty.clone());
             self.binding_locals.insert(param.id, slot);
             // Record the parameter name for `-g` `DW_TAG_formal_parameter`
@@ -9175,6 +10217,48 @@ impl Builder {
             // to a fn type is also admitted.
             if ty_is_closure_pair(&self.subst_ty(&param.ty)) {
                 self.closure_pair_param_owned.insert(param.id);
+            }
+            // RAII-2 (#1295) callee-side drop: a CONSUME affine `#[resource]`
+            // parameter is OWNED by the callee (the caller moved it in and does
+            // not drop it), so register it for the scope-exit drop — closing the
+            // f9 leak where a by-value resource param the body did not forward
+            // was never freed. The per-exit `drops_for_exit` dataflow narrowing
+            // removes it on paths where the body already moved it out (returned,
+            // forwarded to another consume, or a `self`-consuming method), so it
+            // is dropped exactly once and never double-freed. Keyed by the
+            // ORIGIN `(ItemId, index)`; a BORROW param is absent and never
+            // registered (the caller keeps ownership and drops it).
+            if self
+                .param_ownership
+                .param_consume
+                .get(&(func.id, i))
+                .copied()
+                == Some(true)
+            {
+                let owned_ty = self.subst_ty(&param.ty);
+                self.owned_locals
+                    .push((param.id, param.name.clone(), owned_ty.clone()));
+                // Register the param in the function's top body scope so it
+                // participates in the elaborator's path-sensitive drop passes
+                // (forward-`Goto` scope-close + per-exit narrowing) exactly like
+                // a `let`-bound resource local. Without a `binding_scope` entry
+                // a param consumed on ONE branch is dropped on NO branch (the
+                // scope-close pass skips unscoped bindings), leaking it on the
+                // borrow path. `lower_params` runs before the body scope is
+                // pushed, so set it directly rather than via the active-scope
+                // cursor. Borrowed params are absent from `owned_locals` and
+                // need no scope entry (the caller owns and drops them).
+                self.binding_scope.insert(param.id, func.body.scope);
+                // Allocate the path-sensitive runtime drop-flag for a
+                // non-idempotent user `#[resource]` param consumed on SOME but
+                // not all paths (a `MaybeConsumed` join at the exit). The
+                // zero-init emitted here, in the param prologue, dominates every
+                // later `Consume` use and every scope-exit drop; codegen gates
+                // the close on `flag == 0`, so a param closed on one branch is
+                // not re-closed at the merge while one left live on another
+                // branch still drops exactly once. A no-op for a binding whose
+                // close is idempotent/refcounted (`resource_needs_drop_flag`).
+                self.maybe_alloc_resource_drop_flag(param.id, &owned_ty);
             }
         }
     }
@@ -11450,14 +12534,27 @@ impl Builder {
                 // `InitialisedBeforeUse` because the outer binding id was
                 // never initialised in this closure-shim context.
                 if !self.capture_env_sources.contains_key(id) {
+                    // RAII-2 (#1295) call-site downgrade: a by-value resource
+                    // argument the HIR over-stamped `Consume` but whose target
+                    // free-fn parameter is classified BORROW keeps the caller's
+                    // ownership — emit a borrowing `Read` so the binding stays
+                    // live and is dropped exactly once at the caller's scope
+                    // exit. Consulted at the single resource-arg `Use` emission
+                    // point; non-borrow sites (consumed params, unresolved
+                    // callees) keep the over-stamped intent unchanged.
+                    let use_intent = if self.param_ownership.borrow_arg_sites.contains(&expr.site) {
+                        IntentKind::Read
+                    } else {
+                        expr.intent
+                    };
                     self.statements.push(MirStatement::Use {
                         binding: *id,
                         name: name.clone(),
                         site: expr.site,
                         ty: use_ty.clone(),
-                        intent: expr.intent,
+                        intent: use_intent,
                     });
-                    if expr.intent == IntentKind::Consume
+                    if use_intent == IntentKind::Consume
                         && ValueClass::of_ty(&use_ty, &self.type_classes) != ValueClass::BitCopy
                     {
                         // #1933 / #1941 — a non-idempotent user `#[resource]`
@@ -21119,6 +22216,7 @@ impl Builder {
             module_fn_names: self.module_fn_names.clone(),
             module_generic_fn_names: self.module_generic_fn_names.clone(),
             funcupdate_fn_returns_fresh: self.funcupdate_fn_returns_fresh.clone(),
+            param_ownership: self.param_ownership.clone(),
             subst: self.subst.clone(),
             call_site_type_args: self.call_site_type_args.clone(),
             supervisor_child_slots: self.supervisor_child_slots.clone(),
@@ -26703,6 +27801,7 @@ impl Builder {
             module_fn_names: self.module_fn_names.clone(),
             module_generic_fn_names: self.module_generic_fn_names.clone(),
             funcupdate_fn_returns_fresh: self.funcupdate_fn_returns_fresh.clone(),
+            param_ownership: self.param_ownership.clone(),
             subst: self.subst.clone(),
             call_site_type_args: self.call_site_type_args.clone(),
             supervisor_child_slots: self.supervisor_child_slots.clone(),
@@ -26911,6 +28010,7 @@ impl Builder {
             module_fn_names: self.module_fn_names.clone(),
             module_generic_fn_names: self.module_generic_fn_names.clone(),
             funcupdate_fn_returns_fresh: self.funcupdate_fn_returns_fresh.clone(),
+            param_ownership: self.param_ownership.clone(),
             subst: self.subst.clone(),
             call_site_type_args: self.call_site_type_args.clone(),
             supervisor_child_slots: self.supervisor_child_slots.clone(),
@@ -28003,6 +29103,7 @@ impl Builder {
             module_fn_names: self.module_fn_names.clone(),
             module_generic_fn_names: self.module_generic_fn_names.clone(),
             funcupdate_fn_returns_fresh: self.funcupdate_fn_returns_fresh.clone(),
+            param_ownership: self.param_ownership.clone(),
             subst: self.subst.clone(),
             call_site_type_args: self.call_site_type_args.clone(),
             supervisor_child_slots: self.supervisor_child_slots.clone(),
@@ -38866,6 +39967,7 @@ mod slice3_invariants {
                 &HashSet::new(),
                 &HashSet::new(),
                 &std::rc::Rc::new(std::collections::HashMap::new()),
+                &std::rc::Rc::new(ParamOwnershipFacts::default()),
                 &HashMap::new(),
                 &HashMap::new(),
                 None,

@@ -679,6 +679,7 @@ fn qualified_param_type_carries_module_into_resolved_sig() {
                 0..0,
             ),
             is_mutable: false,
+            is_consume: false,
         }],
         return_type: None,
         where_clause: None,
@@ -848,6 +849,7 @@ fn unqualified_ambiguous_type_is_typed_error() {
                 0..0,
             ),
             is_mutable: false,
+            is_consume: false,
         }],
         return_type: None,
         where_clause: None,
@@ -924,6 +926,7 @@ fn unqualified_unpublished_type_is_not_in_scope_not_ambiguous() {
                 0..0,
             ),
             is_mutable: false,
+            is_consume: false,
         }],
         return_type: None,
         where_clause: None,
@@ -1088,6 +1091,7 @@ fn make_receive_fn(name: &str, params: &[(&str, &str)], ret: Option<&str>) -> Re
                     0..0,
                 ),
                 is_mutable: false,
+                is_consume: false,
             })
             .collect(),
         return_type: ret.map(|r| {

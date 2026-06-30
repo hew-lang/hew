@@ -230,6 +230,7 @@ pub(super) fn make_checker_with_trait(
                         0..4,
                     ),
                     is_mutable: false,
+                    is_consume: false,
                 }],
                 return_type: None,
                 where_clause: None,

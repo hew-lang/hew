@@ -54,6 +54,7 @@ fn binding(ids: &mut IdGen, name: &str, ty: ResolvedTy) -> HirBinding {
         ty,
         mutable: false,
         span: 0..0,
+        is_consume: false,
     }
 }
 

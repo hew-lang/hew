@@ -235,6 +235,7 @@ tests/pkg-import/imported_diamond_inline_supermethods_accept.hew
 tests/pkg-import/imported_redeclared_super_separate_impl_accept.hew
 tests/pkg-import/imported_subtrait_inline_supermethod_accept.hew
 tests/pkg-import/imported_trait_method.hew
+tests/pkg-import/imported_trait_resource_param_consume_ok.hew
 tests/pkg-import/local_actor_ask_guard.hew
 tests/pkg-import/local_trait_shadows_imported_collision_accept.hew
 tests/pkg-import/local_type_shadows_import_alias_member.hew
@@ -256,6 +257,14 @@ tests/pkg-import/pkgs/reexmid/reexmid.hew
 tests/pkg-import/pkgs/reexsub/reexsub.hew
 tests/pkg-import/pkgs/reexsubalias/reexsubalias.hew
 tests/pkg-import/pkgs/replynonsend/replynonsend.hew
+
+# requires-package-resolver: resource-boundary reject-fixture package source.
+# sinkres deliberately leaves a trait method's #[resource] param unannotated,
+# which the consume-boundary discipline correctly rejects under standalone
+# `hew check` too; it is covered by make test-pkg-import via the
+# imported_trait_resource_param_missing_consume reject oracle. The consume-pinned
+# positive (pkgs/sinkok) checks clean standalone and is intentionally not listed.
+tests/pkg-import/pkgs/sinkres/sinkres.hew
 
 # requires-package-resolver: more accept/trait tests
 tests/pkg-import/postmono_qualified_layout.hew

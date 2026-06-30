@@ -1,0 +1,17 @@
+// Package-import trait-signature ACCEPT oracle (RAII-2 #1295, positive control).
+//
+// `hew::sinkok` exports a trait `Sink` whose bodyless `put(self, consume item:
+// Sticky)` pins its sibling `#[resource]` param with `consume`. The disposition
+// is spelled at the invisible-body boundary, so the importer must ACCEPT it.
+//
+// Paired with `imported_trait_resource_param_missing_consume_reject` (the
+// negative): the package-import boundary check must reject the unannotated param
+// AND accept this `consume`-annotated one — proving the §4c imported-module
+// trait arm is load-bearing without over-rejecting valid signatures.
+//
+// Harness verb: hew check (positive — see run.sh). Asserts the check succeeds.
+import hew::sinkok::{Sink};
+
+fn main() {
+    println("checked: imported consume-pinned trait boundary accepted");
+}

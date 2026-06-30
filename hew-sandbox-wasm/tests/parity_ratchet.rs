@@ -621,6 +621,21 @@ const CONSTRUCTS: &[Construct] = &[
         },
     },
     Construct {
+        // RAII-2 (#1295) surface: a `consume`-annotated affine `#[resource]`
+        // free-fn value param. The borrow-pass / consume-inference lives in the
+        // native MIR pipeline (`hew-mir`), which the sandbox emitter does not
+        // share; and a `#[resource]` type is rejected at the sandbox boundary
+        // before any param-ownership question arises. Pinned here so the new
+        // `consume` surface can never silently slip into sandbox bytecode with
+        // an unmodelled `<T>::close` drop — it fail-closes with the same named
+        // resource diagnostic.
+        id: "`consume` keyword on a `#[resource]` free-fn param (RAII-2 #1295)",
+        probe: "#[resource]\ntype Conn { fd: i64 }\nfn sink(consume c: Conn) {}\nfn main() {\n    println(\"x\");\n}\n",
+        coverage: Coverage::RejectedByProfile {
+            diagnostic_kind: "user_resource_close_not_yet_admitted_sandbox",
+        },
+    },
+    Construct {
         id: "scope / structured-concurrency block",
         probe: "fn work() -> i64 { 1 }\nfn main() {\n    scope {\n        fork work();\n    }\n    println(\"x\");\n}\n",
         coverage: Coverage::RejectedByProfile {

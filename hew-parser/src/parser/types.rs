@@ -540,6 +540,12 @@ impl Parser<'_> {
         let mut params = Vec::new();
 
         while !self.at_end() && self.peek() != Some(&Token::RightParen) {
+            let is_consume = if self.peek_is_consume_param_modifier() {
+                self.advance();
+                true
+            } else {
+                false
+            };
             let is_mutable = self.eat(&Token::Var);
             let Some(name) = self.expect_ident() else {
                 break;
@@ -556,6 +562,17 @@ impl Parser<'_> {
                 // in `std/builtins.hew`); rejecting `var self` here would
                 // make the surface unreachable from valid programs.
                 if allow_implicit_self && params.is_empty() && self.peek() != Some(&Token::Colon) {
+                    if is_consume {
+                        self.errors.push(ParseError {
+                            message: "`consume self` is not valid; a by-move receiver is \
+                                      written `consuming self`"
+                                .to_string(),
+                            span: span.clone(),
+                            hint: None,
+                            severity: Severity::Error,
+                            kind: ParseDiagnosticKind::Other,
+                        });
+                    }
                     params.push(Param {
                         name,
                         ty: (
@@ -566,6 +583,7 @@ impl Parser<'_> {
                             span,
                         ),
                         is_mutable,
+                        is_consume: false,
                     });
                     if !self.eat(&Token::Comma) {
                         break;
@@ -606,6 +624,7 @@ impl Parser<'_> {
                     name,
                     ty,
                     is_mutable,
+                    is_consume,
                 });
             }
 

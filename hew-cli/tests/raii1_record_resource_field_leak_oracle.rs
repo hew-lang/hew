@@ -77,7 +77,7 @@ impl Dq {\n\
 }\n\
 extern \"C\" {\n\
     fn hew_deque_new() -> Dq;\n\
-    fn hew_deque_free(dq: Dq);\n\
+    fn hew_deque_free(consume dq: Dq);\n\
 }\n\
 type Holder { dq: Dq }\n";
 

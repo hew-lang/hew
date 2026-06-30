@@ -141,6 +141,7 @@ fn option_some_pipeline() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         resource_record_close: vec![],
+        resource_opaque_close: vec![],
     }
 }
 
@@ -243,6 +244,7 @@ fn option_string_pipeline() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         resource_record_close: vec![],
+        resource_opaque_close: vec![],
     }
 }
 
@@ -381,6 +383,7 @@ fn envelope_i64_pipeline() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         resource_record_close: vec![],
+        resource_opaque_close: vec![],
     }
 }
 
@@ -464,6 +467,7 @@ fn bytes_return_pipeline() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         resource_record_close: vec![],
+        resource_opaque_close: vec![],
     }
 }
 
@@ -540,6 +544,7 @@ fn tuple_of_bytes_return_pipeline() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         resource_record_close: vec![],
+        resource_opaque_close: vec![],
     }
 }
 
@@ -630,6 +635,7 @@ fn generic_record_of_string_return_pipeline() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         resource_record_close: vec![],
+        resource_opaque_close: vec![],
     }
 }
 

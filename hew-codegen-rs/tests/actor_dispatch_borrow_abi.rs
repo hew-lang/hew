@@ -713,6 +713,7 @@ fn boxed_enum_recv_pipeline() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         resource_record_close: vec![],
+        resource_opaque_close: vec![],
     }
 }
 
@@ -839,6 +840,7 @@ fn relay_resend_recv_pipeline() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         resource_record_close: vec![],
+        resource_opaque_close: vec![],
     }
 }
 

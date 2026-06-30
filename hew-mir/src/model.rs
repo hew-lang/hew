@@ -339,6 +339,22 @@ pub struct IrPipeline {
     /// boundary; codegen consumes pipeline fields, never the HIR `type_classes`
     /// table. Mirrors `opaque_handle_names` / `user_clone_record_seeds`.
     pub resource_record_close: Vec<(String, String)>,
+    /// RAII-1 opaque-resource close registry — `(opaque_type, "<Type>::<close>")`
+    /// for every single-slot `#[resource] #[opaque]` handle (see
+    /// `resource_opaque_close_registry`). The COMPLEMENT of
+    /// `resource_record_close`: a single-handle opaque `#[resource]` has no
+    /// record layout, so it is excluded from `resource_record_close` — that
+    /// exclusion is exactly the W3.029 leak this closes.
+    ///
+    /// Codegen's record-drop thunk synthesis (`collect_reachable_clone_targets`
+    /// and the on-demand `emit_aggregate_recursive_drop` named-leaf) consumes
+    /// this so a resource handle embedded in an owned record classifies as
+    /// `StateFieldCloneKind::Resource` and the owning record's drop spine runs
+    /// the handle's `close(self)` exactly once on every exit path. It MUST match
+    /// the registry the MIR admission gate used (both built by
+    /// `resource_opaque_close_registry` from the same inputs) or admission and
+    /// drop-body synthesis would disagree.
+    pub resource_opaque_close: Vec<(String, String)>,
 }
 
 /// A single warning-severity finding from the MIR-stage lint pass.

@@ -2848,6 +2848,15 @@ pub fn lower_hir_module_with_facts(
         })
         .collect();
 
+    // RAII-1 complement of `resource_record_close`: the close registry for
+    // single-slot `#[resource] #[opaque]` HANDLES (no record layout, hence
+    // excluded above). Built from the SAME `opaque_handle_names` +
+    // `module.type_classes` the lowering `Builder` ctor used for the admission
+    // gate (`resource_opaque_close_registry`), so codegen's drop-body synthesis
+    // classifies a resource-bearing record identically to MIR admission.
+    let resource_opaque_close =
+        resource_opaque_close_registry(&opaque_handle_names, &module.type_classes);
+
     IrPipeline {
         thir,
         raw_mir,
@@ -2902,6 +2911,7 @@ pub fn lower_hir_module_with_facts(
         user_clone_record_seeds: Vec::new(),
         lint_warnings,
         resource_record_close,
+        resource_opaque_close,
     }
 }
 
@@ -6655,6 +6665,7 @@ fn lower_function(
         machine_layout_names: machine_layout_names.clone(),
         enum_layouts: enum_layouts.to_vec(),
         opaque_handle_names: opaque_handle_names.to_vec(),
+        resource_opaque_close: resource_opaque_close_registry(opaque_handle_names, type_classes),
         supervisor_layout_map: supervisor_layout_map.clone(),
         current_actor_state_fields: current_actor_name
             .and_then(|name| actor_layouts.get(name))
@@ -7879,6 +7890,16 @@ struct Builder {
     /// every Builder construction site that may reach
     /// `owned_aggregate_record_field_kinds_for_key`.
     opaque_handle_names: Vec<String>,
+    /// RAII-1 opaque-resource close registry — `(opaque_type, "<Type>::<close>")`
+    /// for every single-slot `#[resource] #[opaque]` handle (see
+    /// `resource_opaque_close_registry`). Threaded into
+    /// `classify_actor_state_fields_with_resource_handles` at the owned-aggregate
+    /// admission gate so a resource-bearing record field classifies as
+    /// `StateFieldCloneKind::Resource` (RAII drop spine) instead of the
+    /// no-op-drop `OpaqueHandle` (the W3.029 leak). Built from
+    /// `opaque_handle_names` + `type_classes` in the Builder ctor; `IrPipeline`
+    /// rebuilds the identical registry for codegen so the two never drift.
+    resource_opaque_close: Vec<(String, String)>,
     current_actor_state_fields: HashMap<String, (FieldOffset, ResolvedTy)>,
     /// Names of every user-defined function declared in the module. Used by
     /// `lower_value` `HirExprKind::Call` to distinguish user-fn callees
@@ -8597,11 +8618,12 @@ impl Builder {
             .map(|(_, ty)| self.normalize_machine_field_ty(ty))
             .collect();
         let record_layouts = self.record_layouts_for_classification();
-        let kinds = crate::state_clone::classify_actor_state_fields_with_opaque_handles(
+        let kinds = crate::state_clone::classify_actor_state_fields_with_resource_handles(
             &field_tys,
             &record_layouts,
             &self.enum_layouts,
             &self.opaque_handle_names,
+            &self.resource_opaque_close,
         )?;
         // Fail closed at the value-class gate, not late at codegen. An admitted
         // owned-aggregate record is seeded for `DropKind::RecordInPlace`, which
@@ -26646,6 +26668,11 @@ impl Builder {
             supervisor_layout_map: self.supervisor_layout_map.clone(),
             enum_layouts: self.enum_layouts.clone(),
             opaque_handle_names: self.opaque_handle_names.clone(),
+            // Inherit the resource registry so a resource-bearing record dropped
+            // inside a closure shim / lambda-actor / gen body classifies the
+            // handle as `Resource` (runs its close), not the empty-registry
+            // `OpaqueHandle` no-op that would leak it.
+            resource_opaque_close: self.resource_opaque_close.clone(),
             machine_layout_names: self.machine_layout_names.clone(),
             module_fn_names: self.module_fn_names.clone(),
             module_generic_fn_names: self.module_generic_fn_names.clone(),
@@ -36207,6 +36234,56 @@ fn drop_kind_for(
         | Place::EnumTag(_)
         | Place::EnumVariant { .. } => DropKind::Resource,
     }
+}
+
+/// RAII-1 opaque-resource close registry: `(opaque_type_name, "<Type>::<close>")`
+/// for every single-slot `#[resource] #[opaque]` handle whose close is a USER
+/// method.
+///
+/// Parallel to the `resource_record_close` registry (which keys off
+/// `record_layouts` for `#[resource]` RECORDS): a single-handle opaque
+/// `#[resource]` has no record layout, so it is excluded from
+/// `resource_record_close` — that exclusion is exactly the W3.029 leak this
+/// registry closes. The classifier (`classify_named`) consults it to route such
+/// a handle to [`StateFieldCloneKind::Resource`] instead of the no-op-drop
+/// `OpaqueHandle`, and codegen reads the carried symbol to call `close(self)`
+/// on the owning aggregate's drop spine.
+///
+/// Built identically at the MIR admission gate (the lowering `Builder`) and at
+/// `IrPipeline` construction (for codegen) from the same `opaque_handle_names`
+/// and `type_classes`, so MIR and codegen classify a resource-bearing record
+/// the same way (no drift). The `<short>::<method>` symbol matches
+/// `declare_function`'s flattened `<Self>::<method>` mangling and the spelling
+/// `resource_record_close` / `resource_drop_fn` use.
+///
+/// Runtime-descriptor closes (where `RuntimeDropDescriptor::from_drop_fn_name`
+/// matches, e.g. a builtin handle with a C-ABI release) are excluded: the
+/// `Resource` drop arm calls the close as a user LLVM function, which a C-ABI
+/// runtime symbol would not resolve to. Those keep their existing path.
+fn resource_opaque_close_registry(
+    opaque_handle_names: &[String],
+    type_classes: &hew_hir::TypeClassTable,
+) -> Vec<(String, String)> {
+    use hew_types::runtime_call::RuntimeDropDescriptor;
+    opaque_handle_names
+        .iter()
+        .filter_map(|name| {
+            let short = short_name(name);
+            let (_, close) = type_classes
+                .get(name.as_str())
+                .or_else(|| type_classes.get(short))
+                .and_then(|entry| matches!(entry.0, ResourceMarker::Resource).then_some(entry))?;
+            let close_method = close.as_ref()?;
+            let symbol = format!("{short}::{close_method}");
+            // Open-set USER close only: a builtin runtime-descriptor close is a
+            // C-ABI symbol the `Resource` drop arm cannot call via
+            // `get_function`, so leave such a type on its existing path.
+            if RuntimeDropDescriptor::from_drop_fn_name(&symbol).is_some() {
+                return None;
+            }
+            Some((name.clone(), symbol))
+        })
+        .collect()
 }
 
 fn resource_drop_fn(

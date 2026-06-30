@@ -128,6 +128,7 @@ fn base_pipeline(
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         resource_record_close: vec![],
+        resource_opaque_close: vec![],
     }
 }
 
@@ -600,6 +601,7 @@ fn hash_thunk_dedup_one_per_record_per_module() {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         resource_record_close: vec![],
+        resource_opaque_close: vec![],
     };
     let ll = emit_ll(pipeline, "hash_dedup");
 
@@ -750,6 +752,7 @@ fn hash_thunk_dedup_no_double_emit_with_vec_contains_eq_thunk() {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         resource_record_close: vec![],
+        resource_opaque_close: vec![],
     };
     let ll = emit_ll(pipeline, "shared_eq_dedup");
     let eq_defs = ll
@@ -1170,6 +1173,7 @@ fn hash_thunk_dedup_isolates_distinct_records_with_same_size_align() {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         resource_record_close: vec![],
+        resource_opaque_close: vec![],
     };
     let ll = emit_ll(pipeline, "cross_shape_dedup");
     let hash_defs = ll

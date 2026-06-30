@@ -204,6 +204,7 @@ fn vec_index_i64_pipeline() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         resource_record_close: vec![],
+        resource_opaque_close: vec![],
     }
 }
 
@@ -365,6 +366,7 @@ fn vec_index_bool_pipeline() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         resource_record_close: vec![],
+        resource_opaque_close: vec![],
     }
 }
 
@@ -526,6 +528,7 @@ fn vec_index_char_pipeline() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         resource_record_close: vec![],
+        resource_opaque_close: vec![],
     }
 }
 

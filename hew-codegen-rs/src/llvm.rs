@@ -1484,6 +1484,17 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// close-then-teardown thunk the up-front synthesis pass emits — the two
     /// synthesis points cannot diverge on whether close fires (spec §3.7.3).
     pub(crate) resource_record_close: &'a [(String, String)],
+    /// RAII-1 opaque-resource close registry — `(opaque_type, "<Type>::<close>")`
+    /// for single-slot `#[resource] #[opaque]` handles
+    /// (`IrPipeline::resource_opaque_close`). The COMPLEMENT of
+    /// `resource_record_close`. Consulted by the on-demand record-drop thunk
+    /// synthesis in `emit_aggregate_recursive_drop` (via
+    /// `classify_record_drop_fields_for_key`) so a record holding a resource
+    /// handle, reached as a tuple/array element, gets the SAME
+    /// `Resource`-classified close-then-teardown body the up-front synthesis
+    /// pass emits — the two synthesis points cannot diverge on whether the
+    /// handle's `close(self)` fires.
+    pub(crate) resource_opaque_close: &'a [(String, String)],
     /// Module-wide actor layouts keyed by `ActorLayout.name` at use sites.
     /// Spawn lowering consumes these layouts to emit the WASM bridge metadata
     /// producer before calling into the runtime spawn ABI.
@@ -8734,6 +8745,7 @@ fn emit_state_clone_drop_synthesis<'ctx>(
     enum_inplace_drop_seeds: &[String],
     vec_owned_record_seeds: &[String],
     resource_record_close: &[(String, String)],
+    resource_opaque_close: &[(String, String)],
 ) -> CodegenResult<()> {
     // Per-record AND per-enum helpers must exist before the per-actor body
     // that calls them is emitted. Collect-then-emit two passes. The
@@ -8750,6 +8762,7 @@ fn emit_state_clone_drop_synthesis<'ctx>(
         opaque_handle_names,
         enum_inplace_drop_seeds,
         vec_owned_record_seeds,
+        resource_opaque_close,
     )?;
     // Resource-record close-symbol lookup (spec §3.7.3). A `#[resource]`
     // record's recursive drop thunk must run the user `close(self)` FIRST,
@@ -11198,6 +11211,7 @@ fn collect_reachable_clone_targets(
     opaque_handle_names: &[String],
     extra_enum_seeds: &[String],
     extra_record_seeds: &[String],
+    resource_opaque_close: &[(String, String)],
 ) -> CodegenResult<(
     Vec<(String, Vec<StateFieldCloneKind>)>,
     Vec<(String, EnumVariantKinds)>,
@@ -11279,11 +11293,12 @@ fn collect_reachable_clone_targets(
                      have rejected this with MissingRecordLayout"
                     ))
                 })?;
-            let kinds = hew_mir::classify_actor_state_fields_with_opaque_handles(
+            let kinds = hew_mir::classify_actor_state_fields_with_resource_handles(
                 &record.field_tys,
                 pipeline_records,
                 enum_layouts,
                 opaque_handle_names,
+                resource_opaque_close,
             )
             .map_err(|e| {
                 CodegenError::FailClosed(format!(
@@ -11321,11 +11336,12 @@ fn collect_reachable_clone_targets(
                 for field_ty in &variant.field_tys {
                     let mut visited: std::collections::HashSet<String> =
                         std::collections::HashSet::new();
-                    let kind = hew_mir::classify_state_field_full(
+                    let kind = hew_mir::classify_state_field_with_resource_handles(
                         field_ty,
                         pipeline_records,
                         enum_layouts,
                         opaque_handle_names,
+                        resource_opaque_close,
                         &mut visited,
                     )
                     .map_err(|e| {
@@ -26169,10 +26185,12 @@ fn classify_record_drop_fields_for_key(
         .iter()
         .map(|field_ty| {
             let mut visited = HashSet::new();
-            hew_mir::classify_state_field_with_enum_layouts(
+            hew_mir::classify_state_field_with_resource_handles(
                 field_ty,
                 &record_layouts,
                 fn_ctx.enum_layouts,
+                &[],
+                fn_ctx.resource_opaque_close,
                 &mut visited,
             )
             .map_err(|e| {
@@ -35684,6 +35702,7 @@ fn lower_function<'ctx>(
     dyn_vtable_registry: &[DynVtableInstance],
     const_globals: &ConstGlobalMap<'ctx>,
     resource_record_close: &[(String, String)],
+    resource_opaque_close: &[(String, String)],
     emit_wasm_entry_alias: bool,
     has_supervisors: bool,
     module_uses_runtime: bool,
@@ -36510,6 +36529,7 @@ fn lower_function<'ctx>(
         record_layouts,
         fn_symbols,
         resource_record_close,
+        resource_opaque_close,
         actor_layouts,
         machine_layouts,
         enum_layouts,
@@ -37463,6 +37483,7 @@ fn build_module_for_target<'ctx>(
         &enum_inplace_drop_seeds,
         &vec_owned_record_seeds,
         &pipeline.resource_record_close,
+        &pipeline.resource_opaque_close,
     )?;
     // Supervisor bootstraps replace the MIR-side synthesised body wholesale
     // with the canonical `hew_supervisor_new` → `add_child_spec` × N →
@@ -37542,6 +37563,7 @@ fn build_module_for_target<'ctx>(
             &pipeline.dyn_vtable_registry,
             &const_globals,
             &pipeline.resource_record_close,
+            &pipeline.resource_opaque_close,
             emit_wasm_entry_alias,
             !pipeline.supervisor_layouts.is_empty(),
             module_uses_runtime,
@@ -42441,6 +42463,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         }
     }
 
@@ -42951,6 +42974,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         };
 
         let ctx = Context::create();
@@ -43044,6 +43068,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         }
     }
 
@@ -43175,6 +43200,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         }
     }
 
@@ -43290,6 +43316,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         }
     }
 
@@ -43425,6 +43452,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         }
     }
 
@@ -43560,6 +43588,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "handler_ctx_test")
@@ -43647,6 +43676,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "ctx_field_test")
@@ -43728,6 +43758,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         };
         let ctx = Context::create();
         let m =
@@ -44012,6 +44043,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         }
     }
 
@@ -44228,6 +44260,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         }
     }
 
@@ -45019,6 +45052,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         };
 
         let ctx = Context::create();
@@ -45115,6 +45149,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "gen_yield_codegen_test")
@@ -45277,6 +45312,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "make_generator_codegen_test")
@@ -45366,6 +45402,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "cancel_token_is_cancelled_codegen_test")
@@ -45641,6 +45678,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         };
         let syms = empty_fn_symbols();
         let err = verify_drop_dispatch_resolves(&pipeline, &syms)
@@ -45713,6 +45751,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         };
         let syms = empty_fn_symbols();
         verify_drop_dispatch_resolves(&pipeline, &syms)
@@ -45771,6 +45810,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         };
         let found = uses_wasm_excluded_symbol(&pipeline)
             .expect("Duplex::close ElabDrop must be flagged as WASM-excluded");
@@ -45807,6 +45847,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         }
     }
 
@@ -46424,6 +46465,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         };
         assert!(
             uses_wasm_excluded_symbol(&pipeline).is_none(),
@@ -46736,6 +46778,7 @@ mod tests {
             record_layouts: &harness.record_layouts,
             fn_symbols: &harness.fn_symbols,
             resource_record_close: &[],
+            resource_opaque_close: &[],
             actor_layouts: &harness.actor_layouts,
             machine_layouts: &harness.machine_layouts,
             enum_layouts: &[],
@@ -48693,6 +48736,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         };
         let tmp = tempfile::Builder::new()
             .prefix("hew-dyn-coerce-ok-")
@@ -48845,6 +48889,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         };
         let tmp = tempfile::Builder::new()
             .prefix("hew-dyn-coerce-miss-")
@@ -49237,6 +49282,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         };
         let tmp = tempfile::Builder::new()
             .prefix("hew-frame-owned-drop-fail-")
@@ -49524,6 +49570,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         }
     }
 
@@ -49755,6 +49802,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         }
     }
 
@@ -49952,6 +50000,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         }
     }
 
@@ -50146,6 +50195,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         };
 
         let ctx = Context::create();
@@ -50356,6 +50406,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
         }
     }
 

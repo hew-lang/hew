@@ -1,0 +1,19 @@
+// Totality-at-boundary reject fixture: the `Node::` distributed cluster API
+// must fail closed AT CHECK on wasm32 targets.
+//
+// `Node::start` / `Node::connect` / `Node::load_keys` lower to the native mesh
+// transport (`hew_node_api_*`), which is gated behind
+// `#[cfg(not(target_arch = "wasm32"))]` and absent from the wasm32 link set.
+// Before this gate the checker admitted the program on wasm32 and codegen
+// emitted a module importing an undefined `env::hew_node_api_*` symbol that
+// failed at instantiation (admit-then-abort) — the exact fail-open this gate
+// closes. `net`/`quic`/`tls` already fail closed via `WasmUnsupportedFeature`;
+// `Node::` now matches with `WasmUnsupportedFeature::Distributed`.
+//
+// run.sh exercises this under BOTH wasm triples (wasm32-unknown-unknown and
+// wasm32-wasip1) and confirms the identical source still type-checks on native.
+fn main() {
+    Node::start("node-a@127.0.0.1:9000");
+    Node::connect("node-b@127.0.0.1:9001");
+    Node::load_keys("/keys/node.pem");
+}

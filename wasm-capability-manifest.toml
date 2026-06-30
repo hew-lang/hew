@@ -67,7 +67,7 @@ use_case = "WASI execution — `hew build --target=wasm32-wasi`"
 runnable = true
 
 # ---------------------------------------------------------------------------
-# Feature disposition table (30 rows; mirror of the markdown table).
+# Feature disposition table (31 rows; mirror of the markdown table).
 # Row order matches docs/wasm-capability-matrix.md top-to-bottom.
 # ---------------------------------------------------------------------------
 
@@ -395,6 +395,19 @@ tracking = "WASM-TODO"
 tracking_label = "WASM-TODO: os"
 
 [[feature]]
+id = "distributed"
+enum_variant = "Distributed"
+label = "`Node::*`, `RemotePid<T>::tell` / `::ask`"
+prose_label = "`Node::*` (`start`, `shutdown`, `connect`, `set_transport`, `load_keys`, `allow_peer`, `register`, `lookup`), `RemotePid<T>::tell` / `::ask`"
+reason = "the Node:: cluster API and RemotePid messaging route through the native mesh transport (hew_node_api_* / hew_remote_pid_tell), which is not compiled for wasm32; no wasm32 distributed runtime exists yet"
+checker = "reject"
+runtime = "native-only"
+runtime_status = "Native mesh transport (hew_node_api_* / hew_remote_pid_tell); not compiled for wasm32"
+categories = ["stdlib", "distributed", "actor"]
+tracking = "WASM-TODO"
+tracking_label = "WASM-TODO: distributed"
+
+[[feature]]
 id = "crypto-random"
 enum_variant = "CryptoRandom"
 label = "`std::crypto::crypto.random_bytes`"
@@ -419,7 +432,7 @@ tracking_label = "Note below"
 note = "Basic generator syntax and the cooperative scheduler do work on Tier 2. Generators that depend on blocking I/O (e.g. a generator that calls `stream.next()` internally) encounter the Streams reject at the point of the stream call, not at the generator declaration itself. Purely computational generators work on WASM unchanged."
 
 # ---------------------------------------------------------------------------
-# WASM-TODO backlog (15 rows; mirror of the backlog table).
+# WASM-TODO backlog (16 rows; mirror of the backlog table).
 # ---------------------------------------------------------------------------
 
 [[backlog]]
@@ -493,6 +506,12 @@ id = "process-execution"
 gap = "Process execution parity"
 blocker = "Explicit host capability model for subprocesses"
 tracking_label = "WASM-TODO: process-execution"
+
+[[backlog]]
+id = "distributed"
+gap = "Distributed node API / remote-actor messaging parity"
+blocker = "wasm peer transport for the `Node::*` cluster API and `RemotePid` routing (`hew_node_api_*` is native-only)"
+tracking_label = "WASM-TODO: distributed"
 
 [[backlog]]
 id = "supervision"

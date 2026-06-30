@@ -6943,6 +6943,14 @@ impl Checker {
                             applied_sig.return_type.clone()
                         };
                         if matches!(method, "tell" | "ask") {
+                            // `RemotePid<T>::tell` / `::ask` route to the native
+                            // mesh transport (`hew_remote_pid_tell` →
+                            // `hew_actor_send_by_id`), which is not compiled for
+                            // wasm32. Reject at check time so remote messaging
+                            // fails closed with a structured diagnostic instead
+                            // of compiling to a module that imports undefined
+                            // native send symbols and traps at instantiation.
+                            self.reject_wasm_feature(span, WasmUnsupportedFeature::Distributed);
                             self.enforce_actor_method_send_args(args);
                             // A640/S3: this is only a compile-time floor. The
                             // native RemotePid lowering still wraps raw

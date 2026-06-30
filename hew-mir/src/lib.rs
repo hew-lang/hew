@@ -19,8 +19,8 @@ pub mod state_clone;
 
 pub use dataflow::local_is_written_in_body;
 pub use lower::{
-    bracket_actor_handler_blocks, build_const_descriptors, instr_source_places, lower_hir_module,
-    lower_hir_module_with_facts, terminator_source_places,
+    bracket_actor_handler_blocks, build_const_descriptors, imported_function_symbol_names,
+    instr_source_places, lower_hir_module, lower_hir_module_with_facts, terminator_source_places,
 };
 
 /// Test-only access to the per-Place + per-`ResolvedTy` drop-kind

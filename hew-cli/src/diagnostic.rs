@@ -4,7 +4,7 @@
 //! relevant source location.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::IsTerminal;
 use std::ops::Range;
 
@@ -183,14 +183,29 @@ pub(crate) fn codegen_diagnostic_prefix(error: &hew_codegen_rs::CodegenError) ->
 /// shape to a type-check diagnostic. Without a span (synthesised functions,
 /// hand-built test MIR, infrastructure failures) or without source text, it
 /// degrades to the historical single line so no path regresses to silence.
+///
+/// `imported_fns` is the imported-module emit-symbol set
+/// ([`hew_mir::imported_function_symbol_names`]). A span's `(start, end)`
+/// offsets index its OWN function's module source, but `source`/`filename` are
+/// the ROOT input; drawing an imported function's span against the root would
+/// mislabel the caret (#2320). The caret is therefore rendered only when the
+/// failing function (recorded on `CodegenError::Spanned`) is NOT in this set;
+/// an imported function degrades to the bare line — "no location beats a wrong
+/// location".
 fn render_codegen_error_message(
     error: &hew_codegen_rs::CodegenError,
     source: &str,
     filename: &str,
     message: &str,
+    imported_fns: &HashSet<String>,
 ) {
     match error.source_span() {
-        Some((start, end)) if !source.is_empty() => {
+        Some((start, end))
+            if !source.is_empty()
+                && !error
+                    .source_fn_name()
+                    .is_some_and(|name| imported_fns.contains(name)) =>
+        {
             render_diagnostic(
                 source,
                 filename,
@@ -206,38 +221,43 @@ fn render_codegen_error_message(
 
 /// Render a codegen-front (`hew check` / pre-emit gate) validation failure.
 ///
-/// Source-attributed when the error carries a span (#2091); otherwise the
-/// historical bare `E_CODEGEN_FRONT_*: codegen-front validation failed: …` line.
+/// Source-attributed when the error carries a span (#2091) for a root-module
+/// function; an imported-module function degrades to the historical bare
+/// `E_CODEGEN_FRONT_*: codegen-front validation failed: …` line rather than
+/// mislabel the root (#2320; see `render_codegen_error_message`).
 pub(crate) fn render_codegen_front_diagnostic(
     error: &hew_codegen_rs::CodegenError,
     source: &str,
     filename: &str,
+    imported_fns: &HashSet<String>,
 ) {
     let message = format!(
         "{}: codegen-front validation failed: {error}",
         codegen_diagnostic_prefix(error),
     );
-    render_codegen_error_message(error, source, filename, &message);
+    render_codegen_error_message(error, source, filename, &message, imported_fns);
 }
 
 /// Render a `hew build` / `hew run` codegen-emit failure (#2091).
 ///
-/// When the error carries a source span and source text is available, the
-/// message points at the user's code through the same renderer a type error
-/// uses; otherwise it degrades to the historical bare line. The
-/// `WasmUnsupportedSubstrate` arm keeps its whole-program "omit the WASM target"
-/// phrasing (it carries no source point); every other error keeps the
-/// greppable `E_NOT_YET_IMPLEMENTED` family token.
+/// When the error carries a source span for a root-module function and source
+/// text is available, the message points at the user's code through the same
+/// renderer a type error uses; an imported-module function (or a spanless error)
+/// degrades to the historical bare line (#2320). The `WasmUnsupportedSubstrate`
+/// arm keeps its whole-program "omit the WASM target" phrasing (it carries no
+/// source point); every other error keeps the greppable `E_NOT_YET_IMPLEMENTED`
+/// family token.
 pub(crate) fn render_codegen_emit_error(
     error: &hew_codegen_rs::CodegenError,
     source: &str,
     filename: &str,
+    imported_fns: &HashSet<String>,
 ) {
     let message = match error.unspanned() {
         hew_codegen_rs::CodegenError::WasmUnsupportedSubstrate { .. } => format!("error: {error}"),
         _ => format!("E_NOT_YET_IMPLEMENTED: {error}"),
     };
-    render_codegen_error_message(error, source, filename, &message);
+    render_codegen_error_message(error, source, filename, &message, imported_fns);
 }
 
 // ANSI colour helpers
@@ -1377,7 +1397,7 @@ mod tests {
         .with_source_span((16, 27));
 
         start_diagnostic_capture();
-        render_codegen_emit_error(&error, source, "main.hew");
+        render_codegen_emit_error(&error, source, "main.hew", &HashSet::new());
         let captured = finish_diagnostic_capture();
 
         assert!(
@@ -1410,7 +1430,7 @@ mod tests {
         );
 
         start_diagnostic_capture();
-        render_codegen_emit_error(&error, source, "main.hew");
+        render_codegen_emit_error(&error, source, "main.hew", &HashSet::new());
         let captured = finish_diagnostic_capture();
 
         assert!(
@@ -1439,7 +1459,7 @@ mod tests {
         .with_source_span((16, 27));
 
         start_diagnostic_capture();
-        render_codegen_front_diagnostic(&error, source, "main.hew");
+        render_codegen_front_diagnostic(&error, source, "main.hew", &HashSet::new());
         let captured = finish_diagnostic_capture();
 
         assert!(
@@ -1453,6 +1473,78 @@ mod tests {
         assert!(
             captured.contains("^^^"),
             "the offending source line must be underlined; got: {captured:?}"
+        );
+    }
+
+    #[test]
+    fn imported_module_codegen_error_degrades_to_bare_not_mislabelled() {
+        // #2320: a fail-closed codegen error whose span belongs to an IMPORTED
+        // module must NOT draw a caret against the root source we render here —
+        // its `(start, end)` offsets index the imported module's text, so a caret
+        // on `main.hew` would point at the wrong file/line. The render boundary
+        // checks the failing function against the imported-module set and
+        // degrades to the bare, locationless line instead of mislabelling.
+        let source = "fn main() {\n    mem.bogus()\n}\n";
+        let imported_fns: HashSet<String> = ["dep_imported_fn".to_string()].into_iter().collect();
+
+        // Imported function ("dep_imported_fn" ∈ set) → bare line: no caret, no
+        // false header — even though the error DOES carry a span.
+        let imported_error = hew_codegen_rs::CodegenError::FailClosed(
+            "intrinsic 'mem.bogus' has no registered lowering".to_string(),
+        )
+        .with_source_span_for_fn((16, 27), Some("dep_imported_fn".to_string()));
+
+        start_diagnostic_capture();
+        render_codegen_emit_error(&imported_error, source, "main.hew", &imported_fns);
+        let imported_captured = finish_diagnostic_capture();
+
+        assert!(
+            imported_captured.contains("E_NOT_YET_IMPLEMENTED: fail-closed: intrinsic 'mem.bogus'"),
+            "an imported-module error must keep the bare family line; got: {imported_captured:?}"
+        );
+        assert!(
+            !imported_captured.contains("main.hew:"),
+            "an imported-module error must not mislabel the root source; got: {imported_captured:?}"
+        );
+        assert!(
+            !imported_captured.contains('^'),
+            "an imported-module error must not draw a caret on the root; got: {imported_captured:?}"
+        );
+
+        // Same span + same set, but a ROOT-module function ("main" ∉ set) → the
+        // caret renders. Proves the gate discriminates on membership, not on the
+        // mere presence of a span.
+        let root_error = hew_codegen_rs::CodegenError::FailClosed(
+            "intrinsic 'mem.bogus' has no registered lowering".to_string(),
+        )
+        .with_source_span_for_fn((16, 27), Some("main".to_string()));
+
+        start_diagnostic_capture();
+        render_codegen_emit_error(&root_error, source, "main.hew", &imported_fns);
+        let root_captured = finish_diagnostic_capture();
+
+        assert!(
+            root_captured.contains("main.hew:2:5:"),
+            "a root-module error must still render a source-attributed header; got: {root_captured:?}"
+        );
+        assert!(
+            root_captured.contains("^^^"),
+            "a root-module error must still underline the offending source; got: {root_captured:?}"
+        );
+
+        // The same membership gate guards the `hew check` front path (the
+        // codegen-front validation site), not only the build/run emit path.
+        start_diagnostic_capture();
+        render_codegen_front_diagnostic(&imported_error, source, "main.hew", &imported_fns);
+        let front_captured = finish_diagnostic_capture();
+        assert!(
+            front_captured.contains("E_CODEGEN_FRONT_FAIL_CLOSED"),
+            "the front path must keep its family token; got: {front_captured:?}"
+        );
+        assert!(
+            !front_captured.contains("main.hew:") && !front_captured.contains('^'),
+            "an imported-module front error must degrade to bare, not mislabel; \
+             got: {front_captured:?}"
         );
     }
 

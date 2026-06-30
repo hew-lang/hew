@@ -211,7 +211,7 @@ fn render_pipeline_mir_lints(
 fn lower_file_to_mir(
     input_path: &Path,
     requested_target: Option<&str>,
-) -> Result<hew_mir::IrPipeline, ()> {
+) -> Result<(hew_mir::IrPipeline, std::collections::HashSet<String>), ()> {
     let input = input_path.display().to_string();
     let target = target::TargetSpec::from_requested(requested_target).map_err(|e| {
         eprintln!("Error: {e}");
@@ -293,7 +293,11 @@ fn lower_file_to_mir(
         return Err(());
     }
 
-    Ok(pipeline)
+    // #2320: the imported-module emit-symbol set travels with the pipeline so
+    // the emit path can gate the fail-closed codegen caret on root-module
+    // membership (an imported function's span would mislabel the root source).
+    let imported_fns = hew_mir::imported_function_symbol_names(&lower_output.module);
+    Ok((pipeline, imported_fns))
 }
 
 /// Lower a source file to MIR for an explicit, already-resolved target.
@@ -305,7 +309,14 @@ fn lower_file_to_mir_for_target(
     input_path: &Path,
     target: &target::TargetSpec,
     options: &compile::CompileOptions,
-) -> Result<(hew_mir::IrPipeline, Vec<std::path::PathBuf>), ()> {
+) -> Result<
+    (
+        hew_mir::IrPipeline,
+        Vec<std::path::PathBuf>,
+        std::collections::HashSet<String>,
+    ),
+    (),
+> {
     let input = input_path.display().to_string();
     let fopts = compile::frontend_options(target, options);
 
@@ -373,7 +384,11 @@ fn lower_file_to_mir_for_target(
     }
 
     let native_pkg_dirs = native_link::collect_import_pkg_dirs(&state.program);
-    Ok((pipeline, native_pkg_dirs))
+    // #2320: see `lower_file_to_mir` — carry the imported-module emit-symbol set
+    // to the emit path so an imported function's fail-closed codegen error
+    // degrades to a bare line instead of mislabelling the root source.
+    let imported_fns = hew_mir::imported_function_symbol_names(&lower_output.module);
+    Ok((pipeline, native_pkg_dirs, imported_fns))
 }
 
 fn hir_target_arch(target: &target::TargetSpec) -> hew_hir::TargetArch {
@@ -484,7 +499,12 @@ fn run_check_deep_gates(
     let lint_denied = render_pipeline_mir_lints(&state.source, input, &pipeline, levels);
 
     if let Err(error) = hew_codegen_rs::validate_codegen_front(&pipeline) {
-        diagnostic::render_codegen_front_diagnostic(&error, &state.source, input);
+        // #2320: gate the source caret on root-module membership. An imported
+        // function's span indexes its OWN module source, not the root `input`
+        // we render against, so the renderer degrades an imported function's
+        // error to the bare line instead of drawing a caret on the wrong file.
+        let imported_fns = hew_mir::imported_function_symbol_names(&lower_output.module);
+        diagnostic::render_codegen_front_diagnostic(&error, &state.source, input, &imported_fns);
         return Err(());
     }
 
@@ -495,6 +515,11 @@ fn run_check_deep_gates(
     Ok(())
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "thin wrapper forwarding the emit surface to emit_module_with_triple; \
+              grouping the args would only add an indirection struct"
+)]
 fn emit_module(
     pipeline: &hew_mir::IrPipeline,
     module_name: &str,
@@ -503,6 +528,7 @@ fn emit_module(
     link_freestanding_wasm: bool,
     opt_level: hew_codegen_rs::OptLevel,
     source_path: Option<&Path>,
+    imported_fns: &std::collections::HashSet<String>,
 ) -> Result<hew_codegen_rs::EmitArtefacts, ()> {
     emit_module_with_triple(
         pipeline,
@@ -514,6 +540,7 @@ fn emit_module(
         false,
         opt_level,
         source_path,
+        imported_fns,
     )
 }
 
@@ -537,6 +564,7 @@ fn emit_module_with_triple(
     debug: bool,
     opt_level: hew_codegen_rs::OptLevel,
     source_path: Option<&Path>,
+    imported_fns: &std::collections::HashSet<String>,
 ) -> Result<hew_codegen_rs::EmitArtefacts, ()> {
     let options = hew_codegen_rs::EmitOptions {
         module_name,
@@ -563,6 +591,11 @@ fn emit_module_with_triple(
             // source text from the same path codegen emitted against. No path,
             // or unreadable/spanless source, degrades to the historical bare
             // line inside `render_codegen_emit_error`.
+            //
+            // #2320: `imported_fns` gates the caret on root-module membership —
+            // an imported function's span indexes its own module source, not the
+            // `source_path` root we render against, so it degrades to the bare
+            // line rather than mislabelling the root.
             let (source, filename) = source_path
                 .map(|p| {
                     (
@@ -571,7 +604,7 @@ fn emit_module_with_triple(
                     )
                 })
                 .unwrap_or_default();
-            diagnostic::render_codegen_emit_error(&e, &source, &filename);
+            diagnostic::render_codegen_emit_error(&e, &source, &filename, imported_fns);
             Err(())
         }
     }
@@ -600,6 +633,7 @@ fn emit_module_for_target(
     debug: bool,
     opt_level: hew_codegen_rs::OptLevel,
     source_path: Option<&Path>,
+    imported_fns: &std::collections::HashSet<String>,
 ) -> Result<hew_codegen_rs::EmitArtefacts, ()> {
     let codegen_triple = match emit_target {
         CompileEmitTarget::Native => Some(target.linker_triple()),
@@ -615,6 +649,7 @@ fn emit_module_for_target(
         debug,
         opt_level,
         source_path,
+        imported_fns,
     )
 }
 
@@ -634,7 +669,7 @@ fn link_native_object(obj: &Path, bin_path: &Path) -> Result<(), ()> {
 }
 
 pub(crate) fn compile_native_binary(input: &Path, bin_path: &Path) -> Result<(), ()> {
-    let pipeline = lower_file_to_mir(input, None)?;
+    let (pipeline, imported_fns) = lower_file_to_mir(input, None)?;
     let emit_dir = bin_path.parent().unwrap_or_else(|| Path::new("."));
     let module_name = bin_path
         .file_stem()
@@ -648,6 +683,7 @@ pub(crate) fn compile_native_binary(input: &Path, bin_path: &Path) -> Result<(),
         true,
         hew_codegen_rs::OptLevel::O0,
         Some(input),
+        &imported_fns,
     )?;
     let obj = artefacts.native_obj_path.as_deref().ok_or_else(|| {
         eprintln!("E_NOT_YET_IMPLEMENTED: native codegen did not produce an object");
@@ -765,6 +801,10 @@ pub(crate) fn compile_native_from_program(
         // historical bare line (no regression); the file-based `build`/`run`/
         // `check` paths carry a real path and render with a source span (#2091).
         None,
+        // No source path above ⇒ the renderer always degrades to the bare line,
+        // so membership is never consulted; pass the real set anyway so this
+        // stays correct if a source path is ever threaded here (#2320).
+        &hew_mir::imported_function_symbol_names(&lower_output.module),
     )?;
 
     match emit_target {
@@ -852,7 +892,8 @@ fn compile_build_binary(
     extra_libs: &[String],
     options: &compile::CompileOptions,
 ) -> Result<(), ()> {
-    let (pipeline, native_pkg_dirs) = lower_file_to_mir_for_target(input, target, options)?;
+    let (pipeline, native_pkg_dirs, imported_fns) =
+        lower_file_to_mir_for_target(input, target, options)?;
     let emit_dir = output_path.parent().unwrap_or_else(|| Path::new("."));
     let module_name = output_path
         .file_stem()
@@ -875,6 +916,7 @@ fn compile_build_binary(
         debug,
         opt_level,
         Some(input),
+        &imported_fns,
     )?;
 
     match emit_target {
@@ -922,7 +964,8 @@ fn emit_obj_only(
     opt_level: hew_codegen_rs::OptLevel,
     options: &compile::CompileOptions,
 ) -> Result<(), ()> {
-    let (pipeline, _native_pkg_dirs) = lower_file_to_mir_for_target(input, target, options)?;
+    let (pipeline, _native_pkg_dirs, imported_fns) =
+        lower_file_to_mir_for_target(input, target, options)?;
     let stem = input
         .file_stem()
         .and_then(|s| s.to_str())
@@ -946,6 +989,7 @@ fn emit_obj_only(
         debug,
         opt_level,
         if debug { Some(input) } else { None },
+        &imported_fns,
     )?;
     let produced = match emit_target {
         CompileEmitTarget::Native => artefacts.native_obj_path,
@@ -1036,12 +1080,13 @@ fn cmd_compile(a: &args::CompileArgs) {
     let json = a.format == args::DiagnosticFormat::Json;
     diagnostic_json::set_output_format(a.format.into());
 
-    let pipeline = lower_file_to_mir(&a.input, a.target.as_deref()).unwrap_or_else(|()| {
-        if json {
-            diagnostic_json::flush_json_diagnostics();
-        }
-        std::process::exit(1);
-    });
+    let (pipeline, imported_fns) =
+        lower_file_to_mir(&a.input, a.target.as_deref()).unwrap_or_else(|()| {
+            if json {
+                diagnostic_json::flush_json_diagnostics();
+            }
+            std::process::exit(1);
+        });
 
     // Dump path: print the requested MIR stage and exit. Useful for
     // spot-checking the lowering during development.
@@ -1088,6 +1133,7 @@ fn cmd_compile(a: &args::CompileArgs) {
         true,
         opt_level,
         Some(a.input.as_path()),
+        &imported_fns,
     )
     .unwrap_or_else(|()| {
         if json {
@@ -1200,7 +1246,7 @@ fn compile_temp_wasi_module(
     };
 
     let result = (|| -> Result<(), ()> {
-        let (pipeline, _native_pkg_dirs) =
+        let (pipeline, _native_pkg_dirs, imported_fns) =
             lower_file_to_mir_for_target(Path::new(input), &target_spec, options)?;
         let emit_dir = tmp_dir_of_path(&wasm_path);
         // Emit the wasm object only — the WASI runtime link happens in
@@ -1217,6 +1263,7 @@ fn compile_temp_wasi_module(
             // env floor lifts the whole corpus to O2 for the differential gate.
             hew_codegen_rs::OptLevel::O0,
             None,
+            &imported_fns,
         )?;
         let obj = artefacts.wasm_obj_path.as_deref().ok_or_else(|| {
             eprintln!("E_NOT_YET_IMPLEMENTED: WASM codegen did not produce an object");

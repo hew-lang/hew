@@ -424,3 +424,59 @@ fn imported_hir_diagnostic_rendered_with_imported_source_context() {
         "HIR diagnostic output must not contain raw debug spans; got:\n{stderr}"
     );
 }
+
+/// A fail-closed *codegen* error originating in an imported module must not be
+/// mislabelled against the root input. `dep.hew` declares a function whose
+/// signature uses a fixed-size array type — a construct the codegen spine
+/// fails closed on (`E_NOT_YET_IMPLEMENTED: ... Array type`). Compiling the
+/// root `main.hew` that imports it must surface that error WITHOUT a false
+/// `main.hew:line:col` caret pointing at the import (#2320): the codegen
+/// diagnostic degrades to the bare, locationless line rather than resolving the
+/// imported function's span against the wrong (root) source.
+///
+/// The mechanism — a root-module membership gate at the CLI render boundary
+/// (`render_codegen_error_message` checks the failing function against
+/// `hew_mir::imported_function_symbol_names` before drawing a caret) — is
+/// unit-tested in `hew-mir/tests/imported_function_symbol_names.rs` (the set)
+/// and `hew-cli/src/diagnostic.rs` (the gate, both directions). This is the
+/// end-to-end product guarantee the CLI must keep: an imported module's
+/// fail-closed codegen error never carries a root-file caret.
+#[test]
+fn imported_codegen_fail_closed_not_mislabelled_against_root() {
+    let fixture = write_fixture(&[
+        ("main.hew", "import dep;\nfn main() -> i64 {\n    dep.ok()\n}\n"),
+        (
+            "dep.hew",
+            "pub fn ok() -> i64 {\n    7\n}\npub fn unsupported(x: [i64; 2]) -> [i64; 2] {\n    return x;\n}\n",
+        ),
+    ]);
+    let main_path = fixture.path().join("main.hew");
+
+    let output = Command::new(hew_binary())
+        .args(["compile", main_path.to_str().unwrap()])
+        .current_dir(fixture.path())
+        .output()
+        .expect("hew binary must run");
+
+    assert!(
+        !output.status.success(),
+        "hew compile must fail on the imported array-typed codegen construct"
+    );
+
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+
+    // The codegen fail-closed error must still be reported.
+    assert!(
+        stderr.contains("E_NOT_YET_IMPLEMENTED") && stderr.contains("Array type"),
+        "imported codegen fail-closed error must name the unsupported construct; got:\n{stderr}"
+    );
+
+    // It must NOT be falsely attributed to the root input: no `main.hew:`
+    // error/warning caret line. (The root never declares the array construct;
+    // a `main.hew:line:col: error:` here would be the #2320 mislabel.)
+    assert!(
+        !stderr.lines().any(|line| line.contains("main.hew:")
+            && (line.contains("error:") || line.contains("warning:"))),
+        "imported codegen error must not be mislabelled against main.hew; got:\n{stderr}"
+    );
+}

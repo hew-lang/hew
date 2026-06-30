@@ -186,9 +186,19 @@ pub enum CodegenError {
     /// and — because the boundary only wraps when a function carries a faithful
     /// span — every existing `match CodegenError::FailClosed(_)` site keeps
     /// matching for the spanless case (synthesised functions, hand-built test
-    /// MIR). Construct via [`CodegenError::with_source_span`]; never nest.
+    /// MIR). Construct via [`CodegenError::with_source_span`] (or
+    /// [`CodegenError::with_source_span_for_fn`] to also record the function
+    /// identity the #2320 render gate needs); never nest.
     Spanned {
         span: (u32, u32),
+        /// Symbol name of the function the span belongs to
+        /// (`RawMirFunction.name`), or `None` for a span attached without a
+        /// function identity (hand-built test MIR). The CLI render boundary
+        /// resolves this against the imported-module set (#2320) so an imported
+        /// function's span — whose `(start, end)` index ITS module's source, not
+        /// the root the CLI renders against — is never drawn as a caret on the
+        /// wrong file; it degrades to the bare line instead.
+        fn_name: Option<String>,
         inner: Box<CodegenError>,
     },
 }
@@ -200,6 +210,16 @@ impl CodegenError {
     /// failing function's [`RawMirFunction::span`].
     #[must_use]
     pub fn with_source_span(self, span: (u32, u32)) -> Self {
+        self.with_source_span_for_fn(span, None)
+    }
+
+    /// As [`with_source_span`], also recording the symbol name of the function
+    /// the span belongs to. The CLI render boundary checks this name against the
+    /// imported-module set before drawing a source-attributed caret, so a
+    /// fail-closed codegen error in an imported module degrades to a bare line
+    /// rather than mislabelling the root source (#2320).
+    #[must_use]
+    pub fn with_source_span_for_fn(self, span: (u32, u32), fn_name: Option<String>) -> Self {
         match self {
             // Already located — keep the innermost (most specific) span.
             Self::Spanned { .. } => self,
@@ -209,6 +229,7 @@ impl CodegenError {
             Self::WasmUnsupportedSubstrate { .. } => self,
             inner => Self::Spanned {
                 span,
+                fn_name,
                 inner: Box::new(inner),
             },
         }
@@ -222,6 +243,20 @@ impl CodegenError {
     pub fn source_span(&self) -> Option<(u32, u32)> {
         match self {
             Self::Spanned { span, .. } => Some(*span),
+            _ => None,
+        }
+    }
+
+    /// The symbol name of the function this error's span belongs to, when one
+    /// was threaded from MIR at the codegen attach point. The CLI render
+    /// boundary checks this against the imported-module set before drawing a
+    /// source-attributed caret: a span belonging to an imported function indexes
+    /// that module's source, not the root the CLI renders against, so it must
+    /// degrade to a bare line rather than mislabel (#2320).
+    #[must_use]
+    pub fn source_fn_name(&self) -> Option<&str> {
+        match self {
+            Self::Spanned { fn_name, .. } => fn_name.as_deref(),
             _ => None,
         }
     }
@@ -37897,8 +37932,15 @@ fn build_module_for_target<'ctx>(
         // hand-built test MIR — those stay unwrapped, preserving every
         // `match CodegenError::FailClosed(_)` site that exercises codegen
         // fail-closed paths with spanless MIR.
+        //
+        // #2320: also record `func.name` (the MIR symbol — a mangled name for a
+        // monomorphisation). The span's `(start, end)` offsets index the
+        // function's OWN module source, but the CLI renders against the root
+        // input; it uses this name to verify root-module membership before
+        // drawing a caret, degrading an imported function's error to a bare line
+        // rather than mislabelling the root file.
         .map_err(|e| match func.span {
-            Some(span) => e.with_source_span(span),
+            Some(span) => e.with_source_span_for_fn(span, Some(func.name.clone())),
             None => e,
         })?;
     }

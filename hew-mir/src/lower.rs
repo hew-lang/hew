@@ -1025,6 +1025,45 @@ pub fn build_const_descriptors(module: &HirModule) -> (Vec<MirConst>, Vec<MirDia
     (consts, diagnostics)
 }
 
+/// The set of MIR emit-symbol names that belong to IMPORTED modules, for the
+/// CLI's fail-closed codegen diagnostic gate (#2320).
+///
+/// A `RawMirFunction.span` is a byte offset into the function's OWN module
+/// source, but the only source text threaded past MIR (codegen `-g` line-index,
+/// the CLI fail-closed codegen renderer) is the ROOT input. Resolving an
+/// imported function's span against the root would draw a caret on the wrong
+/// file at the wrong line. The CLI renders a source-attributed caret only when
+/// the failing function's name (recorded on `CodegenError::Spanned`) is NOT in
+/// this set; an imported function degrades to the bare, locationless line ("no
+/// location beats a wrong location") instead of mislabelling the root.
+///
+/// Identity is the emit name: `RawMirFunction.name` is the `emit_name` lowering
+/// derives from each `HirItem::Function.name` and, for a monomorphisation, the
+/// registry's mangled symbol — so membership is exact for the imported function
+/// itself. A root function that happened to share an emit name would also
+/// degrade to a bare line; that never mislabels (the worst case forgoes a
+/// caret), so the conservative match is sound.
+#[must_use]
+pub fn imported_function_symbol_names(module: &HirModule) -> HashSet<String> {
+    module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            HirItem::Function(f) if module.diagnostic_source_modules.contains_key(&f.id) => {
+                Some(f.name.clone())
+            }
+            _ => None,
+        })
+        .chain(
+            module
+                .monomorphisations
+                .iter()
+                .filter(|m| module.diagnostic_source_modules.contains_key(&m.key.origin))
+                .map(|m| m.mangled_name.clone()),
+        )
+        .collect()
+}
+
 #[must_use]
 #[allow(
     clippy::too_many_lines,
@@ -2830,6 +2869,20 @@ pub fn lower_hir_module_with_facts(
     // `liveness::is_no_drop_scalar`). Widening the lint past scalars would have
     // to run after drop elaboration so a `Drop`'s read of the local is modelled.
     let lint_warnings = crate::liveness::run_mir_lints(&raw_mir);
+
+    // #2320: an imported function's `RawMirFunction.span` indexes the IMPORTED
+    // module's source, but the only source text threaded past MIR — codegen's
+    // `-g` debug line-index and the CLI's fail-closed codegen diagnostic
+    // renderer — is the ROOT input, so resolving an imported span against the
+    // root mislabels the location. Rather than drop those spans here (which also
+    // blinds the codegen attach point that records the failing function's
+    // identity), the diagnostic renderer gates the caret at the render boundary:
+    // it checks the failing function against the `imported_function_symbol_names`
+    // helper (this module) and degrades an imported error to the bare,
+    // locationless line ("no location beats a wrong location") while still
+    // rendering a caret for a root-module error — the common case. Keeping the
+    // span live here lets the codegen attach point thread the function name the
+    // render gate needs.
 
     // Field-bearing `#[resource]` record → `<Type>::close` symbol registry
     // (spec §3.7.3). A `#[resource]` record that owns a heap/aggregate field

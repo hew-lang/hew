@@ -33,32 +33,34 @@
 //!   that admitting the composite's `EnumInPlace` drop and the field-load retain's
 //!   balancing drop did NOT introduce a double-free of the shared buffer.
 //!
-//! - **Exact zero-leak assertion** (macOS-only via `leaks(1)`): a single
-//!   clone-out cycle wrapped in a helper function (so the stack slot is dead at
-//!   `leaks --atExit`) must report exactly `0 leaks for 0 total leaked bytes`.
-//!   Pre-fix this leaked the payload buffer, the field-load retain, and `copied`.
+//! - **Per-iteration leak slope** (macOS-only via `leaks(1)`): the clone-out
+//!   cycle looped at a LOW and a HIGH iteration count must hold the leak-node
+//!   count flat (within tolerance). The delta cancels the nondeterministic
+//!   constant baseline an exact `== 0` count cannot. Pre-fix this leaked the
+//!   payload buffer, the field-load retain, and `copied` — three nodes per
+//!   iteration of positive slope.
 //!
-//! - **True-interior-alias negative control** (double-free guard): a Vec element
-//!   bound through the BORROW getter (`rows[0]` → `hew_vec_get_owned`, an interior
-//!   pointer into the still-live Vec's element slot) and only borrowed must stay
-//!   leak-clean AND not double-free — the Vec's `hew_vec_free_owned` owns the
-//!   element, so the interior-alias taint must keep the binding excluded from any
-//!   independent release.
+//! - **True-interior-alias negative control** (double-free guard + flat slope): a
+//!   Vec element bound through the BORROW getter (`rows[0]` → `hew_vec_get_owned`,
+//!   an interior pointer into the still-live Vec's element slot) and only borrowed
+//!   must stay leak-clean AND not double-free — the Vec's `hew_vec_free_owned`
+//!   owns the element, so the interior-alias taint must keep the binding excluded
+//!   from any independent release.
 //!
 //! ## Skip behaviour
 //!
-//! The zero-leak oracle is macOS-only (`leaks(1)` is Darwin's allocator
-//! inspector); elsewhere it logs `skip:` and returns. The scribble correctness
-//! pins run on any unix host.
+//! The slope oracle is macOS-only (`leaks(1)` is Darwin's allocator inspector);
+//! elsewhere it logs `skip:` and returns. The scribble correctness pins run on
+//! any unix host.
 
 #![cfg(unix)]
 
 mod support;
 
-use std::path::PathBuf;
-use std::process::Command;
-
-use support::{describe_output, hew_binary, repo_root, require_codegen};
+use support::leak_slope::{
+    assert_frame_slope_below_tolerance, compile_to_native, run_under_malloc_scribble,
+};
+use support::{describe_output, require_codegen};
 
 // ── fixtures ──────────────────────────────────────────────────────────────
 
@@ -87,29 +89,6 @@ fn main() {\n\
 /// abort or UAF read changes this.
 const INTERIOR_CLONE_CONTENTS_EXPECTED: &str = "INTERIOR-CLONE-OK";
 
-/// Zero-leak fixture: the clone-out cycle lives in a helper (`run`) so the stack
-/// slots holding the Vec, the `Option<Row>` payload, and `copied` are gone by the
-/// time `leaks --atExit` inspects the heap. The final use of `copied` is a BORROW
-/// (`copied.len()`) so the clone-out's own balancing drop must fire at the
-/// match-arm scope close — this is exactly the leak the fix closes. Any
-/// un-released share (the payload composite, the field-load retain, or `copied`)
-/// becomes unreachable and is counted by `leaks(1)`.
-const INTERIOR_CLONE_ZERO_LEAK_SOURCE: &str = "\
-type Row { name: string; }\n\
-\n\
-fn run() {\n\
-\x20   let rows: Vec<Row> = [ Row { name: \"interior-clone-heap-name\".to_upper() } ];\n\
-\x20   let first = rows.get(0);\n\
-\x20   match first {\n\
-\x20       Some(r) => { let copied = r.name.to_upper(); if copied.len() > 0 { print(\"nz\"); } }\n\
-\x20       None => { print(\"e\"); }\n\
-\x20   }\n\
-}\n\
-\n\
-fn main() {\n\
-\x20   run();\n\
-}\n";
-
 /// True-interior-alias NEGATIVE control (the hard double-free guard): bind a Vec
 /// element through the BORROW getter (`rows[0]` → `hew_vec_get_owned`, which
 /// returns an interior pointer into the still-live Vec's element slot, NOT a fresh
@@ -117,9 +96,7 @@ fn main() {\n\
 /// `hew_vec_free_owned` runs the per-element record drop. Admitting `r` to its own
 /// `RecordInPlace` — or the composite to an `EnumInPlace` over a borrowed payload —
 /// would free the same buffer twice. The interior-alias taint
-/// (`compute_collection_interior_alias_taint`) must keep `r` excluded; this oracle
-/// proves the #54 narrowing did not re-admit a genuine interior alias: leak-clean
-/// AND no double-free under the poisoned allocator.
+/// (`compute_collection_interior_alias_taint`) must keep `r` excluded.
 const INTERIOR_ALIAS_NEG_CONTROL_SOURCE: &str = "\
 type Row { name: string; }\n\
 \n\
@@ -133,113 +110,65 @@ fn main() {\n\
 \x20   run();\n\
 }\n";
 
-// ── leak measurement plumbing ─────────────────────────────────────────────────
-
-/// Compile `source` to a native binary via `hew compile --emit-dir` and return
-/// the binary path.
-fn compile_to_native(source: &str, dir: &std::path::Path, name: &str) -> PathBuf {
-    let hew_src = dir.join(format!("{name}.hew"));
-    std::fs::write(&hew_src, source).expect("write hew source");
-
-    let output = Command::new(hew_binary())
-        .args([
-            "compile",
-            "--emit-dir",
-            dir.to_str().expect("emit-dir utf-8"),
-            hew_src.to_str().expect("hew src utf-8"),
-        ])
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew compile");
-
-    assert!(
-        output.status.success(),
-        "hew compile failed for {name}:\n{}",
-        describe_output(&output)
-    );
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let bin = stdout
-        .lines()
-        .find_map(|l| l.strip_prefix("native: "))
-        .unwrap_or_else(|| panic!("no `native:` line for {name}:\n{stdout}"))
-        .to_string();
-    PathBuf::from(bin)
+/// Looped clone-out cycle for the per-iteration slope probe. Each cycle builds a
+/// FRESH single-element `Vec<Row>` with a heap `name`, clones the field out of
+/// the `rows.get(0)` payload (`r.name.to_upper()`), and returns its length so the
+/// loop is not dead code. The payload composite, the field-load retain, and the
+/// arm-scoped `copied` owner must each be released every iteration; any stranded
+/// share leaks one node per iteration.
+fn interior_clone_loop_source(frames: usize) -> String {
+    format!(
+        "type Row {{ name: string; }}\n\
+         \n\
+         fn run_cycle() -> i64 {{\n\
+         \x20   let rows: Vec<Row> = [ Row {{ name: \"interior-clone-heap-name\".to_upper() }} ];\n\
+         \x20   let first = rows.get(0);\n\
+         \x20   var got: i64 = 0;\n\
+         \x20   match first {{\n\
+         \x20       Some(r) => {{ let copied = r.name.to_upper(); if copied.len() > 0 {{ got = copied.len(); }} }}\n\
+         \x20       None => {{}}\n\
+         \x20   }}\n\
+         \x20   got\n\
+         }}\n\
+         \n\
+         fn run_loop(frames: i64) -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   for i in 0..frames {{ total = total + run_cycle(); }}\n\
+         \x20   total\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{ run_loop({frames}) }}\n"
+    )
 }
 
-/// Run `bin` under the poisoned-allocator triple + `leaks --atExit` and return
-/// `Some((leak_count, leaked_bytes))` when `leaks` produced a usable summary.
-///
-/// The parsed summary line has the form:
-/// ```text
-/// Process <pid>: N leaks for B total leaked bytes.
-/// ```
-fn measure_leaks_exact(bin: &std::path::Path) -> Option<(usize, usize)> {
-    let output = Command::new("leaks")
-        .arg("--atExit")
-        .arg("--")
-        .arg(bin)
-        .env("MallocScribble", "1")
-        .env("MallocPreScribble", "1")
-        .env("MallocGuardEdges", "1")
-        .output()
-        .ok()?;
-    if !output.status.success() && output.stdout.is_empty() {
-        eprintln!(
-            "skip: leaks declined to attach to {}: {}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return None;
-    }
-    let report = String::from_utf8_lossy(&output.stdout);
-    for line in report.lines() {
-        if !line.contains(" leaks for ") && !line.contains(" leak for ") {
-            continue;
-        }
-        let Some(rest) = line.strip_prefix("Process ") else {
-            continue;
-        };
-        if !rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-            continue;
-        }
-        let Some(after_colon) = rest.split_once(": ").map(|(_, s)| s) else {
-            continue;
-        };
-        let mut words = after_colon.split_whitespace();
-        let Some(count_str) = words.next() else {
-            continue;
-        };
-        let Ok(count) = count_str.parse::<usize>() else {
-            continue;
-        };
-        let _ = words.next(); // "leaks" or "leak"
-        let _ = words.next(); // "for"
-        let Some(bytes_str) = words.next() else {
-            eprintln!(
-                "skip: leaks summary for {} has count ({count}) but no bytes field: {line}",
-                bin.display()
-            );
-            return None;
-        };
-        let Ok(bytes) = bytes_str.parse::<usize>() else {
-            eprintln!(
-                "skip: leaks summary for {} bytes field not a number ({bytes_str}): {line}",
-                bin.display()
-            );
-            return None;
-        };
-        eprintln!("  leaks(1) summary: count={count} bytes={bytes} (from: {line})");
-        return Some((count, bytes));
-    }
-    eprintln!(
-        "skip: leaks did not emit a `Process <pid>: N leak(s) for B total leaked bytes.` \
-         summary for {}: stderr=\n{}",
-        bin.display(),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    None
+/// Looped true-interior-alias negative control for the slope probe. Each cycle
+/// builds a FRESH single-element `Vec<Row>`, rebinds the element through the
+/// BORROW getter (`rows[0]`), and borrows its field. The Vec's `hew_vec_free_owned`
+/// is the single owner; a flat slope proves the interior alias earns no
+/// independent per-iteration release (no leak, no double-free).
+fn interior_neg_control_loop_source(frames: usize) -> String {
+    format!(
+        "type Row {{ name: string; }}\n\
+         \n\
+         fn run_cycle() -> i64 {{\n\
+         \x20   let rows: Vec<Row> = [ Row {{ name: \"neg-alias-heap-name\".to_upper() }} ];\n\
+         \x20   let r = rows[0];\n\
+         \x20   var got: i64 = 0;\n\
+         \x20   if r.name.len() > 0 {{ got = r.name.len(); }}\n\
+         \x20   got\n\
+         }}\n\
+         \n\
+         fn run_loop(frames: i64) -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   for i in 0..frames {{ total = total + run_cycle(); }}\n\
+         \x20   total\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{ run_loop({frames}) }}\n"
+    )
 }
+
+// ── scribble correctness pin ──────────────────────────────────────────────
 
 /// Compile `source`, run it under the poisoned-allocator triple, and assert it
 /// exits cleanly with `expected` on stdout.
@@ -251,13 +180,7 @@ fn assert_exact_under_malloc_scribble(name: &str, source: &str, expected: &str) 
         .tempdir()
         .expect("tempdir");
     let bin = compile_to_native(source, dir.path(), name);
-
-    let output = Command::new(&bin)
-        .env("MallocScribble", "1")
-        .env("MallocPreScribble", "1")
-        .env("MallocGuardEdges", "1")
-        .output()
-        .unwrap_or_else(|error| panic!("run {name} binary: {error}"));
+    let output = run_under_malloc_scribble(&bin);
 
     assert!(
         output.status.success(),
@@ -276,57 +199,6 @@ fn assert_exact_under_malloc_scribble(name: &str, source: &str, expected: &str) 
     );
 }
 
-/// Compile `source`, run it under `leaks --atExit`, and assert exactly
-/// `0 leaks for 0 total leaked bytes`. The fixture must wrap the clone-out cycle
-/// in a helper function so stack slots are gone at process exit.
-fn assert_zero_leaks_exact(name: &str, source: &str) {
-    if !cfg!(target_os = "macos") {
-        eprintln!("skip: {name}: leaks(1) is macOS-only");
-        return;
-    }
-    let leaks_avail = Command::new("which")
-        .arg("leaks")
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !leaks_avail {
-        eprintln!("skip: {name}: `leaks` binary not on PATH");
-        return;
-    }
-
-    require_codegen();
-
-    let dir = tempfile::Builder::new()
-        .prefix(&format!("interior-alias-clone-zero-leak-{name}-"))
-        .tempdir()
-        .expect("tempdir");
-    let bin = compile_to_native(source, dir.path(), name);
-
-    let Some((leak_count, leaked_bytes)) = measure_leaks_exact(&bin) else {
-        return;
-    };
-
-    assert_eq!(
-        leak_count,
-        0,
-        "{name}: leaks(1) reported {leak_count} leak(s) — expected exactly 0. \
-         A non-zero count means an interior-alias clone-out share was not released \
-         (the payload composite `EnumInPlace`, the field-load retain, or the arm-scoped \
-         `copied`). Re-run with `MallocStackLogging=1 leaks --atExit -- {}` to see the stack.",
-        bin.display()
-    );
-    assert_eq!(
-        leaked_bytes,
-        0,
-        "{name}: leaks(1) reported 0 leak nodes but {leaked_bytes} total leaked bytes — \
-         expected exactly 0 bytes. Re-run with `MallocStackLogging=1 leaks --atExit -- {}`.",
-        bin.display()
-    );
-
-    eprintln!(
-        "{name}: leaks(1) confirmed 0 leaks for 0 total leaked bytes — exact zero-leak oracle PASS"
-    );
-}
-
 // ── oracles ─────────────────────────────────────────────────────────────────
 
 /// Exact-contents pin: clone a heap field out of an aliased Vec element and read
@@ -342,13 +214,13 @@ fn interior_alias_clone_exact_contents_under_malloc_scribble() {
     );
 }
 
-/// Exact zero-leak oracle: a clone-out cycle (borrowing final use, wrapped in a
-/// helper so stack slots are dead at exit) must report exactly `0 leaks for 0
-/// total leaked bytes`. Pre-fix this leaked the payload composite, the field-load
-/// retain, and the arm-scoped `copied` string.
+/// Slope oracle: the clone-out cycle looped at LOW vs HIGH iteration counts holds
+/// the leak-node count flat. Pre-fix this leaked the payload composite, the
+/// field-load retain, and the arm-scoped `copied` string — a positive slope of
+/// three nodes per iteration.
 #[test]
-fn interior_alias_clone_zero_leaks_exact() {
-    assert_zero_leaks_exact("interior_clone_zero_leak", INTERIOR_CLONE_ZERO_LEAK_SOURCE);
+fn interior_alias_clone_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance("interior_clone", interior_clone_loop_source);
 }
 
 /// Negative control under the poisoned allocator: a true interior-alias rebind
@@ -363,13 +235,13 @@ fn interior_alias_true_alias_no_double_free_under_malloc_scribble() {
     );
 }
 
-/// Exact zero-leak oracle for the negative control: a true interior-alias rebind
-/// must also be leak-clean (the composite drop is the single owner — no leak, no
+/// Slope oracle for the negative control: a true interior-alias rebind must also
+/// hold a flat leak-node slope (the Vec's free is the single owner — no leak, no
 /// double-free).
 #[test]
-fn interior_alias_true_alias_zero_leaks_exact() {
-    assert_zero_leaks_exact(
-        "interior_alias_neg_control_leak",
-        INTERIOR_ALIAS_NEG_CONTROL_SOURCE,
+fn interior_alias_true_alias_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance(
+        "interior_alias_neg_control",
+        interior_neg_control_loop_source,
     );
 }

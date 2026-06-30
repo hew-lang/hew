@@ -3614,6 +3614,92 @@ pub extern "C" fn hew_dist_quarantine_contains(node_id: u16) -> i64 {
     }
 }
 
+/// Environment signal that arms [`hew_dist_partition_pending_remote_asks`].
+///
+/// The probe is a test-only capability: it stays inert (a `-1` no-op that drains
+/// nothing) unless this variable is present with value `1`. The two-process
+/// partition fixture's harness sets it on the client it spawns; a shipped libhew
+/// runs with it unset.
+const DIST_TEST_PROBE_ENV: &str = "HEW_DIST_TEST_PROBE";
+
+/// Whether the test-only partition probe is armed for this process.
+///
+/// True only when `HEW_DIST_TEST_PROBE=1` is present — the value the e2e harness
+/// sets on the partition-scenario client. Any other value, or an unset variable
+/// (the production default), leaves the probe inert.
+fn dist_test_probe_enabled() -> bool {
+    std::env::var_os(DIST_TEST_PROBE_ENV).as_deref() == Some(std::ffi::OsStr::new("1"))
+}
+
+/// Fail every currently-pending remote ask CLOSED with [`AskError::Partition`],
+/// returning the number of asks it resolved (`0` when none are pending yet, `-1`
+/// when no runtime is installed).
+///
+/// The drain seam behind the test-only partition probe. Drives the in-flight
+/// pending-ask fail-closed path on demand through the SAME reply-table seam the
+/// SWIM-DEAD fan-out ([`fail_remote_asks_for_node`]) reaches via
+/// `fail_connection_with_reason(.., Partition)` — instead of waiting on the OS
+/// socket-teardown detector and the SWIM failure detector, whose latency is
+/// unbounded under host load. It mirrors how the in-process test
+/// `swim_dead_wakes_pending_remote_ask_with_partition` calls the fan-out directly
+/// once the ask registers, letting the two-process partition fixture exercise the
+/// typed fail-closed verdict deterministically rather than racing real time.
+///
+/// Draining under the table lock is atomic against a racing reply: an entry this
+/// drain removes is guaranteed to wake with `Partition` (a late reply finds no
+/// slot and is dropped), so the returned count is exactly the number of asks
+/// failed closed. Reads and resolves reply-table slots only; it does NOT alter
+/// the production partition/StaleRef decision path.
+fn dist_partition_drain_pending_remote_asks() -> i64 {
+    let Some(table) = reply_table_opt() else {
+        return -1;
+    };
+    // Drain every pending reply slot under the table lock — every entry here is a
+    // cross-node remote ask — then fail each closed with Partition OUTSIDE the
+    // lock, mirroring `fail_all`/`fail_connection_with_reason`, which never hold
+    // the map lock across a waiter wake.
+    let drained: Vec<Arc<PendingReply>> = {
+        let mut map = table
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        map.drain().map(|(_, pending)| pending).collect()
+    };
+    let failed = {
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "the count of pending remote asks is bounded by the live in-flight \
+                      asks on this node, far below i64::MAX; the sentinel -1 covers the \
+                      no-runtime case"
+        )]
+        let count = drained.len() as i64;
+        count
+    };
+    for pending in drained {
+        ReplyRoutingTable::fail_pending_with_reason(&pending, AskError::Partition);
+    }
+    failed
+}
+
+/// Test-introspection probe (FFI) for the two-process partition fixture: when
+/// armed, fails every pending remote ask closed with [`AskError::Partition`] via
+/// [`dist_partition_drain_pending_remote_asks`] and returns the count.
+///
+/// Gated as a test-only capability and INERT by default. Without
+/// `HEW_DIST_TEST_PROBE=1` ([`dist_test_probe_enabled`]) it returns `-1` and
+/// drains nothing. A shipped libhew exports this symbol but runs with the signal
+/// unset, so a Hew program that declares `extern "C" fn
+/// hew_dist_partition_pending_remote_asks()` and calls it gets the inert `-1` —
+/// never a drain of healthy in-flight asks. The harness arms it only on the
+/// partition-scenario client it spawns; the compiler never emits calls to it.
+#[no_mangle]
+pub extern "C" fn hew_dist_partition_pending_remote_asks() -> i64 {
+    if !dist_test_probe_enabled() {
+        return -1;
+    }
+    dist_partition_drain_pending_remote_asks()
+}
+
 /// Connect to a remote node and register routing for its node ID.
 ///
 /// Supports `"<node_id>@<addr>"` format for explicit peer node IDs. If no
@@ -6524,6 +6610,120 @@ mod tests {
         assert!(
             !map.contains_key(&id),
             "partition fan-out must remove the entry"
+        );
+    }
+
+    /// `dist_partition_drain_pending_remote_asks` — the drain seam the gated
+    /// `hew_dist_partition_pending_remote_asks` probe wraps and the two-process
+    /// partition fixture's `PartitionInjector` drives — fails EVERY pending
+    /// remote ask closed with `Partition` through the production reply-table
+    /// fan-out and returns the count. This is the in-process proof that a stuck
+    /// pending ask resolves to a typed `Partition` verdict on demand, without
+    /// waiting on the socket-teardown detector or the SWIM failure detector (the
+    /// host-load-sensitive timing the fixture used to race).
+    #[test]
+    fn dist_partition_probe_fails_pending_remote_asks_with_partition() {
+        let _guard = crate::runtime_test_guard();
+
+        // Nothing pending yet: the drain reports 0 so the injector keeps polling
+        // rather than declaring victory before the ask registers.
+        assert_eq!(
+            dist_partition_drain_pending_remote_asks(),
+            0,
+            "drain must report 0 when no ask is pending"
+        );
+
+        let key = ConnectionKey {
+            conn_mgr: 91,
+            conn_id: 17,
+        };
+        let (id, pending) = reply_table().register(key);
+
+        // The instant an ask is pending, one call fails it closed and reports it.
+        assert_eq!(
+            dist_partition_drain_pending_remote_asks(),
+            1,
+            "drain must fail exactly the one pending ask"
+        );
+
+        let guard = pending
+            .outcome
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let outcome = guard
+            .as_ref()
+            .expect("outcome should be set after the partition probe");
+        assert_eq!(outcome.status, ReplyStatus::Failed);
+        assert_eq!(
+            outcome.ask_error,
+            AskError::Partition,
+            "probe must carry the Partition cause (14), not ConnectionDropped or Timeout"
+        );
+        drop(guard);
+
+        // The entry is drained, so a racing reply finds nothing and a repeat
+        // drain is a no-op — exactly-once, matching the SWIM-DEAD fan-out.
+        let map = reply_table()
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(!map.contains_key(&id), "drain must remove the entry");
+        drop(map);
+        assert_eq!(
+            dist_partition_drain_pending_remote_asks(),
+            0,
+            "a repeat drain with nothing pending is a no-op"
+        );
+    }
+
+    /// The exported FFI probe is INERT without the test-capability signal. With
+    /// `HEW_DIST_TEST_PROBE` unset (the production default) and one remote ask
+    /// pending, a call to `hew_dist_partition_pending_remote_asks` returns the
+    /// inert `-1` and leaves the ask pending. This is the guard that a shipped
+    /// libhew exposes no usable "drain all pending remote asks" capability: the
+    /// raw symbol resolves to a no-op unless the harness arms it on the process
+    /// it spawns.
+    #[test]
+    fn dist_partition_probe_is_inert_without_test_signal() {
+        let _guard = crate::runtime_test_guard();
+
+        // The harness arms the probe per-process via `HEW_DIST_TEST_PROBE=1`; the
+        // unit-test process never sets it, so the gate must read disarmed.
+        assert!(
+            !dist_test_probe_enabled(),
+            "HEW_DIST_TEST_PROBE must be unset in the unit-test process"
+        );
+
+        let key = ConnectionKey {
+            conn_mgr: 73,
+            conn_id: 5,
+        };
+        let (id, pending) = reply_table().register(key);
+
+        // Disarmed: the exported symbol is a no-op that drains nothing.
+        assert_eq!(
+            hew_dist_partition_pending_remote_asks(),
+            -1,
+            "the probe must be inert (-1) without the test signal"
+        );
+
+        // The pending ask is untouched — no Partition forced on a healthy slot.
+        let outcome_unset = pending
+            .outcome
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_none();
+        assert!(
+            outcome_unset,
+            "an inert probe must not resolve the pending ask"
+        );
+        let map = reply_table()
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            map.contains_key(&id),
+            "an inert probe must leave the pending entry registered"
         );
     }
 

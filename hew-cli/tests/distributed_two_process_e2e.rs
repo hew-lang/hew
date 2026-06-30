@@ -660,7 +660,12 @@ fn remote_monitor_down_on_connection_drop() {
 /// pins the broader cross-wire no-hang invariant under real teardown races.
 #[test]
 fn remote_ask_under_partition_fails_closed_not_hang() {
-    let stdout = run_conn_drop_scenario("partition_ask");
+    // Arm the test-only partition probe on the client the harness spawns. The
+    // probe (`hew_dist_partition_pending_remote_asks`) is inert by default — a
+    // shipped libhew exports the symbol but it drains nothing unless
+    // `HEW_DIST_TEST_PROBE=1` is set, so only this harness can drive the
+    // deterministic fail-closed seam.
+    let stdout = run_conn_drop_scenario_with_env("partition_ask", &[("HEW_DIST_TEST_PROBE", "1")]);
 
     // Any typed fail-closed cause is correct; the fixture emits this line only for
     // an `Err` that resolved BEFORE the ask's own deadline (a proactive verdict).

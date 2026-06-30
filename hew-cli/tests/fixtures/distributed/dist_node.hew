@@ -192,6 +192,48 @@ extern "C" {
     fn hew_dist_inject_swim_gossip(node_id: u16, state: i32, incarnation: u64) -> i64;
     fn hew_dist_member_state(node_id: u16) -> i64;
     fn hew_dist_quarantine_contains(node_id: u16) -> i64;
+    // Deterministic partition seam for scenario_partition_ask: fail every pending
+    // remote ask CLOSED with Partition through the production reply-table fan-out
+    // (the same seam the SWIM-DEAD verdict reaches). Returns the count failed (0
+    // when none are pending yet). Not user-callable.
+    fn hew_dist_partition_pending_remote_asks() -> i64;
+}
+
+// Deterministic partition seam for `scenario_partition_ask`. A fire-and-forget
+// injector that, the instant the client's remote ask registers as pending,
+// resolves it CLOSED with Partition through the production reply-table fan-out
+// (`hew_dist_partition_pending_remote_asks`). This removes the dependence on the
+// OS socket-teardown detector and the SWIM failure detector — whose latency is
+// unbounded under host load — that otherwise made the typed fail-closed verdict
+// race the ask deadline (the historical source of this test's flake).
+//
+// The harness still kills the server (a real teardown), so the route genuinely
+// dies; the injector fixes only WHEN the in-flight ask is failed closed, not
+// WHETHER. Teeth preserved: a broken fan-out leaves the ask pending -> it times
+// out -> scenario_partition_ask still reports FAIL.
+actor PartitionInjector {
+    receive fn arm() {
+
+        // Poll until a remote ask is pending, then fail it closed via the
+        // production fan-out. Bounded (~30s, under the harness 40s cap) so a true
+        // deadlock surfaces as a timeout rather than an infinite spin; on give-up
+        // the ask falls back to the socket / failure-detector path (the original
+        // behaviour) -- never a fabricated success.
+        var spins: i64 = 0;
+        loop {
+            let failed = unsafe {
+                hew_dist_partition_pending_remote_asks()
+            };
+            if failed >= 1 {
+                return;
+            }
+            spins = spins + 1;
+            if spins >= 15000 {
+                return;
+            }
+            sleep(2ms);
+        }
+    }
 }
 
 actor Linker {
@@ -591,6 +633,17 @@ fn scenario_remote_monitor_conn_drop(kv: RemotePid<KeyValue>) -> i64 {
 fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
     // Signal the harness to kill the server now that the route is established.
     println("READY_DROP partition_ask");
+    // Arm the deterministic partition seam: a concurrent injector fails the
+    // in-flight remote ask closed with Partition through the production
+    // reply-table fan-out the instant it registers, so the typed fail-closed
+    // verdict no longer races the socket-teardown / SWIM detector latency (the
+    // historical source of this test's flake). The harness kill above is the real
+    // teardown; the injector only bounds WHEN the pending ask is failed closed,
+    // never WHETHER. The reply table holds only application asks (the lookup that
+    // resolved `kv` already completed), so the sole pending entry is this scenario's
+    // `kv.ask` — draining it cannot disturb any healthy in-flight request.
+    let injector = spawn PartitionInjector;
+    injector.arm();
     // Per-ask timeout: an unresolved ask cannot block longer than this, so even a
     // pure Timeout is bounded far under the client ceiling — the no-hang floor.
     let ask_timeout_ms: u64 = 1000;

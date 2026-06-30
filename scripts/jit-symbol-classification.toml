@@ -1018,6 +1018,15 @@ internal = [
   # if not, -1 with no node installed. The resurrection-guard teeth for the rejoin
   # fixture. Not user-callable; not JIT-reachable.
   "hew_dist_quarantine_contains",
+  # Test-introspection probe: when armed, fails every pending remote ask closed
+  # with Partition through the production reply-table fan-out (the same seam the
+  # SWIM-DEAD verdict reaches), returning the count failed. Lets the two-process
+  # partition fixture drive the typed fail-closed verdict deterministically
+  # instead of racing the socket-teardown / SWIM detector latency. Inert by
+  # default: returns -1 and drains nothing unless HEW_DIST_TEST_PROBE=1 is set on
+  # the process, so a shipped libhew exports the symbol but exposes no usable
+  # drain capability. Not JIT-reachable.
+  "hew_dist_partition_pending_remote_asks",
   "hew_fault_clear",
   "hew_fault_clear_all",
   "hew_fault_count",

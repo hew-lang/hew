@@ -1,0 +1,22 @@
+// `iter::count(make_vec().iter())` — single-eval witness for the pipeline form
+// over a Vec produced by a CALL (a non-place rvalue).
+//
+// `v.iter()` lowers the receiver exactly once, so a non-place producer runs
+// EXACTLY once — the call result (an rvalue temp) is consumed directly into the
+// cursor. The producer prints "MK" once: stdout MUST be a single line. Four
+// elements → count 4. Exit 4.
+import std::iter;
+
+fn make_vec() -> Vec<i64> {
+    println("MK");
+    let v: Vec<i64> = Vec::new();
+    v.push(1);
+    v.push(2);
+    v.push(3);
+    v.push(4);
+    v
+}
+
+pub fn main() -> i64 {
+    iter::count(make_vec().iter())
+}

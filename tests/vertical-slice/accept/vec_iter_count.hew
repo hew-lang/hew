@@ -1,0 +1,22 @@
+// `iter::count(v.iter())` — explicit pipeline form over a Vec.
+//
+// `v.iter()` resolves to a `VecIter<i64>`, the SAME cursor `v.into_iter()`
+// builds, but WITHOUT consuming the receiver: the cursor takes an INDEPENDENT
+// clone of the buffer it solely owns. A `VecIter` is a first-class value with no
+// lifetime (Hew has none), so it cannot borrow the source's single-owner handle.
+// The source stays a live, independent owner: three elements → count 3, and the
+// source is still usable afterward (`v.len()` == 3). A wrong count or a dead
+// source returns 90+ to flag the miss. Exit 3.
+import std::iter;
+
+pub fn main() -> i64 {
+    let v: Vec<i64> = Vec::new();
+    v.push(10);
+    v.push(20);
+    v.push(30);
+    let n = iter::count(v.iter());
+    if v.len() != 3 {
+        return 99;
+    }
+    n
+}

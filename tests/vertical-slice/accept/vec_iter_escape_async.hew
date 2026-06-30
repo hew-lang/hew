@@ -1,0 +1,29 @@
+// `Vec::iter()` cursor escape across a suspension — build a cursor in an inner
+// block (whose source vec drops at the block exit), hold it across an `await`,
+// then consume it.
+//
+// The cursor owns an independent clone of the buffer, so the inner block's
+// scope-exit free of `v` does not dangle the cursor while it is suspended at the
+// `await`. After the suspension the cursor still reads live memory. A borrowed
+// cursor would dangle across the await and return a wrong sum (or fault on a
+// scribbled buffer). 40 + 2 = 42.
+
+actor Echo {
+    receive fn ping() -> i64 { 0 }
+}
+
+pub fn main() -> i64 {
+    let e = spawn Echo();
+    let c = {
+        let v: Vec<i64> = Vec::new();
+        v.push(40);
+        v.push(2);
+        v.iter()
+    };
+    let _ = await e.ping();
+    var sum: i64 = 0;
+    for x in c {
+        sum = sum + x;
+    }
+    sum
+}

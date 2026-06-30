@@ -1,0 +1,34 @@
+// Reject fixture: vec_iter_actor_field_non_send — a `VecIter<T>` cursor cannot
+// be stored in actor state.
+//
+// A `VecIter<T>` borrows nothing the type system tracks (Hew has no lifetimes),
+// so the cursor-escape drop-safety it needs is provided by making `iter()` clone
+// its backing buffer. But one escape route is closed earlier and more strongly:
+// a `VecIter<T>` is not `Send`, so it cannot cross a spawn/message/reply
+// boundary. An actor field is initialised from a spawn argument, so a cursor can
+// never be installed into actor state in the first place — the "store a cursor
+// in actor state, use it after the constructing message returns" escape is
+// statically impossible rather than fixed at runtime.
+//
+// Harness verb: hew compile
+// Expected diagnostic:
+//   - "cannot send `VecIter<i64>` to actor: type is not Send"
+
+actor Holder {
+    var cur: VecIter<i64>;
+    receive fn sum() -> i64 {
+        var total: i64 = 0;
+        for x in cur {
+            total = total + x;
+        }
+        total
+    }
+}
+
+fn main() {
+    let v: Vec<i64> = Vec::new();
+    v.push(40);
+    v.push(2);
+    let h = spawn Holder(cur: v.iter());
+    let _ = await h.sum();
+}

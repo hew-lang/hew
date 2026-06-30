@@ -18457,6 +18457,66 @@ impl LowerCtx {
         (iter_expr.kind, iter_expr.ty)
     }
 
+    /// Expand `v.iter()` over a `Vec<T>` into the SAME `VecIter<T>` cursor
+    /// `into_iter` builds, but giving the cursor an INDEPENDENT CLONE of the
+    /// receiver instead of moving it — the by-value-snapshot twin of
+    /// [`Self::lower_builtin_vec_into_iter`]'s Consume.
+    ///
+    /// A `VecIter<T>` is a first-class value with no lifetime: it can coexist
+    /// with the source, be bound to an outer scope, returned, or held across a
+    /// suspension while the source vec's scope exits. Hew's `Vec` is a
+    /// single-owner heap handle with
+    /// no buffer refcount, so the cursor cannot borrow the source's handle —
+    /// sharing it would double-free when source and cursor both drop, or dangle
+    /// if the cursor outlives the source. For a place receiver we therefore
+    /// clone the source into a fresh owned `Vec` (`recv.clone()`, a
+    /// deep/retaining `hew_vec_clone` snapshot spanned at the call's start
+    /// offset to match the checker's `BuiltinVecIter` clone recording). The
+    /// cursor solely owns that clone and frees it exactly once on its own drop;
+    /// the source binding stays a live, independent owner (the clone only reads
+    /// it). This reuses the SAME owned-cursor drop registration `into_iter`
+    /// relies on — see `vec_iter_let_cursor_owns_handle` — so the buffer is
+    /// freed correctly at sync scope-exit, async cancellation, and actor
+    /// shutdown alike. `VecIter::next` clones each element out on read
+    /// (`hew_vec_get_clone`), so every yielded item is an independent owner,
+    /// identical to `into_iter`.
+    ///
+    /// A non-place rvalue receiver (`make_vec().iter()`) has no surviving source
+    /// binding, so it is consumed directly — identical to `into_iter` and
+    /// evaluated exactly once by `lower_expr`. Cloning it would leak the
+    /// original temporary, which nothing else frees.
+    fn lower_builtin_vec_iter(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        elem_ty: ResolvedTy,
+        span: Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        if Self::for_in_iterable_is_place(&receiver.0) {
+            // Place source: re-read it through `clone()` so the cursor owns an
+            // independent snapshot and the source binding stays a live owner.
+            // The clone is spanned at the call's start offset, matching the
+            // checker's `BuiltinVecIter` clone recording so the span-keyed
+            // resolved-call fact resolves.
+            let clone_span = span.start..span.start;
+            let clone_call = (
+                Expr::MethodCall {
+                    receiver: Box::new((receiver.0.clone(), clone_span.clone())),
+                    method: "clone".to_string(),
+                    args: Vec::new(),
+                },
+                clone_span,
+            );
+            let clone_hir = self.lower_expr(&clone_call, IntentKind::Consume);
+            let iter_expr = self.make_vec_iter_init(clone_hir, elem_ty, span);
+            return (iter_expr.kind, iter_expr.ty);
+        }
+        // Non-place rvalue: consume the temporary directly (no surviving source
+        // binding to keep alive), exactly as `into_iter` does.
+        let receiver_hir = self.lower_expr(receiver, IntentKind::Consume);
+        let iter_expr = self.make_vec_iter_init(receiver_hir, elem_ty, span);
+        (iter_expr.kind, iter_expr.ty)
+    }
+
     /// Expand `m.into_iter()` over a `HashMap<K, V>` into the same
     /// `HashMapIter<K, V> { ks: m.keys(), vs: m.values(), idx: 0 }` cursor the
     /// `for (k, v) in m` desugar builds — the map twin of
@@ -20265,6 +20325,9 @@ impl LowerCtx {
         match rewrite {
             Some(MethodCallRewrite::BuiltinVecIntoIter { elem_ty }) => {
                 self.lower_builtin_vec_into_iter(receiver, elem_ty, span)
+            }
+            Some(MethodCallRewrite::BuiltinVecIter { elem_ty }) => {
+                self.lower_builtin_vec_iter(receiver, elem_ty, span)
             }
             Some(MethodCallRewrite::BuiltinHashMapIntoIter { key_ty, val_ty }) => {
                 self.lower_builtin_hashmap_into_iter(receiver, &key_ty, &val_ty, span)

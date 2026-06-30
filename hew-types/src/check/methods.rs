@@ -5178,6 +5178,52 @@ impl Checker {
                     builtin: None,
                 }
             }
+            "iter" => {
+                // `Vec<T>::iter()` yields the SAME `VecIter<T>` surface as
+                // `into_iter()` without consuming the receiver, leaving the
+                // source vec a live, independent owner. A `VecIter<T>` is a
+                // first-class value with no lifetime — it can coexist with the
+                // source, observe nothing of the source's later mutations, be
+                // bound to an outer scope, returned, or held across a suspension
+                // — so the cursor must NOT borrow the source's buffer. Hew's
+                // `Vec` is a single-owner heap handle (no buffer refcount); a
+                // shared handle would double-free when the source and cursor
+                // both drop, alias the source's later mutations, or dangle if the
+                // source's buffer is freed under the cursor. Instead the HIR
+                // rewrite gives the cursor an INDEPENDENT CLONE of the source for
+                // a place receiver (see `lower_builtin_vec_iter`): a
+                // deep/retaining `hew_vec_clone` snapshot the cursor solely owns
+                // and frees exactly once on its own drop. Per-element ownership is
+                // identical to `into_iter` — `VecIter::next` clones each item out
+                // on read (`hew_vec_get_clone`).
+                //
+                // Pre-record the clone projection at the call's start offset so
+                // the synthesised `recv.clone()` the rewrite emits resolves
+                // through the normal element-aware vec-clone authority (the same
+                // `record_resolved_vec_call("clone", …)` an explicit `v.clone()`
+                // uses, including per-monomorphisation re-resolution for an
+                // abstract element). Mirrors how `HashMap::into_iter` pre-records
+                // its `keys()`/`values()` projections.
+                self.check_arity(args, 0, "`Vec::iter`", span);
+                let resolved_elem = self.subst.resolve(&elem_ty);
+                if let Ok(elem_resolved) = ResolvedTy::from_ty(&resolved_elem) {
+                    let clone_span = span.start..span.start;
+                    let vec_ty = self.make_vec_type(resolved_elem.clone(), &clone_span);
+                    self.record_type(&clone_span, &vec_ty);
+                    self.record_resolved_vec_call("clone", &resolved_elem, &clone_span);
+                    self.record_method_call_rewrite(
+                        span,
+                        MethodCallRewrite::BuiltinVecIter {
+                            elem_ty: elem_resolved,
+                        },
+                    );
+                }
+                Ty::Named {
+                    name: "VecIter".to_string(),
+                    args: vec![resolved_elem],
+                    builtin: None,
+                }
+            }
             "get" => {
                 // Trait-routed `Index<i64>` accessor: `<Vec<T> as Index>::get
                 // -> Option<T>`. Dispatch is marked as the `Index` primitive

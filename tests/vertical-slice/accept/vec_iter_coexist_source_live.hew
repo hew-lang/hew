@@ -1,0 +1,16 @@
+// `Vec::iter()` coexistence — a cursor and its source vec are both live locals
+// that drop at the same scope exit.
+//
+// `iter()` clones the buffer into the cursor, so the cursor's clone and the
+// source's own buffer are distinct allocations: the source's scope-exit free and
+// the cursor's scope-exit free never collide (a borrowed cursor would double-free
+// the one shared buffer). The source stays fully usable while the cursor lives —
+// `v.len()` reads the live source after the cursor is taken. v.len() = 2.
+
+pub fn main() -> i64 {
+    let v: Vec<i64> = Vec::new();
+    v.push(40);
+    v.push(2);
+    let _c = v.iter();
+    v.len()
+}

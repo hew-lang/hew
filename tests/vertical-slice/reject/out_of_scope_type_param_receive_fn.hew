@@ -1,0 +1,21 @@
+// Reject fixture: out_of_scope_type_param_receive_fn — a type-parameter name is
+// in scope only for the item that declares it. `id` declares `<T>`, so `T` is
+// valid inside `id`. The actor's `receive fn bad` declares no type params, so
+// its `x: T` names a type that is out of scope. The checker must report it at
+// the annotation with `unknown type `T``, rather than exempt it merely because
+// `id` declares a `T` somewhere program-wide and leak an opaque `Ty::named` —
+// here the leak previously aborted as `E_MIR: unknown type` at the MIR
+// boundary instead of failing closed at the annotation.
+//
+// Companion to out_of_scope_type_param (free fn): proves the scope-aware
+// exemption holds on the actor receive-fn signature path.
+//
+// Harness verb: hew check
+// Expected: rejected with `unknown type `T`` at `bad`'s parameter annotation.
+fn id<T>(x: T) -> T { x }
+
+actor Worker {
+    receive fn bad(x: T) {}
+}
+
+fn main() -> i64 { 0 }

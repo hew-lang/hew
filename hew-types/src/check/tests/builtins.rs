@@ -382,18 +382,18 @@ fn test_actor_stream_name_no_longer_aliases_stream() {
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&program);
-    // The alias is removed: ActorStream<i32> must resolve to an unknown Named
-    // type, not the built-in stream alias.  Pinning the exact form means a
-    // regression that re-introduces the alias will produce a type mismatch
-    // rather than a vacuously passing assert_ne.
-    assert_eq!(
-        output.fn_sigs["bar"].return_type,
-        Ty::Named {
-            builtin: None,
-            name: "ActorStream".to_string(),
-            args: vec![Ty::I32],
-        },
-        "ActorStream<i32> must resolve to an unknown Named type, not the Stream alias"
+    // The alias is removed and `ActorStream` is defined nowhere, so it resolves
+    // to neither the built-in `stream` type nor any registered user type: the
+    // undefined-named-type check reports it at the return-type annotation. A
+    // regression that re-introduced the alias would make `ActorStream<i32>`
+    // resolve to `Ty::stream(Ty::I32)` with no diagnostic, failing this
+    // assertion — so this still pins the alias removal, now via the error path.
+    assert!(
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::UndefinedType && error.message.contains("ActorStream")
+        }),
+        "ActorStream<i32> must be reported as an unknown type, not aliased to the Stream builtin: {:?}",
+        output.errors
     );
 }
 

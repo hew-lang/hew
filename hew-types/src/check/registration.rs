@@ -26,6 +26,18 @@ pub(super) enum StdlibBarePublication<'a> {
     Import(&'a Option<ImportSpec>),
 }
 
+/// Guard token for a primary item-signature registration block opened by
+/// [`Checker::enter_primary_sig_scope`]. Records the previous
+/// `scope_local_type_params_only` value and whether an enclosing type-param
+/// frame was pushed, so [`Checker::exit_primary_sig_scope`] restores both
+/// exactly. `#[must_use]` so a forgotten `exit` (which would leave the resolver
+/// pinned in scope-local mode and leak a frame) is a compile error.
+#[must_use = "every enter_primary_sig_scope must be paired with exit_primary_sig_scope"]
+pub(super) struct PrimarySigScope {
+    prev_scope_local: bool,
+    pushed_frame: bool,
+}
+
 impl StdlibBarePublication<'_> {
     /// The bare binding name to publish for `name`, or `None` if this
     /// registration does not publish it unqualified. `Prelude` always
@@ -1340,6 +1352,132 @@ impl Checker {
         self.resolve_registered_annotation_ty(type_expr, &mut hole_vars)
     }
 
+    /// Populate `declared_type_param_names` with every type-parameter name
+    /// declared anywhere in the program and its modules — on type / record /
+    /// trait / impl / machine / actor declarations and on every generic method
+    /// (impl method, trait method, actor receive-fn) or free function — and
+    /// `declared_nominal_type_names` with every declared NOMINAL type name
+    /// (type / type-alias / record / trait / actor / supervisor / machine, plus
+    /// the synthesised `<Machine>Event` companion).
+    ///
+    /// The undefined-named-type guard consults both sets. A name declared as a
+    /// type parameter somewhere is intentionally left opaque (`Ty::named`) by
+    /// the resolver and re-resolved at several secondary sites (signature
+    /// rebuilds, receiver probes, trait-conformance checks) WITHOUT its scope
+    /// re-pushed, so it must never be reported as undefined. A nominal type
+    /// declared in an imported `module_graph` module is likewise resolvable even
+    /// while that module's signatures are registered in a pass where the global
+    /// `trait_defs` / `known_types` still hold only the root module's
+    /// declarations. A genuinely undefined type (`Bogus`) is in neither set, so
+    /// it is still caught.
+    pub(super) fn collect_declared_type_param_names(&mut self, program: &Program) {
+        for (item, _) in &program.items {
+            self.collect_item_type_param_names(item);
+            self.collect_item_nominal_type_name(item);
+        }
+        if let Some(mg) = &program.module_graph {
+            for module in mg.modules.values() {
+                for (item, _) in &module.items {
+                    self.collect_item_type_param_names(item);
+                    self.collect_item_nominal_type_name(item);
+                }
+            }
+        }
+        // Harvest trait-level type parameters from every registered trait def.
+        // Built-in and stdlib traits (e.g. `Index<Idx>` from std/builtins.hew)
+        // are registered into `trait_defs` by `register_builtins` rather than
+        // appearing in the walked program AST; their parameter names surface in
+        // user code when a `dyn Trait<...>` annotation pulls the trait's method
+        // signatures through resolution without the trait scope re-pushed.
+        let trait_param_names: Vec<String> = self
+            .trait_defs
+            .values()
+            .flat_map(|trait_def| trait_def.type_params.iter().cloned())
+            .collect();
+        self.declared_type_param_names.extend(trait_param_names);
+    }
+
+    fn collect_item_type_param_names(&mut self, item: &Item) {
+        match item {
+            Item::Function(fd) => self.insert_opt_type_param_names(fd.type_params.as_ref()),
+            Item::TypeDecl(td) => self.insert_opt_type_param_names(td.type_params.as_ref()),
+            Item::Record(rd) => self.insert_opt_type_param_names(rd.type_params.as_ref()),
+            Item::Trait(tr) => {
+                self.insert_opt_type_param_names(tr.type_params.as_ref());
+                for trait_item in &tr.items {
+                    if let TraitItem::Method(method) = trait_item {
+                        self.insert_opt_type_param_names(method.type_params.as_ref());
+                    }
+                }
+            }
+            Item::Impl(id) => {
+                self.insert_opt_type_param_names(id.type_params.as_ref());
+                for method in &id.methods {
+                    self.insert_opt_type_param_names(method.type_params.as_ref());
+                }
+            }
+            Item::Machine(md) => self.insert_type_param_names(&md.type_params),
+            Item::Actor(ad) => {
+                self.insert_type_param_names(&ad.type_params);
+                for receive_fn in &ad.receive_fns {
+                    self.insert_opt_type_param_names(receive_fn.type_params.as_ref());
+                }
+                for method in &ad.methods {
+                    self.insert_opt_type_param_names(method.type_params.as_ref());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn insert_opt_type_param_names(&mut self, tps: Option<&Vec<TypeParam>>) {
+        if let Some(tps) = tps {
+            self.insert_type_param_names(tps);
+        }
+    }
+
+    /// Record the nominal type name a top-level item declares (if any) into
+    /// `declared_nominal_type_names`. Mirrors the type-name registration in
+    /// `collect_types`, but is a program-wide harvest the undefined-named-type
+    /// guard consults so an imported module's own types/traits resolve even in
+    /// the pass that registers that module's signatures.
+    fn collect_item_nominal_type_name(&mut self, item: &Item) {
+        match item {
+            Item::TypeDecl(td) => {
+                self.declared_nominal_type_names.insert(td.name.clone());
+            }
+            Item::TypeAlias(ta) => {
+                self.declared_nominal_type_names.insert(ta.name.clone());
+            }
+            Item::Trait(tr) => {
+                self.declared_nominal_type_names.insert(tr.name.clone());
+            }
+            Item::Actor(ad) => {
+                self.declared_nominal_type_names.insert(ad.name.clone());
+            }
+            Item::Supervisor(sd) => {
+                self.declared_nominal_type_names.insert(sd.name.clone());
+            }
+            Item::Record(rd) => {
+                self.declared_nominal_type_names.insert(rd.name.clone());
+            }
+            Item::Machine(md) => {
+                self.declared_nominal_type_names.insert(md.name.clone());
+                // The checker synthesises a `<Machine>Event` companion type for
+                // every machine; it is a writable type spelling in user code.
+                self.declared_nominal_type_names
+                    .insert(format!("{}Event", md.name));
+            }
+            _ => {}
+        }
+    }
+
+    fn insert_type_param_names(&mut self, tps: &[TypeParam]) {
+        for tp in tps {
+            self.declared_type_param_names.insert(tp.name.clone());
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "type registration handles all root item variants in one place"
@@ -1572,6 +1710,17 @@ impl Checker {
     pub(super) fn reresolve_member_types_after_imports(&mut self, program: &Program) {
         let errors_before = self.errors.len();
         let warnings_before = self.warnings.len();
+        // Member re-resolution is a secondary fix-up pass (it overwrites the
+        // member types computed during `collect_types` once imports are
+        // visible) and runs with `type_decls_registered` already true. Suppress
+        // the undefined-named-type guard for its duration: a type declaration's
+        // members are out of the F1 diagnostic's remit (they keep the existing
+        // `E_MIR: unknown type` path), and emitting here would also let the
+        // guard substitute `Ty::Error` for the member type, overwriting the
+        // good type computed during `collect_types` and tripping the HIR
+        // field-access checker-boundary conversion downstream.
+        let prev_suppress = self.suppress_undefined_type_report;
+        self.suppress_undefined_type_report = true;
 
         if let Some(ref mg) = program.module_graph {
             for mod_id in &mg.topo_order {
@@ -1605,6 +1754,7 @@ impl Checker {
 
         self.errors.truncate(errors_before);
         self.warnings.truncate(warnings_before);
+        self.suppress_undefined_type_report = prev_suppress;
     }
 
     /// Seed `local_type_defs`/`source_type_defs` with the current scope's own
@@ -4686,6 +4836,13 @@ impl Checker {
                 if module_short.is_some() {
                     self.register_actor_decl_as(ad, &identity);
                 }
+                // The actor's own generics (`actor Worker<T>`) are in scope for
+                // every receive fn and method signature; push them and resolve
+                // those signatures scope-locally so an out-of-scope generic name
+                // is rejected at the annotation while the actor's legitimate
+                // `<T>` still resolves.
+                let actor_sig_scope =
+                    self.enter_primary_sig_scope(&[(Some(&ad.type_params), None)]);
                 for rf in &ad.receive_fns {
                     self.register_receive_fn(&identity, rf);
                 }
@@ -4693,6 +4850,7 @@ impl Checker {
                     let method_name = format!("{identity}::{}", method.name);
                     self.register_fn_sig_with_name(&method_name, method);
                 }
+                self.exit_primary_sig_scope(actor_sig_scope);
             }
             Item::Impl(id) => {
                 if Self::impl_decl_is_drop_impl(id) {
@@ -4891,6 +5049,19 @@ impl Checker {
                 // Register methods defined inside struct/enum bodies
                 for item in &td.body {
                     if let TypeBodyItem::Method(method) = item {
+                        // An inline type-body method's signature can name the
+                        // enclosing type's generics (`type Holder<T> { fn f(...) -> T }`)
+                        // and its own (`fn idm<T>(...)`). Push BOTH so the whole
+                        // block — `register_fn_sig_with_name` AND the secondary
+                        // resolution below that rebuilds the `FnSig` for
+                        // `type_def.methods` (which runs outside the method's own
+                        // frame) — resolves them scope-locally: an out-of-scope
+                        // name is rejected at the annotation, while these
+                        // legitimate generics still resolve.
+                        let method_sig_scope = self.enter_primary_sig_scope(&[
+                            (td.type_params.as_ref(), td.where_clause.as_ref()),
+                            (method.type_params.as_ref(), method.where_clause.as_ref()),
+                        ]);
                         let method_key = format!("{}::{}", td.name, method.name);
                         self.register_fn_sig_with_name(&method_key, method);
                         let skip = usize::from(
@@ -4914,6 +5085,7 @@ impl Checker {
                         let return_type = method.return_type.as_ref().map_or(Ty::Unit, |ret| {
                             self.resolve_registered_annotation_ty_no_holes(ret)
                         });
+                        self.exit_primary_sig_scope(method_sig_scope);
                         let is_async = method.is_async;
                         let method_name = method.name.clone();
                         let type_name = td.name.clone();
@@ -4939,11 +5111,19 @@ impl Checker {
                         self.mark_imported_trait_used(owner, &super_trait.name);
                     }
                 }
+                // A generic trait's own params (`trait Foo<T>`) are in scope for
+                // every method signature; push them and resolve those signatures
+                // scope-locally so an out-of-scope generic name is rejected at
+                // the annotation while the trait's legitimate `<T>` resolves.
+                // (`register_trait_method_sig` pushes each method's own params.)
+                let trait_sig_scope =
+                    self.enter_primary_sig_scope(&[(td.type_params.as_ref(), None)]);
                 for trait_item in &td.items {
                     if let TraitItem::Method(method) = trait_item {
                         self.register_trait_method_sig(&td.name, method, span);
                     }
                 }
+                self.exit_primary_sig_scope(trait_sig_scope);
             }
             Item::ExternBlock(eb) => {
                 self.register_extern_block(eb);
@@ -4983,7 +5163,90 @@ impl Checker {
     }
 
     pub(super) fn register_fn_sig(&mut self, fd: &FnDecl) {
+        // A top-level free function's signature is the primary resolution of its
+        // own annotations: its type-param bounds frame is pushed before the
+        // params/return resolve (see `register_fn_sig_with_name`), so the
+        // in-scope checks alone prove its legitimate type params resolvable. A
+        // free function has no enclosing generic scope, so no extra frame is
+        // pushed — the scope-local guard only suppresses the program-wide
+        // type-param fallback so an out-of-scope generic name (one declared only
+        // on a *different* item) is reported as unknown rather than silently
+        // exempted.
+        let guard = self.enter_primary_sig_scope(&[]);
         self.register_fn_sig_with_name(&fd.name, fd);
+        self.exit_primary_sig_scope(guard);
+    }
+
+    /// Open a primary item-signature registration block: resolve the item's
+    /// signature annotations in scope-LOCAL mode, where a type-parameter name is
+    /// proven resolvable ONLY through the in-scope frames (the enclosing item's
+    /// generics pushed here, plus the item's own generics pushed by
+    /// `register_fn_sig_with_name` / `register_receive_fn` while it resolves),
+    /// NOT the program-wide `declared_type_param_names` fallback.
+    ///
+    /// This is the totality boundary for type-param names: an out-of-scope
+    /// generic (declared only on a *different* item) fails closed AT the
+    /// annotation with `unknown type` instead of leaking an opaque `Ty::named`
+    /// that only aborts downstream as `E_MIR: unknown type` at the MIR boundary.
+    /// The program-wide fallback is too broad to prove a SOURCE annotation valid
+    /// — it would exempt `fn bad(x: T)` merely because some unrelated `fn id<T>`
+    /// declared `T` somewhere — so suppressing it here makes the in-scope frames
+    /// authoritative for the names a signature is allowed to spell.
+    ///
+    /// `scopes` lists the enclosing type-param sets to push as ONE names-only
+    /// bounds frame (e.g. an actor/trait/type's `<T>`, and for inline type-body
+    /// methods the method's own `<T>` too, so the secondary resolution that
+    /// rebuilds the method's `FnSig` sees it). Pass `&[]` for items with no
+    /// enclosing generics (free functions) or where the enclosing frame is
+    /// already on the stack (impl methods, whose impl params `register_impl_method`
+    /// pushes itself) — then only the scope-local flag is armed. The frame is
+    /// names-only (`collect_type_param_scope_with_bounds` is pure) so opening the
+    /// scope has no resolution side effects. Pair every call with
+    /// [`Self::exit_primary_sig_scope`].
+    pub(super) fn enter_primary_sig_scope(
+        &mut self,
+        scopes: &[(Option<&Vec<TypeParam>>, Option<&WhereClause>)],
+    ) -> PrimarySigScope {
+        let mut bounds: HashMap<String, Vec<String>> = HashMap::new();
+        for (type_params, where_clause) in scopes {
+            for (name, param_bounds) in
+                self.collect_type_param_scope_with_bounds(*type_params, *where_clause)
+            {
+                let entry = bounds.entry(name).or_default();
+                for bound in param_bounds {
+                    if !entry.iter().any(|existing| existing == &bound) {
+                        entry.push(bound);
+                    }
+                }
+            }
+        }
+        let pushed_frame = !bounds.is_empty();
+        if pushed_frame {
+            self.current_type_param_bounds
+                .push(TypeParamScope::new(bounds, HashMap::new()));
+        }
+        let prev_scope_local = self.scope_local_type_params_only;
+        self.scope_local_type_params_only = true;
+        PrimarySigScope {
+            prev_scope_local,
+            pushed_frame,
+        }
+    }
+
+    /// Close a block opened by [`Self::enter_primary_sig_scope`], restoring the
+    /// previous scope-local flag and popping the enclosing-generics frame.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "the by-value parameter is the contract: consuming this one-shot \
+                  guard makes a double exit_primary_sig_scope a use-after-move \
+                  compile error, which is what stops the enclosing-generics frame \
+                  from being popped twice. Taking it by reference would defeat that."
+    )]
+    pub(super) fn exit_primary_sig_scope(&mut self, scope: PrimarySigScope) {
+        self.scope_local_type_params_only = scope.prev_scope_local;
+        if scope.pushed_frame {
+            self.current_type_param_bounds.pop();
+        }
     }
 
     fn register_trait_method_sig(
@@ -5578,7 +5841,15 @@ impl Checker {
         if pushed_impl_bounds {
             self.current_type_param_bounds.push(impl_bounds_map);
         }
+        // The impl's own params are already pushed above; `register_fn_sig_with_name`
+        // pushes the method's own params internally. Enable scope-local resolution
+        // for this primary signature registration so an out-of-scope generic name is
+        // rejected at the annotation. The secondary resolution below stays on the
+        // program-wide fallback: out-of-scope names are already rejected here, and
+        // the impl/method's legitimate params are in `declared_type_param_names`.
+        let impl_method_sig_scope = self.enter_primary_sig_scope(&[]);
         self.register_fn_sig_with_name(&method_key, method);
+        self.exit_primary_sig_scope(impl_method_sig_scope);
         if pushed_impl_bounds {
             self.current_type_param_bounds.pop();
         }
@@ -8914,6 +9185,12 @@ impl Checker {
         let identity = Self::actor_identity(module_short, &ad.name);
         self.register_actor_decl_as(ad, &identity);
         self.known_types.insert(identity.clone());
+        // A generic actor's own params (`actor Worker<T>`) are in scope for every
+        // receive-fn / method signature. Push them and register these primary
+        // signatures scope-locally so an out-of-scope generic name is rejected at
+        // the annotation, while the actor's legitimate `<T>` still resolves. This
+        // mirrors the inline `Item::Actor` path for imported / flat-file actors.
+        let actor_sig_scope = self.enter_primary_sig_scope(&[(Some(&ad.type_params), None)]);
         for rf in &ad.receive_fns {
             self.register_receive_fn(&identity, rf);
         }
@@ -8921,6 +9198,7 @@ impl Checker {
             let method_name = format!("{identity}::{}", method.name);
             self.register_fn_sig_with_name(&method_name, method);
         }
+        self.exit_primary_sig_scope(actor_sig_scope);
     }
 
     /// Seed the module-qualified marker-derivation alias for a type declared

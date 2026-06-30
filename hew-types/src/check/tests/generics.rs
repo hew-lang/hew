@@ -2500,6 +2500,198 @@ fn struct_pattern_missing_type_def_emits_diagnostic() {
     );
 }
 
+#[test]
+fn out_of_scope_type_param_name_reported_as_unknown_type() {
+    // A type-parameter name is in scope only for the item that declares it.
+    // `id` declares `<T>`, so `T` is a valid annotation inside `id`. `bad`
+    // declares no type params, so its `x: T` and `-> T` name a type that is out
+    // of scope. The checker must report these at the annotation rather than
+    // exempt them merely because `id` declares a `T` somewhere in the program —
+    // proving a source annotation valid is scope-aware, not a program-wide
+    // type-param name lookup.
+    let output = check_source(
+        r"
+fn id<T>(x: T) -> T { x }
+
+fn bad(x: T) -> T { x }
+
+fn main() -> i64 { id(5) }
+",
+    );
+    assert!(
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::UndefinedType && error.message.contains("unknown type `T`")
+        }),
+        "out-of-scope `T` in `bad` must be reported as `unknown type `T``; got: {:#?}",
+        output.errors
+    );
+
+    // The in-scope `T` declared by `id<T>` must NOT be reported: a generic
+    // function whose only `T` uses are the ones its own signature declares type
+    // checks cleanly. (Guards the gate against over-firing on legitimate
+    // generics — the very behaviour the program-wide fallback used to protect.)
+    let in_scope = check_source(r"fn id<T>(x: T) -> T { x }");
+    assert!(
+        !in_scope.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::UndefinedType && error.message.contains("unknown type `T`")
+        }),
+        "a generic function's own in-scope `T` must not be reported as unknown: {:#?}",
+        in_scope.errors
+    );
+}
+
+#[test]
+fn out_of_scope_type_param_rejected_in_every_item_signature_path() {
+    // The scope-aware exemption must hold at EVERY primary item-signature
+    // registration path, not just free functions. Each case below declares a
+    // decoy `fn id<T>` so `T` IS in the program-wide `declared_type_param_names`
+    // set — the exact condition under which the old program-wide fallback
+    // silently exempted an out-of-scope `T`, admitting an opaque `Ty::named`
+    // that only aborted later as `E_MIR: unknown type` at the MIR boundary.
+    // Every case must instead reject AT the annotation with `unknown type `T``.
+    let cases = [
+        (
+            "actor non-receive method",
+            r"
+fn id<T>(x: T) -> T { x }
+actor Worker { fn bad(x: T) -> i64 { 0 }  receive fn run() {} }
+fn main() -> i64 { 0 }
+",
+        ),
+        (
+            "actor receive fn",
+            r"
+fn id<T>(x: T) -> T { x }
+actor Worker { receive fn bad(x: T) {} }
+fn main() -> i64 { 0 }
+",
+        ),
+        (
+            "trait method signature",
+            r"
+fn id<T>(x: T) -> T { x }
+trait Foo { fn bad(self, x: T) -> i64; }
+fn main() -> i64 { 0 }
+",
+        ),
+        (
+            "inline type-body method",
+            r"
+fn id<T>(x: T) -> T { x }
+type Holder { v: i64, fn bad(h: Holder, x: T) -> i64 { 0 } }
+fn main() -> i64 { 0 }
+",
+        ),
+        (
+            "impl method",
+            r"
+fn id<T>(x: T) -> T { x }
+type Holder { v: i64 }
+impl Holder { fn bad(self, x: T) -> i64 { 0 } }
+fn main() -> i64 { 0 }
+",
+        ),
+    ];
+    for (label, source) in cases {
+        let output = check_source(source);
+        assert!(
+            output.errors.iter().any(|error| {
+                error.kind == TypeErrorKind::UndefinedType
+                    && error.message.contains("unknown type `T`")
+            }),
+            "out-of-scope `T` in {label} must be reported as `unknown type `T``; got: {:#?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn in_scope_type_param_not_false_flagged_in_any_item_signature_path() {
+    // The complement of the reject sweep: a type-param name that IS in scope —
+    // declared by the enclosing actor / trait / type / impl, or by the method
+    // itself — must NOT be reported as unknown. Scope-local resolution pushes
+    // the enclosing container's generics (and the method pushes its own), so
+    // every legitimate `T` resolves. Guards the boundary against over-firing.
+    let cases = [
+        (
+            "actor-level generic, used in method",
+            r"
+actor Worker<T> { fn m(x: T) -> T { x }  receive fn run() {} }
+fn main() -> i64 { 0 }
+",
+        ),
+        (
+            "actor-level generic, used in receive fn",
+            r"
+actor Worker<T> { receive fn handle(x: T) {} }
+fn main() -> i64 { 0 }
+",
+        ),
+        (
+            "actor method's own generic",
+            r"
+actor Worker { fn idm<T>(x: T) -> T { x }  receive fn run() {} }
+fn main() -> i64 { 0 }
+",
+        ),
+        (
+            "trait-level generic",
+            r"
+trait Foo<T> { fn take(self, x: T) -> i64; }
+fn main() -> i64 { 0 }
+",
+        ),
+        (
+            "trait method's own generic",
+            r"
+trait Foo { fn idm<T>(self, x: T) -> T; }
+fn main() -> i64 { 0 }
+",
+        ),
+        (
+            "inline type-body method, type-level generic",
+            r"
+type Holder<T> { value: T, fn first(h: Holder<T>) -> T { h.value } }
+fn main() -> i64 { 0 }
+",
+        ),
+        (
+            "inline type-body method's own generic",
+            r"
+type Box { v: i64, fn idm<T>(b: Box, x: T) -> T { x } }
+fn main() -> i64 { 0 }
+",
+        ),
+        (
+            "impl method's own generic",
+            r"
+type Box { v: i64 }
+impl Box { fn idm<T>(self, x: T) -> T { x } }
+fn main() -> i64 { 0 }
+",
+        ),
+        (
+            "impl-level generic",
+            r"
+type Holder<T> { value: T }
+impl<T> Holder<T> { fn get(self) -> T { self.value } }
+fn main() -> i64 { 0 }
+",
+        ),
+    ];
+    for (label, source) in cases {
+        let output = check_source(source);
+        assert!(
+            !output.errors.iter().any(|error| {
+                error.kind == TypeErrorKind::UndefinedType
+                    && error.message.contains("unknown type `T`")
+            }),
+            "in-scope `T` in {label} must NOT be reported as unknown; got: {:#?}",
+            output.errors
+        );
+    }
+}
+
 // ── Struct init literal coercion tests ─────────────────────────────
 
 fn register_generic_wrapper(checker: &mut Checker) {

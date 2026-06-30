@@ -7045,6 +7045,106 @@ fn emit_nested_supervisor_register<'ctx>(
     Ok(())
 }
 
+/// Register a supervised child actor's type name and per-handler names into the
+/// runtime profiler registry so a crash inside one of its handlers is reported
+/// by name (`Worker::run`) rather than the bare `msg_type` discriminant.
+///
+/// The direct-`spawn` path emits the equivalent registration via
+/// `emit_native_actor_metadata_registration`. A supervised child, however, is
+/// spawned by the runtime supervisor from its child spec and never passes
+/// through a codegen `spawn` site, so without this call its `(dispatch, msg_type)
+/// → name` rows are never seeded and the crash reporter
+/// (`hew-runtime/src/signal.rs`) has nothing to resolve. Registration is
+/// idempotent in the runtime (first-write-wins), so a child that is also spawned
+/// directly elsewhere still registers exactly once.
+///
+/// `dispatch_ptr` is the child actor TYPE's `__hew_actor_dispatch_<name>`
+/// trampoline — the same pointer the runtime stores into `HewActor.dispatch` and
+/// the crash reporter reads back, so the registry key matches at lookup time.
+/// The runtime entry points are no-ops when the `profiler` feature is disabled,
+/// matching the direct-spawn path's behaviour.
+fn emit_supervised_child_handler_name_registration<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &Builder<'ctx>,
+    actor_name: &str,
+    dispatch_ptr: PointerValue<'ctx>,
+    actor_layouts: &[ActorLayout],
+    name_prefix: &str,
+) -> CodegenResult<()> {
+    let Some(layout) = actor_layouts.iter().find(|l| l.name == actor_name) else {
+        // No native ActorLayout for this child means the actor type was not
+        // classified for native dispatch; the spawn itself fails closed
+        // upstream, so there is nothing to register here.
+        return Ok(());
+    };
+
+    let void_ty = ctx.void_type();
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i32_ty = ctx.i32_type();
+    let actor_fragment = llvm_global_name_fragment(actor_name);
+
+    // hew_actor_register_type(dispatch: ptr, name: ptr) — same canonical
+    // signature as `intern_runtime_decl`; `declare_codec_prim` reuses an
+    // existing declaration so this never conflicts with the spawn-path decl.
+    let register_type = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_actor_register_type",
+        void_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+    );
+    let type_name_global = builder
+        .build_global_string_ptr(
+            actor_name,
+            &format!("str_sup_actor_type_{name_prefix}_{actor_fragment}"),
+        )
+        .llvm_ctx("supervised actor type name global")?;
+    builder
+        .build_call(
+            register_type,
+            &[
+                dispatch_ptr.into(),
+                type_name_global.as_pointer_value().into(),
+            ],
+            "hew_actor_register_type_call",
+        )
+        .llvm_ctx("hew_actor_register_type call")?;
+
+    if layout.handlers.is_empty() {
+        return Ok(());
+    }
+
+    // hew_register_handler_name(dispatch: ptr, msg_type: i32, name: ptr).
+    let register_handler = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_register_handler_name",
+        void_ty.fn_type(&[ptr_ty.into(), i32_ty.into(), ptr_ty.into()], false),
+    );
+    for (h_idx, handler) in layout.handlers.iter().enumerate() {
+        let handler_name = format!("{actor_name}::{}", handler.name);
+        let handler_fragment = llvm_global_name_fragment(&handler.name);
+        let handler_name_global = builder
+            .build_global_string_ptr(
+                &handler_name,
+                &format!("str_sup_handler_{name_prefix}_{h_idx}_{handler_fragment}"),
+            )
+            .llvm_ctx("supervised handler name global")?;
+        builder
+            .build_call(
+                register_handler,
+                &[
+                    dispatch_ptr.into(),
+                    i32_ty.const_int(handler.msg_type as u64, true).into(),
+                    handler_name_global.as_pointer_value().into(),
+                ],
+                "hew_register_handler_name_call",
+            )
+            .llvm_ctx("hew_register_handler_name call")?;
+    }
+    Ok(())
+}
+
 /// Emit one `HewChildSpec` literal + `hew_supervisor_add_child_spec` call.
 ///
 /// Per-field semantics:
@@ -7098,6 +7198,23 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
             child.name
         ))
     })?;
+
+    // Register the child actor's type name and per-handler names into the
+    // runtime profiler registry. A supervised child is spawned by the runtime
+    // supervisor from this spec and never passes through a codegen `spawn` site
+    // (where `emit_native_actor_metadata_registration` would do this), so
+    // without this its handler-name registry stays empty and a crash inside one
+    // of its handlers is reported by the bare `msg_type` discriminant instead of
+    // the handler name (e.g. `Worker::run`).
+    emit_supervised_child_handler_name_registration(
+        ctx,
+        llvm_mod,
+        builder,
+        &child.actor_name,
+        dispatch_fn.as_global_value().as_pointer_value(),
+        actor_layouts,
+        &format!("{sup_name}_{idx}"),
+    )?;
 
     // Resolve on_crash fn-pointer: Some(symbol) → pointer to the declared
     // function; None → null. The on_crash function is produced by MIR

@@ -1,0 +1,12 @@
+// Reject fixture: unit_type_spelling — `Unit` is not a writable type name in
+// Hew; the unit type is spelled `()`. `Unit` is an internal carrier with no
+// user-facing spelling, so a source annotation `-> Unit` resolves to an unknown
+// type. The checker reports it at the annotation with `unknown type `Unit`` and
+// a help line pointing at the correct `()` spelling, rather than silently
+// accepting it and producing a confusing downstream mismatch.
+//
+// Harness verb: hew check
+// Expected: rejected with `unknown type `Unit`` plus the `()` spelling hint.
+fn noop() -> Unit {}
+
+fn main() {}

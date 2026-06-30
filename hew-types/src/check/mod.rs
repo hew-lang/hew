@@ -172,6 +172,16 @@ impl Checker {
     pub fn check_program(&mut self, program: &Program) -> TypeCheckOutput {
         self.register_builtins();
         self.collect_types(program);
+        // Record every declared type-parameter name (across all modules) before
+        // arming the guard, so it never false-positives on a generic parameter
+        // the resolver leaves opaque and re-resolves without its scope active.
+        self.collect_declared_type_param_names(program);
+        // Every type declaration is now registered, so a named type that still
+        // fails to resolve is genuinely undefined. Arm the undefined-named-type
+        // guard in `resolve_type_expr_tracking_holes`; it stays disarmed during
+        // `collect_types` because member resolution there can legally reference a
+        // forward-declared sibling type that is not yet registered.
+        self.type_decls_registered = true;
         self.collect_functions(program);
 
         // Pass 1.5 (#2202): re-resolve type-declaration MEMBER types now that

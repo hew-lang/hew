@@ -1,0 +1,15 @@
+// Accept fixture: imported_generics_resolve — importing a module whose generic
+// actor / generic trait / supervisor signatures name their enclosing type
+// params must type-check cleanly. The scope-aware out-of-scope type-param fix
+// resolves these imported signatures scope-locally (pushing the container's
+// generics), so the legitimate `T` resolves. The complement of the
+// out_of_scope_type_param_* reject fixtures: in-scope generics on the import
+// path must NOT false-flag as `unknown type `T``.
+//
+// Harness verb: hew check (the resolution concern this pins is at the checker
+// boundary; see run.sh).
+import lib;
+
+fn main() -> i64 {
+    lib.entry()
+}

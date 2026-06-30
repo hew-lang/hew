@@ -1,0 +1,22 @@
+// Reject fixture: out_of_scope_type_param_type_method — a type-parameter name is
+// in scope only for the item that declares it. `id` declares `<T>`, so `T` is
+// valid inside `id`. The inline type-body method `bad` declares no type params,
+// and the type `Holder` is not generic, so its `x: T` names a type that is out
+// of scope. The checker must report it at the annotation with `unknown type
+// `T``, rather than exempt it merely because `id` declares a `T` somewhere
+// program-wide and leak an opaque `Ty::named("T")`.
+//
+// Companion to out_of_scope_type_param (free fn): proves the scope-aware
+// exemption holds on the inline type-body method-signature path (which has a
+// secondary FnSig rebuild for `type_def.methods` that the fix also covers).
+//
+// Harness verb: hew check
+// Expected: rejected with `unknown type `T`` at `bad`'s parameter annotation.
+fn id<T>(x: T) -> T { x }
+
+type Holder {
+    v: i64,
+    fn bad(h: Holder, x: T) -> i64 { 0 }
+}
+
+fn main() -> i64 { 0 }

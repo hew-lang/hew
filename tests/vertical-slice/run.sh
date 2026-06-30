@@ -873,6 +873,17 @@ expect_check_fail_contains \
     'the unit type is written `()`' \
     "unit_type_spelling"
 
+# Reject: a type-parameter name is resolvable only within the item that declares
+# it. `id<T>` makes `T` valid inside `id`; `bad`, which declares no type params,
+# names a type `T` that is out of scope. The checker must report it at the
+# annotation rather than exempting it merely because another item declares a `T`
+# program-wide — the exemption is scope-aware, not a global name set.
+# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/out_of_scope_type_param.hew" \
+    'unknown type `T`' \
+    "out_of_scope_type_param"
+
 # Reject: `ref.send(msg)` on a named actor with NO `receive fn send` handler is
 # rejected at the type-checker with an actionable UndefinedMethod diagnostic.
 # The anonymous-payload path has no lowerable mailbox slot; the checker now

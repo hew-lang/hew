@@ -2500,6 +2500,46 @@ fn struct_pattern_missing_type_def_emits_diagnostic() {
     );
 }
 
+#[test]
+fn out_of_scope_type_param_name_reported_as_unknown_type() {
+    // A type-parameter name is in scope only for the item that declares it.
+    // `id` declares `<T>`, so `T` is a valid annotation inside `id`. `bad`
+    // declares no type params, so its `x: T` and `-> T` name a type that is out
+    // of scope. The checker must report these at the annotation rather than
+    // exempt them merely because `id` declares a `T` somewhere in the program —
+    // proving a source annotation valid is scope-aware, not a program-wide
+    // type-param name lookup.
+    let output = check_source(
+        r"
+fn id<T>(x: T) -> T { x }
+
+fn bad(x: T) -> T { x }
+
+fn main() -> i64 { id(5) }
+",
+    );
+    assert!(
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::UndefinedType && error.message.contains("unknown type `T`")
+        }),
+        "out-of-scope `T` in `bad` must be reported as `unknown type `T``; got: {:#?}",
+        output.errors
+    );
+
+    // The in-scope `T` declared by `id<T>` must NOT be reported: a generic
+    // function whose only `T` uses are the ones its own signature declares type
+    // checks cleanly. (Guards the gate against over-firing on legitimate
+    // generics — the very behaviour the program-wide fallback used to protect.)
+    let in_scope = check_source(r"fn id<T>(x: T) -> T { x }");
+    assert!(
+        !in_scope.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::UndefinedType && error.message.contains("unknown type `T`")
+        }),
+        "a generic function's own in-scope `T` must not be reported as unknown: {:#?}",
+        in_scope.errors
+    );
+}
+
 // ── Struct init literal coercion tests ─────────────────────────────
 
 fn register_generic_wrapper(checker: &mut Checker) {

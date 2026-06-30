@@ -2717,14 +2717,29 @@ pub struct Checker {
     /// Every type-parameter name declared anywhere in the program — on type /
     /// record / trait / impl / machine / actor declarations and on every
     /// generic method or free function. The undefined-named-type guard treats
-    /// a name in this set as resolvable: the resolver intentionally leaves a
-    /// generic type parameter opaque (`Ty::named`) and re-resolves it at
-    /// several secondary sites (signature rebuilds, receiver probes,
-    /// trait-conformance checks) without re-pushing its scope, so it must
-    /// never be reported as undefined. A genuinely undefined type is a type
-    /// parameter nowhere, so it is still caught. Populated once, after
+    /// a name in this set as resolvable at SECONDARY re-resolution sites: the
+    /// resolver intentionally leaves a generic type parameter opaque
+    /// (`Ty::named`) and re-resolves it during signature rebuilds, receiver
+    /// probes and trait-conformance comparison without re-pushing its scope, so
+    /// a scope-local check alone false-positives there. This set is a uniform
+    /// fallback for those sites only — the PRIMARY resolution of a top-level
+    /// function's own signature suppresses it (see `scope_local_type_params_only`)
+    /// so an out-of-scope generic name is still reported. Populated once, after
     /// `collect_types`, before the guard is armed.
     pub(super) declared_type_param_names: HashSet<String>,
+    /// When `true`, the undefined-named-type guard proves a type-parameter name
+    /// resolvable ONLY through the in-scope tables (`current_type_param_bounds`
+    /// and the current function's registered signature params), ignoring the
+    /// program-wide `declared_type_param_names` fallback. Set around the primary
+    /// resolution of a top-level free function's own signature, where that
+    /// function's type-param scope is reliably reconstructed (its bounds frame
+    /// is pushed before the annotations resolve). The program-wide set is too
+    /// broad to prove a SOURCE annotation valid there: `fn id<T>(x: T)` declares
+    /// `T`, but `fn bad(x: T)` does not, and `bad`'s `T` must be reported as
+    /// unknown rather than silently exempted by `id`'s unrelated `T`. Left
+    /// `false` (the default) at every secondary re-resolution site, which still
+    /// relies on the program-wide fallback.
+    pub(super) scope_local_type_params_only: bool,
     /// Every NOMINAL type name declared anywhere in the program and its
     /// `module_graph` — type / type-alias / record / trait / actor / supervisor /
     /// machine declarations (plus the synthesised `<Machine>Event` companion).
@@ -3222,6 +3237,7 @@ impl Checker {
             type_decls_registered: false,
             suppress_undefined_type_report: false,
             declared_type_param_names: HashSet::new(),
+            scope_local_type_params_only: false,
             declared_nominal_type_names: HashSet::new(),
             unqualified_to_module: HashMap::new(),
             published_bare_type_owners: HashMap::new(),

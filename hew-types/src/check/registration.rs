@@ -5121,7 +5121,19 @@ impl Checker {
     }
 
     pub(super) fn register_fn_sig(&mut self, fd: &FnDecl) {
+        // A top-level free function's signature is the primary resolution of its
+        // own annotations: its type-param bounds frame is pushed before the
+        // params/return resolve (see `register_fn_sig_with_name`), so the
+        // in-scope checks alone prove its legitimate type params resolvable.
+        // Suppress the program-wide type-param fallback for this span so an
+        // out-of-scope generic name (one declared only on a *different* item) is
+        // reported as unknown rather than silently exempted. Methods register
+        // through `register_fn_sig_with_name` directly and keep the fallback,
+        // since their signatures are re-resolved at scope-less conformance sites.
+        let prev = self.scope_local_type_params_only;
+        self.scope_local_type_params_only = true;
         self.register_fn_sig_with_name(&fd.name, fd);
+        self.scope_local_type_params_only = prev;
     }
 
     fn register_trait_method_sig(

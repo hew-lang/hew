@@ -1,0 +1,19 @@
+// Reject fixture: out_of_scope_type_param — a type-parameter name is in scope
+// only for the item that declares it. `id` declares `<T>`, so `T` is a valid
+// annotation inside `id`. `bad` declares no type params, so its `x: T` names a
+// type that does not exist in `bad`'s scope. The checker reports it at the
+// annotation with `unknown type `T``, rather than silently exempting it because
+// some *other* function happens to declare a `T` and leaking an opaque
+// `Ty::named("T")` that only surfaces downstream as `E_MIR: unknown type` at
+// the MIR boundary.
+//
+// Guards against a too-broad exemption: proving a source annotation valid must
+// be scope-aware, not satisfied by any type-param name declared program-wide.
+//
+// Harness verb: hew check
+// Expected: rejected with `unknown type `T`` at `bad`'s parameter annotation.
+fn id<T>(x: T) -> T { x }
+
+fn bad(x: T) -> i64 { 0 }
+
+fn main() -> i64 { id(5) }

@@ -1184,7 +1184,15 @@ impl Checker {
         // scope-local check alone false-positives at those sites. Consulting the
         // program-wide set covers them uniformly; the in-scope checks below stay
         // as defense-in-depth for names that are valid only locally.
-        if self.declared_type_param_names.contains(name) {
+        //
+        // Suppressed under `scope_local_type_params_only` — set around the
+        // primary resolution of a top-level function's own signature, where the
+        // function's type-param scope IS reliably reconstructed. There the
+        // program-wide set is too broad to prove a source annotation valid: it
+        // would exempt `fn bad(x: T)` merely because some unrelated `fn id<T>`
+        // declared `T`, masking the genuinely out-of-scope use. The in-scope
+        // checks below catch the function's own legitimate type params.
+        if !self.scope_local_type_params_only && self.declared_type_param_names.contains(name) {
             return true;
         }
         // A nominal type declared anywhere in the program or its module_graph

@@ -1313,6 +1313,171 @@ fn main() {
         );
     }
 
+    // ── Node:: distributed namespace + RemotePid messaging reject ──────────
+    //
+    // The `Node::*` cluster API (`start`, `connect`, `load_keys`, `register`,
+    // `lookup`, …) and `RemotePid<T>::tell` / `RemotePid<T>::ask` remote
+    // messaging lower to the native mesh transport (`hew_node_api_*` /
+    // `hew_remote_pid_tell`), which is not compiled for wasm32.  Without a
+    // check-time gate the checker admitted these on wasm32 and codegen emitted a
+    // module importing an undefined `env::hew_node_api_*` symbol that fails at
+    // instantiation (admit-then-abort).  They must fail closed AT CHECK, like
+    // every other native-only surface in this file.
+
+    fn remote_pid_tell_source() -> &'static str {
+        concat!(
+            "record Ping { n: i64 }\n",
+            "actor Worker { receive fn ping(msg: Ping) {} }\n",
+            "impl ActorMsg for Worker { type Msg = Ping; type Reply = (); }\n",
+            "fn main() {\n",
+            "    let pid: RemotePid<Worker> = RemotePid::from_raw<Worker>(1, 0);\n",
+            "    let _ = pid.tell(Ping { n: 0 });\n",
+            "}\n",
+        )
+    }
+
+    fn remote_pid_ask_source() -> &'static str {
+        concat!(
+            "record Ping { n: i64 }\n",
+            "actor Worker { receive fn ping(msg: Ping) -> i64 { 0 } }\n",
+            "impl ActorMsg for Worker { type Msg = Ping; type Reply = i64; }\n",
+            "fn main() {\n",
+            "    let pid: RemotePid<Worker> = RemotePid::from_raw<Worker>(1, 0);\n",
+            "    let _ = pid.ask(Ping { n: 0 }, 1000);\n",
+            "}\n",
+        )
+    }
+
+    #[test]
+    fn wasm_rejects_node_start() {
+        let output = check_wasm(r#"fn main() { Node::start("a@127.0.0.1:9000"); }"#);
+        assert!(
+            has_platform_limitation_error(&output),
+            "Node::start should be a compile-time error on WASM; got errors: {:?}",
+            output.errors
+        );
+        assert!(
+            platform_error_contains(&output, "Distributed node"),
+            "error message should mention the Distributed node feature; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn wasm_rejects_node_connect() {
+        let output = check_wasm(r#"fn main() { Node::connect("b@127.0.0.1:9001"); }"#);
+        assert!(
+            platform_error_contains(&output, "Distributed node"),
+            "Node::connect should be a Distributed-node WASM error; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn wasm_rejects_node_load_keys() {
+        let output = check_wasm(r#"fn main() { Node::load_keys("/keys/node.pem"); }"#);
+        assert!(
+            platform_error_contains(&output, "Distributed node"),
+            "Node::load_keys should be a Distributed-node WASM error; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn wasm_rejects_node_register_and_lookup() {
+        // `Node::register` (LocalPid arg) and `Node::lookup` (RemotePid result)
+        // both ride the native registry transport and must fail closed too.
+        let source = concat!(
+            "actor Worker { receive fn ping() {} }\n",
+            "fn main() {\n",
+            "    let w = spawn Worker;\n",
+            "    Node::register(\"w\", w);\n",
+            "    let _ = Node::lookup<Worker>(\"w\");\n",
+            "}\n",
+        );
+        let output = check_wasm(source);
+        let count = output
+            .errors
+            .iter()
+            .filter(|e| {
+                e.kind == TypeErrorKind::PlatformLimitation
+                    && e.message.contains("Distributed node")
+            })
+            .count();
+        assert!(
+            count >= 2,
+            "Node::register and Node::lookup should each fail closed on WASM; got errors: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn native_node_calls_no_platform_error() {
+        let source = concat!(
+            "fn main() {\n",
+            "    Node::start(\"a@127.0.0.1:9000\");\n",
+            "    Node::connect(\"b@127.0.0.1:9001\");\n",
+            "    Node::load_keys(\"/keys/node.pem\");\n",
+            "}\n",
+        );
+        let output = check_native(source);
+        assert!(
+            !has_platform_limitation_error(&output),
+            "Node:: calls must not emit PlatformLimitation on native; got: {:?}",
+            output.errors
+        );
+        assert!(
+            output.errors.is_empty(),
+            "Node:: calls should typecheck cleanly on native; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn wasm_rejects_remote_pid_tell() {
+        let output = check_wasm(remote_pid_tell_source());
+        assert!(
+            platform_error_contains(&output, "remote-actor"),
+            "RemotePid::tell should be a Distributed remote-actor WASM error; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn wasm_rejects_remote_pid_ask() {
+        let output = check_wasm(remote_pid_ask_source());
+        assert!(
+            platform_error_contains(&output, "remote-actor"),
+            "RemotePid::ask should be a Distributed remote-actor WASM error; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn native_remote_pid_tell_no_platform_error() {
+        let output = check_native(remote_pid_tell_source());
+        assert!(
+            !has_platform_limitation_error(&output),
+            "RemotePid::tell must not emit PlatformLimitation on native; got: {:?}",
+            output.errors
+        );
+        assert!(
+            output.errors.is_empty(),
+            "RemotePid::tell should typecheck cleanly on native; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn native_remote_pid_ask_no_platform_error() {
+        let output = check_native(remote_pid_ask_source());
+        assert!(
+            !has_platform_limitation_error(&output),
+            "RemotePid::ask must not emit PlatformLimitation on native; got: {:?}",
+            output.errors
+        );
+    }
+
     #[test]
     fn wasm_multi_arm_literal_timed_select_is_not_warning() {
         let output = check_wasm(

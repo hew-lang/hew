@@ -326,6 +326,30 @@ if "${HEW}" compile --target wasm32-unknown-unknown \
 fi
 grep -q 'Blocking channel receive operations are not supported on WASM32' "${reject_output}"
 
+# Reject (totality at the wasm boundary): the `Node::` distributed cluster API
+# (`Node::start` / `connect` / `load_keys`) must fail closed AT CHECK on BOTH
+# wasm triples. These calls lower to the native mesh transport
+# (`hew_node_api_*`), which is not compiled for wasm32; before this gate the
+# checker admitted them and codegen emitted a module importing an undefined
+# `env::hew_node_api_*` symbol that trapped at instantiation (admit-then-abort).
+# `hew check` accepts both wasm triples (codegen-free), so it is the precise
+# surface for the check-time gate; `hew compile` only emits wasm32-unknown-unknown.
+node_wasm_fixture="${ROOT}/tests/vertical-slice/reject/node_wasm_distributed_failclosed.hew"
+for triple in wasm32-unknown-unknown wasm32-wasip1; do
+  if "${HEW}" check --target "${triple}" "${node_wasm_fixture}" >"${reject_output}" 2>&1; then
+    echo "expected node_wasm_distributed_failclosed to fail closed under ${triple}" >&2
+    cat "${reject_output}" >&2
+    exit 1
+  fi
+  grep -q 'Distributed node and remote-actor operations are not supported on WASM32' "${reject_output}"
+done
+# Native parity: the identical Node:: program type-checks cleanly off-wasm.
+if ! "${HEW}" check "${node_wasm_fixture}" >"${reject_output}" 2>&1; then
+  echo "expected node_wasm_distributed_failclosed to pass hew check on native" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+
 # Accept: `fork child = worker(42)` inside a machine state entry block
 # compiles end to end — machine entry blocks are spawn-capable contexts and
 # arg-bearing named forks ride the fork-entry shim env. Compile-only (main

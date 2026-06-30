@@ -1907,6 +1907,17 @@ pub(super) enum WasmUnsupportedFeature {
     /// POSIX APIs and is not compiled for wasm32. WASM-TODO(#1451): route through a
     /// capability-scoped WASI surface.
     OsEnv,
+    /// `Node::*` distributed cluster API (`start`, `shutdown`, `connect`,
+    /// `set_transport`, `load_keys`, `allow_peer`, `register`, `lookup`) and
+    /// `RemotePid<T>::tell` / `RemotePid<T>::ask` remote messaging: these lower
+    /// to the native mesh transport (`hew_node_api_*` / `hew_remote_pid_tell`),
+    /// which is gated behind `#[cfg(not(target_arch = "wasm32"))]` and absent
+    /// from the wasm32 link set. Reject at check time so the caller sees a
+    /// structured diagnostic rather than a wasm module importing an undefined
+    /// `env::hew_node_api_*` symbol that fails at instantiation.
+    /// WASM-TODO(#1451): decide a wasm peer transport before exposing any
+    /// distributed surface on wasm32.
+    Distributed,
     // ── Crypto reject additions ─────────────────────────────────────────────
     /// `crypto.random_bytes`: the secure entropy source (`ring::SystemRandom`)
     /// is native-only and absent from the wasm32 link set. Reject so callers
@@ -1949,6 +1960,7 @@ impl WasmUnsupportedFeature {
             Self::Quic => "std::net::quic operations",
             Self::Dns => "std::net::dns resolver operations",
             Self::OsEnv => "std::os environment and path operations",
+            Self::Distributed => "Distributed node and remote-actor operations",
             Self::CryptoRandom => "std::crypto::crypto.random_bytes operations",
             Self::CryptoEncrypt => "std::crypto::encrypt operations",
             Self::CryptoSign => "std::crypto::sign operations",
@@ -2017,6 +2029,11 @@ impl WasmUnsupportedFeature {
             Self::OsEnv => {
                 "the std::os helpers rely on native POSIX APIs; \
                  the os runtime layer is not compiled for wasm32"
+            }
+            Self::Distributed => {
+                "the Node:: cluster API and RemotePid messaging route through the \
+                 native mesh transport (hew_node_api_* / hew_remote_pid_tell), which \
+                 is not compiled for wasm32; no wasm32 distributed runtime exists yet"
             }
             Self::CryptoRandom => {
                 "the std::crypto.random_bytes secure entropy source (ring::SystemRandom) is \

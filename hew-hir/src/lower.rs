@@ -3634,6 +3634,33 @@ pub fn lower_program_with_mono_cap(
                             );
                             items.push(HirItem::Actor(lowered));
                         }
+                        // RAII-2 (#1295): a PACKAGE-imported trait is just as
+                        // much an invisible-body boundary as a root or
+                        // file-flattened one. Its bodyless method signatures are
+                        // a contract whose impls may disagree on whether a
+                        // `#[resource]`/`#[linear]` value parameter is borrowed
+                        // or consumed, so the disposition must be pinned with
+                        // `consume` at the signature. The root third pass checks
+                        // `Item::Trait` (above); without this arm an imported
+                        // trait fell through to the no-op catch-all below, so an
+                        // imported `fn put(self, item: Handle)` could cross the
+                        // boundary unannotated — a drop-safety bypass. Mirror the
+                        // root check here. A trait has no runtime artefact, so
+                        // (like the root arm) this emits no HirItem.
+                        Item::Trait(trait_decl) => {
+                            for trait_item in &trait_decl.items {
+                                if let TraitItem::Method(method) = trait_item {
+                                    if method.body.is_none() {
+                                        ctx.check_boundary_consume_discipline(
+                                            &method.name,
+                                            &method.params,
+                                            "trait method signature",
+                                            &method.span,
+                                        );
+                                    }
+                                }
+                            }
+                        }
                         // Item::Record, Item::Supervisor and non-pub Item::Actor
                         // from imported modules are intentionally not emitted in
                         // this slice; their cross-module lowering semantics are
@@ -3646,7 +3673,6 @@ pub fn lower_program_with_mono_cap(
                         | Item::Function(_)
                         | Item::TypeDecl(_)
                         | Item::TypeAlias(_)
-                        | Item::Trait(_)
                         | Item::Machine(_)
                         | Item::Record(_)
                         | Item::Actor(_)

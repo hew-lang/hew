@@ -1,0 +1,6 @@
+[package]
+name = "hew::sinkres"
+version = "0.1.0"
+description = "Package-import boundary fixture: a trait whose bodyless method takes a sibling #[resource] by value without consume — an invisible-body boundary the importer must reject"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

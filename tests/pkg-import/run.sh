@@ -720,6 +720,43 @@ if grep -qE "E_NOT_YET_IMPLEMENTED|field-order table" <<<"${unpub_out}"; then
 fi
 echo "PASS ${unpub_fixture}"
 
+# Reject fixture: a PACKAGE-imported trait whose bodyless `put` takes a sibling
+# `#[resource]` by value WITHOUT `consume`. A bodyless trait method signature is
+# an invisible-body boundary; the importer lowers the imported module's items and
+# must reject the unannotated resource param with `ResourceBoundaryParamMustConsume`
+# (RAII-2 #1295). The imported-module item loop previously had no trait arm, so
+# root/file-flattened traits were checked but package-imported ones slipped the
+# gate — a caller could borrow across an invisible body that actually consumes.
+imported_trait_reject="imported_trait_resource_param_missing_consume_reject"
+imported_trait_reject_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${imported_trait_reject}.hew" 2>&1)" && {
+  echo "FAIL ${imported_trait_reject}: hew check unexpectedly succeeded (package-imported trait resource param slipped the boundary gate)" >&2
+  echo "${imported_trait_reject_out}" >&2
+  exit 1
+}
+if ! grep -q "ResourceBoundaryParamMustConsume" <<<"${imported_trait_reject_out}"; then
+  echo "FAIL ${imported_trait_reject}: expected a ResourceBoundaryParamMustConsume diagnostic on the imported trait signature" >&2
+  echo "${imported_trait_reject_out}" >&2
+  exit 1
+fi
+echo "PASS ${imported_trait_reject}"
+
+# Positive control: the same package-imported trait shape but with the resource
+# param pinned `consume`. The disposition is spelled at the invisible-body
+# boundary, so the importer must ACCEPT it — proving the package-import boundary
+# check is load-bearing without over-rejecting valid `consume` signatures.
+imported_trait_ok="imported_trait_resource_param_consume_ok"
+imported_trait_ok_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${imported_trait_ok}.hew" 2>&1)" || {
+  echo "FAIL ${imported_trait_ok}: hew check rejected a consume-pinned imported trait boundary (false positive)" >&2
+  echo "${imported_trait_ok_out}" >&2
+  exit 1
+}
+if grep -q "ResourceBoundaryParamMustConsume" <<<"${imported_trait_ok_out}"; then
+  echo "FAIL ${imported_trait_ok}: consume-pinned imported trait param wrongly flagged ResourceBoundaryParamMustConsume" >&2
+  echo "${imported_trait_ok_out}" >&2
+  exit 1
+fi
+echo "PASS ${imported_trait_ok}"
+
 # Memory-safety pass on the ask-reply + explicit-release path (macOS only:
 # MallocScribble/MallocGuardEdges are libmalloc features).
 if [[ "$(uname -s)" == "Darwin" ]]; then

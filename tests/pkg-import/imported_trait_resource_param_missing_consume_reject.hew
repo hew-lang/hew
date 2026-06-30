@@ -1,0 +1,23 @@
+// Package-import trait-signature REJECT oracle (RAII-2 #1295).
+//
+// `hew::sinkres` exports a trait `Sink` whose bodyless `put(self, item: Sticky)`
+// takes a sibling `#[resource]` by value WITHOUT `consume`. A bodyless trait
+// method signature is an invisible-body boundary: dispatching impls may disagree
+// on whether `item` is borrowed or consumed, so the disposition must be pinned
+// with `consume`. Leaving it unannotated is a drop-safety bypass (double-free or
+// leak depending on what the impl does).
+//
+// The root and file-flattened lowering passes already reject this. This oracle
+// proves the discipline ALSO fires when the trait arrives via a PACKAGE import:
+// the importer lowers `sinkres`'s items and must reject the unannotated
+// `item: Sticky` with `ResourceBoundaryParamMustConsume`, NOT silently swallow
+// the imported trait (the imported-module item loop previously had no trait arm
+// and let the boundary through).
+//
+// Harness verb: hew check (negative — see run.sh). Asserts the boundary
+// diagnostic fires at HIR-lowering time on the imported trait signature.
+import hew::sinkres::{Sink};
+
+fn main() {
+    println("unreachable: check must reject the imported trait boundary");
+}

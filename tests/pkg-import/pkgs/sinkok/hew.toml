@@ -1,0 +1,6 @@
+[package]
+name = "hew::sinkok"
+version = "0.1.0"
+description = "Package-import boundary fixture (positive control): a trait whose bodyless method pins its sibling #[resource] param with consume — the importer must ACCEPT it"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

@@ -6082,6 +6082,112 @@ fn callee_item_id(callee: &HirExpr) -> Option<hew_hir::ItemId> {
 /// drives BOTH the call-site intent downgrade and the callee-side drop, so a
 /// parameter is consistently either moved-in-and-callee-drops or
 /// kept-and-caller-drops — never split.
+/// Collect the `ItemId` of every function that is an inherent/trait `impl`
+/// method.
+///
+/// A method's receiver slot must never be relaxed by the borrow downgrade: an
+/// inherent method call lowers to
+/// `HirExprKind::Call { callee: Item(m), args: [recv, ...args] }` with the
+/// receiver carrying its ACCURATE move intent (a borrowing receiver `Read`, a
+/// `self`-consuming receiver `Consume`), whereas an ordinary free-call argument
+/// is over-stamped `Consume` by `arg_move_intent`. Two authorities, unioned for
+/// robustness:
+///   * `method_symbols` from every `impl` block — the authoritative
+///     `<Type>::<method>` Function names. This catches a method that names its
+///     receiver something OTHER than `self` (the stdlib writes
+///     `fn close(child: Child)`), whose destructor-consume of the receiver is
+///     IMPLICIT: its body only reads a field, so the body scan would classify
+///     the receiver BORROW and the explicit `recv.close()` would be downgraded
+///     to a `Read`, leaving the caller to auto-drop a value `close` already
+///     released — a double-free.
+///   * the first-param-named-`self` heuristic — a cheap catch for any method
+///     the symbol scan might miss.
+///
+/// A free function can never carry a `self` receiver and is never an `impl`
+/// `method_symbol`, so its over-stamped `Consume` args stay eligible for the
+/// downgrade. Associated/static `impl` functions are also captured here.
+fn collect_method_item_ids(
+    fns: &HashMap<hew_hir::ItemId, &HirFn>,
+    items: &[HirItem],
+) -> HashSet<hew_hir::ItemId> {
+    let method_symbols: HashSet<&str> = items
+        .iter()
+        .filter_map(|item| match item {
+            HirItem::Impl(b) => Some(b.method_symbols.iter().map(String::as_str)),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    fns.iter()
+        .filter(|(_, f)| {
+            f.params.first().is_some_and(|p| p.name == "self")
+                || method_symbols.contains(f.name.as_str())
+        })
+        .map(|(&id, _)| id)
+        .collect()
+}
+
+/// Force-classify every NON-RECEIVER `#[resource]`/`#[linear]` value parameter
+/// of an `impl`/trait method as CONSUME (callee owns and drops it).
+///
+/// The borrow-site collector never downgrades a method-call argument (a
+/// `recv.m(args)` receiver carries authoritative move intent that must not be
+/// relaxed, so the whole arg list is skipped), so a method's non-receiver
+/// resource argument always reaches the call site with its HIR-over-stamped
+/// `Consume` intent: the caller moves it in and does not auto-drop it. If the
+/// fixpoint left such a parameter BORROW (its body only reads a field),
+/// `lower_params` would not drop it either — NOBODY drops it → leak / split
+/// ownership. Forcing CONSUME adds it to `owned_locals`, so the callee drops it
+/// exactly once, matching the caller's move-in.
+///
+/// The RECEIVER slot is EXCLUDED: its drop disposition rides the accurate
+/// call-site receiver intent (a borrowing `peek` Read kept by the caller, a
+/// consuming `close` Consume); forcing it CONSUME would make a borrowing
+/// receiver drop at BOTH the caller (auto-drop of the still-live binding) and
+/// the callee → double-free. Receiver identity follows the checker's rule
+/// (`is_receiver_param`): the first parameter is the receiver iff its type is
+/// the impl Self type (or the bare `self` sugar). A true associated function
+/// whose first parameter is NOT the Self type has no receiver, so all of its
+/// resource parameters are forced. Borrow-pass INTO a method's non-receiver
+/// parameter is intentionally not offered — the ratified borrow-default surface
+/// is free-function value parameters and method receivers.
+fn force_consume_method_nonreceiver_resource_params(
+    fns: &HashMap<hew_hir::ItemId, &HirFn>,
+    items: &[HirItem],
+    type_classes: &hew_hir::TypeClassTable,
+    methods: &HashSet<hew_hir::ItemId>,
+    param_consume: &mut HashMap<(hew_hir::ItemId, usize), bool>,
+) {
+    let method_self_type: HashMap<&str, &str> = items
+        .iter()
+        .filter_map(|item| match item {
+            HirItem::Impl(b) => Some(
+                b.method_symbols
+                    .iter()
+                    .map(|sym| (sym.as_str(), b.self_type_name.as_str())),
+            ),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    for (&id, &f) in fns {
+        if !methods.contains(&id) {
+            continue;
+        }
+        let receiver_arity = usize::from(f.params.first().is_some_and(|p| {
+            p.name == "self"
+                || method_self_type.get(f.name.as_str()).is_some_and(
+                    |self_ty| matches!(&p.ty, ResolvedTy::Named { name, .. } if name == self_ty),
+                )
+        }));
+        for (i, param) in f.params.iter().enumerate().skip(receiver_arity) {
+            if is_user_resource_ty(&param.ty, type_classes) {
+                param_consume.insert((id, i), true);
+            }
+        }
+    }
+}
+
 fn compute_param_ownership(
     fns: &HashMap<hew_hir::ItemId, &HirFn>,
     items: &[HirItem],
@@ -6100,45 +6206,20 @@ fn compute_param_ownership(
             }
         }
     }
-    // Method items — every function that is an inherent/trait `impl` method, so
-    // a `recv.m(args)` call's receiver slot (`args[0]`) is never relaxed by the
-    // borrow downgrade. An inherent method call lowers to
-    // `HirExprKind::Call { callee: Item(m), args: [recv, ...args] }` with the
-    // receiver carrying its ACCURATE move intent (a borrowing receiver `Read`, a
-    // `self`-consuming receiver `Consume`), whereas an ordinary free-call
-    // argument is over-stamped `Consume` by `arg_move_intent`. Two authorities,
-    // unioned for robustness:
-    //   * `method_symbols` from every `impl` block — the authoritative
-    //     `<Type>::<method>` Function names. This catches a method that names its
-    //     receiver something OTHER than `self` (the stdlib writes
-    //     `fn close(child: Child)`), whose destructor-consume of the receiver is
-    //     IMPLICIT: its body only reads a field, so the body scan would classify
-    //     the receiver BORROW and the explicit `recv.close()` would be downgraded
-    //     to a `Read`, leaving the caller to auto-drop a value `close` already
-    //     released — a double-free.
-    //   * the first-param-named-`self` heuristic — a cheap catch for any method
-    //     the symbol scan might miss.
-    // A free function can never carry a `self` receiver and is never an `impl`
-    // `method_symbol`, so its over-stamped `Consume` args stay eligible for the
-    // downgrade. Associated/static `impl` functions are also captured here; their
-    // resource args are then conservatively NOT downgraded — a safe over-consume
-    // (the callee or caller drops once), never a double-free.
-    let method_symbols: HashSet<&str> = items
-        .iter()
-        .filter_map(|item| match item {
-            HirItem::Impl(b) => Some(b.method_symbols.iter().map(String::as_str)),
-            _ => None,
-        })
-        .flatten()
-        .collect();
-    let methods: HashSet<hew_hir::ItemId> = fns
-        .iter()
-        .filter(|(_, f)| {
-            f.params.first().is_some_and(|p| p.name == "self")
-                || method_symbols.contains(f.name.as_str())
-        })
-        .map(|(&id, _)| id)
-        .collect();
+    // Method items — every inherent/trait `impl` method (see
+    // `collect_method_item_ids`). A method-call receiver slot carries accurate
+    // move intent and is never relaxed by the borrow downgrade; associated/static
+    // `impl` functions are captured here too.
+    let methods = collect_method_item_ids(fns, items);
+    // Force-consume non-receiver resource params of `impl`/trait methods so the
+    // callee owns and drops them (the borrow collector skips method-call args).
+    force_consume_method_nonreceiver_resource_params(
+        fns,
+        items,
+        type_classes,
+        &methods,
+        &mut param_consume,
+    );
     // Monotone least-fixpoint: a pass only ever flips a BORROW param to CONSUME;
     // a flip can only enable further flips (a now-CONSUME target turns its
     // callers' borrow args into consumes), so iteration converges in at most

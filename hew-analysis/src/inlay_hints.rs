@@ -781,8 +781,8 @@ fn main() {
     #[test]
     fn parameter_hints_skip_single_arg_calls_and_same_name_arguments() {
         let source = r#"
-fn label(name: String, age: i64) {}
-fn echo(value: String) {}
+fn label(name: string, age: i64) {}
+fn echo(value: string) {}
 fn main() {
     let name = "Ada";
     label(name, 42);
@@ -799,7 +799,7 @@ fn main() {
     #[test]
     fn parameter_hints_do_not_skip_prefix_matches() {
         let source = r#"
-fn limit(max: i64, key: String) {}
+fn limit(max: i64, key: string) {}
 fn main() {
     let maximum_count = 10;
     let key_path = "/tmp";

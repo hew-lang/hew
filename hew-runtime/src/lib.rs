@@ -531,6 +531,8 @@ pub mod wasm_stubs {
     //!   explicit trap until cooperative scheduler yield/resume parity exists.
 
     use std::ffi::c_void;
+    #[cfg(test)]
+    use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
     // ── Sleep ────────────────────────────────────────────────────────────────
 
@@ -580,16 +582,65 @@ pub mod wasm_stubs {
 
     /// WASM shim: monotonic clock in milliseconds.
     ///
-    /// Returns monotonic milliseconds since the first call. The `deterministic`
-    /// simulation-time module is unavailable on `wasm32`; simulated time is not
-    /// supported in the WASM cooperative scheduler.
+    /// Returns monotonic milliseconds since the first call. The native
+    /// `deterministic` simulation-time module is unavailable on `wasm32`, so
+    /// production wasm builds always observe the real monotonic clock.
+    ///
+    /// In **test builds only**, a seam (`pin_virtual_clock`) can freeze this
+    /// clock to a fixed value for the cooperative-scheduler timer-wheel tests.
+    /// Those tests drive explicit deadlines off `hew_now_ms()`, and on the real
+    /// clock the test's anchor `now`, the timer wheel's `current_ms` captured at
+    /// lazy creation, and the `park_actor_sleep` delay are three independent
+    /// reads that drift apart under load and flip exact-deadline assertions. The
+    /// seam does not exist in production builds, so the production path is
+    /// unchanged (a straight monotonic read).
     ///
     /// # Safety
     ///
     /// No preconditions.
     #[no_mangle]
     pub unsafe extern "C" fn hew_now_ms() -> u64 {
-        crate::monotonic::monotonic_ms()
+        // Production: the real monotonic clock, unchanged.
+        #[cfg(not(test))]
+        {
+            crate::monotonic::monotonic_ms()
+        }
+        // Test builds: honour a test-pinned virtual clock when one is active;
+        // otherwise the real monotonic clock (default — seam off).
+        #[cfg(test)]
+        match VCLOCK_PINNED_MS.load(AtomicOrdering::Relaxed) {
+            VCLOCK_DISABLED => crate::monotonic::monotonic_ms(),
+            pinned => pinned,
+        }
+    }
+
+    // ── Test-only virtual clock seam ─────────────────────────────────────────
+    //
+    // Exists ONLY in test builds; the production `hew_now_ms` above is a straight
+    // monotonic read with zero added work. The cooperative scheduler is
+    // single-threaded on wasm32, so a plain atomic with a sentinel is race-free.
+    // Pinning collapses the three independent wall-clock reads in the timer-wheel
+    // tests (anchor `now`, wheel `current_ms`, park delay) to one value, making
+    // the tick→wake boundary exact without weakening any assertion.
+
+    /// Sentinel meaning "no virtual time pinned — use the real clock".
+    #[cfg(test)]
+    const VCLOCK_DISABLED: u64 = u64::MAX;
+
+    /// Test-pinned virtual time in ms, or [`VCLOCK_DISABLED`] when off.
+    #[cfg(test)]
+    static VCLOCK_PINNED_MS: AtomicU64 = AtomicU64::new(VCLOCK_DISABLED);
+
+    /// Pin `hew_now_ms()` to `ms` until [`unpin_virtual_clock`] (test-only seam).
+    #[cfg(test)]
+    pub(crate) fn pin_virtual_clock(ms: u64) {
+        VCLOCK_PINNED_MS.store(ms, AtomicOrdering::Relaxed);
+    }
+
+    /// Restore the real monotonic clock (test-only seam).
+    #[cfg(test)]
+    pub(crate) fn unpin_virtual_clock() {
+        VCLOCK_PINNED_MS.store(VCLOCK_DISABLED, AtomicOrdering::Relaxed);
     }
 
     // ── Channels (blocking recv still deferred on wasm32) ────────────────────

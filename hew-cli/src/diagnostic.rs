@@ -704,11 +704,23 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
         hew_mir::MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported {
             name,
             handle_ty,
-        } => format!(
-            "extracting an owned handle (`{name}`: {handle_ty}) out of an aggregate in this \
-             shape is not yet supported in v0.5 — iterate or consume the handle directly, or \
-             return it without re-aggregating (full support lands in v0.5.1)"
-        ),
+            overwrite,
+        } => {
+            if *overwrite {
+                format!(
+                    "overwriting an owned handle field (`{name}`: {handle_ty}) in an aggregate \
+                     in this shape is not yet supported in v0.5 — the previous handle would leak \
+                     (its `close` never runs) and the new one would be double-owned; rebuild the \
+                     whole record instead of reassigning the field (full support lands in v0.5.1)"
+                )
+            } else {
+                format!(
+                    "extracting an owned handle (`{name}`: {handle_ty}) out of an aggregate in this \
+                     shape is not yet supported in v0.5 — iterate or consume the handle directly, or \
+                     return it without re-aggregating (full support lands in v0.5.1)"
+                )
+            }
+        }
         hew_mir::MirDiagnosticKind::ClosurePairBorrowedStore { name, .. } => {
             let what = name.as_ref().map_or_else(
                 || "this function value".to_string(),

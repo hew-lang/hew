@@ -1519,9 +1519,8 @@ pub(crate) unsafe fn cleanup_all_actors() {
         // Cancel periodic timers, drop link/monitor entries, and unregister
         // named-node bindings BEFORE running terminate or freeing the
         // allocation. This matches the canonical ordering used by
-        // `hew_actor_free` and `drain_actors`; previously this path inverted
-        // the order and skipped the named-node unregister entirely, which
-        // leaked global registry entries on shutdown.
+        // `hew_actor_free` and `drain_actors`, preventing dangling registry
+        // entries on shutdown.
         // SAFETY: actor is quiescent (scheduler is shut down) and the helper
         // tolerates already-untracked actors when no concurrent dispatch is
         // possible.
@@ -5934,9 +5933,8 @@ pub(crate) unsafe fn actor_free_wasm_impl(actor: *mut HewActor) -> c_int {
     }
 
     // Cancel periodic timers, drop link/monitor entries, and unregister
-    // named-node bindings BEFORE untracking. Previously this path called
-    // only `cancel_all_timers_for_actor`, leaving dangling link/monitor
-    // entries on WASM so DOWN signals never fired against a freed actor.
+    // named-node bindings BEFORE untracking. This prevents dangling
+    // link/monitor entries on WASM so DOWN signals cannot target a freed actor.
     // SAFETY: the wait loop above ensures the actor is quiescent and not dispatching.
     unsafe { prepare_quiescent_actor_for_cleanup(actor) };
 
@@ -9543,8 +9541,7 @@ mod tests {
     fn drain_actors_with_pending_timer_cancels_timer() {
         // Pin the canonical ordering: when an actor with a registered
         // periodic timer is drained, the timer must be cancelled before
-        // the actor is freed. This guards against the inverted ordering
-        // that previously lived in `cleanup_all_actors`.
+        // the actor is freed.
         let _guard = crate::runtime_test_guard();
         let _scheduler = NativeSchedulerGuard::new();
         let _ticker_guard = crate::timer_periodic::TICKER_TEST_MUTEX

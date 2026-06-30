@@ -12,6 +12,7 @@ pub mod dyn_vtable_registry;
 pub mod liveness;
 pub mod lower;
 pub mod model;
+pub mod ownership;
 pub mod runtime_call;
 pub mod runtime_symbols;
 pub mod state_clone;
@@ -64,11 +65,17 @@ pub use model::{
     SupervisorConfigParam, SupervisorLayout, SuspendKind, Terminator, ThirFunction,
     TraitObjectStorage, TrapKind, WitnessOperand,
 };
+pub use ownership::{
+    AbiClass, DropClass, FailClosedReason, HandleRole, HeapLeaf, LayoutClass, OwnershipCtx,
+    OwnershipDecision, PlaceProvenance, Projection, ProvenanceOrigin, ValueOwnership,
+    ValueProvenance,
+};
 pub use runtime_symbols::UnknownRuntimeSymbol;
 pub use state_clone::{
     classify_actor_state_fields, classify_actor_state_fields_with_enum_layouts,
-    classify_actor_state_fields_with_opaque_handles, classify_owned_string_record_fields,
+    classify_actor_state_fields_with_opaque_handles,
+    classify_actor_state_fields_with_resource_handles, classify_owned_string_record_fields,
     classify_state_field, classify_state_field_full, classify_state_field_with_enum_layouts,
-    mangle_actor_state_clone_fn, mangle_actor_state_drop_fn, ClassificationError, IoHandleKind,
-    StateFieldCloneKind,
+    classify_state_field_with_resource_handles, mangle_actor_state_clone_fn,
+    mangle_actor_state_drop_fn, ClassificationError, IoHandleKind, StateFieldCloneKind,
 };

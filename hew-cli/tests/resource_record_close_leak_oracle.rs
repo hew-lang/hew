@@ -41,21 +41,24 @@
 //!   `MallocScribble`/`MallocPreScribble`/`MallocGuardEdges`. The loop body
 //!   amplifies any per-iteration double-free.
 //!
-//! - **Exact zero-leak (macOS via `leaks(1)`).** A field-bearing `#[resource]`
-//!   owning a real `Vec<i64>` field freed via `Vec::new()` + `push` (the same
-//!   heap source the heap-owning-record oracles use — provably a heap buffer,
-//!   not a folded literal) drops to exactly `0 leaks for 0 total leaked bytes`.
-//!   Asserting `0` over a genuine heap field, with the `box-closed` side-effect
-//!   proving the drop path executed, is non-vacuous.
+//! - **Per-iteration leak slope (macOS via `leaks(1)`).** A field-bearing
+//!   `#[resource]` owning a real `Vec<i64>` field freed via `Vec::new()` + `push`
+//!   (provably a heap buffer, not a folded literal), built fresh every iteration,
+//!   holds the leak-node count flat across a LOW and a HIGH iteration count. The
+//!   delta cancels the nondeterministic constant baseline a single-shot `== 0`
+//!   count cannot; a thunk that skipped the field teardown would leak the `Vec`
+//!   buffer every iteration (positive slope). The same looped source drives the
+//!   double-free scribble pin, so both the leak and the double-free directions
+//!   share one provably-heap fixture.
 
 #![cfg(unix)]
 
 mod support;
 
-use std::path::PathBuf;
-use std::process::Command;
-
-use support::{describe_output, hew_binary, repo_root, require_codegen};
+use support::leak_slope::{
+    assert_frame_slope_below_tolerance, compile_to_native, run_under_malloc_scribble,
+};
+use support::{describe_output, require_codegen};
 
 // ── fixtures ──────────────────────────────────────────────────────────────
 
@@ -102,134 +105,45 @@ fn main() {\n\
 /// A second `outer-closed` would mean the thunk close ran on a consumed value.
 const EXPLICIT_CONSUME_EXPECTED: &str = "outer-closed\nafter-explicit\n";
 
-/// Heap-field resource, double-free landmine + leak source: `Box { payload:
-/// Vec<i64>; fd: i64 }` is `#[resource]`. The `Vec` is built with `Vec::new()` +
-/// `push` and moved into the record (solely record-owned). The thunk runs
-/// `Box::close` then frees the `Vec` exactly once. Looped to amplify any
-/// per-iteration double-free / leak. `close` has an empty body (it touches no
-/// field), so the only field release is the teardown — if close also freed the
-/// Vec, this aborts under the poisoned allocator.
-const HEAP_FIELD_SOURCE: &str = "\
-#[resource] type Box { payload: Vec<i64>; fd: i64; }\n\
-impl Box { fn close(self) { } }\n\
-fn build(n: i64) -> i64 {\n\
-\x20   let v: Vec<i64> = Vec::new();\n\
-\x20   v.push(n);\n\
-\x20   v.push(n + 1);\n\
-\x20   let b = Box { payload: v, fd: n };\n\
-\x20   b.fd\n\
-}\n\
-fn main() -> i64 {\n\
-\x20   var total: i64 = 0;\n\
-\x20   for i in 0..200 { total = total + build(i); }\n\
-\x20   if total != 19900 { return 70; }\n\
-\x20   0\n\
-}\n";
-
-/// Heap-field resource, side-effect + zero-leak fixture: the same `Box` shape
-/// run once with a `close` that prints, so the zero-leak assertion is paired
-/// with proof the drop path executed (`box-closed`) over a genuine heap `Vec`.
-const HEAP_FIELD_CLOSE_SOURCE: &str = "\
-#[resource] type Box { payload: Vec<i64>; fd: i64; }\n\
-impl Box { fn close(self) { println(\"box-closed\"); } }\n\
-fn build() -> i64 {\n\
-\x20   let v: Vec<i64> = Vec::new();\n\
-\x20   v.push(10);\n\
-\x20   v.push(20);\n\
-\x20   let b = Box { payload: v, fd: 7 };\n\
-\x20   b.fd\n\
-}\n\
-fn run_one_cycle() { let x = build(); print(\"ok\"); }\n\
-fn main() { run_one_cycle(); }\n";
-
-// ── plumbing ──────────────────────────────────────────────────────────────
-
-/// Compile `source` to a native binary via `hew compile --emit-dir` and return
-/// the binary path.
-fn compile_to_native(source: &str, dir: &std::path::Path, name: &str) -> PathBuf {
-    let hew_src = dir.join(format!("{name}.hew"));
-    std::fs::write(&hew_src, source).expect("write hew source");
-
-    let output = Command::new(hew_binary())
-        .args([
-            "compile",
-            "--emit-dir",
-            dir.to_str().expect("emit-dir utf-8"),
-            hew_src.to_str().expect("hew src utf-8"),
-        ])
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew compile");
-
-    assert!(
-        output.status.success(),
-        "hew compile failed for {name}:\n{}",
-        describe_output(&output)
-    );
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let bin = stdout
-        .lines()
-        .find_map(|l| l.strip_prefix("native: "))
-        .unwrap_or_else(|| panic!("no `native:` line for {name}:\n{stdout}"))
-        .to_string();
-    PathBuf::from(bin)
+/// Heap-field resource loop, the shared source for both the double-free scribble
+/// pin and the per-iteration leak slope. `Box { payload: Vec<i64>; fd: i64 }` is
+/// `#[resource]`; the `Vec` is built with `Vec::new()` + `push` (provably a heap
+/// buffer) and moved into the record (solely record-owned). The thunk runs the
+/// empty `Box::close` then frees the `Vec` exactly once. `build(i)` returns its
+/// `fd`, and `main` self-checks the running total (`sum 0..frames`) and returns 0
+/// so the scribble pin's `success()` assertion holds; the slope harness ignores
+/// the exit status and measures leak nodes. If `close` also freed the `Vec` the
+/// loop aborts under the poisoned allocator; if the teardown skipped it the leak
+/// count grows with the iteration count.
+fn heap_field_loop_source(frames: usize) -> String {
+    let expected_total = frames * frames.saturating_sub(1) / 2;
+    format!(
+        "#[resource] type Box {{ payload: Vec<i64>; fd: i64; }}\n\
+         impl Box {{ fn close(self) {{ }} }}\n\
+         fn build(n: i64) -> i64 {{\n\
+         \x20   let v: Vec<i64> = Vec::new();\n\
+         \x20   v.push(n);\n\
+         \x20   v.push(n + 1);\n\
+         \x20   let b = Box {{ payload: v, fd: n }};\n\
+         \x20   b.fd\n\
+         }}\n\
+         fn run_loop(frames: i64) -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   for i in 0..frames {{ total = total + build(i); }}\n\
+         \x20   total\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   let total = run_loop({frames});\n\
+         \x20   if total != {expected_total} {{ return 70; }}\n\
+         \x20   0\n\
+         }}\n"
+    )
 }
 
-/// Run `bin` under the poisoned-allocator triple + `leaks --atExit`; return
-/// `Some((leak_count, leaked_bytes))` when `leaks` produced a usable summary.
-fn measure_leaks_exact(bin: &std::path::Path) -> Option<(usize, usize)> {
-    let output = Command::new("leaks")
-        .arg("--atExit")
-        .arg("--")
-        .arg(bin)
-        .env("MallocScribble", "1")
-        .env("MallocPreScribble", "1")
-        .env("MallocGuardEdges", "1")
-        .output()
-        .ok()?;
-    if !output.status.success() && output.stdout.is_empty() {
-        eprintln!(
-            "skip: leaks declined to attach to {}: {}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return None;
-    }
-    let report = String::from_utf8_lossy(&output.stdout);
-    for line in report.lines() {
-        if !line.contains(" leaks for ") && !line.contains(" leak for ") {
-            continue;
-        }
-        let Some(rest) = line.strip_prefix("Process ") else {
-            continue;
-        };
-        if !rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-            continue;
-        }
-        let Some(after_colon) = rest.split_once(": ").map(|(_, s)| s) else {
-            continue;
-        };
-        let mut words = after_colon.split_whitespace();
-        let Some(count_str) = words.next() else {
-            continue;
-        };
-        let Ok(count) = count_str.parse::<usize>() else {
-            continue;
-        };
-        let _ = words.next(); // "leaks" / "leak"
-        let _ = words.next(); // "for"
-        let bytes_str = words.next()?;
-        let Ok(bytes) = bytes_str.parse::<usize>() else {
-            return None;
-        };
-        eprintln!("  leaks(1) summary: count={count} bytes={bytes} (from: {line})");
-        return Some((count, bytes));
-    }
-    None
-}
+// ── correctness pins ───────────────────────────────────────────────────────
 
-/// Compile + run `source`, assert clean exit and exact stdout.
+/// Compile `source`, run it (no allocator poisoning), assert clean exit + exact
+/// stdout — the close-fires / no-double-close semantic pin.
 fn assert_exact_stdout(name: &str, source: &str, expected: &str) {
     require_codegen();
 
@@ -239,7 +153,7 @@ fn assert_exact_stdout(name: &str, source: &str, expected: &str) {
         .expect("tempdir");
     let bin = compile_to_native(source, dir.path(), name);
 
-    let output = Command::new(&bin)
+    let output = std::process::Command::new(&bin)
         .output()
         .unwrap_or_else(|error| panic!("run {name} binary: {error}"));
 
@@ -271,13 +185,7 @@ fn assert_no_double_free_under_malloc_scribble(name: &str, source: &str) {
         .tempdir()
         .expect("tempdir");
     let bin = compile_to_native(source, dir.path(), name);
-
-    let output = Command::new(&bin)
-        .env("MallocScribble", "1")
-        .env("MallocPreScribble", "1")
-        .env("MallocGuardEdges", "1")
-        .output()
-        .unwrap_or_else(|error| panic!("run {name} binary: {error}"));
+    let output = run_under_malloc_scribble(&bin);
 
     assert!(
         output.status.success(),
@@ -289,51 +197,6 @@ fn assert_no_double_free_under_malloc_scribble(name: &str, source: &str) {
     );
 }
 
-/// Compile + run under `leaks --atExit`, assert exactly `(0, 0)`.
-fn assert_zero_leaks_exact(name: &str, source: &str) {
-    if !cfg!(target_os = "macos") {
-        eprintln!("skip: {name}: leaks(1) is macOS-only");
-        return;
-    }
-    let leaks_avail = Command::new("which")
-        .arg("leaks")
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !leaks_avail {
-        eprintln!("skip: {name}: `leaks` binary not on PATH");
-        return;
-    }
-
-    require_codegen();
-
-    let dir = tempfile::Builder::new()
-        .prefix(&format!("resource-record-close-zero-leak-{name}-"))
-        .tempdir()
-        .expect("tempdir");
-    let bin = compile_to_native(source, dir.path(), name);
-
-    let Some((leak_count, leaked_bytes)) = measure_leaks_exact(&bin) else {
-        return;
-    };
-
-    assert_eq!(
-        leak_count,
-        0,
-        "{name}: leaks(1) reported {leak_count} leak(s) — expected exactly 0. The \
-         `#[resource]` record's drop thunk must free its `Vec<i64>` field exactly once \
-         (after running the user `close`). Re-run with \
-         `MallocStackLogging=1 leaks --atExit -- {}`.",
-        bin.display()
-    );
-    assert_eq!(
-        leaked_bytes, 0,
-        "{name}: leaks(1) reported 0 leak nodes but {leaked_bytes} total leaked bytes — \
-         expected exactly 0.",
-    );
-
-    eprintln!("{name}: leaks(1) confirmed 0 leaks for 0 total leaked bytes — PASS");
-}
-
 // ── oracles ─────────────────────────────────────────────────────────────────
 
 /// Nested field-bearing resource: outer close fires, then nested inner close,
@@ -343,8 +206,8 @@ fn resource_record_nested_close_fires_on_drop() {
     assert_exact_stdout("nested_close", NESTED_CLOSE_SOURCE, NESTED_CLOSE_EXPECTED);
 }
 
-/// Explicit `o.close()` consumes the record: close fires EXACTLY once (the
-/// explicit call), the scope-exit thunk close is suppressed (no double-close).
+/// Explicit `o.close()` consumes the record: close fires exactly once (the
+/// explicit call), the scope-exit thunk close is suppressed — no double-close.
 #[test]
 fn resource_record_explicit_close_single_no_double() {
     assert_exact_stdout(
@@ -354,16 +217,19 @@ fn resource_record_explicit_close_single_no_double() {
     );
 }
 
-/// Heap-field resource looped 200×: close-then-free runs each iteration with no
-/// double-free of the solely-record-owned `Vec<i64>` under the poisoned triple.
+/// Double-free pin: the field-bearing `#[resource]` loop (200 iterations) runs
+/// clean under the poisoned allocator — the thunk frees the `Vec<i64>` field
+/// exactly once after the user close. A per-iteration double-free aborts.
 #[test]
 fn resource_record_heap_field_no_double_free_under_malloc_scribble() {
-    assert_no_double_free_under_malloc_scribble("heap_field", HEAP_FIELD_SOURCE);
+    assert_no_double_free_under_malloc_scribble("heap_field", &heap_field_loop_source(200));
 }
 
-/// Heap-field resource: the drop thunk runs `close` then frees the genuine
-/// `Vec<i64>` field exactly once — `0 leaks for 0 total leaked bytes`.
+/// Slope oracle: the field-bearing `#[resource]` loop holds the leak-node count
+/// flat across LOW vs HIGH iteration counts — the drop thunk frees the `Vec<i64>`
+/// field every iteration after running the user `close`. A skipped teardown leaks
+/// the buffer per iteration (positive slope).
 #[test]
-fn resource_record_heap_field_zero_leaks_exact() {
-    assert_zero_leaks_exact("heap_field_close", HEAP_FIELD_CLOSE_SOURCE);
+fn resource_record_heap_field_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance("resource_record_heap_field", heap_field_loop_source);
 }

@@ -1,0 +1,45 @@
+//! RAII-2 (#1295): a `#[resource]` passed as a NON-RECEIVER argument to an
+//! `impl` method drops exactly once.
+//!
+//! `combine` borrows its receiver (it only reads `self.id`) and takes a second
+//! `#[resource]` value `other`. Per the ratified borrow-default surface the
+//! borrow-site collector never downgrades a method-call argument — a receiver
+//! carries authoritative move intent that must not be relaxed, so the whole
+//! arg list is skipped — and `other` reaches the call site with its
+//! HIR-over-stamped `Consume` intent. The caller therefore MOVES `other` in and
+//! does not auto-drop it. The callee must own it: `compute_param_ownership`
+//! force-classifies a method's non-receiver resource parameter CONSUME, adding
+//! it to the callee's `owned_locals` so `combine` drops it at its own scope
+//! exit.
+//!
+//! Without that classification neither side dropped `other`: the caller moved
+//! it in (so it did not auto-drop) and the callee left it BORROW (so
+//! `lower_params` did not drop it) — a leak / split ownership.
+//!
+//! Observable contract: `combine` consumes `other` and drops it at its scope
+//! exit (prints `7`); `main` keeps `a` (the borrowed receiver) and auto-drops
+//! it at its scope exit (prints `3`). Each id prints exactly once. A regression
+//! that re-introduced the leak would print only `3`; a double-free would print
+//! `7` twice and abort at the resource sentinel.
+
+#[resource]
+type R {
+    id: i64;
+}
+
+impl R {
+    fn close(self) {
+        println(self.id);
+    }
+
+    fn combine(self, other: R) -> i64 {
+        self.id + other.id
+    }
+}
+
+fn main() -> i64 {
+    let a = R { id: 3 };
+    let b = R { id: 7 };
+    let _total = a.combine(b);
+    0
+}

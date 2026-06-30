@@ -694,8 +694,8 @@ pub mod mailbox_wasm;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mpsc;
 /// Runtime-instance state — the de-globalized home for process-wide
-/// authorities that previously lived as free `static`s (native-only; the WASM
-/// cooperative scheduler keeps its own state model).
+/// authorities (native-only; the WASM cooperative scheduler keeps its own state
+/// model).
 #[cfg(not(target_arch = "wasm32"))]
 pub mod runtime;
 /// Public host/embedder handle to a Hew runtime — the external, refcounted

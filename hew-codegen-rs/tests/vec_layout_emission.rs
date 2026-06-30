@@ -116,6 +116,7 @@ fn base_pipeline(
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         resource_record_close: vec![],
+        resource_opaque_close: vec![],
     }
 }
 
@@ -718,6 +719,7 @@ fn vec_layout_contains_thunk_dedups_by_structured_type() {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         resource_record_close: vec![],
+        resource_opaque_close: vec![],
     };
     let ll = emit_ll(pipeline, "contains_thunk_dedup");
 

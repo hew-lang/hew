@@ -257,6 +257,16 @@ pub struct HirExternFn {
     /// Parameter types in declaration order. Names are dropped — extern fns
     /// have no body, so there is no scope to bind names into.
     pub param_tys: Vec<ResolvedTy>,
+    /// The `consume` ownership modifier for each parameter, parallel to
+    /// `param_tys`. An `extern` fn has no visible body, so the borrow-vs-consume
+    /// disposition of a `#[resource]`/`#[linear]` value parameter cannot be
+    /// inferred — it is pinned at the surface with `consume` and preserved here
+    /// as the durable boundary signature (the surface `Param.is_consume` would
+    /// otherwise be dropped at lowering). The lowering pass fail-closes any
+    /// affine resource parameter that is NOT `consume` with
+    /// `ResourceBoundaryParamMustConsume`, so every `true` here on a resource
+    /// parameter records a caller-side move-in / callee-(ABI-)owns transfer.
+    pub param_consume: Vec<bool>,
     pub return_ty: ResolvedTy,
     pub span: Span,
 }
@@ -1044,6 +1054,14 @@ pub struct HirBinding {
     pub ty: ResolvedTy,
     pub mutable: bool,
     pub span: Span,
+    /// `true` when this binding is a function value parameter declared with the
+    /// `consume` modifier (`fn sink(consume c: Conn)`). Pins the by-move
+    /// ownership disposition for the param-ownership classifier: the param is
+    /// owned by the callee (auto-dropped at callee scope-exit unless moved out)
+    /// and the call site consumes the caller's argument. Always `false` for
+    /// non-param bindings (`let`/match/loop binders) and for params without the
+    /// modifier — those take the inferred borrow/consume disposition.
+    pub is_consume: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

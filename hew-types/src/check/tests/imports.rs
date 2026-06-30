@@ -913,6 +913,7 @@ fn user_module_fn_sig_has_correct_types() {
                     0..0,
                 ),
                 is_mutable: false,
+                is_consume: false,
             },
             Param {
                 name: "b".to_string(),
@@ -924,6 +925,7 @@ fn user_module_fn_sig_has_correct_types() {
                     0..0,
                 ),
                 is_mutable: false,
+                is_consume: false,
             },
         ],
         Some(TypeExpr::Named {

@@ -728,6 +728,17 @@ pub struct Param {
     pub name: String,
     pub ty: Spanned<TypeExpr>,
     pub is_mutable: bool,
+    /// `true` when this value parameter was declared with the `consume`
+    /// modifier (`fn sink(consume c: Conn)`), pinning by-move ownership: the
+    /// caller's binding is consumed at the call site and the callee owns the
+    /// value (auto-dropped at callee scope-exit unless moved out). Only
+    /// meaningful for affine `#[resource]`/`#[linear]`-typed params; `CoW` value
+    /// types are unaffected. The modifier is the explicit override of the
+    /// inferred borrow/consume disposition — MANDATORY where the body is not
+    /// visible to inference (extern fns, trait method signatures,
+    /// cross-module `pub` fns), optional elsewhere.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_consume: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

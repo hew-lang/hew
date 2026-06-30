@@ -1,0 +1,38 @@
+//! Package-import boundary fixture (owner module). Exports a `#[resource]`
+//! handle `Sticky` and a trait `Sink` whose bodyless `put` method takes the
+//! handle BY VALUE without `consume`.
+//!
+//! A bodyless trait-method signature is an invisible-body boundary: the impls
+//! that supply the body may disagree on whether the parameter is borrowed or
+//! consumed, so a caller dispatching through the trait cannot know the
+//! disposition. The ratified RAII-2 surface (#1295) makes `consume` MANDATORY
+//! here, exactly as at an `extern` boundary.
+//!
+//! The root and file-flattened lowering passes already enforce this; this
+//! package exists to prove the discipline also fires when the trait crosses a
+//! PACKAGE import — the importer lowers this module's items and must reject the
+//! unannotated `item: Sticky` with `ResourceBoundaryParamMustConsume`.
+
+#[resource]
+#[opaque]
+pub type Sticky {
+}
+
+impl Sticky {
+    fn close(self) {
+        unsafe {
+            hew_sticky_free(self);
+        }
+    }
+}
+
+extern "C" {
+    fn hew_sticky_free(consume h: Sticky);
+}
+
+/// A sink that accepts a `Sticky` handle. The bodyless `put` signature is the
+/// invisible-body boundary: `item` is an unannotated resource and must be
+/// rejected at the importer.
+pub trait Sink {
+    fn put(self, item: Sticky) -> i64;
+}

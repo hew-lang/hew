@@ -1,20 +1,18 @@
-//! Runtime instance state — the de-globalized home for the process-wide
-//! authorities that were previously free `static`s.
+//! Runtime instance state — the de-globalized home for process-wide
+//! authorities.
 //!
 //! # Why this module exists
 //!
-//! Historically every runtime authority (the scheduler, the live-actor table,
-//! the name registry, shutdown phase, timers, the reactor, the node slot, …)
-//! lived as an independent process-global `static`. That made it impossible
-//! for more than one Hew runtime to exist in one process, forced test
-//! serialization on the shared globals, and left ownership of the teardown
-//! order spread across modules.
+//! Runtime authorities (the scheduler, the live-actor table, the name registry,
+//! shutdown phase, timers, the reactor, the node slot, …) need a single owned
+//! teardown root. That keeps teardown order explicit and makes multi-runtime
+//! support possible without shared-global test serialization.
 //!
 //! [`RuntimeInner`] gathers those authorities into one owned struct. A single
 //! **droppable** default slot ([`DEFAULT_RUNTIME`]) holds the one runtime that
 //! today's AOT and JIT programs use. The slot is an [`AtomicPtr`] (not a
-//! `OnceLock`) for the same reason the old `SCHEDULER` pointer was: the runtime
-//! must be *freeable* on `hew_runtime_cleanup`, releasing the scheduler's
+//! `OnceLock`) because the runtime must be *freeable* on
+//! `hew_runtime_cleanup`, releasing the scheduler's
 //! crossbeam deques, parkers, and stealer handles. A bare `OnceLock<RuntimeInner>`
 //! could never free.
 //!
@@ -52,9 +50,8 @@ pub use crate::runtime_id::RuntimeId;
 
 /// The owned state of one Hew runtime instance.
 ///
-/// Each field is an authority that previously lived as a process-global
-/// `static`. Subsystems are migrated into this struct one per commit; fields
-/// are added as each subsystem's statics move here.
+/// Each field is an owned runtime authority. Subsystems migrate into this
+/// struct one authority at a time.
 ///
 /// Dropping a `RuntimeInner` drops every owned field in declaration order.
 /// For the scheduler this releases the crossbeam deques, parkers, stealer
@@ -163,9 +160,8 @@ pub(crate) static RUNTIME_INNER_DROPS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
 /// Test-only drop observer. Production builds compile no `Drop` impl, so the
-/// inner frees by field-drop exactly as the old `Box<Scheduler>` did; the
-/// `#[cfg(test)]` impl only records that the field-drop happened, then lets the
-/// fields drop normally as it returns.
+/// inner frees by field-drop; the `#[cfg(test)]` impl only records that the
+/// field-drop happened, then lets the fields drop normally as it returns.
 #[cfg(test)]
 impl Drop for RuntimeInner {
     fn drop(&mut self) {
@@ -190,7 +186,7 @@ pub(crate) static DEFAULT_RUNTIME: AtomicPtr<RuntimeInner> = AtomicPtr::new(std:
 /// The reference is valid until `hew_runtime_cleanup()` detaches and drops the
 /// inner. Cleanup runs only after all worker threads have been joined, so any
 /// caller reachable from worker/dispatch code holds a valid reference for the
-/// duration of its use. This mirrors the old `get_scheduler()` contract.
+/// duration of its use.
 #[inline]
 pub(crate) fn rt_default() -> Option<&'static RuntimeInner> {
     let ptr = DEFAULT_RUNTIME.load(Ordering::Acquire);
@@ -508,8 +504,8 @@ impl Drop for EnterGuard {
 /// Publish `inner` as the default runtime via compare-exchange.
 ///
 /// Returns `true` when this call installed `inner`. Returns `false` when a
-/// runtime was already installed; in that case the passed-in box is dropped,
-/// matching the old "second `hew_sched_init` is a harmless no-op" semantics.
+/// runtime was already installed; in that case the passed-in box is dropped so a
+/// second `hew_sched_init` remains a harmless no-op.
 pub(crate) fn install_default(inner: Box<RuntimeInner>) -> bool {
     let ptr = Box::into_raw(inner);
     if DEFAULT_RUNTIME

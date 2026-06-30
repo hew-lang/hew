@@ -154,6 +154,7 @@ fn unit_binding(name: &str) -> HirBinding {
         ty: ResolvedTy::Unit,
         mutable: false,
         span: dummy_span(),
+        is_consume: false,
     }
 }
 

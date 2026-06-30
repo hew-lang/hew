@@ -1289,7 +1289,10 @@ fn render_mir_check(check: &MirCheck) -> String {
             binding,
             name,
             handle_ty,
-        } => format!("OwnedHandleAggregateDoubleFree {binding:?} {name} ty={handle_ty}"),
+            overwrite,
+        } => format!(
+            "OwnedHandleAggregateDoubleFree {binding:?} {name} ty={handle_ty} overwrite={overwrite}"
+        ),
     }
 }
 
@@ -1510,8 +1513,14 @@ fn render_diag_kind(kind: &MirDiagnosticKind) -> String {
         } => format!(
             "CallTraitMethodSignatureUnresolved {trait_name}::{method_name} site={site:?} {reason:?}"
         ),
-        MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported { name, handle_ty } => {
-            format!("OwnedHandleAggregateExtractionUnsupported {name} ty={handle_ty}")
+        MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported {
+            name,
+            handle_ty,
+            overwrite,
+        } => {
+            format!(
+                "OwnedHandleAggregateExtractionUnsupported {name} ty={handle_ty} overwrite={overwrite}"
+            )
         }
         MirDiagnosticKind::ClosurePairBorrowedStore { name, site } => {
             let name_str = name.as_deref().unwrap_or("<expr>");
@@ -1770,6 +1779,7 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],
+            resource_opaque_close: vec![],
             wire_layouts: std::sync::Arc::new(std::collections::HashMap::new()),
         }
     }

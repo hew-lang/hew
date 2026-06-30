@@ -734,6 +734,15 @@ run_accept_expect_stdout "user_resource_close_early_return"
 # order (`l` declared after `c`; `Lock::close` then `Conn::close`).
 run_accept_expect_stdout "user_resource_close_multiple_types"
 
+# RAII-2 (#1295) — a `#[resource]` passed as a NON-RECEIVER argument to an
+# `impl` method drops exactly once. `combine` borrows its receiver and takes a
+# second `#[resource]` value; the callee owns and drops the non-receiver arg
+# (prints `7`) while the caller keeps and drops the receiver (prints `3`). A
+# regression that re-leaked the non-receiver arg prints only `3`; a double-free
+# prints `7` twice and aborts at the resource sentinel. (Cross-eco security
+# gate bug 1.)
+run_accept_expect_stdout "resource_nonreceiver_method_arg_drops_once"
+
 # V14 — WASI/WASM parity: V1 must compile under wasm32-unknown-unknown
 # through the shared codegen pipeline. Behavioural parity is inherited
 # from the shared MIR->LLVM lower; this gate pins that the wasm target
@@ -742,6 +751,14 @@ run_accept_expect_stdout "user_resource_close_multiple_types"
   "${ROOT}/tests/vertical-slice/accept/user_resource_close_normal_return.hew" \
   >"${accept_output}" 2>&1
 test -s "${ROOT}/.tmp/compile-out/user_resource_close_normal_return.wasm"
+
+# RAII-2 (#1295) WASM parity: the non-receiver method-arg drop fix must lower
+# through the shared MIR->LLVM codegen on wasm32-unknown-unknown. Pins that the
+# callee-owns-and-drops classification does not regress on the wasm target.
+"${HEW}" compile --target wasm32-unknown-unknown \
+  "${ROOT}/tests/vertical-slice/accept/resource_nonreceiver_method_arg_drops_once.hew" \
+  >"${accept_output}" 2>&1
+test -s "${ROOT}/.tmp/compile-out/resource_nonreceiver_method_arg_drops_once.wasm"
 
 # V10 — `#[resource]` without any `close` body -> ResourceMissingClose.
 if "${HEW}" compile \
@@ -819,6 +836,21 @@ if "${HEW}" compile \
   exit 1
 fi
 grep -q 'ResourceCloseMustReturnUnit' "${reject_output}"
+
+# RAII-2 boundary consume discipline (#1295). A `#[resource]` handle passed by
+# value across an invisible-body boundary — an `extern` fn or a bodyless trait
+# method signature — must be declared `consume`. The interprocedural
+# borrow-vs-consume fixpoint cannot see through these boundaries, so an
+# unannotated resource parameter is rejected fail-closed rather than guessed
+# (a wrong guess double-frees or leaks). The receiver `self` is never flagged.
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/extern_resource_param_missing_consume.hew" \
+    'ResourceBoundaryParamMustConsume' \
+    "extern resource param missing consume"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/trait_sig_resource_param_missing_consume.hew" \
+    'ResourceBoundaryParamMustConsume' \
+    "trait-signature resource param missing consume"
 
 # shellcheck disable=SC2016  # backticks in the pattern are literal — they match
 # the diagnostic text, not a command substitution.

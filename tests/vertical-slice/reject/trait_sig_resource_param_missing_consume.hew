@@ -1,0 +1,43 @@
+// Reject fixture: trait_sig_resource_param_missing_consume — a `#[resource]`
+// handle passed by value as a NON-RECEIVER argument of a bodyless trait method
+// signature must be declared `consume`.
+//
+// A bodyless trait method signature is an invisible-body boundary: the impls
+// that supply the body may disagree on whether the parameter is borrowed or
+// consumed, so a caller dispatching through the trait cannot know the
+// disposition. The ratified RAII-2 surface (#1295) makes `consume` MANDATORY
+// here, exactly as at an `extern` boundary.
+//
+// The receiver `self` is NOT flagged — it is not a concrete resource nominal,
+// and its disposition rides the method dispatch surface (`consuming self`), not
+// borrow-pass. Only the non-receiver `item: Handle` is rejected.
+//
+// Harness verb: hew check
+// Expected: rejected, fail closed; diagnostic HIR kind
+// `ResourceBoundaryParamMustConsume` cites the unannotated trait-signature
+// parameter.
+
+#[resource]
+#[opaque]
+type Handle {
+}
+
+impl Handle {
+    fn close(self) {
+        unsafe {
+            hew_handle_free(self);
+        }
+    }
+}
+
+extern "C" {
+    fn hew_handle_free(consume h: Handle);
+}
+
+trait Store {
+    fn put(self, item: Handle) -> i64;
+}
+
+fn main() -> i64 {
+    0
+}

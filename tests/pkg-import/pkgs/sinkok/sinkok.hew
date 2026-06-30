@@ -1,0 +1,31 @@
+//! Package-import boundary fixture (owner module, POSITIVE control). Exports a
+//! `#[resource]` handle `Sticky` and a trait `Sink` whose bodyless `put` method
+//! pins the handle with `consume` — the disposition IS spelled, so dispatching
+//! impls cannot disagree and the importer must ACCEPT it.
+//!
+//! Paired with `sinkres` (the negative): together they prove the package-import
+//! boundary check (RAII-2 #1295) is load-bearing but not a tautology — it
+//! rejects the unannotated param and accepts the `consume`-annotated one.
+
+#[resource]
+#[opaque]
+pub type Sticky {
+}
+
+impl Sticky {
+    fn close(self) {
+        unsafe {
+            hew_sticky_free(self);
+        }
+    }
+}
+
+extern "C" {
+    fn hew_sticky_free(consume h: Sticky);
+}
+
+/// A sink that consumes a `Sticky` handle. The `consume` pins the by-move
+/// transfer, so the bodyless signature is a well-formed boundary.
+pub trait Sink {
+    fn put(self, consume item: Sticky) -> i64;
+}

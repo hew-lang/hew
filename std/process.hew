@@ -260,9 +260,9 @@ extern "C" {
     fn hew_process_result_stderr(result: ProcessResultHandle) -> string;
     fn hew_process_result_free(result: ProcessResultHandle);
     fn hew_process_spawn(command: string) -> Child;
-    fn hew_process_wait(handle: Child) -> i32;
-    fn hew_process_kill(handle: Child) -> i32;
-    fn hew_process_drop(handle: Child);
+    fn hew_process_wait(consume handle: Child) -> i32;
+    fn hew_process_kill(consume handle: Child) -> i32;
+    fn hew_process_drop(consume handle: Child);
     fn hew_process_last_error() -> string;
     fn hew_clear_error();
 }

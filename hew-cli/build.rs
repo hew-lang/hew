@@ -5,9 +5,8 @@ const UNKNOWN_GIT_METADATA: &str = "unknown";
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    // The retired legacy codegen subtree is no longer a selectable build
-    // substrate.  Keep this build script focused on version metadata only; the
-    // active compiler path is the Rust MIR/codegen-rs pipeline.
+    // Keep this build script focused on version metadata; the active
+    // compiler path is the Rust MIR/codegen-rs pipeline.
 
     let repo_dir = Path::new("..");
     emit_git_metadata(repo_dir);

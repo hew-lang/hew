@@ -44404,6 +44404,95 @@ mod binding_ty_is_plain_vec_tuple {
             "Vec<i64> must be admitted as a plain Vec (scalar `BitCopy` arm)"
         );
     }
+
+    /// Boundary-totality: the `Vec<E>` release-bucket predicates'
+    /// UNION must be total over the heap-owning `Vec` shapes. The outer `Vec`
+    /// ALWAYS owns heap (`ty_owns_heap(Vec<_>)` is `true` unconditionally — a
+    /// `Vec` owns its backing buffer for ANY element), so every `Vec<E>` local
+    /// must be claimed by exactly one release bucket or its scope-exit drop is
+    /// silently skipped → leak. The three Vec buckets are
+    /// `binding_ty_is_plain_vec` (buffer-only `hew_vec_free`; the runtime walks
+    /// `string` elements itself via `ElemKind::String`),
+    /// `binding_ty_is_owned_element_vec` (`hew_vec_free_owned`, per-element
+    /// drop), and `ty_is_closure_pair_vec` (`hew_vec_free_closure_pairs`).
+    ///
+    /// KNOWN-GAP — `Vec<bytes>`: claimed by NEITHER `binding_ty_is_plain_vec`
+    /// (`Bytes` is absent from its scalar/string allow-list) NOR
+    /// `binding_ty_is_owned_element_vec` (`is_owned_vec_element(Bytes)` hits its
+    /// `_ => false` arm), yet `ty_owns_heap(Vec<bytes>)` is `true`. This is a
+    /// LATENT non-totality, not a live leak: `Vec<bytes>` is currently
+    /// unconstructible — `Vec::new` fails closed at codegen with
+    /// `E_NOT_YET_IMPLEMENTED: Vec::new has no constructor lowering for element
+    /// type Bytes`, so a `Vec<bytes>` local can never reach a scope-exit drop
+    /// (the `_ => false` invariant — no silent ABI/drop fall-through — is
+    /// satisfied upstream at construction). This assertion is the tripwire:
+    /// enabling `Vec<bytes>` construction WITHOUT extending the release partition
+    /// (add `Bytes` to a bucket, or route the binding through the typed
+    /// `OwnershipDecision` authority — future release-bucket consolidation) must fail here first. Bare
+    /// runtime-handle elements (`Vec<CancellationToken>`) share this gap class
+    /// and the same NYI gate.
+    #[test]
+    fn release_bucket_partition_is_total_over_vec_elements() {
+        let builder = Builder::default();
+        let claimed = |elem: ResolvedTy| {
+            let v = vec_of_ty(elem);
+            builder.binding_ty_is_plain_vec(&v)
+                || builder.binding_ty_is_owned_element_vec(&v)
+                || ty_is_closure_pair_vec(&v)
+        };
+
+        // Plain bucket: BitCopy scalar / string / all-BitCopy aggregate elements.
+        for elem in [
+            ResolvedTy::I64,
+            ResolvedTy::Bool,
+            ResolvedTy::F64,
+            ResolvedTy::Char,
+            ResolvedTy::Duration,
+            ResolvedTy::String,
+            ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64]),
+        ] {
+            assert!(
+                builder.named_elem_owns_heap(&vec_of_ty(elem.clone())),
+                "Vec<{elem:?}> must own heap (the authority's Vec leaf rule)"
+            );
+            assert!(
+                claimed(elem.clone()),
+                "Vec<{elem:?}> owns heap but no release bucket claims it (plain arm)"
+            );
+        }
+
+        // Owned-element bucket: nested collections + heap-owning tuples.
+        for elem in [
+            ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::I64]),
+            ResolvedTy::named_builtin(
+                "HashMap",
+                BuiltinType::HashMap,
+                vec![ResolvedTy::String, ResolvedTy::I64],
+            ),
+            ResolvedTy::named_builtin("HashSet", BuiltinType::HashSet, vec![ResolvedTy::I64]),
+            ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64]),
+        ] {
+            assert!(
+                claimed(elem.clone()),
+                "Vec<{elem:?}> owns heap through its element but no release bucket claims it"
+            );
+        }
+
+        // The authority agrees the gap element's Vec owns heap (so it MUST be
+        // released): `ty_owns_heap(Vec<bytes>)` is true.
+        assert!(
+            builder.named_elem_owns_heap(&vec_of_ty(ResolvedTy::Bytes)),
+            "ty_owns_heap(Vec<bytes>) must be true — the outer Vec owns its buffer"
+        );
+        // THE KNOWN GAP: Vec<bytes> is claimed by no release bucket.
+        assert!(
+            !claimed(ResolvedTy::Bytes),
+            "KNOWN-GAP: Vec<bytes> is expected to be claimed by NO release bucket \
+             (the known partition gap, NYI-gated by `Vec::new`'s fail-closed on \
+             Bytes elements). If you enabled Vec<bytes> construction, extend the \
+             release partition and update this tripwire."
+        );
+    }
 }
 
 #[cfg(test)]

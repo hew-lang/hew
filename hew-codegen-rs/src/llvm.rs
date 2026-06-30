@@ -40132,60 +40132,159 @@ fn json_string_literal(s: &str) -> String {
     out
 }
 
-/// Standalone heap-ownership probe for a CBOR Vec element type, using only the
-/// pipeline record/enum layouts the thunk emitter has on hand (no `FnCtx`).
-/// Returns true when `ty` is — or transitively contains — a heap-owning leaf
-/// (string / bytes / collection / boxed handle): a value a plain BitCopy Vec
-/// slot could not own without leaking. A `visiting` set breaks layout cycles
-/// (recursive records/enums) by treating a back-edge as non-owning — the
-/// cycle's owning leaves, if any, are already seen on the first visit.
+/// [`hew_mir::HeapOwnershipLayouts`] view over the standalone pipeline
+/// record/enum layout slices the CBOR thunk emitter carries (it has no
+/// `FnCtx`). Resolves user record / enum members through [`xnode_registry_key`]
+/// — the SAME registry-key strategy the retired `cbor_ty_owns_heap` walker used
+/// — so routing the CBOR element heap-ownership probe through the single
+/// `hew_mir::ty_owns_heap` authority is byte-identical for every shape the old
+/// walker classified, while inheriting the authority's correct leaf set. This
+/// is the CBOR sibling of [`CgHeapLayouts`] (which resolves the same members
+/// through a live `FnCtx`).
+struct CborHeapLayouts<'a> {
+    pipeline_records: &'a [RecordLayout],
+    enum_layouts: &'a [EnumLayout],
+}
+
+impl hew_mir::HeapOwnershipLayouts for CborHeapLayouts<'_> {
+    fn record_field_tys(&self, name: &str, args: &[ResolvedTy]) -> Option<Vec<ResolvedTy>> {
+        let key = xnode_registry_key(name, args, self.pipeline_records, self.enum_layouts);
+        self.pipeline_records
+            .iter()
+            .find(|r| r.name == key)
+            .map(|r| r.field_tys.clone())
+    }
+
+    fn enum_variant_field_tys(
+        &self,
+        name: &str,
+        args: &[ResolvedTy],
+    ) -> Option<Vec<Vec<ResolvedTy>>> {
+        let key = xnode_registry_key(name, args, self.pipeline_records, self.enum_layouts);
+        self.enum_layouts
+            .iter()
+            .find(|e| e.name == key)
+            .map(|e| e.variants.iter().map(|v| v.field_tys.clone()).collect())
+    }
+}
+
+/// RETIRED parallel heap walker (ownership/drop/ABI unification) —
+/// superseded by the single `hew_mir::ty_owns_heap` authority. It now delegates
+/// straight to that authority via [`CborHeapLayouts`]; it is retained ONLY as
+/// the sealed seam its sole sanctioned caller ([`cbor_vec_elem_kind`]) routes
+/// through. New code must call `hew_mir::ty_owns_heap` directly.
+///
+/// GUARD: the `#[deprecated]` seal plus the workspace
+/// `cargo clippy --workspace --tests -- -D warnings` CI step
+/// (`.github/workflows/ci.yml`) is the re-entry tripwire — any NEW caller is a
+/// hard CI failure unless it is explicitly `#[allow(deprecated)]`-listed (the
+/// allow-list). `-D deprecated` is implied by `-D warnings`, and the lint fires
+/// for same-crate callers, so no new test plumbing is needed.
+///
+/// Behaviour vs the retired walker (every delta is leak-SAFER, never a new
+/// leak): the old walker's `_ => false` arm BitCopied a heap-owning element
+/// when it was a `CancellationToken` (own variant) or hid behind a
+/// tuple/array/slice record field — a latent under-drop the authority's leaf
+/// set / structural recursion correctly fails closed. Those shapes are
+/// currently unreachable (they fail closed upstream at the clone-helper /
+/// wire-body floor), so this is a consistency hardening, not an observable
+/// change. The old walker's coarse `_ => true` over-defer for non-`Option`
+/// builtins is preserved at the caller (see [`cbor_vec_elem_kind`]), so
+/// reachable behaviour is byte-identical.
+#[deprecated(
+    note = "retired parallel heap walker — call `hew_mir::ty_owns_heap` (the single \
+            ownership authority) directly; this shim exists only as the sealed, \
+            allow-listed seam its sole caller routes through"
+)]
 fn cbor_ty_owns_heap(
+    ty: &ResolvedTy,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> bool {
+    hew_mir::ty_owns_heap(
+        ty,
+        &CborHeapLayouts {
+            pipeline_records,
+            enum_layouts,
+        },
+    )
+}
+
+/// True when `ty` IS — or transitively contains, through type arguments, record
+/// fields, enum/machine variant payloads, or tuple/array elements — an *indirect
+/// enum*. An `indirect enum` value is a heap-owned pointer to a tagged-union
+/// struct (`EnumLayout::is_indirect`) even when every payload field is scalar, so
+/// each element must be released on drop and crosses the ABI by pointer.
+///
+/// The single `hew_mir::ty_owns_heap` authority resolves user types through the
+/// [`hew_mir::HeapOwnershipLayouts`] trait, which conveys only payload *field
+/// types* — not an enum's indirectness. Neither this path's [`CborHeapLayouts`]
+/// nor the `FnCtx`-backed [`CgHeapLayouts`] can signal indirectness through the
+/// authority, so an indirect enum with scalar payloads classifies
+/// `ty_owns_heap == false`. The CBOR element codec therefore detects it directly
+/// and fails closed — matching the pointer ABI the `Vec` constructor (indirect
+/// enum elements stored as `ptr`) and the CBOR decoder (`emit_de_enum_cbor`
+/// allocates and stores a heap node) already use — never BitCopying a heap-owned
+/// node. (The drop elaborator releases such values via `DropKind::IndirectEnum`,
+/// a path independent of `ty_owns_heap`, which is why this gap is CBOR-local.)
+///
+/// Resolution uses the SAME [`xnode_registry_key`] strategy as
+/// [`CborHeapLayouts`], so the layout whose `is_indirect` flag this reads is the
+/// exact layout the authority recursion walks.
+fn cbor_ty_contains_indirect_enum(
     ty: &ResolvedTy,
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
     visiting: &mut std::collections::HashSet<String>,
 ) -> bool {
     match ty {
-        ResolvedTy::String | ResolvedTy::Bytes => true,
-        ResolvedTy::Named {
-            builtin: Some(b),
-            args,
-            ..
-        } => match b {
-            // An `Option` is inline (tag + payload); it owns heap iff its
-            // payload does.
-            BuiltinType::Option => args
-                .first()
-                .is_some_and(|a| cbor_ty_owns_heap(a, pipeline_records, enum_layouts, visiting)),
-            // Every other builtin admitted as a field is a heap handle.
-            _ => true,
-        },
         ResolvedTy::Named { name, args, .. } => {
+            // Type arguments first (`Option<indirect enum>`, `Rc<…>`, …).
+            if args.iter().any(|a| {
+                cbor_ty_contains_indirect_enum(a, pipeline_records, enum_layouts, visiting)
+            }) {
+                return true;
+            }
             let key = xnode_registry_key(name, args, pipeline_records, enum_layouts);
+            // An indirect enum is heap-owned irrespective of its payload field
+            // types — check before the recursion guard so a re-encounter on a
+            // cyclic type still reports it.
+            if enum_layouts.iter().any(|e| e.name == key && e.is_indirect) {
+                return true;
+            }
             if !visiting.insert(key.clone()) {
+                // Already walking this type: its own indirectness was checked on
+                // first entry; break to keep the field recursion bounded.
                 return false;
             }
-            if let Some(rl) = pipeline_records.iter().find(|r| r.name == key) {
-                return rl
-                    .field_tys
-                    .iter()
-                    .any(|f| cbor_ty_owns_heap(f, pipeline_records, enum_layouts, visiting));
-            }
-            if let Some(el) = enum_layouts.iter().find(|e| e.name == key) {
-                return el.variants.iter().any(|v| {
-                    v.field_tys
-                        .iter()
-                        .any(|f| cbor_ty_owns_heap(f, pipeline_records, enum_layouts, visiting))
-                });
-            }
-            false
+            let found = if let Some(rl) = pipeline_records.iter().find(|r| r.name == key) {
+                rl.field_tys.iter().any(|f| {
+                    cbor_ty_contains_indirect_enum(f, pipeline_records, enum_layouts, visiting)
+                })
+            } else if let Some(el) = enum_layouts.iter().find(|e| e.name == key) {
+                el.variants.iter().any(|v| {
+                    v.field_tys.iter().any(|f| {
+                        cbor_ty_contains_indirect_enum(f, pipeline_records, enum_layouts, visiting)
+                    })
+                })
+            } else {
+                false
+            };
+            visiting.remove(&key);
+            found
+        }
+        ResolvedTy::Tuple(elems) => elems
+            .iter()
+            .any(|e| cbor_ty_contains_indirect_enum(e, pipeline_records, enum_layouts, visiting)),
+        ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
+            cbor_ty_contains_indirect_enum(inner, pipeline_records, enum_layouts, visiting)
         }
         _ => false,
     }
 }
 
 /// Backing-store kind a decoded CBOR array needs for its element type.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum CborVecElemKind {
     /// Scalar BitCopy element (bool / int / float / char / duration): a plain
     /// `hew_vec_new_with_elem_size` buffer filled by byte-copy
@@ -40238,16 +40337,41 @@ fn cbor_vec_elem_kind(
         | ResolvedTy::F32
         | ResolvedTy::F64 => CborVecElemKind::Plain,
         ResolvedTy::String => CborVecElemKind::Str,
+        // Non-`Option` builtins (`Vec` / `HashMap` / `HashSet` / `Generator` /
+        // `Result` / `Range` / `Rc` / …) need the owned (thunk-bearing) Vec ABI
+        // the standalone codec cannot synthesise: fail closed. This preserves the
+        // retired `cbor_ty_owns_heap` walker's coarse `_ => true` builtin rule
+        // EXACTLY. The single authority's finer arg-recursion (which would admit
+        // a heap-free `Result<i64, i64>` as BitCopy) is intentionally NOT applied
+        // here: enabling those element shapes needs matching codec support and is
+        // deferred to a future consolidation, so reachable behaviour stays byte-identical.
+        ResolvedTy::Named {
+            builtin: Some(b), ..
+        } if !matches!(b, BuiltinType::Option) => CborVecElemKind::Defer,
+        // `Option<T>` and user record / enum elements: route the heap-ownership
+        // question through the single `hew_mir::ty_owns_heap` authority (was the
+        // parallel `cbor_ty_owns_heap` walker). A heap-owning element needs the
+        // owned (thunk-bearing) Vec ABI the standalone codec cannot synthesise →
+        // fail closed; a heap-free record/enum element is the layout-aware
+        // BitCopy vec `Vec::new` constructs (`hew_vec_new_with_layout`), so the
+        // codec MUST round-trip it through the layout-aware accessors.
         ResolvedTy::Named { .. } => {
+            // SEALED retired-walker seam: the sole sanctioned caller.
+            #[allow(deprecated)]
+            let owns_heap = cbor_ty_owns_heap(elem, pipeline_records, enum_layouts);
+            // The single authority sees only enum payload *field types* through
+            // the layout adapter, not an enum's indirectness, so an indirect enum
+            // with scalar payloads classifies `owns_heap == false`. Such an
+            // element is nonetheless a heap-owned pointer — the `Vec` constructor
+            // and the CBOR decoder both use pointer ABI for it — so fail closed
+            // for any element that IS or transitively contains one, never
+            // BitCopying a heap-owned node.
             let mut visiting = std::collections::HashSet::new();
-            if cbor_ty_owns_heap(elem, pipeline_records, enum_layouts, &mut visiting) {
-                // A heap-owning record/enum needs the owned (thunk-bearing) Vec
-                // ABI the standalone codec cannot synthesise: fail closed.
+            let contains_indirect_enum =
+                cbor_ty_contains_indirect_enum(elem, pipeline_records, enum_layouts, &mut visiting);
+            if owns_heap || contains_indirect_enum {
                 CborVecElemKind::Defer
             } else {
-                // A heap-free record/enum element: `Vec::new` constructs this as
-                // a layout-aware BitCopy vec (`hew_vec_new_with_layout`), so the
-                // codec MUST round-trip it through the layout-aware accessors.
                 CborVecElemKind::LayoutBitCopy
             }
         }
@@ -47566,6 +47690,235 @@ mod tests {
         assert!(
             is_known_cow_heap_drop_symbol("hew_vec_free_closure_pairs"),
             "hew_vec_free_closure_pairs must be in the permitted CowHeap release set"
+        );
+    }
+
+    /// Pin `cbor_vec_elem_kind` over every REACHABLE element shape so the
+    /// retire of the parallel `cbor_ty_owns_heap` walker (now a sealed
+    /// shim over `hew_mir::ty_owns_heap`) is byte-identical: scalars stay
+    /// `Plain`, `string` stays `Str`, a heap-free user record stays
+    /// `LayoutBitCopy` (the `Vec<#[wire] struct>` shape), a heap-owning record
+    /// stays `Defer`, `Option<T>` mirrors its payload, and every non-`Option`
+    /// builtin stays `Defer` (the retired walker's coarse `_ => true` rule,
+    /// preserved at the caller rather than routed through the finer authority).
+    #[test]
+    fn cbor_vec_elem_kind_pins_reachable_classification() {
+        let no_recs: Vec<RecordLayout> = vec![];
+        let no_enums: Vec<EnumLayout> = vec![];
+
+        // Scalars → Plain (generic, null-layout vec).
+        for s in [
+            ResolvedTy::I64,
+            ResolvedTy::U8,
+            ResolvedTy::Bool,
+            ResolvedTy::F64,
+            ResolvedTy::Char,
+            ResolvedTy::Duration,
+        ] {
+            assert_eq!(
+                cbor_vec_elem_kind(&s, &no_recs, &no_enums),
+                CborVecElemKind::Plain,
+                "{s:?} must be a Plain element"
+            );
+        }
+        // `string` → Str.
+        assert_eq!(
+            cbor_vec_elem_kind(&ResolvedTy::String, &no_recs, &no_enums),
+            CborVecElemKind::Str
+        );
+
+        // A heap-free user record → LayoutBitCopy (the `Vec<Inner>` wire shape).
+        let inner = RecordLayout {
+            name: "Inner".to_string(),
+            field_tys: vec![ResolvedTy::I64],
+            field_names: vec!["v".to_string()],
+        };
+        assert_eq!(
+            cbor_vec_elem_kind(
+                &ResolvedTy::named_user("Inner", vec![]),
+                &[inner],
+                &no_enums
+            ),
+            CborVecElemKind::LayoutBitCopy,
+            "a heap-free record element is the layout-aware BitCopy vec `Vec::new` builds"
+        );
+        // A heap-OWNING user record (a `string` field) → Defer.
+        let owns = RecordLayout {
+            name: "Owns".to_string(),
+            field_tys: vec![ResolvedTy::String],
+            field_names: vec!["s".to_string()],
+        };
+        assert_eq!(
+            cbor_vec_elem_kind(&ResolvedTy::named_user("Owns", vec![]), &[owns], &no_enums),
+            CborVecElemKind::Defer,
+            "a string-bearing record element needs the owned Vec ABI → fail closed"
+        );
+
+        // `Option<scalar>` → LayoutBitCopy; `Option<string>` → Defer (the payload
+        // recursion, byte-identical to the retired walker's `Option` arm).
+        assert_eq!(
+            cbor_vec_elem_kind(
+                &ResolvedTy::named_builtin("Option", BuiltinType::Option, vec![ResolvedTy::I64]),
+                &no_recs,
+                &no_enums
+            ),
+            CborVecElemKind::LayoutBitCopy
+        );
+        assert_eq!(
+            cbor_vec_elem_kind(
+                &ResolvedTy::named_builtin("Option", BuiltinType::Option, vec![ResolvedTy::String]),
+                &no_recs,
+                &no_enums
+            ),
+            CborVecElemKind::Defer
+        );
+
+        // Non-`Option` builtins → Defer, preserving the retired walker's coarse
+        // rule. `Result<i64, i64>` is genuinely heap-free, yet stays Defer here
+        // (the authority's finer recursion that would admit it as BitCopy is
+        // deferred to a future consolidation, gated on matching codec support).
+        for b in [
+            ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::I64]),
+            ResolvedTy::named_builtin(
+                "HashMap",
+                BuiltinType::HashMap,
+                vec![ResolvedTy::String, ResolvedTy::I64],
+            ),
+            ResolvedTy::named_builtin(
+                "Result",
+                BuiltinType::Result,
+                vec![ResolvedTy::I64, ResolvedTy::I64],
+            ),
+        ] {
+            assert_eq!(
+                cbor_vec_elem_kind(&b, &no_recs, &no_enums),
+                CborVecElemKind::Defer,
+                "{b:?} must fail closed (coarse non-Option builtin rule)"
+            );
+        }
+    }
+
+    /// G6: routing the CBOR element probe through the single
+    /// `hew_mir::ty_owns_heap` authority fixes a latent under-drop leak. A user
+    /// record whose field is a `CancellationToken` (an owned runtime handle) was
+    /// classified heap-FREE by the retired `cbor_ty_owns_heap` walker — its
+    /// `_ => false` arm did not recognise the `CancellationToken` own-variant —
+    /// so the codec BitCopied (and leaked) the handle as a `LayoutBitCopy`
+    /// element. The authority recognises `CancellationToken` as a leaf, so the
+    /// record owns heap and the codec correctly fails closed (`Defer`).
+    #[test]
+    fn cbor_retire_fixes_latent_cancellation_token_leak() {
+        let rec = RecordLayout {
+            name: "WithTok".to_string(),
+            field_tys: vec![ResolvedTy::CancellationToken],
+            field_names: vec!["tok".to_string()],
+        };
+        let no_enums: Vec<EnumLayout> = vec![];
+        assert_eq!(
+            cbor_vec_elem_kind(
+                &ResolvedTy::named_user("WithTok", vec![]),
+                &[rec],
+                &no_enums
+            ),
+            CborVecElemKind::Defer,
+            "a CancellationToken-bearing record element must fail closed, not BitCopy-leak the handle"
+        );
+    }
+
+    /// A CBOR `Vec` element that IS — or transitively contains — an `indirect
+    /// enum` must fail closed (`Defer`), never `LayoutBitCopy`. An indirect enum
+    /// with scalar payloads is a heap-owned pointer (the `Vec` constructor stores
+    /// it as `ptr`; the CBOR decoder allocates and stores a heap node), yet the
+    /// single `hew_mir::ty_owns_heap` authority sees only payload field types
+    /// through the layout adapter and so classifies it heap-FREE. The codec
+    /// detects indirectness directly (`cbor_ty_contains_indirect_enum`) and
+    /// defers, matching the pointer ABI both endpoints already use — without it
+    /// the codec would BitCopy on encode while the constructor/decoder used
+    /// pointer ABI, leaking the heap-owned node.
+    ///
+    /// Revert-repro: drop the `contains_indirect_enum` term in
+    /// `cbor_vec_elem_kind` (or the `is_indirect` check in
+    /// `cbor_ty_contains_indirect_enum`) and the indirect-enum assertions below
+    /// report `LayoutBitCopy`.
+    #[test]
+    fn cbor_vec_elem_kind_fails_closed_for_indirect_enum_element() {
+        // `indirect enum Node { Leaf(i64); Nil; }` — scalar payloads, yet every
+        // value is a heap-owned pointer to a tagged-union struct.
+        let indirect = EnumLayout {
+            name: "Node".to_string(),
+            tag_width: 1,
+            variants: vec![
+                MachineVariantLayout {
+                    name: "Leaf".to_string(),
+                    field_tys: vec![ResolvedTy::I64],
+                    field_names: vec!["v".to_string()],
+                },
+                MachineVariantLayout {
+                    name: "Nil".to_string(),
+                    field_tys: vec![],
+                    field_names: vec![],
+                },
+            ],
+            is_indirect: true,
+        };
+        let no_recs: Vec<RecordLayout> = vec![];
+
+        // The indirect enum itself → Defer (NOT LayoutBitCopy).
+        assert_eq!(
+            cbor_vec_elem_kind(
+                &ResolvedTy::named_user("Node", vec![]),
+                &no_recs,
+                std::slice::from_ref(&indirect),
+            ),
+            CborVecElemKind::Defer,
+            "an indirect-enum element is a heap-owned pointer — must fail closed, not BitCopy"
+        );
+
+        // A record that transitively CONTAINS the indirect enum → Defer.
+        let wrapper = RecordLayout {
+            name: "Wrapper".to_string(),
+            field_tys: vec![ResolvedTy::named_user("Node", vec![])],
+            field_names: vec!["node".to_string()],
+        };
+        assert_eq!(
+            cbor_vec_elem_kind(
+                &ResolvedTy::named_user("Wrapper", vec![]),
+                std::slice::from_ref(&wrapper),
+                std::slice::from_ref(&indirect),
+            ),
+            CborVecElemKind::Defer,
+            "a record transitively containing an indirect enum must fail closed"
+        );
+
+        // Control: a NON-indirect enum with the SAME scalar payloads stays
+        // LayoutBitCopy — the fail-closed term must not over-defer a heap-free
+        // direct enum (over-drop is the floor, but never at the cost of a
+        // spurious defer that would refuse a legitimately reachable BitCopy).
+        let direct = EnumLayout {
+            name: "Flat".to_string(),
+            tag_width: 1,
+            variants: vec![
+                MachineVariantLayout {
+                    name: "A".to_string(),
+                    field_tys: vec![ResolvedTy::I64],
+                    field_names: vec!["v".to_string()],
+                },
+                MachineVariantLayout {
+                    name: "B".to_string(),
+                    field_tys: vec![],
+                    field_names: vec![],
+                },
+            ],
+            is_indirect: false,
+        };
+        assert_eq!(
+            cbor_vec_elem_kind(
+                &ResolvedTy::named_user("Flat", vec![]),
+                &no_recs,
+                std::slice::from_ref(&direct),
+            ),
+            CborVecElemKind::LayoutBitCopy,
+            "a heap-free direct enum must stay BitCopy — the fix must not over-defer"
         );
     }
 

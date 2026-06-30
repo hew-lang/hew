@@ -1504,6 +1504,24 @@ pub trait HeapOwnershipLayouts {
 /// congruence) and a heap-owning record field can no longer be silently missed
 /// at a call site that forgot a separate record-aware check
 /// (`dedup-semantic-boundary`, `drop-allowset-from-value-flow`).
+///
+/// # Typed seam (the typed inventory boundary)
+///
+/// This boolean is the heap axis of the typed
+/// [`OwnershipDecision`](crate::OwnershipDecision) — the single typed
+/// ownership/drop/ABI decision the consolidation routes the shape-specialised
+/// walkers onto (see the walker inventory in `ownership.rs`). The typed entry
+/// is [`OwnershipDecision::classify`](crate::OwnershipDecision::classify); the
+/// complete carried fact is [`ValueOwnership`](crate::ValueOwnership), whose
+/// [`owns_heap`](crate::ValueOwnership::owns_heap) projection **is this
+/// authority, `≡` by construction** — `ValueOwnership::classify` seeds it by
+/// calling `ty_owns_heap` directly, and the congruence is pinned over every
+/// canonical shape by `carried_seed_projections_equal_the_live_authorities`
+/// (`ownership.rs`). That equality is the contract a future consolidation seam
+/// relies on when it swaps its direct `ty_owns_heap` call for the carried
+/// projection:
+/// the boolean a consumer reads off the value is exactly the boolean this
+/// authority would re-derive, so the swap is byte-identical by construction.
 #[must_use]
 pub fn ty_owns_heap(ty: &ResolvedTy, layouts: &impl HeapOwnershipLayouts) -> bool {
     ty_owns_heap_inner(ty, layouts, &mut HashSet::new())

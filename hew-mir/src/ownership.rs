@@ -16,24 +16,39 @@
 //! / abort class of regressions.
 //!
 //! [`OwnershipDecision`] is the single typed fact those walkers will later read
-//! off the value instead of re-deriving. This Phase-0 landing is **additive and
-//! unused**: it defines the type, a [`OwnershipDecision::classify`] constructor
-//! scaffold, the seed conversions, and a totality test. It switches **no**
-//! production call site — Phases 1A-1D route the existing authorities through
-//! it.
+//! off the value instead of re-deriving. The complete classification of a value
+//! is [`ValueOwnership`]: the rich [`OwnershipDecision`] (drop / ABI / layout)
+//! plus the two coarse seed answers — the `ty_owns_heap` boolean and the
+//! [`ValueClass`] — **carried on the value**, each computed once from its live
+//! authority at [`ValueOwnership::classify`] time. Carrying — not re-deriving —
+//! is the point: the decision *kind* alone cannot reproduce the seeds
+//! faithfully. A heap-free tuple is [`NoHeap`] yet `CowValue`; a `&[string]` is
+//! a non-owning [`Borrowed`] view yet `ty_owns_heap` recurses its element to
+//! `true`; a closure env is [`OwnsHeap`] yet `ty_owns_heap` answers `false`. So
+//! the seed must travel with the value, making [`ValueOwnership::owns_heap`] `≡`
+//! `ty_owns_heap` and [`ValueOwnership::to_value_class`] `≡` `ValueClass::of_ty`
+//! **exactly**, for every shape — the contract Phase 1 relies on when it swaps a
+//! seam's direct authority call for the projection.
+//!
+//! This Phase-0 landing is **additive and unused**: it defines the types, the
+//! [`ValueOwnership::classify`] / [`OwnershipDecision::classify`] constructor
+//! scaffold, the seed conversions, and the totality + round-trip tests. It
+//! switches **no** production call site — Phases 1A-1D route the existing
+//! authorities through it.
 //!
 //! # Subsumes (does not reinvent) the existing seeds
 //!
-//! | Seed | Authority | Relationship to [`OwnershipDecision`] |
+//! | Seed | Authority | Relationship |
 //! |---|---|---|
-//! | `ty_owns_heap` | `model.rs` | The structural yes/no the [`OwnsHeap`]/[`NoHeap`] split is built **from** ([`OwnershipDecision::owns_heap`] projects back). |
+//! | `ty_owns_heap` | `model.rs` | Carried verbatim — [`ValueOwnership::owns_heap`] returns it (`≡`, by construction); the [`OwnsHeap`]/[`NoHeap`] kind is the rich split built alongside. |
 //! | [`DropKind`] | `model.rs` | The release protocol — [`DropClass`] subsumes it (`TryFrom<DropKind>` + [`DropClass::canonical_drop_kind`]). |
-//! | [`ValueClass`] | `value_class.rs` | The coarse class — [`OwnershipDecision::to_value_class`] projects back; `classify` consumes it for the marker seed. |
+//! | [`ValueClass`] | `value_class.rs` | Carried verbatim — [`ValueOwnership::to_value_class`] returns it (`≡`); `classify` also consumes it for the marker seed. |
 //! | [`Strategy::UnknownBlocked`] | `model.rs` | The fail-closed move strategy — [`Unsupported`] projects to it ([`OwnershipDecision::move_strategy_floor`]). |
 //! | `DropPlanUndetermined` | `lower.rs` | The fail-closed diagnostic — [`Unsupported`]'s [`FailClosedReason`] names the cause. |
 //!
 //! [`NoHeap`]: OwnershipDecision::NoHeap
 //! [`OwnsHeap`]: OwnershipDecision::OwnsHeap
+//! [`Borrowed`]: OwnershipDecision::Borrowed
 //! [`Unsupported`]: OwnershipDecision::Unsupported
 
 use std::collections::hash_map::RandomState;
@@ -62,8 +77,10 @@ pub enum OwnershipDecision {
     /// Owns no heap memory and has no scope-exit drop obligation: scalars,
     /// `unit`/`never`, bare function pointers, and heap-free aggregates
     /// (records/tuples/enums all of whose fields are themselves `NoHeap`).
-    /// Subsumes `ValueClass::BitCopy` and the `ty_owns_heap == false` half of
-    /// the authority.
+    /// This is the *rich drop* axis only — the value's exact seed answers are
+    /// carried separately on [`ValueOwnership`] (a heap-free tuple is `NoHeap`
+    /// here yet `CowValue` to the value-class authority; a bare function is
+    /// `NoHeap` yet `PersistentShare`).
     NoHeap,
 
     /// Transitively owns heap memory and must be released exactly once on every
@@ -85,7 +102,9 @@ pub enum OwnershipDecision {
     /// A non-owning borrow / view of a value owned elsewhere (`&T`, `*T`, `[T]`
     /// slices). No drop obligation. Carries the [`ValueProvenance`] of the owner
     /// it views so escape analysis reasons without re-deriving from the type.
-    /// Subsumes `ValueClass::View`.
+    /// The carried value-class seed is `View`; the carried `ty_owns_heap` seed
+    /// is `true` for a slice whose element owns heap (`&[string]`) — a fact the
+    /// kind alone does not show, and the reason the seeds are carried.
     Borrowed {
         /// Provenance of the owner this view points into.
         provenance: ValueProvenance,
@@ -889,13 +908,6 @@ impl HeapLeaf {
 }
 
 impl OwnershipDecision {
-    /// Project back to the structural `ty_owns_heap` boolean: `true` exactly for
-    /// [`OwnsHeap`](OwnershipDecision::OwnsHeap).
-    #[must_use]
-    pub fn owns_heap(&self) -> bool {
-        matches!(self, OwnershipDecision::OwnsHeap { .. })
-    }
-
     /// The [`DropClass`] of an owning decision, if any.
     #[must_use]
     pub fn drop_class(&self) -> Option<DropClass> {
@@ -905,41 +917,6 @@ impl OwnershipDecision {
             | OwnershipDecision::Borrowed { .. }
             | OwnershipDecision::InteriorAlias { .. }
             | OwnershipDecision::Unsupported { .. } => None,
-        }
-    }
-
-    /// Project back to the coarse [`ValueClass`] this decision implies — proves
-    /// the decision subsumes the value-class seed (the coarser fact is
-    /// recoverable).
-    #[must_use]
-    pub fn to_value_class(&self) -> ValueClass {
-        match self {
-            OwnershipDecision::NoHeap => ValueClass::BitCopy,
-            OwnershipDecision::OwnsHeap { drop, .. } => match drop {
-                DropClass::Resource
-                | DropClass::DuplexClose
-                | DropClass::DuplexHalfClose { .. }
-                | DropClass::LambdaActorRelease => ValueClass::AffineResource,
-                DropClass::DynTrait { .. } | DropClass::ClosurePair => ValueClass::PersistentShare,
-                DropClass::CowHeapLeaf { .. }
-                | DropClass::RecordInPlace
-                | DropClass::TupleInPlace
-                | DropClass::EnumInPlace
-                | DropClass::AggregateRecursive
-                | DropClass::IndirectEnum => ValueClass::CowValue,
-            },
-            OwnershipDecision::Borrowed { .. } | OwnershipDecision::InteriorAlias { .. } => {
-                ValueClass::View
-            }
-            OwnershipDecision::Unsupported { reason } => match reason {
-                FailClosedReason::LinearConsumeOnce => ValueClass::Linear,
-                FailClosedReason::UnknownValueClass
-                | FailClosedReason::UnenumeratedShape
-                | FailClosedReason::NoReleaseProtocol
-                | FailClosedReason::UnrecognisedReleaseSymbol
-                | FailClosedReason::DynStorageUnresolved
-                | FailClosedReason::UnprovenSoleOwner => ValueClass::Unknown,
-            },
         }
     }
 
@@ -968,6 +945,102 @@ impl OwnershipDecision {
             | OwnershipDecision::Borrowed { .. }
             | OwnershipDecision::InteriorAlias { .. } => None,
         }
+    }
+}
+
+// ───────────────── carried classification (decision + seed facts) ─────────
+
+/// The complete ownership classification of one MIR value: the rich
+/// [`OwnershipDecision`] (drop / ABI / layout axis) together with the two coarse
+/// seed answers — the `ty_owns_heap` boolean and the [`ValueClass`] — **carried
+/// on the value**, each computed once from its live authority at
+/// [`classify`](Self::classify) time.
+///
+/// Carrying (rather than re-deriving) is the whole point of the lane: the
+/// structural [`OwnershipDecision`] kind alone cannot reproduce the seeds
+/// faithfully (a heap-free tuple is [`NoHeap`](OwnershipDecision::NoHeap) yet
+/// `CowValue`; a `&[string]` is a [`Borrowed`](OwnershipDecision::Borrowed) view
+/// yet `ty_owns_heap` recurses its element to `true`; a closure env is
+/// [`OwnsHeap`](OwnershipDecision::OwnsHeap) yet `ty_owns_heap` answers `false`;
+/// a `Generator` is `OwnsHeap { CowHeapLeaf }` yet `AffineResource`). Because the
+/// facts are carried, [`owns_heap`](Self::owns_heap) `≡` `ty_owns_heap` and
+/// [`to_value_class`](Self::to_value_class) `≡` `ValueClass::of_ty` **exactly**,
+/// so a Phase-1 seam can swap its direct authority call for the projection with
+/// byte-identical behaviour.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValueOwnership {
+    /// The rich typed decision (drop / ABI / layout).
+    decision: OwnershipDecision,
+    /// The carried `ty_owns_heap` seed for the classified type.
+    owns_heap: bool,
+    /// The carried [`ValueClass::of_ty`] seed for the classified type.
+    value_class: ValueClass,
+}
+
+impl ValueOwnership {
+    /// Classify a value of type `ty` held in `place`, carrying its seed facts.
+    ///
+    /// Builds the rich [`OwnershipDecision`] (via
+    /// [`OwnershipDecision::classify`]) and, *once*, the two seed answers from
+    /// their live authorities ([`ty_owns_heap`], [`ValueClass::of_ty`]) so the
+    /// projections below are exact for every shape — including the ones the
+    /// decision kind alone misclassifies.
+    #[must_use]
+    pub fn classify<S: BuildHasher>(
+        ty: &ResolvedTy,
+        place: Place,
+        ctx: &OwnershipCtx<'_, S>,
+    ) -> Self {
+        Self {
+            decision: OwnershipDecision::classify(ty, place, ctx),
+            owns_heap: ty_owns_heap(ty, &ctx.heap_layouts()),
+            value_class: ValueClass::of_ty(ty, ctx.type_classes),
+        }
+    }
+
+    /// The rich typed decision (drop / ABI / layout axis).
+    #[must_use]
+    pub fn decision(&self) -> &OwnershipDecision {
+        &self.decision
+    }
+
+    /// Consume into the owned [`OwnershipDecision`].
+    #[must_use]
+    pub fn into_decision(self) -> OwnershipDecision {
+        self.decision
+    }
+
+    /// The carried `ty_owns_heap` seed — equal to `ty_owns_heap(ty, …)` for the
+    /// classified `ty` **by construction**. This is the exact projection a
+    /// Phase-1 seam reads instead of re-walking the type.
+    #[must_use]
+    pub fn owns_heap(&self) -> bool {
+        self.owns_heap
+    }
+
+    /// The carried [`ValueClass`] seed — equal to `ValueClass::of_ty(ty, …)` for
+    /// the classified `ty` **by construction**.
+    #[must_use]
+    pub fn to_value_class(&self) -> ValueClass {
+        self.value_class
+    }
+
+    /// The [`DropClass`] of the owning decision, if any (delegates to the kind).
+    #[must_use]
+    pub fn drop_class(&self) -> Option<DropClass> {
+        self.decision.drop_class()
+    }
+
+    /// The [`FailClosedReason`] of a tracked-`Unsupported` decision, if any.
+    #[must_use]
+    pub fn fail_closed_reason(&self) -> Option<FailClosedReason> {
+        self.decision.fail_closed_reason()
+    }
+
+    /// The move-strategy floor an `Unsupported` decision imposes, if any.
+    #[must_use]
+    pub fn move_strategy_floor(&self) -> Option<Strategy> {
+        self.decision.move_strategy_floor()
     }
 }
 
@@ -1046,6 +1119,29 @@ mod tests {
             ret: Box::new(ResolvedTy::Unit),
             captures: vec![ResolvedTy::String],
         }
+    }
+
+    fn closure_no_capture() -> ResolvedTy {
+        ResolvedTy::Closure {
+            params: vec![],
+            ret: Box::new(ResolvedTy::Unit),
+            captures: vec![],
+        }
+    }
+
+    fn fn_unit() -> ResolvedTy {
+        ResolvedTy::Function {
+            params: vec![],
+            ret: Box::new(ResolvedTy::Unit),
+        }
+    }
+
+    fn generator_i64() -> ResolvedTy {
+        ResolvedTy::named_builtin(
+            "Generator",
+            BuiltinType::Generator,
+            vec![ResolvedTy::I64, ResolvedTy::Unit],
+        )
     }
 
     fn duplex_i64() -> ResolvedTy {
@@ -1484,46 +1580,10 @@ mod tests {
 
     // ── projection back to the coarser seeds ───────────────────────────────
 
+    /// `Unsupported` floors the move strategy to the existing fail-closed
+    /// boundary; every decided decision imposes no floor.
     #[test]
-    fn projects_back_to_value_class_owns_heap_and_strategy() {
-        // owns_heap mirrors the authority for the decided heap shapes.
-        assert!(HeapLeaf::String.decision().owns_heap());
-        assert!(!OwnershipDecision::NoHeap.owns_heap());
-        assert!(!OwnershipDecision::Unsupported {
-            reason: FailClosedReason::LinearConsumeOnce,
-        }
-        .owns_heap());
-
-        // to_value_class recovers the coarse class.
-        assert_eq!(
-            OwnershipDecision::NoHeap.to_value_class(),
-            ValueClass::BitCopy
-        );
-        assert_eq!(
-            HeapLeaf::Vec.decision().to_value_class(),
-            ValueClass::CowValue,
-        );
-        assert_eq!(
-            OwnershipDecision::owns_handle(DropClass::Resource).to_value_class(),
-            ValueClass::AffineResource,
-        );
-        assert_eq!(
-            OwnershipDecision::Borrowed {
-                provenance: ValueProvenance::unanchored(),
-            }
-            .to_value_class(),
-            ValueClass::View,
-        );
-        assert_eq!(
-            OwnershipDecision::Unsupported {
-                reason: FailClosedReason::LinearConsumeOnce,
-            }
-            .to_value_class(),
-            ValueClass::Linear,
-        );
-
-        // Unsupported floors the move strategy to the existing fail-closed
-        // boundary; decided decisions impose no floor.
+    fn unsupported_floors_move_strategy_decided_does_not() {
         assert_eq!(
             OwnershipDecision::Unsupported {
                 reason: FailClosedReason::UnknownValueClass,
@@ -1532,6 +1592,129 @@ mod tests {
             Some(Strategy::UnknownBlocked),
         );
         assert_eq!(HeapLeaf::String.decision().move_strategy_floor(), None);
+        assert_eq!(OwnershipDecision::NoHeap.move_strategy_floor(), None);
+    }
+
+    /// Assert the carried seed projections of `ty` (held in `place`) equal the
+    /// **live** authorities for the same `ty` — the exact contract Phase 1 swaps
+    /// a seam's `ty_owns_heap(ty)` / `ValueClass::of_ty(ty)` call for.
+    fn assert_carries_live_seeds(
+        label: &str,
+        ty: &ResolvedTy,
+        place: Place,
+        records: &HashMap<String, Vec<(String, ResolvedTy)>>,
+        enums: &[EnumLayout],
+        classes: &TypeClassTable,
+    ) {
+        let c = ctx(records, enums, classes);
+        let owned = ValueOwnership::classify(ty, place, &c);
+        assert_eq!(
+            owned.owns_heap(),
+            ty_owns_heap(ty, &c.heap_layouts()),
+            "{label}: owns_heap() must equal the ty_owns_heap authority exactly",
+        );
+        assert_eq!(
+            owned.to_value_class(),
+            ValueClass::of_ty(ty, classes),
+            "{label}: to_value_class() must equal the ValueClass::of_ty authority exactly",
+        );
+    }
+
+    /// The carried projections round-trip the live authorities for every shape —
+    /// including the ones the *structural* decision-kind alone got wrong, which
+    /// is exactly why the facts are carried, not re-derived from the kind:
+    ///
+    /// - `&[string]` is a `Borrowed` view but `ty_owns_heap` recurses its element
+    ///   to `true` (the kind projected `false`);
+    /// - a heap-free tuple / array is `NoHeap` but `ValueClass::of_ty` is
+    ///   `CowValue` (the kind projected `BitCopy`);
+    /// - a bare function / no-capture closure is `NoHeap` but `PersistentShare`
+    ///   (the kind projected `BitCopy`);
+    /// - a `Generator` is `OwnsHeap { CowHeapLeaf }` but `AffineResource` (the
+    ///   kind projected `CowValue`).
+    #[test]
+    fn carried_seed_projections_equal_the_live_authorities() {
+        let classes = TypeClassTable::new();
+        let boxed = boxed_record_orders();
+        let none = empty_records();
+
+        // Baselines the structural projection already agreed with.
+        let baselines = [
+            ("scalar", ResolvedTy::I64),
+            ("string", ResolvedTy::String),
+            ("bytes", ResolvedTy::Bytes),
+            ("vec", vec_i64()),
+            ("cancellation-token", ResolvedTy::CancellationToken),
+        ];
+        for (label, ty) in &baselines {
+            assert_carries_live_seeds(label, ty, Place::Local(0), &none, &[], &classes);
+        }
+
+        // The shapes the structural projection got WRONG (the gate's four named
+        // cases and their siblings) — each must still equal the live authority.
+        let slice_string = ResolvedTy::Slice(Box::new(ResolvedTy::String));
+        let drifted = [
+            ("slice<string>", slice_string.clone()),
+            ("slice<i64>", ResolvedTy::Slice(Box::new(ResolvedTy::I64))),
+            (
+                "tuple(heap-free)",
+                ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::Bool]),
+            ),
+            (
+                "array(heap-free)",
+                ResolvedTy::Array(Box::new(ResolvedTy::I64), 4),
+            ),
+            (
+                "array(string)",
+                ResolvedTy::Array(Box::new(ResolvedTy::String), 2),
+            ),
+            ("function", fn_unit()),
+            ("closure(no-capture)", closure_no_capture()),
+            ("closure(heap-capture)", closure_capturing_string()),
+            ("generator", generator_i64()),
+            ("trait-object", ResolvedTy::TraitObject { traits: vec![] }),
+        ];
+        for (label, ty) in &drifted {
+            assert_carries_live_seeds(label, ty, Place::Local(0), &none, &[], &classes);
+        }
+
+        // A heap-owning user record (needs the record registry).
+        assert_carries_live_seeds(
+            "record(heap)",
+            &ResolvedTy::named_user("Boxed", vec![]),
+            Place::Local(0),
+            &boxed,
+            &[],
+            &classes,
+        );
+
+        // The exact corrections, pinned directly so the fix is self-documenting
+        // (not merely "equal to whatever the authority says").
+        let c = ctx(&none, &[], &classes);
+        assert!(
+            ValueOwnership::classify(&slice_string, Place::Local(0), &c).owns_heap(),
+            "&[string] transitively owns heap: owns_heap() is true (the kind projected false)",
+        );
+        assert_eq!(
+            ValueOwnership::classify(
+                &ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::Bool]),
+                Place::Local(0),
+                &c,
+            )
+            .to_value_class(),
+            ValueClass::CowValue,
+            "a heap-free tuple is CowValue (the kind projected BitCopy)",
+        );
+        assert_eq!(
+            ValueOwnership::classify(&fn_unit(), Place::Local(0), &c).to_value_class(),
+            ValueClass::PersistentShare,
+            "a bare function is PersistentShare (the kind projected BitCopy)",
+        );
+        assert_eq!(
+            ValueOwnership::classify(&closure_no_capture(), Place::Local(0), &c).to_value_class(),
+            ValueClass::PersistentShare,
+            "a no-capture closure is PersistentShare (the kind projected BitCopy)",
+        );
     }
 
     // ── provenance carries the owner, not the nominal type ─────────────────

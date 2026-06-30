@@ -67,7 +67,8 @@ pub use model::{
 };
 pub use ownership::{
     AbiClass, DropClass, FailClosedReason, HandleRole, HeapLeaf, LayoutClass, OwnershipCtx,
-    OwnershipDecision, PlaceProvenance, Projection, ProvenanceOrigin, ValueProvenance,
+    OwnershipDecision, PlaceProvenance, Projection, ProvenanceOrigin, ValueOwnership,
+    ValueProvenance,
 };
 pub use runtime_symbols::UnknownRuntimeSymbol;
 pub use state_clone::{

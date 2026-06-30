@@ -762,13 +762,12 @@ pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String>
                     // defence-in-depth catch for direct-MIR paths — W2.006,
                     // WASM-TODO(#1451)).
                     //
-                    // `hew_tcp_stream_from_conn` was historically listed here
-                    // but is unreachable through `Instr::CallRuntimeAbi`: it
-                    // is not in `MIR_EMITTER_RUNTIME_SYMBOLS`, so
-                    // `RuntimeCall::new` refuses it at construction; std/net's
-                    // extern-block calls bypass this scan entirely and rely on
-                    // the wasm32 runtime stub (the original note already said
-                    // so). WASM-TODO(#1451): TCP transport gap.
+                    // `hew_tcp_stream_from_conn` is unreachable through
+                    // `Instr::CallRuntimeAbi`: it is not in
+                    // `MIR_EMITTER_RUNTIME_SYMBOLS`, so `RuntimeCall::new`
+                    // refuses it at construction. std/net's extern-block calls
+                    // bypass this scan entirely and rely on the wasm32 runtime
+                    // stub. WASM-TODO(#1451): TCP transport gap.
                     Instr::CallRuntimeAbi(call) => {
                         wasm_excluded_call_family(call.family()).then(|| call.symbol().to_string())
                     }

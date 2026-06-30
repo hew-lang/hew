@@ -2831,6 +2831,51 @@ pub fn lower_hir_module_with_facts(
     // to run after drop elaboration so a `Drop`'s read of the local is modelled.
     let lint_warnings = crate::liveness::run_mir_lints(&raw_mir);
 
+    // #2320: an imported function's `RawMirFunction.span` is a byte offset into
+    // the IMPORTED module's source, but the only source text threaded past MIR
+    // — codegen's `-g` debug line-index and the CLI's fail-closed codegen
+    // diagnostic renderer — is the ROOT input. Resolving an imported span
+    // against the root mislabels the location: a fail-closed codegen error in
+    // `dep.hew` would render a caret against `main.hew` at the wrong line (the
+    // same imported-module boundary class the actor-send re-keying above
+    // compensates for). Until codegen threads per-module source, drop the span
+    // for imported functions so the diagnostic fails closed to the bare,
+    // locationless line ("no location beats a wrong location", per the
+    // `RawMirFunction::span` contract) instead of pointing at another file.
+    //
+    // Identity is the emit name: `RawMirFunction.name` is the `emit_name`
+    // lowering derives from each `HirItem::Function.name` and, for a
+    // monomorphisation, the registry's mangled symbol — so membership is exact
+    // for the imported function itself. A root function that happened to share
+    // an emit name would also degrade to a bare line; that never mislabels (the
+    // worst case forgoes a caret), so the conservative match is sound. Runs
+    // AFTER `run_mir_lints` so imported functions' dead-store lints are
+    // unaffected.
+    let imported_fn_names: std::collections::HashSet<&str> = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            HirItem::Function(f) if module.diagnostic_source_modules.contains_key(&f.id) => {
+                Some(f.name.as_str())
+            }
+            _ => None,
+        })
+        .chain(
+            module
+                .monomorphisations
+                .iter()
+                .filter(|m| module.diagnostic_source_modules.contains_key(&m.key.origin))
+                .map(|m| m.mangled_name.as_str()),
+        )
+        .collect();
+    if !imported_fn_names.is_empty() {
+        for raw in &mut raw_mir {
+            if imported_fn_names.contains(raw.name.as_str()) {
+                raw.span = None;
+            }
+        }
+    }
+
     // Field-bearing `#[resource]` record → `<Type>::close` symbol registry
     // (spec §3.7.3). A `#[resource]` record that owns a heap/aggregate field
     // is admitted to `owned_record_drop_allowed` and routes to the recursive

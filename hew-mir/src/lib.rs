@@ -12,6 +12,7 @@ pub mod dyn_vtable_registry;
 pub mod liveness;
 pub mod lower;
 pub mod model;
+pub mod ownership;
 pub mod runtime_call;
 pub mod runtime_symbols;
 pub mod state_clone;
@@ -63,6 +64,10 @@ pub use model::{
     SelectArm, SelectArmKind, SendAliasMode, Strategy, SupervisorChildLayout,
     SupervisorConfigParam, SupervisorLayout, SuspendKind, Terminator, ThirFunction,
     TraitObjectStorage, TrapKind, WitnessOperand,
+};
+pub use ownership::{
+    AbiClass, DropClass, FailClosedReason, HandleRole, HeapLeaf, LayoutClass, OwnershipCtx,
+    OwnershipDecision, PlaceProvenance, Projection, ProvenanceOrigin, ValueProvenance,
 };
 pub use runtime_symbols::UnknownRuntimeSymbol;
 pub use state_clone::{

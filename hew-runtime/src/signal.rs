@@ -824,6 +824,48 @@ mod platform {
         }
     }
 
+    /// Ignore `SIGPIPE` process-wide.
+    ///
+    /// A broken-pipe write on ANY thread — the OS main thread (where a compiled
+    /// Hew program runs its synchronous top-level `ask` / send code), the
+    /// reactor, the SWIM driver, the accept loop, the reconnect worker, or a
+    /// per-connection reader thread — returns `EPIPE` from the syscall instead
+    /// of raising `SIGPIPE`, whose default disposition would KILL the process.
+    /// With SIGPIPE ignored the `EPIPE` surfaces as an ordinary `io::Error`, so
+    /// the fallible send path converts it into a typed fail-closed error
+    /// (`AskError::SendFailed` / a transport write error) rather than the
+    /// program dying silently.
+    ///
+    /// Installed once, very early in `hew_sched_init`, BEFORE any background
+    /// thread is spawned or any socket I/O runs. One process-wide disposition
+    /// uniformly protects every thread — unlike the per-worker `SIGPIPE` block
+    /// installed in [`init_worker_recovery`] (a `pthread_sigmask` that never
+    /// covers the main thread or the network background threads).
+    ///
+    /// Scope: this is the COMPILED PROGRAM's runtime. The `hew` CLI is a
+    /// separate binary/process that deliberately RESETS SIGPIPE to `SIG_DFL`
+    /// (`hew-cli/src/signal.rs`) so `hew run foo | head` terminates cleanly;
+    /// that binary never calls `hew_sched_init`, so this ignore never reaches
+    /// it.
+    pub(crate) fn ignore_sigpipe() {
+        // SAFETY: `sa` is zero-initialised then fully populated before use.
+        // Installing `SIG_IGN` for `SIGPIPE` is the canonical, async-signal-safe
+        // "ignore broken pipe" disposition; `sigaction` for this signal number
+        // is always valid.
+        unsafe {
+            let mut sa: libc::sigaction = std::mem::zeroed();
+            sa.sa_sigaction = libc::SIG_IGN;
+            libc::sigemptyset(&raw mut sa.sa_mask);
+            sa.sa_flags = 0;
+            let ret = sigaction(libc::SIGPIPE, &raw const sa, ptr::null_mut());
+            // Non-fatal if it somehow fails: the per-worker SIGPIPE block and the
+            // send-path MSG_NOSIGNAL / SO_NOSIGPIPE remain as defenses. Catch a
+            // regression in debug builds without aborting a production startup.
+            debug_assert_eq!(ret, 0, "sigaction(SIGPIPE, SIG_IGN) failed");
+            let _ = ret;
+        }
+    }
+
     /// Set up per-worker recovery infrastructure.
     ///
     /// Allocates a 128 KiB alternate signal stack and a recovery context.
@@ -1289,6 +1331,13 @@ mod platform {
         }
     }
 
+    /// No-op on Windows: there is no `SIGPIPE`. A write to a broken pipe /
+    /// reset socket surfaces directly as an `io::Error` (`ERROR_BROKEN_PIPE` /
+    /// `WSAECONNRESET`), which the fallible send path already converts to a
+    /// typed fail-closed error. See the Unix impl for the disposition this
+    /// mirrors.
+    pub(crate) fn ignore_sigpipe() {}
+
     pub(crate) fn init_worker_recovery(worker_id: u32) {
         let ctx = WorkerRecoveryCtx::new_boxed(worker_id);
         let ctx_ptr = Box::into_raw(ctx); // ALLOCATOR-PAIRING: GlobalAlloc
@@ -1442,6 +1491,14 @@ mod platform {
     pub(crate) fn init_crash_handling() {}
     pub(crate) fn init_worker_recovery(_worker_id: u32) {}
 
+    /// No-op on WASM: wasm32 has no POSIX signals, so there is no `SIGPIPE` to
+    /// ignore. A broken-pipe / reset condition on the simulated transport
+    /// surfaces as a typed error through the normal fallible send path.
+    // WASM-TODO(#1451): revisit if a future wasm target grows a signal-like
+    // disposition for pipe/socket teardown; today the process-wide SIGPIPE
+    // ignore is native-only (the real impl lives in the `#[cfg(unix)]` module).
+    pub(crate) fn ignore_sigpipe() {}
+
     /// # Safety
     ///
     /// No-op on WASM. Always returns null.
@@ -1493,9 +1550,9 @@ mod platform {
 
 // Re-export platform-specific implementations.
 pub(crate) use platform::{
-    clear_dispatch_recovery, handle_crash_recovery, init_crash_handling, init_worker_recovery,
-    mark_recovery_active, prepare_dispatch_recovery, sigsetjmp, try_direct_longjmp,
-    try_direct_longjmp_with_code,
+    clear_dispatch_recovery, handle_crash_recovery, ignore_sigpipe, init_crash_handling,
+    init_worker_recovery, mark_recovery_active, prepare_dispatch_recovery, sigsetjmp,
+    try_direct_longjmp, try_direct_longjmp_with_code,
 };
 
 // ── Terminal off-dispatch crash diagnostic (subprocess test) ─────────────────
@@ -1590,5 +1647,75 @@ mod terminal_diag_tests {
             stderr.contains(&format!("thread={FAULT_THREAD_NAME}")),
             "diagnostic must name the faulting thread `{FAULT_THREAD_NAME}`\nstderr:\n{stderr}"
         );
+    }
+}
+
+/// Tests for the process-wide `SIGPIPE` ignore that `hew_sched_init` installs
+/// (via [`ignore_sigpipe`]) so a broken-pipe network write in a compiled Hew
+/// program fails closed to a typed error instead of killing the process.
+#[cfg(all(test, unix, not(target_arch = "wasm32")))]
+mod sigpipe_tests {
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+    use std::ptr;
+
+    /// After the runtime installs its process-wide SIGPIPE ignore, SIGPIPE's
+    /// disposition must be `SIG_IGN` — the invariant that lets a broken-pipe
+    /// write return `EPIPE` (surfacing as a typed fail-closed error) rather
+    /// than terminate the process.
+    #[test]
+    fn ignore_sigpipe_sets_disposition_to_sig_ign() {
+        super::ignore_sigpipe();
+
+        // SAFETY: an all-zero `libc::sigaction` is a valid initialised value (a
+        // plain C struct of integers/pointers); it is immediately overwritten by
+        // the query below.
+        let mut cur: libc::sigaction = unsafe { std::mem::zeroed() };
+        // SAFETY: a null `act` makes `sigaction` a pure query into the valid,
+        // fully-owned `cur` out-param; the signal number is valid.
+        let rc = unsafe { libc::sigaction(libc::SIGPIPE, ptr::null(), &raw mut cur) };
+        assert_eq!(rc, 0, "sigaction(SIGPIPE) query failed");
+        assert_eq!(
+            cur.sa_sigaction,
+            libc::SIG_IGN,
+            "SIGPIPE must be ignored in the program runtime after startup"
+        );
+    }
+
+    /// Deterministic reproduction of the fixed crash: with SIGPIPE ignored, a
+    /// write to a socket whose peer has closed returns a typed I/O error
+    /// (`BrokenPipe` / `ConnectionReset`) instead of killing the process with
+    /// the default SIGPIPE disposition. Reaching the final assertion at all
+    /// proves the process was NOT terminated by a signal.
+    #[test]
+    fn broken_pipe_write_returns_error_not_signal_death() {
+        super::ignore_sigpipe();
+
+        let (mut writer, reader) = UnixStream::pair().expect("socketpair");
+        drop(reader); // fully close the peer
+
+        // The peer is gone, so the write fails closed with EPIPE. Bound the
+        // loop so an unexpected kernel buffering regime cannot hang the test.
+        // `write_all` surfaces the peer-gone error (and handles the byte count)
+        // rather than looping on partial writes.
+        let payload = [0xA5u8; 4096];
+        let mut observed = None;
+        for _ in 0..1024 {
+            if let Err(e) = writer.write_all(&payload) {
+                observed = Some(e);
+                break;
+            }
+        }
+
+        let err = observed.expect("broken-pipe write should surface an error, not hang");
+        assert!(
+            matches!(
+                err.kind(),
+                std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+            ),
+            "expected a fail-closed peer-gone error, got {err:?}"
+        );
+        // Had SIGPIPE not been ignored, the first write above would have killed
+        // this process before we could observe the error.
     }
 }

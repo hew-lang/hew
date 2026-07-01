@@ -953,6 +953,16 @@ impl ReplyRoutingTable {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         map.remove(&request_id)
     }
+
+    /// Number of registered-but-unresolved pending replies. Test-only: used to
+    /// assert the reply slot does not leak on the fail-closed send path.
+    #[cfg(test)]
+    fn pending_len(&self) -> usize {
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
 }
 
 static REMOTE_VOID_REPLY_SENTINEL: u8 = 0;
@@ -6970,6 +6980,40 @@ mod tests {
         assert_eq!(outcome.status, ReplyStatus::Failed);
         assert_eq!(outcome.ask_error, AskError::OrphanedAsk);
         assert!(outcome.data.is_empty());
+    }
+
+    #[test]
+    fn send_failure_removes_pending_reply_slot_no_leak() {
+        // `setup_remote_ask` registers a pending reply BEFORE the outbound send;
+        // on a fail-closed send (the SIGPIPE→EPIPE path that returns
+        // `AskError::SendFailed`) it must `remove` the slot so a failed ask
+        // cannot leak a pending entry. This pins that cleanup contract on a
+        // fresh table, isolated from the process-global one.
+        let table = ReplyRoutingTable::new();
+        assert_eq!(table.pending_len(), 0);
+
+        let (request_id, _pending) = table.register(ConnectionKey {
+            conn_mgr: 42,
+            conn_id: 7,
+        });
+        assert_eq!(
+            table.pending_len(),
+            1,
+            "register must install exactly one pending reply slot"
+        );
+
+        // Mirror `setup_remote_ask`'s `!send_ok` branch: remove the slot the ask
+        // registered before the send that just failed.
+        let removed = table.remove(request_id);
+        assert!(
+            removed.is_some(),
+            "the fail-closed send path must find and remove the registered slot"
+        );
+        assert_eq!(
+            table.pending_len(),
+            0,
+            "AskError::SendFailed cleanup must not leak the reply slot"
+        );
     }
 
     #[test]

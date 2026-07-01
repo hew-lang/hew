@@ -224,7 +224,12 @@ slow-timeout = { period = "30s", terminate-after = 3 }
 # wire_cbor_cross_process_round_trip is the same harness with a #[wire]-typed
 # payload (explicit @N tags); it shares the compiled binary via OnceLock and runs
 # in the same serialized group for the same reasons.
-filter = "test(remote_ask_round_trip_returns_exact_values) | test(wire_cbor_cross_process_round_trip)"
+# remote_ask_under_partition_fails_closed_not_hang is the same compiled harness
+# (server + client processes built from dist_node.hew) exercising the fail-closed
+# no-hang partition gate; it belongs in the same serialized real-timing group as
+# its siblings above (it was the only one in this binary missing the assignment,
+# which left it exposed to the concurrent-load timing flake).
+filter = "test(remote_ask_round_trip_returns_exact_values) | test(wire_cbor_cross_process_round_trip) | test(remote_ask_under_partition_fails_closed_not_hang)"
 test-group = "real-timing"
 slow-timeout = { period = "120s", terminate-after = 3 }
 

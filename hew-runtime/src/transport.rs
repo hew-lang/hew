@@ -441,6 +441,10 @@ impl TcpTransport {
     }
 
     fn store_conn(&self, sock: Socket) -> c_int {
+        // macOS parity: mark the socket SO_NOSIGPIPE so a broken-pipe write
+        // fails closed with EPIPE instead of raising SIGPIPE (no-op elsewhere;
+        // Linux uses MSG_NOSIGNAL in framed_send).
+        suppress_sigpipe(&sock);
         if let Ok(conn) = self.conns.write(|conns| {
             for (i, slot) in conns.iter_mut().enumerate() {
                 if slot.is_none() {
@@ -518,6 +522,68 @@ fn parse_host_port(addr: &str) -> Option<SocketAddr> {
     addr.parse::<SocketAddr>().ok()
 }
 
+/// Extra `send(2)` flags for [`framed_send`].
+///
+/// On Linux/Android, `MSG_NOSIGNAL` suppresses `SIGPIPE` for THIS send even if
+/// the process-wide disposition were ever reset — a belt-and-suspenders partner
+/// to the `hew_sched_init` process-wide SIGPIPE ignore, so a broken-pipe write
+/// returns `EPIPE` (surfacing as a typed fail-closed error) instead of killing
+/// the process. macOS/iOS have no `MSG_NOSIGNAL`; they get the equivalent via
+/// the `SO_NOSIGPIPE` socket option set in [`suppress_sigpipe`]. Windows has no
+/// `SIGPIPE`.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const FRAMED_SEND_FLAGS: c_int = libc::MSG_NOSIGNAL;
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+const FRAMED_SEND_FLAGS: c_int = 0;
+
+/// Suppress `SIGPIPE` for writes on a stored connection socket (macOS parity).
+///
+/// macOS/iOS/tvOS/watchOS have no `MSG_NOSIGNAL` send flag, so the Linux
+/// [`FRAMED_SEND_FLAGS`] path has no analogue there; instead the `SO_NOSIGPIPE`
+/// socket option is set once, at connection-store time, so a broken-pipe write
+/// on this socket returns `EPIPE` rather than raising `SIGPIPE`. This is
+/// defense-in-depth behind the process-wide SIGPIPE ignore installed in
+/// `hew_sched_init`. No-op on platforms without `SO_NOSIGPIPE`.
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "watchos"
+))]
+fn suppress_sigpipe(sock: &Socket) {
+    use std::os::fd::AsRawFd;
+    let enable: c_int = 1;
+    // SAFETY: `sock` owns a valid file descriptor for the duration of this call.
+    // `SO_NOSIGPIPE` at `SOL_SOCKET` takes an `int`-sized option value; a failure
+    // is non-fatal (the process-wide ignore still applies), so the result is
+    // intentionally not surfaced.
+    unsafe {
+        libc::setsockopt(
+            sock.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_NOSIGPIPE,
+            (&raw const enable).cast(),
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "sizeof(c_int) is 4, fits in socklen_t (u32)"
+            )]
+            {
+                std::mem::size_of::<c_int>() as libc::socklen_t
+            },
+        );
+    }
+}
+
+/// No-op on platforms without `SO_NOSIGPIPE` (Linux/Android use
+/// [`FRAMED_SEND_FLAGS`] `MSG_NOSIGNAL`; Windows has no `SIGPIPE`).
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "watchos"
+)))]
+fn suppress_sigpipe(_sock: &Socket) {}
+
 /// Send exactly `buf` bytes over a socket with length-prefixed framing.
 fn framed_send(sock: &Socket, data: &[u8]) -> c_int {
     if data.len() > u32::MAX as usize {
@@ -527,10 +593,13 @@ fn framed_send(sock: &Socket, data: &[u8]) -> c_int {
     let frame_len = data.len() as u32;
     let header = frame_len.to_le_bytes();
 
-    // Write header.
+    // Write header. `send_with_flags` (not `write`) so `MSG_NOSIGNAL` can
+    // suppress SIGPIPE on Linux; on macOS the socket carries `SO_NOSIGPIPE`
+    // (see `suppress_sigpipe`). Either way a broken pipe returns `EPIPE` here
+    // instead of killing the process, and we fail closed with `-1`.
     let mut written = 0usize;
     while written < 4 {
-        match (&*sock).write(&header[written..]) {
+        match sock.send_with_flags(&header[written..], FRAMED_SEND_FLAGS) {
             Ok(0) => {
                 set_last_error("transport framed_send: peer closed while writing header");
                 return -1;
@@ -545,7 +614,7 @@ fn framed_send(sock: &Socket, data: &[u8]) -> c_int {
     // Write payload.
     written = 0;
     while written < data.len() {
-        match (&*sock).write(&data[written..]) {
+        match sock.send_with_flags(&data[written..], FRAMED_SEND_FLAGS) {
             Ok(0) => {
                 set_last_error("transport framed_send: peer closed while writing payload");
                 return -1;
@@ -1747,6 +1816,37 @@ mod tests {
         (server, client)
     }
 
+    /// A broken-pipe outbound `framed_send` must fail closed with `-1` instead
+    /// of killing the process with SIGPIPE. This exercises the send-path
+    /// defense-in-depth in isolation — `MSG_NOSIGNAL` on Linux/Android
+    /// ([`FRAMED_SEND_FLAGS`]) and `SO_NOSIGPIPE` on macOS ([`suppress_sigpipe`])
+    /// — WITHOUT installing the process-wide SIGPIPE ignore, so a regression in
+    /// either per-socket defense would terminate the test process (a loud
+    /// failure) rather than pass silently.
+    #[cfg(unix)]
+    #[test]
+    fn framed_send_to_broken_pipe_fails_closed_without_signal() {
+        use std::os::fd::OwnedFd;
+        use std::os::unix::net::UnixStream;
+
+        let (near, far) = UnixStream::pair().expect("socketpair");
+        // Wrap the near end as the transport's socket type and apply the same
+        // macOS SIGPIPE suppression the connection-store path applies.
+        let sock: Socket = OwnedFd::from(near).into();
+        suppress_sigpipe(&sock);
+        drop(far); // fully close the peer
+
+        // The peer is gone, so the header write inside framed_send hits EPIPE
+        // and the function fails closed. Reaching the assertion proves the
+        // process was not killed by SIGPIPE.
+        let payload = [0xABu8; 4096];
+        let rc = framed_send(&sock, &payload);
+        assert_eq!(
+            rc, -1,
+            "framed_send to a broken pipe must fail closed with -1, not raise SIGPIPE"
+        );
+    }
+
     fn register_stream(stream: TcpStream) -> c_int {
         TCP_API_STATE.access(|state| {
             let handle = state.alloc_handle();
@@ -2691,8 +2791,8 @@ pub extern "C" fn hew_connection_is_valid(handle: c_int) -> bool {
 mod unix_transport {
     use super::{
         accept_with_optional_timeout, c_char, c_int, c_void, framed_recv, framed_send,
-        report_conn_table_poison, CStr, ConnLookupError, Domain, HewTransport, HewTransportOps,
-        PoisonSafeRw, SockAddr, Socket, Type, HEW_CONN_INVALID, MAX_CONNS,
+        report_conn_table_poison, suppress_sigpipe, CStr, ConnLookupError, Domain, HewTransport,
+        HewTransportOps, PoisonSafeRw, SockAddr, Socket, Type, HEW_CONN_INVALID, MAX_CONNS,
     };
     use std::net::Shutdown;
     use std::sync::atomic::AtomicBool;
@@ -2716,6 +2816,9 @@ mod unix_transport {
         }
 
         fn store_conn(&self, sock: Socket) -> c_int {
+            // macOS parity: see the TCP `store_conn` note — SO_NOSIGPIPE so a
+            // broken-pipe write fails closed with EPIPE instead of SIGPIPE.
+            suppress_sigpipe(&sock);
             if let Ok(conn) = self.conns.write(|conns| {
                 for (i, slot) in conns.iter_mut().enumerate() {
                     if slot.is_none() {

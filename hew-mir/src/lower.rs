@@ -10618,13 +10618,35 @@ impl Builder {
     /// Returns `false` for the genuinely-unwired Vec elements, which therefore
     /// stay on the reject path: a `bytes` fat triple and a bare runtime handle
     /// are not registered record/enum types; an all-BitCopy record/enum is
-    /// `Copy` and owns no heap; and a scalar-payload `indirect enum` owns no
-    /// heap as a flat element (the heap-ownership authority is indirection-blind,
-    /// so `named_elem_owns_heap` is `false`) — its per-element node free is the
-    /// unwired release the reject names. Mirrors codegen's `owned_elem_thunk_key`
-    /// resolution so harvest, reject, getter, and free agree
-    /// (`dedup-semantic-boundary`).
+    /// `Copy` and owns no heap; and EVERY `indirect enum` — scalar OR heap
+    /// payload — is excluded up front. An indirect-enum `Vec` rides the plain
+    /// pointer ABI (`hew_vec_new_ptr`: each slot is a `ptr` to a heap-boxed
+    /// tagged-union node), while the owned-element release
+    /// (`hew_vec_free_owned` running a per-element `drop_fn`) has no
+    /// indirect-aware node free wired — admitting it here would route
+    /// construction and release through mismatched ABIs. A scalar-payload
+    /// indirect enum also has `named_elem_owns_heap == false` (the
+    /// heap-ownership authority is indirection-blind), but a HEAP-payload one
+    /// (`A(string)`) has `named_elem_owns_heap == true` and would otherwise fall
+    /// through the heap-owning-enum path below; the explicit `ty_is_indirect_enum`
+    /// guard is what keeps that case on the fail-closed
+    /// `Unsupported(NoReleaseProtocol)` reject rather than the owned-ABI path.
+    /// Mirrors codegen's `owned_elem_thunk_key` resolution so harvest, reject,
+    /// getter, and free agree (`dedup-semantic-boundary`).
     fn elem_is_owned_abi_releasable(&self, elem: &ResolvedTy) -> bool {
+        // An `indirect enum` element is NEVER owned-ABI releasable, regardless
+        // of payload. Its `Vec` is built through the plain pointer ABI while the
+        // owned-element per-element node free is unwired (the deferred
+        // indirect-aware release phase), so it must stay on the fail-closed
+        // `Unsupported(NoReleaseProtocol)` reject — not be excluded from it as if
+        // the owned ABI claimed it. The scalar-payload case would already return
+        // `false` at the `named_elem_owns_heap` check below; this guard also
+        // catches the HEAP-payload case (`indirect enum Foo { A(string); B }`),
+        // whose payload owns heap and would otherwise reach `true` and suppress
+        // the reject, leaving a construct/release ABI mismatch to reach codegen.
+        if ty_is_indirect_enum(elem, &self.enum_layouts) {
+            return false;
+        }
         let ResolvedTy::Named {
             name: elem_name,
             args: elem_args,
@@ -11071,18 +11093,21 @@ impl Builder {
                 // Reject only a Vec element whose per-element release is unwired
                 // in EVERY context. `classify_vec_element_release` returns
                 // `Unsupported(NoReleaseProtocol)` both for a genuinely-unwired
-                // element (a `bytes` fat triple, a scalar-payload indirect-enum
-                // node) AND for a heap-owning record/enum that simply was not
-                // harvested into THIS function's owned-element allow-list — its
-                // `Vec` is constructed, and released through the owned-element
-                // ABI, in another function (`vec_owned_element_keys` is harvested
-                // per function). Excluding `elem_is_owned_abi_releasable` keeps
-                // the reject from false-positiving on a nested `Vec<owned-record>`
-                // field (e.g. the `Vec<Stack<i64>>` buffer inside
-                // `Stack<Stack<i64>>`) while still rejecting the genuinely-unwired
-                // `Vec<bytes>` / `Vec<indirect_enum>`. The descent below still
-                // visits `E`, so a `Vec<RecordHoldingVecIndirectEnum>` is caught
-                // at the inner `Vec<indirect_enum>`.
+                // element (a `bytes` fat triple, an indirect-enum node — scalar
+                // OR heap payload) AND for a heap-owning record/enum that simply
+                // was not harvested into THIS function's owned-element allow-list
+                // — its `Vec` is constructed, and released through the
+                // owned-element ABI, in another function (`vec_owned_element_keys`
+                // is harvested per function). `elem_is_owned_abi_releasable`
+                // excludes only the latter (and excludes every indirect enum, so
+                // an indirect-enum element is never suppressed from the reject),
+                // keeping the reject from false-positiving on a nested
+                // `Vec<owned-record>` field (e.g. the `Vec<Stack<i64>>` buffer
+                // inside `Stack<Stack<i64>>`) while still rejecting the
+                // genuinely-unwired `Vec<bytes>` / `Vec<indirect_enum>`. The
+                // descent below still visits `E`, so a
+                // `Vec<RecordHoldingVecIndirectEnum>` is caught at the inner
+                // `Vec<indirect_enum>`.
                 if matches!(
                     self.classify_vec_element_release(elem),
                     VecElementRelease::Unsupported(FailClosedReason::NoReleaseProtocol)
@@ -44820,6 +44845,214 @@ mod binding_ty_is_plain_vec_tuple {
         assert!(
             builder.binding_ty_is_plain_vec(&ty),
             "Vec<i64> must be admitted as a plain Vec (scalar `BitCopy` arm)"
+        );
+    }
+
+    /// Build a `Builder` with a HEAP-payload `indirect enum Foo { A(string); B }`
+    /// registered. Unlike the scalar-payload enum, its `A(string)` payload owns
+    /// heap, so `named_elem_owns_heap(Foo)` is `true` — the case the
+    /// scalar-only `!named_elem_owns_heap` guard in `elem_is_owned_abi_releasable`
+    /// used to miss, letting a heap-payload `Vec<indirect_enum>` reach codegen
+    /// with a construct/release ABI mismatch. The explicit `ty_is_indirect_enum`
+    /// guard now keeps it on the fail-closed reject.
+    fn builder_with_heap_payload_indirect_enum() -> Builder {
+        Builder {
+            enum_layouts: vec![crate::model::EnumLayout {
+                name: "Foo".to_string(),
+                tag_width: 1,
+                variants: vec![
+                    crate::model::MachineVariantLayout {
+                        name: "A".to_string(),
+                        field_tys: vec![ResolvedTy::String],
+                        field_names: vec![],
+                    },
+                    crate::model::MachineVariantLayout {
+                        name: "B".to_string(),
+                        field_tys: vec![],
+                        field_names: vec![],
+                    },
+                ],
+                is_indirect: true,
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// Regression (heap-payload indirect enum): a `Vec<indirect enum Foo {
+    /// A(string); B }>` must be rejected. Its `A(string)` payload owns heap, so
+    /// `named_elem_owns_heap(Foo)` is `true` and the element is NOT excluded by
+    /// the `!named_elem_owns_heap` check — yet an indirect-enum `Vec` rides the
+    /// plain pointer ABI (`hew_vec_new_ptr`) while `hew_vec_free_owned` has no
+    /// indirect-aware per-element node free, so admitting it as owned-ABI
+    /// releasable would ship a construct/release ABI mismatch to codegen. The
+    /// explicit `ty_is_indirect_enum` guard in `elem_is_owned_abi_releasable`
+    /// keeps every indirect enum on the fail-closed `Unsupported(NoReleaseProtocol)`
+    /// reject regardless of payload.
+    #[test]
+    fn heap_payload_indirect_enum_vec_element_rejected() {
+        let builder = builder_with_heap_payload_indirect_enum();
+        let foo = unregistered_named("Foo");
+
+        // The payload owns heap — the scalar-only guard would NOT have excluded
+        // this element, so the reject depends on the explicit indirect-enum guard.
+        assert!(
+            builder.named_elem_owns_heap(&foo),
+            "indirect enum Foo {{ A(string); B }}: the A(string) payload owns heap"
+        );
+        assert!(
+            !builder.elem_is_owned_abi_releasable(&foo),
+            "a heap-payload indirect enum is NOT owned-ABI releasable — its per-element \
+             node free is unwired; it must stay on the fail-closed reject"
+        );
+        assert!(
+            !builder.is_owned_vec_element(&foo),
+            "an indirect-enum element is built through the plain pointer ABI and must \
+             never route to the owned-element free"
+        );
+        assert!(
+            builder
+                .unsupported_vec_element_in_ty(&vec_of_ty(foo.clone()))
+                .is_some(),
+            "Vec<heap-payload indirect enum> has no wired per-element node free — must be rejected"
+        );
+        assert!(
+            builder
+                .unsupported_vec_element_in_ty(&vec_of_ty(vec_of_ty(foo)))
+                .is_some(),
+            "Vec<Vec<heap-payload indirect enum>>: the inner unwired element must be found \
+             by descending into E"
+        );
+    }
+
+    /// The heap-payload indirect-enum reject also reaches TRANSITIVELY — through a
+    /// record field, a tuple element, a type argument, and a self-recursive
+    /// `Vec<_>` payload (`indirect enum List { Cons(i64, Vec<List>); Nil }`, whose
+    /// own `Cons` payload owns heap). A composite drop recurses into these, so an
+    /// unclaimed indirect-enum element nested inside leaks exactly as a bare
+    /// `Vec<Foo>` would.
+    #[test]
+    fn heap_payload_indirect_enum_vec_element_rejected_transitively() {
+        let foo = unregistered_named("Foo");
+
+        let mut builder = builder_with_heap_payload_indirect_enum();
+        // Record field: `Holder { items: Vec<Foo> }`.
+        builder.record_field_orders.insert(
+            "Holder".to_string(),
+            vec![("items".to_string(), vec_of_ty(foo.clone()))],
+        );
+        assert!(
+            builder
+                .unsupported_vec_element_in_ty(&unregistered_named("Holder"))
+                .is_some(),
+            "a record field Vec<heap-payload indirect enum> must be rejected transitively"
+        );
+
+        // Tuple element: `(Vec<Foo>, i64)`.
+        assert!(
+            builder
+                .unsupported_vec_element_in_ty(&ResolvedTy::Tuple(vec![
+                    vec_of_ty(foo.clone()),
+                    ResolvedTy::I64,
+                ]))
+                .is_some(),
+            "a tuple element Vec<heap-payload indirect enum> must be rejected transitively"
+        );
+
+        // Type argument: `Option<Vec<Foo>>`.
+        assert!(
+            builder
+                .unsupported_vec_element_in_ty(&ResolvedTy::Named {
+                    name: "Option".to_string(),
+                    args: vec![vec_of_ty(foo)],
+                    builtin: None,
+                    is_opaque: false,
+                })
+                .is_some(),
+            "a type-argument Vec<heap-payload indirect enum> must be rejected transitively"
+        );
+
+        // Self-recursive heap payload: `indirect enum List { Cons(i64, Vec<List>); Nil }`.
+        // `Vec<List>` must reject — List is an indirect enum — and the walk must
+        // terminate on the self-reference (cycle-guarded).
+        let rec_builder = Builder {
+            enum_layouts: vec![crate::model::EnumLayout {
+                name: "List".to_string(),
+                tag_width: 1,
+                variants: vec![
+                    crate::model::MachineVariantLayout {
+                        name: "Cons".to_string(),
+                        field_tys: vec![ResolvedTy::I64, vec_of_ty(unregistered_named("List"))],
+                        field_names: vec![],
+                    },
+                    crate::model::MachineVariantLayout {
+                        name: "Nil".to_string(),
+                        field_tys: vec![],
+                        field_names: vec![],
+                    },
+                ],
+                is_indirect: true,
+            }],
+            ..Default::default()
+        };
+        assert!(
+            rec_builder
+                .unsupported_vec_element_in_ty(&vec_of_ty(unregistered_named("List")))
+                .is_some(),
+            "Vec<self-recursive indirect enum List> must be rejected (its per-element node \
+             free is unwired) and the recursion must terminate"
+        );
+    }
+
+    /// Non-over-rejection guard for the indirect-enum exclusion: making EVERY
+    /// indirect enum fail closed must NOT catch shapes that are genuinely
+    /// owned-ABI releasable. A DIRECT (non-indirect) heap-owning enum is stored
+    /// inline and released through the owned-element ABI, and a heap-owning
+    /// record is likewise releasable — both stay `elem_is_owned_abi_releasable`
+    /// and are NOT rejected. Only indirectness flips the verdict.
+    #[test]
+    fn is_indirect_exclusion_preserves_direct_enum_and_owned_record() {
+        let mut builder = Builder {
+            // A DIRECT heap-owning enum `DirE { A(string); B }` (is_indirect:
+            // false) — inline storage, owned-element ABI applies.
+            enum_layouts: vec![crate::model::EnumLayout {
+                name: "DirE".to_string(),
+                tag_width: 1,
+                variants: vec![
+                    crate::model::MachineVariantLayout {
+                        name: "A".to_string(),
+                        field_tys: vec![ResolvedTy::String],
+                        field_names: vec![],
+                    },
+                    crate::model::MachineVariantLayout {
+                        name: "B".to_string(),
+                        field_tys: vec![],
+                        field_names: vec![],
+                    },
+                ],
+                is_indirect: false,
+            }],
+            ..Default::default()
+        };
+        // A heap-owning record `Pair { name: string }`.
+        builder.record_field_orders.insert(
+            "Pair".to_string(),
+            vec![("name".to_string(), ResolvedTy::String)],
+        );
+
+        let dir_e = unregistered_named("DirE");
+        assert!(
+            !ty_is_indirect_enum(&dir_e, &builder.enum_layouts),
+            "a direct enum is not an indirect enum — the exclusion must not touch it"
+        );
+        assert!(
+            builder.elem_is_owned_abi_releasable(&dir_e),
+            "a direct heap-owning enum is owned-ABI releasable (inline storage) — the \
+             indirect-enum exclusion must not over-reject it"
+        );
+        assert!(
+            builder.elem_is_owned_abi_releasable(&unregistered_named("Pair")),
+            "a heap-owning record is owned-ABI releasable — the indirect-enum exclusion \
+             must not over-reject it"
         );
     }
 

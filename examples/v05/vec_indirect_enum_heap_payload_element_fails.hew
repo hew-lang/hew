@@ -1,0 +1,24 @@
+// Vec element rejection fixture: a `Vec<Foo>` whose element is an `indirect
+// enum` with a HEAP-owning payload (`A(string)`). Unlike a scalar-payload
+// indirect enum, this element's payload owns heap, so the heap-ownership
+// authority reports the element as heap-owning — yet an indirect-enum `Vec` is
+// still built through the plain pointer ABI (each slot a `ptr` to a heap-boxed
+// node) while the scope-exit buffer free has no wired per-element node free.
+//
+// The payload owning heap must NOT route the element onto the owned-element
+// release ABI: construction (pointer ABI) and release (owned-element ABI) would
+// mismatch, and the boxed nodes plus their string payloads would leak. Every
+// indirect enum — scalar OR heap payload — fails closed at compile with a
+// diagnostic naming the unwired per-element release, never silently constructed
+// then leaked. Once the per-element release is wired this fixture compiles —
+// delete its entry from hew-corpus-expected-failures.txt then.
+indirect enum Foo {
+    A(string);
+    B;
+}
+
+fn main() {
+    let nodes: Vec<Foo> = Vec::new();
+    nodes.push(Foo::B);
+    nodes.push(Foo::A("boxed"));
+}

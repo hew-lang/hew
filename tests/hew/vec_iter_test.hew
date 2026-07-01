@@ -1,0 +1,83 @@
+//! Tests for `Vec<T>::iter()` — the non-consuming iterator surface.
+//!
+//! `v.iter()` yields the same `VecIter<T>` cursor as `v.into_iter()` but
+//! snapshots the receiver via an independent clone (place receivers) instead of
+//! consuming it, so the source stays a live, independent owner after iteration:
+//! later mutations to the source are not observed by the cursor, and the
+//! place-receiver clone is an O(n) deep copy. Covers the count/map/fold pipeline
+//! terminals, `for`-in, source-liveness, and owned (`string`) elements.
+
+import std::iter;
+import std::testing;
+
+#[test]
+fn test_iter_count() {
+    let v: Vec<i64> = Vec::new();
+    v.push(10);
+    v.push(20);
+    v.push(30);
+    testing.assert_eq(iter::count(v.iter()), 3);
+}
+
+#[test]
+fn test_iter_fold_sums_elements() {
+    let v: Vec<i64> = Vec::new();
+    v.push(1);
+    v.push(2);
+    v.push(3);
+    v.push(4);
+    let total = iter::fold(v.iter(), 0, |acc: i64, x: i64| acc + x);
+    testing.assert_eq(total, 10);
+}
+
+#[test]
+fn test_iter_map_then_fold() {
+    let v: Vec<i64> = Vec::new();
+    v.push(1);
+    v.push(2);
+    v.push(3);
+    let doubled = iter::map(v.iter(), |x: i64| x * 2);
+    let total = iter::fold(doubled, 0, |acc: i64, x: i64| acc + x);
+    testing.assert_eq(total, 12);
+}
+
+#[test]
+fn test_iter_for_in_accumulates() {
+    let v: Vec<i64> = Vec::new();
+    v.push(4);
+    v.push(5);
+    v.push(6);
+    var total = 0;
+    for x in v.iter() {
+        total = total + x;
+    }
+    testing.assert_eq(total, 15);
+}
+
+#[test]
+fn test_iter_leaves_source_live() {
+    let v: Vec<i64> = Vec::new();
+    v.push(7);
+    v.push(8);
+    // Iterating by reference must not consume the source.
+    testing.assert_eq(iter::count(v.iter()), 2);
+    testing.assert_eq(v.len(), 2);
+    // A second independent iteration still sees every element.
+    let total = iter::fold(v.iter(), 0, |acc: i64, x: i64| acc + x);
+    testing.assert_eq(total, 15);
+}
+
+#[test]
+fn test_iter_owned_elements() {
+    let v: Vec<string> = Vec::new();
+    v.push("aa");
+    v.push("bbb");
+    v.push("cccc");
+    // Each yielded `string` is cloned out on read; the source stays live.
+    var total = 0;
+    for s in v.iter() {
+        total = total + s.len();
+    }
+    testing.assert_eq(total, 9);
+    testing.assert_eq(v.len(), 3);
+}

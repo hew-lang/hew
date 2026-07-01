@@ -487,6 +487,52 @@ run_accept_expect_status "hashmap_into_iter_filter" 2
 # (bound to a temp before keys()/values()), so stdout is one "MK" not two. → 3.
 run_accept_expect_status_and_stdout "hashmap_into_iter_call_single_eval" 3
 
+# Vec::iter() pipeline form: `v.iter()` resolves to a VecIter cursor without
+# consuming the receiver, so the vec stays live after the pipeline. A VecIter is
+# a first-class value with no lifetime (Hew has none), so the cursor takes an
+# INDEPENDENT clone of the buffer it solely owns rather than borrowing the
+# source's single-owner handle. The by-reference twin of `v.into_iter()`. count 3
+# elements → 3.
+run_accept_expect_status "vec_iter_count" 3
+# map x*2 then fold: elements 1+2+3 doubled → 12.
+run_accept_expect_status "vec_iter_map_fold" 12
+# Owned (string) elements, drop-safety: `for s in v.iter()` twice (source stays
+# live), each yielded string dropped once at loop-body scope exit; the cursor's
+# clone is freed once when the cursor drops, the source frees its own buffer
+# independently. Verified clean under the guard allocator (MallocScribble /
+# MallocPreScribble / GuardEdges) and the `leaks` tool. Lens 2+3+4 = 9 per pass,
+# two passes → 18.
+run_accept_expect_status "vec_iter_owned_drop" 18
+# Single-eval witness: a call-result (non-place) receiver runs make_vec() once
+# (the rvalue temp is consumed directly into the cursor), so stdout is one "MK"
+# not two. count 4 → 4.
+run_accept_expect_status_and_stdout "vec_iter_call_single_eval" 4
+
+# Vec::iter() cursor drop-safety: a VecIter is a first-class value with no
+# lifetime, so `iter()` clones the source into a cursor the caller solely owns
+# (it cannot borrow the source's single-owner handle). These pin the drop-safety
+# that demands.
+# Coexistence: a cursor and its live source both drop at the same scope exit
+# without double-freeing the buffer — the clone and the source are distinct
+# allocations. A shared handle aborts here. v.len() = 2.
+run_accept_expect_status "vec_iter_coexist_source_live" 2
+# Mutation-independence: mutating the source after `iter()` does not change what
+# the cursor yields — the cursor holds an independent snapshot. A borrow would
+# observe the 3 appended elements and count 5. Count = 2.
+run_accept_expect_status "vec_iter_mutation_independence" 2
+# Escape — return: a cursor returned from a fn whose source vec is a local,
+# consumed in the caller. The clone outlives the callee's scope-exit free. 42.
+run_accept_expect_status "vec_iter_escape_return" 42
+# Escape — async: a cursor held across an `await` while the inner block that
+# produced its source exits. The clone survives the suspension. 42.
+run_accept_expect_status "vec_iter_escape_async" 42
+# A VecIter cannot be stored in actor state: it is not Send, so it cannot cross a
+# spawn/message/reply boundary. The actor-state escape is statically impossible.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/vec_iter_actor_field_non_send.hew" \
+  "type is not Send" \
+  "vec_iter_actor_field_non_send"
+
 # g12-B (CLOSED): `for x in s` over a HashSet snapshots the set's elements into
 # an owned Vec via to_vec() and drives a VecIter cursor.
 # Scalar elements: 10+20+30 → exit 60.

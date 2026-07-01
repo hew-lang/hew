@@ -1,0 +1,25 @@
+// `Vec::iter()` mutation-independence — the cursor snapshots an independent
+// clone of the source, so mutating the source after `iter()` must not change
+// what the cursor yields.
+//
+// `iter()` clones the buffer into the cursor at the point of the call. The three
+// `push`es after `let c = v.iter()` grow the SOURCE vec, not the cursor's clone,
+// so the cursor still iterates exactly the two original elements. A shared/borrow
+// cursor would observe the appended elements (count 5) — proving it aliased the
+// live source rather than holding the by-value snapshot iterator semantics
+// require. Count = 2.
+
+pub fn main() -> i64 {
+    let v: Vec<i64> = Vec::new();
+    v.push(40);
+    v.push(2);
+    let c = v.iter();
+    v.push(99);
+    v.push(7);
+    v.push(13);
+    var n: i64 = 0;
+    for _x in c {
+        n = n + 1;
+    }
+    n
+}

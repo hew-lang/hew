@@ -190,13 +190,6 @@ tests/corpus/v05-value-model/17_to_string_display_read_receiver.hew
 tests/corpus/v05-value-model/18_record_update_syntax.hew
 tests/corpus/v05-value-model/19_actor_scope.hew
 
-# ── tests/hew/ ───────────────────────────────────────────────────────────────
-
-# deferred-nyi: hew test suite files using NYI features (actor select/suspend,
-# generic clone, hashmap clone, instant methods, process, generic vec iter,
-# this-send)
-tests/hew/generic_vec_iter_surface_test.hew
-
 # ── tests/ll-oracle/ ─────────────────────────────────────────────────────────
 
 # deferred-nyi: LL oracle corpus file uses NYI runtime ABI features

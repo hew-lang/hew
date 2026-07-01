@@ -1,0 +1,31 @@
+// `for s in v.iter()` over a `Vec<string>` — drop-safety for an owned-element
+// by-reference iterator. Each `string` is an independently-droppable owner.
+//
+// `v.iter()` clones the vec into an independent buffer the cursor solely owns,
+// and `VecIter::next` clones each element out on read, so every yielded `string`
+// is a fresh owner dropped at the loop body's scope exit; the cursor's clone is
+// freed once when the cursor drops, and the source vec frees its own buffer
+// independently. The vec is iterated TWICE — proving the source stays a live
+// owner after the first `iter()` (a consuming cursor would leave it dead) — and
+// the cursor's drop must not double-free or leak the buffer or any element.
+//
+// Run under the guard allocator (MallocScribble / MallocPreScribble /
+// MallocGuardEdges) in CI: a double-free or use-after-free on the owned path
+// surfaces as a scribble-read crash; a missed element drop surfaces under the
+// `leaks` tool. Lens 2+3+4 = 9 per pass, two passes → exit 18.
+
+pub fn main() -> i64 {
+    let v: Vec<string> = Vec::new();
+    v.push("aa");
+    v.push("bbb");
+    v.push("cccc");
+    var total = 0;
+    for s in v.iter() {
+        total = total + s.len();
+    }
+    // Source still live after the first by-reference iteration: iterate again.
+    for s in v.iter() {
+        total = total + s.len();
+    }
+    total
+}

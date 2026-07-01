@@ -1,0 +1,25 @@
+// `Vec::iter()` cursor escape — return a cursor from a function whose source
+// vec is a LOCAL, then consume it in the caller.
+//
+// A `VecIter<T>` is a first-class Hew value with no lifetime, so it can be
+// returned and outlive the scope that produced its source vec. `iter()` gives
+// the cursor an independent clone of the buffer that it solely owns, so
+// `make_iter`'s local `v` freeing at its scope exit does NOT dangle the returned
+// cursor — consuming it in `main` reads live memory. A borrowed cursor would
+// read `make_iter`'s freed buffer (a use-after-free) and return a wrong sum.
+// 40 + 2 = 42.
+
+fn make_iter() -> VecIter<i64> {
+    let v: Vec<i64> = Vec::new();
+    v.push(40);
+    v.push(2);
+    v.iter()
+}
+
+pub fn main() -> i64 {
+    var sum: i64 = 0;
+    for x in make_iter() {
+        sum = sum + x;
+    }
+    sum
+}

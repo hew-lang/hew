@@ -1,0 +1,20 @@
+// `iter::map(v.iter(), ..)` then `iter::fold` — map/fold pipeline over a Vec.
+//
+// `v.iter()` yields each element by value (cloned out on read); map doubles
+// each; fold sums them. Elements 1+2+3 = 6, doubled mapped sum is 12. The vec
+// is cloned into the cursor, not consumed, so it stays a live independent owner
+// after the pipeline (`v.len()` == 3). Exit 12.
+import std::iter;
+
+pub fn main() -> i64 {
+    let v: Vec<i64> = Vec::new();
+    v.push(1);
+    v.push(2);
+    v.push(3);
+    let doubled = iter::map(v.iter(), |x: i64| x * 2);
+    let total = iter::fold(doubled, 0, |acc: i64, x: i64| acc + x);
+    if v.len() != 3 {
+        return 99;
+    }
+    total
+}

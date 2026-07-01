@@ -27,6 +27,7 @@ fn spawn_pipeline(
 ) -> IrPipeline {
     let actor_pid_ty = local_pid_of(actor_name);
     let spawn_fn = RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: "spawn_actor".to_string(),
         return_ty: actor_pid_ty.clone(),
         call_conv: FunctionCallConv::Default,

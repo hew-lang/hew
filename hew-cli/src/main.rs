@@ -484,7 +484,7 @@ fn run_check_deep_gates(
     let lint_denied = render_pipeline_mir_lints(&state.source, input, &pipeline, levels);
 
     if let Err(error) = hew_codegen_rs::validate_codegen_front(&pipeline) {
-        diagnostic::render_codegen_front_diagnostic(&error);
+        diagnostic::render_codegen_front_diagnostic(&error, Some((state.source.as_str(), input)));
         return Err(());
     }
 
@@ -559,7 +559,7 @@ fn emit_module_with_triple(
             Err(())
         }
         Err(e) => {
-            eprintln!("E_NOT_YET_IMPLEMENTED: {e}");
+            diagnostic::render_codegen_emit_error(&e, source_path);
             Err(())
         }
     }

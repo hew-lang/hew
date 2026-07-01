@@ -48,6 +48,7 @@ fn impl_method_stub(name: &str) -> RawMirFunction {
     let mut locals = params.clone();
     locals.push(ResolvedTy::I64);
     RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: name.to_string(),
         return_ty: ResolvedTy::I64,
         call_conv: FunctionCallConv::Default,

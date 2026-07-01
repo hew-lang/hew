@@ -170,6 +170,7 @@ fn vec_index_i64_mir() -> RawMirFunction {
     };
 
     RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: "vec_index_i64_test".to_string(),
         return_ty: ResolvedTy::I64,
         call_conv: hew_mir::FunctionCallConv::Default,

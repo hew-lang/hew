@@ -79,6 +79,7 @@ fn colour_red_pipeline() -> IrPipeline {
         is_indirect: false,
     };
     let main_fn = RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: "main".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,

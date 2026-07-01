@@ -51,6 +51,7 @@ fn floor_pipeline(
     IrPipeline {
         thir: vec![],
         raw_mir: vec![RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: name.to_string(),
             return_ty: return_ty.clone(),
             call_conv: FunctionCallConv::Default,

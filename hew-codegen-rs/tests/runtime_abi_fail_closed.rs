@@ -55,6 +55,7 @@ fn pipeline_with_call_runtime_abi_parts(
     IrPipeline {
         thir: vec![],
         raw_mir: vec![RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "probe".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: hew_mir::FunctionCallConv::Default,

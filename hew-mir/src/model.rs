@@ -2300,6 +2300,58 @@ pub struct MirScope {
     pub end: u32,
 }
 
+/// PROVEN source attribution for a MIR function's byte-offset spans.
+///
+/// A [`RawMirFunction::span`] and the entries in [`RawMirFunction::instr_spans`]
+/// are bare byte offsets (`hew_lexer::Span` carries no source identity). This
+/// enum records WHICH source those offsets index, resolved at MIR lowering from
+/// the HIR's positive attribution (`HirModule::root_item_ids` /
+/// `HirModule::diagnostic_source_modules`) — never inferred by absence from a
+/// set.
+///
+/// The CLI's fail-closed renderer points a `^^^` caret at the source it is
+/// rendering (the root compilation unit's `state.source`) ONLY when the
+/// offending function carries [`SourceOrigin::RootUnit`]. Every other origin
+/// degrades to a bare diagnostic line: a bare line is always safe, a caret
+/// against the wrong source is not.
+///
+/// WHY carried per-function rather than inferred at the CLI: a function can
+/// enter `HirModule.items` many ways (root source, module-path import,
+/// file-path import, builtin, monomorphisation, generated impl default-method
+/// copied from a trait). The generated default-method is the decisive case —
+/// its body spans index the TRAIT's source even though it is synthesised while
+/// lowering a root-file impl, so no "which module was being lowered" heuristic
+/// can attribute it. Carrying the proven origin on the function is the only
+/// leak-free authority.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum SourceOrigin {
+    /// The function's spans PROVABLY index the root compilation unit's source
+    /// (the file the user is compiling, rendered as `state.source`). Recorded
+    /// positively in `HirModule::root_item_ids` for functions lowered natively
+    /// from the root file at module index 0 — excluding copied-body synths
+    /// (trait default-methods). A caret against `state.source` is safe.
+    RootUnit,
+    /// The function's spans index an imported module's source (named), NOT the
+    /// root. The CLI has no buffer for that source, so the diagnostic degrades
+    /// to a bare plain-line.
+    Foreign(String),
+    /// No source attribution established: synthesised functions (actor
+    /// handlers, machine dispatch, drop shims, closures), monomorphisations of
+    /// a foreign origin, and hand-built test MIR. Degrades to bare — the
+    /// fail-closed default.
+    #[default]
+    Unknown,
+}
+
+impl SourceOrigin {
+    /// Whether a `^^^` caret may be rendered against the root compilation
+    /// unit's source for a fail-closed error carried by this function.
+    #[must_use]
+    pub fn renders_root_caret(&self) -> bool {
+        matches!(self, SourceOrigin::RootUnit)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawMirFunction {
     pub name: String,
@@ -2428,6 +2480,15 @@ pub struct RawMirFunction {
     /// than fabricating one; empty for synthesised functions and hand-built
     /// test MIR.
     pub instr_spans: std::collections::BTreeMap<(u32, u32), (u32, u32)>,
+    /// PROVEN source attribution for this function's `span` / `instr_spans`
+    /// byte offsets (which source they index). Set at MIR lowering from the
+    /// HIR's positive attribution: the item loop resolves it from the origin
+    /// `HirFn`'s `ItemId`, the monomorphisation loop from the generic origin's
+    /// `ItemId`. Defaults to [`SourceOrigin::Unknown`] for the synthesised
+    /// builders (actor handlers, drop shims) and hand-built test MIR that do
+    /// not carry a faithful HIR origin. Codegen gates whether a fail-closed
+    /// error keeps its source span on `source_origin.renders_root_caret()`.
+    pub source_origin: SourceOrigin,
 }
 
 /// A generic origin function lowered against abstract `ResolvedTy::TypeParam`

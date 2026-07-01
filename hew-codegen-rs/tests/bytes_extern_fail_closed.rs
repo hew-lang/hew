@@ -74,6 +74,7 @@ fn pipeline_with_extern(
     ];
 
     let raw = RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: "probe".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: hew_mir::FunctionCallConv::Default,

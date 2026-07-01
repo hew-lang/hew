@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use hew_parser::ast::{BinaryOp, OverflowPolicy, Span, UnaryOp};
 use hew_types::{stdlib::VecElementToken, NumericMethodFamily};
@@ -21,6 +24,19 @@ pub struct HirModule {
     /// item id. Diagnostics emitted while verifying one of these items inherit
     /// the same dotted module key used by `HirDiagnostic::source_module`.
     pub diagnostic_source_modules: HashMap<ItemId, String>,
+    /// `ItemId`s of function items whose bodies PROVABLY index the root
+    /// compilation unit's source text: functions lowered natively from the
+    /// root file (module index 0), EXCLUDING generated trait default-method
+    /// bodies (which are copied from an imported trait and index the trait's
+    /// source, not the root file).
+    ///
+    /// This is a POSITIVE record of root membership. Codegen resolves each
+    /// function's [`crate`]-external `SourceOrigin` from it: presence means a
+    /// fail-closed caret against the root source is safe; absence degrades to a
+    /// bare diagnostic line. Never inferred by absence-from-a-foreign-set, so a
+    /// producer missing from `diagnostic_source_modules` cannot leak a false
+    /// root caret — it simply is not in this set.
+    pub root_item_ids: HashSet<ItemId>,
     /// Checker-authored wire layout metadata keyed by canonical type name.
     pub wire_layouts: Arc<WireLayoutTable>,
     /// Per-named-type classification table populated during HIR lowering from

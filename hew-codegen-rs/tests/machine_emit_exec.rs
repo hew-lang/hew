@@ -104,6 +104,7 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
     // The store-back into ReturnSlot and Return let the function exit cleanly
     // (no trap) so the JIT execution test can drive it without sigsetjmp.
     let step_fn = RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: format!("{machine_name}__step"),
         return_ty: machine_ty.clone(),
         call_conv: FunctionCallConv::Default,
@@ -149,6 +150,7 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
     // `caller()` invokes the step stub with zeroed locals and returns.
     // Block 0 → Call → Block 1 → Return.
     let caller = RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: "caller".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,

@@ -77,6 +77,7 @@ fn supervisor_pipeline() -> IrPipeline {
     // never reaches `lower_function` because the bootstrap symbol is in
     // the skip-set.
     let bootstrap_fn = RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: bootstrap_symbol.clone(),
         return_ty: bootstrap_return_ty.clone(),
         // Default: see `lower_supervisor_bootstrap` for why the bootstrap
@@ -112,6 +113,7 @@ fn supervisor_pipeline() -> IrPipeline {
     // module verifies; the test only inspects the bootstrap function so
     // `main`'s body is just `ret i64 42`.
     let main_fn = RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: "main".to_string(),
         return_ty: ResolvedTy::I64,
         call_conv: FunctionCallConv::Default,
@@ -322,6 +324,7 @@ fn on_crash_pipeline() -> IrPipeline {
     // ActorHandler functions require EnterContext at entry and ExitContext
     // before the terminal instruction to pass the context-boundary check.
     let on_crash_fn = RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: on_crash_symbol.clone(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::ActorHandler,
@@ -348,6 +351,7 @@ fn on_crash_pipeline() -> IrPipeline {
     };
 
     let bootstrap_fn = RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: bootstrap_symbol.clone(),
         return_ty: bootstrap_return_ty.clone(),
         call_conv: FunctionCallConv::Default,
@@ -374,6 +378,7 @@ fn on_crash_pipeline() -> IrPipeline {
     };
 
     let main_fn = RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: "main".to_string(),
         return_ty: ResolvedTy::I64,
         call_conv: FunctionCallConv::Default,
@@ -631,6 +636,7 @@ fn nested_supervisor_pipeline() -> IrPipeline {
     };
 
     let stub_bootstrap = |symbol: &str, ret: ResolvedTy| RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: symbol.to_string(),
         return_ty: ret.clone(),
         call_conv: FunctionCallConv::Default,
@@ -659,6 +665,7 @@ fn nested_supervisor_pipeline() -> IrPipeline {
     let inner_fn = stub_bootstrap(&inner_bootstrap, local_pid_of("InnerSupervisor"));
 
     let main_fn = RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: "main".to_string(),
         return_ty: ResolvedTy::I64,
         call_conv: FunctionCallConv::Default,
@@ -850,6 +857,7 @@ fn pool_then_static_pipeline() -> IrPipeline {
     };
 
     let bootstrap_fn = RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: bootstrap_symbol.clone(),
         return_ty: local_pid_of("MixedSupervisor"),
         call_conv: FunctionCallConv::Default,
@@ -875,6 +883,7 @@ fn pool_then_static_pipeline() -> IrPipeline {
     };
 
     let main_fn = RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: "main".to_string(),
         return_ty: ResolvedTy::I64,
         call_conv: FunctionCallConv::Default,

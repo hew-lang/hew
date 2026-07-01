@@ -39,6 +39,7 @@ use hew_types::ResolvedTy;
 
 fn trivial_main() -> RawMirFunction {
     RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: "main".to_string(),
         return_ty: ResolvedTy::I64,
         call_conv: FunctionCallConv::Default,

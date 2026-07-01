@@ -120,6 +120,7 @@ fn vec_index_i64_pipeline() -> IrPipeline {
     IrPipeline {
         thir: vec![],
         raw_mir: vec![RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "main".to_string(),
             return_ty: ResolvedTy::I64,
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -282,6 +283,7 @@ fn vec_index_bool_pipeline() -> IrPipeline {
     IrPipeline {
         thir: vec![],
         raw_mir: vec![RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "main".to_string(),
             return_ty: ResolvedTy::Bool,
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -444,6 +446,7 @@ fn vec_index_char_pipeline() -> IrPipeline {
     IrPipeline {
         thir: vec![],
         raw_mir: vec![RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "main".to_string(),
             return_ty: ResolvedTy::Char,
             call_conv: hew_mir::FunctionCallConv::Default,

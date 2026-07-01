@@ -29,6 +29,7 @@ fn empty_module(items: Vec<HirItem>) -> HirModule {
     HirModule {
         items,
         diagnostic_source_modules: HashMap::default(),
+        root_item_ids: std::collections::HashSet::new(),
         wire_layouts: std::sync::Arc::new(HashMap::default()),
         type_classes: HashMap::default(),
         monomorphisations: vec![],

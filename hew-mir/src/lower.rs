@@ -34,8 +34,8 @@ use crate::model::{
     DecisionFact, DropKind, DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath,
     FieldOffset, FloatWidth, Instr, IntArithOp, IntSignedness, IrPipeline, JoinBranch,
     LambdaCapture, MirCheck, MirConst, MirConstValue, MirDiagnostic, MirDiagnosticKind,
-    MirStatement, Place, PointerWidth, RawMirFunction, SelectArm, SelectArmKind, Strategy,
-    SuspendKind, Terminator, ThirFunction, TraitObjectStorage, TrapKind,
+    MirStatement, Place, PointerWidth, RawMirFunction, SelectArm, SelectArmKind, SourceOrigin,
+    Strategy, SuspendKind, Terminator, ThirFunction, TraitObjectStorage, TrapKind,
 };
 use crate::ownership::FailClosedReason;
 use crate::ownership::VecElementRelease;
@@ -1067,6 +1067,30 @@ fn collapse_actor_send_aliasing_to_idx0(
             )
         })
         .collect()
+}
+
+/// Resolve the proven source origin of a lowered function body for codegen
+/// caret attribution.
+///
+/// Positive-membership only: a function is [`SourceOrigin::RootUnit`] (its span
+/// indexes the root compilation unit's source text) ONLY when the HIR lowering
+/// pass recorded its `ItemId` in `module.root_item_ids`. Everything else
+/// degrades to [`SourceOrigin::Foreign`] (when the diagnostic source-module
+/// table names its origin module) or [`SourceOrigin::Unknown`].
+///
+/// This never infers root by absence-from-a-foreign-set: a producer the foreign
+/// table happens to miss resolves to `Unknown` (a bare plain-line at the render
+/// site), never a false caret against the root source. Generated trait
+/// default-method bodies are excluded from `root_item_ids` at the HIR site, so
+/// their trait-indexed spans resolve away from `RootUnit`.
+fn resolve_source_origin(id: hew_hir::ItemId, module: &HirModule) -> SourceOrigin {
+    if module.root_item_ids.contains(&id) {
+        SourceOrigin::RootUnit
+    } else if let Some(src) = module.diagnostic_source_modules.get(&id) {
+        SourceOrigin::Foreign(src.clone())
+    } else {
+        SourceOrigin::Unknown
+    }
 }
 
 /// Lower a HIR module to MIR, threading the checker's per-send-site alias
@@ -2505,7 +2529,7 @@ pub fn lower_hir_module_with_facts(
                     });
                     continue;
                 }
-                let lowered = lower_function(
+                let mut lowered = lower_function(
                     func,
                     func.name.clone(),
                     HashMap::new(),
@@ -2532,6 +2556,7 @@ pub fn lower_hir_module_with_facts(
                     task_entry_adapter_symbols.clone(),
                 );
                 thir.push(lowered.thir);
+                lowered.raw.source_origin = resolve_source_origin(func.id, module);
                 raw_mir.push(lowered.raw);
                 checked_mir.push(lowered.checked);
                 elaborated_mir.push(lowered.elaborated);
@@ -2726,7 +2751,7 @@ pub fn lower_hir_module_with_facts(
             .cloned()
             .zip(mono.key.type_args.iter().cloned())
             .collect();
-        let lowered = lower_function(
+        let mut lowered = lower_function(
             origin,
             mono.mangled_name.clone(),
             subst,
@@ -2753,6 +2778,7 @@ pub fn lower_hir_module_with_facts(
             task_entry_adapter_symbols.clone(),
         );
         thir.push(lowered.thir);
+        lowered.raw.source_origin = resolve_source_origin(mono.key.origin, module);
         raw_mir.push(lowered.raw);
         checked_mir.push(lowered.checked);
         elaborated_mir.push(lowered.elaborated);
@@ -4228,6 +4254,7 @@ fn synthesize_machine_step_fn(
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
         instr_spans: ::std::collections::BTreeMap::new(),
+        source_origin: SourceOrigin::Unknown,
     };
 
     let thir = ThirFunction {
@@ -7857,6 +7884,7 @@ fn lower_function(
         // splices above. Cloned (not moved) — `builder` is still read by
         // `check_function` below.
         instr_spans: builder.instr_spans.clone(),
+        source_origin: SourceOrigin::Unknown,
     };
     // Checked MIR's `checks` field is populated by `check_function`
     // from real dataflow over the checker-authority `MirStatement`
@@ -22128,6 +22156,7 @@ impl Builder {
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
             instr_spans: ::std::collections::BTreeMap::new(),
+            source_origin: SourceOrigin::Unknown,
         };
         let builder = Builder {
             current_function_symbol: adapter_symbol.to_string(),
@@ -22663,6 +22692,7 @@ impl Builder {
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
             instr_spans: ::std::collections::BTreeMap::new(),
+            source_origin: SourceOrigin::Unknown,
         };
         // Synthetic HirFn for dataflow checking — no HIR params (the shim
         // locals are positional, not HIR bindings).
@@ -28300,6 +28330,7 @@ impl Builder {
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
             instr_spans: ::std::collections::BTreeMap::new(),
+            source_origin: SourceOrigin::Unknown,
         };
         let synthetic_func = HirFn {
             id: hew_hir::ItemId(0),
@@ -28457,6 +28488,7 @@ impl Builder {
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
             instr_spans: ::std::collections::BTreeMap::new(),
+            source_origin: SourceOrigin::Unknown,
         };
 
         // Synthetic HirFn for dataflow checking — no HIR params (the shim
@@ -28940,6 +28972,7 @@ impl Builder {
             lambda_actor_user_param_locals: user_param_local_ids.clone(),
             span: None,
             instr_spans: ::std::collections::BTreeMap::new(),
+            source_origin: SourceOrigin::Unknown,
         };
 
         let thir_statements: Vec<MirStatement> = body_blocks
@@ -29641,6 +29674,7 @@ impl Builder {
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
             instr_spans: ::std::collections::BTreeMap::new(),
+            source_origin: SourceOrigin::Unknown,
         };
 
         // A synthetic HirFn shell so `check_function` has a valid fn descriptor.
@@ -42344,6 +42378,7 @@ mod enum_layout_tests {
         HirModule {
             items,
             diagnostic_source_modules: HashMap::default(),
+            root_item_ids: std::collections::HashSet::new(),
             wire_layouts: std::sync::Arc::new(HashMap::default()),
             type_classes: hew_hir::TypeClassTable::default(),
             monomorphisations: vec![],

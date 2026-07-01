@@ -178,6 +178,7 @@ fn caller_with_dispatch(
     }
 
     RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: "caller".to_string(),
         return_ty: ret,
         call_conv: FunctionCallConv::Default,
@@ -370,6 +371,7 @@ fn call_trait_method_fails_closed_when_receiver_not_fat_pointer() {
         ..FnSig::default()
     };
     let bogus = RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: "caller_bad_recv".to_string(),
         return_ty: ResolvedTy::I64,
         call_conv: FunctionCallConv::Default,

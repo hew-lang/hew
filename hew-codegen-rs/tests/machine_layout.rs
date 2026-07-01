@@ -86,6 +86,7 @@ fn traffic_light_uses_i8_tagged_union_struct() {
     };
     let mut pipeline = empty_pipeline(vec![traffic_light_layout()]);
     pipeline.raw_mir = vec![RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: "main".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,
@@ -128,6 +129,7 @@ fn repeated_machine_uses_share_one_named_struct_definition() {
     };
     let mut pipeline = empty_pipeline(vec![traffic_light_layout()]);
     pipeline.raw_mir = vec![RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: "main".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,
@@ -179,6 +181,7 @@ fn two_hundred_fifty_seven_states_use_i16_tag() {
         events: Vec::new(),
     }]);
     pipeline.raw_mir = vec![RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: "main".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,
@@ -232,6 +235,7 @@ fn constructor_pipeline() -> IrPipeline {
         events: Vec::new(),
     };
     let main_fn = RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: "main".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,

@@ -34,6 +34,7 @@ fn spawn_pipeline() -> IrPipeline {
     let handler_symbol = format!("{actor_name}__recv__handle_ping");
 
     let spawn_fn = RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: "spawn_trace_actor".to_string(),
         return_ty: actor_pid_ty.clone(),
         call_conv: FunctionCallConv::Default,
@@ -73,6 +74,7 @@ fn spawn_pipeline() -> IrPipeline {
     };
 
     let handler_fn = RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: handler_symbol.clone(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::ActorHandler,

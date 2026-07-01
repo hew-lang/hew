@@ -61,7 +61,7 @@ pub use model::{
     MachineLayout, MachineVariantLayout, MirCheck, MirConst, MirConstValue, MirDiagnostic,
     MirDiagnosticKind, MirHeapLayouts, MirLint, MirScope, MirStatement, Place, PointerWidth,
     PolymorphicMirFunction, PoolCount, RawMirFunction, RecordLayout, RegexLiteral, RuntimeCall,
-    SelectArm, SelectArmKind, SendAliasMode, Strategy, SupervisorChildLayout,
+    SelectArm, SelectArmKind, SendAliasMode, SourceOrigin, Strategy, SupervisorChildLayout,
     SupervisorConfigParam, SupervisorLayout, SuspendKind, Terminator, ThirFunction,
     TraitObjectStorage, TrapKind, WitnessOperand,
 };

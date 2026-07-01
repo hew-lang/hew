@@ -103,6 +103,7 @@ fn mut_u8_ptr() -> ResolvedTy {
 /// blocks are a placeholder; codegen synthesizes the real body.
 fn floor_fn(name: &str, id: &str, params: Vec<ResolvedTy>, ret: ResolvedTy) -> RawMirFunction {
     RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: name.to_string(),
         return_ty: ret,
         call_conv: FunctionCallConv::Default,
@@ -249,6 +250,7 @@ fn driver_main() -> RawMirFunction {
         },
     ];
     RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: "main".to_string(),
         return_ty: ResolvedTy::I64,
         call_conv: FunctionCallConv::Default,
@@ -352,6 +354,7 @@ fn driver_copy_no_free() -> RawMirFunction {
         },
     ];
     RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: "main".to_string(),
         return_ty: ResolvedTy::I64,
         call_conv: FunctionCallConv::Default,

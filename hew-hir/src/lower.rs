@@ -2961,7 +2961,17 @@ pub fn lower_program_with_mono_cap(
                     // Either way, do not lower a body — the declaration is a
                     // typed substrate stub that must match an existing catalog entry.
                 } else {
-                    items.push(HirItem::Function(ctx.lower_fn(func, span.clone())));
+                    let hir_fn = ctx.lower_fn(func, span.clone());
+                    // Positive root-origin record: a free function lowered from
+                    // the root file (module index 0) has a body span that
+                    // indexes the root compilation unit's source, so codegen may
+                    // render a fail-closed caret against it. Injected items
+                    // (`lowering_injected_items`) are excluded even at index 0 —
+                    // their spans index a library file, not root.
+                    if ctx.current_module_idx == 0 && !ctx.lowering_injected_items {
+                        ctx.root_item_ids.insert(hir_fn.id);
+                    }
+                    items.push(HirItem::Function(hir_fn));
                 }
             }
             Item::Impl(impl_decl) => {
@@ -3700,6 +3710,13 @@ pub fn lower_program_with_mono_cap(
     ) {
         let item_start = items.len();
         ctx.with_typecheck_facts(output, |ctx| {
+            // The builtin receiver impls lower at module index 0 but their
+            // bodies index `std/builtins.hew`, not the user's root source. Flag
+            // the phase so the `root_item_ids` inserts in `lower_impl_block`
+            // skip them — a fail-closed in a builtin method must render bare,
+            // never a false caret against the root. Restored below.
+            let saved_injected = ctx.lowering_injected_items;
+            ctx.lowering_injected_items = true;
             let saved_some = ctx
                 .machine_ctor_registry
                 .insert("Some".to_string(), ("Option".to_string(), 0));
@@ -3736,6 +3753,7 @@ pub fn lower_program_with_mono_cap(
             } else {
                 ctx.machine_ctor_registry.remove("None");
             }
+            ctx.lowering_injected_items = saved_injected;
         });
         record_source_modules_for_items(
             &items[item_start..],
@@ -3840,6 +3858,7 @@ pub fn lower_program_with_mono_cap(
         module: HirModule {
             items,
             diagnostic_source_modules,
+            root_item_ids: ctx.root_item_ids,
             wire_layouts: Arc::new(type_check_output.wire_layouts.clone()),
             type_classes: ctx.type_classes,
             monomorphisations,
@@ -5196,6 +5215,26 @@ struct LowerCtx {
     /// the checker's module-scoped inserts, preventing byte-offset collisions
     /// across stdlib files (L23 defect root cause).
     current_module_idx: u32,
+    /// `ItemId`s of function items PROVABLY lowered from the root compilation
+    /// unit's own source (recorded when `current_module_idx == 0` AND
+    /// `lowering_injected_items` is false), EXCLUDING generated trait
+    /// default-method bodies (whose bodies are copied from the trait
+    /// declaration and index the trait's source, which may be an imported
+    /// module). Moved onto [`HirModule::root_item_ids`] at construction; codegen
+    /// resolves each function's `SourceOrigin` from it so a fail-closed caret is
+    /// rendered against the root source ONLY for a proven-root function. A
+    /// positive record — never inferred by absence-from-a-foreign-set.
+    root_item_ids: HashSet<ItemId>,
+    /// True while lowering items that are INJECTED at root `current_module_idx`
+    /// but do NOT index the user's root source — currently the `std/builtins.hew`
+    /// receiver impls (and the Vec iterator harness), which are lowered
+    /// out-of-band at module index 0 rather than through `module_graph`. Their
+    /// spans index `std/builtins.hew`, so they must be kept OUT of
+    /// `root_item_ids` even though `current_module_idx == 0`: a codegen
+    /// fail-closed reachable in a builtin method must degrade to a bare line, not
+    /// render a false caret against the user's root source. Gates the
+    /// `root_item_ids` inserts alongside the `current_module_idx == 0` check.
+    lowering_injected_items: bool,
     /// Full dotted path of the module currently being lowered (e.g.
     /// `"subpkg.helper"`): `None` for root items, `Some(path.join("."))` for
     /// imported package/file modules.  Mirrors the checker's
@@ -5342,6 +5381,8 @@ impl LowerCtx {
             opaque_type_short_names: HashSet::new(),
             non_opaque_type_short_names: HashSet::new(),
             current_module_idx: 0,
+            root_item_ids: HashSet::new(),
+            lowering_injected_items: false,
             current_module_name: None,
             import_type_name_aliases: tc_output.import_type_name_aliases.clone(),
         }
@@ -8830,12 +8871,26 @@ impl LowerCtx {
             // Pass impl-level type params so that methods of e.g. `impl<U> Trait for Wrapper<U>`
             // carry `U` as a `HirFn::type_params` entry — required for monomorphization
             // of generic-over-generic impl methods (W3.022 Stage 3).
-            items.push(HirItem::Function(self.lower_fn_with_name_and_impl_params(
+            let hir_method = self.lower_fn_with_name_and_impl_params(
                 method,
                 &symbol,
                 span.clone(),
                 &type_params,
-            )));
+            );
+            // Explicit impl-method bodies are written in the file that declares
+            // the impl, so record as root-origin when this impl is lowered from
+            // the root file (module index 0). Injected builtin receiver impls
+            // (`lowering_injected_items`) are excluded even at index 0 — their
+            // bodies index `std/builtins.hew`, not the user's root source, so a
+            // fail-closed there must render bare, not a false root caret. Default
+            // methods (below) are deliberately NOT recorded: their bodies are
+            // copied from the trait declaration and index the trait's source,
+            // which may be an imported module — attributing them to the root
+            // would render a false caret.
+            if self.current_module_idx == 0 && !self.lowering_injected_items {
+                self.root_item_ids.insert(hir_method.id);
+            }
+            items.push(HirItem::Function(hir_method));
             method_symbols.push(symbol);
             method_names.push(method.name.clone());
             let declaring_trait = decl
@@ -8865,6 +8920,14 @@ impl LowerCtx {
                     let fn_decl = trait_method_to_fn_decl(default_method);
                     let symbol =
                         crate::node::HirImplBlock::method_symbol(&symbol_self_name, &fn_decl.name);
+                    // Deliberately NOT recorded into `root_item_ids`: the body
+                    // was copied from the trait declaration (see
+                    // `trait_method_to_fn_decl`), so its span indexes the
+                    // trait's source — the root file only when the trait is
+                    // itself root-local. Excluding all generated default-method
+                    // bodies degrades to a bare fail-closed line (never a false
+                    // caret against the root source). This is the exact producer
+                    // an absence-from-a-foreign-set proxy misclassified.
                     items.push(HirItem::Function(self.lower_fn_with_name_and_impl_params(
                         &fn_decl,
                         &symbol,

@@ -1752,6 +1752,7 @@ mod tests {
             lambda_actor_user_param_locals: vec![],
             span: None,
             instr_spans: std::collections::BTreeMap::new(),
+            source_origin: crate::model::SourceOrigin::Unknown,
         }
     }
 
@@ -1931,6 +1932,7 @@ mod tests {
             lambda_actor_user_param_locals: vec![],
             span: None,
             instr_spans: std::collections::BTreeMap::new(),
+            source_origin: crate::model::SourceOrigin::Unknown,
         };
         let pipeline = minimal_pipeline_with_raw(func);
         let dump = dump_mir(&pipeline, DumpStage::Raw);
@@ -1988,6 +1990,7 @@ mod tests {
             lambda_actor_user_param_locals: vec![],
             span: None,
             instr_spans: std::collections::BTreeMap::new(),
+            source_origin: crate::model::SourceOrigin::Unknown,
         };
         let pipeline = minimal_pipeline_with_raw(func);
         let dump = dump_mir(&pipeline, DumpStage::Raw);
@@ -2029,6 +2032,7 @@ mod tests {
             lambda_actor_user_param_locals: vec![],
             span: None,
             instr_spans: std::collections::BTreeMap::new(),
+            source_origin: crate::model::SourceOrigin::Unknown,
         };
         let pipeline = minimal_pipeline_with_raw(func);
         let dump = dump_mir(&pipeline, DumpStage::Raw);

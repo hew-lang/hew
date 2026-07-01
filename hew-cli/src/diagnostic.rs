@@ -157,8 +157,10 @@ pub(crate) fn mir_diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'stat
 pub(crate) fn codegen_diagnostic_prefix(error: &hew_codegen_rs::CodegenError) -> &'static str {
     match error {
         hew_codegen_rs::CodegenError::Llvm(_) => "E_CODEGEN_FRONT_LLVM",
-        hew_codegen_rs::CodegenError::Unsupported(_) => "E_CODEGEN_FRONT_UNSUPPORTED",
-        hew_codegen_rs::CodegenError::FailClosed(_) => "E_CODEGEN_FRONT_FAIL_CLOSED",
+        hew_codegen_rs::CodegenError::Unsupported(_)
+        | hew_codegen_rs::CodegenError::UnsupportedAt { .. } => "E_CODEGEN_FRONT_UNSUPPORTED",
+        hew_codegen_rs::CodegenError::FailClosed(_)
+        | hew_codegen_rs::CodegenError::FailClosedAt { .. } => "E_CODEGEN_FRONT_FAIL_CLOSED",
         hew_codegen_rs::CodegenError::LlvmVerify(_) => "E_CODEGEN_FRONT_LLVM_VERIFY",
         hew_codegen_rs::CodegenError::TargetSetup { .. } => "E_CODEGEN_FRONT_TARGET_SETUP",
         hew_codegen_rs::CodegenError::Link(_) => "E_CODEGEN_FRONT_LINK",
@@ -169,11 +171,73 @@ pub(crate) fn codegen_diagnostic_prefix(error: &hew_codegen_rs::CodegenError) ->
     }
 }
 
-pub(crate) fn render_codegen_front_diagnostic(error: &hew_codegen_rs::CodegenError) {
-    emit_plain_diagnostic_line(&format!(
-        "{}: codegen-front validation failed: {error}",
-        codegen_diagnostic_prefix(error),
-    ));
+pub(crate) fn render_codegen_front_diagnostic(
+    error: &hew_codegen_rs::CodegenError,
+    source: Option<(&str, &str)>,
+) {
+    let prefix = codegen_diagnostic_prefix(error);
+    let msg = format!("{prefix}: codegen-front validation failed: {error}");
+    // FAIL-CLOSED RENDER RULE: only render a `^^^` caret when ALL conditions hold:
+    //   1. The error carries a source byte-range (FailClosedAt / UnsupportedAt).
+    //   2. The caller supplied source text + filename (the root compilation unit).
+    //   3. span.start is strictly within the source text's byte length (secondary
+    //      safety — a root-origin span should always be in-bounds; belt + braces).
+    //
+    // PRIMARY ATTRIBUTION (upstream): a span reaches this renderer ONLY for a
+    // function carrying `SourceOrigin::RootUnit` — the origin is carried on the
+    // MIR function and `build_module_for_target` strips the span from every other
+    // origin (imported module, synthesised body, foreign monomorphisation). So a
+    // span here provably indexes the root source being rendered; the origin is
+    // never inferred by absence-from-a-foreign-set.
+    //
+    // The bounds check is defence in depth, not the attribution: it cannot by
+    // itself distinguish a root span from a dep span that happens to be in range.
+    // Attribution soundness lives entirely in the carried origin upstream.
+    if let Some((span_start, span_end)) = error.span() {
+        if let Some((text, filename)) = source {
+            let start = span_start as usize;
+            let end = span_end as usize;
+            if start < text.len() {
+                let span = start..end.min(text.len());
+                render_diagnostic(text, filename, &span, &msg, &[], &[]);
+                return;
+            }
+        }
+    }
+    emit_plain_diagnostic_line(&msg);
+}
+
+/// Render a codegen-emit error (`emit_module` failure path).
+///
+/// FAIL-CLOSED RENDER RULE: renders a `^^^` caret only when the error carries a
+/// source span, `source_path` can be read, and the span's start byte is within
+/// that source's length.  Any of those conditions failing degrades to a bare
+/// `E_NOT_YET_IMPLEMENTED:` plain-line — never a caret against the wrong source.
+///
+/// CROSS-MODULE SAFETY: the span is attached upstream ONLY for a function
+/// carrying `SourceOrigin::RootUnit`, so it provably indexes the root source
+/// named by `source_path`.  A non-root function reaches here spanless (the span
+/// was stripped at `build_module_for_target`), so its error renders bare.  The
+/// bounds check is belt-and-braces; the carried origin is the attribution.
+pub(crate) fn render_codegen_emit_error(
+    error: &hew_codegen_rs::CodegenError,
+    source_path: Option<&std::path::Path>,
+) {
+    if let Some((span_start, span_end)) = error.span() {
+        if let Some(path) = source_path {
+            if let Ok(text) = std::fs::read_to_string(path) {
+                let start = span_start as usize;
+                let end = span_end as usize;
+                if start < text.len() {
+                    let filename = path.to_str().unwrap_or("<unknown>");
+                    let span = start..end.min(text.len());
+                    render_diagnostic(&text, filename, &span, &format!("{error}"), &[], &[]);
+                    return;
+                }
+            }
+        }
+    }
+    emit_plain_diagnostic_line(&format!("E_NOT_YET_IMPLEMENTED: {error}"));
 }
 
 // ANSI colour helpers

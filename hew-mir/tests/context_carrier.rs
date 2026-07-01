@@ -6,6 +6,7 @@ use hew_types::ResolvedTy;
 
 fn actor_handler(blocks: Vec<BasicBlock>) -> RawMirFunction {
     RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: "handler".to_string(),
         return_ty: ResolvedTy::I64,
         call_conv: FunctionCallConv::ActorHandler,

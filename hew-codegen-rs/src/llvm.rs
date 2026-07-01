@@ -160,6 +160,21 @@ pub enum CodegenError {
     /// An MIR invariant the emitter assumed was violated (e.g. a `Place`
     /// referencing a local that was never allocated).
     FailClosed(String),
+    /// `FailClosed` enriched with the source byte-range `(start, end)` of the
+    /// offending instruction, attached by [`CodegenError::with_instr_span`] at
+    /// the `lower_instruction` / `lower_terminator` call site.  The CLI uses
+    /// this span to render a `^^^` caret at the failing source construct.
+    ///
+    /// INVARIANT: only produced by `with_instr_span`, and only retained when
+    /// the enclosing function carries [`hew_mir::SourceOrigin::RootUnit`] — the
+    /// body-lowering loop strips the span for any other origin (see
+    /// `build_module_for_target`).  The retained span is therefore always a
+    /// byte-range into the root compilation unit's source being rendered.
+    FailClosedAt { msg: String, span: (u32, u32) },
+    /// `Unsupported` enriched with the source byte-range of the instruction
+    /// that triggered the unsupported-construct boundary, attached by
+    /// [`CodegenError::with_instr_span`].  Identical contract to `FailClosedAt`.
+    UnsupportedAt { msg: &'static str, span: (u32, u32) },
     /// `Module::verify()` rejected the emitted module.
     LlvmVerify(String),
     /// LLVM target lookup / target-machine setup failed for a concrete triple.
@@ -174,12 +189,65 @@ pub enum CodegenError {
     WasmUnsupportedSubstrate { symbol: String },
 }
 
+impl CodegenError {
+    /// If this is a spanless `FailClosed` or `Unsupported` and `span` is
+    /// `Some`, upgrade to the span-bearing `FailClosedAt` / `UnsupportedAt`
+    /// form.  Called at the `lower_instruction` / `lower_terminator` loop to
+    /// attach the originating instruction's byte-range to any error that
+    /// propagates out.
+    ///
+    /// Errors that already carry structured data (all other variants) pass
+    /// through unchanged so callers can use this unconditionally.
+    pub(crate) fn with_instr_span(self, span: Option<(u32, u32)>) -> Self {
+        let Some(span) = span else { return self };
+        match self {
+            Self::FailClosed(msg) => Self::FailClosedAt { msg, span },
+            Self::Unsupported(msg) => Self::UnsupportedAt { msg, span },
+            other => other,
+        }
+    }
+
+    /// Drop the span from a span-bearing variant back to the bare form.
+    ///
+    /// Called at the `build_module_for_target` body-lowering loop to strip
+    /// spans from any function whose [`hew_mir::SourceOrigin`] is not
+    /// `RootUnit` — a non-root span indexes a source the CLI is not rendering
+    /// (an imported module, a synthesised body, or a foreign monomorphisation),
+    /// so carrying it would risk a caret against the wrong source.
+    ///
+    /// Passes every other variant through unchanged.
+    pub(crate) fn strip_span(self) -> Self {
+        match self {
+            Self::FailClosedAt { msg, .. } => Self::FailClosed(msg),
+            Self::UnsupportedAt { msg, .. } => Self::Unsupported(msg),
+            other => other,
+        }
+    }
+
+    /// The source byte-range carried by this error, if any.
+    ///
+    /// Returns `Some((start, end))` for `FailClosedAt` and `UnsupportedAt`;
+    /// `None` for all other variants (including the spanless `FailClosed` and
+    /// `Unsupported`).
+    #[must_use]
+    pub fn span(&self) -> Option<(u32, u32)> {
+        match self {
+            Self::FailClosedAt { span, .. } | Self::UnsupportedAt { span, .. } => Some(*span),
+            _ => None,
+        }
+    }
+}
+
 impl std::fmt::Display for CodegenError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Llvm(s) => write!(f, "llvm: {s}"),
-            Self::Unsupported(s) => write!(f, "unsupported construct: {s}"),
-            Self::FailClosed(s) => write!(f, "fail-closed: {s}"),
+            Self::Unsupported(s) | Self::UnsupportedAt { msg: s, .. } => {
+                write!(f, "unsupported construct: {s}")
+            }
+            Self::FailClosed(s) | Self::FailClosedAt { msg: s, .. } => {
+                write!(f, "fail-closed: {s}")
+            }
             Self::LlvmVerify(s) => write!(f, "llvm verify rejected module: {s}"),
             Self::TargetSetup { triple, reason } => {
                 write!(f, "target setup for `{triple}` failed: {reason}")
@@ -36989,16 +37057,24 @@ fn lower_function<'ctx>(
             // location in place rather than fabricating a line. The
             // function-entry location seeded before this loop keeps every call
             // site `!dbg`-tagged for the verifier.
+            let instr_key = (block.id, u32::try_from(instr_idx).unwrap_or(u32::MAX));
             set_debug_location_for_span(
                 ctx,
                 &fn_ctx.builder,
                 debug,
                 fn_subprogram,
-                func.instr_spans
-                    .get(&(block.id, u32::try_from(instr_idx).unwrap_or(u32::MAX))),
+                func.instr_spans.get(&instr_key),
                 lexical_scopes.as_ref(),
             );
-            lower_instruction(&fn_ctx, instr, block.id, drop_plans)?;
+            // Attach the originating instruction's source byte-range to any
+            // FailClosed / Unsupported that propagates out so the CLI can render
+            // a `^^^` caret at the offending source construct. A no-op for all
+            // other error variants and for instructions with no `instr_spans`
+            // entry (synthesised instructions outside any HIR statement). The
+            // caller (`build_module_for_target`) retains this span only for a
+            // root-origin function; every other origin has it stripped.
+            lower_instruction(&fn_ctx, instr, block.id, drop_plans)
+                .map_err(|e| e.with_instr_span(func.instr_spans.get(&instr_key).copied()))?;
         }
         if cooperate_sites
             .iter()
@@ -37015,17 +37091,20 @@ fn lower_function<'ctx>(
         // inherit the previous instruction's line. The terminator span is keyed
         // one slot past the last instruction (`block.instructions.len()`), kept
         // aligned through any post-seal splices by `shift_instr_spans_on_insert`.
+        let term_key = (
+            block.id,
+            u32::try_from(block.instructions.len()).unwrap_or(u32::MAX),
+        );
         set_debug_location_for_span(
             ctx,
             &fn_ctx.builder,
             debug,
             fn_subprogram,
-            func.instr_spans.get(&(
-                block.id,
-                u32::try_from(block.instructions.len()).unwrap_or(u32::MAX),
-            )),
+            func.instr_spans.get(&term_key),
             lexical_scopes.as_ref(),
         );
+        // Attach the terminator's source span to any FailClosed / Unsupported
+        // that propagates out, matching the instruction-span treatment above.
         lower_terminator(
             &fn_ctx,
             fn_symbols,
@@ -37033,7 +37112,8 @@ fn lower_function<'ctx>(
             block.id,
             &func.await_deadline_ns,
             &func.suspend_kinds,
-        )?;
+        )
+        .map_err(|e| e.with_instr_span(func.instr_spans.get(&term_key).copied()))?;
     }
 
     // Coroutine epilogue (R326/R327). Fill the two shared blocks every
@@ -37486,7 +37566,19 @@ fn build_module_for_target<'ctx>(
             &record_layouts,
             &pipeline.enum_layouts,
             emit_wasm_entry_alias,
-        )?;
+        )
+        // Attach the function's own source span to a fail-closed declaration
+        // error ONLY when the function's body provably indexes the root
+        // compilation unit's source (`SourceOrigin::RootUnit`). For every other
+        // origin the span would index a source the CLI is not rendering, so it
+        // is left off and the diagnostic degrades to a bare line.
+        .map_err(|e| {
+            if func.source_origin.renders_root_caret() {
+                e.with_instr_span(func.span)
+            } else {
+                e
+            }
+        })?;
         fn_symbols.insert(func.name.clone(), sym);
     }
     if emit_wasm_entry_alias {
@@ -37822,7 +37914,19 @@ fn build_module_for_target<'ctx>(
             !pipeline.supervisor_layouts.is_empty(),
             module_uses_runtime,
             fn_debug_ctx.as_ref(),
-        )?;
+        )
+        // `lower_function` attaches the offending instruction's byte-range to
+        // any fail-closed / unsupported error via `with_instr_span`. Retain
+        // that span ONLY when the function's body provably indexes the root
+        // compilation unit's source; otherwise strip it so a non-root span is
+        // never rendered as a caret against the root source being shown.
+        .map_err(|e| {
+            if func.source_origin.renders_root_caret() {
+                e
+            } else {
+                e.strip_span()
+            }
+        })?;
     }
     // Emit the cross-node payload codec thunks + registration constructor so a
     // Serializable actor message survives a process hop. The cross-node codec is
@@ -42784,6 +42888,7 @@ mod tests {
     fn empty_pipeline_with_const_42() -> IrPipeline {
         let return_ty = ResolvedTy::I64;
         let main = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "main".to_string(),
             return_ty: return_ty.clone(),
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -43244,6 +43349,7 @@ mod tests {
             ret: Box::new(ResolvedTy::I64),
         };
         let invoke = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "__hew_closure_invoke_main_0".to_string(),
             return_ty: ResolvedTy::I64,
             call_conv: hew_mir::FunctionCallConv::ClosureInvoke,
@@ -43278,6 +43384,7 @@ mod tests {
             instr_spans: ::std::collections::BTreeMap::new(),
         };
         let main = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "main".to_string(),
             return_ty: ResolvedTy::I64,
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -43395,6 +43502,7 @@ mod tests {
         IrPipeline {
             thir: Vec::new(),
             raw_mir: vec![RawMirFunction {
+                source_origin: hew_mir::SourceOrigin::Unknown,
                 name: "main".to_string(),
                 return_ty: ResolvedTy::Unit,
                 call_conv: hew_mir::FunctionCallConv::Default,
@@ -43534,6 +43642,7 @@ mod tests {
         IrPipeline {
             thir: Vec::new(),
             raw_mir: vec![RawMirFunction {
+                source_origin: hew_mir::SourceOrigin::Unknown,
                 name: "main".to_string(),
                 return_ty: ResolvedTy::Unit,
                 call_conv: hew_mir::FunctionCallConv::Default,
@@ -43631,6 +43740,7 @@ mod tests {
         const_value: MirConstValue,
     ) -> IrPipeline {
         let main = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "main".to_string(),
             return_ty: const_ty.clone(),
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -43782,6 +43892,7 @@ mod tests {
     fn pipeline_with_float_return() -> IrPipeline {
         let return_ty = ResolvedTy::F64;
         let main = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "main".to_string(),
             return_ty: return_ty.clone(),
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -43911,6 +44022,7 @@ mod tests {
     #[test]
     fn actor_handler_signature_leads_with_execution_context_pointer() {
         let handler = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "handler".to_string(),
             return_ty: ResolvedTy::I64,
             call_conv: FunctionCallConv::ActorHandler,
@@ -43985,6 +44097,7 @@ mod tests {
     #[test]
     fn context_field_actor_offset_emits_gep_and_load() {
         let handler = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "handler_ctx_field".to_string(),
             return_ty: ResolvedTy::I64,
             call_conv: FunctionCallConv::ActorHandler,
@@ -44079,6 +44192,7 @@ mod tests {
         // Locals: [0: String (the lit dest), ReturnSlot: String]
         let return_ty = ResolvedTy::String;
         let main = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "main".to_string(),
             return_ty: return_ty.clone(),
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -44366,6 +44480,7 @@ mod tests {
     /// `pipeline_with_select_*_arms` builders below).
     fn pipeline_with_select_terminator(arm_kind: hew_mir::SelectArmKind) -> IrPipeline {
         let main = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "main".to_string(),
             return_ty: ResolvedTy::I64,
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -44595,6 +44710,7 @@ mod tests {
         });
 
         let main = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "main".to_string(),
             return_ty: ResolvedTy::I64,
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -45362,6 +45478,7 @@ mod tests {
         // reads an i64 constant into the return slot — the alloca for
         // local_0 is what exercises `resolve_ty` with a non-empty args vec.
         let func = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "main".to_string(),
             return_ty: ResolvedTy::I64,
             call_conv: FunctionCallConv::Default,
@@ -45463,6 +45580,7 @@ mod tests {
             pointee: Box::new(ResolvedTy::Unit),
         };
         let gen_body = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "__hew_gen_body_test_0".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: FunctionCallConv::Default,
@@ -45588,6 +45706,7 @@ mod tests {
         // and it carries `Terminator::Yield` so `is_coroutine` overrides its LLVM
         // return type to the `coro.begin` handle (`ptr`).
         let gen_body = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "__hew_gen_body_make_test_0".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: FunctionCallConv::Default,
@@ -45629,6 +45748,7 @@ mod tests {
         // The enclosing function: allocate a Generator-typed local, construct it
         // via MakeGenerator, then return.
         let enclosing = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "build_gen".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: FunctionCallConv::Default,
@@ -45723,6 +45843,7 @@ mod tests {
     #[test]
     fn cancellation_token_is_cancelled_emits_runtime_observation_call() {
         let func = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "observe".to_string(),
             return_ty: ResolvedTy::Bool,
             call_conv: FunctionCallConv::Default,
@@ -46243,6 +46364,7 @@ mod tests {
             pointee: Box::new(ResolvedTy::Unit),
         };
         let body = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "select_channel_recv_wasm_excl_test".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -46308,6 +46430,7 @@ mod tests {
             pointee: Box::new(ResolvedTy::Unit),
         };
         let body = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "suspending_channel_recv_wasm_excl_test".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -46381,6 +46504,7 @@ mod tests {
             pointee: Box::new(ResolvedTy::Unit),
         };
         let body = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "suspending_stream_next_wasm_excl_test".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -46454,6 +46578,7 @@ mod tests {
             pointee: Box::new(ResolvedTy::Unit),
         };
         let body = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "suspending_task_await_wasm_excl_test".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -46521,6 +46646,7 @@ mod tests {
     fn wasm_exclusion_scan_flags_suspending_sleep() {
         let i64_ty = ResolvedTy::I64;
         let body = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "suspending_sleep_wasm_excl_test".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -46596,6 +46722,7 @@ mod tests {
         // exclusion scan keys on terminator shape, not arm count or arm kind, so
         // any SuspendingSelect must be refused on wasm32.
         let body = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "suspending_select_wasm_excl_test".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -46696,6 +46823,7 @@ mod tests {
                 .map(|k| std::collections::HashMap::from([(0u32, k)]))
                 .unwrap_or_default();
             RawMirFunction {
+                source_origin: hew_mir::SourceOrigin::Unknown,
                 name: name.to_string(),
                 return_ty: ResolvedTy::Unit,
                 call_conv: hew_mir::FunctionCallConv::Default,
@@ -49351,6 +49479,7 @@ mod tests {
         // the drop-in-place synthesis succeeds for the trivially-
         // droppable i64 concrete.
         let main = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "main".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: FunctionCallConv::Default,
@@ -49508,6 +49637,7 @@ mod tests {
             }],
         };
         let main = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "main".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: FunctionCallConv::Default,
@@ -49871,6 +50001,7 @@ mod tests {
             }],
         };
         let raw = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "frame_owned_drop_with_drop_fn".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: FunctionCallConv::Default,
@@ -50034,6 +50165,7 @@ mod tests {
             FunctionCallConv, Terminator,
         };
         let raw = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: name.to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: FunctionCallConv::Default,
@@ -50408,6 +50540,7 @@ mod tests {
     /// chosen because actor-program `fn main()` returns unit.
     fn minimal_pipeline_with_unit_main(with_actor: bool) -> IrPipeline {
         let main = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "main".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: FunctionCallConv::Default,
@@ -50638,6 +50771,7 @@ mod tests {
             pointee: Box::new(ResolvedTy::Unit),
         };
         let probe = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "__hew_coro_probe".to_string(),
             return_ty: ptr_ty.clone(),
             call_conv: FunctionCallConv::Default,
@@ -50827,6 +50961,7 @@ mod tests {
             pointee: Box::new(ResolvedTy::Unit),
         };
         let probe = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "__hew_coro_multi".to_string(),
             return_ty: ptr_ty.clone(),
             call_conv: FunctionCallConv::Default,
@@ -51042,6 +51177,7 @@ mod tests {
         //   - carries a Terminator::Suspend
         // This is the exact shape the fail-closed guard was designed to catch.
         let fn_with_non_ptr_return_and_suspend = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "bad_coro".to_string(),
             return_ty: ResolvedTy::I64, // NOT a ptr — the guard's bite condition
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -51157,6 +51293,7 @@ mod tests {
             pointee: Box::new(ResolvedTy::Unit),
         };
         RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: symbol.to_string(),
             return_ty: ptr_ty.clone(),
             call_conv: FunctionCallConv::ActorHandler,
@@ -51211,6 +51348,7 @@ mod tests {
     /// `lower_function` emits it as an ordinary (non-coroutine) function.
     fn run_to_completion_handler_fn(symbol: &str) -> RawMirFunction {
         RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: symbol.to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: FunctionCallConv::ActorHandler,
@@ -51245,6 +51383,7 @@ mod tests {
         handlers: Vec<(hew_mir::ActorHandlerLayout, RawMirFunction)>,
     ) -> IrPipeline {
         let main = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "main".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: FunctionCallConv::Default,
@@ -52167,6 +52306,7 @@ fn main() {
         // The dispatch trampoline calls it as (ctx_ptr, i64_msg, i32_borrow_mode),
         // so `params` and `locals` must both carry the i64 message type.
         let handler_fn = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: symbol.to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: FunctionCallConv::ActorHandler,

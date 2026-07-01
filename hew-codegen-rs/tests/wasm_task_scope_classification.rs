@@ -51,6 +51,7 @@ fn pipeline_with_task_scope_new_call() -> IrPipeline {
     IrPipeline {
         thir: vec![],
         raw_mir: vec![RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "probe".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: FunctionCallConv::Default,
@@ -139,6 +140,7 @@ fn pipeline_with_task_scope_spawn_call() -> IrPipeline {
     IrPipeline {
         thir: vec![],
         raw_mir: vec![RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "probe".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: FunctionCallConv::Default,

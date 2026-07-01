@@ -118,6 +118,7 @@ fn callee_param_is_borrow_classifies_real_pipeline() {
 #[test]
 fn callee_param_is_borrow_distinguishes_borrow_from_owned_pointer() {
     let borrow_fn = RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: "takes_borrow".to_string(),
         return_ty: ResolvedTy::I64,
         call_conv: FunctionCallConv::Default,
@@ -139,6 +140,7 @@ fn callee_param_is_borrow_distinguishes_borrow_from_owned_pointer() {
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     let owned_ptr_fn = RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: "takes_owned_pointer".to_string(),
         return_ty: ResolvedTy::I64,
         call_conv: FunctionCallConv::Default,
@@ -184,6 +186,7 @@ fn callee_param_is_borrow_distinguishes_borrow_from_owned_pointer() {
 #[test]
 fn borrow_param_call_is_non_consuming() {
     let borrow_fn = RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: "takes_borrow".to_string(),
         return_ty: ResolvedTy::String,
         call_conv: FunctionCallConv::Default,
@@ -205,6 +208,7 @@ fn borrow_param_call_is_non_consuming() {
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     let by_value_fn = RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: "takes_owned".to_string(),
         return_ty: ResolvedTy::String,
         call_conv: FunctionCallConv::Default,

@@ -59,6 +59,7 @@ fn impl_method_stub(
         locals.push(ret.clone());
     }
     RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: name.to_string(),
         return_ty: ret,
         call_conv: FunctionCallConv::Default,
@@ -392,6 +393,7 @@ fn impl_method_stub_value_recv(name: &str, ret: ResolvedTy) -> RawMirFunction {
         locals.push(ret.clone());
     }
     RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: name.to_string(),
         return_ty: ret,
         call_conv: FunctionCallConv::Default,

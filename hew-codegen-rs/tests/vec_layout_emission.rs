@@ -43,6 +43,7 @@ fn base_pipeline(
     IrPipeline {
         thir: vec![],
         raw_mir: vec![RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "main".to_string(),
             return_ty: return_ty.clone(),
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -640,6 +641,7 @@ fn vec_layout_contains_thunk_dedups_by_structured_type() {
     let pipeline = IrPipeline {
         thir: vec![],
         raw_mir: vec![RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "main".to_string(),
             return_ty: return_ty.clone(),
             call_conv: hew_mir::FunctionCallConv::Default,

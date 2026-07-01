@@ -54,6 +54,7 @@ fn pipeline_with_task_abi_call(
     IrPipeline {
         thir: vec![],
         raw_mir: vec![RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "probe".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -154,6 +155,7 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
         thir: vec![],
         raw_mir: vec![
             RawMirFunction {
+                source_origin: hew_mir::SourceOrigin::Unknown,
                 name: "main".to_string(),
                 return_ty: ResolvedTy::Unit,
                 call_conv: FunctionCallConv::ActorHandler,
@@ -174,6 +176,7 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
                 instr_spans: ::std::collections::BTreeMap::new(),
             },
             RawMirFunction {
+                source_origin: hew_mir::SourceOrigin::Unknown,
                 name: "long_op".to_string(),
                 return_ty: ResolvedTy::Unit,
                 call_conv: FunctionCallConv::TaskEntry,
@@ -262,6 +265,7 @@ fn pipeline_with_spawn_task_direct_target_without_context() -> IrPipeline {
         thir: vec![],
         raw_mir: vec![
             RawMirFunction {
+                source_origin: hew_mir::SourceOrigin::Unknown,
                 name: "main".to_string(),
                 return_ty: ResolvedTy::Unit,
                 call_conv: FunctionCallConv::ActorHandler,
@@ -282,6 +286,7 @@ fn pipeline_with_spawn_task_direct_target_without_context() -> IrPipeline {
                 instr_spans: ::std::collections::BTreeMap::new(),
             },
             RawMirFunction {
+                source_origin: hew_mir::SourceOrigin::Unknown,
                 name: "long_op".to_string(),
                 return_ty: ResolvedTy::Unit,
                 call_conv: FunctionCallConv::Default,
@@ -390,6 +395,7 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
         thir: vec![],
         raw_mir: vec![
             RawMirFunction {
+                source_origin: hew_mir::SourceOrigin::Unknown,
                 name: "main".to_string(),
                 return_ty: ResolvedTy::Unit,
                 call_conv: FunctionCallConv::ActorHandler,
@@ -410,6 +416,7 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
                 instr_spans: ::std::collections::BTreeMap::new(),
             },
             RawMirFunction {
+                source_origin: hew_mir::SourceOrigin::Unknown,
                 name: "__hew_closure_invoke_main_0".to_string(),
                 return_ty: ResolvedTy::Unit,
                 call_conv: FunctionCallConv::ClosureInvoke,
@@ -628,6 +635,7 @@ fn task_abi_emission_task_scope_spawn_paired_with_task_new() {
     let pipeline = IrPipeline {
         thir: vec![],
         raw_mir: vec![RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "probe".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: FunctionCallConv::Default,

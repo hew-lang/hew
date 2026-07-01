@@ -59,6 +59,7 @@ fn base_pipeline(
     IrPipeline {
         thir: vec![],
         raw_mir: vec![RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "main".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -526,6 +527,7 @@ fn hash_thunk_dedup_one_per_record_per_module() {
     let pipeline = IrPipeline {
         thir: vec![],
         raw_mir: vec![RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "main".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -677,6 +679,7 @@ fn hash_thunk_dedup_no_double_emit_with_vec_contains_eq_thunk() {
     let pipeline = IrPipeline {
         thir: vec![],
         raw_mir: vec![RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "main".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -1098,6 +1101,7 @@ fn hash_thunk_dedup_isolates_distinct_records_with_same_size_align() {
     let pipeline = IrPipeline {
         thir: vec![],
         raw_mir: vec![RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
             name: "main".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: hew_mir::FunctionCallConv::Default,

@@ -646,6 +646,7 @@ fn boxed_enum_recv_pipeline() -> IrPipeline {
     //   Move { dest: MachineVariant{1, variant 0, field 0}, src: local 0 }
     //   Return
     let handler = RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: "Keeper__recv__stash".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::ActorHandler,
@@ -778,6 +779,7 @@ fn relay_resend_recv_pipeline() -> IrPipeline {
     // Block 0: EnterContext; Send { actor: ActorHandle(1), value: Local(0) }
     // Block 1: ExitContext; Return
     let handler = RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: "Relay__recv__forward".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::ActorHandler,

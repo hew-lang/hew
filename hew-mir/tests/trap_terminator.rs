@@ -32,6 +32,7 @@ use hew_types::ResolvedTy;
 /// `Terminator::Trap { kind }`. Used for MIR-shape assertions below.
 fn trap_fn(kind: TrapKind) -> RawMirFunction {
     RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
         name: format!("trap_{kind:?}"),
         return_ty: ResolvedTy::I64,
         call_conv: hew_mir::FunctionCallConv::Default,

@@ -1,37 +1,23 @@
-//! Regression test for #2150 — a `Vec<Foo>` with an `indirect enum Foo` must
-//! be built and operated through the pointer-element ABI.
+//! Regression test for #2150 — a direct (non-indirect) `enum` `Vec` element
+//! keeps the layout-descriptor Vec path.
 //!
-//! Before the fix this program passed `hew check` but aborted at runtime with
-//! "Vec layout-aware operation is not implemented": codegen found the enum's
-//! tagged-union struct in `record_layouts` (every enum is registered there) and
-//! built a layout-aware Vec regardless of indirection, while the checker and
-//! MIR getter routed the element through the pointer ABI. The push then tripped
-//! the runtime layout-aware abort. The fix gates the codegen descriptor
-//! decision on `is_indirect_enum` so the indirect enum rides the pointer ABI,
-//! agreeing with the checker and MIR. Direct enums keep the layout path.
+//! #2150's defect: codegen found an enum's tagged-union struct in
+//! `record_layouts` (every enum is registered there) and built a layout-aware
+//! Vec regardless of indirection, while the checker and MIR getter routed an
+//! indirect enum's element through the pointer ABI. A `Vec<indirect_enum>` push
+//! then tripped the runtime "Vec layout-aware operation is not implemented"
+//! abort. The fix gates the codegen descriptor decision on `is_indirect_enum`,
+//! so a direct enum keeps the layout path (asserted here) and an indirect enum
+//! rides the pointer ABI.
+//!
+//! The indirect-enum half of the original #2150 test (a `Vec<Foo>` round-trip
+//! over `indirect enum Foo`) moved to the reject fixture
+//! `examples/v05/vec_indirect_enum_element_fails.hew`: a `Vec<indirect_enum>`
+//! now fails closed at compile because its per-element node free is unwired, so
+//! constructing one would leak the element nodes at scope exit. The reject is
+//! lifted once the per-element release is wired.
 
 import std::testing;
-
-indirect enum Foo {
-    A(i64);
-    B;
-}
-
-fn describe(f: Foo) -> string {
-    match f {
-        A(n) => f"A({n})",
-        B => "B",
-    }
-}
-
-#[test]
-fn indirect_enum_vec_round_trips() {
-    let v: Vec<Foo> = Vec::new();
-    v.push(Foo::B);
-    v.push(Foo::A(42));
-    testing.assert_eq_str(describe(v[0]), "B");
-    testing.assert_eq_str(describe(v[1]), "A(42)");
-}
 
 // Direct (non-indirect) enum Vec must keep the layout-descriptor path.
 enum Dir {

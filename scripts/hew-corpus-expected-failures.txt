@@ -92,6 +92,8 @@ examples/v05/hashset_f64_clear_fails.hew
 # deferred-nyi: channel/stream surfaces NYI
 
 # deferred-nyi: vec layout and method NYI
+examples/v05/vec_indirect_enum_element_fails.hew
+examples/v05/vec_indirect_enum_heap_payload_element_fails.hew
 examples/v05/vec_layout_noncopy_fails.hew
 examples/v05/vec_unsupported_method_fails.hew
 

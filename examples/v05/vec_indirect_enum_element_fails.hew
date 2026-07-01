@@ -1,0 +1,21 @@
+// Vec element rejection fixture: a `Vec<Foo>` whose element is an `indirect
+// enum` (a heap-boxed tagged-union node) is owned but has no wired per-element
+// release. The outer `Vec` owns its backing buffer and every slot is a `ptr` to
+// a node, but the scope-exit buffer free cannot yet run a per-element node free,
+// so the element nodes would leak. It must fail closed at compile with a
+// diagnostic that names the unwired release — never silently constructed then
+// leaked at runtime.
+//
+// The push / get / round-trip pointer-element ABI works today; only the
+// per-element release is unwired. Once that release is wired this fixture
+// compiles — delete its entry from hew-corpus-expected-failures.txt then.
+indirect enum Foo {
+    A(i64);
+    B;
+}
+
+fn main() {
+    let nodes: Vec<Foo> = Vec::new();
+    nodes.push(Foo::B);
+    nodes.push(Foo::A(42));
+}

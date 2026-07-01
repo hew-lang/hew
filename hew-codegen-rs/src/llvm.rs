@@ -47810,6 +47810,82 @@ mod tests {
         );
     }
 
+    /// MIR↔codegen congruence pin (`dedup-semantic-boundary`): codegen's
+    /// `resolved_ty_element_owns_heap_for_owned_vec` owned-element verdicts must
+    /// equal the MIR `is_owned_vec_element` verdicts over the shared shape table.
+    /// The sibling test `is_owned_vec_element_matches_codegen_owned_vec_table` in
+    /// `hew-mir` pins the SAME table on the MIR side, so a drift in either crate's
+    /// owned-element decision (which selects whether the Vec is built + freed
+    /// through the owned-descriptor ABI) fails its own crate's test before the two
+    /// can disagree on a getter/constructor/free at a seam.
+    #[test]
+    fn resolved_ty_element_owns_heap_for_owned_vec_matches_mir_table() {
+        let ctx = Context::create();
+        let llvm_mod = ctx.create_module("owned_vec_table_test");
+        let harness = build_harness(&ctx, &[], &[]);
+        let fn_ctx = make_test_fn_ctx(&ctx, &llvm_mod, &harness, "owned_vec_table_probe");
+
+        let fn_elem = ResolvedTy::Function {
+            params: vec![ResolvedTy::I64],
+            ret: Box::new(ResolvedTy::I64),
+        };
+        let closure_elem = ResolvedTy::Closure {
+            params: vec![],
+            ret: Box::new(ResolvedTy::Unit),
+            captures: vec![ResolvedTy::String],
+        };
+        let vec_of = |elem: ResolvedTy| ResolvedTy::Named {
+            name: "Vec".to_string(),
+            args: vec![elem],
+            builtin: Some(hew_types::BuiltinType::Vec),
+            is_opaque: false,
+        };
+        // Identical to the MIR `is_owned_vec_element` table — keep in lockstep.
+        let table: [(ResolvedTy, bool); 11] = [
+            (ResolvedTy::String, false),
+            (ResolvedTy::Bytes, false),
+            (ResolvedTy::I64, false),
+            (
+                ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64]),
+                true,
+            ),
+            (
+                ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64]),
+                false,
+            ),
+            (
+                ResolvedTy::Named {
+                    name: "HashMap".to_string(),
+                    args: vec![ResolvedTy::String, ResolvedTy::I64],
+                    builtin: Some(hew_types::BuiltinType::HashMap),
+                    is_opaque: false,
+                },
+                true,
+            ),
+            (
+                ResolvedTy::Named {
+                    name: "HashSet".to_string(),
+                    args: vec![ResolvedTy::I64],
+                    builtin: Some(hew_types::BuiltinType::HashSet),
+                    is_opaque: false,
+                },
+                true,
+            ),
+            (vec_of(ResolvedTy::I64), true),
+            (vec_of(fn_elem.clone()), false),
+            (fn_elem, false),
+            (closure_elem, false),
+        ];
+        for (elem, want) in table {
+            assert_eq!(
+                resolved_ty_element_owns_heap_for_owned_vec(&fn_ctx, &elem),
+                want,
+                "resolved_ty_element_owns_heap_for_owned_vec({elem:?}) must equal the MIR table"
+            );
+        }
+        finish_test_fn(&fn_ctx);
+    }
+
     /// Pin `cbor_vec_elem_kind` over every REACHABLE element shape so the
     /// retire of the parallel `cbor_ty_owns_heap` walker (now a sealed
     /// shim over `hew_mir::ty_owns_heap`) is byte-identical: scalars stay

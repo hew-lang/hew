@@ -60,16 +60,20 @@
 //! | `ty_owns_heap` / `ty_owns_heap_inner` | `hew-mir` · `model.rs` | heap-ownership leaf set + structural recursion | **AUTHORITY** — the single source of truth; [`OwnershipDecision::classify`] and every routed walker resolve the heap axis here. |
 //! | `cbor_ty_owns_heap` | `hew-codegen-rs` · `llvm.rs` | CBOR `Vec` element heap probe (own leaf set, divergent `_ => false`) | **RETIRED** — now a `#[deprecated]` shim delegating to `ty_owns_heap` via `CborHeapLayouts`; sole caller `cbor_vec_elem_kind` is `#[allow(deprecated)]`-listed. The workspace `clippy -D warnings` CI step guards re-entry. Fixed a latent `CancellationToken` / tuple-field under-drop for free. |
 //! | owned-locals seed gate (`ValueClass::of_ty(ty) != BitCopy`) | `hew-mir` · `lower.rs` → `hew-hir` · `value_class.rs` | which locals enter drop elaboration | **PENDING (release-bucket consolidation)** — record-blind via [`ValueClass`]; the consolidation seeds from [`ValueOwnership`] instead. Not yet switched. |
-//! | `cow_value_leaf_drop_symbol` | `hew-mir` · `lower.rs` | scalar-leaf release symbol (`string` → `hew_string_drop`, else `None`) | **PENDING (release-bucket consolidation)** — a release bucket; see the partition-totality test below. |
-//! | `binding_ty_is_plain_vec` · `binding_ty_is_owned_element_vec` · `is_owned_vec_element` · `tuple_is_all_bitcopy` | `hew-mir` · `lower.rs` | `Vec<E>` release partition (plain-BitCopy vs owned-element) | **PENDING (release-bucket consolidation)** — release buckets; their UNION must be total vs the authority leaf set (the `Vec<bytes>` gap is pinned by the partition-totality test below). |
+//! | `cow_value_leaf_drop_symbol` | `hew-mir` · `lower.rs` | scalar-leaf release symbol (`string` → `hew_string_drop`, else `None`) | **LANDED (release-bucket consolidation)** — routed through the typed decision; see the partition-totality test below. |
+//! | `binding_ty_is_plain_vec` · `binding_ty_is_owned_element_vec` · `is_owned_vec_element` · `tuple_is_all_bitcopy` | `hew-mir` · `lower.rs` | `Vec<E>` release partition (plain-BitCopy vs owned-element) | **LANDED (release-bucket consolidation)** — release buckets now PROJECT from the typed `classify_vec_element_release` decision; their union is total vs the authority leaf set. The unwired `Vec<bytes>` / `Vec<indirect_enum>` elements (`Unsupported(NoReleaseProtocol)`) are REJECTED at compile by `Builder::unsupported_vec_element_diagnostics` rather than silently leaked at scope exit. |
 //! | `ty_is_closure_pair_vec` · `ty_is_local_collection_handle` | `hew-mir` · `lower.rs` | closure-pair / collection-handle release | **PENDING (release-bucket consolidation)** — release buckets. |
 //! | `cow_heap_release_symbol` | `hew-codegen-rs` · `llvm.rs` | codegen-side release-symbol picker | **PENDING (release-bucket consolidation)** — the codegen sibling the MIR release buckets must agree with (`dedup-semantic-boundary`). |
 //!
 //! The boundary-totality tests pin both axes: [`OwnershipDecision::classify`] is
 //! total over the twelve canonical shapes (`classify_is_total_over_the_twelve_shapes`),
 //! and the release-bucket predicates' union is total vs the authority leaf set
-//! (`release_bucket_partition_is_total_over_vec_elements` in `lower.rs`, which
-//! surfaces the `Vec<bytes>` partition gap).
+//! (`release_bucket_partition_is_total_over_vec_elements` in `lower.rs`). The
+//! unwired `Vec<bytes>` and `Vec<indirect_enum>` elements that own heap but no
+//! release bucket can yet release (`Unsupported(NoReleaseProtocol)`) are
+//! rejected at compile by `Builder::unsupported_vec_element_diagnostics` — a
+//! fatal, actionable `NotYetImplemented` — rather than constructed and silently
+//! leaked at scope exit; the reject lifts once the per-element release is wired.
 //!
 //! [`NoHeap`]: OwnershipDecision::NoHeap
 //! [`OwnsHeap`]: OwnershipDecision::OwnsHeap
@@ -313,6 +317,84 @@ pub enum FailClosedReason {
     /// prove (e.g. owned-handle aggregate extraction). Mirrors
     /// `OwnedHandleAggregateExtractionUnsupported`.
     UnprovenSoleOwner,
+}
+
+// ─────────────────────────── vec-element release ──────────────────────────
+
+/// The scope-exit release protocol for a `Vec<E>` local, derived ONCE from the
+/// element type `E` by reading the single heap-ownership authority
+/// (`ty_owns_heap`). The MIR release-bucket predicates
+/// (`binding_ty_is_plain_vec`, `binding_ty_is_owned_element_vec`,
+/// `ty_is_closure_pair_vec`) are PROJECTIONS of this one decision, so their
+/// union is total over [`ResolvedTy`](hew_types::ResolvedTy) by construction: a
+/// `Vec<E>` local can never silently fall through every bucket and skip its
+/// release (the leak surface the `_ => false` bucket arms used to be). The
+/// codegen siblings (`cow_heap_release_symbol`,
+/// `resolved_ty_element_owns_heap_for_owned_vec`) pick the matching release
+/// symbol; the two sides agree per shape (`dedup-semantic-boundary`).
+///
+/// `classify_vec_element_release` (the `Builder` method that reads the function
+/// registries) is the constructor; the partition-totality test
+/// (`release_bucket_partition_is_total_over_vec_elements`) pins that every
+/// heap-owning `Vec` element resolves to a claimed bucket XOR a tracked
+/// [`Unsupported`](VecElementRelease::Unsupported), never a silent miss.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VecElementRelease {
+    /// `hew_vec_free` — the element owns no heap (a `BitCopy` scalar / aggregate)
+    /// or is a plain leaf the runtime walks itself (`string` via
+    /// `ElemKind::String`). Buffer + handle free.
+    Plain,
+    /// `hew_vec_free_owned` — the element is an owned composite (a record / enum
+    /// / tuple / nested collection that owns heap), constructed through the owned
+    /// descriptor ABI; the per-element `drop_fn` runs before the buffer free.
+    OwnedElement,
+    /// `hew_vec_free_closure_pairs` — the element is a closure pair (`fn` /
+    /// closure); each slot owns a heap pair-box (and its env box).
+    ClosurePair,
+    /// No release bucket claims the element, yet `ty_owns_heap(Vec<E>)` is `true`
+    /// (the outer `Vec` always owns its backing buffer). The element's release
+    /// ABI is not wired — a fat `bytes` triple (outside the single-pointer
+    /// buckets), a bare runtime handle, or an indirect-enum pointer-element node
+    /// free. A `Vec<bytes>` is unconstructible (`Vec::new` is NYI for the
+    /// element); a `Vec<indirect_enum>` is constructible through the
+    /// pointer-element ABI but its per-element node free is unwired. Both are
+    /// REJECTED at compile (a fatal `NotYetImplemented` naming
+    /// `NoReleaseProtocol`) — see
+    /// `Builder::unsupported_vec_element_diagnostics` — rather than constructed
+    /// and silently leaked at scope exit, the leak-safe fail-closed direction.
+    /// The reject lifts once the per-element release is wired. Carrying the
+    /// [`FailClosedReason`] keeps the decision a typed, actionable "no" instead
+    /// of a silent non-owning `false`.
+    Unsupported(FailClosedReason),
+}
+
+impl VecElementRelease {
+    /// Projection: the plain buffer-only bucket (`binding_ty_is_plain_vec` /
+    /// `hew_vec_free`).
+    #[must_use]
+    pub fn is_plain(self) -> bool {
+        matches!(self, Self::Plain)
+    }
+
+    /// Projection: the owned-descriptor bucket (`binding_ty_is_owned_element_vec`
+    /// / `hew_vec_free_owned`).
+    #[must_use]
+    pub fn is_owned_element(self) -> bool {
+        matches!(self, Self::OwnedElement)
+    }
+
+    /// Projection: the closure-pair bucket (`ty_is_closure_pair_vec` /
+    /// `hew_vec_free_closure_pairs`).
+    #[must_use]
+    pub fn is_closure_pair(self) -> bool {
+        matches!(self, Self::ClosurePair)
+    }
+
+    /// True when no release bucket claims the element — the fail-closed arm.
+    #[must_use]
+    pub fn is_unsupported(self) -> bool {
+        matches!(self, Self::Unsupported(_))
+    }
 }
 
 // ──────────────────────────────── provenance ─────────────────────────────

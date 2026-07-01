@@ -37,6 +37,8 @@ use crate::model::{
     MirStatement, Place, PointerWidth, RawMirFunction, SelectArm, SelectArmKind, Strategy,
     SuspendKind, Terminator, ThirFunction, TraitObjectStorage, TrapKind,
 };
+use crate::ownership::FailClosedReason;
+use crate::ownership::VecElementRelease;
 
 type TaskEntryAdapterSymbols = Rc<RefCell<HashSet<String>>>;
 
@@ -7874,6 +7876,29 @@ fn lower_function(
     // Collect diagnostics emitted by the builder (e.g., Unsupported HIR nodes).
     diagnostics.append(&mut builder.diagnostics);
 
+    // Reject any owned local holding a `Vec<E>` with no wired per-element
+    // release (`Vec<bytes>` / `Vec<indirect_enum>`) at compile, rather than
+    // constructing it and silently leaking the element nodes at scope exit. The
+    // outer `Vec` owns heap unconditionally, but no release bucket claims such an
+    // element, so without this reject it would fall through every scope-exit drop
+    // set and leak. Consuming the typed
+    // `VecElementRelease::Unsupported(NoReleaseProtocol)` disposition here moves
+    // that "no" up to compile time (the leak-safe fail-closed direction — a
+    // defined, actionable error the author can act on, over a silent runtime
+    // leak). The release itself stays a tracked follow-up; this is the
+    // fail-closed half. Bind sites come from the finalized blocks so the error
+    // points at the real construction site.
+    let bind_sites: HashMap<BindingId, SiteId> = raw
+        .blocks
+        .iter()
+        .flat_map(|block| block.statements.iter())
+        .filter_map(|stmt| match stmt {
+            MirStatement::Bind { binding, site, .. } => Some((*binding, *site)),
+            _ => None,
+        })
+        .collect();
+    diagnostics.extend(builder.unsupported_vec_element_diagnostics(&bind_sites));
+
     collect_unknown_type_diagnostics(func, &builder, &mut diagnostics);
 
     // Compute cooperate-check sites from the CFG. Empty for leaf functions
@@ -10575,27 +10600,60 @@ impl Builder {
         blocks
     }
 
-    /// Harvest the record/enum layout key of an owned-Vec element type into
-    /// `vec_owned_element_keys`. `ty` is any type observed in the function; only
-    /// a `Vec<elem>` whose `elem` is a registered, non-BitCopy record/enum (the
-    /// shape codegen synthesizes `__hew_*_inplace` thunks for) contributes a
-    /// key. Mirrors codegen's `owned_elem_thunk_key` resolution so the MIR
-    /// value-class allow-list and the codegen descriptor/seeding agree on which
-    /// types are owned-Vec elements (`dedup-semantic-boundary`).
-    fn harvest_vec_owned_element_key(&mut self, ty: &ResolvedTy) {
-        let ResolvedTy::Named { name, args, .. } = ty else {
-            return;
-        };
-        if name != "Vec" || args.len() != 1 {
-            return;
+    /// True when a `Vec` element is released through the owned-element ABI
+    /// (`hew_vec_free_owned` running the per-element `drop_fn`, #1722): a
+    /// registered, genuinely heap-owning, non-closure record or enum. This is
+    /// the exact acceptance `harvest_vec_owned_element_key` records into
+    /// `vec_owned_element_keys` in the function that CONSTRUCTS the `Vec`,
+    /// factored so the compile reject (`unsupported_vec_element_walk`) can ask
+    /// the same question harvest-independently.
+    ///
+    /// An element satisfying this is releasable wherever its `Vec` is built, so
+    /// it must NOT be rejected as unwired when it is merely observed as a nested
+    /// field HERE — its key was harvested in the constructing function, not this
+    /// one. Without this guard a nested `Vec<owned-record>` (e.g. the
+    /// `Vec<Stack<i64>>` buffer inside `Stack<Stack<i64>>`) would false-positive
+    /// as unwired, since `vec_owned_element_keys` is harvested per function.
+    ///
+    /// Returns `false` for the genuinely-unwired Vec elements, which therefore
+    /// stay on the reject path: a `bytes` fat triple and a bare runtime handle
+    /// are not registered record/enum types; an all-BitCopy record/enum is
+    /// `Copy` and owns no heap; and EVERY `indirect enum` — scalar OR heap
+    /// payload — is excluded up front. An indirect-enum `Vec` rides the plain
+    /// pointer ABI (`hew_vec_new_ptr`: each slot is a `ptr` to a heap-boxed
+    /// tagged-union node), while the owned-element release
+    /// (`hew_vec_free_owned` running a per-element `drop_fn`) has no
+    /// indirect-aware node free wired — admitting it here would route
+    /// construction and release through mismatched ABIs. A scalar-payload
+    /// indirect enum also has `named_elem_owns_heap == false` (the
+    /// heap-ownership authority is indirection-blind), but a HEAP-payload one
+    /// (`A(string)`) has `named_elem_owns_heap == true` and would otherwise fall
+    /// through the heap-owning-enum path below; the explicit `ty_is_indirect_enum`
+    /// guard is what keeps that case on the fail-closed
+    /// `Unsupported(NoReleaseProtocol)` reject rather than the owned-ABI path.
+    /// Mirrors codegen's `owned_elem_thunk_key` resolution so harvest, reject,
+    /// getter, and free agree (`dedup-semantic-boundary`).
+    fn elem_is_owned_abi_releasable(&self, elem: &ResolvedTy) -> bool {
+        // An `indirect enum` element is NEVER owned-ABI releasable, regardless
+        // of payload. Its `Vec` is built through the plain pointer ABI while the
+        // owned-element per-element node free is unwired (the deferred
+        // indirect-aware release phase), so it must stay on the fail-closed
+        // `Unsupported(NoReleaseProtocol)` reject — not be excluded from it as if
+        // the owned ABI claimed it. The scalar-payload case would already return
+        // `false` at the `named_elem_owns_heap` check below; this guard also
+        // catches the HEAP-payload case (`indirect enum Foo { A(string); B }`),
+        // whose payload owns heap and would otherwise reach `true` and suppress
+        // the reject, leaving a construct/release ABI mismatch to reach codegen.
+        if ty_is_indirect_enum(elem, &self.enum_layouts) {
+            return false;
         }
         let ResolvedTy::Named {
             name: elem_name,
             args: elem_args,
             ..
-        } = &args[0]
+        } = elem
         else {
-            return;
+            return false;
         };
         // A registered, non-BitCopy record/enum element. BitCopy records stay on
         // the existing `_layout` path and never enter the owned allow-list.
@@ -10611,7 +10669,7 @@ impl Builder {
         let is_record = self.lookup_record_field_order(&key).is_some()
             || self.lookup_record_field_order(elem_name.as_str()).is_some();
         if !is_enum && !is_record {
-            return;
+            return false;
         }
         // ONLY a genuinely heap-owning (non-BitCopy) element is an owned-Vec
         // element. An all-BitCopy record/enum (e.g. `type Point { x: i64; y:
@@ -10620,34 +10678,73 @@ impl Builder {
         // owned getter (which reads an owned descriptor the Copy Vec never
         // carries). Check field/variant heap-ownership via the record/enum
         // registries.
-        if !self.named_elem_owns_heap(&args[0]) {
-            return;
+        if !self.named_elem_owns_heap(elem) {
+            return false;
         }
-        // A closure-bearing record/enum element never harvests: the owned-Vec
-        // descriptor deep-clones elements on push/set through the record clone
-        // thunk, and a closure pair's clone direction is refused (sole-owner
-        // env, no retain). Skipping the harvest keeps `Vec<Holder-with-fn>`
+        // A closure-bearing record/enum element is NOT owned-ABI releasable: the
+        // owned-Vec descriptor deep-clones elements on push/set through the
+        // record clone thunk, and a closure pair's clone direction is refused
+        // (sole-owner env, no retain). Excluding it keeps `Vec<Holder-with-fn>`
         // on the fail-closed unsupported path at compile time instead of
         // refusing at runtime on the first push.
-        if crate::model::ty_contains_closure_value(
-            &args[0],
+        !crate::model::ty_contains_closure_value(
+            elem,
             &self.record_layouts_for_classification(),
             &self.enum_layouts,
-        ) {
+        )
+    }
+
+    /// Harvest the record/enum layout key of an owned-Vec element type into
+    /// `vec_owned_element_keys`. `ty` is any type observed in the function; only
+    /// a `Vec<elem>` whose `elem` is owned-element-ABI releasable (the same
+    /// acceptance `elem_is_owned_abi_releasable` and the compile reject consult,
+    /// i.e. a registered, non-BitCopy record/enum codegen synthesizes
+    /// `__hew_*_inplace` thunks for) contributes a key. Mirrors codegen's
+    /// `owned_elem_thunk_key` resolution so the MIR value-class allow-list and
+    /// the codegen descriptor/seeding agree on which types are owned-Vec
+    /// elements (`dedup-semantic-boundary`).
+    fn harvest_vec_owned_element_key(&mut self, ty: &ResolvedTy) {
+        let ResolvedTy::Named { name, args, .. } = ty else {
+            return;
+        };
+        if name != "Vec" || args.len() != 1 {
             return;
         }
-        // Use the record-layout-key form for records (matches
-        // `user_record_layout_key` consulted by the W3.029 escape hatch).
-        let record_key = if self.lookup_record_field_order(&key).is_some() {
-            key.clone()
-        } else {
-            elem_name.clone()
+        // Only an owned-element-ABI-releasable element contributes a key — the
+        // same acceptance the compile reject consults, so harvest and reject
+        // agree on which elements the owned ABI claims (`dedup-semantic-boundary`).
+        if !self.elem_is_owned_abi_releasable(&args[0]) {
+            return;
+        }
+        let ResolvedTy::Named {
+            name: elem_name,
+            args: elem_args,
+            ..
+        } = &args[0]
+        else {
+            return;
         };
+        let key = if elem_args.is_empty() {
+            elem_name.clone()
+        } else {
+            mangle_layout_key(elem_name, elem_args)
+        };
+        let is_enum = self
+            .enum_layouts
+            .iter()
+            .any(|el| el.name == key || short_name(&el.name) == short_name(elem_name));
         if is_enum {
             // Enums are gated by their own EnumInPlace drop path; record the
             // mangled enum key so a value of the enum admits as CowValue too.
             self.vec_owned_element_keys.insert(key);
         } else {
+            // Use the record-layout-key form for records (matches
+            // `user_record_layout_key` consulted by the W3.029 escape hatch).
+            let record_key = if self.lookup_record_field_order(&key).is_some() {
+                key
+            } else {
+                elem_name.clone()
+            };
             self.vec_owned_element_keys.insert(record_key);
         }
     }
@@ -10836,15 +10933,320 @@ impl Builder {
                             .iter()
                             .any(|k| short_name(k) == short)
             }
-            _ => false,
+            // Every remaining `ResolvedTy` shape is NOT an owned-descriptor Vec
+            // element. The match is exhaustive (no `_ => false` fall-through) so a
+            // new `ResolvedTy` variant is a compile error here, never a silent
+            // non-owning default — the leak surface this consolidation removes.
+            // The heap-owning shapes among them are released by a DIFFERENT bucket
+            // or are fail-closed, never leaked silently (pinned by
+            // `release_bucket_partition_is_total_over_vec_elements`):
+            //   - `String`: a plain element — the runtime walks `ElemKind::String`
+            //     under the buffer-only `hew_vec_free` (`is_plain_vec_element`).
+            //   - `Bytes`: a fat `{ ptr, len, cap }` triple, outside the single-
+            //     pointer / owned-descriptor buckets; `Vec<bytes>` is fail-closed
+            //     at construction (`Vec::new` is NYI for `Bytes`) →
+            //     `classify_vec_element_release` returns `Unsupported`.
+            //   - `Function` / `Closure`: a closure pair released by
+            //     `ty_is_closure_pair_vec` / `hew_vec_free_closure_pairs`.
+            //   - `CancellationToken` and the remaining views/handles either own
+            //     no heap as a flat element or are fail-closed at construction.
+            ResolvedTy::I8
+            | ResolvedTy::I16
+            | ResolvedTy::I32
+            | ResolvedTy::I64
+            | ResolvedTy::U8
+            | ResolvedTy::U16
+            | ResolvedTy::U32
+            | ResolvedTy::U64
+            | ResolvedTy::Isize
+            | ResolvedTy::Usize
+            | ResolvedTy::F32
+            | ResolvedTy::F64
+            | ResolvedTy::Bool
+            | ResolvedTy::Char
+            | ResolvedTy::Duration
+            | ResolvedTy::String
+            | ResolvedTy::Bytes
+            | ResolvedTy::CancellationToken
+            | ResolvedTy::Unit
+            | ResolvedTy::Never
+            | ResolvedTy::Array(_, _)
+            | ResolvedTy::Slice(_)
+            | ResolvedTy::Function { .. }
+            | ResolvedTy::Closure { .. }
+            | ResolvedTy::Pointer { .. }
+            | ResolvedTy::Borrow { .. }
+            | ResolvedTy::TraitObject { .. }
+            | ResolvedTy::Task(_)
+            | ResolvedTy::TypeParam { .. } => false,
         }
     }
 
+    /// Classify a `Vec<E>` element's scope-exit release by reading the single
+    /// heap-ownership authority. The three release-bucket predicates are
+    /// projections of this one decision (see [`VecElementRelease`]), so their
+    /// union is total over `ResolvedTy` by construction — a `Vec<E>` local can
+    /// never silently fall through every bucket and skip its release.
+    ///
+    /// Order matters and mirrors codegen's `cow_heap_release_symbol`: a closure
+    /// pair is checked BEFORE the owned/plain arms (a `fn`/closure element is
+    /// neither an owned composite nor a plain leaf — it has its own pair-box
+    /// release), and the owned composite is checked before the plain leaf (an
+    /// all-`BitCopy` aggregate is plain; a heap-owning one is owned). The arms
+    /// are disjoint, so the order only fixes the (unreachable) tie.
+    fn classify_vec_element_release(&self, elem: &ResolvedTy) -> VecElementRelease {
+        if ty_is_closure_pair(elem) {
+            return VecElementRelease::ClosurePair;
+        }
+        if self.is_owned_vec_element(elem) {
+            return VecElementRelease::OwnedElement;
+        }
+        if self.is_plain_vec_element(elem) {
+            return VecElementRelease::Plain;
+        }
+        // Unclaimed by every bucket. `ty_owns_heap(Vec<E>)` is `true`
+        // unconditionally (the outer Vec owns its buffer), so this element has no
+        // wired release protocol — fail closed with a typed, tracked reason
+        // rather than silently classifying it non-owning (the leak surface).
+        VecElementRelease::Unsupported(self.vec_element_unsupported_reason(elem))
+    }
+
+    /// The fail-closed reason for a `Vec<E>` element no release bucket claims.
+    /// `bytes` (a fat `{ ptr, len, cap }` triple), bare runtime handles, and
+    /// indirect-enum nodes own heap with no wired Vec-element release
+    /// (`NoReleaseProtocol`) — a real release protocol exists to be wired (a
+    /// fat-triple drop, a handle close, or a pointer-element node free). Any
+    /// other shape reaching here owns no heap as a flat element; it is named with
+    /// the anti-drift sentinel (`UnenumeratedShape`). The indirect-enum probe is
+    /// explicit because the heap-ownership authority is blind to indirection — a
+    /// scalar-payload `indirect enum` owns a heap node the authority reports as
+    /// non-owning, so without this probe its `Vec` would mis-label as the
+    /// sentinel instead of the actionable "release protocol unwired".
+    fn vec_element_unsupported_reason(&self, elem: &ResolvedTy) -> FailClosedReason {
+        if self.named_elem_owns_heap(elem) || ty_is_indirect_enum(elem, &self.enum_layouts) {
+            FailClosedReason::NoReleaseProtocol
+        } else {
+            FailClosedReason::UnenumeratedShape
+        }
+    }
+
+    /// Walk an owned local's type for a `Vec<E>` whose element has no wired
+    /// per-element release — `classify_vec_element_release(E)` is
+    /// `Unsupported(NoReleaseProtocol)` (a `bytes` fat triple or an indirect-enum
+    /// node). Returns a human description of the FIRST such element, found
+    /// directly (a `Vec<E>` local) or transitively through a record field, a
+    /// tuple element, a nested `Vec`, a type argument, or an enum variant
+    /// payload.
+    ///
+    /// This is the PRODUCTION consumer of the typed `Unsupported` disposition.
+    /// `ty_owns_heap(Vec<_>)` is unconditionally `true`, but a `Vec<E>` no
+    /// release bucket claims falls through every scope-exit drop set and silently
+    /// leaks its element nodes (the admit-then-leak non-totality). Surfacing it
+    /// here turns that runtime leak into a fatal, actionable compile diagnostic —
+    /// the fail-closed direction (reject at compile, where the author can act,
+    /// over a silent runtime leak).
+    ///
+    /// Only `NoReleaseProtocol` is rejected, never `UnenumeratedShape`: the
+    /// latter names an element owning NO heap as a flat element (a free
+    /// `TypeParam` in a generic skeleton, `Unit`, a bare runtime view), so
+    /// skipping its release leaks nothing — today's behaviour is preserved and an
+    /// un-monomorphised generic `Vec<T>` is never rejected.
+    ///
+    /// And only an element unwired in EVERY context is rejected: a heap-owning
+    /// record/enum releasable through the owned-element ABI
+    /// (`elem_is_owned_abi_releasable`) is excluded, because it reaches
+    /// `Unsupported(NoReleaseProtocol)` here only when its `Vec` is constructed
+    /// in another function (so its key was not harvested into THIS function's
+    /// allow-list), not because its release is unwired — without that exclusion a
+    /// nested `Vec<owned-record>` field (e.g. the `Vec<Stack<i64>>` buffer inside
+    /// `Stack<Stack<i64>>`) would false-positive as a leak.
+    ///
+    /// Cycle-guarded on `Named` recursion (an `indirect enum` references itself)
+    /// exactly as the heap-ownership authority `ty_owns_heap_inner`.
+    fn unsupported_vec_element_in_ty(&self, ty: &ResolvedTy) -> Option<String> {
+        let layouts = crate::model::MirHeapLayouts {
+            record_field_orders: &self.record_field_orders,
+            enum_layouts: &self.enum_layouts,
+        };
+        let mut visiting = std::collections::HashSet::new();
+        self.unsupported_vec_element_walk(ty, &layouts, &mut visiting)
+    }
+
+    fn unsupported_vec_element_walk<L: crate::model::HeapOwnershipLayouts>(
+        &self,
+        ty: &ResolvedTy,
+        layouts: &L,
+        visiting: &mut std::collections::HashSet<String>,
+    ) -> Option<String> {
+        match ty {
+            // The element this consolidation classifies. A `NoReleaseProtocol`
+            // element is the unwired-leak case to reject; otherwise descend into
+            // `E` regardless, so a `Vec<Vec<indirect_enum>>` (whose outer `Vec`
+            // is `OwnedElement`, not `Unsupported`) is still caught at the inner
+            // `Vec`.
+            ResolvedTy::Named {
+                args,
+                builtin: Some(hew_types::BuiltinType::Vec),
+                ..
+            } => {
+                let elem = args.first()?;
+                // Reject only a Vec element whose per-element release is unwired
+                // in EVERY context. `classify_vec_element_release` returns
+                // `Unsupported(NoReleaseProtocol)` both for a genuinely-unwired
+                // element (a `bytes` fat triple, an indirect-enum node — scalar
+                // OR heap payload) AND for a heap-owning record/enum that simply
+                // was not harvested into THIS function's owned-element allow-list
+                // — its `Vec` is constructed, and released through the
+                // owned-element ABI, in another function (`vec_owned_element_keys`
+                // is harvested per function). `elem_is_owned_abi_releasable`
+                // excludes only the latter (and excludes every indirect enum, so
+                // an indirect-enum element is never suppressed from the reject),
+                // keeping the reject from false-positiving on a nested
+                // `Vec<owned-record>` field (e.g. the `Vec<Stack<i64>>` buffer
+                // inside `Stack<Stack<i64>>`) while still rejecting the
+                // genuinely-unwired `Vec<bytes>` / `Vec<indirect_enum>`. The
+                // descent below still visits `E`, so a
+                // `Vec<RecordHoldingVecIndirectEnum>` is caught at the inner
+                // `Vec<indirect_enum>`.
+                if matches!(
+                    self.classify_vec_element_release(elem),
+                    VecElementRelease::Unsupported(FailClosedReason::NoReleaseProtocol)
+                ) && !self.elem_is_owned_abi_releasable(elem)
+                {
+                    return Some(describe_vec_element(elem, &self.enum_layouts));
+                }
+                self.unsupported_vec_element_walk(elem, layouts, visiting)
+            }
+            ResolvedTy::Named { name, args, .. } => {
+                // Type arguments first (`Option<Vec<indirect_enum>>`,
+                // `HashMap<K, Vec<…>>`), then record fields, then enum variant
+                // payloads — cycle-guarded on the `Named` head so a recursive
+                // `indirect enum` does not loop.
+                for arg in args {
+                    if let Some(found) = self.unsupported_vec_element_walk(arg, layouts, visiting) {
+                        return Some(found);
+                    }
+                }
+                let key = hew_hir::mangle_resolved_ty(ty);
+                if !visiting.insert(key.clone()) {
+                    return None;
+                }
+                let found = layouts
+                    .record_field_tys(name, args)
+                    .into_iter()
+                    .flatten()
+                    .find_map(|field_ty| {
+                        self.unsupported_vec_element_walk(&field_ty, layouts, visiting)
+                    })
+                    .or_else(|| {
+                        layouts
+                            .enum_variant_field_tys(name, args)
+                            .into_iter()
+                            .flatten()
+                            .flatten()
+                            .find_map(|payload_ty| {
+                                self.unsupported_vec_element_walk(&payload_ty, layouts, visiting)
+                            })
+                    });
+                visiting.remove(&key);
+                found
+            }
+            ResolvedTy::Tuple(elems) => elems
+                .iter()
+                .find_map(|elem| self.unsupported_vec_element_walk(elem, layouts, visiting)),
+            ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
+                self.unsupported_vec_element_walk(inner, layouts, visiting)
+            }
+            _ => None,
+        }
+    }
+
+    /// Fatal compile diagnostics for every owned local whose type holds a
+    /// `Vec<E>` with no wired per-element release (see
+    /// [`Builder::unsupported_vec_element_in_ty`]). Emitted before codegen so an
+    /// admit-then-leak `Vec<bytes>` / `Vec<indirect_enum>` is REJECTED at compile
+    /// (where the author can act) rather than constructed and silently leaked at
+    /// scope exit — the leak-safe fail-closed direction. The typed
+    /// `VecElementRelease::Unsupported(NoReleaseProtocol)` disposition this
+    /// consumes is the same single authority the release buckets project from.
+    ///
+    /// `bind_sites` maps each binding to its construction `SiteId` (harvested
+    /// from the finalized `Bind` statements in the function's blocks, since the
+    /// builder's transient `statements` buffer is already drained into blocks by
+    /// the time diagnostics assemble), so the error points at the real
+    /// construction site rather than a synthetic fallback.
+    fn unsupported_vec_element_diagnostics(
+        &self,
+        bind_sites: &std::collections::HashMap<BindingId, SiteId>,
+    ) -> Vec<MirDiagnostic> {
+        self.owned_locals
+            .iter()
+            .filter_map(|(binding, name, ty)| {
+                let elem = self.unsupported_vec_element_in_ty(ty)?;
+                let site = bind_sites.get(binding).copied().unwrap_or(SiteId(0));
+                Some(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: format!(
+                            "`{name}`: a `Vec` whose element is {elem} has no per-element \
+                             release protocol, so its heap nodes would leak at scope exit"
+                        ),
+                        site,
+                    },
+                    note: "a `Vec` of `bytes` or of an indirect-enum element cannot yet be \
+                           released element-by-element at scope exit. This construction is \
+                           rejected at compile rather than silently leaked, and becomes \
+                           available once the per-element release is wired."
+                        .to_string(),
+                })
+            })
+            .collect()
+    }
+
+    /// True when `elem` is a PLAIN `Vec` element — a `BitCopy` scalar, `string`
+    /// (whose element release is the runtime's `ElemKind::String` walk under the
+    /// buffer-only `hew_vec_free`), a `BitCopy` value aggregate (a record /
+    /// direct enum), or an all-`BitCopy` tuple. This is the element-level core of
+    /// [`Builder::binding_ty_is_plain_vec`], factored so
+    /// [`Builder::classify_vec_element_release`] shares the exact same
+    /// plain-element authority — one body, no second copy to drift. See
+    /// `binding_ty_is_plain_vec` for why the `Named` arm uses `ValueClass::of_ty`
+    /// and the `Tuple` arm uses `tuple_is_all_bitcopy` (the `Tuple` value class
+    /// is unconditionally `CowValue`, so it cannot discriminate field types).
+    fn is_plain_vec_element(&self, elem: &ResolvedTy) -> bool {
+        if matches!(
+            elem,
+            ResolvedTy::I8
+                | ResolvedTy::I16
+                | ResolvedTy::I32
+                | ResolvedTy::I64
+                | ResolvedTy::U8
+                | ResolvedTy::U16
+                | ResolvedTy::U32
+                | ResolvedTy::U64
+                | ResolvedTy::Isize
+                | ResolvedTy::Usize
+                | ResolvedTy::F32
+                | ResolvedTy::F64
+                | ResolvedTy::Bool
+                | ResolvedTy::Char
+                | ResolvedTy::Duration
+                | ResolvedTy::String
+        ) {
+            return true;
+        }
+        (matches!(elem, ResolvedTy::Named { .. })
+            && ValueClass::of_ty(elem, &self.type_classes) == ValueClass::BitCopy)
+            || (matches!(elem, ResolvedTy::Tuple(_)) && self.tuple_is_all_bitcopy(elem))
+    }
+
     /// True when `ty` is a `Vec<T>` whose element `T` is an owned-Vec element
-    /// (record/enum in `vec_owned_element_keys`, or a heap-owning tuple). Uses
-    /// the same `is_owned_vec_element` authority the getter routing uses, so the
-    /// scope-exit `hew_vec_free_owned` drop fires for exactly the Vecs that were
-    /// constructed through the owned ABI (`dedup-semantic-boundary`).
+    /// (record/enum in `vec_owned_element_keys`, or a heap-owning tuple). A
+    /// projection of [`Builder::classify_vec_element_release`] — equal to
+    /// `is_owned_vec_element(elem)` (a closure-pair element gives
+    /// `is_owned_vec_element == false`, so routing through the typed decision is
+    /// behaviour-identical) — so the scope-exit `hew_vec_free_owned` drop fires
+    /// for exactly the Vecs that were constructed through the owned ABI
+    /// (`dedup-semantic-boundary`).
     fn binding_ty_is_owned_element_vec(&self, ty: &ResolvedTy) -> bool {
         let ResolvedTy::Named {
             args,
@@ -10855,7 +11257,7 @@ impl Builder {
             return false;
         };
         args.first()
-            .is_some_and(|elem| self.is_owned_vec_element(elem))
+            .is_some_and(|elem| self.classify_vec_element_release(elem).is_owned_element())
     }
 
     /// True when `ty` is the builtin `Vec<T>` whose element `T` is a PLAIN
@@ -10902,58 +11304,13 @@ impl Builder {
         else {
             return false;
         };
-        args.first().is_some_and(|elem| {
-            if matches!(
-                elem,
-                ResolvedTy::I8
-                    | ResolvedTy::I16
-                    | ResolvedTy::I32
-                    | ResolvedTy::I64
-                    | ResolvedTy::U8
-                    | ResolvedTy::U16
-                    | ResolvedTy::U32
-                    | ResolvedTy::U64
-                    | ResolvedTy::Isize
-                    | ResolvedTy::Usize
-                    | ResolvedTy::F32
-                    | ResolvedTy::F64
-                    | ResolvedTy::Bool
-                    | ResolvedTy::Char
-                    | ResolvedTy::Duration
-                    | ResolvedTy::String
-            ) {
-                return true;
-            }
-            // BitCopy value aggregate (record / direct enum): constructed
-            // inline via `hew_vec_new_with_layout`, owns no heap, so the
-            // buffer-only `hew_vec_free` is the matching release.
-            // `ValueClass::of_ty(Named{..}) == BitCopy` is the exact complement
-            // of `is_owned_vec_element` for named types — a heap-owning or
-            // closure-bearing aggregate is never `BitCopy` — so this never
-            // claims a binding the owned/closure-pair arms own.
-            //
-            // Tuple: `ValueClass::of_ty(Tuple(_))` ALWAYS returns `CowValue`
-            // (it does not inspect element types), so using that path for a
-            // tuple element would make this arm permanently dead. Instead,
-            // recurse structurally via `tuple_is_all_bitcopy`: a tuple is
-            // all-BitCopy iff every element is a BitCopy scalar, a Named type
-            // whose `ValueClass::of_ty` is `BitCopy`, or a nested tuple that
-            // also satisfies the same predicate recursively. This is the
-            // correct complement of the owned authority for tuples; using
-            // `!is_owned_vec_element` is UNSOUND here because
-            // `ty_contains_heap_owning` (which backs the tuple arm of
-            // `is_owned_vec_element`) only consults `enum_layouts` for Named
-            // types but NOT `record_field_resolved_tys`, so a named record
-            // type nested inside a tuple can be mis-classified non-heap-owning
-            // even when it transitively contains a `string` field. The
-            // `ValueClass::of_ty` path for Named types is the correct authority
-            // — it is what `harvest_vec_owned_element_key` and codegen's
-            // `resolved_ty_contains_heap_leaf` agree on — so the plain and
-            // owned allow-sets stay disjoint (`dedup-semantic-boundary`).
-            (matches!(elem, ResolvedTy::Named { .. })
-                && ValueClass::of_ty(elem, &self.type_classes) == ValueClass::BitCopy)
-                || (matches!(elem, ResolvedTy::Tuple(_)) && self.tuple_is_all_bitcopy(elem))
-        })
+        // Element-level plain check factored into `is_plain_vec_element` so the
+        // typed `classify_vec_element_release` partition shares the exact same
+        // authority (no second copy to drift). The doc above this function
+        // records why the `Named` arm uses `ValueClass::of_ty` and the `Tuple`
+        // arm uses `tuple_is_all_bitcopy`.
+        args.first()
+            .is_some_and(|elem| self.is_plain_vec_element(elem))
     }
 
     /// True when `ty` is a `Tuple` whose every element is all-`BitCopy` by
@@ -11002,7 +11359,29 @@ impl Builder {
                 ValueClass::of_ty(e, &self.type_classes) == ValueClass::BitCopy
             }
             ResolvedTy::Tuple(_) => self.tuple_is_all_bitcopy(e),
-            _ => false,
+            // Exhaustive (no `_ => false` fall-through): a new `ResolvedTy`
+            // variant is a compile error here, never a silent "is BitCopy"
+            // miss. None of the remaining shapes is a `BitCopy` tuple field —
+            // `String`/`Bytes`/`CancellationToken` own heap; `Function`/`Closure`
+            // are fat closure pairs; `Array`/`Slice`/`Pointer`/`Borrow`/
+            // `TraitObject`/`Task` are not value-aggregate-copyable here; `Unit`/
+            // `Never`/`TypeParam` carry no proven `BitCopy` layout — so a tuple
+            // containing any of them is NOT all-`BitCopy` and routes off the
+            // plain bucket.
+            ResolvedTy::String
+            | ResolvedTy::Bytes
+            | ResolvedTy::CancellationToken
+            | ResolvedTy::Unit
+            | ResolvedTy::Never
+            | ResolvedTy::Array(_, _)
+            | ResolvedTy::Slice(_)
+            | ResolvedTy::Function { .. }
+            | ResolvedTy::Closure { .. }
+            | ResolvedTy::Pointer { .. }
+            | ResolvedTy::Borrow { .. }
+            | ResolvedTy::TraitObject { .. }
+            | ResolvedTy::Task(_)
+            | ResolvedTy::TypeParam { .. } => false,
         })
     }
 
@@ -38095,6 +38474,22 @@ fn ty_is_indirect_enum(ty: &ResolvedTy, enum_layouts: &[crate::model::EnumLayout
     matches!(ty, ResolvedTy::Named { name, .. } if name_is_indirect_enum(name, enum_layouts))
 }
 
+/// A human description of a `Vec` element with no wired per-element release, for
+/// the compile diagnostic emitted by
+/// [`Builder::unsupported_vec_element_diagnostics`]. Names indirectness
+/// explicitly (an indirect enum is the common case) so the message is
+/// actionable.
+fn describe_vec_element(elem: &ResolvedTy, enum_layouts: &[crate::model::EnumLayout]) -> String {
+    match elem {
+        ResolvedTy::Bytes => "`bytes` (a fat `{ ptr, len, cap }` triple)".to_string(),
+        ResolvedTy::Named { name, .. } if ty_is_indirect_enum(elem, enum_layouts) => {
+            format!("the indirect enum `{}`", short_name(name))
+        }
+        ResolvedTy::Named { name, .. } => format!("`{}`", short_name(name)),
+        other => format!("`{other:?}`"),
+    }
+}
+
 /// Fail-closed sole-owner allow-set for `indirect enum` heap-node bindings
 /// (spec §3.7.4). An indirect-enum local is a single heap `ptr` to a
 /// tagged-union node; its scope-exit release (`DropKind::IndirectEnum`) frees
@@ -38841,7 +39236,55 @@ fn build_lifo_drops(
 fn cow_value_leaf_drop_symbol(ty: &ResolvedTy) -> Option<&'static str> {
     match ty {
         ResolvedTy::String => Some("hew_string_drop"),
-        _ => None,
+        // Exhaustive (no `_ => None` fall-through): a new `ResolvedTy` variant is
+        // a compile error here, never a silent "no scope-exit drop" miss for a
+        // heap-owning leaf. Every other leaf is `None` for a documented reason —
+        // it owns no heap, or its scope-exit drop is a DIFFERENT authority's job,
+        // never an unenumerated guess:
+        //   - `Bytes`: a fat `{ ptr, len, cap }` triple with its own dedicated
+        //     admission authority (`derive_local_bytes_drop_allowed`) and
+        //     `build_lifo_drops` arm — kept out so exactly ONE prover owns bytes
+        //     admission (a second union-admitting authority would risk a
+        //     double-free; LESSONS: boundary-fail-closed).
+        //   - `Named` containers/handles (`Vec`/`HashMap`/`HashSet`/`Generator`/
+        //     records/enums): NOT scalar leaves — their drop is the
+        //     `binding_ty_is_*_vec` / `derive_local_collection_drop_allowed`
+        //     release buckets, NOT this per-leaf symbol picker.
+        //   - scalars / `Unit` / `Never` / views (`Pointer`/`Borrow`/`Slice`/
+        //     `Array`) / `Function` / `Closure` / `TraitObject` / `Task` /
+        //     `CancellationToken` / `TypeParam`: own no scalar heap leaf to drop
+        //     here (closure pairs, tasks, and tokens have their own release
+        //     paths).
+        ResolvedTy::I8
+        | ResolvedTy::I16
+        | ResolvedTy::I32
+        | ResolvedTy::I64
+        | ResolvedTy::U8
+        | ResolvedTy::U16
+        | ResolvedTy::U32
+        | ResolvedTy::U64
+        | ResolvedTy::Isize
+        | ResolvedTy::Usize
+        | ResolvedTy::F32
+        | ResolvedTy::F64
+        | ResolvedTy::Bool
+        | ResolvedTy::Char
+        | ResolvedTy::Duration
+        | ResolvedTy::Bytes
+        | ResolvedTy::CancellationToken
+        | ResolvedTy::Unit
+        | ResolvedTy::Never
+        | ResolvedTy::Tuple(_)
+        | ResolvedTy::Array(_, _)
+        | ResolvedTy::Slice(_)
+        | ResolvedTy::Named { .. }
+        | ResolvedTy::Function { .. }
+        | ResolvedTy::Closure { .. }
+        | ResolvedTy::Pointer { .. }
+        | ResolvedTy::Borrow { .. }
+        | ResolvedTy::TraitObject { .. }
+        | ResolvedTy::Task(_)
+        | ResolvedTy::TypeParam { .. } => None,
     }
 }
 
@@ -44405,40 +44848,299 @@ mod binding_ty_is_plain_vec_tuple {
         );
     }
 
-    /// Boundary-totality: the `Vec<E>` release-bucket predicates'
-    /// UNION must be total over the heap-owning `Vec` shapes. The outer `Vec`
-    /// ALWAYS owns heap (`ty_owns_heap(Vec<_>)` is `true` unconditionally — a
-    /// `Vec` owns its backing buffer for ANY element), so every `Vec<E>` local
-    /// must be claimed by exactly one release bucket or its scope-exit drop is
-    /// silently skipped → leak. The three Vec buckets are
-    /// `binding_ty_is_plain_vec` (buffer-only `hew_vec_free`; the runtime walks
-    /// `string` elements itself via `ElemKind::String`),
-    /// `binding_ty_is_owned_element_vec` (`hew_vec_free_owned`, per-element
-    /// drop), and `ty_is_closure_pair_vec` (`hew_vec_free_closure_pairs`).
+    /// Build a `Builder` with a HEAP-payload `indirect enum Foo { A(string); B }`
+    /// registered. Unlike the scalar-payload enum, its `A(string)` payload owns
+    /// heap, so `named_elem_owns_heap(Foo)` is `true` — the case the
+    /// scalar-only `!named_elem_owns_heap` guard in `elem_is_owned_abi_releasable`
+    /// used to miss, letting a heap-payload `Vec<indirect_enum>` reach codegen
+    /// with a construct/release ABI mismatch. The explicit `ty_is_indirect_enum`
+    /// guard now keeps it on the fail-closed reject.
+    fn builder_with_heap_payload_indirect_enum() -> Builder {
+        Builder {
+            enum_layouts: vec![crate::model::EnumLayout {
+                name: "Foo".to_string(),
+                tag_width: 1,
+                variants: vec![
+                    crate::model::MachineVariantLayout {
+                        name: "A".to_string(),
+                        field_tys: vec![ResolvedTy::String],
+                        field_names: vec![],
+                    },
+                    crate::model::MachineVariantLayout {
+                        name: "B".to_string(),
+                        field_tys: vec![],
+                        field_names: vec![],
+                    },
+                ],
+                is_indirect: true,
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// Regression (heap-payload indirect enum): a `Vec<indirect enum Foo {
+    /// A(string); B }>` must be rejected. Its `A(string)` payload owns heap, so
+    /// `named_elem_owns_heap(Foo)` is `true` and the element is NOT excluded by
+    /// the `!named_elem_owns_heap` check — yet an indirect-enum `Vec` rides the
+    /// plain pointer ABI (`hew_vec_new_ptr`) while `hew_vec_free_owned` has no
+    /// indirect-aware per-element node free, so admitting it as owned-ABI
+    /// releasable would ship a construct/release ABI mismatch to codegen. The
+    /// explicit `ty_is_indirect_enum` guard in `elem_is_owned_abi_releasable`
+    /// keeps every indirect enum on the fail-closed `Unsupported(NoReleaseProtocol)`
+    /// reject regardless of payload.
+    #[test]
+    fn heap_payload_indirect_enum_vec_element_rejected() {
+        let builder = builder_with_heap_payload_indirect_enum();
+        let foo = unregistered_named("Foo");
+
+        // The payload owns heap — the scalar-only guard would NOT have excluded
+        // this element, so the reject depends on the explicit indirect-enum guard.
+        assert!(
+            builder.named_elem_owns_heap(&foo),
+            "indirect enum Foo {{ A(string); B }}: the A(string) payload owns heap"
+        );
+        assert!(
+            !builder.elem_is_owned_abi_releasable(&foo),
+            "a heap-payload indirect enum is NOT owned-ABI releasable — its per-element \
+             node free is unwired; it must stay on the fail-closed reject"
+        );
+        assert!(
+            !builder.is_owned_vec_element(&foo),
+            "an indirect-enum element is built through the plain pointer ABI and must \
+             never route to the owned-element free"
+        );
+        assert!(
+            builder
+                .unsupported_vec_element_in_ty(&vec_of_ty(foo.clone()))
+                .is_some(),
+            "Vec<heap-payload indirect enum> has no wired per-element node free — must be rejected"
+        );
+        assert!(
+            builder
+                .unsupported_vec_element_in_ty(&vec_of_ty(vec_of_ty(foo)))
+                .is_some(),
+            "Vec<Vec<heap-payload indirect enum>>: the inner unwired element must be found \
+             by descending into E"
+        );
+    }
+
+    /// The heap-payload indirect-enum reject also reaches TRANSITIVELY — through a
+    /// record field, a tuple element, a type argument, and a self-recursive
+    /// `Vec<_>` payload (`indirect enum List { Cons(i64, Vec<List>); Nil }`, whose
+    /// own `Cons` payload owns heap). A composite drop recurses into these, so an
+    /// unclaimed indirect-enum element nested inside leaks exactly as a bare
+    /// `Vec<Foo>` would.
+    #[test]
+    fn heap_payload_indirect_enum_vec_element_rejected_transitively() {
+        let foo = unregistered_named("Foo");
+
+        let mut builder = builder_with_heap_payload_indirect_enum();
+        // Record field: `Holder { items: Vec<Foo> }`.
+        builder.record_field_orders.insert(
+            "Holder".to_string(),
+            vec![("items".to_string(), vec_of_ty(foo.clone()))],
+        );
+        assert!(
+            builder
+                .unsupported_vec_element_in_ty(&unregistered_named("Holder"))
+                .is_some(),
+            "a record field Vec<heap-payload indirect enum> must be rejected transitively"
+        );
+
+        // Tuple element: `(Vec<Foo>, i64)`.
+        assert!(
+            builder
+                .unsupported_vec_element_in_ty(&ResolvedTy::Tuple(vec![
+                    vec_of_ty(foo.clone()),
+                    ResolvedTy::I64,
+                ]))
+                .is_some(),
+            "a tuple element Vec<heap-payload indirect enum> must be rejected transitively"
+        );
+
+        // Type argument: `Option<Vec<Foo>>`.
+        assert!(
+            builder
+                .unsupported_vec_element_in_ty(&ResolvedTy::Named {
+                    name: "Option".to_string(),
+                    args: vec![vec_of_ty(foo)],
+                    builtin: None,
+                    is_opaque: false,
+                })
+                .is_some(),
+            "a type-argument Vec<heap-payload indirect enum> must be rejected transitively"
+        );
+
+        // Self-recursive heap payload: `indirect enum List { Cons(i64, Vec<List>); Nil }`.
+        // `Vec<List>` must reject — List is an indirect enum — and the walk must
+        // terminate on the self-reference (cycle-guarded).
+        let rec_builder = Builder {
+            enum_layouts: vec![crate::model::EnumLayout {
+                name: "List".to_string(),
+                tag_width: 1,
+                variants: vec![
+                    crate::model::MachineVariantLayout {
+                        name: "Cons".to_string(),
+                        field_tys: vec![ResolvedTy::I64, vec_of_ty(unregistered_named("List"))],
+                        field_names: vec![],
+                    },
+                    crate::model::MachineVariantLayout {
+                        name: "Nil".to_string(),
+                        field_tys: vec![],
+                        field_names: vec![],
+                    },
+                ],
+                is_indirect: true,
+            }],
+            ..Default::default()
+        };
+        assert!(
+            rec_builder
+                .unsupported_vec_element_in_ty(&vec_of_ty(unregistered_named("List")))
+                .is_some(),
+            "Vec<self-recursive indirect enum List> must be rejected (its per-element node \
+             free is unwired) and the recursion must terminate"
+        );
+    }
+
+    /// Non-over-rejection guard for the indirect-enum exclusion: making EVERY
+    /// indirect enum fail closed must NOT catch shapes that are genuinely
+    /// owned-ABI releasable. A DIRECT (non-indirect) heap-owning enum is stored
+    /// inline and released through the owned-element ABI, and a heap-owning
+    /// record is likewise releasable — both stay `elem_is_owned_abi_releasable`
+    /// and are NOT rejected. Only indirectness flips the verdict.
+    #[test]
+    fn is_indirect_exclusion_preserves_direct_enum_and_owned_record() {
+        let mut builder = Builder {
+            // A DIRECT heap-owning enum `DirE { A(string); B }` (is_indirect:
+            // false) — inline storage, owned-element ABI applies.
+            enum_layouts: vec![crate::model::EnumLayout {
+                name: "DirE".to_string(),
+                tag_width: 1,
+                variants: vec![
+                    crate::model::MachineVariantLayout {
+                        name: "A".to_string(),
+                        field_tys: vec![ResolvedTy::String],
+                        field_names: vec![],
+                    },
+                    crate::model::MachineVariantLayout {
+                        name: "B".to_string(),
+                        field_tys: vec![],
+                        field_names: vec![],
+                    },
+                ],
+                is_indirect: false,
+            }],
+            ..Default::default()
+        };
+        // A heap-owning record `Pair { name: string }`.
+        builder.record_field_orders.insert(
+            "Pair".to_string(),
+            vec![("name".to_string(), ResolvedTy::String)],
+        );
+
+        let dir_e = unregistered_named("DirE");
+        assert!(
+            !ty_is_indirect_enum(&dir_e, &builder.enum_layouts),
+            "a direct enum is not an indirect enum — the exclusion must not touch it"
+        );
+        assert!(
+            builder.elem_is_owned_abi_releasable(&dir_e),
+            "a direct heap-owning enum is owned-ABI releasable (inline storage) — the \
+             indirect-enum exclusion must not over-reject it"
+        );
+        assert!(
+            builder.elem_is_owned_abi_releasable(&unregistered_named("Pair")),
+            "a heap-owning record is owned-ABI releasable — the indirect-enum exclusion \
+             must not over-reject it"
+        );
+    }
+
+    /// Build a `Builder` with a scalar-payload `indirect enum Foo { A(i64); B }`
+    /// registered, so `Vec<Foo>` exercises the indirect-enum fail-closed arm of
+    /// the release partition.
+    fn builder_with_indirect_enum() -> Builder {
+        Builder {
+            enum_layouts: vec![crate::model::EnumLayout {
+                name: "Foo".to_string(),
+                tag_width: 1,
+                variants: vec![
+                    crate::model::MachineVariantLayout {
+                        name: "A".to_string(),
+                        field_tys: vec![ResolvedTy::I64],
+                        field_names: vec![],
+                    },
+                    crate::model::MachineVariantLayout {
+                        name: "B".to_string(),
+                        field_tys: vec![],
+                        field_names: vec![],
+                    },
+                ],
+                is_indirect: true,
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// Boundary-totality, expressed POSITIVELY through the typed
+    /// [`VecElementRelease`] decision: every `Vec<E>` element resolves to exactly
+    /// ONE release disposition (`Plain` | `OwnedElement` | `ClosurePair` |
+    /// `Unsupported`), and the three bool release-bucket predicates
+    /// (`binding_ty_is_plain_vec`, `binding_ty_is_owned_element_vec`,
+    /// `ty_is_closure_pair_vec`) are projections of it. The outer `Vec` ALWAYS
+    /// owns heap (`ty_owns_heap(Vec<_>)` is `true` unconditionally — a `Vec` owns
+    /// its backing buffer for ANY element), so a heap-owning `Vec<E>` local must
+    /// resolve to a claimed bucket XOR a tracked `Unsupported` — never a silent
+    /// fall-through through every bucket (the leak surface the `_ => false` bucket
+    /// arms used to be).
     ///
-    /// KNOWN-GAP — `Vec<bytes>`: claimed by NEITHER `binding_ty_is_plain_vec`
-    /// (`Bytes` is absent from its scalar/string allow-list) NOR
-    /// `binding_ty_is_owned_element_vec` (`is_owned_vec_element(Bytes)` hits its
-    /// `_ => false` arm), yet `ty_owns_heap(Vec<bytes>)` is `true`. This is a
-    /// LATENT non-totality, not a live leak: `Vec<bytes>` is currently
-    /// unconstructible — `Vec::new` fails closed at codegen with
-    /// `E_NOT_YET_IMPLEMENTED: Vec::new has no constructor lowering for element
-    /// type Bytes`, so a `Vec<bytes>` local can never reach a scope-exit drop
-    /// (the `_ => false` invariant — no silent ABI/drop fall-through — is
-    /// satisfied upstream at construction). This assertion is the tripwire:
-    /// enabling `Vec<bytes>` construction WITHOUT extending the release partition
-    /// (add `Bytes` to a bucket, or route the binding through the typed
-    /// `OwnershipDecision` authority — future release-bucket consolidation) must fail here first. Bare
-    /// runtime-handle elements (`Vec<CancellationToken>`) share this gap class
-    /// and the same NYI gate.
+    /// `Vec<bytes>` and `Vec<indirect_enum>` are EXPLICIT `Unsupported` entries,
+    /// GREEN BY CONSTRUCTION (not a gap-tripwire `assert!(!claimed)`): the typed
+    /// decision names them `Unsupported(NoReleaseProtocol)` — a defined,
+    /// actionable "release ABI unwired", not a silent non-owning `false`. `bytes`
+    /// is a fat `{ ptr, len, cap }` triple outside the single-pointer buckets and
+    /// `Vec<bytes>` is unconstructible (`Vec::new` is NYI for `Bytes`); a
+    /// scalar-payload `indirect enum` is a heap-boxed node whose pointer-element
+    /// release (a node free per element) is a tracked follow-up. Both own heap no
+    /// bucket can release, so `Builder::unsupported_vec_element_diagnostics`
+    /// consumes this `Unsupported` disposition to REJECT them at compile rather
+    /// than silently leak them at scope exit; the reject lifts once the
+    /// per-element release is wired. If either becomes claimed by a real release
+    /// path, swap its expected arm here — the test fails first if a bucket
+    /// silently starts (or stops) claiming it.
     #[test]
     fn release_bucket_partition_is_total_over_vec_elements() {
-        let builder = Builder::default();
-        let claimed = |elem: ResolvedTy| {
-            let v = vec_of_ty(elem);
-            builder.binding_ty_is_plain_vec(&v)
-                || builder.binding_ty_is_owned_element_vec(&v)
-                || ty_is_closure_pair_vec(&v)
+        let builder = builder_with_indirect_enum();
+
+        // Assert `elem` resolves to `want`, the outer `Vec<elem>` owns heap, and
+        // the three bool buckets project EXACTLY from the typed decision (so the
+        // partition is a disjoint cover, not just non-empty).
+        let assert_disposition = |elem: ResolvedTy, want: VecElementRelease| {
+            let v = vec_of_ty(elem.clone());
+            assert!(
+                builder.named_elem_owns_heap(&v),
+                "ty_owns_heap(Vec<{elem:?}>) must be true — the outer Vec owns its buffer"
+            );
+            assert_eq!(
+                builder.classify_vec_element_release(&elem),
+                want,
+                "Vec<{elem:?}> element release disposition"
+            );
+            assert_eq!(
+                builder.binding_ty_is_plain_vec(&v),
+                want.is_plain(),
+                "binding_ty_is_plain_vec(Vec<{elem:?}>) must project from the typed decision"
+            );
+            assert_eq!(
+                builder.binding_ty_is_owned_element_vec(&v),
+                want.is_owned_element(),
+                "binding_ty_is_owned_element_vec(Vec<{elem:?}>) must project from the typed decision"
+            );
+            assert_eq!(
+                ty_is_closure_pair_vec(&v),
+                want.is_closure_pair(),
+                "ty_is_closure_pair_vec(Vec<{elem:?}>) must project from the typed decision"
+            );
         };
 
         // Plain bucket: BitCopy scalar / string / all-BitCopy aggregate elements.
@@ -44451,14 +45153,7 @@ mod binding_ty_is_plain_vec_tuple {
             ResolvedTy::String,
             ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64]),
         ] {
-            assert!(
-                builder.named_elem_owns_heap(&vec_of_ty(elem.clone())),
-                "Vec<{elem:?}> must own heap (the authority's Vec leaf rule)"
-            );
-            assert!(
-                claimed(elem.clone()),
-                "Vec<{elem:?}> owns heap but no release bucket claims it (plain arm)"
-            );
+            assert_disposition(elem, VecElementRelease::Plain);
         }
 
         // Owned-element bucket: nested collections + heap-owning tuples.
@@ -44472,26 +45167,341 @@ mod binding_ty_is_plain_vec_tuple {
             ResolvedTy::named_builtin("HashSet", BuiltinType::HashSet, vec![ResolvedTy::I64]),
             ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64]),
         ] {
-            assert!(
-                claimed(elem.clone()),
-                "Vec<{elem:?}> owns heap through its element but no release bucket claims it"
-            );
+            assert_disposition(elem, VecElementRelease::OwnedElement);
         }
 
-        // The authority agrees the gap element's Vec owns heap (so it MUST be
-        // released): `ty_owns_heap(Vec<bytes>)` is true.
-        assert!(
-            builder.named_elem_owns_heap(&vec_of_ty(ResolvedTy::Bytes)),
-            "ty_owns_heap(Vec<bytes>) must be true — the outer Vec owns its buffer"
+        // Closure-pair bucket.
+        assert_disposition(
+            ResolvedTy::Function {
+                params: vec![],
+                ret: Box::new(ResolvedTy::Unit),
+            },
+            VecElementRelease::ClosurePair,
         );
-        // THE KNOWN GAP: Vec<bytes> is claimed by no release bucket.
-        assert!(
-            !claimed(ResolvedTy::Bytes),
-            "KNOWN-GAP: Vec<bytes> is expected to be claimed by NO release bucket \
-             (the known partition gap, NYI-gated by `Vec::new`'s fail-closed on \
-             Bytes elements). If you enabled Vec<bytes> construction, extend the \
-             release partition and update this tripwire."
+
+        // Fail-closed entries — explicit, GREEN BY CONSTRUCTION. `bytes`' fat
+        // triple and the scalar-payload `indirect enum Foo` both own heap the
+        // partition cannot release, so the typed decision is a tracked
+        // `Unsupported(NoReleaseProtocol)` and all three bool buckets project
+        // `false`.
+        for elem in [ResolvedTy::Bytes, unregistered_named("Foo")] {
+            assert_disposition(
+                elem,
+                VecElementRelease::Unsupported(FailClosedReason::NoReleaseProtocol),
+            );
+        }
+    }
+
+    /// Focused pin: a scalar-payload `indirect enum` Vec element must fail closed
+    /// as `Unsupported(NoReleaseProtocol)`, NOT silently land in the plain bucket
+    /// (`BitCopy`). The heap-ownership authority is blind to indirection — a
+    /// scalar `indirect enum`'s `ty_owns_heap` is `false` — so without the
+    /// explicit indirect-enum probe in `vec_element_unsupported_reason` this node
+    /// would mis-label. The element is heap-boxed (each slot is a `ptr` to a
+    /// tagged-union node); a `BitCopy` classification would skip the node free.
+    /// `NeverBitCopy`: the disposition is `Unsupported`, never `Plain`.
+    #[test]
+    fn indirect_enum_vec_element_fails_closed_not_plain() {
+        let builder = builder_with_indirect_enum();
+        let foo = unregistered_named("Foo");
+        assert_eq!(
+            builder.classify_vec_element_release(&foo),
+            VecElementRelease::Unsupported(FailClosedReason::NoReleaseProtocol),
+            "Vec<indirect enum Foo> must fail closed (release unwired), not be \
+             mis-classified as a plain BitCopy element"
         );
+        assert!(
+            !builder.is_plain_vec_element(&foo),
+            "an indirect-enum element is heap-boxed — never a plain BitCopy element"
+        );
+        assert!(
+            !builder.is_owned_vec_element(&foo),
+            "Vec<indirect_enum> is built through the plain pointer ABI (no owned \
+             descriptor), so it must NOT route to the owned-element free"
+        );
+    }
+
+    /// The production reject walk ([`Builder::unsupported_vec_element_in_ty`])
+    /// finds a `Vec<E>` with no wired per-element release directly — a
+    /// `Vec<bytes>` (fat triple) or a `Vec<indirect_enum>` (heap-boxed node) —
+    /// and through a nested `Vec`. This walk is the consumer that moves the
+    /// admit-then-leak "no" up to compile time; without it the element nodes fall
+    /// through every scope-exit drop set and silently leak.
+    #[test]
+    fn unwired_vec_element_rejected_directly_and_when_nested() {
+        let builder = builder_with_indirect_enum();
+        let foo = unregistered_named("Foo");
+
+        assert!(
+            builder
+                .unsupported_vec_element_in_ty(&vec_of_ty(ResolvedTy::Bytes))
+                .is_some(),
+            "Vec<bytes> owns heap with no single-pointer release bucket — must be rejected"
+        );
+        assert!(
+            builder
+                .unsupported_vec_element_in_ty(&vec_of_ty(foo.clone()))
+                .is_some(),
+            "Vec<indirect enum Foo> has no wired per-element node free — must be rejected"
+        );
+        assert!(
+            builder
+                .unsupported_vec_element_in_ty(&vec_of_ty(vec_of_ty(foo)))
+                .is_some(),
+            "Vec<Vec<indirect enum Foo>>: the outer Vec is OwnedElement, but the inner \
+             unwired element must still be found by descending into E"
+        );
+    }
+
+    /// The reject walk finds an unwired `Vec<E>` TRANSITIVELY — through a record
+    /// field, a tuple element, and a type argument — not only as a top-level
+    /// `Vec<E>` binding. A composite drop recurses into these fields, so an
+    /// unclaimed element nested inside them leaks exactly as a bare `Vec<E>`
+    /// would; the reject must reach it.
+    #[test]
+    fn unwired_vec_element_rejected_transitively() {
+        let foo = unregistered_named("Foo");
+
+        let mut builder = builder_with_indirect_enum();
+        // Record field: `Holder { items: Vec<Foo> }`.
+        builder.record_field_orders.insert(
+            "Holder".to_string(),
+            vec![("items".to_string(), vec_of_ty(foo.clone()))],
+        );
+        assert!(
+            builder
+                .unsupported_vec_element_in_ty(&unregistered_named("Holder"))
+                .is_some(),
+            "a record field Vec<indirect_enum> must be rejected transitively"
+        );
+
+        // Tuple element: `(Vec<Foo>, i64)`.
+        assert!(
+            builder
+                .unsupported_vec_element_in_ty(&ResolvedTy::Tuple(vec![
+                    vec_of_ty(foo.clone()),
+                    ResolvedTy::I64,
+                ]))
+                .is_some(),
+            "a tuple element Vec<indirect_enum> must be rejected transitively"
+        );
+
+        // Type argument: `Option<Vec<Foo>>` (a Named carrying the Vec as an arg).
+        // The walk descends type arguments before record/enum payloads.
+        let option_vec_foo = ResolvedTy::Named {
+            name: "Option".to_string(),
+            args: vec![vec_of_ty(foo)],
+            builtin: None,
+            is_opaque: false,
+        };
+        assert!(
+            builder
+                .unsupported_vec_element_in_ty(&option_vec_foo)
+                .is_some(),
+            "a type-argument Vec<indirect_enum> must be rejected transitively"
+        );
+    }
+
+    /// Behaviour preservation: the reject walk fires ONLY for a genuinely unwired
+    /// heap-owning element (`NoReleaseProtocol`). Every releasable or
+    /// non-heap-owning `Vec` element is left untouched — a plain BitCopy/string
+    /// element, a nested collection (`Vec<Vec<i64>>`), a heap-owning tuple, an
+    /// owned record whose element release IS wired (harvested into
+    /// `vec_owned_element_keys`), and an un-monomorphised generic `Vec<T>`
+    /// skeleton (a free `TypeParam` owns no heap → `UnenumeratedShape`, never
+    /// rejected). A bare indirect-enum local (NOT a `Vec` element) is also
+    /// untouched — its scope-exit node free is wired separately
+    /// (`DropKind::IndirectEnum`).
+    #[test]
+    fn releasable_and_non_owning_vec_elements_not_rejected() {
+        // Owned record `Pair { name: string }` with its element release wired
+        // (harvested key present), as production has by the time diagnostics run.
+        let mut builder = builder_with_indirect_enum();
+        builder.record_field_orders.insert(
+            "Pair".to_string(),
+            vec![("name".to_string(), ResolvedTy::String)],
+        );
+        builder.vec_owned_element_keys.insert("Pair".to_string());
+
+        for ty in [
+            vec_of_ty(ResolvedTy::I64),
+            vec_of_ty(ResolvedTy::String),
+            vec_of_ty(vec_of_ty(ResolvedTy::I64)),
+            vec_of_ty(ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64])),
+            vec_of_ty(unregistered_named("Pair")),
+            vec_of_ty(ResolvedTy::TypeParam {
+                name: "T".to_string(),
+            }),
+            // A bare indirect-enum local is wired via DropKind::IndirectEnum.
+            unregistered_named("Foo"),
+        ] {
+            assert!(
+                builder.unsupported_vec_element_in_ty(&ty).is_none(),
+                "{ty:?} has a wired release (or owns no heap) — must NOT be rejected"
+            );
+        }
+    }
+
+    /// Regression: a nested `Vec<owned-record>` whose element key was NOT
+    /// harvested into THIS function's allow-list must NOT be rejected. The
+    /// element is released through the owned-element ABI in the function that
+    /// CONSTRUCTS its `Vec`; it reaches `Unsupported(NoReleaseProtocol)` here
+    /// only because `vec_owned_element_keys` is harvested per function. This is
+    /// the `Stack<Stack<i64>>` shape — the outer record holds a `Vec<Stack<i64>>`
+    /// buffer whose `Stack<i64>` element owns heap (its own `Vec<i64>`) and is
+    /// releasable, not unwired. Pre-fix the reject false-positived on it and
+    /// failed `generic_ctor_return_type_mono` at compile.
+    #[test]
+    fn nested_owned_record_vec_element_not_rejected_without_harvested_key() {
+        let mut builder = builder_with_indirect_enum();
+        // `StackI64 { items: Vec<i64> }` — a heap-owning record (owns its Vec
+        // buffer), releasable via the owned-element ABI when its Vec is built.
+        builder.record_field_orders.insert(
+            "StackI64".to_string(),
+            vec![("items".to_string(), vec_of_ty(ResolvedTy::I64))],
+        );
+        // `OuterStack { items: Vec<StackI64> }` — the `Stack<Stack<i64>>` shape.
+        builder.record_field_orders.insert(
+            "OuterStack".to_string(),
+            vec![(
+                "items".to_string(),
+                vec_of_ty(unregistered_named("StackI64")),
+            )],
+        );
+        // NEITHER key is harvested into `vec_owned_element_keys` — exactly the
+        // state of a function that does not directly CONSTRUCT the inner Vec.
+
+        assert!(
+            builder.elem_is_owned_abi_releasable(&unregistered_named("StackI64")),
+            "a registered heap-owning record element is owned-ABI releasable \
+             regardless of harvest"
+        );
+        assert!(
+            builder
+                .unsupported_vec_element_in_ty(&vec_of_ty(unregistered_named("StackI64")))
+                .is_none(),
+            "Vec<owned-record> with an un-harvested key must NOT be rejected — it \
+             is released through the owned-element ABI in its constructing function"
+        );
+        assert!(
+            builder
+                .unsupported_vec_element_in_ty(&unregistered_named("OuterStack"))
+                .is_none(),
+            "a nested Vec<owned-record> field (the Stack<Stack<i64>> buffer) must \
+             NOT false-positive as an unwired leak"
+        );
+    }
+
+    /// The owned-local diagnostics pass emits exactly one fatal
+    /// `NotYetImplemented` for a local holding an unwired `Vec` element, and none
+    /// for a fully-releasable owned local — the production wiring that turns the
+    /// admit-then-leak into a compile error before codegen.
+    #[test]
+    fn unsupported_vec_element_diagnostics_rejects_unwired_owned_local() {
+        let mut builder = builder_with_indirect_enum();
+        builder.owned_locals = vec![(
+            BindingId(7),
+            "nodes".to_string(),
+            vec_of_ty(unregistered_named("Foo")),
+        )];
+        // The construction site is sourced from the finalized `Bind` statements,
+        // keyed by the owned local's binding id.
+        let bind_sites = std::collections::HashMap::from([(BindingId(7), SiteId(42))]);
+        let diags = builder.unsupported_vec_element_diagnostics(&bind_sites);
+        assert_eq!(diags.len(), 1, "one unwired owned local → one diagnostic");
+        assert!(
+            matches!(
+                diags[0].kind,
+                MirDiagnosticKind::NotYetImplemented {
+                    site: SiteId(42),
+                    ..
+                }
+            ),
+            "the reject is a fatal NotYetImplemented carrying the real construction site"
+        );
+
+        // A releasable owned `Vec<string>` local emits nothing — behaviour
+        // preserved for every constructible, releasable shape.
+        let mut ok = builder_with_indirect_enum();
+        ok.owned_locals = vec![(
+            BindingId(8),
+            "names".to_string(),
+            vec_of_ty(ResolvedTy::String),
+        )];
+        assert!(
+            ok.unsupported_vec_element_diagnostics(&bind_sites)
+                .is_empty(),
+            "a Vec<string> owned local has a wired release — no diagnostic"
+        );
+    }
+
+    /// MIR↔codegen congruence pin (`dedup-semantic-boundary`): the MIR
+    /// `is_owned_vec_element` element verdicts must equal codegen's
+    /// `resolved_ty_element_owns_heap_for_owned_vec` over the shapes both classify
+    /// the same way (non-`Named`, builtin collections, closure pairs, and an
+    /// unregistered `Named` — which both report `false` with empty registries).
+    /// The sibling test
+    /// `resolved_ty_element_owns_heap_for_owned_vec_matches_mir_table` in
+    /// `hew-codegen-rs` pins the SAME table on the codegen side, so a drift in
+    /// either crate's owned-element decision fails its own test. (The MIR `Named`
+    /// arm uses the function `vec_owned_element_keys` set — a harvested subset of
+    /// codegen's direct-authority verdict — which converges with codegen for
+    /// every constructible `Vec<record/enum>`, where the element is always
+    /// harvested.)
+    #[test]
+    fn is_owned_vec_element_matches_codegen_owned_vec_table() {
+        let builder = Builder::default();
+        let fn_elem = ResolvedTy::Function {
+            params: vec![ResolvedTy::I64],
+            ret: Box::new(ResolvedTy::I64),
+        };
+        let closure_elem = ResolvedTy::Closure {
+            params: vec![],
+            ret: Box::new(ResolvedTy::Unit),
+            captures: vec![ResolvedTy::String],
+        };
+        let table: [(ResolvedTy, bool); 11] = [
+            (ResolvedTy::String, false),
+            (ResolvedTy::Bytes, false),
+            (ResolvedTy::I64, false),
+            (
+                ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64]),
+                true,
+            ),
+            (
+                ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64]),
+                false,
+            ),
+            (
+                ResolvedTy::named_builtin(
+                    "HashMap",
+                    BuiltinType::HashMap,
+                    vec![ResolvedTy::String, ResolvedTy::I64],
+                ),
+                true,
+            ),
+            (
+                ResolvedTy::named_builtin("HashSet", BuiltinType::HashSet, vec![ResolvedTy::I64]),
+                true,
+            ),
+            (
+                ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::I64]),
+                true,
+            ),
+            (
+                ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![fn_elem.clone()]),
+                false,
+            ),
+            (fn_elem, false),
+            (closure_elem, false),
+        ];
+        for (elem, want) in table {
+            assert_eq!(
+                builder.is_owned_vec_element(&elem),
+                want,
+                "is_owned_vec_element({elem:?}) must equal the codegen owned-vec table"
+            );
+        }
     }
 }
 

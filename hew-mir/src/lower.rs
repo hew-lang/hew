@@ -10699,13 +10699,16 @@ impl Builder {
         if !is_enum && !is_record {
             return false;
         }
-        // ONLY a genuinely heap-owning (non-BitCopy) element is an owned-Vec
-        // element. An all-BitCopy record/enum (e.g. `type Point { x: i64; y:
-        // i64 }`) is `Copy` and stays on the existing BitCopy `_layout` path —
-        // harvesting it would mis-route its Vec's element loads through the
-        // owned getter (which reads an owned descriptor the Copy Vec never
-        // carries). Check field/variant heap-ownership via the record/enum
-        // registries.
+        // ONLY a genuinely heap-owning element is an owned-Vec element, decided
+        // by the `named_elem_owns_heap` authority (NOT by `ValueClass::BitCopy`,
+        // which finalises records only). A heap-free record (e.g.
+        // `type Point { x: i64; y: i64 }`, which is `BitCopy`) OR a heap-free
+        // direct enum (e.g. `enum Colour { Red; Green; Blue }`, which is NOT
+        // `BitCopy`) owns no heap and stays on the plain-Vec path
+        // (`is_plain_vec_element`); harvesting it would mis-route its Vec's
+        // element loads through the owned getter (which reads an owned
+        // descriptor the plain Vec never carries). Check field/variant
+        // heap-ownership via the record/enum registries.
         if !self.named_elem_owns_heap(elem) {
             return false;
         }
@@ -11230,15 +11233,37 @@ impl Builder {
             .collect()
     }
 
-    /// True when `elem` is a PLAIN `Vec` element — a `BitCopy` scalar, `string`
-    /// (whose element release is the runtime's `ElemKind::String` walk under the
-    /// buffer-only `hew_vec_free`), a `BitCopy` value aggregate (a record /
-    /// direct enum), or an all-`BitCopy` tuple. This is the element-level core of
-    /// [`Builder::binding_ty_is_plain_vec`], factored so
-    /// [`Builder::classify_vec_element_release`] shares the exact same
-    /// plain-element authority — one body, no second copy to drift. See
-    /// `binding_ty_is_plain_vec` for why the `Named` arm uses `ValueClass::of_ty`
-    /// and the `Tuple` arm uses `tuple_is_all_bitcopy` (the `Tuple` value class
+    /// True when `elem` is a PLAIN `Vec` element — one released by the
+    /// buffer-only `hew_vec_free` (with the runtime's own `ElemKind` walk for
+    /// `string`/layout elements), carrying NO owned-descriptor or closure-pair
+    /// release. Covers: a `BitCopy` scalar or `string`; a `BitCopy` value record
+    /// (and scalar builtins that reach the classifier as `Named`, e.g.
+    /// `Instant`); a DIRECT (non-indirect) user enum that owns no heap; and an
+    /// all-plain tuple.
+    ///
+    /// The `Named` arm reads the heap-ownership AUTHORITY, not `ValueClass`
+    /// alone. `ValueClass::of_ty` finalises records only, so a fieldless /
+    /// scalar-payload user enum is NEVER `BitCopy`; gating solely on
+    /// `ValueClass::of_ty == BitCopy` (the pre-fix form) classified such an enum
+    /// NEITHER plain nor owned, leaving its `Vec` with no scope-exit release — a
+    /// whole-buffer+handle leak. The arm therefore also admits a direct enum via
+    /// `ty_is_direct_enum_element(elem) && !named_elem_owns_heap(elem)`: a
+    /// heap-free direct enum is plain, a heap-owning one still routes owned. The
+    /// `BitCopy` disjunct is retained for the shapes `ValueClass` classifies
+    /// correctly (records, `Instant`), where a pure heap-authority gate would
+    /// wrongly exclude a `BitCopy` builtin not in the layout registry.
+    ///
+    /// The direct-enum membership is `ty_is_direct_enum_element`, extracted
+    /// verbatim from the layout-Vec constructor authority
+    /// (`vec_element_uses_layout_descriptor`), so a direct enum is RELEASED as a
+    /// plain layout Vec exactly when it was CONSTRUCTED as one — the
+    /// construct/release symmetry the runtime relies on, and congruent with the
+    /// vec-index getter's non-indirect-enum `hew_vec_get_layout` arm.
+    ///
+    /// This is the element-level core of [`Builder::binding_ty_is_plain_vec`],
+    /// factored so [`Builder::classify_vec_element_release`] shares the exact
+    /// same plain-element authority — one body, no second copy to drift. The
+    /// `Tuple` arm delegates to `tuple_is_all_bitcopy` (the `Tuple` value class
     /// is unconditionally `CowValue`, so it cannot discriminate field types).
     fn is_plain_vec_element(&self, elem: &ResolvedTy) -> bool {
         if matches!(
@@ -11262,8 +11287,21 @@ impl Builder {
         ) {
             return true;
         }
+        // A `Named` element is plain when it is BitCopy (records, and scalar
+        // builtins that reach the classifier as `Named` such as `Instant`), OR
+        // when it is a DIRECT user enum that owns no heap. The enum disjunct is
+        // load-bearing: `ValueClass::of_ty` finalises records only, so a
+        // fieldless / scalar-payload user enum is NEVER `BitCopy` and would
+        // otherwise be classified NEITHER plain nor owned — leaving its Vec with
+        // no scope-exit release (a buffer+handle leak). Heap-ness is read from
+        // the `named_elem_owns_heap` authority, never re-derived from BitCopy, so
+        // a heap-owning enum still routes owned. `ty_is_direct_enum_element` is
+        // the layout-Vec constructor's own membership, so release matches
+        // construction; it is congruent with the vec-index getter's non-indirect
+        // enum `hew_vec_get_layout` arm (`dedup-semantic-boundary`).
         (matches!(elem, ResolvedTy::Named { .. })
-            && ValueClass::of_ty(elem, &self.type_classes) == ValueClass::BitCopy)
+            && (ValueClass::of_ty(elem, &self.type_classes) == ValueClass::BitCopy
+                || (self.ty_is_direct_enum_element(elem) && !self.named_elem_owns_heap(elem))))
             || (matches!(elem, ResolvedTy::Tuple(_)) && self.tuple_is_all_bitcopy(elem))
     }
 
@@ -11291,34 +11329,35 @@ impl Builder {
     /// True when `ty` is the builtin `Vec<T>` whose element `T` is a PLAIN
     /// element — a `BitCopy` scalar (`i64`, `u8`, `bool`, `f64`, `char`,
     /// `Duration`, …), `string` (whose element release lives inside the
-    /// runtime's `ElemKind::String` walk), or a `BitCopy` value aggregate
-    /// (a record / direct enum / tuple whose fields are all `BitCopy`, e.g.
-    /// `type Point { x: i64, y: i64 }`). These are exactly the Vecs codegen
-    /// constructs WITHOUT an owned-element descriptor — the scalar/string ABIs
-    /// and the inline value-aggregate `hew_vec_new_with_layout` /
-    /// `hew_vec_get_layout` path — so the matching scope-exit release is the
-    /// plain `hew_vec_free` (buffer + handle; the runtime walks string elements
-    /// itself, and a `BitCopy` aggregate element owns no heap so no per-element
-    /// drop is needed). Substitutes through the monomorphisation map first
-    /// (mirroring `vec_receiver_has_owned_element`) so a polymorphic binding
-    /// type resolves to its concrete element.
+    /// runtime's `ElemKind::String` walk), a `BitCopy` value record (e.g.
+    /// `type Point { x: i64, y: i64 }`), a DIRECT (non-indirect) user enum that
+    /// owns no heap, or a tuple whose fields are all plain. These are exactly
+    /// the Vecs codegen constructs WITHOUT an owned-element descriptor — the
+    /// scalar/string ABIs and the inline value-aggregate
+    /// `hew_vec_new_with_layout` / `hew_vec_get_layout` path — so the matching
+    /// scope-exit release is the plain `hew_vec_free` (buffer + handle; the
+    /// runtime walks string elements itself, and a heap-free value-aggregate
+    /// element owns no heap so no per-element drop is needed). Substitutes
+    /// through the monomorphisation map first (mirroring
+    /// `vec_receiver_has_owned_element`) so a polymorphic binding type resolves
+    /// to its concrete element.
     ///
     /// Default-deny: ONLY the positively enumerated plain element shapes admit.
-    /// The `BitCopy` value-aggregate arm is the precise complement of the owned
-    /// arm: an owned-element Vec (record/enum/tuple with a string/bytes/nested-
-    /// collection field) is never admitted here and continues to route to its
-    /// dedicated `hew_vec_free_owned` release; a closure-pair `Vec<fn>` is
-    /// also excluded and routes to `hew_vec_free_closure_pairs`.
+    /// The plain arm is the precise complement of the owned arm: an owned-element
+    /// Vec (record/enum/tuple with a string/bytes/nested-collection field) is
+    /// never admitted here and continues to route to its dedicated
+    /// `hew_vec_free_owned` release; a closure-pair `Vec<fn>` is also excluded
+    /// and routes to `hew_vec_free_closure_pairs`.
     ///
-    /// For named records/enums the `ValueClass::of_ty(Named{..}) == BitCopy`
-    /// check is the exact discriminant. For tuples it cannot be used:
+    /// For named records the `ValueClass::of_ty(Named{..}) == BitCopy` check is
+    /// the discriminant. For direct user ENUMS it is NOT — `ValueClass` finalises
+    /// records only, so a fieldless / scalar-payload enum is never `BitCopy`;
+    /// `is_plain_vec_element` admits those via the `named_elem_owns_heap`
+    /// authority instead (see its doc). For tuples `ValueClass` cannot be used:
     /// `ValueClass::of_ty(Tuple(_))` ALWAYS returns `CowValue` regardless of
-    /// field types, so the tuple path delegates instead to `tuple_is_all_bitcopy`,
-    /// which recurses structurally: a tuple element is all-`BitCopy` iff every
-    /// field is a `BitCopy` scalar, a `Named` type with `ValueClass::of_ty ==
-    /// BitCopy`, or a nested tuple that satisfies the same predicate. This is the
-    /// correct complement of the owned authority; using `!is_owned_vec_element`
-    /// is unsound here because its backing `ty_contains_heap_owning` omits
+    /// field types, so the tuple path delegates to `tuple_is_all_bitcopy`, which
+    /// recurses structurally. Using `!is_owned_vec_element` as the complement is
+    /// unsound here because its backing `ty_contains_heap_owning` omits
     /// `record_field_resolved_tys` and can mis-classify a named record inside a
     /// tuple as non-heap-owning. An unresolved type parameter has no known value
     /// class and stays on the leak-as-before posture rather than risking a
@@ -11335,22 +11374,26 @@ impl Builder {
         // Element-level plain check factored into `is_plain_vec_element` so the
         // typed `classify_vec_element_release` partition shares the exact same
         // authority (no second copy to drift). The doc above this function
-        // records why the `Named` arm uses `ValueClass::of_ty` and the `Tuple`
-        // arm uses `tuple_is_all_bitcopy`.
+        // records why the `Named` arm reads the `named_elem_owns_heap` authority
+        // (not `ValueClass` alone) and the `Tuple` arm uses `tuple_is_all_bitcopy`.
         args.first()
             .is_some_and(|elem| self.is_plain_vec_element(elem))
     }
 
-    /// True when `ty` is a `Tuple` whose every element is all-`BitCopy` by
-    /// structural recursion.
+    /// True when `ty` is a `Tuple` whose every element is plain-releasable by
+    /// structural recursion (a plain tuple field carries no per-element heap
+    /// drop, so the tuple Vec releases via the buffer-only `hew_vec_free`).
     ///
-    /// A tuple element is all-`BitCopy` if it is:
+    /// A tuple element is plain if it is:
     /// - a `BitCopy` scalar (same allow-list as the scalar arm of
     ///   `binding_ty_is_plain_vec`),
-    /// - a `Named` type whose `ValueClass::of_ty` is `BitCopy` (the correct
-    ///   authority for records and direct enums — it is what
-    ///   `harvest_vec_owned_element_key` consults; a heap-owning record is never
-    ///   `BitCopy`), or
+    /// - a `Named` type that is either `ValueClass::of_ty == BitCopy` (the
+    ///   authority for records — a heap-owning record is never `BitCopy`) OR a
+    ///   DIRECT user enum that owns no heap. The enum disjunct is load-bearing:
+    ///   `ValueClass` finalises records only, so a fieldless / scalar-payload
+    ///   enum is never `BitCopy` and must be admitted through the
+    ///   `named_elem_owns_heap` authority, exactly as `is_plain_vec_element`
+    ///   does — or a `(Colour, i64)` tuple element would leak, or
     /// - a nested `Tuple` that also satisfies this predicate recursively.
     ///
     /// This is the correct complement of the owned authority for tuples.
@@ -11360,9 +11403,9 @@ impl Builder {
     /// tuple that transitively owns a `string` field can be mis-classified as
     /// non-heap-owning, silently admitting a `Vec<(Rec, i64)>` (where `Rec` has
     /// a `string` field) to the plain-Vec path and emitting `hew_vec_free`
-    /// where `hew_vec_free_owned` is required. `ValueClass::of_ty` for `Named`
-    /// types is the correct, complete authority and agrees with codegen's
-    /// `resolved_ty_contains_heap_leaf` (`dedup-semantic-boundary`).
+    /// where `hew_vec_free_owned` is required. The `BitCopy`-plus-`named_elem_
+    /// owns_heap` discriminant is complete for `Named` fields and agrees with
+    /// codegen's `resolved_ty_contains_heap_leaf` (`dedup-semantic-boundary`).
     fn tuple_is_all_bitcopy(&self, ty: &ResolvedTy) -> bool {
         let ResolvedTy::Tuple(elems) = ty else {
             return false;
@@ -11384,7 +11427,14 @@ impl Builder {
             | ResolvedTy::Char
             | ResolvedTy::Duration => true,
             ResolvedTy::Named { .. } => {
+                // A tuple field is BitCopy-compatible when it is itself BitCopy
+                // (records / scalar builtins), OR a direct user enum owning no
+                // heap. The enum disjunct mirrors `is_plain_vec_element`: user
+                // enums are never `ValueClass::BitCopy`, so without it a
+                // `(Colour, i64)` tuple element would leak. Heap-ness comes from
+                // the `named_elem_owns_heap` authority.
                 ValueClass::of_ty(e, &self.type_classes) == ValueClass::BitCopy
+                    || (self.ty_is_direct_enum_element(e) && !self.named_elem_owns_heap(e))
             }
             ResolvedTy::Tuple(_) => self.tuple_is_all_bitcopy(e),
             // Exhaustive (no `_ => false` fall-through): a new `ResolvedTy`
@@ -11432,13 +11482,39 @@ impl Builder {
                 self.record_field_orders
                     .keys()
                     .any(|known| known == &key || short_name(known) == short)
-                    || self.enum_layouts.iter().any(|el| {
-                        !el.is_indirect
-                            && (el.name == key || el.name == *name || short_name(&el.name) == short)
-                    })
+                    || self.ty_is_direct_enum_element(elem_ty)
             }
             _ => false,
         }
+    }
+
+    /// True when `elem_ty` is a registered DIRECT (non-indirect) user enum.
+    ///
+    /// A direct enum is stored inline in the vec buffer at its full
+    /// tagged-union stride — the same layout-descriptor path a `BitCopy` record
+    /// takes — whereas an indirect (heap-boxed, `is_indirect`) enum holds an
+    /// 8-byte pointer per slot and routes through the pointer ABI.
+    ///
+    /// This membership is the seam shared by the vec-index getter
+    /// (`hew_vec_get_layout` arm), the range-slice getter, and the plain-release
+    /// predicate. It is load-bearing for release routing because a payload-free
+    /// or scalar-payload direct enum owns no heap yet is NEVER marked `BitCopy`
+    /// in the HIR value-class table (`finalize_user_record_value_classes`
+    /// covers records only). Callers pair it with the `named_elem_owns_heap`
+    /// authority so a heap-owning direct enum still routes owned.
+    fn ty_is_direct_enum_element(&self, elem_ty: &ResolvedTy) -> bool {
+        let ResolvedTy::Named { name, args, .. } = elem_ty else {
+            return false;
+        };
+        let short = short_name(name);
+        let key = if args.is_empty() {
+            name.clone()
+        } else {
+            mangle_layout_key(short, args)
+        };
+        self.enum_layouts.iter().any(|el| {
+            !el.is_indirect && (el.name == key || el.name == *name || short_name(&el.name) == short)
+        })
     }
 
     /// True when `vec_ty` is a `Vec<T>` whose element `T` is an owned-Vec element.
@@ -17300,14 +17376,25 @@ impl Builder {
                 args,
                 ..
             } => {
-                // Owned-element Vec (element owns heap) releases via
-                // `hew_vec_free_owned` (per-element descriptor drop then buffer
-                // free); a plain (BitCopy / string) element Vec uses
-                // `hew_vec_free`. The owned-element predicate routes through the
-                // SAME `is_owned_vec_element` authority codegen's
-                // `resolved_ty_element_owns_heap_for_owned_vec` agrees with
+                // Closure-pair Vec<fn>/Vec<closure>: each slot owns a heap-boxed
+                // {code, env} pair (and the pair's env box); release walks the
+                // elements before the buffer/handle free via
+                // `hew_vec_free_closure_pairs`. Codegen's `cow_heap_release_symbol`
+                // checks the fn/closure element FIRST — a closure pair is neither
+                // an owned composite nor a plain leaf — so this arm must dispatch
+                // in the same order, or a yielded `Vec<fn>` computes `hew_vec_free`
+                // and fails the inline-drop congruence check
                 // (`dedup-semantic-boundary`).
-                if args.first().is_some_and(|e| self.is_owned_vec_element(e)) {
+                if ty_is_closure_pair_vec(ty) {
+                    Some("hew_vec_free_closure_pairs")
+                } else if args.first().is_some_and(|e| self.is_owned_vec_element(e)) {
+                    // Owned-element Vec (element owns heap) releases via
+                    // `hew_vec_free_owned` (per-element descriptor drop then buffer
+                    // free); a plain (BitCopy / string) element Vec uses
+                    // `hew_vec_free`. The owned-element predicate routes through the
+                    // SAME `is_owned_vec_element` authority codegen's
+                    // `resolved_ty_element_owns_heap_for_owned_vec` agrees with
+                    // (`dedup-semantic-boundary`).
                     Some("hew_vec_free_owned")
                 } else {
                     Some("hew_vec_free")
@@ -17609,9 +17696,11 @@ impl Builder {
                 // (`is_known_cow_heap_drop_symbol` / the RecordFieldDrop
                 // congruence assert). Both authorities are documented to agree;
                 // this restores that agreement.
-                if args.first().is_some_and(|e| {
-                    matches!(e, ResolvedTy::Function { .. } | ResolvedTy::Closure { .. })
-                }) {
+                // The closure-pair leaf test shares `ty_is_closure_pair` with
+                // `ty_is_closure_pair_vec` (used by the generator-yield picker),
+                // so every drop-symbol authority detects a fn/closure element
+                // through one predicate and cannot drift.
+                if args.first().is_some_and(ty_is_closure_pair) {
                     Some("hew_vec_free_closure_pairs")
                 } else if args.first().is_some_and(|e| self.is_owned_vec_element(e)) {
                     Some("hew_vec_free_owned")
@@ -45144,8 +45233,71 @@ mod binding_ty_is_plain_vec_tuple {
     /// path, swap its expected arm here — the test fails first if a bucket
     /// silently starts (or stops) claiming it.
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the length is intrinsic: this is the single partition-totality \
+                  matrix over every Vec<E> element shape (scalars, string, tuple, \
+                  the four enum classes, nested collections, closure pair, and the \
+                  fail-closed entries), each asserted against the typed decision \
+                  and its three projected buckets — splitting it would scatter the \
+                  disjoint-cover proof across functions"
+    )]
     fn release_bucket_partition_is_total_over_vec_elements() {
-        let builder = builder_with_indirect_enum();
+        // Register the full USER-ENUM matrix alongside the indirect scalar
+        // `Foo`, so the partition is proven total over enums (not just over the
+        // builtin/scalar/tuple shapes the loops below already cover). User
+        // enums are never marked `ValueClass::BitCopy` (the HIR value-class pass
+        // finalises records only), so the Plain bucket must claim heap-free
+        // enums via the heap-ownership authority, not the value-class table:
+        //   - `Colour` — a DIRECT fieldless enum, owns no heap → Plain.
+        //   - `Tone`   — a DIRECT scalar-payload enum, owns no heap → Plain.
+        //   - `DirE`   — a DIRECT heap-payload (`string`) enum, owns heap →
+        //                OwnedElement (proves the Plain swap does NOT over-drop
+        //                a genuinely heap-owning enum — it still routes owned).
+        //   - `Foo`    — the indirect scalar enum from `builder_with_indirect_enum`
+        //                → Unsupported(NoReleaseProtocol) (heap-boxed node, no
+        //                wired per-element release).
+        // Compact non-indirect enum-layout builder: one `EnumLayout` whose
+        // variants carry the given field types (empty = fieldless).
+        fn direct_enum(
+            name: &str,
+            variants: &[(&str, Vec<ResolvedTy>)],
+        ) -> crate::model::EnumLayout {
+            crate::model::EnumLayout {
+                name: name.to_string(),
+                tag_width: 1,
+                variants: variants
+                    .iter()
+                    .map(|(vname, field_tys)| crate::model::MachineVariantLayout {
+                        name: (*vname).to_string(),
+                        field_tys: field_tys.clone(),
+                        field_names: vec![],
+                    })
+                    .collect(),
+                is_indirect: false,
+            }
+        }
+        let mut builder = builder_with_indirect_enum();
+        builder.enum_layouts.push(direct_enum(
+            "Colour",
+            &[("Red", vec![]), ("Green", vec![]), ("Blue", vec![])],
+        ));
+        builder.enum_layouts.push(direct_enum(
+            "Tone",
+            &[
+                ("Bright", vec![ResolvedTy::I64]),
+                ("Dark", vec![ResolvedTy::I64]),
+            ],
+        ));
+        builder.enum_layouts.push(direct_enum(
+            "DirE",
+            &[("A", vec![ResolvedTy::String]), ("B", vec![])],
+        ));
+        // Harvest DirE's owned-element key exactly as lowering would when it
+        // observes a `Vec<DirE>` construction, so `is_owned_vec_element` claims
+        // it (the owned bucket is keyed off the harvested set, not re-derived).
+        builder.harvest_vec_owned_element_key(&vec_of_ty(unregistered_named("DirE")));
+        let builder = builder;
 
         // Assert `elem` resolves to `want`, the outer `Vec<elem>` owns heap, and
         // the three bool buckets project EXACTLY from the typed decision (so the
@@ -45178,7 +45330,9 @@ mod binding_ty_is_plain_vec_tuple {
             );
         };
 
-        // Plain bucket: BitCopy scalar / string / all-BitCopy aggregate elements.
+        // Plain bucket: BitCopy scalar / string / all-BitCopy aggregate
+        // elements, plus heap-free DIRECT user enums (fieldless + scalar
+        // payload) and a tuple whose fields include a heap-free direct enum.
         for elem in [
             ResolvedTy::I64,
             ResolvedTy::Bool,
@@ -45187,11 +45341,19 @@ mod binding_ty_is_plain_vec_tuple {
             ResolvedTy::Duration,
             ResolvedTy::String,
             ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64]),
+            // Heap-free direct enums: never `ValueClass::BitCopy`, claimed by
+            // the Plain bucket through `!named_elem_owns_heap` instead.
+            unregistered_named("Colour"),
+            unregistered_named("Tone"),
+            // A tuple containing a heap-free direct enum is all-`BitCopy` too.
+            ResolvedTy::Tuple(vec![unregistered_named("Colour"), ResolvedTy::I64]),
         ] {
             assert_disposition(elem, VecElementRelease::Plain);
         }
 
-        // Owned-element bucket: nested collections + heap-owning tuples.
+        // Owned-element bucket: nested collections + heap-owning tuples, plus a
+        // heap-owning DIRECT enum (inline storage, owned-element ABI) and a
+        // tuple carrying one — the swap must NOT reclassify these as Plain.
         for elem in [
             ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::I64]),
             ResolvedTy::named_builtin(
@@ -45201,6 +45363,8 @@ mod binding_ty_is_plain_vec_tuple {
             ),
             ResolvedTy::named_builtin("HashSet", BuiltinType::HashSet, vec![ResolvedTy::I64]),
             ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64]),
+            unregistered_named("DirE"),
+            ResolvedTy::Tuple(vec![unregistered_named("DirE"), ResolvedTy::I64]),
         ] {
             assert_disposition(elem, VecElementRelease::OwnedElement);
         }
@@ -45225,6 +45389,51 @@ mod binding_ty_is_plain_vec_tuple {
                 VecElementRelease::Unsupported(FailClosedReason::NoReleaseProtocol),
             );
         }
+    }
+
+    /// Closure-pair release-symbol pin: the generator-yield and match-field
+    /// release-symbol pickers must check the closure-pair bucket BEFORE the
+    /// owned/plain split, matching codegen's `cow_heap_release_symbol` dispatch
+    /// order. A yielded or match-destructured `Vec<fn>` releases via
+    /// `hew_vec_free_closure_pairs`; the pre-fix `generator_yield_drop_symbol`
+    /// had only an owned/plain split and computed `hew_vec_free`, which diverges
+    /// from codegen and fails the inline-drop congruence check closed. The owned
+    /// and plain arms are pinned too so the closure-pair arm cannot displace them.
+    #[test]
+    fn vec_closure_pair_yield_and_field_drop_symbol_is_closure_pairs() {
+        let builder = builder_with_indirect_enum();
+        let vec_fn = vec_of_ty(ResolvedTy::Function {
+            params: vec![],
+            ret: Box::new(ResolvedTy::Unit),
+        });
+        assert_eq!(
+            builder.generator_yield_drop_symbol(&vec_fn),
+            Some("hew_vec_free_closure_pairs"),
+            "a yielded Vec<fn> must release via hew_vec_free_closure_pairs, not hew_vec_free"
+        );
+        assert_eq!(
+            builder.project_field_inline_drop_symbol(&vec_fn),
+            Some("hew_vec_free_closure_pairs"),
+            "a match-destructured Vec<fn> field must release via hew_vec_free_closure_pairs"
+        );
+        // The owned and plain Vec arms are unchanged and dispatch AFTER the
+        // closure-pair arm (a fn element is neither owned composite nor plain
+        // leaf, so it must not fall through to either).
+        assert_eq!(
+            builder.generator_yield_drop_symbol(&vec_of_ty(ResolvedTy::String)),
+            Some("hew_vec_free"),
+            "Vec<string> is a plain release (buffer + runtime string walk)"
+        );
+        assert_eq!(
+            builder.generator_yield_drop_symbol(&vec_of_ty(vec_of_ty(ResolvedTy::I64))),
+            Some("hew_vec_free_owned"),
+            "Vec<Vec<i64>> is an owned-element release"
+        );
+        assert_eq!(
+            builder.project_field_inline_drop_symbol(&vec_of_ty(vec_of_ty(ResolvedTy::I64))),
+            Some("hew_vec_free_owned"),
+            "match-destructured Vec<Vec<i64>> field is an owned-element release"
+        );
     }
 
     /// Focused pin: a scalar-payload `indirect enum` Vec element must fail closed

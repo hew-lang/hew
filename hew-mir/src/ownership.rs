@@ -61,7 +61,8 @@
 //! | `cbor_ty_owns_heap` | `hew-codegen-rs` · `llvm.rs` | CBOR `Vec` element heap probe (own leaf set, divergent `_ => false`) | **RETIRED** — now a `#[deprecated]` shim delegating to `ty_owns_heap` via `CborHeapLayouts`; sole caller `cbor_vec_elem_kind` is `#[allow(deprecated)]`-listed. The workspace `clippy -D warnings` CI step guards re-entry. Fixed a latent `CancellationToken` / tuple-field under-drop for free. |
 //! | owned-locals seed gate (`ValueClass::of_ty(ty) != BitCopy`) | `hew-mir` · `lower.rs` → `hew-hir` · `value_class.rs` | which locals enter drop elaboration | **PENDING (release-bucket consolidation)** — record-blind via [`ValueClass`]; the consolidation seeds from [`ValueOwnership`] instead. Not yet switched. |
 //! | `cow_value_leaf_drop_symbol` | `hew-mir` · `lower.rs` | scalar-leaf release symbol (`string` → `hew_string_drop`, else `None`) | **LANDED (release-bucket consolidation)** — routed through the typed decision; see the partition-totality test below. |
-//! | `binding_ty_is_plain_vec` · `binding_ty_is_owned_element_vec` · `is_owned_vec_element` · `tuple_is_all_bitcopy` | `hew-mir` · `lower.rs` | `Vec<E>` release partition (plain-BitCopy vs owned-element) | **LANDED (release-bucket consolidation)** — release buckets now PROJECT from the typed `classify_vec_element_release` decision; their union is total vs the authority leaf set. The unwired `Vec<bytes>` / `Vec<indirect_enum>` elements (`Unsupported(NoReleaseProtocol)`) are REJECTED at compile by `Builder::unsupported_vec_element_diagnostics` rather than silently leaked at scope exit. |
+//! | `binding_ty_is_plain_vec` · `is_plain_vec_element` · `binding_ty_is_owned_element_vec` · `is_owned_vec_element` · `tuple_is_all_bitcopy` | `hew-mir` · `lower.rs` | `Vec<E>` release partition (plain vs owned-element) | **LANDED (release-bucket consolidation)** — release buckets PROJECT from the typed `classify_vec_element_release` decision; their union is total vs the authority leaf set. The Plain bucket's `Named` arm reads the `named_elem_owns_heap` AUTHORITY, not `ValueClass::of_ty == BitCopy` alone: a heap-free DIRECT user enum is never `BitCopy` (value-class finalisation covers records only), so the pre-fix `BitCopy`-only gate classified `Vec<fieldless-enum>` NEITHER plain nor owned and leaked its whole buffer+handle at every scope exit — now closed by the `ty_is_direct_enum_element(e) && !named_elem_owns_heap(e)` disjunct. The unwired `Vec<bytes>` / `Vec<indirect_enum>` elements (`Unsupported(NoReleaseProtocol)`) are REJECTED at compile by `Builder::unsupported_vec_element_diagnostics` rather than silently leaked at scope exit. |
+//! | `generator_yield_drop_symbol` · `project_field_inline_drop_symbol` | `hew-mir` · `lower.rs` | per-yield / per-field `Vec<E>` release-symbol picker | **LANDED (release-bucket consolidation)** — both check the closure-pair bucket (`ty_is_closure_pair_vec` / `ty_is_closure_pair`) BEFORE the owned/plain split, so a yielded or match-destructured `Vec<fn>` / `Vec<closure>` picks `hew_vec_free_closure_pairs` congruent with codegen's `cow_heap_release_symbol` (`dedup-semantic-boundary`) rather than mis-computing `hew_vec_free` and failing the inline-drop congruence check closed. |
 //! | `ty_is_closure_pair_vec` · `ty_is_local_collection_handle` | `hew-mir` · `lower.rs` | closure-pair / collection-handle release | **PENDING (release-bucket consolidation)** — release buckets. |
 //! | `cow_heap_release_symbol` | `hew-codegen-rs` · `llvm.rs` | codegen-side release-symbol picker | **PENDING (release-bucket consolidation)** — the codegen sibling the MIR release buckets must agree with (`dedup-semantic-boundary`). |
 //!
@@ -297,6 +298,18 @@ pub enum FailClosedReason {
     /// anti-drift sentinel: adding a `ResolvedTy` variant without a `classify`
     /// arm lands here (a compile error in the exhaustive match), never a silent
     /// `false`.
+    ///
+    /// NOTE: unlike `NoReleaseProtocol`, an `Unsupported(UnenumeratedShape)`
+    /// `Vec` element is NOT compile-rejected by
+    /// `Builder::unsupported_vec_element_diagnostics` — it falls through both the
+    /// Plain and Owned buckets and emits NO scope-exit release, silently leaking
+    /// the OUTER Vec's own handle+buffer (a different thing from the element's
+    /// heap that `NoReleaseProtocol` guards). A heap-free direct user enum was a
+    /// live instance of this — never `BitCopy`, so the `BitCopy`-only Plain gate
+    /// mis-bucketed it here — now closed by routing direct enums through the
+    /// `named_elem_owns_heap` authority into the Plain bucket. Any future shape
+    /// that legitimately owns heap yet lands here must be added to a release
+    /// bucket or to the `NoReleaseProtocol` reject, never left on this arm.
     UnenumeratedShape,
     /// A heap-owning value reached a release path with no release symbol / drop
     /// protocol assigned. Routes to `MirCheck::DropPlanUndetermined`.

@@ -32,6 +32,7 @@ command_timeout_floor() {
         "make test-pkg-import") echo 60 ;;
         "make fuzz-oracle") echo 210 ;;
         "make test-hew-ratchet") echo 600 ;;
+        "make test-o2-differential") echo 1200 ;;
         "make test-stdlib-ratchet") echo 45 ;;
         "make test-doc-examples") echo 45 ;;
         "make sandbox-parity") echo 150 ;;
@@ -80,6 +81,7 @@ CI_REQUIRED_CHECKS=(
     "nextest workspace ci (release-gate.yml: nextest run --workspace --profile ci)	make test"
     "playground-check (release-gate.yml: make playground-check)	make playground-check"
     "Hew test suite ratchet (ci.yml: make test-hew-ratchet)	make test-hew-ratchet"
+    "O2 differential-exec parity gate (ci.yml: make test-o2-differential)	make test-o2-differential"
     "Stdlib type-check ratchet (ci.yml: make test-stdlib-ratchet)	make test-stdlib-ratchet"
     "Vertical slice oracle (ci.yml: make test-vertical-slice)	make test-vertical-slice"
     "Package-import oracle (ci.yml: make test-pkg-import)	make test-pkg-import"
@@ -786,6 +788,7 @@ case "$LANE" in
         add_command "make test-pkg-import"
         add_command "make fuzz-oracle"
         add_command "make test-hew-ratchet"
+        add_command "make test-o2-differential"
         add_command "make test-stdlib-ratchet"
         add_command "make test-doc-examples"
         add_command "make sandbox-parity"

@@ -2,7 +2,7 @@
 // byte string, preserving length and every element (including the high byte
 // 255). A mismatch returns a distinct code per assertion.
 #[wire]
-struct Blob {
+type Blob {
     data: bytes @1,
 }
 

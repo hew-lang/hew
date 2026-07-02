@@ -3,7 +3,7 @@
 // empty text). Both must decode back empty, not null or absent. Success
 // returns 42.
 #[wire]
-struct Empties {
+type Empties {
     items: Vec<i64> @1,
     label: string @2,
 }

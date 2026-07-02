@@ -2,7 +2,7 @@
 // codec — f32, f64, bool, char, a non-empty string, and an empty string (the
 // empty-string boundary). A mismatch returns the field's 1-based index.
 #[wire]
-struct Scalars {
+type Scalars {
     a: f32 @1,
     b: f64 @2,
     c: bool @3,

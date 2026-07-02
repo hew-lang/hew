@@ -11,12 +11,12 @@
 // null, and the `.decode()` call site traps — the same free-before-trap
 // discipline every other malformed shape follows.
 #[wire]
-struct Wide {
+type Wide {
     v: i64 @1,
 }
 
 #[wire]
-struct Narrow {
+type Narrow {
     v: i8 @1,
 }
 

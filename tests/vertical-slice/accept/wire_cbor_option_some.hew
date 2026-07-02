@@ -3,7 +3,7 @@
 // `None` is CBOR null. This fixture exercises `Some`; the recovered payload
 // (42) is the exit code, so a garbled round-trip changes it.
 #[wire]
-struct Holder {
+type Holder {
     maybe: Option<i64> @1,
 }
 

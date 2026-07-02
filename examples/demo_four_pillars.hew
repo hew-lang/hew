@@ -14,7 +14,7 @@ actor Counter {
 }
 
 #[wire]
-struct StatusUpdate {
+type StatusUpdate {
     actor_id: u32 @1,
     count: i32 @2,
     message: string @3,

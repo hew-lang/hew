@@ -4,12 +4,12 @@
 // codec that could leak or mis-free the owned element heap on a malformed
 // decode. Scalar and heap-free-record `Vec` elements are supported.
 #[wire]
-struct Inner {
+type Inner {
     name: string @1,
 }
 
 #[wire]
-struct Holder {
+type Holder {
     xs: Vec<Inner> @1,
 }
 

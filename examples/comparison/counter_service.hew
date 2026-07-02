@@ -22,7 +22,7 @@ supervisor CounterPool {
 // Wire types are first-class.
 // Schema evolution rules enforced at compile time.
 #[wire]
-struct CounterUpdate {
+type CounterUpdate {
     counter_id: u32 @1,
     new_count: i32 @2,
     timestamp: u64 @3,

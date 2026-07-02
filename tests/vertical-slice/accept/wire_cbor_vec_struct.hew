@@ -7,12 +7,12 @@
 // vec). The decoded elements' `v` fields sum to 42, so a dropped, reordered, or
 // corrupted element changes the exit code.
 #[wire]
-struct Inner {
+type Inner {
     v: i64 @1,
 }
 
 #[wire]
-struct Container {
+type Container {
     items: Vec<Inner> @1,
 }
 

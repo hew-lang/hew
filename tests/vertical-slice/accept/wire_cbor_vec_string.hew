@@ -3,7 +3,7 @@
 // element strings are owned and freed on drop. A mismatch returns a distinct
 // code; full success returns 42.
 #[wire]
-struct Names {
+type Names {
     items: Vec<string> @1,
 }
 

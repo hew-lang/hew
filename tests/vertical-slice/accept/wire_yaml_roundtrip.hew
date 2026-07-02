@@ -2,7 +2,7 @@
 // produces a YAML document the bridge can re-parse via `from_yaml` back into an
 // equal value. The recovered fields sum to 42.
 #[wire]
-struct Point {
+type Point {
     x: i64 @1,
     y: i64 @2,
 }

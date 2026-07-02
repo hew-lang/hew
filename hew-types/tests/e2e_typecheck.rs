@@ -165,11 +165,11 @@ fn one(a: i64) -> [i64; 2] {
 #[test]
 fn fixed_array_literal_element_mismatch_cites_element() {
     let output = typecheck_inline(
-        r#"
+        r"
 fn one(a: string) -> [i64; 2] {
     [a, a]
 }
-"#,
+",
     );
 
     assert!(

@@ -2706,19 +2706,16 @@ impl Checker {
 
             // Array literals checked against [T; N] require exact arity.
             (Expr::Array(elems), Ty::Array(elem_ty, size)) => {
-                let actual_len = match u64::try_from(elems.len()) {
-                    Ok(actual_len) => actual_len,
-                    Err(_) => {
-                        self.report_error(
-                            TypeErrorKind::ArityMismatch,
-                            span,
-                            format!(
-                                "array literal has {} elements, which exceeds the supported fixed-array length",
-                                elems.len()
-                            ),
-                        );
-                        return Ty::Error;
-                    }
+                let Ok(actual_len) = u64::try_from(elems.len()) else {
+                    self.report_error(
+                        TypeErrorKind::ArityMismatch,
+                        span,
+                        format!(
+                            "array literal has {} elements, which exceeds the supported fixed-array length",
+                            elems.len()
+                        ),
+                    );
+                    return Ty::Error;
                 };
 
                 if actual_len != *size {

@@ -3433,6 +3433,7 @@ fn compound_assign_op_str(op: CompoundAssignOp) -> &'static str {
 ///
 /// Note: Cs (Surrogate) codepoints are not valid Rust `char` values and
 /// therefore never reach this function.
+#[must_use]
 pub fn is_printable_non_ascii(c: char) -> bool {
     debug_assert!(!c.is_ascii(), "only call for non-ASCII chars");
 
@@ -3698,6 +3699,7 @@ pub struct Comment {
 /// skipped because the parser captures their content into AST fields
 /// (`doc_comment` / `module_doc`) and the formatter re-emits them via
 /// `write_outer_doc` / `format_program`.
+#[must_use]
 pub fn extract_comments(source: &str, include_doc_comments: bool) -> Vec<Comment> {
     let mut comments = Vec::new();
     let bytes = source.as_bytes();

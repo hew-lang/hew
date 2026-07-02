@@ -6823,8 +6823,7 @@ impl Checker {
                 // into the own-methods lookup below leaves `T::Msg`
                 // unresolved and produces a phantom `expected \`X::Msg\``
                 // mismatch instead of an actionable diagnostic. Reject here
-                // with the same actor-name/fix-hint shape the deleted
-                // handler gate used to give.
+                // with the same actor-name/fix-hint shape.
                 if method == "send" && !has_user_send_handler {
                     let has_send_envelope = resolved
                         .as_local_pid()

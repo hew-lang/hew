@@ -24,12 +24,6 @@ hew-parser = { path = "../hew-parser" }
 # `default-features = false` keeps the heavy quic/profiler runtime features off
 # the compiler build (only the leaf `internal::types` constants are needed).
 hew-runtime = { path = "../hew-runtime", default-features = false }
-# `hew-cabi` re-declares the `#[repr(C)]` layout descriptor structs
-# (`HewVecElemLayout`, `HewMapKeyLayout`, `HewMapValueLayout`) that codegen
-# hand-mirrors as LLVM struct types. Pulled in so `offset_of!`-based parity
-# tests can compare codegen's mirror against the real struct without codegen
-# linking the full hew-runtime layout machinery.
-hew-cabi = { path = "../hew-cabi" }
 # Inkwell wraps LLVM. Pinned to llvm22-1 because the v0.5 backend probe
 # (.claude/worktrees/c1-backend-probe @ e6c83faa) established this version
 # empirically against Homebrew llvm@22, and the release/tooling surface keeps
@@ -42,6 +36,12 @@ inkwell = { version = "0.9", default-features = false, features = [
 ] }
 
 [dev-dependencies]
+# `hew-cabi` re-declares the `#[repr(C)]` layout descriptor structs
+# (`HewVecElemLayout`, `HewMapKeyLayout`, `HewMapValueLayout`) that codegen
+# hand-mirrors as LLVM struct types. Referenced only from `#[cfg(test)]`
+# parity guards, which compare codegen's mirror against the real struct via
+# `offset_of!` — production codegen never links it.
+hew-cabi = { path = "../hew-cabi" }
 hew-testutil = { path = "../hew-testutil" }
 # Required by jit_trap_bridge.rs: libc::c_int for the sigsetjmp/siglongjmp FFI
 # declarations used in the trap recorder (same pattern as hew-runtime/src/signal.rs).

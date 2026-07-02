@@ -61,7 +61,7 @@
               ],
               "dst": null,
               "op": "local.set",
-              "span": "span:42-76"
+              "span": "span:46-49"
             },
             {
               "args": [
@@ -374,7 +374,7 @@
       }
     ]
   },
-  "package_id": "pkg:bc07c9f85afa5ac1",
+  "package_id": "pkg:04eb9de4e0f917a9",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {
@@ -398,20 +398,6 @@
           "byte_offset": 26,
           "column": 1,
           "line": 3
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 76,
-          "column": 5,
-          "line": 5
-        },
-        "id": "span:42-76",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 42,
-          "column": 5,
-          "line": 4
         }
       },
       {

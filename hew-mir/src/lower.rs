@@ -40372,6 +40372,248 @@ fn enumerate_exits(
 /// FunctionEntry-cancel handling aligned with those producers.
 const ENTRY_BLOCK_ID: u32 = 0;
 
+#[cfg(test)]
+mod runtime_callee_ownership_contract_parity {
+    use super::*;
+    use crate::runtime_symbols::{callee_ownership_contract, known_runtime_symbols};
+    use std::collections::BTreeSet;
+
+    const CLASSIFIER_SYMBOLS: &[&str] = &[
+        "hew_bool_to_string",
+        "hew_bytes_append",
+        "hew_bytes_clear",
+        "hew_bytes_contains",
+        "hew_bytes_get",
+        "hew_bytes_index",
+        "hew_bytes_is_empty",
+        "hew_bytes_len",
+        "hew_bytes_pop",
+        "hew_bytes_push",
+        "hew_bytes_set",
+        "hew_bytes_slice",
+        "hew_bytes_to_string",
+        "hew_char_to_string",
+        "hew_float_to_string",
+        "hew_hashmap_clone_layout",
+        "hew_hashmap_contains_key_layout",
+        "hew_hashmap_get_clone_layout",
+        "hew_hashmap_get_layout",
+        "hew_hashmap_insert_layout",
+        "hew_hashmap_keys_layout",
+        "hew_hashmap_len_layout",
+        "hew_hashmap_remove_layout",
+        "hew_hashmap_values_layout",
+        "hew_hashset_clone_layout",
+        "hew_hashset_contains_layout",
+        "hew_hashset_insert_layout",
+        "hew_hashset_is_empty_layout",
+        "hew_hashset_len_layout",
+        "hew_hashset_remove_layout",
+        "hew_hashset_to_vec_layout",
+        "hew_i64_to_string",
+        "hew_int_to_string",
+        "hew_string_char_at",
+        "hew_string_char_at_utf8",
+        "hew_string_char_count",
+        "hew_string_chars",
+        "hew_string_clone",
+        "hew_string_concat",
+        "hew_string_contains",
+        "hew_string_ends_with",
+        "hew_string_find",
+        "hew_string_from_char",
+        "hew_string_get",
+        "hew_string_index",
+        "hew_string_is_alpha",
+        "hew_string_is_alphanumeric",
+        "hew_string_is_digit",
+        "hew_string_is_empty",
+        "hew_string_length",
+        "hew_string_lines",
+        "hew_string_repeat",
+        "hew_string_replace",
+        "hew_string_slice",
+        "hew_string_slice_codepoints",
+        "hew_string_split",
+        "hew_string_starts_with",
+        "hew_string_to_bytes",
+        "hew_string_to_lowercase",
+        "hew_string_to_uppercase",
+        "hew_string_trim",
+        "hew_u64_to_string",
+        "hew_uint_to_string",
+        "hew_vec_append",
+        "hew_vec_append_layout",
+        "hew_vec_clear",
+        "hew_vec_clear_layout",
+        "hew_vec_clone",
+        "hew_vec_clone_layout",
+        "hew_vec_clone_owned",
+        "hew_vec_contains_f64",
+        "hew_vec_contains_i32",
+        "hew_vec_contains_i64",
+        "hew_vec_contains_owned",
+        "hew_vec_contains_str",
+        "hew_vec_contains_thunk",
+        "hew_vec_get_bool",
+        "hew_vec_get_clone",
+        "hew_vec_get_f32",
+        "hew_vec_get_f64",
+        "hew_vec_get_i16",
+        "hew_vec_get_i32",
+        "hew_vec_get_i64",
+        "hew_vec_get_i8",
+        "hew_vec_get_layout",
+        "hew_vec_get_owned",
+        "hew_vec_get_ptr",
+        "hew_vec_get_str",
+        "hew_vec_get_u16",
+        "hew_vec_get_u8",
+        "hew_vec_is_empty",
+        "hew_vec_join_str",
+        "hew_vec_len",
+        "hew_vec_pop_bool",
+        "hew_vec_pop_f32",
+        "hew_vec_pop_f64",
+        "hew_vec_pop_i16",
+        "hew_vec_pop_i32",
+        "hew_vec_pop_i64",
+        "hew_vec_pop_i8",
+        "hew_vec_pop_layout",
+        "hew_vec_pop_owned",
+        "hew_vec_pop_ptr",
+        "hew_vec_pop_str",
+        "hew_vec_pop_u16",
+        "hew_vec_pop_u8",
+        "hew_vec_push_bool",
+        "hew_vec_push_f32",
+        "hew_vec_push_f64",
+        "hew_vec_push_i16",
+        "hew_vec_push_i32",
+        "hew_vec_push_i64",
+        "hew_vec_push_i8",
+        "hew_vec_push_layout",
+        "hew_vec_push_owned",
+        "hew_vec_push_owned_move",
+        "hew_vec_push_ptr",
+        "hew_vec_push_str",
+        "hew_vec_push_u16",
+        "hew_vec_push_u8",
+        "hew_vec_remove_at",
+        "hew_vec_remove_at_layout",
+        "hew_vec_set_bool",
+        "hew_vec_set_f32",
+        "hew_vec_set_f64",
+        "hew_vec_set_i16",
+        "hew_vec_set_i32",
+        "hew_vec_set_i64",
+        "hew_vec_set_i8",
+        "hew_vec_set_layout",
+        "hew_vec_set_owned",
+        "hew_vec_set_ptr",
+        "hew_vec_set_str",
+        "hew_vec_set_u16",
+        "hew_vec_set_u8",
+        "hew_vec_slice_range_bytesize",
+        "hew_vec_slice_range_f64",
+        "hew_vec_slice_range_i32",
+        "hew_vec_slice_range_i64",
+        "hew_vec_slice_range_layout",
+        "hew_vec_slice_range_owned",
+        "hew_vec_slice_range_ptr",
+        "hew_vec_slice_range_str",
+        "print",
+        "print_str",
+        "println",
+        "println_str",
+        "to_string_bool",
+        "to_string_char",
+        "to_string_f64",
+        "to_string_i32",
+        "to_string_i64",
+        "to_string_u16",
+        "to_string_u32",
+        "to_string_u64",
+        "to_string_u8",
+    ];
+
+    fn parity_symbols() -> BTreeSet<&'static str> {
+        let mut symbols = CLASSIFIER_SYMBOLS.iter().copied().collect::<BTreeSet<_>>();
+        symbols.extend(known_runtime_symbols().iter().copied());
+        symbols
+    }
+
+    #[test]
+    fn callee_ownership_contract_matches_live_classifier_projections() {
+        assert_eq!(CLASSIFIER_SYMBOLS.len(), 156);
+        for symbol in parity_symbols() {
+            let contract = callee_ownership_contract(symbol);
+            assert_eq!(
+                contract.borrows_vec_receiver(),
+                is_vec_receiver_borrow_symbol(symbol),
+                "vec receiver projection mismatch for {symbol}",
+            );
+            assert_eq!(
+                contract.borrows_collection_receiver(),
+                is_collection_receiver_borrow_callee(symbol),
+                "collection receiver projection mismatch for {symbol}",
+            );
+            assert_eq!(
+                contract.is_vec_copy_in_element_store(),
+                is_vec_copy_in_element_store_symbol(symbol),
+                "vec copy-in projection mismatch for {symbol}",
+            );
+            assert_eq!(
+                contract.borrows_collection_binder_receiver(),
+                is_collection_borrow_receiver_symbol(symbol),
+                "binder receiver projection mismatch for {symbol}",
+            );
+            assert_eq!(
+                contract.borrows_bytes_receiver(),
+                is_bytes_receiver_borrow_callee(symbol),
+                "bytes receiver projection mismatch for {symbol}",
+            );
+            assert_eq!(
+                contract.borrows_all_bytes_args(),
+                is_bytes_all_args_borrow_callee(symbol),
+                "bytes all-args projection mismatch for {symbol}",
+            );
+            assert_eq!(
+                contract.borrows_string_use(),
+                crate::runtime_symbols::is_borrowing_string_use(symbol),
+                "string-use projection mismatch for {symbol}",
+            );
+            assert_eq!(
+                contract.borrows_string_call_args(),
+                is_borrowing_string_call_callee(symbol),
+                "string-callee projection mismatch for {symbol}",
+            );
+            assert_eq!(
+                contract.produces_fresh_owned_string(),
+                crate::runtime_symbols::is_fresh_owned_string_producer(symbol),
+                "fresh-string projection mismatch for {symbol}",
+            );
+            assert_eq!(
+                contract.returns_receiver_interior_alias(),
+                is_vec_interior_borrow_getter(symbol),
+                "interior-alias projection mismatch for {symbol}",
+            );
+        }
+    }
+
+    #[test]
+    fn copy_in_tail_exemption_split_is_limited_to_owned_vec_stores() {
+        let split_symbols = parity_symbols()
+            .into_iter()
+            .filter(|symbol| callee_ownership_contract(symbol).is_vec_copy_in_element_store())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            split_symbols,
+            vec!["hew_vec_push_owned", "hew_vec_set_owned"]
+        );
+    }
+}
+
 // ============================================================================
 // Slice 3 (M2 substrate) drop-plan invariant tests.
 //

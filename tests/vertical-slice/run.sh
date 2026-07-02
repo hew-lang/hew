@@ -726,15 +726,17 @@ run_accept_expect_trap "hashmap_enum_index_absent_traps"
 # Indexed-accessor trap negative for bytes: `b[i]` on an out-of-bounds index
 # traps (IndexOutOfBounds) — the trapping `at` half of the `Index<Idx>` model
 # (the `get` half returns `Option<u8>`). bytes routes `b[i]` through the
-# `hew_bytes_index` runtime getter, which aborts via `libc::abort()` on OOB:
-# exit 134 (SIGABRT+128), the same fail-closed termination as `assert_eq_fail`.
+# `hew_bytes_index` runtime getter, which routes through the runtime bounds trap.
+# In main context the trap helper aborts: exit 134 (SIGABRT+128), the same
+# fail-closed termination as `assert_eq_fail`.
 run_accept_expect_status "bytes_index_oob_traps" 134
 
 # Indexed-accessor trap negative for string: `s[i]` on an out-of-bounds index
 # traps (IndexOutOfBounds) — the trapping `at` half of the `Index<Idx>` model
 # (the `get` half returns `Option<char>`). string routes `s[i]` through the
-# `hew_string_index` runtime getter, which aborts via `libc::abort()` on OOB:
-# exit 134 (SIGABRT+128), the same fail-closed termination as `bytes_index_oob_traps`.
+# `hew_string_index` runtime getter, which routes through the runtime bounds
+# trap. In main context the trap helper aborts: exit 134 (SIGABRT+128), the same
+# fail-closed termination as `bytes_index_oob_traps`.
 run_accept_expect_status "string_index_oob_traps" 134
 
 # defer: basic (no effect on return), executes (exit override), LIFO, block scope
@@ -1551,11 +1553,18 @@ run_accept_expect_status "bytes_append" 0
 # exits 0 only when every assertion holds.
 run_accept_expect_status "bytes_unitop_match_value" 0
 
-# Fail-closed negatives: pop on an empty buffer and set past the end abort via
-# the bytes runtime trap (exit 134 = SIGABRT+128), the same fail-closed
-# termination as bytes_index_oob_traps.
+# Fail-closed negatives: pop on an empty buffer and set past the end route via
+# the bytes runtime bounds trap. In main context the trap helper aborts:
+# exit 134 = SIGABRT+128, the same fail-closed termination as bytes_index_oob_traps.
 run_accept_expect_status "bytes_pop_empty_traps" 134
 run_accept_expect_status "bytes_set_oob_traps" 134
+
+# Main-context Vec method bounds ratchets: runtime FFI checks route through the
+# actor-isolating trap seam, but when no actor recovery frame exists the helper
+# must still abort instead of returning.
+run_accept_expect_status "vec_set_oob_traps" 134
+run_accept_expect_status "vec_pop_empty_traps" 134
+run_accept_expect_status "vec_remove_oob_traps" 134
 
 run_accept_expect_stdout "regex_captures_find_all"
 run_check_run_expect_stdout "stdlib_io_scanner_file_oracle"
@@ -2749,9 +2758,9 @@ run_accept_expect_stdout "char_cast_codepoint_read"
 # integer width rules on '€' (8364): `as u32` preserves, `as u8` truncates
 # to the low byte (172).
 run_accept_expect_stdout "char_cast_roundtrip"
-# Accept (panic semantics): out-of-bounds codepoint slice ABORTS. Exit
-# 134 = SIGABRT (libc::abort from hew_string_slice_codepoints). Q-CS1
-# locks panic-on-OOB; no clamp / null / empty-string fallback.
+# Accept (panic semantics): out-of-bounds codepoint slice routes through the
+# runtime bounds trap. In main context the trap helper aborts with exit 134
+# (SIGABRT). Q-CS1 locks panic-on-OOB; no clamp / null / empty-string fallback.
 run_accept_expect_status "string_slice_oob_panics" 134
 
 # Accept (S1): Vec<i64> push/pop/get/contains via catalog entries. Exit 10.

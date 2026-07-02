@@ -2,8 +2,9 @@
 // (IndexOutOfBounds) rather than read past the buffer or return garbage. This
 // is the trapping `at` half of the `Index<Idx>` model for `bytes`: `b[i]` traps
 // on OOB while `b.get(i)` returns `None`. bytes routes `b[i]` through the
-// `hew_bytes_index` runtime getter, which aborts via `libc::abort()` on OOB —
-// the binary terminates with exit 134 (SIGABRT+128); run.sh asserts that code.
+// `hew_bytes_index` runtime getter, which uses the runtime bounds trap. In main
+// context there is no actor recovery frame, so the helper aborts with exit 134;
+// run.sh asserts that code.
 fn main() -> i64 {
     let b: bytes = bytes::new();
     b.push(10);

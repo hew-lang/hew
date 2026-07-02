@@ -3672,7 +3672,9 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         match &pattern.0 {
             Pattern::Wildcard => true,
             Pattern::Identifier(_) => self.pattern_tag(pattern, scrutinee_ty).is_none(),
-            Pattern::Struct { .. } | Pattern::Tuple(_) => !self.match_uses_enum_tag(scrutinee_ty),
+            Pattern::Struct { .. } | Pattern::RecordShorthand { .. } | Pattern::Tuple(_) => {
+                !self.match_uses_enum_tag(scrutinee_ty)
+            }
             _ => false,
         }
     }

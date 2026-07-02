@@ -1,0 +1,11 @@
+type Point {
+    x: i64;
+    y: i64;
+}
+
+fn main() {
+    let rec = Point { x: 21, y: 34 };
+    let { x, y } = rec;
+    println(f"x: {x}");
+    println(f"y: {y}");
+}

@@ -128,6 +128,7 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     "compound_bitwise_assign",
     "shift_out_of_range",
     "struct_destructure_let",
+    "record_shorthand_destructure_let",
     "nested_tuple_destructure_let",
     "wrapping_binary_operators",
 ];

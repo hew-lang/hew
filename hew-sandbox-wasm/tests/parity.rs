@@ -379,11 +379,17 @@ const PARITY_CASES: &[ParityCase] = &[
         accepted_divergences: &[],
     },
     ParityCase {
+        test_name: "record_shorthand_destructure_let",
+        source_rel: "examples/sandbox-graduation/record_shorthand_destructure_let.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
         test_name: "nested_tuple_destructure_let",
         source_rel: "examples/sandbox-graduation/nested_tuple_destructure_let.hew",
         accepted_divergences: &[],
     },
     ParityCase {
+        // IS: parity covers non-overflow values; the wraparound boundary is tracked in #2341.
         test_name: "wrapping_binary_operators",
         source_rel: "examples/sandbox-graduation/wrapping_binary_operators.hew",
         accepted_divergences: &[],

@@ -207,6 +207,7 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "wrapping binary operators",
+        // IS: parity covers non-overflow values; the wraparound boundary is tracked in #2341.
         probe: "fn main() {\n    let a = 10;\n    let b = 3;\n    println(a &+ b);\n    println(a &- b);\n    println(a &* b);\n}\n",
         coverage: Coverage::Parity("wrapping_binary_operators"),
     },
@@ -484,8 +485,13 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "struct destructure in let",
-        probe: "type Point { x: i64; y: i64; }\nfn main() {\n    let Point { x: a, y: b } = Point { x: 8, y: 13 };\n    println(a + b);\n}\n",
+        probe: "type Point { x: i64; y: i64; }\nfn main() {\n    let Point { x: a, y: b } = Point { x: 8, y: 13 };\n    println(a);\n    println(b);\n}\n",
         coverage: Coverage::Parity("struct_destructure_let"),
+    },
+    Construct {
+        id: "record shorthand destructure in let",
+        probe: "type Point { x: i64; y: i64; }\nfn main() {\n    let rec = Point { x: 21, y: 34 };\n    let { x, y } = rec;\n    println(x);\n    println(y);\n}\n",
+        coverage: Coverage::Parity("record_shorthand_destructure_let"),
     },
     Construct {
         id: "nested tuple destructure in let",
@@ -857,7 +863,7 @@ fn every_required_parity_case_backs_a_construct() {
 /// justifying a removed admission in the same commit.
 #[test]
 fn runnable_coverage_does_not_shrink() {
-    const RUNNABLE_BASELINE: usize = 50; // +7: bool_not, scalar matches, struct update/pattern, const refs
+    const RUNNABLE_BASELINE: usize = 51; // +1: record shorthand let destructure
     let runnable = CONSTRUCTS
         .iter()
         .filter(|c| matches!(c.coverage, Coverage::Parity(_) | Coverage::ParityTrap(_)))
@@ -1133,7 +1139,7 @@ mod ast_surface {
             Pattern::Identifier(_) => Some("match with constructor-payload patterns"),
             Pattern::Constructor { .. } => Some("match with constructor-payload patterns"),
             Pattern::Struct { .. } => Some("struct pattern in match arm"),
-            Pattern::RecordShorthand { .. } => Some("struct pattern in match arm"),
+            Pattern::RecordShorthand { .. } => Some("record shorthand destructure in let"),
             Pattern::Tuple(_) => Some("tuple value + tuple-let destructure"),
             Pattern::Or(_, _) => Some("match with wildcard arm"),
             Pattern::Regex { .. } => Some("regex compile + is_match"),

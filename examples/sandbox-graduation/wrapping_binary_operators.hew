@@ -1,3 +1,4 @@
+// IS: parity covers non-overflow values; the wraparound boundary is tracked in #2341.
 fn main() {
     let a = 10;
     let b = 3;

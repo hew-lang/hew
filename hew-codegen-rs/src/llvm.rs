@@ -43010,6 +43010,60 @@ mod tests {
         }
     }
 
+    /// Groups every catalog entry that reaches `declare_catalog_ffi` (the
+    /// three shim linkages that name a real runtime FFI symbol) by that
+    /// shared runtime symbol, then — for every group with 2+ entries —
+    /// declares each entry through the exact production path
+    /// (`declare_catalog_ffi` → `get_or_declare_catalog_ffi` →
+    /// `ensure_catalog_ffi_signature_matches`) into one shared LLVM module.
+    /// A shared symbol backing multiple Hew-facing catalog rows (e.g.
+    /// `to_string_u16`/`to_string_u32` both routing through
+    /// `hew_uint_to_string`) must compute the identical LLVM function type
+    /// for every entry in the group; any divergence is exactly the
+    /// `to_string_u16`/`to_string_u32` → `hew_uint_to_string` width mismatch
+    /// class of bug that an O0/O2 differential run found instead of a test.
+    /// This generalizes `catalog_ffi_redeclaration_mismatch_fails_closed`
+    /// (one hand-picked symbol) into an exhaustive gate over the whole
+    /// catalog, reusing the real declaration path rather than a parallel
+    /// hand-rolled computation.
+    #[test]
+    fn catalog_ffi_symbols_agree_across_all_shared_symbol_entries() {
+        use std::collections::HashMap;
+
+        let mut groups: HashMap<&'static str, Vec<&'static BuiltinEntry>> = HashMap::new();
+        for entry in stdlib_catalog::entries() {
+            if let Some(symbol) = entry.linkage.runtime_symbol() {
+                groups.entry(symbol).or_default().push(entry);
+            }
+        }
+
+        let record_layouts = RecordLayoutMap::new();
+        let mut checked_groups = 0usize;
+        for (symbol, entries) in &groups {
+            if entries.len() < 2 {
+                continue;
+            }
+            checked_groups += 1;
+            let ctx = Context::create();
+            let llvm_mod = ctx.create_module("catalog_ffi_group_parity");
+            for entry in entries {
+                declare_catalog_ffi(&ctx, &llvm_mod, entry, symbol, &record_layouts)
+                    .unwrap_or_else(|err| {
+                        panic!(
+                            "catalog FFI symbol `{symbol}` diverges across shared-symbol \
+                             entries (entry `{}`): {err}",
+                            entry.name
+                        )
+                    });
+            }
+        }
+        assert!(
+            checked_groups > 0,
+            "expected at least one shared-symbol catalog group (e.g. hew_uint_to_string) \
+             to exercise the parity gate"
+        );
+    }
+
     fn empty_pipeline_with_const_42() -> IrPipeline {
         let return_ty = ResolvedTy::I64;
         let main = RawMirFunction {

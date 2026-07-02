@@ -2495,6 +2495,35 @@ fn i32_match_integer_literal_arm_runs_correct_branch() {
     );
 }
 
+#[test]
+fn platform_sized_match_integer_literal_arms_run_correct_branches() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/platform_sized_match_literal.hew");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/platform_sized_match_literal.expected"),
+    )
+    .expect("read platform_sized_match_literal.expected");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert_eq!(
+        output.status.code(),
+        Some(43),
+        "expected exit 43 from isize + usize literal match arms; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "expected no diagnostics; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
 /// Regression oracle — mixed-width range bounds (i32..i64) produce a loop
 /// variable typed at the wider bound (i64), not the narrower start bound.
 ///

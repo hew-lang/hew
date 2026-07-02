@@ -98,3 +98,37 @@ fn classify(s: string) -> i64 {
         "string literal match should compare once per literal arm"
     );
 }
+
+#[test]
+fn platform_sized_integer_literal_matches_lower_to_constants() {
+    let pipeline = pipeline_with_tc(
+        r"
+fn signed(x: isize) -> i64 {
+    match x {
+        5 => 1,
+        _ => 0,
+    }
+}
+
+fn unsigned(x: usize) -> i64 {
+    match x {
+        5 => 1,
+        _ => 0,
+    }
+}",
+    );
+
+    for name in ["signed", "unsigned"] {
+        let func = find_fn(&pipeline, name);
+        let literal_constants = func
+            .blocks
+            .iter()
+            .flat_map(|block| block.instructions.iter())
+            .filter(|instr| matches!(instr, Instr::ConstI64 { value: 5, .. }))
+            .count();
+        assert_eq!(
+            literal_constants, 1,
+            "{name} should lower the platform-sized literal predicate exactly once"
+        );
+    }
+}

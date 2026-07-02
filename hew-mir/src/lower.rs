@@ -296,7 +296,7 @@ fn context_reader_offset(reader: ExecutionContextReader) -> usize {
 }
 
 fn literal_match_scrutinee_ty(ty: &ResolvedTy) -> bool {
-    (ty.is_integer() && !matches!(ty, ResolvedTy::Isize | ResolvedTy::Usize))
+    ty.is_integer_literal_match_scrutinee()
         || matches!(ty, ResolvedTy::Bool | ResolvedTy::Char | ResolvedTy::String)
 }
 
@@ -18698,9 +18698,7 @@ impl Builder {
         site: SiteId,
     ) -> Option<Place> {
         match (lit, ty) {
-            (HirLiteral::Integer(value), ty)
-                if ty.is_integer() && !matches!(ty, ResolvedTy::Isize | ResolvedTy::Usize) =>
-            {
+            (HirLiteral::Integer(value), ty) if ty.is_integer_literal_match_scrutinee() => {
                 let dest = self.alloc_local(ty.clone());
                 self.push_instr(Instr::ConstI64 {
                     dest,

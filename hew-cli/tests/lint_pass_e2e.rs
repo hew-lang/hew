@@ -215,6 +215,69 @@ fn len_zero_comparison_inline_directive_suppresses() {
     );
 }
 
+// ── receive-handler lint: sleep_loop_blocks_mailbox ───────────────────
+
+const SLEEP_LOOP_BLOCKS_MAILBOX: &str = "actor Worker {\n\
+     var running: bool = true;\n\
+     receive fn run() { while running { sleep(10ms); } }\n\
+     receive fn stop() { running = false; }\n\
+     }\n";
+
+const SLEEP_LOOP_BLOCKS_MAILBOX_SUPPRESSED: &str = "actor Worker {\n\
+     var running: bool = true;\n\
+     receive fn run() {\n\
+     // hew:allow(sleep_loop_blocks_mailbox)\n\
+     while running { sleep(10ms); }\n\
+     }\n\
+     receive fn stop() { running = false; }\n\
+     }\n";
+
+const SLEEP_LOOP_BLOCKS_MAILBOX_MESSAGE: &str = "actor's mailbox is never observed";
+
+#[test]
+fn sleep_loop_blocks_mailbox_renders_by_default() {
+    let output = run_check(SLEEP_LOOP_BLOCKS_MAILBOX, &[]);
+    let stderr = stderr_of(&output);
+    assert!(
+        output.status.success(),
+        "a lint warning must not fail the build:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("warning:")
+            && stderr.contains(SLEEP_LOOP_BLOCKS_MAILBOX_MESSAGE)
+            && stderr.contains("#[every"),
+        "expected the sleep_loop_blocks_mailbox warning and suggestion:\n{stderr}"
+    );
+}
+
+#[test]
+fn sleep_loop_blocks_mailbox_deny_promotes_to_error() {
+    let output = run_check(
+        SLEEP_LOOP_BLOCKS_MAILBOX,
+        &["--deny", "sleep_loop_blocks_mailbox"],
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        !output.status.success(),
+        "--deny must fail the build:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("error:") && stderr.contains(SLEEP_LOOP_BLOCKS_MAILBOX_MESSAGE),
+        "--deny must render the lint as an error:\n{stderr}"
+    );
+}
+
+#[test]
+fn sleep_loop_blocks_mailbox_inline_directive_suppresses() {
+    let output = run_check(SLEEP_LOOP_BLOCKS_MAILBOX_SUPPRESSED, &[]);
+    let stderr = stderr_of(&output);
+    assert!(output.status.success(), "check should pass:\n{stderr}");
+    assert!(
+        !stderr.contains(SLEEP_LOOP_BLOCKS_MAILBOX_MESSAGE),
+        "an in-source `// hew:allow(...)` directive must suppress the lint:\n{stderr}"
+    );
+}
+
 // ── migrated warning: dead_code is now registry-controlled ───────────
 
 /// `helper` is never called, so the migrated `dead_code` lint flags it.

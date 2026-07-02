@@ -1,0 +1,77 @@
+// MIR-corpus fixture: skipped-field drops under control flow — the
+// back-edge, join, and all-wildcard legs of the exact-drop-op matrix.
+//
+//   - `loop_backedge`: a partial destructure with a skipped owned record
+//     field inside a `while` loop. The raw golden pins one
+//     `drop_field_in_place` in the loop body (straight-line pre-body
+//     emission — executed exactly once per arm entry); the elab golden
+//     pins that NO back-edge drop plan contains the skipped field or the
+//     scrutinee root (no scope-drop double-free against the in-place
+//     drop).
+//   - `join_paths`: two branch-local destructures — one partial-skip, one
+//     all-wildcard — flowing into a join. Each path discharges its own
+//     local exactly once (in-place drops on the skip path, the retained
+//     composite drop on the all-wildcard path) and no drop plan re-drops
+//     either local after the join.
+//   - `all_wildcard`: the negative pin — an all-wildcard arm binds
+//     nothing, so NO `drop_field_in_place` and NO inline drop is emitted;
+//     the scrutinee's own composite drop is retained (visible in the elab
+//     drop plans) and frees every owned field.
+type Inner {
+    value: string;
+}
+
+type Duo {
+    n: i64;
+    inner: Inner;
+    s: string;
+}
+
+fn make(n: i64) -> Duo {
+    Duo { n: n, inner: Inner { value: string_concat("cf-inner-", "payload") }, s: string_concat("cf-s-", "payload") }
+}
+
+fn loop_backedge(frames: i64) -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < frames {
+        let d = make(i);
+        let x = match d {
+            Duo { n: x, inner: _, s: _ } => x,
+        };
+        total = total + x;
+        i = i + 1;
+    }
+    total
+}
+
+fn join_paths(k: i64) -> i64 {
+    if k - k / 2 * 2 == 0 {
+        let d = make(k);
+        let x = match d {
+            Duo { n: x, inner: _, s: _ } => x,
+        };
+        return x + 1;
+    }
+    let e = make(k);
+    let z = match e {
+        Duo { n: _, inner: _, s: _ } => 1,
+    };
+    z
+}
+
+fn all_wildcard(k: i64) -> i64 {
+    let d = make(k);
+    let z = match d {
+        Duo { n: _, inner: _, s: _ } => k,
+    };
+    z
+}
+
+fn main() -> i64 {
+    let a = loop_backedge(3);
+    let b = join_paths(1);
+    let c = join_paths(2);
+    let d = all_wildcard(7);
+    a + b + c + d - 15
+}

@@ -1,0 +1,36 @@
+//! Reject: match-destructure wildcard on a closure-typed field. Neither
+//! discharge path can place a function-typed field's drop: it has no leaf
+//! release symbol (`project_field_inline_drop_symbol` returns `None`) and
+//! the field-addressed in-place classifier
+//! (`field_drop_in_place_admissible`) refuses closure shapes outright — a
+//! captured environment box hides behind a non-owning-classified `fn`
+//! surface, so a structural free would either leak the env box or free it
+//! with the wrong ABI. The pre-flight fails closed at MIR construction
+//! time instead.
+//!
+//! Skipped fields the classifier CAN place (records, tuples, inline and
+//! indirect enums, fixed arrays) are admitted and discharged in place —
+//! the accept fixture `match_record_wildcard_owned_aggregate_field.hew`
+//! covers that path. This fixture pins the boundary: shapes without a
+//! proven in-place release keep the refusal, never a leak.
+
+type Holder {
+    label: string,
+    op: fn(i64) -> i64,
+}
+
+fn make() -> Holder {
+    let k = 3;
+    Holder {
+        label: string_concat("l-", "x"),
+        op: |x| x * k,
+    }
+}
+
+fn main() -> i64 {
+    let h = make();
+    let _s = match h {
+        Holder { label: l, op: _ } => l,
+    };
+    0
+}

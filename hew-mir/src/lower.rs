@@ -18440,20 +18440,28 @@ impl Builder {
             }
         }
 
-        // Inline-drop pre-flight (partial extraction only). When at least one
-        // owned field is bound, `derive_owned_record_drop_allowed` /
+        // Skipped-field drop pre-flight (partial extraction only). When at
+        // least one owned field is bound, `derive_owned_record_drop_allowed` /
         // `derive_tuple_composite_drop_allowed` suppress the scrutinee's
-        // composite drop (the field-binder release-owner rule), so every
-        // UNSELECTED owned field must be freed by an inline `Instr::Drop`
-        // emitted below. The inline-drop dispatcher can only emit a single-`ptr`
-        // leaf release (`project_field_inline_drop_symbol`); an owned-AGGREGATE
-        // field (record / tuple / enum) has only a function-scope in-place drop
-        // kind it cannot emit, so wildcarding such a field would leak. Determine
-        // the unselected-owned set BEFORE emitting any code so a fail-closed
-        // diagnostic surfaces cleanly without a half-lowered block. All-wildcard
-        // patterns skip this loop: with no binding to suppress it, the
-        // scrutinee's own composite drop frees every field (the gate above
-        // proved the scrutinee is a droppable `BindingRef`).
+        // composite drop (the field-binder release-owner rule and the direct
+        // `FieldDropInPlace` exclusion rule), so every UNSELECTED owned field
+        // must be discharged by the safety-drop loop below. Admission is the
+        // OR of the two discharge paths that loop can emit:
+        //   - a single-`ptr` leaf release symbol
+        //     (`project_field_inline_drop_symbol` — the load+`Instr::Drop`
+        //     path), or
+        //   - the field-addressed in-place drop
+        //     (`field_drop_in_place_admissible` — the `FieldDropInPlace`
+        //     path for record / tuple / fixed-array / inline-enum /
+        //     indirect-enum fields over registered layouts).
+        // Anything neither path can place — slices, `dyn Trait` fat fields,
+        // closures, affine handles (`Channel` / `Task` /
+        // `CancellationToken`), unregistered layouts — keeps this fail-closed
+        // refusal. Determine the unselected-owned set BEFORE emitting any code
+        // so the diagnostic surfaces cleanly without a half-lowered block.
+        // All-wildcard patterns skip this loop: with no binding to suppress
+        // it, the scrutinee's own composite drop frees every field (the gate
+        // above proved the scrutinee is a droppable `BindingRef`).
         if !selected.bindings.is_empty() && scrutinee_is_non_bitcopy {
             let extracted: HashSet<u32> = selected.bindings.iter().map(|b| b.field_idx).collect();
             let owned_fields: Vec<(u32, ResolvedTy)> = match &selected.predicate {
@@ -18469,7 +18477,9 @@ impl Builder {
                 if extracted.contains(idx) {
                     continue;
                 }
-                if self.project_field_inline_drop_symbol(field_ty).is_none() {
+                if self.project_field_inline_drop_symbol(field_ty).is_none()
+                    && !self.field_drop_in_place_admissible(field_ty)
+                {
                     self.diagnostics.push(MirDiagnostic {
                         kind: MirDiagnosticKind::NotYetImplemented {
                             construct: "match-destructure wildcard on owned aggregate field"
@@ -18477,13 +18487,13 @@ impl Builder {
                             site: scrutinee.site,
                         },
                         note: format!(
-                            "field {idx} of `{}` has owned-aggregate type `{}`; wildcarding it \
-                             would leak its heap contents because the in-place drop kinds \
-                             (`RecordInPlace` / `TupleInPlace` / `EnumInPlace`) are function-\
-                             scope drops, not inline `Instr::Drop` targets. Bind the field \
-                             explicitly so its drop is elaborated through `owned_locals`, or \
-                             extract every sibling instead of using `_` on this field — refusing \
-                             to lower fail-closed rather than emit a leak / wrong-ABI drop",
+                            "field {idx} of `{}` has type `{}`, which neither the inline leaf \
+                             release nor the field-addressed in-place drop can discharge \
+                             (slices, `dyn Trait` fields, closures, affine handles, and \
+                             unregistered layouts are refused). Bind the field explicitly so \
+                             its drop is elaborated through `owned_locals`, or extract every \
+                             sibling instead of using `_` on this field — refusing to lower \
+                             fail-closed rather than emit a leak / wrong-ABI drop",
                             scrutinee.ty.user_facing(),
                             field_ty.user_facing(),
                         ),
@@ -18645,22 +18655,44 @@ impl Builder {
         // `selected.bindings` is a wildcard discard. If the scrutinee carries
         // any owned content, the composite drop on the source aggregate is
         // already suppressed by `derive_owned_record_drop_allowed` /
-        // `derive_tuple_composite_drop_allowed` once an extracted binding (or
-        // an inline drop emitted here) seeds the field-binder release-owner
-        // path. Without explicit drops for the wildcarded owned fields, those
-        // fields would leak (the composite is suppressed, the extracted bindings
-        // do not cover them). Emit a `RecordFieldLoad` / `TupleFieldLoad` of
-        // each unselected owned field into a fresh temp, then an inline
-        // `Instr::Drop` with the leaf release symbol the inline-drop dispatcher
-        // is allowed to emit (`project_field_inline_drop_symbol`). The pre-flight
-        // above guarantees every unselected owned field has a known leaf symbol
-        // — if any did not, we have already returned a fail-closed diagnostic
-        // and never enter this loop.
+        // `derive_tuple_composite_drop_allowed` once an extracted binding, an
+        // inline drop emitted here, or a `FieldDropInPlace` emitted here seeds
+        // the exclusion. Without explicit drops for the wildcarded owned
+        // fields, those fields would leak (the composite is suppressed, the
+        // extracted bindings do not cover them). Two discharge paths, decided
+        // per field:
+        //
+        //   - `string` fields and classifier-admitted aggregates (record /
+        //     tuple / fixed array / inline enum / indirect enum —
+        //     `field_drop_in_place_admissible`) emit `Instr::FieldDropInPlace`:
+        //     the release runs IN PLACE at the field address, type-directed by
+        //     codegen's `emit_heap_slot_drop` dispatcher. Strings MUST take
+        //     this path even though a leaf release symbol exists: codegen's
+        //     `RecordFieldLoad` / `TupleFieldLoad` retain string-typed dests
+        //     via `hew_string_clone` (`retain_string_field_load`), so a
+        //     load+`Drop` pair retain-cancels — the temp's release frees the
+        //     clone while the ORIGINAL slot value leaks. The in-place drop
+        //     raw-loads the original handle, releases it, and null-stores the
+        //     pointer word.
+        //   - Every other leaf with a release symbol
+        //     (`project_field_inline_drop_symbol`: `bytes`, `Vec`, `HashMap`,
+        //     `HashSet`, generator handles — loads that do NOT retain) keeps
+        //     the load-into-temp + inline `Instr::Drop` path.
+        //
+        // The pre-flight above guarantees every unselected owned field is
+        // dischargeable by one of the two paths — if any was not, we have
+        // already returned a fail-closed diagnostic and never enter this loop.
         //
         // Emit drops AFTER the extraction binds but BEFORE the body: the body
         // refers only to the bound names (not the wildcarded fields), so the
         // drops free the discarded heap content immediately and leave the body
-        // to run with the bound owners live.
+        // to run with the bound owners live. The straight-line pre-body
+        // position is load-bearing for `FieldDropInPlace`: the op executes
+        // exactly once per arm entry (no join or back-edge can re-run it),
+        // which — together with the provers' direct exclusion of the base
+        // root — is the whole idempotence story for inline-composite fields
+        // (they have no null-store; see the `Instr::FieldDropInPlace` model
+        // contract).
         if !selected.bindings.is_empty() && !self.project_match_scrutinee_is_bitcopy(&scrutinee.ty)
         {
             let extracted: HashSet<u32> = selected.bindings.iter().map(|b| b.field_idx).collect();
@@ -18677,49 +18709,72 @@ impl Builder {
                 if extracted.contains(&idx) {
                     continue;
                 }
-                let Some(drop_symbol) = self.project_field_inline_drop_symbol(&field_ty) else {
-                    // Unreachable — the pre-flight at the head of the function
-                    // returned fail-closed on the same condition. Defense-in-
-                    // depth: surface the invariant rather than silently leak.
-                    self.diagnostics.push(MirDiagnostic {
-                        kind: MirDiagnosticKind::NotYetImplemented {
-                            construct: "match-destructure wildcard on owned aggregate field"
-                                .to_string(),
-                            site: scrutinee.site,
-                        },
-                        note: format!(
-                            "field {idx} of `{}` slipped past the pre-flight inline-drop \
-                             admission check; refusing to emit a leak / wrong-ABI free",
-                            scrutinee.ty.user_facing(),
-                        ),
-                    });
-                    return None;
-                };
-                let temp = self.alloc_local(field_ty.clone());
-                match &selected.predicate {
-                    hew_hir::HirMatchArmPredicate::RecordProject { .. } => {
-                        self.push_instr(Instr::RecordFieldLoad {
-                            record: Place::Local(scrutinee_local),
-                            field_offset: FieldOffset(idx),
-                            dest: temp,
+                let field_is_string = matches!(field_ty, ResolvedTy::String);
+                if !field_is_string {
+                    if let Some(drop_symbol) = self.project_field_inline_drop_symbol(&field_ty) {
+                        let temp = self.alloc_local(field_ty.clone());
+                        match &selected.predicate {
+                            hew_hir::HirMatchArmPredicate::RecordProject { .. } => {
+                                self.push_instr(Instr::RecordFieldLoad {
+                                    record: Place::Local(scrutinee_local),
+                                    field_offset: FieldOffset(idx),
+                                    dest: temp,
+                                });
+                            }
+                            hew_hir::HirMatchArmPredicate::TupleProject { .. } => {
+                                self.push_instr(Instr::TupleFieldLoad {
+                                    tuple: Place::Local(scrutinee_local),
+                                    field_index: idx,
+                                    dest: temp,
+                                });
+                            }
+                            _ => unreachable!(
+                                "owned-field enumeration only populated for project predicates"
+                            ),
+                        }
+                        self.push_instr(Instr::Drop {
+                            place: temp,
+                            ty: field_ty,
+                            drop_fn: Some(crate::model::DropFnSpec::Release(drop_symbol)),
                         });
+                        continue;
                     }
-                    hew_hir::HirMatchArmPredicate::TupleProject { .. } => {
-                        self.push_instr(Instr::TupleFieldLoad {
-                            tuple: Place::Local(scrutinee_local),
-                            field_index: idx,
-                            dest: temp,
-                        });
-                    }
-                    _ => unreachable!(
-                        "owned-field enumeration only populated for project predicates"
-                    ),
                 }
-                self.push_instr(Instr::Drop {
-                    place: temp,
-                    ty: field_ty,
-                    drop_fn: Some(crate::model::DropFnSpec::Release(drop_symbol)),
+                if field_is_string || self.field_drop_in_place_admissible(&field_ty) {
+                    let field = match &selected.predicate {
+                        hew_hir::HirMatchArmPredicate::RecordProject { .. } => {
+                            crate::model::FieldAddr::Record(FieldOffset(idx))
+                        }
+                        hew_hir::HirMatchArmPredicate::TupleProject { .. } => {
+                            crate::model::FieldAddr::Tuple(idx)
+                        }
+                        _ => unreachable!(
+                            "owned-field enumeration only populated for project predicates"
+                        ),
+                    };
+                    self.push_instr(Instr::FieldDropInPlace {
+                        base: Place::Local(scrutinee_local),
+                        field,
+                        ty: field_ty,
+                    });
+                    continue;
+                }
+                // Unreachable — the pre-flight at the head of the function
+                // returned fail-closed on the same admission OR. Defense-in-
+                // depth: surface the invariant rather than silently leak.
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "match-destructure wildcard on owned aggregate field"
+                            .to_string(),
+                        site: scrutinee.site,
+                    },
+                    note: format!(
+                        "field {idx} of `{}` slipped past the pre-flight skipped-field \
+                         admission check; refusing to emit a leak / wrong-ABI free",
+                        scrutinee.ty.user_facing(),
+                    ),
                 });
+                return None;
             }
         }
 

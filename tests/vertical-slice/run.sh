@@ -3657,18 +3657,19 @@ if "${HEW}" compile \
 fi
 grep -q 'non-literal duration' "${reject_output}"
 
-# `lower_match_project` lowers non-BitCopy
-# record/tuple match destructure (heap-owning fields), but a wildcard `_` on
-# an *owned-aggregate* field (record/tuple/enum carrying heap payload) still
-# fails closed — the inline-drop dispatcher only emits leaf release symbols
-# (`hew_string_drop`, `hew_vec_free*`, `hew_hashmap_free_layout`,
-# `hew_hashset_free_layout`, `hew_gen_free`, `hew_bytes_drop`), not
-# `DropKind::RecordInPlace`. Loading such a field into a temp + inline-Drop
-# would emit a wrong-ABI free, so MIR refuses. This pins the diagnostic.
+# `lower_match_project` discharges a wildcard `_` on an owned-aggregate
+# field (record/tuple/enum/fixed-array carrying heap payload) through
+# `Instr::FieldDropInPlace` — see
+# `accept/match_record_wildcard_owned_aggregate_field.hew`. Shapes the
+# in-place classifier cannot place (closures, affine handles, slices,
+# `dyn Trait` fields) still fail closed at MIR construction time: a
+# closure field hides an env box behind a non-owning `fn` surface, so a
+# structural free would leak or free with the wrong ABI. This pins the
+# fail-closed boundary diagnostic.
 if "${HEW}" check \
-    "${ROOT}/tests/vertical-slice/reject/match_destructure_wildcard_owned_aggregate.hew" \
+    "${ROOT}/tests/vertical-slice/reject/match_destructure_wildcard_closure_field.hew" \
     >"${reject_output}" 2>&1; then
-  echo "expected match_destructure_wildcard_owned_aggregate fixture to fail" >&2
+  echo "expected match_destructure_wildcard_closure_field fixture to fail" >&2
   exit 1
 fi
 grep -q 'match-destructure wildcard on owned aggregate field' "${reject_output}"

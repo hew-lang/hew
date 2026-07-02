@@ -1,0 +1,46 @@
+//! Match-destructure wildcard on an owned-AGGREGATE field (`Inner` is a
+//! record that owns a `string`). The partial-extraction safety-drop loop
+//! emits `Instr::FieldDropInPlace` for the skipped aggregate: the release
+//! runs in place at the field address, type-directed through codegen's
+//! `emit_heap_slot_drop` dispatcher (`__hew_record_drop_inplace_Inner`
+//! frees the nested `string` leaf). The composite-drop provers exclude the
+//! scrutinee root directly on the `FieldDropInPlace` base, so the nested
+//! leaves are freed exactly once — no composite re-walk, no double-free.
+//!
+//! Shapes neither the leaf release nor the in-place classifier can place
+//! (closures, affine handles, slices) still fail closed — see
+//! `reject/match_destructure_wildcard_closure_field.hew`.
+//!
+//! Observable contract: across many iterations the program prints `done`
+//! and exits 0. A regression that re-admitted the scrutinee's composite
+//! drop alongside the in-place field drop would double-free `Inner`'s
+//! string leaf and abort at `free_cstring`'s sentinel.
+
+type Inner {
+    value: string,
+}
+
+type Outer {
+    name: string,
+    inner: Inner,
+}
+
+fn make() -> Outer {
+    Outer {
+        name: string_concat("name-", "x"),
+        inner: Inner { value: string_concat("v-", "x") },
+    }
+}
+
+fn main() -> i64 {
+    var i: i64 = 0;
+    while i < 100000 {
+        let o = make();
+        let _s = match o {
+            Outer { name: n, inner: _ } => n,
+        };
+        i = i + 1;
+    }
+    println("done");
+    0
+}

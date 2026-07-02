@@ -1714,11 +1714,13 @@ fn run_match_tuple_destructure_owned_drops_once() {
 
 /// Non-BitCopy record match destructure — PARTIAL extraction (wildcard on
 /// an owned `string` sibling) across 100k iterations. The partial-extraction
-/// emitter loads the wildcarded field into a temp and emits an inline
-/// `Instr::Drop` with the leaf release symbol (`hew_string_drop`). Without
-/// that emission the wildcarded sibling leaked — the drop spine's composite
-/// suppression already kicks in once any binder owns release. A double-free
-/// (composite + binder + inline drop all firing) aborts; a leak grows RSS.
+/// emitter discharges the wildcarded `string` through
+/// `Instr::FieldDropInPlace` (raw slot load + `hew_string_drop` +
+/// null-store — string field LOADS retain via `hew_string_clone`, so a
+/// load+drop pair would retain-cancel and leak the original slot value).
+/// The drop spine's composite suppression already kicks in once any binder
+/// owns release. A double-free (composite + binder + in-place drop all
+/// firing) aborts; a leak grows RSS.
 #[test]
 fn run_match_record_partial_extraction_owned_drops_once() {
     require_codegen();
@@ -1744,20 +1746,52 @@ fn run_match_record_partial_extraction_owned_drops_once() {
     assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
 }
 
-/// Fail-closed: match-destructure wildcard on an owned-aggregate field
-/// (here `Inner` is a record carrying a `string`). The inline-drop
-/// dispatcher cannot emit `DropKind::RecordInPlace`, so
-/// `project_field_inline_drop_symbol` returns `None` for owned record /
-/// tuple / enum field types and the pre-flight emits
-/// `E_NOT_YET_IMPLEMENTED: MIR lowering for match-destructure wildcard on
-/// owned aggregate field`. The guard guarantees the lift never silently
-/// leaks an owned-aggregate sibling.
+/// Match-destructure wildcard on an owned-AGGREGATE field (here `Inner`
+/// is a record carrying a `string`) — the skipped field is discharged in
+/// place through `Instr::FieldDropInPlace` (type-directed at codegen via
+/// `emit_heap_slot_drop`), with the composite-drop provers excluding the
+/// scrutinee root directly on the op's base. A regression that
+/// re-admitted the composite alongside the in-place drop would double-free
+/// the nested string leaf and abort at `free_cstring`'s sentinel.
 #[test]
-fn check_match_destructure_wildcard_owned_aggregate_fails_closed() {
+fn run_match_record_wildcard_owned_aggregate_field_drops_once() {
     require_codegen();
 
     let source = repo_root()
-        .join("tests/vertical-slice/reject/match_destructure_wildcard_owned_aggregate.hew");
+        .join("tests/vertical-slice/accept/match_record_wildcard_owned_aggregate_field.hew");
+    let expected =
+        std::fs::read_to_string(repo_root().join(
+            "tests/vertical-slice/accept/match_record_wildcard_owned_aggregate_field.expected",
+        ))
+        .expect("read match_record_wildcard_owned_aggregate_field.expected");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "match_record_wildcard_owned_aggregate_field should run cleanly (a composite \
+         re-drop of the in-place-discharged field would abort); stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
+/// Fail-closed boundary: match-destructure wildcard on a CLOSURE-typed
+/// field. Neither discharge path can place it — no leaf release symbol
+/// (`project_field_inline_drop_symbol` returns `None`) and the in-place
+/// classifier (`field_drop_in_place_admissible`) refuses closure shapes
+/// (the env box hides behind a non-owning `fn` surface). The pre-flight
+/// emits `E_NOT_YET_IMPLEMENTED: MIR lowering for match-destructure
+/// wildcard on owned aggregate field`, guaranteeing no silent leak or
+/// wrong-ABI free for shapes without a proven in-place release.
+#[test]
+fn check_match_destructure_wildcard_closure_field_fails_closed() {
+    require_codegen();
+
+    let source = repo_root()
+        .join("tests/vertical-slice/reject/match_destructure_wildcard_closure_field.hew");
     let output = Command::new(hew_binary())
         .arg("check")
         .arg(&source)

@@ -50603,6 +50603,51 @@ mod tests {
         );
     }
 
+    /// A tuple-TYPED record field walks its elements through
+    /// `emit_aggregate_recursive_drop`: the owned `string` element is
+    /// released exactly once at its slot (raw load — never the retaining
+    /// clone), the BitCopy element emits nothing.
+    #[test]
+    fn field_drop_in_place_tuple_typed_field_walks_elements() {
+        let tuple_field_ty = ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64]);
+        let outer = MirRecordLayout {
+            name: "OuterTup".to_string(),
+            field_tys: vec![tuple_field_ty.clone(), ResolvedTy::I64],
+            field_names: vec![],
+        };
+        let ctx = Context::create();
+        let m = ctx.create_module("fdip_tuple_typed_field");
+        let harness = build_harness(&ctx, std::slice::from_ref(&outer), &[]);
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "fdip_tuple_typed_field_fn");
+        alloc_local(&mut fn_ctx, 0, ResolvedTy::named_user("OuterTup", vec![]));
+        lower_instruction(
+            &fn_ctx,
+            &Instr::FieldDropInPlace {
+                base: Place::Local(0),
+                field: hew_mir::FieldAddr::Record(FieldOffset(0)),
+                ty: tuple_field_ty,
+            },
+            0,
+            &[],
+        )
+        .expect("tuple-typed FieldDropInPlace must lower through the recursive walk");
+        finish_test_fn(&fn_ctx);
+        assert!(
+            m.verify().is_ok(),
+            "tuple-typed field-drop module must verify"
+        );
+        let ir = m.print_to_string().to_string();
+        assert_eq!(
+            ir.matches("call void @hew_string_drop(").count(),
+            1,
+            "exactly one release of the tuple's owned string element; ir:\n{ir}"
+        );
+        assert!(
+            !ir.contains("hew_string_clone"),
+            "no retain anywhere in the per-element walk; ir:\n{ir}"
+        );
+    }
+
     /// The selector must agree with the base's resolved type in BOTH
     /// directions — a `Record` address on a tuple base and a `Tuple` address
     /// on a record base are producer bugs codegen refuses.

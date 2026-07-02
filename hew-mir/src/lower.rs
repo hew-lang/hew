@@ -33408,7 +33408,7 @@ fn retained_string_terminator_drop_safe(
     // a source operand here), so the composite drop is the single owner — no
     // double-free.
     if let Terminator::Call { callee, args, .. } = term {
-        if is_borrowing_string_call_callee(callee)
+        if crate::runtime_symbols::callee_ownership_contract(callee).borrows_string_call_args()
             && args.iter().any(|arg| place_refs_local(*arg, local))
         {
             return true;
@@ -33834,7 +33834,8 @@ fn compute_collection_interior_alias_taint(blocks: &[BasicBlock]) -> HashSet<u32
 fn fresh_string_producer_dest(instr: &Instr) -> Option<Place> {
     match instr {
         Instr::CallRuntimeAbi(call)
-            if crate::runtime_symbols::is_fresh_owned_string_producer(call.symbol()) =>
+            if crate::runtime_symbols::callee_ownership_contract(call.symbol())
+                .produces_fresh_owned_string() =>
         {
             call.dest()
         }
@@ -33848,7 +33849,8 @@ fn fresh_string_producer_dest(instr: &Instr) -> Option<Place> {
 fn fresh_string_producer_term_dest(term: &Terminator) -> Option<Place> {
     match term {
         Terminator::Call { callee, dest, .. }
-            if crate::runtime_symbols::is_fresh_owned_string_producer(callee) =>
+            if crate::runtime_symbols::callee_ownership_contract(callee)
+                .produces_fresh_owned_string() =>
         {
             *dest
         }
@@ -33943,7 +33945,8 @@ fn cow_owned_string_instr_escapes(instr: &Instr, local: u32) -> bool {
     match instr {
         Instr::CallRuntimeAbi(call) => {
             call.args().iter().any(|p| place_refs_local(*p, local))
-                && !is_borrowing_string_call_callee(call.symbol())
+                && !crate::runtime_symbols::callee_ownership_contract(call.symbol())
+                    .borrows_string_call_args()
         }
         Instr::CallClosure { .. } | Instr::CallTraitMethod { .. } => instr_source_places(instr)
             .into_iter()
@@ -33969,7 +33972,8 @@ fn cow_owned_string_terminator_escapes(
     match term {
         Terminator::Call { callee, args, .. } => {
             args.iter().any(|p| place_refs_local(*p, local))
-                && !is_borrowing_string_call_callee(callee)
+                && !crate::runtime_symbols::callee_ownership_contract(callee)
+                    .borrows_string_call_args()
         }
         _ => false,
     }
@@ -34415,7 +34419,8 @@ fn nested_fresh_string_temp_drop(
             if !args.iter().any(|p| place_refs_local(*p, t)) {
                 return None;
             }
-            if !is_borrowing_string_call_callee(callee) {
+            if !crate::runtime_symbols::callee_ownership_contract(callee).borrows_string_call_args()
+            {
                 return None;
             }
             if pred_count.get(next).copied().unwrap_or(0) != 1 {

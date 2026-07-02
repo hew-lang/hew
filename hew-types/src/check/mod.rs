@@ -927,6 +927,7 @@ impl Checker {
                 }
                 for rec in &actor.receive_fns {
                     lints::lint_block(&ctx, levels, &rec.body, out);
+                    lints::lint_receive_fn(&ctx, levels, &rec.body, out);
                 }
             }
             Item::Trait(trait_decl) => {

@@ -64,8 +64,6 @@ spec-0012   # SNIPPET: bare before/after code — ? operator syntax illustration
 spec-0013   # SNIPPET: bare `let buf: bytes = bytes::new()` — bytes type illustration
 spec-0014   # SNIPPET: bare `let x = 5` / `var y = 0` — binding modes illustration
 spec-0015   # SNIPPET: bare `type Point { ... }` + bare `var` — struct mutable field illustration
-spec-0018   # SNIPPET: bare `receive fn forward(...)` — actor send-boundary illustration
-spec-0019   # SNIPPET: bare `receive fn broadcast(...)` — clone-on-send illustration
 spec-0020   # SNIPPET: bare `let config = load_config()` — actor capture illustration
 spec-0021   # SNIPPET: bare `let local_ref = ...` — non-Send capture illustration
 spec-0022   # FRAGMENT: actor calls undefined `process()` — allowed-ops illustration
@@ -78,14 +76,11 @@ spec-0030   # SNIPPET: bare code outside declarations — trait method dispatch 
 spec-0031   # SNIPPET: bare `let` + trait call — trait dispatch illustration
 spec-0034   # IMPL-GAP: field-access result type failed checker-boundary conversion (E_HIR)
 spec-0035   # SNIPPET: bare `let` — type inference illustration
-spec-0037   # SPEC-BUG: calls `clone()` on unconstrained `T` — planned trait bound
-spec-0039   # SNIPPET: bare `receive fn` outside actor — actor message illustration
 spec-0044   # SNIPPET: bare `let f = |...| ...` — lambda illustration
 spec-0045   # SPEC-BUG: references variant `Lit` not defined in the fence
 spec-0046   # SNIPPET: bare `let` — fn-type variable illustration
 spec-0050   # SPEC-BUG: struct `impl` using wrong syntax form (stray `;` before `fn`)
 spec-0053   # SNIPPET: bare identifier `max` after trait definition — illustration
-spec-0054   # SPEC-BUG: calls `clone()` on unconstrained `T` — planned trait bound
 spec-0055   # SPEC-BUG: type mismatch in aspirational HashMap construction
 spec-0056   # ERROR-DEMO: intentionally shows `cannot assign to immutable iter`
 spec-0059   # SNIPPET: bare `receive fn` — actor send-semantics illustration

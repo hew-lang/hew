@@ -15039,6 +15039,36 @@ fn float_to_int_payload_and_invalid<'ctx>(
     Ok((payload, invalid))
 }
 
+fn int_to_float_payload_and_invalid<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    src_v: IntValue<'ctx>,
+    src_int: IntType<'ctx>,
+    dest_float: FloatType<'ctx>,
+    from_ty: &ResolvedTy,
+) -> CodegenResult<(FloatValue<'ctx>, IntValue<'ctx>)> {
+    let payload = match cast_int_signedness(from_ty)? {
+        IntSignedness::Signed => fn_ctx
+            .builder
+            .build_signed_int_to_float(src_v, dest_float, "try_width_sint_to_float")
+            .llvm_ctx("try-width signed int to float")?,
+        IntSignedness::Unsigned => fn_ctx
+            .builder
+            .build_unsigned_int_to_float(src_v, dest_float, "try_width_uint_to_float")
+            .llvm_ctx("try-width unsigned int to float")?,
+    };
+    let roundtrip = float_to_int_sat_value(fn_ctx, dest_float, src_int, payload, from_ty)?;
+    let invalid = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::NE,
+            roundtrip,
+            src_v,
+            "try_width_int_float_inexact",
+        )
+        .llvm_ctx("try-width int-float roundtrip compare")?;
+    Ok((payload, invalid))
+}
+
 fn lower_try_width_cast(
     fn_ctx: &FnCtx<'_, '_>,
     dest: Place,
@@ -15107,6 +15137,31 @@ fn lower_try_width_cast(
                 invalid,
                 payload.into(),
                 "try-width float-to-int payload store",
+            )
+        }
+        hew_types::TryConversionKind::IntToFloat => {
+            if !from_ty.is_integer() || !to_ty.is_float() {
+                return Err(CodegenError::FailClosed(format!(
+                    "TryWidthCast IntToFloat requires integer-to-float types; got {} -> {}",
+                    from_ty.user_facing(),
+                    to_ty.user_facing()
+                )));
+            }
+            let src_int = expect_int_type(src_storage, "try-width int source")?;
+            let dest_float = expect_float_type(slot.payload_ty, "try-width float payload")?;
+            let src_v = fn_ctx
+                .builder
+                .build_load(src_int, src_ptr, "try_width_int_src")
+                .llvm_ctx("try-width int source load")?
+                .into_int_value();
+            let (payload, invalid) =
+                int_to_float_payload_and_invalid(fn_ctx, src_v, src_int, dest_float, from_ty)?;
+            write_try_width_option(
+                fn_ctx,
+                &slot,
+                invalid,
+                payload.into(),
+                "try-width int-to-float payload store",
             )
         }
         other => Err(CodegenError::FailClosed(format!(

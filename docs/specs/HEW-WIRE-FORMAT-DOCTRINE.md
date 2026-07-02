@@ -53,7 +53,7 @@ that conform to that schema live in
 
 The Rust mirror is `EnvelopeFrame` (and `ControlFrame`) in
 [`hew-runtime/src/envelope.rs`][envelope-rs] starting near line 30. The
-CDDL integer keys are mirrored as field-doc comments on each struct field.
+CDDL integer keys are mirrored as field-doc comments on each Rust mirror field.
 
 ### The message body — CDDL-described tagged CBOR
 
@@ -69,7 +69,7 @@ whole internode wire — frame and body — CDDL-described.
 
 The body shapes (the `wire-body` rule and its parts):
 
-- A **`#[wire]` struct** (or any cross-node `Serializable` record) encodes
+- A **`#[wire]` type** (or any cross-node `Serializable` record) encodes
   as a CBOR **map keyed by the unsigned `@N` field tags** — `cbor_field_key`
   uses the explicit `@N` from the wire layout, or a 1-based positional
   fallback for layout-less records. Keys are emitted in canonical
@@ -85,18 +85,18 @@ The body shapes (the `wire-body` rule and its parts):
 - The **leaf floor** is scalars (CBOR int / uint / bool / float), `string`
   (CBOR text), `bytes` (CBOR byte string), `Option<T>` (`null` for `None`,
   the inner encoding for `Some`), `Vec<T>` (a CBOR array), and nested
-  `#[wire]` structs/enums (nested maps / unit-tag / map-of-one). A value
+  `#[wire]` types/enums (nested maps / unit-tag / map-of-one). A value
   type outside this floor fails closed at codegen ("unsupported value type …
   outside the supported wire-body floor") and never reaches the wire.
 
 ### Tag-stability asymmetry — explicit `@N` vs ordinal
 
-Struct fields and enum variants carry their wire tag differently, and this
+Type fields and enum variants carry their wire tag differently, and this
 creates an **important stability asymmetry**:
 
-- **`#[wire]` struct fields** use the **explicit `@N` tag** from the wire
+- **`#[wire]` type fields** use the **explicit `@N` tag** from the wire
   layout (`cbor_field_key` picks the declared tag, not the field's
-  declaration position). Reordering struct fields in source is
+  declaration position). Reordering type fields in source is
   **wire-safe**: the tag is the `@N` annotation, not the position.
 - **`#[wire]` enum variants** use the **declaration ordinal** as their tag
   (`cbor_variant_tag` falls back to `variant_idx` when no explicit tag is
@@ -104,7 +104,7 @@ creates an **important stability asymmetry**:
   and is a **breaking wire change**: a sender's `Ping` at ordinal 0 is
   no longer the receiver's `Ping` at ordinal 1.
 
-In short: reordering `#[wire]` struct fields is safe; reordering `#[wire]`
+In short: reordering `#[wire]` type fields is safe; reordering `#[wire]`
 enum variants is a breaking change. If you need reorder-stable enum variants,
 assign an explicit tag annotation — the `@N` mechanism is available on enum
 variants for exactly this reason.
@@ -172,7 +172,7 @@ The round-trip and version-rejection tests live in
 ### Required posture for runtime code touching the wire
 
 - Add new envelope fields **first to the CDDL**, then to `EnvelopeFrame`.
-  The CDDL is the doc-of-truth; the Rust struct conforms to it, not the
+  The CDDL is the doc-of-truth; the Rust mirror conforms to it, not the
   other way around. The same rule holds for the body: a change to the
   per-type body shape the codegen serializer emits must be reflected in
   `wire-body.cddl`, and the conformance test keeps the two from drifting.

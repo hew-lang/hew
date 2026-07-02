@@ -2163,7 +2163,7 @@ fn parse_gen_without_block_emits_diagnostic() {
 fn parse_wire_struct_preserves_since_modifier() {
     let source = "\
 #[wire]
-struct Msg {
+type Msg {
     added: String @2 optional since 2 json(\"added\"),
 }
 ";
@@ -2182,12 +2182,36 @@ struct Msg {
 }
 
 #[test]
+fn wire_attr_on_type_declaration_produces_wire_metadata() {
+    let source = "\
+#[wire]
+type Point {
+    x: i64;
+    y: i64;
+}
+";
+    let result = parse(source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    let Item::TypeDecl(decl) = &result.program.items[0].0 else {
+        panic!("expected type declaration");
+    };
+    assert_eq!(decl.kind, TypeDeclKind::Struct);
+    let wire = decl.wire.as_ref().expect("expected wire metadata");
+    assert_eq!(wire.field_meta.len(), 2);
+    assert_eq!(wire.field_meta[0].field_name, "x");
+    assert_eq!(wire.field_meta[0].field_number, 1);
+    assert_eq!(wire.field_meta[1].field_name, "y");
+    assert_eq!(wire.field_meta[1].field_number, 2);
+}
+
+#[test]
 fn wire_struct_field_metadata_preserves_number_and_outer_naming_cases() {
     let source = "\
 #[wire]
 #[json(\"camelCase\")]
 #[yaml(\"snake_case\")]
-struct Msg {
+type Msg {
     added: String @2 optional yaml(\"added_name\"),
 }
 ";
@@ -2307,7 +2331,7 @@ enum Op {
 }
 
 /// `#[wire]` is exclusive with `#[resource]` / `#[linear]` on enums (same
-/// rule as `#[wire] struct`).
+/// rule as `#[wire] type`).
 #[test]
 fn parse_wire_enum_rejects_resource_marker_combo() {
     let source = "\
@@ -2459,7 +2483,7 @@ enum Mixed {
 fn wire_struct_field_metadata_preserves_since_modifier() {
     let source = "\
 #[wire]
-struct Msg {
+type Msg {
     added: String @2 repeated since 3 yaml(\"added\");
 }
 ";
@@ -2482,7 +2506,7 @@ fn wire_struct_field_metadata_preserves_explicit_number_and_naming_cases_kebab()
 #[json(\"camelCase\")]
 #[yaml(\"kebab-case\")]
 #[wire]
-struct Msg {
+type Msg {
     added: String @4 repeated json(\"added_name\");
 }
 ";
@@ -2506,7 +2530,7 @@ struct Msg {
 fn wire_struct_since_invalid_version_is_rejected() {
     let source = "\
 #[wire]
-struct Msg {
+type Msg {
     added: String @2 since 4294967296;
 }
 ";
@@ -3201,12 +3225,12 @@ fn unknown_type_marker_emits_diagnostic() {
 
 #[test]
 fn wire_and_resource_combined_emits_conflict_diagnostic() {
-    // `#[wire] struct` + `#[resource]` is disallowed: wire types are
+    // `#[wire] type` + `#[resource]` is disallowed: wire types are
     // traffic-shape declarations; ownership discipline is separate.
     let source = r"
             #[wire]
             #[resource]
-            struct Bad { x: int @1 }
+            type Bad { x: int @1 }
         ";
     let result = parse(source);
     assert!(
@@ -4086,6 +4110,65 @@ fn format_let_record_shorthand_round_trips_without_type_name() {
 // Proving gate: bare `wire` keyword is rejected as a declaration form.
 // Item::Wire no longer exists; the identifier "wire" produces a helpful error.
 #[test]
+fn bare_struct_rejected_with_type_hint() {
+    let result = parse("struct Point { x: i64 }");
+    assert!(
+        !result.errors.is_empty(),
+        "expected parse error for bare `struct`"
+    );
+    assert_eq!(result.errors[0].message, "unexpected 'struct'");
+    assert_eq!(
+        result.errors[0].hint.as_deref(),
+        Some("write `type Name { ... }`")
+    );
+}
+
+#[test]
+fn wire_struct_rejected_with_wire_type_hint() {
+    let result = parse("#[wire]\nstruct Point { x: i64 @1 }");
+    assert!(
+        !result.errors.is_empty(),
+        "expected parse error for `#[wire] struct`"
+    );
+    assert_eq!(result.errors[0].message, "unexpected 'struct'");
+    assert_eq!(
+        result.errors[0].hint.as_deref(),
+        Some("write `#[wire] type Name { ... }`")
+    );
+}
+
+// Proving gate: the post-visibility-modifier path gives the same targeted
+// struct->type redirect as the bare-item path, not the generic "invalid item
+// after visibility modifier" fallback.
+#[test]
+fn pub_struct_rejected_with_type_hint() {
+    let result = parse("pub struct Point { x: i64 }");
+    assert!(
+        !result.errors.is_empty(),
+        "expected parse error for `pub struct`"
+    );
+    assert_eq!(result.errors[0].message, "unexpected 'struct'");
+    assert_eq!(
+        result.errors[0].hint.as_deref(),
+        Some("write `type Name { ... }`")
+    );
+}
+
+#[test]
+fn wire_pub_struct_rejected_with_wire_type_hint() {
+    let result = parse("#[wire]\npub struct Point { x: i64 @1 }");
+    assert!(
+        !result.errors.is_empty(),
+        "expected parse error for `#[wire] pub struct`"
+    );
+    assert_eq!(result.errors[0].message, "unexpected 'struct'");
+    assert_eq!(
+        result.errors[0].hint.as_deref(),
+        Some("write `#[wire] type Name { ... }`")
+    );
+}
+
+#[test]
 fn bare_wire_keyword_rejected_with_hint() {
     let result = parse("wire Foo {}");
     assert!(
@@ -4128,6 +4211,11 @@ fn wire_type_keyword_form_rejected() {
         first_msg.contains("wire"),
         "first error should mention 'wire', got: {first_msg}"
     );
+    let first_hint = result.errors[0].hint.as_deref().unwrap_or_default();
+    assert!(
+        first_hint.contains("#[wire] type") && !first_hint.contains("struct"),
+        "hint should point at #[wire] type, got: {first_hint}"
+    );
 }
 
 #[test]
@@ -4141,5 +4229,10 @@ fn wire_enum_keyword_form_rejected() {
     assert!(
         first_msg.contains("wire"),
         "first error should mention 'wire', got: {first_msg}"
+    );
+    let first_hint = result.errors[0].hint.as_deref().unwrap_or_default();
+    assert!(
+        first_hint.contains("#[wire] type") && !first_hint.contains("struct"),
+        "hint should point at #[wire] type, got: {first_hint}"
     );
 }

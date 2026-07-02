@@ -2,7 +2,7 @@
 // match the target type (an array where the struct expects an object) returns
 // `Err`, never a misread or trap. Exits 42 only via the `Err` arm.
 #[wire]
-struct Point {
+type Point {
     x: i64 @1,
     y: i64 @2,
 }

@@ -3,7 +3,7 @@
 // an equal value. A wrong key name, dropped field, or mis-parse changes the exit
 // code; the success path returns 42.
 #[wire]
-struct Point {
+type Point {
     x: i64 @1,
     y: i64 @2,
 }

@@ -137,7 +137,7 @@ fn unsupported_project_subpattern_label(pattern: &Pattern) -> Option<&'static st
         Pattern::Tuple(pats) if pats.is_empty() => None,
         Pattern::Literal(lit) => Some(literal_pattern_label(lit)),
         Pattern::Constructor { .. } => Some("nested constructor"),
-        Pattern::Struct { .. } | Pattern::RecordShorthand { .. } => Some("struct destructure"),
+        Pattern::Struct { .. } | Pattern::RecordShorthand { .. } => Some("record destructure"),
         Pattern::Tuple(_) => Some("tuple destructure"),
         Pattern::Or(_, _) => Some("or-pattern"),
         Pattern::Regex { .. } => Some("regex pattern"),
@@ -781,9 +781,7 @@ impl Checker {
                         self.report_error(
                             TypeErrorKind::UndefinedType,
                             span,
-                            format!(
-                                "type `{type_name}` is not defined for struct pattern `{name}`"
-                            ),
+                            format!("type `{type_name}` is not defined for type pattern `{name}`"),
                         );
                         self.bind_struct_field_placeholders(fields, &Ty::Error, is_mutable, span);
                     }
@@ -797,9 +795,7 @@ impl Checker {
                             actual: name.clone(),
                         },
                         span,
-                        format!(
-                            "struct pattern `{name}` cannot match non-struct type `{expected}`"
-                        ),
+                        format!("type pattern `{name}` cannot match value of type `{expected}`"),
                     );
                     self.bind_struct_field_placeholders(fields, &Ty::Error, is_mutable, span);
                 }

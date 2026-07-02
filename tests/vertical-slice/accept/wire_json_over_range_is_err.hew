@@ -3,7 +3,7 @@
 // truncated or wrapped value. The CBOR decode walk's range check is the
 // fail-closed gate; the bridge surfaces its failure as `Err`. Exits 42 via Err.
 #[wire]
-struct Narrow {
+type Narrow {
     v: i8 @1,
 }
 

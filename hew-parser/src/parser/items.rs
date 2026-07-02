@@ -206,6 +206,57 @@ impl Parser<'_> {
         Some(Item::Function(f))
     }
 
+    /// Redirect a foreign-language keyword found where an item was expected
+    /// to the matching Hew construct, with an actionable hint. Shared by the
+    /// bare-item path and the post-visibility-modifier path so both give the
+    /// same targeted hint instead of a generic "expected item" error.
+    ///
+    /// Returns `true` (and has already emitted a diagnostic) when `id` is a
+    /// recognized foreign keyword; `false` when the caller should fall
+    /// through to its own generic diagnostic.
+    fn foreign_keyword_redirect(&mut self, id: &str, has_wire_attr: bool) -> bool {
+        match id {
+            "struct" => {
+                let hint = if has_wire_attr {
+                    "write `#[wire] type Name { ... }`"
+                } else {
+                    "write `type Name { ... }`"
+                };
+                self.error_with_hint(format!("unexpected '{id}'"), hint);
+                true
+            }
+            "class" | "object" => {
+                self.error_with_hint(
+                    format!("unexpected '{id}'"),
+                    "Hew uses 'actor' for stateful objects: actor Name { ... }",
+                );
+                true
+            }
+            "func" | "function" | "def" | "sub" | "proc" | "method" => {
+                self.error_with_hint(
+                    format!("unexpected '{id}'"),
+                    "Hew uses 'fn' to declare functions: fn name() { ... }",
+                );
+                true
+            }
+            "interface" | "protocol" => {
+                self.error_with_hint(
+                    format!("unexpected '{id}'"),
+                    "Hew uses 'trait' to declare interfaces: trait Name { ... }",
+                );
+                true
+            }
+            "wire" => {
+                self.error_with_hint(
+                    "unexpected 'wire'".to_string(),
+                    "use the #[wire] attribute instead: `#[wire] type Name { ... }` or `#[wire] enum Name { ... }`",
+                );
+                true
+            }
+            _ => false,
+        }
+    }
+
     #[expect(clippy::too_many_lines, reason = "parser function with many branches")]
     pub(crate) fn parse_item(&mut self) -> Option<Spanned<Item>> {
         // Collect any outer doc comments (`///`) and attributes before this item.
@@ -245,6 +296,7 @@ impl Parser<'_> {
             } else {
                 (None, None)
             };
+        let has_wire_attr = attrs.iter().any(|a| a.name == "wire");
 
         let item = match self.peek() {
             Some(Token::Import) => {
@@ -260,15 +312,6 @@ impl Parser<'_> {
                 match self.peek() {
                     Some(Token::Fn | Token::Async | Token::Gen) => {
                         self.parse_fn_with_modifiers(vis, attrs, &doc_comment)?
-                    }
-                    Some(Token::Struct) if attrs.iter().any(|a| a.name == "wire") => {
-                        let mut t = self.parse_wire_struct(&attrs, vis)?;
-                        t.doc_comment = doc_comment;
-                        Item::TypeDecl(t)
-                    }
-                    Some(Token::Struct) => {
-                        self.error("use 'type' instead of 'struct' to declare types".to_string());
-                        return None;
                     }
                     Some(Token::Indirect) => {
                         let mut t = self.parse_indirect_enum(vis)?;
@@ -293,6 +336,10 @@ impl Parser<'_> {
                     Some(Token::Type) => {
                         if self.is_type_alias_lookahead() {
                             Item::TypeAlias(self.parse_type_alias(vis, doc_comment)?)
+                        } else if has_wire_attr {
+                            let mut t = self.parse_wire_struct(&attrs, vis)?;
+                            t.doc_comment = doc_comment;
+                            Item::TypeDecl(t)
                         } else {
                             let mut t = self.parse_struct_or_enum(vis, &attrs)?;
                             t.doc_comment = doc_comment;
@@ -324,6 +371,12 @@ impl Parser<'_> {
                         Item::Const(self.parse_const_decl(vis, doc_comment)?)
                     }
                     _ => {
+                        if let Some(Token::Identifier(id)) = self.peek() {
+                            let id = *id;
+                            if self.foreign_keyword_redirect(id, has_wire_attr) {
+                                return None;
+                            }
+                        }
                         self.error(
                             "invalid item after visibility modifier (expected fn, type, trait, actor, machine, supervisor, record, enum, indirect, or const)".to_string(),
                         );
@@ -333,15 +386,6 @@ impl Parser<'_> {
             }
             Some(Token::Fn | Token::Async | Token::Gen) => {
                 self.parse_fn_with_modifiers(Visibility::Private, attrs, &doc_comment)?
-            }
-            Some(Token::Struct) if attrs.iter().any(|a| a.name == "wire") => {
-                let mut t = self.parse_wire_struct(&attrs, Visibility::Private)?;
-                t.doc_comment = doc_comment;
-                Item::TypeDecl(t)
-            }
-            Some(Token::Struct) => {
-                self.error("use 'type' instead of 'struct' to declare types".to_string());
-                return None;
             }
             Some(Token::Indirect) => {
                 let mut t = self.parse_indirect_enum(Visibility::Private)?;
@@ -366,6 +410,10 @@ impl Parser<'_> {
             Some(Token::Type) => {
                 if self.is_type_alias_lookahead() {
                     Item::TypeAlias(self.parse_type_alias(Visibility::Private, doc_comment)?)
+                } else if has_wire_attr {
+                    let mut t = self.parse_wire_struct(&attrs, Visibility::Private)?;
+                    t.doc_comment = doc_comment;
+                    Item::TypeDecl(t)
                 } else {
                     let mut t = self.parse_struct_or_enum(Visibility::Private, &attrs)?;
                     t.doc_comment = doc_comment;
@@ -414,43 +462,9 @@ impl Parser<'_> {
                 };
                 // Detect common keywords from other languages
                 if let Some(Token::Identifier(id)) = self.peek() {
-                    match *id {
-                        "struct" => {
-                            self.error_with_hint(
-                                format!("unexpected '{id}'"),
-                                "Hew uses 'type' to declare structs: type Name { ... }",
-                            );
-                            return None;
-                        }
-                        "class" | "object" => {
-                            self.error_with_hint(
-                                format!("unexpected '{id}'"),
-                                "Hew uses 'actor' for stateful objects: actor Name { ... }",
-                            );
-                            return None;
-                        }
-                        "func" | "function" | "def" | "sub" | "proc" | "method" => {
-                            self.error_with_hint(
-                                format!("unexpected '{id}'"),
-                                "Hew uses 'fn' to declare functions: fn name() { ... }",
-                            );
-                            return None;
-                        }
-                        "interface" | "protocol" => {
-                            self.error_with_hint(
-                                format!("unexpected '{id}'"),
-                                "Hew uses 'trait' to declare interfaces: trait Name { ... }",
-                            );
-                            return None;
-                        }
-                        "wire" => {
-                            self.error_with_hint(
-                                "unexpected 'wire'".to_string(),
-                                "use the #[wire] attribute instead: `#[wire] struct Name { ... }` or `#[wire] enum Name { ... }`",
-                            );
-                            return None;
-                        }
-                        _ => {}
+                    let id = *id;
+                    if self.foreign_keyword_redirect(id, has_wire_attr) {
+                        return None;
                     }
                 }
                 self.error(format!(
@@ -727,7 +741,7 @@ impl Parser<'_> {
 
         if is_opaque && (kind != TypeDeclKind::Struct || !body.is_empty()) {
             self.error(
-                "#[opaque] type must be an empty-body struct — an opaque handle \
+                "#[opaque] type must be an empty-body type — an opaque handle \
                  has no fields and is produced only via FFI [E_OPAQUE_TYPE_SHAPE]"
                     .to_string(),
             );

@@ -42,8 +42,8 @@ fn assert_wire_check_ok(current: &str, baseline: &str) -> String {
 #[test]
 fn wire_check_rejects_duplicate_field_tag_in_current() {
     let output = run_wire_check(
-        "#[wire]\nstruct Msg { id: String @1; also_id: i32 @1; }\n",
-        "#[wire]\nstruct Msg { id: String @1; }\n",
+        "#[wire]\ntype Msg { id: String @1; also_id: i32 @1; }\n",
+        "#[wire]\ntype Msg { id: String @1; }\n",
     );
 
     assert!(!output.status.success());
@@ -60,8 +60,8 @@ fn wire_check_rejects_duplicate_field_tag_in_current() {
 #[test]
 fn wire_check_rejects_duplicate_field_tag_in_baseline() {
     let output = run_wire_check(
-        "#[wire]\nstruct Msg { id: String @1; }\n",
-        "#[wire]\nstruct Msg { id: String @1; also_id: i32 @1; }\n",
+        "#[wire]\ntype Msg { id: String @1; }\n",
+        "#[wire]\ntype Msg { id: String @1; also_id: i32 @1; }\n",
     );
 
     assert!(!output.status.success());
@@ -78,8 +78,8 @@ fn wire_check_rejects_duplicate_field_tag_in_baseline() {
 #[test]
 fn wire_check_rejects_field_tag_reassigned_to_different_name() {
     let output = run_wire_check(
-        "#[wire]\nstruct Msg { label: String @1; }\n",
-        "#[wire]\nstruct Msg { id: String @1; }\n",
+        "#[wire]\ntype Msg { label: String @1; }\n",
+        "#[wire]\ntype Msg { id: String @1; }\n",
     );
 
     assert!(!output.status.success());
@@ -96,8 +96,8 @@ fn wire_check_rejects_field_tag_reassigned_to_different_name() {
 #[test]
 fn wire_check_rejects_field_type_change() {
     let output = run_wire_check(
-        "#[wire]\nstruct Msg { count: i32 @1; }\n",
-        "#[wire]\nstruct Msg { count: String @1; }\n",
+        "#[wire]\ntype Msg { count: i32 @1; }\n",
+        "#[wire]\ntype Msg { count: String @1; }\n",
     );
 
     assert!(!output.status.success());
@@ -112,8 +112,8 @@ fn wire_check_rejects_field_type_change() {
 #[test]
 fn wire_check_rejects_field_repeatedness_change() {
     let output = run_wire_check(
-        "#[wire]\nstruct Msg { tags: String @1 repeated; }\n",
-        "#[wire]\nstruct Msg { tags: String @1; }\n",
+        "#[wire]\ntype Msg { tags: String @1 repeated; }\n",
+        "#[wire]\ntype Msg { tags: String @1; }\n",
     );
 
     assert!(!output.status.success());
@@ -131,8 +131,8 @@ fn wire_check_rejects_field_repeatedness_change() {
 #[test]
 fn wire_check_warns_optional_to_required() {
     let output = run_wire_check(
-        "#[wire]\nstruct Msg { name: String @1; }\n",
-        "#[wire]\nstruct Msg { name: String @1 optional; }\n",
+        "#[wire]\ntype Msg { name: String @1; }\n",
+        "#[wire]\ntype Msg { name: String @1 optional; }\n",
     );
 
     assert!(
@@ -154,8 +154,8 @@ fn wire_check_warns_optional_to_required() {
 #[test]
 fn wire_check_warns_new_required_field_without_since() {
     let output = run_wire_check(
-        "#[wire]\nstruct Msg { id: String @1; extra: i32 @2; }\n",
-        "#[wire]\nstruct Msg { id: String @1; }\n",
+        "#[wire]\ntype Msg { id: String @1; extra: i32 @2; }\n",
+        "#[wire]\ntype Msg { id: String @1; }\n",
     );
 
     assert!(
@@ -178,8 +178,8 @@ fn wire_check_suppresses_new_required_field_warning_with_since() {
     // current: version 2 with a required field introduced at version 2
     // baseline: version 1 without that field
     let stderr = assert_wire_check_ok(
-        "#[wire(version = 2)]\nstruct Msg { id: String, extra: i32 since 2, }\n",
-        "#[wire(version = 1)]\nstruct Msg { id: String, }\n",
+        "#[wire(version = 2)]\ntype Msg { id: String, extra: i32 since 2, }\n",
+        "#[wire(version = 1)]\ntype Msg { id: String, }\n",
     );
     assert!(
         !stderr.contains("new required field"),
@@ -193,8 +193,8 @@ fn wire_check_suppresses_new_required_field_warning_with_since() {
 #[test]
 fn wire_check_warns_deprecated_field() {
     let output = run_wire_check(
-        "#[wire]\nstruct Msg { id: String @1; legacy: i32 @2 deprecated; }\n",
-        "#[wire]\nstruct Msg { id: String @1; legacy: i32 @2; }\n",
+        "#[wire]\ntype Msg { id: String @1; legacy: i32 @2 deprecated; }\n",
+        "#[wire]\ntype Msg { id: String @1; legacy: i32 @2; }\n",
     );
 
     assert!(
@@ -215,8 +215,8 @@ fn wire_check_warns_deprecated_field() {
 #[test]
 fn wire_check_rejects_removed_required_field() {
     let output = run_wire_check(
-        "#[wire]\nstruct Msg { id: String @1; }\n",
-        "#[wire]\nstruct Msg { id: String @1; count: i32 @2; }\n",
+        "#[wire]\ntype Msg { id: String @1; }\n",
+        "#[wire]\ntype Msg { id: String @1; count: i32 @2; }\n",
     );
 
     assert!(!output.status.success());
@@ -231,8 +231,8 @@ fn wire_check_rejects_removed_required_field() {
 #[test]
 fn wire_check_allows_removed_optional_field() {
     let stderr = assert_wire_check_ok(
-        "#[wire]\nstruct Msg { id: String @1; }\n",
-        "#[wire]\nstruct Msg { id: String @1; tag: String @2 optional; }\n",
+        "#[wire]\ntype Msg { id: String @1; }\n",
+        "#[wire]\ntype Msg { id: String @1; tag: String @2 optional; }\n",
     );
     assert!(
         !stderr.contains("removed"),
@@ -247,8 +247,8 @@ fn wire_check_allows_removed_optional_field() {
 #[test]
 fn wire_check_warns_version_advance() {
     let output = run_wire_check(
-        "#[wire(version = 3)]\nstruct Config { host: String, }\n",
-        "#[wire(version = 1)]\nstruct Config { host: String, }\n",
+        "#[wire(version = 3)]\ntype Config { host: String, }\n",
+        "#[wire(version = 1)]\ntype Config { host: String, }\n",
     );
 
     assert!(
@@ -270,8 +270,8 @@ fn wire_check_warns_version_advance() {
 #[test]
 fn wire_check_rejects_min_version_higher_than_baseline() {
     let output = run_wire_check(
-        "#[wire(version = 2, min_version = 3)]\nstruct Config { host: String, }\n",
-        "#[wire(version = 1)]\nstruct Config { host: String, }\n",
+        "#[wire(version = 2, min_version = 3)]\ntype Config { host: String, }\n",
+        "#[wire(version = 1)]\ntype Config { host: String, }\n",
     );
 
     assert!(!output.status.success());
@@ -292,7 +292,7 @@ fn wire_check_rejects_min_version_higher_than_baseline() {
 fn wire_check_rejects_struct_to_enum_kind_change() {
     let output = run_wire_check(
         "#[wire]\nenum Msg { Ok; Err; }\n",
-        "#[wire]\nstruct Msg { id: String @1; }\n",
+        "#[wire]\ntype Msg { id: String @1; }\n",
     );
 
     assert!(!output.status.success());
@@ -307,8 +307,8 @@ fn wire_check_rejects_struct_to_enum_kind_change() {
 #[test]
 fn wire_check_rejects_duplicate_declaration_in_current() {
     let output = run_wire_check(
-        "#[wire]\nstruct Msg { id: String @1; }\n#[wire]\nstruct Msg { id: String @1; }\n",
-        "#[wire]\nstruct Msg { id: String @1; }\n",
+        "#[wire]\ntype Msg { id: String @1; }\n#[wire]\ntype Msg { id: String @1; }\n",
+        "#[wire]\ntype Msg { id: String @1; }\n",
     );
 
     assert!(!output.status.success());
@@ -326,7 +326,7 @@ fn wire_check_rejects_duplicate_declaration_in_current() {
 fn wire_check_rejects_removed_wire_struct_with_required_fields() {
     let output = run_wire_check(
         "",
-        "#[wire]\nstruct Request { id: String @1; payload: String @2; }\n",
+        "#[wire]\ntype Request { id: String @1; payload: String @2; }\n",
     );
 
     assert!(!output.status.success());
@@ -440,7 +440,7 @@ fn wire_check_rejects_wire_enum_struct_variant_field_type_change() {
 #[test]
 fn wire_check_warns_new_wire_struct_with_required_fields() {
     let output = run_wire_check(
-        "#[wire]\nstruct NewMessage { id: String @1; payload: String @2; }\n",
+        "#[wire]\ntype NewMessage { id: String @1; payload: String @2; }\n",
         "",
     );
 
@@ -460,7 +460,7 @@ fn wire_check_warns_new_wire_struct_with_required_fields() {
 #[test]
 fn wire_check_warns_new_wire_struct_with_deprecated_field() {
     let output = run_wire_check(
-        "#[wire]\nstruct NewMessage { id: String @1; legacy: i32 @2 deprecated; }\n",
+        "#[wire]\ntype NewMessage { id: String @1; legacy: i32 @2 deprecated; }\n",
         "",
     );
 

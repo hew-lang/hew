@@ -2,7 +2,7 @@
 // Build a Packet, encode it to bytes, decode the bytes back, and exit with the
 // recovered field value (42), so a garbled round-trip changes the exit code.
 #[wire]
-struct Packet {
+type Packet {
     id: i64 @1,
 }
 

@@ -142,9 +142,9 @@ const SLOPE_TOLERANCE: usize = 5;
 fn round_trip_source(frames: usize) -> String {
     format!(
         "#[wire]\n\
-         struct Inner {{ name: string @1; }}\n\
+         type Inner {{ name: string @1; }}\n\
          #[wire]\n\
-         struct Packet {{ label: string @1; tags: Vec<string> @2; inner: Inner @3; seq: i64 @4; }}\n\
+         type Packet {{ label: string @1; tags: Vec<string> @2; inner: Inner @3; seq: i64 @4; }}\n\
          \n\
          fn main() -> i64 {{\n\
          \x20   var total: i64 = 0;\n\
@@ -184,9 +184,9 @@ fn round_trip_source(frames: usize) -> String {
 fn vec_struct_round_trip_source(frames: usize) -> String {
     format!(
         "#[wire]\n\
-         struct Inner {{ v: i64 @1; }}\n\
+         type Inner {{ v: i64 @1; }}\n\
          #[wire]\n\
-         struct Container {{ items: Vec<Inner> @1; seq: i64 @2; }}\n\
+         type Container {{ items: Vec<Inner> @1; seq: i64 @2; }}\n\
          \n\
          fn main() -> i64 {{\n\
          \x20   var total: i64 = 0;\n\
@@ -216,9 +216,9 @@ fn vec_struct_round_trip_source(frames: usize) -> String {
 /// first) but keeps the decoded binding live so the codec path is fully
 /// emitted.
 const DECODE_FAILURE_SOURCE: &str = "#[wire]\n\
-     struct TwoStr { a: string @1; b: string @2; }\n\
+     type TwoStr { a: string @1; b: string @2; }\n\
      #[wire]\n\
-     struct Pair { a: string @1; b: i64 @2; }\n\
+     type Pair { a: string @1; b: i64 @2; }\n\
      \n\
      fn main() -> i64 {\n\
      \x20   let t = TwoStr { a: \"owned-field-a-value\", b: \"owned-field-b-value\" };\n\
@@ -243,7 +243,7 @@ const DECODE_FAILURE_SOURCE: &str = "#[wire]\n\
 fn enum_owned_payload_round_trip_source(frames: usize) -> String {
     format!(
         "#[wire]\n\
-         struct Inner {{ name: string @1; }}\n\
+         type Inner {{ name: string @1; }}\n\
          #[wire]\n\
          enum Payload {{ Empty; Full(string, Vec<string>, Inner); }}\n\
          \n\
@@ -274,7 +274,7 @@ fn enum_owned_payload_round_trip_source(frames: usize) -> String {
 /// (drop the already-decoded owned string, then free the shell, then return
 /// null → trap). Proves the partial owned field is freed exactly once.
 const ENUM_DECODE_FAILURE_SOURCE: &str = "#[wire]\n\
-     struct Inner { name: string @1; }\n\
+     type Inner { name: string @1; }\n\
      #[wire]\n\
      enum PayloadGood { Empty; Full(string, Vec<string>, Inner); }\n\
      #[wire]\n\

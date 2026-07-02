@@ -2,7 +2,7 @@
 // CBOR array, preserving order and every element. The decoded elements sum to
 // 42, so a dropped or reordered element changes the exit code.
 #[wire]
-struct ListHolder {
+type ListHolder {
     items: Vec<i64> @1,
 }
 

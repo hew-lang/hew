@@ -355,7 +355,7 @@ impl GeneratorSpec {
 impl WireSpec {
     fn to_source(&self, idx: usize) -> String {
         let count = usize::from(self.fields % 3) + 1;
-        let mut out = format!("#[wire]\nstruct FuzzWire{idx} {{\n");
+        let mut out = format!("#[wire]\ntype FuzzWire{idx} {{\n");
         for i in 0..count {
             let ty = match i % 5 {
                 0 => "i64",

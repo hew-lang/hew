@@ -1863,8 +1863,8 @@ fn fmt_assoc_binding_in_where_trait_bound_roundtrip() {
 
 #[test]
 fn fmt_wire_declarations_roundtrip() {
-    // Canonical wire struct form (attribute-based).
-    exact_roundtrip("#[wire]\nstruct Message {\n    id: i32 @1,\n}\n");
+    // Canonical wire type form (attribute-based).
+    exact_roundtrip("#[wire]\ntype Message {\n    id: i32 @1,\n}\n");
 }
 
 #[test]

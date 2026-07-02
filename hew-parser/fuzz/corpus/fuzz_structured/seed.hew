@@ -1,5 +1,5 @@
 #[wire]
-struct SeedWire {
+type SeedWire {
     id: i64 @1,
     label: string @2
 }

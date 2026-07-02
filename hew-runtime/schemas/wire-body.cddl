@@ -51,7 +51,7 @@ wire-body = wire-struct-body / wire-enum-body
 
 wire-struct-body = { * uint => wire-value }
 
-; Worked example: `#[wire] struct WirePoint { x: i64 @1, y: i64 @2 }`.
+; Worked example: `#[wire] type WirePoint { x: i64 @1, y: i64 @2 }`.
 ; The conformance test asserts the emitted bytes for this type validate against
 ; this exact rule.
 wire-point-body = {

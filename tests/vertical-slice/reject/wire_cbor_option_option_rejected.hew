@@ -3,7 +3,7 @@
 // null, so the two are indistinguishable on decode. The codec fails closed at
 // codegen-front validation rather than silently collapsing them.
 #[wire]
-struct Nested {
+type Nested {
     x: Option<Option<i64>> @1,
 }
 

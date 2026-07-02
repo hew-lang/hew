@@ -25,7 +25,7 @@ enum Colour {
 
 // === Wire Types ===
 #[wire]
-struct Message {
+type Message {
     data: i32 @1,
     text: string @2,
 }

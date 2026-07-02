@@ -72,7 +72,7 @@ enum KvResp {
 // request (WireCmd) and the reply (WireResult) are #[wire] types, so the
 // explicit-@N body is proven crossing the wire in BOTH directions.
 #[wire]
-struct WirePoint {
+type WirePoint {
     x: i64 @1,
     y: i64 @2,
 }
@@ -89,7 +89,7 @@ enum WireCmd {
 // WireResult is the #[wire] struct reply: `tag` is which variant the server saw
 // (0 = Ping, 1 = Move); `sum` is x + y for Move, or 0 for Ping.
 #[wire]
-struct WireResult {
+type WireResult {
     tag: i64 @1,
     sum: i64 @2,
 }

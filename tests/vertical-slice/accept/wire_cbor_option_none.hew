@@ -3,7 +3,7 @@
 // `None` arm returns 42, so a round-trip that mis-decodes the absent value
 // changes the exit code.
 #[wire]
-struct Holder {
+type Holder {
     maybe: Option<i64> @1,
 }
 

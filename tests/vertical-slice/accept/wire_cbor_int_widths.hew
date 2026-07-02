@@ -4,7 +4,7 @@
 // cannot construct them). A mismatch returns the field's 1-based index so a
 // regression points at the exact width.
 #[wire]
-struct Ints {
+type Ints {
     a: i8 @1,
     b: i16 @2,
     c: i32 @3,

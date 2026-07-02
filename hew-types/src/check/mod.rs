@@ -128,8 +128,7 @@ fn value_type_kind_label(kind: TypeDefKind) -> &'static str {
     match kind {
         TypeDefKind::Enum => "enum",
         TypeDefKind::Record => "record",
-        TypeDefKind::Struct => "struct",
-        TypeDefKind::Actor | TypeDefKind::Machine => "type",
+        TypeDefKind::Struct | TypeDefKind::Actor | TypeDefKind::Machine => "type",
     }
 }
 

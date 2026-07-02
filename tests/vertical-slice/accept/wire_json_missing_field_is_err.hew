@@ -2,7 +2,7 @@
 // (non-optional) field returns `Err`, never a fabricated zero value. Exits 42
 // via the `Err` arm.
 #[wire]
-struct Point {
+type Point {
     x: i64 @1,
     y: i64 @2,
 }

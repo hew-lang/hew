@@ -5,7 +5,7 @@
 // an explicit tag (@1, @2, ...) so the binary encoding stays compatible as
 // the schema evolves. Optional fields may be added or omitted across versions.
 #[wire]
-struct UserMessage {
+type UserMessage {
     name: string @1,
     age: i32 @2,
     nickname: string @3 optional,

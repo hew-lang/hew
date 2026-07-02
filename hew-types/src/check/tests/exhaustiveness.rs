@@ -1050,7 +1050,7 @@ fn typecheck_int_scrutinee_struct_pattern_errors_without_binding_cascade() {
     assert_eq!(
         errors.len(),
         1,
-        "expected only the struct-pattern mismatch, got: {errors:?}"
+        "expected only the type-pattern mismatch, got: {errors:?}"
     );
     assert!(
         errors.iter().any(|e| matches!(
@@ -1058,13 +1058,13 @@ fn typecheck_int_scrutinee_struct_pattern_errors_without_binding_cascade() {
             TypeErrorKind::Mismatch { expected, actual }
                 if expected == "i64" && actual == "Point"
         )),
-        "expected struct-pattern mismatch on i64 scrutinee, got: {errors:?}"
+        "expected type-pattern mismatch on i64 scrutinee, got: {errors:?}"
     );
     assert!(
         errors.iter().any(|e| e
             .message
-            .contains("struct pattern `Point` cannot match non-struct type `i64`")),
-        "expected fail-closed struct-pattern diagnostic, got: {errors:?}"
+            .contains("type pattern `Point` cannot match value of type `i64`")),
+        "expected fail-closed type-pattern diagnostic, got: {errors:?}"
     );
     assert!(
         errors

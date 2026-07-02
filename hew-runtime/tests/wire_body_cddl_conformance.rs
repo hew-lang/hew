@@ -79,7 +79,7 @@ fn validate_against_rule(rule: &str, bytes: &[u8]) -> Result<(), String> {
     cddl::validate_cbor_from_slice(&schema, bytes, None).map_err(|e| format!("{e:?}"))
 }
 
-/// `#[wire] struct WirePoint { x: i64 @1, y: i64 @2 }` body, encoded exactly as
+/// `#[wire] type WirePoint { x: i64 @1, y: i64 @2 }` body, encoded exactly as
 /// `emit_ser_value_cbor` would: `begin_map`, key 1 → i64, key 2 → i64, `end_map`.
 #[test]
 fn wire_struct_body_conforms_to_cddl() {
@@ -164,7 +164,7 @@ fn wire_enum_payload_body_conforms_to_cddl() {
         .expect("Move payload body must validate against wire-body");
 }
 
-/// A `#[wire] struct WireGreeting { name: string @1 }` body exercises the
+/// A `#[wire] type WireGreeting { name: string @1 }` body exercises the
 /// text-leaf rule (`hew_cbor_ser_string`).
 #[test]
 fn wire_struct_string_field_conforms_to_cddl() {

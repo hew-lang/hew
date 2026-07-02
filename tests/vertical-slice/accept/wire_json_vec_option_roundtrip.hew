@@ -2,7 +2,7 @@
 // serializes as a JSON array; a `Some(x)` as the value, `None` as null. The
 // recovered vector elements (10 + 20 + 12 = 42) select the exit code.
 #[wire]
-struct Bag {
+type Bag {
     items: Vec<i64> @1,
     label: Option<string> @2,
 }

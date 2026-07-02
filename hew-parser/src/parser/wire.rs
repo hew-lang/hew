@@ -1,4 +1,4 @@
-//! Wire (`@wire`) struct and enum parsing, plus the wire-field modifier helpers.
+//! Wire (`@wire`) type and enum parsing, plus the wire-field modifier helpers.
 
 #[allow(
     clippy::wildcard_imports,
@@ -181,7 +181,7 @@ impl Parser<'_> {
         }
     }
 
-    /// Parse `#[wire] struct Name { field: Type, ... }` into a `TypeDecl` with wire metadata.
+    /// Parse `#[wire] type Name { field: Type, ... }` into a `TypeDecl` with wire metadata.
     #[expect(
         clippy::too_many_lines,
         reason = "expression parsing handles all expression types"
@@ -209,7 +209,7 @@ impl Parser<'_> {
                 );
             }
         }
-        self.expect(&Token::Struct)?;
+        self.expect(&Token::Type)?;
         let name = self.expect_ident()?;
         self.expect(&Token::LeftBrace)?;
 
@@ -383,7 +383,7 @@ impl Parser<'_> {
     /// helper (which handles unit / tuple / struct variant payloads, type
     /// parameters, and where clauses).  This function attaches the wire
     /// metadata to the resulting `TypeDecl` and validates the marker-conflict
-    /// rules that also apply to `#[wire] struct`.
+    /// rules that also apply to `#[wire] type`.
     pub(crate) fn parse_wire_enum(
         &mut self,
         attrs: &[Attribute],

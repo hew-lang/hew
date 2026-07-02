@@ -2,12 +2,12 @@
 // codec — the outer codec recurses into the inner struct's codec, encoding it
 // as a nested CBOR map. The recovered fields sum to 42.
 #[wire]
-struct Inner {
+type Inner {
     v: i64 @1,
 }
 
 #[wire]
-struct Outer {
+type Outer {
     inner: Inner @1,
     tag: i64 @2,
 }

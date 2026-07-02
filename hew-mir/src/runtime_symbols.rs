@@ -642,149 +642,611 @@ pub fn known_runtime_symbols() -> &'static [&'static str] {
     MIR_EMITTER_RUNTIME_SYMBOLS
 }
 
-/// W5.011 P3 — `true` when a runtime-ABI string call hands the caller a
-/// **fresh, solely-owned `string`** that must be balanced by exactly one
-/// `hew_string_drop`.
-///
-/// Two ownership shapes qualify, and both place an identical single-drop
-/// obligation on the caller (verified against `hew-runtime/src/string.rs` and
-/// `vec.rs`):
-///
-/// - **Fresh allocation** (`hew_string_concat`, `…_to_uppercase`,
-///   `hew_int_to_string`, …): the result is a brand-new `malloc_cstring` /
-///   `alloc_cstring_data` buffer at refcount 1, documented "released via
-///   `hew_string_drop`".
-/// - **Refcounted retain** (`hew_string_clone`, `hew_vec_get_str` →
-///   `retain_string_element` → `hew_string_clone`): the result aliases an
-///   existing buffer with its refcount bumped by one. `hew_string_drop`
-///   decrements; the buffer frees only at refcount zero. The caller still owes
-///   exactly one drop to balance the `+1`.
-///
-/// This is the **producer** half of the borrowing-read-aware owned-string
-/// cleanup. A binding whose backing local traces (through `Move`) to one of
-/// these dests is a proven sole owner that may earn a scope-exit
-/// `DropKind::CowHeap`, provided every use of it is a verified borrow
-/// ([`is_borrowing_string_use`]). Symbols absent here are treated as
-/// non-producers — the binding is not admitted, so the result leaks rather
-/// than risk a double-free (fail-closed).
-///
-/// The match is exhaustive-by-listing with a `false` default: a new string
-/// producer must be classified here explicitly (and verified to allocate or
-/// retain, never to alias an input without a refcount bump) before its result
-/// can be admitted to drop.
-#[must_use]
-pub fn is_fresh_owned_string_producer(symbol: &str) -> bool {
-    matches!(
-        symbol,
-        // --- Fresh-allocation producers (rc == 1, released via hew_string_drop) ---
-        "hew_string_concat"
-            | "hew_string_to_lowercase"
-            | "hew_string_to_uppercase"
-            | "hew_string_trim"
-            | "hew_string_replace"
-            | "hew_string_slice"
-            | "hew_string_slice_codepoints"
-            | "hew_string_repeat"
-            | "hew_string_from_char"
-            | "hew_char_to_string"
-            | "hew_int_to_string"
-            | "hew_i64_to_string"
-            | "hew_uint_to_string"
-            | "hew_u64_to_string"
-            | "hew_float_to_string"
-            | "hew_bool_to_string"
-            // --- f-string Display-dispatch CATALOG producers ---
-            // An f-string interpolant (`f"{n}"`) lowers to the catalog symbol
-            // `to_string_<ty>` (`hew-hir` `lower_display_dispatch`), which codegen
-            // maps to the `hew_<ty>_to_string` runtime fn above — a fresh
-            // `malloc_cstring` at rc==1. The drop-derivation scans the MIR stream,
-            // which carries the catalog presentation, so the producer must be
-            // recognised under BOTH names or the interpolation result temp (and a
-            // `let s = f"{n}"` binding) is never admitted to a scope-exit
-            // `hew_string_drop` and leaks (one buffer per interpolated value).
-            | "to_string_i32"
-            | "to_string_i64"
-            | "to_string_u8"
-            | "to_string_u16"
-            | "to_string_u32"
-            | "to_string_u64"
-            | "to_string_f64"
-            | "to_string_bool"
-            | "to_string_char"
-            // --- Refcounted-retain producers (+1 owner aliasing a live buffer) ---
-            | "hew_string_clone"
-            | "hew_vec_get_str"
-    )
+/// Candidate-scoped receiver-borrow scans that may use a callee's arg[0]
+/// exemption.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReceiverScanSet {
+    vec: bool,
+    collection: bool,
+    bytes: bool,
 }
 
-/// W5.011 P3 — `true` when passing an owned `string` as an argument to this
-/// runtime-ABI symbol is a **borrowing read**: the callee inspects or copies
-/// the bytes but does NOT take ownership, so the caller retains its single
-/// `hew_string_drop` obligation.
+impl ReceiverScanSet {
+    /// Owned-Vec local collection scans.
+    pub const VEC: Self = Self::new(true, false, false);
+    /// HashMap/HashSet/string/bytes collection-handle scans.
+    pub const COLLECTION: Self = Self::new(false, true, false);
+    /// Bytes triple sole-owner scans.
+    pub const BYTES: Self = Self::new(false, false, true);
+    /// The polymorphic `hew_vec_len` receiver is observed by Vec and bytes scans.
+    pub const VEC_BYTES: Self = Self::new(true, false, true);
+
+    #[must_use]
+    pub const fn new(vec: bool, collection: bool, bytes: bool) -> Self {
+        Self {
+            vec,
+            collection,
+            bytes,
+        }
+    }
+
+    #[must_use]
+    pub const fn contains_vec(self) -> bool {
+        self.vec
+    }
+
+    #[must_use]
+    pub const fn contains_collection(self) -> bool {
+        self.collection
+    }
+
+    #[must_use]
+    pub const fn contains_bytes(self) -> bool {
+        self.bytes
+    }
+}
+
+/// Ownership contract for the receiver and tail operands of a runtime callee.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReceiverOwnership {
+    /// arg[0] is borrowed in place; arg[1..] still escape.
+    BorrowsReceiver { scans: ReceiverScanSet },
+    /// Owned-Vec element stores copy in the element. Collection-local scans
+    /// exempt every operand; composite binder scans exempt only arg[0].
+    VecCopyInElementStore,
+    /// Bytes append borrows every unpacked bytes operand.
+    BytesAllArgsBorrow,
+    /// Every operand escapes.
+    Escapes,
+}
+
+/// Ownership contract for string operands.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StringArgsOwnership {
+    /// String operands are read or copied; caller keeps the drop obligation.
+    BorrowingUse,
+    /// Output sinks read the string operand without retaining it.
+    PrintSink,
+    /// String operands escape.
+    Escaping,
+}
+
+/// Ownership contract for a callee result.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResultOwnership {
+    /// Fresh or refcount-retained string; caller owes one `hew_string_drop`.
+    FreshOwnedString,
+    /// Result borrows storage owned by arg[0].
+    InteriorAliasOfReceiver,
+    /// No drop obligation is tracked by this contract.
+    Untracked,
+}
+
+/// One typed ownership contract per compiler-known callee identity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CalleeOwnershipContract {
+    pub receiver: ReceiverOwnership,
+    pub string_args: StringArgsOwnership,
+    pub result: ResultOwnership,
+}
+
+impl CalleeOwnershipContract {
+    pub const FAIL_CLOSED: Self = Self {
+        receiver: ReceiverOwnership::Escapes,
+        string_args: StringArgsOwnership::Escaping,
+        result: ResultOwnership::Untracked,
+    };
+
+    #[must_use]
+    pub const fn new(
+        receiver: ReceiverOwnership,
+        string_args: StringArgsOwnership,
+        result: ResultOwnership,
+    ) -> Self {
+        Self {
+            receiver,
+            string_args,
+            result,
+        }
+    }
+
+    #[must_use]
+    pub const fn borrows_vec_receiver(self) -> bool {
+        match self.receiver {
+            ReceiverOwnership::BorrowsReceiver { scans } => scans.contains_vec(),
+            ReceiverOwnership::VecCopyInElementStore => true,
+            ReceiverOwnership::BytesAllArgsBorrow | ReceiverOwnership::Escapes => false,
+        }
+    }
+
+    #[must_use]
+    pub const fn borrows_collection_receiver(self) -> bool {
+        match self.receiver {
+            ReceiverOwnership::BorrowsReceiver { scans } => scans.contains_collection(),
+            ReceiverOwnership::VecCopyInElementStore
+            | ReceiverOwnership::BytesAllArgsBorrow
+            | ReceiverOwnership::Escapes => false,
+        }
+    }
+
+    #[must_use]
+    pub const fn borrows_collection_binder_receiver(self) -> bool {
+        self.borrows_vec_receiver() || self.borrows_collection_receiver()
+    }
+
+    #[must_use]
+    pub const fn borrows_bytes_receiver(self) -> bool {
+        match self.receiver {
+            ReceiverOwnership::BorrowsReceiver { scans } => scans.contains_bytes(),
+            ReceiverOwnership::VecCopyInElementStore
+            | ReceiverOwnership::BytesAllArgsBorrow
+            | ReceiverOwnership::Escapes => false,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_vec_copy_in_element_store(self) -> bool {
+        matches!(self.receiver, ReceiverOwnership::VecCopyInElementStore)
+    }
+
+    #[must_use]
+    pub const fn borrows_all_bytes_args(self) -> bool {
+        matches!(self.receiver, ReceiverOwnership::BytesAllArgsBorrow)
+    }
+
+    #[must_use]
+    pub const fn borrows_string_use(self) -> bool {
+        matches!(self.string_args, StringArgsOwnership::BorrowingUse)
+    }
+
+    #[must_use]
+    pub const fn borrows_string_call_args(self) -> bool {
+        matches!(
+            self.string_args,
+            StringArgsOwnership::BorrowingUse | StringArgsOwnership::PrintSink
+        )
+    }
+
+    #[must_use]
+    pub const fn produces_fresh_owned_string(self) -> bool {
+        matches!(self.result, ResultOwnership::FreshOwnedString)
+    }
+
+    #[must_use]
+    pub const fn returns_receiver_interior_alias(self) -> bool {
+        matches!(self.result, ResultOwnership::InteriorAliasOfReceiver)
+    }
+}
+
+impl Default for CalleeOwnershipContract {
+    fn default() -> Self {
+        Self::FAIL_CLOSED
+    }
+}
+
+/// Return the ownership contract for a runtime callee spelling.
 ///
-/// This is the **use** half of the borrowing-read-aware cleanup. A fresh-owned
-/// string binding ([`is_fresh_owned_string_producer`]) is admitted to a
-/// scope-exit drop only when EVERY use of it is a verified borrow; any use that
-/// is not on this list (a container-insert move such as
-/// `hew_hashmap_insert_layout`, a user/closure/trait call, an unrecognised
-/// runtime symbol) is treated as an ownership-transferring escape and the
-/// binding is excluded (leak, never double-free).
-///
-/// Every symbol here was verified read-only / copy-in against
-/// `hew-runtime/src/string.rs` and `vec.rs`:
-/// - the scalar/`Vec`/`bytes`-returning inspectors (`hew_string_length`,
-///   `…_contains`, `…_find`, `…_to_bytes`, `…_split`, …) only read the input;
-/// - the `string`-returning transforms (`hew_string_concat`, `…_to_uppercase`,
-///   `hew_string_clone`, …) copy / refcount-bump the input and leave the
-///   argument's ownership with the caller;
-/// - `hew_vec_push_str` stores an independent `copy_string_element_in` copy, so
-///   the pushed argument is borrowed (the caller still owns and drops it).
-///
-/// Container-move sinks (`hew_hashmap_insert_layout`, `hew_hashset_insert*`)
-/// are deliberately ABSENT: they transfer ownership of the string into the
-/// container, so the caller must NOT also drop it.
+/// Unknown callees are explicit fail-closed contracts: operands escape and the
+/// result carries no tracked drop obligation.
+#[expect(
+    clippy::too_many_lines,
+    reason = "single flat positive-membership symbol table; one authority, never split"
+)]
 #[must_use]
-pub fn is_borrowing_string_use(symbol: &str) -> bool {
-    matches!(
-        symbol,
-        // --- Scalar / bytes / Vec inspectors (read-only, scalar or fresh-container
-        //     return; the string argument is never retained) ---
-        "hew_string_length"
-            | "hew_string_char_count"
-            | "hew_string_char_at"
-            | "hew_string_char_at_utf8"
-            | "hew_string_index"
-            | "hew_string_starts_with"
-            | "hew_string_ends_with"
-            | "hew_string_contains"
-            | "hew_string_is_empty"
-            | "hew_string_is_digit"
-            | "hew_string_is_alpha"
-            | "hew_string_is_alphanumeric"
-            | "hew_string_find"
-            | "hew_string_to_bytes"
-            | "hew_string_split"
-            | "hew_string_lines"
-            | "hew_string_chars"
-            // --- string-returning transforms: copy / refcount-bump the input,
-            //     argument ownership stays with the caller ---
-            | "hew_string_concat"
-            | "hew_string_to_lowercase"
-            | "hew_string_to_uppercase"
-            | "hew_string_trim"
-            | "hew_string_replace"
-            | "hew_string_slice"
-            | "hew_string_slice_codepoints"
-            | "hew_string_repeat"
-            | "hew_string_clone"
-            // --- container copy-in (stores an independent copy; arg is borrowed) ---
-            | "hew_vec_push_str"
-    )
+pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
+    use ReceiverOwnership::{BorrowsReceiver, BytesAllArgsBorrow, Escapes, VecCopyInElementStore};
+    use ResultOwnership::{FreshOwnedString, InteriorAliasOfReceiver, Untracked};
+    use StringArgsOwnership::{BorrowingUse, Escaping, PrintSink};
+
+    match callee {
+        // Bytes append borrows the receiver and the unpacked source triple.
+        "hew_bytes_append" => CalleeOwnershipContract::new(BytesAllArgsBorrow, Escaping, Untracked),
+
+        // Bytes receiver reads and in-place mutations leave arg[0] owned by the
+        // caller. `hew_bytes_to_string` is not a fresh-string producer here.
+        "hew_bytes_clear"
+        | "hew_bytes_contains"
+        | "hew_bytes_index"
+        | "hew_bytes_is_empty"
+        | "hew_bytes_len"
+        | "hew_bytes_pop"
+        | "hew_bytes_push"
+        | "hew_bytes_set"
+        | "hew_bytes_slice"
+        | "hew_bytes_to_string" => CalleeOwnershipContract::new(
+            BorrowsReceiver {
+                scans: ReceiverScanSet::BYTES,
+            },
+            Escaping,
+            Untracked,
+        ),
+
+        // The polymorphic Vec length symbol is a receiver borrow for both the
+        // Vec-local and bytes-local scans.
+        "hew_vec_len" => CalleeOwnershipContract::new(
+            BorrowsReceiver {
+                scans: ReceiverScanSet::VEC_BYTES,
+            },
+            Escaping,
+            Untracked,
+        ),
+
+        // Collection receiver reads and in-place mutations borrow arg[0]; tail
+        // operands remain ordinary escapes.
+        "hew_bytes_get"
+        | "hew_hashmap_clone_layout"
+        | "hew_hashmap_contains_key_layout"
+        | "hew_hashmap_get_clone_layout"
+        | "hew_hashmap_get_layout"
+        | "hew_hashmap_insert_layout"
+        | "hew_hashmap_keys_layout"
+        | "hew_hashmap_len_layout"
+        | "hew_hashmap_remove_layout"
+        | "hew_hashmap_values_layout"
+        | "hew_hashset_clone_layout"
+        | "hew_hashset_contains_layout"
+        | "hew_hashset_insert_layout"
+        | "hew_hashset_is_empty_layout"
+        | "hew_hashset_len_layout"
+        | "hew_hashset_remove_layout"
+        | "hew_hashset_to_vec_layout"
+        | "hew_string_get" => CalleeOwnershipContract::new(
+            BorrowsReceiver {
+                scans: ReceiverScanSet::COLLECTION,
+            },
+            Escaping,
+            Untracked,
+        ),
+
+        // Owned-Vec copy-in stores clone the element into the destination slot.
+        "hew_vec_push_owned" | "hew_vec_set_owned" => {
+            CalleeOwnershipContract::new(VecCopyInElementStore, Escaping, Untracked)
+        }
+
+        // Vec string element stores borrow the receiver and copy the string
+        // argument; the caller keeps the string drop obligation.
+        "hew_vec_push_str" => CalleeOwnershipContract::new(
+            BorrowsReceiver {
+                scans: ReceiverScanSet::VEC,
+            },
+            BorrowingUse,
+            Untracked,
+        ),
+
+        // Vec string getters retain the string element and hand the caller a +1
+        // owned string.
+        "hew_vec_get_str" => CalleeOwnershipContract::new(
+            BorrowsReceiver {
+                scans: ReceiverScanSet::VEC,
+            },
+            Escaping,
+            FreshOwnedString,
+        ),
+
+        // Vec owned-element getters return aliases into the receiver storage.
+        "hew_vec_get_owned" | "hew_vec_get_ptr" => CalleeOwnershipContract::new(
+            BorrowsReceiver {
+                scans: ReceiverScanSet::VEC,
+            },
+            Escaping,
+            InteriorAliasOfReceiver,
+        ),
+
+        // Vec receivers are borrowed in place; element and range operands keep
+        // the default escaping behaviour unless a narrower row above applies.
+        "hew_vec_append"
+        | "hew_vec_append_layout"
+        | "hew_vec_clear"
+        | "hew_vec_clear_layout"
+        | "hew_vec_clone"
+        | "hew_vec_clone_layout"
+        | "hew_vec_clone_owned"
+        | "hew_vec_contains_f64"
+        | "hew_vec_contains_i32"
+        | "hew_vec_contains_i64"
+        | "hew_vec_contains_owned"
+        | "hew_vec_contains_str"
+        | "hew_vec_contains_thunk"
+        | "hew_vec_get_bool"
+        | "hew_vec_get_clone"
+        | "hew_vec_get_f32"
+        | "hew_vec_get_f64"
+        | "hew_vec_get_i16"
+        | "hew_vec_get_i32"
+        | "hew_vec_get_i64"
+        | "hew_vec_get_i8"
+        | "hew_vec_get_layout"
+        | "hew_vec_get_u16"
+        | "hew_vec_get_u8"
+        | "hew_vec_is_empty"
+        | "hew_vec_join_str"
+        | "hew_vec_pop_bool"
+        | "hew_vec_pop_f32"
+        | "hew_vec_pop_f64"
+        | "hew_vec_pop_i16"
+        | "hew_vec_pop_i32"
+        | "hew_vec_pop_i64"
+        | "hew_vec_pop_i8"
+        | "hew_vec_pop_layout"
+        | "hew_vec_pop_owned"
+        | "hew_vec_pop_ptr"
+        | "hew_vec_pop_str"
+        | "hew_vec_pop_u16"
+        | "hew_vec_pop_u8"
+        | "hew_vec_push_bool"
+        | "hew_vec_push_f32"
+        | "hew_vec_push_f64"
+        | "hew_vec_push_i16"
+        | "hew_vec_push_i32"
+        | "hew_vec_push_i64"
+        | "hew_vec_push_i8"
+        | "hew_vec_push_layout"
+        | "hew_vec_push_owned_move"
+        | "hew_vec_push_ptr"
+        | "hew_vec_push_u16"
+        | "hew_vec_push_u8"
+        | "hew_vec_remove_at"
+        | "hew_vec_remove_at_layout"
+        | "hew_vec_set_bool"
+        | "hew_vec_set_f32"
+        | "hew_vec_set_f64"
+        | "hew_vec_set_i16"
+        | "hew_vec_set_i32"
+        | "hew_vec_set_i64"
+        | "hew_vec_set_i8"
+        | "hew_vec_set_layout"
+        | "hew_vec_set_ptr"
+        | "hew_vec_set_str"
+        | "hew_vec_set_u16"
+        | "hew_vec_set_u8"
+        | "hew_vec_slice_range_bytesize"
+        | "hew_vec_slice_range_f64"
+        | "hew_vec_slice_range_i32"
+        | "hew_vec_slice_range_i64"
+        | "hew_vec_slice_range_layout"
+        | "hew_vec_slice_range_owned"
+        | "hew_vec_slice_range_ptr"
+        | "hew_vec_slice_range_str" => CalleeOwnershipContract::new(
+            BorrowsReceiver {
+                scans: ReceiverScanSet::VEC,
+            },
+            Escaping,
+            Untracked,
+        ),
+
+        // String transforms borrow their inputs and produce a fresh or +1-owned
+        // string result. `hew-runtime/src/string.rs` either allocates a new
+        // refcounted buffer at rc=1 or bumps an existing string's refcount; the
+        // caller owns exactly one balancing `hew_string_drop`.
+        "hew_string_clone"
+        | "hew_string_concat"
+        | "hew_string_repeat"
+        | "hew_string_replace"
+        | "hew_string_slice"
+        | "hew_string_slice_codepoints"
+        | "hew_string_to_lowercase"
+        | "hew_string_to_uppercase"
+        | "hew_string_trim" => {
+            CalleeOwnershipContract::new(Escapes, BorrowingUse, FreshOwnedString)
+        }
+
+        // String inspectors and container producers borrow their string input
+        // without handing back a tracked string result. Scalar/bytes/Vec
+        // inspectors read only; `hew_vec_push_str` stores an independent string
+        // copy so the caller keeps the source string's drop obligation.
+        "hew_string_char_at"
+        | "hew_string_char_at_utf8"
+        | "hew_string_char_count"
+        | "hew_string_chars"
+        | "hew_string_contains"
+        | "hew_string_ends_with"
+        | "hew_string_find"
+        | "hew_string_index"
+        | "hew_string_is_alpha"
+        | "hew_string_is_alphanumeric"
+        | "hew_string_is_digit"
+        | "hew_string_is_empty"
+        | "hew_string_length"
+        | "hew_string_lines"
+        | "hew_string_split"
+        | "hew_string_starts_with"
+        | "hew_string_to_bytes" => CalleeOwnershipContract::new(Escapes, BorrowingUse, Untracked),
+
+        // Scalar and catalog display producers allocate a fresh string result.
+        // The `to_string_*` catalog spellings are the MIR presentation for
+        // f-string display dispatch and map to the `hew_*_to_string` runtime
+        // allocation entries.
+        "hew_bool_to_string"
+        | "hew_char_to_string"
+        | "hew_float_to_string"
+        | "hew_i64_to_string"
+        | "hew_int_to_string"
+        | "hew_string_from_char"
+        | "hew_u64_to_string"
+        | "hew_uint_to_string"
+        | "to_string_bool"
+        | "to_string_char"
+        | "to_string_f64"
+        | "to_string_i32"
+        | "to_string_i64"
+        | "to_string_u16"
+        | "to_string_u32"
+        | "to_string_u64"
+        | "to_string_u8" => CalleeOwnershipContract::new(Escapes, Escaping, FreshOwnedString),
+
+        // Print sinks borrow their string operands for output.
+        "print" | "print_str" | "println" | "println_str" => {
+            CalleeOwnershipContract::new(Escapes, PrintSink, Untracked)
+        }
+
+        _ => CalleeOwnershipContract::FAIL_CLOSED,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hew_types::runtime_call::RuntimeCallFamily;
+    use std::collections::BTreeSet;
+
+    const CONTRACT_SYMBOLS: &[&str] = &[
+        "hew_bool_to_string",
+        "hew_bytes_append",
+        "hew_bytes_clear",
+        "hew_bytes_contains",
+        "hew_bytes_get",
+        "hew_bytes_index",
+        "hew_bytes_is_empty",
+        "hew_bytes_len",
+        "hew_bytes_pop",
+        "hew_bytes_push",
+        "hew_bytes_set",
+        "hew_bytes_slice",
+        "hew_bytes_to_string",
+        "hew_char_to_string",
+        "hew_float_to_string",
+        "hew_hashmap_clone_layout",
+        "hew_hashmap_contains_key_layout",
+        "hew_hashmap_get_clone_layout",
+        "hew_hashmap_get_layout",
+        "hew_hashmap_insert_layout",
+        "hew_hashmap_keys_layout",
+        "hew_hashmap_len_layout",
+        "hew_hashmap_remove_layout",
+        "hew_hashmap_values_layout",
+        "hew_hashset_clone_layout",
+        "hew_hashset_contains_layout",
+        "hew_hashset_insert_layout",
+        "hew_hashset_is_empty_layout",
+        "hew_hashset_len_layout",
+        "hew_hashset_remove_layout",
+        "hew_hashset_to_vec_layout",
+        "hew_i64_to_string",
+        "hew_int_to_string",
+        "hew_string_char_at",
+        "hew_string_char_at_utf8",
+        "hew_string_char_count",
+        "hew_string_chars",
+        "hew_string_clone",
+        "hew_string_concat",
+        "hew_string_contains",
+        "hew_string_ends_with",
+        "hew_string_find",
+        "hew_string_from_char",
+        "hew_string_get",
+        "hew_string_index",
+        "hew_string_is_alpha",
+        "hew_string_is_alphanumeric",
+        "hew_string_is_digit",
+        "hew_string_is_empty",
+        "hew_string_length",
+        "hew_string_lines",
+        "hew_string_repeat",
+        "hew_string_replace",
+        "hew_string_slice",
+        "hew_string_slice_codepoints",
+        "hew_string_split",
+        "hew_string_starts_with",
+        "hew_string_to_bytes",
+        "hew_string_to_lowercase",
+        "hew_string_to_uppercase",
+        "hew_string_trim",
+        "hew_u64_to_string",
+        "hew_uint_to_string",
+        "hew_vec_append",
+        "hew_vec_append_layout",
+        "hew_vec_clear",
+        "hew_vec_clear_layout",
+        "hew_vec_clone",
+        "hew_vec_clone_layout",
+        "hew_vec_clone_owned",
+        "hew_vec_contains_f64",
+        "hew_vec_contains_i32",
+        "hew_vec_contains_i64",
+        "hew_vec_contains_owned",
+        "hew_vec_contains_str",
+        "hew_vec_contains_thunk",
+        "hew_vec_get_bool",
+        "hew_vec_get_clone",
+        "hew_vec_get_f32",
+        "hew_vec_get_f64",
+        "hew_vec_get_i16",
+        "hew_vec_get_i32",
+        "hew_vec_get_i64",
+        "hew_vec_get_i8",
+        "hew_vec_get_layout",
+        "hew_vec_get_owned",
+        "hew_vec_get_ptr",
+        "hew_vec_get_str",
+        "hew_vec_get_u16",
+        "hew_vec_get_u8",
+        "hew_vec_is_empty",
+        "hew_vec_join_str",
+        "hew_vec_len",
+        "hew_vec_pop_bool",
+        "hew_vec_pop_f32",
+        "hew_vec_pop_f64",
+        "hew_vec_pop_i16",
+        "hew_vec_pop_i32",
+        "hew_vec_pop_i64",
+        "hew_vec_pop_i8",
+        "hew_vec_pop_layout",
+        "hew_vec_pop_owned",
+        "hew_vec_pop_ptr",
+        "hew_vec_pop_str",
+        "hew_vec_pop_u16",
+        "hew_vec_pop_u8",
+        "hew_vec_push_bool",
+        "hew_vec_push_f32",
+        "hew_vec_push_f64",
+        "hew_vec_push_i16",
+        "hew_vec_push_i32",
+        "hew_vec_push_i64",
+        "hew_vec_push_i8",
+        "hew_vec_push_layout",
+        "hew_vec_push_owned",
+        "hew_vec_push_owned_move",
+        "hew_vec_push_ptr",
+        "hew_vec_push_str",
+        "hew_vec_push_u16",
+        "hew_vec_push_u8",
+        "hew_vec_remove_at",
+        "hew_vec_remove_at_layout",
+        "hew_vec_set_bool",
+        "hew_vec_set_f32",
+        "hew_vec_set_f64",
+        "hew_vec_set_i16",
+        "hew_vec_set_i32",
+        "hew_vec_set_i64",
+        "hew_vec_set_i8",
+        "hew_vec_set_layout",
+        "hew_vec_set_owned",
+        "hew_vec_set_ptr",
+        "hew_vec_set_str",
+        "hew_vec_set_u16",
+        "hew_vec_set_u8",
+        "hew_vec_slice_range_bytesize",
+        "hew_vec_slice_range_f64",
+        "hew_vec_slice_range_i32",
+        "hew_vec_slice_range_i64",
+        "hew_vec_slice_range_layout",
+        "hew_vec_slice_range_owned",
+        "hew_vec_slice_range_ptr",
+        "hew_vec_slice_range_str",
+        "print",
+        "print_str",
+        "println",
+        "println_str",
+        "to_string_bool",
+        "to_string_char",
+        "to_string_f64",
+        "to_string_i32",
+        "to_string_i64",
+        "to_string_u16",
+        "to_string_u32",
+        "to_string_u64",
+        "to_string_u8",
+    ];
 
     #[test]
     fn allowlist_is_sorted_for_binary_search() {
@@ -833,6 +1295,95 @@ mod tests {
         assert!(is_known_runtime_symbol("hew_duplex_send"));
         assert!(is_known_runtime_symbol("hew_duplex_recv"));
         assert!(is_known_runtime_symbol("hew_duplex_close"));
+    }
+
+    #[test]
+    fn callee_ownership_contract_symbols_are_unique_positive_rows() {
+        let unique = CONTRACT_SYMBOLS.iter().copied().collect::<BTreeSet<_>>();
+        assert_eq!(CONTRACT_SYMBOLS.len(), 156);
+        assert_eq!(
+            unique.len(),
+            CONTRACT_SYMBOLS.len(),
+            "contract symbol inventory contains duplicates"
+        );
+        for symbol in CONTRACT_SYMBOLS {
+            assert_ne!(
+                callee_ownership_contract(symbol),
+                CalleeOwnershipContract::FAIL_CLOSED,
+                "{symbol} should have a positive ownership contract row",
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_callee_ownership_contract_fails_closed() {
+        assert_eq!(
+            callee_ownership_contract("hew_nope"),
+            CalleeOwnershipContract::FAIL_CLOSED
+        );
+    }
+
+    #[test]
+    fn borrow_marked_contracts_do_not_consume_catalogued_receivers() {
+        // The runtime-call catalog covers only its closed subset of callee
+        // spellings. Within that subset, no consuming receiver may be marked as
+        // borrowed by this contract.
+        for symbol in CONTRACT_SYMBOLS {
+            let Some(family) = RuntimeCallFamily::from_c_symbol(symbol) else {
+                continue;
+            };
+            assert!(
+                !family.consumes_receiver()
+                    || matches!(
+                        callee_ownership_contract(symbol).receiver,
+                        ReceiverOwnership::Escapes
+                    ),
+                "{symbol} consumes its receiver and must not be borrow-marked",
+            );
+        }
+    }
+
+    #[test]
+    fn release_spelling_runtime_symbols_fail_closed() {
+        // Spelling-based tripwire for the emitter surface outside the closed
+        // runtime-call catalog: release-like names default to no borrow/result
+        // ownership contract unless deliberately classified elsewhere.
+        let release_symbols = MIR_EMITTER_RUNTIME_SYMBOLS
+            .iter()
+            .copied()
+            .filter(|symbol| {
+                ["drop", "free", "close", "release", "destroy", "dispose"]
+                    .iter()
+                    .any(|needle| symbol.contains(needle))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            release_symbols,
+            vec![
+                "hew_auto_mutex_free",
+                "hew_cancel_token_release",
+                "hew_duplex_close",
+                "hew_duplex_close_half",
+                "hew_duplex_payload_free",
+                "hew_dyn_box_free",
+                "hew_hashmap_free_layout",
+                "hew_hashset_free_layout",
+                "hew_lambda_actor_release",
+                "hew_lambda_actor_weak_drop",
+                "hew_regex_free_capture",
+                "hew_reply_channel_free",
+                "hew_reply_payload_free",
+                "hew_task_free",
+                "hew_task_scope_destroy",
+            ],
+        );
+        for symbol in release_symbols {
+            assert_eq!(
+                callee_ownership_contract(symbol),
+                CalleeOwnershipContract::FAIL_CLOSED,
+                "{symbol} should keep the fail-closed ownership contract",
+            );
+        }
     }
 
     #[test]

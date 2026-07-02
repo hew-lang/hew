@@ -3,9 +3,10 @@
 //! A fresh-owned `string` result used in a non-consuming (borrowing) context
 //! must be released EXACTLY ONCE — never zero (leak), never twice (refcount
 //! over-decrement / premature free). `string` is refcounted (`hew_string_drop`
-//! decrements and frees at zero); every `is_fresh_owned_string_producer`
-//! (`hew_string_concat`, `_to_uppercase`, the `Vec<string>` getter
-//! `hew_vec_get_str`, …) hands the caller exactly one drop obligation, and a
+//! decrements and frees at zero); the `CalleeOwnershipContract` result
+//! projection marks fresh-owned-string producers (`hew_string_concat`,
+//! `_to_uppercase`, the `Vec<string>` getter `hew_vec_get_str`, …) as handing
+//! the caller exactly one drop obligation, and a
 //! borrowing use (`hew_string_length`, …) reads the buffer without consuming the
 //! refcount (verified in `hew-runtime/src/string.rs`).
 //!

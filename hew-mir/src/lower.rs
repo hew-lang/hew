@@ -11553,10 +11553,10 @@ impl Builder {
     ///     `hew_vec_set_owned` COPY-IN, `hew_vec_pop_owned` moves out, and the
     ///     outer Vec releases via `hew_vec_free_owned`). The element is owned by
     ///     structural type, so the per-monomorphisation owned descriptor is
-    ///     harvested into `vec_owned_element_keys` and the interior-borrow leak
-    ///     taint (`is_vec_interior_borrow_getter`) both key off this same
-    ///     substituted `E` — so ownership (retain/clone vs borrow, scope-exit
-    ///     free) matches the concrete path exactly (`dedup-semantic-boundary`).
+    ///     harvested into `vec_owned_element_keys` and the interior-alias result
+    ///     contract both key off this same substituted `E` — so ownership
+    ///     (retain/clone vs borrow, scope-exit free) matches the concrete path
+    ///     exactly (`dedup-semantic-boundary`).
     ///  2. Otherwise look `E` up in the checker-exported
     ///     [`vec_generic_element_abi`] verdict table (scalar / `string` / `ptr`
     ///     / Copy value-record `layout`) and map `(method, token)` to the symbol
@@ -23835,7 +23835,7 @@ impl Builder {
     /// passes the receiver alloca address so the runtime writes back the
     /// shrunken triple. An empty buffer fails closed in the runtime (the spec
     /// `pop` signature has no Option). The receiver is BORROWED — listed in
-    /// `is_bytes_receiver_borrow_callee` — so it keeps its scope-exit drop.
+    /// bytes-receiver contract, so it keeps its scope-exit drop.
     fn lower_bytes_pop(
         &mut self,
         hir_args: &[hew_hir::HirExpr],
@@ -23990,7 +23990,7 @@ impl Builder {
     /// unpacks `other` into the scalar `(src_ptr, src_offset, src_len)` runtime
     /// args. Both operands are BORROWED — `hew_bytes_append` copies the source
     /// region and never takes its reference (see
-    /// `is_bytes_all_args_borrow_callee`), so `other` keeps its scope-exit drop.
+    /// the bytes-all-args contract, so `other` keeps its scope-exit drop.
     fn lower_bytes_append(
         &mut self,
         hir_args: &[hew_hir::HirExpr],
@@ -24060,9 +24060,9 @@ impl Builder {
     /// export (`builtin: None`, like `hew_vec_get_clone`): codegen does the
     /// check over the stack-resident `BytesTriple` and an in-bounds typed load.
     ///
-    /// The receiver is BORROWED, not consumed — `hew_bytes_get` is listed in
-    /// `is_collection_receiver_borrow_callee`, so `buf` keeps its scope-exit
-    /// drop. The `u8` element is a scalar (Copy): the `Some` payload is a
+    /// The receiver is BORROWED, not consumed — `hew_bytes_get` carries the
+    /// collection-receiver contract, so `buf` keeps its scope-exit drop. The
+    /// `u8` element is a scalar (Copy): the `Some` payload is a
     /// by-value load with no owned clone, so drop-safety is trivial.
     fn lower_bytes_get_option(
         &mut self,
@@ -24126,9 +24126,9 @@ impl Builder {
     /// `hew_string_char_count` and materialises `Some(char)` / `None` over the
     /// in-bounds `hew_string_index` codepoint load.
     ///
-    /// The receiver is BORROWED, not consumed — `hew_string_get` is listed in
-    /// `is_collection_receiver_borrow_callee`, so `s` keeps its scope-exit drop.
-    /// The `char` element is a scalar (Copy): the `Some` payload is a by-value
+    /// The receiver is BORROWED, not consumed — `hew_string_get` carries the
+    /// collection-receiver contract, so `s` keeps its scope-exit drop. The
+    /// `char` element is a scalar (Copy): the `Some` payload is a by-value
     /// codepoint with no owned clone, so drop-safety is trivial.
     fn lower_string_get_option(
         &mut self,
@@ -31247,10 +31247,9 @@ fn elaborate(
     // closure-pair Vec, and bytes arms use — is the primary gate: it removes the
     // spawn-moved / returned / aggregate-stored handle from the LIFO before the
     // per-exit `Live` filter in `enumerate_exits` ever sees it, while its
-    // receiver-borrow classifier (`is_vec_receiver_borrow_symbol` /
-    // `is_vec_copy_in_element_store_symbol`) keeps a normal owned Vec whose only
-    // reads are `push` / `get` / `len` admitted (those borrow arg[0] / deep-clone
-    // the element, they do not escape the handle). The dataflow `Consumed` /
+    // callee contract keeps a normal owned Vec whose only reads are `push` /
+    // `get` / `len` admitted (those borrow arg[0] / deep-clone the element, they
+    // do not escape the handle). The dataflow `Consumed` /
     // `MaybeConsumed` removal below is the same belt-and-suspenders net the
     // sibling arms keep for a handle moved out by a by-value consume; the
     // interior-alias retain and `dedup_whole_value_handoff` further down close
@@ -31404,8 +31403,8 @@ fn elaborate(
     // its backing buffer (and, for `Vec<string>`, every element) on every
     // exit. Rides the same receiver-borrow escape model as the
     // HashMap/HashSet and closure-pair derivations (the handle is the owner;
-    // push/index/len reads borrow it via `is_vec_receiver_borrow_symbol`),
-    // narrowed by the same consume filter. The matching release is the plain
+    // push/index/len reads carry a Vec receiver-borrow contract), narrowed by
+    // the same consume filter. The matching release is the plain
     // `hew_vec_free` — buffer + handle, with the runtime's own
     // `ElemKind::String` element walk for string vecs; BitCopy elements have
     // no element-release path, so the single unconditional free is sound
@@ -33396,19 +33395,14 @@ fn retained_string_terminator_drop_safe(
         return true;
     }
     // A borrowing string call (`hew_string_length`, `hew_string_concat`, the
-    // `.len()` / `.to_uppercase()` / … getters and copy-in transforms in
-    // `is_borrowing_string_use`) READS its string argument without retaining
-    // it — argument ownership stays with the caller. A payload binder passed
-    // there is therefore a transient borrow, NOT an escape, so the parent
-    // enum composite still owns the buffer and keeps its `EnumInPlace` drop.
-    // Without this, `match r { Err(E::Invalid(m)) => m.len() }` (and the flat
-    // `Err(m) => m.len()`) wrongly excluded the composite and leaked the
-    // bound inner string on every match. The binder `m` itself is excluded
-    // from its own sole-owner drop by `derive_cow_sole_owner` (it is read as
-    // a source operand here), so the composite drop is the single owner — no
-    // double-free.
+    // `.len()` / `.to_uppercase()` getters, copy-in transforms, and print sinks)
+    // reads its string argument without retaining it. A payload binder passed
+    // there is a transient borrow, not an escape, so the parent enum composite
+    // still owns the buffer and keeps its `EnumInPlace` drop. The binder itself
+    // is excluded from its own sole-owner drop because it is read as a source
+    // operand here, so the composite drop is the single owner.
     if let Terminator::Call { callee, args, .. } = term {
-        if is_borrowing_string_call_callee(callee)
+        if crate::runtime_symbols::callee_ownership_contract(callee).borrows_string_call_args()
             && args.iter().any(|arg| place_refs_local(*arg, local))
         {
             return true;
@@ -33726,34 +33720,6 @@ fn compute_projection_alias_taint(
     tainted
 }
 
-/// True when `callee` is a vector ELEMENT getter that returns a BORROW of the
-/// parent vector's element slot rather than a fresh, independently-owned value.
-///
-/// `hew_vec_get_ptr` / `hew_vec_get_owned` hand back the live heap handle (or
-/// the heap-boxed pair address) stored in the slot; the vector keeps ownership
-/// (`Builder::*` element-load routing doc: "a for-in / index read is a BORROW,
-/// not an independent owner"). A collection/owned-vector binding bound from one
-/// of these therefore aliases interior storage of a still-live parent vector
-/// and must never earn its own scope-exit free.
-///
-/// Deliberately NARROW — the move-out and copy-out element ops are EXCLUDED so
-/// their genuinely-owned results stay droppable:
-///   - `hew_vec_pop_*` MOVES the element out of the buffer (the slot is gone),
-///     so the popped handle is the sole owner now;
-///   - `hew_vec_slice_range_*` / `hew_vec_clone*` build a FRESH vector;
-///   - `hew_vec_get_str` returns a `+1` retained string (a fresh owner — see
-///     `fresh_string_producer_term_dest`), not a vector handle;
-///   - `hew_vec_get_layout` / the typed scalar getters copy a `BitCopy` value
-///     out (no heap alias, never a collection candidate).
-///
-/// Listing the two borrowing getters explicitly (not a prefix test) keeps the
-/// classifier fail-closed: a future getter must be classified deliberately, and
-/// the default (not borrowing → eligible) is the SAFE side only for the
-/// move/copy producers enumerated above.
-fn is_vec_interior_borrow_getter(callee: &str) -> bool {
-    matches!(callee, "hew_vec_get_ptr" | "hew_vec_get_owned")
-}
-
 /// Interior-alias taint for the COLLECTION / owned-vector sole-owner provers:
 /// the locals that hold an interior pointer of a still-live aggregate and must
 /// therefore never earn an independent scope-exit free.
@@ -33761,7 +33727,8 @@ fn is_vec_interior_borrow_getter(callee: &str) -> bool {
 /// Extends [`compute_projection_alias_taint`] (the record/tuple/closure-env/
 /// actor-state field loads + enum/machine payload destructures the string and
 /// bytes leaf provers already exclude) with the owned-element VECTOR getters
-/// (`is_vec_interior_borrow_getter`), which lower as either an
+/// whose callee contract returns [`crate::runtime_symbols::ResultOwnership::InteriorAliasOfReceiver`],
+/// which lower as either an
 /// `Instr::CallRuntimeAbi` (the `xs[i]` index path) or a `Terminator::Call`
 /// (the `xs.get(i)` method path). A handle loaded out of a parent vector's slot
 /// is a borrow of that slot; dropping it double-frees the element the parent's
@@ -33787,7 +33754,9 @@ fn compute_collection_interior_alias_taint(blocks: &[BasicBlock]) -> HashSet<u32
     for block in blocks {
         for instr in &block.instructions {
             if let Instr::CallRuntimeAbi(call) = instr {
-                if is_vec_interior_borrow_getter(call.symbol()) {
+                if crate::runtime_symbols::callee_ownership_contract(call.symbol())
+                    .returns_receiver_interior_alias()
+                {
                     if let Some(local) = call.dest().and_then(base_local) {
                         tainted.insert(local);
                     }
@@ -33795,7 +33764,9 @@ fn compute_collection_interior_alias_taint(blocks: &[BasicBlock]) -> HashSet<u32
             }
         }
         if let Terminator::Call { callee, dest, .. } = &block.terminator {
-            if is_vec_interior_borrow_getter(callee) {
+            if crate::runtime_symbols::callee_ownership_contract(callee)
+                .returns_receiver_interior_alias()
+            {
                 if let Some(local) = dest.and_then(base_local) {
                     tainted.insert(local);
                 }
@@ -33828,13 +33799,14 @@ fn compute_collection_interior_alias_taint(blocks: &[BasicBlock]) -> HashSet<u32
 /// W5.011 P3 — the destination place of an instruction that produces a fresh,
 /// solely-owned `string` (a `+1` owner the caller must balance with exactly one
 /// `hew_string_drop`). Only the validated runtime-ABI producers
-/// (`runtime_symbols::is_fresh_owned_string_producer`) qualify; everything else
+/// whose callee contract produces a fresh owned string qualify; everything else
 /// returns `None` (the local is not seeded as fresh, so it is never admitted —
 /// fail-closed).
 fn fresh_string_producer_dest(instr: &Instr) -> Option<Place> {
     match instr {
         Instr::CallRuntimeAbi(call)
-            if crate::runtime_symbols::is_fresh_owned_string_producer(call.symbol()) =>
+            if crate::runtime_symbols::callee_ownership_contract(call.symbol())
+                .produces_fresh_owned_string() =>
         {
             call.dest()
         }
@@ -33848,7 +33820,8 @@ fn fresh_string_producer_dest(instr: &Instr) -> Option<Place> {
 fn fresh_string_producer_term_dest(term: &Terminator) -> Option<Place> {
     match term {
         Terminator::Call { callee, dest, .. }
-            if crate::runtime_symbols::is_fresh_owned_string_producer(callee) =>
+            if crate::runtime_symbols::callee_ownership_contract(callee)
+                .produces_fresh_owned_string() =>
         {
             *dest
         }
@@ -33888,16 +33861,6 @@ fn string_field_load_producer_dest(instr: &Instr, locals: &[ResolvedTy]) -> Opti
     }
 }
 
-/// W5.011 P3 — `true` when a `Terminator::Call`/`Instr` callee borrows (reads /
-/// copies) its `string` argument without taking ownership. Wraps the runtime-ABI
-/// borrow allowlist and folds in the non-`hew_*` print sinks, which read their
-/// argument for output and never retain it (the same set
-/// `retained_string_terminator_drop_safe` treats as drop-safe).
-fn is_borrowing_string_call_callee(callee: &str) -> bool {
-    crate::runtime_symbols::is_borrowing_string_use(callee)
-        || matches!(callee, "print" | "println" | "print_str" | "println_str")
-}
-
 /// `true` when `instr` is a string comparison (`==`/`!=`/`<`/`<=`/`>`/`>=`)
 /// that **borrows** the leaf-`string` temp `t` as an operand. String compares
 /// lower to `Instr::IntCmp { pred, lhs, rhs }` (see `lower_binary`); codegen
@@ -33933,7 +33896,7 @@ fn is_borrowing_string_cmp_instr(instr: &Instr, t: u32) -> bool {
 ///
 /// This refinement re-classifies exactly those call arms: a call that references
 /// `local` as a source operand escapes UNLESS it is a verified borrowing string
-/// call ([`is_borrowing_string_call_callee`]). A closure/trait call has no
+/// call with a string-argument borrow contract. A closure/trait call has no
 /// visible ownership posture, so any reference is an escape (fail-closed: leak,
 /// never double-free).
 fn cow_owned_string_instr_escapes(instr: &Instr, local: u32) -> bool {
@@ -33943,7 +33906,8 @@ fn cow_owned_string_instr_escapes(instr: &Instr, local: u32) -> bool {
     match instr {
         Instr::CallRuntimeAbi(call) => {
             call.args().iter().any(|p| place_refs_local(*p, local))
-                && !is_borrowing_string_call_callee(call.symbol())
+                && !crate::runtime_symbols::callee_ownership_contract(call.symbol())
+                    .borrows_string_call_args()
         }
         Instr::CallClosure { .. } | Instr::CallTraitMethod { .. } => instr_source_places(instr)
             .into_iter()
@@ -33969,7 +33933,8 @@ fn cow_owned_string_terminator_escapes(
     match term {
         Terminator::Call { callee, args, .. } => {
             args.iter().any(|p| place_refs_local(*p, local))
-                && !is_borrowing_string_call_callee(callee)
+                && !crate::runtime_symbols::callee_ownership_contract(callee)
+                    .borrows_string_call_args()
         }
         _ => false,
     }
@@ -33994,7 +33959,7 @@ fn cow_owned_string_terminator_escapes(
 ///
 /// `string` is refcounted: `hew_string_drop` decrements and frees at zero;
 /// `hew_string_clone` / `hew_vec_get_str` bump the count and alias the same
-/// buffer. Every producer in `is_fresh_owned_string_producer` hands the caller
+/// buffer. Every fresh-owned-string contract hands the caller
 /// exactly ONE drop obligation (fresh `rc == 1`, or a `+1` retain). A binding is
 /// admitted here iff ALL of:
 ///
@@ -34166,10 +34131,10 @@ fn block_by_id(blocks: &[BasicBlock], id: u32) -> Option<&BasicBlock> {
 ///
 /// ## Ownership model (the same refcount keystone as the binding path)
 ///
-/// `string` is refcounted. Every `is_fresh_owned_string_producer` hands the
-/// caller exactly ONE drop obligation (fresh `rc == 1`, or a `+1` retain for
-/// `hew_vec_get_str` / `hew_string_clone`). A borrowing use
-/// (`is_borrowing_string_call_callee`) reads/copies the buffer WITHOUT consuming
+/// `string` is refcounted. Every fresh-owned-string contract hands the caller
+/// exactly ONE drop obligation (fresh `rc == 1`, or a `+1` retain for
+/// `hew_vec_get_str` / `hew_string_clone`). A borrowing-use contract reads/copies
+/// the buffer WITHOUT consuming
 /// the refcount — verified in `hew-runtime/src/string.rs`: `hew_string_concat`,
 /// `hew_string_to_uppercase`, `hew_string_trim`, … all `CStr::from_ptr(input)`
 /// then allocate a FRESH result, never freeing the input. So a fresh temp used
@@ -34415,7 +34380,8 @@ fn nested_fresh_string_temp_drop(
             if !args.iter().any(|p| place_refs_local(*p, t)) {
                 return None;
             }
-            if !is_borrowing_string_call_callee(callee) {
+            if !crate::runtime_symbols::callee_ownership_contract(callee).borrows_string_call_args()
+            {
                 return None;
             }
             if pred_count.get(next).copied().unwrap_or(0) != 1 {
@@ -35159,8 +35125,8 @@ fn derive_owned_record_drop_allowed(
     // Interior-alias exclusion (hard double-free): a record binding bound from an
     // ALIASING container getter — `let a = xs[i]` lowers to `hew_vec_get_owned`,
     // which returns an interior pointer into the still-live `Vec<Boxed>`'s element
-    // slot (NOT a fresh owner; `is_vec_interior_borrow_getter` /
-    // `hew-runtime/src/vec.rs`) — does NOT solely own its heap fields. The
+    // slot (NOT a fresh owner; `hew-runtime/src/vec.rs`) — does NOT solely own
+    // its heap fields. The
     // parent Vec's `hew_vec_free_owned` runs the per-element record drop thunk and
     // frees each element's owned fields; admitting the alias `a` to its OWN
     // `RecordInPlace` would free the same buffer a second time. Over-exclude every
@@ -35402,7 +35368,7 @@ fn derive_owned_record_drop_allowed(
 /// collection handle is a LEAF (a single pointer), so there is no owned-field
 /// binder pass and no interior `RecordFieldLoad` read to exempt. The one
 /// interior (non-escape) read is the call RECEIVER (arg[0]) of a
-/// receiver-borrowing collection op (`is_collection_receiver_borrow_callee`):
+/// receiver-borrowing collection op:
 /// those calls borrow the handle in place and never free it, so arg[0] is a
 /// transient read, not an ownership escape. Every other read — a `Move` to a
 /// non-member slot / `ReturnSlot`, a `RecordInit` / `SpawnActor` / closure-env
@@ -35539,10 +35505,11 @@ fn derive_local_collection_drop_allowed(
                 // cloned element source escapes the candidate, so the source keeps
                 // its own scope-exit release (#1722 — `container-ingress-ownership-
                 // is-per-container` COPY-IN retain). Skip the whole call.
-                if is_vec_copy_in_element_store_symbol(call.symbol()) {
+                let contract = crate::runtime_symbols::callee_ownership_contract(call.symbol());
+                if contract.is_vec_copy_in_element_store() {
                     continue;
                 }
-                if is_vec_receiver_borrow_symbol(call.symbol()) {
+                if contract.borrows_vec_receiver() {
                     for p in call.args().iter().skip(1) {
                         if let Some(l) = base_local(*p) {
                             if alias_of.contains_key(&l)
@@ -35599,10 +35566,14 @@ fn derive_local_collection_drop_allowed(
             // and keeps its own scope-exit drop (#1722 COPY-IN retain). Scan
             // nothing (must precede the receiver-borrow arm, which would still
             // scan the by-value element operand as an escape).
-            Terminator::Call { callee, .. } if is_vec_copy_in_element_store_symbol(callee) => {}
+            Terminator::Call { callee, .. }
+                if crate::runtime_symbols::callee_ownership_contract(callee)
+                    .is_vec_copy_in_element_store() => {}
             Terminator::Call { callee, args, .. }
-                if is_collection_receiver_borrow_callee(callee)
-                    || is_vec_receiver_borrow_symbol(callee) =>
+                if {
+                    let contract = crate::runtime_symbols::callee_ownership_contract(callee);
+                    contract.borrows_vec_receiver() || contract.borrows_collection_receiver()
+                } =>
             {
                 for p in args.iter().skip(1) {
                     if let Some(l) = base_local(*p) {
@@ -35683,76 +35654,6 @@ fn derive_local_collection_drop_allowed(
     allowed
 }
 
-/// True when `callee` is a `bytes` runtime operation that BORROWS its receiver
-/// (arg[0]) — reads or CoW-mutates the `BytesTriple` in place without
-/// transferring ownership of the binding's heap reference. The receiver of
-/// such a call is a transient interior read, NOT an ownership escape, so
-/// `derive_local_bytes_drop_allowed` skips arg[0] when scanning these calls
-/// (it still scans arg[1..], which carry index/endpoint scalars today and
-/// would carry genuinely-escaping operands if a future op grew one).
-///
-/// This is an EXPLICIT allow-list, deliberately NOT a `hew_bytes_` prefix test
-/// (LESSONS: `boundary-fail-closed`). Every entry is verified against the
-/// runtime ownership contract in `hew-runtime/src/bytes.rs`:
-///   - `hew_bytes_len` / `hew_bytes_index` — pure reads (no refcount motion).
-///   - `hew_vec_len` — the polymorphic `.len()` MIR symbol; for a bytes-typed
-///     receiver codegen swaps in `hew_bytes_len` (the canonical bytes entry),
-///     a pure read. For a Vec receiver the place is never a member of this
-///     prover's bytes alias set, so the exemption is inert there.
-///   - `hew_bytes_to_string` — pure read; the result is a FRESH cstring
-///     allocation, never an alias of the buffer.
-///   - `hew_bytes_slice` — refcount-bumping share (`hew_bytes_clone_ref`
-///     before returning the derived triple), so the receiver KEEPS its own
-///     reference and both owners release independently through the
-///     refcount-aware `hew_bytes_drop`.
-///   - `hew_bytes_push` / `hew_bytes_pop` / `hew_bytes_set` — in-place `CoW`
-///     mutate; on a shared buffer `ensure_unique` clones the active region and
-///     releases the receiver's old reference itself, so the binding still owns
-///     exactly one reference afterwards.
-///   - `hew_bytes_is_empty` / `hew_bytes_contains` — pure reads (no refcount
-///     motion).
-///   - `hew_bytes_clear` — releases the receiver's OWN reference (refcount-
-///     aware `hew_bytes_drop`) and resets the triple to the canonical empty
-///     value in place. The binding still owns its (now-null) triple, whose
-///     scope-exit drop is a no-op; the buffer ref does not escape, so this is a
-///     receiver borrow, not a transfer.
-///
-/// The consuming release `hew_bytes_drop` and the producers
-/// (`hew_bytes_from_str` / `hew_bytes_from_static` / `hew_bytes_concat` /
-/// `hew_bytes_new`) are intentionally absent: producers never read an existing
-/// triple as arg[0], and a future op left out of this list is treated as a
-/// receiver ESCAPE, which over-excludes the binding from its scope-exit drop —
-/// a leak, never a double-free.
-fn is_bytes_receiver_borrow_callee(callee: &str) -> bool {
-    matches!(
-        callee,
-        "hew_bytes_len"
-            | "hew_vec_len"
-            | "hew_bytes_index"
-            | "hew_bytes_slice"
-            | "hew_bytes_push"
-            | "hew_bytes_pop"
-            | "hew_bytes_set"
-            | "hew_bytes_is_empty"
-            | "hew_bytes_contains"
-            | "hew_bytes_clear"
-            | "hew_bytes_to_string"
-    )
-}
-
-/// Bytes runtime ops that borrow EVERY operand (no escape on any arg).
-///
-/// `hew_bytes_append(&mut dst, src_ptr, src_offset, src_len)` extends the
-/// receiver with a COPY of the source region and never retains the source's
-/// reference, so both the receiver (arg[0]) and the source `bytes` binding
-/// (whose triple codegen unpacks into arg[1..=3]) keep their own scope-exit
-/// drop. Listed separately from `is_bytes_receiver_borrow_callee` because that
-/// predicate scans arg[1..] as escapes — correct for the single-receiver ops,
-/// wrong for `append` whose tail args are a borrowed source.
-fn is_bytes_all_args_borrow_callee(callee: &str) -> bool {
-    callee == "hew_bytes_append"
-}
-
 /// Fail-closed sole-owner derivation for **local `bytes`** bindings. Returns
 /// the subset of `owned_locals` whose `BytesTriple` is proven to still solely
 /// own its refcounted data buffer at every exit, and therefore earns a
@@ -35782,9 +35683,8 @@ fn is_bytes_all_args_borrow_callee(callee: &str) -> bool {
 /// 2. **Bytes runtime ops are instruction-level.** Collection ops lower as
 ///    `Terminator::Call`; the bytes surface ops (`len`/`index`/`slice`/`push`)
 ///    lower as `Instr::CallRuntimeAbi`, and `to_string` reaches MIR as a
-///    `Terminator::Call`. The receiver-borrow exemption
-///    (`is_bytes_receiver_borrow_callee`) is therefore applied at BOTH scan
-///    sites; either way only arg[0] is exempt and arg[1..] are scanned.
+///    `Terminator::Call`. The bytes-receiver contract is therefore applied at
+///    BOTH scan sites; either way only arg[0] is exempt and arg[1..] are scanned.
 ///
 /// A bytes value consumed by an actor `Terminator::Send` / `Ask` (the mailbox
 /// `memcpy` hand-off — the receive side / actor state owns the buffer from
@@ -35902,18 +35802,21 @@ fn derive_local_bytes_drop_allowed(
             // classification than the Vec append precedent, which over-excludes
             // arg[1] for a conservative leak).
             if let Instr::CallRuntimeAbi(call) = instr {
-                if is_bytes_all_args_borrow_callee(call.symbol()) {
+                let contract = crate::runtime_symbols::callee_ownership_contract(call.symbol());
+                if contract.borrows_all_bytes_args() {
                     continue;
                 }
             }
             // A receiver-borrowing bytes runtime op reads the triple as arg[0]
-            // but only borrows it (see `is_bytes_receiver_borrow_callee`); scan
+            // but only borrows it; scan
             // only arg[1..]. Every other instruction reading an alias member is
             // an owning-sink escape (stored into a record field, captured into
             // a closure env, moved into an aggregate, sent, …). Fail-closed: a
             // bytes triple has no other benign interior instruction read.
             if let Instr::CallRuntimeAbi(call) = instr {
-                if is_bytes_receiver_borrow_callee(call.symbol()) {
+                if crate::runtime_symbols::callee_ownership_contract(call.symbol())
+                    .borrows_bytes_receiver()
+                {
                     scan_places(&call.args()[1..], &alias_of, &mut excluded_roots);
                     continue;
                 }
@@ -35934,7 +35837,10 @@ fn derive_local_bytes_drop_allowed(
         // the `ReturnSlot`, …) is scanned in full: a member read there is an
         // escape.
         match &block.terminator {
-            Terminator::Call { callee, args, .. } if is_bytes_receiver_borrow_callee(callee) => {
+            Terminator::Call { callee, args, .. }
+                if crate::runtime_symbols::callee_ownership_contract(callee)
+                    .borrows_bytes_receiver() =>
+            {
                 scan_places(&args[1..], &alias_of, &mut excluded_roots);
             }
             other => {
@@ -39587,203 +39493,6 @@ fn ty_is_local_collection_handle(ty: &ResolvedTy) -> bool {
 /// confirmed against the runtime signature to take the handle by shared/mutable
 /// borrow (`*const` / `*mut`, never freed): `hew-runtime/src/hashmap.rs`,
 /// `hew-runtime/src/hashset.rs`.
-/// Receiver-borrowing Vec runtime ops: arg 0 is the vec handle, read or
-/// mutated in place but never owned/freed by the callee. The closure-pair and
-/// plain Vec drop derivations treat these as interior reads (mirroring
-/// `is_collection_receiver_borrow_callee`) so ordinary push/index/len use does
-/// not exclude the handle from its scope-exit release. `push`/`set`/`append`
-/// DO consume (or borrow without releasing) their non-receiver operands — the
-/// arg-tail scan still records those as escapes, which only ever
-/// over-excludes (leak), never re-admits.
-///
-/// This is an EXPLICIT allow-list, deliberately NOT a `hew_vec_` prefix test
-/// (LESSONS: `boundary-fail-closed`). The consuming releases (`hew_vec_free`,
-/// `hew_vec_free_owned`, `hew_vec_free_closure_pairs`) and the constructors
-/// (`hew_vec_new*`, which write a fresh handle and never read an existing one
-/// as arg[0]) are intentionally absent. Every family below is confirmed
-/// against `hew-runtime/src/vec.rs` (`hew_vec_join_str`:
-/// `hew-runtime/src/string.rs`) to take the receiver by `*const` / `*mut`
-/// borrow and never free it:
-///   - `len` / `is_empty` / `contains_*` / `join_str` — pure reads.
-///   - `get_*` — element reads; `get_str` hands out a RETAINED owner (the vec
-///     keeps its own element reference), `get_owned` clones via the element
-///     descriptor.
-///   - `push_*` / `set_*` — in-place writes of an independent copy of the
-///     element (`set_str` releases the displaced element itself).
-///   - `pop_*` / `remove_at*` / `clear*` — in-place removal; the vec's own
-///     reference to a removed element is transferred out or released by the
-///     callee, so the later buffer free cannot touch it again.
-///   - `slice_range_*` — returns a FRESH vec (content-copying; the string
-///     form clones elements), never an alias of the receiver's buffer.
-///   - `append` / `append_layout` — extends arg[0] with copies of arg[1]'s
-///     elements; borrows BOTH vecs (arg[1] is scanned by the arg-tail rule
-///     and over-excludes — a leak, never a double free).
-///   - `clone` / `clone_layout` / `clone_owned` — deep copy; the receiver is
-///     read element-by-element and the result is a fresh, independently owned
-///     handle (`clone_owned` deep-clones each owned element via the descriptor
-///     `clone_fn`). The receiver keeps its own buffer and MUST retain its
-///     scope-exit drop — omitting `clone_owned` here over-excludes the original
-///     owned-element Vec and leaks it (`drop-allowset-from-value-flow`).
-///
-/// The typed scalar variants (`*_bool` / `*_i32` / `*_i64` / `*_f64`) are the
-/// MIR-level symbols the checker / HIR array-literal desugar resolve for
-/// `BitCopy` elements; codegen may remap them onto generic entry points, but
-/// the receiver-borrow contract is per family, not per suffix.
-fn is_vec_receiver_borrow_symbol(callee: &str) -> bool {
-    matches!(
-        callee,
-        "hew_vec_len"
-            | "hew_vec_is_empty"
-            | "hew_vec_clear"
-            | "hew_vec_clear_layout"
-            | "hew_vec_push_bool"
-            | "hew_vec_push_i8"
-            | "hew_vec_push_u8"
-            | "hew_vec_push_i16"
-            | "hew_vec_push_u16"
-            | "hew_vec_push_i32"
-            | "hew_vec_push_i64"
-            | "hew_vec_push_f32"
-            | "hew_vec_push_f64"
-            | "hew_vec_push_str"
-            | "hew_vec_push_layout"
-            | "hew_vec_push_ptr"
-            | "hew_vec_push_owned"
-            | "hew_vec_push_owned_move"
-            | "hew_vec_get_bool"
-            | "hew_vec_get_i8"
-            | "hew_vec_get_u8"
-            | "hew_vec_get_i16"
-            | "hew_vec_get_u16"
-            | "hew_vec_get_i32"
-            | "hew_vec_get_i64"
-            | "hew_vec_get_f32"
-            | "hew_vec_get_f64"
-            | "hew_vec_get_str"
-            | "hew_vec_get_layout"
-            | "hew_vec_get_ptr"
-            | "hew_vec_get_owned"
-            | "hew_vec_get_clone"
-            | "hew_vec_set_bool"
-            | "hew_vec_set_i8"
-            | "hew_vec_set_u8"
-            | "hew_vec_set_i16"
-            | "hew_vec_set_u16"
-            | "hew_vec_set_i32"
-            | "hew_vec_set_i64"
-            | "hew_vec_set_f32"
-            | "hew_vec_set_f64"
-            | "hew_vec_set_str"
-            | "hew_vec_set_layout"
-            | "hew_vec_set_ptr"
-            | "hew_vec_set_owned"
-            | "hew_vec_pop_bool"
-            | "hew_vec_pop_i8"
-            | "hew_vec_pop_u8"
-            | "hew_vec_pop_i16"
-            | "hew_vec_pop_u16"
-            | "hew_vec_pop_i32"
-            | "hew_vec_pop_i64"
-            | "hew_vec_pop_f32"
-            | "hew_vec_pop_f64"
-            | "hew_vec_pop_str"
-            | "hew_vec_pop_layout"
-            | "hew_vec_pop_ptr"
-            | "hew_vec_pop_owned"
-            | "hew_vec_remove_at"
-            | "hew_vec_remove_at_layout"
-            | "hew_vec_contains_i32"
-            | "hew_vec_contains_i64"
-            | "hew_vec_contains_f64"
-            | "hew_vec_contains_str"
-            | "hew_vec_contains_thunk"
-            | "hew_vec_contains_owned"
-            | "hew_vec_slice_range_i32"
-            | "hew_vec_slice_range_i64"
-            | "hew_vec_slice_range_f64"
-            | "hew_vec_slice_range_bytesize"
-            | "hew_vec_slice_range_layout"
-            | "hew_vec_slice_range_owned"
-            | "hew_vec_slice_range_str"
-            | "hew_vec_slice_range_ptr"
-            | "hew_vec_append"
-            | "hew_vec_append_layout"
-            | "hew_vec_clone"
-            | "hew_vec_clone_layout"
-            | "hew_vec_clone_owned"
-            | "hew_vec_join_str"
-    )
-}
-
-fn is_collection_receiver_borrow_callee(callee: &str) -> bool {
-    matches!(
-        callee,
-        "hew_hashmap_insert_layout"
-            | "hew_hashmap_get_layout"
-            // The non-trapping `b.get(i)` / `s.get(i)` read (`Index::get`)
-            // choke: reads the byte/codepoint at `i` and materialises
-            // `Some(v)` / `None` without ever freeing the receiver (`buf`/`s`
-            // is borrowed in place). Same receiver-borrow contract as the
-            // hashmap getters; classified here so `.get` does not exclude the
-            // bytes/string handle from its scope-exit release.
-            | "hew_bytes_get"
-            | "hew_string_get"
-            // The trapping `m[k]` read (`Index::at`) choke: reads the table and
-            // clones the matched value into the caller's out-slot, never freeing
-            // the map (`m: *const HewLayoutHashMap`). Same receiver-borrow
-            // contract as `hew_hashmap_get_layout`; classified here so `m[k]`
-            // does not exclude the handle from its scope-exit release.
-            | "hew_hashmap_get_clone_layout"
-            | "hew_hashmap_remove_layout"
-            | "hew_hashmap_contains_key_layout"
-            | "hew_hashmap_len_layout"
-            | "hew_hashmap_keys_layout"
-            | "hew_hashmap_values_layout"
-            | "hew_hashmap_clone_layout"
-            | "hew_hashset_insert_layout"
-            | "hew_hashset_remove_layout"
-            | "hew_hashset_contains_layout"
-            | "hew_hashset_len_layout"
-            | "hew_hashset_is_empty_layout"
-            | "hew_hashset_to_vec_layout"
-            | "hew_hashset_clone_layout"
-    )
-}
-
-/// True for the owned-element Vec STORES that take their element by COPY-IN —
-/// `hew_vec_push_owned` / `hew_vec_set_owned` memcpy the source handle into the
-/// slot and then run the descriptor `clone_fn` to DEEP-COPY the owned heap, so
-/// the slot ends up owning an independent clone and the SOURCE keeps sole
-/// ownership of its original buffer (`hew-runtime/src/vec.rs` —
-/// `alias-byte-copy-not-semantic-clone`). For the collection-local escape scan
-/// this means the element operand of these calls does NOT escape: it is a
-/// borrow-for-clone, not an ownership hand-off, so a candidate read there must
-/// stay on its own scope-exit drop spine (#1722 COPY-IN retain). This is the
-/// owned-Vec analogue of `is_vec_receiver_borrow_symbol`, but it additionally
-/// clears the BY-VALUE element operand, not just the borrowed receiver.
-///
-/// Map/set value ingress (`hew_hashmap_insert_layout` /
-/// `hew_hashset_insert_layout`) is deliberately NOT here: that container chose
-/// MOVE for its values, so its element operands genuinely escape and must keep
-/// excluding their source (`container-ingress-ownership-is-per-container`).
-fn is_vec_copy_in_element_store_symbol(callee: &str) -> bool {
-    matches!(callee, "hew_vec_push_owned" | "hew_vec_set_owned")
-}
-
-/// True for a runtime symbol that borrows a heap-owning COLLECTION handle as its
-/// receiver (arg[0]) without freeing it — the `Vec` / `HashMap` / `HashSet` read
-/// family (`hew_vec_len`, `hew_vec_get_*`, `hew_vec_contains_*`,
-/// `hew_vec_slice_range_*`, the hashmap/hashset inspectors). Unifies the two
-/// receiver-borrow authorities the collection-LOCAL escape scan already consults
-/// (`is_vec_receiver_borrow_symbol` + `is_collection_receiver_borrow_callee`)
-/// behind one predicate so the composite (record / tuple) field-binder escape
-/// scans share the SAME borrow classification — one authority, not a third
-/// parallel walker (DI-017). A handle read only as such a borrowed receiver is an
-/// interior read, never an ownership escape.
-fn is_collection_borrow_receiver_symbol(callee: &str) -> bool {
-    is_vec_receiver_borrow_symbol(callee) || is_collection_receiver_borrow_callee(callee)
-}
-
 /// True when every source-Place reference to `binder` in `term` is the borrowed
 /// receiver (arg[0]) of a collection-borrow call — i.e. reading `binder` here is
 /// an interior borrow, not an ownership escape of the composite that owns it. A
@@ -39806,7 +39515,9 @@ fn binder_read_is_borrow_safe_terminator(
     // by-value tail (arg[1..]) genuinely escapes. `binder` is borrow-safe iff it
     // never appears past arg[0].
     if let Terminator::Call { callee, args, .. } = term {
-        if is_collection_borrow_receiver_symbol(callee) {
+        if crate::runtime_symbols::callee_ownership_contract(callee)
+            .borrows_collection_binder_receiver()
+        {
             return !args
                 .iter()
                 .skip(1)
@@ -39823,7 +39534,9 @@ fn binder_read_is_borrow_safe_terminator(
 /// `false` unless the only references to `binder` are the borrowed receiver.
 fn binder_read_is_borrow_safe_instr(instr: &Instr, binder: u32) -> bool {
     if let Instr::CallRuntimeAbi(call) = instr {
-        if is_collection_borrow_receiver_symbol(call.symbol()) {
+        if crate::runtime_symbols::callee_ownership_contract(call.symbol())
+            .borrows_collection_binder_receiver()
+        {
             return !call
                 .args()
                 .iter()
@@ -40371,6 +40084,455 @@ fn enumerate_exits(
 /// entry block as id 0. This single constant keeps the elaborator's
 /// FunctionEntry-cancel handling aligned with those producers.
 const ENTRY_BLOCK_ID: u32 = 0;
+
+#[cfg(test)]
+mod runtime_callee_ownership_contract_parity {
+    use crate::runtime_symbols::{callee_ownership_contract, known_runtime_symbols};
+    use std::collections::BTreeSet;
+
+    const CLASSIFIER_SYMBOLS: &[&str] = &[
+        "hew_bool_to_string",
+        "hew_bytes_append",
+        "hew_bytes_clear",
+        "hew_bytes_contains",
+        "hew_bytes_get",
+        "hew_bytes_index",
+        "hew_bytes_is_empty",
+        "hew_bytes_len",
+        "hew_bytes_pop",
+        "hew_bytes_push",
+        "hew_bytes_set",
+        "hew_bytes_slice",
+        "hew_bytes_to_string",
+        "hew_char_to_string",
+        "hew_float_to_string",
+        "hew_hashmap_clone_layout",
+        "hew_hashmap_contains_key_layout",
+        "hew_hashmap_get_clone_layout",
+        "hew_hashmap_get_layout",
+        "hew_hashmap_insert_layout",
+        "hew_hashmap_keys_layout",
+        "hew_hashmap_len_layout",
+        "hew_hashmap_remove_layout",
+        "hew_hashmap_values_layout",
+        "hew_hashset_clone_layout",
+        "hew_hashset_contains_layout",
+        "hew_hashset_insert_layout",
+        "hew_hashset_is_empty_layout",
+        "hew_hashset_len_layout",
+        "hew_hashset_remove_layout",
+        "hew_hashset_to_vec_layout",
+        "hew_i64_to_string",
+        "hew_int_to_string",
+        "hew_string_char_at",
+        "hew_string_char_at_utf8",
+        "hew_string_char_count",
+        "hew_string_chars",
+        "hew_string_clone",
+        "hew_string_concat",
+        "hew_string_contains",
+        "hew_string_ends_with",
+        "hew_string_find",
+        "hew_string_from_char",
+        "hew_string_get",
+        "hew_string_index",
+        "hew_string_is_alpha",
+        "hew_string_is_alphanumeric",
+        "hew_string_is_digit",
+        "hew_string_is_empty",
+        "hew_string_length",
+        "hew_string_lines",
+        "hew_string_repeat",
+        "hew_string_replace",
+        "hew_string_slice",
+        "hew_string_slice_codepoints",
+        "hew_string_split",
+        "hew_string_starts_with",
+        "hew_string_to_bytes",
+        "hew_string_to_lowercase",
+        "hew_string_to_uppercase",
+        "hew_string_trim",
+        "hew_u64_to_string",
+        "hew_uint_to_string",
+        "hew_vec_append",
+        "hew_vec_append_layout",
+        "hew_vec_clear",
+        "hew_vec_clear_layout",
+        "hew_vec_clone",
+        "hew_vec_clone_layout",
+        "hew_vec_clone_owned",
+        "hew_vec_contains_f64",
+        "hew_vec_contains_i32",
+        "hew_vec_contains_i64",
+        "hew_vec_contains_owned",
+        "hew_vec_contains_str",
+        "hew_vec_contains_thunk",
+        "hew_vec_get_bool",
+        "hew_vec_get_clone",
+        "hew_vec_get_f32",
+        "hew_vec_get_f64",
+        "hew_vec_get_i16",
+        "hew_vec_get_i32",
+        "hew_vec_get_i64",
+        "hew_vec_get_i8",
+        "hew_vec_get_layout",
+        "hew_vec_get_owned",
+        "hew_vec_get_ptr",
+        "hew_vec_get_str",
+        "hew_vec_get_u16",
+        "hew_vec_get_u8",
+        "hew_vec_is_empty",
+        "hew_vec_join_str",
+        "hew_vec_len",
+        "hew_vec_pop_bool",
+        "hew_vec_pop_f32",
+        "hew_vec_pop_f64",
+        "hew_vec_pop_i16",
+        "hew_vec_pop_i32",
+        "hew_vec_pop_i64",
+        "hew_vec_pop_i8",
+        "hew_vec_pop_layout",
+        "hew_vec_pop_owned",
+        "hew_vec_pop_ptr",
+        "hew_vec_pop_str",
+        "hew_vec_pop_u16",
+        "hew_vec_pop_u8",
+        "hew_vec_push_bool",
+        "hew_vec_push_f32",
+        "hew_vec_push_f64",
+        "hew_vec_push_i16",
+        "hew_vec_push_i32",
+        "hew_vec_push_i64",
+        "hew_vec_push_i8",
+        "hew_vec_push_layout",
+        "hew_vec_push_owned",
+        "hew_vec_push_owned_move",
+        "hew_vec_push_ptr",
+        "hew_vec_push_str",
+        "hew_vec_push_u16",
+        "hew_vec_push_u8",
+        "hew_vec_remove_at",
+        "hew_vec_remove_at_layout",
+        "hew_vec_set_bool",
+        "hew_vec_set_f32",
+        "hew_vec_set_f64",
+        "hew_vec_set_i16",
+        "hew_vec_set_i32",
+        "hew_vec_set_i64",
+        "hew_vec_set_i8",
+        "hew_vec_set_layout",
+        "hew_vec_set_owned",
+        "hew_vec_set_ptr",
+        "hew_vec_set_str",
+        "hew_vec_set_u16",
+        "hew_vec_set_u8",
+        "hew_vec_slice_range_bytesize",
+        "hew_vec_slice_range_f64",
+        "hew_vec_slice_range_i32",
+        "hew_vec_slice_range_i64",
+        "hew_vec_slice_range_layout",
+        "hew_vec_slice_range_owned",
+        "hew_vec_slice_range_ptr",
+        "hew_vec_slice_range_str",
+        "print",
+        "print_str",
+        "println",
+        "println_str",
+        "to_string_bool",
+        "to_string_char",
+        "to_string_f64",
+        "to_string_i32",
+        "to_string_i64",
+        "to_string_u16",
+        "to_string_u32",
+        "to_string_u64",
+        "to_string_u8",
+    ];
+
+    const VEC_RECEIVER_SYMBOLS: &[&str] = &[
+        "hew_vec_append",
+        "hew_vec_append_layout",
+        "hew_vec_clear",
+        "hew_vec_clear_layout",
+        "hew_vec_clone",
+        "hew_vec_clone_layout",
+        "hew_vec_clone_owned",
+        "hew_vec_contains_f64",
+        "hew_vec_contains_i32",
+        "hew_vec_contains_i64",
+        "hew_vec_contains_owned",
+        "hew_vec_contains_str",
+        "hew_vec_contains_thunk",
+        "hew_vec_get_bool",
+        "hew_vec_get_clone",
+        "hew_vec_get_f32",
+        "hew_vec_get_f64",
+        "hew_vec_get_i16",
+        "hew_vec_get_i32",
+        "hew_vec_get_i64",
+        "hew_vec_get_i8",
+        "hew_vec_get_layout",
+        "hew_vec_get_owned",
+        "hew_vec_get_ptr",
+        "hew_vec_get_str",
+        "hew_vec_get_u16",
+        "hew_vec_get_u8",
+        "hew_vec_is_empty",
+        "hew_vec_join_str",
+        "hew_vec_len",
+        "hew_vec_pop_bool",
+        "hew_vec_pop_f32",
+        "hew_vec_pop_f64",
+        "hew_vec_pop_i16",
+        "hew_vec_pop_i32",
+        "hew_vec_pop_i64",
+        "hew_vec_pop_i8",
+        "hew_vec_pop_layout",
+        "hew_vec_pop_owned",
+        "hew_vec_pop_ptr",
+        "hew_vec_pop_str",
+        "hew_vec_pop_u16",
+        "hew_vec_pop_u8",
+        "hew_vec_push_bool",
+        "hew_vec_push_f32",
+        "hew_vec_push_f64",
+        "hew_vec_push_i16",
+        "hew_vec_push_i32",
+        "hew_vec_push_i64",
+        "hew_vec_push_i8",
+        "hew_vec_push_layout",
+        "hew_vec_push_owned",
+        "hew_vec_push_owned_move",
+        "hew_vec_push_ptr",
+        "hew_vec_push_str",
+        "hew_vec_push_u16",
+        "hew_vec_push_u8",
+        "hew_vec_remove_at",
+        "hew_vec_remove_at_layout",
+        "hew_vec_set_bool",
+        "hew_vec_set_f32",
+        "hew_vec_set_f64",
+        "hew_vec_set_i16",
+        "hew_vec_set_i32",
+        "hew_vec_set_i64",
+        "hew_vec_set_i8",
+        "hew_vec_set_layout",
+        "hew_vec_set_owned",
+        "hew_vec_set_ptr",
+        "hew_vec_set_str",
+        "hew_vec_set_u16",
+        "hew_vec_set_u8",
+        "hew_vec_slice_range_bytesize",
+        "hew_vec_slice_range_f64",
+        "hew_vec_slice_range_i32",
+        "hew_vec_slice_range_i64",
+        "hew_vec_slice_range_layout",
+        "hew_vec_slice_range_owned",
+        "hew_vec_slice_range_ptr",
+        "hew_vec_slice_range_str",
+    ];
+
+    const COLLECTION_RECEIVER_SYMBOLS: &[&str] = &[
+        "hew_bytes_get",
+        "hew_hashmap_clone_layout",
+        "hew_hashmap_contains_key_layout",
+        "hew_hashmap_get_clone_layout",
+        "hew_hashmap_get_layout",
+        "hew_hashmap_insert_layout",
+        "hew_hashmap_keys_layout",
+        "hew_hashmap_len_layout",
+        "hew_hashmap_remove_layout",
+        "hew_hashmap_values_layout",
+        "hew_hashset_clone_layout",
+        "hew_hashset_contains_layout",
+        "hew_hashset_insert_layout",
+        "hew_hashset_is_empty_layout",
+        "hew_hashset_len_layout",
+        "hew_hashset_remove_layout",
+        "hew_hashset_to_vec_layout",
+        "hew_string_get",
+    ];
+
+    const COPY_IN_SYMBOLS: &[&str] = &["hew_vec_push_owned", "hew_vec_set_owned"];
+
+    const BYTES_RECEIVER_SYMBOLS: &[&str] = &[
+        "hew_bytes_clear",
+        "hew_bytes_contains",
+        "hew_bytes_index",
+        "hew_bytes_is_empty",
+        "hew_bytes_len",
+        "hew_bytes_pop",
+        "hew_bytes_push",
+        "hew_bytes_set",
+        "hew_bytes_slice",
+        "hew_bytes_to_string",
+        "hew_vec_len",
+    ];
+
+    const BYTES_ALL_ARGS_SYMBOLS: &[&str] = &["hew_bytes_append"];
+
+    const STRING_USE_SYMBOLS: &[&str] = &[
+        "hew_string_char_at",
+        "hew_string_char_at_utf8",
+        "hew_string_char_count",
+        "hew_string_chars",
+        "hew_string_clone",
+        "hew_string_concat",
+        "hew_string_contains",
+        "hew_string_ends_with",
+        "hew_string_find",
+        "hew_string_index",
+        "hew_string_is_alpha",
+        "hew_string_is_alphanumeric",
+        "hew_string_is_digit",
+        "hew_string_is_empty",
+        "hew_string_length",
+        "hew_string_lines",
+        "hew_string_repeat",
+        "hew_string_replace",
+        "hew_string_slice",
+        "hew_string_slice_codepoints",
+        "hew_string_split",
+        "hew_string_starts_with",
+        "hew_string_to_bytes",
+        "hew_string_to_lowercase",
+        "hew_string_to_uppercase",
+        "hew_string_trim",
+        "hew_vec_push_str",
+    ];
+
+    const PRINT_SINK_SYMBOLS: &[&str] = &["print", "print_str", "println", "println_str"];
+
+    const FRESH_STRING_SYMBOLS: &[&str] = &[
+        "hew_bool_to_string",
+        "hew_char_to_string",
+        "hew_float_to_string",
+        "hew_i64_to_string",
+        "hew_int_to_string",
+        "hew_string_clone",
+        "hew_string_concat",
+        "hew_string_from_char",
+        "hew_string_repeat",
+        "hew_string_replace",
+        "hew_string_slice",
+        "hew_string_slice_codepoints",
+        "hew_string_to_lowercase",
+        "hew_string_to_uppercase",
+        "hew_string_trim",
+        "hew_u64_to_string",
+        "hew_uint_to_string",
+        "hew_vec_get_str",
+        "to_string_bool",
+        "to_string_char",
+        "to_string_f64",
+        "to_string_i32",
+        "to_string_i64",
+        "to_string_u16",
+        "to_string_u32",
+        "to_string_u64",
+        "to_string_u8",
+    ];
+
+    const INTERIOR_ALIAS_SYMBOLS: &[&str] = &["hew_vec_get_owned", "hew_vec_get_ptr"];
+
+    fn expected_set(symbols: &'static [&'static str]) -> BTreeSet<&'static str> {
+        let set = symbols.iter().copied().collect::<BTreeSet<_>>();
+        assert_eq!(set.len(), symbols.len(), "literal set contains duplicates");
+        set
+    }
+
+    fn parity_symbols() -> BTreeSet<&'static str> {
+        let mut symbols = CLASSIFIER_SYMBOLS.iter().copied().collect::<BTreeSet<_>>();
+        symbols.extend(known_runtime_symbols().iter().copied());
+        symbols
+    }
+
+    #[test]
+    fn callee_ownership_contract_matches_literal_projection_sets() {
+        assert_eq!(CLASSIFIER_SYMBOLS.len(), 156);
+        let vec_receiver = expected_set(VEC_RECEIVER_SYMBOLS);
+        let collection_receiver = expected_set(COLLECTION_RECEIVER_SYMBOLS);
+        let copy_in = expected_set(COPY_IN_SYMBOLS);
+        let bytes_receiver = expected_set(BYTES_RECEIVER_SYMBOLS);
+        let bytes_all_args = expected_set(BYTES_ALL_ARGS_SYMBOLS);
+        let string_use = expected_set(STRING_USE_SYMBOLS);
+        let print_sink = expected_set(PRINT_SINK_SYMBOLS);
+        let fresh_string = expected_set(FRESH_STRING_SYMBOLS);
+        let interior_alias = expected_set(INTERIOR_ALIAS_SYMBOLS);
+
+        assert_eq!(vec_receiver.len(), 80);
+        assert_eq!(collection_receiver.len(), 18);
+        assert_eq!(bytes_receiver.len(), 11);
+        assert_eq!(string_use.len(), 27);
+        assert_eq!(fresh_string.len(), 27);
+
+        for symbol in parity_symbols() {
+            let contract = callee_ownership_contract(symbol);
+            assert_eq!(
+                contract.borrows_vec_receiver(),
+                vec_receiver.contains(symbol),
+                "vec receiver projection mismatch for {symbol}",
+            );
+            assert_eq!(
+                contract.borrows_collection_receiver(),
+                collection_receiver.contains(symbol),
+                "collection receiver projection mismatch for {symbol}",
+            );
+            assert_eq!(
+                contract.is_vec_copy_in_element_store(),
+                copy_in.contains(symbol),
+                "vec copy-in projection mismatch for {symbol}",
+            );
+            assert_eq!(
+                contract.borrows_collection_binder_receiver(),
+                vec_receiver.contains(symbol) || collection_receiver.contains(symbol),
+                "binder receiver projection mismatch for {symbol}",
+            );
+            assert_eq!(
+                contract.borrows_bytes_receiver(),
+                bytes_receiver.contains(symbol),
+                "bytes receiver projection mismatch for {symbol}",
+            );
+            assert_eq!(
+                contract.borrows_all_bytes_args(),
+                bytes_all_args.contains(symbol),
+                "bytes all-args projection mismatch for {symbol}",
+            );
+            assert_eq!(
+                contract.borrows_string_use(),
+                string_use.contains(symbol),
+                "string-use projection mismatch for {symbol}",
+            );
+            assert_eq!(
+                contract.borrows_string_call_args(),
+                string_use.contains(symbol) || print_sink.contains(symbol),
+                "string-callee projection mismatch for {symbol}",
+            );
+            assert_eq!(
+                contract.produces_fresh_owned_string(),
+                fresh_string.contains(symbol),
+                "fresh-string projection mismatch for {symbol}",
+            );
+            assert_eq!(
+                contract.returns_receiver_interior_alias(),
+                interior_alias.contains(symbol),
+                "interior-alias projection mismatch for {symbol}",
+            );
+        }
+    }
+
+    #[test]
+    fn copy_in_tail_exemption_split_is_limited_to_owned_vec_stores() {
+        let split_symbols = parity_symbols()
+            .into_iter()
+            .filter(|symbol| callee_ownership_contract(symbol).is_vec_copy_in_element_store())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            split_symbols,
+            vec!["hew_vec_push_owned", "hew_vec_set_owned"]
+        );
+    }
+}
 
 // ============================================================================
 // Slice 3 (M2 substrate) drop-plan invariant tests.
@@ -43040,8 +43202,22 @@ mod owned_record_drop_derivation {
         ResolvedTy::named_user("Rec", vec![])
     }
 
+    fn vec_string_ty() -> ResolvedTy {
+        ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::String])
+    }
+
     fn is_rec(ty: &ResolvedTy) -> bool {
         matches!(ty, ResolvedTy::Named { name, .. } if name == "Rec")
+    }
+
+    fn is_vec_handle(ty: &ResolvedTy) -> bool {
+        matches!(
+            ty,
+            ResolvedTy::Named {
+                builtin: Some(BuiltinType::Vec),
+                ..
+            }
+        )
     }
 
     fn block(id: u32, instructions: Vec<Instr>, terminator: Terminator) -> BasicBlock {
@@ -43194,6 +43370,79 @@ mod owned_record_drop_derivation {
             !allowed.contains(&b),
             "an owned field loaded out and returned escaped the record; the \
              record must be excluded to avoid double-freeing it; got {allowed:?}"
+        );
+    }
+
+    /// `hew_vec_push_owned` / `hew_vec_set_owned` copy their element into the
+    /// destination Vec. The collection-local prover exempts that element operand,
+    /// while composite binder scans still treat the tail operand as an escape.
+    #[test]
+    fn vec_copy_in_tail_split_keeps_local_candidate_but_excludes_composite_binder() {
+        let callee = "hew_vec_push_owned";
+        let call_builtin = hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(callee);
+
+        let record = BindingId(10);
+        let record_owned = vec![(record, "r".to_string(), rec_ty())];
+        let record_binding_locals: HashMap<BindingId, Place> =
+            [(record, Place::Local(0))].into_iter().collect();
+        let record_local_tys = vec![rec_ty(), vec_string_ty(), vec_string_ty()];
+        let record_blocks = vec![block(
+            0,
+            vec![Instr::RecordFieldLoad {
+                record: Place::Local(0),
+                field_offset: FieldOffset(0),
+                dest: Place::Local(1),
+            }],
+            Terminator::Call {
+                callee: callee.to_string(),
+                builtin: call_builtin,
+                args: vec![Place::Local(2), Place::Local(1)],
+                dest: None,
+                next: 1,
+            },
+        )];
+
+        let record_allowed = derive(
+            &record_blocks,
+            &record_owned,
+            &record_binding_locals,
+            &record_local_tys,
+        );
+        assert!(
+            !record_allowed.contains(&record),
+            "a composite field binder used as the copy-in element operand is a \
+             tail read and must exclude the composite; allowed: {record_allowed:?}"
+        );
+
+        let elem = BindingId(11);
+        let collection_owned = vec![(elem, "elem".to_string(), vec_string_ty())];
+        let collection_binding_locals: HashMap<BindingId, Place> =
+            [(elem, Place::Local(1))].into_iter().collect();
+        let collection_blocks = vec![BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Call {
+                callee: callee.to_string(),
+                builtin: call_builtin,
+                args: vec![Place::Local(2), Place::Local(1)],
+                dest: None,
+                next: 1,
+            },
+        }];
+
+        let collection_allowed = derive_local_collection_drop_allowed(
+            &collection_blocks,
+            &HashMap::new(),
+            &collection_owned,
+            &collection_binding_locals,
+            is_vec_handle,
+        );
+        assert!(
+            collection_allowed.contains(&elem),
+            "a local collection candidate used as the copy-in element operand is \
+             borrowed for clone and must keep its drop admission; allowed: \
+             {collection_allowed:?}"
         );
     }
 

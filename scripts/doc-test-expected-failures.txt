@@ -126,15 +126,15 @@ spec-0107   # IMPL-GAP: `pool` as pattern — reserved word clash in supervisor 
 spec-0109   # FRAGMENT: references `prices` from prior fence context — context-dependent
 spec-0110   # SNIPPET: bare `let` — wire schema illustration
 spec-0111   # SNIPPET: bare `match` — wire format pattern illustration
-spec-0122   # SNIPPET: bare `let` — remote PID illustration
-spec-0123   # SNIPPET: bare `mailbox` identifier — mailbox API illustration
-spec-0124   # SNIPPET: bare `let` — cluster API illustration
-spec-0125   # SNIPPET: bare `let` — node addressing illustration
-spec-0126   # SNIPPET: bare `let` — distributed ask illustration
-spec-0127   # SNIPPET: bare `let` — node/pid illustration
-spec-0128   # SNIPPET: bare `let` — distributed supervisor illustration
-spec-0129   # NYI: bare `@outer` label — labeled break/continue not yet lowered
-spec-0130   # SNIPPET: bare `var` — timer illustration
-spec-0131   # SNIPPET: bare `let` — timer illustration
-spec-0132   # SNIPPET: bare `var` — timer illustration
-spec-0133   # SNIPPET: bare `var` — timer illustration (renumbered from 0132 by §6.5.4 fence addition)
+spec-0122   # SNIPPET: bare `let` — wire encode illustration
+spec-0123   # SNIPPET: bare `let` — wire decode illustration
+spec-0124   # SNIPPET: bare `mailbox` declaration — overflow-policy illustration
+spec-0125   # SNIPPET: bare `let` — integer width-mismatch conversion illustration
+spec-0126   # SNIPPET: bare `let` — explicit usize-to-integer conversion illustration
+spec-0127   # SNIPPET: bare `let` — saturating f64/integer conversion illustration
+spec-0128   # SNIPPET: bare `let` — duration literal illustration
+spec-0129   # SNIPPET: bare `let` — await timeout illustration
+spec-0130   # SNIPPET: bare labeled loop — labeled break/continue illustration
+spec-0131   # SNIPPET: bare `var` — loop statement result-accumulator illustration
+spec-0132   # SNIPPET: bare `if let` — Option pattern-match illustration
+spec-0133   # SNIPPET: bare `while let` — HashMap pattern-match illustration

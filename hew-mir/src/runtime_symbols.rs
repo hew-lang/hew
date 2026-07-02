@@ -828,6 +828,10 @@ impl Default for CalleeOwnershipContract {
 ///
 /// Unknown callees are explicit fail-closed contracts: operands escape and the
 /// result carries no tracked drop obligation.
+#[expect(
+    clippy::too_many_lines,
+    reason = "single flat positive-membership symbol table; one authority, never split"
+)]
 #[must_use]
 pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
     use ReceiverOwnership::{BorrowsReceiver, BytesAllArgsBorrow, Escapes, VecCopyInElementStore};

@@ -121,3 +121,24 @@ extern "C" {
     fn hew_encrypt_must_open_hew(key: bytes, ciphertext: bytes) -> string;
     fn hew_encrypt_last_open_error_code() -> i32;
 }
+
+// ── Poisoned-code parity test ──────────────────────────────────────────
+// Mirrors JWT's poisoned-slot fail-closed regression test: an out-of-range
+// code from the FFI layer must never decode as `CryptoError::None` (which
+// would read a swallowed crypto error as success). `crypto_error_from_i32`
+// is module-private, so this test — which calls it directly with poisoned
+// codes — can only live here as an inline test.
+#[test]
+fn crypto_error_from_i32_poisoned_codes_never_decode_to_none() {
+    assert(crypto_error_from_i32(99) != CryptoError::None);
+    assert(crypto_error_from_i32(99) == CryptoError::AuthFailed);
+    assert(crypto_error_from_i32(-1) != CryptoError::None);
+    assert(crypto_error_from_i32(-1) == CryptoError::AuthFailed);
+    assert(crypto_error_from_i32(6) != CryptoError::None);
+    assert(crypto_error_from_i32(6) == CryptoError::AuthFailed);
+    assert(crypto_error_from_i32(100) != CryptoError::None);
+    assert(crypto_error_from_i32(100) == CryptoError::AuthFailed);
+
+    // A genuinely absent error (status 0) still means None (no error).
+    assert(crypto_error_from_i32(0) == CryptoError::None);
+}

@@ -242,3 +242,39 @@ extern "C" {
     fn hew_tls_attach(stream: TlsStream, handler: LocalPid<TlsHandler>, on_data_type: i32, on_close_type: i32);
     fn hew_tls_close(stream: TlsStream);
 }
+
+// ── Status-code parity tests ──────────────────────────────────────────
+// `TLS_STATUS_*` mirrors `hew-std/src/tls.rs`'s `TLS_STATUS_*` constants
+// (pinned cross-side in `hew-std/src/tls.rs`'s
+// `hew_binding_pins_tls_status_constants` test). These tests exercise the
+// Hew-side consumer of those codes, `tls_error_from_status`, which is
+// module-private and therefore only reachable from an inline test here.
+#[test]
+fn tls_error_from_status_retryable_maps_to_timed_out() {
+    assert(tls_error_from_status(TLS_STATUS_RETRYABLE, "") == NetError::TimedOut(0));
+}
+
+#[test]
+fn tls_error_from_status_success_never_reached_maps_like_other() {
+    // TLS_STATUS_SUCCESS is never actually passed to this function in
+    // production (callers branch on success before calling it), but the
+    // function itself has no dedicated arm for it, so it falls into the
+    // same `else` branch as TLS_ERROR/IO_ERROR. Pinned here so a stray
+    // caller passing SUCCESS gets the current (non-crashing) behavior.
+    assert(tls_error_from_status(TLS_STATUS_SUCCESS, "") == NetError::Other(0));
+}
+
+#[test]
+fn tls_error_from_status_tls_error_and_io_error_currently_collapse() {
+    // KNOWN SIMPLIFICATION (not a bug): `TLS_STATUS_TLS_ERROR` (2) and
+    // `TLS_STATUS_IO_ERROR` (3) both fall through to `NetError::Other(0)`
+    // today — there is no dedicated `NetError` variant distinguishing a
+    // TLS-protocol failure from a plain I/O failure. This test pins that
+    // collapse as current, deliberate behavior; changing the mapping is a
+    // separate product decision, not something to do incidentally here.
+    let tls_error = tls_error_from_status(TLS_STATUS_TLS_ERROR, "");
+    let io_error = tls_error_from_status(TLS_STATUS_IO_ERROR, "");
+    assert(tls_error == NetError::Other(0));
+    assert(io_error == NetError::Other(0));
+    assert(tls_error == io_error);
+}

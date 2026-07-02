@@ -1771,4 +1771,46 @@ mod tests {
         assert_eq!(unsafe { actor::hew_actor_free(actor) }, 0);
         unregister_tls_actor_events(test_id);
     }
+
+    /// FFI enum/status-code parity guard.
+    ///
+    /// `tls.hew` declares its own `TLS_STATUS_*` constants (there is no
+    /// shared Rust/Hew constant for this ABI-level status code) that must
+    /// stay numerically identical to this file's `TLS_STATUS_*` consts, or
+    /// the Hew-side `tls_error_from_status` dispatch silently misroutes.
+    /// This test parses the `.hew` declarations via `include_str!` and pins
+    /// each literal against the Rust-side value.
+    #[test]
+    fn hew_binding_pins_tls_status_constants() {
+        let hew_src = include_str!("../../std/net/tls/tls.hew");
+
+        let pins: &[(&str, c_int)] = &[
+            ("TLS_STATUS_SUCCESS", TLS_STATUS_SUCCESS),
+            ("TLS_STATUS_RETRYABLE", TLS_STATUS_RETRYABLE),
+            ("TLS_STATUS_TLS_ERROR", TLS_STATUS_TLS_ERROR),
+            ("TLS_STATUS_IO_ERROR", TLS_STATUS_IO_ERROR),
+        ];
+
+        for (name, expected) in pins {
+            let decl = hew_src
+                .lines()
+                .map(str::trim)
+                .find(|line| line.starts_with(&format!("const {name}:")))
+                .unwrap_or_else(|| panic!("tls.hew must declare `const {name}`"));
+            let literal = decl
+                .rsplit('=')
+                .next()
+                .unwrap_or(decl)
+                .trim()
+                .trim_end_matches(';')
+                .trim();
+            let parsed: c_int = literal
+                .parse()
+                .unwrap_or_else(|e| panic!("tls.hew `{name}` value {literal:?} not an int: {e}"));
+            assert_eq!(
+                parsed, *expected,
+                "tls.hew `{name}` = {parsed} must match Rust `{name}` = {expected}"
+            );
+        }
+    }
 }

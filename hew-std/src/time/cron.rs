@@ -660,4 +660,114 @@ mod tests {
         // SAFETY: expr was returned by hew_cron_parse.
         unsafe { hew_cron_free(expr) };
     }
+
+    /// FFI signature-parity guard (`uuid.rs`-style scalar pin).
+    ///
+    /// `hew_cron_is_valid` returns `bool` on the Rust side (`#[no_mangle]`
+    /// above). The Hew binding in `cron.hew` must declare the same return
+    /// type. This test parses the `.hew` extern block and fails closed if
+    /// the declared return type is anything other than `-> bool`.
+    #[test]
+    fn hew_binding_declares_cron_is_valid_returns_bool() {
+        let hew_src = include_str!("../../../std/time/cron/cron.hew");
+
+        let decl = hew_src
+            .lines()
+            .map(str::trim)
+            .find(|line| line.starts_with("fn hew_cron_is_valid"))
+            .expect("cron.hew must declare an extern `fn hew_cron_is_valid`");
+
+        let signature = decl.split("//").next().unwrap_or(decl).trim();
+
+        assert!(
+            signature.contains("-> bool"),
+            "cron.hew binding for hew_cron_is_valid must return bool to \
+             match the Rust `#[no_mangle] -> bool` signature; found: {signature:?}"
+        );
+    }
+
+    /// FFI signature-parity guard (`uuid.rs`-style scalar pin).
+    ///
+    /// `hew_cron_next` returns `i32` on the Rust side (`#[no_mangle]` above,
+    /// a status code: 0=success/1=no-next/2=invalid-input/3=invalid-epoch).
+    /// The Hew binding in `cron.hew` must declare the same return type. This
+    /// test parses the `.hew` extern block and fails closed if the declared
+    /// return type is anything other than `-> i32`.
+    #[test]
+    fn hew_binding_declares_cron_next_returns_i32() {
+        let hew_src = include_str!("../../../std/time/cron/cron.hew");
+
+        let decl = hew_src
+            .lines()
+            .map(str::trim)
+            .find(|line| line.starts_with("fn hew_cron_next("))
+            .expect("cron.hew must declare an extern `fn hew_cron_next`");
+
+        let signature = decl.split("//").next().unwrap_or(decl).trim();
+
+        assert!(
+            signature.contains("-> i32"),
+            "cron.hew binding for hew_cron_next must return i32 to match \
+             the Rust `#[no_mangle] -> i32` signature; found: {signature:?}"
+        );
+    }
+
+    /// FFI enum/status-code parity guard.
+    ///
+    /// `cron.hew`'s `cron_error_from_result` match arms hard-code the status
+    /// literals `1`/`2`/`3` (mapping to `NoNextOccurrence`/`InvalidInput`/
+    /// `InvalidEpoch`) rather than referencing this file's
+    /// `HEW_CRON_STATUS_*` constants directly — there is no shared Rust/Hew
+    /// constant for this ABI-level status code. This test parses the
+    /// `cron_error_from_result` match block via `include_str!` and pins each
+    /// arm's literal against the Rust-side constant, so a silent renumber
+    /// on either side fails here instead of silently misrouting errors.
+    #[test]
+    fn hew_binding_pins_cron_status_constants() {
+        let hew_src = include_str!("../../../std/time/cron/cron.hew");
+
+        let match_start = hew_src
+            .find("fn cron_error_from_result")
+            .expect("cron.hew must declare `fn cron_error_from_result`");
+        let match_block = &hew_src[match_start..];
+
+        let pins: &[(&str, i32)] = &[
+            ("NoNextOccurrence", HEW_CRON_STATUS_NO_NEXT_OCCURRENCE),
+            ("InvalidInput", HEW_CRON_STATUS_INVALID_INPUT),
+            ("InvalidEpoch", HEW_CRON_STATUS_INVALID_EPOCH),
+        ];
+
+        for (variant, expected) in pins {
+            let arm = match_block
+                .lines()
+                .map(str::trim)
+                .find(|line| line.contains(&format!("=> CronError::{variant}(")))
+                .unwrap_or_else(|| {
+                    panic!("cron.hew `cron_error_from_result` must have an arm for {variant}")
+                });
+            let literal = arm
+                .split("=>")
+                .next()
+                .expect("match arm must contain `=>`")
+                .trim();
+            let parsed: i32 = literal.parse().unwrap_or_else(|e| {
+                panic!("cron.hew {variant} arm literal {literal:?} not an int: {e}")
+            });
+            assert_eq!(
+                parsed, *expected,
+                "cron.hew `cron_error_from_result` arm for {variant} = {parsed} \
+                 must match Rust `HEW_CRON_STATUS_*` = {expected}"
+            );
+        }
+
+        // The success status (0) is checked separately in `try_next` before
+        // `cron_error_from_result` is ever called; pin it too so `0` never
+        // silently drifts to mean something else on the Hew side.
+        assert_eq!(HEW_CRON_STATUS_SUCCESS, 0);
+        assert!(
+            hew_src.contains("result.status == 0"),
+            "cron.hew's `try_next` must branch on `result.status == 0` for \
+             the success status"
+        );
+    }
 }

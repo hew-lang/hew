@@ -255,17 +255,13 @@ enum ForIterNextCall {
 
 fn literal_match_supported(lit: &HirLiteral, ty: &ResolvedTy) -> bool {
     match (lit, ty) {
-        (HirLiteral::Integer(_), ty) => literal_match_integer_ty(ty),
+        (HirLiteral::Integer(_), ty) => ty.is_integer_literal_match_scrutinee(),
         (HirLiteral::Float(_), ResolvedTy::F32 | ResolvedTy::F64)
         | (HirLiteral::Bool(_), ResolvedTy::Bool)
         | (HirLiteral::Char(_), ResolvedTy::Char)
         | (HirLiteral::String(_), ResolvedTy::String) => true,
         _ => false,
     }
-}
-
-fn literal_match_integer_ty(ty: &ResolvedTy) -> bool {
-    ty.is_integer()
 }
 
 impl TargetArch {
@@ -22816,7 +22812,7 @@ impl LowerCtx {
                     let (lit, literal_ty) = literal_to_hir(lit);
                     let ty = match (&lit, &scrutinee_hir.ty) {
                         (HirLiteral::Integer(_), scrutinee_ty)
-                            if literal_match_integer_ty(scrutinee_ty) =>
+                            if scrutinee_ty.is_integer_literal_match_scrutinee() =>
                         {
                             scrutinee_ty.clone()
                         }
@@ -28680,6 +28676,11 @@ mod tests {
             "platform-sized literal match diagnostics: {:#?}",
             lowered.diagnostics
         );
+        let verify_diagnostics = crate::verify_hir(&lowered.module);
+        assert!(
+            verify_diagnostics.is_empty(),
+            "platform-sized literal match verifier diagnostics: {verify_diagnostics:#?}"
+        );
         assert_match_literal_ty(&lowered, "signed", &ResolvedTy::Isize);
         assert_match_literal_ty(&lowered, "unsigned", &ResolvedTy::Usize);
     }
@@ -28690,7 +28691,10 @@ mod tests {
             panic!("expected `{function_name}` to have a match tail");
         };
         let HirExprKind::Match { arms, .. } = &tail.kind else {
-            panic!("expected `{function_name}` tail to be a match, got {:#?}", tail.kind);
+            panic!(
+                "expected `{function_name}` tail to be a match, got {:#?}",
+                tail.kind
+            );
         };
         let Some(first_arm) = arms.first() else {
             panic!("expected `{function_name}` match to have a literal arm");

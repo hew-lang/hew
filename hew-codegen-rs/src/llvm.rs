@@ -53437,6 +53437,75 @@ fn main() {
         );
     }
 
+    /// `hashmap_key_layout_descriptor_ptr` reconstructs `HewMapKeyLayout`'s byte
+    /// layout as an independent LLVM `StructType` because codegen does not link
+    /// the full `hew-cabi` map machinery at the emission site. This test pins
+    /// every field offset and the total size of that mirror against the real
+    /// `#[repr(C)]` struct so a future field reorder on either side fails here
+    /// instead of silently desyncing until a generated HashMap's hash/eq/drop
+    /// thunk reads the wrong slot at runtime.
+    ///
+    /// The comparison struct below is built the same way
+    /// `hashmap_key_layout_descriptor_ptr`'s `layout_ty` is (same field-type
+    /// list, same order) but independently — this test never calls that
+    /// function or inspects its output, so the comparison is not tautological
+    /// against codegen's own construction.
+    #[test]
+    fn hew_map_key_layout_offset_parity() {
+        use hew_cabi::map::HewMapKeyLayout;
+
+        let ctx = Context::create();
+        let td = host_target_data();
+        let usize_ty = ctx.ptr_sized_int_type(&td, None);
+        let i8_ty = ctx.i8_type();
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let llvm_struct = ctx.struct_type(
+            &[
+                usize_ty.into(),
+                usize_ty.into(),
+                i8_ty.into(),
+                ptr_ty.into(),
+                ptr_ty.into(),
+                ptr_ty.into(),
+            ],
+            false,
+        );
+
+        // (Rust offset_of, LLVM element index) for every field, in
+        // declaration order.
+        let fields: [(usize, u32, &str); 6] = [
+            (std::mem::offset_of!(HewMapKeyLayout, size), 0, "size"),
+            (std::mem::offset_of!(HewMapKeyLayout, align), 1, "align"),
+            (
+                std::mem::offset_of!(HewMapKeyLayout, ownership_kind),
+                2,
+                "ownership_kind",
+            ),
+            (std::mem::offset_of!(HewMapKeyLayout, hash_fn), 3, "hash_fn"),
+            (std::mem::offset_of!(HewMapKeyLayout, eq_fn), 4, "eq_fn"),
+            (std::mem::offset_of!(HewMapKeyLayout, drop_fn), 5, "drop_fn"),
+        ];
+
+        for (rust_offset, llvm_idx, name) in fields {
+            let llvm_offset = td
+                .offset_of_element(&llvm_struct, llvm_idx)
+                .unwrap_or_else(|| panic!("LLVM struct has no element {llvm_idx} for `{name}`"));
+            assert_eq!(
+                llvm_offset as usize, rust_offset,
+                "HewMapKeyLayout field `{name}` offset mismatch: LLVM {llvm_offset} vs Rust \
+                 {rust_offset} — codegen's hashmap_key_layout_descriptor_ptr mirror drifted \
+                 from hew_cabi::map::HewMapKeyLayout"
+            );
+        }
+
+        assert_eq!(
+            td.get_abi_size(&llvm_struct) as usize,
+            std::mem::size_of::<HewMapKeyLayout>(),
+            "HewMapKeyLayout total size mismatch between the codegen mirror and the \
+             hew_cabi::map::HewMapKeyLayout struct"
+        );
+    }
+
     /// RC10 Stage 1: the `emit_lifetime_start`/`emit_lifetime_end` helpers emit
     /// the canonical opaque-pointer `@llvm.lifetime.{start,end}.p0(ptr %slot)`
     /// shape (LLVM 22 single-operand signature — the explicit size operand was

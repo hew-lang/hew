@@ -39528,10 +39528,21 @@ fn builtin_method_arg_is_move_ingress(family: hew_types::MethodTargetFamily) -> 
 /// True when `ty` is a builtin `HashMap<K, V>` / `HashSet<E>` handle. Dispatches
 /// on the `builtin` discriminant (NOT the name string) so a user
 /// `type HashMap { ... }` is never mistaken for the runtime collection handle.
-/// This is the ABI-shape confirmation that the `hew_hashmap_free_layout` /
-/// `hew_hashset_free_layout` release is the correct release for the binding's
-/// single owned handle; the sole-owner / no-escape decision is the separate
-/// fail-closed authority `derive_local_collection_drop_allowed`.
+/// THE single ABI-shape authority for the collection-handle release bucket:
+/// the confirmation that `hew_hashmap_free_layout` / `hew_hashset_free_layout`
+/// is the correct release for the binding's single owned handle. The
+/// sole-owner / no-escape decision is the separate fail-closed authority
+/// `derive_local_collection_drop_allowed`.
+///
+/// A projection of the typed ownership classification:
+/// `ty_is_local_collection_handle(ty)` ≡ "the decision's drop class is the
+/// `HashMap` / `HashSet` copy-on-write leaf", pinned over the heap-leaf
+/// domain (plus the user-Named collision negative) by
+/// `collection_handle_predicate_projects_from_heap_leaf`, whose
+/// release-symbol tripwire also pins the two `*_free_layout` spellings to
+/// `HeapLeaf::release_symbol`. A future builtin collection is classified
+/// once, in `classify_named`; the pin fails if this predicate does not
+/// follow.
 fn ty_is_local_collection_handle(ty: &ResolvedTy) -> bool {
     matches!(
         ty,

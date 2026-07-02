@@ -584,13 +584,25 @@ This distinction exists because actor fields are stateful (they change over the 
 The **only** ownership constraint is at actor boundaries. When a value crosses an actor boundary (via method call or `.send()`), it must be **moved** or **cloned**:
 
 ```hew
-receive fn forward(message: Message, target: LocalPid<Handler>) {
-    target.handle(message);  // message is MOVED to target's mailbox
-    // message is now invalid - compile error if used
+type Message { body: string }
+
+actor Handler {
+    receive fn process(message: Message) {
+        println(message.body);
+    }
 }
 
-// Or for lambda actors:
-worker.send(message);        // message is MOVED via .send()
+actor Forwarder {
+    receive fn forward(message: Message, target: LocalPid<Handler>) {
+        target.process(message);  // message is MOVED to target's mailbox
+    }
+}
+
+fn main() {
+    let handler = spawn Handler();
+    let forwarder = spawn Forwarder();
+    forwarder.forward(Message { body: "hello" }, handler);
+}
 ```
 
 > **Note:** Throughout this specification, "sending a message" refers to invoking a `receive fn` method on an actor (for named actors) or calling `.send()` on a lambda actor handle.
@@ -623,17 +635,29 @@ Hew provides two syntactic forms for duplication:
   `x.clone()` are unaffected.
 
 ```hew
-receive fn broadcast(message: Message, targets: Vec<LocalPid<Handler>>) {
-    for target in targets {
-        target.handle(clone message);  // prefix form — each recipient gets a clone
+type Message { body: string }
+
+actor Handler {
+    receive fn process(message: Message) {
+        println(message.body);
     }
-    // message still valid - we only sent clones
 }
 
-// Method form is identical in semantics:
-for target in targets {
-    target.send(message.clone());
+actor Broadcaster {
+    receive fn broadcast(message: Message, first: LocalPid<Handler>, second: LocalPid<Handler>) {
+        first.process(message.clone());
+        second.process(message.clone());
+    }
 }
+
+fn main() {
+    let first = spawn Handler();
+    let second = spawn Handler();
+    let broadcaster = spawn Broadcaster();
+    broadcaster.broadcast(Message { body: "hello" }, first, second);
+}
+
+// Lambda actor .send() uses the same move-on-send rule.
 ```
 
 #### 3.4.5 Capturing Values in Lambda Actors
@@ -714,12 +738,12 @@ actor Example {
 
     receive fn bad_examples(other: LocalPid<Other>) {
         // Sending without move - ERROR (implicit move makes source invalid)
-        other.handle(data);
+        other.process(data);
         data.push(1);     // compile error: data was moved
 
         // Using value after send - ERROR
         let msg = Message::new();
-        other.handle(msg);
+        other.process(msg);
         println(msg.content);  // compile error: msg was moved
 
         // Capturing non-Send value - ERROR
@@ -1123,10 +1147,26 @@ Hew distinguishes three cases of variable shadowing:
 **Trait bounds on generics:**
 
 ```hew
-fn broadcast<T: Send>(message: T, recipients: Vec<LocalPid<Receiver>>) {
-    for recipient in recipients {
-        recipient.handle(message.clone());
+type Message { body: string }
+
+actor Receiver {
+    receive fn accept(message: Message) {
+        println(message.body);
     }
+}
+
+actor Broadcaster {
+    receive fn broadcast(message: Message, first: LocalPid<Receiver>, second: LocalPid<Receiver>) {
+        first.accept(message.clone());
+        second.accept(message.clone());
+    }
+}
+
+fn main() {
+    let first = spawn Receiver();
+    let second = spawn Receiver();
+    let broadcaster = spawn Broadcaster();
+    broadcaster.broadcast(Message { body: "hello" }, first, second);
 }
 ```
 
@@ -1207,9 +1247,24 @@ This hybrid gives the safety of Rust's move semantics (no use-after-send bugs) w
 - No user-visible references or borrows cross actor boundaries — `&T` (borrow/`View`) is not `Send` and is rejected at the actor boundary entirely; the runtime retain optimization applies only to admissible immutable-shareable **owned** values, and the receiver always observes an independent owned value at the language level, never a borrow into the sender's heap
 
 ```hew
-receive fn forward(message: Message, target: LocalPid<Handler>) {
-    target.handle(message);  // message is MOVED — runtime uses gated send mechanism (retain/deep-copy/move)
-    // message is now invalid — compile error if used
+type Message { body: string }
+
+actor Handler {
+    receive fn process(message: Message) {
+        println(message.body);
+    }
+}
+
+actor Forwarder {
+    receive fn forward(message: Message, target: LocalPid<Handler>) {
+        target.process(message);  // message is MOVED by the gated send mechanism
+    }
+}
+
+fn main() {
+    let handler = spawn Handler();
+    let forwarder = spawn Forwarder();
+    forwarder.forward(Message { body: "hello" }, handler);
 }
 ```
 
@@ -1687,10 +1742,26 @@ max(3.14, 2.71);       // max$f64
 **Inline bounds:**
 
 ```hew
-fn broadcast<T: Send + Clone>(message: T, targets: Vec<LocalPid<Receiver>>) {
-    for target in targets {
-        target.handle(message.clone());
+type Message { body: string }
+
+actor Receiver {
+    receive fn accept(message: Message) {
+        println(message.body);
     }
+}
+
+actor Broadcaster {
+    receive fn broadcast(message: Message, first: LocalPid<Receiver>, second: LocalPid<Receiver>) {
+        first.accept(message.clone());
+        second.accept(message.clone());
+    }
+}
+
+fn main() {
+    let first = spawn Receiver();
+    let second = spawn Receiver();
+    let broadcaster = spawn Broadcaster();
+    broadcaster.broadcast(Message { body: "hello" }, first, second);
 }
 ```
 
@@ -1774,12 +1845,12 @@ The runtime also has internal `Arc` support, but those `Send`/`Frozen` rules are
 ```hew
 // Error: T might not be Send
 receive fn forward_unsafe<T>(message: T, target: LocalPid<Handler<T>>) {
-    target.handle(message);     // Compile error: T not bounded by Send
+    target.process(message);    // Compile error: T not bounded by Send
 }
 
 // Correct: T is bounded by Send
 receive fn forward<T: Send>(message: T, target: LocalPid<Handler<T>>) {
-    target.handle(message);     // OK: T: Send verified at instantiation
+    target.process(message);    // OK: T: Send verified at instantiation
 }
 ```
 

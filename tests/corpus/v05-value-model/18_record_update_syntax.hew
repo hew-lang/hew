@@ -23,12 +23,12 @@
 //   - source record is valid after the update
 //   - chained record updates (two updates from the same source)
 
-struct User {
+type User {
     name: string,
     score: i64,
 }
 
-struct Point {
+type Point {
     x: f64,
     y: f64,
 }

@@ -6,11 +6,15 @@
 fn link(_a: LocalPid<Probe>, _b: LocalPid<Probe>) {}
 fn monitor(_a: LocalPid<Probe>, _b: LocalPid<Probe>) {}
 
+actor Probe {
+    receive fn ping() {}
+}
+
 fn main() -> i64 {
-    let p = spawn Probe;
-    let q = spawn Probe;
-    let r = spawn Probe;
-    let s = spawn Probe;
+    let p = spawn Probe();
+    let q = spawn Probe();
+    let r = spawn Probe();
+    let s = spawn Probe();
     link(p, q);
     monitor(r, s);
     0

@@ -23,7 +23,7 @@
 //   - caller's value is still valid after the call
 //   - no hidden materialize at stringification sites
 
-struct User {
+type User {
     name: string,
     score: i64,
 }

@@ -28,7 +28,7 @@ fn alias_then_mutate() {
     let _ = alias;
 }
 
-struct User {
+type User {
     name: string,
     score: i64,
 }

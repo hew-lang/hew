@@ -6,8 +6,7 @@ actor SeedChild {
 
 supervisor SeedSupervisor {
     strategy: one_for_one;
-    max_restarts: 3;
-    window: 60;
+    intensity: 3 within 60s;
     child worker: SeedChild;
 }
 

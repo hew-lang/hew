@@ -5,6 +5,6 @@ fn main() {
     println(f"or: {a | b}");
     println(f"xor: {a ^ b}");
     println(f"shl: {1 << 5}");
-    println(f"shr: {(0 - 8) >> 1}");
+    println(f"shr: {0 - 8 >> 1}");
     println(f"sign: {1 << 63}");
 }

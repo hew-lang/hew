@@ -5091,6 +5091,36 @@ fn dyn_trait_fat_ptr_ty<'ctx>(ctx: &'ctx Context) -> StructType<'ctx> {
     st
 }
 
+/// The dyn-trait vtable prefix type: `{ drop_in_place: ptr, size_of:
+/// usize, align_of: usize }`, mirroring the `#[repr(C)]`
+/// `hew_runtime::trait_object::HewVtable` prefix.
+///
+/// This is the single layout authority for the prefix. BOTH production
+/// consumers derive their slot types from it so the write and read sides
+/// cannot drift from each other:
+/// - `emit_dyn_trait_vtable_definitions` (write side) extends this
+///   prefix's field types with N method-thunk pointer slots when it
+///   finalises each `%hew.dyn.vtable.N` body;
+/// - `lower_dyn_trait_vtable_drop` (read side) uses it directly as the
+///   view struct its slot-0/1/2 GEPs go through at every drop site.
+///
+/// Parity with the runtime `HewVtable` struct itself is pinned by
+/// `hew_vtable_prefix_offset_parity`, which calls this helper and
+/// compares against `std::mem::offset_of!` over the real struct.
+///
+/// The `usize` slots are ptr-sized ints from `host_target_data()` —
+/// target-width, so a wasm32 build naturally produces `i32` slots and a
+/// native build produces `i64`, matching the runtime ABI's Rust `usize`
+/// on every Hew target. Anonymous (not a named struct): LLVM uniques
+/// anonymous struct types structurally, so both consumers observe the
+/// identical type without introducing a new name into the emitted IR.
+fn dyn_vtable_prefix_ty<'ctx>(ctx: &'ctx Context) -> StructType<'ctx> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let host_td = host_target_data();
+    let usize_ty = ctx.ptr_sized_int_type(&host_td, None);
+    ctx.struct_type(&[ptr_ty.into(), usize_ty.into(), usize_ty.into()], false)
+}
+
 /// Resolve an `Instr::CoerceToDynTrait` payload to its
 /// `DynVtableInstance` in `registry`.
 ///
@@ -5325,17 +5355,16 @@ fn lower_dyn_trait_vtable_drop(
         .into_pointer_value();
 
     // The vtable prefix is `{ ptr (drop_in_place), <usize> (size_of),
-    // <usize> (align_of) }`. The synthetic prefix-view struct mirrors it
-    // bit-for-bit; the view's layout authority must equal
-    // `emit_dyn_trait_vtable_definitions`'s — both source `usize_ty` from
-    // `host_target_data()` so the prefix byte offsets are identical. (Same
-    // idiom as `lower_call_trait_method`'s method-slot GEP.)
+    // <usize> (align_of) }`. The view struct IS the shared prefix
+    // authority `dyn_vtable_prefix_ty` — the same type
+    // `emit_dyn_trait_vtable_definitions` derives its first three slot
+    // types from — so this drop-site read cannot drift from the write
+    // side's layout. (Same idiom as `lower_call_trait_method`'s
+    // method-slot GEP.)
     let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
     let host_td = host_target_data();
     let usize_ty = fn_ctx.ctx.ptr_sized_int_type(&host_td, None);
-    let view_ty = fn_ctx
-        .ctx
-        .struct_type(&[ptr_ty.into(), usize_ty.into(), usize_ty.into()], false);
+    let view_ty = dyn_vtable_prefix_ty(fn_ctx.ctx);
 
     // Slot 0: load the `drop_in_place` fn pointer and dispatch it on the
     // data word. The synthesised thunk runs the concrete's structural drop
@@ -5523,12 +5552,12 @@ fn lower_call_trait_method(
         .into_pointer_value();
 
     // 2. GEP into the vtable at field index `slot`. The synthetic
-    //    prefix-view struct mirrors the vtable's prefix bit-for-bit
-    //    (`ptr` then two `ptr_sized_int` slots, then `ptr` slots up to
-    //    and including index `slot`). The view's layout authority must
-    //    equal `emit_dyn_trait_vtable_definitions`'s layout authority;
-    //    both source `usize_ty` from `host_target_data()` so the prefix
-    //    byte offset is identical.
+    //    prefix-view struct's first three fields come from the shared
+    //    prefix authority `dyn_vtable_prefix_ty` (the same type
+    //    `emit_dyn_trait_vtable_definitions` derives its prefix slots
+    //    from), followed by `ptr` slots up to and including index
+    //    `slot`, so this dispatch-site read cannot drift from the
+    //    write side's layout.
     if slot < 3 {
         return Err(CodegenError::FailClosed(format!(
             "CallTraitMethod `{trait_name}::{method_name}`: slot {slot} \
@@ -5539,15 +5568,12 @@ fn lower_call_trait_method(
         )));
     }
     let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
-    let host_td = host_target_data();
-    let usize_ty = fn_ctx.ctx.ptr_sized_int_type(&host_td, None);
     let view_field_count = (slot as usize)
         .checked_add(1)
         .expect("slot fits in usize+1 — checker bounds prevent overflow");
     let mut view_fields: Vec<BasicTypeEnum> = Vec::with_capacity(view_field_count);
-    view_fields.push(ptr_ty.into()); // slot 0: drop_in_place fn pointer
-    view_fields.push(usize_ty.into()); // slot 1: size_of<Concrete>
-    view_fields.push(usize_ty.into()); // slot 2: align_of<Concrete>
+    // Slots 0-2: the prefix (drop_in_place, size_of, align_of).
+    view_fields.extend(dyn_vtable_prefix_ty(fn_ctx.ctx).get_field_types());
     for _ in 3..view_field_count {
         view_fields.push(ptr_ty.into()); // slot 3..=slot: method thunk pointers
     }
@@ -38878,15 +38904,19 @@ fn emit_dyn_trait_vtable_definitions<'ctx>(
         return Ok(());
     }
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
-    // Ptr-sized integer for the `size_of` / `align_of` prefix slots.
-    // Sourced from the host target data (the same `host_target_data`
-    // that `emit_dyn_trait_drop_in_place_fns` uses) so a wasm32 build
-    // would naturally produce `i32` slots and a native build produces
-    // `i64`. The runtime ABI in `hew-runtime/src/trait_object.rs`
-    // declares `size_of`/`align_of` as Rust `usize`, which lowers to
-    // exactly this width on every Hew target.
+    // Ptr-sized integer for the `size_of` / `align_of` prefix slot
+    // VALUES. Sourced from the host target data (the same
+    // `host_target_data` that `emit_dyn_trait_drop_in_place_fns` uses) so
+    // a wasm32 build would naturally produce `i32` slots and a native
+    // build produces `i64`. The runtime ABI in
+    // `hew-runtime/src/trait_object.rs` declares `size_of`/`align_of` as
+    // Rust `usize`, which lowers to exactly this width on every Hew
+    // target. The prefix slot TYPES come from the shared authority
+    // `dyn_vtable_prefix_ty` (same `host_target_data` sourcing), which
+    // the drop/dispatch read sites also consume.
     let host_td = host_target_data();
     let usize_ty = ctx.ptr_sized_int_type(&host_td, None);
+    let prefix_field_tys = dyn_vtable_prefix_ty(ctx).get_field_types();
     for inst in registry {
         // Ensure the forward declaration exists for vtables whose
         // coercion site, in some edge cases (registry pre-populated
@@ -38929,16 +38959,17 @@ fn emit_dyn_trait_vtable_definitions<'ctx>(
 
         let n_methods = inst.vtable_entries.len();
         // Layout: 3-slot prefix (drop, size, align) + N method thunks.
+        // The prefix slot types come from the shared authority
+        // `dyn_vtable_prefix_ty`, so the write side cannot drift from
+        // the drop/dispatch read sites that GEP these slots back out.
         let mut slot_tys: Vec<BasicTypeEnum<'ctx>> = Vec::with_capacity(3 + n_methods);
         let mut slot_vals: Vec<BasicValueEnum<'ctx>> = Vec::with_capacity(3 + n_methods);
+        slot_tys.extend(prefix_field_tys.iter().copied());
         // Slot 0: drop_in_place fn pointer.
-        slot_tys.push(ptr_ty.into());
         slot_vals.push(drop_fn.as_global_value().as_pointer_value().into());
         // Slot 1: size_of<ConcreteType> as usize.
-        slot_tys.push(usize_ty.into());
         slot_vals.push(usize_ty.const_int(concrete_size, false).into());
         // Slot 2: align_of<ConcreteType> as usize.
-        slot_tys.push(usize_ty.into());
         slot_vals.push(usize_ty.const_int(u64::from(concrete_align), false).into());
 
         for method_index in 0..n_methods {
@@ -53488,6 +53519,214 @@ fn main() {
             td.get_abi_size(&llvm_struct) as usize,
             std::mem::size_of::<HewChildInitResult>(),
             "HewChildInitResult total size mismatch between the LLVM mirror and the Rust struct"
+        );
+    }
+
+    /// `hashmap_key_layout_descriptor_ptr` reconstructs `HewMapKeyLayout`'s byte
+    /// layout as an independent LLVM `StructType` because codegen does not link
+    /// the full `hew-cabi` map machinery at the emission site. This test pins
+    /// every field offset and the total size of that mirror against the real
+    /// `#[repr(C)]` struct so a future field reorder on either side fails here
+    /// instead of silently desyncing until a generated HashMap's hash/eq/drop
+    /// thunk reads the wrong slot at runtime.
+    ///
+    /// The comparison struct below is built the same way
+    /// `hashmap_key_layout_descriptor_ptr`'s `layout_ty` is (same field-type
+    /// list, same order) but independently — this test never calls that
+    /// function or inspects its output, so the comparison is not tautological
+    /// against codegen's own construction.
+    #[test]
+    fn hew_map_key_layout_offset_parity() {
+        use hew_cabi::map::HewMapKeyLayout;
+
+        let ctx = Context::create();
+        let td = host_target_data();
+        let usize_ty = ctx.ptr_sized_int_type(&td, None);
+        let i8_ty = ctx.i8_type();
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let llvm_struct = ctx.struct_type(
+            &[
+                usize_ty.into(),
+                usize_ty.into(),
+                i8_ty.into(),
+                ptr_ty.into(),
+                ptr_ty.into(),
+                ptr_ty.into(),
+            ],
+            false,
+        );
+
+        // (Rust offset_of, LLVM element index) for every field, in
+        // declaration order.
+        let fields: [(usize, u32, &str); 6] = [
+            (std::mem::offset_of!(HewMapKeyLayout, size), 0, "size"),
+            (std::mem::offset_of!(HewMapKeyLayout, align), 1, "align"),
+            (
+                std::mem::offset_of!(HewMapKeyLayout, ownership_kind),
+                2,
+                "ownership_kind",
+            ),
+            (std::mem::offset_of!(HewMapKeyLayout, hash_fn), 3, "hash_fn"),
+            (std::mem::offset_of!(HewMapKeyLayout, eq_fn), 4, "eq_fn"),
+            (std::mem::offset_of!(HewMapKeyLayout, drop_fn), 5, "drop_fn"),
+        ];
+
+        for (rust_offset, llvm_idx, name) in fields {
+            let llvm_offset = td
+                .offset_of_element(&llvm_struct, llvm_idx)
+                .unwrap_or_else(|| panic!("LLVM struct has no element {llvm_idx} for `{name}`"));
+            assert_eq!(
+                llvm_offset as usize, rust_offset,
+                "HewMapKeyLayout field `{name}` offset mismatch: LLVM {llvm_offset} vs Rust \
+                 {rust_offset} — codegen's hashmap_key_layout_descriptor_ptr mirror drifted \
+                 from hew_cabi::map::HewMapKeyLayout"
+            );
+        }
+
+        assert_eq!(
+            td.get_abi_size(&llvm_struct) as usize,
+            std::mem::size_of::<HewMapKeyLayout>(),
+            "HewMapKeyLayout total size mismatch between the codegen mirror and the \
+             hew_cabi::map::HewMapKeyLayout struct"
+        );
+    }
+
+    /// Both `hashmap_value_layout_descriptor_ptr` (plain-value path) and
+    /// `hashmap_owned_value_layout_descriptor_ptr` (owned-value path)
+    /// independently reconstruct `HewMapValueLayout`'s byte layout as an LLVM
+    /// `StructType` because codegen does not link the full `hew-cabi` map
+    /// machinery at either emission site. This test pins every field offset
+    /// and the total size of that shared shape against the real `#[repr(C)]`
+    /// struct.
+    ///
+    /// `HewMapValueLayout` is `{ size, align, ownership_kind, drop_fn,
+    /// clone_fn }` — the INVERSE of `HewVecElemLayout`'s `clone_fn`-then-
+    /// `drop_fn` order (see the developer comment directly above the
+    /// owned-path initializer). A copy-paste from the Vec descriptor into
+    /// either Map descriptor site would silently swap which thunk runs on
+    /// which lifecycle event; this test's `offset_of!` comparison, sourced
+    /// independently from the real struct rather than from either emission
+    /// site, is what catches that swap.
+    ///
+    /// The comparison struct below is built the same way both sites build
+    /// their `layout_ty` (same field-type list, same order) but
+    /// independently — this test never calls either function or inspects its
+    /// output, so the comparison is not tautological against codegen's own
+    /// construction.
+    #[test]
+    fn hew_map_value_layout_offset_parity() {
+        use hew_cabi::map::HewMapValueLayout;
+
+        let ctx = Context::create();
+        let td = host_target_data();
+        let usize_ty = ctx.ptr_sized_int_type(&td, None);
+        let i8_ty = ctx.i8_type();
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let llvm_struct = ctx.struct_type(
+            &[
+                usize_ty.into(),
+                usize_ty.into(),
+                i8_ty.into(),
+                ptr_ty.into(),
+                ptr_ty.into(),
+            ],
+            false,
+        );
+
+        // (Rust offset_of, LLVM element index) for every field, in
+        // declaration order. drop_fn precedes clone_fn here — the inverse of
+        // HewVecElemLayout's clone_fn/drop_fn order.
+        let fields: [(usize, u32, &str); 5] = [
+            (std::mem::offset_of!(HewMapValueLayout, size), 0, "size"),
+            (std::mem::offset_of!(HewMapValueLayout, align), 1, "align"),
+            (
+                std::mem::offset_of!(HewMapValueLayout, ownership_kind),
+                2,
+                "ownership_kind",
+            ),
+            (
+                std::mem::offset_of!(HewMapValueLayout, drop_fn),
+                3,
+                "drop_fn",
+            ),
+            (
+                std::mem::offset_of!(HewMapValueLayout, clone_fn),
+                4,
+                "clone_fn",
+            ),
+        ];
+
+        for (rust_offset, llvm_idx, name) in fields {
+            let llvm_offset = td
+                .offset_of_element(&llvm_struct, llvm_idx)
+                .unwrap_or_else(|| panic!("LLVM struct has no element {llvm_idx} for `{name}`"));
+            assert_eq!(
+                llvm_offset as usize, rust_offset,
+                "HewMapValueLayout field `{name}` offset mismatch: LLVM {llvm_offset} vs Rust \
+                 {rust_offset} — codegen's hashmap_value_layout_descriptor_ptr /\
+                 hashmap_owned_value_layout_descriptor_ptr mirror drifted from \
+                 hew_cabi::map::HewMapValueLayout"
+            );
+        }
+
+        assert_eq!(
+            td.get_abi_size(&llvm_struct) as usize,
+            std::mem::size_of::<HewMapValueLayout>(),
+            "HewMapValueLayout total size mismatch between the codegen mirror and the \
+             hew_cabi::map::HewMapValueLayout struct"
+        );
+    }
+
+    /// `dyn_vtable_prefix_ty` is the single layout authority for the
+    /// dyn-trait vtable prefix `{ drop_in_place: fn ptr, size_of: usize,
+    /// align_of: usize }`: `emit_dyn_trait_vtable_definitions` derives
+    /// its first three slot types from it, and `lower_dyn_trait_vtable_drop`
+    /// / `lower_call_trait_method` GEP through it (or its field list) at
+    /// every drop/dispatch site. Pinning the helper therefore pins every
+    /// producer and consumer of the prefix at once; a prefix-slot reorder
+    /// or element-width change fails here instead of miscompiling every
+    /// `dyn Trait` drop/method-dispatch site.
+    ///
+    /// Calling the real helper is not circular: the comparison values are
+    /// `std::mem::offset_of!` over the real `#[repr(C)]`
+    /// `hew_runtime::trait_object::HewVtable`, sourced independently of
+    /// codegen — the same pattern as
+    /// `hew_child_spec_struct_matches_runtime_abi` above.
+    #[test]
+    fn hew_vtable_prefix_offset_parity() {
+        use hew_runtime::trait_object::HewVtable;
+
+        let ctx = Context::create();
+        let td = host_target_data();
+        let llvm_struct = dyn_vtable_prefix_ty(&ctx);
+
+        let fields: [(usize, u32, &str); 3] = [
+            (
+                std::mem::offset_of!(HewVtable, drop_in_place),
+                0,
+                "drop_in_place",
+            ),
+            (std::mem::offset_of!(HewVtable, size_of), 1, "size_of"),
+            (std::mem::offset_of!(HewVtable, align_of), 2, "align_of"),
+        ];
+
+        for (rust_offset, llvm_idx, name) in fields {
+            let llvm_offset = td
+                .offset_of_element(&llvm_struct, llvm_idx)
+                .unwrap_or_else(|| panic!("LLVM struct has no element {llvm_idx} for `{name}`"));
+            assert_eq!(
+                llvm_offset as usize, rust_offset,
+                "HewVtable field `{name}` offset mismatch: LLVM {llvm_offset} vs Rust \
+                 {rust_offset} — codegen's dyn_vtable_prefix_ty drifted from \
+                 hew_runtime::trait_object::HewVtable"
+            );
+        }
+
+        assert_eq!(
+            td.get_abi_size(&llvm_struct) as usize,
+            std::mem::size_of::<HewVtable>(),
+            "HewVtable total size mismatch between codegen's dyn_vtable_prefix_ty and \
+             the hew_runtime::trait_object::HewVtable struct"
         );
     }
 

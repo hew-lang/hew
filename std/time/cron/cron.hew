@@ -151,3 +151,37 @@ extern "C" {
     fn hew_cron_to_string(expr: Expr) -> string;
     fn hew_cron_free(expr: Expr);
 }
+
+// ── Status-code parity tests ──────────────────────────────────────────
+// The status literals below mirror `hew-std/src/time/cron.rs`'s
+// `HEW_CRON_STATUS_*` constants (pinned cross-side in that file's
+// `hew_binding_pins_cron_status_constants` test). These tests exercise
+// `cron_error_from_result`, which is module-private and therefore only
+// reachable from an inline test here, against a synthetic `CronNextResult`
+// for each non-success status so all three error arms are distinguished
+// (rather than only the one or two arms existing FFI-level tests reach).
+fn cron_error_tag(err: CronError) -> i64 {
+    match err {
+        CronError::NoNextOccurrence(_) => 1,
+        CronError::InvalidInput(_) => 2,
+        CronError::InvalidEpoch(_) => 3,
+    }
+}
+
+#[test]
+fn cron_error_from_result_maps_status_1_to_no_next_occurrence() {
+    let synthetic = CronNextResult { status: 1, timestamp: 0 };
+    assert(cron_error_tag(cron_error_from_result(synthetic)) == 1);
+}
+
+#[test]
+fn cron_error_from_result_maps_status_2_to_invalid_input() {
+    let synthetic = CronNextResult { status: 2, timestamp: 0 };
+    assert(cron_error_tag(cron_error_from_result(synthetic)) == 2);
+}
+
+#[test]
+fn cron_error_from_result_maps_status_3_to_invalid_epoch() {
+    let synthetic = CronNextResult { status: 3, timestamp: 0 };
+    assert(cron_error_tag(cron_error_from_result(synthetic)) == 3);
+}

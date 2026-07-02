@@ -106,8 +106,8 @@ use inkwell::types::{
     BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, FunctionType, IntType, StructType,
 };
 use inkwell::values::{
-    BasicMetadataValueEnum, BasicValueEnum, CallSiteValue, FunctionValue, GlobalValue, IntValue,
-    PointerValue, StructValue,
+    BasicMetadataValueEnum, BasicValueEnum, CallSiteValue, FloatValue, FunctionValue, GlobalValue,
+    IntValue, PointerValue, StructValue,
 };
 use inkwell::AddressSpace;
 use inkwell::{FloatPredicate, IntPredicate};
@@ -14925,6 +14925,120 @@ fn int_to_int_payload_and_invalid<'ctx>(
     Ok((payload, invalid))
 }
 
+fn float_trunc_value<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    float_ty: FloatType<'ctx>,
+    src_v: FloatValue<'ctx>,
+) -> CodegenResult<FloatValue<'ctx>> {
+    let intrinsic = Intrinsic::find("llvm.trunc")
+        .ok_or_else(|| llvm_err!("float trunc intrinsic `llvm.trunc` not in LLVM build"))?;
+    let trunc_fn = intrinsic
+        .get_declaration(fn_ctx.llvm_mod, &[float_ty.into()])
+        .ok_or_else(|| llvm_err!("float trunc intrinsic declaration failed for {float_ty:?}"))?;
+    let call = fn_ctx
+        .builder
+        .build_call(trunc_fn, &[src_v.into()], "try_width_float_trunc")
+        .llvm_ctx("try-width float trunc intrinsic call")?;
+    Ok(call
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| llvm_err!("float trunc intrinsic returned void"))?
+        .into_float_value())
+}
+
+fn float_to_int_sat_value<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    src_float: FloatType<'ctx>,
+    dest_int: IntType<'ctx>,
+    src_v: FloatValue<'ctx>,
+    to_ty: &ResolvedTy,
+) -> CodegenResult<IntValue<'ctx>> {
+    let sat_name = match cast_int_signedness(to_ty)? {
+        IntSignedness::Signed => "llvm.fptosi.sat",
+        IntSignedness::Unsigned => "llvm.fptoui.sat",
+    };
+    let sat_intrinsic = Intrinsic::find(sat_name)
+        .ok_or_else(|| llvm_err!("float→int sat intrinsic `{sat_name}` not in LLVM build"))?;
+    let sat_fn = sat_intrinsic
+        .get_declaration(fn_ctx.llvm_mod, &[dest_int.into(), src_float.into()])
+        .ok_or_else(|| {
+            llvm_err!(
+                "float→int sat intrinsic `{sat_name}` declaration failed for dest={dest_int:?} src={src_float:?}"
+            )
+        })?;
+    let call = fn_ctx
+        .builder
+        .build_call(sat_fn, &[src_v.into()], "try_width_float_to_int_sat")
+        .llvm_ctx("try-width float to int saturating cast")?;
+    Ok(call
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| llvm_err!("float→int sat intrinsic `{sat_name}` returned void"))?
+        .into_int_value())
+}
+
+fn float_to_int_payload_and_invalid<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    src_v: FloatValue<'ctx>,
+    src_float: FloatType<'ctx>,
+    dest_int: IntType<'ctx>,
+    to_ty: &ResolvedTy,
+) -> CodegenResult<(IntValue<'ctx>, IntValue<'ctx>)> {
+    let nan = fn_ctx
+        .builder
+        .build_float_compare(FloatPredicate::UNO, src_v, src_v, "try_width_float_nan")
+        .llvm_ctx("try-width float NaN compare")?;
+    let dest_bits = dest_int.get_bit_width();
+    let (lower, upper_exclusive) = if to_ty.is_signed_integer() {
+        (
+            -2.0_f64.powi((dest_bits - 1) as i32),
+            2.0_f64.powi((dest_bits - 1) as i32),
+        )
+    } else {
+        (0.0, 2.0_f64.powi(dest_bits as i32))
+    };
+    let lower_const = src_float.const_float(lower);
+    let upper_const = src_float.const_float(upper_exclusive);
+    let below = fn_ctx
+        .builder
+        .build_float_compare(
+            FloatPredicate::OLT,
+            src_v,
+            lower_const,
+            "try_width_float_below",
+        )
+        .llvm_ctx("try-width float lower-bound compare")?;
+    let above = fn_ctx
+        .builder
+        .build_float_compare(
+            FloatPredicate::OGE,
+            src_v,
+            upper_const,
+            "try_width_float_above",
+        )
+        .llvm_ctx("try-width float upper-bound compare")?;
+    let trunc_v = float_trunc_value(fn_ctx, src_float, src_v)?;
+    let fractional = fn_ctx
+        .builder
+        .build_float_compare(
+            FloatPredicate::ONE,
+            trunc_v,
+            src_v,
+            "try_width_float_fractional",
+        )
+        .llvm_ctx("try-width float fractional compare")?;
+    let range_invalid = or_i1(fn_ctx, below, above, "try_width_float_out_of_range")?;
+    let finite_invalid = or_i1(
+        fn_ctx,
+        range_invalid,
+        fractional,
+        "try_width_float_finite_invalid",
+    )?;
+    let invalid = or_i1(fn_ctx, nan, finite_invalid, "try_width_float_invalid")?;
+    let payload = float_to_int_sat_value(fn_ctx, src_float, dest_int, src_v, to_ty)?;
+    Ok((payload, invalid))
+}
+
 fn lower_try_width_cast(
     fn_ctx: &FnCtx<'_, '_>,
     dest: Place,
@@ -14968,6 +15082,31 @@ fn lower_try_width_cast(
                 invalid,
                 payload.into(),
                 "try-width int payload store",
+            )
+        }
+        hew_types::TryConversionKind::FloatToInt => {
+            if !from_ty.is_float() || !to_ty.is_integer() {
+                return Err(CodegenError::FailClosed(format!(
+                    "TryWidthCast FloatToInt requires float-to-integer types; got {} -> {}",
+                    from_ty.user_facing(),
+                    to_ty.user_facing()
+                )));
+            }
+            let src_float = expect_float_type(src_storage, "try-width float source")?;
+            let dest_int = expect_int_type(slot.payload_ty, "try-width int payload")?;
+            let src_v = fn_ctx
+                .builder
+                .build_load(src_float, src_ptr, "try_width_float_src")
+                .llvm_ctx("try-width float source load")?
+                .into_float_value();
+            let (payload, invalid) =
+                float_to_int_payload_and_invalid(fn_ctx, src_v, src_float, dest_int, to_ty)?;
+            write_try_width_option(
+                fn_ctx,
+                &slot,
+                invalid,
+                payload.into(),
+                "try-width float-to-int payload store",
             )
         }
         other => Err(CodegenError::FailClosed(format!(

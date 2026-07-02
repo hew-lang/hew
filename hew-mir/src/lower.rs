@@ -26726,7 +26726,22 @@ impl Builder {
             field_places.push(place);
             field_tys.push(self.subst_ty(&arg.ty));
         }
+        Some(self.pack_actor_payload_from_places(field_places, field_tys))
+    }
 
+    /// The pack half of [`Self::lower_packed_args_payload`]: mint the
+    /// module-unique packed-record layout and emit the `RecordInit` over
+    /// ALREADY-LOWERED argument places. Split out so the fungible-child tell
+    /// path can evaluate arguments before its liveness branch (argument
+    /// effects are user-visible and must not depend on child liveness) while
+    /// building the packed temp — whose bytes the `Send` alone consumes — on
+    /// the delivery edge only. Pure MIR construction: no user effect runs
+    /// here, so the emission point is free to move across control flow.
+    fn pack_actor_payload_from_places(
+        &mut self,
+        field_places: Vec<Place>,
+        field_tys: Vec<ResolvedTy>,
+    ) -> Place {
         let packed_id = self.next_closure_id;
         self.next_closure_id = self
             .next_closure_id
@@ -26767,7 +26782,7 @@ impl Builder {
             fields,
             dest,
         });
-        Some(dest)
+        dest
     }
 
     fn actor_method_info(
@@ -26828,8 +26843,8 @@ impl Builder {
     /// - Live (`tag == 0`)  → continues in the returned `live_bb` (cursor parked
     ///   there) with `handle_place` holding the CURRENT live child pointer.
     /// - not-Live (`tag != 0`) → branches to `recover_bb` (the caller wires the
-    ///   recoverable fail-closed path there — e.g. skip the tell, or build an
-    ///   `Err` for an ask).
+    ///   recoverable fail-closed path there — the tell releases its undelivered
+    ///   payload values and skips the Send).
     ///
     /// Because the pointer is fetched fresh under the slot lock at the instant of
     /// the send and used immediately in the same turn, the "valid only within the
@@ -26916,6 +26931,95 @@ impl Builder {
         (live_bb, recover_bb)
     }
 
+    /// Release one undelivered actor-tell payload value on the not-live
+    /// recover edge of a fungible supervisor-child send (#2126).
+    ///
+    /// The delivered edge's `Terminator::Send` is the payload's one consumer:
+    /// the mailbox takes ownership of the value's bytes (heap pointers
+    /// included), and the checker marks every send argument moved at the
+    /// boundary, so no scope-exit drop covers the value. When the liveness
+    /// branch takes the recover edge instead, the Send never runs — this
+    /// helper stands in for it, releasing exactly the ownership the delivered
+    /// edge would have consumed. The two edges are exclusive per send
+    /// execution, so the release runs exactly once.
+    ///
+    /// Shape dispatch, routed through the drop authorities:
+    /// - a type that does not seed drop elaboration
+    ///   (`binding_seeds_drop_elaboration` — the `BitCopy` spine) owns nothing;
+    ///   no instruction is emitted.
+    /// - a Wired leaf (`project_field_inline_drop_symbol`: `string`, `bytes`,
+    ///   `Vec` with a wired element release, `HashMap`, `HashSet`, generator
+    ///   handles) releases through one whole-value `Instr::Drop` — the same
+    ///   inline release the overwrite path emits for these shapes. A static
+    ///   string literal is safe here: `hew_string_drop` skips read-only
+    ///   segment pointers via its `is_static_string` guard.
+    /// - an Unwired `Vec` (element release protocol unwired) is refused fail
+    ///   closed, per the picker contract ("a `Wired`-gated pre-flight can no
+    ///   longer admit the buffer-only free"). Unreachable today: a receive
+    ///   handler parameter of such a type is already rejected by the
+    ///   scope-exit element scan in the handler's own body, so no tell can
+    ///   target one — defence in depth, not a live diagnostic.
+    /// - everything else returns with no instruction. The seed gate already
+    ///   excluded `BitCopy`, so this arm is a View/handle shape with no release
+    ///   obligation at this seam (e.g. an actor pid) — or an owned aggregate:
+    ///   SHIM(F-04 recover-path aggregate payload): an owned-aggregate
+    ///   payload (user record / tuple / enum with heap fields) has no inline
+    ///   whole-value release — its drop kinds (`RecordInPlace` /
+    ///   `TupleInPlace` / `EnumInPlace`) are function-scope drop-plan
+    ///   entries, not inline `Instr::Drop`s — so an undelivered aggregate
+    ///   payload still leaks its heap fields on the not-live edge. WHY: the
+    ///   leak is bounded to restart/shutdown windows and refusing the shape
+    ///   would reject every record tell through a supervisor child. WHEN
+    ///   obsolete: when the type-directed drop-table consolidation gives
+    ///   aggregates a whole-value release emittable at an arbitrary
+    ///   instruction position. WHAT: route this arm through that whole-value
+    ///   drop instead of returning empty-handed.
+    fn emit_undelivered_send_payload_release(
+        &mut self,
+        place: Place,
+        ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+    ) -> Option<()> {
+        let ty = self.subst_ty(ty);
+        if !self.binding_seeds_drop_elaboration(&ty) {
+            return Some(());
+        }
+        match self.project_field_inline_drop_symbol(&ty) {
+            ReleaseSymbolVerdict::Wired(symbol) => {
+                self.push_instr(Instr::Drop {
+                    place,
+                    ty,
+                    drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
+                });
+                Some(())
+            }
+            ReleaseSymbolVerdict::Unwired(_) => {
+                let elem = self
+                    .unsupported_vec_element_in_ty(&ty)
+                    .unwrap_or_else(|| format!("`{}`", ty.user_facing()));
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: format!(
+                            "actor tell payload: a `Vec` whose element is {elem} has no \
+                             per-element release protocol, so a send skipped at a \
+                             not-live supervisor child would leak its heap nodes"
+                        ),
+                        site,
+                    },
+                    note: "a `Vec` of `bytes` or of an indirect-enum element cannot yet \
+                           be released element-by-element, and a fungible-child tell \
+                           must free an undelivered payload on the not-live recover \
+                           edge. This construction is rejected at compile rather than \
+                           silently leaked, and becomes available once the per-element \
+                           release is wired."
+                        .to_string(),
+                });
+                None
+            }
+            ReleaseSymbolVerdict::NoDropPath => Some(()),
+        }
+    }
+
     fn lower_actor_send(
         &mut self,
         receiver: &HirExpr,
@@ -26943,7 +27047,32 @@ impl Builder {
             return None;
         }
         let actor = self.lower_value(receiver)?;
-        let value = self.lower_actor_payload(args, site)?;
+        let child_ref = self.fungible_child_ref_of(actor);
+        // Argument evaluation stays HERE, in the pre-branch block: an argument
+        // expression's effects are user-visible and must run whether or not a
+        // fungible child is live — the liveness branch below decides DELIVERY,
+        // never evaluation.
+        let mut lowered: Vec<(Place, ResolvedTy)> = Vec::with_capacity(args.len());
+        for arg in args {
+            let place = self.lower_value(arg)?;
+            let ty = self.subst_ty(&arg.ty);
+            lowered.push((place, ty));
+        }
+        // The payload Place. Zero args: a unit local (owns nothing). One arg:
+        // the argument's own place — no pack exists. Multi-arg: the packed
+        // anonymous record; through a FUNGIBLE child reference the pack is
+        // deferred into `live_bb` below, so the packed temp — whose bytes the
+        // `Send` alone consumes — is never built on the discard path.
+        let mut value = match &lowered[..] {
+            [] => Some(self.alloc_local(ResolvedTy::Unit)),
+            [(place, _)] => Some(*place),
+            _ => None,
+        };
+        if value.is_none() && child_ref.is_none() {
+            let (field_places, field_tys): (Vec<Place>, Vec<ResolvedTy>) =
+                lowered.iter().cloned().unzip();
+            value = Some(self.pack_actor_payload_from_places(field_places, field_tys));
+        }
         let next = self.alloc_block();
         // F-04: a fire-and-forget send through a FUNGIBLE supervisor-child
         // reference re-resolves the current live child at the send site. On a
@@ -26951,31 +27080,33 @@ impl Builder {
         // a recoverable no-op (the message is dropped, NOT a program-killing
         // trap) — the tell's contract is best-effort delivery, so dropping into a
         // restart window is the correct recoverable behaviour. The `recover_bb`
-        // joins straight to `next` so control flow continues normally; `live_bb`
-        // becomes the current cursor where the Send terminator is emitted with the
-        // freshly-resolved child pointer.
-        if let Some(child_ref) = self.fungible_child_ref_of(actor) {
+        // releases the undelivered payload values (#2126) and joins straight to
+        // `next` so control flow continues normally; `live_bb` becomes the
+        // current cursor where the multi-arg pack (if any) is built and the Send
+        // terminator is emitted with the freshly-resolved child pointer.
+        if let Some(child_ref) = child_ref {
             let (live_bb, recover_bb) = self.emit_fungible_reresolve(child_ref, actor);
-            // recover_bb: not-live → drop the tell and continue.
-            // SHIM(F-04 recover-path payload): the recover edge skips the Send,
-            //   so a heap-owning payload (e.g. an owned `string`) packed into the
-            //   non-binding payload temp is neither delivered nor freed → a leak
-            //   on the not-live path. The integer/BitCopy spine (every supervisor
-            //   example + the dogfood case) is unaffected.
-            // WHY now: payload-drop on the recover edge needs drop-elaboration
-            //   threaded into recover_bb; that is a larger change than this fix,
-            //   and the pre-F-04 behaviour leaked-by-aborting (the trap killed the
-            //   whole process), so this is not a regression for the common case.
-            // WHEN obsolete: when a heap-payload tell to a supervised child is a
-            //   supported, exercised shape.
-            // WHAT: elaborate the payload's owned drop into recover_bb before the
-            //   Goto (mirror the Send-fail path's owner release), or hoist the
-            //   payload pack into live_bb so it is only built on delivery.
+            // recover_bb: not-live → the Send is skipped, so nothing consumes
+            // the already-evaluated argument values. Release each one exactly
+            // as the delivered edge would have consumed it (the two edges are
+            // exclusive, so the release runs exactly once), then continue.
             self.start_block(recover_bb);
+            for (place, ty) in &lowered {
+                self.emit_undelivered_send_payload_release(*place, ty, site)?;
+            }
             self.finish_current_block(Terminator::Goto { target: next });
-            // live_bb: the freshly-resolved current child; the Send below targets it.
+            // live_bb: the freshly-resolved current child; the Send below
+            // targets it. The multi-arg pack is built here, on the delivery
+            // edge only (pure MIR construction over the pre-branch argument
+            // places — no user effect moves across the branch).
             self.start_block(live_bb);
+            if value.is_none() {
+                let (field_places, field_tys): (Vec<Place>, Vec<ResolvedTy>) =
+                    lowered.into_iter().unzip();
+                value = Some(self.pack_actor_payload_from_places(field_places, field_tys));
+            }
         }
+        let value = value.expect("payload place is populated for every arity above");
         // Determine alias mode: look up the first argument's span in the
         // checker's `actor_send_aliasing` map.  Only an explicit `Alias`
         // classification promotes the mode; every `Copy(reason)` variant and

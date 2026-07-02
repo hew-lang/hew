@@ -717,7 +717,7 @@ fn remote_ask_round_trip_returns_exact_values() {
 
 /// `StaleRef` supersession: a captured `RemotePid<T>` fails closed with `StaleRef` once
 /// its registration is superseded by a re-registration of the same name to a
-/// DIFFERENT actor — on both `tell` and `ask`, across two OS processes.
+/// DIFFERENT actor — on both `send` and `ask`, across two OS processes.
 ///
 /// The client looks up "kv" (capturing the original actor's pid), the server
 /// re-points "kv" to a fresh actor (unregister + re-register, which supersedes
@@ -732,11 +732,11 @@ fn captured_remote_ref_fails_closed_with_stale_ref_after_repoint() {
     let stdout = run_two_process_scenario("stale_ref");
 
     assert!(
-        stdout.contains("PASS stale_ref tell=stale ask=stale"),
-        "expected the captured ref to go StaleRef on both tell and ask after the \
+        stdout.contains("PASS stale_ref send=stale ask=stale"),
+        "expected the captured ref to go StaleRef on both send and ask after the \
          server re-pointed the name; client stdout:\n{stdout}"
     );
-    // Negative guard: no FAIL line — in particular not `tell-never-stale` (the ref
+    // Negative guard: no FAIL line — in particular not `send-never-stale` (the ref
     // kept delivering to the replacement) or a wrong-error discriminant.
     assert!(
         !stdout.contains("FAIL "),

@@ -138,6 +138,26 @@ fn test_try_to_int_to_float_requires_exact_representation() {
 }
 
 #[test]
+fn test_try_to_int_to_float_rejects_type_max_boundary() {
+    // sitofp/uitofp rounds each type's MAX up past the type's own range
+    // (e.g. i32::MAX = 2^31-1 rounds to 2^31 in f32); a saturating
+    // back-conversion alone would clamp that back to MAX and spuriously
+    // report an exact round-trip. These pin the boundary the round-trip
+    // check cannot see on its own.
+    let max_i32: i32 = 2147483647;
+    expect_none_f32(max_i32.try_to_f32());
+
+    let max_u32: u32 = 4294967295;
+    expect_none_f32(max_u32.try_to_f32());
+
+    let max_i64: i64 = 9223372036854775807;
+    expect_none_f64(max_i64.try_to_f64());
+
+    let max_u64: u64 = (-1) as u64;
+    expect_none_f64(max_u64.try_to_f64());
+}
+
+#[test]
 fn test_try_to_float_to_float_requires_exact_representation() {
     let precise: f64 = 0.1;
     expect_none_f32(precise.try_to_f32());

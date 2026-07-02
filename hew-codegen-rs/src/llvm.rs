@@ -15056,8 +15056,51 @@ fn int_to_float_payload_and_invalid<'ctx>(
             .build_unsigned_int_to_float(src_v, dest_float, "try_width_uint_to_float")
             .llvm_ctx("try-width unsigned int to float")?,
     };
+
+    // sitofp/uitofp rounds to the nearest representable float. At the top of
+    // the source integer type's range this can round the payload UP past the
+    // type's own MAX (or below MIN); the saturating fptosi.sat/fptoui.sat
+    // used below to prove the round-trip then clamps that out-of-range float
+    // back down to MAX/MIN, which spuriously equals `src_v` even though
+    // `payload` is not the exact source value. Guard against this directly
+    // with the same exact-power-of-two range check
+    // `float_to_int_payload_and_invalid` uses — the bounds are powers of two,
+    // always exactly representable in any IEEE float format, so this
+    // comparison cannot itself be inexact — instead of trusting the
+    // saturating back-conversion alone.
+    let src_bits = src_int.get_bit_width();
+    let (lower, upper_exclusive) = if from_ty.is_signed_integer() {
+        (
+            -2.0_f64.powi((src_bits - 1) as i32),
+            2.0_f64.powi((src_bits - 1) as i32),
+        )
+    } else {
+        (0.0, 2.0_f64.powi(src_bits as i32))
+    };
+    let lower_const = dest_float.const_float(lower);
+    let upper_const = dest_float.const_float(upper_exclusive);
+    let below = fn_ctx
+        .builder
+        .build_float_compare(
+            FloatPredicate::OLT,
+            payload,
+            lower_const,
+            "try_width_int_float_below",
+        )
+        .llvm_ctx("try-width int-float lower-bound compare")?;
+    let above = fn_ctx
+        .builder
+        .build_float_compare(
+            FloatPredicate::OGE,
+            payload,
+            upper_const,
+            "try_width_int_float_above",
+        )
+        .llvm_ctx("try-width int-float upper-bound compare")?;
+    let out_of_range = or_i1(fn_ctx, below, above, "try_width_int_float_out_of_range")?;
+
     let roundtrip = float_to_int_sat_value(fn_ctx, dest_float, src_int, payload, from_ty)?;
-    let invalid = fn_ctx
+    let inexact = fn_ctx
         .builder
         .build_int_compare(
             IntPredicate::NE,
@@ -15066,6 +15109,7 @@ fn int_to_float_payload_and_invalid<'ctx>(
             "try_width_int_float_inexact",
         )
         .llvm_ctx("try-width int-float roundtrip compare")?;
+    let invalid = or_i1(fn_ctx, out_of_range, inexact, "try_width_int_float_invalid")?;
     Ok((payload, invalid))
 }
 

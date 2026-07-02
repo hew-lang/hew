@@ -2,10 +2,12 @@
 //!
 //! This module hosts the *semantic* lint layer — idiom / code-smell findings
 //! that need more than syntax (def-use, types) and therefore live in the
-//! compiler rather than in the syntactic ast-grep rule set. Lints are
-//! non-fatal by default: each is emitted through the checker's existing
-//! [`TypeError`] warning channel ([`super::TypeCheckOutput::warnings`]), which
-//! already reaches the CLI, the LSP, and the website with no extra plumbing.
+//! compiler rather than in the syntactic ast-grep rule set. Most lints are
+//! non-fatal by default, while narrowly-scoped correctness/security lints may be
+//! `Deny` by default. The Trojan-Source text-direction lint uses a fixed
+//! UAX #9 explicit-formatting codepoint set with no legitimate Hew-comment use,
+//! so it fails closed for the CVE-2021-42574 class instead of emitting a warning
+//! heuristic.
 //!
 //! ## Public surface (for the CLI / suppression integration)
 //!
@@ -50,6 +52,7 @@ mod needless_match_to_if_let;
 mod needless_range_loop;
 mod redundant_else_after_return;
 mod sleep_loop_blocks_mailbox;
+mod trojan_source;
 
 /// Stable identifier for a single compiler lint.
 ///
@@ -99,6 +102,12 @@ pub enum LintId {
     /// concrete handle dispatch uses the handler while generic pid dispatch keeps
     /// the builtin method surface.
     ActorHandleBuiltinShadow,
+    /// A comment contains one of Unicode's explicit bidirectional text controls,
+    /// which can visually reorder source around the bytes the compiler sees.
+    TextDirectionCodepointInComment,
+    /// A comment contains an invisible/default-ignorable Unicode codepoint that
+    /// can hide text or create visually indistinguishable source.
+    InvisibleCodepointInComment,
     // NOTE: a `clean_counter` lint (a loop-carried accumulator that is
     // incremented but never read after the loop) is deliberately NOT registered
     // here. It has no emission code yet, and registering an un-emitted lint
@@ -125,6 +134,8 @@ impl LintId {
         LintId::MustUse,
         LintId::SleepLoopBlocksMailbox,
         LintId::ActorHandleBuiltinShadow,
+        LintId::TextDirectionCodepointInComment,
+        LintId::InvisibleCodepointInComment,
     ];
 
     /// The stable, lowercase string name for this lint.
@@ -146,6 +157,8 @@ impl LintId {
             LintId::MustUse => "must_use",
             LintId::SleepLoopBlocksMailbox => "sleep_loop_blocks_mailbox",
             LintId::ActorHandleBuiltinShadow => "actor_handle_builtin_shadow",
+            LintId::TextDirectionCodepointInComment => "text_direction_codepoint_in_comment",
+            LintId::InvisibleCodepointInComment => "invisible_codepoint_in_comment",
         }
     }
 
@@ -173,7 +186,9 @@ impl LintId {
             | LintId::DeadStore
             | LintId::MustUse
             | LintId::SleepLoopBlocksMailbox
-            | LintId::ActorHandleBuiltinShadow => LintLevel::Warn,
+            | LintId::ActorHandleBuiltinShadow
+            | LintId::InvisibleCodepointInComment => LintLevel::Warn,
+            LintId::TextDirectionCodepointInComment => LintLevel::Deny,
         }
     }
 }
@@ -491,6 +506,20 @@ fn shadowed_actor_handle_builtin(name: &str) -> Option<&'static str> {
         "ask" => Some("`RemotePid<T>::ask`"),
         _ => None,
     }
+}
+
+/// Run source-text lints over one module's raw source.
+///
+/// Invoked once per module by [`super::Checker::run_lints`], outside the
+/// per-body sweep, so comments before, between, and after items are scanned
+/// exactly once.
+pub(super) fn lint_source(
+    ctx: &LintCtx,
+    levels: &LintLevels,
+    source: &str,
+    out: &mut Vec<TypeError>,
+) {
+    trojan_source::check(ctx, levels, source, out);
 }
 
 // ── shared read-only body walker ─────────────────────────────────────

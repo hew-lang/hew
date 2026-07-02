@@ -1405,6 +1405,20 @@ fn check_with_lint_level(source: &str, id: LintId, level: LintLevel) -> TypeChec
     checker.check_program(&parsed.program)
 }
 
+fn check_with_lint_defaults(source: &str) -> TypeCheckOutput {
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "fixture should parse cleanly: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let mut sources = LintSources::new();
+    sources.set_root(source.to_string());
+    checker.set_lint_sources(sources);
+    checker.check_program(&parsed.program)
+}
+
 // ---- redundant_else_after_return ----
 
 fn count_redundant_else(diags: &[TypeError]) -> usize {
@@ -4010,6 +4024,183 @@ fn sleep_loop_blocks_mailbox_deny_routes_to_errors() {
         out.errors
     );
     assert_eq!(count_sleep_loop_blocks_mailbox(&out.warnings), 0);
+}
+
+// -----------------------------------------------------------------------
+// comment-side Trojan-Source lints
+// -----------------------------------------------------------------------
+
+fn count_text_direction_codepoint(diags: &[TypeError]) -> usize {
+    diags
+        .iter()
+        .filter(|d| d.kind == TypeErrorKind::Lint(LintId::TextDirectionCodepointInComment))
+        .count()
+}
+
+fn count_invisible_codepoint(diags: &[TypeError]) -> usize {
+    diags
+        .iter()
+        .filter(|d| d.kind == TypeErrorKind::Lint(LintId::InvisibleCodepointInComment))
+        .count()
+}
+
+#[test]
+fn text_direction_codepoint_flags_line_comment_by_default_as_error() {
+    let out = check_with_lint_defaults("// \u{202E}\nfn main() {}\n");
+    let hit = out
+        .errors
+        .iter()
+        .find(|e| e.kind == TypeErrorKind::Lint(LintId::TextDirectionCodepointInComment))
+        .expect("RLO in a line comment must be denied by default");
+    assert_eq!(hit.severity, crate::error::Severity::Error);
+    assert_eq!(count_text_direction_codepoint(&out.warnings), 0);
+}
+
+#[test]
+fn text_direction_codepoint_flags_outer_doc_comment() {
+    let out = check_with_lint_defaults("/// \u{202E}\nfn main() {}\n");
+    assert_eq!(
+        count_text_direction_codepoint(&out.errors),
+        1,
+        "outer doc comments are source comments for this lint: {:?}",
+        out.errors
+    );
+}
+
+#[test]
+fn text_direction_codepoint_flags_inner_doc_comment() {
+    let out = check_with_lint_defaults("//! \u{202E}\nfn main() {}\n");
+    assert_eq!(
+        count_text_direction_codepoint(&out.errors),
+        1,
+        "inner doc comments are source comments for this lint: {:?}",
+        out.errors
+    );
+}
+
+#[test]
+fn text_direction_codepoint_flags_nested_block_comment() {
+    let out = check_with_lint_defaults("/* outer /* inner \u{2066} */ done */\nfn main() {}\n");
+    assert_eq!(
+        count_text_direction_codepoint(&out.errors),
+        1,
+        "nested block comments must be scanned once: {:?}",
+        out.errors
+    );
+}
+
+#[test]
+fn invisible_codepoint_flags_zero_width_space_without_bidi_duplication() {
+    let out = check_with_lint_defaults("// hidden\u{200B}gap\nfn main() {}\n");
+    assert_eq!(
+        count_invisible_codepoint(&out.warnings),
+        1,
+        "zero-width space should warn: {:?}",
+        out.warnings
+    );
+    assert_eq!(count_invisible_codepoint(&out.errors), 0);
+    assert_eq!(count_text_direction_codepoint(&out.errors), 0);
+    assert_eq!(count_text_direction_codepoint(&out.warnings), 0);
+}
+
+#[test]
+fn comment_lints_allow_readable_non_ascii_prose() {
+    let out = check_with_lint_defaults(
+        "// café — déjà vu, naïve façade\n// 世界 😀 → value\nfn main() {}\n",
+    );
+    assert_eq!(count_text_direction_codepoint(&out.errors), 0);
+    assert_eq!(count_text_direction_codepoint(&out.warnings), 0);
+    assert_eq!(count_invisible_codepoint(&out.errors), 0);
+    assert_eq!(count_invisible_codepoint(&out.warnings), 0);
+}
+
+#[test]
+fn comment_lints_do_not_scan_literal_content() {
+    // Issue #2109 scopes this lint to comments; literal output escaping is owned
+    // by the formatter, so raw literal content is a boundary case here.
+    let out = check_with_lint_defaults(
+        "fn main() {\n    let _url = \"http://example.com\";\n    let _s = \"\u{202E}\";\n}\n",
+    );
+    assert_eq!(count_text_direction_codepoint(&out.errors), 0);
+    assert_eq!(count_text_direction_codepoint(&out.warnings), 0);
+    assert_eq!(count_invisible_codepoint(&out.errors), 0);
+    assert_eq!(count_invisible_codepoint(&out.warnings), 0);
+}
+
+#[test]
+fn source_comment_scan_runs_once_per_module() {
+    let out = check_with_lint_defaults(
+        "// top \u{202E}\nfn a() {}\nfn b() {}\nfn main() { a(); b(); }\n",
+    );
+    assert_eq!(
+        count_text_direction_codepoint(&out.errors),
+        1,
+        "a top-of-file comment must not be re-scanned for each item: {:?}",
+        out.errors
+    );
+}
+
+#[test]
+fn text_direction_codepoint_suppressed_by_directive_above_comment() {
+    let out = check_with_lint_defaults(
+        "// hew:allow(text_direction_codepoint_in_comment)\n// \u{202E}\nfn main() {}\n",
+    );
+    assert_eq!(count_text_direction_codepoint(&out.errors), 0);
+    assert_eq!(count_text_direction_codepoint(&out.warnings), 0);
+}
+
+#[test]
+fn text_direction_codepoint_warn_level_routes_to_warnings() {
+    let out = check_with_lint_level(
+        "// \u{202E}\nfn main() {}\n",
+        LintId::TextDirectionCodepointInComment,
+        LintLevel::Warn,
+    );
+    assert_eq!(count_text_direction_codepoint(&out.errors), 0);
+    assert_eq!(
+        count_text_direction_codepoint(&out.warnings),
+        1,
+        "explicit warn should downgrade the deny-default lint: {:?}",
+        out.warnings
+    );
+}
+
+#[test]
+fn text_direction_codepoint_allow_level_suppresses() {
+    let out = check_with_lint_level(
+        "// \u{202E}\nfn main() {}\n",
+        LintId::TextDirectionCodepointInComment,
+        LintLevel::Allow,
+    );
+    assert_eq!(count_text_direction_codepoint(&out.errors), 0);
+    assert_eq!(count_text_direction_codepoint(&out.warnings), 0);
+}
+
+#[test]
+fn invisible_codepoint_deny_level_routes_to_errors() {
+    let out = check_with_lint_level(
+        "// hidden\u{FE0F}\nfn main() {}\n",
+        LintId::InvisibleCodepointInComment,
+        LintLevel::Deny,
+    );
+    assert_eq!(
+        count_invisible_codepoint(&out.errors),
+        1,
+        "explicit deny should promote the invisible-codepoint lint: {:?}",
+        out.errors
+    );
+    assert_eq!(count_invisible_codepoint(&out.warnings), 0);
+}
+
+#[test]
+fn invisible_codepoint_allow_level_suppresses() {
+    let out = check_with_lint_level(
+        "// hidden\u{FE0F}\nfn main() {}\n",
+        LintId::InvisibleCodepointInComment,
+        LintLevel::Allow,
+    );
+    assert_eq!(count_invisible_codepoint(&out.errors), 0);
+    assert_eq!(count_invisible_codepoint(&out.warnings), 0);
 }
 
 // -----------------------------------------------------------------------

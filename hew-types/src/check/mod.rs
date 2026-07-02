@@ -840,9 +840,10 @@ impl Checker {
     /// Run the semantic lint sweep over every function/method body in the
     /// program and collect findings into `out`.
     ///
-    /// Read-only over checker state (`&self`): it walks each item's bodies,
-    /// builds a [`lints::LintCtx`] carrying the resolved-type facts, and tags
-    /// each body with the right `module_idx` / `source_module`. The module
+    /// Read-only over checker state (`&self`): it scans each module's raw source
+    /// once, walks each item's bodies, builds a [`lints::LintCtx`] carrying the
+    /// resolved-type facts, and tags each finding with the right `module_idx` /
+    /// `source_module`. The module
     /// walk mirrors `classify_closure_escapes` and the body-check loop in
     /// [`Checker::check_program`] (root items at index 0, then each non-root
     /// module in topo order at a 1-based index, with the same dotted module
@@ -850,6 +851,9 @@ impl Checker {
     /// and diagnostics route to the correct source file. Severity routing
     /// (`Deny` → error, otherwise warning) is left to the caller.
     pub fn run_lints(&self, program: &Program, levels: &LintLevels, out: &mut Vec<TypeError>) {
+        if let Some(source) = self.lint_sources.source_for(None) {
+            self.lint_source(source, 0, None, levels, out);
+        }
         for (item, _) in &program.items {
             self.lint_item(item, 0, None, levels, out);
         }
@@ -890,11 +894,34 @@ impl Checker {
                     continue;
                 }
                 let module_name = mod_id.path.join(".");
+                if let Some(source) = self.lint_sources.source_for(Some(&module_name)) {
+                    self.lint_source(source, module_idx, Some(&module_name), levels, out);
+                }
                 for (item, _) in &module.items {
                     self.lint_item(item, module_idx, Some(&module_name), levels, out);
                 }
             }
         }
+    }
+
+    /// Lint a module's raw source text once, for findings that do not live in
+    /// the AST body structure (such as comments).
+    fn lint_source(
+        &self,
+        source: &str,
+        module_idx: u32,
+        source_module: Option<&str>,
+        levels: &LintLevels,
+        out: &mut Vec<TypeError>,
+    ) {
+        let ctx = lints::LintCtx {
+            subst: &self.subst,
+            expr_types: &self.expr_types,
+            module_idx,
+            source_module,
+            source: Some(source),
+        };
+        lints::lint_source(&ctx, levels, source, out);
     }
 
     /// Lint every body carried by a single top-level item (mirrors

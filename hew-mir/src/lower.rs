@@ -39811,7 +39811,9 @@ fn binder_read_is_borrow_safe_terminator(
     // by-value tail (arg[1..]) genuinely escapes. `binder` is borrow-safe iff it
     // never appears past arg[0].
     if let Terminator::Call { callee, args, .. } = term {
-        if is_collection_borrow_receiver_symbol(callee) {
+        if crate::runtime_symbols::callee_ownership_contract(callee)
+            .borrows_collection_binder_receiver()
+        {
             return !args
                 .iter()
                 .skip(1)
@@ -39828,7 +39830,9 @@ fn binder_read_is_borrow_safe_terminator(
 /// `false` unless the only references to `binder` are the borrowed receiver.
 fn binder_read_is_borrow_safe_instr(instr: &Instr, binder: u32) -> bool {
     if let Instr::CallRuntimeAbi(call) = instr {
-        if is_collection_borrow_receiver_symbol(call.symbol()) {
+        if crate::runtime_symbols::callee_ownership_contract(call.symbol())
+            .borrows_collection_binder_receiver()
+        {
             return !call
                 .args()
                 .iter()
@@ -43287,8 +43291,22 @@ mod owned_record_drop_derivation {
         ResolvedTy::named_user("Rec", vec![])
     }
 
+    fn vec_string_ty() -> ResolvedTy {
+        ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::String])
+    }
+
     fn is_rec(ty: &ResolvedTy) -> bool {
         matches!(ty, ResolvedTy::Named { name, .. } if name == "Rec")
+    }
+
+    fn is_vec_handle(ty: &ResolvedTy) -> bool {
+        matches!(
+            ty,
+            ResolvedTy::Named {
+                builtin: Some(BuiltinType::Vec),
+                ..
+            }
+        )
     }
 
     fn block(id: u32, instructions: Vec<Instr>, terminator: Terminator) -> BasicBlock {
@@ -43441,6 +43459,79 @@ mod owned_record_drop_derivation {
             !allowed.contains(&b),
             "an owned field loaded out and returned escaped the record; the \
              record must be excluded to avoid double-freeing it; got {allowed:?}"
+        );
+    }
+
+    /// `hew_vec_push_owned` / `hew_vec_set_owned` copy their element into the
+    /// destination Vec. The collection-local prover exempts that element operand,
+    /// while composite binder scans still treat the tail operand as an escape.
+    #[test]
+    fn vec_copy_in_tail_split_keeps_local_candidate_but_excludes_composite_binder() {
+        let callee = "hew_vec_push_owned";
+        let call_builtin = hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(callee);
+
+        let record = BindingId(10);
+        let record_owned = vec![(record, "r".to_string(), rec_ty())];
+        let record_binding_locals: HashMap<BindingId, Place> =
+            [(record, Place::Local(0))].into_iter().collect();
+        let record_local_tys = vec![rec_ty(), vec_string_ty(), vec_string_ty()];
+        let record_blocks = vec![block(
+            0,
+            vec![Instr::RecordFieldLoad {
+                record: Place::Local(0),
+                field_offset: FieldOffset(0),
+                dest: Place::Local(1),
+            }],
+            Terminator::Call {
+                callee: callee.to_string(),
+                builtin: call_builtin,
+                args: vec![Place::Local(2), Place::Local(1)],
+                dest: None,
+                next: 1,
+            },
+        )];
+
+        let record_allowed = derive(
+            &record_blocks,
+            &record_owned,
+            &record_binding_locals,
+            &record_local_tys,
+        );
+        assert!(
+            !record_allowed.contains(&record),
+            "a composite field binder used as the copy-in element operand is a \
+             tail read and must exclude the composite; allowed: {record_allowed:?}"
+        );
+
+        let elem = BindingId(11);
+        let collection_owned = vec![(elem, "elem".to_string(), vec_string_ty())];
+        let collection_binding_locals: HashMap<BindingId, Place> =
+            [(elem, Place::Local(1))].into_iter().collect();
+        let collection_blocks = vec![BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Call {
+                callee: callee.to_string(),
+                builtin: call_builtin,
+                args: vec![Place::Local(2), Place::Local(1)],
+                dest: None,
+                next: 1,
+            },
+        }];
+
+        let collection_allowed = derive_local_collection_drop_allowed(
+            &collection_blocks,
+            &HashMap::new(),
+            &collection_owned,
+            &collection_binding_locals,
+            is_vec_handle,
+        );
+        assert!(
+            collection_allowed.contains(&elem),
+            "a local collection candidate used as the copy-in element operand is \
+             borrowed for clone and must keep its drop admission; allowed: \
+             {collection_allowed:?}"
         );
     }
 

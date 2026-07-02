@@ -353,6 +353,47 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/sandbox-graduation/const_reference.hew",
         accepted_divergences: &[],
     },
+    ParityCase {
+        test_name: "logical_binary_operators",
+        source_rel: "examples/sandbox-graduation/logical_binary_operators.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "bitwise_binary_operators",
+        source_rel: "examples/sandbox-graduation/bitwise_binary_operators.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "compound_bitwise_assign",
+        source_rel: "examples/sandbox-graduation/compound_bitwise_assign.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "shift_out_of_range",
+        source_rel: "examples/sandbox-graduation/shift_out_of_range.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "struct_destructure_let",
+        source_rel: "examples/sandbox-graduation/struct_destructure_let.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "record_shorthand_destructure_let",
+        source_rel: "examples/sandbox-graduation/record_shorthand_destructure_let.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "nested_tuple_destructure_let",
+        source_rel: "examples/sandbox-graduation/nested_tuple_destructure_let.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        // IS: parity covers non-overflow values; the wraparound boundary is tracked in #2341.
+        test_name: "wrapping_binary_operators",
+        source_rel: "examples/sandbox-graduation/wrapping_binary_operators.hew",
+        accepted_divergences: &[],
+    },
 ];
 
 #[derive(Debug, Clone, Copy)]

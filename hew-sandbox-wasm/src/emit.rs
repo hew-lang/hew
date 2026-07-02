@@ -5,7 +5,7 @@ use hew_parser::ast::{
     Item, Literal, MatchArm, Pattern, Program, ReceiveFnDecl, Spanned, Stmt, TypeBodyItem,
     TypeDeclKind, VariantKind,
 };
-use hew_types::check::{PatternKind, SpanKey, TypeDefKind, VariantDef};
+use hew_types::check::{SpanKey, TypeDefKind, VariantDef};
 use hew_types::{BuiltinType, Ty};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -1367,76 +1367,24 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         span: std::ops::Range<usize>,
     ) -> Result<(), CompileError> {
         match stmt {
-            Stmt::Let { pattern, value, .. } => {
-                if let Pattern::Identifier(name) = &pattern.0 {
-                    if let Some(value) = value {
-                        let value_local = self.lower_expr(value)?;
-                        let ty = self.ty_for_expr(value);
-                        let local = self.declare_local(
-                            Some(name.clone()),
-                            &ty,
-                            false,
-                            Some(pattern.1.clone()),
-                        );
-                        self.emit_instruction(
-                            "local.set",
-                            None,
-                            vec![Operand::local(local.clone()), Operand::local(value_local)],
-                            Some(span),
-                            None,
-                        );
-                        self.bindings.insert(name.clone(), local);
-                    }
-                } else if let Pattern::Tuple(sub_patterns) = &pattern.0 {
-                    // Tuple destructure: `let (a, b, c) = expr;`
-                    // The tuple was lowered as an anonymous record with positional
-                    // fields _0, _1, …; emit `record.get` at each index and bind
-                    // each sub-pattern's identifier.  Only `Pattern::Identifier`
-                    // and `Pattern::Wildcard` sub-patterns are supported here;
-                    // nested destructure hits emit_unsupported.
-                    if let Some(value) = value {
-                        let value_local = self.lower_expr(value)?;
-                        let tuple_ty = self.ty_for_expr(value);
-                        let elem_tys: Vec<Ty> = match &tuple_ty {
-                            Ty::Tuple(items) => items.clone(),
-                            _ => vec![],
-                        };
-                        let sub_patterns = sub_patterns.clone();
-                        for (i, sub_pat) in sub_patterns.iter().enumerate() {
-                            match &sub_pat.0 {
-                                Pattern::Identifier(name) => {
-                                    let elem_ty = elem_tys.get(i).cloned().unwrap_or(Ty::Unit);
-                                    let dst = self.declare_local(
-                                        Some(name.clone()),
-                                        &elem_ty,
-                                        false,
-                                        Some(sub_pat.1.clone()),
-                                    );
-                                    self.emit_instruction(
-                                        "record.get",
-                                        Some(dst.clone()),
-                                        vec![
-                                            Operand::local(value_local.clone()),
-                                            Operand::literal(i as u64),
-                                        ],
-                                        Some(span.clone()),
-                                        None,
-                                    );
-                                    self.bindings.insert(name.clone(), dst);
-                                }
-                                Pattern::Wildcard => {
-                                    // discard element — no binding needed
-                                }
-                                _ => {
-                                    // nested destructure not yet supported
-                                    self.emit_unsupported(Some(span.clone()));
-                                    return Ok(());
-                                }
-                            }
-                        }
-                    }
-                } else {
+            Stmt::Let {
+                pattern,
+                value,
+                else_block,
+                ..
+            } => {
+                if else_block.is_some() {
                     self.emit_unsupported(Some(span));
+                    return Ok(());
+                }
+                if let Some(value) = value {
+                    let value_local = self.lower_expr(value)?;
+                    let ty = self.ty_for_expr(value);
+                    if self.pattern_is_unconditional(pattern, &ty) {
+                        self.bind_pattern_payloads(pattern, &value_local, &ty);
+                    } else {
+                        self.emit_unsupported(Some(span));
+                    }
                 }
             }
             Stmt::Var {
@@ -1546,17 +1494,11 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                                 CompoundAssignOp::Multiply => "i64.checked_mul",
                                 CompoundAssignOp::Divide => "i64.checked_div",
                                 CompoundAssignOp::Modulo => "i64.checked_rem",
-                                // Bitwise and shift forms are integer-only; admit them
-                                // to the arithmetic path when an opcode exists, trap
-                                // otherwise so learners get a named failure.
-                                CompoundAssignOp::BitAnd
-                                | CompoundAssignOp::BitOr
-                                | CompoundAssignOp::BitXor
-                                | CompoundAssignOp::Shl
-                                | CompoundAssignOp::Shr => {
-                                    self.emit_unsupported(Some(span));
-                                    return Ok(());
-                                }
+                                CompoundAssignOp::BitAnd => "i64.and",
+                                CompoundAssignOp::BitOr => "i64.or",
+                                CompoundAssignOp::BitXor => "i64.xor",
+                                CompoundAssignOp::Shl => "i64.shl",
+                                CompoundAssignOp::Shr => "i64.shr",
                             };
                             // Emit `local.get current, binding` to read the current value.
                             let current_ty = self.ty_for_expr(target);
@@ -2407,6 +2349,12 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         right: &Spanned<Expr>,
         span: std::ops::Range<usize>,
     ) -> Result<String, CompileError> {
+        match op {
+            BinaryOp::And => return self.lower_logical_and(left, right, span),
+            BinaryOp::Or => return self.lower_logical_or(left, right, span),
+            _ => {}
+        }
+
         let left_local = self.lower_expr(left)?;
         let right_local = self.lower_expr(right)?;
         // Arithmetic opcodes are type-directed: the native semantics of
@@ -2434,6 +2382,11 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             BinaryOp::WrappingAdd => "i64.add",
             BinaryOp::WrappingSub => "i64.sub",
             BinaryOp::WrappingMul => "i64.mul",
+            BinaryOp::BitAnd => "i64.and",
+            BinaryOp::BitOr => "i64.or",
+            BinaryOp::BitXor => "i64.xor",
+            BinaryOp::Shl => "i64.shl",
+            BinaryOp::Shr => "i64.shr",
             // Comparisons are already type-polymorphic in the interpreter
             // (`compareScalar` dispatches on the runtime value kind), so a
             // single `cmp.*` opcode covers both i64 and f64 operands.
@@ -2461,6 +2414,74 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             None,
         );
         Ok(dst)
+    }
+
+    fn lower_logical_and(
+        &mut self,
+        left: &Spanned<Expr>,
+        right: &Spanned<Expr>,
+        span: std::ops::Range<usize>,
+    ) -> Result<String, CompileError> {
+        self.lower_logical_binary(left, right, span, false, true)
+    }
+
+    fn lower_logical_or(
+        &mut self,
+        left: &Spanned<Expr>,
+        right: &Spanned<Expr>,
+        span: std::ops::Range<usize>,
+    ) -> Result<String, CompileError> {
+        self.lower_logical_binary(left, right, span, true, false)
+    }
+
+    fn lower_logical_binary(
+        &mut self,
+        left: &Spanned<Expr>,
+        right: &Spanned<Expr>,
+        span: std::ops::Range<usize>,
+        short_circuit_value: bool,
+        rhs_on_true: bool,
+    ) -> Result<String, CompileError> {
+        let result = self.declare_local(None, &Ty::Bool, true, Some(span.clone()));
+        let default = self.lower_literal(&Literal::Bool(short_circuit_value), span.clone());
+        self.emit_instruction(
+            "local.set",
+            None,
+            vec![Operand::local(result.clone()), Operand::local(default)],
+            Some(span.clone()),
+            None,
+        );
+
+        let span_ref = self.package.spans.span_ref(&span);
+        let (rhs_idx, rhs_id) = self.new_block("logical_rhs", span_ref.clone());
+        let (exit_idx, exit_id) = self.new_block("logical_exit", span_ref.clone());
+        let left_local = self.lower_expr(left)?;
+        let (then_id, else_id) = if rhs_on_true {
+            (rhs_id.clone(), exit_id.clone())
+        } else {
+            (exit_id.clone(), rhs_id.clone())
+        };
+        self.terminate(Terminator::br_if(
+            Operand::local(left_local),
+            then_id,
+            else_id,
+            Vec::new(),
+            span_ref.clone(),
+        ));
+
+        self.switch_to(rhs_idx);
+        let right_local = self.lower_expr(right)?;
+        self.emit_instruction(
+            "local.set",
+            None,
+            vec![Operand::local(result.clone()), Operand::local(right_local)],
+            Some(right.1.clone()),
+            None,
+        );
+        self.terminate(Terminator::br(exit_id, Vec::new(), span_ref));
+
+        self.switch_to(exit_idx);
+        Ok(result)
     }
 
     #[expect(
@@ -3431,6 +3452,10 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         Ok(result_local)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pattern binding handles every admitted pattern shell in one recursive dispatcher"
+    )]
     fn bind_pattern_payloads(
         &mut self,
         pattern: &Spanned<Pattern>,
@@ -3485,37 +3510,92 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                     }
                 }
             }
-            Pattern::Struct { .. } | Pattern::Tuple(_) => {
-                let key = SpanKey::from(&pattern.1);
-                if let Some(resolution) = self.package.type_output.pattern_resolutions.get(&key) {
-                    if matches!(
-                        resolution.pattern_kind,
-                        PatternKind::StructPattern | PatternKind::TuplePattern
-                    ) {
-                        for binding in resolution.payload_bindings.clone() {
-                            let local = self.declare_local(
-                                Some(binding.binding_name.clone()),
-                                &binding.ty,
+            Pattern::Tuple(patterns) => {
+                if let Ty::Tuple(elem_tys) = scrutinee_ty {
+                    for (idx, subpattern) in patterns.iter().enumerate() {
+                        if matches!(subpattern.0, Pattern::Wildcard) {
+                            continue;
+                        }
+                        let ty = elem_tys.get(idx).cloned().unwrap_or(Ty::Unit);
+                        let field = self.temp_local(&ty, Some(subpattern.1.clone()));
+                        self.emit_instruction(
+                            "record.get",
+                            Some(field.clone()),
+                            vec![
+                                Operand::local(scrutinee_local.to_string()),
+                                Operand::literal(idx as u64),
+                            ],
+                            Some(subpattern.1.clone()),
+                            None,
+                        );
+                        self.bind_pattern_payloads(subpattern, &field, &ty);
+                    }
+                }
+            }
+            Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields } => {
+                if let Some(layout) = self.struct_pattern_layout(scrutinee_ty) {
+                    for field_pattern in fields {
+                        let Some((field_idx, field_ty)) = layout
+                            .iter()
+                            .position(|(name, _)| name == &field_pattern.name)
+                            .map(|idx| (idx, layout[idx].1.clone()))
+                        else {
+                            continue;
+                        };
+                        let field_local = match &field_pattern.pattern {
+                            Some(pattern) if matches!(pattern.0, Pattern::Wildcard) => continue,
+                            Some(pattern) => self.temp_local(&field_ty, Some(pattern.1.clone())),
+                            None => self.declare_local(
+                                Some(field_pattern.name.clone()),
+                                &field_ty,
                                 false,
                                 Some(pattern.1.clone()),
-                            );
-                            self.emit_instruction(
-                                "record.get",
-                                Some(local.clone()),
-                                vec![
-                                    Operand::local(scrutinee_local.to_string()),
-                                    Operand::literal(binding.field_idx as u64),
-                                ],
-                                Some(pattern.1.clone()),
-                                None,
-                            );
-                            self.bindings.insert(binding.binding_name, local);
+                            ),
+                        };
+                        self.emit_instruction(
+                            "record.get",
+                            Some(field_local.clone()),
+                            vec![
+                                Operand::local(scrutinee_local.to_string()),
+                                Operand::literal(field_idx as u64),
+                            ],
+                            Some(pattern.1.clone()),
+                            None,
+                        );
+                        if let Some(subpattern) = &field_pattern.pattern {
+                            self.bind_pattern_payloads(subpattern, &field_local, &field_ty);
+                        } else {
+                            self.bindings
+                                .insert(field_pattern.name.clone(), field_local);
                         }
                     }
                 }
             }
             _ => {}
         }
+    }
+
+    fn struct_pattern_layout(&self, scrutinee_ty: &Ty) -> Option<Vec<(String, Ty)>> {
+        let Ty::Named { name, .. } = scrutinee_ty else {
+            return None;
+        };
+        let type_def = self.package.type_output.type_defs.get(name)?;
+        if !matches!(type_def.kind, TypeDefKind::Record | TypeDefKind::Struct) {
+            return None;
+        }
+        Some(
+            type_def
+                .field_order
+                .iter()
+                .filter_map(|field_name| {
+                    type_def
+                        .fields
+                        .get(field_name)
+                        .cloned()
+                        .map(|ty| (field_name.clone(), ty))
+                })
+                .collect(),
+        )
     }
 
     fn new_match_blocks(&mut self, arms: &[MatchArm]) -> MatchBlocks {
@@ -3592,7 +3672,9 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         match &pattern.0 {
             Pattern::Wildcard => true,
             Pattern::Identifier(_) => self.pattern_tag(pattern, scrutinee_ty).is_none(),
-            Pattern::Struct { .. } | Pattern::Tuple(_) => !self.match_uses_enum_tag(scrutinee_ty),
+            Pattern::Struct { .. } | Pattern::RecordShorthand { .. } | Pattern::Tuple(_) => {
+                !self.match_uses_enum_tag(scrutinee_ty)
+            }
             _ => false,
         }
     }
@@ -4126,6 +4208,9 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         else_body: Option<&AstBlock>,
         span: std::ops::Range<usize>,
     ) -> Result<(), CompileError> {
+        let scrutinee_ty = self.ty_for_expr(expr);
+        let scrutinee = self.lower_expr(expr)?;
+
         let Pattern::Constructor { name, .. } = &pattern.0 else {
             self.emit_unsupported(Some(span));
             return Ok(());
@@ -4136,9 +4221,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         let (then_idx, then_id) = self.new_block("ifl_then", span_ref.clone());
         let (exit_idx, exit_id) = self.new_block("ifl_exit", span_ref.clone());
 
-        let scrutinee_ty = self.ty_for_expr(expr);
         self.package.ensure_option_result_layout(&scrutinee_ty);
-        let scrutinee = self.lower_expr(expr)?;
         let tag_local = self.temp_local(&Ty::I64, Some(expr.1.clone()));
         self.emit_instruction(
             "enum.tag",
@@ -4230,6 +4313,8 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         else_body: Option<&AstBlock>,
         span: std::ops::Range<usize>,
     ) -> Result<String, CompileError> {
+        let scrutinee_ty = self.ty_for_expr(scrutinee_expr);
+
         // Value position requires a join: without an else arm there is no
         // second value to join, so fall back to the statement form (the result
         // is unit anyway). Non-constructor patterns are unsupported by the
@@ -4252,7 +4337,6 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         let result_ty = self.ty_for_expr(whole_expr);
         let result_local = self.declare_local(None, &result_ty, true, Some(span.clone()));
 
-        let scrutinee_ty = self.ty_for_expr(scrutinee_expr);
         self.package.ensure_option_result_layout(&scrutinee_ty);
         let scrutinee = self.lower_expr(scrutinee_expr)?;
         let tag_local = self.temp_local(&Ty::I64, Some(scrutinee_expr.1.clone()));
@@ -4346,12 +4430,6 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         body: &AstBlock,
         span: std::ops::Range<usize>,
     ) -> Result<(), CompileError> {
-        let Pattern::Constructor { name, patterns } = &pattern.0 else {
-            self.emit_unsupported(Some(span));
-            return Ok(());
-        };
-        let (constructor_name, payload_patterns) = (name.clone(), patterns.clone());
-
         let span_ref = self.package.spans.span_ref(&span);
         let (header_idx, header_id) = self.new_block("wl_header", span_ref.clone());
         let (body_idx, body_id) = self.new_block("wl_body", span_ref.clone());
@@ -4364,7 +4442,15 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         ));
         self.switch_to(header_idx);
 
+        let scrutinee_ty = self.ty_for_expr(expr);
         let scrutinee = self.lower_expr(expr)?;
+
+        let Pattern::Constructor { name, .. } = &pattern.0 else {
+            self.emit_unsupported(Some(span));
+            return Ok(());
+        };
+        let constructor_name = name.clone();
+
         let tag_local = self.temp_local(&Ty::I64, Some(expr.1.clone()));
         self.emit_instruction(
             "enum.tag",
@@ -4403,34 +4489,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
 
         self.switch_to(body_idx);
         let saved_bindings = self.bindings.clone();
-        let payload_tys = self
-            .package
-            .enum_variant_tags
-            .get(&constructor_name)
-            .map(|(_, _, tys)| tys.clone())
-            .unwrap_or_default();
-        for (idx, payload_pattern) in payload_patterns.iter().enumerate() {
-            if let Pattern::Identifier(binding) = &payload_pattern.0 {
-                let ty = payload_tys.get(idx).cloned().unwrap_or(Ty::Unit);
-                let local = self.declare_local(
-                    Some(binding.clone()),
-                    &ty,
-                    false,
-                    Some(payload_pattern.1.clone()),
-                );
-                self.emit_instruction(
-                    "enum.payload",
-                    Some(local.clone()),
-                    vec![
-                        Operand::local(scrutinee.clone()),
-                        Operand::literal(idx as u64),
-                    ],
-                    Some(payload_pattern.1.clone()),
-                    None,
-                );
-                self.bindings.insert(binding.clone(), local);
-            }
-        }
+        self.bind_pattern_payloads(pattern, &scrutinee, &scrutinee_ty);
         self.loop_targets.push(LoopTargets {
             continue_id: header_id.clone(),
             exit_id: exit_id.clone(),

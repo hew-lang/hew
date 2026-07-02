@@ -352,7 +352,28 @@ impl<'a> ProfileChecker<'a> {
     )]
     fn check_stmt(&mut self, stmt: &Stmt, span: &std::ops::Range<usize>) {
         match stmt {
-            Stmt::Let { value, ty, .. } | Stmt::Var { value, ty, .. } => {
+            Stmt::Let {
+                pattern,
+                value,
+                ty,
+                else_block,
+            } => {
+                if let Some((ty, _)) = ty {
+                    self.check_type_expr(ty, span);
+                }
+                if let Some(expr) = value {
+                    self.check_expr(expr);
+                }
+                self.check_pattern(pattern);
+                if else_block.is_some() || !let_pattern_is_unconditional(&pattern.0) {
+                    self.reject(
+                        pattern.1.clone(),
+                        "reserved_runtime_feature",
+                        "refutable let patterns are reserved for a later sandbox VM milestone; use match or if let instead",
+                    );
+                }
+            }
+            Stmt::Var { value, ty, .. } => {
                 if let Some((ty, _)) = ty {
                     self.check_type_expr(ty, span);
                 }
@@ -445,12 +466,25 @@ impl<'a> ProfileChecker<'a> {
                 self.check_expr(condition);
                 self.check_block(body);
             }
-            Stmt::WhileLet { expr, body, label, .. } => {
+            Stmt::WhileLet {
+                pattern,
+                expr,
+                body,
+                label,
+            } => {
                 if label.is_some() {
                     self.reject(
                         span.clone(),
                         "reserved_control_flow",
                         "labeled while-let loops are not yet admitted in the sandbox profile",
+                    );
+                }
+                self.check_pattern(pattern);
+                if !matches!(pattern.0, Pattern::Constructor { .. }) {
+                    self.reject(
+                        pattern.1.clone(),
+                        "reserved_runtime_feature",
+                        "non-constructor while-let patterns are reserved until native HIR lowering supports them",
                     );
                 }
                 self.check_expr(expr);
@@ -486,7 +520,20 @@ impl<'a> ProfileChecker<'a> {
                     );
                 }
             }
-            Stmt::IfLet { expr, body, else_body, .. } => {
+            Stmt::IfLet {
+                pattern,
+                expr,
+                body,
+                else_body,
+            } => {
+                self.check_pattern(pattern);
+                if !matches!(pattern.0, Pattern::Constructor { .. }) {
+                    self.reject(
+                        pattern.1.clone(),
+                        "reserved_runtime_feature",
+                        "non-constructor if-let patterns are reserved until native HIR lowering supports them",
+                    );
+                }
                 self.check_expr(expr);
                 self.check_block(body);
                 if let Some(block) = else_body {
@@ -628,6 +675,13 @@ impl<'a> ProfileChecker<'a> {
                 else_body,
             } => {
                 self.check_pattern(pattern);
+                if !matches!(pattern.0, Pattern::Constructor { .. }) {
+                    self.reject(
+                        pattern.1.clone(),
+                        "reserved_runtime_feature",
+                        "non-constructor if-let patterns are reserved until native HIR lowering supports them",
+                    );
+                }
                 self.check_expr(expr);
                 self.check_block(body);
                 if let Some(block) = else_body {
@@ -1062,6 +1116,27 @@ fn is_trivial_machine_transition_body(expr: &Expr) -> bool {
                     .is_none_or(|e| is_trivial_machine_transition_body(&e.0))
         }
         _ => false,
+    }
+}
+
+fn let_pattern_is_unconditional(pattern: &Pattern) -> bool {
+    match pattern {
+        Pattern::Wildcard | Pattern::Identifier(_) => true,
+        Pattern::Tuple(patterns) => patterns
+            .iter()
+            .all(|pattern| let_pattern_is_unconditional(&pattern.0)),
+        Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields } => {
+            fields.iter().all(|field| {
+                field
+                    .pattern
+                    .as_ref()
+                    .is_none_or(|pattern| let_pattern_is_unconditional(&pattern.0))
+            })
+        }
+        Pattern::Literal(_)
+        | Pattern::Constructor { .. }
+        | Pattern::Or(_, _)
+        | Pattern::Regex { .. } => false,
     }
 }
 

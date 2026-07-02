@@ -154,6 +154,7 @@ export interface SandboxBytecodePackage {
 
 export type TrapKind =
   | "integer_overflow"
+  | "shift_out_of_range"
   | "divide_by_zero"
   | "invalid_local"
   | "invalid_block"

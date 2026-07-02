@@ -1,0 +1,7 @@
+fn main() {
+    let zero = 0;
+    println(f"and_safe: {false && 1 / zero == 0}");
+    println(f"or_safe: {true || 1 / zero == 0}");
+    println(f"and_true: {true && 4 > 2}");
+    println(f"or_false: {false || 3 < 1}");
+}

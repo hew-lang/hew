@@ -1,9 +1,9 @@
 //! End-to-end coverage for the compiler lint pass surfaced through `hew check`:
-//! lints render as warnings by default, the `--allow` / `--warn` / `--deny`
+//! lints render at their default levels, the `--allow` / `--warn` / `--deny`
 //! flags re-level them, an in-source `// hew:allow(...)` directive suppresses
 //! them, and an unknown lint name fails closed at the CLI boundary. Covers the
-//! `needless_range_loop` and `len_zero_comparison` checker lints plus the
-//! `dead_code` warning now routed through the same registry.
+//! `needless_range_loop`, `len_zero_comparison`, and comment Unicode checker
+//! lints plus the `dead_code` warning now routed through the same registry.
 
 mod support;
 
@@ -399,6 +399,90 @@ fn stdlib_lints_do_not_leak_through_implicit_import() {
     assert!(
         !stderr.contains(LEN_ZERO_MESSAGE),
         "a len_zero_comparison finding must not leak from stdlib bodies:\n{stderr}"
+    );
+}
+
+// ── checker-stage source lint: Trojan-Source comments ──────────────────
+
+const COMMENT_TEXT_DIRECTION: &str = "/// \u{202E}\nfn main() {}\n";
+const COMMENT_TEXT_DIRECTION_SUPPRESSED: &str =
+    "// hew:allow(text_direction_codepoint_in_comment)\n/// \u{202E}\nfn main() {}\n";
+const COMMENT_INVISIBLE: &str = "// hidden\u{200B}gap\nfn main() {}\n";
+const TEXT_DIRECTION_LINT: &str = "text_direction_codepoint_in_comment";
+const INVISIBLE_LINT: &str = "invisible_codepoint_in_comment";
+
+#[test]
+fn comment_text_direction_denies_by_default() {
+    let output = run_check(COMMENT_TEXT_DIRECTION, &[]);
+    let stderr = stderr_of(&output);
+    assert!(
+        !output.status.success(),
+        "the deny-default text-direction lint must fail the build:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("error:") && stderr.contains(TEXT_DIRECTION_LINT),
+        "expected the text-direction lint to render as an error:\n{stderr}"
+    );
+}
+
+#[test]
+fn comment_text_direction_allow_flag_suppresses() {
+    let output = run_check(COMMENT_TEXT_DIRECTION, &["--allow", TEXT_DIRECTION_LINT]);
+    let stderr = stderr_of(&output);
+    assert!(output.status.success(), "check should pass:\n{stderr}");
+    assert!(
+        !stderr.contains(TEXT_DIRECTION_LINT),
+        "--allow must suppress the deny-default lint:\n{stderr}"
+    );
+}
+
+#[test]
+fn comment_text_direction_warn_flag_downgrades_to_warning() {
+    let output = run_check(COMMENT_TEXT_DIRECTION, &["--warn", TEXT_DIRECTION_LINT]);
+    let stderr = stderr_of(&output);
+    assert!(
+        output.status.success(),
+        "--warn must downgrade the deny-default lint:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("warning:") && stderr.contains(TEXT_DIRECTION_LINT),
+        "--warn must render the text-direction lint as a warning:\n{stderr}"
+    );
+}
+
+#[test]
+fn comment_text_direction_inline_directive_suppresses() {
+    let output = run_check(COMMENT_TEXT_DIRECTION_SUPPRESSED, &[]);
+    let stderr = stderr_of(&output);
+    assert!(output.status.success(), "check should pass:\n{stderr}");
+    assert!(
+        !stderr.contains(TEXT_DIRECTION_LINT),
+        "an in-source `// hew:allow(...)` directive must suppress the lint:\n{stderr}"
+    );
+}
+
+#[test]
+fn comment_invisible_warns_by_default_and_deny_promotes() {
+    let default = run_check(COMMENT_INVISIBLE, &[]);
+    let default_stderr = stderr_of(&default);
+    assert!(
+        default.status.success(),
+        "the invisible-codepoint lint is warning-tier by default:\n{default_stderr}"
+    );
+    assert!(
+        default_stderr.contains("warning:") && default_stderr.contains(INVISIBLE_LINT),
+        "expected the invisible-codepoint lint warning:\n{default_stderr}"
+    );
+
+    let denied = run_check(COMMENT_INVISIBLE, &["--deny", INVISIBLE_LINT]);
+    let denied_stderr = stderr_of(&denied);
+    assert!(
+        !denied.status.success(),
+        "--deny must promote the invisible-codepoint lint:\n{denied_stderr}"
+    );
+    assert!(
+        denied_stderr.contains("error:") && denied_stderr.contains(INVISIBLE_LINT),
+        "--deny must render the invisible-codepoint lint as an error:\n{denied_stderr}"
     );
 }
 

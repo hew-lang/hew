@@ -71,7 +71,11 @@ fn emit(
         levels,
         id,
         span,
-        format!("comment contains {class} U+{:04X}", c as u32),
+        format!(
+            "{}: comment contains {class} U+{:04X}",
+            id.as_str(),
+            c as u32
+        ),
         suggestion.to_string(),
         out,
     );

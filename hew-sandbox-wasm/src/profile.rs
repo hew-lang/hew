@@ -466,12 +466,25 @@ impl<'a> ProfileChecker<'a> {
                 self.check_expr(condition);
                 self.check_block(body);
             }
-            Stmt::WhileLet { expr, body, label, .. } => {
+            Stmt::WhileLet {
+                pattern,
+                expr,
+                body,
+                label,
+            } => {
                 if label.is_some() {
                     self.reject(
                         span.clone(),
                         "reserved_control_flow",
                         "labeled while-let loops are not yet admitted in the sandbox profile",
+                    );
+                }
+                self.check_pattern(pattern);
+                if !matches!(pattern.0, Pattern::Constructor { .. }) {
+                    self.reject(
+                        pattern.1.clone(),
+                        "reserved_runtime_feature",
+                        "non-constructor while-let patterns are reserved until native HIR lowering supports them",
                     );
                 }
                 self.check_expr(expr);
@@ -507,7 +520,20 @@ impl<'a> ProfileChecker<'a> {
                     );
                 }
             }
-            Stmt::IfLet { expr, body, else_body, .. } => {
+            Stmt::IfLet {
+                pattern,
+                expr,
+                body,
+                else_body,
+            } => {
+                self.check_pattern(pattern);
+                if !matches!(pattern.0, Pattern::Constructor { .. }) {
+                    self.reject(
+                        pattern.1.clone(),
+                        "reserved_runtime_feature",
+                        "non-constructor if-let patterns are reserved until native HIR lowering supports them",
+                    );
+                }
                 self.check_expr(expr);
                 self.check_block(body);
                 if let Some(block) = else_body {
@@ -649,6 +675,13 @@ impl<'a> ProfileChecker<'a> {
                 else_body,
             } => {
                 self.check_pattern(pattern);
+                if !matches!(pattern.0, Pattern::Constructor { .. }) {
+                    self.reject(
+                        pattern.1.clone(),
+                        "reserved_runtime_feature",
+                        "non-constructor if-let patterns are reserved until native HIR lowering supports them",
+                    );
+                }
                 self.check_expr(expr);
                 self.check_block(body);
                 if let Some(block) = else_body {

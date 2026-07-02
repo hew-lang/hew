@@ -495,6 +495,27 @@ const CONSTRUCTS: &[Construct] = &[
         },
     },
     Construct {
+        id: "struct pattern in statement if-let",
+        probe: "type Point { x: i64; y: i64; }\nfn main() {\n    let point = Point { x: 5, y: 8 };\n    if let Point { x: a, y: b } = point {\n        println(a + b);\n    }\n}\n",
+        coverage: Coverage::RejectedByProfile {
+            diagnostic_kind: "reserved_runtime_feature",
+        },
+    },
+    Construct {
+        id: "struct pattern in value if-let",
+        probe: "type Point { x: i64; y: i64; }\nfn main() {\n    let point = Point { x: 21, y: 34 };\n    let sum = if let Point { x: a, y: b } = point { a + b } else { 0 };\n    println(sum);\n}\n",
+        coverage: Coverage::RejectedByProfile {
+            diagnostic_kind: "reserved_runtime_feature",
+        },
+    },
+    Construct {
+        id: "struct pattern in while-let",
+        probe: "type Point { x: i64; y: i64; }\nfn main() {\n    let point = Point { x: 3, y: 4 };\n    while let Point { x: a, y: b } = point {\n        println(a + b);\n        break;\n    }\n}\n",
+        coverage: Coverage::RejectedByProfile {
+            diagnostic_kind: "reserved_runtime_feature",
+        },
+    },
+    Construct {
         id: "const item reference",
         probe: "const LIMIT: i64 = 100;\nfn main() {\n    println(LIMIT);\n}\n",
         coverage: Coverage::Parity("const_reference"),

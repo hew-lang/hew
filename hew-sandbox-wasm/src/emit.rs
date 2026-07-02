@@ -4202,6 +4202,16 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         else_body: Option<&AstBlock>,
         span: std::ops::Range<usize>,
     ) -> Result<(), CompileError> {
+        let scrutinee_ty = self.ty_for_expr(expr);
+        let scrutinee = self.lower_expr(expr)?;
+        if self.pattern_is_unconditional(pattern, &scrutinee_ty) {
+            let saved_bindings = self.bindings.clone();
+            self.bind_pattern_payloads(pattern, &scrutinee, &scrutinee_ty);
+            self.lower_block(body)?;
+            self.bindings = saved_bindings;
+            return Ok(());
+        }
+
         let Pattern::Constructor { name, .. } = &pattern.0 else {
             self.emit_unsupported(Some(span));
             return Ok(());
@@ -4212,9 +4222,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         let (then_idx, then_id) = self.new_block("ifl_then", span_ref.clone());
         let (exit_idx, exit_id) = self.new_block("ifl_exit", span_ref.clone());
 
-        let scrutinee_ty = self.ty_for_expr(expr);
         self.package.ensure_option_result_layout(&scrutinee_ty);
-        let scrutinee = self.lower_expr(expr)?;
         let tag_local = self.temp_local(&Ty::I64, Some(expr.1.clone()));
         self.emit_instruction(
             "enum.tag",
@@ -4306,6 +4314,18 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         else_body: Option<&AstBlock>,
         span: std::ops::Range<usize>,
     ) -> Result<String, CompileError> {
+        let scrutinee_ty = self.ty_for_expr(scrutinee_expr);
+        if self.pattern_is_unconditional(pattern, &scrutinee_ty) {
+            let scrutinee = self.lower_expr(scrutinee_expr)?;
+            let saved_bindings = self.bindings.clone();
+            self.bind_pattern_payloads(pattern, &scrutinee, &scrutinee_ty);
+            let value = self
+                .lower_block(body)?
+                .unwrap_or_else(|| self.emit_const_unit(Some(span.clone())));
+            self.bindings = saved_bindings;
+            return Ok(value);
+        }
+
         // Value position requires a join: without an else arm there is no
         // second value to join, so fall back to the statement form (the result
         // is unit anyway). Non-constructor patterns are unsupported by the
@@ -4328,7 +4348,6 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         let result_ty = self.ty_for_expr(whole_expr);
         let result_local = self.declare_local(None, &result_ty, true, Some(span.clone()));
 
-        let scrutinee_ty = self.ty_for_expr(scrutinee_expr);
         self.package.ensure_option_result_layout(&scrutinee_ty);
         let scrutinee = self.lower_expr(scrutinee_expr)?;
         let tag_local = self.temp_local(&Ty::I64, Some(scrutinee_expr.1.clone()));
@@ -4422,12 +4441,6 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         body: &AstBlock,
         span: std::ops::Range<usize>,
     ) -> Result<(), CompileError> {
-        let Pattern::Constructor { name, patterns } = &pattern.0 else {
-            self.emit_unsupported(Some(span));
-            return Ok(());
-        };
-        let (constructor_name, payload_patterns) = (name.clone(), patterns.clone());
-
         let span_ref = self.package.spans.span_ref(&span);
         let (header_idx, header_id) = self.new_block("wl_header", span_ref.clone());
         let (body_idx, body_id) = self.new_block("wl_body", span_ref.clone());
@@ -4440,7 +4453,39 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         ));
         self.switch_to(header_idx);
 
+        let scrutinee_ty = self.ty_for_expr(expr);
         let scrutinee = self.lower_expr(expr)?;
+        if self.pattern_is_unconditional(pattern, &scrutinee_ty) {
+            self.terminate(Terminator::br(
+                body_id.clone(),
+                Vec::new(),
+                span_ref.clone(),
+            ));
+
+            self.switch_to(body_idx);
+            let saved_bindings = self.bindings.clone();
+            self.bind_pattern_payloads(pattern, &scrutinee, &scrutinee_ty);
+            self.loop_targets.push(LoopTargets {
+                continue_id: header_id.clone(),
+                exit_id: exit_id.clone(),
+                label,
+            });
+            self.lower_block(body)?;
+            if !self.current_is_terminated() {
+                self.terminate(Terminator::br(header_id, Vec::new(), None));
+            }
+            self.loop_targets.pop();
+            self.bindings = saved_bindings;
+            self.switch_to(exit_idx);
+            return Ok(());
+        }
+
+        let Pattern::Constructor { name, .. } = &pattern.0 else {
+            self.emit_unsupported(Some(span));
+            return Ok(());
+        };
+        let constructor_name = name.clone();
+
         let tag_local = self.temp_local(&Ty::I64, Some(expr.1.clone()));
         self.emit_instruction(
             "enum.tag",
@@ -4479,34 +4524,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
 
         self.switch_to(body_idx);
         let saved_bindings = self.bindings.clone();
-        let payload_tys = self
-            .package
-            .enum_variant_tags
-            .get(&constructor_name)
-            .map(|(_, _, tys)| tys.clone())
-            .unwrap_or_default();
-        for (idx, payload_pattern) in payload_patterns.iter().enumerate() {
-            if let Pattern::Identifier(binding) = &payload_pattern.0 {
-                let ty = payload_tys.get(idx).cloned().unwrap_or(Ty::Unit);
-                let local = self.declare_local(
-                    Some(binding.clone()),
-                    &ty,
-                    false,
-                    Some(payload_pattern.1.clone()),
-                );
-                self.emit_instruction(
-                    "enum.payload",
-                    Some(local.clone()),
-                    vec![
-                        Operand::local(scrutinee.clone()),
-                        Operand::literal(idx as u64),
-                    ],
-                    Some(payload_pattern.1.clone()),
-                    None,
-                );
-                self.bindings.insert(binding.clone(), local);
-            }
-        }
+        self.bind_pattern_payloads(pattern, &scrutinee, &scrutinee_ty);
         self.loop_targets.push(LoopTargets {
             continue_id: header_id.clone(),
             exit_id: exit_id.clone(),

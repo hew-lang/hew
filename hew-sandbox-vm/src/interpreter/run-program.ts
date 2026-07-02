@@ -210,6 +210,7 @@ enum SandboxExitCode {
   HeapExceeded = 200,
   IntegerOverflow = 201,
   DivideByZero = 202,
+  ShiftOutOfRange = 204,
   IndexOutOfBounds = 205,
   ActorSendFailed = 206,
   MachineDispatchUnreachable = 207,
@@ -218,6 +219,7 @@ enum SandboxExitCode {
 
 const TRAP_EXIT_CODES: Readonly<Record<TrapKind, SandboxExitCode>> = {
   integer_overflow: SandboxExitCode.IntegerOverflow,
+  shift_out_of_range: SandboxExitCode.ShiftOutOfRange,
   divide_by_zero: SandboxExitCode.DivideByZero,
   invalid_local: SandboxExitCode.InternalError,
   invalid_block: SandboxExitCode.InternalError,

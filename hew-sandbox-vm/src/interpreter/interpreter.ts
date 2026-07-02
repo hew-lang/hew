@@ -339,6 +339,25 @@ class Interpreter {
       case "i64.mul":
         this.writeDst(frame, instruction, this.i64(this.i64Arg(frame, instruction.args[0], instruction.span) * this.i64Arg(frame, instruction.args[1], instruction.span)));
         return;
+      case "i64.and":
+        this.writeDst(frame, instruction, this.i64(this.i64Arg(frame, instruction.args[0], instruction.span) & this.i64Arg(frame, instruction.args[1], instruction.span)));
+        return;
+      case "i64.or":
+        this.writeDst(frame, instruction, this.i64(this.i64Arg(frame, instruction.args[0], instruction.span) | this.i64Arg(frame, instruction.args[1], instruction.span)));
+        return;
+      case "i64.xor":
+        this.writeDst(frame, instruction, this.i64(this.i64Arg(frame, instruction.args[0], instruction.span) ^ this.i64Arg(frame, instruction.args[1], instruction.span)));
+        return;
+      case "i64.shl": {
+        const count = this.shiftCount(frame, instruction.args[1], instruction.span);
+        this.writeDst(frame, instruction, this.i64(BigInt.asIntN(64, this.i64Arg(frame, instruction.args[0], instruction.span) << count)));
+        return;
+      }
+      case "i64.shr": {
+        const count = this.shiftCount(frame, instruction.args[1], instruction.span);
+        this.writeDst(frame, instruction, this.i64(this.i64Arg(frame, instruction.args[0], instruction.span) >> count));
+        return;
+      }
       case "i64.div":
       case "i64.checked_div":
         this.writeDst(frame, instruction, this.i64(this.checkedDiv(frame, instruction.args[0], instruction.args[1], instruction.span)));
@@ -1609,6 +1628,14 @@ class Interpreter {
     return this.i64(value);
   }
 
+  private shiftCount(frame: Frame, operand: Operand | undefined, span: string | null): bigint {
+    const value = this.i64Arg(frame, operand, span);
+    if (value < 0n || value >= 64n) {
+      this.trap("shift_out_of_range", "shift out of range", span);
+    }
+    return value;
+  }
+
   private trapKind(operand: Operand | undefined, span: string | null): TrapKind {
     const value = this.stringOperand(operand, span);
     return value as TrapKind;
@@ -1960,6 +1987,8 @@ function trapMessage(trapKind: TrapKind): string {
       return "divide by zero";
     case "integer_overflow":
       return "integer overflow";
+    case "shift_out_of_range":
+      return "shift out of range";
     case "budget_exhausted":
       return "step budget exhausted";
     case "panic":

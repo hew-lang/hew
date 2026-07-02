@@ -4,7 +4,7 @@ use std::{
 };
 
 use hew_hir::{sanitize_for_symbol, BindingId, IntentKind, ItemId, SiteId, ValueClass};
-use hew_types::{NumericWidth, ResolvedTy, WireCodecDirection, WireLayoutTable};
+use hew_types::{NumericWidth, ResolvedTy, TryConversionKind, WireCodecDirection, WireLayoutTable};
 
 pub use crate::runtime_symbols::UnknownRuntimeSymbol;
 
@@ -4062,6 +4062,17 @@ pub enum Instr {
         src: Place,
         from_ty: ResolvedTy,
         to_ty: ResolvedTy,
+    },
+    /// Exact fallible numeric conversion: `.try_to_<W>() -> Option<W>`.
+    ///
+    /// `dest` is the local enum slot for `Option<W>`. Codegen writes `Some`
+    /// only when the source value round-trips exactly through the target type.
+    TryWidthCast {
+        dest: Place,
+        src: Place,
+        from_ty: ResolvedTy,
+        to_ty: ResolvedTy,
+        kind: TryConversionKind,
     },
     /// Call into a `hew_*` runtime-ABI entry by name. The carried
     /// `symbol` names a `#[no_mangle] extern "C" fn` exported by

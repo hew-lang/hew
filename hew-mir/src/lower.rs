@@ -13341,15 +13341,38 @@ impl Builder {
                 });
                 Some(dest)
             }
-            HirExprKind::TryWidthCast { .. } => {
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::UnsupportedNode {
-                        reason: "try-width numeric conversion requires MIR lowering".to_string(),
-                    },
-                    note: "HIR TryWidthCast must lower through the dedicated MIR instruction"
-                        .to_string(),
+            HirExprKind::TryWidthCast {
+                value,
+                from_ty,
+                to_ty,
+                kind,
+            } => {
+                let src = self.lower_value(value)?;
+                let from_ty = self.subst_ty(from_ty);
+                let to_ty = self.subst_ty(to_ty);
+                if !from_ty.is_numeric() || !to_ty.is_numeric() {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnsupportedNode {
+                            reason: format!(
+                                "try-width cast from {} to {} requires numeric types",
+                                from_ty.user_facing(),
+                                to_ty.user_facing()
+                            ),
+                        },
+                        note: "HIR TryWidthCast carried a non-numeric type; the HIR verifier should have rejected it"
+                            .to_string(),
+                    });
+                    return None;
+                }
+                let dest = self.alloc_local(self.subst_ty(&expr.ty));
+                self.instructions.push(Instr::TryWidthCast {
+                    dest,
+                    src,
+                    from_ty,
+                    to_ty,
+                    kind: *kind,
                 });
-                None
+                Some(dest)
             }
             HirExprKind::TupleLiteral { elements } => {
                 // Lower each element expression to a MIR Place.
@@ -32523,7 +32546,9 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
             ..
         } => vec![*dest, *operand, *overflow_flag],
         Instr::Move { dest, src } => vec![*dest, *src],
-        Instr::NumericCast { dest, src, .. } | Instr::SaturatingWidthCast { dest, src, .. } => {
+        Instr::NumericCast { dest, src, .. }
+        | Instr::SaturatingWidthCast { dest, src, .. }
+        | Instr::TryWidthCast { dest, src, .. } => {
             vec![*dest, *src]
         }
         Instr::Drop { place, .. } => vec![*place],
@@ -32946,7 +32971,9 @@ pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
         | Instr::IntNegChecked { operand, .. } => vec![*operand],
         // The src is read into the dest; the dest is a write.
         Instr::Move { src, .. } => vec![*src],
-        Instr::NumericCast { src, .. } | Instr::SaturatingWidthCast { src, .. } => vec![*src],
+        Instr::NumericCast { src, .. }
+        | Instr::SaturatingWidthCast { src, .. }
+        | Instr::TryWidthCast { src, .. } => vec![*src],
         // A Drop reads the place it releases.
         Instr::Drop { place, .. } => vec![*place],
         // Witness size/align read no operand (the type is static metadata,
@@ -33324,6 +33351,7 @@ fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
         | Instr::WireCodec { .. }
         | Instr::NumericCast { .. }
         | Instr::SaturatingWidthCast { .. }
+        | Instr::TryWidthCast { .. }
         | Instr::AutoLockAcquire { .. }
         | Instr::AutoLockRelease { .. }
         | Instr::WitnessSizeOf { .. }
@@ -33566,6 +33594,7 @@ fn projection_alias_dest(instr: &Instr) -> Option<Place> {
         | Instr::Move { .. }
         | Instr::NumericCast { .. }
         | Instr::SaturatingWidthCast { .. }
+        | Instr::TryWidthCast { .. }
         | Instr::CallRuntimeAbi(_)
         | Instr::AutoLockAcquire { .. }
         | Instr::AutoLockRelease { .. }

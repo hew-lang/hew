@@ -16402,6 +16402,13 @@ fn lower_instruction(
             crate::arith::lower_saturating_width_cast(fn_ctx, *dest, *src, from_ty, to_ty)?;
             let _ = ctx;
         }
+        Instr::TryWidthCast { from_ty, to_ty, .. } => {
+            return Err(CodegenError::FailClosed(format!(
+                "TryWidthCast from {} to {} requires codegen lowering",
+                from_ty.user_facing(),
+                to_ty.user_facing()
+            )));
+        }
         Instr::Move { dest, src } => {
             // #46: allocate an `indirect enum` node at its construction site
             // (the tag store) rather than in an entry-block prologue. This puts

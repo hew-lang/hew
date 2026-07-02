@@ -3020,7 +3020,7 @@ impl Checker {
                             TypeErrorKind::ArityMismatch,
                             span,
                             format!(
-                                "struct `{name}` has {} type parameter(s) but {} were supplied",
+                                "type `{name}` has {} type parameter(s) but {} were supplied",
                                 expected_args.len(),
                                 explicit_args.len()
                             ),
@@ -3065,7 +3065,7 @@ impl Checker {
                                 self.report_error_with_suggestions(
                                     TypeErrorKind::UndefinedField,
                                     span,
-                                    format!("no field `{field_name}` on struct `{name}`"),
+                                    format!("no field `{field_name}` on type `{name}`"),
                                     similar,
                                 );
                             }
@@ -6411,7 +6411,7 @@ impl Checker {
                         TypeErrorKind::ArityMismatch,
                         span,
                         format!(
-                            "struct `{name}` has {} type parameter(s) but {} were supplied",
+                            "type `{name}` has {} type parameter(s) but {} were supplied",
                             td.type_params.len(),
                             explicit_args.len()
                         ),
@@ -6480,7 +6480,7 @@ impl Checker {
                     self.report_error_with_suggestions(
                         TypeErrorKind::UndefinedField,
                         span,
-                        format!("no field `{field_name}` on struct `{name}`"),
+                        format!("no field `{field_name}` on type `{name}`"),
                         similar,
                     );
                 }

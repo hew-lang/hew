@@ -871,7 +871,7 @@ impl Checker {
                             "a non-record type",
                             |td| match td.kind {
                                 TypeDefKind::Enum => "an enum",
-                                TypeDefKind::Struct => "a struct",
+                                TypeDefKind::Struct => "a type",
                                 TypeDefKind::Actor => "an actor",
                                 TypeDefKind::Machine => "a machine",
                                 TypeDefKind::Record => "a record",

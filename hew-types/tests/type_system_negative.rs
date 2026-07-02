@@ -632,11 +632,11 @@ fn duplicate_definition_same_wire_type() {
     let output = typecheck(
         r"
         #[wire]
-        struct Packet {
+        type Packet {
             id: i32 @1;
         }
         #[wire]
-        struct Packet {
+        type Packet {
             name: string @1;
         }
         fn main() {}

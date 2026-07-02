@@ -4,7 +4,7 @@ use hew_parser::parse;
 fn duplicate_wire_struct_field_numbers_report_diagnostic() {
     let result = parse(
         r"#[wire]
-struct Message {
+type Message {
     first: i32 @1,
     second: i32 @1,
 }",
@@ -24,7 +24,7 @@ struct Message {
 fn reserved_wire_struct_field_numbers_report_diagnostic() {
     let result = parse(
         r"#[wire]
-struct Message {
+type Message {
     reserved @3;
     field: i32 @3,
 }",

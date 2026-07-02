@@ -9,7 +9,7 @@ fn wire_encode_decode_record_binary_codec_rewrite() {
     let output = check_source(
         r"
         #[wire]
-        struct Point { x: i64 @1, y: i64 @2 }
+        type Point { x: i64 @1, y: i64 @2 }
 
         fn main() -> i64 {
             let p = Point { x: 1, y: 2 };
@@ -62,7 +62,7 @@ fn wire_text_format_methods_record_codec_rewrite() {
     let output = check_source(
         r#"
         #[wire]
-        struct Point { x: i64 @1, y: i64 @2 }
+        type Point { x: i64 @1, y: i64 @2 }
 
         fn main() {
             let p = Point { x: 1, y: 2 };
@@ -114,7 +114,7 @@ fn wire_from_json_returns_result_self_string() {
     let output = check_source(
         r#"
         #[wire]
-        struct Point { x: i64 @1, y: i64 @2 }
+        type Point { x: i64 @1, y: i64 @2 }
 
         fn main() {
             let _r: Result<Point, string> = Point.from_json("{\"x\":1,\"y\":2}");
@@ -137,7 +137,7 @@ fn wire_from_json_bare_self_is_type_error() {
     let output = check_source(
         r#"
         #[wire]
-        struct Point { x: i64 @1, y: i64 @2 }
+        type Point { x: i64 @1, y: i64 @2 }
 
         fn main() {
             let _p: Point = Point.from_json("{\"x\":1,\"y\":2}");
@@ -155,7 +155,7 @@ fn wire_layout_table_populated_from_wire_struct() {
     let output = check_source(
         r"
         #[wire]
-        struct Point { x: i64 @1, y: i64 @2 }
+        type Point { x: i64 @1, y: i64 @2 }
         ",
     );
 
@@ -189,7 +189,7 @@ fn wire_layout_json_name_override_preserved() {
     let output = check_source(
         r#"
         #[wire]
-        struct Cfg { host: string @1 json_name="hostname" }
+        type Cfg { host: string @1 json_name="hostname" }
         "#,
     );
 

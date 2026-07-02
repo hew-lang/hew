@@ -565,7 +565,7 @@ impl<'a> Formatter<'a> {
         self.write_indent();
         self.write_visibility(decl.visibility);
         match decl.kind {
-            TypeDeclKind::Struct => self.write("struct "),
+            TypeDeclKind::Struct => self.write("type "),
             TypeDeclKind::Enum => self.write("enum "),
         }
         self.write(&decl.name);
@@ -4121,14 +4121,34 @@ enum Status {
     }
 
     #[test]
-    fn wire_struct_since_roundtrips() {
+    fn wire_type_since_roundtrips() {
         let src = "\
 #[wire]
-struct Msg {
+type Msg {
     added: String @2 repeated since 3 yaml(\"added\"),
 }
 ";
         assert_eq!(roundtrip(src), src);
+    }
+
+    #[test]
+    fn wire_type_roundtrips_byte_stably() {
+        let src = "\
+#[wire]
+type Msg {
+    id: i64 @1,
+    name: String @2 optional since 2,
+    tags: Vec<String> @3 repeated,
+    reserved @4;
+}
+";
+        let formatted = roundtrip(src);
+        assert!(
+            !formatted.contains("struct"),
+            "formatted wire type should not contain struct: {formatted}"
+        );
+        assert_eq!(formatted, src);
+        assert_eq!(roundtrip(&formatted), formatted);
     }
 
     #[test]

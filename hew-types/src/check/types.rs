@@ -543,7 +543,7 @@ pub struct WireFieldLayout {
 /// Wire layout metadata for a single type (struct or enum).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WireLayoutEntry {
-    /// True for `#[wire] struct`, false for `#[wire] enum`.
+    /// True for `#[wire] type`, false for `#[wire] enum`.
     pub is_struct: bool,
     /// Type-level JSON casing override.
     pub json_case: Option<NamingCase>,

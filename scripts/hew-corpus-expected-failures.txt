@@ -126,8 +126,9 @@ hew-observe/test-harness/observe_workload.hew
 
 # stale-syntax: fuzz corpus seed files use pre-v0.5 machine event syntax
 hew-parser/fuzz/corpus/fuzz_machine_decls/seed.hew
-hew-parser/fuzz/corpus/fuzz_mir/regression-link-monitor-spawn.hew
 hew-parser/fuzz/corpus/fuzz_record_types/seed.hew
+
+# deferred-nyi: scope/fork caller context routing (W4.010-followup-caller-ctx-routing)
 hew-parser/fuzz/corpus/fuzz_supervisor_decls/seed.hew
 
 # fmt-corpus-incomplete: formatter roundtrip corpus files reference undefined

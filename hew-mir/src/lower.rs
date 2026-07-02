@@ -9250,6 +9250,22 @@ struct Builder {
     /// for an `Item`-resolved fn reference RHS and propagated through
     /// rebinds of an already-exempt binding.
     closure_pair_null_env: HashSet<BindingId>,
+    /// Fn-typed (`ty_is_closure_pair`) bindings whose introducing `let` or ANY
+    /// reassignment RHS produces a capturing-closure literal in a
+    /// produced-value position (directly, through block/if/match tails, or
+    /// copied from another binding already in this set). Such a binding's pair
+    /// may carry a NON-NULL heap env word even when its static type is a plain
+    /// `fn(..)` — the closure structurally unified with `fn(..)` and the env
+    /// word rode along ("laundering"). Collected flow-INSENSITIVELY by the
+    /// `collect_vec_owned_element_keys_from_block` pre-pass so a reassignment
+    /// on a loop back-edge taints the binding before any call site lowers.
+    ///
+    /// Consulted ONLY by `generator_arg_laundered_closure` (the
+    /// generator-constructor argument gate). Deliberately NOT a drop ledger
+    /// and NOT consulted by the closure-pair ingress/drop machinery: taint
+    /// answers "may this `fn(..)`-typed value hide a heap env?", never "who
+    /// frees the env box".
+    closure_pair_laundered_bindings: HashSet<BindingId>,
     /// Closure-pair bindings whose ownership has already left them via a
     /// rebind (`ClosurePairRhs::TransferFrom`). The dataflow checker flags
     /// any later use of these on its own: the rebind's RHS read carries
@@ -9651,27 +9667,27 @@ impl Builder {
     ///   1. `ValueClass::BitCopy` scalars (i64/f64/bool/char/…), actor pids, and
     ///      `#[copy]` records — provided they are transitively free of `#[opaque]`
     ///      runtime handles (gate 2 below).
-    ///   2. `ResolvedTy::Function { .. }` — a named-function reference. Safety
-    ///      rests on three independent properties: (a) `hew_gen_ctx_create`
-    ///      flat-`memcpy`s the arg block and only `libc::free`s the flat buffer at
-    ///      thread end — it never recurses into inner pointers, so a non-null
-    ///      env-box is not freed by the generator; (b) `Function` is
-    ///      `PersistentShare`, so the body side never drops the fn value; (c)
-    ///      `derive_closure_pair_drop_allowed` marks any closure read as a call
-    ///      argument "aliased" and excludes it from the drop set — a capturing
-    ///      closure passed where `fn(..)` is declared leaks its env box rather than
-    ///      double-freeing. Note: a named fn literal produced by the compiler has a
-    ///      null env word; a capturing closure that structurally unifies with
-    ///      `fn(..)` (via `unify.rs`) may carry a non-null env word — the safety
-    ///      argument above covers both, but the laundered-closure path leaks the
-    ///      env box. That is accepted here; a stricter check belongs in a
-    ///      follow-up lane alongside the `genfn-owned-captures` work.
+    ///   2. `ResolvedTy::Function { .. }` — a fn-typed value. Safety rests on
+    ///      four properties: (a) `hew_gen_ctx_create` flat-`memcpy`s the arg
+    ///      block and only `libc::free`s the flat buffer at thread end — it
+    ///      never recurses into inner pointers, so a non-null env-box is not
+    ///      freed by the generator; (b) `Function` is `PersistentShare`, so
+    ///      the body side never drops the fn value; (c) a named fn literal
+    ///      produced by the compiler has a null env word; and (d) a capturing
+    ///      closure that structurally unifies with `fn(..)` (via `unify.rs`)
+    ///      is REFUSED at the generator-constructor call boundary
+    ///      (`generator_arg_laundered_closure` in `lower_direct_call`), so a
+    ///      `fn(..)`-typed value reaching this admission is null-env wherever
+    ///      that gate can prove provenance. The gate's documented residual
+    ///      (fn-typed parameters / call results forwarded interprocedurally)
+    ///      can still smuggle a heap env word; that residual leaks the env
+    ///      box — it never double-frees, per (a)-(b).
     ///   3. `ResolvedTy::Closure { captures, .. }` where `captures.is_empty()` —
     ///      an empty-capture closure. No heap env box exists to alias. Closures
     ///      with non-empty captures carry a heap-boxed env; flat-copying them would
     ///      shallow-alias the caller's heap → double-free / UAF at generator
-    ///      teardown. That case is REJECTED here and deferred to the
-    ///      `genfn-owned-captures` lane.
+    ///      teardown. That case is REJECTED here; admitting it takes the
+    ///      clone-into-env protocol (`genfn-owned-captures`).
     ///
     /// Rejected shapes (fail closed):
     ///   * `ResolvedTy::Closure { captures, .. }` with non-empty `captures`.
@@ -9689,17 +9705,18 @@ impl Builder {
     fn gen_env_capture_admissible(&self, ty: &ResolvedTy) -> bool {
         // Fast-path: admit a fn-typed value (`fn(..)->R`). Safety is guaranteed
         // by flat-free semantics (generator runtime never recurses into inner
-        // pointers), PersistentShare no-drop on the body side, and alias-on-arg
-        // exclusion from the closure-pair drop set. A named fn literal has a null
-        // env word; a capturing closure that unifies structurally with `fn(..)`
-        // may have a non-null env word and will leak it — accepted and documented
-        // above; a tighter check is deferred to the genfn-owned-captures lane.
+        // pointers), PersistentShare no-drop on the body side, and the
+        // generator-constructor argument gate (`generator_arg_laundered_closure`)
+        // refusing a capturing closure laundered through `fn(..)` at the call
+        // boundary — so the value here is null-env wherever provenance is
+        // provable; the gate's interprocedural residual leaks at worst, never
+        // double-frees.
         if matches!(ty, ResolvedTy::Function { .. }) {
             return true;
         }
         // Admit an empty-capture closure: same null-env guarantee.
         // A closure with non-empty captures carries a heap-boxed env; reject it
-        // (defer to the `genfn-owned-captures` lane that adds clone-into-env).
+        // (admitting it takes the `genfn-owned-captures` clone-into-env protocol).
         if let ResolvedTy::Closure { captures, .. } = ty {
             return captures.is_empty();
         }
@@ -11764,6 +11781,47 @@ impl Builder {
     /// Recursively walk a block's statements + tail, harvesting owned-Vec
     /// element keys from every expression's type (the `Vec<T>` receiver of an
     /// owned-Vec op carries the type) and every let binding's declared type.
+    /// True when `expr`, read as a produced VALUE, is a capturing-closure
+    /// literal — directly, behind transparent block/scope tails, on either
+    /// branch of an `if`, in any `match` arm body, or copied from a binding
+    /// already tainted as laundered. Feeds `closure_pair_laundered_bindings`
+    /// during the pre-pass (statements are visited in source order, so a
+    /// binding-to-binding copy chain resolves top-down). A capture-FREE
+    /// closure literal answers `false`: its pair's env word is null by
+    /// construction, so nothing can leak or dangle through a flat copy.
+    ///
+    /// Deliberately conservative in the ADMIT direction for producer shapes
+    /// this walk cannot see through (fn-typed call results, fn-typed
+    /// parameters): those stay untainted here and are the documented residual
+    /// of the generator-argument gate (`generator_arg_laundered_closure`).
+    fn rhs_produces_capturing_closure(&self, expr: &HirExpr) -> bool {
+        match &expr.kind {
+            HirExprKind::Closure { captures, .. } => !captures.is_empty(),
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(id),
+                ..
+            } => self.closure_pair_laundered_bindings.contains(id),
+            HirExprKind::Block(body) | HirExprKind::Scope { body } => body
+                .tail
+                .as_deref()
+                .is_some_and(|tail| self.rhs_produces_capturing_closure(tail)),
+            HirExprKind::If {
+                then_expr,
+                else_expr,
+                ..
+            } => {
+                self.rhs_produces_capturing_closure(then_expr)
+                    || else_expr
+                        .as_deref()
+                        .is_some_and(|eb| self.rhs_produces_capturing_closure(eb))
+            }
+            HirExprKind::Match { arms, .. } => arms
+                .iter()
+                .any(|arm| self.rhs_produces_capturing_closure(&arm.body)),
+            _ => false,
+        }
+    }
+
     fn collect_vec_owned_element_keys_from_block(&mut self, block: &HirBlock) {
         for stmt in &block.statements {
             match &stmt.kind {
@@ -11771,6 +11829,14 @@ impl Builder {
                     let binding_ty = self.subst_ty(&binding.ty);
                     self.harvest_vec_owned_element_key(&binding_ty);
                     if let Some(v) = value {
+                        // Launder taint: a fn/closure-typed binding whose RHS
+                        // produces a capturing-closure literal may hide a heap
+                        // env word behind a `fn(..)` static type — see
+                        // `closure_pair_laundered_bindings`.
+                        if ty_is_closure_pair(&binding_ty) && self.rhs_produces_capturing_closure(v)
+                        {
+                            self.closure_pair_laundered_bindings.insert(binding.id);
+                        }
                         self.collect_vec_owned_element_keys_from_expr(v);
                     }
                 }
@@ -11785,6 +11851,15 @@ impl Builder {
                     } = &target.kind
                     {
                         self.prepass_reassigned_bindings.insert(*id);
+                        // Launder taint for reassignments (`var g = triple;
+                        // g = |x| x * k;`). The pre-pass runs before any call
+                        // site lowers, so a back-edge reassignment taints the
+                        // binding for the whole function.
+                        if ty_is_closure_pair(&self.subst_ty(&target.ty))
+                            && self.rhs_produces_capturing_closure(value)
+                        {
+                            self.closure_pair_laundered_bindings.insert(*id);
+                        }
                     }
                     self.collect_vec_owned_element_keys_from_expr(target);
                     self.collect_vec_owned_element_keys_from_expr(value);
@@ -23982,6 +24057,44 @@ impl Builder {
             builtin,
             builtin.map_or("", |f| f.c_symbol()),
         );
+        // CAP-11 fail-closed gate: a generator-constructor call (`gen fn` —
+        // the only direct calls typed `Generator<..>`) flat-copies every
+        // argument its body captures into the generator env
+        // (`hew_gen_ctx_create`), and the body side never drops a fn-typed
+        // capture. A capturing closure laundered through a `fn(..)`-typed
+        // parameter therefore carries a heap env box NOTHING can ever
+        // release — refuse it here, at the launder crossing, where the
+        // argument's real shape is still visible (the callee's own frame
+        // sees only the null-env-presumptive `fn(..)` type). Named-fn
+        // references and capture-free closures stay admitted: their env
+        // word is null by construction.
+        if ty_is_generator_handle(ret_ty) {
+            for arg in hir_args {
+                if let Some(what) = self.generator_arg_laundered_closure(arg) {
+                    // The diagnostic is fatal on its own; lowering CONTINUES so
+                    // the surrounding statement stream stays coherent (a bare
+                    // `return None` here cascades spurious follow-on errors
+                    // onto bindings the enclosing loop/let still references).
+                    // No binary is ever produced past a fatal diagnostic.
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: "a capturing closure as a generator's `fn(..)` \
+                                        argument"
+                                .to_string(),
+                            site: arg.site,
+                        },
+                        note: format!(
+                            "{what} would cross into the generator's flat-copied env: \
+                             the generator can never release a capturing closure's \
+                             environment box, so every generator constructed from it \
+                             would leak that box. Pass a named function or a \
+                             capture-free closure instead; owned captures need the \
+                             clone-into-env protocol (`genfn-owned-captures`)."
+                        ),
+                    });
+                }
+            }
+        }
         // Lower each argument left-to-right.  If any fails to produce a
         // Place, fail the whole call — argument diagnostics already capture
         // the root cause.
@@ -30112,8 +30225,8 @@ impl Builder {
         //     no implicit drop) yet is a runtime handle — bit-copying it across
         //     the body thread aliases the caller's handle → the same UAF; and
         //   * `Closure` with non-empty `captures`: heap-boxed env — same
-        //     shallow-alias hazard. Admitted by the `genfn-owned-captures` lane
-        //     once clone-into-env + env-field-drop-on-destroy lands.
+        //     shallow-alias hazard. Admitting it takes the `genfn-owned-captures`
+        //     clone-into-env + env-field-drop-on-destroy protocol.
         let mut env_place: Option<Place> = None;
         let mut env_ty: Option<ResolvedTy> = None;
         let mut env_capture_field_tys: Vec<ResolvedTy> = Vec::new();
@@ -30147,8 +30260,8 @@ impl Builder {
                         // precisely so the diagnostic is actionable:
                         //   * `Closure` with non-empty `captures` — a heap-boxed
                         //     env; flat-copying it shallow-aliases the caller's env
-                        //     → double-free / UAF at generator teardown (a clone-
-                        //     into-env protocol lands in a follow-on lane); OR
+                        //     → double-free / UAF at generator teardown (admitting
+                        //     it takes a clone-into-env protocol); OR
                         //   * owned / non-`BitCopy` (string/Vec/owned record) —
                         //     no clone-into-env protocol exists yet; OR
                         //   * `BitCopy`-but-opaque — an `#[opaque]` runtime
@@ -30164,8 +30277,8 @@ impl Builder {
                                 "a closure with a captured environment cannot yet cross the \
                                  generator's thread boundary; its heap env would be \
                                  shallow-aliased (double-free / UAF at teardown). \
-                                 Owned/closure-env captures land in a follow-on lane that \
-                                 adds clone-into-env + env-field-drop-on-destroy"
+                                 Owned/closure-env captures need the clone-into-env + \
+                                 env-field-drop-on-destroy protocol"
                             }
                             _ if ValueClass::of_ty(&ty, &self.type_classes)
                                 == ValueClass::BitCopy =>
@@ -31433,6 +31546,66 @@ impl Builder {
                 .is_some_and(|tail| self.closure_rhs_is_null_env_pair(tail)),
             _ => false,
         }
+    }
+
+    /// `Some(description)` when a generator-constructor call argument is a
+    /// capturing closure (or a binding that may hold one) laundered behind a
+    /// `fn(..)` view — the CAP-11 fail-closed gate. The generator env is a
+    /// flat `memcpy` (`hew_gen_ctx_create`) that never recurses into inner
+    /// pointers and the body side never drops a fn-typed capture, so a
+    /// non-null env word crossing this boundary is an unreleasable heap box:
+    /// every constructed generator would leak it. `None` admits the argument.
+    ///
+    /// Admitted (provably or presumptively null-env):
+    ///   * named-fn references (`Item`-resolved — env word null by
+    ///     construction);
+    ///   * capture-free closure literals (no env box exists);
+    ///   * fn-typed values whose producer this gate cannot see through —
+    ///     fn-typed parameters of the ENCLOSING function and fn-typed call
+    ///     results. TODO(genfn-owned-captures): these two shapes can still
+    ///     smuggle a heap env interprocedurally (`fn wrap(f: fn(i64) -> i64)`
+    ///     forwarding `f` into a generator, called with a capturing closure)
+    ///     and keep the env-box leak. Closing them needs either closure-pair
+    ///     provenance carried on the value/type or the clone-into-env
+    ///     protocol that makes the generator own its captures; until then
+    ///     they stay admitted-and-documented, matching the pre-existing
+    ///     call-argument alias posture (leak, never a double-free).
+    ///
+    /// Rejected (fail closed):
+    ///   * a closure literal with captures;
+    ///   * any expression whose resolved type is a capturing `Closure`;
+    ///   * a binding tainted by `closure_pair_laundered_bindings` (its `let`
+    ///     or any reassignment RHS was a capturing closure, so its `fn(..)`
+    ///     static type proves nothing about the env word).
+    fn generator_arg_laundered_closure(&self, arg: &HirExpr) -> Option<String> {
+        if let HirExprKind::Block(body) = &arg.kind {
+            return body
+                .tail
+                .as_deref()
+                .and_then(|tail| self.generator_arg_laundered_closure(tail));
+        }
+        if let HirExprKind::Closure { captures, .. } = &arg.kind {
+            if captures.is_empty() {
+                return None;
+            }
+            let names: Vec<String> = captures.iter().map(|c| format!("`{}`", c.name)).collect();
+            return Some(format!("a closure capturing {}", names.join(", ")));
+        }
+        if let ResolvedTy::Closure { captures, .. } = self.subst_ty(&arg.ty) {
+            if !captures.is_empty() {
+                return Some("a value of a capturing-closure type".to_string());
+            }
+        }
+        if let HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(id),
+            name,
+        } = &arg.kind
+        {
+            if self.closure_pair_laundered_bindings.contains(id) {
+                return Some(format!("`{name}` (which holds a capturing closure)"));
+            }
+        }
+        None
     }
 
     /// Ownership classification for a closure-pair operand entering an

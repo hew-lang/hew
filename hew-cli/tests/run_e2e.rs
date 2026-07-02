@@ -1889,6 +1889,103 @@ fn check_channel_vec_indirect_enum_rejected_by_layout_witness() {
     );
 }
 
+/// CAP-11 fail-closed gate: a CAPTURING closure passed where a generator
+/// declares a `fn(..)` parameter is refused at check time. The closure
+/// unifies structurally with `fn(..)` but carries a non-null env word; the
+/// generator env is a flat copy nothing can ever release, so admitting the
+/// launder leaks one env box per constructed generator (previously: compiled
+/// clean and leaked exactly that box per launder).
+#[test]
+fn check_gen_fn_capturing_closure_arg_fails_closed() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/reject/gen_fn_capturing_closure_arg.hew");
+    let output = Command::new(hew_binary())
+        .arg("check")
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew check");
+
+    assert!(
+        !output.status.success(),
+        "expected check to fail; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("can never release a capturing closure"),
+        "expected the laundered-closure fail-closed diagnostic; got: {combined}"
+    );
+}
+
+/// CAP-11 rebind leg: a `fn(..)`-typed `var` REASSIGNED a capturing closure
+/// is tainted by a whole-body pre-pass, so the launder cannot hide behind
+/// the binding's `fn(..)` static type or behind statement order (a back-edge
+/// assignment runs before the generator call on the second loop iteration).
+#[test]
+fn check_gen_fn_capturing_closure_rebind_fails_closed() {
+    require_codegen();
+
+    let source =
+        repo_root().join("tests/vertical-slice/reject/gen_fn_capturing_closure_rebind.hew");
+    let output = Command::new(hew_binary())
+        .arg("check")
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew check");
+
+    assert!(
+        !output.status.success(),
+        "expected check to fail; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("can never release a capturing closure"),
+        "expected the laundered-closure fail-closed diagnostic; got: {combined}"
+    );
+}
+
+/// CAP-11 admitted boundary: the two null-env `fn(..)` value shapes — a
+/// named-fn reference and a capture-free closure — still compile and run
+/// with exact stdout. Both pairs carry a null env word by construction, so
+/// the generator's flat env copy has no heap box to leak or alias; a gate
+/// regression that over-tightened onto these shapes would fail this test at
+/// compile time.
+#[test]
+fn run_gen_fn_null_env_fn_values_exact_stdout() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/gen_fn_null_env_fn_values.hew");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/gen_fn_null_env_fn_values.expected"),
+    )
+    .expect("read gen_fn_null_env_fn_values.expected");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "gen_fn_null_env_fn_values should run cleanly; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
 /// Non-BitCopy record match destructure — FULL extraction with a
 /// non-escaping bound owned field.
 ///

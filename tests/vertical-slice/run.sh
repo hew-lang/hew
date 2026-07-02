@@ -3701,6 +3701,36 @@ if "${HEW}" check \
 fi
 grep -q 'cannot ride the element-layout queue witness' "${reject_output}"
 
+# Reject (CAP-11): a CAPTURING closure passed where a generator declares a
+# `fn(..)` parameter fails CLOSED at check time. The closure unifies
+# structurally with `fn(..)` but carries a non-null env word; the generator
+# env is a flat copy nothing can ever release, so admitting the launder
+# leaks one env box per constructed generator.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/gen_fn_capturing_closure_arg.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected gen_fn_capturing_closure_arg fixture to fail" >&2
+  exit 1
+fi
+grep -q 'can never release a capturing closure' "${reject_output}"
+
+# Reject (CAP-11, rebind leg): a `fn(..)`-typed var REASSIGNED a capturing
+# closure is tainted by a whole-body pre-pass — including back-edge
+# assignments that textually follow the generator call — so the launder
+# cannot hide behind statement order or the binding's `fn(..)` static type.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/gen_fn_capturing_closure_rebind.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected gen_fn_capturing_closure_rebind fixture to fail" >&2
+  exit 1
+fi
+grep -q 'can never release a capturing closure' "${reject_output}"
+
+# Accept (CAP-11 boundary): the two null-env `fn(..)` shapes stay admitted —
+# a named-fn reference and a capture-free closure both carry a null env word
+# by construction, so the generator's flat env copy has nothing to leak.
+run_accept_expect_stdout "gen_fn_null_env_fn_values"
+
 # A `BindingRef` scrutinee
 # whose owned fields are destructured (full or partial) must transition to
 # `Consumed` at the destructure site so the dataflow checker rejects a

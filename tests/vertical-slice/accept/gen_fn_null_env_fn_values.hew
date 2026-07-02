@@ -1,0 +1,31 @@
+// Accept: the two NULL-ENV `fn(..)` value shapes a generator's `fn(..)`
+// parameter admits — a named-function reference and a capture-free closure.
+// Both pairs carry a null env word by construction, so the generator's flat
+// env copy has no heap box to leak or alias; the capturing-closure launder
+// (see reject/gen_fn_capturing_closure_arg.hew) is the rejected boundary.
+gen fn mapped(n: i64, f: fn(i64) -> i64) -> i64 {
+    var i = 0;
+    while i < n {
+        yield f(i);
+        i = i + 1;
+    }
+}
+
+fn triple(x: i64) -> i64 {
+    x * 3
+}
+
+fn main() {
+    var named_total = 0;
+    for v in mapped(3, triple) {
+        named_total = named_total + v;
+    }
+    // 0*3 + 1*3 + 2*3
+    println(named_total);
+    var closure_total = 0;
+    for v in mapped(3, |x: i64| x * 4) {
+        closure_total = closure_total + v;
+    }
+    // 0*4 + 1*4 + 2*4
+    println(closure_total);
+}

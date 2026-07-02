@@ -288,6 +288,18 @@ impl ResolvedTy {
         )
     }
 
+    /// Returns `true` when an integer literal pattern can be compared directly
+    /// against a match scrutinee of this type.
+    ///
+    /// This is the checker/HIR/MIR semantic boundary for integer literal-match
+    /// admission. Keep all downstream literal-match gates routed through this
+    /// predicate so platform-sized integers cannot drift from fixed-width
+    /// integers again.
+    #[must_use]
+    pub fn is_integer_literal_match_scrutinee(&self) -> bool {
+        self.is_integer()
+    }
+
     /// Returns `true` for the concrete floating-point types admitted by the
     /// checker numeric matrix.
     #[must_use]
@@ -836,6 +848,41 @@ pub fn mangle_impl_self_name(name: &str, type_args: &[ResolvedTy]) -> Option<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn integer_literal_match_scrutinee_admits_all_integer_widths_only() {
+        for ty in [
+            ResolvedTy::I8,
+            ResolvedTy::I16,
+            ResolvedTy::I32,
+            ResolvedTy::I64,
+            ResolvedTy::U8,
+            ResolvedTy::U16,
+            ResolvedTy::U32,
+            ResolvedTy::U64,
+            ResolvedTy::Isize,
+            ResolvedTy::Usize,
+        ] {
+            assert!(
+                ty.is_integer_literal_match_scrutinee(),
+                "{ty:?} must admit integer literal match predicates"
+            );
+        }
+
+        for ty in [
+            ResolvedTy::F32,
+            ResolvedTy::F64,
+            ResolvedTy::Bool,
+            ResolvedTy::Char,
+            ResolvedTy::String,
+            ResolvedTy::Unit,
+        ] {
+            assert!(
+                !ty.is_integer_literal_match_scrutinee(),
+                "{ty:?} must not admit integer literal match predicates"
+            );
+        }
+    }
 
     #[test]
     fn from_ty_rejects_ty_var() {

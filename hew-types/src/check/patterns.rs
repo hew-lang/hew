@@ -105,10 +105,9 @@ fn unsupported_payload_subpattern_label(pattern: &Pattern) -> Option<&'static st
         Pattern::Identifier(name) if name.contains("::") => Some("nested constructor"),
         // Plain binding (bare identifier), wildcard, literal predicates, and tuple
         // payload aggregates are supported or deferred to the call site.
-        Pattern::Wildcard
-        | Pattern::Literal(_)
-        | Pattern::Tuple(_)
-        | Pattern::Identifier(_) => None,
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Tuple(_) | Pattern::Identifier(_) => {
+            None
+        }
         Pattern::Struct { .. } | Pattern::RecordShorthand { .. } => Some("record destructure"),
         Pattern::Constructor { .. } => Some("nested constructor"),
         Pattern::Or(_, _) => Some("or-pattern"),

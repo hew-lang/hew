@@ -2,7 +2,7 @@
 //!
 //! Flags a *discarded* value whose type carries a failure that must not be
 //! ignored — `WriteError`, `SendError`, and `AskError`, the error arms returned
-//! by `Connection.write`, the pid `tell` family, and an actor `ask`
+//! by `Connection.write`, the pid `send` family, and an actor `ask`
 //! (`await actor.msg()`). Dropping such a value on the floor silently fails
 //! open: a backpressure or disconnect signal vanishes, an undelivered message
 //! is never noticed, or a timed-out / mailbox-full / stopped-actor ask is
@@ -13,7 +13,7 @@
 //!
 //! - the bare error: `WriteError` / `SendError` / `AskError`;
 //! - a `Result<_, E>` whose error arm is one of those — the common case, since
-//!   `write()` returns `Result<(), WriteError>`, `tell()` returns
+//!   `write()` returns `Result<(), WriteError>`, `send()` returns
 //!   `Result<(), SendError>`, and an `ask` returns `Result<Reply, AskError>`.
 //!
 //! ## Precision over recall
@@ -120,7 +120,7 @@ impl MustUseError {
         class: "write/send",
         reports: "backpressure, disconnect, or undelivered sends",
     };
-    /// `SendError` — an undelivered message from the pid `tell` family.
+    /// `SendError` — an undelivered message from the pid `send` family.
     const SEND: Self = Self {
         name: "SendError",
         class: "write/send",

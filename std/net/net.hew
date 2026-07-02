@@ -489,7 +489,7 @@ impl ConnectionMethods for Connection {
     /// `on_close` `msg_id`s from the concrete actor type and emit the runtime
     /// attach ABI. The body below is never lowered on the native path; it
     /// exists only so the trait surface type-checks. (Mirrors the
-    /// `RemotePid::tell` stub in std/builtins.hew.)
+    /// `RemotePid::send` stub in std/builtins.hew.)
     fn attach(conn: Connection, handler: LocalPid<ConnectionHandler>) {}
     /// Consume the connection and produce a `(Stream<bytes>, Sink<bytes>)` pair.
     fn into_stream_sink(conn: Connection) -> (Stream<bytes>, Sink<bytes>) {
@@ -669,7 +669,7 @@ extern "C" {
     // rewrites each call site to `hew_tcp_attach_local`, which codegen
     // intercepts to synthesise the handler `msg_id`s and emit the runtime attach
     // ABI directly. No extern declaration here would match that 4-arg ABI, so
-    // none is declared (mirrors `hew_remote_pid_tell`, whose real symbol
+    // none is declared (mirrors `hew_remote_pid_send`, whose real symbol
     // `hew_actor_send_by_id` is interned in codegen rather than declared in Hew).
     fn hew_tcp_detach(conn: Connection);
     fn hew_bytes_to_string(data: bytes) -> string;

@@ -132,12 +132,13 @@ spec-0111   3964649123   # SNIPPET: bare `match` — wire format pattern illustr
 spec-0122   3678662757   # SNIPPET: bare `let` — wire encode illustration
 spec-0123   866984589   # SNIPPET: bare `let` — wire decode illustration
 spec-0124   543939813   # SNIPPET: bare `mailbox` declaration — overflow-policy illustration
-spec-0125   668939213   # SNIPPET: bare `let` — integer width-mismatch conversion illustration
-spec-0126   922722789   # SNIPPET: bare `let` — explicit usize-to-integer conversion illustration
-spec-0127   940575234   # SNIPPET: bare `let` — saturating f64/integer conversion illustration
-spec-0128   3357476678   # SNIPPET: bare `let` — duration literal illustration
-spec-0129   1545965628   # SNIPPET: bare `let` — await timeout illustration
-spec-0130   1635702216   # SNIPPET: bare labeled loop — labeled break/continue illustration
-spec-0131   796057876   # SNIPPET: bare `var` — loop statement result-accumulator illustration
-spec-0132   642644102   # SNIPPET: bare `if let` — Option pattern-match illustration
-spec-0133   1695617851   # SNIPPET: bare `while let` — HashMap pattern-match illustration
+spec-0125   2829887061   # SNIPPET: bare `let` — integer width-mismatch conversion illustration
+spec-0126   570017546   # SNIPPET: bare `let` — explicit usize-to-integer conversion illustration
+spec-0127   2833987996   # SNIPPET: bare `let` — saturating `as` f64/integer conversion illustration
+spec-0128   3559603183   # SNIPPET: bare `let` — exact numeric try_to conversion illustration
+spec-0129   3357476678   # SNIPPET: bare `let` — duration literal illustration
+spec-0130   1545965628   # SNIPPET: bare `let` — await timeout illustration
+spec-0131   1635702216   # SNIPPET: bare labeled loop — labeled break/continue illustration
+spec-0132   796057876   # SNIPPET: bare `var` — loop statement result-accumulator illustration
+spec-0133   642644102   # SNIPPET: bare `if let` — Option pattern-match illustration
+spec-0134   1695617851   # SNIPPET: bare `while let` — HashMap pattern-match illustration

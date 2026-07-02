@@ -124,8 +124,12 @@ hew-observe/test-harness/observe_workload.hew
 
 # ── hew-parser/ ──────────────────────────────────────────────────────────────
 
-# stale-syntax: fuzz corpus seed files use pre-v0.5 machine event syntax
+# stale-syntax: fuzz machine seed uses pre-v0.5 interleaved event declarations;
+# paired generator emits the same parse-rejected form
 hew-parser/fuzz/corpus/fuzz_machine_decls/seed.hew
+
+# stale-syntax: fuzz record seed uses tuple-style record declarations; paired
+# generator emits the same parse-rejected form
 hew-parser/fuzz/corpus/fuzz_record_types/seed.hew
 
 # deferred-nyi: scope/fork caller context routing (W4.010-followup-caller-ctx-routing)
@@ -178,17 +182,32 @@ repros/p0c_method_value_failclosed.hew
 # stale-syntax: record update spread must be the final field
 tests/corpus/v05-value-model/03_cowvalue_mutation_after_share.hew
 
-# stale-syntax: v05-value-model corpus uses pre-v0.5 syntax that needs migrating
-# forward to current type/record syntax
+# deferred-nyi: planned shareable persistent-map stdlib surface is not built yet
 tests/corpus/v05-value-model/04_persistent_share_placeholder.hew
+
+# stale-syntax: pre-v0.5 bare resource attribute and consuming receiver modifier
 tests/corpus/v05-value-model/05_affine_resource_consume.hew
+
+# deferred-nyi: Vec.first and speculative Map/PersistentMap surfaces are not built yet
 tests/corpus/v05-value-model/07_view_field_slice_alias.hew
+
+# stale-syntax: pre-v0.5 bare resource attribute plus open receive-fn attribute support
 tests/corpus/v05-value-model/08_actor_send_transfer.hew
+
+# deferred-nyi: actor share send-mode semantics are not implemented yet
 tests/corpus/v05-value-model/09_actor_send_share.hew
+
+# stale-syntax: pre-v0.5 bare linear attribute and missing copy builtin surface
 tests/corpus/v05-value-model/10_actor_send_materialize.hew
+
+# stale-syntax: pre-v0.5 fn(...) closure literal syntax
 tests/corpus/v05-value-model/12_closure_capture_let_read.hew
 tests/corpus/v05-value-model/13_closure_capture_var_mutate.hew
+
+# stale-syntax: pre-v0.5 consuming parameter modifier
 tests/corpus/v05-value-model/14_closure_capture_var_consume.hew
+
+# stale-syntax: pre-v0.5 generator return-type syntax
 tests/corpus/v05-value-model/15_generator_yield_immutable_read.hew
 
 # deferred-nyi: Display/Formatter stringification API surface is not built yet
@@ -196,6 +215,8 @@ tests/corpus/v05-value-model/17_to_string_display_read_receiver.hew
 
 # stale-syntax: record update spread must be the final field
 tests/corpus/v05-value-model/18_record_update_syntax.hew
+
+# deferred-nyi: actor_scope is forward syntax that has not landed yet
 tests/corpus/v05-value-model/19_actor_scope.hew
 
 # ── tests/ll-oracle/ ─────────────────────────────────────────────────────────

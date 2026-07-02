@@ -2401,6 +2401,12 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         right: &Spanned<Expr>,
         span: std::ops::Range<usize>,
     ) -> Result<String, CompileError> {
+        match op {
+            BinaryOp::And => return self.lower_logical_and(left, right, span),
+            BinaryOp::Or => return self.lower_logical_or(left, right, span),
+            _ => {}
+        }
+
         let left_local = self.lower_expr(left)?;
         let right_local = self.lower_expr(right)?;
         // Arithmetic opcodes are type-directed: the native semantics of
@@ -2460,6 +2466,74 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             None,
         );
         Ok(dst)
+    }
+
+    fn lower_logical_and(
+        &mut self,
+        left: &Spanned<Expr>,
+        right: &Spanned<Expr>,
+        span: std::ops::Range<usize>,
+    ) -> Result<String, CompileError> {
+        self.lower_logical_binary(left, right, span, false, true)
+    }
+
+    fn lower_logical_or(
+        &mut self,
+        left: &Spanned<Expr>,
+        right: &Spanned<Expr>,
+        span: std::ops::Range<usize>,
+    ) -> Result<String, CompileError> {
+        self.lower_logical_binary(left, right, span, true, false)
+    }
+
+    fn lower_logical_binary(
+        &mut self,
+        left: &Spanned<Expr>,
+        right: &Spanned<Expr>,
+        span: std::ops::Range<usize>,
+        short_circuit_value: bool,
+        rhs_on_true: bool,
+    ) -> Result<String, CompileError> {
+        let result = self.declare_local(None, &Ty::Bool, true, Some(span.clone()));
+        let default = self.lower_literal(&Literal::Bool(short_circuit_value), span.clone());
+        self.emit_instruction(
+            "local.set",
+            None,
+            vec![Operand::local(result.clone()), Operand::local(default)],
+            Some(span.clone()),
+            None,
+        );
+
+        let span_ref = self.package.spans.span_ref(&span);
+        let (rhs_idx, rhs_id) = self.new_block("logical_rhs", span_ref.clone());
+        let (exit_idx, exit_id) = self.new_block("logical_exit", span_ref.clone());
+        let left_local = self.lower_expr(left)?;
+        let (then_id, else_id) = if rhs_on_true {
+            (rhs_id.clone(), exit_id.clone())
+        } else {
+            (exit_id.clone(), rhs_id.clone())
+        };
+        self.terminate(Terminator::br_if(
+            Operand::local(left_local),
+            then_id,
+            else_id,
+            Vec::new(),
+            span_ref.clone(),
+        ));
+
+        self.switch_to(rhs_idx);
+        let right_local = self.lower_expr(right)?;
+        self.emit_instruction(
+            "local.set",
+            None,
+            vec![Operand::local(result.clone()), Operand::local(right_local)],
+            Some(right.1.clone()),
+            None,
+        );
+        self.terminate(Terminator::br(exit_id, Vec::new(), span_ref));
+
+        self.switch_to(exit_idx);
+        Ok(result)
     }
 
     #[expect(

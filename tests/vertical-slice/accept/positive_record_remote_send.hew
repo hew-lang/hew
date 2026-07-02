@@ -1,4 +1,4 @@
-// Accept: record-value messages are admitted by the RemotePid<T>::tell
+// Accept: record-value messages are admitted by the RemotePid<T>::send
 // Serializable gate.
 record Ping {
     n: i64,
@@ -14,5 +14,5 @@ impl ActorMsg for Worker {
 }
 
 fn send_remote(pid: RemotePid<Worker>) -> Result<(), SendError> {
-    pid.tell(Ping { n: 42 })
+    pid.send(Ping { n: 42 })
 }

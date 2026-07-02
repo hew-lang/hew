@@ -1,4 +1,4 @@
-// Lambda actor capturing a BitCopy outer binding (tell shape). The
+// Lambda actor capturing a BitCopy outer binding (send shape). The
 // capture rides the heap-boxed env record passed as the runtime state
 // pointer; the body reads it back through the state slot on every
 // dispatch. Both tells land in one mailbox, so their prints are FIFO

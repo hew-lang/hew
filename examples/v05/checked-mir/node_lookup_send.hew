@@ -1,4 +1,4 @@
-// Accept: Node::lookup(name) -> Result::Ok(RemotePid<T>) -> pid.tell(msg)
+// Accept: Node::lookup(name) -> Result::Ok(RemotePid<T>) -> pid.send(msg)
 // delivers to a locally registered actor through the in-process send-by-id path.
 record Ping {
     n: i64
@@ -27,7 +27,7 @@ fn main() -> i64 {
     let missing: Result<RemotePid<Worker>, LookupError> = Node::lookup("node-lookup-missing");
     let missing_code = match missing {
         Result::Ok(pid) => {
-            let unexpected = pid.tell(Ping { n: 1 });
+            let unexpected = pid.send(Ping { n: 1 });
             match unexpected {
                 Result::Ok(_) => 10,
                 Result::Err(_) => 11,
@@ -39,7 +39,7 @@ fn main() -> i64 {
     let found: Result<RemotePid<Worker>, LookupError> = Node::lookup("node-lookup-worker");
     let status = match found {
         Result::Ok(pid) => {
-            let delivered = pid.tell(Ping { n: 42 });
+            let delivered = pid.send(Ping { n: 42 });
             let send_code = match delivered {
                 Result::Ok(_) => 0,
                 Result::Err(_) => 20,

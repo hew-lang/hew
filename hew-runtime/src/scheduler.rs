@@ -433,6 +433,16 @@ pub extern "C" fn hew_sched_init() -> c_int {
         return 0;
     }
 
+    // Ignore SIGPIPE process-wide, before ANY background thread is spawned or
+    // any socket I/O runs. A broken-pipe write on the main thread (where a
+    // networked program runs its synchronous top-level `ask` / send) or on any
+    // reactor / SWIM / accept / reader thread would otherwise be KILLED by the
+    // default SIGPIPE disposition, before the fallible send path could convert
+    // the EPIPE into a typed fail-closed error. This is the compiled program's
+    // runtime only; the `hew` CLI is a separate process that resets SIGPIPE to
+    // SIG_DFL and never calls this. See `signal::ignore_sigpipe`.
+    crate::signal::ignore_sigpipe();
+
     // Install crash signal handlers for the entire process.
     crate::signal::init_crash_handling();
 

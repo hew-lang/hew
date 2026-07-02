@@ -17413,29 +17413,48 @@ impl Builder {
                 args,
                 ..
             } => {
-                // Closure-pair Vec<fn>/Vec<closure>: each slot owns a heap-boxed
-                // {code, env} pair (and the pair's env box); release walks the
-                // elements before the buffer/handle free via
-                // `hew_vec_free_closure_pairs`. Codegen's `cow_heap_release_symbol`
-                // checks the fn/closure element FIRST — a closure pair is neither
-                // an owned composite nor a plain leaf — so this arm must dispatch
-                // in the same order, or a yielded `Vec<fn>` computes `hew_vec_free`
-                // and fails the inline-drop congruence check
-                // (`dedup-semantic-boundary`).
-                if ty_is_closure_pair_vec(ty) {
-                    Some("hew_vec_free_closure_pairs")
-                } else if args.first().is_some_and(|e| self.is_owned_vec_element(e)) {
-                    // Owned-element Vec (element owns heap) releases via
-                    // `hew_vec_free_owned` (per-element descriptor drop then buffer
-                    // free); a plain (BitCopy / string) element Vec uses
-                    // `hew_vec_free`. The owned-element predicate routes through the
-                    // SAME `is_owned_vec_element` authority codegen's
-                    // `resolved_ty_element_owns_heap_for_owned_vec` agrees with
-                    // (`dedup-semantic-boundary`).
-                    Some("hew_vec_free_owned")
-                } else {
-                    Some("hew_vec_free")
-                }
+                // The element's release bucket selects the Vec symbol, read
+                // from the one typed classification. Its dispatch checks the
+                // closure-pair bucket FIRST, mirroring codegen's
+                // `cow_heap_release_symbol` (a fn/closure element is neither
+                // an owned composite nor a plain leaf; the inline-drop
+                // congruence check rejects a mis-picked `hew_vec_free` for a
+                // yielded `Vec<fn>` — `dedup-semantic-boundary`), and its
+                // owned bucket routes through the SAME `is_owned_vec_element`
+                // authority codegen's
+                // `resolved_ty_element_owns_heap_for_owned_vec` agrees with.
+                // The classification runs on the RAW element (a yield's type
+                // is concrete at its producer; the field picker substitutes
+                // first — the asymmetry is pinned by
+                // `yield_and_field_pickers_match_legacy_symbol_table`). A
+                // no-type-arg `Vec` falls through to the plain buffer free.
+                args.first().map_or(Some("hew_vec_free"), |elem| {
+                    #[allow(
+                        clippy::match_same_arms,
+                        reason = "Plain and Unsupported are distinct decisions \
+                                  whose symbols coincide only by transcription: \
+                                  Plain is the wired buffer-only release; \
+                                  Unsupported is an unwired protocol frozen at \
+                                  the legacy verdict. Merging the arms would \
+                                  hide the seam the type-directed drop tables \
+                                  rewire fail-closed"
+                    )]
+                    match self.classify_vec_element_release(elem) {
+                        VecElementRelease::ClosurePair => Some("hew_vec_free_closure_pairs"),
+                        VecElementRelease::OwnedElement => Some("hew_vec_free_owned"),
+                        VecElementRelease::Plain => Some("hew_vec_free"),
+                        // An element no bucket claims keeps the buffer-only
+                        // free: its per-element release is unwired, and
+                        // `unsupported_vec_element_diagnostics` rejects the
+                        // `NoReleaseProtocol` shapes at compile where the Vec
+                        // is constructed. The verdict over the Unsupported
+                        // domain is frozen by
+                        // `yield_and_field_pickers_match_legacy_symbol_table`;
+                        // the honest fail-closed treatment belongs to the
+                        // type-directed drop-table consolidation.
+                        VecElementRelease::Unsupported(_) => Some("hew_vec_free"),
+                    }
+                })
             }
             _ => None,
         }
@@ -17718,32 +17737,38 @@ impl Builder {
                 ref args,
                 ..
             } => {
-                // Mirror codegen's `cow_heap_release_symbol` Vec arm EXACTLY,
-                // including order: a closure-pair element (`Vec<fn>` /
-                // `Vec<closure>`) is checked FIRST and releases via
-                // `hew_vec_free_closure_pairs` (per-element env-thunk + pair-box
-                // walk, then buffer/handle free). A fn element is neither an
-                // owned composite nor a plain leaf, so it must not fall through
-                // to the owned/plain arms. Omitting this arm made the MIR symbol
-                // authority disagree with codegen (`hew_vec_free` vs
-                // `hew_vec_free_closure_pairs`): every consumer — the
-                // functional-update override-drop AND the match-destructure
-                // wildcard inline-drop — then emitted an incongruent release
-                // that codegen rejects fail-closed
-                // (`is_known_cow_heap_drop_symbol` / the RecordFieldDrop
-                // congruence assert). Both authorities are documented to agree;
-                // this restores that agreement.
-                // The closure-pair leaf test shares `ty_is_closure_pair` with
-                // `ty_is_closure_pair_vec` (used by the generator-yield picker),
-                // so every drop-symbol authority detects a fn/closure element
-                // through one predicate and cannot drift.
-                if args.first().is_some_and(ty_is_closure_pair) {
-                    Some("hew_vec_free_closure_pairs")
-                } else if args.first().is_some_and(|e| self.is_owned_vec_element(e)) {
-                    Some("hew_vec_free_owned")
-                } else {
-                    Some("hew_vec_free")
-                }
+                // The element's release bucket selects the Vec symbol, read
+                // from the one typed classification — the same classification
+                // the generator-yield picker reads, so every drop-symbol
+                // authority detects each bucket through one decision and
+                // cannot drift. The dispatch checks the closure-pair bucket
+                // FIRST, mirroring codegen's `cow_heap_release_symbol` (see
+                // `classify_vec_element_release`'s order doc; both
+                // authorities are documented to agree —
+                // `dedup-semantic-boundary`, `is_known_cow_heap_drop_symbol`
+                // / the RecordFieldDrop congruence assert reject a
+                // mis-picked symbol fail-closed). The classification runs on
+                // the SUBSTITUTED element (this match substitutes before
+                // dispatching; the generator-yield picker classifies the raw
+                // type — the asymmetry is pinned by
+                // `yield_and_field_pickers_match_legacy_symbol_table`). A
+                // no-type-arg `Vec` falls through to the plain buffer free.
+                args.first().map_or(Some("hew_vec_free"), |elem| {
+                    #[allow(
+                        clippy::match_same_arms,
+                        reason = "Plain and Unsupported are distinct decisions \
+                                  whose symbols coincide only by transcription; \
+                                  see the generator-yield picker's Vec arm"
+                    )]
+                    match self.classify_vec_element_release(elem) {
+                        VecElementRelease::ClosurePair => Some("hew_vec_free_closure_pairs"),
+                        VecElementRelease::OwnedElement => Some("hew_vec_free_owned"),
+                        VecElementRelease::Plain => Some("hew_vec_free"),
+                        // Unsupported keeps the legacy buffer-only free — see
+                        // the generator-yield picker's Unsupported arm.
+                        VecElementRelease::Unsupported(_) => Some("hew_vec_free"),
+                    }
+                })
             }
             ResolvedTy::Named {
                 builtin: Some(hew_types::BuiltinType::HashMap),
@@ -39473,6 +39498,14 @@ fn ty_is_vec(ty: &ResolvedTy) -> bool {
 /// (`fn(...) -> T` / closure surface type). Such a vec owns each element's
 /// pair box and, transitively, the pair's env box; its scope-exit release is
 /// `hew_vec_free_closure_pairs` (element walk + buffer + handle).
+///
+/// THE projection of the [`VecElementRelease::ClosurePair`] bucket for
+/// contexts without `Builder` state (the drop-plan validator and
+/// `build_lifo_drops` are free fns): `ty_is_closure_pair_vec(Vec<E>)` ≡
+/// `classify_vec_element_release(E).is_closure_pair()`, pinned over the
+/// element domain by `release_bucket_partition_is_total_over_vec_elements`.
+/// `Builder`-side consumers (the release-symbol pickers) read the
+/// classification itself.
 fn ty_is_closure_pair_vec(ty: &ResolvedTy) -> bool {
     matches!(
         ty,

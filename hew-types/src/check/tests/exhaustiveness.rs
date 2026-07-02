@@ -1482,6 +1482,63 @@ fn main() {
     );
 }
 
+/// Sibling of the #2340 fix: a struct-variant field typed as a tuple, fully
+/// destructured with bindings, must also be credited as irrefutable via the
+/// same unified predicate (routed through the now-typed
+/// `VariantPayloadShape::Struct`).
+#[test]
+fn typecheck_struct_variant_tuple_field_destructure_is_exhaustive() {
+    let (errors, _) = parse_and_check(
+        r"
+enum Packet { Data { value: (i64, i64) }; Empty }
+fn main() {
+    let p: Packet = Data { value: (1, 2) };
+    let r = match p {
+        Data { value: (a, b) } => a + b,
+        Empty => 0,
+    };
+    let _done = r;
+}",
+    );
+    assert!(
+        errors.is_empty(),
+        "irrefutable tuple-typed struct-variant field destructure must be exhaustive: {errors:?}"
+    );
+}
+
+/// Negative control mirroring the struct-variant sibling: a literal inside
+/// the tuple-typed field makes the field sub-pattern refutable, so the match
+/// must still be non-exhaustive.
+#[test]
+fn typecheck_struct_variant_tuple_field_with_literal_still_non_exhaustive() {
+    let (errors, warnings) = parse_and_check(
+        r"
+enum Packet { Data { value: (i64, i64) }; Empty }
+fn main() {
+    let p: Packet = Data { value: (1, 2) };
+    match p {
+        Data { value: (1, b) } => b,
+        Empty => 0,
+    }
+    let _done = 0;
+}",
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::NonExhaustiveMatch)),
+        "literal element inside a tuple-typed struct-variant field must keep the match \
+         non-exhaustive: {errors:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .all(|w| !matches!(w.kind, TypeErrorKind::NonExhaustiveMatch)),
+        "non-exhaustive struct-variant tuple-field match must not be downgraded to a warning: \
+         {warnings:?}"
+    );
+}
+
 /// Negative control: a literal inside one tuple element makes the whole
 /// element-wise AND-recursion refutable, so the match must still be
 /// non-exhaustive. Catches an over-eager fix that credits any non-empty

@@ -35539,10 +35539,11 @@ fn derive_local_collection_drop_allowed(
                 // cloned element source escapes the candidate, so the source keeps
                 // its own scope-exit release (#1722 — `container-ingress-ownership-
                 // is-per-container` COPY-IN retain). Skip the whole call.
-                if is_vec_copy_in_element_store_symbol(call.symbol()) {
+                let contract = crate::runtime_symbols::callee_ownership_contract(call.symbol());
+                if contract.is_vec_copy_in_element_store() {
                     continue;
                 }
-                if is_vec_receiver_borrow_symbol(call.symbol()) {
+                if contract.borrows_vec_receiver() {
                     for p in call.args().iter().skip(1) {
                         if let Some(l) = base_local(*p) {
                             if alias_of.contains_key(&l)
@@ -35599,10 +35600,14 @@ fn derive_local_collection_drop_allowed(
             // and keeps its own scope-exit drop (#1722 COPY-IN retain). Scan
             // nothing (must precede the receiver-borrow arm, which would still
             // scan the by-value element operand as an escape).
-            Terminator::Call { callee, .. } if is_vec_copy_in_element_store_symbol(callee) => {}
+            Terminator::Call { callee, .. }
+                if crate::runtime_symbols::callee_ownership_contract(callee)
+                    .is_vec_copy_in_element_store() => {}
             Terminator::Call { callee, args, .. }
-                if is_collection_receiver_borrow_callee(callee)
-                    || is_vec_receiver_borrow_symbol(callee) =>
+                if {
+                    let contract = crate::runtime_symbols::callee_ownership_contract(callee);
+                    contract.borrows_vec_receiver() || contract.borrows_collection_receiver()
+                } =>
             {
                 for p in args.iter().skip(1) {
                     if let Some(l) = base_local(*p) {

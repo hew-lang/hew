@@ -17434,6 +17434,20 @@ fn lower_instruction(
             lower_record_field_drop(fn_ctx, *record, *field_offset, ty, drop_fn)?;
             let _ = ctx;
         }
+        Instr::FieldDropInPlace { base, field, ty } => {
+            // TODO(FieldDropInPlace codegen): the lowering — place_pointer(base)
+            // → field GEP → `is_indirect_enum`-first dispatch →
+            // `emit_heap_slot_drop(field_ptr, ty, …)` with the type-correct
+            // per-shape postcondition — is the dedicated codegen arm for this
+            // op. Until it lands, no MIR producer emits the instruction;
+            // refuse fail-closed rather than silently skip a field's release.
+            return Err(CodegenError::FailClosed(format!(
+                "FieldDropInPlace on {base:?} at {field:?} (field type {}) has \
+                 no codegen lowering; refusing rather than skipping the \
+                 field's release",
+                ty.user_facing()
+            )));
+        }
         Instr::RecordFieldStore {
             record,
             field_offset,

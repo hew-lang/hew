@@ -614,6 +614,15 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
             // only neutralises the orphaned old field value on the consumed base.
             (vec![*record], vec![])
         }
+        Instr::FieldDropInPlace { base, .. } => {
+            // FieldDropInPlace GEPs into `base` to release ONE owned field
+            // slot in place (type-directed; no `drop_fn`, no temp). It is a
+            // READ of `base`, not a move — the base aggregate's overall
+            // move-state is governed by its own consume marks — and it
+            // defines no place (interior field op: uses base, no dest, no
+            // alias). Mirrors `RecordFieldDrop` above.
+            (vec![*base], vec![])
+        }
         Instr::RecordFieldStore { record, src, .. } => {
             // Field-store reads both the aggregate (to GEP into it) and
             // the source. The aggregate stays Live — only the field bytes

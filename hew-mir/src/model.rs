@@ -4500,6 +4500,81 @@ pub enum Instr {
         /// a known COW-heap release symbol (e.g. `"hew_string_drop"`).
         drop_fn: DropFnSpec,
     },
+    /// Release one owned field of a record or tuple aggregate IN PLACE at its
+    /// field address, with the release resolved from `ty` by codegen's
+    /// address-based type-directed drop dispatcher (`emit_heap_slot_drop`,
+    /// `hew-codegen-rs/src/llvm.rs`).  Carries **no `drop_fn`** — unlike
+    /// `RecordFieldDrop`, whose leaf-COW contract requires a literal release
+    /// symbol, this op is type-directed: codegen GEPs `base` to the field slot
+    /// and dispatches on `ty`'s shape (`is_indirect_enum` FIRST — an indirect
+    /// enum field frees through the recursive `__hew_indirect_enum_free_*`
+    /// node path, never the inline `__hew_enum_drop_inplace_*` helper — then
+    /// the dispatcher).
+    ///
+    /// ## Ownership invariant (precondition)
+    ///
+    /// The base aggregate must be the SOLE owner of the addressed field's
+    /// value when this instruction executes.  Emitting it against a shared or
+    /// escaped field frees a buffer another owner still references.
+    ///
+    /// ## Per-shape postcondition (type-correct, not blanket)
+    ///
+    /// - **Pointer leaves** (`string`): raw handle load (no retain) → release
+    ///   → null-store of the field's pointer word; a structurally reachable
+    ///   second drop observes null and short-circuits.
+    /// - **Fat leaves** (`bytes`): the data-pointer word is null-stored after
+    ///   release; len/cap words are inert once the data pointer is null.
+    /// - **Indirect enums**: node-pointer load → recursive node free →
+    ///   null-store of the field's node-pointer word.
+    /// - **Inline composites** (record / tuple / inline-enum / fixed-array
+    ///   fields): NO null-store exists and none is promised — the in-place
+    ///   helpers free the composite's leaves and store nothing.  Idempotence
+    ///   rests on exactly-once execution (straight-line pre-body emission,
+    ///   never inside a `DropPlan`) plus exactly-once parent suppression: the
+    ///   composite-drop provers exclude the base root directly (see below)
+    ///   and the drop-plan verifier rejects an inline-composite `ty` whose
+    ///   base still receives a composite in-place drop.
+    ///
+    /// ## Analysis classification
+    ///
+    /// An interior field operation: it USES `base`, creates NO dest, and
+    /// creates NO alias.  It is by construction BOTH the field extraction and
+    /// that field's release, so the record/tuple composite provers
+    /// (`derive_owned_record_drop_allowed` /
+    /// `derive_tuple_composite_drop_allowed` in `lower.rs`) exclude a
+    /// candidate root this op addresses — the combined role the safety-drop
+    /// temps' `field_binders ∩ release_owner_bases` intersection plays for
+    /// the load+drop leaf path — and the enum composite prover exempts it
+    /// from the owning-sink scan exactly like the interior `RecordFieldDrop`.
+    ///
+    /// ## Admission
+    ///
+    /// `ty` must be `string` (routed here because `RecordFieldLoad` /
+    /// `TupleFieldLoad` retain string fields via `hew_string_clone`, so a
+    /// load+`Drop` pair retain-cancels and leaks the original slot value) or
+    /// a shape the shared fail-closed classifier admits
+    /// (`field_drop_in_place_admissible` in `lower.rs`: record / tuple /
+    /// fixed array / inline enum / indirect enum over registered layouts,
+    /// mirroring `emit_heap_slot_drop`'s dispatch).  Anything else is a
+    /// verify error — never a silent skip, never a wrong-ABI free.
+    ///
+    /// ## Scope
+    ///
+    /// `RecordFieldDrop` is NOT widened by this op: its leaf-COW congruence
+    /// assert and functional-update contract stay narrow.  This op covers
+    /// record AND tuple parents with one field-address selector and is the
+    /// discharge primitive for partial ownership consumption (a pattern, an
+    /// escape, or a lost delivery consuming part of an owned aggregate).
+    FieldDropInPlace {
+        /// The record- or tuple-typed local whose field is to be released.
+        base: Place,
+        /// Which field slot of `base` to release.
+        field: FieldAddr,
+        /// Hew type of the field being released.  Must match the field's
+        /// declared type in the base aggregate; codegen resolves the release
+        /// ritual from this type and fails closed on a shape it cannot place.
+        ty: ResolvedTy,
+    },
     /// Load a single element from a tuple value by its 0-based positional index.
     ///
     /// Produced from `HirExprKind::TupleIndex { tuple, index }` when the tuple
@@ -4915,6 +4990,19 @@ impl WitnessOperand {
 /// rather than silently truncate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FieldOffset(pub u32);
+
+/// Field-address selector for [`Instr::FieldDropInPlace`]: one op covers both
+/// record parents (addressed by declared-field offset) and tuple parents
+/// (addressed by positional element index).  The selector must agree with the
+/// base place's registered type — a `Record` address on a non-record local (or
+/// `Tuple` on a non-tuple local) is a verify error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FieldAddr {
+    /// Record parent: 0-based index into the record's declared field order.
+    Record(FieldOffset),
+    /// Tuple parent: 0-based positional element index.
+    Tuple(u32),
+}
 
 /// Discriminates the two kinds of yield-check site the cooperate-site
 /// analysis identifies. Consumed by codegen to select the injection point

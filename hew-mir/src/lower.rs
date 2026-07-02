@@ -7973,6 +7973,24 @@ fn lower_function(
             diagnostics.push(diag);
         }
     }
+    // Fail-closed legality rules for the field-addressed in-place drop op:
+    // the op's `ty` must be a shape the shared classifier (or the `string`
+    // reroute) admits, its base must be a record/tuple local matching the
+    // field address, and an inline-composite field release requires the
+    // base's composite drop to be suppressed (exactly-once pairing — see
+    // `validate_field_drop_in_place`).
+    let field_drop_admissible = |ty: &ResolvedTy| builder.field_drop_in_place_admissible(ty);
+    for check in validate_field_drop_in_place(
+        &raw.blocks,
+        &elaborated,
+        &builder.locals,
+        &builder.enum_layouts,
+        &field_drop_admissible,
+    ) {
+        if let Some(diag) = check_to_diagnostic(&check) {
+            diagnostics.push(diag);
+        }
+    }
     // Cross-block stale-handle detection. Walks the backend Instr
     // stream across the function's CFG and rejects drop plans that
     // fire `Place::DuplexHandle(N)` on a block whose reaching paths
@@ -17823,6 +17841,180 @@ impl Builder {
                 ..
             } => Some("hew_gen_coro_destroy"),
             _ => None,
+        }
+    }
+
+    /// THE shared fail-closed admissibility classifier for
+    /// [`Instr::FieldDropInPlace`]: can codegen's address-based type-directed
+    /// drop dispatcher (`emit_heap_slot_drop`, `hew-codegen-rs/src/llvm.rs`)
+    /// discharge an owned field of this type at its field address, for every
+    /// leaf the shape transitively reaches?
+    ///
+    /// ONE predicate answers both the MIR admission question ("may the
+    /// safety-drop loop emit `FieldDropInPlace` for this skipped field?") and
+    /// the drop-plan verifier's legality rule ("is this op's `ty` a shape the
+    /// dispatcher can resolve?"), so MIR admission and codegen capability
+    /// cannot drift (`dedup-semantic-boundary` — the same discipline
+    /// `project_field_inline_drop_symbol` documents against codegen's
+    /// `cow_heap_release_symbol`).
+    ///
+    /// Admitted top-level shapes, mirroring `emit_heap_slot_drop`'s dispatch:
+    ///   - user record with a registered layout — every field dischargeable
+    ///     (the on-demand `__hew_record_drop_inplace_{name}` walk);
+    ///   - tuple — every element dischargeable
+    ///     (`emit_aggregate_recursive_drop`);
+    ///   - fixed array — element dischargeable (per-element recursion);
+    ///   - inline enum with a registered layout — every variant payload
+    ///     dischargeable (`__hew_enum_drop_inplace_{name}` tag dispatch);
+    ///   - indirect enum — every variant payload dischargeable (the recursive
+    ///     `__hew_indirect_enum_free_{name}` node walk, dispatched FIRST in
+    ///     codegen).
+    ///
+    /// Leaf COW types (`string`, `Vec`, …) are deliberately NOT admitted at
+    /// top level — the admission OR (`leaf symbol || classifier`) keeps their
+    /// discharge decision on `project_field_inline_drop_symbol`, and the
+    /// `string` reroute onto `FieldDropInPlace` is its own decision (the
+    /// retain-cancel), not a classifier verdict.
+    ///
+    /// Everything else — slices, `dyn Trait` fat fields, closure pairs,
+    /// affine handles (`Channel` / `Task` / `CancellationToken`), opaque
+    /// handles, free type params, unregistered layouts — is REFUSED
+    /// (fail-closed: the caller keeps the NYI refusal; never a wrong-ABI
+    /// free). Cycle-guarded on `Named` recursion exactly as
+    /// `unsupported_vec_element_walk`.
+    fn field_drop_in_place_admissible(&self, ty: &ResolvedTy) -> bool {
+        let subst = self.subst_ty(ty);
+        let mut visiting = HashSet::new();
+        self.field_drop_aggregate_admissible(&subst, &mut visiting)
+    }
+
+    /// The aggregate-shape half of [`Self::field_drop_in_place_admissible`]:
+    /// true only for the five admitted aggregate shapes whose reachable
+    /// leaves are all dischargeable. Operates on substituted types.
+    fn field_drop_aggregate_admissible(
+        &self,
+        ty: &ResolvedTy,
+        visiting: &mut HashSet<String>,
+    ) -> bool {
+        use crate::model::HeapOwnershipLayouts as _;
+        match ty {
+            ResolvedTy::Tuple(elems) => elems
+                .iter()
+                .all(|elem| self.field_drop_slot_dischargeable(elem, visiting)),
+            ResolvedTy::Array(elem, _) => self.field_drop_slot_dischargeable(elem, visiting),
+            ResolvedTy::Named {
+                name,
+                args,
+                builtin: None,
+                is_opaque: false,
+            } => {
+                // Cycle guard keyed on the mangled head (an `indirect enum`
+                // references itself); a shape already on the walk stack is
+                // admissible AT THIS EDGE — the outer frame still decides.
+                let key = hew_hir::mangle_resolved_ty(ty);
+                if !visiting.insert(key.clone()) {
+                    return true;
+                }
+                let layouts = crate::model::MirHeapLayouts {
+                    record_field_orders: &self.record_field_orders,
+                    enum_layouts: &self.enum_layouts,
+                };
+                let verdict = if let Some(field_tys) = layouts.record_field_tys(name, args) {
+                    field_tys
+                        .iter()
+                        .all(|field_ty| self.field_drop_slot_dischargeable(field_ty, visiting))
+                } else if let Some(variants) = layouts.enum_variant_field_tys(name, args) {
+                    // Inline and indirect enums both admit through their
+                    // registered layout: the inline shape drops through the
+                    // on-demand `__hew_enum_drop_inplace_{name}` tag walk, the
+                    // indirect shape through the recursive
+                    // `__hew_indirect_enum_free_{name}` node free. Either way
+                    // every variant payload must be dischargeable.
+                    variants
+                        .iter()
+                        .flatten()
+                        .all(|payload_ty| self.field_drop_slot_dischargeable(payload_ty, visiting))
+                } else {
+                    // No registered layout to walk — refuse (fail-closed).
+                    false
+                };
+                visiting.remove(&key);
+                verdict
+            }
+            _ => false,
+        }
+    }
+
+    /// Is one interior slot of an admitted aggregate dischargeable by the
+    /// codegen dispatcher? A slot passes when it is an admitted aggregate
+    /// shape, a leaf the dispatcher releases in place, or a shape owning no
+    /// heap (nothing to discharge). Fail-closed on everything else.
+    fn field_drop_slot_dischargeable(
+        &self,
+        ty: &ResolvedTy,
+        visiting: &mut HashSet<String>,
+    ) -> bool {
+        let subst = self.subst_ty(ty);
+        // Indirect enums FIRST: the structural heap-ownership authority is
+        // blind to indirection (a scalar-payload `indirect enum` owns a heap
+        // node the authority reports as non-owning), so the layout probe must
+        // precede the ownership shortcut below.
+        if ty_is_indirect_enum(&subst, &self.enum_layouts) {
+            return self.field_drop_aggregate_admissible(&subst, visiting);
+        }
+        // Shapes the dispatcher fail-closes on are refused OUTRIGHT — even
+        // where the ownership authority reports them non-owning (a closure
+        // pair owns its env box behind a non-owning-classified fn surface; a
+        // free type param has no layout to walk).
+        if matches!(
+            subst,
+            ResolvedTy::Slice(_)
+                | ResolvedTy::TraitObject { .. }
+                | ResolvedTy::Function { .. }
+                | ResolvedTy::Closure { .. }
+                | ResolvedTy::Task(_)
+                | ResolvedTy::TypeParam { .. }
+        ) {
+            return false;
+        }
+        // A slot owning no heap needs no discharge.
+        if !crate::model::ty_owns_heap_mir(&subst, &self.record_field_orders, &self.enum_layouts) {
+            return true;
+        }
+        match &subst {
+            // Leaf shapes `emit_heap_slot_drop` releases in place: the
+            // pointer/fat leaves (`string` / `bytes`, null-store
+            // postcondition) and the handle leaves with a wired release
+            // symbol (`HashMap` / `HashSet` / `Generator` /
+            // `AsyncGenerator`).
+            ResolvedTy::String
+            | ResolvedTy::Bytes
+            | ResolvedTy::Named {
+                builtin:
+                    Some(
+                        hew_types::BuiltinType::HashMap
+                        | hew_types::BuiltinType::HashSet
+                        | hew_types::BuiltinType::Generator
+                        | hew_types::BuiltinType::AsyncGenerator,
+                    ),
+                ..
+            } => true,
+            // The Vec element's release-bucket question routes through the
+            // one typed classification (`classify_vec_element_release`) —
+            // an element no bucket claims keeps the slot refused
+            // (fail-closed), never a buffer-only free over leaking element
+            // nodes.
+            ResolvedTy::Named {
+                builtin: Some(hew_types::BuiltinType::Vec),
+                args,
+                ..
+            } => args.first().is_some_and(|elem| {
+                !matches!(
+                    self.classify_vec_element_release(elem),
+                    VecElementRelease::Unsupported(_)
+                )
+            }),
+            other => self.field_drop_aggregate_admissible(other, visiting),
         }
     }
 
@@ -31983,6 +32175,133 @@ fn expected_drop_kind_for_validation(drop: &ElabDrop) -> DropKind {
     }
 }
 
+/// Structural legality rules for [`Instr::FieldDropInPlace`] — the pairing
+/// verifier for the field-addressed in-place drop op. Three rules, each a
+/// hard reject (`MirCheck::DropPlanUndetermined` upgrades to a diagnostic and
+/// the CLI refuses the program), never a silent skip:
+///
+///   1. **Type admissibility.** The op's `ty` must be `string` (rerouted off
+///      the retain-cancelling load+`Drop` pair) or a shape the shared
+///      classifier admits (`field_drop_in_place_admissible` — the same
+///      predicate MIR admission consults, so admission and verification
+///      cannot drift).
+///   2. **Base shape.** `base` must be a `Place::Local` whose registered type
+///      matches the field address: a user record local for
+///      `FieldAddr::Record(_)`, a tuple local for `FieldAddr::Tuple(_)`.
+///   3. **Inline-composite pairing.** For an inline-composite `ty` — an
+///      admitted aggregate that is NOT an indirect enum (record / tuple /
+///      inline enum / fixed array) — the in-place helpers null-store NOTHING,
+///      so idempotence rests entirely on exactly-once parent suppression: the
+///      base local must not receive a composite in-place drop
+///      (`RecordInPlace` / `EnumInPlace` / `TupleInPlace` /
+///      `AggregateRecursive` / `IndirectEnum`) in any exit `DropPlan` or
+///      cleanup block, because that drop would re-walk the freed field's
+///      leaves (double-free). Pointer (`string`) and indirect-enum shapes
+///      carry a null-store postcondition into codegen instead and tolerate a
+///      structurally reachable second walk.
+///
+/// LESSONS: drop-allowset-from-value-flow (a no-temp field-addressed drop op
+/// carries a direct prover-exclusion rule; this verifier is its enforcement
+/// pairing), boundary-fail-closed.
+fn validate_field_drop_in_place(
+    blocks: &[BasicBlock],
+    elab: &ElaboratedMirFunction,
+    locals: &[ResolvedTy],
+    enum_layouts: &[crate::model::EnumLayout],
+    admissible: &dyn Fn(&ResolvedTy) -> bool,
+) -> Vec<MirCheck> {
+    let mut findings = Vec::new();
+    // Base locals of every composite in-place drop the elaborated plan still
+    // fires — the set rule 3 requires the op's base to be absent from.
+    let composite_dropped_locals: HashSet<u32> = elab
+        .drop_plans
+        .iter()
+        .flat_map(|(_, plan)| plan.drops.iter())
+        .chain(elab.blocks.iter().flat_map(|block| block.drops.iter()))
+        .filter(|drop| {
+            matches!(
+                drop.kind,
+                DropKind::RecordInPlace
+                    | DropKind::EnumInPlace
+                    | DropKind::TupleInPlace
+                    | DropKind::AggregateRecursive
+                    | DropKind::IndirectEnum
+            )
+        })
+        .filter_map(|drop| base_local(drop.place))
+        .collect();
+    for block in blocks {
+        for instr in &block.instructions {
+            let Instr::FieldDropInPlace { base, field, ty } = instr else {
+                continue;
+            };
+            // Rule 1 — type admissibility.
+            if !matches!(ty, ResolvedTy::String) && !admissible(ty) {
+                findings.push(MirCheck::DropPlanUndetermined {
+                    block: block.id,
+                    reason: format!(
+                        "FieldDropInPlace field type {} is neither `string` nor \
+                         a shape the field-drop classifier admits; the codegen \
+                         dispatcher has no in-place release for it",
+                        ty.user_facing()
+                    ),
+                });
+            }
+            // Rule 2 — base shape must match the field address.
+            let base_ty = match (base, base_local(*base)) {
+                (Place::Local(_), Some(l)) => locals.get(l as usize),
+                _ => None,
+            };
+            let base_ok = match (field, base_ty) {
+                (crate::model::FieldAddr::Record(_), Some(bty)) => {
+                    user_record_layout_key(bty).is_some()
+                }
+                (crate::model::FieldAddr::Tuple(_), Some(bty)) => {
+                    matches!(bty, ResolvedTy::Tuple(_))
+                }
+                (_, None) => false,
+            };
+            if !base_ok {
+                findings.push(MirCheck::DropPlanUndetermined {
+                    block: block.id,
+                    reason: format!(
+                        "FieldDropInPlace base {base:?} at {field:?} is not a \
+                         local of the matching aggregate shape (record local \
+                         for a Record address, tuple local for a Tuple address)"
+                    ),
+                });
+                continue;
+            }
+            // Rule 3 — inline-composite pairing: exactly-once parent
+            // suppression is the op's whole idempotence story for shapes with
+            // no null-store.
+            let inline_composite = !matches!(ty, ResolvedTy::String)
+                && !ty_is_indirect_enum(ty, enum_layouts)
+                && admissible(ty);
+            if inline_composite {
+                if let Some(l) = base_local(*base) {
+                    if composite_dropped_locals.contains(&l) {
+                        findings.push(MirCheck::DropPlanUndetermined {
+                            block: block.id,
+                            reason: format!(
+                                "FieldDropInPlace on local {l} releases an \
+                                 inline-composite field ({}) while the base \
+                                 still receives a composite in-place drop; the \
+                                 composite walk would re-free the field's \
+                                 leaves (no null-store exists on inline \
+                                 composites) — the base's composite drop must \
+                                 be suppressed",
+                                ty.user_facing()
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    findings
+}
+
 /// Lambda-actor capture invariants. The capture side-table encodes the
 /// runtime's self-binding weak-ref discipline (§5.9 ratification 2):
 /// the recursive forward-bind case
@@ -32580,6 +32899,9 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         }
         Instr::RecordFieldLoad { record, dest, .. } => vec![*record, *dest],
         Instr::RecordFieldDrop { record, .. } => vec![*record],
+        // FieldDropInPlace surfaces only its base aggregate: an interior
+        // in-place field release has no dest place to discover.
+        Instr::FieldDropInPlace { base, .. } => vec![*base],
         Instr::RecordFieldStore { record, src, .. } => vec![*record, *src],
         Instr::ActorStateFieldLoad { dest, .. } => vec![*dest],
         Instr::ActorStateFieldStore { src, .. } => vec![*src],
@@ -32993,6 +33315,9 @@ pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
         // `projection_alias_dest`).
         Instr::RecordFieldLoad { record, .. } => vec![*record],
         Instr::RecordFieldDrop { record, .. } => vec![*record],
+        // FieldDropInPlace reads its base aggregate (GEP + in-place field
+        // release); like `RecordFieldDrop` it produces no dest.
+        Instr::FieldDropInPlace { base, .. } => vec![*base],
         Instr::TupleFieldLoad { tuple, .. } => vec![*tuple],
         Instr::ClosureEnvFieldLoad { env, .. } => vec![*env],
         // Field stores: both the target aggregate and the stored value are
@@ -33362,6 +33687,10 @@ fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
         | Instr::ConstGlobalLoad { .. }
         | Instr::RecordFieldLoad { .. }
         | Instr::RecordFieldDrop { .. }
+        // FieldDropInPlace is an interior in-place field release (uses its
+        // base, no dest, no alias) — like `RecordFieldDrop` it moves no
+        // ownership out of the frame.
+        | Instr::FieldDropInPlace { .. }
         | Instr::TupleFieldLoad { .. }
         | Instr::ClosureEnvFieldLoad { .. }
         | Instr::ActorStateFieldLoad { .. }
@@ -33607,6 +33936,9 @@ fn projection_alias_dest(instr: &Instr) -> Option<Place> {
         | Instr::SpawnTaskClosure { .. }
         | Instr::Drop { .. }
         | Instr::RecordFieldDrop { .. }
+        // FieldDropInPlace releases one field slot in place through the base
+        // pointer — it creates no dest and therefore no projection alias.
+        | Instr::FieldDropInPlace { .. }
         | Instr::WitnessSizeOf { .. }
         | Instr::WitnessAlignOf { .. }
         | Instr::WitnessDropGlue { .. }
@@ -34998,6 +35330,13 @@ fn derive_enum_composite_drop_allowed(
             // field is seeded as a payload binder in the loop above, so if it
             // ESCAPES onward (Move/store/return/owning call) the composite is still
             // excluded — fail-closed.
+            //
+            // `FieldDropInPlace` is the same interior shape: it is a skipped
+            // field's extraction AND release in ONE op against a nested
+            // record/tuple payload binder (`Some(Row { inner, tag: _ })`), so
+            // reading it as an owning sink would over-exclude the composite
+            // from its `EnumInPlace` drop and leak the payload remainder the
+            // composite still owns.
             if !matches!(
                 instr,
                 Instr::Move { .. }
@@ -35005,6 +35344,7 @@ fn derive_enum_composite_drop_allowed(
                     | Instr::RecordFieldLoad { .. }
                     | Instr::TupleFieldLoad { .. }
                     | Instr::RecordFieldDrop { .. }
+                    | Instr::FieldDropInPlace { .. }
             ) {
                 for p in instr_source_places(instr) {
                     if let Some(l) = base_local(p) {
@@ -35332,6 +35672,25 @@ fn derive_owned_record_drop_allowed(
     };
     for block in blocks {
         for instr in &block.instructions {
+            // Direct prover-exclusion rule for the no-temp field-addressed
+            // drop: a `FieldDropInPlace` whose base is an alias-set member is
+            // by construction BOTH the field extraction AND that field's
+            // release — the combined role `field_binders ∩
+            // release_owner_bases` plays for the load+drop leaf path. It
+            // mints no load dest and no `Drop` place, so with bitcopy-only
+            // sibling binders it seeds NEITHER set; without this rule the
+            // composite would stay admitted and its `RecordInPlace` would
+            // re-walk the freed field's leaves (double-free — inline
+            // composites carry no null-store to short-circuit it). Exclude
+            // the root directly; the remaining owned siblings are the
+            // emitter's discharge obligation.
+            if let Instr::FieldDropInPlace { base, .. } = instr {
+                if let Some(l) = base_local(*base) {
+                    if alias_of.contains_key(&l) {
+                        note_alias_escape(l, &mut excluded_roots);
+                    }
+                }
+            }
             // A `Move` discriminates a benign whole-value hand-off (dest is
             // another alias member) from a real whole-record escape.
             if let Instr::Move { dest, src } = instr {
@@ -35380,6 +35739,12 @@ fn derive_owned_record_drop_allowed(
                     // lowering to release overridden fields; the surrounding record
                     // binding is still live (and should receive its composite drop).
                     | Instr::RecordFieldDrop { .. }
+                    // `FieldDropInPlace` is the same interior field-op shape (uses
+                    // base, no dest, no alias); its composite-suppression semantics
+                    // are the DIRECT exclusion rule at the top of this loop, not
+                    // this blanket owning-sink scan (which would also misread a
+                    // base that is a field BINDER as a whole-set field escape).
+                    | Instr::FieldDropInPlace { .. }
                     // `RecordCloneInplace` (`let q = clone p`) reads `src` (`p`) as
                     // a DEEP copy: it `memcpy`s then deep-clones each owned field
                     // into `dest`, leaving `src` in sole ownership of its own
@@ -36208,6 +36573,22 @@ fn derive_tuple_composite_drop_allowed(
     };
     for block in blocks {
         for instr in &block.instructions {
+            // Direct prover-exclusion rule for the no-temp field-addressed
+            // drop, the tuple twin of `derive_owned_record_drop_allowed`'s: a
+            // `FieldDropInPlace` whose base is an alias-set member is BOTH
+            // the element extraction AND its release, mints no load dest and
+            // no `Drop` place, and so — with bitcopy-only sibling binders —
+            // seeds neither `elem_binders` nor `release_owner_bases`. Without
+            // this rule the tuple's `TupleInPlace` would re-walk the freed
+            // element's leaves (double-free; no null-store on inline
+            // composites). Exclude the root directly.
+            if let Instr::FieldDropInPlace { base, .. } = instr {
+                if let Some(l) = base_local(*base) {
+                    if alias_of.contains_key(&l) {
+                        note_alias_escape(l, &mut excluded_roots);
+                    }
+                }
+            }
             // A `Move` discriminates a benign whole-value hand-off (dest is
             // another alias member) from a real whole-tuple escape.
             if let Instr::Move { dest, src } = instr {
@@ -43496,6 +43877,40 @@ mod owned_record_drop_derivation {
         );
     }
 
+    /// A `FieldDropInPlace` addressing the candidate root is BOTH the field
+    /// extraction and its release, yet it mints no load dest and no `Drop`
+    /// place — with bitcopy-only sibling binders it seeds neither
+    /// `field_binders` nor `release_owner_bases`, so only the direct
+    /// prover-exclusion rule suppresses the composite. Without it the
+    /// `RecordInPlace` drop would re-walk the freed field's leaves
+    /// (double-free; inline composites carry no null-store).
+    #[test]
+    fn field_drop_in_place_on_root_excludes_record() {
+        let b = BindingId(1);
+        let owned = vec![(b, "r".to_string(), rec_ty())];
+        let mut binding_locals: HashMap<BindingId, Place> = HashMap::new();
+        binding_locals.insert(b, Place::Local(0));
+        let local_tys = vec![rec_ty()];
+        let instrs = vec![Instr::FieldDropInPlace {
+            base: Place::Local(0),
+            field: crate::model::FieldAddr::Record(FieldOffset(0)),
+            ty: ResolvedTy::String,
+        }];
+
+        let allowed = derive(
+            &[block(0, instrs, Terminator::Return)],
+            &owned,
+            &binding_locals,
+            &local_tys,
+        );
+        assert!(
+            !allowed.contains(&b),
+            "a record root addressed by FieldDropInPlace already discharged \
+             that field's release; admitting its composite drop would re-walk \
+             the freed field (double-free); got {allowed:?}"
+        );
+    }
+
     /// `hew_vec_push_owned` / `hew_vec_set_owned` copy their element into the
     /// destination Vec. The collection-local prover exempts that element operand,
     /// while composite binder scans still treat the tail operand as an escape.
@@ -43653,6 +44068,439 @@ mod owned_record_drop_derivation {
             allowed.contains(&b),
             "a record field-read on both arms never escapes and must be admitted \
              so its heap fields are freed; got {allowed:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tuple_composite_field_drop_exclusion {
+    //! Direct structural pins for `derive_tuple_composite_drop_allowed`'s
+    //! `FieldDropInPlace` exclusion rule — the tuple twin of the record
+    //! prover's. The op mints no load dest and no `Drop` place, so with
+    //! bitcopy-only sibling binders it is invisible to the
+    //! `elem_binders ∩ release_owner_bases` intersection; the direct rule is
+    //! what keeps the `TupleInPlace` drop from re-walking the freed element.
+    use super::*;
+
+    fn pair_ty() -> ResolvedTy {
+        ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64])
+    }
+
+    fn derive(instrs: Vec<Instr>) -> (BindingId, HashSet<BindingId>) {
+        let b = BindingId(1);
+        let owned = vec![(b, "p".to_string(), pair_ty())];
+        let mut binding_locals: HashMap<BindingId, Place> = HashMap::new();
+        binding_locals.insert(b, Place::Local(0));
+        let local_tys = vec![pair_ty()];
+        let allowed = derive_tuple_composite_drop_allowed(
+            &[BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: instrs,
+                terminator: Terminator::Return,
+            }],
+            &HashMap::new(),
+            &owned,
+            &binding_locals,
+            &local_tys,
+            &HashMap::new(),
+            &[],
+        );
+        (b, allowed)
+    }
+
+    /// Control: an untouched owned tuple is its own sole owner and admitted.
+    #[test]
+    fn untouched_tuple_is_admitted() {
+        let (b, allowed) = derive(vec![]);
+        assert!(
+            allowed.contains(&b),
+            "an untouched owned tuple must keep its TupleInPlace drop"
+        );
+    }
+
+    /// A `FieldDropInPlace` addressing the tuple root excludes it — the op
+    /// already discharged that element's release.
+    #[test]
+    fn field_drop_in_place_on_root_excludes_tuple() {
+        let (b, allowed) = derive(vec![Instr::FieldDropInPlace {
+            base: Place::Local(0),
+            field: crate::model::FieldAddr::Tuple(0),
+            ty: ResolvedTy::String,
+        }]);
+        assert!(
+            !allowed.contains(&b),
+            "a tuple root addressed by FieldDropInPlace must be excluded from \
+             its composite drop (else the freed element is re-walked); got \
+             {allowed:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod enum_composite_field_drop_exemption {
+    //! Differential pins for the `FieldDropInPlace` entry in
+    //! `derive_enum_composite_drop_allowed`'s owning-sink exemption list. A
+    //! `FieldDropInPlace` against a nested-record payload binder
+    //! (`Some(Row { inner, tag: _ })`) is an interior discharge, NOT an
+    //! owning sink: reading it as one would over-exclude the composite from
+    //! its `EnumInPlace` drop and leak the payload remainder the composite
+    //! still owns. The differential control proves a genuine owning-sink
+    //! read of the same binder still excludes the composite (the exemption
+    //! is exactly one op wide).
+    use super::*;
+
+    fn opt_ty() -> ResolvedTy {
+        ResolvedTy::named_user("Opt", vec![])
+    }
+
+    fn row_ty() -> ResolvedTy {
+        ResolvedTy::named_user("Row", vec![])
+    }
+
+    fn derive(instrs: Vec<Instr>) -> (BindingId, HashSet<BindingId>) {
+        let b = BindingId(1);
+        let owned = vec![(b, "o".to_string(), opt_ty())];
+        let mut binding_locals: HashMap<BindingId, Place> = HashMap::new();
+        binding_locals.insert(b, Place::Local(0));
+        // local 0: the Opt composite; local 1: the Row payload binder;
+        // local 2: a general-storage sink for the differential control.
+        let local_tys = vec![opt_ty(), row_ty(), ResolvedTy::Tuple(vec![row_ty()])];
+        let mut record_field_orders: HashMap<String, Vec<(String, ResolvedTy)>> = HashMap::new();
+        record_field_orders.insert(
+            "Row".to_string(),
+            vec![
+                ("inner".to_string(), ResolvedTy::String),
+                ("tag".to_string(), ResolvedTy::String),
+            ],
+        );
+        let enum_layouts = vec![crate::model::EnumLayout {
+            name: "Opt".to_string(),
+            tag_width: 1,
+            variants: vec![
+                crate::model::MachineVariantLayout {
+                    name: "Some".to_string(),
+                    field_tys: vec![row_ty()],
+                    field_names: vec![],
+                },
+                crate::model::MachineVariantLayout {
+                    name: "None".to_string(),
+                    field_tys: vec![],
+                    field_names: vec![],
+                },
+            ],
+            is_indirect: false,
+        }];
+        let allowed = derive_enum_composite_drop_allowed(
+            &[BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: instrs,
+                terminator: Terminator::Return,
+            }],
+            &HashMap::new(),
+            &owned,
+            &binding_locals,
+            &HashMap::new(),
+            &local_tys,
+            &record_field_orders,
+            &enum_layouts,
+        );
+        (b, allowed)
+    }
+
+    /// `Some(r)` destructure: the payload binder receives the interior
+    /// projection of the composite.
+    fn payload_destructure() -> Instr {
+        Instr::Move {
+            dest: Place::Local(1),
+            src: Place::EnumVariant {
+                local: 0,
+                variant_idx: 0,
+                field_idx: 0,
+            },
+        }
+    }
+
+    /// A `FieldDropInPlace` discharging one skipped field of the payload
+    /// binder is interior — the composite stays admitted (its `EnumInPlace`
+    /// is the one balancing drop for everything the payload still owns).
+    #[test]
+    fn field_drop_on_payload_binder_keeps_composite_admitted() {
+        let (b, allowed) = derive(vec![
+            payload_destructure(),
+            Instr::FieldDropInPlace {
+                base: Place::Local(1),
+                field: crate::model::FieldAddr::Record(FieldOffset(1)),
+                ty: ResolvedTy::String,
+            },
+        ]);
+        assert!(
+            allowed.contains(&b),
+            "an interior FieldDropInPlace on the payload binder must not read \
+             as an owning sink — over-excluding the composite leaks the \
+             payload remainder; got {allowed:?}"
+        );
+    }
+
+    /// Differential control: a genuine owning-sink read of the same payload
+    /// binder (an aggregate construction) still excludes the composite —
+    /// the exemption admits exactly the interior discharge op, nothing wider.
+    #[test]
+    fn owning_sink_read_of_payload_binder_still_excludes_composite() {
+        let (b, allowed) = derive(vec![
+            payload_destructure(),
+            Instr::TupleConstruct {
+                elements: vec![Place::Local(1)],
+                dest: Place::Local(2),
+            },
+        ]);
+        assert!(
+            !allowed.contains(&b),
+            "a payload binder read into an owning sink escaped the composite; \
+             it must be excluded (fail-closed); got {allowed:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod field_drop_in_place_verifier {
+    //! Structural tests for `validate_field_drop_in_place` — the pairing
+    //! verifier for the field-addressed in-place drop op. The inline-composite
+    //! pairing rule is the load-bearing one: exactly-once parent suppression
+    //! is the op's WHOLE idempotence story for shapes with no null-store, so
+    //! an inline-composite `ty` whose base still receives a composite
+    //! in-place drop must be a verify error, never a silent double-free.
+    use super::*;
+    use crate::model::FieldAddr;
+
+    fn rec_ty() -> ResolvedTy {
+        ResolvedTy::named_user("Rec", vec![])
+    }
+
+    fn inner_ty() -> ResolvedTy {
+        ResolvedTy::named_user("Inner", vec![])
+    }
+
+    fn one_block(instructions: Vec<Instr>) -> Vec<BasicBlock> {
+        vec![BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions,
+            terminator: Terminator::Return,
+        }]
+    }
+
+    fn elab_with_drops(drops: Vec<ElabDrop>) -> ElaboratedMirFunction {
+        ElaboratedMirFunction {
+            name: "synthetic".to_string(),
+            return_ty: ResolvedTy::Unit,
+            statements: vec![],
+            decisions: vec![],
+            blocks: vec![],
+            drop_plans: vec![(ExitPath::Return { block: 0 }, DropPlan { drops })],
+            coroutine: None,
+            lambda_captures: vec![],
+        }
+    }
+
+    fn composite_drop_on(local: u32, ty: ResolvedTy) -> ElabDrop {
+        ElabDrop {
+            place: Place::Local(local),
+            ty,
+            drop_fn: None,
+            kind: DropKind::RecordInPlace,
+            guard: None,
+        }
+    }
+
+    fn validate(
+        instrs: Vec<Instr>,
+        drops: Vec<ElabDrop>,
+        locals: &[ResolvedTy],
+        admissible: bool,
+    ) -> Vec<MirCheck> {
+        let admit = move |_: &ResolvedTy| admissible;
+        validate_field_drop_in_place(
+            &one_block(instrs),
+            &elab_with_drops(drops),
+            locals,
+            &[],
+            &admit,
+        )
+    }
+
+    fn field_drop(base: u32, field: FieldAddr, ty: ResolvedTy) -> Instr {
+        Instr::FieldDropInPlace {
+            base: Place::Local(base),
+            field,
+            ty,
+        }
+    }
+
+    /// The pairing rule fires: an inline-composite field release whose base
+    /// STILL receives a composite in-place drop is a verify error (the
+    /// composite walk would re-free the field's leaves).
+    #[test]
+    fn inline_composite_with_paired_composite_drop_is_rejected() {
+        let findings = validate(
+            vec![field_drop(0, FieldAddr::Record(FieldOffset(0)), inner_ty())],
+            vec![composite_drop_on(0, rec_ty())],
+            &[rec_ty()],
+            true,
+        );
+        assert_eq!(
+            findings.len(),
+            1,
+            "an unsuppressed composite drop paired with an inline-composite \
+             FieldDropInPlace must be exactly one verify error; got {findings:?}"
+        );
+        let MirCheck::DropPlanUndetermined { reason, .. } = &findings[0] else {
+            panic!("expected DropPlanUndetermined, got {:?}", findings[0]);
+        };
+        assert!(
+            reason.contains("composite in-place drop"),
+            "the finding must name the unsuppressed composite drop; got: {reason}"
+        );
+    }
+
+    /// With the base's composite drop suppressed (absent from every plan),
+    /// the same op verifies clean.
+    #[test]
+    fn inline_composite_with_suppressed_composite_drop_is_accepted() {
+        let findings = validate(
+            vec![field_drop(0, FieldAddr::Record(FieldOffset(0)), inner_ty())],
+            vec![],
+            &[rec_ty()],
+            true,
+        );
+        assert!(
+            findings.is_empty(),
+            "suppressed base composite drop satisfies the pairing rule; got \
+             {findings:?}"
+        );
+    }
+
+    /// A composite drop on a DIFFERENT local does not violate the pairing —
+    /// the rule keys on the op's base local, not on plan non-emptiness.
+    #[test]
+    fn composite_drop_on_other_local_is_not_a_pairing_violation() {
+        let findings = validate(
+            vec![field_drop(0, FieldAddr::Record(FieldOffset(0)), inner_ty())],
+            vec![composite_drop_on(1, rec_ty())],
+            &[rec_ty(), rec_ty()],
+            true,
+        );
+        assert!(
+            findings.is_empty(),
+            "a composite drop on an unrelated local is not a pairing \
+             violation; got {findings:?}"
+        );
+    }
+
+    /// A `string`-typed release carries the null-store postcondition, so a
+    /// structurally reachable composite re-walk observes null and
+    /// short-circuits — no pairing obligation.
+    #[test]
+    fn string_field_release_tolerates_base_composite_drop() {
+        let findings = validate(
+            vec![field_drop(
+                0,
+                FieldAddr::Record(FieldOffset(0)),
+                ResolvedTy::String,
+            )],
+            vec![composite_drop_on(0, rec_ty())],
+            &[rec_ty()],
+            false,
+        );
+        assert!(
+            findings.is_empty(),
+            "a string field release null-stores its slot; the base composite \
+             drop may stay; got {findings:?}"
+        );
+    }
+
+    /// A field type neither `string` nor classifier-admitted is a verify
+    /// error — the codegen dispatcher has no in-place release for it.
+    #[test]
+    fn inadmissible_field_ty_is_rejected() {
+        let findings = validate(
+            vec![field_drop(
+                0,
+                FieldAddr::Record(FieldOffset(0)),
+                ResolvedTy::Slice(Box::new(ResolvedTy::I64)),
+            )],
+            vec![],
+            &[rec_ty()],
+            false,
+        );
+        assert_eq!(
+            findings.len(),
+            1,
+            "an inadmissible field type must be exactly one verify error; \
+             got {findings:?}"
+        );
+        let MirCheck::DropPlanUndetermined { reason, .. } = &findings[0] else {
+            panic!("expected DropPlanUndetermined, got {:?}", findings[0]);
+        };
+        assert!(
+            reason.contains("classifier"),
+            "the finding must name the classifier refusal; got: {reason}"
+        );
+    }
+
+    /// A `Tuple` field address on a record-typed base is a verify error.
+    #[test]
+    fn tuple_address_on_non_tuple_base_is_rejected() {
+        let findings = validate(
+            vec![field_drop(0, FieldAddr::Tuple(0), ResolvedTy::String)],
+            vec![],
+            &[rec_ty()],
+            false,
+        );
+        assert_eq!(
+            findings.len(),
+            1,
+            "a Tuple address on a record local must be a verify error; got \
+             {findings:?}"
+        );
+    }
+
+    /// A `Record` field address on a tuple-typed base is a verify error.
+    #[test]
+    fn record_address_on_non_record_base_is_rejected() {
+        let findings = validate(
+            vec![field_drop(
+                0,
+                FieldAddr::Record(FieldOffset(0)),
+                ResolvedTy::String,
+            )],
+            vec![],
+            &[ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64])],
+            false,
+        );
+        assert_eq!(
+            findings.len(),
+            1,
+            "a Record address on a tuple local must be a verify error; got \
+             {findings:?}"
+        );
+    }
+
+    /// The matching addresses verify clean on their own shapes (record
+    /// address on record base above; tuple address on tuple base here).
+    #[test]
+    fn tuple_address_on_tuple_base_is_accepted() {
+        let findings = validate(
+            vec![field_drop(0, FieldAddr::Tuple(0), ResolvedTy::String)],
+            vec![],
+            &[ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64])],
+            false,
+        );
+        assert!(
+            findings.is_empty(),
+            "a Tuple address on a tuple local is the matching shape; got \
+             {findings:?}"
         );
     }
 }
@@ -46339,6 +47187,193 @@ mod drop_admission_type_shape_pins {
                 is_indirect: true,
             }],
             ..Builder::default()
+        }
+    }
+
+    /// Builder carrying the field-drop classifier corpus's registered
+    /// layouts: user records over every slot class, an inline enum, and the
+    /// indirect enums `Foo` (from `builder_with_indirect_enum_foo`) and the
+    /// self-recursive `ListNode`.
+    fn builder_for_field_drop_classifier() -> Builder {
+        let mut builder = builder_with_indirect_enum_foo();
+        builder.enum_layouts.push(crate::model::EnumLayout {
+            name: "Msg".to_string(),
+            tag_width: 1,
+            variants: vec![
+                crate::model::MachineVariantLayout {
+                    name: "Text".to_string(),
+                    field_tys: vec![ResolvedTy::String],
+                    field_names: vec![],
+                },
+                crate::model::MachineVariantLayout {
+                    name: "Ping".to_string(),
+                    field_tys: vec![],
+                    field_names: vec![],
+                },
+            ],
+            is_indirect: false,
+        });
+        builder.enum_layouts.push(crate::model::EnumLayout {
+            name: "ListNode".to_string(),
+            tag_width: 1,
+            variants: vec![
+                crate::model::MachineVariantLayout {
+                    name: "Cons".to_string(),
+                    field_tys: vec![ResolvedTy::I64, named("ListNode")],
+                    field_names: vec![],
+                },
+                crate::model::MachineVariantLayout {
+                    name: "Nil".to_string(),
+                    field_tys: vec![],
+                    field_names: vec![],
+                },
+            ],
+            is_indirect: true,
+        });
+        for (record, fields) in [
+            (
+                "Row",
+                vec![
+                    ("name".to_string(), ResolvedTy::String),
+                    ("n".to_string(), ResolvedTy::I64),
+                ],
+            ),
+            (
+                "Outer",
+                vec![
+                    ("row".to_string(), named("Row")),
+                    ("k".to_string(), ResolvedTy::I64),
+                ],
+            ),
+            ("HoldsFoo", vec![("f".to_string(), named("Foo"))]),
+            (
+                "HoldsBadVec",
+                vec![("xs".to_string(), vec_of(named("Foo")))],
+            ),
+            (
+                "HoldsSlice",
+                vec![(
+                    "s".to_string(),
+                    ResolvedTy::Slice(Box::new(ResolvedTy::I64)),
+                )],
+            ),
+            ("HoldsClosure", vec![("f".to_string(), bare_fn())]),
+            (
+                "HoldsToken",
+                vec![("t".to_string(), ResolvedTy::CancellationToken)],
+            ),
+        ] {
+            builder
+                .record_field_orders
+                .insert(record.to_string(), fields);
+        }
+        builder
+    }
+
+    /// The `FieldDropInPlace` admissibility classifier — the ONE predicate
+    /// MIR admission and the drop-plan verifier consult — with the verdict
+    /// frozen per shape. Admission mirrors codegen's `emit_heap_slot_drop`
+    /// dispatch: the five aggregate shapes over registered layouts admit
+    /// when every reachable slot is dischargeable; leaf COW types stay on
+    /// their own authority (refused at top level); everything the dispatcher
+    /// fail-closes on (slices, dyn traits, closure pairs, affine handles,
+    /// unwired `Vec` elements, unregistered layouts, free type params) is
+    /// refused. A widened verdict here is a wrong-ABI free at codegen; a
+    /// narrowed one is a lost capability — both are named test failures.
+    #[test]
+    fn field_drop_classifier_verdicts_are_frozen_per_shape() {
+        let builder = builder_for_field_drop_classifier();
+
+        let corpus: Vec<(&str, ResolvedTy, bool)> = vec![
+            // Admitted aggregate shapes.
+            ("record of string+i64", named("Row"), true),
+            ("record nesting an admissible record", named("Outer"), true),
+            ("record with indirect-enum field", named("HoldsFoo"), true),
+            (
+                "tuple of (string, i64)",
+                ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64]),
+                true,
+            ),
+            (
+                "fixed array of string",
+                ResolvedTy::Array(Box::new(ResolvedTy::String), 3),
+                true,
+            ),
+            ("inline enum with string payload", named("Msg"), true),
+            ("indirect enum", named("Foo"), true),
+            (
+                "self-recursive indirect enum (cycle guard)",
+                named("ListNode"),
+                true,
+            ),
+            (
+                "tuple with a wired Vec element",
+                ResolvedTy::Tuple(vec![vec_of(ResolvedTy::I64)]),
+                true,
+            ),
+            // Refused: a reachable slot the dispatcher cannot discharge.
+            (
+                "record with unwired Vec<indirect enum> field",
+                named("HoldsBadVec"),
+                false,
+            ),
+            ("record with slice field", named("HoldsSlice"), false),
+            ("record with closure field", named("HoldsClosure"), false),
+            (
+                "record with affine-handle field",
+                named("HoldsToken"),
+                false,
+            ),
+            (
+                "tuple with dyn-trait element",
+                ResolvedTy::Tuple(vec![ResolvedTy::TraitObject {
+                    traits: vec![hew_types::ResolvedTraitBound {
+                        trait_name: "Display".to_string(),
+                        args: vec![],
+                        assoc_bindings: vec![],
+                    }],
+                }]),
+                false,
+            ),
+            (
+                "tuple with free type-param element",
+                ResolvedTy::Tuple(vec![ResolvedTy::TypeParam {
+                    name: "T".to_string(),
+                }]),
+                false,
+            ),
+            // Refused: leaf / non-aggregate top levels (the admission OR
+            // keeps leaves on `project_field_inline_drop_symbol`; `string`'s
+            // reroute onto the op is its own decision, not a classifier
+            // verdict).
+            ("string top level", ResolvedTy::String, false),
+            ("bytes top level", ResolvedTy::Bytes, false),
+            ("Vec top level", vec_of(ResolvedTy::I64), false),
+            ("i64 top level", ResolvedTy::I64, false),
+            (
+                "slice top level",
+                ResolvedTy::Slice(Box::new(ResolvedTy::I64)),
+                false,
+            ),
+            ("unregistered named type", named("Ghost"), false),
+            (
+                "free type param top level",
+                ResolvedTy::TypeParam {
+                    name: "T".to_string(),
+                },
+                false,
+            ),
+        ];
+
+        for (label, ty, admitted) in corpus {
+            assert_eq!(
+                builder.field_drop_in_place_admissible(&ty),
+                admitted,
+                "field-drop admissibility verdict moved for `{label}` \
+                 ({ty:?}); a widened verdict reaches codegen with no in-place \
+                 release (wrong-ABI / fail-closed error), a narrowed one \
+                 regresses an admitted discharge shape to the NYI refusal"
+            );
         }
     }
 

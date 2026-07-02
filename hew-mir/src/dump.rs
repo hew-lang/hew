@@ -999,6 +999,19 @@ fn render_instr(instr: &Instr) -> String {
             field_offset.0,
             ty.user_facing()
         ),
+        Instr::FieldDropInPlace { base, field, ty } => match field {
+            crate::model::FieldAddr::Record(off) => format!(
+                "drop_field_in_place {}.field[{}] ty={}",
+                render_place(base),
+                off.0,
+                ty.user_facing()
+            ),
+            crate::model::FieldAddr::Tuple(idx) => format!(
+                "drop_field_in_place {}.{idx} ty={}",
+                render_place(base),
+                ty.user_facing()
+            ),
+        },
         Instr::TupleFieldLoad {
             tuple,
             field_index,

@@ -32,6 +32,19 @@ use crate::await_cancel::{
 use crate::await_cancel::{AwaitCancelStatus, HewAwaitCancel};
 use crate::bytes::BytesTriple;
 
+#[cfg(test)]
+static READ_SLOT_FINAL_FREE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+pub(crate) fn reset_read_slot_final_free_count_for_test() {
+    READ_SLOT_FINAL_FREE_COUNT.store(0, Ordering::Release);
+}
+
+#[cfg(test)]
+pub(crate) fn read_slot_final_free_count_for_test() -> usize {
+    READ_SLOT_FINAL_FREE_COUNT.load(Ordering::Acquire)
+}
+
 /// The sentinel an accept slot carries until a handle is deposited, and the
 /// value a failed accept deposits so the resume edge binds an invalid
 /// `Connection` (`hew_connection_is_valid` rejects it) rather than panicking.
@@ -205,6 +218,8 @@ pub unsafe extern "C" fn hew_read_slot_free(slot: *mut HewReadSlot) {
     if prev != 1 {
         return;
     }
+    #[cfg(test)]
+    READ_SLOT_FINAL_FREE_COUNT.fetch_add(1, Ordering::AcqRel);
     // Last ref — reclaim the box. SAFETY: refs reached 0, so no other thread
     // holds a live reference; we own the box exclusively.
     let boxed = unsafe { Box::from_raw(slot) };

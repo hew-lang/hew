@@ -100,6 +100,90 @@ fn assert_inline_typechecks_cleanly(source: &str, context: &str) {
 }
 
 #[test]
+fn array_literal_typechecks_against_fixed_array_return() {
+    assert_inline_typechecks_cleanly(
+        r"
+fn one(a: i64) -> [i64; 2] {
+    [a, a]
+}
+",
+        "array literal in fixed-array return position",
+    );
+}
+
+#[test]
+fn array_literal_typechecks_against_fixed_array_let_annotation() {
+    assert_inline_typechecks_cleanly(
+        r"
+fn main() {
+    let xs: [i64; 2] = [1, 2];
+}
+",
+        "array literal in fixed-array let annotation",
+    );
+}
+
+#[test]
+fn unannotated_array_literal_still_infers_vec() {
+    assert_inline_typechecks_cleanly(
+        r"
+fn take_vec(xs: Vec<i64>) {}
+
+fn main() {
+    let xs = [1, 2];
+    take_vec(xs);
+}
+",
+        "unannotated array literal should infer Vec<i64>",
+    );
+}
+
+#[test]
+fn fixed_array_literal_length_mismatch_is_targeted() {
+    let output = typecheck_inline(
+        r"
+fn one(a: i64) -> [i64; 2] {
+    [a, a, a]
+}
+",
+    );
+
+    assert_eq!(
+        output.errors.len(),
+        1,
+        "length mismatch should emit one targeted diagnostic: {:#?}",
+        output.errors
+    );
+    let error = &output.errors[0];
+    assert_eq!(error.kind, TypeErrorKind::ArityMismatch);
+    assert!(
+        error.message.contains("expected 2") && error.message.contains("found 3"),
+        "length mismatch diagnostic should name expected and actual arity: {error:#?}"
+    );
+}
+
+#[test]
+fn fixed_array_literal_element_mismatch_cites_element() {
+    let output = typecheck_inline(
+        r#"
+fn one(a: string) -> [i64; 2] {
+    [a, a]
+}
+"#,
+    );
+
+    assert!(
+        output.errors.iter().any(|error| matches!(
+            &error.kind,
+            TypeErrorKind::Mismatch { expected, actual }
+                if expected == "i64" && actual == "string"
+        )),
+        "element mismatch should cite the element type mismatch: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn hashmap_remove_typechecks_as_bool() {
     assert_inline_typechecks_cleanly(
         r#"

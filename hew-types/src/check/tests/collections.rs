@@ -5,6 +5,91 @@
 pub(super) use super::*;
 
 #[test]
+fn literal_coercion_array_literal_to_fixed_array() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let span = 0..6;
+    let expected = Ty::Array(Box::new(Ty::I64), 2);
+    let expr = Expr::Array(vec![make_int_literal(1, 1..2), make_int_literal(2, 4..5)]);
+
+    let result = checker.check_against(&expr, &span, &expected);
+
+    assert_eq!(result, expected);
+    assert!(
+        checker.errors.is_empty(),
+        "array literal should coerce to fixed array cleanly: {:#?}",
+        checker.errors
+    );
+    assert_eq!(
+        checker.expr_types.get(&SpanKey::from(&span)),
+        Some(&expected)
+    );
+}
+
+#[test]
+fn literal_coercion_array_literal_length_mismatch() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let span = 0..9;
+    let expected = Ty::Array(Box::new(Ty::I64), 2);
+    let expr = Expr::Array(vec![
+        make_int_literal(1, 1..2),
+        make_int_literal(2, 4..5),
+        make_int_literal(3, 7..8),
+    ]);
+
+    let result = checker.check_against(&expr, &span, &expected);
+
+    assert_eq!(result, Ty::Error);
+    assert_eq!(
+        checker.errors.len(),
+        1,
+        "length mismatch should emit one targeted diagnostic: {:#?}",
+        checker.errors
+    );
+    let error = &checker.errors[0];
+    assert_eq!(error.kind, TypeErrorKind::ArityMismatch);
+    assert_eq!(error.span, span);
+    assert!(
+        error.message.contains("expected 2") && error.message.contains("found 3"),
+        "diagnostic should name expected and actual arity: {error:#?}"
+    );
+}
+
+#[test]
+fn literal_coercion_array_literal_element_mismatch() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let span = 0..8;
+    let string_span = 1..4;
+    let expected = Ty::Array(Box::new(Ty::I64), 2);
+    let expr = Expr::Array(vec![
+        (
+            Expr::Literal(Literal::String("x".to_string())),
+            string_span.clone(),
+        ),
+        make_int_literal(2, 6..7),
+    ]);
+
+    let result = checker.check_against(&expr, &span, &expected);
+
+    assert_eq!(result, expected);
+    assert_eq!(
+        checker.errors.len(),
+        1,
+        "element mismatch should emit one element diagnostic: {:#?}",
+        checker.errors
+    );
+    let error = &checker.errors[0];
+    assert_eq!(error.span, string_span);
+    assert!(
+        matches!(
+            &error.kind,
+            TypeErrorKind::Mismatch { expected, actual }
+                if expected == "i64" && actual == "string"
+        ),
+        "element mismatch should cite the element type mismatch: {error:#?}"
+    );
+}
+
+#[test]
 fn vec_copy_record_new_constructor_typechecks() {
     let output = check_source(
         r"

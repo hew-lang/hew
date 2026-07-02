@@ -17,6 +17,7 @@
 #   - Exits 0 if the failing fence set exactly matches the expected-failures list.
 #   - Exits 1 on any NEW failure (unexpected regression).
 #   - Exits 1 if a LISTED failure now passes (ratchet forward — remove from list).
+#   - Exits 1 if a LISTED failure's content checksum changed (re-verify label).
 #
 # WHY: Docs can rot silently with no gate. 133 fences currently pass; 111 fail
 # (the docs-rot backlog, tracked per entry with root-cause notes). This ratchet
@@ -198,14 +199,28 @@ echo "  Extracted: $total_fences fences total"
 
 # ── Read expected-failures list ────────────────────────────────────────────────
 EXPECTED_STR=""
+EXPECTED_CKSUM_STR=""
 while IFS= read -r line; do
-    name="${line%%#*}"                   # strip comment
-    name="${name#"${name%%[! ]*}"}"      # ltrim
-    name="${name%"${name##*[! ]}"}"      # rtrim
+    fields="${line%%#*}"                 # strip comment
+    fields="${fields#"${fields%%[! ]*}"}" # ltrim
+    fields="${fields%"${fields##*[! ]}"}" # rtrim
+    [[ -z "$fields" ]] && continue
+    set -- $fields
+    if [[ $# -ne 2 ]]; then
+        echo "error: expected-failures entry must be: <fence-id> <cksum>" >&2
+        echo "       bad entry: $line" >&2
+        exit 1
+    fi
+    name="$1"
+    recorded_cksum="$2"
     [[ -z "$name" ]] && continue
-    name="${name%% *}"                   # first field only
-    [[ -z "$name" ]] && continue
+    if [[ ! "$recorded_cksum" =~ ^[0-9]+$ ]]; then
+        echo "error: expected-failures checksum must be decimal cksum output" >&2
+        echo "       bad entry: $line" >&2
+        exit 1
+    fi
     EXPECTED_STR="${EXPECTED_STR}${name}"$'\n'
+    EXPECTED_CKSUM_STR="${EXPECTED_CKSUM_STR}${name} ${recorded_cksum}"$'\n'
 done < "$EXPECTED_FAILURES_FILE"
 
 # ── Typecheck pass ─────────────────────────────────────────────────────────────
@@ -271,13 +286,32 @@ while IFS= read -r name; do
     fi
 done <<< "$EXPECTED_STR"
 
+# Stale metadata: content changed under a listed ID, so the root-cause label
+# must be re-verified instead of trusted by position alone.
+stale_metadata=""
+while IFS= read -r entry; do
+    [[ -z "$entry" ]] && continue
+    set -- $entry
+    name="$1"
+    recorded_cksum="$2"
+    outfile="$OUTDIR/${name}.hew"
+    [[ -f "$outfile" ]] || continue
+    actual_cksum="$(cksum "$outfile" | awk '{print $1}')"
+    if [[ "$recorded_cksum" != "$actual_cksum" ]]; then
+        stale_metadata="${stale_metadata}${name} ${recorded_cksum} ${actual_cksum}"$'\n'
+    fi
+done <<< "$EXPECTED_CKSUM_STR"
+
 count_unexpected_fail=0
 [[ -n "$unexpected_failures" ]] && count_unexpected_fail="$(printf '%s' "$unexpected_failures" | grep -c .)"
 
 count_unexpected_pass=0
 [[ -n "$unexpected_passes" ]] && count_unexpected_pass="$(printf '%s' "$unexpected_passes" | grep -c .)"
 
-if [[ $count_unexpected_fail -eq 0 && $count_unexpected_pass -eq 0 ]]; then
+count_stale_metadata=0
+[[ -n "$stale_metadata" ]] && count_stale_metadata="$(printf '%s' "$stale_metadata" | grep -c .)"
+
+if [[ $count_unexpected_fail -eq 0 && $count_unexpected_pass -eq 0 && $count_stale_metadata -eq 0 ]]; then
     if [[ $count_actual -eq 0 ]]; then
         echo ""
         echo "    All doc fences pass. Consider removing the expected-failures file."
@@ -320,6 +354,19 @@ if [[ $count_unexpected_pass -gt 0 ]]; then
     echo ""
     echo "  Delete these lines from: $EXPECTED_FAILURES_FILE"
     echo "  (Do not restore a failing entry to keep this green — fix the docs.)"
+    echo ""
+fi
+
+if [[ $count_stale_metadata -gt 0 ]]; then
+    echo "RATCHET FAIL: $count_stale_metadata stale expected-failure metadata entr$( [[ $count_stale_metadata -eq 1 ]] && echo "y" || echo "ies" ):"
+    while IFS= read -r entry; do
+        [[ -z "$entry" ]] && continue
+        set -- $entry
+        name="$1"
+        recorded_cksum="$2"
+        actual_cksum="$3"
+        echo "  STALE METADATA: $name content changed since label was written (recorded=$recorded_cksum actual=$actual_cksum) — re-verify and update the label"
+    done <<< "$stale_metadata"
     echo ""
 fi
 

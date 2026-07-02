@@ -1,0 +1,54 @@
+//! Runtime coverage for cancellable actor work expressed as periodic receive
+//! handlers.
+//!
+//! The worker checks a boolean flag on each `#[every]` tick. The `stop` receive
+//! handler is a normal actor message, so it can interleave between ticks because
+//! each tick returns control to the mailbox.
+
+import std::testing;
+
+actor Worker {
+    var running: bool = true;
+    var ticks: i64 = 0;
+
+    #[every(25ms)]
+    receive fn tick() {
+        if !running {
+            return;
+        }
+        ticks += 1;
+    }
+
+    receive fn stop() {
+        running = false;
+    }
+
+    receive fn total() -> i64 {
+        ticks
+    }
+}
+
+#[test]
+fn stop_message_prevents_more_periodic_work() {
+    let worker = spawn Worker(running: true, ticks: 0);
+    sleep(250ms);
+
+    let before = await worker.total();
+    let _ = worker.stop();
+    sleep(150ms);
+    let after = await worker.total();
+    sleep(150ms);
+    let final = await worker.total();
+
+    match before {
+        Ok(n) => testing.assert_true(n >= 2),
+        Err(_) => testing.assert_true(false),
+    }
+    match after {
+        Ok(a) => match final {
+            Ok(f) => testing.assert_eq(a, f),
+            Err(_) => testing.assert_true(false),
+        },
+        Err(_) => testing.assert_true(false),
+    }
+}

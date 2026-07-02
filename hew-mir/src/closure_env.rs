@@ -357,7 +357,8 @@ fn walk_expr_for_suspend(expr: &HirExpr, found: &mut bool) {
             walk_expr_for_suspend(operand, found);
         }
         HirExprKind::NumericCast { value, .. }
-        | HirExprKind::SaturatingWidthCast { value, .. } => {
+        | HirExprKind::SaturatingWidthCast { value, .. }
+        | HirExprKind::TryWidthCast { value, .. } => {
             walk_expr_for_suspend(value, found);
         }
         HirExprKind::TupleLiteral { elements } => {

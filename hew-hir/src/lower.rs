@@ -4340,6 +4340,7 @@ fn collect_call_sites_in_expr(
         }
         HirExprKind::NumericCast { value, .. }
         | HirExprKind::SaturatingWidthCast { value, .. }
+        | HirExprKind::TryWidthCast { value, .. }
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_call_sites_in_expr(value, out, trait_out);
         }
@@ -4768,6 +4769,9 @@ struct LowerCtx {
     /// and `method_call_rewrites` to emit `NumericCast` (wrapping) or
     /// `SaturatingWidthCast` (saturating) from a zero-arg method call.
     width_cast_lowerings: HashMap<SpanKey, hew_types::WidthCastLowering>,
+    /// Checker-owned exact numeric conversion decisions keyed by method-call
+    /// expression span. HIR emits `TryWidthCast` directly from this table.
+    try_width_cast_lowerings: HashMap<SpanKey, hew_types::TryWidthCastLowering>,
     /// Checker-owned actor receive dispatch decisions keyed by method-call span.
     /// HIR consumes these to choose `ActorSend` / `ActorAsk` without reclassifying
     /// receiver types.
@@ -5307,6 +5311,7 @@ impl LowerCtx {
             method_call_rewrites: tc_output.method_call_rewrites.clone(),
             numeric_method_lowerings: tc_output.numeric_method_lowerings.clone(),
             width_cast_lowerings: tc_output.width_cast_lowerings.clone(),
+            try_width_cast_lowerings: tc_output.try_width_cast_lowerings.clone(),
             actor_method_dispatch: tc_output.actor_method_dispatch.clone(),
             machine_method_dispatch: tc_output.machine_method_dispatch.clone(),
             conn_await_reads: tc_output.conn_await_reads.clone(),
@@ -5402,6 +5407,10 @@ impl LowerCtx {
                 &mut self.width_cast_lowerings,
                 tc_output.width_cast_lowerings.clone(),
             ),
+            std::mem::replace(
+                &mut self.try_width_cast_lowerings,
+                tc_output.try_width_cast_lowerings.clone(),
+            ),
             std::mem::take(&mut self.actor_method_dispatch),
             std::mem::take(&mut self.machine_method_dispatch),
             std::mem::take(&mut self.method_call_receiver_kinds),
@@ -5421,6 +5430,7 @@ impl LowerCtx {
             self.method_call_rewrites,
             self.numeric_method_lowerings,
             self.width_cast_lowerings,
+            self.try_width_cast_lowerings,
             self.actor_method_dispatch,
             self.machine_method_dispatch,
             self.method_call_receiver_kinds,
@@ -7525,6 +7535,7 @@ impl LowerCtx {
             }
             HirExprKind::NumericCast { value, .. }
             | HirExprKind::SaturatingWidthCast { value, .. }
+            | HirExprKind::TryWidthCast { value, .. }
             | HirExprKind::CoerceToDynTrait { value, .. } => {
                 self.wrap_var_self_explicit_expr_returns(value, receiver, abi_return_ty);
             }
@@ -20032,6 +20043,61 @@ impl LowerCtx {
                 ),
             };
         }
+        if let Some(lowering) = self.try_width_cast_lowerings.get(&key).cloned() {
+            if !args.is_empty() {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: format!("try-width-cast method `.{method}`"),
+                        reason: format!(
+                            "checker side-table expected zero arguments, found {}",
+                            args.len()
+                        ),
+                    },
+                    span.clone(),
+                    "try-width-cast method lowering requires exactly zero arguments",
+                ));
+                return (
+                    HirExprKind::Unsupported(format!(
+                        "try-width-cast method `.{method}` has invalid arity"
+                    )),
+                    ResolvedTy::Unit,
+                );
+            }
+            let Ok(from_ty) = ResolvedTy::from_ty(&lowering.from_ty) else {
+                return (
+                    HirExprKind::Unsupported(format!(
+                        "try-width-cast method `.{method}` has poisoned source type"
+                    )),
+                    ResolvedTy::Unit,
+                );
+            };
+            let Ok(to_ty) = ResolvedTy::from_ty(&lowering.to_ty) else {
+                return (
+                    HirExprKind::Unsupported(format!(
+                        "try-width-cast method `.{method}` has poisoned target type"
+                    )),
+                    ResolvedTy::Unit,
+                );
+            };
+            let Ok(result_ty) = ResolvedTy::from_ty(&Ty::option(lowering.to_ty)) else {
+                return (
+                    HirExprKind::Unsupported(format!(
+                        "try-width-cast method `.{method}` has poisoned result type"
+                    )),
+                    ResolvedTy::Unit,
+                );
+            };
+            let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+            return (
+                HirExprKind::TryWidthCast {
+                    value: Box::new(lowered_receiver),
+                    from_ty,
+                    to_ty,
+                    kind: lowering.kind,
+                },
+                result_ty,
+            );
+        }
         if let Some(lowering) = self.numeric_method_lowerings.get(&key).cloned() {
             if args.len() != 1 {
                 self.diagnostics.push(HirDiagnostic::new(
@@ -23873,6 +23939,7 @@ fn collect_captures_walk(
         }
         HirExprKind::NumericCast { value, .. }
         | HirExprKind::SaturatingWidthCast { value, .. }
+        | HirExprKind::TryWidthCast { value, .. }
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_captures_walk(value, param_ids, seen, captures, self_id);
         }
@@ -24184,6 +24251,7 @@ fn collect_general_closure_captures_walk(
         }
         HirExprKind::NumericCast { value, .. }
         | HirExprKind::SaturatingWidthCast { value, .. }
+        | HirExprKind::TryWidthCast { value, .. }
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
         }
@@ -24956,6 +25024,7 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
         }
         HirExprKind::NumericCast { value, .. }
         | HirExprKind::SaturatingWidthCast { value, .. }
+        | HirExprKind::TryWidthCast { value, .. }
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_hir_emitted_events_walk(value, event_names, out);
         }
@@ -27355,7 +27424,9 @@ fn scan_expr_for_call_shape(
         HirExprKind::StreamRecvAwait { stream, .. } => {
             scan_expr_for_call_shape(stream, callable, diagnostics);
         }
-        HirExprKind::NumericCast { value, .. } | HirExprKind::SaturatingWidthCast { value, .. } => {
+        HirExprKind::NumericCast { value, .. }
+        | HirExprKind::SaturatingWidthCast { value, .. }
+        | HirExprKind::TryWidthCast { value, .. } => {
             scan_expr_for_call_shape(value, callable, diagnostics);
         }
         HirExprKind::TupleLiteral { elements } => {

@@ -6239,8 +6239,8 @@ impl Checker {
         // to i32 without going through a method call), but method dispatch
         // cannot drive unification from the receiver type alone.  The i64
         // default matches what `default_unconstrained_range_types` would apply
-        // at the end of the inference pass, moved forward so that methods such
-        // as `.to_f64()` resolve correctly inside the loop body.
+        // at the end of the inference pass, moved forward so receiver-only
+        // numeric methods resolve correctly inside the loop body.
         let resolved = if let Ty::Var(v) = resolved {
             let is_int_range_var = self
                 .deferred_range_bounds
@@ -6437,133 +6437,8 @@ impl Checker {
                 );
                 Ty::Error
             }
-            // Infallible width-widening: `.to_<W>()` — same signedness, strictly wider.
-            //
-            // Rule (B-1c): For integer sources, only same-sign strictly-wider fixed-width
-            // targets are admitted. Same-width, narrowing, cross-sign, and platform-sized
-            // (isize/usize) sources must use `.try_to_<W>()` instead.
-            //
-            // Float sources retain the legacy permissive behaviour: any numeric source
-            // may call `.to_f32()`/`.to_f64()`.  Float-to-integer is also unchanged.
-            //
-            // Admitted pairs:
-            //   signed:   i8→{i16,i32,i64}, i16→{i32,i64}, i32→{i64}
-            //   unsigned: u8→{u16,u32,u64}, u16→{u32,u64}, u32→{u64}
-            //   float:    any numeric → f32/f64  (legacy, unchanged)
-            //   to_f*:    any numeric source     (legacy, unchanged)
-            (resolved, method) if resolved.is_numeric() && method.starts_with("to_") => {
-                // Resolve target type from method name.
-                let target_opt: Option<Ty> = match method {
-                    "to_i8" => Some(Ty::I8),
-                    "to_i16" => Some(Ty::I16),
-                    "to_i32" => Some(Ty::I32),
-                    "to_i64" => Some(Ty::I64),
-                    "to_isize" => Some(Ty::Isize),
-                    "to_u8" => Some(Ty::U8),
-                    "to_u16" => Some(Ty::U16),
-                    "to_u32" => Some(Ty::U32),
-                    "to_u64" => Some(Ty::U64),
-                    "to_usize" => Some(Ty::Usize),
-                    "to_f32" => Some(Ty::F32),
-                    "to_f64" => Some(Ty::F64),
-                    _ => None,
-                };
-                let Some(target) = target_opt else {
-                    for arg in args {
-                        let (expr, sp) = arg.expr();
-                        self.synthesize(expr, sp);
-                    }
-                    self.report_error(
-                        TypeErrorKind::UndefinedMethod,
-                        span,
-                        format!(
-                            "no conversion method `{method}` on `{}`",
-                            resolved.user_facing()
-                        ),
-                    );
-                    return Ty::Error;
-                };
-                // Float targets: always admitted regardless of source width.
-                if matches!(target, Ty::F32 | Ty::F64) {
-                    return target;
-                }
-                // Float source converting to integer: always admitted (legacy).
-                if resolved.is_float() {
-                    return target;
-                }
-                // Integer-to-integer: enforce strict widening rules.
-                // Reject platform-sized source (isize/usize have no fixed width).
-                if matches!(resolved, Ty::Isize | Ty::Usize) {
-                    self.report_error(
-                        TypeErrorKind::UndefinedMethod,
-                        span,
-                        format!(
-                            "`{}` is platform-sized; use `.try_to_{}()` for width conversion",
-                            resolved.user_facing(),
-                            target.user_facing()
-                        ),
-                    );
-                    return Ty::Error;
-                }
-                // Reject platform-sized target (to_isize/to_usize on integer source).
-                if matches!(target, Ty::Isize | Ty::Usize) {
-                    self.report_error(
-                        TypeErrorKind::UndefinedMethod,
-                        span,
-                        format!(
-                            "`.{}()` targets a platform-sized type; use `.try_to_{}()` \
-                             for width conversion",
-                            method,
-                            target.user_facing()
-                        ),
-                    );
-                    return Ty::Error;
-                }
-                // Both are fixed-width integers. Check sign and width.
-                let src_unsigned = resolved.is_unsigned();
-                let tgt_unsigned = target.is_unsigned();
-                if src_unsigned != tgt_unsigned {
-                    // Cross-sign: must use try_to_*.
-                    self.report_error(
-                        TypeErrorKind::UndefinedMethod,
-                        span,
-                        format!(
-                            "`.{}()` crosses integer signedness; use `.try_to_{}()` for \
-                             cross-sign conversion",
-                            method,
-                            target.user_facing()
-                        ),
-                    );
-                    return Ty::Error;
-                }
-                let src_bits = resolved.integer_bit_width().unwrap(); // non-None: fixed-width checked above
-                let tgt_bits = target.integer_bit_width().unwrap();
-                if src_bits >= tgt_bits {
-                    // Same width or narrowing: must use try_to_*.
-                    let hint = if src_bits == tgt_bits {
-                        format!(
-                            "source and target are the same width ({src_bits}); no conversion needed"
-                        )
-                    } else {
-                        let tgt_name = target.user_facing();
-                        format!("use `.try_to_{tgt_name}()` for narrowing conversions")
-                    };
-                    self.report_error(
-                        TypeErrorKind::UndefinedMethod,
-                        span,
-                        format!("`.{method}()` is not an infallible widening; {hint}"),
-                    );
-                    return Ty::Error;
-                }
-                // Admitted: same sign, strictly wider fixed-width target.
-                target
-            }
-            // Fallible narrowing / cross-sign: `.try_to_<W>() -> Result<W, NarrowError>`.
-            //
-            // Admitted for all integer-to-integer pairs that are NOT covered by the
-            // infallible `.to_<W>()` family: narrowing, cross-sign, isize/usize source
-            // or target.  Also admitted for same-width (caller may not know widths).
-            (resolved, method) if resolved.is_integer() && method.starts_with("try_to_") => {
+            // Exact fallible numeric conversion: `.try_to_<W>() -> Option<W>`.
+            (resolved, method) if resolved.is_numeric() && method.starts_with("try_to_") => {
                 let suffix = &method["try_to_".len()..];
                 let target_opt: Option<Ty> = match suffix {
                     "i8" => Some(Ty::I8),
@@ -6576,10 +6451,26 @@ impl Checker {
                     "u32" => Some(Ty::U32),
                     "u64" => Some(Ty::U64),
                     "usize" => Some(Ty::Usize),
+                    "f32" => Some(Ty::F32),
+                    "f64" => Some(Ty::F64),
                     _ => None,
                 };
                 if let Some(target) = target_opt {
-                    Ty::result(target, Ty::narrow_error())
+                    let kind = match (resolved.is_integer(), target.is_integer()) {
+                        (true, true) => TryConversionKind::IntToInt,
+                        (false, true) => TryConversionKind::FloatToInt,
+                        (true, false) => TryConversionKind::IntToFloat,
+                        (false, false) => TryConversionKind::FloatToFloat,
+                    };
+                    self.try_width_cast_lowerings.insert(
+                        SpanKey::in_module(span, self.current_module_idx),
+                        TryWidthCastLowering {
+                            from_ty: resolved.clone(),
+                            to_ty: target.clone(),
+                            kind,
+                        },
+                    );
+                    Ty::option(target)
                 } else {
                     for arg in args {
                         let (expr, sp) = arg.expr();
@@ -6591,7 +6482,7 @@ impl Checker {
                         span,
                         format!(
                             "no method `{method}` on `{receiver_name}`; supported targets: \
-                             i8, i16, i32, i64, isize, u8, u16, u32, u64, usize",
+                             i8, i16, i32, i64, isize, u8, u16, u32, u64, usize, f32, f64",
                         ),
                     );
                     Ty::Error
@@ -8455,11 +8346,31 @@ impl Checker {
                         let (expr, sp) = arg.expr();
                         self.synthesize(expr, sp);
                     }
-                    self.report_error(
-                        TypeErrorKind::UndefinedMethod,
-                        span,
-                        format!("no method `{method}` on `{}`", resolved.user_facing()),
-                    );
+                    let message = if resolved.is_numeric()
+                        && method.starts_with("to_")
+                        && matches!(
+                            &method["to_".len()..],
+                            "i8" | "i16"
+                                | "i32"
+                                | "i64"
+                                | "isize"
+                                | "u8"
+                                | "u16"
+                                | "u32"
+                                | "u64"
+                                | "usize"
+                                | "f32"
+                                | "f64"
+                        ) {
+                        format!(
+                            "no method `.{method}()` on numeric type `{}`; use `as` for numeric casts \
+                             or `.try_to_<W>()` for exact fallible conversion",
+                            resolved.user_facing()
+                        )
+                    } else {
+                        format!("no method `{method}` on `{}`", resolved.user_facing())
+                    };
+                    self.report_error(TypeErrorKind::UndefinedMethod, span, message);
                     Ty::Error
                 }
             }
@@ -8530,11 +8441,31 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp);
                 }
-                self.report_error(
-                    TypeErrorKind::UndefinedMethod,
-                    span,
-                    format!("no method `{method}` on `{}`", resolved.user_facing()),
-                );
+                let message = if resolved.is_numeric()
+                    && method.starts_with("to_")
+                    && matches!(
+                        &method["to_".len()..],
+                        "i8" | "i16"
+                            | "i32"
+                            | "i64"
+                            | "isize"
+                            | "u8"
+                            | "u16"
+                            | "u32"
+                            | "u64"
+                            | "usize"
+                            | "f32"
+                            | "f64"
+                    ) {
+                    format!(
+                        "no method `.{method}()` on numeric type `{}`; use `as` for numeric casts \
+                         or `.try_to_<W>()` for exact fallible conversion",
+                        resolved.user_facing()
+                    )
+                } else {
+                    format!("no method `{method}` on `{}`", resolved.user_facing())
+                };
+                self.report_error(TypeErrorKind::UndefinedMethod, span, message);
                 Ty::Error
             }
         }

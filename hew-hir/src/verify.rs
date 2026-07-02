@@ -17,7 +17,7 @@ use crate::node::{
     HirBlock, HirExpr, HirExprKind, HirItem, HirLiteral, HirMatchArmPredicate, HirModule,
     HirStmtKind,
 };
-use hew_types::ResolvedTy;
+use hew_types::{BuiltinType, ResolvedTy};
 
 #[must_use]
 pub fn verify_hir(module: &HirModule) -> Vec<HirDiagnostic> {
@@ -245,9 +245,16 @@ impl Verifier {
                 value,
                 from_ty,
                 to_ty,
+            }
+            | HirExprKind::TryWidthCast {
+                value,
+                from_ty,
+                to_ty,
+                ..
             } => {
                 let node_name = match &expr.kind {
                     HirExprKind::SaturatingWidthCast { .. } => "saturating width cast",
+                    HirExprKind::TryWidthCast { .. } => "try width cast",
                     _ => "numeric cast",
                 };
                 self.expr(value);
@@ -265,18 +272,28 @@ impl Verifier {
                         "cast source type metadata must match the lowered operand",
                     ));
                 }
-                if expr.ty != *to_ty {
+                let expected_expr_ty = if matches!(expr.kind, HirExprKind::TryWidthCast { .. }) {
+                    ResolvedTy::Named {
+                        name: "Option".to_string(),
+                        args: vec![to_ty.clone()],
+                        builtin: Some(BuiltinType::Option),
+                        is_opaque: false,
+                    }
+                } else {
+                    to_ty.clone()
+                };
+                if expr.ty != expected_expr_ty {
                     self.diagnostics.push(self.diagnostic(
                         HirDiagnosticKind::CheckerBoundaryViolation {
                             name: node_name.to_string(),
                             reason: format!(
-                                "cast target metadata {} disagrees with expression type {}",
-                                to_ty.user_facing(),
+                                "cast result metadata {} disagrees with expression type {}",
+                                expected_expr_ty.user_facing(),
                                 expr.ty.user_facing()
                             ),
                         },
                         expr.span.clone(),
-                        "cast target type metadata must match the expression type",
+                        "cast result type metadata must match the expression type",
                     ));
                 }
                 if !from_ty.can_explicitly_numeric_cast_to(to_ty) {

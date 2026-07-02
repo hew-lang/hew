@@ -1,8 +1,8 @@
 use hew_hir::{
     dump_hir, lower_program, verify_hir, HirDiagnosticKind, HirExprKind, HirItem, ResolutionCtx,
 };
-use hew_types::ResolvedTy;
 use hew_types::{module_registry::ModuleRegistry, Checker};
+use hew_types::{BuiltinType, ResolvedTy, TryConversionKind};
 
 fn checked_lower(source: &str) -> hew_hir::LowerOutput {
     let parsed = hew_parser::parse(source);
@@ -58,6 +58,54 @@ fn lowers_checker_admitted_numeric_cast_to_hir_node() {
     };
     assert_eq!(from_ty, &ResolvedTy::I32);
     assert_eq!(to_ty, &ResolvedTy::I64);
+}
+
+#[test]
+fn lowers_try_to_numeric_method_to_hir_node() {
+    let output = checked_lower(
+        r"
+        fn main() -> Option<i32> {
+            let x: i64 = 300;
+            x.try_to_i32()
+        }
+        ",
+    );
+    assert!(
+        output.diagnostics.is_empty(),
+        "HIR diagnostics: {:?}",
+        output.diagnostics
+    );
+    assert!(verify_hir(&output.module).is_empty());
+    assert!(
+        dump_hir(&output.module).contains("try-width-cast IntToInt i64 -> i32"),
+        "dump should expose the HIR try-width-cast node"
+    );
+
+    let HirItem::Function(function) = &output.module.items[0] else {
+        panic!("expected function item");
+    };
+    let tail = function.body.tail.as_deref().expect("main has tail expr");
+    let HirExprKind::TryWidthCast {
+        value: _,
+        from_ty,
+        to_ty,
+        kind,
+    } = &tail.kind
+    else {
+        panic!("expected tail TryWidthCast, got {tail:#?}");
+    };
+    assert_eq!(from_ty, &ResolvedTy::I64);
+    assert_eq!(to_ty, &ResolvedTy::I32);
+    assert_eq!(kind, &TryConversionKind::IntToInt);
+    assert_eq!(
+        tail.ty,
+        ResolvedTy::Named {
+            name: "Option".to_string(),
+            args: vec![ResolvedTy::I32],
+            builtin: Some(BuiltinType::Option),
+            is_opaque: false,
+        }
+    );
 }
 
 #[test]

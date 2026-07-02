@@ -4711,52 +4711,77 @@ that mix distinct integer widths without a cast. Example:
 
 ```hew
 let x: i32 = 1;
-let y: i64 = x + 1;        // ERROR: i32 vs i64 width mismatch; use x.to_i64() + 1
-let z: i64 = x.to_i64() + 1;  // OK
+let y: i64 = x + 1;          // ERROR: i32 vs i64 width mismatch; use x as i64 + 1
+let z: i64 = x as i64 + 1;   // OK
 ```
 
 `isize` and `usize` are also distinct from each other and from any fixed-width type:
 
 ```hew
 let n: usize = v.len();
-let i: i32 = n.to_i32();   // explicit conversion required
-let j: i64 = n.to_i64();   // explicit conversion required
+let i: i32 = n as i32;       // explicit conversion required
+let j: i64 = n as i64;       // explicit conversion required
 ```
 
-All numeric types support explicit conversion methods:
+All numeric types support `as` casts to every other numeric type:
 
 ```hew
 // Integer → f64
 let x: i32 = 42;
-let f: f64 = x.to_f64();      // 42.0
+let f: f64 = x as f64;        // 42.0
 
 // Float → integer (saturating)
 let pi: f64 = 3.14;
-let n: i32 = pi.to_i32();     // 3 (truncates toward zero for in-range values)
+let n: i32 = pi as i32;       // 3 (truncates toward zero for in-range values)
 
 // Out-of-range and non-finite values saturate instead of producing poison:
 let big: f64 = 1.0e30;
-let clamped: i32 = big.to_i32();    // i32::MAX (2147483647) — positive overflow clamps to MAX
+let clamped: i32 = big as i32;      // positive overflow clamps to 2147483647
 let neg_big: f64 = -1.0e30;
-let neg_clamped: i32 = neg_big.to_i32(); // i32::MIN (-2147483648) — negative overflow clamps to MIN
+let neg_clamped: i32 = neg_big as i32; // negative overflow clamps to -2147483648
 let nan: f64 = 0.0 / 0.0;
-let nan_as_int: i32 = nan.to_i32();     // 0 — NaN converts to zero
+let nan_as_int: i32 = nan as i32;       // NaN converts to zero
 ```
 
-**Float-to-integer conversion semantics:**
+**`as` conversion semantics:**
 
-| Source value          | Signed result      | Unsigned result |
-| --------------------- | ------------------ | --------------- |
-| In-range finite       | Truncated toward 0 | Truncated toward 0 |
-| `+Inf` or > MAX       | Integer `MAX`      | Integer `MAX` (`UINT_MAX`) |
-| `-Inf` or < MIN       | Integer `MIN`      | `0` |
-| `NaN`                 | `0`                | `0` |
+| Conversion | Result |
+| --- | --- |
+| Integer → wider integer | Sign-extends signed sources and zero-extends unsigned sources. |
+| Integer → narrower integer | Truncates to the target width's low bits. |
+| Integer → float | Produces the nearest representable IEEE 754 value for the target float type. |
+| Float → wider float | Extends precision. |
+| Float → narrower float | Rounds to the nearest representable value for the target float type. |
+| Float → integer | Truncates toward zero for in-range finite values, then saturates for out-of-range and non-finite values as specified below. |
+
+**Float-to-integer `as` semantics:**
+
+| Source value    | Signed result      | Unsigned result            |
+| --------------- | ------------------ | -------------------------- |
+| In-range finite | Truncated toward 0 | Truncated toward 0         |
+| `+Inf` or > MAX | Integer `MAX`      | Integer `MAX` (`UINT_MAX`) |
+| `-Inf` or < MIN | Integer `MIN`      | `0`                        |
+| `NaN`           | `0`                | `0`                        |
 
 These semantics are guaranteed on all Hew targets (x86_64, aarch64, wasm32). The underlying LLVM lowering uses `llvm.fptosi.sat` / `llvm.fptoui.sat`, which produce defined behaviour for all input values. Plain `fptosi` / `fptoui` (which produce LLVM poison for out-of-range inputs) are never emitted.
 
-These are compiler intrinsics on all numeric types: `.to_i8()`, `.to_i16()`, `.to_i32()`, `.to_i64()`, `.to_u8()`, `.to_u16()`, `.to_u32()`, `.to_u64()`, `.to_f32()`, `.to_f64()`, `.to_isize()`, `.to_usize()`.
+All numeric types also support exact fallible conversion methods:
 
-`.to_isize()` returns `isize` (platform-sized signed). `.to_usize()` returns `usize` (platform-sized unsigned).
+```hew
+let n: i64 = 2147483647;
+let ok: Option<i32> = n.try_to_i32();        // Some(2147483647)
+
+let past: i64 = 2147483648;
+let too_large: Option<i32> = past.try_to_i32(); // None
+
+let precise: i32 = 16777216;
+let as_float: Option<f32> = precise.try_to_f32(); // Some(16777216.0)
+
+let inexact: i32 = 16777217;
+let not_exact: Option<f32> = inexact.try_to_f32(); // None
+```
+
+The methods `.try_to_i8()`, `.try_to_i16()`, `.try_to_i32()`, `.try_to_i64()`, `.try_to_u8()`, `.try_to_u16()`, `.try_to_u32()`, `.try_to_u64()`, `.try_to_isize()`, `.try_to_usize()`, `.try_to_f32()`, and `.try_to_f64()` return `Option<W>`. The result is `Some(w)` iff the source value round-trips through target type `W` exactly. The result is `None` for out-of-range values, negative values converted to unsigned targets, `NaN`, `+Inf`, `-Inf`, nonzero fractional parts in float-to-integer conversions, and inexact integer-to-float or float-to-float conversions.
 
 ### 12.2 Operator Precedence (highest to lowest)
 

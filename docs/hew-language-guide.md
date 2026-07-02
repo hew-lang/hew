@@ -111,7 +111,34 @@ fn main() {
 }
 ```
 
-Use `as` for all numeric conversions — widening, narrowing, int↔float, signed↔unsigned. Float→int truncates toward zero. (Avoid casting negative values to unsigned types.)
+Use `as` for all defined numeric conversions: widening, narrowing, int↔float, and signed↔unsigned. Integer narrowing keeps the target width's low bits. Integer→float and float→float casts round to the target float type. Float→int casts truncate toward zero for in-range finite values and use defined saturation for every edge case:
+
+| Source value | Signed result | Unsigned result |
+| --- | --- | --- |
+| In-range finite | Truncated toward 0 | Truncated toward 0 |
+| `+Inf` or greater than the target maximum | Target maximum | Target maximum |
+| `-Inf` or less than the target minimum | Target minimum | `0` |
+| `NaN` | `0` | `0` |
+
+Use `.try_to_X()` when a conversion must fail instead of losing information. It returns `Option<X>` and produces `Some` only when the value round-trips through the target type exactly.
+
+```hew
+fn main() {
+    let bytes: i64 = 255;
+    let byte: Option<u8> = bytes.try_to_u8();       // Some(255)
+
+    let negative: i32 = -1;
+    let unsigned: Option<u32> = negative.try_to_u32(); // None
+
+    let exact: i32 = 16777216;
+    let exact_float: Option<f32> = exact.try_to_f32(); // Some(16777216.0)
+
+    let inexact: i32 = 16777217;
+    let rounded_float: Option<f32> = inexact.try_to_f32(); // None
+}
+```
+
+The available methods are `.try_to_i8()`, `.try_to_i16()`, `.try_to_i32()`, `.try_to_i64()`, `.try_to_u8()`, `.try_to_u16()`, `.try_to_u32()`, `.try_to_u64()`, `.try_to_isize()`, `.try_to_usize()`, `.try_to_f32()`, and `.try_to_f64()`. They return `None` for out-of-range values, negative values converted to unsigned targets, `NaN`, infinities, nonzero fractional parts in float→integer conversions, and inexact integer→float or float→float conversions.
 
 `char as <integer>` extracts the Unicode scalar value — the codepoint. `'A' as i64` is `65`, and `s[i] as i64` reads the codepoint of the char at codepoint offset `i` (the read primitive for text/byte parsers). Wider integer targets zero-extend; narrower ones truncate to the low byte (`'€' as u8` is `172`), following the same width rules as above. The reverse — `<integer> as char` — is not an `as` cast (not every integer is a valid scalar value); build a one-character string with `string.from_char(code)` instead.
 

@@ -5367,6 +5367,7 @@ fn collect_unknown_self_fields_in_expr(
         }
         HirExprKind::NumericCast { value, .. }
         | HirExprKind::SaturatingWidthCast { value, .. }
+        | HirExprKind::TryWidthCast { value, .. }
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_unknown_self_fields_in_expr(value, state_fields, seen, unknown);
         }
@@ -5839,6 +5840,7 @@ fn collect_binding_defs_in_expr<'f>(
         }
         HirExprKind::NumericCast { value, .. }
         | HirExprKind::SaturatingWidthCast { value, .. }
+        | HirExprKind::TryWidthCast { value, .. }
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_binding_defs_in_expr(value, defs, let_ids);
         }
@@ -6565,6 +6567,7 @@ fn scan_expr_for_consume(expr: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) -> bo
         HirExprKind::StreamRecvAwait { stream, .. } => scan_expr_for_consume(stream, b_p, pc),
         HirExprKind::NumericCast { value, .. }
         | HirExprKind::SaturatingWidthCast { value, .. }
+        | HirExprKind::TryWidthCast { value, .. }
         | HirExprKind::CoerceToDynTrait { value, .. } => scan_expr_for_consume(value, b_p, pc),
         HirExprKind::TupleLiteral { elements } => {
             elements.iter().any(|e| scan_expr_for_consume(e, b_p, pc))
@@ -6846,6 +6849,7 @@ fn collect_borrow_arg_sites_in_expr(
         HirExprKind::StreamRecvAwait { stream, .. } => go!(stream),
         HirExprKind::NumericCast { value, .. }
         | HirExprKind::SaturatingWidthCast { value, .. }
+        | HirExprKind::TryWidthCast { value, .. }
         | HirExprKind::CoerceToDynTrait { value, .. } => go!(value),
         HirExprKind::TupleLiteral { elements } => {
             for elem in elements {
@@ -7381,6 +7385,7 @@ fn collect_return_values_in_expr<'f>(expr: &'f HirExpr, out: &mut Vec<&'f HirExp
         }
         HirExprKind::NumericCast { value, .. }
         | HirExprKind::SaturatingWidthCast { value, .. }
+        | HirExprKind::TryWidthCast { value, .. }
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_return_values_in_expr(value, out);
         }
@@ -11779,7 +11784,8 @@ impl Builder {
                 self.collect_vec_owned_element_keys_from_expr(operand);
             }
             HirExprKind::NumericCast { value, .. }
-            | HirExprKind::SaturatingWidthCast { value, .. } => {
+            | HirExprKind::SaturatingWidthCast { value, .. }
+            | HirExprKind::TryWidthCast { value, .. } => {
                 self.collect_vec_owned_element_keys_from_expr(value);
             }
             HirExprKind::TupleLiteral { elements } => {
@@ -13332,6 +13338,39 @@ impl Builder {
                     src,
                     from_ty,
                     to_ty,
+                });
+                Some(dest)
+            }
+            HirExprKind::TryWidthCast {
+                value,
+                from_ty,
+                to_ty,
+                kind,
+            } => {
+                let src = self.lower_value(value)?;
+                let from_ty = self.subst_ty(from_ty);
+                let to_ty = self.subst_ty(to_ty);
+                if !from_ty.is_numeric() || !to_ty.is_numeric() {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnsupportedNode {
+                            reason: format!(
+                                "try-width cast from {} to {} requires numeric types",
+                                from_ty.user_facing(),
+                                to_ty.user_facing()
+                            ),
+                        },
+                        note: "HIR TryWidthCast carried a non-numeric type; the HIR verifier should have rejected it"
+                            .to_string(),
+                    });
+                    return None;
+                }
+                let dest = self.alloc_local(self.subst_ty(&expr.ty));
+                self.instructions.push(Instr::TryWidthCast {
+                    dest,
+                    src,
+                    from_ty,
+                    to_ty,
+                    kind: *kind,
                 });
                 Some(dest)
             }
@@ -32507,7 +32546,9 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
             ..
         } => vec![*dest, *operand, *overflow_flag],
         Instr::Move { dest, src } => vec![*dest, *src],
-        Instr::NumericCast { dest, src, .. } | Instr::SaturatingWidthCast { dest, src, .. } => {
+        Instr::NumericCast { dest, src, .. }
+        | Instr::SaturatingWidthCast { dest, src, .. }
+        | Instr::TryWidthCast { dest, src, .. } => {
             vec![*dest, *src]
         }
         Instr::Drop { place, .. } => vec![*place],
@@ -32930,7 +32971,9 @@ pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
         | Instr::IntNegChecked { operand, .. } => vec![*operand],
         // The src is read into the dest; the dest is a write.
         Instr::Move { src, .. } => vec![*src],
-        Instr::NumericCast { src, .. } | Instr::SaturatingWidthCast { src, .. } => vec![*src],
+        Instr::NumericCast { src, .. }
+        | Instr::SaturatingWidthCast { src, .. }
+        | Instr::TryWidthCast { src, .. } => vec![*src],
         // A Drop reads the place it releases.
         Instr::Drop { place, .. } => vec![*place],
         // Witness size/align read no operand (the type is static metadata,
@@ -33308,6 +33351,7 @@ fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
         | Instr::WireCodec { .. }
         | Instr::NumericCast { .. }
         | Instr::SaturatingWidthCast { .. }
+        | Instr::TryWidthCast { .. }
         | Instr::AutoLockAcquire { .. }
         | Instr::AutoLockRelease { .. }
         | Instr::WitnessSizeOf { .. }
@@ -33550,6 +33594,7 @@ fn projection_alias_dest(instr: &Instr) -> Option<Place> {
         | Instr::Move { .. }
         | Instr::NumericCast { .. }
         | Instr::SaturatingWidthCast { .. }
+        | Instr::TryWidthCast { .. }
         | Instr::CallRuntimeAbi(_)
         | Instr::AutoLockAcquire { .. }
         | Instr::AutoLockRelease { .. }

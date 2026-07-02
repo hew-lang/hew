@@ -1,5 +1,5 @@
 use hew_mir::{Instr, IrPipeline};
-use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
+use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy, TryConversionKind};
 
 fn pipeline(source: &str) -> IrPipeline {
     let parsed = hew_parser::parse(source);
@@ -23,6 +23,48 @@ fn pipeline(source: &str) -> IrPipeline {
         output.diagnostics
     );
     hew_mir::lower_hir_module(&output.module)
+}
+
+#[test]
+fn lowers_try_to_numeric_method_to_try_width_cast_instr() {
+    let p = pipeline(
+        r"
+        fn main() -> Option<i32> {
+            let x: i64 = 7;
+            x.try_to_i32()
+        }
+        ",
+    );
+    assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+
+    let main = p
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "main")
+        .expect("main function lowered");
+    let casts: Vec<_> = main
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instr| match instr {
+            Instr::TryWidthCast {
+                from_ty,
+                to_ty,
+                kind,
+                ..
+            } => Some((from_ty.clone(), to_ty.clone(), *kind)),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(
+        casts,
+        vec![(
+            ResolvedTy::I64,
+            ResolvedTy::I32,
+            TryConversionKind::IntToInt
+        )]
+    );
 }
 
 #[test]

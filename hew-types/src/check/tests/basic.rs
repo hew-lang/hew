@@ -788,19 +788,17 @@ fn for_range_step_by_negative_rejected() {
     );
 }
 
-/// Regression for hew-lang/hew#1762: `for i in 0..8 { let x = i.to_f64() }`
-/// must resolve before method lookup.  Both bounds are integer literals so the
-/// range element type starts as a fresh inference variable; method dispatch
-/// must see a concrete i64, not an unresolved `?T<n>`.
-///
-/// Before the fix this produced: `no method 'to_f64' on '?T<n>'`.
+/// Range loop variables resolve before receiver-only numeric methods. Both bounds are
+/// integer literals so the range element type starts as a fresh inference
+/// variable; method dispatch must see a concrete i64.
 #[test]
 fn for_range_literal_bounds_loop_var_resolves_before_method_lookup() {
     let source = r"
         fn main() -> f64 {
             var acc: f64 = 0.0;
             for i in 0..8 {
-                acc = acc + i.to_f64();
+                let _: Option<f64> = i.try_to_f64();
+                acc = acc + 1.0;
             }
             acc
         }
@@ -813,11 +811,9 @@ fn for_range_literal_bounds_loop_var_resolves_before_method_lookup() {
     );
 }
 
-/// Regression for hew-lang/hew#1762, const-bound variant:
-/// `const N: i64 = 8; for i in 0..N { let x = i.to_f64() }`.
-/// A const-integer bound is coercible (it is in `const_values`), so the range
-/// element type is also a fresh inference variable.  The loop variable must be
-/// resolved to i64 before method dispatch, not left as `?T<n>`.
+/// Const-bound range loop variables resolve before receiver-only numeric methods. A
+/// const-integer bound is coercible, so the range element type is also a fresh
+/// inference variable. The loop variable must resolve to i64 at method dispatch.
 #[test]
 fn for_range_const_bound_loop_var_resolves_before_method_lookup() {
     let source = r"
@@ -825,7 +821,8 @@ fn for_range_const_bound_loop_var_resolves_before_method_lookup() {
         fn main() -> f64 {
             var acc: f64 = 0.0;
             for i in 0..N {
-                acc = acc + i.to_f64();
+                let _: Option<f64> = i.try_to_f64();
+                acc = acc + 1.0;
             }
             acc
         }
@@ -845,15 +842,16 @@ fn for_range_const_bound_loop_var_resolves_before_method_lookup() {
 /// codegen boundary.
 #[test]
 fn for_range_literal_bounds_method_only_body_resolves_to_i64() {
-    // Both `.to_f64()` and `.to_f32()` are called; no function-call use-site
-    // to narrow the width.  The loop variable must default to i64.
+    // Both float widths are targeted through receiver-only methods; no
+    // function-call use-site narrows the width. The loop variable must default
+    // to i64.
     let source = r"
         fn main() -> f64 {
             var sum: f64 = 0.0;
             for i in 0..4 {
-                let f = i.to_f64();
-                let g = i.to_f32();
-                sum = sum + f + g.to_f64();
+                let _: Option<f64> = i.try_to_f64();
+                let _: Option<f32> = i.try_to_f32();
+                sum = sum + 1.0;
             }
             sum
         }

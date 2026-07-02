@@ -166,6 +166,13 @@ pub struct TypeCheckOutput {
     /// or `HirExprKind::SaturatingWidthCast` (saturating) without re-matching
     /// method-name strings downstream.
     pub width_cast_lowerings: HashMap<SpanKey, WidthCastLowering>,
+    /// Checker-owned exact numeric conversion lowering decisions keyed by
+    /// method-call span.
+    ///
+    /// Populated for accepted `.try_to_<W>()` calls. HIR consumes this to emit
+    /// a dedicated fallible cast node without re-matching method names or
+    /// reclassifying numeric source/target pairs.
+    pub try_width_cast_lowerings: HashMap<SpanKey, TryWidthCastLowering>,
     /// Checker-owned actor mailbox dispatch decisions keyed by the method call span.
     ///
     /// Populated only when a method call resolves to an actor `receive fn`.
@@ -1073,6 +1080,7 @@ impl Default for TypeCheckOutput {
             wire_layouts: HashMap::new(),
             numeric_method_lowerings: HashMap::new(),
             width_cast_lowerings: HashMap::new(),
+            try_width_cast_lowerings: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: Vec::new(),
@@ -1738,6 +1746,30 @@ pub struct WidthCastLowering {
     pub to_ty: Ty,
     /// Whether this is a wrapping or saturating conversion.
     pub kind: WidthCastKind,
+}
+
+/// Discriminator for `.try_to_<W>()` exact numeric conversions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TryConversionKind {
+    IntToInt,
+    FloatToInt,
+    IntToFloat,
+    FloatToFloat,
+}
+
+/// Checker-owned lowering record for `.try_to_<W>()`.
+///
+/// Keyed by the method-call span in [`TypeCheckOutput::try_width_cast_lowerings`].
+/// HIR consumes this to emit `HirExprKind::TryWidthCast` instead of falling
+/// through to `MethodCallNoRewrite`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TryWidthCastLowering {
+    /// The source numeric type at the call site.
+    pub from_ty: Ty,
+    /// The target numeric type parsed from the method-name suffix.
+    pub to_ty: Ty,
+    /// Numeric source/target class selected by the checker.
+    pub kind: TryConversionKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2407,6 +2439,7 @@ pub struct Checker {
     pub(super) resolved_calls: HashMap<SpanKey, crate::check::dispatch::ResolvedCall>,
     pub(super) numeric_method_lowerings: HashMap<SpanKey, NumericMethodLowering>,
     pub(super) width_cast_lowerings: HashMap<SpanKey, WidthCastLowering>,
+    pub(super) try_width_cast_lowerings: HashMap<SpanKey, TryWidthCastLowering>,
     pub(super) actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
     /// Machine method dispatch side-table. Mirrors [`TypeCheckOutput::machine_method_dispatch`].
     pub(super) machine_method_dispatch: HashMap<SpanKey, MachineMethodKind>,
@@ -3197,6 +3230,7 @@ impl Checker {
             resolved_calls: HashMap::new(),
             numeric_method_lowerings: HashMap::new(),
             width_cast_lowerings: HashMap::new(),
+            try_width_cast_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             conn_await_reads: HashMap::new(),

@@ -748,6 +748,20 @@ fn render_instr(instr: &Instr) -> String {
             from_ty.user_facing(),
             to_ty.user_facing()
         ),
+        Instr::TryWidthCast {
+            dest,
+            src,
+            from_ty,
+            to_ty,
+            kind,
+        } => format!(
+            "{} = try_cast {:?} {} {} -> {}",
+            render_place(dest),
+            kind,
+            render_place(src),
+            from_ty.user_facing(),
+            to_ty.user_facing()
+        ),
 
         // Runtime ABI calls
         Instr::CallRuntimeAbi(call) => {

@@ -2873,15 +2873,10 @@ fn primitive_impl_dispatch_resolves_vec_receiver() {
 #[test]
 fn primitive_impl_dispatch_preserves_builtin_numeric_conversion() {
     // R5 mitigation: the side table is consulted only when the compiler
-    // builtin returns "no match".  Numeric width-conversion methods like
-    // `.to_i64()` flow through their own dispatch arm (methods.rs around
-    // the `is_numeric() && starts_with("to_")` guard).  With a user
-    // `Display for i32` in scope, calling the builtin must still resolve
-    // to `Ty::I64`, not be hijacked into the user trait's `fmt` method.
-    //
-    // Uses `i32.to_i64()` (infallible widening) rather than the previously
-    // tested `i64.to_i32()` (i64→i32 narrowing), which now requires
-    // `.try_to_i32()` under the B-1c strict-width rules.
+    // builtin returns "no match". Numeric exact-conversion methods flow
+    // through their checker-owned dispatch arm. With a user `Display for i32`
+    // in scope, calling the builtin must still resolve to `Option<i64>`, not
+    // be hijacked into the user trait's `fmt` method.
     let source = r#"
         pub trait Display { fn fmt(val: Self) -> string; }
         impl Display for i32 {
@@ -2889,7 +2884,7 @@ fn primitive_impl_dispatch_preserves_builtin_numeric_conversion() {
         }
         fn main() {
             let n: i32 = 7;
-            let _: i64 = n.to_i64();
+            let _: Option<i64> = n.try_to_i64();
         }
     "#;
     let parsed = hew_parser::parse(source);
@@ -2902,7 +2897,7 @@ fn primitive_impl_dispatch_preserves_builtin_numeric_conversion() {
     let output = checker.check_program(&parsed.program);
     assert!(
         output.errors.is_empty(),
-        "builtin i32.to_i64 regressed under Stage A2 dispatch: {:?}",
+        "builtin i32.try_to_i64 regressed under Stage A2 dispatch: {:?}",
         output.errors
     );
 }

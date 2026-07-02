@@ -106,8 +106,8 @@ use inkwell::types::{
     BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, FunctionType, IntType, StructType,
 };
 use inkwell::values::{
-    BasicMetadataValueEnum, BasicValueEnum, CallSiteValue, FunctionValue, GlobalValue, IntValue,
-    PointerValue, StructValue,
+    BasicMetadataValueEnum, BasicValueEnum, CallSiteValue, FloatValue, FunctionValue, GlobalValue,
+    IntValue, PointerValue, StructValue,
 };
 use inkwell::AddressSpace;
 use inkwell::{FloatPredicate, IntPredicate};
@@ -14747,6 +14747,566 @@ fn lower_numeric_cast(
     Ok(())
 }
 
+struct OptionSlot<'ctx> {
+    tag_ptr: PointerValue<'ctx>,
+    tag_int: IntType<'ctx>,
+    payload_ptr: PointerValue<'ctx>,
+    payload_ty: BasicTypeEnum<'ctx>,
+}
+
+fn option_slot_for_payload<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    dest: Place,
+    expected_payload: BasicTypeEnum<'ctx>,
+    context: &'static str,
+) -> CodegenResult<OptionSlot<'ctx>> {
+    let Place::Local(dest_local) = dest else {
+        return Err(CodegenError::FailClosed(format!(
+            "{context} destination must be a local enum slot"
+        )));
+    };
+    let (tag_ptr, tag_ty) = place_pointer(fn_ctx, Place::EnumTag(dest_local))?;
+    let tag_int = expect_int_type(tag_ty, "try-width cast option tag")?;
+    let some_payload = Place::EnumVariant {
+        local: dest_local,
+        variant_idx: 0,
+        field_idx: 0,
+    };
+    let (payload_ptr, payload_ty) = place_pointer(fn_ctx, some_payload)?;
+    if payload_ty != expected_payload {
+        return Err(CodegenError::FailClosed(format!(
+            "{context} Some payload storage {payload_ty:?} disagrees with target storage {expected_payload:?}"
+        )));
+    }
+    Ok(OptionSlot {
+        tag_ptr,
+        tag_int,
+        payload_ptr,
+        payload_ty,
+    })
+}
+
+fn write_try_width_option<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    slot: &OptionSlot<'ctx>,
+    invalid: IntValue<'ctx>,
+    payload: BasicValueEnum<'ctx>,
+    context: &'static str,
+) -> CodegenResult<()> {
+    let some_tag = slot.tag_int.const_zero();
+    let none_tag = slot.tag_int.const_int(1, false);
+    let tag_v = fn_ctx
+        .builder
+        .build_select(invalid, none_tag, some_tag, "try_width_tag")
+        .llvm_ctx("try-width option tag select")?;
+    fn_ctx
+        .builder
+        .build_store(slot.tag_ptr, tag_v)
+        .llvm_ctx("try-width option tag store")?;
+    fn_ctx
+        .builder
+        .build_store(slot.payload_ptr, payload)
+        .llvm_ctx(context)?;
+    Ok(())
+}
+
+fn const_false<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> IntValue<'ctx> {
+    fn_ctx.ctx.bool_type().const_zero()
+}
+
+fn or_i1<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    lhs: IntValue<'ctx>,
+    rhs: IntValue<'ctx>,
+    name: &'static str,
+) -> CodegenResult<IntValue<'ctx>> {
+    fn_ctx
+        .builder
+        .build_or(lhs, rhs, name)
+        .llvm_ctx("try-width invalid-or")
+}
+
+fn int_to_int_payload_and_invalid<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    src_v: IntValue<'ctx>,
+    src_int: IntType<'ctx>,
+    dest_int: IntType<'ctx>,
+    from_ty: &ResolvedTy,
+    to_ty: &ResolvedTy,
+) -> CodegenResult<(IntValue<'ctx>, IntValue<'ctx>)> {
+    let src_bits = src_int.get_bit_width();
+    let dest_bits = dest_int.get_bit_width();
+    let from_signed = from_ty.is_signed_integer();
+    let to_signed = to_ty.is_signed_integer();
+
+    let payload = if src_bits == dest_bits {
+        src_v
+    } else if src_bits > dest_bits {
+        fn_ctx
+            .builder
+            .build_int_truncate(src_v, dest_int, "try_width_int_trunc")
+            .llvm_ctx("try-width int truncate")?
+    } else if from_signed {
+        fn_ctx
+            .builder
+            .build_int_s_extend(src_v, dest_int, "try_width_int_sext")
+            .llvm_ctx("try-width int sign extend")?
+    } else {
+        fn_ctx
+            .builder
+            .build_int_z_extend(src_v, dest_int, "try_width_int_zext")
+            .llvm_ctx("try-width int zero extend")?
+    };
+
+    let invalid = match (from_signed, to_signed) {
+        (true, true) => {
+            if dest_bits >= src_bits {
+                const_false(fn_ctx)
+            } else {
+                let min = src_int.const_int((-1_i64 << (dest_bits - 1)) as u64, true);
+                let max = src_int.const_int(((1_i64 << (dest_bits - 1)) - 1) as u64, true);
+                let below = fn_ctx
+                    .builder
+                    .build_int_compare(IntPredicate::SLT, src_v, min, "try_width_below_min")
+                    .llvm_ctx("try-width signed below-min compare")?;
+                let above = fn_ctx
+                    .builder
+                    .build_int_compare(IntPredicate::SGT, src_v, max, "try_width_above_max")
+                    .llvm_ctx("try-width signed above-max compare")?;
+                or_i1(fn_ctx, below, above, "try_width_signed_out_of_range")?
+            }
+        }
+        (true, false) => {
+            let zero = src_int.const_zero();
+            let below_zero = fn_ctx
+                .builder
+                .build_int_compare(IntPredicate::SLT, src_v, zero, "try_width_below_zero")
+                .llvm_ctx("try-width signed-to-unsigned below-zero compare")?;
+            if dest_bits >= src_bits {
+                below_zero
+            } else {
+                let max = src_int.const_int((1_u64 << dest_bits) - 1, false);
+                let above = fn_ctx
+                    .builder
+                    .build_int_compare(IntPredicate::SGT, src_v, max, "try_width_above_umax")
+                    .llvm_ctx("try-width signed-to-unsigned above-max compare")?;
+                or_i1(
+                    fn_ctx,
+                    below_zero,
+                    above,
+                    "try_width_signed_unsigned_invalid",
+                )?
+            }
+        }
+        (false, false) => {
+            if dest_bits >= src_bits {
+                const_false(fn_ctx)
+            } else {
+                let max = src_int.const_int((1_u64 << dest_bits) - 1, false);
+                fn_ctx
+                    .builder
+                    .build_int_compare(IntPredicate::UGT, src_v, max, "try_width_above_umax")
+                    .llvm_ctx("try-width unsigned above-max compare")?
+            }
+        }
+        (false, true) => {
+            if dest_bits > src_bits {
+                const_false(fn_ctx)
+            } else {
+                let max = src_int.const_int((1_u64 << (dest_bits - 1)) - 1, false);
+                fn_ctx
+                    .builder
+                    .build_int_compare(IntPredicate::UGT, src_v, max, "try_width_above_smax")
+                    .llvm_ctx("try-width unsigned-to-signed above-max compare")?
+            }
+        }
+    };
+
+    Ok((payload, invalid))
+}
+
+fn float_trunc_value<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    float_ty: FloatType<'ctx>,
+    src_v: FloatValue<'ctx>,
+) -> CodegenResult<FloatValue<'ctx>> {
+    let intrinsic = Intrinsic::find("llvm.trunc")
+        .ok_or_else(|| llvm_err!("float trunc intrinsic `llvm.trunc` not in LLVM build"))?;
+    let trunc_fn = intrinsic
+        .get_declaration(fn_ctx.llvm_mod, &[float_ty.into()])
+        .ok_or_else(|| llvm_err!("float trunc intrinsic declaration failed for {float_ty:?}"))?;
+    let call = fn_ctx
+        .builder
+        .build_call(trunc_fn, &[src_v.into()], "try_width_float_trunc")
+        .llvm_ctx("try-width float trunc intrinsic call")?;
+    Ok(call
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| llvm_err!("float trunc intrinsic returned void"))?
+        .into_float_value())
+}
+
+fn float_to_int_sat_value<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    src_float: FloatType<'ctx>,
+    dest_int: IntType<'ctx>,
+    src_v: FloatValue<'ctx>,
+    to_ty: &ResolvedTy,
+) -> CodegenResult<IntValue<'ctx>> {
+    let sat_name = match cast_int_signedness(to_ty)? {
+        IntSignedness::Signed => "llvm.fptosi.sat",
+        IntSignedness::Unsigned => "llvm.fptoui.sat",
+    };
+    let sat_intrinsic = Intrinsic::find(sat_name)
+        .ok_or_else(|| llvm_err!("float→int sat intrinsic `{sat_name}` not in LLVM build"))?;
+    let sat_fn = sat_intrinsic
+        .get_declaration(fn_ctx.llvm_mod, &[dest_int.into(), src_float.into()])
+        .ok_or_else(|| {
+            llvm_err!(
+                "float→int sat intrinsic `{sat_name}` declaration failed for dest={dest_int:?} src={src_float:?}"
+            )
+        })?;
+    let call = fn_ctx
+        .builder
+        .build_call(sat_fn, &[src_v.into()], "try_width_float_to_int_sat")
+        .llvm_ctx("try-width float to int saturating cast")?;
+    Ok(call
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| llvm_err!("float→int sat intrinsic `{sat_name}` returned void"))?
+        .into_int_value())
+}
+
+fn float_to_int_payload_and_invalid<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    src_v: FloatValue<'ctx>,
+    src_float: FloatType<'ctx>,
+    dest_int: IntType<'ctx>,
+    to_ty: &ResolvedTy,
+) -> CodegenResult<(IntValue<'ctx>, IntValue<'ctx>)> {
+    let nan = fn_ctx
+        .builder
+        .build_float_compare(FloatPredicate::UNO, src_v, src_v, "try_width_float_nan")
+        .llvm_ctx("try-width float NaN compare")?;
+    let dest_bits = dest_int.get_bit_width();
+    let (lower, upper_exclusive) = if to_ty.is_signed_integer() {
+        (
+            -2.0_f64.powi((dest_bits - 1) as i32),
+            2.0_f64.powi((dest_bits - 1) as i32),
+        )
+    } else {
+        (0.0, 2.0_f64.powi(dest_bits as i32))
+    };
+    let lower_const = src_float.const_float(lower);
+    let upper_const = src_float.const_float(upper_exclusive);
+    let below = fn_ctx
+        .builder
+        .build_float_compare(
+            FloatPredicate::OLT,
+            src_v,
+            lower_const,
+            "try_width_float_below",
+        )
+        .llvm_ctx("try-width float lower-bound compare")?;
+    let above = fn_ctx
+        .builder
+        .build_float_compare(
+            FloatPredicate::OGE,
+            src_v,
+            upper_const,
+            "try_width_float_above",
+        )
+        .llvm_ctx("try-width float upper-bound compare")?;
+    let trunc_v = float_trunc_value(fn_ctx, src_float, src_v)?;
+    let fractional = fn_ctx
+        .builder
+        .build_float_compare(
+            FloatPredicate::ONE,
+            trunc_v,
+            src_v,
+            "try_width_float_fractional",
+        )
+        .llvm_ctx("try-width float fractional compare")?;
+    let range_invalid = or_i1(fn_ctx, below, above, "try_width_float_out_of_range")?;
+    let finite_invalid = or_i1(
+        fn_ctx,
+        range_invalid,
+        fractional,
+        "try_width_float_finite_invalid",
+    )?;
+    let invalid = or_i1(fn_ctx, nan, finite_invalid, "try_width_float_invalid")?;
+    let payload = float_to_int_sat_value(fn_ctx, src_float, dest_int, src_v, to_ty)?;
+    Ok((payload, invalid))
+}
+
+fn int_to_float_payload_and_invalid<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    src_v: IntValue<'ctx>,
+    src_int: IntType<'ctx>,
+    dest_float: FloatType<'ctx>,
+    from_ty: &ResolvedTy,
+) -> CodegenResult<(FloatValue<'ctx>, IntValue<'ctx>)> {
+    let payload = match cast_int_signedness(from_ty)? {
+        IntSignedness::Signed => fn_ctx
+            .builder
+            .build_signed_int_to_float(src_v, dest_float, "try_width_sint_to_float")
+            .llvm_ctx("try-width signed int to float")?,
+        IntSignedness::Unsigned => fn_ctx
+            .builder
+            .build_unsigned_int_to_float(src_v, dest_float, "try_width_uint_to_float")
+            .llvm_ctx("try-width unsigned int to float")?,
+    };
+
+    // sitofp/uitofp rounds to the nearest representable float. At the top of
+    // the source integer type's range this can round the payload UP past the
+    // type's own MAX (or below MIN); the saturating fptosi.sat/fptoui.sat
+    // used below to prove the round-trip then clamps that out-of-range float
+    // back down to MAX/MIN, which spuriously equals `src_v` even though
+    // `payload` is not the exact source value. Guard against this directly
+    // with the same exact-power-of-two range check
+    // `float_to_int_payload_and_invalid` uses — the bounds are powers of two,
+    // always exactly representable in any IEEE float format, so this
+    // comparison cannot itself be inexact — instead of trusting the
+    // saturating back-conversion alone.
+    let src_bits = src_int.get_bit_width();
+    let (lower, upper_exclusive) = if from_ty.is_signed_integer() {
+        (
+            -2.0_f64.powi((src_bits - 1) as i32),
+            2.0_f64.powi((src_bits - 1) as i32),
+        )
+    } else {
+        (0.0, 2.0_f64.powi(src_bits as i32))
+    };
+    let lower_const = dest_float.const_float(lower);
+    let upper_const = dest_float.const_float(upper_exclusive);
+    let below = fn_ctx
+        .builder
+        .build_float_compare(
+            FloatPredicate::OLT,
+            payload,
+            lower_const,
+            "try_width_int_float_below",
+        )
+        .llvm_ctx("try-width int-float lower-bound compare")?;
+    let above = fn_ctx
+        .builder
+        .build_float_compare(
+            FloatPredicate::OGE,
+            payload,
+            upper_const,
+            "try_width_int_float_above",
+        )
+        .llvm_ctx("try-width int-float upper-bound compare")?;
+    let out_of_range = or_i1(fn_ctx, below, above, "try_width_int_float_out_of_range")?;
+
+    let roundtrip = float_to_int_sat_value(fn_ctx, dest_float, src_int, payload, from_ty)?;
+    let inexact = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::NE,
+            roundtrip,
+            src_v,
+            "try_width_int_float_inexact",
+        )
+        .llvm_ctx("try-width int-float roundtrip compare")?;
+    let invalid = or_i1(fn_ctx, out_of_range, inexact, "try_width_int_float_invalid")?;
+    Ok((payload, invalid))
+}
+
+fn float_nan_or_inf<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    src_v: FloatValue<'ctx>,
+    src_float: FloatType<'ctx>,
+) -> CodegenResult<IntValue<'ctx>> {
+    let nan = fn_ctx
+        .builder
+        .build_float_compare(FloatPredicate::UNO, src_v, src_v, "try_width_ff_nan")
+        .llvm_ctx("try-width float NaN compare")?;
+    let pos_inf = fn_ctx
+        .builder
+        .build_float_compare(
+            FloatPredicate::OEQ,
+            src_v,
+            src_float.const_float(f64::INFINITY),
+            "try_width_ff_pos_inf",
+        )
+        .llvm_ctx("try-width float positive infinity compare")?;
+    let neg_inf = fn_ctx
+        .builder
+        .build_float_compare(
+            FloatPredicate::OEQ,
+            src_v,
+            src_float.const_float(f64::NEG_INFINITY),
+            "try_width_ff_neg_inf",
+        )
+        .llvm_ctx("try-width float negative infinity compare")?;
+    let inf = or_i1(fn_ctx, pos_inf, neg_inf, "try_width_ff_inf")?;
+    or_i1(fn_ctx, nan, inf, "try_width_ff_non_finite")
+}
+
+fn float_to_float_payload_and_invalid<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    src_v: FloatValue<'ctx>,
+    src_float: FloatType<'ctx>,
+    dest_float: FloatType<'ctx>,
+) -> CodegenResult<(FloatValue<'ctx>, IntValue<'ctx>)> {
+    let src_bits = src_float.get_bit_width();
+    let dest_bits = dest_float.get_bit_width();
+    let non_finite = float_nan_or_inf(fn_ctx, src_v, src_float)?;
+    if src_bits == dest_bits {
+        return Ok((src_v, non_finite));
+    }
+    if src_bits < dest_bits {
+        let payload = fn_ctx
+            .builder
+            .build_float_ext(src_v, dest_float, "try_width_float_ext")
+            .llvm_ctx("try-width float extend")?;
+        return Ok((payload, non_finite));
+    }
+    let payload = fn_ctx
+        .builder
+        .build_float_trunc(src_v, dest_float, "try_width_float_trunc")
+        .llvm_ctx("try-width float truncate")?;
+    let roundtrip = fn_ctx
+        .builder
+        .build_float_ext(payload, src_float, "try_width_float_roundtrip")
+        .llvm_ctx("try-width float roundtrip extend")?;
+    let inexact = fn_ctx
+        .builder
+        .build_float_compare(
+            FloatPredicate::ONE,
+            roundtrip,
+            src_v,
+            "try_width_float_inexact",
+        )
+        .llvm_ctx("try-width float roundtrip compare")?;
+    let invalid = or_i1(fn_ctx, non_finite, inexact, "try_width_float_float_invalid")?;
+    Ok((payload, invalid))
+}
+
+fn lower_try_width_cast(
+    fn_ctx: &FnCtx<'_, '_>,
+    dest: Place,
+    src: Place,
+    from_ty: &ResolvedTy,
+    to_ty: &ResolvedTy,
+    kind: hew_types::TryConversionKind,
+) -> CodegenResult<()> {
+    let (src_ptr, src_storage) = place_pointer(fn_ctx, src)?;
+    let expected_src = primitive_to_llvm(fn_ctx.ctx, from_ty)?;
+    let expected_dest = primitive_to_llvm(fn_ctx.ctx, to_ty)?;
+    if src_storage != expected_src {
+        return Err(CodegenError::FailClosed(format!(
+            "TryWidthCast source storage {src_storage:?} disagrees with from_ty {}",
+            from_ty.user_facing()
+        )));
+    }
+
+    let slot = option_slot_for_payload(fn_ctx, dest, expected_dest, "TryWidthCast")?;
+    match kind {
+        hew_types::TryConversionKind::IntToInt => {
+            if !from_ty.is_integer() || !to_ty.is_integer() {
+                return Err(CodegenError::FailClosed(format!(
+                    "TryWidthCast IntToInt requires integer types; got {} -> {}",
+                    from_ty.user_facing(),
+                    to_ty.user_facing()
+                )));
+            }
+            let src_int = expect_int_type(src_storage, "try-width int source")?;
+            let dest_int = expect_int_type(slot.payload_ty, "try-width int payload")?;
+            let src_v = fn_ctx
+                .builder
+                .build_load(src_int, src_ptr, "try_width_int_src")
+                .llvm_ctx("try-width int source load")?
+                .into_int_value();
+            let (payload, invalid) =
+                int_to_int_payload_and_invalid(fn_ctx, src_v, src_int, dest_int, from_ty, to_ty)?;
+            write_try_width_option(
+                fn_ctx,
+                &slot,
+                invalid,
+                payload.into(),
+                "try-width int payload store",
+            )
+        }
+        hew_types::TryConversionKind::FloatToInt => {
+            if !from_ty.is_float() || !to_ty.is_integer() {
+                return Err(CodegenError::FailClosed(format!(
+                    "TryWidthCast FloatToInt requires float-to-integer types; got {} -> {}",
+                    from_ty.user_facing(),
+                    to_ty.user_facing()
+                )));
+            }
+            let src_float = expect_float_type(src_storage, "try-width float source")?;
+            let dest_int = expect_int_type(slot.payload_ty, "try-width int payload")?;
+            let src_v = fn_ctx
+                .builder
+                .build_load(src_float, src_ptr, "try_width_float_src")
+                .llvm_ctx("try-width float source load")?
+                .into_float_value();
+            let (payload, invalid) =
+                float_to_int_payload_and_invalid(fn_ctx, src_v, src_float, dest_int, to_ty)?;
+            write_try_width_option(
+                fn_ctx,
+                &slot,
+                invalid,
+                payload.into(),
+                "try-width float-to-int payload store",
+            )
+        }
+        hew_types::TryConversionKind::IntToFloat => {
+            if !from_ty.is_integer() || !to_ty.is_float() {
+                return Err(CodegenError::FailClosed(format!(
+                    "TryWidthCast IntToFloat requires integer-to-float types; got {} -> {}",
+                    from_ty.user_facing(),
+                    to_ty.user_facing()
+                )));
+            }
+            let src_int = expect_int_type(src_storage, "try-width int source")?;
+            let dest_float = expect_float_type(slot.payload_ty, "try-width float payload")?;
+            let src_v = fn_ctx
+                .builder
+                .build_load(src_int, src_ptr, "try_width_int_src")
+                .llvm_ctx("try-width int source load")?
+                .into_int_value();
+            let (payload, invalid) =
+                int_to_float_payload_and_invalid(fn_ctx, src_v, src_int, dest_float, from_ty)?;
+            write_try_width_option(
+                fn_ctx,
+                &slot,
+                invalid,
+                payload.into(),
+                "try-width int-to-float payload store",
+            )
+        }
+        hew_types::TryConversionKind::FloatToFloat => {
+            if !from_ty.is_float() || !to_ty.is_float() {
+                return Err(CodegenError::FailClosed(format!(
+                    "TryWidthCast FloatToFloat requires float-to-float types; got {} -> {}",
+                    from_ty.user_facing(),
+                    to_ty.user_facing()
+                )));
+            }
+            let src_float = expect_float_type(src_storage, "try-width float source")?;
+            let dest_float = expect_float_type(slot.payload_ty, "try-width float payload")?;
+            let src_v = fn_ctx
+                .builder
+                .build_load(src_float, src_ptr, "try_width_float_src")
+                .llvm_ctx("try-width float source load")?
+                .into_float_value();
+            let (payload, invalid) =
+                float_to_float_payload_and_invalid(fn_ctx, src_v, src_float, dest_float)?;
+            write_try_width_option(
+                fn_ctx,
+                &slot,
+                invalid,
+                payload.into(),
+                "try-width float-to-float payload store",
+            )
+        }
+    }
+}
+
 fn lower_instruction(
     fn_ctx: &FnCtx<'_, '_>,
     instr: &Instr,
@@ -16400,6 +16960,16 @@ fn lower_instruction(
             to_ty,
         } => {
             crate::arith::lower_saturating_width_cast(fn_ctx, *dest, *src, from_ty, to_ty)?;
+            let _ = ctx;
+        }
+        Instr::TryWidthCast {
+            dest,
+            src,
+            from_ty,
+            to_ty,
+            kind,
+        } => {
+            lower_try_width_cast(fn_ctx, *dest, *src, from_ty, to_ty, *kind)?;
             let _ = ctx;
         }
         Instr::Move { dest, src } => {

@@ -88,7 +88,7 @@ pub enum BuiltinLinkage {
     /// gate treats them like `CompilerIntrinsic` (no C-ABI symbol to
     /// classify).
     ///
-    /// Used by S5 `hew_remote_pid_tell`: the user-visible call expands
+    /// Used by S5 `hew_remote_pid_send`: the user-visible call expands
     /// into `hew_actor_send_by_id` (declared via `intern_runtime_decl`)
     /// followed by an in-place `Result<(), SendError>` construction; no
     /// separate stub symbol is needed.
@@ -2345,33 +2345,33 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_node_api_lookup",
         },
     ),
-    // `RemotePid<T>::tell(pid: RemotePid<T>, msg: T::Msg) -> Result<(), SendError>`
+    // `RemotePid<T>::send(pid: RemotePid<T>, msg: T::Msg) -> Result<(), SendError>`
     //
     // Surface in std/builtins.hew. The checker records a
     // MethodCallRewrite::RewriteToFunction with c_symbol
-    // "hew_remote_pid_tell" at every `pid.tell(msg)` call site on a
+    // "hew_remote_pid_send" at every `pid.send(msg)` call site on a
     // RemotePid<T> receiver (see hew-types::check::methods); the HIR
-    // direct-call lowering produces a Terminator::Call("hew_remote_pid_tell",
+    // direct-call lowering produces a Terminator::Call("hew_remote_pid_send",
     // [pid, msg]). Codegen branches on callee name in
-    // `emit_remote_pid_tell_call` to emit the `hew_actor_send_by_id`
+    // `emit_remote_pid_send_call` to emit the `hew_actor_send_by_id`
     // call sequence and construct the user-visible `Result<(), SendError>`
     // in place (mirrors the Node::lookup precedent).
     //
-    // No new FnSymbol::*Pid* / FnSymbol::*RemoteTell* variant is
+    // No new FnSymbol::*Pid* / FnSymbol::*RemoteSend* variant is
     // introduced — codegen dispatch is by callee name, matching the S4
     // Node::lookup precedent (R82-era).
     //
     // Linkage is `CalleeNameDispatchOnly` (not `RuntimeFfiShim`): there
-    // is no dedicated `hew_remote_pid_tell` runtime symbol — the real
+    // is no dedicated `hew_remote_pid_send` runtime symbol — the real
     // underlying extern `hew_actor_send_by_id` has a different ABI
     // (`(u64, i32, ptr, usize) -> i32`) and is declared via
-    // `intern_runtime_decl` directly inside `emit_remote_pid_tell_call`,
+    // `intern_runtime_decl` directly inside `emit_remote_pid_send_call`,
     // not through the catalog FFI predeclare path. The catalog entry's
     // params/return shape only needs to satisfy HIR's fn_registry lookup
     // (BindingRef resolves to Item) and MIR's `module_fn_names`
     // membership (so the call lowers to `Terminator::Call`).
     direct(
-        "hew_remote_pid_tell",
+        "hew_remote_pid_send",
         BuiltinClass::ClassB,
         &[BuiltinTy::U64, BuiltinTy::U64],
         BuiltinTy::U64,
@@ -2389,7 +2389,7 @@ pub const CATALOG: &[BuiltinEntry] = &[
     // handler `msg_id`s in its `ActorLayout`, and emits the real runtime ABI
     // `hew_tcp_attach_local(conn, actor_ptr, on_data_id, on_close_id)`.
     //
-    // Linkage is `CalleeNameDispatchOnly`, mirroring `hew_remote_pid_tell`:
+    // Linkage is `CalleeNameDispatchOnly`, mirroring `hew_remote_pid_send`:
     // the real runtime symbol has a 4-arg ABI declared via `intern_runtime_decl`
     // inside the codegen interceptor, not through the catalog FFI predeclare
     // path. The catalog entry's params/return shape only needs to satisfy HIR's
@@ -2415,7 +2415,7 @@ pub const CATALOG: &[BuiltinEntry] = &[
     // from MIR's `module_fn_names` (they lower through numeric method-rewrites,
     // not direct calls) and therefore never reach `Terminator::Call` — there is
     // no working codegen path for them.  Using `CalleeNameDispatchOnly` mirrors
-    // the `hew_remote_pid_tell` precedent above; the catalog inventory gate
+    // the `hew_remote_pid_send` precedent above; the catalog inventory gate
     // treats both identically (no C-ABI symbol to classify).
     //
     // alloc/realloc/dealloc lower to `build_call` of the hew-runtime symbols

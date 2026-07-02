@@ -2,7 +2,7 @@
 // RemotePid (cross-node) boundary. `LocalPid<T>` is process-local — a bare
 // `*mut HewActor` pointer with no on-wire representation — and is therefore NOT
 // Serializable (it carries neither Encode nor Decode). Sending it through
-// `RemotePid::tell` must fail closed at the checker's Serializable boundary
+// `RemotePid::send` must fail closed at the checker's Serializable boundary
 // rather than ship a local pointer to another node.
 //
 // This is the guard half of the process-local-pid-payload gate. Its companion
@@ -25,7 +25,7 @@ impl ActorMsg for Holder {
 fn main() {
     let local: LocalPid<Holder> = spawn Holder();
     let peer: RemotePid<Holder> = RemotePid::from_raw<Holder>(1, 0);
-    let sent: Result<(), SendError> = peer.tell(local);
+    let sent: Result<(), SendError> = peer.send(local);
     match sent {
         Ok(_) => println("sent"),
         Err(_) => println("send failed"),

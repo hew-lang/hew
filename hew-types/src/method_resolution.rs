@@ -366,7 +366,7 @@ pub fn collect_method_sigs_for_named_type(
 /// Collect all method signatures visible on a receiver type.
 ///
 /// For `LocalPid<T>`, this produces two groups:
-/// 1. The handle's own impl methods (`tell`, `to_remote_via`, etc.) registered
+/// 1. The handle's own impl methods (`send`, `to_remote_via`, etc.) registered
 ///    in `fn_sigs` as `"LocalPid::{method}"`.
 /// 2. The actor's receive handlers (the methods callers can dispatch to via the
 ///    handle), resolved against the inner actor type T.
@@ -392,7 +392,7 @@ pub fn collect_method_sigs_for_receiver(
     };
 
     if let Some((handle_type_name, inner_ty)) = handle_name {
-        // Own handle methods (e.g. `tell`, `to_remote_via`).
+        // Own handle methods (e.g. `send`, `to_remote_via`).
         let handle_methods =
             collect_method_sigs_for_named_type(type_defs, fn_sigs, handle_type_name, &[]);
         // Actor receive handlers resolved against the inner actor type.

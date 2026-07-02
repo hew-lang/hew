@@ -1189,13 +1189,8 @@ mod tests {
 
     #[test]
     fn dot_completions_for_actor_handle_surface_send_primitives_and_handlers() {
-        // After `spawn`, completing on the handle (`c.`) must surface:
-        //   - `tell` and `to_remote_via` (LocalPid's own impl methods from std/builtins.hew)
-        //   - `increment` (the actor's declared receive handler)
-        //
-        // Regression: before the fix, `named_receiver_parts` unwrapped `LocalPid<Counter>`
-        // to `Counter`, so `collect_method_sigs_for_receiver` only saw Counter's methods
-        // and silently dropped LocalPid's own send primitives.
+        // Completing on an actor handle surfaces LocalPid's own impl methods
+        // and the actor's declared receive handlers.
         let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
@@ -1236,8 +1231,8 @@ mod tests {
         );
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         assert!(
-            labels.contains(&"tell"),
-            "expected `tell` in actor-handle completions, got: {labels:?}"
+            labels.contains(&"send"),
+            "expected `send` in actor-handle completions, got: {labels:?}"
         );
         assert!(
             labels.contains(&"to_remote_via"),

@@ -75,7 +75,7 @@ fn main -> i64
       (none)
     call[bb5 assert_eq_i64 -> bb16] ->
       (none)
-    call[bb6 hew_remote_pid_tell -> bb10] ->
+    call[bb6 hew_remote_pid_send -> bb10] ->
       (none)
     goto[bb7->bb5] ->
       (none)
@@ -113,7 +113,7 @@ fn main -> i64
       (none)
     call[bb18 Node::shutdown -> bb41] ->
       (none)
-    call[bb19 hew_remote_pid_tell -> bb23] ->
+    call[bb19 hew_remote_pid_send -> bb23] ->
       (none)
     goto[bb20->bb18] ->
       (none)

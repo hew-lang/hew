@@ -69,8 +69,8 @@ fn main() -> i64 {
             return 1;
         },
         Ok(kv) => {
-            // Scenario 1: put("hello","world") — fire and forget via tell.
-            let send1 = kv.tell(KvReq::Put(KvPut { key: "hello", val: "world" }));
+            // Scenario 1: put("hello","world") — fire and forget via send.
+            let send1 = kv.send(KvReq::Put(KvPut { key: "hello", val: "world" }));
             match send1 {
                 Err(_) => {
                     println("[kv-client] FAIL: put('hello','world') send error");
@@ -79,8 +79,8 @@ fn main() -> i64 {
                 },
                 Ok(_) => {},
             }
-            // Scenario 2: put("count","42") — fire and forget via tell.
-            let send2 = kv.tell(KvReq::Put(KvPut { key: "count", val: "42" }));
+            // Scenario 2: put("count","42") — fire and forget via send.
+            let send2 = kv.send(KvReq::Put(KvPut { key: "count", val: "42" }));
             match send2 {
                 Err(_) => {
                     println("[kv-client] FAIL: put('count','42') send error");
@@ -90,7 +90,7 @@ fn main() -> i64 {
                 Ok(_) => {},
             }
             println("[kv-client] put('hello','world') and put('count','42') dispatched");
-            // Give the server time to process the tell messages before asking.
+            // Give the server time to process the send messages before asking.
             sleep(500ms);
 
             // Scenario 3: get("hello") — blocking remote ask, exercises await-over-wire.

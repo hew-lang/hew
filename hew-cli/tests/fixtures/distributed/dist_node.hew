@@ -371,11 +371,11 @@ fn run_server(port: string, scenario: string) {
 
 // Scenario: remote_ask
 //
-// The client connects, puts two entries via fire-and-forget tell, then issues
+// The client connects, puts two entries via fire-and-forget send, then issues
 // two blocking remote asks and checks the exact returned values. This is the
 // first assertion: a real cross-process ask round-trip with exact-value teeth.
 fn scenario_remote_ask(kv: RemotePid<KeyValue>) -> i64 {
-    let send1 = kv.tell(KvReq::Put(KvPut { key: "hello", val: "world" }));
+    let send1 = kv.send(KvReq::Put(KvPut { key: "hello", val: "world" }));
     match send1 {
         Result::Err(_) => {
             println("FAIL remote_ask put-hello-send-error");
@@ -383,7 +383,7 @@ fn scenario_remote_ask(kv: RemotePid<KeyValue>) -> i64 {
         },
         Result::Ok(_) => {},
     }
-    let send2 = kv.tell(KvReq::Put(KvPut { key: "count", val: "42" }));
+    let send2 = kv.send(KvReq::Put(KvPut { key: "count", val: "42" }));
     match send2 {
         Result::Err(_) => {
             println("FAIL remote_ask put-count-send-error");
@@ -391,8 +391,8 @@ fn scenario_remote_ask(kv: RemotePid<KeyValue>) -> i64 {
         },
         Result::Ok(_) => {},
     }
-    // Brief settle so the fire-and-forget tells are applied before the ask.
-    // (tell is async; the ask below is the synchronization point we assert on.)
+    // Brief settle so the fire-and-forget sends are applied before the ask.
+    // (send is async; the ask below is the synchronization point we assert on.)
     sleep(200ms);
     let ask1 = kv.ask(KvReq::GetKey("hello"), 5000);
     match ask1 {
@@ -506,8 +506,8 @@ fn scenario_wire_cbor(wp: RemotePid<WireProbe>) -> i64 {
 // monitor must deliver exactly one DOWN carrying the clean-exit reason (6).
 fn scenario_remote_monitor_clean_exit(kv: RemotePid<KeyValue>) -> i64 {
     let m: MonitorRef = monitor(kv);
-    let tell_stop = kv.tell(KvReq::StopSelf);
-    match tell_stop {
+    let send_stop = kv.send(KvReq::StopSelf);
+    match send_stop {
         Result::Err(_) => {
             println("FAIL remote_monitor_clean_exit stop-send-error");
             return 2;
@@ -539,8 +539,8 @@ fn scenario_remote_monitor_clean_exit(kv: RemotePid<KeyValue>) -> i64 {
 // monitor must deliver exactly one DOWN carrying the crash reason (5).
 fn scenario_remote_monitor_crash(kv: RemotePid<KeyValue>) -> i64 {
     let m: MonitorRef = monitor(kv);
-    let tell_crash = kv.tell(KvReq::CrashSelf);
-    match tell_crash {
+    let send_crash = kv.send(KvReq::CrashSelf);
+    match send_crash {
         Result::Err(_) => {
             println("FAIL remote_monitor_crash crash-send-error");
             return 2;
@@ -709,7 +709,7 @@ fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
 // captures a RemotePid for the ORIGINAL actor. The server then re-points "kv" to
 // a DIFFERENT actor (unregister + re-register), which supersedes the original
 // serial. Once the re-point gossip propagates, the client's CAPTURED ref must
-// fail closed with StaleRef on BOTH tell and ask — never silently deliver to the
+// fail closed with StaleRef on BOTH send and ask — never silently deliver to the
 // replacement, never a generic routing error.
 //
 // Teeth: the test fails if the captured ref ever succeeds (delivered to the new
@@ -720,7 +720,7 @@ fn scenario_stale_ref(kv: RemotePid<KeyValue>) -> i64 {
     // while still failing closed if StaleRef never fires.
     var attempts: i64 = 0;
     loop {
-        let probe = kv.tell(KvReq::Put(KvPut { key: "x", val: "y" }));
+        let probe = kv.send(KvReq::Put(KvPut { key: "x", val: "y" }));
         match probe {
             Result::Ok(_) => {
                 // Still routing to the original (pre-re-point) — retry until the
@@ -728,7 +728,7 @@ fn scenario_stale_ref(kv: RemotePid<KeyValue>) -> i64 {
                 // failure: the captured ref must go stale.
                 attempts = attempts + 1;
                 if attempts >= 60 {
-                    println("FAIL stale_ref tell-never-stale");
+                    println("FAIL stale_ref send-never-stale");
                     return 2;
                 }
                 sleep(100ms);
@@ -736,18 +736,18 @@ fn scenario_stale_ref(kv: RemotePid<KeyValue>) -> i64 {
             Result::Err(e) => {
                 match e {
                     SendError::StaleRef => {
-                        // tell is stale; now require ask to be stale too (the
+                        // send is stale; now require ask to be stale too (the
                         // shared gate fires on every verb).
                         let ask_probe = kv.ask(KvReq::GetKey("x"), 2000);
                         match ask_probe {
                             Result::Ok(_) => {
-                                println("FAIL stale_ref ask-succeeded-after-tell-stale");
+                                println("FAIL stale_ref ask-succeeded-after-send-stale");
                                 return 3;
                             },
                             Result::Err(ae) => {
                                 match ae {
                                     AskError::StaleRef => {
-                                        println("PASS stale_ref tell=stale ask=stale");
+                                        println("PASS stale_ref send=stale ask=stale");
                                         return 0;
                                     },
                                     _ => {
@@ -764,7 +764,7 @@ fn scenario_stale_ref(kv: RemotePid<KeyValue>) -> i64 {
                         // route); retry within the deadline rather than accept it.
                         attempts = attempts + 1;
                         if attempts >= 60 {
-                            println("FAIL stale_ref tell-wrong-error");
+                            println("FAIL stale_ref send-wrong-error");
                             return 5;
                         }
                         sleep(100ms);
@@ -855,7 +855,7 @@ fn scenario_client_watcher_node_death(kv: RemotePid<KeyValue>) -> i64 {
 
 // ── Cross-node link scenarios ────────────────────────────────────────────────
 
-// Spawn a Linker, tell it to establish the cross-node link (capturing its actor
+// Spawn a Linker, send it to establish the cross-node link (capturing its actor
 // id from the reply), drive the remote actor to a terminal state, then poll the
 // linker's terminal state. With CrashLinked the linker must reach Crashed (5):
 // the cross-node link-down landed in its mailbox as a SYS_MSG_EXIT and crashed
@@ -878,7 +878,7 @@ fn link_cascade_common(kv: RemotePid<KeyValue>, scenario: string, drive: string)
     }
     // Drive the remote actor to its terminal state per the scenario.
     if drive == "stop" {
-        let t = kv.tell(KvReq::StopSelf);
+        let t = kv.send(KvReq::StopSelf);
         match t {
             Result::Err(_) => {
                 println(f"FAIL {scenario} stop-send-error");
@@ -888,7 +888,7 @@ fn link_cascade_common(kv: RemotePid<KeyValue>, scenario: string, drive: string)
         }
     } else {
         if drive == "crash" {
-            let t = kv.tell(KvReq::CrashSelf);
+            let t = kv.send(KvReq::CrashSelf);
             match t {
                 Result::Err(_) => {
                     println(f"FAIL {scenario} crash-send-error");
@@ -960,7 +960,7 @@ fn scenario_link_remote_non_crashlinked(kv: RemotePid<KeyValue>) -> i64 {
         println("FAIL link_remote_non_crashlinked link-register-failed");
         return 3;
     }
-    let t = kv.tell(KvReq::StopSelf);
+    let t = kv.send(KvReq::StopSelf);
     match t {
         Result::Err(_) => {
             println("FAIL link_remote_non_crashlinked stop-send-error");

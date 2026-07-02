@@ -1926,8 +1926,8 @@ pub(super) enum WasmUnsupportedFeature {
     OsEnv,
     /// `Node::*` distributed cluster API (`start`, `shutdown`, `connect`,
     /// `set_transport`, `load_keys`, `allow_peer`, `register`, `lookup`) and
-    /// `RemotePid<T>::tell` / `RemotePid<T>::ask` remote messaging: these lower
-    /// to the native mesh transport (`hew_node_api_*` / `hew_remote_pid_tell`),
+    /// `RemotePid<T>::send` / `RemotePid<T>::ask` remote messaging: these lower
+    /// to the native mesh transport (`hew_node_api_*` / `hew_remote_pid_send`),
     /// which is gated behind `#[cfg(not(target_arch = "wasm32"))]` and absent
     /// from the wasm32 link set. Reject at check time so the caller sees a
     /// structured diagnostic rather than a wasm module importing an undefined
@@ -2049,7 +2049,7 @@ impl WasmUnsupportedFeature {
             }
             Self::Distributed => {
                 "the Node:: cluster API and RemotePid messaging route through the \
-                 native mesh transport (hew_node_api_* / hew_remote_pid_tell), which \
+                 native mesh transport (hew_node_api_* / hew_remote_pid_send), which \
                  is not compiled for wasm32; no wasm32 distributed runtime exists yet"
             }
             Self::CryptoRandom => {

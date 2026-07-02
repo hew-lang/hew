@@ -156,7 +156,7 @@ fn main() -> i64 [conv=default]
     _16 = move mvar9.0.0
     _17 = const.i64 1
     _18 = record_init Ping { .0=_17 }
-    _19 = call hew_remote_pid_tell(_16, _18) [builtin=RemotePidTell] -> bb10
+    _19 = call hew_remote_pid_send(_16, _18) [builtin=RemotePidSend] -> bb10
   bb7:
     _30 = const.i64 0
     _10 = move _30
@@ -215,7 +215,7 @@ fn main() -> i64 [conv=default]
     _42 = move mvar35.0.0
     _43 = const.i64 42
     _44 = record_init Ping { .0=_43 }
-    _45 = call hew_remote_pid_tell(_42, _44) [builtin=RemotePidTell] -> bb23
+    _45 = call hew_remote_pid_send(_42, _44) [builtin=RemotePidSend] -> bb23
   bb20:
     _80 = const.i64 30
     _36 = move _80

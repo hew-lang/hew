@@ -1,8 +1,8 @@
-// Accept: RemotePid<T>::tell end-to-end — in-place Result<(), SendError> construction.
+// Accept: RemotePid<T>::send end-to-end — in-place Result<(), SendError> construction.
 //
-// Exercises the full codegen path for `pid.tell(msg)` on a `RemotePid<T>`:
-//   - Checker rewrites the method call to `hew_remote_pid_tell` (MethodCallRewrite)
-//   - MIR lowers it to Terminator::Call("hew_remote_pid_tell", [pid, msg])
+// Exercises the full codegen path for `pid.send(msg)` on a `RemotePid<T>`:
+//   - Checker rewrites the method call to `hew_remote_pid_send` (MethodCallRewrite)
+//   - MIR lowers it to Terminator::Call("hew_remote_pid_send", [pid, msg])
 //   - Codegen intercepts by callee name, emits `hew_actor_send_by_id`, and
 //     constructs `Result<(), SendError>` in-place in the dest slot.
 //
@@ -16,7 +16,7 @@
 //
 // TODO(cross-node-ok): positive Ok path (tag=0, no-payload) is deferred until
 // test/native-m3-quic-mesh-cross-node-integration lands. Add a two-process
-// variant that starts a real node, registers Worker, calls tell, and asserts
+// variant that starts a real node, registers Worker, calls send, and asserts
 // Result::Ok.
 record Ping {
     n: i64
@@ -33,7 +33,7 @@ impl ActorMsg for Worker {
 
 fn main() -> i64 {
     let pid: RemotePid<Worker> = RemotePid::from_raw<Worker>(1, 0);
-    let result: Result<(), SendError> = pid.tell(Ping { n: 0 });
+    let result: Result<(), SendError> = pid.send(Ping { n: 0 });
     match result {
         Result::Ok(_) => 0,
         Result::Err(e) => match e {

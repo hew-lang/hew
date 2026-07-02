@@ -26,7 +26,8 @@ accept_output="${ROOT}/.tmp/vertical-slice-accept-output.txt"
 reject_output="${ROOT}/.tmp/vertical-slice-reject-output.txt"
 stdout_output="${ROOT}/.tmp/vertical-slice.stdout"
 stderr_output="${ROOT}/.tmp/vertical-slice.stderr"
-trap 'rm -f "${accept_output}" "${reject_output}" "${stdout_output}" "${stderr_output}"' EXIT
+old_verb_output="${ROOT}/.tmp/vertical-slice-remote-pid-old-verb.hew"
+trap 'rm -f "${accept_output}" "${reject_output}" "${stdout_output}" "${stderr_output}" "${old_verb_output}"' EXIT
 
 compile_accept() {
   local fixture="$1"
@@ -1032,17 +1033,19 @@ grep -q ": OK$" "${accept_output}" || {
   exit 1
 }
 
-# Reject: `ref.send(msg)` on a named actor with NO `receive fn send` handler is
+# Reject: `ref.send(msg)` on a named actor with NO `receive fn send` handler
+# and NO `ActorMsg` envelope (`impl ActorMsg for X { type Msg = ...; }`) is
 # rejected at the type-checker with an actionable UndefinedMethod diagnostic.
-# The anonymous-payload path has no lowerable mailbox slot; the checker now
-# surfaces a clear error (not a confusing HIR MethodCallNoRewrite) pointing the
-# user at `receive fn send` or a named handler.
+# The anonymous-payload path has no lowerable mailbox slot; the checker
+# surfaces a clear error (not a confusing HIR MethodCallNoRewrite, nor a
+# phantom `Msg` type mismatch) pointing the user at `receive fn send` or a
+# named handler.
 # Complement of `actor_receive_fn_named_send`: with a user `receive fn send`
 # handler the call dispatches correctly.
 # shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/actor_builtin_send_no_handler.hew" \
-    'has no `receive fn send` handler' \
+    'no `send` handler on `Adder` — declare `receive fn send(...)` to accept it, or call a named handler' \
     "actor_builtin_send_no_handler"
 
 # Accept: the recommended alternative — a named `receive fn` dispatched by
@@ -1077,8 +1080,8 @@ run_accept_expect_status "actor_counter_reorder" 42
 # The exit code being 42 (not 41) proves on(start) fired before the first message.
 run_accept_expect_status "actor_counter_init" 42
 
-# Accept: a user-defined `receive fn send` is a first-class handler — not the
-# legacy builtin fire-and-forget. `ref.send(n)` must dispatch to the handler.
+# Accept: a user-defined `receive fn send` is a first-class handler.
+# `ref.send(n)` must dispatch to the handler on a concrete actor handle.
 # send(10) + send(32) = 42; get() returns 42.
 run_accept_expect_status "actor_receive_fn_named_send" 42
 
@@ -1732,10 +1735,10 @@ fi
 # over-read, or the run-time wrapper leak. The runnable surface now
 # pins all four of those.
 
-# Accept: tell-shaped lambda actor call dispatch — exercises spawn,
+# Accept: send-shaped lambda actor call dispatch — exercises spawn,
 # `hew_lambda_actor_new`, env-less body synthesis, tell-send, and the
 # wrapper-free path on release at process exit.
-run_accept_expect_stdout "lambda_callable_tell"
+run_accept_expect_stdout "lambda_callable_send"
 
 # Accept: ask-shaped lambda actor call dispatch — exercises the reply
 # channel, the B2 status-branched reply decode (Ok path), and the reply
@@ -1758,7 +1761,7 @@ run_check_run_expect_stdout "actor_ask_block_wrapped_await"
 # dispatch routing — pre-fix the callee-binding check resolved `log("hi")`
 # to the math `log` floor before the lambda-actor surface was consulted,
 # misrouting the send through the f64 logarithm. The fixture exercises
-# BOTH a tell-shaped and an ask-shaped binding named `log` so codegen
+# BOTH a send-shaped and an ask-shaped binding named `log` so codegen
 # parity (send dispatch + ask reply decode) is held by the same routing.
 run_accept_expect_stdout "lambda_log_collision"
 
@@ -1786,13 +1789,13 @@ run_accept_expect_stdout "lambda_small_msg"
 # which fired before the field receiver was recognised as an actor send/ask.
 run_accept_expect_stdout "actor_field_method_dispatch"
 
-# Accept + run: declared-actor multi-arg tell through the packed-args
+# Accept + run: declared-actor multi-arg send through the packed-args
 # anonymous-record wire. Mixed (string, i64) and double-heap-owning
 # (string, string) payloads; the trailing ask fences stdout ordering.
 # Each packed field is copied at exactly sizeof(field) into the record,
 # the mailbox deep-copies sizeof(record) bytes, and the dispatch
 # trampoline unpacks each param at its natural field offset.
-run_accept_expect_stdout "actor_multi_arg_tell"
+run_accept_expect_stdout "actor_multi_arg_send"
 
 # Accept + run: declared-actor multi-arg ask — `await adder.compute(3, 4)`
 # packs both args into one record and the reply rides the existing ask
@@ -1909,7 +1912,7 @@ run_accept_expect_stdout "lambda_method_send"
 
 # Accept + run: value-context `.send()` on a lambda-actor handle materializes
 # `Result<(), SendError>` AND still delivers the message. The checker types the
-# tell-shaped send as `Result<(), SendError>`; MIR sizes the dest from that
+# send-shaped send as `Result<(), SendError>`; MIR sizes the dest from that
 # recorded type and codegen constructs the Result in place from the runtime's
 # i32 status (D1 mapping). Exit 7 proves the Ok arm; stdout `99` proves the
 # message was delivered (not dropped). Together with the statement-context
@@ -1942,7 +1945,7 @@ grep -q 'E_LAMBDA_SELF_ESCAPE' "${reject_output}"
 # back-filled with the downgraded handle after construction and
 # dispatches through hew_lambda_actor_weak_send (§5.9 ratification 2 —
 # the body never keeps its own actor alive).
-run_accept_expect_stdout "lambda_capture_tell"
+run_accept_expect_stdout "lambda_capture_send"
 run_accept_expect_stdout "lambda_capture_ask"
 run_accept_expect_stdout "lambda_self_recursion"
 
@@ -2033,21 +2036,21 @@ expect_check_fail_contains \
 # wire is the packed-args record. A first-param match between the two is
 # a wire-width mismatch (short bytes into a full-record unpack on the
 # receiving node), so both seams — MIR's remote ask matcher and
-# codegen's hew_remote_pid_tell intercept — refuse at compile time. The
+# codegen's hew_remote_pid_send intercept — refuse at compile time. The
 # cross-node payload serialization lane lands the positive path.
 expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/actor_multi_arg_remote_unsupported.hew" \
   "E_REMOTE_PAYLOAD_UNSUPPORTED" \
   "actor_multi_arg_remote_unsupported"
 expect_check_fail_contains \
-  "${ROOT}/tests/vertical-slice/reject/actor_multi_arg_remote_tell_unsupported.hew" \
+  "${ROOT}/tests/vertical-slice/reject/actor_multi_arg_remote_send_unsupported.hew" \
   "E_REMOTE_PAYLOAD_UNSUPPORTED" \
-  "actor_multi_arg_remote_tell_unsupported"
+  "actor_multi_arg_remote_send_unsupported"
 
 # Reject: a process-local `LocalPid` payload must never cross a RemotePid
 # (cross-node) boundary. `LocalPid<T>` is process-local — a bare `*mut HewActor`
 # pointer with no on-wire representation — and carries neither Encode nor
-# Decode, so it is NOT Serializable. Sending it through `RemotePid::tell` must
+# Decode, so it is NOT Serializable. Sending it through `RemotePid::send` must
 # fail closed at the checker's Serializable boundary, never ship a local pointer
 # to another node. This is the guard for the broadened codec-seeder skip: the
 # companion accept fixture (actor_single_arg_pid_payload) proves the SAME pid
@@ -2891,30 +2894,43 @@ run_accept_expect_status "tuple_heap_return" 42
     >"${accept_output}" 2>&1
 
 # ---------------------------------------------------------------------------
-# RemotePid<T>::tell — in-place Result<(), SendError> construction gate
+# RemotePid<T>::send — in-place Result<(), SendError> construction gate
 # ---------------------------------------------------------------------------
 
-# Accept: RemotePid<T>::tell on a synthetic pid (no peer online) must lower
+# Accept: RemotePid<T>::send on a synthetic pid (no peer online) must lower
 # end-to-end and return SendError::NodeRoutingNotWired (variant 2) in the Err
 # arm. Exit 42 asserts the correct tag/payload written by
-# emit_remote_pid_tell_call. Regression in the in-place construction would
+# emit_remote_pid_send_call. Regression in the in-place construction would
 # produce a wrong SendError discriminant, exiting 1 or 2 instead.
-run_accept_expect_status "remote_pid_tell" 42
+run_accept_expect_status "remote_pid_send" 42
 
 # Accept: Node::lookup(name) must expose the registered local actor as a
-# RemotePid<T>, and pid.tell(msg) must deliver through the in-process
+# RemotePid<T>, and pid.send(msg) must deliver through the in-process
 # send-by-id path.
-run_accept_expect_status "node_lookup_tell" 0
+run_accept_expect_status "node_lookup_send" 0
 
-# A640/S3: compile-time Serializable floor for RemotePid<T>::tell.
-"${HEW}" check "${ROOT}/tests/vertical-slice/accept/positive_record_remote_tell.hew" \
+# A640/S3: compile-time Serializable floor for RemotePid<T>::send.
+"${HEW}" check "${ROOT}/tests/vertical-slice/accept/positive_record_remote_send.hew" \
     >"${accept_output}" 2>&1
-if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/negative_fn_msg_remote_tell.hew" \
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/negative_fn_msg_remote_send.hew" \
     >"${reject_output}" 2>&1; then
-  echo "expected negative_fn_msg_remote_tell fixture to fail" >&2
+  echo "expected negative_fn_msg_remote_send fixture to fail" >&2
   exit 1
 fi
 grep -q 'Serializable' "${reject_output}"
+printf '%s\n' \
+    'record Ping { n: i64 }' \
+    'actor Worker { receive fn ping(msg: Ping) {} }' \
+    'impl ActorMsg for Worker { type Msg = Ping; type Reply = (); }' \
+    'fn main() {' \
+    '    let pid: RemotePid<Worker> = RemotePid::from_raw<Worker>(1, 0);' \
+    '    let result = pid.tell(Ping { n: 1 });' \
+    '}' \
+    >"${old_verb_output}"
+expect_check_fail_contains \
+    "${old_verb_output}" \
+    "no method \`tell\` on \`RemotePid<Worker>\`" \
+    "remote_pid_old_verb_reject"
 expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/accept/local_fn_msg_actor_method_allowed.hew" \
   "wire CBOR serialize: unsupported value type Function" \

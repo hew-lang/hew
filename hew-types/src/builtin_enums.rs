@@ -60,8 +60,8 @@ pub struct BuiltinMonomorphicEnum {
     /// `false` for types that DO surface in user-visible signatures and
     /// must remain in sandbox bytecode descriptor tables for fixture
     /// stability (e.g. `SendError`, the `Err` variant of every
-    /// `Result<(), SendError>` returned by `.tell` / `.send` family
-    /// methods declared in `std/builtins.hew`).
+    /// `Result<(), SendError>` returned by `.send` family methods declared
+    /// in `std/builtins.hew`).
     pub suppress_from_sandbox_emit: bool,
 }
 
@@ -224,28 +224,17 @@ pub fn monomorphic_builtin_enums() -> &'static [BuiltinMonomorphicEnum] {
             suppress_from_sandbox_emit: true,
         },
         // `SendError` is the `Err` variant of `Result<(), SendError>`
-        // returned by every `.tell` shaped surface: `LocalPid<T>::tell`,
-        // `RemotePid<T>::tell`, `Duplex<…>::send`, and the channel
-        // `SendHalf::send`/`try_send` family. Until S5, the only consumer
-        // that needed the layout in MIR was the inline body of
-        // `RemotePid<T>::tell` (which returned `Err(NodeRoutingNotWired)`
-        // as a constant); the v0.5 inline-stdlib path lowered the literal
-        // through ordinary enum-ctor lowering, so MIR learned the layout
-        // from the generic `EnumLayoutRegistry`.
-        //
-        // S5 changes that contract: the checker rewrites
-        // `pid.tell(msg)` on a `RemotePid<T>` receiver into a direct call
-        // to the catalog-declared `hew_remote_pid_tell`. Codegen
-        // intercepts that call and constructs the user-visible
-        // `Result<(), SendError>` in place from the runtime rc, but MIR
-        // still needs the `SendError` layout to size the dest local for
-        // the Call terminator's dest place. Carry the layout out-of-band
-        // here, parallel to `LookupError`.
+        // returned by `.send` surfaces: `LocalPid<T>::send`,
+        // `RemotePid<T>::send`, `Duplex<…>::send`, and the channel
+        // `SendHalf::send`/`try_send` family. `RemotePid<T>::send` lowers
+        // through the catalog-declared `hew_remote_pid_send` intercept,
+        // so MIR carries this layout out-of-band to size the Call
+        // terminator's dest place.
         //
         // Unlike `LookupError`, `SendError` is surfaced in user-visible
-        // trait signatures (`fn tell(...) -> Result<(), SendError>`), so
-        // its bytecode descriptor IS present in baseline sandbox fixtures
-        // and must stay there — hence `suppress_from_sandbox_emit: false`.
+        // trait signatures (`fn send(...) -> Result<(), SendError>`), so
+        // its bytecode descriptor is present in sandbox fixtures and
+        // `suppress_from_sandbox_emit` is false.
         BuiltinMonomorphicEnum {
             name: "SendError",
             variants: SEND_ERROR_VARIANTS,

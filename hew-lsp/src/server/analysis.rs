@@ -2079,7 +2079,7 @@ mod tests {
             "signature help should label ask(...) -> Result<Worker::Reply, AskError>, got: {sig:?}",
         );
         let completions = surface_completions(&doc, source, "peer.ask");
-        for expected in ["ask", "tell"] {
+        for expected in ["ask", "send"] {
             assert!(
                 completions.contains(&expected.to_string()),
                 "completion on RemotePid<Worker> should include `{expected}`, got: {completions:?}",

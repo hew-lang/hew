@@ -1,7 +1,7 @@
 // A user-defined `receive fn send(...) -> T` invoked as an *ask* via
-// `await ref.send(...)` is a first-class handler dispatch, not the legacy
-// builtin fire-and-forget. The awaited form consumes the reply, so the call
-// lowers as an ask and yields the handler's return value.
+// `await ref.send(...)` is a first-class handler dispatch. The awaited form
+// consumes the reply, so the call lowers as an ask and yields the handler's
+// return value.
 //
 // Doubler.send(n) returns n * 2; `await d.send(21)` resolves to Ok(42).
 // main returns 42 → exit 42.

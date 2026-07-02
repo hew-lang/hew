@@ -9477,7 +9477,7 @@ fn runtime_symbol_for_call_expr(
     // whose symbol is in `MIR_EMITTER_RUNTIME_SYMBOLS` lower to
     // `Instr::CallRuntimeAbi`; pre-staged families (codegen
     // `Terminator::Call` callee-name intercepts such as
-    // `hew_remote_pid_tell`) fall through to `module_fn_names` →
+    // `hew_remote_pid_send`) fall through to `module_fn_names` →
     // `lower_direct_call`, exactly as their name-resolved form did.
     if let ResolvedRef::Builtin(family) = resolved {
         let symbol = family.c_symbol();

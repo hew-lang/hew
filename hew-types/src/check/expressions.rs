@@ -2120,7 +2120,7 @@ impl Checker {
                         span,
                         "actor lambda body returns an actor handle — actor handles cannot \
                          escape the actor boundary via a return value (E_LAMBDA_SELF_ESCAPE); \
-                         use a tell-shaped actor (no return type) instead"
+                         use an actor with no return type instead"
                             .to_string(),
                     );
                 }
@@ -2142,8 +2142,8 @@ impl Checker {
                         _ => Ty::Tuple(param_types),
                     }
                 };
-                // The reply type determines tell vs ask:
-                //   tell-shaped (`actor |p| { ... }` — no explicit return type, or `-> ()`)
+                // The reply type determines send vs ask:
+                //   send-shaped (`actor |p| { ... }` — no explicit return type, or `-> ()`)
                 //     → `LambdaPid<Msg, ()>` — call-site returns `Result<(), SendError>`
                 //   ask-shaped (`actor |p| -> Reply { ... }`)
                 //     → `LambdaPid<Msg, Reply>` — call-site returns `Result<Reply, AskError>`

@@ -309,7 +309,7 @@ builtin_named_types! {
     // node. Built-in actor functions (`close`, `link`, `monitor`, etc.) use
     // `LocalPid<T>` directly; it is nominally distinct from `RemotePid<T>`.
     //
-    // Methods (`.tell`) are declared in `std/builtins.hew` as `impl LocalPid<T>` and
+    // Methods (`.send`) are declared in `std/builtins.hew` as `impl LocalPid<T>` and
     // resolved via the normal user-type method dispatch path.
     LocalPid {
         consts: (LOCAL_PID, QUALIFIED_LOCAL_PID),
@@ -330,7 +330,7 @@ builtin_named_types! {
     // with `LocalPid<T>`; coercion from local → remote is explicit via
     // `local_pid.to_remote_via(node_handle)`.
     //
-    // `.tell` returns Result<(), SendError>; a captured ref whose registration
+    // `.send` returns Result<(), SendError>; a captured ref whose registration
     // was superseded fails closed with `SendError::StaleRef`.
     RemotePid {
         consts: (REMOTE_PID, QUALIFIED_REMOTE_PID),

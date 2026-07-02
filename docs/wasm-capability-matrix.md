@@ -101,7 +101,7 @@ The **Checker disposition** column documents what the type checker emits when
 | **`std::net::quic.*`, `quic.QUICEndpoint.*`, `quic.QUICConnection.*`, `quic.QUICStream.*`, `quic.QUICEvent.*`** | 🚫 Error (`Quic`) | `quic_transport` is feature-gated and not compiled for wasm32 | WASM-TODO |
 | **`std::net::dns.resolve`, `dns.lookup_host`** | 🚫 Error (`Dns`) | Native OS resolver; not compiled for wasm32 | WASM-TODO |
 | **`std::os.*`** | 🚫 Error (`OsEnv`) | Hew OS/env helpers are native-only today even where WASI may offer host data | WASM-TODO |
-| **`Node::*` (`start`, `shutdown`, `connect`, `set_transport`, `load_keys`, `allow_peer`, `register`, `lookup`), `RemotePid<T>::tell` / `::ask`** | 🚫 Error (`Distributed`) | Native mesh transport (`hew_node_api_*` / `hew_remote_pid_tell`); not compiled for wasm32 | WASM-TODO |
+| **`Node::*` (`start`, `shutdown`, `connect`, `set_transport`, `load_keys`, `allow_peer`, `register`, `lookup`), `RemotePid<T>::send` / `::ask`** | 🚫 Error (`Distributed`) | Native mesh transport (`hew_node_api_*` / `hew_remote_pid_send`); not compiled for wasm32 | WASM-TODO |
 | **`std::crypto::crypto.random_bytes`** | 🚫 Error (`CryptoRandom`) | Secure entropy source is native-only; fail-closed rejection until wasm32 cryptographic entropy exists | WASM-TODO |
 | Generators on WASM | ✅ Pass (basic syntax) | Cooperative scheduler | Note below |
 
@@ -203,8 +203,8 @@ would otherwise end in a trap or linker failure:
 
 - **Distributed node API / remote-actor messaging**: The `Node::*` cluster API
   (`start`, `shutdown`, `connect`, `set_transport`, `load_keys`, `allow_peer`,
-  `register`, `lookup`) and `RemotePid<T>::tell` / `RemotePid<T>::ask` lower to
-  the native mesh transport (`hew_node_api_*` and `hew_remote_pid_tell` →
+  `register`, `lookup`) and `RemotePid<T>::send` / `RemotePid<T>::ask` lower to
+  the native mesh transport (`hew_node_api_*` and `hew_remote_pid_send` →
   `hew_actor_send_by_id`), which is gated behind
   `#[cfg(not(target_arch = "wasm32"))]` and absent from the wasm32 link set.
   Before this gate the checker admitted these on wasm32 and codegen emitted a
@@ -276,7 +276,7 @@ reject_wasm_feature   → Severity::Error    → self.errors
 - `hew-types/src/check/methods.rs` Receiver match arm (`recv` → `BlockingChannelRecv`)
 - `hew-types/src/check/methods.rs` semaphore handle gate (`acquire` / `acquire_timeout` → `BlockingSemaphoreAcquire`)
 - `hew-types/src/check/methods.rs` Stream / http.Server / http.Request / net.Listener / net.Connection / process.Child / tls.TlsStream / quic.QUIC* handle match arms
-- `hew-types/src/check/methods.rs` RemotePid match arm (`tell` / `ask` → `Distributed`)
+- `hew-types/src/check/methods.rs` RemotePid match arm (`send` / `ask` → `Distributed`)
 
 Rows marked **WASM-TODO (not checker-gated)** currently have no dedicated
 `WasmUnsupportedFeature` guard point. As of main, that bucket includes raw WASI

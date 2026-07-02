@@ -284,8 +284,8 @@ fn surface_senderror_variants() -> Vec<&'static str> {
 }
 
 #[test]
-fn remote_tell_stale_ref_mapping_is_pinned_cross_crate() {
-    // `emit_remote_pid_tell_call` (llvm.rs) maps the runtime send rc to the
+fn remote_send_stale_ref_mapping_is_pinned_cross_crate() {
+    // `emit_remote_pid_send_call` (llvm.rs) maps the runtime send rc to the
     // user-visible `SendError` discriminant:
     //   rc == HEW_ERR_STALE_REF (-16)  -> SendError::StaleRef          (surface 4)
     //   any other nonzero rc           -> SendError::NodeRoutingNotWired (surface 2)
@@ -310,14 +310,14 @@ fn remote_tell_stale_ref_mapping_is_pinned_cross_crate() {
         surface.get(CODEGEN_SEND_ERR_STALE_REF).copied(),
         Some("StaleRef"),
         "surface SendError position {CODEGEN_SEND_ERR_STALE_REF} is not StaleRef; \
-         the codegen tell-path writes that discriminant for a stale capture.\n\
+         the codegen send-path writes that discriminant for a stale capture.\n\
          surface: {surface:?}"
     );
     assert_eq!(
         surface.get(CODEGEN_SEND_ERR_NODE_ROUTING).copied(),
         Some("NodeRoutingNotWired"),
         "surface SendError position {CODEGEN_SEND_ERR_NODE_ROUTING} is not \
-         NodeRoutingNotWired; the codegen tell-path writes that discriminant for a \
+         NodeRoutingNotWired; the codegen send-path writes that discriminant for a \
          generic routing failure.\nsurface: {surface:?}"
     );
 }

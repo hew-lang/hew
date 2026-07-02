@@ -1,0 +1,25 @@
+actor BytesSetCrasher {
+    receive fn boom() {
+        let b: bytes = bytes::new();
+        b.push(1);
+        b.set(99, 7);
+    }
+}
+
+actor BytesSetProbe {
+    receive fn ping() -> i64 {
+        0
+    }
+}
+
+fn main() -> i64 {
+    let crasher = spawn BytesSetCrasher;
+    let probe = spawn BytesSetProbe;
+    crasher.boom();
+    sleep(300ms);
+    match await probe.ping() {
+        Ok(v) => v,
+        Err(_) => 1,
+    }
+}
+

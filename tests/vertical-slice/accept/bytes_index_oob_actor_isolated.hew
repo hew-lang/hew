@@ -1,0 +1,25 @@
+actor BytesIndexCrasher {
+    receive fn boom() {
+        let b: bytes = bytes::new();
+        b.push(1);
+        let _x: u8 = b[99];
+    }
+}
+
+actor BytesIndexProbe {
+    receive fn ping() -> i64 {
+        0
+    }
+}
+
+fn main() -> i64 {
+    let crasher = spawn BytesIndexCrasher;
+    let probe = spawn BytesIndexProbe;
+    crasher.boom();
+    sleep(300ms);
+    match await probe.ping() {
+        Ok(v) => v,
+        Err(_) => 1,
+    }
+}
+

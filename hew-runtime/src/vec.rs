@@ -30,6 +30,8 @@ pub use hew_cabi::vec::{
     ElemKind, HewTypeLayout, HewTypeOwnershipKind, HewVec, HewVecElemLayout, HewVecEqThunk,
 };
 
+use crate::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS;
+use crate::trap_code::runtime_bounds_trap;
 use core::ffi::{c_char, c_void};
 use core::ptr;
 
@@ -105,14 +107,13 @@ unsafe fn ensure_cap_raw(v: *mut HewVec, needed: usize) {
     }
 }
 
-/// Abort with an out-of-bounds message.
-unsafe fn abort_oob(index: usize, len: usize) -> ! {
-    // SAFETY: writing to stderr and aborting is always safe.
+/// Trap with an out-of-bounds message.
+unsafe fn abort_oob(operation: &str, index: usize, len: usize) -> ! {
+    // SAFETY: writing to stderr and trapping is always safe on this failure path.
     unsafe {
-        let msg = b"PANIC: Vec index out of bounds\n\0";
-        write_stderr(&msg[..msg.len() - 1]);
-        let _ = (index, len); // avoid unused warnings
-        libc::abort();
+        let msg = format!("PANIC: {operation} index {index} out of bounds (len {len})\n");
+        write_stderr(msg.as_bytes());
+        runtime_bounds_trap(HEW_TRAP_INDEX_OUT_OF_BOUNDS);
     }
 }
 
@@ -123,17 +124,17 @@ unsafe fn abort_oob(index: usize, len: usize) -> ! {
 /// Always aborts — safe to call from any context.
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_abort_oob(index: i64, len: i64) -> ! {
-    // SAFETY: abort_oob writes to stderr and aborts; always safe to call.
-    unsafe { abort_oob(index as usize, len as usize) }
+    // SAFETY: abort_oob writes to stderr and traps; always safe to call.
+    unsafe { abort_oob("Vec index", index as usize, len as usize) }
 }
 
 /// Abort on pop of empty vec.
 unsafe fn abort_pop_empty() -> ! {
-    // SAFETY: writing to stderr and aborting is always safe.
+    // SAFETY: writing to stderr and trapping is always safe on this failure path.
     unsafe {
-        let msg = b"PANIC: Vec pop on empty vector\n\0";
-        write_stderr(&msg[..msg.len() - 1]);
-        libc::abort();
+        let msg = b"PANIC: Vec.pop() on an empty vector\n";
+        write_stderr(msg);
+        runtime_bounds_trap(HEW_TRAP_INDEX_OUT_OF_BOUNDS);
     }
 }
 
@@ -144,7 +145,7 @@ unsafe fn abort_pop_empty() -> ! {
 /// Always aborts — safe to call from any context.
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_abort_pop_empty() -> ! {
-    // SAFETY: abort_pop_empty writes to stderr and aborts; always safe to call.
+    // SAFETY: abort_pop_empty writes to stderr and traps; always safe to call.
     unsafe { abort_pop_empty() }
 }
 
@@ -787,7 +788,7 @@ macro_rules! vec_get_primitive {
             unsafe {
                 let index = index as usize;
                 if index >= (*v).len {
-                    abort_oob(index, (*v).len);
+                    abort_oob("Vec.get()", index, (*v).len);
                 }
                 (*v).data.cast::<$ty>().add(index).read()
             }
@@ -819,7 +820,7 @@ pub unsafe extern "C" fn hew_vec_get_str(v: *mut HewVec, index: i64) -> *const c
     unsafe {
         let index = index as usize;
         if index >= (*v).len {
-            abort_oob(index, (*v).len);
+            abort_oob("Vec.get()", index, (*v).len);
         }
         let raw = (*v).data.cast::<*const c_char>().add(index).read();
         // Retain one owner for the caller (VWT copy); handles null/static.
@@ -869,7 +870,7 @@ pub unsafe extern "C" fn hew_vec_get_ptr(v: *mut HewVec, index: i64) -> *mut c_v
         }
         let index = index as usize;
         if index >= (*v).len {
-            abort_oob(index, (*v).len);
+            abort_oob("Vec.get()", index, (*v).len);
         }
         (*v).data.cast::<*mut c_void>().add(index).read()
     }
@@ -912,7 +913,7 @@ unsafe fn check_slice_bounds(v: *mut HewVec, start: i64, end: i64) -> (usize, us
         let start_u = start as usize;
         let end_u = end as usize;
         if start > end || end_u > len || start_u > len {
-            abort_oob(start_u, len);
+            abort_oob("Vec slice", start_u, len);
         }
         (start_u, end_u)
     }
@@ -1239,7 +1240,7 @@ pub unsafe extern "C" fn hew_vec_set_i32(v: *mut HewVec, index: i64, val: i32) {
     unsafe {
         let index = index as usize;
         if index >= (*v).len {
-            abort_oob(index, (*v).len);
+            abort_oob("Vec.set()", index, (*v).len);
         }
         (*v).data.cast::<i32>().add(index).write(val);
     }
@@ -1256,7 +1257,7 @@ pub unsafe extern "C" fn hew_vec_set_bool(v: *mut HewVec, index: i64, val: bool)
     unsafe {
         let index = index as usize;
         if index >= (*v).len {
-            abort_oob(index, (*v).len);
+            abort_oob("Vec.set()", index, (*v).len);
         }
         (*v).data.cast::<bool>().add(index).write(val);
     }
@@ -1275,7 +1276,7 @@ macro_rules! vec_set_primitive {
             unsafe {
                 let index = index as usize;
                 if index >= (*v).len {
-                    abort_oob(index, (*v).len);
+                    abort_oob("Vec.set()", index, (*v).len);
                 }
                 (*v).data.cast::<$ty>().add(index).write(val);
             }
@@ -1299,7 +1300,7 @@ pub unsafe extern "C" fn hew_vec_set_i64(v: *mut HewVec, index: i64, val: i64) {
     unsafe {
         let index = index as usize;
         if index >= (*v).len {
-            abort_oob(index, (*v).len);
+            abort_oob("Vec.set()", index, (*v).len);
         }
         (*v).data.cast::<i64>().add(index).write(val);
     }
@@ -1319,7 +1320,7 @@ pub unsafe extern "C" fn hew_vec_set_str(v: *mut HewVec, index: i64, val: *const
     unsafe {
         let index = index as usize;
         if index >= (*v).len {
-            abort_oob(index, (*v).len);
+            abort_oob("Vec.set()", index, (*v).len);
         }
         let slot = (*v).data.cast::<*mut c_char>().add(index);
         let old = slot.read();
@@ -1343,7 +1344,7 @@ pub unsafe extern "C" fn hew_vec_set_f64(v: *mut HewVec, index: i64, val: f64) {
     unsafe {
         let index = index as usize;
         if index >= (*v).len {
-            abort_oob(index, (*v).len);
+            abort_oob("Vec.set()", index, (*v).len);
         }
         (*v).data.cast::<f64>().add(index).write(val);
     }
@@ -1996,10 +1997,9 @@ pub unsafe extern "C" fn hew_vec_remove_at(v: *mut HewVec, index: i64) {
     unsafe {
         abort_if_layout_aware(v);
         let len = (*v).len;
-        assert!(
-            idx < len,
-            "hew_vec_remove_at: index {idx} out of bounds (len {len})"
-        );
+        if idx >= len {
+            abort_oob("Vec.remove()", idx, len);
+        }
         let elem_size = (*v).elem_size;
         let src = (*v).data.add((idx + 1) * elem_size);
         let dst = (*v).data.add(idx * elem_size);
@@ -2047,7 +2047,7 @@ pub unsafe extern "C" fn hew_vec_remove_at_layout(
         let len = (*v).len;
         let idx = index as usize;
         if idx >= len {
-            abort_oob(idx, len);
+            abort_oob("Vec.remove()", idx, len);
         }
         let elem_size = (*layout).size;
         // Guard against zero-stride pointer arithmetic (layout validation
@@ -2080,7 +2080,7 @@ pub unsafe extern "C" fn hew_vec_set_ptr(v: *mut HewVec, index: i64, val: *mut c
     unsafe {
         let index = index as usize;
         if index >= (*v).len {
-            abort_oob(index, (*v).len);
+            abort_oob("Vec.set()", index, (*v).len);
         }
         (*v).data.cast::<*mut c_void>().add(index).write(val);
     }
@@ -2127,10 +2127,10 @@ pub unsafe extern "C" fn hew_vec_swap(v: *mut HewVec, i: i64, j: i64) {
         let j = j as usize;
         let len = (*v).len;
         if i >= len {
-            abort_oob(i, len);
+            abort_oob("Vec.swap()", i, len);
         }
         if j >= len {
-            abort_oob(j, len);
+            abort_oob("Vec.swap()", j, len);
         }
         if i == j {
             return;
@@ -2276,7 +2276,7 @@ pub unsafe extern "C" fn hew_vec_get_generic(
         abort_if_layout_aware(v);
         let index = index as usize;
         if index >= (*v).len {
-            abort_oob(index, (*v).len);
+            abort_oob("Vec.get()", index, (*v).len);
         }
         (*v).data.add(index * (*v).elem_size).cast()
     }
@@ -2301,7 +2301,7 @@ pub unsafe extern "C" fn hew_vec_get_layout(
         validate_bitcopy_layout_operation(v, layout);
         let index = index as usize;
         if index >= (*v).len {
-            abort_oob(index, (*v).len);
+            abort_oob("Vec.get()", index, (*v).len);
         }
         (*v).data.add(index * (*layout).size).cast()
     }
@@ -2325,7 +2325,7 @@ pub unsafe extern "C" fn hew_vec_set_generic(
         abort_if_layout_aware(v);
         let index = index as usize;
         if index >= (*v).len {
-            abort_oob(index, (*v).len);
+            abort_oob("Vec.set()", index, (*v).len);
         }
         let elem_size = (*v).elem_size;
         let dst = (*v).data.add(index * elem_size);
@@ -2353,7 +2353,7 @@ pub unsafe extern "C" fn hew_vec_set_layout(
         validate_bitcopy_layout_operation(v, layout);
         let index = index as usize;
         if index >= (*v).len {
-            abort_oob(index, (*v).len);
+            abort_oob("Vec.set()", index, (*v).len);
         }
         let elem_size = (*layout).size;
         let dst = (*v).data.add(index * elem_size);
@@ -2654,7 +2654,7 @@ pub unsafe extern "C" fn hew_vec_get_owned(
         let layout = owned_descriptor(v);
         let index = index as usize;
         if index >= (*v).len {
-            abort_oob(index, (*v).len);
+            abort_oob("Vec.get()", index, (*v).len);
         }
         (*v).data.add(index * layout.size).cast()
     }
@@ -2754,7 +2754,7 @@ pub unsafe extern "C" fn hew_vec_set_owned(
         let drop_fn = owned_drop_fn(layout);
         let index = index as usize;
         if index >= (*v).len {
-            abort_oob(index, (*v).len);
+            abort_oob("Vec.set()", index, (*v).len);
         }
         let slot = (*v).data.add(index * elem_size);
         // Drop the replaced element exactly once, then deep-copy the new one in.
@@ -3549,6 +3549,132 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    fn run_vec_death_helper(helper: &str) -> std::process::Output {
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "--nocapture", helper])
+            .env("RUST_TEST_THREADS", "1")
+            .env("HEW_DEATH_TEST", helper)
+            .output()
+            .unwrap()
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg_attr(
+        miri,
+        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+    )]
+    fn test_vec_set_i32_oob_traps_main_context() {
+        let output = run_vec_death_helper("vec::tests::_helper_vec_set_i32_oob");
+        assert!(
+            !output.status.success(),
+            "out-of-bounds Vec.set() must terminate without actor context"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("PANIC: Vec.set() index 1 out of bounds (len 1)"),
+            "out-of-bounds Vec.set() must report index and len; got: {stderr}"
+        );
+        assert!(
+            stderr.contains("hew: trap in main context: IndexOutOfBounds"),
+            "out-of-bounds Vec.set() must route through the trap code; got: {stderr}"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn _helper_vec_set_i32_oob() {
+        if std::env::var("HEW_DEATH_TEST")
+            .map_or(true, |value| value != "vec::tests::_helper_vec_set_i32_oob")
+        {
+            return;
+        }
+        // SAFETY: FFI calls use a valid vec; the set is intentionally OOB.
+        unsafe {
+            let v = hew_vec_new();
+            hew_vec_push_i32(v, 7);
+            hew_vec_set_i32(v, 1, 9);
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg_attr(
+        miri,
+        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+    )]
+    fn test_vec_pop_i32_empty_traps_main_context() {
+        let output = run_vec_death_helper("vec::tests::_helper_vec_pop_i32_empty");
+        assert!(
+            !output.status.success(),
+            "empty Vec.pop() must terminate without actor context"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("PANIC: Vec.pop() on an empty vector"),
+            "empty Vec.pop() must report the operation; got: {stderr}"
+        );
+        assert!(
+            stderr.contains("hew: trap in main context: IndexOutOfBounds"),
+            "empty Vec.pop() must route through the trap code; got: {stderr}"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn _helper_vec_pop_i32_empty() {
+        if std::env::var("HEW_DEATH_TEST")
+            .map_or(true, |value| value != "vec::tests::_helper_vec_pop_i32_empty")
+        {
+            return;
+        }
+        // SAFETY: FFI calls use a valid vec; the pop is intentionally empty.
+        unsafe {
+            let v = hew_vec_new();
+            let _ = hew_vec_pop_i32(v);
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg_attr(
+        miri,
+        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+    )]
+    fn test_vec_remove_i32_oob_traps_main_context() {
+        let output = run_vec_death_helper("vec::tests::_helper_vec_remove_i32_oob");
+        assert!(
+            !output.status.success(),
+            "out-of-bounds Vec.remove() must terminate without actor context"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("PANIC: Vec.remove() index 1 out of bounds (len 1)"),
+            "out-of-bounds Vec.remove() must report index and len; got: {stderr}"
+        );
+        assert!(
+            stderr.contains("hew: trap in main context: IndexOutOfBounds"),
+            "out-of-bounds Vec.remove() must route through the trap code; got: {stderr}"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn _helper_vec_remove_i32_oob() {
+        if std::env::var("HEW_DEATH_TEST")
+            .map_or(true, |value| value != "vec::tests::_helper_vec_remove_i32_oob")
+        {
+            return;
+        }
+        // SAFETY: FFI calls use a valid vec; the remove is intentionally OOB.
+        unsafe {
+            let v = hew_vec_new();
+            hew_vec_push_i32(v, 7);
+            hew_vec_remove_at(v, 1);
+        }
+    }
+
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg_attr(
@@ -3567,7 +3693,8 @@ mod tests {
             "out-of-bounds get must terminate abnormally"
         );
         assert!(
-            String::from_utf8_lossy(&status.stderr).contains("PANIC: Vec index out of bounds"),
+            String::from_utf8_lossy(&status.stderr)
+                .contains("PANIC: Vec.get() index 1 out of bounds (len 1)"),
             "out-of-bounds get must report the vec bounds panic"
         );
     }
@@ -4082,7 +4209,7 @@ mod tests {
         );
         let stderr = String::from_utf8_lossy(&status.stderr);
         assert!(
-            stderr.contains("PANIC: Vec index out of bounds"),
+            stderr.contains("PANIC: Vec.remove() index 1 out of bounds (len 1)"),
             "out-of-bounds remove must report the vec bounds panic; got: {stderr}"
         );
     }

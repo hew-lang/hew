@@ -1546,17 +1546,11 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                                 CompoundAssignOp::Multiply => "i64.checked_mul",
                                 CompoundAssignOp::Divide => "i64.checked_div",
                                 CompoundAssignOp::Modulo => "i64.checked_rem",
-                                // Bitwise and shift forms are integer-only; admit them
-                                // to the arithmetic path when an opcode exists, trap
-                                // otherwise so learners get a named failure.
-                                CompoundAssignOp::BitAnd
-                                | CompoundAssignOp::BitOr
-                                | CompoundAssignOp::BitXor
-                                | CompoundAssignOp::Shl
-                                | CompoundAssignOp::Shr => {
-                                    self.emit_unsupported(Some(span));
-                                    return Ok(());
-                                }
+                                CompoundAssignOp::BitAnd => "i64.and",
+                                CompoundAssignOp::BitOr => "i64.or",
+                                CompoundAssignOp::BitXor => "i64.xor",
+                                CompoundAssignOp::Shl => "i64.shl",
+                                CompoundAssignOp::Shr => "i64.shr",
                             };
                             // Emit `local.get current, binding` to read the current value.
                             let current_ty = self.ty_for_expr(target);
@@ -2434,6 +2428,11 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             BinaryOp::WrappingAdd => "i64.add",
             BinaryOp::WrappingSub => "i64.sub",
             BinaryOp::WrappingMul => "i64.mul",
+            BinaryOp::BitAnd => "i64.and",
+            BinaryOp::BitOr => "i64.or",
+            BinaryOp::BitXor => "i64.xor",
+            BinaryOp::Shl => "i64.shl",
+            BinaryOp::Shr => "i64.shr",
             // Comparisons are already type-polymorphic in the interpreter
             // (`compareScalar` dispatches on the runtime value kind), so a
             // single `cmp.*` opcode covers both i64 and f64 operands.

@@ -665,6 +665,73 @@ mod tests {
         }
     }
 
+    /// Crypto parity gate: HS384 round-trips (encode with algo=1, decode with
+    /// algo=1) just like the existing HS256 (algo=0) coverage above. Every
+    /// prior round-trip test in this module used `"HS256"`/`algo=0`
+    /// literally; HS384/HS512 had zero coverage before this test.
+    #[test]
+    fn hs384_round_trips_encode_and_decode() {
+        let payload = valid_payload();
+        let secret = valid_secret();
+        let token = mint_token(&payload, &secret, 1);
+        let token_c = CString::new(token).unwrap();
+
+        // SAFETY: CStrings are valid NUL-terminated C strings.
+        unsafe {
+            let (decoded_ptr, err) = decode_err(token_c.as_ptr(), secret.as_ptr(), 1);
+            assert_eq!(err, HewJwtError::None);
+            let decoded = read_and_free(decoded_ptr);
+            let claims: serde_json::Value = serde_json::from_str(&decoded).unwrap();
+            assert_eq!(claims["sub"], "user1");
+            assert_eq!(claims["role"], "admin");
+        }
+    }
+
+    /// Crypto parity gate: HS512 round-trips (encode with algo=2, decode with
+    /// algo=2). See `hs384_round_trips_encode_and_decode`.
+    #[test]
+    fn hs512_round_trips_encode_and_decode() {
+        let payload = valid_payload();
+        let secret = valid_secret();
+        let token = mint_token(&payload, &secret, 2);
+        let token_c = CString::new(token).unwrap();
+
+        // SAFETY: CStrings are valid NUL-terminated C strings.
+        unsafe {
+            let (decoded_ptr, err) = decode_err(token_c.as_ptr(), secret.as_ptr(), 2);
+            assert_eq!(err, HewJwtError::None);
+            let decoded = read_and_free(decoded_ptr);
+            let claims: serde_json::Value = serde_json::from_str(&decoded).unwrap();
+            assert_eq!(claims["sub"], "user1");
+            assert_eq!(claims["role"], "admin");
+        }
+    }
+
+    /// Crypto parity gate: a token signed with one algorithm must be
+    /// rejected (not crash, not silently accepted) when decoded against a
+    /// different algorithm. `jsonwebtoken::Validation::new(algorithm)`
+    /// checks the token header's `alg` claim against the decode-side
+    /// algorithm; a mismatch classifies as `SignatureInvalid` via
+    /// `classify_jwt_error`'s `InvalidAlgorithm` arm.
+    #[test]
+    fn decode_rejects_token_signed_with_different_algorithm() {
+        let payload = valid_payload();
+        let secret = valid_secret();
+        // Sign with HS384 (algo=1), attempt to decode as HS256 (algo=0).
+        let token = mint_token(&payload, &secret, 1);
+        let token_c = CString::new(token).unwrap();
+
+        // SAFETY: CStrings are valid NUL-terminated C strings.
+        unsafe {
+            let (decoded_ptr, err) = decode_err(token_c.as_ptr(), secret.as_ptr(), 0);
+            assert!(
+                decoded_ptr.is_null(),
+                "cross-algorithm decode must not silently succeed"
+            );
+            assert_eq!(err, HewJwtError::SignatureInvalid);
+        }
+    }
+
     #[test]
     fn hew_wrappers_track_last_error_code() {
         let payload = valid_payload();

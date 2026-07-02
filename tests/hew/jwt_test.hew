@@ -40,6 +40,86 @@ fn test_decode_insecure_returns_payload_without_verification() {
     testing.assert_eq_str(jwt.decode_insecure(token), payload);
 }
 
+// ── HS384/HS512 coverage (crypto parity gate) ─────────────────────────
+// Every prior round-trip test above used "HS256" literally; these mirror
+// the same round-trip shape for the other two supported HMAC algorithms.
+
+#[test]
+fn test_hs384_try_encode_and_try_decode_round_trip_payload() {
+    let payload = "{\"sub\":\"user42\"}";
+    let secret = "fixture-secret";
+
+    match jwt.try_encode(payload, secret, "HS384") {
+        Ok(token) => {
+            testing.assert_true(token.len() > 0);
+
+            match jwt.try_decode(token, secret, "HS384") {
+                Ok(decoded) => testing.assert_eq_str(decoded, payload),
+                Err(err) => panic(jwt.error_message(err)),
+            }
+        },
+        Err(err) => panic(jwt.error_message(err)),
+    }
+}
+
+#[test]
+fn test_hs384_validate_accepts_matching_secret() {
+    let token = jwt.encode("{\"sub\":\"user42\"}", "fixture-secret", "HS384");
+    testing.assert_true(jwt.validate(token, "fixture-secret", "HS384"));
+}
+
+#[test]
+fn test_hs512_try_encode_and_try_decode_round_trip_payload() {
+    let payload = "{\"sub\":\"user42\"}";
+    let secret = "fixture-secret";
+
+    match jwt.try_encode(payload, secret, "HS512") {
+        Ok(token) => {
+            testing.assert_true(token.len() > 0);
+
+            match jwt.try_decode(token, secret, "HS512") {
+                Ok(decoded) => testing.assert_eq_str(decoded, payload),
+                Err(err) => panic(jwt.error_message(err)),
+            }
+        },
+        Err(err) => panic(jwt.error_message(err)),
+    }
+}
+
+#[test]
+fn test_hs512_validate_accepts_matching_secret() {
+    let token = jwt.encode("{\"sub\":\"user42\"}", "fixture-secret", "HS512");
+    testing.assert_true(jwt.validate(token, "fixture-secret", "HS512"));
+}
+
+// A token signed with one algorithm must be rejected — not silently
+// accepted, not crash — when decoded/validated against a different
+// algorithm.
+
+#[test]
+fn test_try_decode_rejects_token_signed_with_different_algorithm() {
+    let payload = "{\"sub\":\"user42\"}";
+    let secret = "fixture-secret";
+    let token = jwt.encode(payload, secret, "HS384");
+
+    match jwt.try_decode(token, secret, "HS256") {
+        Ok(_) => panic("cross-algorithm decode must not silently succeed"),
+        Err(err) => match err {
+            JwtError::SignatureInvalid => testing.assert_true(true),
+            _ => panic(f"expected SignatureInvalid, got: {jwt.error_message(err)}"),
+        },
+    }
+}
+
+#[test]
+fn test_validate_rejects_token_signed_with_different_algorithm() {
+    let payload = "{\"sub\":\"user42\"}";
+    let secret = "fixture-secret";
+    let token = jwt.encode(payload, secret, "HS512");
+
+    testing.assert_false(jwt.validate(token, secret, "HS256"));
+}
+
 // ── Fail-closed error path (finding JWT-3) ────────────────────────────
 // A malformed token must surface the typed `TokenMalformed` error, never
 // decode as success. This proves the fail-closed direction on the compiled

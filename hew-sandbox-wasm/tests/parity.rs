@@ -383,6 +383,11 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/sandbox-graduation/nested_tuple_destructure_let.hew",
         accepted_divergences: &[],
     },
+    ParityCase {
+        test_name: "wrapping_binary_operators",
+        source_rel: "examples/sandbox-graduation/wrapping_binary_operators.hew",
+        accepted_divergences: &[],
+    },
 ];
 
 #[derive(Debug, Clone, Copy)]

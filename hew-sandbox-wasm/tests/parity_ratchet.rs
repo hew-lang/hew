@@ -206,6 +206,11 @@ const CONSTRUCTS: &[Construct] = &[
         coverage: Coverage::ParityTrap("shift_out_of_range"),
     },
     Construct {
+        id: "wrapping binary operators",
+        probe: "fn main() {\n    let a = 10;\n    let b = 3;\n    println(a &+ b);\n    println(a &- b);\n    println(a &* b);\n}\n",
+        coverage: Coverage::Parity("wrapping_binary_operators"),
+    },
+    Construct {
         id: "unary integer negate (`-a`)",
         // The arithmetic_operators example carries the real `-a` line. Before
         // this change it only used `0 - a` (binary subtract), so `i64.neg` was
@@ -1181,7 +1186,9 @@ mod ast_surface {
                 Some("bitwise binary operators")
             }
             BinaryOp::Shl | BinaryOp::Shr => Some("shift binary operators"),
-            BinaryOp::WrappingAdd | BinaryOp::WrappingSub | BinaryOp::WrappingMul => None,
+            BinaryOp::WrappingAdd | BinaryOp::WrappingSub | BinaryOp::WrappingMul => {
+                Some("wrapping binary operators")
+            }
             BinaryOp::Range | BinaryOp::RangeInclusive => {
                 Some("recursive call + expr-if + range-for + interpolation")
             }
@@ -1307,16 +1314,105 @@ fn every_classified_owner_names_a_construct() {
 }
 
 fn walk_item(item: &hew_parser::ast::Item, owners: &mut Vec<Option<&'static str>>) {
-    use hew_parser::ast::Item;
+    use hew_parser::ast::{Item, TraitItem};
     match item {
         Item::Function(f) => walk_block(&f.body, owners),
+        Item::Const(c) => walk_expr(&c.value, owners),
+        Item::Trait(t) => {
+            for item in &t.items {
+                match item {
+                    TraitItem::Method(method) => {
+                        if let Some(body) = &method.body {
+                            walk_block(body, owners);
+                        }
+                    }
+                    TraitItem::AssociatedType { default, .. } => {
+                        if let Some((ty, _)) = default {
+                            walk_type_expr(ty, owners);
+                        }
+                    }
+                }
+            }
+        }
+        Item::Impl(i) => {
+            walk_type_expr(&i.target_type.0, owners);
+            for alias in &i.type_aliases {
+                walk_type_expr(&alias.ty.0, owners);
+            }
+            for method in &i.methods {
+                walk_block(&method.body, owners);
+            }
+        }
         Item::Actor(a) => {
+            if let Some(init) = &a.init {
+                walk_block(&init.body, owners);
+            }
+            for field in &a.fields {
+                walk_type_expr(&field.ty.0, owners);
+                if let Some(default) = &field.default {
+                    walk_expr(default, owners);
+                }
+            }
             for r in &a.receive_fns {
                 walk_block(&r.body, owners);
             }
+            for method in &a.methods {
+                walk_block(&method.body, owners);
+            }
         }
-        Item::Const(c) => walk_expr(&c.value, owners),
-        _ => {}
+        Item::Supervisor(s) => {
+            for child in &s.children {
+                for (_, arg) in &child.args {
+                    walk_expr(arg, owners);
+                }
+            }
+        }
+        Item::Machine(m) => {
+            for state in &m.states {
+                for (_, ty) in &state.fields {
+                    walk_type_expr(&ty.0, owners);
+                }
+                if let Some(entry) = &state.entry {
+                    walk_block(entry, owners);
+                }
+                if let Some(exit) = &state.exit {
+                    walk_block(exit, owners);
+                }
+            }
+            for event in &m.events {
+                for (_, ty) in &event.fields {
+                    walk_type_expr(&ty.0, owners);
+                }
+            }
+            for transition in &m.transitions {
+                if let Some(guard) = &transition.guard {
+                    walk_expr(guard, owners);
+                }
+                walk_expr(&transition.body, owners);
+            }
+            for group in &m.composite_groups {
+                if let Some(entry) = &group.entry {
+                    walk_block(entry, owners);
+                }
+                if let Some(exit) = &group.exit {
+                    walk_block(exit, owners);
+                }
+                for (_, ty) in &group.fields {
+                    walk_type_expr(&ty.0, owners);
+                }
+                for transition in &group.parent_transitions {
+                    if let Some(guard) = &transition.guard {
+                        walk_expr(guard, owners);
+                    }
+                    walk_expr(&transition.body, owners);
+                }
+            }
+        }
+        Item::Import(_)
+        | Item::TypeDecl(_)
+        | Item::TypeAlias(_)
+        | Item::ExternBlock(_)
+        | Item::Record(_) => {}
     }
 }
 
@@ -1333,9 +1429,26 @@ fn walk_stmt(stmt: &hew_parser::ast::Stmt, owners: &mut Vec<Option<&'static str>
     use hew_parser::ast::Stmt;
     owners.push(ast_surface::classify_stmt(stmt));
     match stmt {
-        Stmt::Let { value, ty, .. } | Stmt::Var { value, ty, .. } => {
+        Stmt::Let {
+            pattern,
+            value,
+            ty,
+            else_block,
+        } => {
+            walk_pattern(pattern, owners);
             if let Some((ty, _)) = ty {
-                owners.push(ast_surface::classify_type_expr(ty));
+                walk_type_expr(ty, owners);
+            }
+            if let Some(e) = value {
+                walk_expr(e, owners);
+            }
+            if let Some(block) = else_block {
+                walk_block(block, owners);
+            }
+        }
+        Stmt::Var { value, ty, .. } => {
+            if let Some((ty, _)) = ty {
+                walk_type_expr(ty, owners);
             }
             if let Some(e) = value {
                 walk_expr(e, owners);
@@ -1345,20 +1458,152 @@ fn walk_stmt(stmt: &hew_parser::ast::Stmt, owners: &mut Vec<Option<&'static str>
             walk_expr(target, owners);
             walk_expr(value, owners);
         }
-        Stmt::Expression(e) | Stmt::Return(Some(e)) => walk_expr(e, owners),
-        Stmt::Defer(e) => walk_expr(e, owners),
+        Stmt::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            walk_expr(condition, owners);
+            walk_block(then_block, owners);
+            if let Some(else_block) = else_block {
+                walk_else_block(else_block, owners);
+            }
+        }
+        Stmt::IfLet {
+            pattern,
+            expr,
+            body,
+            else_body,
+        } => {
+            walk_pattern(pattern, owners);
+            walk_expr(expr, owners);
+            walk_block(body, owners);
+            if let Some(block) = else_body {
+                walk_block(block, owners);
+            }
+        }
+        Stmt::Match { scrutinee, arms } => {
+            walk_expr(scrutinee, owners);
+            for arm in arms {
+                walk_pattern(&arm.pattern, owners);
+                if let Some(guard) = &arm.guard {
+                    walk_expr(guard, owners);
+                }
+                walk_expr(&arm.body, owners);
+            }
+        }
+        Stmt::Loop { body, .. } => walk_block(body, owners),
+        Stmt::For {
+            pattern,
+            iterable,
+            body,
+            ..
+        } => {
+            walk_pattern(pattern, owners);
+            walk_expr(iterable, owners);
+            walk_block(body, owners);
+        }
         Stmt::While {
             condition, body, ..
         } => {
             walk_expr(condition, owners);
             walk_block(body, owners);
         }
-        Stmt::Loop { body, .. } => walk_block(body, owners),
-        Stmt::For { iterable, body, .. } => {
-            walk_expr(iterable, owners);
+        Stmt::WhileLet {
+            pattern,
+            expr,
+            body,
+            ..
+        } => {
+            walk_pattern(pattern, owners);
+            walk_expr(expr, owners);
             walk_block(body, owners);
         }
-        _ => {}
+        Stmt::Break { value, .. } => {
+            if let Some(value) = value {
+                walk_expr(value, owners);
+            }
+        }
+        Stmt::Continue { .. } | Stmt::Return(None) => {}
+        Stmt::Return(Some(e)) | Stmt::Expression(e) => walk_expr(e, owners),
+        Stmt::Defer(e) => walk_expr(e, owners),
+    }
+}
+
+fn walk_else_block(block: &hew_parser::ast::ElseBlock, owners: &mut Vec<Option<&'static str>>) {
+    if let Some(block) = &block.block {
+        walk_block(block, owners);
+    }
+    if let Some((stmt, _)) = block.if_stmt.as_deref() {
+        walk_stmt(stmt, owners);
+    }
+}
+
+fn walk_pattern(
+    pattern: &hew_parser::ast::Spanned<hew_parser::ast::Pattern>,
+    owners: &mut Vec<Option<&'static str>>,
+) {
+    use hew_parser::ast::Pattern;
+    owners.push(ast_surface::classify_pattern(&pattern.0));
+    match &pattern.0 {
+        Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => {
+            for pattern in patterns {
+                walk_pattern(pattern, owners);
+            }
+        }
+        Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields } => {
+            for field in fields {
+                if let Some(pattern) = &field.pattern {
+                    walk_pattern(pattern, owners);
+                }
+            }
+        }
+        Pattern::Or(left, right) => {
+            walk_pattern(left, owners);
+            walk_pattern(right, owners);
+        }
+        Pattern::Wildcard
+        | Pattern::Literal(_)
+        | Pattern::Identifier(_)
+        | Pattern::Regex { .. } => {}
+    }
+}
+
+fn walk_type_expr(ty: &hew_parser::ast::TypeExpr, owners: &mut Vec<Option<&'static str>>) {
+    use hew_parser::ast::TypeExpr;
+    owners.push(ast_surface::classify_type_expr(ty));
+    match ty {
+        TypeExpr::Named { type_args, .. } => {
+            if let Some(type_args) = type_args {
+                for (ty, _) in type_args {
+                    walk_type_expr(ty, owners);
+                }
+            }
+        }
+        TypeExpr::Result { ok, err } => {
+            walk_type_expr(&ok.0, owners);
+            walk_type_expr(&err.0, owners);
+        }
+        TypeExpr::Option(inner)
+        | TypeExpr::Slice(inner)
+        | TypeExpr::Pointer { pointee: inner, .. }
+        | TypeExpr::Borrow(inner) => walk_type_expr(&inner.0, owners),
+        TypeExpr::Tuple(items) => {
+            for (ty, _) in items {
+                walk_type_expr(ty, owners);
+            }
+        }
+        TypeExpr::Array { element, .. } => walk_type_expr(&element.0, owners),
+        TypeExpr::Function {
+            params,
+            return_type,
+        } => {
+            for (ty, _) in params {
+                walk_type_expr(ty, owners);
+            }
+            walk_type_expr(&return_type.0, owners);
+        }
+        TypeExpr::TraitObject(_) | TypeExpr::Infer => {}
     }
 }
 
@@ -1366,7 +1611,7 @@ fn walk_expr(
     expr: &hew_parser::ast::Spanned<hew_parser::ast::Expr>,
     owners: &mut Vec<Option<&'static str>>,
 ) {
-    use hew_parser::ast::Expr;
+    use hew_parser::ast::{Expr, StringPart};
     owners.push(ast_surface::classify_expr(&expr.0));
     match &expr.0 {
         Expr::Binary { left, op, right } => {
@@ -1378,18 +1623,36 @@ fn walk_expr(
             owners.push(ast_surface::classify_unary_op(*op));
             walk_expr(operand, owners);
         }
-        Expr::Match { scrutinee, arms } => {
-            walk_expr(scrutinee, owners);
-            for arm in arms {
-                owners.push(ast_surface::classify_pattern(&arm.pattern.0));
-                walk_expr(&arm.body, owners);
+        Expr::Clone(operand)
+        | Expr::PostfixTry(operand)
+        | Expr::Await(operand)
+        | Expr::AwaitRestart(operand) => walk_expr(operand, owners),
+        Expr::Literal(_)
+        | Expr::Identifier(_)
+        | Expr::This
+        | Expr::RegexLiteral(_)
+        | Expr::ByteStringLiteral(_)
+        | Expr::ByteArrayLiteral(_) => {}
+        Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) => {
+            for item in items {
+                walk_expr(item, owners);
             }
         }
-        Expr::Call { args, .. } | Expr::MethodCall { args, .. } => {
-            for arg in args {
-                walk_expr(arg.expr(), owners);
+        Expr::ArrayRepeat { value, count } => {
+            walk_expr(value, owners);
+            walk_expr(count, owners);
+        }
+        Expr::MapLiteral { entries } => {
+            for (key, value) in entries {
+                walk_expr(key, owners);
+                walk_expr(value, owners);
             }
         }
+        Expr::Block(block)
+        | Expr::Scope { body: block }
+        | Expr::ForkBlock { body: block }
+        | Expr::GenBlock { body: block } => walk_block(block, owners),
+        Expr::UnsafeBlock(block) => walk_block(block, owners),
         Expr::If {
             condition,
             then_block,
@@ -1401,7 +1664,163 @@ fn walk_expr(
                 walk_expr(e, owners);
             }
         }
-        _ => {}
+        Expr::IfLet {
+            pattern,
+            expr,
+            body,
+            else_body,
+        } => {
+            walk_pattern(pattern, owners);
+            walk_expr(expr, owners);
+            walk_block(body, owners);
+            if let Some(block) = else_body {
+                walk_block(block, owners);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            walk_expr(scrutinee, owners);
+            for arm in arms {
+                walk_pattern(&arm.pattern, owners);
+                if let Some(guard) = &arm.guard {
+                    walk_expr(guard, owners);
+                }
+                walk_expr(&arm.body, owners);
+            }
+        }
+        Expr::Lambda {
+            params,
+            return_type,
+            body,
+            ..
+        }
+        | Expr::SpawnLambdaActor {
+            params,
+            return_type,
+            body,
+            ..
+        } => {
+            for param in params {
+                if let Some((ty, _)) = &param.ty {
+                    walk_type_expr(ty, owners);
+                }
+            }
+            if let Some((ty, _)) = return_type {
+                walk_type_expr(ty, owners);
+            }
+            walk_expr(body, owners);
+        }
+        Expr::Call {
+            function,
+            type_args,
+            args,
+            ..
+        } => {
+            walk_expr(function, owners);
+            if let Some(type_args) = type_args {
+                for (ty, _) in type_args {
+                    walk_type_expr(ty, owners);
+                }
+            }
+            for arg in args {
+                walk_expr(arg.expr(), owners);
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            walk_expr(receiver, owners);
+            for arg in args {
+                walk_expr(arg.expr(), owners);
+            }
+        }
+        Expr::Spawn {
+            target,
+            type_args,
+            args,
+        } => {
+            walk_expr(target, owners);
+            for (ty, _) in type_args {
+                walk_type_expr(ty, owners);
+            }
+            for (_, arg) in args {
+                walk_expr(arg, owners);
+            }
+        }
+        Expr::ForkChild { expr, .. } => walk_expr(expr, owners),
+        Expr::ScopeDeadline { duration, body } => {
+            walk_expr(duration, owners);
+            walk_block(body, owners);
+        }
+        Expr::InterpolatedString(parts) => {
+            for part in parts {
+                match part {
+                    StringPart::Literal(_) => {}
+                    StringPart::Expr(expr) => walk_expr(expr, owners),
+                }
+            }
+        }
+        Expr::StructInit {
+            fields,
+            type_args,
+            base,
+            ..
+        } => {
+            if let Some(type_args) = type_args {
+                for (ty, _) in type_args {
+                    walk_type_expr(ty, owners);
+                }
+            }
+            for (_, value) in fields {
+                walk_expr(value, owners);
+            }
+            if let Some(base) = base {
+                walk_expr(base, owners);
+            }
+        }
+        Expr::Select { arms, timeout } => {
+            for arm in arms {
+                walk_pattern(&arm.binding, owners);
+                walk_expr(&arm.source, owners);
+                walk_expr(&arm.body, owners);
+            }
+            if let Some(timeout) = timeout {
+                walk_expr(&timeout.duration, owners);
+                walk_expr(&timeout.body, owners);
+            }
+        }
+        Expr::Timeout { expr, duration } => {
+            walk_expr(expr, owners);
+            walk_expr(duration, owners);
+        }
+        Expr::Yield(value) | Expr::Return(value) => {
+            if let Some(value) = value {
+                walk_expr(value, owners);
+            }
+        }
+        Expr::FieldAccess { object, .. } => walk_expr(object, owners),
+        Expr::Index { object, index } => {
+            walk_expr(object, owners);
+            walk_expr(index, owners);
+        }
+        Expr::Cast { expr, ty } => {
+            walk_expr(expr, owners);
+            walk_type_expr(&ty.0, owners);
+        }
+        Expr::Range { start, end, .. } => {
+            if let Some(start) = start {
+                walk_expr(start, owners);
+            }
+            if let Some(end) = end {
+                walk_expr(end, owners);
+            }
+        }
+        Expr::Is { lhs, rhs } => {
+            walk_expr(lhs, owners);
+            walk_expr(rhs, owners);
+        }
+        Expr::MachineEmit { fields, .. } => {
+            for (_, value) in fields {
+                walk_expr(value, owners);
+            }
+        }
     }
 }
 

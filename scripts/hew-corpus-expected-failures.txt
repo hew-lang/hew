@@ -175,10 +175,11 @@ repros/p0c_method_value_failclosed.hew
 
 # ── tests/corpus/ ────────────────────────────────────────────────────────────
 
-# stale-syntax: v05-value-model corpus uses pre-v0.5 `struct` keyword and
-# other old syntax; needs migrating forward to current type/record syntax
-tests/corpus/v05-value-model/01_bitcopy_simple.hew
+# stale-syntax: record update spread must be the final field
 tests/corpus/v05-value-model/03_cowvalue_mutation_after_share.hew
+
+# stale-syntax: v05-value-model corpus uses pre-v0.5 syntax that needs migrating
+# forward to current type/record syntax
 tests/corpus/v05-value-model/04_persistent_share_placeholder.hew
 tests/corpus/v05-value-model/05_affine_resource_consume.hew
 tests/corpus/v05-value-model/07_view_field_slice_alias.hew
@@ -189,7 +190,11 @@ tests/corpus/v05-value-model/12_closure_capture_let_read.hew
 tests/corpus/v05-value-model/13_closure_capture_var_mutate.hew
 tests/corpus/v05-value-model/14_closure_capture_var_consume.hew
 tests/corpus/v05-value-model/15_generator_yield_immutable_read.hew
+
+# deferred-nyi: Display/Formatter stringification API surface is not built yet
 tests/corpus/v05-value-model/17_to_string_display_read_receiver.hew
+
+# stale-syntax: record update spread must be the final field
 tests/corpus/v05-value-model/18_record_update_syntax.hew
 tests/corpus/v05-value-model/19_actor_scope.hew
 

@@ -15,7 +15,7 @@
 //   - arithmetic / field access on Copy → borrow_read, cost: Free
 //   - struct with all-Copy fields is itself Copy (structural)
 
-struct Point {
+type Point {
     x: f64,
     y: f64,
 }

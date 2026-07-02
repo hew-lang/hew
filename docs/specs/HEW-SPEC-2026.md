@@ -398,7 +398,7 @@ unaffected.
 
 - Bindings are immutable by default: `let`.
 - Mutable bindings: `var`.
-- Struct fields have no mutability qualifier. Field mutation is governed by the binding: a `var`-bound struct allows `p.x = …`; a `let`-bound struct rejects it.
+- Type fields have no mutability qualifier. Field mutation is governed by the binding: a `var`-bound value allows `p.x = …`; a `let`-bound value rejects it.
 
 ### 3.3 Sendability / isolation rule
 
@@ -538,7 +538,7 @@ y = 10;          // ok
 
 This is similar to JavaScript's `const`/`let` or Swift's `let`/`var`. It controls whether the _binding_ can be reassigned, not whether the underlying data is mutable.
 
-For type (struct) fields:
+For type fields:
 
 ```hew
 type Point {
@@ -553,7 +553,7 @@ let q = Point { x: 0, y: 0 };
 // q.x = 10;     // compile error — q is let-bound
 ```
 
-**Type (struct) field syntax:**
+**Type field syntax:**
 
 Type fields do NOT require a `let`/`var` prefix. Fields are immutable and use semicolons as terminators:
 
@@ -578,7 +578,7 @@ actor Counter {
 
 A `let` (or bare) actor field is immutable after construction: it may be assigned only inside the `init { }` block, where its initial value is established. Any assignment to a `let` field from a `receive fn`, a plain actor method, or a lifecycle hook is rejected at check time with a diagnostic that names the field and suggests declaring it with `var`. A `var` field is mutable and may be assigned anywhere in the actor body.
 
-This distinction exists because actor fields are stateful (they change over the actor's lifetime) and use initialization syntax similar to variable declarations, while struct fields are data layout declarations.
+This distinction exists because actor fields are stateful (they change over the actor's lifetime) and use initialization syntax similar to variable declarations, while type fields are data layout declarations.
 
 #### 3.4.4 The Boundary Rule: Move on Send
 
@@ -967,7 +967,7 @@ This produces an index plus per-module pages for the shipped `std/` sources.
 Types defined in different modules are distinct even if they share a name. A
 `Point` defined in `geometry` and a `Point` defined in `graphics` are unrelated
 types; the qualified names `geometry.Point` and `graphics.Point` disambiguate
-them everywhere — in type annotations, `match` patterns, and struct literals.
+them everywhere — in type annotations, `match` patterns, and aggregate literals.
 
 ```hew
 import geometry;
@@ -1038,7 +1038,7 @@ impl Display for Point {
 
 - `Frozen` - Type is deeply immutable and thus safely shareable. Implies `Send`. `Frozen ⊇ Send` holds by structural coincidence — every type whose fields are all deeply immutable is also send-admissible — not via an explicit impl chain.
   - Runtime-internal shared immutable handles (the planned `Arc<T>` surface is not yet exposed in Hew source)
-  - Structs where all fields are `Frozen`
+  - Types where all fields are `Frozen`
 
 - `Copy` - Type is copied on assignment rather than moved.
   - Only value types (integers, floats, bool, char)
@@ -1072,7 +1072,7 @@ p.fmt();    // desugars to Point::fmt(p) — p is consumed (by-value)
 // p is no longer valid here
 ```
 
-**In `impl` blocks for structs/enums (by-value):**
+**In `impl` blocks for types/enums (by-value):**
 
 The receiver is passed by value — the receiver is consumed (ownership transfer):
 
@@ -1093,7 +1093,7 @@ actor Counter {
 }
 ```
 
-There is no `&self` or `&mut self` syntax — Hew does not have references in its surface syntax (see §3.4.1). The by-value vs implicit-state distinction is determined by the context (struct `impl` vs actor body), not by annotation.
+There is no `&self` or `&mut self` syntax — Hew does not have references in its surface syntax (see §3.4.1). The by-value vs implicit-state distinction is determined by the context (`type`/`enum` `impl` vs actor body), not by annotation.
 
 **The `this` keyword (actor self-reference):**
 
@@ -1103,7 +1103,7 @@ Inside an actor body, the `this` keyword provides a read-only handle to the acto
 - Type `LocalPid<Self>` — a sendable handle to the enclosing actor
 - Can be passed as a message argument or stored in a field
 - Read-only — assignment to `this` is rejected at compile time
-- Not valid in struct `impl` blocks or free functions
+- Not valid in `type`/`enum` `impl` blocks or free functions
 
 **Variable shadowing:**
 
@@ -1283,7 +1283,7 @@ trait Send {}  // Marker trait — no methods
 - The value is owned and transferred by move with no remaining aliases
 - The value is `Frozen` (deeply immutable)
 - The value is a `LocalPid<A>`
-- The value is a struct/enum where all fields/variants satisfy `Send`
+- The value is a type/enum where all fields/variants satisfy `Send`
 
 > **Implementation note:** `Send` means send-admissible; the runtime selects the send mechanism based on the value's admissibility class (immutable-shareable → alias-shared by retain; mutable collections → deep-copied; `iso`/Linear → ownership move, P6). The `Send` marker tells the compiler that a type's structure is send-admissible; it does **not** mandate a particular runtime copy strategy. User-defined types do NOT need to implement `Send` explicitly — the compiler derives it automatically based on field types.
 
@@ -1333,7 +1333,7 @@ resource is released exactly once.
 
 **Automatic field-wise drop** — for plain data types, the compiler emits a
 recursive drop that frees heap storage (strings, `Vec`, `HashMap`, nested
-structs) in **reverse declaration order (LIFO)**. No annotation or `impl`
+types) in **reverse declaration order (LIFO)**. No annotation or `impl`
 is needed.
 
 **Cleanup guarantees:**
@@ -1341,7 +1341,7 @@ is needed.
 - `close()` (resource types) or field-wise drop runs exactly once per value
 - Cleanup runs at a predictable point (scope exit)
 - Drop order: fields are released in reverse declaration order (LIFO) — last declared, first dropped
-- Nested structs are recursively dropped
+- Nested types are recursively dropped
 - `Rc<T>` payloads are released when the refcount reaches zero; unsupported `Rc<T>` payload types are rejected during checking
 - All owned values in an actor are cleaned up when the actor terminates; heap is freed after the last field
 
@@ -1385,7 +1385,7 @@ fn eval(e: Expr) -> i64 {
 
 **Restrictions:**
 
-- `indirect` can only be used with `enum` declarations, not `type` (struct)
+- `indirect` can only be used with `enum` declarations, not `type` declarations
 - Only enums that contain self-referential variants benefit from `indirect`
 
 #### 3.7.5 Reference Counting (Rc and Arc)
@@ -1396,7 +1396,7 @@ fn eval(e: Expr) -> i64 {
 - Cannot cross actor boundaries (does not implement `Send`)
 - Use for shared ownership within one actor
 - Current compiler support is fail-closed: `Rc<T>` currently accepts `T: Copy`, `string`, `bytes`, and nested `Rc` of supported payloads until recursive drop lowering exists
-- For collection admissibility, the checker currently enforces an internal `RcFree` boundary (current checker behaviour, not stable user-written trait syntax): a type is treated as RcFree only when its resolved structure contains no `Rc<_>` after recursively checking wrapper type arguments, tuples/arrays/slices, and registered named struct/enum/actor members, including module-qualified and non-root private definitions seen during checking
+- For collection admissibility, the checker currently enforces an internal `RcFree` boundary (current checker behaviour, not stable user-written trait syntax): a type is treated as RcFree only when its resolved structure contains no `Rc<_>` after recursively checking wrapper type arguments, tuples/arrays/slices, and registered named type/enum/actor members, including module-qualified and non-root private definitions seen during checking
 - `LocalPid<A>` participates in that structural check through its actor type argument: if actor `A` stores non-RcFree state, `LocalPid<A>` is also non-RcFree for collection checks
 - `HashMap` and `HashSet` reject non-RcFree key/value/element types during type checking; `Vec` rejects non-RcFree elements at collection method-call sites (`push`, `pop`, `get`, `remove`, `set`, `append`, `extend`, `map`, `filter`, `fold`) rather than as a bare annotation-level ban
 
@@ -2626,7 +2626,7 @@ Inside a transition body the compiler binds two implicit names:
 | Binding | Type              | Meaning                                       |
 | ------- | ----------------- | --------------------------------------------- |
 | `state` | source state type | Fields of the current (source) state          |
-| `event` | event struct      | Payload fields of the incoming event (if any) |
+| `event` | event payload     | Payload fields of the incoming event (if any) |
 
 ```hew
 machine Elevator {
@@ -4310,7 +4310,7 @@ Native object / WASM
 - **THIR.** Every expression carries its concrete `Ty`. No `Ty::Var`
   survives this stage — the boundary is fail-closed. Generic functions
   are monomorphised at use sites; trait dispatch resolves to concrete
-  implementations; closure signatures are explicit; struct
+  implementations; closure signatures are explicit; aggregate
   initialiser type arguments are carried.
 - **Raw MIR.** The function body is a control-flow graph of basic
   blocks with real terminators (`Goto`, `Branch`, `Return`, `Drop`,

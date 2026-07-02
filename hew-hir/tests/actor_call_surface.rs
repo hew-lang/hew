@@ -154,7 +154,8 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
         }
         HirExprKind::CoerceToDynTrait { value, .. }
         | HirExprKind::NumericCast { value, .. }
-        | HirExprKind::SaturatingWidthCast { value, .. } => {
+        | HirExprKind::SaturatingWidthCast { value, .. }
+        | HirExprKind::TryWidthCast { value, .. } => {
             visit_expr(value, out);
         }
         HirExprKind::MachineEmit { fields, .. } => {

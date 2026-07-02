@@ -9,7 +9,9 @@ use hew_types::{
     ChildSlot, ExecutionContextReader, ImplId, MethodTargetFamily, PoolAccessor, ResolvedTy, Ty,
     TyPattern, VariantMatch, WireLayoutTable,
 };
-use hew_types::{NumericMethodOp, NumericSignedness, NumericWidth, WireCodecDirection};
+use hew_types::{
+    NumericMethodOp, NumericSignedness, NumericWidth, TryConversionKind, WireCodecDirection,
+};
 
 use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
 use crate::mono::MachineMonoEntry;
@@ -1255,6 +1257,17 @@ pub enum HirExprKind {
         value: Box<HirExpr>,
         from_ty: ResolvedTy,
         to_ty: ResolvedTy,
+    },
+    /// Exact fallible numeric conversion: `.try_to_<W>() -> Option<W>`.
+    ///
+    /// Produced from a method call site recorded in
+    /// `TypeCheckOutput::try_width_cast_lowerings`. The `kind` is selected by
+    /// the checker so later phases do not reclassify the source/target pair.
+    TryWidthCast {
+        value: Box<HirExpr>,
+        from_ty: ResolvedTy,
+        to_ty: ResolvedTy,
+        kind: TryConversionKind,
     },
     /// Tuple literal construction (`(1, 2)`, `(a, b, c)`).
     ///

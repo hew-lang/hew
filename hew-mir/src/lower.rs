@@ -5367,6 +5367,7 @@ fn collect_unknown_self_fields_in_expr(
         }
         HirExprKind::NumericCast { value, .. }
         | HirExprKind::SaturatingWidthCast { value, .. }
+        | HirExprKind::TryWidthCast { value, .. }
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_unknown_self_fields_in_expr(value, state_fields, seen, unknown);
         }
@@ -5839,6 +5840,7 @@ fn collect_binding_defs_in_expr<'f>(
         }
         HirExprKind::NumericCast { value, .. }
         | HirExprKind::SaturatingWidthCast { value, .. }
+        | HirExprKind::TryWidthCast { value, .. }
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_binding_defs_in_expr(value, defs, let_ids);
         }
@@ -6565,6 +6567,7 @@ fn scan_expr_for_consume(expr: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) -> bo
         HirExprKind::StreamRecvAwait { stream, .. } => scan_expr_for_consume(stream, b_p, pc),
         HirExprKind::NumericCast { value, .. }
         | HirExprKind::SaturatingWidthCast { value, .. }
+        | HirExprKind::TryWidthCast { value, .. }
         | HirExprKind::CoerceToDynTrait { value, .. } => scan_expr_for_consume(value, b_p, pc),
         HirExprKind::TupleLiteral { elements } => {
             elements.iter().any(|e| scan_expr_for_consume(e, b_p, pc))
@@ -6846,6 +6849,7 @@ fn collect_borrow_arg_sites_in_expr(
         HirExprKind::StreamRecvAwait { stream, .. } => go!(stream),
         HirExprKind::NumericCast { value, .. }
         | HirExprKind::SaturatingWidthCast { value, .. }
+        | HirExprKind::TryWidthCast { value, .. }
         | HirExprKind::CoerceToDynTrait { value, .. } => go!(value),
         HirExprKind::TupleLiteral { elements } => {
             for elem in elements {
@@ -7381,6 +7385,7 @@ fn collect_return_values_in_expr<'f>(expr: &'f HirExpr, out: &mut Vec<&'f HirExp
         }
         HirExprKind::NumericCast { value, .. }
         | HirExprKind::SaturatingWidthCast { value, .. }
+        | HirExprKind::TryWidthCast { value, .. }
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_return_values_in_expr(value, out);
         }
@@ -11779,7 +11784,8 @@ impl Builder {
                 self.collect_vec_owned_element_keys_from_expr(operand);
             }
             HirExprKind::NumericCast { value, .. }
-            | HirExprKind::SaturatingWidthCast { value, .. } => {
+            | HirExprKind::SaturatingWidthCast { value, .. }
+            | HirExprKind::TryWidthCast { value, .. } => {
                 self.collect_vec_owned_element_keys_from_expr(value);
             }
             HirExprKind::TupleLiteral { elements } => {
@@ -13334,6 +13340,16 @@ impl Builder {
                     to_ty,
                 });
                 Some(dest)
+            }
+            HirExprKind::TryWidthCast { .. } => {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::UnsupportedNode {
+                        reason: "try-width numeric conversion requires MIR lowering".to_string(),
+                    },
+                    note: "HIR TryWidthCast must lower through the dedicated MIR instruction"
+                        .to_string(),
+                });
+                None
             }
             HirExprKind::TupleLiteral { elements } => {
                 // Lower each element expression to a MIR Place.

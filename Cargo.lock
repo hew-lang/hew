@@ -1833,6 +1833,7 @@ dependencies = [
 name = "hew-codegen-rs"
 version = "0.5.6"
 dependencies = [
+ "hew-cabi",
  "hew-hir",
  "hew-mir",
  "hew-parser",

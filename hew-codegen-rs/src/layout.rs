@@ -1273,3 +1273,87 @@ pub(crate) fn primitive_key_layout_extern_name(rty: &ResolvedTy) -> Option<&'sta
         _ => return None,
     })
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `owned_elem_layout_descriptor_ptr` reconstructs `HewVecElemLayout`'s
+    /// byte layout as an independent LLVM `StructType` because codegen does
+    /// not link `hew-cabi`. This test pins every field offset and the total
+    /// size of that mirror against the real `#[repr(C)]` struct so a future
+    /// field reorder on either side fails here instead of silently
+    /// desyncing until a generated Vec's clone/drop thunk reads the wrong
+    /// slot at runtime.
+    ///
+    /// The comparison struct below is built the same way
+    /// `owned_elem_layout_descriptor_ptr`'s `layout_ty` is (same field-type
+    /// list, same order) but independently — this test never calls that
+    /// function or inspects its output, so the comparison is not
+    /// tautological against codegen's own construction.
+    #[test]
+    fn hew_vec_elem_layout_offset_parity() {
+        use hew_cabi::vec::HewVecElemLayout;
+
+        let ctx = Context::create();
+        let td = host_target_data();
+        let usize_ty = ctx.ptr_sized_int_type(&td, None);
+        let i8_ty = ctx.i8_type();
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let llvm_struct = ctx.struct_type(
+            &[
+                usize_ty.into(),
+                usize_ty.into(),
+                i8_ty.into(),
+                ptr_ty.into(),
+                ptr_ty.into(),
+            ],
+            false,
+        );
+
+        // (Rust offset_of, LLVM element index) for every field, in
+        // declaration order.
+        let fields: [(usize, u32, &str); 5] = [
+            (std::mem::offset_of!(HewVecElemLayout, size), 0, "size"),
+            (std::mem::offset_of!(HewVecElemLayout, align), 1, "align"),
+            (
+                std::mem::offset_of!(HewVecElemLayout, ownership_kind),
+                2,
+                "ownership_kind",
+            ),
+            (
+                std::mem::offset_of!(HewVecElemLayout, clone_fn),
+                3,
+                "clone_fn",
+            ),
+            (
+                std::mem::offset_of!(HewVecElemLayout, drop_fn),
+                4,
+                "drop_fn",
+            ),
+        ];
+
+        for (rust_offset, llvm_idx, name) in fields {
+            let llvm_offset = td
+                .offset_of_element(&llvm_struct, llvm_idx)
+                .unwrap_or_else(|| panic!("LLVM struct has no element {llvm_idx} for `{name}`"));
+            assert_eq!(
+                llvm_offset as usize, rust_offset,
+                "HewVecElemLayout field `{name}` offset mismatch: LLVM {llvm_offset} vs Rust \
+                 {rust_offset} — codegen's owned_elem_layout_descriptor_ptr mirror drifted \
+                 from hew_cabi::vec::HewVecElemLayout"
+            );
+        }
+
+        assert_eq!(
+            td.get_abi_size(&llvm_struct) as usize,
+            std::mem::size_of::<HewVecElemLayout>(),
+            "HewVecElemLayout total size mismatch between the codegen mirror and the \
+             hew_cabi::vec::HewVecElemLayout struct"
+        );
+    }
+}

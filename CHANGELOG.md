@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Actor sleep-loop mailbox lint.** `hew check` now warns when an actor
+  receive handler loops around `sleep`/`sleep_until` without an in-handler exit
+  path, and the guide documents the cancellable `#[every(duration)]` + flag
+  pattern. (closes #2271)
+
 ### Removed (breaking)
 
 - **User `impl Drop` is rejected.** Declaring `impl Drop for T` is now a

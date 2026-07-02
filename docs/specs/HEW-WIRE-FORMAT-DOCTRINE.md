@@ -57,7 +57,7 @@ CDDL integer keys are mirrored as field-doc comments on each Rust mirror field.
 
 ### The message body — CDDL-described tagged CBOR
 
-The `envelope-frame` `payload` (key `6`) is a `bstr` to the _frame_ schema:
+The `envelope-frame` `payload` (key `6`) is a `bstr` to the *frame* schema:
 the frame does not interpret it. The bytes inside that `bstr` are the
 **per-`#[wire]`-type CBOR body** the codegen serializer emits for the
 message being sent, and they have their own doc-of-truth schema in
@@ -204,20 +204,20 @@ and was settled by issue #1247.
 
 ### Module inventory and honest status
 
-| Module                    | Status                                                                                                                                                                                     | What's there today                                                           |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
-| `std::encoding::json`     | **Real.** Production-shape encoder/decoder.                                                                                                                                                | `std/encoding/json/` (~2k LOC). Backing parser + the opaque `Value` surface. |
-| `std::encoding::yaml`     | **Real.** Full parser/serialiser.                                                                                                                                                          | `std/encoding/yaml/` (~2.4k LOC).                                            |
-| `std::encoding::toml`     | **Real.** Parser/generator + datetime variant.                                                                                                                                             | `std/encoding/toml/` (~1.2k LOC).                                            |
-| `std::encoding::msgpack`  | **Real, JSON-bridged.** Encode/decode against the canonical `Value`; per the `wire` README it bridges through JSON's value model when crossing the opaque surface.                         | `std/encoding/msgpack/` (~1k LOC).                                           |
-| `std::encoding::protobuf` | **Real, scoped.** Wire-format encode/decode helpers; not a schema compiler.                                                                                                                | `std/encoding/protobuf/` (~1.5k LOC).                                        |
-| `std::encoding::xml`      | **Real, scoped.** Parse/serialise.                                                                                                                                                         | `std/encoding/xml/` (~850 LOC).                                              |
-| `std::encoding::csv`      | **Real, scoped.**                                                                                                                                                                          | `std/encoding/csv/`.                                                         |
-| `std::encoding::markdown` | **Real, scoped.** Markdown → HTML rendering only.                                                                                                                                          | `std/encoding/markdown/`.                                                    |
-| `std::encoding::base64`   | **Real.**                                                                                                                                                                                  | `std/encoding/base64/`.                                                      |
-| `std::encoding::hex`      | **Real.**                                                                                                                                                                                  | `std/encoding/hex/`.                                                         |
-| `std::encoding::compress` | **Real.** gzip/deflate/zlib.                                                                                                                                                               | `std/encoding/compress/`.                                                    |
-| `std::encoding::wire`     | **Substrate.** Holds the opaque `Value` contract (issue #1247). The legacy HBF byte-layout helpers (`encode_header` / framing) were removed when the CBOR-native wire format replaced HBF. | `std/encoding/wire/` — see §5 for history.                                   |
+| Module | Status | What's there today |
+| --- | --- | --- |
+| `std::encoding::json` | **Real.** Production-shape encoder/decoder. | `std/encoding/json/` (~2k LOC). Backing parser + the opaque `Value` surface. |
+| `std::encoding::yaml` | **Real.** Full parser/serialiser. | `std/encoding/yaml/` (~2.4k LOC). |
+| `std::encoding::toml` | **Real.** Parser/generator + datetime variant. | `std/encoding/toml/` (~1.2k LOC). |
+| `std::encoding::msgpack` | **Real, JSON-bridged.** Encode/decode against the canonical `Value`; per the `wire` README it bridges through JSON's value model when crossing the opaque surface. | `std/encoding/msgpack/` (~1k LOC). |
+| `std::encoding::protobuf` | **Real, scoped.** Wire-format encode/decode helpers; not a schema compiler. | `std/encoding/protobuf/` (~1.5k LOC). |
+| `std::encoding::xml` | **Real, scoped.** Parse/serialise. | `std/encoding/xml/` (~850 LOC). |
+| `std::encoding::csv` | **Real, scoped.** | `std/encoding/csv/`. |
+| `std::encoding::markdown` | **Real, scoped.** Markdown → HTML rendering only. | `std/encoding/markdown/`. |
+| `std::encoding::base64` | **Real.** | `std/encoding/base64/`. |
+| `std::encoding::hex` | **Real.** | `std/encoding/hex/`. |
+| `std::encoding::compress` | **Real.** gzip/deflate/zlib. | `std/encoding/compress/`. |
+| `std::encoding::wire` | **Substrate.** Holds the opaque `Value` contract (issue #1247). The legacy HBF byte-layout helpers (`encode_header` / framing) were removed when the CBOR-native wire format replaced HBF. | `std/encoding/wire/` — see §5 for history. |
 
 Each module's README states its own scope. The doctrine here is about
 **which one to reach for**, not how each one is implemented.

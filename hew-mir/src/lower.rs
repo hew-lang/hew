@@ -11013,6 +11013,43 @@ impl Builder {
         }
     }
 
+    /// The owned-locals seed authority: does a binding of type `ty` oblige
+    /// scope-exit drop elaboration? `true` admits the binding into the
+    /// `owned_locals` candidate ledger every downstream allow-set derivation,
+    /// `unsupported_vec_element_diagnostics`, and `build_lifo_drops` scan.
+    /// The verdict is the value-class seed: every class except `BitCopy`
+    /// seeds (a `BitCopy` value owns no heap and its copy is free; a `View`
+    /// seeds into the no-retain no-op drop arm; a `Linear` seeds so the
+    /// move-checker's consume obligations observe it). Equivalent to
+    /// `ValueOwnership::to_value_class`'s carried seed by construction
+    /// (`ownership.rs` pins `to_value_class` ≡ `ValueClass::of_ty`). The
+    /// frozen verdict table is `seed_gate_matches_value_class_authority`; the
+    /// source-inventory pin `seed_fact_comparison_site_inventory_is_closed`
+    /// keeps this body the ONLY seed-fact spelling in production code.
+    ///
+    /// Consulted on BOTH sides of the ledger: the seed sites that push into
+    /// `owned_locals`, AND the consume-side handling of a `Use { Consume }`
+    /// on a `BindingRef` (drop-flag-set vs `mark_binding_moved`). One
+    /// authority on both sides is load-bearing: a consume side looser than
+    /// the seed side leaves a moved-out binding in `owned_locals`, and the
+    /// function-exit LIFO drop pass then releases a moved-out value (an
+    /// over-drop / double-free); a tighter consume side leaks.
+    ///
+    /// Known limitation, preserved: the gate is record-blind via
+    /// `ValueClass` — an unmarked user record classifies `Unknown`, which
+    /// seeds.
+    ///
+    /// Three sibling gates are DIFFERENT facts and do not route here: the
+    /// dyn-trait `let` arm seeds on `classify_dyn_trait_storage` (fail-closed
+    /// storage discrimination), the param arm seeds on the HIR ownership
+    /// checker's `param_consume` side-table verdict, and
+    /// `gen_env_capture_admissible` gates generator-env capture
+    /// flat-copyability on its own direct `ValueClass` test (it must not
+    /// follow a future seed-rule change).
+    fn binding_seeds_drop_elaboration(&self, ty: &ResolvedTy) -> bool {
+        ValueClass::of_ty(ty, &self.type_classes) != ValueClass::BitCopy
+    }
+
     /// Classify a `Vec<E>` element's scope-exit release by reading the single
     /// heap-ownership authority. The three release-bucket predicates are
     /// projections of this one decision (see [`VecElementRelease`]), so their
@@ -12125,7 +12162,7 @@ impl Builder {
                             });
                         }
                     }
-                } else if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy
+                } else if self.binding_seeds_drop_elaboration(&binding_ty)
                     && (pending || value_place.is_some())
                 {
                     // Only register the binding in `owned_locals` when
@@ -12453,7 +12490,7 @@ impl Builder {
                 ty: binding_ty.clone(),
             });
             self.record_binding_scope(binding.binding);
-            if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy {
+            if self.binding_seeds_drop_elaboration(&binding_ty) {
                 self.owned_locals
                     .push((binding.binding, binding.name.clone(), binding_ty.clone()));
             }
@@ -12478,7 +12515,7 @@ impl Builder {
                 ty: binding_ty.clone(),
             });
             self.record_binding_scope(binding.binding);
-            if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy {
+            if self.binding_seeds_drop_elaboration(&binding_ty) {
                 self.owned_locals
                     .push((binding.binding, binding.name.clone(), binding_ty.clone()));
             }
@@ -13038,7 +13075,7 @@ impl Builder {
                         intent: use_intent,
                     });
                     if use_intent == IntentKind::Consume
-                        && ValueClass::of_ty(&use_ty, &self.type_classes) != ValueClass::BitCopy
+                        && self.binding_seeds_drop_elaboration(&use_ty)
                     {
                         // #1933 / #1941 — a non-idempotent user `#[resource]`
                         // with an allocated path-sensitive drop-flag is KEPT in
@@ -18254,8 +18291,7 @@ impl Builder {
             // the binding's escape consume) — both fail-closed-unsafe.
             // BitCopy bindings stay out: their copy is free of heap ownership
             // and the surrounding scrutinee's composite drop covers them.
-            let keep_for_drop_elab =
-                ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy;
+            let keep_for_drop_elab = self.binding_seeds_drop_elaboration(&binding_ty);
             if keep_for_drop_elab {
                 self.owned_locals
                     .push((binding.binding, binding.name.clone(), binding_ty.clone()));
@@ -19651,8 +19687,7 @@ impl Builder {
                     ty: binding_ty.clone(),
                 });
                 self.record_binding_scope(binding.binding);
-                let keep_for_drop_elab =
-                    ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy;
+                let keep_for_drop_elab = self.binding_seeds_drop_elaboration(&binding_ty);
                 if keep_for_drop_elab {
                     self.owned_locals.push((
                         binding.binding,
@@ -19742,8 +19777,7 @@ impl Builder {
                     ty: binding_ty.clone(),
                 });
                 self.record_binding_scope(binding.binding);
-                let keep_for_drop_elab =
-                    ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy;
+                let keep_for_drop_elab = self.binding_seeds_drop_elaboration(&binding_ty);
                 if keep_for_drop_elab {
                     self.owned_locals
                         .push((binding.binding, binding.name.clone(), binding_ty));
@@ -20265,7 +20299,7 @@ impl Builder {
                 ty: binding_ty.clone(),
             });
             self.record_binding_scope(binding.binding);
-            if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy {
+            if self.binding_seeds_drop_elaboration(&binding_ty) {
                 self.owned_locals
                     .push((binding.binding, binding.name.clone(), binding_ty.clone()));
             }
@@ -20290,7 +20324,7 @@ impl Builder {
                 ty: binding_ty.clone(),
             });
             self.record_binding_scope(binding.binding);
-            if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy {
+            if self.binding_seeds_drop_elaboration(&binding_ty) {
                 self.owned_locals
                     .push((binding.binding, binding.name.clone(), binding_ty.clone()));
             }
@@ -20488,7 +20522,7 @@ impl Builder {
                 ty: binding_ty.clone(),
             });
             self.record_binding_scope(binding.binding);
-            if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy {
+            if self.binding_seeds_drop_elaboration(&binding_ty) {
                 self.owned_locals
                     .push((binding.binding, binding.name.clone(), binding_ty.clone()));
             }
@@ -20513,7 +20547,7 @@ impl Builder {
                 ty: binding_ty.clone(),
             });
             self.record_binding_scope(binding.binding);
-            if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy {
+            if self.binding_seeds_drop_elaboration(&binding_ty) {
                 self.owned_locals
                     .push((binding.binding, binding.name.clone(), binding_ty.clone()));
             }
@@ -23315,7 +23349,7 @@ impl Builder {
             ty: ty.clone(),
         });
         self.record_binding_scope(binding_id);
-        if ValueClass::of_ty(ty, &self.type_classes) != ValueClass::BitCopy
+        if self.binding_seeds_drop_elaboration(ty)
             && !self
                 .owned_locals
                 .iter()
@@ -46316,11 +46350,17 @@ mod drop_admission_type_shape_pins {
 
         for (label, ty, seeds) in corpus {
             assert_eq!(
-                ValueClass::of_ty(&ty, &builder.type_classes) != ValueClass::BitCopy,
+                builder.binding_seeds_drop_elaboration(&ty),
                 seeds,
                 "owned-locals seed verdict moved for `{label}` ({ty:?}); \
                  seeding decides drop-elaboration membership, so a flipped \
                  verdict is an over-drop (double-free) or an under-seed (leak)"
+            );
+            assert_eq!(
+                builder.binding_seeds_drop_elaboration(&ty),
+                ValueClass::of_ty(&ty, &builder.type_classes) != ValueClass::BitCopy,
+                "the seed authority's verdict must remain the value-class \
+                 seed for `{label}` ({ty:?})"
             );
         }
     }
@@ -46593,17 +46633,17 @@ mod drop_admission_type_shape_pins {
             .chars()
             .filter(|c| !c.is_whitespace())
             .collect();
+        // The seed fact has exactly one production spelling: the body of
+        // `binding_seeds_drop_elaboration`, the authority the 11 seed sites
+        // and the consume-side removal mirror all call.
+        assert!(
+            squeezed.contains("fnbinding_seeds_drop_elaboration"),
+            "the owned-locals seed authority must exist in production code"
+        );
         let count = squeezed.matches("!=ValueClass::BitCopy").count();
-        // The complete inventory:
-        //   - 11 owned-locals seed sites: the `let` main arm (conjoined with
-        //     the binding_locals-sync condition), two machine-variant
-        //     destructure binder loops, the match/select destructure
-        //     `keep_for_drop_elab`, two receive/select arm binder loops (arm
-        //     and nested-payload), four further machine-variant / nested
-        //     destructure binder loops, and
-        //     `restore_var_self_receiver_binding`;
-        //   - 1 consume-side removal mirror (`Use { Consume }` on a
-        //     `BindingRef` — decides drop-flag-set vs `mark_binding_moved`);
+        // The complete allowlist of the non-`BitCopy` polarity test:
+        //   - `binding_seeds_drop_elaboration` — the seed authority's own
+        //     body, the single spelling of the seed fact;
         //   - `gen_env_capture_admissible` — generator-env capture
         //     flat-copyability, a DIFFERENT fact that must not follow a
         //     future seed-rule change;
@@ -46611,11 +46651,12 @@ mod drop_admission_type_shape_pins {
         //     the first non-BitCopy field in a rejection note (diagnostic
         //     wording, not admission).
         assert_eq!(
-            count, 14,
-            "the seed-fact comparison population in lower.rs production code \
-             changed; classify the new (or removed) occurrence in the \
-             inventory above deliberately — an unclassified copy of the seed \
-             comparison is exactly the per-site drift this pin closes"
+            count, 3,
+            "a raw copy of the owned-locals seed comparison appeared in (or \
+             an allowlisted use vanished from) lower.rs production code; \
+             seed decisions route through `binding_seeds_drop_elaboration`, \
+             never an inline class test — classify any change to this \
+             population in the allowlist above deliberately"
         );
     }
 }

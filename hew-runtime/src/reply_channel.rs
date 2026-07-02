@@ -1149,11 +1149,11 @@ mod tests {
         let _guard = crate::runtime_test_guard();
         let pre = active_channel_count();
         // NOTE: this test is a ref-COUNT proof, not a literal codegen replay.
-        // The emitted abandon arm releases the observer ref on each arm channel
-        // via the deregister call (which drains the readiness-poll registration
-        // and drops its retained channel ref).  Here the observer ref is freed
-        // with an explicit second `hew_reply_channel_free` so the arithmetic is
-        // directly visible; both paths are ref-correct and net the same count.
+        // Abandon cancels and frees only the parked waiter ref on each arm
+        // channel; the ask-protocol sender ref is the second reference, and
+        // each late `hew_reply` releases it when it observes cancellation.
+        // Both refs are freed here through the same calls codegen emits, so
+        // the arithmetic is directly visible.
         // SAFETY: the test owns the wheel, arbiter, and channels for the whole
         // lifecycle and drives each transition in order; all pointers are valid
         // at each call.

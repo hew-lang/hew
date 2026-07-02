@@ -67,7 +67,7 @@ spec-0015   # SNIPPET: bare `type Point { ... }` + bare `var` — struct mutable
 spec-0020   # SNIPPET: bare `let config = load_config()` — actor capture illustration
 spec-0021   # SNIPPET: bare `let local_ref = ...` — non-Send capture illustration
 spec-0022   # FRAGMENT: actor calls undefined `process()` — allowed-ops illustration
-spec-0023   # SPEC-BUG: `actor.handle(...)` wrong method name on LocalPid<Other>
+spec-0023   # ERROR-DEMO: intentionally shows use-after-send and non-Send capture errors
 spec-0024   # SPEC-BUG: type mismatch in aspirational TCP module example
 spec-0025   # FRAGMENT: imports `network::tcp` — hypothetical module, not in stdlib
 spec-0026   # SNIPPET: bare code after import statement — illustration of import effect
@@ -83,7 +83,7 @@ spec-0050   # SPEC-BUG: struct `impl` using wrong syntax form (stray `;` before 
 spec-0053   # SNIPPET: bare identifier `max` after trait definition — illustration
 spec-0055   # SPEC-BUG: type mismatch in aspirational HashMap construction
 spec-0056   # ERROR-DEMO: intentionally shows `cannot assign to immutable iter`
-spec-0059   # SNIPPET: bare `receive fn` — actor send-semantics illustration
+spec-0059   # ERROR-DEMO: intentionally shows missing Send bound on actor-boundary call
 spec-0060   # SNIPPET: bare `let` after struct definitions — trait usage illustration
 spec-0061   # SNIPPET: bare `let f: fn(i64) -> i64 = ...` — fn-type illustration
 spec-0062   # SNIPPET: bare code — trait implementation illustration

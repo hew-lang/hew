@@ -738,12 +738,12 @@ actor Example {
 
     receive fn bad_examples(other: LocalPid<Other>) {
         // Sending without move - ERROR (implicit move makes source invalid)
-        other.handle(data);
+        other.process(data);
         data.push(1);     // compile error: data was moved
 
         // Using value after send - ERROR
         let msg = Message::new();
-        other.handle(msg);
+        other.process(msg);
         println(msg.content);  // compile error: msg was moved
 
         // Capturing non-Send value - ERROR
@@ -1845,12 +1845,12 @@ The runtime also has internal `Arc` support, but those `Send`/`Frozen` rules are
 ```hew
 // Error: T might not be Send
 receive fn forward_unsafe<T>(message: T, target: LocalPid<Handler<T>>) {
-    target.handle(message);     // Compile error: T not bounded by Send
+    target.process(message);    // Compile error: T not bounded by Send
 }
 
 // Correct: T is bounded by Send
 receive fn forward<T: Send>(message: T, target: LocalPid<Handler<T>>) {
-    target.handle(message);     // OK: T: Send verified at instantiation
+    target.process(message);    // OK: T: Send verified at instantiation
 }
 ```
 

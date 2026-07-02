@@ -1,0 +1,30 @@
+type Point {
+    x: i64,
+    y: i64,
+}
+
+actor VecRemoveLayoutCrasher {
+    receive fn boom() {
+        let points: Vec<Point> = Vec::new();
+        points.push(Point { x: 1, y: 2 });
+        points.remove(99);
+    }
+}
+
+actor VecRemoveLayoutProbe {
+    receive fn ping() -> i64 {
+        0
+    }
+}
+
+fn main() -> i64 {
+    let crasher = spawn VecRemoveLayoutCrasher;
+    let probe = spawn VecRemoveLayoutProbe;
+    crasher.boom();
+    sleep(300ms);
+    match await probe.ping() {
+        Ok(v) => v,
+        Err(_) => 1,
+    }
+}
+

@@ -83,6 +83,22 @@ run_accept_expect_status() {
   echo "PASS ${fixture}"
 }
 
+run_actor_bounds_trap_fixture() {
+  local fixture="$1"
+  local expected_diagnostic="$2"
+  local expected_actor="${3:-}"
+  run_accept_expect_status "${fixture}" 0
+  grep -qF -- "${expected_diagnostic}" "${stderr_output}"
+  if [[ -n "${expected_actor}" ]]; then
+    grep -qF -- "${expected_actor}" "${stderr_output}"
+  fi
+  if grep -qF -- 'hew: trap in main context' "${stderr_output}"; then
+    echo "${fixture}: actor-context bounds trap fell through to main-context fallback" >&2
+    cat "${stderr_output}" >&2
+    exit 1
+  fi
+}
+
 run_accept_expect_stdout() {
   local fixture="$1"
   run_accept_expect_status "${fixture}" 0
@@ -1596,6 +1612,51 @@ if grep -q 'msg_type=-' "${stderr_output}"; then
   cat "${stderr_output}" >&2
   exit 1
 fi
+
+# Runtime FFI bounds checks inside actor dispatch must crash only the actor, not
+# the whole process. Each fixture sends a crashing message and then proves actor
+# scheduling still works afterward; the Vec.set fixture also gates on
+# CrashInfo.code == IndexOutOfBounds through its on(crash) handler.
+run_actor_bounds_trap_fixture \
+  "vec_set_oob_actor_isolated" \
+  "PANIC: Vec.set() index 99 out of bounds (len 1)" \
+  "VecSetCrasher"
+run_actor_bounds_trap_fixture \
+  "vec_pop_empty_actor_isolated" \
+  "PANIC: Vec.pop() on an empty vector" \
+  "VecPopCrasher"
+run_actor_bounds_trap_fixture \
+  "vec_remove_oob_actor_isolated" \
+  "PANIC: Vec.remove() index 99 out of bounds (len 1)" \
+  "VecRemoveCrasher"
+run_actor_bounds_trap_fixture \
+  "vec_remove_layout_oob_actor_isolated" \
+  "PANIC: Vec.remove() index 99 out of bounds (len 1)" \
+  "VecRemoveLayoutCrasher"
+run_actor_bounds_trap_fixture \
+  "bytes_index_oob_actor_isolated" \
+  "PANIC: bytes[i] index 99 out of bounds (len 1)" \
+  "BytesIndexCrasher"
+run_actor_bounds_trap_fixture \
+  "bytes_slice_oob_actor_isolated" \
+  "PANIC: bytes slice range 0..99 out of bounds (len 2)" \
+  "BytesSliceCrasher"
+run_actor_bounds_trap_fixture \
+  "bytes_pop_empty_actor_isolated" \
+  "PANIC: bytes.pop() on an empty buffer" \
+  "BytesPopCrasher"
+run_actor_bounds_trap_fixture \
+  "bytes_set_oob_actor_isolated" \
+  "PANIC: bytes.set() index 99 out of bounds (len 1)" \
+  "BytesSetCrasher"
+run_actor_bounds_trap_fixture \
+  "string_index_oob_actor_isolated" \
+  "PANIC: string[i] index 99 out of bounds (len 3)" \
+  "StringIndexCrasher"
+run_actor_bounds_trap_fixture \
+  "string_slice_oob_actor_isolated" \
+  "PANIC: string slice range 1..99 out of bounds (len 5)" \
+  "StringSliceCrasher"
 
 run_accept_expect_status "directory_module_call" 7
 
@@ -3946,4 +4007,3 @@ run_accept_expect_status "string_split_to_chars_empty" 0
 # input, trailing delimiters, and multi-byte separator / multi-byte value.
 # ---------------------------------------------------------------------------
 run_accept_expect_status "string_split_nonempty" 0
-

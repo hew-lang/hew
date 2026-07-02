@@ -1,0 +1,25 @@
+actor VecRemoveCrasher {
+    receive fn boom() {
+        let xs: Vec<i64> = Vec::new();
+        xs.push(1);
+        xs.remove(99);
+    }
+}
+
+actor VecRemoveProbe {
+    receive fn ping() -> i64 {
+        0
+    }
+}
+
+fn main() -> i64 {
+    let crasher = spawn VecRemoveCrasher;
+    let probe = spawn VecRemoveProbe;
+    crasher.boom();
+    sleep(300ms);
+    match await probe.ping() {
+        Ok(v) => v,
+        Err(_) => 1,
+    }
+}
+

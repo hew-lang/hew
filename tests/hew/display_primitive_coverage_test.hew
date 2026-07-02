@@ -24,6 +24,7 @@ fn test_generic_println_accepts_canonical_numeric_primitives() {
     let u8v: u8 = 250;
     let u16v: u16 = 65000;
     let u32v: u32 = 4000000000;
+    let u32_boundary: u32 = 65536;
     let u64v: u64 = (-1) as u64;
     let isizev: isize = -4096;
     let usizev: usize = 4000000000;
@@ -37,6 +38,7 @@ fn test_generic_println_accepts_canonical_numeric_primitives() {
     print_generic(u8v);
     print_generic(u16v);
     print_generic(u32v);
+    print_generic(u32_boundary);
     print_generic(u64v);
     print_generic(isizev);
     print_generic(usizev);
@@ -53,6 +55,7 @@ fn test_generic_to_string_formats_canonical_numeric_primitives() {
     let u8v: u8 = 250;
     let u16v: u16 = 65000;
     let u32v: u32 = 4000000000;
+    let u32_boundary: u32 = 65536;
     let u64v: u64 = (-1) as u64;
     let isizev: isize = -4096;
     let usizev: usize = 4000000000;
@@ -66,6 +69,7 @@ fn test_generic_to_string_formats_canonical_numeric_primitives() {
     testing.assert_eq_str(render_generic(u8v), "250");
     testing.assert_eq_str(render_generic(u16v), "65000");
     testing.assert_eq_str(render_generic(u32v), "4000000000");
+    testing.assert_eq_str(render_generic(u32_boundary), "65536");
     testing.assert_eq_str(render_generic(u64v), "18446744073709551615");
     testing.assert_eq_str(render_generic(isizev), "-4096");
     testing.assert_eq_str(render_generic(usizev), "4000000000");
@@ -82,6 +86,7 @@ fn test_generic_fstring_formats_canonical_numeric_primitives() {
     let u8v: u8 = 250;
     let u16v: u16 = 65000;
     let u32v: u32 = 4000000000;
+    let u32_boundary: u32 = 65536;
     let u64v: u64 = (-1) as u64;
     let isizev: isize = -4096;
     let usizev: usize = 4000000000;
@@ -95,6 +100,7 @@ fn test_generic_fstring_formats_canonical_numeric_primitives() {
     testing.assert_eq_str(interpolate_generic(u8v), "250");
     testing.assert_eq_str(interpolate_generic(u16v), "65000");
     testing.assert_eq_str(interpolate_generic(u32v), "4000000000");
+    testing.assert_eq_str(interpolate_generic(u32_boundary), "65536");
     testing.assert_eq_str(interpolate_generic(u64v), "18446744073709551615");
     testing.assert_eq_str(interpolate_generic(isizev), "-4096");
     testing.assert_eq_str(interpolate_generic(usizev), "4000000000");

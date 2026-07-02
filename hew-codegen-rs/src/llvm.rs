@@ -42885,6 +42885,13 @@ mod tests {
     use super::*;
     use hew_mir::{BasicBlock, DecisionFact, IrPipeline};
 
+    #[test]
+    fn uint_to_string_runtime_arg_width_is_u32() {
+        // The runtime signature is `hew_uint_to_string(n: u32)` at
+        // `hew-runtime/src/string.rs:253`, so arg 0 must be declared as i32.
+        assert_eq!(runtime_ffi_param_abi_bits("hew_uint_to_string", 0), Some(32));
+    }
+
     fn empty_pipeline_with_const_42() -> IrPipeline {
         let return_ty = ResolvedTy::I64;
         let main = RawMirFunction {

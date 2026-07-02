@@ -1,0 +1,43 @@
+import std::failure;
+
+actor VecSetCrasher {
+    var value: i64;
+
+    receive fn boom() {
+        let xs: Vec<i64> = Vec::new();
+        xs.push(value);
+        xs.set(99, 7);
+    }
+
+    receive fn alive() -> i64 {
+        0
+    }
+
+    #[on(crash)]
+    fn on_crash(info: CrashInfo) -> CrashAction {
+        if info.code == 205 {
+            CrashAction::Restart
+        } else {
+            CrashAction::Kill
+        }
+    }
+}
+
+supervisor VecSetSupervisor {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child worker: VecSetCrasher(value: 1);
+}
+
+fn main() -> i64 {
+    let sup = spawn VecSetSupervisor;
+    let worker = sup.worker;
+    worker.boom();
+    let restarted = await_restart sup.worker;
+    match await restarted.alive() {
+        Ok(v) => v,
+        Err(_) => 1,
+    }
+}
+

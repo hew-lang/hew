@@ -1,0 +1,10 @@
+// `Vec.remove(i)` with an out-of-range index fails closed through the runtime
+// bounds trap. In main context there is no actor recovery frame, so the runtime
+// trap helper aborts the process and run.sh pins exit 134.
+fn main() -> i64 {
+    let xs: Vec<i64> = Vec::new();
+    xs.push(1);
+    xs.remove(99);
+    0
+}
+

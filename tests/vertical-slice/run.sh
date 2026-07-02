@@ -83,6 +83,22 @@ run_accept_expect_status() {
   echo "PASS ${fixture}"
 }
 
+run_actor_bounds_trap_fixture() {
+  local fixture="$1"
+  local expected_diagnostic="$2"
+  local expected_actor="${3:-}"
+  run_accept_expect_status "${fixture}" 0
+  grep -qF -- "${expected_diagnostic}" "${stderr_output}"
+  if [[ -n "${expected_actor}" ]]; then
+    grep -qF -- "${expected_actor}" "${stderr_output}"
+  fi
+  if grep -qF -- 'hew: trap in main context' "${stderr_output}"; then
+    echo "${fixture}: actor-context bounds trap fell through to main-context fallback" >&2
+    cat "${stderr_output}" >&2
+    exit 1
+  fi
+}
+
 run_accept_expect_stdout() {
   local fixture="$1"
   run_accept_expect_status "${fixture}" 0
@@ -710,15 +726,17 @@ run_accept_expect_trap "hashmap_enum_index_absent_traps"
 # Indexed-accessor trap negative for bytes: `b[i]` on an out-of-bounds index
 # traps (IndexOutOfBounds) — the trapping `at` half of the `Index<Idx>` model
 # (the `get` half returns `Option<u8>`). bytes routes `b[i]` through the
-# `hew_bytes_index` runtime getter, which aborts via `libc::abort()` on OOB:
-# exit 134 (SIGABRT+128), the same fail-closed termination as `assert_eq_fail`.
+# `hew_bytes_index` runtime getter, which routes through the runtime bounds trap.
+# In main context the trap helper aborts: exit 134 (SIGABRT+128), the same
+# fail-closed termination as `assert_eq_fail`.
 run_accept_expect_status "bytes_index_oob_traps" 134
 
 # Indexed-accessor trap negative for string: `s[i]` on an out-of-bounds index
 # traps (IndexOutOfBounds) — the trapping `at` half of the `Index<Idx>` model
 # (the `get` half returns `Option<char>`). string routes `s[i]` through the
-# `hew_string_index` runtime getter, which aborts via `libc::abort()` on OOB:
-# exit 134 (SIGABRT+128), the same fail-closed termination as `bytes_index_oob_traps`.
+# `hew_string_index` runtime getter, which routes through the runtime bounds
+# trap. In main context the trap helper aborts: exit 134 (SIGABRT+128), the same
+# fail-closed termination as `bytes_index_oob_traps`.
 run_accept_expect_status "string_index_oob_traps" 134
 
 # defer: basic (no effect on return), executes (exit override), LIFO, block scope
@@ -1535,11 +1553,18 @@ run_accept_expect_status "bytes_append" 0
 # exits 0 only when every assertion holds.
 run_accept_expect_status "bytes_unitop_match_value" 0
 
-# Fail-closed negatives: pop on an empty buffer and set past the end abort via
-# the bytes runtime trap (exit 134 = SIGABRT+128), the same fail-closed
-# termination as bytes_index_oob_traps.
+# Fail-closed negatives: pop on an empty buffer and set past the end route via
+# the bytes runtime bounds trap. In main context the trap helper aborts:
+# exit 134 = SIGABRT+128, the same fail-closed termination as bytes_index_oob_traps.
 run_accept_expect_status "bytes_pop_empty_traps" 134
 run_accept_expect_status "bytes_set_oob_traps" 134
+
+# Main-context Vec method bounds ratchets: runtime FFI checks route through the
+# actor-isolating trap seam, but when no actor recovery frame exists the helper
+# must still abort instead of returning.
+run_accept_expect_status "vec_set_oob_traps" 134
+run_accept_expect_status "vec_pop_empty_traps" 134
+run_accept_expect_status "vec_remove_oob_traps" 134
 
 run_accept_expect_stdout "regex_captures_find_all"
 run_check_run_expect_stdout "stdlib_io_scanner_file_oracle"
@@ -1596,6 +1621,51 @@ if grep -q 'msg_type=-' "${stderr_output}"; then
   cat "${stderr_output}" >&2
   exit 1
 fi
+
+# Runtime FFI bounds checks inside actor dispatch must crash only the actor, not
+# the whole process. Each fixture sends a crashing message and then proves actor
+# scheduling still works afterward; the Vec.set fixture also gates on
+# CrashInfo.code == IndexOutOfBounds through its on(crash) handler.
+run_actor_bounds_trap_fixture \
+  "vec_set_oob_actor_isolated" \
+  "PANIC: Vec.set() index 99 out of bounds (len 1)" \
+  "VecSetCrasher"
+run_actor_bounds_trap_fixture \
+  "vec_pop_empty_actor_isolated" \
+  "PANIC: Vec.pop() on an empty vector" \
+  "VecPopCrasher"
+run_actor_bounds_trap_fixture \
+  "vec_remove_oob_actor_isolated" \
+  "PANIC: Vec.remove() index 99 out of bounds (len 1)" \
+  "VecRemoveCrasher"
+run_actor_bounds_trap_fixture \
+  "vec_remove_layout_oob_actor_isolated" \
+  "PANIC: Vec.remove() index 99 out of bounds (len 1)" \
+  "VecRemoveLayoutCrasher"
+run_actor_bounds_trap_fixture \
+  "bytes_index_oob_actor_isolated" \
+  "PANIC: bytes[i] index 99 out of bounds (len 1)" \
+  "BytesIndexCrasher"
+run_actor_bounds_trap_fixture \
+  "bytes_slice_oob_actor_isolated" \
+  "PANIC: bytes slice range 0..99 out of bounds (len 2)" \
+  "BytesSliceCrasher"
+run_actor_bounds_trap_fixture \
+  "bytes_pop_empty_actor_isolated" \
+  "PANIC: bytes.pop() on an empty buffer" \
+  "BytesPopCrasher"
+run_actor_bounds_trap_fixture \
+  "bytes_set_oob_actor_isolated" \
+  "PANIC: bytes.set() index 99 out of bounds (len 1)" \
+  "BytesSetCrasher"
+run_actor_bounds_trap_fixture \
+  "string_index_oob_actor_isolated" \
+  "PANIC: string[i] index 99 out of bounds (len 3)" \
+  "StringIndexCrasher"
+run_actor_bounds_trap_fixture \
+  "string_slice_oob_actor_isolated" \
+  "PANIC: string slice range 1..99 out of bounds (len 5)" \
+  "StringSliceCrasher"
 
 run_accept_expect_status "directory_module_call" 7
 
@@ -2688,9 +2758,9 @@ run_accept_expect_stdout "char_cast_codepoint_read"
 # integer width rules on '€' (8364): `as u32` preserves, `as u8` truncates
 # to the low byte (172).
 run_accept_expect_stdout "char_cast_roundtrip"
-# Accept (panic semantics): out-of-bounds codepoint slice ABORTS. Exit
-# 134 = SIGABRT (libc::abort from hew_string_slice_codepoints). Q-CS1
-# locks panic-on-OOB; no clamp / null / empty-string fallback.
+# Accept (panic semantics): out-of-bounds codepoint slice routes through the
+# runtime bounds trap. In main context the trap helper aborts with exit 134
+# (SIGABRT). Q-CS1 locks panic-on-OOB; no clamp / null / empty-string fallback.
 run_accept_expect_status "string_slice_oob_panics" 134
 
 # Accept (S1): Vec<i64> push/pop/get/contains via catalog entries. Exit 10.
@@ -3946,4 +4016,3 @@ run_accept_expect_status "string_split_to_chars_empty" 0
 # input, trailing delimiters, and multi-byte separator / multi-byte value.
 # ---------------------------------------------------------------------------
 run_accept_expect_status "string_split_nonempty" 0
-

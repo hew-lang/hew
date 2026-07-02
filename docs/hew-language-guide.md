@@ -111,7 +111,34 @@ fn main() {
 }
 ```
 
-Use `as` for all numeric conversions — widening, narrowing, int↔float, signed↔unsigned. Float→int truncates toward zero. (Avoid casting negative values to unsigned types.)
+Use `as` for all defined numeric conversions: widening, narrowing, int↔float, and signed↔unsigned. Integer narrowing keeps the target width's low bits. Integer→float and float→float casts round to the target float type. Float→int casts truncate toward zero for in-range finite values and use defined saturation for every edge case:
+
+| Source value                              | Signed result      | Unsigned result    |
+| ----------------------------------------- | ------------------ | ------------------ |
+| In-range finite                           | Truncated toward 0 | Truncated toward 0 |
+| `+Inf` or greater than the target maximum | Target maximum     | Target maximum     |
+| `-Inf` or less than the target minimum    | Target minimum     | `0`                |
+| `NaN`                                     | `0`                | `0`                |
+
+Use `.try_to_X()` when a conversion must fail instead of losing information. It returns `Option<X>` and produces `Some` only when the value round-trips through the target type exactly.
+
+```hew
+fn main() {
+    let bytes: i64 = 255;
+    let byte: Option<u8> = bytes.try_to_u8();       // Some(255)
+
+    let negative: i32 = -1;
+    let unsigned: Option<u32> = negative.try_to_u32(); // None
+
+    let exact: i32 = 16777216;
+    let exact_float: Option<f32> = exact.try_to_f32(); // Some(16777216.0)
+
+    let inexact: i32 = 16777217;
+    let rounded_float: Option<f32> = inexact.try_to_f32(); // None
+}
+```
+
+The available methods are `.try_to_i8()`, `.try_to_i16()`, `.try_to_i32()`, `.try_to_i64()`, `.try_to_u8()`, `.try_to_u16()`, `.try_to_u32()`, `.try_to_u64()`, `.try_to_isize()`, `.try_to_usize()`, `.try_to_f32()`, and `.try_to_f64()`. They return `None` for out-of-range values, negative values converted to unsigned targets, `NaN`, infinities, nonzero fractional parts in float→integer conversions, and inexact integer→float or float→float conversions.
 
 `char as <integer>` extracts the Unicode scalar value — the codepoint. `'A' as i64` is `65`, and `s[i] as i64` reads the codepoint of the char at codepoint offset `i` (the read primitive for text/byte parsers). Wider integer targets zero-extend; narrower ones truncate to the low byte (`'€' as u8` is `172`), following the same width rules as above. The reverse — `<integer> as char` — is not an `as` cast (not every integer is a valid scalar value); build a one-character string with `string.from_char(code)` instead.
 
@@ -739,10 +766,10 @@ fn main() {
 }
 ```
 
-| Declaration | How to exit non-zero |
-|-------------|----------------------|
-| `fn main() -> i32` | return the code as the last expression or with `return N;` |
-| `fn main() -> i64` | same — return the code value |
+| Declaration        | How to exit non-zero                                           |
+| ------------------ | -------------------------------------------------------------- |
+| `fn main() -> i32` | return the code as the last expression or with `return N;`     |
+| `fn main() -> i64` | same — return the code value                                   |
 | `fn main()` (unit) | call `exit(N)` explicitly; the function itself can only exit 0 |
 
 Shell pipelines and `&&` chains read the exit code — write `main() -> i32` for any program that signals failure to the caller. `assert(false)`, `panic(...)`, and traps (div-by-zero) all exit non-zero via the runtime trap handler and do not need an explicit return.
@@ -922,11 +949,11 @@ Compose records by nesting; access depth-chains directly. Every field must be su
 
 > **Syntax callout — this trips up almost everyone:**
 >
-> | Context | Separator |
-> |---------|-----------|
-> | `type` field definitions | `;` (semicolon) — idiomatic; `,` also accepted |
-> | `enum` variant separators | `;` (semicolon) — required; `,` is an error |
-> | Record construction literals | `,` (comma) — required; `;` is an error |
+> | Context                      | Separator                                      |
+> | ---------------------------- | ---------------------------------------------- |
+> | `type` field definitions     | `;` (semicolon) — idiomatic; `,` also accepted |
+> | `enum` variant separators    | `;` (semicolon) — required; `,` is an error    |
+> | Record construction literals | `,` (comma) — required; `;` is an error        |
 >
 > ```hew
 > // Definition — semicolons throughout (idiomatic)
@@ -1195,6 +1222,7 @@ fn main() {
 **2. `scope{}` body for concurrent tasks** — use `scope{}` with `fork` for structured concurrency. `await` suspensions inside a `scope{}` do not block its sibling forks:
 
 <!-- doctest: skip -->
+
 ```hew
 scope {
     fork { result_a = work_a(); };
@@ -1206,6 +1234,7 @@ scope {
 **3. `await` as a value in non-statement positions is rejected** — `await` cannot be used as a function argument, binary operand, or let-binding right-hand side nested inside a larger expression. Bind the awaited result to a `let` first:
 
 <!-- doctest: skip -->
+
 ```hew
 // Wrong: await as function argument
 // println(await actor.method());   // compile error
@@ -1722,7 +1751,7 @@ fn main() {
 }
 ```
 
-> **Note:** Generic constructor functions called *without* turbofish fail — the error depends on context: if `T` is entirely unconstrained (no usage to narrow it), the type-checker reports `cannot infer type for local binding`; once usage constrains `T`, the call emits `E_NOT_YET_IMPLEMENTED: MIR lowering for function call is not implemented yet`. Annotating the binding without turbofish (`let s: Stack<i64> = new_empty()`) does not help — it still emits `E_NOT_YET_IMPLEMENTED`. Two workarounds:
+> **Note:** Generic constructor functions called _without_ turbofish fail — the error depends on context: if `T` is entirely unconstrained (no usage to narrow it), the type-checker reports `cannot infer type for local binding`; once usage constrains `T`, the call emits `E_NOT_YET_IMPLEMENTED: MIR lowering for function call is not implemented yet`. Annotating the binding without turbofish (`let s: Stack<i64> = new_empty()`) does not help — it still emits `E_NOT_YET_IMPLEMENTED`. Two workarounds:
 >
 > ```hew
 > type Stack<T> { items: Vec<T>; }
@@ -1738,7 +1767,7 @@ fn main() {
 > }
 > ```
 >
-> Note: `Stack { items: Vec::new() }` *without* a type annotation on the binding also fails — with `cannot infer type for local binding` when `T` is unconstrained, or `E_MIR: unknown type 'T' at the MIR boundary` once usage constrains `T`. Always provide a type annotation when constructing a generic record inline.
+> Note: `Stack { items: Vec::new() }` _without_ a type annotation on the binding also fails — with `cannot infer type for local binding` when `T` is unconstrained, or `E_MIR: unknown type 'T' at the MIR boundary` once usage constrains `T`. Always provide a type annotation when constructing a generic record inline.
 
 ### Generic functions as values (cross-module)
 
@@ -1748,6 +1777,7 @@ declared type or the parameter type at the call site — the context fully
 determines the monomorphisation.
 
 <!-- doctest: skip -->
+
 ```hew
 import math_utils;
 
@@ -1772,6 +1802,7 @@ fn main() {
 Where `math_utils.hew` exports:
 
 <!-- doctest: skip -->
+
 ```hew
 pub fn add_one(x: i64) -> i64 { x + 1 }
 pub fn square(x: i64) -> i64 { x * x }
@@ -1786,7 +1817,7 @@ need an annotation; the type is recovered from the function's declared
 signature directly.
 
 > **Scope:** this path fires only for cross-module functions
-> (`module.fn_name`). Capturing a generic function from the *current* module
+> (`module.fn_name`). Capturing a generic function from the _current_ module
 > as a value is not supported — split the generic helper into a separate
 > module if you need it as a value.
 
@@ -2402,15 +2433,15 @@ fn main() {
 
 **`type_of()` constants** — `type_of()` returns an `i32` tag:
 
-| Value | Type |
-|-------|------|
-| 0 | null |
-| 1 | bool |
-| 2 | i64 (integer) |
-| 3 | f64 (float) |
-| 4 | string |
-| 5 | array |
-| 6 | object |
+| Value | Type          |
+| ----- | ------------- |
+| 0     | null          |
+| 1     | bool          |
+| 2     | i64 (integer) |
+| 3     | f64 (float)   |
+| 4     | string        |
+| 5     | array         |
+| 6     | object        |
 
 ```hew
 import std::encoding::json;
@@ -2530,7 +2561,7 @@ Structural equality over a float field is **bitwise**, not IEEE numeric. The
 compiler compares the raw bit patterns of the two floats, so:
 
 - it is **reflexive**: `x == x` holds for every value, including `NaN`. Two
-  `NaN` values compare *equal* when their bit patterns are identical.
+  `NaN` values compare _equal_ when their bit patterns are identical.
 - `+0.0` and `-0.0` are **distinct** (their bit patterns differ), so a record
   holding `+0.0` is not equal to one holding `-0.0`.
 
@@ -2596,6 +2627,7 @@ comparing raw buffer bytes, which would produce unreliable results for
 refcounted heap handles:
 
 <!-- doctest: skip -->
+
 ```hew
 type Packet { data: bytes; }
 // Packet { data: bytes } == Packet { data: bytes }
@@ -2854,18 +2886,19 @@ The `| after duration` timeout combinator works with the two blocking network
 operations, converting a plain suspend into a timed suspend that returns
 `Result` on expiry:
 
-| Suspend form | Return type |
-| --- | --- |
-| `await conn.read_string()` | `string` |
-| `await conn.read_string() \| after d` | `Result<string, IoError>` |
-| `await conn.read()` | `bytes` |
-| `await conn.read() \| after d` | `Result<bytes, IoError>` |
-| `await ln.accept()` | `net.Connection` |
-| `await ln.accept() \| after d` | `Result<net.Connection, IoError>` |
+| Suspend form                          | Return type                       |
+| ------------------------------------- | --------------------------------- |
+| `await conn.read_string()`            | `string`                          |
+| `await conn.read_string() \| after d` | `Result<string, IoError>`         |
+| `await conn.read()`                   | `bytes`                           |
+| `await conn.read() \| after d`        | `Result<bytes, IoError>`          |
+| `await ln.accept()`                   | `net.Connection`                  |
+| `await ln.accept() \| after d`        | `Result<net.Connection, IoError>` |
 
 Use inside a `scope` body to bound how long a handler waits for a peer:
 
 <!-- doctest: skip -->
+
 ```hew
 scope {
     fork {
@@ -2925,6 +2958,7 @@ On the QUIC mesh transport, peers authenticate by mutual TLS with pinned public
 keys. Call these before `Node::start`:
 
 <!-- doctest: skip -->
+
 ```hew
 Node::set_transport("quic-mesh");
 Node::load_keys("node.key");        // mint+persist this node's identity (stable SPKI)

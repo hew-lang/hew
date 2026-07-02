@@ -53592,6 +53592,133 @@ fn main() {
         );
     }
 
+    /// `emit_dyn_trait_vtable_definitions` builds every dyn-trait vtable
+    /// global as a 3-slot prefix `{ drop_in_place: fn ptr, size_of: usize,
+    /// align_of: usize }` followed by N method-thunk pointer slots. This
+    /// test pins the prefix's field offsets and total size (with zero
+    /// trailing method slots, matching the runtime's fixed-size struct)
+    /// against the real `hew_runtime::trait_object::HewVtable` so a future
+    /// prefix-slot reorder fails here instead of miscompiling every `dyn
+    /// Trait` drop/method-dispatch site.
+    ///
+    /// The comparison struct below is built the same way the write site's
+    /// `slot_tys[0..3]` is (same field-type list, same order, sourced from
+    /// `host_target_data()`) but independently — this test never calls
+    /// `emit_dyn_trait_vtable_definitions` or inspects its output.
+    #[test]
+    fn hew_vtable_prefix_offset_parity() {
+        use hew_runtime::trait_object::HewVtable;
+
+        let ctx = Context::create();
+        let td = host_target_data();
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let usize_ty = ctx.ptr_sized_int_type(&td, None);
+        let llvm_struct =
+            ctx.struct_type(&[ptr_ty.into(), usize_ty.into(), usize_ty.into()], false);
+
+        let fields: [(usize, u32, &str); 3] = [
+            (
+                std::mem::offset_of!(HewVtable, drop_in_place),
+                0,
+                "drop_in_place",
+            ),
+            (std::mem::offset_of!(HewVtable, size_of), 1, "size_of"),
+            (std::mem::offset_of!(HewVtable, align_of), 2, "align_of"),
+        ];
+
+        for (rust_offset, llvm_idx, name) in fields {
+            let llvm_offset = td
+                .offset_of_element(&llvm_struct, llvm_idx)
+                .unwrap_or_else(|| panic!("LLVM struct has no element {llvm_idx} for `{name}`"));
+            assert_eq!(
+                llvm_offset as usize, rust_offset,
+                "HewVtable field `{name}` offset mismatch: LLVM {llvm_offset} vs Rust \
+                 {rust_offset} — emit_dyn_trait_vtable_definitions's prefix mirror drifted \
+                 from hew_runtime::trait_object::HewVtable"
+            );
+        }
+
+        assert_eq!(
+            td.get_abi_size(&llvm_struct) as usize,
+            std::mem::size_of::<HewVtable>(),
+            "HewVtable total size mismatch between the codegen write-side prefix mirror \
+             and the hew_runtime::trait_object::HewVtable struct"
+        );
+    }
+
+    /// `lower_dyn_trait_vtable_drop`'s `view_ty` is a SEPARATE struct-type
+    /// construction, independent of `emit_dyn_trait_vtable_definitions`'s
+    /// write-side prefix, that GEPs the same three vtable prefix slots back
+    /// out at every `dyn Trait` drop site. Both sites live in this file and
+    /// currently source their `ptr`/`usize` element types from the same
+    /// `host_target_data()` authority — but nothing ties them together
+    /// structurally. If the read side's element-type sourcing (or slot
+    /// count/order) ever drifts from the write side's, a `dyn Trait` drop
+    /// reads `drop_in_place`/`size_of`/`align_of` from the wrong bytes: a
+    /// silent wrong-code hazard, not a compile-time error, because both
+    /// sides independently pass LLVM's own struct-body validation.
+    ///
+    /// This is an intra-codegen cross-check (write-side vs read-side, both
+    /// in `llvm.rs`), NOT a codegen-vs-runtime check — it does not
+    /// duplicate `hew_vtable_prefix_offset_parity` above, which pins the
+    /// write side against the runtime struct. This test pins the read
+    /// side's `view_ty` against the same write-side prefix shape,
+    /// reconstructed independently here (mirroring
+    /// `lower_dyn_trait_vtable_drop`'s own `view_ty` construction, not by
+    /// calling either function).
+    #[test]
+    fn hew_vtable_write_read_slot_parity() {
+        let ctx = Context::create();
+        let td = host_target_data();
+
+        // Mirrors emit_dyn_trait_vtable_definitions's slot_tys[0..3].
+        let write_ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let write_usize_ty = ctx.ptr_sized_int_type(&td, None);
+        let write_struct = ctx.struct_type(
+            &[
+                write_ptr_ty.into(),
+                write_usize_ty.into(),
+                write_usize_ty.into(),
+            ],
+            false,
+        );
+
+        // Mirrors lower_dyn_trait_vtable_drop's view_ty.
+        let read_ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let read_usize_ty = ctx.ptr_sized_int_type(&td, None);
+        let read_struct = ctx.struct_type(
+            &[
+                read_ptr_ty.into(),
+                read_usize_ty.into(),
+                read_usize_ty.into(),
+            ],
+            false,
+        );
+
+        let slot_names = ["drop_in_place", "size_of", "align_of"];
+        for (idx, name) in (0u32..3).zip(slot_names) {
+            let write_offset = td
+                .offset_of_element(&write_struct, idx)
+                .unwrap_or_else(|| panic!("write-side struct has no element {idx} for `{name}`"));
+            let read_offset = td
+                .offset_of_element(&read_struct, idx)
+                .unwrap_or_else(|| panic!("read-side view_ty has no element {idx} for `{name}`"));
+            assert_eq!(
+                read_offset, write_offset,
+                "dyn-trait vtable slot `{name}` (index {idx}): read-side view_ty offset \
+                 {read_offset} disagrees with write-side prefix offset {write_offset} — \
+                 lower_dyn_trait_vtable_drop's GEP would read the wrong slot"
+            );
+        }
+
+        assert_eq!(
+            td.get_abi_size(&read_struct) as usize,
+            td.get_abi_size(&write_struct) as usize,
+            "dyn-trait vtable prefix total size disagrees between read-side view_ty and \
+             write-side prefix"
+        );
+    }
+
     /// RC10 Stage 1: the `emit_lifetime_start`/`emit_lifetime_end` helpers emit
     /// the canonical opaque-pointer `@llvm.lifetime.{start,end}.p0(ptr %slot)`
     /// shape (LLVM 22 single-operand signature — the explicit size operand was

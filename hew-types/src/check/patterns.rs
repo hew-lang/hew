@@ -311,6 +311,12 @@ impl Checker {
     ///
     /// Constructor identifiers (qualified with `::`, or resolving to a known
     /// variant) are refutable and return `false`.
+    ///
+    /// A tuple sub-pattern is irrefutable when it is the empty tuple `()`, or
+    /// when its resolved payload type is itself `Ty::Tuple` of equal arity and
+    /// every element sub-pattern is (recursively) irrefutable against its
+    /// corresponding element type. Any arity mismatch or non-tuple resolved
+    /// payload type stays refutable (fail-closed) rather than being credited.
     fn is_payload_irrefutable_for_ty(&self, pattern: &Pattern, payload_ty: &Ty) -> bool {
         match pattern {
             Pattern::Wildcard => true,
@@ -324,7 +330,20 @@ impl Checker {
                 let short = name.rsplit("::").next().unwrap_or(name);
                 self.resolve_variant_match(short, &resolved, name).is_none()
             }
-            Pattern::Tuple(pats) => pats.is_empty(),
+            Pattern::Tuple(pats) => {
+                if pats.is_empty() {
+                    return true;
+                }
+                let resolved = self.project_assoc_types(&self.subst.resolve(payload_ty));
+                let Ty::Tuple(elem_tys) = &resolved else {
+                    return false;
+                };
+                pats.len() == elem_tys.len()
+                    && pats
+                        .iter()
+                        .zip(elem_tys.iter())
+                        .all(|((sub, _), elem_ty)| self.is_payload_irrefutable_for_ty(sub, elem_ty))
+            }
             _ => false,
         }
     }

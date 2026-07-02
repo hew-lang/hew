@@ -1125,17 +1125,20 @@ mod tests {
     /// N-arm + deadline select):
     /// 1. `hew_await_cancel_new` allocates the shared arbiter (refs = 1, the
     ///    codegen frame ref).
-    /// 2. Per arm: `hew_reply_channel_new` + a retained observer ref +
+    /// 2. Per arm: `hew_reply_channel_new` + a retained sender ref +
     ///    `hew_reply_channel_set_await_cancel(ch, reg)` (retains the arbiter)
     ///    + `hew_reply_channel_set_parked_waiter(ch, self)`.
     /// 3. `hew_await_cancel_schedule_deadline_ms` arms the deadline (retains the
     ///    arbiter for the timer callback).
     /// 4. Abandon: `hew_await_cancel_cancel(Cancelled, no_wake)` wins the
     ///    one-shot transition and cancels the armed timer (releasing the timer
-    ///    ref); then each channel is cancelled + freed (each free releases the
-    ///    arbiter ref the channel took and the observer ref); then
-    ///    `hew_await_cancel_free` drops the codegen frame ref.
-    /// 5. The arbiter and every channel are reclaimed exactly once — the active
+    ///    ref); then each channel is cancelled + the parked waiter ref is freed;
+    ///    then `hew_await_cancel_free` drops the codegen frame ref. The abandoned
+    ///    channels still hold their sender refs, so the arbiter remains retained
+    ///    by the channels until the late replies arrive.
+    /// 5. Each late reply observes cancellation and releases exactly one sender
+    ///    ref. The last channel free releases the last channel-held arbiter ref.
+    /// 6. The arbiter and every channel are reclaimed exactly once — the active
     ///    channel count returns to baseline and a post-abandon wheel tick does
     ///    not fire the cancelled deadline against the freed arbiter.
     ///
@@ -1163,13 +1166,14 @@ mod tests {
                 crate::await_cancel::hew_await_cancel_new(ptr::null_mut(), None, ptr::null_mut());
 
             // (2) three arm channels, each carrying the SAME arbiter + a retained
-            // observer ref (the channel-poll / stream-poll / task-observe
-            // readiness reference the setup ramp takes).
+            // sender ref. This is the actor-ask abandon shape: codegen abandons
+            // the parked waiter ref immediately, while each late handler reply
+            // consumes its own sender ref later.
             let n = 3;
             let mut chans = Vec::with_capacity(n);
             for _ in 0..n {
                 let ch = hew_reply_channel_new();
-                hew_reply_channel_retain(ch); // the readiness-observer ref
+                hew_reply_channel_retain(ch); // the late handler's sender ref
                 hew_reply_channel_set_await_cancel(ch, reg);
                 hew_reply_channel_set_parked_waiter(ch, ptr::null_mut());
                 chans.push(ch);
@@ -1180,8 +1184,9 @@ mod tests {
             assert_eq!(rc, 0, "arming the select deadline must succeed");
 
             // (4) ABANDON: cancel the arbiter (no wake) — wins the one-shot and
-            // cancels the timer — then deregister + free each channel (cancel
-            // before free), then free the codegen arbiter ref.
+            // cancels the timer — then cancel + free each parked waiter channel
+            // ref, then free the codegen arbiter ref. Sender refs intentionally
+            // remain live until the late replies below.
             let won = crate::await_cancel::hew_await_cancel_cancel(
                 reg,
                 AwaitCancelStatus::Cancelled as i32,
@@ -1190,12 +1195,34 @@ mod tests {
             assert_eq!(won, 1, "abandon must win the one-shot terminal transition");
             for &ch in &chans {
                 hew_reply_channel_cancel(ch);
-                hew_reply_channel_free(ch); // releases the channel's arbiter ref
-                hew_reply_channel_free(ch); // releases the readiness-observer ref
+                hew_reply_channel_free(ch); // releases the parked waiter ref
             }
             crate::await_cancel::hew_await_cancel_free(reg);
 
-            // (5) every channel is reclaimed exactly once.
+            assert_eq!(
+                active_channel_count(),
+                pre + n,
+                "abandoned select channels must remain alive only for their late sender refs"
+            );
+
+            // (5) late replies arrive after abandon. Each loses to cancellation,
+            // releases exactly one sender ref, and must not touch the cancelled
+            // timer/arbiter except by releasing the channel-held arbiter ref.
+            for (i, &ch) in chans.iter().enumerate() {
+                let payload = i32::try_from(i).expect("test arm count fits in i32");
+                let delivered = hew_reply(
+                    ch,
+                    (&raw const payload).cast_mut().cast(),
+                    std::mem::size_of::<i32>(),
+                );
+                assert!(
+                    !delivered,
+                    "late reply on an abandoned select arm must observe cancellation"
+                );
+            }
+
+            // (6) every channel is reclaimed exactly once, after late sender refs
+            // are consumed.
             assert_eq!(
                 active_channel_count(),
                 pre,

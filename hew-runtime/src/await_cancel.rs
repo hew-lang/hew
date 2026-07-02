@@ -18,6 +18,19 @@ use crate::task_scope::{hew_cancel_token_release, hew_cancel_token_retain, HewCa
 use crate::timer_wheel::{hew_timer_wheel_cancel, hew_timer_wheel_schedule_handle};
 use crate::timer_wheel::{HewTimerEntry, HewTimerWheel};
 
+#[cfg(test)]
+static AWAIT_CANCEL_FINAL_FREE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+pub(crate) fn reset_await_cancel_final_free_count_for_test() {
+    AWAIT_CANCEL_FINAL_FREE_COUNT.store(0, Ordering::Release);
+}
+
+#[cfg(test)]
+pub(crate) fn await_cancel_final_free_count_for_test() -> usize {
+    AWAIT_CANCEL_FINAL_FREE_COUNT.load(Ordering::Acquire)
+}
+
 /// Terminal state for an internal suspended await registration.
 ///
 /// Values are ABI-visible to codegen/runtime adapters.
@@ -253,6 +266,8 @@ pub unsafe extern "C" fn hew_await_cancel_free(reg: *mut HewAwaitCancel) {
     if prev != 1 {
         return;
     }
+    #[cfg(test)]
+    AWAIT_CANCEL_FINAL_FREE_COUNT.fetch_add(1, Ordering::AcqRel);
     // SAFETY: last ref; no timer ref can still be held or refs would exceed 1.
     let boxed = unsafe { Box::from_raw(reg) };
     // SAFETY: this registration retained the token at creation.

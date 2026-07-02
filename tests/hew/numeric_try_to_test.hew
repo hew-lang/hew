@@ -1,0 +1,153 @@
+//! Executable coverage for exact numeric `.try_to_X()` conversions.
+
+import std::testing;
+
+fn expect_some_i32(value: Option<i32>, expected: i32) {
+    match value {
+        Some(actual) => testing.assert_eq(actual as i64, expected as i64),
+        None => testing.assert_true(false),
+    }
+}
+
+fn expect_none_i32(value: Option<i32>) {
+    match value {
+        Some(_) => testing.assert_true(false),
+        None => testing.assert_true(true),
+    }
+}
+
+fn expect_some_i8(value: Option<i8>, expected: i8) {
+    match value {
+        Some(actual) => testing.assert_eq(actual as i64, expected as i64),
+        None => testing.assert_true(false),
+    }
+}
+
+fn expect_none_i8(value: Option<i8>) {
+    match value {
+        Some(_) => testing.assert_true(false),
+        None => testing.assert_true(true),
+    }
+}
+
+fn expect_none_u32(value: Option<u32>) {
+    match value {
+        Some(_) => testing.assert_true(false),
+        None => testing.assert_true(true),
+    }
+}
+
+fn expect_some_u64(value: Option<u64>, expected: u64) {
+    match value {
+        Some(actual) => testing.assert_eq(actual as i64, expected as i64),
+        None => testing.assert_true(false),
+    }
+}
+
+fn expect_some_f32(value: Option<f32>, expected: f32) {
+    match value {
+        Some(actual) => testing.assert_true(actual == expected),
+        None => testing.assert_true(false),
+    }
+}
+
+fn expect_none_f32(value: Option<f32>) {
+    match value {
+        Some(_) => testing.assert_true(false),
+        None => testing.assert_true(true),
+    }
+}
+
+fn expect_some_f64(value: Option<f64>, expected: f64) {
+    match value {
+        Some(actual) => testing.assert_true(actual == expected),
+        None => testing.assert_true(false),
+    }
+}
+
+fn expect_none_f64(value: Option<f64>) {
+    match value {
+        Some(_) => testing.assert_true(false),
+        None => testing.assert_true(true),
+    }
+}
+
+fn divide_f64(numerator: f64, denominator: f64) -> f64 {
+    numerator / denominator
+}
+
+fn divide_f32(numerator: f32, denominator: f32) -> f32 {
+    numerator / denominator
+}
+
+#[test]
+fn test_try_to_int_boundaries() {
+    let u: u8 = 255;
+    expect_none_i8(u.try_to_i8());
+
+    let id: i8 = 127;
+    expect_some_i8(id.try_to_i8(), 127);
+
+    let neg: i32 = -1;
+    expect_none_u32(neg.try_to_u32());
+
+    let max_i32: i64 = 2147483647;
+    expect_some_i32(max_i32.try_to_i32(), 2147483647);
+
+    let past_i32: i64 = 2147483648;
+    expect_none_i32(past_i32.try_to_i32());
+
+    let wide_signed: isize = 42 as isize;
+    expect_some_i32(wide_signed.try_to_i32(), 42);
+
+    let wide_unsigned: usize = 42 as usize;
+    expect_some_u64(wide_unsigned.try_to_u64(), 42 as u64);
+}
+
+#[test]
+fn test_try_to_float_to_int_rejects_lossy_values() {
+    let nan: f64 = divide_f64(0.0, 0.0);
+    expect_none_i32(nan.try_to_i32());
+
+    let inf: f64 = divide_f64(1.0, 0.0);
+    expect_none_i32(inf.try_to_i32());
+
+    let huge: f64 = 1000000000000000000000000000000.0;
+    expect_none_i32(huge.try_to_i32());
+
+    let fractional: f64 = 3.5;
+    expect_none_i32(fractional.try_to_i32());
+
+    let exact: f64 = 3.0;
+    expect_some_i32(exact.try_to_i32(), 3);
+}
+
+#[test]
+fn test_try_to_int_to_float_requires_exact_representation() {
+    let exact: i32 = 16777216;
+    expect_some_f32(exact.try_to_f32(), 16777216.0 as f32);
+
+    let inexact: i32 = 16777217;
+    expect_none_f32(inexact.try_to_f32());
+
+    let exact64: i64 = 9007199254740992;
+    expect_some_f64(exact64.try_to_f64(), 9007199254740992.0);
+
+    let inexact64: i64 = 9007199254740993;
+    expect_none_f64(inexact64.try_to_f64());
+}
+
+#[test]
+fn test_try_to_float_to_float_requires_exact_representation() {
+    let precise: f64 = 0.1;
+    expect_none_f32(precise.try_to_f32());
+
+    let exact: f64 = 2.5;
+    expect_some_f32(exact.try_to_f32(), 2.5 as f32);
+
+    let widening: f32 = 1.5;
+    expect_some_f64(widening.try_to_f64(), 1.5);
+
+    let inf: f32 = divide_f32(1.0 as f32, 0.0 as f32);
+    expect_none_f64(inf.try_to_f64());
+}

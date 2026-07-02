@@ -31,52 +31,58 @@ pub(super) fn check(ctx: &LintCtx, levels: &LintLevels, source: &str, out: &mut 
 
             let span = comment.span.start + offset..comment.span.start + offset + c.len_utf8();
             if is_bidi_reorder_control(c) {
-                emit(
-                    ctx,
-                    levels,
-                    LintId::TextDirectionCodepointInComment,
-                    &span,
-                    c,
-                    "text-direction control",
-                    "remove the codepoint or describe the directionality in visible text",
-                    out,
-                );
+                emit(ctx, levels, &Kind::TEXT_DIRECTION, &span, c, out);
             } else if !hew_parser::fmt::is_printable_non_ascii(c) {
-                emit(
-                    ctx,
-                    levels,
-                    LintId::InvisibleCodepointInComment,
-                    &span,
-                    c,
-                    "invisible Unicode codepoint",
-                    "remove the codepoint or spell it out visibly in the comment",
-                    out,
-                );
+                emit(ctx, levels, &Kind::INVISIBLE, &span, c, out);
             }
         }
     }
 }
 
+/// The two comment lint tiers this pass emits, bundled because `id`,
+/// `class`, and `suggestion` always vary together per tier — see
+/// [`Kind::TEXT_DIRECTION`] and [`Kind::INVISIBLE`].
+struct Kind {
+    id: LintId,
+    /// Noun phrase naming the codepoint class in the diagnostic message.
+    class: &'static str,
+    suggestion: &'static str,
+}
+
+impl Kind {
+    /// Deny-by-default: bidirectional reordering controls.
+    const TEXT_DIRECTION: Self = Self {
+        id: LintId::TextDirectionCodepointInComment,
+        class: "text-direction control",
+        suggestion: "remove the codepoint or describe the directionality in visible text",
+    };
+    /// Warning-tier: other invisible/default-ignorable scalars.
+    const INVISIBLE: Self = Self {
+        id: LintId::InvisibleCodepointInComment,
+        class: "invisible Unicode codepoint",
+        suggestion: "remove the codepoint or spell it out visibly in the comment",
+    };
+}
+
 fn emit(
     ctx: &LintCtx,
     levels: &LintLevels,
-    id: LintId,
+    kind: &Kind,
     span: &Span,
     c: char,
-    class: &str,
-    suggestion: &str,
     out: &mut Vec<TypeError>,
 ) {
     ctx.emit(
         levels,
-        id,
+        kind.id,
         span,
         format!(
-            "{}: comment contains {class} U+{:04X}",
-            id.as_str(),
+            "{}: comment contains {} U+{:04X}",
+            kind.id.as_str(),
+            kind.class,
             c as u32
         ),
-        suggestion.to_string(),
+        kind.suggestion.to_string(),
         out,
     );
 }

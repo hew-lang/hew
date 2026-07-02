@@ -59,7 +59,6 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::RecvError
             | BuiltinType::LinkError
             | BuiltinType::MonitorRef
-            | BuiltinType::NarrowError
             | BuiltinType::CloseError
             | BuiltinType::Iterator
             | BuiltinType::Unit
@@ -929,13 +928,6 @@ impl Ty {
     #[must_use]
     pub fn monitor_ref() -> Ty {
         Self::builtin_named(BuiltinType::MonitorRef, vec![])
-    }
-
-    /// Construct `NarrowError` — error type returned by `.try_to_<W>()` width-conversion
-    /// methods when the source value does not fit in the target integer width.
-    #[must_use]
-    pub fn narrow_error() -> Ty {
-        Self::builtin_named(BuiltinType::NarrowError, vec![])
     }
 
     /// Return the fixed bit-width of this integer type, or `None` for

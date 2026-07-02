@@ -58,7 +58,6 @@ pub enum BuiltinType {
     RecvError,
     LinkError,
     MonitorRef,
-    NarrowError,
     CloseError,
     Iterator,
     Unit,
@@ -184,7 +183,6 @@ builtin_types! {
     RecvError => "RecvError",
     LinkError => "LinkError",
     MonitorRef => "MonitorRef",
-    NarrowError => "NarrowError",
     CloseError => "CloseError",
     Iterator => "Iterator",
     Unit => "Unit",
@@ -310,7 +308,6 @@ impl BuiltinType {
             | Self::RecvError
             | Self::LinkError
             | Self::MonitorRef
-            | Self::NarrowError
             | Self::CloseError
             | Self::Iterator
             | Self::Unit

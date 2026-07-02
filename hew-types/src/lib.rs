@@ -47,9 +47,10 @@ pub use check::{
     MethodCallRewrite, MethodTarget, MethodTargetFamily, NumericMethodFamily,
     NumericMethodLowering, NumericMethodOp, NumericSignedness, NumericWidth, OptionResultMethod,
     PatternKind, PayloadBinding, PayloadVariantPattern, PoolAccessor, PoolAccessorKind,
-    ResolvedCall, RuntimeAbi, SpanKey, TyPattern, TypeCheckOutput, VariantDef, VariantMatch,
-    VecHigherOrderOp, VecMethod, WidthCastKind, WidthCastLowering, WireCodecDirection,
-    WireFieldLayout, WireLayoutEntry, WireLayoutTable, WireTextFormat,
+    ResolvedCall, RuntimeAbi, SpanKey, TryConversionKind, TryWidthCastLowering, TyPattern,
+    TypeCheckOutput, VariantDef, VariantMatch, VecHigherOrderOp, VecMethod, WidthCastKind,
+    WidthCastLowering, WireCodecDirection, WireFieldLayout, WireLayoutEntry, WireLayoutTable,
+    WireTextFormat,
 };
 pub use error::TypeError;
 pub use extern_symbol::{

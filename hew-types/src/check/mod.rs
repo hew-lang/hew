@@ -62,10 +62,10 @@ pub use self::types::{
     ExecutionContextReader, FnSig, MachineMethodKind, MathGenericOp, MethodCallReceiverKind,
     MethodCallRewrite, NumericMethodFamily, NumericMethodLowering, NumericMethodOp,
     NumericSignedness, NumericWidth, OptionResultMethod, PatternKind, PayloadBinding,
-    PayloadVariantPattern, PoolAccessor, PoolAccessorKind, SpanKey, StackHint, TypeCheckOutput,
-    TypeDef, TypeDefKind, VariantDef, VariantMatch, VecHigherOrderOp, WidthCastKind,
-    WidthCastLowering, WireCodecDirection, WireFieldLayout, WireLayoutEntry, WireLayoutTable,
-    WireTextFormat,
+    PayloadVariantPattern, PoolAccessor, PoolAccessorKind, SpanKey, StackHint, TryConversionKind,
+    TryWidthCastLowering, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef, VariantMatch,
+    VecHigherOrderOp, WidthCastKind, WidthCastLowering, WireCodecDirection, WireFieldLayout,
+    WireLayoutEntry, WireLayoutTable, WireTextFormat,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,
@@ -717,6 +717,7 @@ impl Checker {
             import_type_name_aliases: std::mem::take(&mut self.import_type_name_aliases),
             numeric_method_lowerings: std::mem::take(&mut self.numeric_method_lowerings),
             width_cast_lowerings: std::mem::take(&mut self.width_cast_lowerings),
+            try_width_cast_lowerings: std::mem::take(&mut self.try_width_cast_lowerings),
             actor_method_dispatch: std::mem::take(&mut self.actor_method_dispatch),
             machine_method_dispatch: std::mem::take(&mut self.machine_method_dispatch),
             conn_await_reads: std::mem::take(&mut self.conn_await_reads),

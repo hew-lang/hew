@@ -35,7 +35,7 @@
 use std::collections::HashMap;
 
 use hew_parser::ast::{
-    Block, CallArg, ElseBlock, Expr, MatchArm, SelectArm, Span, Stmt, StringPart,
+    Block, CallArg, ElseBlock, Expr, MatchArm, ReceiveFnDecl, SelectArm, Span, Stmt, StringPart,
 };
 
 use crate::error::{Severity, TypeError, TypeErrorKind};
@@ -95,6 +95,10 @@ pub enum LintId {
     /// exit is a sibling actor message, but the mailbox is not observed until
     /// the current handler returns.
     SleepLoopBlocksMailbox,
+    /// A receive handler name overlaps a builtin actor-handle method, so
+    /// concrete handle dispatch uses the handler while generic pid dispatch keeps
+    /// the builtin method surface.
+    ActorHandleBuiltinShadow,
     // NOTE: a `clean_counter` lint (a loop-carried accumulator that is
     // incremented but never read after the loop) is deliberately NOT registered
     // here. It has no emission code yet, and registering an un-emitted lint
@@ -120,6 +124,7 @@ impl LintId {
         LintId::DeadStore,
         LintId::MustUse,
         LintId::SleepLoopBlocksMailbox,
+        LintId::ActorHandleBuiltinShadow,
     ];
 
     /// The stable, lowercase string name for this lint.
@@ -140,6 +145,7 @@ impl LintId {
             LintId::DeadStore => "dead_store",
             LintId::MustUse => "must_use",
             LintId::SleepLoopBlocksMailbox => "sleep_loop_blocks_mailbox",
+            LintId::ActorHandleBuiltinShadow => "actor_handle_builtin_shadow",
         }
     }
 
@@ -166,7 +172,8 @@ impl LintId {
             | LintId::DeadCode
             | LintId::DeadStore
             | LintId::MustUse
-            | LintId::SleepLoopBlocksMailbox => LintLevel::Warn,
+            | LintId::SleepLoopBlocksMailbox
+            | LintId::ActorHandleBuiltinShadow => LintLevel::Warn,
         }
     }
 }
@@ -446,6 +453,44 @@ pub(super) fn lint_receive_fn(
     out: &mut Vec<TypeError>,
 ) {
     sleep_loop_blocks_mailbox::check(ctx, levels, body, out);
+}
+
+/// Run lints whose finding is attached to the receive-handler declaration.
+pub(super) fn lint_receive_fn_definition(
+    ctx: &LintCtx,
+    levels: &LintLevels,
+    rec: &ReceiveFnDecl,
+    out: &mut Vec<TypeError>,
+) {
+    let Some(shadowed_builtin) = shadowed_actor_handle_builtin(&rec.name) else {
+        return;
+    };
+    ctx.emit(
+        levels,
+        LintId::ActorHandleBuiltinShadow,
+        &rec.span,
+        format!(
+            "`receive fn {}` shadows builtin actor-handle method {shadowed_builtin}; \
+             concrete actor handles dispatch to this handler, while generic `P: Pid` \
+             contexts use builtin `Pid::send` semantics",
+            rec.name
+        ),
+        format!(
+            "rename `receive fn {}` or add `// hew:allow(actor_handle_builtin_shadow)` \
+             when this concrete-handle precedence is intentional",
+            rec.name
+        ),
+        out,
+    );
+}
+
+fn shadowed_actor_handle_builtin(name: &str) -> Option<&'static str> {
+    match name {
+        "send" => Some("`LocalPid<T>::send` / `RemotePid<T>::send`"),
+        "to_remote_via" => Some("`LocalPid<T>::to_remote_via`"),
+        "ask" => Some("`RemotePid<T>::ask`"),
+        _ => None,
+    }
 }
 
 // ── shared read-only body walker ─────────────────────────────────────

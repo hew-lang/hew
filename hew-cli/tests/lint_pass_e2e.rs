@@ -278,6 +278,57 @@ fn sleep_loop_blocks_mailbox_inline_directive_suppresses() {
     );
 }
 
+// ── receive-handler lint: actor_handle_builtin_shadow ─────────────────
+
+const ACTOR_HANDLE_BUILTIN_SHADOW: &str = "actor Counter {\n\
+     var count: i64;\n\
+     receive fn send(n: i64) { count = count + n; }\n\
+     }\n\
+     fn main() {\n\
+     let counter = spawn Counter(count: 0);\n\
+     counter.send(1);\n\
+     }\n";
+
+const ACTOR_HANDLE_BUILTIN_SHADOW_SUPPRESSED: &str = "actor Counter {\n\
+     var count: i64;\n\
+     // hew:allow(actor_handle_builtin_shadow)\n\
+     receive fn send(n: i64) { count = count + n; }\n\
+     }\n\
+     fn main() {\n\
+     let counter = spawn Counter(count: 0);\n\
+     counter.send(1);\n\
+     }\n";
+
+const ACTOR_HANDLE_BUILTIN_SHADOW_MESSAGE: &str =
+    "`receive fn send` shadows builtin actor-handle method";
+
+#[test]
+fn actor_handle_builtin_shadow_warns_by_default() {
+    let output = run_check(ACTOR_HANDLE_BUILTIN_SHADOW, &[]);
+    let stderr = stderr_of(&output);
+    assert!(
+        output.status.success(),
+        "a shadow warning must not fail the build:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("warning:")
+            && stderr.contains(ACTOR_HANDLE_BUILTIN_SHADOW_MESSAGE)
+            && stderr.contains("generic `P: Pid` contexts use builtin `Pid::send` semantics"),
+        "expected the actor_handle_builtin_shadow warning to render:\n{stderr}"
+    );
+}
+
+#[test]
+fn actor_handle_builtin_shadow_inline_directive_suppresses() {
+    let output = run_check(ACTOR_HANDLE_BUILTIN_SHADOW_SUPPRESSED, &[]);
+    let stderr = stderr_of(&output);
+    assert!(output.status.success(), "check should pass:\n{stderr}");
+    assert!(
+        !stderr.contains(ACTOR_HANDLE_BUILTIN_SHADOW_MESSAGE),
+        "an in-source `// hew:allow(...)` directive must suppress the lint:\n{stderr}"
+    );
+}
+
 // ── migrated warning: dead_code is now registry-controlled ───────────
 
 /// `helper` is never called, so the migrated `dead_code` lint flags it.

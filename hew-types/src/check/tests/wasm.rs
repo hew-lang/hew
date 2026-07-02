@@ -1316,7 +1316,7 @@ fn main() {
     // ── Node:: distributed namespace + RemotePid messaging reject ──────────
     //
     // The `Node::*` cluster API (`start`, `connect`, `load_keys`, `register`,
-    // `lookup`, …) and `RemotePid<T>::tell` / `RemotePid<T>::ask` remote
+    // `lookup`, …) and `RemotePid<T>::send` / `RemotePid<T>::ask` remote
     // messaging lower to the native mesh transport (`hew_node_api_*` /
     // `hew_remote_pid_tell`), which is not compiled for wasm32.  Without a
     // check-time gate the checker admitted these on wasm32 and codegen emitted a
@@ -1324,14 +1324,14 @@ fn main() {
     // instantiation (admit-then-abort).  They must fail closed AT CHECK, like
     // every other native-only surface in this file.
 
-    fn remote_pid_tell_source() -> &'static str {
+    fn remote_pid_send_source() -> &'static str {
         concat!(
             "record Ping { n: i64 }\n",
             "actor Worker { receive fn ping(msg: Ping) {} }\n",
             "impl ActorMsg for Worker { type Msg = Ping; type Reply = (); }\n",
             "fn main() {\n",
             "    let pid: RemotePid<Worker> = RemotePid::from_raw<Worker>(1, 0);\n",
-            "    let _ = pid.tell(Ping { n: 0 });\n",
+            "    let _ = pid.send(Ping { n: 0 });\n",
             "}\n",
         )
     }
@@ -1434,11 +1434,11 @@ fn main() {
     }
 
     #[test]
-    fn wasm_rejects_remote_pid_tell() {
-        let output = check_wasm(remote_pid_tell_source());
+    fn wasm_rejects_remote_pid_send() {
+        let output = check_wasm(remote_pid_send_source());
         assert!(
             platform_error_contains(&output, "remote-actor"),
-            "RemotePid::tell should be a Distributed remote-actor WASM error; got: {:?}",
+            "RemotePid::send should be a Distributed remote-actor WASM error; got: {:?}",
             output.errors
         );
     }
@@ -1454,16 +1454,16 @@ fn main() {
     }
 
     #[test]
-    fn native_remote_pid_tell_no_platform_error() {
-        let output = check_native(remote_pid_tell_source());
+    fn native_remote_pid_send_no_platform_error() {
+        let output = check_native(remote_pid_send_source());
         assert!(
             !has_platform_limitation_error(&output),
-            "RemotePid::tell must not emit PlatformLimitation on native; got: {:?}",
+            "RemotePid::send must not emit PlatformLimitation on native; got: {:?}",
             output.errors
         );
         assert!(
             output.errors.is_empty(),
-            "RemotePid::tell should typecheck cleanly on native; got: {:?}",
+            "RemotePid::send should typecheck cleanly on native; got: {:?}",
             output.errors
         );
     }

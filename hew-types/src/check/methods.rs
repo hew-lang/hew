@@ -1741,7 +1741,7 @@ impl Checker {
         // the `on_data` / `on_close` `msg_id`s from the actor's protocol
         // descriptor, and emits the runtime attach ABI. The `attach` impl body
         // is a stub, so the handle-method auto-derivation below produces nothing;
-        // this explicit rewrite is the authority. Mirrors `RemotePid::tell`.
+        // this explicit rewrite is the authority. Mirrors `RemotePid::send`.
         if (name == "Connection" || name == "net.Connection") && method == "attach" {
             self.record_runtime_method_call_rewrite(span, "hew_tcp_attach_local");
             return;
@@ -2299,7 +2299,7 @@ impl Checker {
         )
     }
 
-    fn report_pid_polymorphic_tell_fail_closed(
+    fn report_pid_polymorphic_send_fail_closed(
         &mut self,
         type_param_name: &str,
         ty: &Ty,
@@ -2309,7 +2309,7 @@ impl Checker {
             TypeErrorKind::BoundsNotSatisfied,
             span,
             format!(
-                "generic `Pid::tell` on `{type_param_name}` is fail-closed: `{}` must be proven \
+                "generic `Pid::send` on `{type_param_name}` is fail-closed: `{}` must be proven \
                  Serializable, but the current checker cannot express the required \
                  `P::Msg: Serializable` associated-type projection bound yet (TODO A640)",
                 ty.user_facing()
@@ -2317,7 +2317,7 @@ impl Checker {
         );
     }
 
-    fn enforce_pid_polymorphic_tell_serializable_args(
+    fn enforce_pid_polymorphic_send_serializable_args(
         &mut self,
         args: &[CallArg],
         type_param_name: &str,
@@ -2329,7 +2329,7 @@ impl Checker {
             if let Some(ty) = ty_opt {
                 let resolved = self.subst.resolve(&ty);
                 if Self::is_unresolved_pid_msg_projection(&resolved) {
-                    self.report_pid_polymorphic_tell_fail_closed(type_param_name, &resolved, sp);
+                    self.report_pid_polymorphic_send_fail_closed(type_param_name, &resolved, sp);
                     all_serializable = false;
                 } else {
                     all_serializable &= self.enforce_remote_actor_msg_serializable(&resolved, sp);
@@ -6792,21 +6792,13 @@ impl Checker {
             // LocalPid<T> methods — first check LocalPid's own impl methods,
             // then fall through to actor receive-fn dispatch on the inner type T.
             //
-            // Own methods (e.g. `tell`, `to_remote_via`) are declared in
+            // Own methods (e.g. `send`, `to_remote_via`) are declared in
             // `impl LocalPid<T>` in std/builtins.hew and registered in type_defs /
             // fn_sigs as `"LocalPid::{method}"`.  Actor receive-fn dispatch
             // (e.g. `pid.greet(arg)`) remains the local actor-dispatch path.
             (resolved, _) if resolved.as_local_pid().is_some() => {
-                // `.send(payload)` on a named actor: if the actor declares a
-                // `receive fn send(...)` that user-defined handler takes
-                // precedence and falls through to the receive-fn dispatch path
-                // below.  When no such handler exists the anonymous-payload
-                // surface is not lowerable — there is no mailbox slot to
-                // receive an untyped envelope — so reject it here with an
-                // actionable diagnostic pointing the caller at the correct
-                // named-handler alternative.  Failing here (type-checker) is
-                // cleaner than accepting and failing closed in HIR with a
-                // confusing `MethodCallNoRewrite`.
+                // A user handler named `send` is actor dispatch; otherwise
+                // `send` resolves through LocalPid's own fire-and-forget method.
                 let has_user_send_handler = if method == "send" {
                     resolved.as_local_pid().and_then(|inner| {
                         if let Ty::Named { name, .. } = inner {
@@ -6824,60 +6816,33 @@ impl Checker {
                 } else {
                     false
                 };
-                if method == "send" && !has_user_send_handler {
-                    // Synthesize args so downstream bindings resolve cleanly
-                    // even though we are about to reject this call.
-                    for arg in args {
-                        let (expr, sp) = arg.expr();
-                        self.synthesize(expr, sp);
-                    }
-                    let actor_hint = resolved
-                        .as_local_pid()
-                        .and_then(|inner| {
-                            if let Ty::Named { name, .. } = inner {
-                                Some(name.clone())
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap_or_else(|| "this actor".to_string());
-                    self.report_error(
-                        TypeErrorKind::UndefinedMethod,
-                        span,
-                        format!(
-                            "actor `{actor_hint}` has no `receive fn send` handler; \
-                             anonymous-payload `.send()` is not supported — \
-                             add `receive fn send(payload: T) {{ ... }}` to the actor, \
-                             or dispatch through a named handler: `ref.method_name(payload)`"
-                        ),
-                    );
-                    return Ty::Error;
-                }
                 // Try LocalPid's own methods first.
-                if let Ty::Named {
-                    args: receiver_args,
-                    ..
-                } = resolved
-                {
-                    if let Some(sig) = self.lookup_named_method_sig(
-                        crate::BuiltinType::LocalPid.canonical_name(),
-                        receiver_args,
-                        method,
-                    ) {
-                        let applied_sig = self.apply_instantiated_call_signature(
-                            &sig,
-                            None,
-                            args,
-                            span,
-                            SignatureArgApplication::PositionalOnly {
-                                arity_context: format!("method '{method}'"),
-                            },
-                            true,
-                        );
-                        if method == "tell" {
-                            self.enforce_actor_method_send_args(args);
+                if !has_user_send_handler {
+                    if let Ty::Named {
+                        args: receiver_args,
+                        ..
+                    } = resolved
+                    {
+                        if let Some(sig) = self.lookup_named_method_sig(
+                            crate::BuiltinType::LocalPid.canonical_name(),
+                            receiver_args,
+                            method,
+                        ) {
+                            let applied_sig = self.apply_instantiated_call_signature(
+                                &sig,
+                                None,
+                                args,
+                                span,
+                                SignatureArgApplication::PositionalOnly {
+                                    arity_context: format!("method '{method}'"),
+                                },
+                                true,
+                            );
+                            if method == "send" {
+                                self.enforce_actor_method_send_args(args);
+                            }
+                            return applied_sig.return_type;
                         }
-                        return applied_sig.return_type;
                     }
                 }
                 // Fall through to actor receive-fn dispatch on the inner type.
@@ -6988,8 +6953,8 @@ impl Checker {
                         } else {
                             applied_sig.return_type.clone()
                         };
-                        if matches!(method, "tell" | "ask") {
-                            // `RemotePid<T>::tell` / `::ask` route to the native
+                        if matches!(method, "send" | "ask") {
+                            // `RemotePid<T>::send` / `::ask` route to the native
                             // mesh transport (`hew_remote_pid_tell` →
                             // `hew_actor_send_by_id`), which is not compiled for
                             // wasm32. Reject at check time so remote messaging
@@ -7014,8 +6979,8 @@ impl Checker {
                                 );
                             }
                         }
-                        if method == "tell" {
-                            // S5: real RemotePid<T>::tell lowering. Record a
+                        if method == "send" {
+                            // S5: real RemotePid<T>::send lowering. Record a
                             // direct-call rewrite so HIR/MIR lower the call
                             // to `hew_remote_pid_tell`, which codegen
                             // intercepts and lowers to the
@@ -8131,7 +8096,7 @@ impl Checker {
                             },
                             true,
                         );
-                        if declaring_trait == "Pid" && method == "tell" {
+                        if declaring_trait == "Pid" && method == "send" {
                             // TODO(A640): replace this fail-closed branch with
                             // a first-class `P::Msg: Serializable` projection
                             // bound once the checker can express that shape on
@@ -8139,7 +8104,7 @@ impl Checker {
                             // already concretely bound (for example
                             // `P: Pid<Msg = Ping>`), the regular Serializable
                             // gate below proves it and the call may proceed.
-                            if !self.enforce_pid_polymorphic_tell_serializable_args(args, name) {
+                            if !self.enforce_pid_polymorphic_send_serializable_args(args, name) {
                                 return Ty::Error;
                             }
                             self.enforce_actor_method_send_args(args);
@@ -8312,8 +8277,8 @@ impl Checker {
                 }
 
                 if let Some(mut sig) = found_sig {
-                    let pid_tell_dispatch = found_bound
-                        .is_some_and(|bound| bound.trait_name == "Pid" && method == "tell");
+                    let pid_send_dispatch = found_bound
+                        .is_some_and(|bound| bound.trait_name == "Pid" && method == "send");
                     if let Some(bound) = found_bound {
                         self.record_method_call_receiver_kind(
                             span,
@@ -8418,7 +8383,7 @@ impl Checker {
                         },
                         true,
                     );
-                    if pid_tell_dispatch {
+                    if pid_send_dispatch {
                         self.enforce_actor_method_send_args(args);
                         if !self.enforce_remote_actor_method_serializable_args(args) {
                             return Ty::Error;

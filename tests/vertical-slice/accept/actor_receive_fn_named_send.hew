@@ -1,6 +1,5 @@
-// A user-defined `receive fn send` is a first-class handler, not the builtin
-// fire-and-forget. `ref.send(n)` must dispatch to the handler, not the legacy
-// anonymous-payload path.
+// A user-defined `receive fn send` is a first-class handler. `ref.send(n)` must
+// dispatch to the handler on a concrete actor handle.
 //
 // Counter.send accumulates n into count; Counter.get returns count.
 // main: send(10) + send(32) = 42 → exit 42.

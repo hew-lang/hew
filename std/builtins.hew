@@ -25,7 +25,7 @@ pub type LocalPid<T> {
 /// Produced by peer-discovery or explicit construction via `RemotePid::from_raw`.
 /// Does NOT coerce implicitly to `LocalPid<T>` — remote actors are a distinct class.
 ///
-/// On the native target `.tell` and `.ask` are real cross-node operations:
+/// On the native target `.send` and `.ask` are real cross-node operations:
 /// codegen rewrites each call on a `RemotePid<T>` receiver to the runtime
 /// transport ABI, sending the message over the mesh to the peer (proven by the
 /// two-process distributed harness). A remote `.ask` returns its peer's reply,
@@ -174,7 +174,7 @@ pub enum LinkError {
 /// Message contract for actor types used behind `LocalPid<A>` / `RemotePid<A>`.
 ///
 /// Named actors opt into the erased `Pid` surface by implementing this trait
-/// and binding `Msg` to the envelope type accepted by `.tell` / `.ask`, plus
+/// and binding `Msg` to the envelope type accepted by `.send` / `.ask`, plus
 /// `Reply` to the response type returned by `.ask`.
 pub trait ActorMsg {
     type Msg;
@@ -191,18 +191,18 @@ pub trait ActorMsg {
 ///
 /// ```
 /// fn ping<P: Pid>(p: P, msg: P::Msg) -> Result<(), SendError> {
-///     p.tell(msg)
+///     p.send(msg)
 /// }
 /// ```
 pub trait Pid {
     type Msg;
 
-    fn tell(pid: Self, msg: Self::Msg) -> Result<(), SendError>;
+    fn send(pid: Self, msg: Self::Msg) -> Result<(), SendError>;
 }
 
 impl<T: ActorMsg> LocalPid<T> {
     /// Send a message to this local actor.
-    fn tell(pid: LocalPid<T>, msg: T::Msg) -> Result<(), SendError> {
+    fn send(pid: LocalPid<T>, msg: T::Msg) -> Result<(), SendError> {
         Ok(())
     }
 }
@@ -213,7 +213,7 @@ impl<T> LocalPid<T> {
     /// Obtain a remote pid that routes to the same actor via `node_handle`.
     ///
     /// Cross-node routing itself is wired: once a `RemotePid<T>` is held, its
-    /// `.tell`/`.ask` reach the peer over the mesh. This explicit conversion
+    /// `.send`/`.ask` reach the peer over the mesh. This explicit conversion
     /// helper is not the proven acquisition path — `Node::lookup` resolves a
     /// `RemotePid<T>` from registry gossip — and its `node_handle` argument is
     /// not yet consumed; it remains scaffolding pending a peer-handle API.
@@ -239,9 +239,9 @@ impl<T> RemotePid<T> {
 impl<T: ActorMsg> RemotePid<T> {
     /// Send a message to this remote actor.
     ///
-    /// Lowered by codegen: the checker rewrites every `pid.tell(msg)` site
+    /// Lowered by codegen: the checker rewrites every `pid.send(msg)` site
     /// on a `RemotePid<T>` receiver to a direct call to
-    /// `hew_remote_pid_tell`, and the LLVM backend intercepts that call
+    /// `hew_remote_pid_send`, and the LLVM backend intercepts that call
     /// and emits the `hew_actor_send_by_id(pid, msg_type, ptr, size)`
     /// runtime ABI plus an in-place `Result<(), SendError>` construction.
     /// The body below is unreachable on the native path and is retained
@@ -249,7 +249,7 @@ impl<T: ActorMsg> RemotePid<T> {
     /// and as a fail-closed fallback on targets without the codegen
     /// interception (notably WASM, where remote routing is not wired —
     /// WASM-TODO(#1451)).
-    fn tell(pid: RemotePid<T>, msg: T::Msg) -> Result<(), SendError> {
+    fn send(pid: RemotePid<T>, msg: T::Msg) -> Result<(), SendError> {
         Err(SendError::NodeRoutingNotWired)
     }
     /// Ask this remote actor for a reply, failing with `AskError` if the
@@ -261,15 +261,15 @@ impl<T: ActorMsg> RemotePid<T> {
 
 impl<T: ActorMsg> Pid for LocalPid<T> {
     type Msg = T::Msg;
-    fn tell(pid: LocalPid<T>, msg: Self::Msg) -> Result<(), SendError> {
-        pid.tell(msg)
+    fn send(pid: LocalPid<T>, msg: Self::Msg) -> Result<(), SendError> {
+        pid.send(msg)
     }
 }
 
 impl<T: ActorMsg> Pid for RemotePid<T> {
     type Msg = T::Msg;
-    fn tell(pid: RemotePid<T>, msg: Self::Msg) -> Result<(), SendError> {
-        pid.tell(msg)
+    fn send(pid: RemotePid<T>, msg: Self::Msg) -> Result<(), SendError> {
+        pid.send(msg)
     }
 }
 

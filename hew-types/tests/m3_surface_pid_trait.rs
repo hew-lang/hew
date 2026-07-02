@@ -4,7 +4,7 @@ use common::typecheck;
 use hew_types::Ty;
 
 #[test]
-fn pid_trait_generic_tell_fails_closed_without_serializable_projection_bound() {
+fn pid_trait_generic_send_fails_closed_without_serializable_projection_bound() {
     let output = typecheck(
         r"
         record Work {
@@ -23,7 +23,7 @@ fn pid_trait_generic_tell_fails_closed_without_serializable_projection_bound() {
         }
 
         fn ping<P: Pid>(p: P, m: P::Msg) -> Result<(), SendError> {
-            p.tell(m)
+            p.send(m)
         }
 
         fn main() {
@@ -39,13 +39,13 @@ fn pid_trait_generic_tell_fails_closed_without_serializable_projection_bound() {
             .iter()
             .any(|error| error.message.contains("fail-closed")
                 && error.message.contains("P::Msg: Serializable")),
-        "generic Pid::tell must fail closed without a P::Msg Serializable proof: {:#?}",
+        "generic Pid::send must fail closed without a P::Msg Serializable proof: {:#?}",
         output.errors
     );
 }
 
 #[test]
-fn local_pid_generic_pid_tell_still_fails_closed_without_projection_bound() {
+fn local_pid_generic_pid_send_still_fails_closed_without_projection_bound() {
     let output = typecheck(
         r"
         record Job {
@@ -64,7 +64,7 @@ fn local_pid_generic_pid_tell_still_fails_closed_without_projection_bound() {
         }
 
         fn takes_pid<P: Pid>(pid: P, msg: P::Msg) -> Result<(), SendError> {
-            pid.tell(msg)
+            pid.send(msg)
         }
 
         fn main() {
@@ -79,13 +79,13 @@ fn local_pid_generic_pid_tell_still_fails_closed_without_projection_bound() {
             .iter()
             .any(|error| error.message.contains("fail-closed")
                 && error.message.contains("P::Msg: Serializable")),
-        "generic Pid::tell must fail closed even when a call site later supplies LocalPid: {:#?}",
+        "generic Pid::send must fail closed even when a call site later supplies LocalPid: {:#?}",
         output.errors
     );
 }
 
 #[test]
-fn local_pid_tell_returns_result_send_error() {
+fn local_pid_send_returns_result_send_error() {
     let (prog, output) = common::parse_and_typecheck_inline(
         r"
         record Job {
@@ -105,13 +105,13 @@ fn local_pid_tell_returns_result_send_error() {
 
         fn main() {
             let worker = spawn Worker(id: 7);
-            let result = worker.tell(Job { n: 3 });
+            let result = worker.send(Job { n: 3 });
         }
         ",
     );
     assert!(
         output.errors.is_empty(),
-        "LocalPid.tell should type-check cleanly: {:#?}",
+        "LocalPid.send should type-check cleanly: {:#?}",
         output.errors
     );
     let main = prog
@@ -122,7 +122,7 @@ fn local_pid_tell_returns_result_send_error() {
             _ => None,
         })
         .expect("no main");
-    let tell_span = main
+    let send_span = main
         .body
         .stmts
         .iter()
@@ -130,19 +130,19 @@ fn local_pid_tell_returns_result_send_error() {
             hew_parser::ast::Stmt::Let {
                 value: Some((hew_parser::ast::Expr::MethodCall { method, .. }, span)),
                 ..
-            } if method == "tell" => Some(span.clone()),
+            } if method == "send" => Some(span.clone()),
             _ => None,
         })
-        .expect("no tell call");
+        .expect("no send call");
     let ty = output
         .expr_types
-        .get(&hew_types::check::SpanKey::from(&tell_span))
-        .expect("tell expression type missing");
+        .get(&hew_types::check::SpanKey::from(&send_span))
+        .expect("send expression type missing");
     assert_eq!(ty, &Ty::result(Ty::Unit, Ty::send_error()));
 }
 
 #[test]
-fn remote_pid_tell_returns_typed_send_error_stub() {
+fn remote_pid_send_returns_typed_send_error_stub() {
     let output = typecheck(
         r"
         record Job {
@@ -162,13 +162,13 @@ fn remote_pid_tell_returns_typed_send_error_stub() {
 
         fn main() {
             let remote: RemotePid<Worker>;
-            let result: Result<(), SendError> = remote.tell(Job { n: 9 });
+            let result: Result<(), SendError> = remote.send(Job { n: 9 });
         }
         ",
     );
     assert!(
         output.errors.is_empty(),
-        "RemotePid.tell should return Result<(), SendError> from the typed stub: {:#?}",
+        "RemotePid.send should return Result<(), SendError> from the typed stub: {:#?}",
         output.errors
     );
 }

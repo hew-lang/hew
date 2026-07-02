@@ -33787,7 +33787,9 @@ fn compute_collection_interior_alias_taint(blocks: &[BasicBlock]) -> HashSet<u32
     for block in blocks {
         for instr in &block.instructions {
             if let Instr::CallRuntimeAbi(call) = instr {
-                if is_vec_interior_borrow_getter(call.symbol()) {
+                if crate::runtime_symbols::callee_ownership_contract(call.symbol())
+                    .returns_receiver_interior_alias()
+                {
                     if let Some(local) = call.dest().and_then(base_local) {
                         tainted.insert(local);
                     }
@@ -33795,7 +33797,9 @@ fn compute_collection_interior_alias_taint(blocks: &[BasicBlock]) -> HashSet<u32
             }
         }
         if let Terminator::Call { callee, dest, .. } = &block.terminator {
-            if is_vec_interior_borrow_getter(callee) {
+            if crate::runtime_symbols::callee_ownership_contract(callee)
+                .returns_receiver_interior_alias()
+            {
                 if let Some(local) = dest.and_then(base_local) {
                     tainted.insert(local);
                 }

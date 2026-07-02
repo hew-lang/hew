@@ -135,7 +135,7 @@ fn wire_decode_valid_bytes_round_trips() {
     require_codegen();
     let (_emit_dir, binary_path) = compile_to_native(
         "#[wire]\n\
-         struct Point { x: i64 @1, y: i64 @2 }\n\
+         type Point { x: i64 @1, y: i64 @2 }\n\
          fn main() -> i64 {\n\
          \x20   let p = Point { x: 7, y: 35 };\n\
          \x20   let b = p.encode();\n\
@@ -170,7 +170,7 @@ fn wire_decode_malformed_bytes_fails_closed_not_segfault() {
     require_codegen();
     let (_emit_dir, binary_path) = compile_to_native(
         "#[wire]\n\
-         struct Point { x: i64 @1, y: i64 @2 }\n\
+         type Point { x: i64 @1, y: i64 @2 }\n\
          fn main() -> i64 {\n\
          \x20   let b: bytes = bytes::new();\n\
          \x20   let p = Point.decode(b);\n\

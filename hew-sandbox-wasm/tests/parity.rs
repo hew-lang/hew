@@ -260,8 +260,9 @@ const PARITY_CASES: &[ParityCase] = &[
     },
     ParityCase {
         // `#[wire]` is now the sole canonical declaration surface for wire types
-        // (bare `wire`/`wire type`/`wire enum` keyword forms removed in 60c50dae).
-        // Verifies the sandbox profile and emitter treat a `#[wire] struct` with
+        // (bare `wire`/`wire type`/`wire enum` keyword forms removed in 60c50dae;
+        // the `struct` keyword itself later removed in favour of `#[wire] type`).
+        // Verifies the sandbox profile and emitter treat a `#[wire] type` with
         // tagged fields as a plain record without rejecting the attribute or the
         // optional-field tag annotation.
         test_name: "wire_types_declaration",

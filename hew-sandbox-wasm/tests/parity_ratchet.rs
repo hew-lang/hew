@@ -758,12 +758,27 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         // `#[wire]` is now the sole canonical declaration surface for wire types
-        // (bare `wire`/`wire type`/`wire enum` removed in 60c50dae). A `#[wire]`
-        // struct is a TypeDecl in the AST; the profile and emitter treat it as a
-        // plain record and do not reject the `#[wire]` attribute.
-        id: "#[wire] struct declaration",
-        probe: "#[wire]\nstruct Msg {\n    text: string @1,\n}\nfn main() {\n    println(\"ok\");\n}\n",
+        // (bare `wire`/`wire type`/`wire enum` removed in 60c50dae; the `struct`
+        // keyword itself removed in favour of `#[wire] type` — `struct` now
+        // lexes as a plain identifier). A `#[wire] type` is a TypeDecl in the
+        // AST; the profile and emitter treat it as a plain record and do not
+        // reject the `#[wire]` attribute.
+        id: "#[wire] type declaration",
+        probe: "#[wire]\ntype Msg {\n    text: string @1,\n}\nfn main() {\n    println(\"ok\");\n}\n",
         coverage: Coverage::Parity("wire_types_declaration"),
+    },
+    Construct {
+        // Legacy `#[wire] struct` declaration form. `struct` is no longer a
+        // keyword — it lexes as a plain identifier — so this hits the parser's
+        // foreign-keyword redirect (`unexpected 'struct'`, hint `#[wire] type
+        // Name { ... }`) as a parse-time rejection, not a profile admission.
+        // Pinned so the sandbox and native compiler agree on redirecting the
+        // old declaration surface rather than silently admitting it.
+        id: "#[wire] struct declaration (legacy, redirected to type)",
+        probe: "#[wire]\nstruct Msg {\n    text: string @1,\n}\nfn main() {\n    println(\"ok\");\n}\n",
+        coverage: Coverage::RejectedByProfile {
+            diagnostic_kind: "Other",
+        },
     },
     Construct {
         // Vec<T>::contains: linear equality scan via canonical comparison.

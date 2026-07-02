@@ -7831,6 +7831,35 @@ fn lower_function(
         &builder.binding_locals,
         &mut builder.instr_spans,
     );
+    // #2212 — an owned record whose field escapes through a binder loses its
+    // composite scope-exit drop (the sole-owner prover excludes it); the
+    // record's NON-escaped owned sibling fields still need their release.
+    // Where the value flow proves the escape's root, field, and last-use
+    // position, splice one `FieldDropInPlace` per dischargeable sibling
+    // right after the escape. Runs BEFORE `check_function` / elaboration so
+    // the dataflow observes the discharges and codegen emits them.
+    {
+        let mut instr_spans = std::mem::take(&mut builder.instr_spans);
+        let is_owned_record = |ty: &ResolvedTy| builder.is_owned_aggregate_record_ty(ty);
+        let owned_field_list = |ty: &ResolvedTy| builder.project_record_owned_field_list(ty);
+        let field_dischargeable = |ty: &ResolvedTy| {
+            matches!(ty, ResolvedTy::String) || builder.field_drop_in_place_admissible(ty)
+        };
+        apply_escaped_record_sibling_field_drops(
+            &mut blocks,
+            &builder.suspend_kinds,
+            &builder.owned_locals,
+            &builder.binding_locals,
+            &builder.locals,
+            &builder.record_field_orders,
+            &builder.enum_layouts,
+            &is_owned_record,
+            &owned_field_list,
+            &field_dischargeable,
+            &mut instr_spans,
+        );
+        builder.instr_spans = instr_spans;
+    }
     // THIR's `statements` is the union of every block's checker stream
     // in CFG-construction order — the THIR snapshot's job is preserving
     // the pre-CFG flat-stream shape for diagnostic readers that haven't
@@ -33327,6 +33356,218 @@ fn propagate_whole_value_alias_roots(
     alias_of
 }
 
+/// Owned-field-binder set for a record-candidate alias map: destinations of
+/// `RecordFieldLoad { record: alias-set member }` whose loaded field is
+/// itself heap-owning, closed forward over whole-value `Move` copies so a
+/// binder handed to another slot is still tracked. Shared by
+/// `derive_owned_record_drop_allowed` (the composite-drop prover) and
+/// `apply_escaped_record_sibling_field_drops` (the #2212 sibling-discharge
+/// emitter) so the two agree on what counts as a field binder.
+fn collect_record_field_binders(
+    blocks: &[BasicBlock],
+    alias_of: &HashMap<u32, u32>,
+    local_is_heap_owning: &dyn Fn(u32) -> bool,
+) -> HashSet<u32> {
+    let mut field_binders: HashSet<u32> = HashSet::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            if let Instr::RecordFieldLoad { record, dest, .. } = instr {
+                if let Some(sl) = base_local(*record) {
+                    if alias_of.contains_key(&sl) {
+                        if let Some(dl) = base_local(*dest) {
+                            if local_is_heap_owning(dl) {
+                                field_binders.insert(dl);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                if let Instr::Move { dest, src } = instr {
+                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
+                        if field_binders.contains(&sl) && field_binders.insert(dl) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    field_binders
+}
+
+/// Where a record field binder's value came from, as far as the
+/// intraprocedural value flow proves it. Consumed by the record
+/// composite-drop prover (an escape of a provably-attributed binder excludes
+/// ONLY its root instead of every record root) and by the #2212
+/// sibling-discharge emitter (which additionally needs the FIELD, so only
+/// `Unique` admits a discharge).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FieldBinderProvenance {
+    /// Every defining write traces to exactly one (record root, field offset).
+    Unique { root: u32, field: u32 },
+    /// Every defining write traces to one record root, but to more than one
+    /// of its fields.
+    RootOnly { root: u32 },
+    /// The binder mixes roots, or is written by something other than a
+    /// member field load / binder-to-binder whole-value move. Fail-closed:
+    /// consumers treat its escape as an escape of EVERY root.
+    Ambiguous,
+}
+
+/// Attribute each field binder to the record root (and field) it was loaded
+/// from. Fail-closed lattice: vacant → `Unique` → `RootOnly` → `Ambiguous`,
+/// monotone in every merge, so the move-propagation fixpoint converges.
+///
+/// A binder local REUSED via an instruction write that is not a member field
+/// load or a binder-to-binder move is forced `Ambiguous` up front. Terminator
+/// dests (a call result written into a reused binder local) are NOT tracked:
+/// a stale attribution can only redirect WHICH root an escape excludes, and
+/// the only root a binder local can alias intraprocedurally is the one its
+/// member load named — excluding that root remains sound, and the
+/// sibling-discharge emitter's siblings never alias the binder's content.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the three passes (reuse-write forcing, load seeding, move-\
+              propagation fixpoint) share the merge lattice and the binder \
+              set; splitting them scatters the monotonicity argument the \
+              fixpoint's convergence rests on"
+)]
+fn attribute_field_binder_provenance(
+    blocks: &[BasicBlock],
+    alias_of: &HashMap<u32, u32>,
+    field_binders: &HashSet<u32>,
+) -> HashMap<u32, FieldBinderProvenance> {
+    fn merge(
+        provenance: &mut HashMap<u32, FieldBinderProvenance>,
+        binder: u32,
+        incoming: FieldBinderProvenance,
+    ) -> bool {
+        use std::collections::hash_map::Entry;
+        match provenance.entry(binder) {
+            Entry::Vacant(slot) => {
+                slot.insert(incoming);
+                true
+            }
+            Entry::Occupied(mut slot) => {
+                let current = *slot.get();
+                let merged = match (current, incoming) {
+                    (a, b) if a == b => a,
+                    (FieldBinderProvenance::Ambiguous, _)
+                    | (_, FieldBinderProvenance::Ambiguous) => FieldBinderProvenance::Ambiguous,
+                    (
+                        FieldBinderProvenance::Unique { root: r1, .. }
+                        | FieldBinderProvenance::RootOnly { root: r1 },
+                        FieldBinderProvenance::Unique { root: r2, .. }
+                        | FieldBinderProvenance::RootOnly { root: r2 },
+                    ) => {
+                        if r1 == r2 {
+                            FieldBinderProvenance::RootOnly { root: r1 }
+                        } else {
+                            FieldBinderProvenance::Ambiguous
+                        }
+                    }
+                };
+                if merged == current {
+                    false
+                } else {
+                    slot.insert(merged);
+                    true
+                }
+            }
+        }
+    }
+
+    let mut provenance: HashMap<u32, FieldBinderProvenance> = HashMap::new();
+    // Pass 0 — any instruction write into a binder that is NOT its defining
+    // member field load or a binder-to-binder whole-value move forces
+    // `Ambiguous` (absorbing; later merges cannot downgrade it).
+    for block in blocks {
+        for instr in &block.instructions {
+            let defining_write = match instr {
+                Instr::RecordFieldLoad { record, .. } => {
+                    base_local(*record).is_some_and(|rl| alias_of.contains_key(&rl))
+                }
+                Instr::Move { src, .. } => {
+                    matches!(src, Place::Local(_))
+                        && base_local(*src).is_some_and(|sl| field_binders.contains(&sl))
+                }
+                _ => false,
+            };
+            if defining_write {
+                continue;
+            }
+            let (_, writes) = crate::dataflow::instr_reads_writes(instr);
+            for w in writes {
+                if let Some(wl) = base_local(w) {
+                    if field_binders.contains(&wl) {
+                        provenance.insert(wl, FieldBinderProvenance::Ambiguous);
+                    }
+                }
+            }
+        }
+    }
+    // Pass 1 — seed from member field loads.
+    for block in blocks {
+        for instr in &block.instructions {
+            if let Instr::RecordFieldLoad {
+                record,
+                field_offset,
+                dest,
+            } = instr
+            {
+                let Some(dl) = base_local(*dest) else {
+                    continue;
+                };
+                if !field_binders.contains(&dl) {
+                    continue;
+                }
+                let incoming = match base_local(*record).and_then(|rl| alias_of.get(&rl)) {
+                    Some(&root) => FieldBinderProvenance::Unique {
+                        root,
+                        field: field_offset.0,
+                    },
+                    // Loaded from a non-member record: not attributable.
+                    None => FieldBinderProvenance::Ambiguous,
+                };
+                merge(&mut provenance, dl, incoming);
+            }
+        }
+    }
+    // Pass 2 — fixpoint over binder-to-binder whole-value moves.
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                if let Instr::Move { dest, src } = instr {
+                    if !matches!(src, Place::Local(_)) || !matches!(dest, Place::Local(_)) {
+                        continue;
+                    }
+                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
+                        if field_binders.contains(&sl) && field_binders.contains(&dl) {
+                            if let Some(p) = provenance.get(&sl).copied() {
+                                changed |= merge(&mut provenance, dl, p);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    provenance
+}
+
 /// True if reading this `Place` as a `Move` source yields a value that
 /// *aliases interior storage* of a still-live parent aggregate rather than
 /// a standalone slot the move can hand off ownership of.
@@ -35161,6 +35402,478 @@ fn shift_instr_spans_on_insert(
     }
 }
 
+/// Block ids transitively reachable FROM `start` (via its successors; `start`
+/// itself is included only when a cycle re-enters it).
+fn blocks_reachable_from(blocks: &[BasicBlock], start: u32) -> HashSet<u32> {
+    let by_id: HashMap<u32, &BasicBlock> = blocks.iter().map(|b| (b.id, b)).collect();
+    let mut seen: HashSet<u32> = HashSet::new();
+    let mut work: Vec<u32> = by_id
+        .get(&start)
+        .map(|b| b.successors())
+        .unwrap_or_default();
+    while let Some(id) = work.pop() {
+        if seen.insert(id) {
+            if let Some(b) = by_id.get(&id) {
+                work.extend(b.successors());
+            }
+        }
+    }
+    seen
+}
+
+/// Per-root event ledger for [`apply_escaped_record_sibling_field_drops`]'
+/// classification walk.
+#[derive(Default)]
+struct RootScan {
+    poisoned: bool,
+    /// Instruction escape events: (block id, instruction index, field).
+    escapes: Vec<(u32, usize, u32)>,
+    /// Non-escape uses of the root or its binders; `None` index = the
+    /// block's terminator.
+    sites: Vec<(u32, Option<usize>)>,
+}
+
+/// #2212 — discharge the non-escaped owned sibling fields of a record whose
+/// composite drop the sole-owner prover excludes because ONE of its fields
+/// escaped through a field binder.
+///
+/// `derive_owned_record_drop_allowed` excludes a record root from its
+/// scope-exit `RecordInPlace` drop when an owned-field binder loaded from it
+/// escapes (the escapee owns that field now). The exclusion is
+/// function-scoped, so every OTHER owned field of the record — still solely
+/// owned by the record slot — leaked (#2212: one 64 B `tag` buffer per
+/// frame at slope 1). This pass emits one `Instr::FieldDropInPlace` per
+/// non-escaped owned sibling right after the escape instruction, where the
+/// value flow proves that point is past the record's last use.
+///
+/// Runs post-seal, after `apply_nested_fresh_string_temp_drops` and before
+/// `check_function` / drop elaboration, so the dataflow observes each
+/// discharge as a read of the record local and codegen emits the release.
+///
+/// ## Fail-closed admission (ALL conditions required; any miss keeps
+/// today's whole-record leak — never a double-free)
+///
+/// 1. The root is an `owned_locals` owned-aggregate-record candidate whose
+///    whole-value alias set is the root alone (no `let b2 = b` copies —
+///    copies byte-share field pointers and can diverge; the discharge frees
+///    through the root slot only).
+/// 2. Exactly ONE escape event exists across the root's binders, it is an
+///    instruction (a terminator escape has no post-escape insertion point),
+///    and the escaping binder's provenance is `Unique { root, field }` —
+///    the value flow proves both the root and WHICH field escaped. The
+///    escaped field is never discharged: for a moved-out binder the escapee
+///    owns it; for a retained `string` clone the original keeps its
+///    pre-existing leak.
+/// 3. No binder of the root is the base local of another `owned_locals`
+///    binding and none is the place of an inline `Drop` — an extracted
+///    field with its own release path (`let g = b.gen`) is a second owner
+///    whose release this pass must not race (the aggregate-extraction
+///    double-free class).
+/// 4. The escape's block is not reachable from itself (a loop would re-run
+///    the discharge, and inline-composite fields have no null-store to make
+///    that idempotent), and NO use of the root or its binders — field
+///    loads, alias moves, clone reads, borrow-safe binder reads — lies
+///    after the escape (a later position in its block, its block's
+///    terminator, or any transitively reachable block). Discharging before
+///    a live read would free a slot the read still observes.
+///
+/// The discharged sibling set is the record's owned fields minus the
+/// escaped field, narrowed to the shapes the field-drop contract covers
+/// (`string`, or a classifier-admitted aggregate —
+/// `field_drop_in_place_admissible`); an owned sibling outside that set
+/// keeps its leak. The emitted op's base is the root local, so the
+/// composite-drop prover's direct `FieldDropInPlace` exclusion rule keeps
+/// the root excluded when it re-derives over these blocks — admission and
+/// discharge cannot disagree.
+///
+/// Binder-local reuse through a terminator dest (a call result written into
+/// a spent binder slot) is not tracked as a defining write: stale
+/// provenance can only redirect WHICH field is treated as escaped (that
+/// field keeps its leak), never which record owns the siblings, so the
+/// discharge stays sound.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct Builder-owned input (blocks, the \
+              ownership ledgers, the layout tables, the three type-shape \
+              predicates, the debug line table); bundling them into a struct \
+              would add indirection at the single call site"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exhaustive event-classification walk over every \
+              instruction and terminator, then the per-root admission checks \
+              and the splice; splitting the walk from the checks would \
+              scatter the fail-closed poison rules the soundness argument \
+              enumerates in the doc comment"
+)]
+fn apply_escaped_record_sibling_field_drops(
+    blocks: &mut [BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    owned_locals: &[(BindingId, String, ResolvedTy)],
+    binding_locals: &HashMap<BindingId, Place>,
+    local_tys: &[ResolvedTy],
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    enum_layouts: &[crate::model::EnumLayout],
+    is_owned_record: &dyn Fn(&ResolvedTy) -> bool,
+    owned_field_list: &dyn Fn(&ResolvedTy) -> Vec<(u32, ResolvedTy)>,
+    field_dischargeable: &dyn Fn(&ResolvedTy) -> bool,
+    instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
+) {
+    // Candidate roots: base locals of owned-aggregate-record bindings — the
+    // same candidate set the composite-drop prover derives from.
+    let mut root_record_ty: HashMap<u32, ResolvedTy> = HashMap::new();
+    for (binding, _name, ty) in owned_locals {
+        if !is_owned_record(ty) {
+            continue;
+        }
+        let Some(place) = binding_locals.get(binding) else {
+            continue;
+        };
+        let Some(local) = base_local(*place) else {
+            continue;
+        };
+        root_record_ty.insert(local, ty.clone());
+    }
+    if root_record_ty.is_empty() {
+        return;
+    }
+
+    let alias_of = propagate_whole_value_alias_roots(blocks, root_record_ty.keys().copied());
+    let local_is_heap_owning = |local: u32| -> bool {
+        local_tys
+            .get(local as usize)
+            .is_some_and(|ty| crate::model::ty_owns_heap_mir(ty, record_field_orders, enum_layouts))
+    };
+    let field_binders = collect_record_field_binders(blocks, &alias_of, &local_is_heap_owning);
+    let provenance = attribute_field_binder_provenance(blocks, &alias_of, &field_binders);
+    let binder_root = |binder: u32| -> Option<u32> {
+        match provenance.get(&binder) {
+            Some(
+                FieldBinderProvenance::Unique { root, .. }
+                | FieldBinderProvenance::RootOnly { root },
+            ) => Some(*root),
+            _ => None,
+        }
+    };
+
+    // Condition 1 — member count per root (only singleton alias sets admit).
+    let mut member_count: HashMap<u32, u32> = HashMap::new();
+    for &root in alias_of.values() {
+        *member_count.entry(root).or_insert(0) += 1;
+    }
+    // Condition 3 — base locals of every owned binding (a binder in this set
+    // is an extracted field with its own release path).
+    let owned_binding_bases: HashSet<u32> = owned_locals
+        .iter()
+        .filter_map(|(binding, _, _)| binding_locals.get(binding).and_then(|p| base_local(*p)))
+        .collect();
+
+    let mut scans: HashMap<u32, RootScan> = root_record_ty
+        .keys()
+        .map(|&r| (r, RootScan::default()))
+        .collect();
+    // Uses of a binder whose provenance names no single root: dangerous for
+    // EVERY root's after-escape region.
+    let mut global_sites: Vec<(u32, Option<usize>)> = Vec::new();
+    // An ambiguous binder escaping (or any event this walk cannot attribute)
+    // refuses every discharge in the function.
+    let mut poison_all = false;
+
+    for block in blocks.iter() {
+        let bid = block.id;
+        for (idx, instr) in block.instructions.iter().enumerate() {
+            // Per-event closures would fight the borrow checker over `scans`;
+            // small macros keep the classification readable instead.
+            macro_rules! poison {
+                ($root:expr) => {
+                    if let Some(scan) = scans.get_mut(&$root) {
+                        scan.poisoned = true;
+                    }
+                };
+            }
+            macro_rules! site {
+                ($root:expr, $pos:expr) => {
+                    match $root {
+                        Some(r) => {
+                            if let Some(scan) = scans.get_mut(&r) {
+                                scan.sites.push((bid, $pos));
+                            }
+                        }
+                        None => global_sites.push((bid, $pos)),
+                    }
+                };
+            }
+            macro_rules! escape {
+                ($binder:expr, $pos:expr) => {
+                    match provenance.get(&$binder) {
+                        Some(FieldBinderProvenance::Unique { root, field }) => {
+                            if let Some(scan) = scans.get_mut(root) {
+                                scan.escapes.push((bid, $pos, *field));
+                            }
+                        }
+                        Some(FieldBinderProvenance::RootOnly { root }) => poison!(*root),
+                        _ => poison_all = true,
+                    }
+                };
+            }
+            match instr {
+                Instr::RecordFieldLoad { record, dest, .. } => {
+                    if let Some(&root) = base_local(*record).and_then(|rl| alias_of.get(&rl)) {
+                        site!(Some(root), Some(idx));
+                    }
+                    // A member slot overwritten by a field load is not a
+                    // construction shape this pass models.
+                    if let Some(&root) = base_local(*dest).and_then(|dl| alias_of.get(&dl)) {
+                        poison!(root);
+                    }
+                }
+                Instr::RecordInit { fields, dest, .. } => {
+                    for (_, p) in fields {
+                        if let Some(l) = base_local(*p) {
+                            if let Some(&root) = alias_of.get(&l) {
+                                poison!(root);
+                            } else if field_binders.contains(&l) {
+                                // A binder packed into a fresh aggregate is an
+                                // owning sink — an escape event.
+                                escape!(l, idx);
+                            }
+                        }
+                    }
+                    if let Some(&root) = base_local(*dest).and_then(|dl| alias_of.get(&dl)) {
+                        // Construction into the root slot (call-free init).
+                        site!(Some(root), Some(idx));
+                    }
+                }
+                Instr::RecordCloneInplace { src, dest, .. } => {
+                    if let Some(l) = base_local(*src) {
+                        if let Some(&root) = alias_of.get(&l) {
+                            // A deep clone borrows the source's fields; the
+                            // source keeps sole ownership of its originals.
+                            site!(Some(root), Some(idx));
+                        } else if field_binders.contains(&l) {
+                            site!(binder_root(l), Some(idx));
+                        }
+                    }
+                    if let Some(&root) = base_local(*dest).and_then(|dl| alias_of.get(&dl)) {
+                        poison!(root);
+                    }
+                }
+                Instr::Move { dest, src } => {
+                    let sl = base_local(*src).filter(|_| matches!(src, Place::Local(_)));
+                    let dl = base_local(*dest).filter(|_| matches!(dest, Place::Local(_)));
+                    let src_member = sl.and_then(|l| alias_of.get(&l).copied());
+                    let dest_member = dl.and_then(|l| alias_of.get(&l).copied());
+                    let src_binder = sl.filter(|l| field_binders.contains(l));
+                    let dest_binder = dl.filter(|l| field_binders.contains(l));
+                    if let Some(r) = src_member {
+                        if dest_member == Some(r) {
+                            // Whole-value alias hand-off inside the set (the
+                            // singleton-set gate refuses these roots anyway).
+                            site!(Some(r), Some(idx));
+                        } else {
+                            // The whole record moves out — every field goes
+                            // with it; nothing is left to discharge.
+                            poison!(r);
+                        }
+                    } else if let Some(b) = src_binder {
+                        if dest_binder.is_some() {
+                            site!(binder_root(b), Some(idx));
+                        } else {
+                            // Moved into a non-member, non-binder place
+                            // (ReturnSlot, an unrelated local): the escape.
+                            escape!(b, idx);
+                        }
+                    } else if let Some(r) = dest_member {
+                        // Construction / initialization write into the root
+                        // slot from a non-member source.
+                        site!(Some(r), Some(idx));
+                    }
+                    // A non-binder source moved INTO a binder slot is a reuse
+                    // write; provenance pass 0 already forced it Ambiguous.
+                }
+                Instr::Drop { place, .. } => {
+                    if let Some(l) = base_local(*place) {
+                        if let Some(&root) = alias_of.get(&l) {
+                            poison!(root);
+                        } else if field_binders.contains(&l) {
+                            // An inline release of a binder (an extracted
+                            // field with its own drop, or a spliced
+                            // read-temp release): a second release path this
+                            // pass must not reason past.
+                            match binder_root(l) {
+                                Some(r) => poison!(r),
+                                None => poison_all = true,
+                            }
+                        }
+                    }
+                }
+                Instr::FieldDropInPlace { base, .. }
+                | Instr::RecordFieldDrop { record: base, .. }
+                | Instr::RecordFieldStore { record: base, .. } => {
+                    // Field-granular writes/releases against a member carry
+                    // overwrite semantics this pass does not model.
+                    if let Some(l) = base_local(*base) {
+                        if let Some(&root) = alias_of.get(&l) {
+                            poison!(root);
+                        }
+                    }
+                    if let Instr::RecordFieldStore { src, .. } = instr {
+                        if let Some(l) = base_local(*src) {
+                            if field_binders.contains(&l) {
+                                // Binder stored into another aggregate's
+                                // field slot — an owning sink.
+                                escape!(l, idx);
+                            }
+                        }
+                    }
+                }
+                other => {
+                    let (reads, writes) = crate::dataflow::instr_reads_writes(other);
+                    for p in reads {
+                        if let Some(l) = base_local(p) {
+                            if let Some(&root) = alias_of.get(&l) {
+                                // Any unmodelled read of the record itself.
+                                poison!(root);
+                            } else if field_binders.contains(&l) {
+                                if binder_read_is_borrow_safe_instr(other, l) {
+                                    site!(binder_root(l), Some(idx));
+                                } else {
+                                    escape!(l, idx);
+                                }
+                            }
+                        }
+                    }
+                    for p in writes {
+                        if let Some(l) = base_local(p) {
+                            if let Some(&root) = alias_of.get(&l) {
+                                // The record slot overwritten by an
+                                // unmodelled producer.
+                                poison!(root);
+                            }
+                            // Binder reuse writes: provenance pass 0 already
+                            // forced the binder Ambiguous.
+                        }
+                    }
+                }
+            }
+        }
+        for p in terminator_source_places(&block.terminator, suspend_kinds.get(&bid)) {
+            let Some(l) = base_local(p) else { continue };
+            if let Some(&root) = alias_of.get(&l) {
+                // The whole record read by a terminator (returned, sent,
+                // passed to a call): refuse.
+                if let Some(scan) = scans.get_mut(&root) {
+                    scan.poisoned = true;
+                }
+            } else if field_binders.contains(&l) {
+                if binder_read_is_borrow_safe_terminator(
+                    &block.terminator,
+                    suspend_kinds.get(&bid),
+                    l,
+                ) {
+                    match binder_root(l) {
+                        Some(r) => {
+                            if let Some(scan) = scans.get_mut(&r) {
+                                scan.sites.push((bid, None));
+                            }
+                        }
+                        None => global_sites.push((bid, None)),
+                    }
+                } else {
+                    // A terminator escape has no post-escape insertion
+                    // point; refuse the discharge (leak-as-before).
+                    match binder_root(l) {
+                        Some(r) => {
+                            if let Some(scan) = scans.get_mut(&r) {
+                                scan.poisoned = true;
+                            }
+                        }
+                        None => poison_all = true,
+                    }
+                }
+            }
+        }
+    }
+    if poison_all {
+        return;
+    }
+
+    let mut roots: Vec<u32> = scans.keys().copied().collect();
+    roots.sort_unstable();
+    let mut insertions: Vec<(u32, usize, Vec<Instr>)> = Vec::new();
+    for root in roots {
+        let scan = &scans[&root];
+        if scan.poisoned || member_count.get(&root).copied().unwrap_or(0) != 1 {
+            continue;
+        }
+        let &[(esc_block, esc_idx, esc_field)] = &scan.escapes[..] else {
+            continue;
+        };
+        if field_binders
+            .iter()
+            .any(|b| binder_root(*b) == Some(root) && owned_binding_bases.contains(b))
+        {
+            continue;
+        }
+        let reach = blocks_reachable_from(blocks, esc_block);
+        if reach.contains(&esc_block) {
+            continue;
+        }
+        let in_region = |&(sb, si): &(u32, Option<usize>)| -> bool {
+            if sb == esc_block {
+                si.is_none_or(|i| i > esc_idx)
+            } else {
+                reach.contains(&sb)
+            }
+        };
+        if scan.sites.iter().any(in_region) || global_sites.iter().any(in_region) {
+            continue;
+        }
+        let record_ty = &root_record_ty[&root];
+        let siblings: Vec<Instr> = owned_field_list(record_ty)
+            .into_iter()
+            .filter(|(idx, _)| *idx != esc_field)
+            .filter(|(_, ty)| field_dischargeable(ty))
+            .map(|(idx, ty)| Instr::FieldDropInPlace {
+                base: Place::Local(root),
+                field: crate::model::FieldAddr::Record(FieldOffset(idx)),
+                ty,
+            })
+            .collect();
+        if siblings.is_empty() {
+            continue;
+        }
+        insertions.push((esc_block, esc_idx + 1, siblings));
+    }
+    if insertions.is_empty() {
+        return;
+    }
+    let mut by_block: HashMap<u32, Vec<(usize, Vec<Instr>)>> = HashMap::new();
+    for (bid, at, ops) in insertions {
+        by_block.entry(bid).or_default().push((at, ops));
+    }
+    for block in blocks.iter_mut() {
+        let Some(mut ins) = by_block.remove(&block.id) else {
+            continue;
+        };
+        // Descending index order so an earlier splice does not shift a later
+        // (lower-index) one; each packet is spliced in reverse so its ops
+        // land in field order.
+        ins.sort_by_key(|entry| std::cmp::Reverse(entry.0));
+        for (at, ops) in ins {
+            let at = at.min(block.instructions.len());
+            for op in ops.into_iter().rev() {
+                block.instructions.insert(at, op);
+                shift_instr_spans_on_insert(
+                    instr_spans,
+                    block.id,
+                    u32::try_from(at).unwrap_or(u32::MAX),
+                );
+            }
+        }
+    }
+}
+
 /// W5.020 — fail-closed sole-owner derivation for **heap-owning enum
 /// composite** bindings (`Result<T, string>`, `Option<string>`, any user
 /// `enum` whose active variant owns heap). Returns the subset of
@@ -35732,41 +36445,13 @@ fn derive_owned_record_drop_allowed(
         propagate_whole_value_alias_roots(blocks, candidate_local_to_binding.keys().copied());
 
     // Owned-field-binder set: destinations of `RecordFieldLoad { record: alias-
-    // set member }` whose loaded field is itself heap-owning. Propagate forward
+    // set member }` whose loaded field is itself heap-owning, closed forward
     // through whole-value Move so a binder copied onward is still tracked.
-    let mut field_binders: HashSet<u32> = HashSet::new();
-    for block in blocks {
-        for instr in &block.instructions {
-            if let Instr::RecordFieldLoad { record, dest, .. } = instr {
-                if let Some(sl) = base_local(*record) {
-                    if alias_of.contains_key(&sl) {
-                        if let Some(dl) = base_local(*dest) {
-                            if local_is_heap_owning(dl) {
-                                field_binders.insert(dl);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    loop {
-        let mut changed = false;
-        for block in blocks {
-            for instr in &block.instructions {
-                if let Instr::Move { dest, src } = instr {
-                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
-                        if field_binders.contains(&sl) && field_binders.insert(dl) {
-                            changed = true;
-                        }
-                    }
-                }
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
+    let field_binders = collect_record_field_binders(blocks, &alias_of, &local_is_heap_owning);
+    // Per-binder escape attribution (#2212): where the load scan + alias map
+    // prove which root a binder came from, its escape excludes exactly that
+    // root; unprovable provenance keeps the blanket every-root exclusion.
+    let binder_provenance = attribute_field_binder_provenance(blocks, &alias_of, &field_binders);
 
     let mut excluded_roots: HashSet<u32> = HashSet::new();
 
@@ -35865,13 +36550,25 @@ fn derive_owned_record_drop_allowed(
             excluded.insert(root);
         }
     };
-    // A field binder escaping means the record no longer solely owns that field.
-    // We cannot cheaply attribute a binder to one record root, so — fail-closed
-    // — exclude every record root when any field binder escapes (over-exclusion
-    // leaks; never double-frees), mirroring `note_payload_escape`.
-    let note_field_escape = |excluded: &mut HashSet<u32>| {
-        for &root in alias_of.values() {
-            excluded.insert(root);
+    // A field binder escaping means its record no longer solely owns that
+    // field. When `attribute_field_binder_provenance` proves which root the
+    // binder came from, exclude exactly that root — its non-escaped owned
+    // sibling fields are `apply_escaped_record_sibling_field_drops`'
+    // discharge obligation (#2212). A binder whose provenance is unprovable
+    // excludes every record root (over-exclusion leaks; never double-frees),
+    // mirroring `note_payload_escape`.
+    let note_field_escape = |binder: u32, excluded: &mut HashSet<u32>| match binder_provenance
+        .get(&binder)
+    {
+        Some(
+            FieldBinderProvenance::Unique { root, .. } | FieldBinderProvenance::RootOnly { root },
+        ) => {
+            excluded.insert(*root);
+        }
+        _ => {
+            for &root in alias_of.values() {
+                excluded.insert(root);
+            }
         }
     };
     for block in blocks {
@@ -35915,7 +36612,7 @@ fn derive_owned_record_drop_allowed(
                         let benign = dest_local.is_some_and(|dl| field_binders.contains(&dl))
                             && matches!(dest, Place::Local(_));
                         if !benign {
-                            note_field_escape(&mut excluded_roots);
+                            note_field_escape(sl, &mut excluded_roots);
                         }
                     }
                 }
@@ -35972,7 +36669,7 @@ fn derive_owned_record_drop_allowed(
                         }
                         if field_binders.contains(&l) && !binder_read_is_borrow_safe_instr(instr, l)
                         {
-                            note_field_escape(&mut excluded_roots);
+                            note_field_escape(l, &mut excluded_roots);
                         }
                     }
                 }
@@ -36002,7 +36699,7 @@ fn derive_owned_record_drop_allowed(
                         l,
                     )
                 {
-                    note_field_escape(&mut excluded_roots);
+                    note_field_escape(l, &mut excluded_roots);
                 }
             }
         }
@@ -44272,6 +44969,596 @@ mod owned_record_drop_derivation {
             allowed.contains(&b),
             "a record field-read on both arms never escapes and must be admitted \
              so its heap fields are freed; got {allowed:?}"
+        );
+    }
+
+    /// #2212 attribution: a field-binder escape provably traced to ONE root
+    /// excludes exactly that root — an unrelated record candidate in the same
+    /// function keeps its composite drop (pre-attribution the blanket
+    /// exclusion leaked every record's fields on any field escape).
+    #[test]
+    fn attributed_field_escape_keeps_unrelated_root_admitted() {
+        let escaping = BindingId(1);
+        let unrelated = BindingId(2);
+        let owned = vec![
+            (escaping, "a".to_string(), rec_ty()),
+            (unrelated, "b".to_string(), rec_ty()),
+        ];
+        let binding_locals: HashMap<BindingId, Place> =
+            [(escaping, Place::Local(0)), (unrelated, Place::Local(1))]
+                .into_iter()
+                .collect();
+        // local 2 receives the loaded owned (string) field of local 0.
+        let local_tys = vec![rec_ty(), rec_ty(), ResolvedTy::String];
+        let instrs = vec![
+            Instr::RecordFieldLoad {
+                record: Place::Local(0),
+                field_offset: FieldOffset(0),
+                dest: Place::Local(2),
+            },
+            Instr::Move {
+                dest: Place::ReturnSlot,
+                src: Place::Local(2),
+            },
+        ];
+
+        let allowed = derive(
+            &[block(0, instrs, Terminator::Return)],
+            &owned,
+            &binding_locals,
+            &local_tys,
+        );
+        assert!(
+            !allowed.contains(&escaping),
+            "the escaped field's root must stay excluded; got {allowed:?}"
+        );
+        assert!(
+            allowed.contains(&unrelated),
+            "a record no binder of which escaped must keep its composite drop \
+             under per-root attribution; got {allowed:?}"
+        );
+    }
+
+    /// #2212 fail-closed boundary: a binder loaded from TWO different roots
+    /// has ambiguous provenance — its escape must exclude EVERY record root
+    /// (the pre-attribution blanket), never guess one.
+    #[test]
+    fn ambiguous_binder_escape_excludes_every_root() {
+        let first = BindingId(1);
+        let second = BindingId(2);
+        let owned = vec![
+            (first, "a".to_string(), rec_ty()),
+            (second, "b".to_string(), rec_ty()),
+        ];
+        let binding_locals: HashMap<BindingId, Place> =
+            [(first, Place::Local(0)), (second, Place::Local(1))]
+                .into_iter()
+                .collect();
+        let local_tys = vec![rec_ty(), rec_ty(), ResolvedTy::String];
+        let instrs = vec![
+            Instr::RecordFieldLoad {
+                record: Place::Local(0),
+                field_offset: FieldOffset(0),
+                dest: Place::Local(2),
+            },
+            Instr::RecordFieldLoad {
+                record: Place::Local(1),
+                field_offset: FieldOffset(0),
+                dest: Place::Local(2),
+            },
+            Instr::Move {
+                dest: Place::ReturnSlot,
+                src: Place::Local(2),
+            },
+        ];
+
+        let allowed = derive(
+            &[block(0, instrs, Terminator::Return)],
+            &owned,
+            &binding_locals,
+            &local_tys,
+        );
+        assert!(
+            !allowed.contains(&first) && !allowed.contains(&second),
+            "a binder loaded from two roots is unattributable; its escape must \
+             exclude both roots fail-closed; got {allowed:?}"
+        );
+    }
+
+    /// #2212 attribution through a reused binder slot: an instruction write
+    /// into the binder that is not a member load or binder move (a rebind
+    /// from an unrelated local) forces `Ambiguous`, so the escape falls back
+    /// to the blanket every-root exclusion.
+    #[test]
+    fn reused_binder_escape_falls_back_to_blanket_exclusion() {
+        let root = BindingId(1);
+        let bystander = BindingId(2);
+        let owned = vec![
+            (root, "a".to_string(), rec_ty()),
+            (bystander, "b".to_string(), rec_ty()),
+        ];
+        let binding_locals: HashMap<BindingId, Place> =
+            [(root, Place::Local(0)), (bystander, Place::Local(1))]
+                .into_iter()
+                .collect();
+        // local 2: the binder; local 3: an unrelated string overwriting it.
+        let local_tys = vec![rec_ty(), rec_ty(), ResolvedTy::String, ResolvedTy::String];
+        let instrs = vec![
+            Instr::RecordFieldLoad {
+                record: Place::Local(0),
+                field_offset: FieldOffset(0),
+                dest: Place::Local(2),
+            },
+            Instr::Move {
+                dest: Place::Local(2),
+                src: Place::Local(3),
+            },
+            Instr::Move {
+                dest: Place::ReturnSlot,
+                src: Place::Local(2),
+            },
+        ];
+
+        let allowed = derive(
+            &[block(0, instrs, Terminator::Return)],
+            &owned,
+            &binding_locals,
+            &local_tys,
+        );
+        assert!(
+            !allowed.contains(&root) && !allowed.contains(&bystander),
+            "a binder overwritten by a non-member source is unattributable; \
+             its escape must exclude every root fail-closed; got {allowed:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod escaped_sibling_field_discharge {
+    //! Structural tests for `apply_escaped_record_sibling_field_drops` — the
+    //! #2212 sibling-discharge emitter. The positive shape (one attributed
+    //! instruction escape, record untouched afterwards) splices one
+    //! `FieldDropInPlace` per dischargeable owned sibling right after the
+    //! escape; every fail-closed refusal condition must leave the blocks
+    //! untouched (leak-as-before, never a double-free).
+    use super::*;
+
+    fn rec_ty() -> ResolvedTy {
+        ResolvedTy::named_user("Rec", vec![])
+    }
+
+    fn is_rec(ty: &ResolvedTy) -> bool {
+        matches!(ty, ResolvedTy::Named { name, .. } if name == "Rec")
+    }
+
+    /// `Rec { inner: string, tag: string }` — field 0 escapes in the test
+    /// shapes, field 1 is the dischargeable sibling.
+    fn owned_fields(ty: &ResolvedTy) -> Vec<(u32, ResolvedTy)> {
+        if is_rec(ty) {
+            vec![(0, ResolvedTy::String), (1, ResolvedTy::String)]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn dischargeable(ty: &ResolvedTy) -> bool {
+        matches!(ty, ResolvedTy::String)
+    }
+
+    fn field_orders() -> HashMap<String, Vec<(String, ResolvedTy)>> {
+        let mut orders = HashMap::new();
+        orders.insert(
+            "Rec".to_string(),
+            vec![
+                ("inner".to_string(), ResolvedTy::String),
+                ("tag".to_string(), ResolvedTy::String),
+            ],
+        );
+        orders
+    }
+
+    fn block(id: u32, instructions: Vec<Instr>, terminator: Terminator) -> BasicBlock {
+        BasicBlock {
+            id,
+            statements: vec![],
+            instructions,
+            terminator,
+        }
+    }
+
+    fn apply(
+        blocks: &mut [BasicBlock],
+        owned: &[(BindingId, String, ResolvedTy)],
+        binding_locals: &HashMap<BindingId, Place>,
+        local_tys: &[ResolvedTy],
+    ) {
+        let mut instr_spans = BTreeMap::new();
+        apply_escaped_record_sibling_field_drops(
+            blocks,
+            &HashMap::new(),
+            owned,
+            binding_locals,
+            local_tys,
+            &field_orders(),
+            &[],
+            &is_rec,
+            &owned_fields,
+            &dischargeable,
+            &mut instr_spans,
+        );
+    }
+
+    /// The #2212 shape: one field loaded out and returned, record untouched
+    /// afterwards → the owned sibling gets its in-place discharge spliced
+    /// directly after the escape instruction.
+    #[test]
+    fn single_attributed_escape_discharges_owned_sibling() {
+        let b = BindingId(1);
+        let owned = vec![(b, "r".to_string(), rec_ty())];
+        let binding_locals: HashMap<BindingId, Place> =
+            [(b, Place::Local(0))].into_iter().collect();
+        let local_tys = vec![rec_ty(), ResolvedTy::String];
+        let mut blocks = vec![block(
+            0,
+            vec![
+                Instr::RecordFieldLoad {
+                    record: Place::Local(0),
+                    field_offset: FieldOffset(0),
+                    dest: Place::Local(1),
+                },
+                Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src: Place::Local(1),
+                },
+            ],
+            Terminator::Return,
+        )];
+
+        apply(&mut blocks, &owned, &binding_locals, &local_tys);
+        assert_eq!(
+            blocks[0].instructions.len(),
+            3,
+            "exactly one sibling discharge must be spliced; got {:?}",
+            blocks[0].instructions
+        );
+        assert_eq!(
+            blocks[0].instructions[2],
+            Instr::FieldDropInPlace {
+                base: Place::Local(0),
+                field: crate::model::FieldAddr::Record(FieldOffset(1)),
+                ty: ResolvedTy::String,
+            },
+            "the discharge must address the NON-escaped sibling (field 1) on \
+             the root local, typed at the field"
+        );
+    }
+
+    /// The escaped field itself must never be discharged: when field 1 is the
+    /// escapee, the spliced set contains ONLY field 0 — a discharge of the
+    /// escaped slot would free the buffer the escapee now owns.
+    #[test]
+    fn escaped_field_is_never_in_the_discharge_set() {
+        let b = BindingId(1);
+        let owned = vec![(b, "r".to_string(), rec_ty())];
+        let binding_locals: HashMap<BindingId, Place> =
+            [(b, Place::Local(0))].into_iter().collect();
+        let local_tys = vec![rec_ty(), ResolvedTy::String];
+        let mut blocks = vec![block(
+            0,
+            vec![
+                Instr::RecordFieldLoad {
+                    record: Place::Local(0),
+                    field_offset: FieldOffset(1),
+                    dest: Place::Local(1),
+                },
+                Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src: Place::Local(1),
+                },
+            ],
+            Terminator::Return,
+        )];
+
+        apply(&mut blocks, &owned, &binding_locals, &local_tys);
+        let ops: Vec<_> = blocks[0]
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instr::FieldDropInPlace { .. }))
+            .collect();
+        assert_eq!(
+            ops,
+            vec![&Instr::FieldDropInPlace {
+                base: Place::Local(0),
+                field: crate::model::FieldAddr::Record(FieldOffset(0)),
+                ty: ResolvedTy::String,
+            }],
+            "only the non-escaped sibling (field 0) may be discharged — a \
+             discharge of escaped field 1 double-frees the escapee"
+        );
+    }
+
+    /// A read of the record after the escape (a later field load) refuses the
+    /// discharge — freeing the sibling earlier would be a use-after-free at
+    /// that read.
+    #[test]
+    fn record_read_after_escape_refuses_discharge() {
+        let b = BindingId(1);
+        let owned = vec![(b, "r".to_string(), rec_ty())];
+        let binding_locals: HashMap<BindingId, Place> =
+            [(b, Place::Local(0))].into_iter().collect();
+        let local_tys = vec![rec_ty(), ResolvedTy::String, ResolvedTy::String];
+        let mut blocks = vec![block(
+            0,
+            vec![
+                Instr::RecordFieldLoad {
+                    record: Place::Local(0),
+                    field_offset: FieldOffset(0),
+                    dest: Place::Local(1),
+                },
+                Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src: Place::Local(1),
+                },
+                Instr::RecordFieldLoad {
+                    record: Place::Local(0),
+                    field_offset: FieldOffset(1),
+                    dest: Place::Local(2),
+                },
+            ],
+            Terminator::Return,
+        )];
+
+        apply(&mut blocks, &owned, &binding_locals, &local_tys);
+        assert!(
+            !blocks[0]
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instr::FieldDropInPlace { .. })),
+            "a record field read after the escape must refuse the discharge; \
+             got {:?}",
+            blocks[0].instructions
+        );
+    }
+
+    /// A second escape event refuses the discharge — a per-escape splice
+    /// would run twice on one path.
+    #[test]
+    fn two_escape_events_refuse_discharge() {
+        let b = BindingId(1);
+        let owned = vec![(b, "r".to_string(), rec_ty())];
+        let binding_locals: HashMap<BindingId, Place> =
+            [(b, Place::Local(0))].into_iter().collect();
+        let local_tys = vec![rec_ty(), ResolvedTy::String, ResolvedTy::String];
+        let mut blocks = vec![block(
+            0,
+            vec![
+                Instr::RecordFieldLoad {
+                    record: Place::Local(0),
+                    field_offset: FieldOffset(0),
+                    dest: Place::Local(1),
+                },
+                Instr::RecordFieldLoad {
+                    record: Place::Local(0),
+                    field_offset: FieldOffset(1),
+                    dest: Place::Local(2),
+                },
+                Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src: Place::Local(1),
+                },
+                Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src: Place::Local(2),
+                },
+            ],
+            Terminator::Return,
+        )];
+
+        apply(&mut blocks, &owned, &binding_locals, &local_tys);
+        assert!(
+            !blocks[0]
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instr::FieldDropInPlace { .. })),
+            "two escape events on one root must refuse the discharge; got {:?}",
+            blocks[0].instructions
+        );
+    }
+
+    /// An escape inside a loop (its block reachable from itself) refuses the
+    /// discharge — the splice would re-run per iteration.
+    #[test]
+    fn escape_in_cycle_refuses_discharge() {
+        let b = BindingId(1);
+        let owned = vec![(b, "r".to_string(), rec_ty())];
+        let binding_locals: HashMap<BindingId, Place> =
+            [(b, Place::Local(0))].into_iter().collect();
+        let local_tys = vec![rec_ty(), ResolvedTy::String];
+        let mut blocks = vec![block(
+            0,
+            vec![
+                Instr::RecordFieldLoad {
+                    record: Place::Local(0),
+                    field_offset: FieldOffset(0),
+                    dest: Place::Local(1),
+                },
+                Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src: Place::Local(1),
+                },
+            ],
+            Terminator::Goto { target: 0 },
+        )];
+
+        apply(&mut blocks, &owned, &binding_locals, &local_tys);
+        assert!(
+            !blocks[0]
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instr::FieldDropInPlace { .. })),
+            "an escape whose block is self-reachable must refuse the \
+             discharge; got {:?}",
+            blocks[0].instructions
+        );
+    }
+
+    /// A binder that is itself an `owned_locals` base (`let g = r.field`) has
+    /// its own release path; the discharge must refuse rather than race it.
+    #[test]
+    fn extracted_owned_binding_refuses_discharge() {
+        let root = BindingId(1);
+        let extracted = BindingId(2);
+        let owned = vec![
+            (root, "r".to_string(), rec_ty()),
+            (extracted, "g".to_string(), ResolvedTy::String),
+        ];
+        let binding_locals: HashMap<BindingId, Place> =
+            [(root, Place::Local(0)), (extracted, Place::Local(1))]
+                .into_iter()
+                .collect();
+        let local_tys = vec![rec_ty(), ResolvedTy::String];
+        let mut blocks = vec![block(
+            0,
+            vec![
+                Instr::RecordFieldLoad {
+                    record: Place::Local(0),
+                    field_offset: FieldOffset(0),
+                    dest: Place::Local(1),
+                },
+                Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src: Place::Local(1),
+                },
+            ],
+            Terminator::Return,
+        )];
+
+        apply(&mut blocks, &owned, &binding_locals, &local_tys);
+        assert!(
+            !blocks[0]
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instr::FieldDropInPlace { .. })),
+            "a binder that is an owned binding's base has its own release \
+             path; the discharge must refuse; got {:?}",
+            blocks[0].instructions
+        );
+    }
+
+    /// A whole-value copy of the record (`let b2 = b`) refuses the discharge
+    /// — the copies byte-share field pointers and the pass frees through the
+    /// root slot only.
+    #[test]
+    fn whole_value_alias_copy_refuses_discharge() {
+        let b = BindingId(1);
+        let owned = vec![(b, "r".to_string(), rec_ty())];
+        let binding_locals: HashMap<BindingId, Place> =
+            [(b, Place::Local(0))].into_iter().collect();
+        let local_tys = vec![rec_ty(), ResolvedTy::String, rec_ty()];
+        let mut blocks = vec![block(
+            0,
+            vec![
+                Instr::Move {
+                    dest: Place::Local(2),
+                    src: Place::Local(0),
+                },
+                Instr::RecordFieldLoad {
+                    record: Place::Local(2),
+                    field_offset: FieldOffset(0),
+                    dest: Place::Local(1),
+                },
+                Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src: Place::Local(1),
+                },
+            ],
+            Terminator::Return,
+        )];
+
+        apply(&mut blocks, &owned, &binding_locals, &local_tys);
+        assert!(
+            !blocks[0]
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instr::FieldDropInPlace { .. })),
+            "a whole-value alias copy of the record must refuse the \
+             discharge; got {:?}",
+            blocks[0].instructions
+        );
+    }
+
+    /// An owned sibling whose shape the field-drop contract does not cover
+    /// keeps its leak while the coverable sibling is still discharged —
+    /// partial discharge is strictly better and never double-frees.
+    #[test]
+    fn uncoverable_sibling_keeps_leak_while_coverable_discharges() {
+        fn three_fields(ty: &ResolvedTy) -> Vec<(u32, ResolvedTy)> {
+            if is_rec(ty) {
+                vec![
+                    (0, ResolvedTy::String),
+                    (1, ResolvedTy::String),
+                    (
+                        2,
+                        ResolvedTy::named_builtin(
+                            "Vec",
+                            BuiltinType::Vec,
+                            vec![ResolvedTy::String],
+                        ),
+                    ),
+                ]
+            } else {
+                Vec::new()
+            }
+        }
+        let b = BindingId(1);
+        let owned = vec![(b, "r".to_string(), rec_ty())];
+        let binding_locals: HashMap<BindingId, Place> =
+            [(b, Place::Local(0))].into_iter().collect();
+        let local_tys = vec![rec_ty(), ResolvedTy::String];
+        let mut blocks = vec![block(
+            0,
+            vec![
+                Instr::RecordFieldLoad {
+                    record: Place::Local(0),
+                    field_offset: FieldOffset(0),
+                    dest: Place::Local(1),
+                },
+                Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src: Place::Local(1),
+                },
+            ],
+            Terminator::Return,
+        )];
+
+        let mut instr_spans = BTreeMap::new();
+        apply_escaped_record_sibling_field_drops(
+            &mut blocks,
+            &HashMap::new(),
+            &owned,
+            &binding_locals,
+            &local_tys,
+            &field_orders(),
+            &[],
+            &is_rec,
+            &three_fields,
+            &dischargeable,
+            &mut instr_spans,
+        );
+        let ops: Vec<_> = blocks[0]
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instr::FieldDropInPlace { .. }))
+            .collect();
+        assert_eq!(
+            ops,
+            vec![&Instr::FieldDropInPlace {
+                base: Place::Local(0),
+                field: crate::model::FieldAddr::Record(FieldOffset(1)),
+                ty: ResolvedTy::String,
+            }],
+            "the string sibling is discharged; the uncovered Vec sibling \
+             keeps its leak (fail-closed partial discharge)"
         );
     }
 }

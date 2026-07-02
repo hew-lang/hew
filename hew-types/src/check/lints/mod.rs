@@ -91,7 +91,7 @@ pub enum LintId {
     /// timed-out / mailbox-full / stopped-actor `ask` mistaken for a reply);
     /// handle it or bind `let _ = …`.
     MustUse,
-    /// A receive handler contains a sleep/sleep_until loop whose only obvious
+    /// A receive handler contains a `sleep`/`sleep_until` loop whose only obvious
     /// exit is a sibling actor message, but the mailbox is not observed until
     /// the current handler returns.
     SleepLoopBlocksMailbox,

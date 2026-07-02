@@ -55,8 +55,8 @@ fn find_in_stmt(
             try_flag(
                 ctx,
                 levels,
-                Candidate::Unconditional,
-                label,
+                &Candidate::Unconditional,
+                label.as_ref(),
                 body,
                 span,
                 out,
@@ -69,7 +69,7 @@ fn find_in_stmt(
             body,
         } => {
             if let Some(candidate) = candidate_from_condition(&condition.0) {
-                try_flag(ctx, levels, candidate, label, body, span, out);
+                try_flag(ctx, levels, &candidate, label.as_ref(), body, span, out);
             }
             find_in_expr(ctx, levels, &condition.0, out);
             find_in_block(ctx, levels, body, out);
@@ -424,16 +424,16 @@ fn candidate_from_condition(condition: &Expr) -> Option<Candidate> {
 fn try_flag(
     ctx: &LintCtx,
     levels: &LintLevels,
-    candidate: Candidate,
-    label: &Option<String>,
+    candidate: &Candidate,
+    label: Option<&String>,
     body: &Block,
     span: &Span,
     out: &mut Vec<TypeError>,
 ) {
-    if !bounded_contains_sleep(body) || loop_body_has_break(body, label.as_deref()) {
+    if !bounded_contains_sleep(body) || loop_body_has_break(body, label.map(String::as_str)) {
         return;
     }
-    if let Candidate::Guard(name) = &candidate {
+    if let Candidate::Guard(name) = candidate {
         if assigns_identifier(body, name) {
             return;
         }
@@ -466,7 +466,11 @@ fn bounded_contains_sleep(block: &Block) -> bool {
 )]
 fn bounded_stmt_has_sleep(stmt: &Stmt) -> bool {
     match stmt {
-        Stmt::Loop { .. } | Stmt::For { .. } | Stmt::While { .. } | Stmt::WhileLet { .. } => false,
+        Stmt::Loop { .. }
+        | Stmt::For { .. }
+        | Stmt::While { .. }
+        | Stmt::WhileLet { .. }
+        | Stmt::Continue { .. } => false,
         Stmt::If {
             condition,
             then_block,
@@ -505,7 +509,6 @@ fn bounded_stmt_has_sleep(stmt: &Stmt) -> bool {
         }
         Stmt::Defer(expr) => bounded_expr_has_sleep(&expr.0),
         Stmt::Expression(expr) => bounded_expr_has_sleep(&expr.0),
-        Stmt::Continue { .. } => false,
     }
 }
 
@@ -542,7 +545,15 @@ fn bounded_expr_has_sleep(expr: &Expr) -> bool {
                 || bounded_expr_has_sleep(&function.0)
                 || bounded_call_args_have_sleep(args)
         }
-        Expr::Lambda { .. } | Expr::SpawnLambdaActor { .. } | Expr::GenBlock { .. } => false,
+        Expr::Lambda { .. }
+        | Expr::SpawnLambdaActor { .. }
+        | Expr::GenBlock { .. }
+        | Expr::Literal(_)
+        | Expr::Identifier(_)
+        | Expr::This
+        | Expr::RegexLiteral(_)
+        | Expr::ByteStringLiteral(_)
+        | Expr::ByteArrayLiteral(_) => false,
         Expr::Block(block) | Expr::Scope { body: block } | Expr::ForkBlock { body: block } => {
             bounded_contains_sleep(block)
         }
@@ -644,12 +655,6 @@ fn bounded_expr_has_sleep(expr: &Expr) -> bool {
         Expr::Yield(value) | Expr::Return(value) => value
             .as_ref()
             .is_some_and(|value| bounded_expr_has_sleep(&value.0)),
-        Expr::Literal(_)
-        | Expr::Identifier(_)
-        | Expr::This
-        | Expr::RegexLiteral(_)
-        | Expr::ByteStringLiteral(_)
-        | Expr::ByteArrayLiteral(_) => false,
     }
 }
 

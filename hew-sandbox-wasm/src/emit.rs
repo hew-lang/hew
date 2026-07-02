@@ -4210,13 +4210,6 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
     ) -> Result<(), CompileError> {
         let scrutinee_ty = self.ty_for_expr(expr);
         let scrutinee = self.lower_expr(expr)?;
-        if self.pattern_is_unconditional(pattern, &scrutinee_ty) {
-            let saved_bindings = self.bindings.clone();
-            self.bind_pattern_payloads(pattern, &scrutinee, &scrutinee_ty);
-            self.lower_block(body)?;
-            self.bindings = saved_bindings;
-            return Ok(());
-        }
 
         let Pattern::Constructor { name, .. } = &pattern.0 else {
             self.emit_unsupported(Some(span));
@@ -4311,10 +4304,6 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
     /// `Expr::If` lowering. When the pattern is not a constructor (the only
     /// shape the statement form supports) or there is no else arm to join,
     /// it falls back to statement-form lowering and yields unit.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "value if-let lowering keeps constructor and unconditional-pattern control-flow joins together"
-    )]
     fn lower_expr_if_let(
         &mut self,
         whole_expr: &Spanned<Expr>,
@@ -4325,16 +4314,6 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         span: std::ops::Range<usize>,
     ) -> Result<String, CompileError> {
         let scrutinee_ty = self.ty_for_expr(scrutinee_expr);
-        if self.pattern_is_unconditional(pattern, &scrutinee_ty) {
-            let scrutinee = self.lower_expr(scrutinee_expr)?;
-            let saved_bindings = self.bindings.clone();
-            self.bind_pattern_payloads(pattern, &scrutinee, &scrutinee_ty);
-            let value = self
-                .lower_block(body)?
-                .unwrap_or_else(|| self.emit_const_unit(Some(span.clone())));
-            self.bindings = saved_bindings;
-            return Ok(value);
-        }
 
         // Value position requires a join: without an else arm there is no
         // second value to join, so fall back to the statement form (the result
@@ -4465,30 +4444,6 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
 
         let scrutinee_ty = self.ty_for_expr(expr);
         let scrutinee = self.lower_expr(expr)?;
-        if self.pattern_is_unconditional(pattern, &scrutinee_ty) {
-            self.terminate(Terminator::br(
-                body_id.clone(),
-                Vec::new(),
-                span_ref.clone(),
-            ));
-
-            self.switch_to(body_idx);
-            let saved_bindings = self.bindings.clone();
-            self.bind_pattern_payloads(pattern, &scrutinee, &scrutinee_ty);
-            self.loop_targets.push(LoopTargets {
-                continue_id: header_id.clone(),
-                exit_id: exit_id.clone(),
-                label,
-            });
-            self.lower_block(body)?;
-            if !self.current_is_terminated() {
-                self.terminate(Terminator::br(header_id, Vec::new(), None));
-            }
-            self.loop_targets.pop();
-            self.bindings = saved_bindings;
-            self.switch_to(exit_idx);
-            return Ok(());
-        }
 
         let Pattern::Constructor { name, .. } = &pattern.0 else {
             self.emit_unsupported(Some(span));

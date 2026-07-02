@@ -3452,6 +3452,10 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         Ok(result_local)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pattern binding handles every admitted pattern shell in one recursive dispatcher"
+    )]
     fn bind_pattern_payloads(
         &mut self,
         pattern: &Spanned<Pattern>,
@@ -4305,6 +4309,10 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
     /// `Expr::If` lowering. When the pattern is not a constructor (the only
     /// shape the statement form supports) or there is no else arm to join,
     /// it falls back to statement-form lowering and yields unit.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "value if-let lowering keeps constructor and unconditional-pattern control-flow joins together"
+    )]
     fn lower_expr_if_let(
         &mut self,
         whole_expr: &Spanned<Expr>,

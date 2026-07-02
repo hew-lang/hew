@@ -1425,6 +1425,10 @@ fn walk_block(block: &hew_parser::ast::Block, owners: &mut Vec<Option<&'static s
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "ratchet walker exhaustively enumerates every statement variant without wildcard arms"
+)]
 fn walk_stmt(stmt: &hew_parser::ast::Stmt, owners: &mut Vec<Option<&'static str>>) {
     use hew_parser::ast::Stmt;
     owners.push(ast_surface::classify_stmt(stmt));
@@ -1607,6 +1611,10 @@ fn walk_type_expr(ty: &hew_parser::ast::TypeExpr, owners: &mut Vec<Option<&'stat
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "ratchet walker exhaustively enumerates every expression variant without wildcard arms"
+)]
 fn walk_expr(
     expr: &hew_parser::ast::Spanned<hew_parser::ast::Expr>,
     owners: &mut Vec<Option<&'static str>>,

@@ -3917,6 +3917,23 @@ fn sleep_loop_blocks_mailbox_ignores_non_actor_function() {
 }
 
 #[test]
+fn sleep_loop_blocks_mailbox_ignores_sleep_loop_inside_lambda() {
+    let (errors, warnings) = parse_and_check(
+        "actor Worker {\n\
+         var running: bool = true;\n\
+         receive fn run() { let f = || { while running { sleep(10ms); } }; let _ = f; }\n\
+         receive fn stop() { running = false; }\n\
+         }\n",
+    );
+    assert!(errors.is_empty(), "fixture should type-check: {errors:?}");
+    assert_eq!(
+        count_sleep_loop_blocks_mailbox(&warnings),
+        0,
+        "sleep loops inside closures do not block the enclosing handler's mailbox: {warnings:?}"
+    );
+}
+
+#[test]
 fn sleep_loop_blocks_mailbox_ignores_loop_with_reachable_break() {
     let (errors, warnings) = parse_and_check(
         "actor Worker {\n\

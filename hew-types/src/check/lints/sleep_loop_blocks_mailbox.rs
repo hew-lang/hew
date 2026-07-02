@@ -12,6 +12,9 @@
 //! Compound conditions and derived progress checks are not candidates. A
 //! reachable `break` or an assignment to the bare guard name inside the loop is
 //! treated as an in-handler exit path and suppresses the diagnostic.
+//! Closure/lambda and generator bodies are traversal boundaries: closures do
+//! not block the enclosing handler's mailbox when they are spawned or passed
+//! elsewhere.
 
 use hew_parser::{
     ast::{
@@ -167,7 +170,6 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
             find_in_block(ctx, levels, block, out);
         }
         Expr::UnsafeBlock(block) => find_in_block(ctx, levels, block, out),
-        Expr::GenBlock { body } => find_in_block(ctx, levels, body, out),
         Expr::If {
             condition,
             then_block,
@@ -196,9 +198,6 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
             for arm in arms {
                 find_in_arm(ctx, levels, arm, out);
             }
-        }
-        Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
-            find_in_expr(ctx, levels, &body.0, out);
         }
         Expr::Spawn { target, args, .. } => {
             find_in_expr(ctx, levels, &target.0, out);
@@ -307,7 +306,10 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
                 find_in_expr(ctx, levels, &value.0, out);
             }
         }
-        Expr::Literal(_)
+        Expr::Lambda { .. }
+        | Expr::SpawnLambdaActor { .. }
+        | Expr::GenBlock { .. }
+        | Expr::Literal(_)
         | Expr::Identifier(_)
         | Expr::This
         | Expr::RegexLiteral(_)

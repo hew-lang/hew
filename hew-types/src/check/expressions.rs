@@ -2704,6 +2704,39 @@ impl Checker {
                 expected.clone()
             }
 
+            // Array literals checked against [T; N] require exact arity.
+            (Expr::Array(elems), Ty::Array(elem_ty, size)) => {
+                let Ok(actual_len) = u64::try_from(elems.len()) else {
+                    self.report_error(
+                        TypeErrorKind::ArityMismatch,
+                        span,
+                        format!(
+                            "array literal has {} elements, which exceeds the supported fixed-array length",
+                            elems.len()
+                        ),
+                    );
+                    return Ty::Error;
+                };
+
+                if actual_len != *size {
+                    self.report_error(
+                        TypeErrorKind::ArityMismatch,
+                        span,
+                        format!(
+                            "array literal length mismatch: expected {size} elements for `{}`, found {actual_len}",
+                            expected.user_facing()
+                        ),
+                    );
+                    return Ty::Error;
+                }
+
+                for elem in elems {
+                    self.check_against(&elem.0, &elem.1, elem_ty);
+                }
+                self.record_type(span, expected);
+                expected.clone()
+            }
+
             // Map literal can coerce to HashMap<K,V> when expected
             (
                 Expr::MapLiteral { entries },

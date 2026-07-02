@@ -11013,6 +11013,43 @@ impl Builder {
         }
     }
 
+    /// The owned-locals seed authority: does a binding of type `ty` oblige
+    /// scope-exit drop elaboration? `true` admits the binding into the
+    /// `owned_locals` candidate ledger every downstream allow-set derivation,
+    /// `unsupported_vec_element_diagnostics`, and `build_lifo_drops` scan.
+    /// The verdict is the value-class seed: every class except `BitCopy`
+    /// seeds (a `BitCopy` value owns no heap and its copy is free; a `View`
+    /// seeds into the no-retain no-op drop arm; a `Linear` seeds so the
+    /// move-checker's consume obligations observe it). Equivalent to
+    /// `ValueOwnership::to_value_class`'s carried seed by construction
+    /// (`ownership.rs` pins `to_value_class` ≡ `ValueClass::of_ty`). The
+    /// frozen verdict table is `seed_gate_matches_value_class_authority`; the
+    /// source-inventory pin `seed_fact_comparison_site_inventory_is_closed`
+    /// keeps this body the ONLY seed-fact spelling in production code.
+    ///
+    /// Consulted on BOTH sides of the ledger: the seed sites that push into
+    /// `owned_locals`, AND the consume-side handling of a `Use { Consume }`
+    /// on a `BindingRef` (drop-flag-set vs `mark_binding_moved`). One
+    /// authority on both sides is load-bearing: a consume side looser than
+    /// the seed side leaves a moved-out binding in `owned_locals`, and the
+    /// function-exit LIFO drop pass then releases a moved-out value (an
+    /// over-drop / double-free); a tighter consume side leaks.
+    ///
+    /// Known limitation, preserved: the gate is record-blind via
+    /// `ValueClass` — an unmarked user record classifies `Unknown`, which
+    /// seeds.
+    ///
+    /// Three sibling gates are DIFFERENT facts and do not route here: the
+    /// dyn-trait `let` arm seeds on `classify_dyn_trait_storage` (fail-closed
+    /// storage discrimination), the param arm seeds on the HIR ownership
+    /// checker's `param_consume` side-table verdict, and
+    /// `gen_env_capture_admissible` gates generator-env capture
+    /// flat-copyability on its own direct `ValueClass` test (it must not
+    /// follow a future seed-rule change).
+    fn binding_seeds_drop_elaboration(&self, ty: &ResolvedTy) -> bool {
+        ValueClass::of_ty(ty, &self.type_classes) != ValueClass::BitCopy
+    }
+
     /// Classify a `Vec<E>` element's scope-exit release by reading the single
     /// heap-ownership authority. The three release-bucket predicates are
     /// projections of this one decision (see [`VecElementRelease`]), so their
@@ -12125,7 +12162,7 @@ impl Builder {
                             });
                         }
                     }
-                } else if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy
+                } else if self.binding_seeds_drop_elaboration(&binding_ty)
                     && (pending || value_place.is_some())
                 {
                     // Only register the binding in `owned_locals` when
@@ -12453,7 +12490,7 @@ impl Builder {
                 ty: binding_ty.clone(),
             });
             self.record_binding_scope(binding.binding);
-            if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy {
+            if self.binding_seeds_drop_elaboration(&binding_ty) {
                 self.owned_locals
                     .push((binding.binding, binding.name.clone(), binding_ty.clone()));
             }
@@ -12478,7 +12515,7 @@ impl Builder {
                 ty: binding_ty.clone(),
             });
             self.record_binding_scope(binding.binding);
-            if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy {
+            if self.binding_seeds_drop_elaboration(&binding_ty) {
                 self.owned_locals
                     .push((binding.binding, binding.name.clone(), binding_ty.clone()));
             }
@@ -13038,7 +13075,7 @@ impl Builder {
                         intent: use_intent,
                     });
                     if use_intent == IntentKind::Consume
-                        && ValueClass::of_ty(&use_ty, &self.type_classes) != ValueClass::BitCopy
+                        && self.binding_seeds_drop_elaboration(&use_ty)
                     {
                         // #1933 / #1941 — a non-idempotent user `#[resource]`
                         // with an allocated path-sensitive drop-flag is KEPT in
@@ -17376,29 +17413,48 @@ impl Builder {
                 args,
                 ..
             } => {
-                // Closure-pair Vec<fn>/Vec<closure>: each slot owns a heap-boxed
-                // {code, env} pair (and the pair's env box); release walks the
-                // elements before the buffer/handle free via
-                // `hew_vec_free_closure_pairs`. Codegen's `cow_heap_release_symbol`
-                // checks the fn/closure element FIRST — a closure pair is neither
-                // an owned composite nor a plain leaf — so this arm must dispatch
-                // in the same order, or a yielded `Vec<fn>` computes `hew_vec_free`
-                // and fails the inline-drop congruence check
-                // (`dedup-semantic-boundary`).
-                if ty_is_closure_pair_vec(ty) {
-                    Some("hew_vec_free_closure_pairs")
-                } else if args.first().is_some_and(|e| self.is_owned_vec_element(e)) {
-                    // Owned-element Vec (element owns heap) releases via
-                    // `hew_vec_free_owned` (per-element descriptor drop then buffer
-                    // free); a plain (BitCopy / string) element Vec uses
-                    // `hew_vec_free`. The owned-element predicate routes through the
-                    // SAME `is_owned_vec_element` authority codegen's
-                    // `resolved_ty_element_owns_heap_for_owned_vec` agrees with
-                    // (`dedup-semantic-boundary`).
-                    Some("hew_vec_free_owned")
-                } else {
-                    Some("hew_vec_free")
-                }
+                // The element's release bucket selects the Vec symbol, read
+                // from the one typed classification. Its dispatch checks the
+                // closure-pair bucket FIRST, mirroring codegen's
+                // `cow_heap_release_symbol` (a fn/closure element is neither
+                // an owned composite nor a plain leaf; the inline-drop
+                // congruence check rejects a mis-picked `hew_vec_free` for a
+                // yielded `Vec<fn>` — `dedup-semantic-boundary`), and its
+                // owned bucket routes through the SAME `is_owned_vec_element`
+                // authority codegen's
+                // `resolved_ty_element_owns_heap_for_owned_vec` agrees with.
+                // The classification runs on the RAW element (a yield's type
+                // is concrete at its producer; the field picker substitutes
+                // first — the asymmetry is pinned by
+                // `yield_and_field_pickers_match_legacy_symbol_table`). A
+                // no-type-arg `Vec` falls through to the plain buffer free.
+                args.first().map_or(Some("hew_vec_free"), |elem| {
+                    #[allow(
+                        clippy::match_same_arms,
+                        reason = "Plain and Unsupported are distinct decisions \
+                                  whose symbols coincide only by transcription: \
+                                  Plain is the wired buffer-only release; \
+                                  Unsupported is an unwired protocol frozen at \
+                                  the legacy verdict. Merging the arms would \
+                                  hide the seam the type-directed drop tables \
+                                  rewire fail-closed"
+                    )]
+                    match self.classify_vec_element_release(elem) {
+                        VecElementRelease::ClosurePair => Some("hew_vec_free_closure_pairs"),
+                        VecElementRelease::OwnedElement => Some("hew_vec_free_owned"),
+                        VecElementRelease::Plain => Some("hew_vec_free"),
+                        // An element no bucket claims keeps the buffer-only
+                        // free: its per-element release is unwired, and
+                        // `unsupported_vec_element_diagnostics` rejects the
+                        // `NoReleaseProtocol` shapes at compile where the Vec
+                        // is constructed. The verdict over the Unsupported
+                        // domain is frozen by
+                        // `yield_and_field_pickers_match_legacy_symbol_table`;
+                        // the honest fail-closed treatment belongs to the
+                        // type-directed drop-table consolidation.
+                        VecElementRelease::Unsupported(_) => Some("hew_vec_free"),
+                    }
+                })
             }
             _ => None,
         }
@@ -17681,32 +17737,38 @@ impl Builder {
                 ref args,
                 ..
             } => {
-                // Mirror codegen's `cow_heap_release_symbol` Vec arm EXACTLY,
-                // including order: a closure-pair element (`Vec<fn>` /
-                // `Vec<closure>`) is checked FIRST and releases via
-                // `hew_vec_free_closure_pairs` (per-element env-thunk + pair-box
-                // walk, then buffer/handle free). A fn element is neither an
-                // owned composite nor a plain leaf, so it must not fall through
-                // to the owned/plain arms. Omitting this arm made the MIR symbol
-                // authority disagree with codegen (`hew_vec_free` vs
-                // `hew_vec_free_closure_pairs`): every consumer — the
-                // functional-update override-drop AND the match-destructure
-                // wildcard inline-drop — then emitted an incongruent release
-                // that codegen rejects fail-closed
-                // (`is_known_cow_heap_drop_symbol` / the RecordFieldDrop
-                // congruence assert). Both authorities are documented to agree;
-                // this restores that agreement.
-                // The closure-pair leaf test shares `ty_is_closure_pair` with
-                // `ty_is_closure_pair_vec` (used by the generator-yield picker),
-                // so every drop-symbol authority detects a fn/closure element
-                // through one predicate and cannot drift.
-                if args.first().is_some_and(ty_is_closure_pair) {
-                    Some("hew_vec_free_closure_pairs")
-                } else if args.first().is_some_and(|e| self.is_owned_vec_element(e)) {
-                    Some("hew_vec_free_owned")
-                } else {
-                    Some("hew_vec_free")
-                }
+                // The element's release bucket selects the Vec symbol, read
+                // from the one typed classification — the same classification
+                // the generator-yield picker reads, so every drop-symbol
+                // authority detects each bucket through one decision and
+                // cannot drift. The dispatch checks the closure-pair bucket
+                // FIRST, mirroring codegen's `cow_heap_release_symbol` (see
+                // `classify_vec_element_release`'s order doc; both
+                // authorities are documented to agree —
+                // `dedup-semantic-boundary`, `is_known_cow_heap_drop_symbol`
+                // / the RecordFieldDrop congruence assert reject a
+                // mis-picked symbol fail-closed). The classification runs on
+                // the SUBSTITUTED element (this match substitutes before
+                // dispatching; the generator-yield picker classifies the raw
+                // type — the asymmetry is pinned by
+                // `yield_and_field_pickers_match_legacy_symbol_table`). A
+                // no-type-arg `Vec` falls through to the plain buffer free.
+                args.first().map_or(Some("hew_vec_free"), |elem| {
+                    #[allow(
+                        clippy::match_same_arms,
+                        reason = "Plain and Unsupported are distinct decisions \
+                                  whose symbols coincide only by transcription; \
+                                  see the generator-yield picker's Vec arm"
+                    )]
+                    match self.classify_vec_element_release(elem) {
+                        VecElementRelease::ClosurePair => Some("hew_vec_free_closure_pairs"),
+                        VecElementRelease::OwnedElement => Some("hew_vec_free_owned"),
+                        VecElementRelease::Plain => Some("hew_vec_free"),
+                        // Unsupported keeps the legacy buffer-only free — see
+                        // the generator-yield picker's Unsupported arm.
+                        VecElementRelease::Unsupported(_) => Some("hew_vec_free"),
+                    }
+                })
             }
             ResolvedTy::Named {
                 builtin: Some(hew_types::BuiltinType::HashMap),
@@ -18254,8 +18316,7 @@ impl Builder {
             // the binding's escape consume) — both fail-closed-unsafe.
             // BitCopy bindings stay out: their copy is free of heap ownership
             // and the surrounding scrutinee's composite drop covers them.
-            let keep_for_drop_elab =
-                ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy;
+            let keep_for_drop_elab = self.binding_seeds_drop_elaboration(&binding_ty);
             if keep_for_drop_elab {
                 self.owned_locals
                     .push((binding.binding, binding.name.clone(), binding_ty.clone()));
@@ -19651,8 +19712,7 @@ impl Builder {
                     ty: binding_ty.clone(),
                 });
                 self.record_binding_scope(binding.binding);
-                let keep_for_drop_elab =
-                    ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy;
+                let keep_for_drop_elab = self.binding_seeds_drop_elaboration(&binding_ty);
                 if keep_for_drop_elab {
                     self.owned_locals.push((
                         binding.binding,
@@ -19742,8 +19802,7 @@ impl Builder {
                     ty: binding_ty.clone(),
                 });
                 self.record_binding_scope(binding.binding);
-                let keep_for_drop_elab =
-                    ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy;
+                let keep_for_drop_elab = self.binding_seeds_drop_elaboration(&binding_ty);
                 if keep_for_drop_elab {
                     self.owned_locals
                         .push((binding.binding, binding.name.clone(), binding_ty));
@@ -20265,7 +20324,7 @@ impl Builder {
                 ty: binding_ty.clone(),
             });
             self.record_binding_scope(binding.binding);
-            if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy {
+            if self.binding_seeds_drop_elaboration(&binding_ty) {
                 self.owned_locals
                     .push((binding.binding, binding.name.clone(), binding_ty.clone()));
             }
@@ -20290,7 +20349,7 @@ impl Builder {
                 ty: binding_ty.clone(),
             });
             self.record_binding_scope(binding.binding);
-            if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy {
+            if self.binding_seeds_drop_elaboration(&binding_ty) {
                 self.owned_locals
                     .push((binding.binding, binding.name.clone(), binding_ty.clone()));
             }
@@ -20488,7 +20547,7 @@ impl Builder {
                 ty: binding_ty.clone(),
             });
             self.record_binding_scope(binding.binding);
-            if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy {
+            if self.binding_seeds_drop_elaboration(&binding_ty) {
                 self.owned_locals
                     .push((binding.binding, binding.name.clone(), binding_ty.clone()));
             }
@@ -20513,7 +20572,7 @@ impl Builder {
                 ty: binding_ty.clone(),
             });
             self.record_binding_scope(binding.binding);
-            if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy {
+            if self.binding_seeds_drop_elaboration(&binding_ty) {
                 self.owned_locals
                     .push((binding.binding, binding.name.clone(), binding_ty.clone()));
             }
@@ -23315,7 +23374,7 @@ impl Builder {
             ty: ty.clone(),
         });
         self.record_binding_scope(binding_id);
-        if ValueClass::of_ty(ty, &self.type_classes) != ValueClass::BitCopy
+        if self.binding_seeds_drop_elaboration(ty)
             && !self
                 .owned_locals
                 .iter()
@@ -39439,6 +39498,14 @@ fn ty_is_vec(ty: &ResolvedTy) -> bool {
 /// (`fn(...) -> T` / closure surface type). Such a vec owns each element's
 /// pair box and, transitively, the pair's env box; its scope-exit release is
 /// `hew_vec_free_closure_pairs` (element walk + buffer + handle).
+///
+/// THE projection of the [`VecElementRelease::ClosurePair`] bucket for
+/// contexts without `Builder` state (the drop-plan validator and
+/// `build_lifo_drops` are free fns): `ty_is_closure_pair_vec(Vec<E>)` ≡
+/// `classify_vec_element_release(E).is_closure_pair()`, pinned over the
+/// element domain by `release_bucket_partition_is_total_over_vec_elements`.
+/// `Builder`-side consumers (the release-symbol pickers) read the
+/// classification itself.
 fn ty_is_closure_pair_vec(ty: &ResolvedTy) -> bool {
     matches!(
         ty,
@@ -39461,10 +39528,21 @@ fn builtin_method_arg_is_move_ingress(family: hew_types::MethodTargetFamily) -> 
 /// True when `ty` is a builtin `HashMap<K, V>` / `HashSet<E>` handle. Dispatches
 /// on the `builtin` discriminant (NOT the name string) so a user
 /// `type HashMap { ... }` is never mistaken for the runtime collection handle.
-/// This is the ABI-shape confirmation that the `hew_hashmap_free_layout` /
-/// `hew_hashset_free_layout` release is the correct release for the binding's
-/// single owned handle; the sole-owner / no-escape decision is the separate
-/// fail-closed authority `derive_local_collection_drop_allowed`.
+/// THE single ABI-shape authority for the collection-handle release bucket:
+/// the confirmation that `hew_hashmap_free_layout` / `hew_hashset_free_layout`
+/// is the correct release for the binding's single owned handle. The
+/// sole-owner / no-escape decision is the separate fail-closed authority
+/// `derive_local_collection_drop_allowed`.
+///
+/// A projection of the typed ownership classification:
+/// `ty_is_local_collection_handle(ty)` ≡ "the decision's drop class is the
+/// `HashMap` / `HashSet` copy-on-write leaf", pinned over the heap-leaf
+/// domain (plus the user-Named collision negative) by
+/// `collection_handle_predicate_projects_from_heap_leaf`, whose
+/// release-symbol tripwire also pins the two `*_free_layout` spellings to
+/// `HeapLeaf::release_symbol`. A future builtin collection is classified
+/// once, in `classify_named`; the pin fails if this predicate does not
+/// follow.
 fn ty_is_local_collection_handle(ty: &ResolvedTy) -> bool {
     matches!(
         ty,
@@ -46136,5 +46214,493 @@ mod child_init_owned_classification {
                 "{name} carries heap ownership and must be classified owned"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod drop_admission_type_shape_pins {
+    //! Frozen-verdict pins for the type-shape axis of MIR drop admission: the
+    //! owned-locals seed gate, the collection-handle release bucket, and the
+    //! two release-symbol pickers. Each pin enumerates its own function's
+    //! decision domain and freezes today's verdict as a literal, so a moved
+    //! admission decision is a named test failure — never a silent
+    //! reclassification. An admission that widens over-drops (double-free,
+    //! the worst outcome); one that narrows leaks.
+    use super::*;
+    use crate::ownership::{DropClass, HeapLeaf, OwnershipCtx, OwnershipDecision};
+
+    fn vec_of(elem: ResolvedTy) -> ResolvedTy {
+        ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![elem])
+    }
+
+    fn named(name: &str) -> ResolvedTy {
+        ResolvedTy::named_user(name, vec![])
+    }
+
+    fn hashmap_str_i64() -> ResolvedTy {
+        ResolvedTy::named_builtin(
+            "HashMap",
+            BuiltinType::HashMap,
+            vec![ResolvedTy::String, ResolvedTy::I64],
+        )
+    }
+
+    fn hashset_i64() -> ResolvedTy {
+        ResolvedTy::named_builtin("HashSet", BuiltinType::HashSet, vec![ResolvedTy::I64])
+    }
+
+    fn generator_i64() -> ResolvedTy {
+        ResolvedTy::named_builtin(
+            "Generator",
+            BuiltinType::Generator,
+            vec![ResolvedTy::I64, ResolvedTy::Unit],
+        )
+    }
+
+    fn bare_fn() -> ResolvedTy {
+        ResolvedTy::Function {
+            params: vec![],
+            ret: Box::new(ResolvedTy::Unit),
+        }
+    }
+
+    fn empty_capture_closure() -> ResolvedTy {
+        ResolvedTy::Closure {
+            params: vec![],
+            ret: Box::new(ResolvedTy::Unit),
+            captures: vec![],
+        }
+    }
+
+    /// `indirect enum Foo { A(i64); B }` — a heap-boxed node whose per-element
+    /// `Vec` release is unwired (`Unsupported(NoReleaseProtocol)`).
+    fn builder_with_indirect_enum_foo() -> Builder {
+        Builder {
+            enum_layouts: vec![crate::model::EnumLayout {
+                name: "Foo".to_string(),
+                tag_width: 1,
+                variants: vec![
+                    crate::model::MachineVariantLayout {
+                        name: "A".to_string(),
+                        field_tys: vec![ResolvedTy::I64],
+                        field_names: vec![],
+                    },
+                    crate::model::MachineVariantLayout {
+                        name: "B".to_string(),
+                        field_tys: vec![],
+                        field_names: vec![],
+                    },
+                ],
+                is_indirect: true,
+            }],
+            ..Builder::default()
+        }
+    }
+
+    /// The owned-locals seed gate — "does a binding of this TYPE oblige drop
+    /// elaboration?" — with the verdict frozen per shape over every class
+    /// `ValueClass::of_ty` can answer. Only `BitCopy` declines to seed; every
+    /// other class (including the record-blind `Unknown` for unmarked user
+    /// records — a known, preserved limitation) enters `owned_locals`.
+    #[test]
+    fn seed_gate_matches_value_class_authority() {
+        let mut type_classes = hew_hir::TypeClassTable::new();
+        type_classes.insert("CopyRec".to_string(), (ResourceMarker::BitCopy, None));
+        type_classes.insert("Sock".to_string(), (ResourceMarker::Resource, None));
+        type_classes.insert("Once".to_string(), (ResourceMarker::Linear, None));
+        let builder = Builder {
+            type_classes,
+            ..Builder::default()
+        };
+
+        // (shape, type, seeds-drop-elaboration) — the verdict column is the
+        // FROZEN admission decision; a row here may only change together with
+        // a deliberate, reviewed seed-rule change.
+        let corpus: Vec<(&str, ResolvedTy, bool)> = vec![
+            // BitCopy — the only class that does NOT seed.
+            ("i64 scalar", ResolvedTy::I64, false),
+            ("bool scalar", ResolvedTy::Bool, false),
+            ("duration", ResolvedTy::Duration, false),
+            ("unit", ResolvedTy::Unit, false),
+            (
+                "instant builtin",
+                ResolvedTy::named_builtin("instant", BuiltinType::Instant, vec![]),
+                false,
+            ),
+            ("bitcopy-marked record", named("CopyRec"), false),
+            // CowValue seeds.
+            ("string", ResolvedTy::String, true),
+            ("bytes", ResolvedTy::Bytes, true),
+            ("builtin Vec", vec_of(ResolvedTy::I64), true),
+            (
+                "tuple",
+                ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64]),
+                true,
+            ),
+            // PersistentShare seeds.
+            ("bare fn", bare_fn(), true),
+            ("empty-capture closure", empty_capture_closure(), true),
+            (
+                "dyn trait",
+                ResolvedTy::TraitObject {
+                    traits: vec![hew_types::ResolvedTraitBound {
+                        trait_name: "Display".to_string(),
+                        args: vec![],
+                        assoc_bindings: vec![],
+                    }],
+                },
+                true,
+            ),
+            // AffineResource seeds.
+            ("cancellation token", ResolvedTy::CancellationToken, true),
+            ("generator handle", generator_i64(), true),
+            ("resource-marked named", named("Sock"), true),
+            // Linear seeds (its release is the move-checker's MustConsume,
+            // but membership in the candidate ledger is what is decided here).
+            (
+                "task handle",
+                ResolvedTy::Task(Box::new(ResolvedTy::I64)),
+                true,
+            ),
+            ("linear-marked named", named("Once"), true),
+            // View seeds (build_lifo_drops elaborates its no-retain no-op arm).
+            (
+                "borrow",
+                ResolvedTy::Borrow {
+                    pointee: Box::new(ResolvedTy::I64),
+                },
+                true,
+            ),
+            ("slice", ResolvedTy::Slice(Box::new(ResolvedTy::I64)), true),
+            (
+                "pointer",
+                ResolvedTy::Pointer {
+                    is_mutable: false,
+                    pointee: Box::new(ResolvedTy::I64),
+                },
+                true,
+            ),
+            // Unknown seeds — the record-blind arm: an unmarked user record
+            // classifies Unknown, not BitCopy, so it enters the ledger.
+            ("unmarked named", named("Mystery"), true),
+            (
+                "type param",
+                ResolvedTy::TypeParam {
+                    name: "T".to_string(),
+                },
+                true,
+            ),
+        ];
+
+        for (label, ty, seeds) in corpus {
+            assert_eq!(
+                builder.binding_seeds_drop_elaboration(&ty),
+                seeds,
+                "owned-locals seed verdict moved for `{label}` ({ty:?}); \
+                 seeding decides drop-elaboration membership, so a flipped \
+                 verdict is an over-drop (double-free) or an under-seed (leak)"
+            );
+            assert_eq!(
+                builder.binding_seeds_drop_elaboration(&ty),
+                ValueClass::of_ty(&ty, &builder.type_classes) != ValueClass::BitCopy,
+                "the seed authority's verdict must remain the value-class \
+                 seed for `{label}` ({ty:?})"
+            );
+        }
+    }
+
+    /// `ty_is_local_collection_handle` is a projection of the typed ownership
+    /// classification: it answers `true` exactly when the decision's drop
+    /// class is the `HashMap` / `HashSet` copy-on-write leaf. Corpus: every
+    /// heap leaf the authority recognises, plus the user-Named collision
+    /// negative (a user `type HashMap` shares the name but not the `builtin`
+    /// discriminator and must never be mistaken for the runtime handle).
+    #[test]
+    fn collection_handle_predicate_projects_from_heap_leaf() {
+        let records: HashMap<String, Vec<(String, ResolvedTy)>> = HashMap::new();
+        let type_classes = hew_hir::TypeClassTable::new();
+        let ctx = OwnershipCtx::new(&records, &[], &type_classes);
+
+        let corpus: Vec<(&str, ResolvedTy, bool)> = vec![
+            ("string", ResolvedTy::String, false),
+            ("bytes", ResolvedTy::Bytes, false),
+            ("vec", vec_of(ResolvedTy::I64), false),
+            ("hashmap", hashmap_str_i64(), true),
+            ("hashset", hashset_i64(), true),
+            ("generator", generator_i64(), false),
+            ("cancellation token", ResolvedTy::CancellationToken, false),
+            ("user-named HashMap collision", named("HashMap"), false),
+        ];
+
+        for (label, ty, expected) in corpus {
+            assert_eq!(
+                ty_is_local_collection_handle(&ty),
+                expected,
+                "collection-handle bucket membership moved for `{label}` ({ty:?})"
+            );
+            let projects = matches!(
+                OwnershipDecision::classify(&ty, Place::Local(0), &ctx).drop_class(),
+                Some(DropClass::CowHeapLeaf {
+                    leaf: HeapLeaf::HashMap | HeapLeaf::HashSet
+                })
+            );
+            assert_eq!(
+                projects, expected,
+                "`{label}` ({ty:?}): the typed classification and \
+                 `ty_is_local_collection_handle` must answer identically — \
+                 a future builtin collection added to one but not the other \
+                 splits bucket admission from classification"
+            );
+        }
+
+        // Symbol-agreement tripwire: the leaves' canonical release symbols are
+        // exactly the two symbols the collection-handle bucket emits in
+        // `build_lifo_drops` (via `drop_kind_for`).
+        assert_eq!(
+            HeapLeaf::HashMap.release_symbol(),
+            "hew_hashmap_free_layout",
+            "HashMap leaf release symbol must match the bucket's emission"
+        );
+        assert_eq!(
+            HeapLeaf::HashSet.release_symbol(),
+            "hew_hashset_free_layout",
+            "HashSet leaf release symbol must match the bucket's emission"
+        );
+    }
+
+    /// The complete release-symbol table for both Builder-side pickers —
+    /// `generator_yield_drop_symbol` (matches the RAW type) and
+    /// `project_field_inline_drop_symbol` (substitutes FIRST) — frozen per
+    /// shape: the `Vec` arm over every `VecElementRelease` variant (both
+    /// `FailClosedReason` arms represented), the defensive no-type-arg `Vec`,
+    /// and the non-`Vec` arms. The `Unsupported` rows freeze the legacy
+    /// buffer-only `hew_vec_free` verdict deliberately: the per-element
+    /// release for those shapes is unwired, and the honest fail-closed
+    /// treatment belongs to the type-directed drop-table consolidation.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the length is intrinsic: one frozen symbol matrix over every \
+                  picker input shape, asserted against both pickers — splitting \
+                  it would scatter the single-table proof across functions"
+    )]
+    fn yield_and_field_pickers_match_legacy_symbol_table() {
+        let mut builder = builder_with_indirect_enum_foo();
+
+        // (shape, type, generator-yield symbol, project-field symbol) — every
+        // symbol column FROZEN. The two pickers agree on every row here; the
+        // substitution-order asymmetry is pinned separately below.
+        let corpus: Vec<(&str, ResolvedTy, Option<&str>, Option<&str>)> = vec![
+            // Vec arm — Plain elements.
+            (
+                "Vec<i64> (Plain)",
+                vec_of(ResolvedTy::I64),
+                Some("hew_vec_free"),
+                Some("hew_vec_free"),
+            ),
+            (
+                "Vec<string> (Plain)",
+                vec_of(ResolvedTy::String),
+                Some("hew_vec_free"),
+                Some("hew_vec_free"),
+            ),
+            // Vec arm — OwnedElement elements.
+            (
+                "Vec<Vec<i64>> (OwnedElement)",
+                vec_of(vec_of(ResolvedTy::I64)),
+                Some("hew_vec_free_owned"),
+                Some("hew_vec_free_owned"),
+            ),
+            (
+                "Vec<HashMap<string,i64>> (OwnedElement)",
+                vec_of(hashmap_str_i64()),
+                Some("hew_vec_free_owned"),
+                Some("hew_vec_free_owned"),
+            ),
+            (
+                "Vec<(string,i64)> (OwnedElement)",
+                vec_of(ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64])),
+                Some("hew_vec_free_owned"),
+                Some("hew_vec_free_owned"),
+            ),
+            // Vec arm — ClosurePair elements.
+            (
+                "Vec<fn> (ClosurePair)",
+                vec_of(bare_fn()),
+                Some("hew_vec_free_closure_pairs"),
+                Some("hew_vec_free_closure_pairs"),
+            ),
+            (
+                "Vec<closure> (ClosurePair)",
+                vec_of(empty_capture_closure()),
+                Some("hew_vec_free_closure_pairs"),
+                Some("hew_vec_free_closure_pairs"),
+            ),
+            // Vec arm — Unsupported elements, frozen at the legacy buffer-only
+            // verdict (see the test doc).
+            (
+                "Vec<bytes> (Unsupported/NoReleaseProtocol)",
+                vec_of(ResolvedTy::Bytes),
+                Some("hew_vec_free"),
+                Some("hew_vec_free"),
+            ),
+            (
+                "Vec<indirect enum> (Unsupported/NoReleaseProtocol)",
+                vec_of(named("Foo")),
+                Some("hew_vec_free"),
+                Some("hew_vec_free"),
+            ),
+            (
+                "Vec<T> unsubstituted (Unsupported/UnenumeratedShape)",
+                vec_of(ResolvedTy::TypeParam {
+                    name: "T".to_string(),
+                }),
+                Some("hew_vec_free"),
+                Some("hew_vec_free"),
+            ),
+            // Vec arm — defensive no-type-arg fall-through.
+            (
+                "Vec with no type arg (defensive)",
+                ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![]),
+                Some("hew_vec_free"),
+                Some("hew_vec_free"),
+            ),
+            // Non-Vec arms — must not move when the Vec arm reroutes.
+            (
+                "string",
+                ResolvedTy::String,
+                Some("hew_string_drop"),
+                Some("hew_string_drop"),
+            ),
+            (
+                "bytes",
+                ResolvedTy::Bytes,
+                Some("hew_bytes_drop"),
+                Some("hew_bytes_drop"),
+            ),
+            // HashMap/HashSet yields have no validated consumer-drop path —
+            // they leak-as-before (a frozen None), never risk a double-free.
+            (
+                "HashMap (yield leak-as-before)",
+                hashmap_str_i64(),
+                None,
+                Some("hew_hashmap_free_layout"),
+            ),
+            (
+                "HashSet (yield leak-as-before)",
+                hashset_i64(),
+                None,
+                Some("hew_hashset_free_layout"),
+            ),
+            (
+                "Generator",
+                generator_i64(),
+                None,
+                Some("hew_gen_coro_destroy"),
+            ),
+            ("i64", ResolvedTy::I64, None, None),
+            ("unmarked user record", named("Rec"), None, None),
+        ];
+
+        for (label, ty, want_yield, want_field) in corpus {
+            assert_eq!(
+                builder.generator_yield_drop_symbol(&ty),
+                want_yield,
+                "generator-yield release symbol moved for `{label}` ({ty:?})"
+            );
+            assert_eq!(
+                builder.project_field_inline_drop_symbol(&ty),
+                want_field,
+                "project-field release symbol moved for `{label}` ({ty:?})"
+            );
+        }
+
+        // The Unsupported rows above carry exactly the two fail-closed
+        // reasons: the unwired release protocols and the anti-drift sentinel.
+        assert_eq!(
+            builder.classify_vec_element_release(&ResolvedTy::Bytes),
+            VecElementRelease::Unsupported(FailClosedReason::NoReleaseProtocol)
+        );
+        assert_eq!(
+            builder.classify_vec_element_release(&named("Foo")),
+            VecElementRelease::Unsupported(FailClosedReason::NoReleaseProtocol)
+        );
+        assert_eq!(
+            builder.classify_vec_element_release(&ResolvedTy::TypeParam {
+                name: "T".to_string(),
+            }),
+            VecElementRelease::Unsupported(FailClosedReason::UnenumeratedShape)
+        );
+
+        // Substitution-order asymmetry, frozen: `generator_yield_drop_symbol`
+        // classifies the RAW type (a yield's type is already concrete at its
+        // producer); `project_field_inline_drop_symbol` substitutes through
+        // the monomorphisation map FIRST (a field type may still spell the
+        // function's type parameter). With `T ↦ fn() -> unit` the two pickers
+        // therefore answer differently for `Vec<T>` — harmonising them would
+        // move release decisions.
+        builder.subst = [("T".to_string(), bare_fn())].into_iter().collect();
+        let vec_t = vec_of(ResolvedTy::TypeParam {
+            name: "T".to_string(),
+        });
+        assert_eq!(
+            builder.generator_yield_drop_symbol(&vec_t),
+            Some("hew_vec_free"),
+            "the yield picker must classify the raw (unsubstituted) type"
+        );
+        assert_eq!(
+            builder.project_field_inline_drop_symbol(&vec_t),
+            Some("hew_vec_free_closure_pairs"),
+            "the field picker must substitute before classifying"
+        );
+    }
+
+    /// The production (non-test) prefix of `lower.rs`. CRLF-normalised so a
+    /// Windows checkout (`core.autocrlf=true`) still splits on the LF-anchored
+    /// test-module boundary (mirrors `layout_key_shortening_guard`).
+    fn production_source() -> String {
+        let src = include_str!("lower.rs").replace("\r\n", "\n");
+        src.split("\n#[cfg(test)]\n")
+            .next()
+            .expect("lower.rs has a non-test prefix")
+            .to_string()
+    }
+
+    /// Structural inventory pin for the owned-locals seed fact: every
+    /// occurrence of the non-`BitCopy` value-class polarity test in production
+    /// code is named below, so a raw copy of the seed comparison cannot appear
+    /// (or disappear) silently under any spelling — the whitespace-stripped
+    /// scan catches line-wrapped and temp-variable forms alike.
+    #[test]
+    fn seed_fact_comparison_site_inventory_is_closed() {
+        let squeezed: String = production_source()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        // The seed fact has exactly one production spelling: the body of
+        // `binding_seeds_drop_elaboration`, the authority the 11 seed sites
+        // and the consume-side removal mirror all call.
+        assert!(
+            squeezed.contains("fnbinding_seeds_drop_elaboration"),
+            "the owned-locals seed authority must exist in production code"
+        );
+        let count = squeezed.matches("!=ValueClass::BitCopy").count();
+        // The complete allowlist of the non-`BitCopy` polarity test:
+        //   - `binding_seeds_drop_elaboration` — the seed authority's own
+        //     body, the single spelling of the seed fact;
+        //   - `gen_env_capture_admissible` — generator-env capture
+        //     flat-copyability, a DIFFERENT fact that must not follow a
+        //     future seed-rule change;
+        //   - the user-record value-class diagnostic reason builder — names
+        //     the first non-BitCopy field in a rejection note (diagnostic
+        //     wording, not admission).
+        assert_eq!(
+            count, 3,
+            "a raw copy of the owned-locals seed comparison appeared in (or \
+             an allowlisted use vanished from) lower.rs production code; \
+             seed decisions route through `binding_seeds_drop_elaboration`, \
+             never an inline class test — classify any change to this \
+             population in the allowlist above deliberately"
+        );
     }
 }

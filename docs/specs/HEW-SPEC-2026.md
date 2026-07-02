@@ -18,7 +18,7 @@ runtime.
 Hew tracks **two version axes** that move independently:
 
 - **Compiler version** is SemVer on the binary (`hew --version` → `hew
-  0.5.x`). Patch releases for soundness and codegen fixes; minor releases
+0.5.x`). Patch releases for soundness and codegen fixes; minor releases
   for new stdlib surfaces and new language editions; the major release is
   the v1.0 stability event.
 - **Spec edition** is a year-shaped identifier declared once per package in
@@ -197,6 +197,7 @@ actor HealthChecker {
 ```
 
 **Rules:**
+
 - The `#[every]` attribute takes a single duration literal argument (e.g. `5s`, `100ms`, `1m`)
 - Periodic handlers must not have parameters (they receive no message payload)
 - Periodic handlers must not have a return type (fire-and-forget)
@@ -239,7 +240,7 @@ handle in the same family as `LocalPid` / `RemotePid` ("a pid you ask, `M` in �
   tuple of the param types for multiple params, or `()` for no params)
 - `R` is the reply type (from the `-> R` annotation, or `()` when omitted)
 
-`LambdaPid<M, ()>` is tell-shaped (fire-and-forget); `LambdaPid<M, R>` with a
+`LambdaPid<M, ()>` is send-shaped (fire-and-forget); `LambdaPid<M, R>` with a
 non-unit `R` is ask-shaped (request-response). `LambdaPid` is a move-only
 resource handle: it is `Send`/`Sync` iff both `M` and `R` are `Send`, and the
 runtime stops the actor when the last strong handle drops.
@@ -258,7 +259,7 @@ separate receive.
 let counter: LocalPid<Counter> = spawn Counter(count: 0);
 
 // Lambda actor expression returns LambdaPid<M, R>
-let worker: LambdaPid<i64, ()> = actor |msg: i64| { println(msg); };   // tell
+let worker: LambdaPid<i64, ()> = actor |msg: i64| { println(msg); };   // send
 let adder: LambdaPid<i64, i64> = actor |x: i64| -> i64 { x + 1 };      // ask
 ```
 
@@ -356,7 +357,7 @@ let r?: T = expr;       ≡  let r: T = expr?;
 - The enclosing function must return `Result<_, E>` or `Option<_>` with a
   compatible error type. If it does not, the checker reports the same
   "`?` cannot be used in a function returning …`" diagnostic as for bare `?`.
-- The type annotation `T` in `let r?: T = expr` describes the *unwrapped*
+- The type annotation `T` in `let r?: T = expr` describes the _unwrapped_
   Ok-payload (type of `r` after propagation), not the Result itself — the
   same convention as `let r: T = expr?;`.
 
@@ -418,34 +419,34 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 
 **Send derivation:**
 
-| Type                               | `Send` if...                               |
-| ---------------------------------- | ------------------------------------------ |
-| Value types (i32, f64, bool, char, isize, usize) | Always `Send`                |
-| `string`                           | Always `Send` (immutable-shareable owned type; alias-shared by refcount retain on send — not deep-copied) |
-| `LocalPid<A>`                      | Always `Send`                              |
-| `type S { f1: T1; f2: T2; ... }`   | All fields are `Send`                      |
-| `enum E { V1(T1), V2(T2), ... }`   | All variant payloads are `Send`            |
-| `Vec<T>`                           | `T` is `Send`                              |
-| `HashMap<K, V>`                    | `K` and `V` are both `Send`                |
-| `Option<T>`                        | `T` is `Send`                              |
-| `Result<T, E>`                     | `T` and `E` are both `Send`                |
-| `(T1, T2, ...)`                    | All elements are `Send`                    |
-| `[T; N]`                           | `T` is `Send`                              |
+| Type                                             | `Send` if...                                                                                              |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------- |
+| Value types (i32, f64, bool, char, isize, usize) | Always `Send`                                                                                             |
+| `string`                                         | Always `Send` (immutable-shareable owned type; alias-shared by refcount retain on send — not deep-copied) |
+| `LocalPid<A>`                                    | Always `Send`                                                                                             |
+| `type S { f1: T1; f2: T2; ... }`                 | All fields are `Send`                                                                                     |
+| `enum E { V1(T1), V2(T2), ... }`                 | All variant payloads are `Send`                                                                           |
+| `Vec<T>`                                         | `T` is `Send`                                                                                             |
+| `HashMap<K, V>`                                  | `K` and `V` are both `Send`                                                                               |
+| `Option<T>`                                      | `T` is `Send`                                                                                             |
+| `Result<T, E>`                                   | `T` and `E` are both `Send`                                                                               |
+| `(T1, T2, ...)`                                  | All elements are `Send`                                                                                   |
+| `[T; N]`                                         | `T` is `Send`                                                                                             |
 
 > **Note on array annotations:** Only fixed-size array annotations `[T; N]` are supported. Slice annotations `[T]` (unsized) are rejected by the type checker; unsized-slice lowering is not implemented. Use `Vec<T>` for dynamically-sized sequences.
 
 **Frozen derivation:**
 
-| Type                          | `Frozen` if...                            |
-| ----------------------------- | ----------------------------------------- |
-| Value types                   | Always `Frozen`                           |
-| `string`                      | NOT `Frozen` (mutable content)            |
-| `LocalPid<A>`                 | Always `Frozen` (identity reference only) |
-| `type S` where all field types are `Frozen` | `Frozen` (recursive over field types) |
-| `type S` where any field type is not `Frozen` | NOT `Frozen`                        |
-| `enum E`                      | All variant payloads are `Frozen`         |
-| `Arc<T>`                      | _Not currently surfaced in Hew source; runtime-only support today_ |
-| `Vec<T>`, `HashMap<K,V>`      | NOT `Frozen` (mutable containers)         |
+| Type                                          | `Frozen` if...                                                     |
+| --------------------------------------------- | ------------------------------------------------------------------ |
+| Value types                                   | Always `Frozen`                                                    |
+| `string`                                      | NOT `Frozen` (mutable content)                                     |
+| `LocalPid<A>`                                 | Always `Frozen` (identity reference only)                          |
+| `type S` where all field types are `Frozen`   | `Frozen` (recursive over field types)                              |
+| `type S` where any field type is not `Frozen` | NOT `Frozen`                                                       |
+| `enum E`                                      | All variant payloads are `Frozen`                                  |
+| `Arc<T>`                                      | _Not currently surfaced in Hew source; runtime-only support today_ |
+| `Vec<T>`, `HashMap<K,V>`                      | NOT `Frozen` (mutable containers)                                  |
 
 > **Soundness requirement:** The compiler MUST reject as non-`Send` any type whose `Send` status cannot be determined (e.g., opaque foreign types). Foreign types are non-`Send` by default. The runtime/ABI has internal escape hatches, but there is currently **no surfaced Hew `#[send]` attribute** for user code.
 
@@ -833,7 +834,7 @@ This provides clean, namespaced access to stdlib functionality. The module name 
 | `std::net`         | `net.listen`, `net.accept`, `net.connect`, `net.read`, `net.write`, `net.close`                                                                              |
 | `std::text::regex` | `regex.new`, `regex.is_match`, `regex.find`, `regex.replace`                                                                                                 |
 | `std::net::mime`   | `mime.from_path`, `mime.from_ext`, `mime.is_text`                                                                                                            |
-| `std::process`     | `process.run`, `process.try_run`, `process.run_argv`, `process.try_run_argv`, `process.start`                                                               |
+| `std::process`     | `process.run`, `process.try_run`, `process.run_argv`, `process.try_run_argv`, `process.start`                                                                |
 
 Predicate functions (`fs.exists`, `path.exists`, `regex.is_match`, `os.has_env`, `mime.is_text`) return `bool`.
 
@@ -841,17 +842,17 @@ Predicate functions (`fs.exists`, `path.exists`, `regex.is_match`, `os.has_env`,
 
 Three-tier model — written as a prefix keyword before the item keyword:
 
-| Syntax              | Meaning                                    |
-|---------------------|--------------------------------------------|
-| `fn foo()`          | Private — visible only within this module  |
-| `package fn foo()`  | Package — visible within the same package  |
-| `pub fn foo()`      | Public — visible to all modules            |
+| Syntax             | Meaning                                   |
+| ------------------ | ----------------------------------------- |
+| `fn foo()`         | Private — visible only within this module |
+| `package fn foo()` | Package — visible within the same package |
+| `pub fn foo()`     | Public — visible to all modules           |
 
 The same prefix applies to any item kind: `package type`, `package const`, `package actor`, etc.
 
 > **Implementation note:** `package` visibility is accepted and parsed correctly.
 > Enforcement of the package boundary (rejecting callers outside the package) is
-> planned for a future edition.  Code written with `package` visibility today will
+> planned for a future edition. Code written with `package` visibility today will
 > keep compiling after the restriction is applied, because callers within the
 > package are unaffected.
 
@@ -1226,11 +1227,11 @@ Hew guarantees no GC pauses. Memory reclamation is entirely deterministic:
 
 At the **language level**, `send()` **moves** the value — the sender loses access and cannot use it after sending (see §3.4.4). At the **runtime level**, the send mechanism is **gated** on the value's admissibility class (D355):
 
-| Admissibility class | Runtime mechanism | Examples |
-| ------------------- | ----------------- | -------- |
-| **Immutable-shareable** (`is_immutable_shareable`) | **Alias-shared by refcount retain** — no byte copy | `string`, `bytes` |
-| **Mutable owned collections** | **Deep-copied** into the receiver's per-actor heap | `Vec<T>`, `HashMap<K,V>`, `HashSet<T>` |
-| **Consumed-linear (`iso`/Linear)** | Zero-copy **ownership move** (P6 — not surfaced in edition 2026) | — |
+| Admissibility class                                | Runtime mechanism                                                | Examples                               |
+| -------------------------------------------------- | ---------------------------------------------------------------- | -------------------------------------- |
+| **Immutable-shareable** (`is_immutable_shareable`) | **Alias-shared by refcount retain** — no byte copy               | `string`, `bytes`                      |
+| **Mutable owned collections**                      | **Deep-copied** into the receiver's per-actor heap               | `Vec<T>`, `HashMap<K,V>`, `HashSet<T>` |
+| **Consumed-linear (`iso`/Linear)**                 | Zero-copy **ownership move** (P6 — not surfaced in edition 2026) | —                                      |
 
 The gate is `is_immutable_shareable || consumed-Linear || deep-copy`. Bare `copy` does **not** imply sendability (`copy ⊥ sendable`, B-INV-3). `View`/borrow (`&T`) is rejected across actor boundaries and is not `Send`.
 
@@ -1495,6 +1496,7 @@ Typical example — file I/O with implicit cleanup (illustrative; no `File` type
 exists in stdlib — for file reading use `fs::try_read`):
 
 <!-- doctest: skip -->
+
 ```hew
 fn read_config(path: string) -> Result<Config, IoError> {
     let f = File::open(path)?;
@@ -1507,6 +1509,7 @@ fn read_config(path: string) -> Result<Config, IoError> {
 Early close, surfacing the I/O error to the caller (illustrative):
 
 <!-- doctest: skip -->
+
 ```hew
 fn read_and_process(path: string) -> Result<Summary, AppError> {
     let f = File::open(path)?;
@@ -1550,6 +1553,7 @@ A correct use (illustrative — `Database` and `Transaction` are hypothetical ty
 showing the `#[linear]` pattern; `&Database` uses reference syntax not in Hew):
 
 <!-- doctest: skip -->
+
 ```hew
 fn transfer(db: &Database, from: AccountId, to: AccountId, amount: Money)
     -> Result<(), DbError>
@@ -1564,6 +1568,7 @@ fn transfer(db: &Database, from: AccountId, to: AccountId, amount: Money)
 The compile error for forgetting to consume (illustrative):
 
 <!-- doctest: skip -->
+
 ```hew
 fn forgot_to_commit(db: &Database) -> Result<(), DbError> {
     let tx = db.begin_transaction()?;
@@ -1576,12 +1581,12 @@ fn forgot_to_commit(db: &Database) -> Result<(), DbError> {
 
 ##### 3.7.8.3 Choosing between `#[resource]` and `#[linear]`
 
-| Question                                                          | Pick           |
-| ----------------------------------------------------------------- | -------------- |
-| Is "close and discard the error" a sensible default at scope exit? | `#[resource]` |
-| Must the caller surface the cleanup result, every time?            | `#[linear]`   |
+| Question                                                               | Pick          |
+| ---------------------------------------------------------------------- | ------------- |
+| Is "close and discard the error" a sensible default at scope exit?     | `#[resource]` |
+| Must the caller surface the cleanup result, every time?                | `#[linear]`   |
 | Are there multiple distinct ways to consume (commit / rollback / ...)? | `#[linear]`   |
-| Is there exactly one cleanup action, and is it idempotent?         | `#[resource]` |
+| Is there exactly one cleanup action, and is it idempotent?             | `#[resource]` |
 
 File descriptors, sockets, allocator handles, regex compiled patterns,
 HTTP server/request handles — `#[resource]`. Database transactions,
@@ -1625,7 +1630,7 @@ hooks, or the supervised shutdown handler):
 
 **Path 3 — Supervised actor crash (handler trap that bypasses the
 terminating handler).** A trap raised by any handler restarts the
-actor under the supervisor's policy. The terminating handler is *not*
+actor under the supervisor's policy. The terminating handler is _not_
 guaranteed to run on this path; only heap teardown is:
 
 - `#[resource]` fields: implicit `close()` runs as part of heap teardown
@@ -1633,7 +1638,7 @@ guaranteed to run on this path; only heap teardown is:
 - `#[linear]` fields: a crash bypasses the consume path the move-checker
   relied on in Path 2. Edition 2026 resolves this conservatively: a
   `#[linear]` field is admitted on an actor only when the field's type
-  *also* satisfies `#[resource]` semantics, so heap teardown invokes the
+  _also_ satisfies `#[resource]` semantics, so heap teardown invokes the
   implicit drop on the crash path. A bare `#[linear]` field whose consume
   path can be bypassed by a supervised restart is a compile error at
   actor-declaration time. A future edition may relax this with an
@@ -2015,6 +2020,7 @@ Hew provides FFI capabilities for interoperating with C libraries and system cal
 External C functions are declared in `extern` blocks:
 
 <!-- doctest: skip -->
+
 ```hew
 extern "C" {
     fn malloc(size: usize) -> *mut u8;
@@ -2041,6 +2047,7 @@ extern "C" {
 Use `#[repr(C)]` to ensure C-compatible memory layout:
 
 <!-- doctest: skip -->
+
 ```hew
 #[repr(C)]
 type Point {
@@ -2113,6 +2120,7 @@ extern "C" fn my_callback(value: i32) -> i32 {
 **All FFI calls are `unsafe`:**
 
 <!-- doctest: skip -->
+
 ```hew
 fn allocate_buffer(size: usize) -> *mut u8 {
     unsafe {
@@ -2141,6 +2149,7 @@ fn safe_read(fd: i32, buf: *mut u8, count: usize) -> Result<usize, string> {
 **Safe wrapper pattern:**
 
 <!-- doctest: skip -->
+
 ```hew
 // Raw FFI (internal, unsafe)
 extern "C" {
@@ -2309,7 +2318,7 @@ regardless of the ABI key/value check; this is structural, not just a direct
 `Rc<T>` ban.
 
 **Map literal syntax** — a `HashMap<K, V>` can be constructed inline with
-brace-colon syntax.  The parser disambiguates `{` as a map literal when the
+brace-colon syntax. The parser disambiguates `{` as a map literal when the
 first token after `{` is a `StringLit` followed by `:`:
 
 ```hew
@@ -2342,15 +2351,15 @@ Rules:
 
 Available `HashMap` methods:
 
-| Method                    | Returns         | Description                      |
-| ------------------------- | --------------- | -------------------------------- |
-| `HashMap::new()`          | `HashMap<K,V>`  | Create empty map                 |
-| `m.get(key)`              | `Option<V>`     | Look up a key                    |
-| `m.insert(key, value)`    | `()`            | Insert or overwrite              |
-| `m.remove(key)`           | `bool`          | Remove a key; true if present    |
-| `m.contains_key(key)`     | `bool`          | Test membership                  |
-| `m.len()`                 | `i64`           | Number of entries                |
-| `m.is_empty()`            | `bool`          | True if no entries               |
+| Method                 | Returns        | Description                   |
+| ---------------------- | -------------- | ----------------------------- |
+| `HashMap::new()`       | `HashMap<K,V>` | Create empty map              |
+| `m.get(key)`           | `Option<V>`    | Look up a key                 |
+| `m.insert(key, value)` | `()`           | Insert or overwrite           |
+| `m.remove(key)`        | `bool`         | Remove a key; true if present |
+| `m.contains_key(key)`  | `bool`         | Test membership               |
+| `m.len()`              | `i64`          | Number of entries             |
+| `m.is_empty()`         | `bool`         | True if no entries            |
 
 #### 3.10.4 Collections, I/O, and Utility Modules
 
@@ -2441,13 +2450,13 @@ to release the underlying resource. Dropping without `close()` is a
 resource leak; the compiler does not synthesise an implicit drop for
 these types in the current implementation.
 
-| Type             | Created by                                 | Methods                                                                                                                              |
-| ---------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `http.Server`    | `http.listen(addr)`                        | `.accept()` → `http.Request`, `.close()`                                                                                              |
-| `http.Request`   | `server.accept()` or `http.accept(server)` | `.path`, `.method`, `.body`, `.header(name)`, `.respond(status, body, len, type)`, `.respond_text(status, body)`, `.respond_json(status, body)`, `.close()` |
-| `net.Listener`   | `net.listen(addr)`                         | `.accept()` → `net.Connection`, `await ln.accept() \| after d` → `Result<net.Connection, IoError>`, `.close()`                        |
+| Type             | Created by                                 | Methods                                                                                                                                                                |
+| ---------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `http.Server`    | `http.listen(addr)`                        | `.accept()` → `http.Request`, `.close()`                                                                                                                               |
+| `http.Request`   | `server.accept()` or `http.accept(server)` | `.path`, `.method`, `.body`, `.header(name)`, `.respond(status, body, len, type)`, `.respond_text(status, body)`, `.respond_json(status, body)`, `.close()`            |
+| `net.Listener`   | `net.listen(addr)`                         | `.accept()` → `net.Connection`, `await ln.accept() \| after d` → `Result<net.Connection, IoError>`, `.close()`                                                         |
 | `net.Connection` | `listener.accept()` or `net.connect(addr)` | `.read()` → `bytes`, `.read_string()` → `string`, `await conn.read_string() \| after d` → `Result<string, IoError>`, `.write(data)`, `.write_string(data)`, `.close()` |
-| `process.Child`  | `process.start(cmd)`                       | `.wait()`, `.kill()`                                                                                                                  |
+| `process.Child`  | `process.start(cmd)`                       | `.wait()`, `.kill()`                                                                                                                                                   |
 
 Handle types are opaque — their internal representation is not accessible.
 They can be stored in variables, passed as function arguments, and
@@ -2472,8 +2481,8 @@ returned from functions.
 
 A `machine` is a **value type** that defines a closed set of named states, a
 closed set of named events, and transition rules mapping `(State, Event)` pairs
-to new states.  It compiles to a tagged union with a compiler-generated
-`step()` method.  Machines are not actors — they are pure data, like enums
+to new states. It compiles to a tagged union with a compiler-generated
+`step()` method. Machines are not actors — they are pure data, like enums
 with per-state fields and compiler-checked transition logic.
 
 > **Detailed specification:** See [`docs/specs/MACHINE-SPEC.md`](MACHINE-SPEC.md)
@@ -2566,12 +2575,12 @@ EmitExpr = "emit" Ident ( "{" FieldInitList "}" )? ;
 ```
 
 > **Depth > 1 nesting is reserved** — a substate body may not itself contain
-> substates.  Depth-1 composite state blocks are supported; deeper nesting
+> substates. Depth-1 composite state blocks are supported; deeper nesting
 > (`depth > 1`) is a parse error: `nested composite states (depth > 1) are reserved`.
 
 **Visualisation:** `hew machine diagram <file.hew>` renders any
 `machine` declaration as a Mermaid state diagram, Graphviz DOT, or JSON
-schema.  The command runs all HIR static checks before rendering, so it
+schema. The command runs all HIR static checks before rendering, so it
 doubles as a structural validator.
 
 ```
@@ -2584,40 +2593,40 @@ hew machine diagram traffic_light.hew --no-check        # skip HIR checks
 
 ### 3.11.2 Constraints
 
-| Constraint                                  | Checked at  | Error if violated                             |
-| ------------------------------------------- | ----------- | --------------------------------------------- |
-| At least two states                         | Types/HIR   | `machine_one_state` negative test             |
-| At least one event                          | Types/HIR   | `machine_no_events` negative test             |
-| No `state` nesting deeper than depth 1; depth-1 composite states are supported | Parse | diagnostic: nested composite states (depth > 1) are reserved |
-| No duplicate explicit transition per (S, E) | Parse/HIR   | `machine_dup_transition` negative test        |
-| No duplicate wildcard for same event        | Parse/HIR   | `machine_dup_wildcard` negative test          |
-| All referenced states/events must be declared | HIR       | `machine_unknown_state/event` negative tests  |
-| All (S, E) pairs covered (exhaustiveness)   | HIR         | `MachineExhaustivenessViolation` diagnostic   |
-| Effect parity: transition body writes ≡ entry writes | HIR  | `MachineEffectParityViolation` diagnostic     |
-| No direct self-emit (`emit E` in transition for event E) | HIR | `MachineEmitCycle` diagnostic          |
+| Constraint                                                                     | Checked at | Error if violated                                            |
+| ------------------------------------------------------------------------------ | ---------- | ------------------------------------------------------------ |
+| At least two states                                                            | Types/HIR  | `machine_one_state` negative test                            |
+| At least one event                                                             | Types/HIR  | `machine_no_events` negative test                            |
+| No `state` nesting deeper than depth 1; depth-1 composite states are supported | Parse      | diagnostic: nested composite states (depth > 1) are reserved |
+| No duplicate explicit transition per (S, E)                                    | Parse/HIR  | `machine_dup_transition` negative test                       |
+| No duplicate wildcard for same event                                           | Parse/HIR  | `machine_dup_wildcard` negative test                         |
+| All referenced states/events must be declared                                  | HIR        | `machine_unknown_state/event` negative tests                 |
+| All (S, E) pairs covered (exhaustiveness)                                      | HIR        | `MachineExhaustivenessViolation` diagnostic                  |
+| Effect parity: transition body writes ≡ entry writes                           | HIR        | `MachineEffectParityViolation` diagnostic                    |
+| No direct self-emit (`emit E` in transition for event E)                       | HIR        | `MachineEmitCycle` diagnostic                                |
 
 Exhaustiveness can be satisfied by: explicit `on` rules, wildcard (`_`-source)
-rules, or a `default` handler.  A `default` handler alone covers all pairs that
+rules, or a `default` handler. A `default` handler alone covers all pairs that
 have no other matching rule.
 
 **Effect parity:** when a transition body writes a state field (via
 `self.field = …`) and the target state's `entry` block also writes that same
-field, the compiler emits a `MachineEffectParityViolation` diagnostic.  This
+field, the compiler emits a `MachineEffectParityViolation` diagnostic. This
 prevents silent shadowing between transition-side and entry-side field
 initialisation.
 
 **Emit-cycle detection:** a transition handling event `E` may not directly
-`emit E` — that would form an immediate re-entry cycle.  Indirect cycles
+`emit E` — that would form an immediate re-entry cycle. Indirect cycles
 (A emits B, B emits A) are not checked.
 
 ### 3.11.3 Transition Bodies
 
 Inside a transition body the compiler binds two implicit names:
 
-| Binding     | Type              | Meaning                                         |
-| ----------- | ----------------- | ----------------------------------------------- |
-| `state`     | source state type | Fields of the current (source) state            |
-| `event`     | event struct      | Payload fields of the incoming event (if any)   |
+| Binding | Type              | Meaning                                       |
+| ------- | ----------------- | --------------------------------------------- |
+| `state` | source state type | Fields of the current (source) state          |
+| `event` | event struct      | Payload fields of the incoming event (if any) |
 
 ```hew
 machine Elevator {
@@ -2666,15 +2675,15 @@ on Request: Allowing => Allowing when state.tokens > 1 {
 on Request: Allowing => Throttled when state.tokens <= 1;
 ```
 
-Guards are evaluated in declaration order.  The first transition whose event
-and source-state match *and* whose guard (if present) evaluates to `true` fires.
+Guards are evaluated in declaration order. The first transition whose event
+and source-state match _and_ whose guard (if present) evaluates to `true` fires.
 If no guarded transition matches, evaluation falls through to wildcard rules and
 then to `default`.
 
 ### 3.11.5 Wildcard Transitions and Priority
 
-`_` in the source position matches any state.  `_` in the target position means
-"return a value of the machine type" (any variant, not a specific one).  The
+`_` in the source position matches any state. `_` in the target position means
+"return a value of the machine type" (any variant, not a specific one). The
 conventional identity pattern `on E: _ => _ { state }` keeps the current state
 unchanged.
 
@@ -2690,14 +2699,14 @@ Specific transitions always win over wildcards for the same event.
 
 The compiler generates the following for every `machine Name { ... }`:
 
-| Generated item              | Usage / behaviour                                                  |
-| ----------------------------| ------------------------------------------------------------------ |
-| State constructors          | `Name::State` (unit) or `Name::State { field: val }` (with data)  |
-| Companion event enum        | `NameEvent` with variants matching each `event` declaration        |
-| Event constructors          | `NameEvent::EventName` (unit) or `NameEvent::EventName { f: v }`  |
-| `m.step(event)`             | Mutates `m` in place; returns `()` — no return value              |
-| `m.state_name()`            | Returns the current state name as `string`                        |
-| Pattern-match support       | Machine values can be matched exactly like enum values             |
+| Generated item        | Usage / behaviour                                                |
+| --------------------- | ---------------------------------------------------------------- |
+| State constructors    | `Name::State` (unit) or `Name::State { field: val }` (with data) |
+| Companion event enum  | `NameEvent` with variants matching each `event` declaration      |
+| Event constructors    | `NameEvent::EventName` (unit) or `NameEvent::EventName { f: v }` |
+| `m.step(event)`       | Mutates `m` in place; returns `()` — no return value             |
+| `m.state_name()`      | Returns the current state name as `string`                       |
+| Pattern-match support | Machine values can be matched exactly like enum values           |
 
 **Calling `step()`** — both unqualified and qualified event constructors are
 accepted:
@@ -2920,7 +2929,7 @@ safepoint before its body reaches a consuming or close call.
    normal completion, recoverable `Err(E)`, trap, or cancellation. The
    declared `close(consuming self) -> Result<(), E>` is invoked through
    the child's stack-unwind path (§4.5), and its returned error is
-   discarded per the §3.4 `@resource` semantics. This is the *same*
+   discarded per the §3.4 `@resource` semantics. This is the _same_
    discipline a `@resource` would receive in a non-task context; the
    child's cancellation safepoint is simply one more exit through which
    stack unwinding runs cleanup.
@@ -2939,7 +2948,7 @@ safepoint before its body reaches a consuming or close call.
    The conservative rule keeps the language honest in edition 2026:
    without cancellation tokens, the programmer has no way to consume a
    `@linear` value along the cancellation path, so the only safe shape
-   is for the child's *only* exits-to-completion to be ones the
+   is for the child's _only_ exits-to-completion to be ones the
    compiler can prove consume the value. Relaxation is tracked in
    HEW-FUTURE.md §1.2 alongside the broader cancellation-token
    vocabulary.
@@ -2955,7 +2964,7 @@ safepoint before its body reaches a consuming or close call.
    names the mutable borrow site and points at the fork child.
 
 4. **Task<T> handle escape.** A `Task<T>` handle bound by `fork name =
-   expr` is usable only within the lexical scope-block that introduced
+expr` is usable only within the lexical scope-block that introduced
    it. The handle cannot be returned from the scope-block, stored in a
    field, captured by a closure that outlives the block, nor moved into
    a sibling child unless that sibling is itself a `fork` form inside
@@ -3010,7 +3019,7 @@ let result = await task;
 | ------------------ | ----------------------------------------------------------- |
 | Completed          | Returns `Ok(value)` immediately                             |
 | Running/Pending    | Suspends current task until completion, returns `Ok(value)` |
-| Cancelled          | Returns `Err(...)`                                         |
+| Cancelled          | Returns `Err(...)`                                          |
 | Trapped            | Propagates the trap to the awaiting task                    |
 
 **Type:**
@@ -3219,6 +3228,7 @@ All IO operations in Hew are explicit and return `Result` types. Use
 handle type — reads and writes are free functions:
 
 <!-- doctest: skip -->
+
 ```hew
 fn read_config(path: string) -> Result<Config, string> {
     let content = fs::try_read(path)?;
@@ -3268,6 +3278,7 @@ reachable from inside a child body.
 > The example below uses an indicative placeholder pending ratification.
 
 <!-- doctest: skip -->
+
 ```hew
 actor DataProcessor {
     var cache: HashMap<string, Data> = HashMap::new();
@@ -3312,15 +3323,15 @@ fn heavy_computation() {
 
 ### 4.9 Summary: Tasks vs Actors
 
-| Aspect        | `fork` child task                                   | Actors                           |
-| ------------- | --------------------------------------------------- | -------------------------------- |
-| Communication | Explicit data passing on spawn + `await` for result | Message passing                  |
-| Concurrency   | True parallelism (one OS thread per child)          | True parallelism (M:N scheduler) |
-| Isolation     | Complete (no shared mutable state with parent)      | Complete (mailbox only)          |
-| Failure       | First error becomes `ScopeError::primary`; siblings cancel | Traps isolated to actor   |
-| Lifetime      | Bound to enclosing `scope` block                     | Independent                      |
-| Cancellation  | Automatic at safepoints                             | Supervisor control               |
-| Scheduling    | OS thread per child (substrate); cooperative coroutines are an internal runtime layer | M:N work-stealing scheduler |
+| Aspect        | `fork` child task                                                                     | Actors                           |
+| ------------- | ------------------------------------------------------------------------------------- | -------------------------------- |
+| Communication | Explicit data passing on spawn + `await` for result                                   | Message passing                  |
+| Concurrency   | True parallelism (one OS thread per child)                                            | True parallelism (M:N scheduler) |
+| Isolation     | Complete (no shared mutable state with parent)                                        | Complete (mailbox only)          |
+| Failure       | First error becomes `ScopeError::primary`; siblings cancel                            | Traps isolated to actor          |
+| Lifetime      | Bound to enclosing `scope` block                                                      | Independent                      |
+| Cancellation  | Automatic at safepoints                                                               | Supervisor control               |
+| Scheduling    | OS thread per child (substrate); cooperative coroutines are an internal runtime layer | M:N work-stealing scheduler      |
 
 **Design rationale:**
 
@@ -3391,17 +3402,17 @@ HIR lowering:
 
 **The three forms (closed set).** Each form is fully specified by four
 columns: what the winning arm binds, how the winning arm propagates a
-non-success outcome at the source, how the runtime cleans up *that* arm
+non-success outcome at the source, how the runtime cleans up _that_ arm
 when a different arm wins (loser cleanup), and how the runtime cleans up
 the arm when the enclosing scope is cancelled while the `select` is still
 pending (outer-cancellation cleanup). Sources are the same in both
 cleanup columns; the difference is which side initiates the teardown.
 
-| Form                       | Winning bind / type             | Winning error or trap at the source                                                                                                                                                                                       | Loser cleanup (a different arm won)                                                                                                                                                                       | Outer-cancellation cleanup (enclosing scope cancelled, `select` still pending)                                                                              |
-| -------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `<id> from <actor>.<method>(<args>)` | `id: <reply-type>` per ask | `AskError` per HEW-DIST-SPEC §6 — `Partition`, `Timeout`, `Cancelled`, `LocalShutdown`, or `OrphanedAsk` as observed by the caller. Traps in the callee are isolated by the mailbox boundary and do not propagate through the ask. | If the envelope has **not yet been dispatched**, withdraw it from the target actor's mailbox by correlation id — no `OrphanedAsk` is observed on either side. If it **has been dispatched**, the reply sink is tombstoned; a late reply arriving at the tombstoned sink is classified as `OrphanedAsk` and discarded silently (no caller-visible failure). | Same as loser cleanup: withdraw-or-tombstone by correlation id, late reply classified as `OrphanedAsk` and discarded.                                       |
-| `<id> from <rx>.recv()`    | `id: Option<T>` for `Receiver<T>` | `None` is a normal winning value indicating that the channel is closed; `Some(value)` carries the received item. Channel receive has no separate error surface in edition 2026.                              | Pending receive is withdrawn from the channel core; the receiver binding remains usable in the enclosing scope.                                                                                         | Same as loser cleanup: pending receive withdrawn, receiver binding remains usable for the cancellation handler.                                             |
-| `after <duration>`         | no binding; arm type is `()`-shaped at the source | None. Timers cannot fail or trap in edition 2026.                                                                                                                                                                          | The timer is cancelled. No effect propagates.                                                                                                                                                            | The timer is cancelled. No effect propagates.                                                                                                              |
+| Form                                 | Winning bind / type                               | Winning error or trap at the source                                                                                                                                                                                                | Loser cleanup (a different arm won)                                                                                                                                                                                                                                                                                                                        | Outer-cancellation cleanup (enclosing scope cancelled, `select` still pending)                                        |
+| ------------------------------------ | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `<id> from <actor>.<method>(<args>)` | `id: <reply-type>` per ask                        | `AskError` per HEW-DIST-SPEC §6 — `Partition`, `Timeout`, `Cancelled`, `LocalShutdown`, or `OrphanedAsk` as observed by the caller. Traps in the callee are isolated by the mailbox boundary and do not propagate through the ask. | If the envelope has **not yet been dispatched**, withdraw it from the target actor's mailbox by correlation id — no `OrphanedAsk` is observed on either side. If it **has been dispatched**, the reply sink is tombstoned; a late reply arriving at the tombstoned sink is classified as `OrphanedAsk` and discarded silently (no caller-visible failure). | Same as loser cleanup: withdraw-or-tombstone by correlation id, late reply classified as `OrphanedAsk` and discarded. |
+| `<id> from <rx>.recv()`              | `id: Option<T>` for `Receiver<T>`                 | `None` is a normal winning value indicating that the channel is closed; `Some(value)` carries the received item. Channel receive has no separate error surface in edition 2026.                                                    | Pending receive is withdrawn from the channel core; the receiver binding remains usable in the enclosing scope.                                                                                                                                                                                                                                            | Same as loser cleanup: pending receive withdrawn, receiver binding remains usable for the cancellation handler.       |
+| `after <duration>`                   | no binding; arm type is `()`-shaped at the source | None. Timers cannot fail or trap in edition 2026.                                                                                                                                                                                  | The timer is cancelled. No effect propagates.                                                                                                                                                                                                                                                                                                              | The timer is cancelled. No effect propagates.                                                                         |
 
 **Semantics:**
 
@@ -3418,7 +3429,7 @@ cleanup columns; the difference is which side initiates the teardown.
    asynchronous.
 4. **Same-type arms.** All arm result expressions must have the same
    type `T`. The `select` expression has type `T`. There is no `T =
-   Result<U, E>` flattening — if arms return `Result`, the `select`
+Result<U, E>` flattening — if arms return `Result`, the `select`
    returns `Result`.
 5. **Cancellation propagates outward.** If the enclosing `scope {}` is
    cancelled while a `select` is pending, every arm runs its loser-
@@ -3535,12 +3546,12 @@ Edition 2026 defines the legal compositions of `scope {}` and `select {}`
 explicitly. Anything not listed is rejected by type checking, with the
 diagnostic pointing at the offending position.
 
-| Composition                                              | Legality        | Rationale                                                                                                                                                                                          |
-| -------------------------------------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `select {}` inside a `scope {}` body or child             | Legal           | The three `select` forms are single-await constructs and compose with the scope block's cancellation discipline at their safepoints.                                                                |
-| `fork name = select { ... }`                             | Legal           | A child task's expression may be a `select` expression; the binding is the `select` expression's result type.                                                                                      |
-| `scope {}` inside a `select` arm's `=>` result expression | Legal           | The arm has already won; its result expression runs in the surrounding scope as ordinary code that happens to contain a scope block.                                                               |
-| `scope { ... }` as a `select` arm source                  | **Rejected**    | The three sealed arm sources are exhaustive (§4.11.1). A scope block is a *lexical region*, not a pending operation, and starting one as a `select` competitor would create children whose scope is unclear if the arm loses. Hint: wrap the fork in a child task and `await` the task instead. |
+| Composition                                               | Legality     | Rationale                                                                                                                                                                                                                                                                                       |
+| --------------------------------------------------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `select {}` inside a `scope {}` body or child             | Legal        | The three `select` forms are single-await constructs and compose with the scope block's cancellation discipline at their safepoints.                                                                                                                                                            |
+| `fork name = select { ... }`                              | Legal        | A child task's expression may be a `select` expression; the binding is the `select` expression's result type.                                                                                                                                                                                   |
+| `scope {}` inside a `select` arm's `=>` result expression | Legal        | The arm has already won; its result expression runs in the surrounding scope as ordinary code that happens to contain a scope block.                                                                                                                                                            |
+| `scope { ... }` as a `select` arm source                  | **Rejected** | The three sealed arm sources are exhaustive (§4.11.1). A scope block is a _lexical region_, not a pending operation, and starting one as a `select` competitor would create children whose scope is unclear if the arm loses. Hint: wrap the fork in a child task and `await` the task instead. |
 
 **Cancellation propagation across the composition (normative):**
 
@@ -3549,7 +3560,7 @@ diagnostic pointing at the offending position.
   rule (§4.11.1) and the cancellation then propagates through the
   `select` site as if the site were any other safepoint. The `select`
   does not return a value in this case; control unwinds.
-- When a `select` arm wins inside a scope-block body, only the *losing*
+- When a `select` arm wins inside a scope-block body, only the _losing_
   arms run their loser-cleanup. Sibling fork-children are not affected
   by the arm transition; their scope is bound to the enclosing scope
   block, not to the `select` site.
@@ -3635,12 +3646,12 @@ Then:
 
 ### 5.3 Restart Strategies
 
-| Strategy              | Behaviour                                                           |
-| --------------------- | ------------------------------------------------------------------- |
-| `one_for_one`         | Only the crashed child is restarted.                                |
-| `one_for_all`         | All children are stopped and restarted.                             |
-| `rest_for_one`        | The crashed child and all children declared after it are restarted. |
-| `simple_one_for_one`  | A pool-oriented strategy; only the specific crashed `pool` child instance is restarted. Required for supervisors that use `pool` declarations. |
+| Strategy             | Behaviour                                                                                                                                      |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `one_for_one`        | Only the crashed child is restarted.                                                                                                           |
+| `one_for_all`        | All children are stopped and restarted.                                                                                                        |
+| `rest_for_one`       | The crashed child and all children declared after it are restarted.                                                                            |
+| `simple_one_for_one` | A pool-oriented strategy; only the specific crashed `pool` child instance is restarted. Required for supervisors that use `pool` declarations. |
 
 ### 5.4 Restart Budget and Escalation
 
@@ -3887,6 +3898,7 @@ A bidirectional network connection (such as a TCP socket from `std::net`)
 splits into a `(Stream<bytes>, Sink<bytes>)` pair via `.into_stream_sink()`:
 
 <!-- doctest: skip -->
+
 ```hew
 import std::net;
 
@@ -3907,12 +3919,12 @@ First-class `Stream<T>` values from `std::stream` are bounded handles that may
 be moved across actor boundaries. Both are consumed with `for await`, but they
 have different implementations:
 
-|                     | Actor stream (`receive gen fn`) | `std::stream::Stream<T>`                   |
-| ------------------- | ------------------------------- | ------------------------------------------ |
+|                     | Actor stream (`receive gen fn`) | `std::stream::Stream<T>`                      |
+| ------------------- | ------------------------------- | --------------------------------------------- |
 | Created by          | `receive gen fn` call           | `bytes_pipe()`, `pipe()`, `from_file()`, etc. |
-| Backed by           | Actor mailbox protocol          | Bounded channel / wrapper-specific handle  |
-| Passable as value   | No (tied to the spawned actor)  | Yes (move-only, `Send`)                    |
-| Use in actor fields | No                              | Yes                                        |
+| Backed by           | Actor mailbox protocol          | Bounded channel / wrapper-specific handle     |
+| Passable as value   | No (tied to the spawned actor)  | Yes (move-only, `Send`)                       |
+| Use in actor fields | No                              | Yes                                           |
 
 ---
 
@@ -3956,21 +3968,21 @@ Design goals: compact representation, fast encode/decode, language interoperabil
 
 Hew wire types map to MessagePack formats as follows:
 
-| Hew Type     | MessagePack Format      | Format Marker(s)           | Notes                            |
-| ------------ | ----------------------- | -------------------------- | -------------------------------- |
-| `bool`       | boolean                 | `0xc3` (true), `0xc2` (false) | Single-byte primitives           |
-| `u8`–`u16`   | u64 (up to 16-bit)     | `0xcc`, `0xcd`             | Variable-length u64 encoding    |
-| `u32`–`u64`  | u64 (up to 64-bit)     | `0xce`, `0xcf`             | Variable-length u64 encoding    |
-| `i8`–`i16`   | i64 (signed, up to 16)  | `0xd0`, `0xd1`             | Variable-length signed encoding  |
-| `i32`–`i64`  | i64 (signed, up to 64)  | `0xd2`, `0xd3`             | Variable-length signed encoding  |
-| `f32`        | float32                 | `0xca`                     | IEEE 754 single precision        |
-| `f64`        | float64                 | `0xcb`                     | IEEE 754 double precision        |
-| `string`     | string                  | `0xa0`–`0xbf`, `0xd9`, ... | Length-prefixed UTF-8 string     |
-| `bytes`      | binary                  | `0xc4`, `0xc5`, `0xc6`     | Length-prefixed raw bytes        |
-| `#[wire] struct` | map                     | `0x80`–`0x8f`, `0xde`, ... | Key–value pairs (field number keys) |
-| `#[wire] enum`   | i64 + str (variant)     | Tag + variant index/name   | Encoded as MessagePack integer (variant index) or string (variant name) |
-| Optional     | nil or value            | `0xc0` or type of Some(v)  | `None` encodes as MessagePack nil |
-| List         | array                   | `0x90`–`0x9f`, `0xdc`, ... | Length-prefixed sequence         |
+| Hew Type         | MessagePack Format     | Format Marker(s)              | Notes                                                                   |
+| ---------------- | ---------------------- | ----------------------------- | ----------------------------------------------------------------------- |
+| `bool`           | boolean                | `0xc3` (true), `0xc2` (false) | Single-byte primitives                                                  |
+| `u8`–`u16`       | u64 (up to 16-bit)     | `0xcc`, `0xcd`                | Variable-length u64 encoding                                            |
+| `u32`–`u64`      | u64 (up to 64-bit)     | `0xce`, `0xcf`                | Variable-length u64 encoding                                            |
+| `i8`–`i16`       | i64 (signed, up to 16) | `0xd0`, `0xd1`                | Variable-length signed encoding                                         |
+| `i32`–`i64`      | i64 (signed, up to 64) | `0xd2`, `0xd3`                | Variable-length signed encoding                                         |
+| `f32`            | float32                | `0xca`                        | IEEE 754 single precision                                               |
+| `f64`            | float64                | `0xcb`                        | IEEE 754 double precision                                               |
+| `string`         | string                 | `0xa0`–`0xbf`, `0xd9`, ...    | Length-prefixed UTF-8 string                                            |
+| `bytes`          | binary                 | `0xc4`, `0xc5`, `0xc6`        | Length-prefixed raw bytes                                               |
+| `#[wire] struct` | map                    | `0x80`–`0x8f`, `0xde`, ...    | Key–value pairs (field number keys)                                     |
+| `#[wire] enum`   | i64 + str (variant)    | Tag + variant index/name      | Encoded as MessagePack integer (variant index) or string (variant name) |
+| Optional         | nil or value           | `0xc0` or type of Some(v)     | `None` encodes as MessagePack nil                                       |
+| List             | array                  | `0x90`–`0x9f`, `0xdc`, ...    | Length-prefixed sequence                                                |
 
 ##### 7.3.1.2 Wire Struct Encoding
 
@@ -4204,13 +4216,13 @@ enum Status { PendingReview; ActiveNow; Completed; }
 
 Encoders select format based on context:
 
-| Context                 | Default Format |
-| ----------------------- | -------------- |
-| Actor-to-actor (local)  | CBOR           |
-| Actor-to-actor (remote) | CBOR           |
-| HTTP API response       | JSON           |
+| Context                 | Default Format                   |
+| ----------------------- | -------------------------------- |
+| Actor-to-actor (local)  | CBOR                             |
+| Actor-to-actor (remote) | CBOR                             |
+| HTTP API response       | JSON                             |
 | File storage            | user choice (`std::encoding::*`) |
-| Debugging/logging       | JSON           |
+| Debugging/logging       | JSON                             |
 
 Explicit format selection:
 
@@ -4314,8 +4326,8 @@ Native object / WASM
   - Generator borrow across yield.
   - Actor-send escape (a value captured into an outgoing message that
     aliases live state in the sending actor).
-  `@linear` must-consume obligations are discharged here; unconsumed
-  `@linear` values surface as `MustConsumeAtScopeExit`.
+    `@linear` must-consume obligations are discharged here; unconsumed
+    `@linear` values surface as `MustConsumeAtScopeExit`.
 - **Elaborated MIR.** Drops are first-class basic blocks in the CFG.
   Cleanup edges (panic, cancellation) are real edges. Every CFG exit
   runs the right destructor sequence in the right order. `@resource`
@@ -4465,12 +4477,12 @@ for messages are `Idle` (or `Suspended` during a cooperative suspension) and bec
 
 **Key distinctions from task states (§4.1):**
 
-| Aspect          | Actor State Machine                                                        | Task State Machine (§4.1)                     |
-| --------------- | -------------------------------------------------------------------------- | --------------------------------------------- |
-| **Entity**      | Entire actor instance                                                      | Individual task within an actor               |
-| **Managed by**  | Runtime scheduler (Level 1)                                                | Actor-local coroutine executor (Level 2)      |
-| **States**      | Idle/Runnable/Running/Suspended/Stopping/Crashing/Crashed/Stopped/Sleeping | Pending/Running/Completed/Cancelled/Trapped   |
-| **Granularity** | One per actor                                                              | Many per actor (one per `fork` child)         |
+| Aspect          | Actor State Machine                                                        | Task State Machine (§4.1)                   |
+| --------------- | -------------------------------------------------------------------------- | ------------------------------------------- |
+| **Entity**      | Entire actor instance                                                      | Individual task within an actor             |
+| **Managed by**  | Runtime scheduler (Level 1)                                                | Actor-local coroutine executor (Level 2)    |
+| **States**      | Idle/Runnable/Running/Suspended/Stopping/Crashing/Crashed/Stopped/Sleeping | Pending/Running/Completed/Cancelled/Trapped |
+| **Granularity** | One per actor                                                              | Many per actor (one per `fork` child)       |
 
 Supervisor observes actor terminal states `Stopped` or `Crashed`.
 
@@ -4529,12 +4541,12 @@ added in later editions without growing the annotation vocabulary.
 
 **Hooks defined in this edition:**
 
-| Annotation       | Signature                                 | Runs when                                                                                       |
-| ---------------- | ----------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `#[on(start)]`   | `fn name()`                               | Once, after the actor's fields are initialized and before any message is dispatched.            |
+| Annotation       | Signature                                 | Runs when                                                                                                 |
+| ---------------- | ----------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `#[on(start)]`   | `fn name()`                               | Once, after the actor's fields are initialized and before any message is dispatched.                      |
 | `#[on(stop)]`    | `fn name()`                               | Once per actor instance, on normal exit, cancellation by an enclosing `fork{}`, or supervisor `Shutdown`. |
-| `#[on(crash)]`   | `fn name(info: CrashInfo) -> CrashAction` | After a child trap is classified and before restart-policy handling.                            |
-| `#[on(upgrade)]` | reserved                                  | Reserved for future hot-upgrade machinery; not a usable hook in this edition.                   |
+| `#[on(crash)]`   | `fn name(info: CrashInfo) -> CrashAction` | After a child trap is classified and before restart-policy handling.                                      |
+| `#[on(upgrade)]` | reserved                                  | Reserved for future hot-upgrade machinery; not a usable hook in this edition.                             |
 
 Unknown hook kinds (e.g. `#[on(restart)]`) are rejected with a diagnostic listing the valid set.
 
@@ -4560,12 +4572,14 @@ and is rejected during lowering.
 
 9. Cancellation by an enclosing `fork{}` scope triggers `#[on(stop)]` for each cancelled actor before its task ends. This is the common path under structured concurrency, not an exceptional one.
 10. The runtime sequence at terminal transition is:
-   - (a) actor body exits or is cancelled;
-   - (b) the `#[on(stop)]` hook runs with field access live, if present;
-   - (c) `#[linear]` consumed-checks fire (unconsumed linear values surface as diagnostics);
-   - (d) `#[resource]` field `close()` methods run in reverse declaration order.
-   Hooks therefore run BEFORE `#[resource]` `close()`, so user logic in a hook can still use resources for goodbye flushes.
-11. A panic in `#[on(start)]` aborts actor startup. The supervisor is notified; `#[on(stop)]` does NOT run, because the actor never reached the *started* state.
+
+- (a) actor body exits or is cancelled;
+- (b) the `#[on(stop)]` hook runs with field access live, if present;
+- (c) `#[linear]` consumed-checks fire (unconsumed linear values surface as diagnostics);
+- (d) `#[resource]` field `close()` methods run in reverse declaration order.
+  Hooks therefore run BEFORE `#[resource]` `close()`, so user logic in a hook can still use resources for goodbye flushes.
+
+11. A panic in `#[on(start)]` aborts actor startup. The supervisor is notified; `#[on(stop)]` does NOT run, because the actor never reached the _started_ state.
 12. The default `#[on(stop)]` timeout budget is 5 seconds; future editions MAY introduce `#[on(stop, timeout = <duration>)]` to override per actor.
 
 **Compilation:** `#[on(start)]` bodies are appended to the synthesized `_init`
@@ -4649,7 +4663,7 @@ summarises what is shipped and stable.
 
 **Shipped cross-node surface:**
 
-- Remote `tell` and `ask` (`<- actor.method()` / `<id> from actor.method()`)
+- Remote `send` and `ask` (`<- actor.method()` / `<id> from actor.method()`)
   with typed `SendError` and `AskError` result envelopes.
 - Cross-node actor monitoring (`monitor` / `demonitor`) with exactly-once
   `DOWN` delivery; pruning on watcher-node death.
@@ -4690,15 +4704,15 @@ When the grammar files and this specification disagree, the parser implementatio
 > are rejected. Integer literals default to `i64`; literal defaulting is not a
 > user-nameable alias and does not affect wire shape or ABI.
 
-| Type                      | Size          | Description             |
-| ------------------------- | ------------- | ----------------------- |
-| `i8`, `i16`, `i32`, `i64` | 1/2/4/8 bytes | Signed integers (fixed-width) |
-| `u8`, `u16`, `u32`, `u64` | 1/2/4/8 bytes | Unsigned integers (fixed-width) |
-| `isize`                   | platform      | Platform-sized signed integer: 32-bit on WASM32, 64-bit on native. Distinct from any fixed-width integer type. |
+| Type                      | Size          | Description                                                                                                      |
+| ------------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `i8`, `i16`, `i32`, `i64` | 1/2/4/8 bytes | Signed integers (fixed-width)                                                                                    |
+| `u8`, `u16`, `u32`, `u64` | 1/2/4/8 bytes | Unsigned integers (fixed-width)                                                                                  |
+| `isize`                   | platform      | Platform-sized signed integer: 32-bit on WASM32, 64-bit on native. Distinct from any fixed-width integer type.   |
 | `usize`                   | platform      | Platform-sized unsigned integer: 32-bit on WASM32, 64-bit on native. Distinct from any fixed-width integer type. |
-| `f32`, `f64`              | 4/8 bytes     | IEEE 754 floating point |
-| `bool`                    | 1 byte        | Boolean (true/false)    |
-| `char`                    | 4 bytes       | Unicode scalar value    |
+| `f32`, `f64`              | 4/8 bytes     | IEEE 754 floating point                                                                                          |
+| `bool`                    | 1 byte        | Boolean (true/false)                                                                                             |
+| `char`                    | 4 bytes       | Unicode scalar value                                                                                             |
 
 **Type aliases** (compile-time synonyms only — the aliased type is what the checker sees):
 
@@ -4745,12 +4759,12 @@ let nan_as_int: i32 = nan.to_i32();     // 0 — NaN converts to zero
 
 **Float-to-integer conversion semantics:**
 
-| Source value          | Signed result      | Unsigned result |
-| --------------------- | ------------------ | --------------- |
-| In-range finite       | Truncated toward 0 | Truncated toward 0 |
-| `+Inf` or > MAX       | Integer `MAX`      | Integer `MAX` (`UINT_MAX`) |
-| `-Inf` or < MIN       | Integer `MIN`      | `0` |
-| `NaN`                 | `0`                | `0` |
+| Source value    | Signed result      | Unsigned result            |
+| --------------- | ------------------ | -------------------------- |
+| In-range finite | Truncated toward 0 | Truncated toward 0         |
+| `+Inf` or > MAX | Integer `MAX`      | Integer `MAX` (`UINT_MAX`) |
+| `-Inf` or < MIN | Integer `MIN`      | `0`                        |
+| `NaN`           | `0`                | `0`                        |
 
 These semantics are guaranteed on all Hew targets (x86_64, aarch64, wasm32). The underlying LLVM lowering uses `llvm.fptosi.sat` / `llvm.fptoui.sat`, which produce defined behaviour for all input values. Plain `fptosi` / `fptoui` (which produce LLVM poison for out-of-range inputs) are never emitted.
 

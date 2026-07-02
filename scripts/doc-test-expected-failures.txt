@@ -59,7 +59,7 @@ spec-0002   3576876295   # SNIPPET: bare `let counter = spawn Counter(...)` — 
 spec-0003   1917753997   # SNIPPET: bare lambda-actor messaging code — lambda actor call illustration
 spec-0004   558578277   # SNIPPET: bare `let counter = spawn Counter(...)` with field args — spawn illustration
 spec-0007   4253604243   # SNIPPET: bare lambda actor example — inline actor syntax illustration
-spec-0008   2561084104   # SNIPPET: bare `let pid = spawn Actor(...)` — LocalPid return illustration
+spec-0008   1744331657   # SNIPPET: bare `let pid = spawn Actor(...)` — LocalPid return illustration
 spec-0009   4166606024   # SNIPPET: bare `worker.send` + `await counter.get()` — fire-and-forget illustration
 spec-0010   3633579472   # NYI: bare `scope { ... }` — scope/structured-concurrency not yet lowered
 spec-0011   3107872017   # FRAGMENT: calls `open(path)` with no import — context-dependent snippet

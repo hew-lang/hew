@@ -5,26 +5,31 @@ maintainers · Companion to the ast-grep rule set
 
 M1 + M2 have landed: the lint infrastructure (`LintId` / `LintLevel` /
 `LintLevels`), the checker `run_lints` sweep, the CLI `--allow` / `--warn` /
-`--deny` flags, and in-source `// hew:allow(...)` suppression — plus seven
+`--deny` flags, and in-source `// hew:allow(...)` suppression — plus nine
 checker lints (`needless_range_loop`, `redundant_else_after_return`,
 `needless_match_to_if_let`, `len_zero_comparison`, `needless_bool`,
-`must_use`, `sleep_loop_blocks_mailbox`) and the two ad-hoc warnings
-(`clone_on_copy`, `dead_code`) migrated onto the registry so
+`must_use`, `sleep_loop_blocks_mailbox`,
+`text_direction_codepoint_in_comment`, `invisible_codepoint_in_comment`) and the
+two ad-hoc warnings (`clone_on_copy`, `dead_code`) migrated onto the registry so
 they are now re-levelable and suppressible. M3 has landed too: a backward
 liveness dataflow pass in `hew-mir`, the `dead_store` MIR lint built on it, and
 the CLI plumbing that surfaces MIR-stage lints as level-controlled, suppressible
-warnings (see §10). `clean_counter` is deferred and intentionally **not
-registered** — so `-D clean_counter` fails closed as an unknown lint rather than
-silently no-opping; the reasoning is in §10 (tracked in issue #2178). Editor/web
-surfacing of MIR lints is deferred to issue #2176.
+warnings (see §10). M4 has landed too: comment-side Trojan-Source scanning over
+raw module source, with the text-direction tier denied by default and the broader
+invisible-codepoint tier warning by default (see §11). `clean_counter` is
+deferred and intentionally **not registered** — so `-D clean_counter` fails
+closed as an unknown lint rather than silently no-opping; the reasoning is in §10
+(tracked in issue #2178). Editor/web surfacing of MIR lints is deferred to issue
+#2176.
 
 ## 1. Goal
 
 Add a **lint layer in the Hew compiler** for idiom/code-smell findings that need more than
 syntax — the cases ast-grep (purely syntactic) cannot do precisely: "is this index only used to
 index that collection?", "is this value ever read again?", "does this branch always diverge?".
-Model: Clippy (HIR/MIR lints on top of the compiler's own analysis). Lints are **non-fatal
-warnings**, **suppressible**, and surfaced in the CLI, editors, and the website.
+Model: Clippy (HIR/MIR lints on top of the compiler's own analysis). Lints are **level-controlled**,
+**suppressible**, and surfaced in the CLI, editors, and the website; most default to warnings, while
+narrow security/correctness lints may be denied by default.
 
 Non-goals: replacing the ast-grep rules (they stay as the cheap, build-free, CI/grep layer);
 a general plugin system; cross-crate/interprocedural analysis.
@@ -306,8 +311,43 @@ the precise subset that is actually convertible.
     and the over-approximation contract; `dead_store` positives and precision-guard negatives live
     alongside them and in the CLI e2e suite (`hew-cli/tests/lint_pass_e2e.rs`), including the
     `for i in 0..n` regression that must stay silent even under `-D dead_store`.
+- **M4 — comment-side Trojan-Source lints. (Implemented in this change.)** Two source-text checker
+  lints scan comments (`//`, `///`, `//!`, `/* */`) for codepoints that can make source review lie
+  about the bytes the compiler sees. See §11.
 
-## 11. Division of labour with ast-grep
+## 11. M4: comment-side Trojan-Source lints
+
+The formatter already escapes invisible and bidirectional codepoints when it emits string, f-string,
+byte-string, char, and regex literal content. M4 covers the remaining checker-stage source surface:
+comments, including doc-comments.
+
+- **Detect:** `hew-parser::fmt::extract_comments(source, true)` scans raw module source once per
+  module, including doc-comments for the checker while `hew fmt` still excludes them for formatting.
+  Each non-ASCII comment codepoint is classified with the same readability predicate the formatter
+  uses for literal emission. The deny tier, `text_direction_codepoint_in_comment`, is exactly the nine
+  Unicode explicit bidirectional formatting controls (U+202A–U+202E and U+2066–U+2069). The warning
+  tier, `invisible_codepoint_in_comment`, catches other non-printable/default-ignorable scalars such
+  as zero-width spaces and variation selectors.
+- **Guards:** readable non-ASCII prose (`café`, CJK, emoji, arrows, em dashes) is silent. The comment
+  scanner skips string/char/regex literal bodies, so a `//` inside a literal is not a comment start.
+  Literal content remains out of scope for `hew check`; formatter escaping owns literal output.
+- **Suggest:** remove the hidden codepoint, or spell out the intended directionality/codepoint in
+  visible text.
+- **Emit:** both lints use the shared `LintId`/`LintLevels`/`LintCtx::emit` path, so `--allow`,
+  `--warn`, `--deny`, and `// hew:allow(...)` work like every other registry lint. The text-direction
+  tier defaults to `Deny` because the fixed UAX #9 control set has no legitimate Hew-comment use and
+  maps to the CVE-2021-42574 class. The broader invisible-codepoint tier defaults to `Warn` because it
+  is still suspicious but less specifically a reordering attack.
+- **Surfacing:** CLI and wasm already installed lint sources. The LSP analysis path now installs the
+  root buffer and resolved module sources on the checker before type-checking, so comment-scanning
+  diagnostics and in-source allow directives reach editor diagnostics too.
+- **Tests:** checker unit tests cover all comment forms, deny/warn defaults, allow/warn/deny
+  overrides, suppression, readable-Unicode negatives, literal-boundary negatives, and once-per-module
+  source scanning. CLI e2e tests run real `hew check` subprocesses for default denial, `--allow`,
+  `--warn`, `--deny`, directive suppression, and unknown-lint fail-closed behaviour. LSP tests pin the
+  editor diagnostic and suppression path.
+
+## 12. Division of labour with ast-grep
 
 ast-grep stays the cheap syntactic/CI/IDE-grep layer (the 15+ rules). The compiler lint pass is the
 authoritative semantic layer. They compose: ast-grep cheaply flags candidate shapes; the compiler

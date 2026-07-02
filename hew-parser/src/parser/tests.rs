@@ -4137,6 +4137,37 @@ fn wire_struct_rejected_with_wire_type_hint() {
     );
 }
 
+// Proving gate: the post-visibility-modifier path gives the same targeted
+// struct->type redirect as the bare-item path, not the generic "invalid item
+// after visibility modifier" fallback.
+#[test]
+fn pub_struct_rejected_with_type_hint() {
+    let result = parse("pub struct Point { x: i64 }");
+    assert!(
+        !result.errors.is_empty(),
+        "expected parse error for `pub struct`"
+    );
+    assert_eq!(result.errors[0].message, "unexpected 'struct'");
+    assert_eq!(
+        result.errors[0].hint.as_deref(),
+        Some("write `type Name { ... }`")
+    );
+}
+
+#[test]
+fn wire_pub_struct_rejected_with_wire_type_hint() {
+    let result = parse("#[wire]\npub struct Point { x: i64 @1 }");
+    assert!(
+        !result.errors.is_empty(),
+        "expected parse error for `#[wire] pub struct`"
+    );
+    assert_eq!(result.errors[0].message, "unexpected 'struct'");
+    assert_eq!(
+        result.errors[0].hint.as_deref(),
+        Some("write `#[wire] type Name { ... }`")
+    );
+}
+
 #[test]
 fn bare_wire_keyword_rejected_with_hint() {
     let result = parse("wire Foo {}");

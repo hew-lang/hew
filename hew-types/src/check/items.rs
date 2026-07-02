@@ -2106,7 +2106,7 @@ impl Checker {
                         self.report_error_with_suggestions(
                             TypeErrorKind::MutabilityError,
                             &self_param.ty.1,
-                            "`var self` on an inherent struct impl method has no effect — \
+                            "`var self` on an inherent impl method has no effect — \
                              inherent methods receive self by value with no trait contract \
                              to make the mutation observable to the caller"
                                 .to_string(),

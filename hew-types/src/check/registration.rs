@@ -3009,7 +3009,7 @@ impl Checker {
                         kind: TypeErrorKind::StyleSuggestion,
                         span: decl_span.clone(),
                         message: format!(
-                            "wire `{type_name}.{}`: field has `since {since}` but struct \
+                            "wire `{type_name}.{}`: field has `since {since}` but type \
                              has no #[wire(version = N)] attribute",
                             fm.field_name
                         ),

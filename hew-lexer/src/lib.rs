@@ -1311,14 +1311,14 @@ mod tests {
 
     // WHY: `docs/syntax-data.json` still lists `struct` for editor-grammar
     // consumers even though the lexer no longer treats it as a keyword;
-    // regenerating that file is scoped to the editor-grammar lane, not this
+    // regenerating that file is scoped to the editor-grammar update, not this
     // one. Filtering `json_all` down to `ALL_KEYWORDS` before comparing
     // tolerates that one extra entry, but it also means this test no longer
     // catches a keyword present in syntax-data.json and absent from the
     // lexer's `ALL_KEYWORDS` — the pending-future gap is deliberately not
     // fabricated as a pass.
     // WHEN: re-tighten to the exact bijection (`json_all == ALL_KEYWORDS`,
-    // no filter) once the editor-grammar lane regenerates syntax-data.json
+    // no filter) once the editor-grammar update regenerates syntax-data.json
     // to drop `struct`.
     // WHAT: the real check is exact equality between `json_all` and
     // `ALL_KEYWORDS` (order-sensitive, no filtering either side).

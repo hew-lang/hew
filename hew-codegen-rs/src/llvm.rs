@@ -3356,6 +3356,86 @@ pub(crate) fn fn_type_for_return<'ctx>(
     }
 }
 
+fn basic_type_signature_label(ty: BasicTypeEnum<'_>) -> String {
+    match ty {
+        BasicTypeEnum::ArrayType(t) => t.print_to_string().to_string(),
+        BasicTypeEnum::FloatType(t) => t.print_to_string().to_string(),
+        BasicTypeEnum::IntType(t) => t.print_to_string().to_string(),
+        BasicTypeEnum::PointerType(t) => t.print_to_string().to_string(),
+        BasicTypeEnum::StructType(t) => t.print_to_string().to_string(),
+        BasicTypeEnum::VectorType(t) => t.print_to_string().to_string(),
+        BasicTypeEnum::ScalableVectorType(t) => t.print_to_string().to_string(),
+    }
+}
+
+fn metadata_type_signature_label(ty: BasicMetadataTypeEnum<'_>) -> String {
+    match ty {
+        BasicMetadataTypeEnum::ArrayType(t) => t.print_to_string().to_string(),
+        BasicMetadataTypeEnum::FloatType(t) => t.print_to_string().to_string(),
+        BasicMetadataTypeEnum::IntType(t) => t.print_to_string().to_string(),
+        BasicMetadataTypeEnum::PointerType(t) => t.print_to_string().to_string(),
+        BasicMetadataTypeEnum::StructType(t) => t.print_to_string().to_string(),
+        BasicMetadataTypeEnum::VectorType(t) => t.print_to_string().to_string(),
+        BasicMetadataTypeEnum::ScalableVectorType(t) => t.print_to_string().to_string(),
+        BasicMetadataTypeEnum::MetadataType(t) => t.print_to_string().to_string(),
+    }
+}
+
+fn return_type_signature_label(return_ty: Option<BasicTypeEnum<'_>>) -> String {
+    return_ty
+        .map(basic_type_signature_label)
+        .unwrap_or_else(|| "void".to_string())
+}
+
+fn ensure_catalog_ffi_signature_matches<'ctx>(
+    symbol: &str,
+    existing: FunctionValue<'ctx>,
+    return_ty: Option<BasicTypeEnum<'ctx>>,
+    param_tys: &[BasicMetadataTypeEnum<'ctx>],
+) -> CodegenResult<()> {
+    let fn_ty = existing.get_type();
+    let existing_param_tys = fn_ty.get_param_types();
+    let expected_params = param_tys
+        .iter()
+        .copied()
+        .map(metadata_type_signature_label)
+        .collect::<Vec<_>>();
+    let actual_params = existing_param_tys
+        .iter()
+        .copied()
+        .map(metadata_type_signature_label)
+        .collect::<Vec<_>>();
+    let expected_return = return_type_signature_label(return_ty);
+    let actual_return = return_type_signature_label(fn_ty.get_return_type());
+
+    if expected_params != actual_params || expected_return != actual_return {
+        return Err(CodegenError::FailClosed(format!(
+            "catalog FFI declaration for `{symbol}` conflicts with existing LLVM declaration: \
+             expected ({}) -> {}, got ({}) -> {}",
+            expected_params.join(", "),
+            expected_return,
+            actual_params.join(", "),
+            actual_return
+        )));
+    }
+
+    Ok(())
+}
+
+fn get_or_declare_catalog_ffi<'ctx>(
+    llvm_mod: &LlvmModule<'ctx>,
+    symbol: &str,
+    fn_ty: FunctionType<'ctx>,
+    return_ty: Option<BasicTypeEnum<'ctx>>,
+    param_tys: &[BasicMetadataTypeEnum<'ctx>],
+) -> CodegenResult<FunctionValue<'ctx>> {
+    if let Some(existing) = llvm_mod.get_function(symbol) {
+        ensure_catalog_ffi_signature_matches(symbol, existing, return_ty, param_tys)?;
+        return Ok(existing);
+    }
+    Ok(llvm_mod.add_function(symbol, fn_ty, Some(Linkage::External)))
+}
+
 fn builtin_type_to_llvm<'ctx>(
     ctx: &'ctx Context,
     ty: BuiltinTy,
@@ -3437,14 +3517,16 @@ fn runtime_ffi_return_abi_bits(symbol: &str) -> Option<u32> {
 }
 
 /// Per-parameter runtime C-ABI integer width (in bits) for catalog FFI symbols
-/// whose runtime parameter is *narrower* than the Hew-facing catalog type.
+/// whose runtime parameter width differs from the Hew-facing catalog type.
 ///
 /// Mirror of `runtime_ffi_return_abi_bits` for the argument direction:
 /// `hew_string_char_at(s, idx: i32)` takes an `i32`, but the catalog declares
 /// the index parameter as `i64`. Declaring the extern with the Hew-facing width
 /// passes a 64-bit value where the C function reads a 32-bit register; the call
-/// boundary truncates the i64 argument down to the declared i32. Returns `None`
-/// to keep the catalog-declared width when there is no narrower override.
+/// boundary truncates the i64 argument down to the declared i32. Shared runtime
+/// symbols can also use a wider runtime width than one Hew-facing overload, such
+/// as `hew_uint_to_string(n: u32)` serving both `u16` and `u32` catalog entries.
+/// Returns `None` to keep the catalog-declared width when there is no override.
 ///
 /// `param_idx` is zero-based over the catalog `entry.params` slice.
 fn runtime_ffi_param_abi_bits(symbol: &str, param_idx: usize) -> Option<u32> {
@@ -3453,6 +3535,8 @@ fn runtime_ffi_param_abi_bits(symbol: &str, param_idx: usize) -> Option<u32> {
         ("hew_string_char_at", 1) => Some(32),
         // `hew_string_char_at_utf8(s: ptr, index: i32) -> i32`.
         ("hew_string_char_at_utf8", 1) => Some(32),
+        // `hew_uint_to_string(n: u32) -> ptr`.
+        ("hew_uint_to_string", 0) => Some(32),
         _ => None,
     }
 }
@@ -3582,14 +3666,10 @@ fn declare_catalog_ffi<'ctx>(
         let mut raw_param_tys = param_tys.clone();
         raw_param_tys.push(ctx.ptr_type(AddressSpace::default()).into());
         let raw_fn_ty = ctx.void_type().fn_type(&raw_param_tys, false);
-        llvm_mod
-            .get_function(&raw_name)
-            .unwrap_or_else(|| llvm_mod.add_function(&raw_name, raw_fn_ty, Some(Linkage::External)))
+        get_or_declare_catalog_ffi(llvm_mod, &raw_name, raw_fn_ty, None, &raw_param_tys)?
     } else {
         let fn_ty = fn_type_for_return(ctx, return_ty, &param_tys);
-        llvm_mod
-            .get_function(symbol)
-            .unwrap_or_else(|| llvm_mod.add_function(symbol, fn_ty, Some(Linkage::External)))
+        get_or_declare_catalog_ffi(llvm_mod, symbol, fn_ty, return_ty, &param_tys)?
     };
     Ok(FnSymbol::Real {
         value,
@@ -42884,6 +42964,51 @@ fn link_wasm_module(obj: &Path, out: &Path) -> CodegenResult<()> {
 mod tests {
     use super::*;
     use hew_mir::{BasicBlock, DecisionFact, IrPipeline};
+
+    #[test]
+    fn uint_to_string_runtime_arg_width_is_u32() {
+        // The runtime signature is `hew_uint_to_string(n: u32)` at
+        // `hew-runtime/src/string.rs:253`, so arg 0 must be declared as i32.
+        assert_eq!(
+            runtime_ffi_param_abi_bits("hew_uint_to_string", 0),
+            Some(32)
+        );
+    }
+
+    #[test]
+    fn catalog_ffi_redeclaration_mismatch_fails_closed() {
+        let ctx = Context::create();
+        let llvm_mod = ctx.create_module("catalog_ffi_redeclaration_mismatch");
+        let wrong_ty = ctx
+            .ptr_type(AddressSpace::default())
+            .fn_type(&[ctx.i16_type().into()], false);
+        llvm_mod.add_function("hew_uint_to_string", wrong_ty, Some(Linkage::External));
+
+        let entry = stdlib_catalog::entries()
+            .iter()
+            .find(|entry| entry.name == "to_string_u32")
+            .expect("to_string_u32 catalog entry");
+        let record_layouts = RecordLayoutMap::new();
+        let result = declare_catalog_ffi(
+            &ctx,
+            &llvm_mod,
+            entry,
+            "hew_uint_to_string",
+            &record_layouts,
+        );
+
+        let Err(err) = result else {
+            panic!("mismatched catalog FFI redeclaration must fail closed");
+        };
+        match err {
+            CodegenError::FailClosed(msg) => {
+                assert!(msg.contains("hew_uint_to_string"));
+                assert!(msg.contains("expected (i32) -> ptr"));
+                assert!(msg.contains("got (i16) -> ptr"));
+            }
+            other => panic!("expected fail-closed redeclaration error, got {other}"),
+        }
+    }
 
     fn empty_pipeline_with_const_42() -> IrPipeline {
         let return_ty = ResolvedTy::I64;

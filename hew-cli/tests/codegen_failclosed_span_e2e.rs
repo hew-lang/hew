@@ -61,6 +61,37 @@ fn has_root_error_caret(stderr: &str) -> bool {
 const ARRAY_RETURN_SOURCE: &str =
     "pub fn unsupported_array_return(x: [i64; 2]) -> [i64; 2] {\n    return x;\n}\nfn main() {}\n";
 
+const ARRAY_LITERAL_RETURN_SOURCE: &str =
+    "fn one(a: i64) -> [i64; 2] {\n    [a, a]\n}\nfn main() {}\n";
+
+#[test]
+fn array_literal_fixed_array_return_reaches_codegen_boundary() {
+    let fixture = write_fixture(&[("main.hew", ARRAY_LITERAL_RETURN_SOURCE)]);
+    let main_path = fixture.path().join("main.hew");
+
+    let output = Command::new(hew_binary())
+        .args(["check", main_path.to_str().unwrap()])
+        .current_dir(fixture.path())
+        .output()
+        .expect("hew binary must run");
+
+    assert!(
+        !output.status.success(),
+        "hew check must fail on fixed-size array value codegen"
+    );
+
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(
+        stderr.contains("E_CODEGEN_FRONT_UNSUPPORTED")
+            && stderr.contains("Array type — composite lowering is Cluster 2"),
+        "fixed-size array value should fail at the codegen boundary; got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("found `Vec<i64>`"),
+        "fixed-size array literal should not fall back to Vec inference; got:\n{stderr}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // (a) root-module fail-closed shows a caret
 // ---------------------------------------------------------------------------

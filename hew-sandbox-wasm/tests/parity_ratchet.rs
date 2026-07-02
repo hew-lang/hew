@@ -33,9 +33,9 @@
 //!    [`compile_to_sandbox_bytecode`] (profile + emitter) and, when it produces
 //!    bytecode, run on the *real* TS VM. The cross-check tests assert the
 //!    declared coverage matches what the gate actually does:
-//!    - [`Coverage::Parity`] — the gate admits it, it runs cleanly on the VM,
+//!    - [`Coverage::Parity`] / [`Coverage::ParityTrap`] — the gate admits it,
 //!      and the name is pinned in `REQUIRED_PARITY_TEST_NAMES` (so a real
-//!      stdout+exit parity case in `parity.rs` proves it).
+//!      stdout+exit parity case in `parity.rs` proves clean or trap parity).
 //!    - [`Coverage::NotYetRunnable`] — the gate admits it but the VM traps or
 //!      the emitter fails to lower it (fail-loud). Catalogued, never silently
 //!      "green". The moment a graduation lane makes one runnable, the honesty
@@ -66,12 +66,15 @@ const HEW_SEED: &str = "42";
 /// cross-checked against the real gate by the tests below.
 #[derive(Debug, Clone, Copy)]
 enum Coverage {
-    /// The gate admits it AND it runs at native↔sandbox parity. Pinned to this
-    /// required parity-case name; a real stdout+exit case in `parity.rs` proves
-    /// it. Asserting the gate runs the probe cleanly (exit 0) is the teeth
-    /// against a future G1: a construct that runs but is not pinned here fails
-    /// the build.
+    /// The gate admits it AND it runs cleanly at native↔sandbox parity. Pinned
+    /// to this required parity-case name; a real stdout+exit case in `parity.rs`
+    /// proves it. Asserting the gate runs the probe cleanly (exit 0) is the
+    /// teeth against a future G1: a construct that runs but is not pinned here
+    /// fails the build.
     Parity(&'static str),
+    /// The gate admits it AND it traps at native↔sandbox parity. Pinned to a
+    /// required parity-case name whose native and sandbox exit codes must match.
+    ParityTrap(&'static str),
     /// The gate admits it, but the emitter/interpreter cannot yet run it: it
     /// traps (`unsupported_instruction` / `invalid_enum_tag`) or fails to lower.
     /// Fail-loud, catalogued with the observed failure so it can never
@@ -181,6 +184,26 @@ const CONSTRUCTS: &[Construct] = &[
         id: "integer arithmetic + comparison",
         probe: "fn main() {\n    let a = 17;\n    let b = 5;\n    println(f\"{a + b} {a - b} {a * b} {a / b} {a % b}\");\n    println(f\"{a < b} {a > b} {a == b} {a != b}\");\n}\n",
         coverage: Coverage::Parity("arithmetic_operators"),
+    },
+    Construct {
+        id: "logical binary operators",
+        probe: "fn main() {\n    let zero = 0;\n    println(false && (1 / zero == 0));\n    println(true || (1 / zero == 0));\n}\n",
+        coverage: Coverage::Parity("logical_binary_operators"),
+    },
+    Construct {
+        id: "bitwise binary operators",
+        probe: "fn main() {\n    let a = 12;\n    let b = 10;\n    println(a & b);\n    println(a | b);\n    println(a ^ b);\n}\n",
+        coverage: Coverage::Parity("bitwise_binary_operators"),
+    },
+    Construct {
+        id: "shift binary operators",
+        probe: "fn main() {\n    println(1 << 5);\n    println((0 - 8) >> 1);\n    println(1 << 63);\n}\n",
+        coverage: Coverage::Parity("bitwise_binary_operators"),
+    },
+    Construct {
+        id: "shift-out-of-range trap",
+        probe: "fn main() {\n    let value = 1;\n    println(value << 64);\n}\n",
+        coverage: Coverage::ParityTrap("shift_out_of_range"),
     },
     Construct {
         id: "unary integer negate (`-a`)",
@@ -476,6 +499,11 @@ const CONSTRUCTS: &[Construct] = &[
         coverage: Coverage::Parity("compound_assign"),
     },
     Construct {
+        id: "compound bitwise assignment",
+        probe: "fn main() {\n    var x = 14;\n    x &= 11;\n    x |= 16;\n    x ^= 3;\n    x <<= 2;\n    x >>= 1;\n    println(x);\n}\n",
+        coverage: Coverage::Parity("compound_bitwise_assign"),
+    },
+    Construct {
         id: "non-finite f64 rendering (inf / -inf / nan)",
         // Sandbox VM's renderF64 must match native printf("%g"): lowercase
         // `inf`, `-inf`, `nan`. JavaScript's `String()` produces capitalised
@@ -749,7 +777,7 @@ const CONSTRUCTS: &[Construct] = &[
 fn parity_constructs_pin_a_required_case_name() {
     let required: BTreeSet<&str> = REQUIRED_PARITY_TEST_NAMES.iter().copied().collect();
     for construct in CONSTRUCTS {
-        if let Coverage::Parity(case) = construct.coverage {
+        if let Coverage::Parity(case) | Coverage::ParityTrap(case) = construct.coverage {
             assert!(
                 required.contains(case),
                 "construct `{}` claims parity case `{case}`, but no such name is in \
@@ -767,7 +795,7 @@ fn every_required_parity_case_backs_a_construct() {
     let claimed: BTreeSet<&str> = CONSTRUCTS
         .iter()
         .filter_map(|c| match c.coverage {
-            Coverage::Parity(name) => Some(name),
+            Coverage::Parity(name) | Coverage::ParityTrap(name) => Some(name),
             _ => None,
         })
         .collect();
@@ -789,7 +817,7 @@ fn runnable_coverage_does_not_shrink() {
     const RUNNABLE_BASELINE: usize = 50; // +7: bool_not, scalar matches, struct update/pattern, const refs
     let runnable = CONSTRUCTS
         .iter()
-        .filter(|c| matches!(c.coverage, Coverage::Parity(_)))
+        .filter(|c| matches!(c.coverage, Coverage::Parity(_) | Coverage::ParityTrap(_)))
         .count();
     assert!(
         runnable >= RUNNABLE_BASELINE,
@@ -807,6 +835,9 @@ fn runnable_coverage_does_not_shrink() {
 /// - `Parity` probe: must produce bytecode AND run cleanly (exit 0) on the VM.
 ///   A `Parity` probe that traps is a regression; a probe that runs but is not
 ///   pinned to a required case is caught by `parity_constructs_pin_a_required_case_name`.
+/// - `ParityTrap` probe: must produce bytecode AND trap (non-zero exit) on the
+///   VM. The named parity case proves the exact native and sandbox exit codes
+///   match.
 /// - `NotYetRunnable` probe: must produce bytecode AND trap (non-zero exit). The
 ///   moment it runs cleanly, this fails — forcing promotion to `Parity` + a case.
 ///   This is the structural guarantee against a future G1: a construct cannot be
@@ -822,6 +853,7 @@ fn live_gate_matches_declared_coverage() {
             .unwrap_or_else(|err| panic!("sandbox compile threw for `{}`: {err}", construct.id));
         match construct.coverage {
             Coverage::Parity(_) => assert_admitted_runs_clean(construct, &compiled),
+            Coverage::ParityTrap(_) => assert_admitted_traps(construct, &compiled),
             Coverage::NotYetRunnable { failure, reason } => {
                 assert_admitted_but_fails(construct, &compiled, failure, reason);
             }
@@ -839,6 +871,20 @@ fn assert_admitted_runs_clean(construct: &Construct, compiled: &CompileOutput) {
         sandbox.status.code(),
         Some(0),
         "construct `{}` is classified Parity but the sandbox VM did NOT run it cleanly \
+         (exit {:?}). Either it regressed (fix it) or its classification is wrong.\nstdout:\n{}\nstderr:\n{}",
+        construct.id,
+        sandbox.status.code(),
+        String::from_utf8_lossy(&sandbox.stdout),
+        String::from_utf8_lossy(&sandbox.stderr)
+    );
+}
+
+fn assert_admitted_traps(construct: &Construct, compiled: &CompileOutput) {
+    let bytecode = bytecode_or_panic(construct, compiled);
+    let sandbox = run_sandbox_inline(&serde_json::to_string(bytecode).expect("serialize"));
+    assert!(
+        sandbox.status.code().is_some_and(|code| code != 0),
+        "construct `{}` is classified ParityTrap but the sandbox VM did NOT trap \
          (exit {:?}). Either it regressed (fix it) or its classification is wrong.\nstdout:\n{}\nstderr:\n{}",
         construct.id,
         sandbox.status.code(),
@@ -935,7 +981,7 @@ fn diagnostics_dump(compiled: &CompileOutput) -> String {
               `Owner = Option` return is semantically load-bearing (None = covered-by-parent)"
 )]
 mod ast_surface {
-    use hew_parser::ast::{BinaryOp, Expr, Pattern, Stmt, TypeExpr, UnaryOp};
+    use hew_parser::ast::{BinaryOp, CompoundAssignOp, Expr, Pattern, Stmt, TypeExpr, UnaryOp};
 
     /// Which manifest construct id is responsible for an AST variant's coverage.
     /// `Some(id)` ties the variant to a `CONSTRUCTS` row; `None` marks a variant
@@ -1008,6 +1054,17 @@ mod ast_surface {
         match stmt {
             Stmt::Let { .. } => Some("literal + println"),
             Stmt::Var { .. } => Some("while loop + bare break/continue"),
+            Stmt::Assign {
+                op:
+                    Some(
+                        CompoundAssignOp::BitAnd
+                        | CompoundAssignOp::BitOr
+                        | CompoundAssignOp::BitXor
+                        | CompoundAssignOp::Shl
+                        | CompoundAssignOp::Shr,
+                    ),
+                ..
+            } => Some("compound bitwise assignment"),
             Stmt::Assign { op: Some(_), .. } => Some("compound assignment (`x += v`)"),
             Stmt::Assign { .. } => Some("while loop + bare break/continue"),
             Stmt::If { .. } => Some("statement-position `if`"),
@@ -1081,13 +1138,12 @@ mod ast_surface {
             | BinaryOp::LessEqual
             | BinaryOp::Greater
             | BinaryOp::GreaterEqual => Some("integer arithmetic + comparison"),
-            BinaryOp::And | BinaryOp::Or => None,
-            BinaryOp::BitAnd
-            | BinaryOp::BitOr
-            | BinaryOp::BitXor
-            | BinaryOp::Shl
-            | BinaryOp::Shr
-            | BinaryOp::WrappingAdd
+            BinaryOp::And | BinaryOp::Or => Some("logical binary operators"),
+            BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor => {
+                Some("bitwise binary operators")
+            }
+            BinaryOp::Shl | BinaryOp::Shr => Some("shift binary operators"),
+            BinaryOp::WrappingAdd
             | BinaryOp::WrappingSub
             | BinaryOp::WrappingMul => None,
             BinaryOp::Range | BinaryOp::RangeInclusive => {

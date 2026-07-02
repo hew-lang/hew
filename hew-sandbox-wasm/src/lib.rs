@@ -123,6 +123,10 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     "struct_pattern_match",
     "option_some_none",
     "const_reference",
+    "logical_binary_operators",
+    "bitwise_binary_operators",
+    "compound_bitwise_assign",
+    "shift_out_of_range",
 ];
 
 const SANDBOX_STDIN_HELPER: &str = "__hew_sandbox_stdin_read_line";

@@ -353,6 +353,26 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/sandbox-graduation/const_reference.hew",
         accepted_divergences: &[],
     },
+    ParityCase {
+        test_name: "logical_binary_operators",
+        source_rel: "examples/sandbox-graduation/logical_binary_operators.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "bitwise_binary_operators",
+        source_rel: "examples/sandbox-graduation/bitwise_binary_operators.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "compound_bitwise_assign",
+        source_rel: "examples/sandbox-graduation/compound_bitwise_assign.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "shift_out_of_range",
+        source_rel: "examples/sandbox-graduation/shift_out_of_range.hew",
+        accepted_divergences: &[],
+    },
 ];
 
 #[derive(Debug, Clone, Copy)]

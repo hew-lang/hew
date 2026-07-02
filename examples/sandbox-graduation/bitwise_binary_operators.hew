@@ -1,0 +1,10 @@
+fn main() {
+    let a = 12;
+    let b = 10;
+    println(f"and: {a & b}");
+    println(f"or: {a | b}");
+    println(f"xor: {a ^ b}");
+    println(f"shl: {1 << 5}");
+    println(f"shr: {(0 - 8) >> 1}");
+    println(f"sign: {1 << 63}");
+}

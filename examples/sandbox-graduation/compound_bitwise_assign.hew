@@ -1,0 +1,13 @@
+fn main() {
+    var x = 14;
+    x &= 11;
+    println(f"and_assign: {x}");
+    x |= 16;
+    println(f"or_assign: {x}");
+    x ^= 3;
+    println(f"xor_assign: {x}");
+    x <<= 2;
+    println(f"shl_assign: {x}");
+    x >>= 1;
+    println(f"shr_assign: {x}");
+}

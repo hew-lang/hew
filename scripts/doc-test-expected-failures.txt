@@ -37,20 +37,23 @@
 #             pool reserved-word clash, or a checker-boundary HIR error.
 #             Fix: compiler follow-on; annotate fence for now.
 #
-# Baseline: 135 pass, 94 fail, 12 skip (NYI/skip-annotated) out of 241 total fences.
+# Baseline: 172 pass, 86 fail, 19 skip (NYI/skip-annotated) out of 277 total fences.
 # Updated 2026-06-22: fixed spec-0033/0038/0073 (now PASS) and annotated
 # spec-0048/0049/0051/0052/0066/0067/0069/0070/0097/0099/0113 (now SKIP).
 # Recorded against docs/ @ f16718d2 on 2026-06-22.
 # Updated 2026-06-22: migrated all wire-keyword fences (116-124) to #[wire] form.
 # spec-0119 and spec-0120 now PASS (removed from list). spec-0123 and spec-0124
-# were previously failing (wire enum NYI) but now pass via #[wire] enum.
+# failed as wire enum NYI and now pass via #[wire] enum.
+# Updated 2026-07-02: rewrote direct actor-call examples, reclassified
+# intentional actor-boundary error demos, corrected spec-0122..spec-0133 labels,
+# and bound entries to cksum metadata.
 #
 # ─── Guide failures (0) ─────────────────────────────────────────────────────────
 
 # guide-0107 was removed 2026-06-23: std::string.from_int fence now passes;
 # the NYI label was stale (fence renumbered as guide grew).
 
-# ─── Spec failures (107) ─────────────────────────────────────────────────────────
+# ─── Spec failures (86) ──────────────────────────────────────────────────────────
 
 spec-0002   3576876295   # SNIPPET: bare `let counter = spawn Counter(...)` — actor spawn illustration
 spec-0003   1917753997   # SNIPPET: bare lambda-actor messaging code — lambda actor call illustration

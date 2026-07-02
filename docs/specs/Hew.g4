@@ -172,9 +172,9 @@ recordTupleBody
     : '(' type_ ( ',' type_ )* ','? ')' ';'
     ;
 
-// #[wire] struct syntax — canonical wire struct declaration
+// #[wire] type syntax — canonical wire type declaration
 wireStructDecl
-    : 'struct' ident '{' wireStructItem* '}'
+    : 'type' ident '{' wireStructItem* '}'
     ;
 
 typeParams
@@ -893,7 +893,7 @@ typeArgs
     ;
 
 // ----------------------------------------------------------------
-//  Wire types (for wire struct/enum declarations)
+//  Wire types (for wire type/enum declarations)
 // ----------------------------------------------------------------
 
 wireType

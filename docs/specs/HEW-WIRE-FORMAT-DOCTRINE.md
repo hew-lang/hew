@@ -53,11 +53,11 @@ that conform to that schema live in
 
 The Rust mirror is `EnvelopeFrame` (and `ControlFrame`) in
 [`hew-runtime/src/envelope.rs`][envelope-rs] starting near line 30. The
-CDDL integer keys are mirrored as field-doc comments on each struct field.
+CDDL integer keys are mirrored as field-doc comments on each Rust mirror field.
 
 ### The message body — CDDL-described tagged CBOR
 
-The `envelope-frame` `payload` (key `6`) is a `bstr` to the *frame* schema:
+The `envelope-frame` `payload` (key `6`) is a `bstr` to the _frame_ schema:
 the frame does not interpret it. The bytes inside that `bstr` are the
 **per-`#[wire]`-type CBOR body** the codegen serializer emits for the
 message being sent, and they have their own doc-of-truth schema in
@@ -69,7 +69,7 @@ whole internode wire — frame and body — CDDL-described.
 
 The body shapes (the `wire-body` rule and its parts):
 
-- A **`#[wire]` struct** (or any cross-node `Serializable` record) encodes
+- A **`#[wire]` type** (or any cross-node `Serializable` record) encodes
   as a CBOR **map keyed by the unsigned `@N` field tags** — `cbor_field_key`
   uses the explicit `@N` from the wire layout, or a 1-based positional
   fallback for layout-less records. Keys are emitted in canonical
@@ -85,18 +85,18 @@ The body shapes (the `wire-body` rule and its parts):
 - The **leaf floor** is scalars (CBOR int / uint / bool / float), `string`
   (CBOR text), `bytes` (CBOR byte string), `Option<T>` (`null` for `None`,
   the inner encoding for `Some`), `Vec<T>` (a CBOR array), and nested
-  `#[wire]` structs/enums (nested maps / unit-tag / map-of-one). A value
+  `#[wire]` types/enums (nested maps / unit-tag / map-of-one). A value
   type outside this floor fails closed at codegen ("unsupported value type …
   outside the supported wire-body floor") and never reaches the wire.
 
 ### Tag-stability asymmetry — explicit `@N` vs ordinal
 
-Struct fields and enum variants carry their wire tag differently, and this
+Type fields and enum variants carry their wire tag differently, and this
 creates an **important stability asymmetry**:
 
-- **`#[wire]` struct fields** use the **explicit `@N` tag** from the wire
+- **`#[wire]` type fields** use the **explicit `@N` tag** from the wire
   layout (`cbor_field_key` picks the declared tag, not the field's
-  declaration position). Reordering struct fields in source is
+  declaration position). Reordering type fields in source is
   **wire-safe**: the tag is the `@N` annotation, not the position.
 - **`#[wire]` enum variants** use the **declaration ordinal** as their tag
   (`cbor_variant_tag` falls back to `variant_idx` when no explicit tag is
@@ -104,7 +104,7 @@ creates an **important stability asymmetry**:
   and is a **breaking wire change**: a sender's `Ping` at ordinal 0 is
   no longer the receiver's `Ping` at ordinal 1.
 
-In short: reordering `#[wire]` struct fields is safe; reordering `#[wire]`
+In short: reordering `#[wire]` type fields is safe; reordering `#[wire]`
 enum variants is a breaking change. If you need reorder-stable enum variants,
 assign an explicit tag annotation — the `@N` mechanism is available on enum
 variants for exactly this reason.
@@ -172,7 +172,7 @@ The round-trip and version-rejection tests live in
 ### Required posture for runtime code touching the wire
 
 - Add new envelope fields **first to the CDDL**, then to `EnvelopeFrame`.
-  The CDDL is the doc-of-truth; the Rust struct conforms to it, not the
+  The CDDL is the doc-of-truth; the Rust mirror conforms to it, not the
   other way around. The same rule holds for the body: a change to the
   per-type body shape the codegen serializer emits must be reflected in
   `wire-body.cddl`, and the conformance test keeps the two from drifting.
@@ -204,20 +204,20 @@ and was settled by issue #1247.
 
 ### Module inventory and honest status
 
-| Module | Status | What's there today |
-| --- | --- | --- |
-| `std::encoding::json` | **Real.** Production-shape encoder/decoder. | `std/encoding/json/` (~2k LOC). Backing parser + the opaque `Value` surface. |
-| `std::encoding::yaml` | **Real.** Full parser/serialiser. | `std/encoding/yaml/` (~2.4k LOC). |
-| `std::encoding::toml` | **Real.** Parser/generator + datetime variant. | `std/encoding/toml/` (~1.2k LOC). |
-| `std::encoding::msgpack` | **Real, JSON-bridged.** Encode/decode against the canonical `Value`; per the `wire` README it bridges through JSON's value model when crossing the opaque surface. | `std/encoding/msgpack/` (~1k LOC). |
-| `std::encoding::protobuf` | **Real, scoped.** Wire-format encode/decode helpers; not a schema compiler. | `std/encoding/protobuf/` (~1.5k LOC). |
-| `std::encoding::xml` | **Real, scoped.** Parse/serialise. | `std/encoding/xml/` (~850 LOC). |
-| `std::encoding::csv` | **Real, scoped.** | `std/encoding/csv/`. |
-| `std::encoding::markdown` | **Real, scoped.** Markdown → HTML rendering only. | `std/encoding/markdown/`. |
-| `std::encoding::base64` | **Real.** | `std/encoding/base64/`. |
-| `std::encoding::hex` | **Real.** | `std/encoding/hex/`. |
-| `std::encoding::compress` | **Real.** gzip/deflate/zlib. | `std/encoding/compress/`. |
-| `std::encoding::wire` | **Substrate.** Holds the opaque `Value` contract (issue #1247). The legacy HBF byte-layout helpers (`encode_header` / framing) were removed when the CBOR-native wire format replaced HBF. | `std/encoding/wire/` — see §5 for history. |
+| Module                    | Status                                                                                                                                                                                     | What's there today                                                           |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
+| `std::encoding::json`     | **Real.** Production-shape encoder/decoder.                                                                                                                                                | `std/encoding/json/` (~2k LOC). Backing parser + the opaque `Value` surface. |
+| `std::encoding::yaml`     | **Real.** Full parser/serialiser.                                                                                                                                                          | `std/encoding/yaml/` (~2.4k LOC).                                            |
+| `std::encoding::toml`     | **Real.** Parser/generator + datetime variant.                                                                                                                                             | `std/encoding/toml/` (~1.2k LOC).                                            |
+| `std::encoding::msgpack`  | **Real, JSON-bridged.** Encode/decode against the canonical `Value`; per the `wire` README it bridges through JSON's value model when crossing the opaque surface.                         | `std/encoding/msgpack/` (~1k LOC).                                           |
+| `std::encoding::protobuf` | **Real, scoped.** Wire-format encode/decode helpers; not a schema compiler.                                                                                                                | `std/encoding/protobuf/` (~1.5k LOC).                                        |
+| `std::encoding::xml`      | **Real, scoped.** Parse/serialise.                                                                                                                                                         | `std/encoding/xml/` (~850 LOC).                                              |
+| `std::encoding::csv`      | **Real, scoped.**                                                                                                                                                                          | `std/encoding/csv/`.                                                         |
+| `std::encoding::markdown` | **Real, scoped.** Markdown → HTML rendering only.                                                                                                                                          | `std/encoding/markdown/`.                                                    |
+| `std::encoding::base64`   | **Real.**                                                                                                                                                                                  | `std/encoding/base64/`.                                                      |
+| `std::encoding::hex`      | **Real.**                                                                                                                                                                                  | `std/encoding/hex/`.                                                         |
+| `std::encoding::compress` | **Real.** gzip/deflate/zlib.                                                                                                                                                               | `std/encoding/compress/`.                                                    |
+| `std::encoding::wire`     | **Substrate.** Holds the opaque `Value` contract (issue #1247). The legacy HBF byte-layout helpers (`encode_header` / framing) were removed when the CBOR-native wire format replaced HBF. | `std/encoding/wire/` — see §5 for history.                                   |
 
 Each module's README states its own scope. The doctrine here is about
 **which one to reach for**, not how each one is implemented.

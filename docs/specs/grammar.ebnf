@@ -71,8 +71,8 @@ ConstDecl      = "const" Ident ":" Type "=" Expr ";" ;
 
 TypeDecl       = "type" Ident TypeParams? WhereClause? TypeBody
                | "indirect"? "enum" Ident TypeParams? WhereClause? TypeBody ;
-(* #[wire] struct syntax — sole canonical wire struct declaration *)
-WireStructDecl = "struct" Ident "{" { WireStructFieldDecl | ReservedDecl ";" } "}" ;
+(* #[wire] type syntax — canonical wire type declaration *)
+WireStructDecl = "type" Ident "{" { WireStructFieldDecl | ReservedDecl ";" } "}" ;
 WireStructFieldDecl = Ident ":" Type ( "@" IntLit )? WireAttr* ( "," | ";" ) ;
 
 TypeParams     = "<" TypeParam { "," TypeParam } ">" ;
@@ -85,7 +85,6 @@ WhereClause    = "where" WherePredicate { "," WherePredicate } [ "," ] ;
 WherePredicate = Type ":" TraitBounds ;
 
 TypeBody       = "{" { StructFieldDecl | VariantDecl | FnDecl } "}" ;
-(* WireBody is used by the legacy wire keyword form — no longer a production *)
 
 StructFieldDecl = Attribute* Ident ":" Type ( ";" | "," ) ;
 ActorFieldDecl  = ("let" | "var")? Ident ":" Type ("=" Expr)? ";" ;

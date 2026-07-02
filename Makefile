@@ -1173,7 +1173,7 @@ grammar: $(GRAMMAR) $(HEW_FILES)
 	@echo "==> Generating ANTLR4 parser"
 	@rm -rf $(GRAMMAR_OUT)
 	@cp $(GRAMMAR) .tmp/Hew.g4
-	$(JAVA) -jar $(ANTLR4_JAR) -Dlanguage=Java -o $(GRAMMAR_OUT) .tmp/Hew.g4
+	$(JAVA) -jar $(ANTLR4_JAR) -Dlanguage=Java -Xexact-output-dir -o $(GRAMMAR_OUT) .tmp/Hew.g4
 	@echo "==> Compiling grammar test parser"
 	$(JAVAC) -cp $(ANTLR4_JAR) $(GRAMMAR_OUT)/*.java
 	@echo "==> Parsing example files"

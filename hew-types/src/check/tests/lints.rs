@@ -3833,6 +3833,191 @@ fn must_use_await_suppressed_by_directive() {
 }
 
 // -----------------------------------------------------------------------
+// sleep_loop_blocks_mailbox lint
+// -----------------------------------------------------------------------
+
+fn count_sleep_loop_blocks_mailbox(diags: &[TypeError]) -> usize {
+    diags
+        .iter()
+        .filter(|d| d.kind == TypeErrorKind::Lint(LintId::SleepLoopBlocksMailbox))
+        .count()
+}
+
+const SLEEP_LOOP_REPRO: &str = "actor Worker {\n\
+     var running: bool = true;\n\
+     receive fn run() { while running { sleep(10ms); } }\n\
+     receive fn stop() { running = false; }\n\
+     }\n";
+
+#[test]
+fn sleep_loop_blocks_mailbox_flags_sibling_stopped_loop() {
+    let (errors, warnings) = parse_and_check(SLEEP_LOOP_REPRO);
+    assert!(errors.is_empty(), "fixture should type-check: {errors:?}");
+    let hit = warnings
+        .iter()
+        .find(|w| w.kind == TypeErrorKind::Lint(LintId::SleepLoopBlocksMailbox))
+        .expect("a sleep loop stopped only by a sibling message must warn");
+    assert_eq!(hit.severity, crate::error::Severity::Warning);
+    assert!(
+        hit.message.contains("mailbox") && hit.message.contains("cannot be dispatched"),
+        "message should explain mailbox starvation: {}",
+        hit.message
+    );
+    assert!(
+        hit.suggestions.iter().any(|s| s.contains("#[every")),
+        "suggestion should name the periodic receive alternative: {:?}",
+        hit.suggestions
+    );
+}
+
+#[test]
+fn sleep_loop_blocks_mailbox_flags_unconditional_loop() {
+    let (errors, warnings) = parse_and_check(
+        "actor Worker { receive fn run() { let t = instant::now(); loop { sleep_until(t); } } }\n",
+    );
+    assert!(errors.is_empty(), "fixture should type-check: {errors:?}");
+    assert_eq!(
+        count_sleep_loop_blocks_mailbox(&warnings),
+        1,
+        "unconditional sleep_until loop should warn: {warnings:?}"
+    );
+}
+
+#[test]
+fn sleep_loop_blocks_mailbox_ignores_bounded_counter_loop() {
+    let (errors, warnings) = parse_and_check(
+        "actor Ticker {\n\
+         receive fn tick(count: i64) {\n\
+             var i: i64 = 0;\n\
+             while i < count {\n\
+                 sleep(5ms);\n\
+                 i = i + 1;\n\
+             }\n\
+         }\n\
+         }\n",
+    );
+    assert!(errors.is_empty(), "fixture should type-check: {errors:?}");
+    assert_eq!(
+        count_sleep_loop_blocks_mailbox(&warnings),
+        0,
+        "derived-progress loop conditions are not candidates: {warnings:?}"
+    );
+}
+
+#[test]
+fn sleep_loop_blocks_mailbox_ignores_non_actor_function() {
+    let (errors, warnings) =
+        parse_and_check("fn main() { var running: bool = true; while running { sleep(10ms); } }\n");
+    assert!(errors.is_empty(), "fixture should type-check: {errors:?}");
+    assert_eq!(
+        count_sleep_loop_blocks_mailbox(&warnings),
+        0,
+        "sleep loops outside receive handlers must be silent: {warnings:?}"
+    );
+}
+
+#[test]
+fn sleep_loop_blocks_mailbox_ignores_sleep_loop_inside_lambda() {
+    let (errors, warnings) = parse_and_check(
+        "actor Worker {\n\
+         var running: bool = true;\n\
+         receive fn run() { let f = || { while running { sleep(10ms); } }; let _ = f; }\n\
+         receive fn stop() { running = false; }\n\
+         }\n",
+    );
+    assert!(errors.is_empty(), "fixture should type-check: {errors:?}");
+    assert_eq!(
+        count_sleep_loop_blocks_mailbox(&warnings),
+        0,
+        "sleep loops inside closures do not block the enclosing handler's mailbox: {warnings:?}"
+    );
+}
+
+#[test]
+fn sleep_loop_blocks_mailbox_ignores_loop_with_reachable_break() {
+    let (errors, warnings) = parse_and_check(
+        "actor Worker {\n\
+         var flag: bool = false;\n\
+         receive fn run() { while true { sleep(1s); if flag { break; } } }\n\
+         }\n",
+    );
+    assert!(errors.is_empty(), "fixture should type-check: {errors:?}");
+    assert_eq!(
+        count_sleep_loop_blocks_mailbox(&warnings),
+        0,
+        "a reachable break is an in-handler exit path: {warnings:?}"
+    );
+}
+
+#[test]
+fn sleep_loop_blocks_mailbox_ignores_bare_sleep_without_loop() {
+    let (errors, warnings) =
+        parse_and_check("actor Worker { receive fn run() { sleep(100ms); } }\n");
+    assert!(errors.is_empty(), "fixture should type-check: {errors:?}");
+    assert_eq!(
+        count_sleep_loop_blocks_mailbox(&warnings),
+        0,
+        "a one-shot sleep does not starve the mailbox forever: {warnings:?}"
+    );
+}
+
+#[test]
+fn sleep_loop_blocks_mailbox_ignores_loop_assigning_its_guard() {
+    let (errors, warnings) = parse_and_check(
+        "actor Worker {\n\
+         var running: bool = true;\n\
+         receive fn run() { while running { sleep(10ms); running = false; } }\n\
+         }\n",
+    );
+    assert!(errors.is_empty(), "fixture should type-check: {errors:?}");
+    assert_eq!(
+        count_sleep_loop_blocks_mailbox(&warnings),
+        0,
+        "an assignment to the guard inside the loop is an in-handler exit path: {warnings:?}"
+    );
+}
+
+#[test]
+fn sleep_loop_blocks_mailbox_suppressed_by_directive() {
+    const SOURCE: &str = "actor Worker {\n\
+         var running: bool = true;\n\
+         receive fn run() {\n\
+             // hew:allow(sleep_loop_blocks_mailbox)\n\
+             while running { sleep(10ms); }\n\
+         }\n\
+         receive fn stop() { running = false; }\n\
+         }\n";
+    let out = check_with_lint_level(SOURCE, LintId::SleepLoopBlocksMailbox, LintLevel::Warn);
+    assert!(
+        out.errors.is_empty(),
+        "fixture should type-check: {:?}",
+        out.errors
+    );
+    assert_eq!(
+        count_sleep_loop_blocks_mailbox(&out.warnings),
+        0,
+        "a directive above the loop must suppress the lint: {:?}",
+        out.warnings
+    );
+}
+
+#[test]
+fn sleep_loop_blocks_mailbox_deny_routes_to_errors() {
+    let out = check_with_lint_level(
+        SLEEP_LOOP_REPRO,
+        LintId::SleepLoopBlocksMailbox,
+        LintLevel::Deny,
+    );
+    assert_eq!(
+        count_sleep_loop_blocks_mailbox(&out.errors),
+        1,
+        "deny should route the lint into errors: {:?}",
+        out.errors
+    );
+    assert_eq!(count_sleep_loop_blocks_mailbox(&out.warnings), 0);
+}
+
+// -----------------------------------------------------------------------
 // Module namespacing tests
 // -----------------------------------------------------------------------
 

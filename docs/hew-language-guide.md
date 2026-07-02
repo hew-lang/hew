@@ -1372,6 +1372,90 @@ handlers convert to 0 ms (next tick); in `fn main` the OS sleep is
 nanosecond-precise (subject to OS granularity, typically ≥ 1 µs on
 Linux/macOS).
 
+### Periodic receive handlers — `#[every(duration)]`
+
+`#[every(duration)]` marks a zero-argument `receive fn` as periodic. The timer
+starts when the actor is spawned and repeats until the actor stops. Each firing
+is dispatched through the actor mailbox as its own message, so ordinary receive
+handlers can run between ticks.
+
+```hew
+actor Pulse {
+    var count: i64 = 0;
+
+    #[every(50ms)]
+    receive fn tick() {
+        count = count + 1;
+    }
+
+    receive fn total() -> i64 {
+        count
+    }
+}
+
+fn main() {
+    let p = spawn Pulse(count: 0);
+    sleep(250ms);
+    let r = await p.total();
+    match r {
+        Ok(n) => println(f"ticks={n}"),
+        Err(_) => println("ask failed"),
+    }
+}
+```
+
+Periodic handlers preserve the actor's single-threaded state model: a tick never
+runs concurrently with another receive handler on the same actor. It is just a
+separate mailbox dispatch armed by the runtime timer.
+
+### Cancellable long-running work in actor handlers
+
+A receive handler runs to completion before the actor observes the next message.
+If a handler writes `while running { sleep(...) }` and expects another receive
+handler to set `running = false`, the stop message cannot be dispatched until
+the loop exits. Use a periodic receive handler and a flag instead:
+
+```hew
+actor Worker {
+    var running: bool = true;
+    var ticks: i64 = 0;
+
+    #[every(25ms)]
+    receive fn tick() {
+        if !running {
+            return;
+        }
+        ticks = ticks + 1;
+    }
+
+    receive fn stop() {
+        running = false;
+    }
+
+    receive fn total() -> i64 {
+        ticks
+    }
+}
+
+fn main() {
+    let worker = spawn Worker(running: true, ticks: 0);
+    sleep(150ms);
+    worker.stop();
+    sleep(150ms);
+    let r = await worker.total();
+    match r {
+        Ok(n) => println(f"ticks={n}"),
+        Err(_) => println("ask failed"),
+    }
+}
+```
+
+Here `receive fn stop()` is a user-defined actor message. It is unrelated to the
+`#[on(stop)]` lifecycle hook, which is a plain `fn` invoked when the actor is
+tearing down. The `sleep_loop_blocks_mailbox` lint warns on the mailbox
+starvation shape where a receive handler loops around `sleep`/`sleep_until`
+without an in-loop exit path.
+
 ## State machines
 
 ### Machine declaration: events, states, transitions, step(), state_name()

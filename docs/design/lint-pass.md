@@ -5,10 +5,11 @@ maintainers · Companion to the ast-grep rule set
 
 M1 + M2 have landed: the lint infrastructure (`LintId` / `LintLevel` /
 `LintLevels`), the checker `run_lints` sweep, the CLI `--allow` / `--warn` /
-`--deny` flags, and in-source `// hew:allow(...)` suppression — plus six
+`--deny` flags, and in-source `// hew:allow(...)` suppression — plus seven
 checker lints (`needless_range_loop`, `redundant_else_after_return`,
-`needless_match_to_if_let`, `len_zero_comparison`, `needless_bool`, `must_use`) and the two
-ad-hoc warnings (`clone_on_copy`, `dead_code`) migrated onto the registry so
+`needless_match_to_if_let`, `len_zero_comparison`, `needless_bool`,
+`must_use`, `sleep_loop_blocks_mailbox`) and the two ad-hoc warnings
+(`clone_on_copy`, `dead_code`) migrated onto the registry so
 they are now re-levelable and suppressible. M3 has landed too: a backward
 liveness dataflow pass in `hew-mir`, the `dead_store` MIR lint built on it, and
 the CLI plumbing that surfaces MIR-stage lints as level-controlled, suppressible
@@ -224,6 +225,17 @@ the precise subset that is actually convertible.
     fails open — a dropped backpressure/disconnect signal, an unnoticed undelivered send, or a
     timed-out / mailbox-full / stopped-actor `ask` (`await actor.msg()`) mistaken for a reply.
     Opt out with `let _ = …` or `// hew:allow(must_use)`.
+  - **`sleep_loop_blocks_mailbox`** — an actor `receive fn` contains a `loop`, `while true`,
+    `while flag`, or `while !flag` whose body directly reaches `sleep` or `sleep_until`, has no
+    reachable `break` for that loop, and does not assign the bare guard name inside the loop body.
+    The lint runs only through the receive-function dispatch seam, never on free functions, actor
+    helper methods, impl methods, or trait methods, because the hazard is actor mailbox
+    run-to-completion. *Guards:* compound or derived-progress conditions (`while i < count`,
+    `while running && !paused`) are not candidates; `loop_body_has_break` suppresses loops with an
+    in-handler break path; the sleep scan stops at nested loop and lambda/generator boundaries so an
+    inner loop owns its own finding; the guard-assignment scan is permissive and crosses nested
+    bodies to avoid false positives. The suggestion points users at `#[every(duration)]` periodic
+    receive handlers plus a boolean flag, where each tick is a separate mailbox dispatch.
   - **Migrations.** `clone_on_copy` (clone on a Copy/BitCopy type; `hew-types/src/check/methods.rs`)
     and `dead_code` (unreachable functions; `hew-types/src/check/diagnostics.rs`) now emit through
     `Checker::emit_main_pass_lint`, giving them a `LintId` with `default_level() = Warn`. Default

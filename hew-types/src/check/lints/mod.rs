@@ -49,6 +49,7 @@ mod needless_bool;
 mod needless_match_to_if_let;
 mod needless_range_loop;
 mod redundant_else_after_return;
+mod sleep_loop_blocks_mailbox;
 
 /// Stable identifier for a single compiler lint.
 ///
@@ -90,6 +91,10 @@ pub enum LintId {
     /// timed-out / mailbox-full / stopped-actor `ask` mistaken for a reply);
     /// handle it or bind `let _ = …`.
     MustUse,
+    /// A receive handler contains a `sleep`/`sleep_until` loop whose only obvious
+    /// exit is a sibling actor message, but the mailbox is not observed until
+    /// the current handler returns.
+    SleepLoopBlocksMailbox,
     // NOTE: a `clean_counter` lint (a loop-carried accumulator that is
     // incremented but never read after the loop) is deliberately NOT registered
     // here. It has no emission code yet, and registering an un-emitted lint
@@ -114,6 +119,7 @@ impl LintId {
         LintId::DeadCode,
         LintId::DeadStore,
         LintId::MustUse,
+        LintId::SleepLoopBlocksMailbox,
     ];
 
     /// The stable, lowercase string name for this lint.
@@ -133,6 +139,7 @@ impl LintId {
             LintId::DeadCode => "dead_code",
             LintId::DeadStore => "dead_store",
             LintId::MustUse => "must_use",
+            LintId::SleepLoopBlocksMailbox => "sleep_loop_blocks_mailbox",
         }
     }
 
@@ -158,7 +165,8 @@ impl LintId {
             | LintId::CloneOnCopy
             | LintId::DeadCode
             | LintId::DeadStore
-            | LintId::MustUse => LintLevel::Warn,
+            | LintId::MustUse
+            | LintId::SleepLoopBlocksMailbox => LintLevel::Warn,
         }
     }
 }
@@ -425,6 +433,19 @@ pub(super) fn lint_block(
     len_zero_comparison::check(ctx, levels, body, out);
     needless_bool::check(ctx, levels, body, out);
     must_use::check(ctx, levels, body, out);
+}
+
+/// Run receive-handler-only lints over one actor message handler body.
+///
+/// These diagnostics depend on actor mailbox run-to-completion semantics and
+/// must not run on free functions, actor helper methods, or trait/impl methods.
+pub(super) fn lint_receive_fn(
+    ctx: &LintCtx,
+    levels: &LintLevels,
+    body: &Block,
+    out: &mut Vec<TypeError>,
+) {
+    sleep_loop_blocks_mailbox::check(ctx, levels, body, out);
 }
 
 // ── shared read-only body walker ─────────────────────────────────────

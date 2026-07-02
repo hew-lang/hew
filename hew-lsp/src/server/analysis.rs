@@ -1651,11 +1651,10 @@ mod tests {
         let source =
             "// hew:allow(text_direction_codepoint_in_comment)\n// \u{202E}\nfn main() {}\n";
         let document = analyze_document(&uri, source, &DashMap::new(), &[]);
-        let root_diags = document
+        let root_diags: &[Diagnostic] = document
             .diagnostics_by_uri
             .get(&uri)
-            .map(|diagnostics| diagnostics.as_slice())
-            .unwrap_or(&[]);
+            .map_or(&[], Vec::as_slice);
 
         assert!(
             !root_diags.iter().any(|diagnostic| {

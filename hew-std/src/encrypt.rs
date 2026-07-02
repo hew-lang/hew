@@ -597,4 +597,32 @@ mod tests {
             .expect("plaintext must be UTF-8");
         assert_eq!(recovered, "hello");
     }
+
+    /// FFI signature-parity guard (`uuid.rs`-style scalar pin).
+    ///
+    /// `hew_encrypt_last_open_error_code` returns `i32` on the Rust side
+    /// (`#[no_mangle]` above). The Hew binding in `encrypt.hew` must declare
+    /// the same return type, or the compiled call reads the error code
+    /// through a mismatched ABI width. This test parses the `.hew` extern
+    /// block and fails closed if the declared return type is anything other
+    /// than `-> i32`.
+    #[test]
+    fn hew_binding_declares_encrypt_last_open_error_code_returns_i32() {
+        let hew_src = include_str!("../../std/crypto/encrypt/encrypt.hew");
+
+        let decl = hew_src
+            .lines()
+            .map(str::trim)
+            .find(|line| line.starts_with("fn hew_encrypt_last_open_error_code"))
+            .expect("encrypt.hew must declare an extern `fn hew_encrypt_last_open_error_code`");
+
+        let signature = decl.split("//").next().unwrap_or(decl).trim();
+
+        assert!(
+            signature.contains("-> i32"),
+            "encrypt.hew binding for hew_encrypt_last_open_error_code must \
+             return i32 to match the Rust `#[no_mangle] -> i32` signature; \
+             found: {signature:?}"
+        );
+    }
 }

@@ -1253,4 +1253,30 @@ mod tests {
         unsafe { free_bytes_triple(&by_value) };
         unsafe { free_bytes_triple(&via_raw) };
     }
+
+    /// FFI signature-parity guard (`uuid.rs`-style scalar pin).
+    ///
+    /// `hew_ed25519_verify_hew` returns `i32` on the Rust side (`#[no_mangle]`
+    /// above). The Hew binding in `sign.hew` must declare the same return
+    /// type, or the compiled call reads a 32-bit value through a mismatched
+    /// ABI width. This test parses the `.hew` extern block and fails closed
+    /// if the declared return type is anything other than `-> i32`.
+    #[test]
+    fn hew_binding_declares_ed25519_verify_hew_returns_i32() {
+        let hew_src = include_str!("../../std/crypto/sign/sign.hew");
+
+        let decl = hew_src
+            .lines()
+            .map(str::trim)
+            .find(|line| line.starts_with("fn hew_ed25519_verify_hew"))
+            .expect("sign.hew must declare an extern `fn hew_ed25519_verify_hew`");
+
+        let signature = decl.split("//").next().unwrap_or(decl).trim();
+
+        assert!(
+            signature.contains("-> i32"),
+            "sign.hew binding for hew_ed25519_verify_hew must return i32 to \
+             match the Rust `#[no_mangle] -> i32` signature; found: {signature:?}"
+        );
+    }
 }

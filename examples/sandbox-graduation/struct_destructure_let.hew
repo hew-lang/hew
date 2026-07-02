@@ -1,0 +1,9 @@
+type Point {
+    x: i64;
+    y: i64;
+}
+
+fn main() {
+    let Point { x: a, y: b } = Point { x: 8, y: 13 };
+    println(f"sum: {a + b}");
+}

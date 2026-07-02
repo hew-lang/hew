@@ -373,6 +373,16 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/sandbox-graduation/shift_out_of_range.hew",
         accepted_divergences: &[],
     },
+    ParityCase {
+        test_name: "struct_destructure_let",
+        source_rel: "examples/sandbox-graduation/struct_destructure_let.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "nested_tuple_destructure_let",
+        source_rel: "examples/sandbox-graduation/nested_tuple_destructure_let.hew",
+        accepted_divergences: &[],
+    },
 ];
 
 #[derive(Debug, Clone, Copy)]

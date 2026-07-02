@@ -352,7 +352,28 @@ impl<'a> ProfileChecker<'a> {
     )]
     fn check_stmt(&mut self, stmt: &Stmt, span: &std::ops::Range<usize>) {
         match stmt {
-            Stmt::Let { value, ty, .. } | Stmt::Var { value, ty, .. } => {
+            Stmt::Let {
+                pattern,
+                value,
+                ty,
+                else_block,
+            } => {
+                if let Some((ty, _)) = ty {
+                    self.check_type_expr(ty, span);
+                }
+                if let Some(expr) = value {
+                    self.check_expr(expr);
+                }
+                self.check_pattern(pattern);
+                if else_block.is_some() || !let_pattern_is_unconditional(&pattern.0) {
+                    self.reject(
+                        pattern.1.clone(),
+                        "reserved_runtime_feature",
+                        "refutable let patterns are reserved for a later sandbox VM milestone; use match or if let instead",
+                    );
+                }
+            }
+            Stmt::Var { value, ty, .. } => {
                 if let Some((ty, _)) = ty {
                     self.check_type_expr(ty, span);
                 }
@@ -1062,6 +1083,27 @@ fn is_trivial_machine_transition_body(expr: &Expr) -> bool {
                     .is_none_or(|e| is_trivial_machine_transition_body(&e.0))
         }
         _ => false,
+    }
+}
+
+fn let_pattern_is_unconditional(pattern: &Pattern) -> bool {
+    match pattern {
+        Pattern::Wildcard | Pattern::Identifier(_) => true,
+        Pattern::Tuple(patterns) => patterns
+            .iter()
+            .all(|pattern| let_pattern_is_unconditional(&pattern.0)),
+        Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields } => {
+            fields.iter().all(|field| {
+                field
+                    .pattern
+                    .as_ref()
+                    .is_none_or(|pattern| let_pattern_is_unconditional(&pattern.0))
+            })
+        }
+        Pattern::Literal(_)
+        | Pattern::Constructor { .. }
+        | Pattern::Or(_, _)
+        | Pattern::Regex { .. } => false,
     }
 }
 

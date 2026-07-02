@@ -5,7 +5,7 @@ use hew_parser::ast::{
     Item, Literal, MatchArm, Pattern, Program, ReceiveFnDecl, Spanned, Stmt, TypeBodyItem,
     TypeDeclKind, VariantKind,
 };
-use hew_types::check::{PatternKind, SpanKey, TypeDefKind, VariantDef};
+use hew_types::check::{SpanKey, TypeDefKind, VariantDef};
 use hew_types::{BuiltinType, Ty};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -1367,76 +1367,24 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         span: std::ops::Range<usize>,
     ) -> Result<(), CompileError> {
         match stmt {
-            Stmt::Let { pattern, value, .. } => {
-                if let Pattern::Identifier(name) = &pattern.0 {
-                    if let Some(value) = value {
-                        let value_local = self.lower_expr(value)?;
-                        let ty = self.ty_for_expr(value);
-                        let local = self.declare_local(
-                            Some(name.clone()),
-                            &ty,
-                            false,
-                            Some(pattern.1.clone()),
-                        );
-                        self.emit_instruction(
-                            "local.set",
-                            None,
-                            vec![Operand::local(local.clone()), Operand::local(value_local)],
-                            Some(span),
-                            None,
-                        );
-                        self.bindings.insert(name.clone(), local);
-                    }
-                } else if let Pattern::Tuple(sub_patterns) = &pattern.0 {
-                    // Tuple destructure: `let (a, b, c) = expr;`
-                    // The tuple was lowered as an anonymous record with positional
-                    // fields _0, _1, …; emit `record.get` at each index and bind
-                    // each sub-pattern's identifier.  Only `Pattern::Identifier`
-                    // and `Pattern::Wildcard` sub-patterns are supported here;
-                    // nested destructure hits emit_unsupported.
-                    if let Some(value) = value {
-                        let value_local = self.lower_expr(value)?;
-                        let tuple_ty = self.ty_for_expr(value);
-                        let elem_tys: Vec<Ty> = match &tuple_ty {
-                            Ty::Tuple(items) => items.clone(),
-                            _ => vec![],
-                        };
-                        let sub_patterns = sub_patterns.clone();
-                        for (i, sub_pat) in sub_patterns.iter().enumerate() {
-                            match &sub_pat.0 {
-                                Pattern::Identifier(name) => {
-                                    let elem_ty = elem_tys.get(i).cloned().unwrap_or(Ty::Unit);
-                                    let dst = self.declare_local(
-                                        Some(name.clone()),
-                                        &elem_ty,
-                                        false,
-                                        Some(sub_pat.1.clone()),
-                                    );
-                                    self.emit_instruction(
-                                        "record.get",
-                                        Some(dst.clone()),
-                                        vec![
-                                            Operand::local(value_local.clone()),
-                                            Operand::literal(i as u64),
-                                        ],
-                                        Some(span.clone()),
-                                        None,
-                                    );
-                                    self.bindings.insert(name.clone(), dst);
-                                }
-                                Pattern::Wildcard => {
-                                    // discard element — no binding needed
-                                }
-                                _ => {
-                                    // nested destructure not yet supported
-                                    self.emit_unsupported(Some(span.clone()));
-                                    return Ok(());
-                                }
-                            }
-                        }
-                    }
-                } else {
+            Stmt::Let {
+                pattern,
+                value,
+                else_block,
+                ..
+            } => {
+                if else_block.is_some() {
                     self.emit_unsupported(Some(span));
+                    return Ok(());
+                }
+                if let Some(value) = value {
+                    let value_local = self.lower_expr(value)?;
+                    let ty = self.ty_for_expr(value);
+                    if self.pattern_is_unconditional(pattern, &ty) {
+                        self.bind_pattern_payloads(pattern, &value_local, &ty);
+                    } else {
+                        self.emit_unsupported(Some(span));
+                    }
                 }
             }
             Stmt::Var {
@@ -3558,37 +3506,92 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                     }
                 }
             }
-            Pattern::Struct { .. } | Pattern::Tuple(_) => {
-                let key = SpanKey::from(&pattern.1);
-                if let Some(resolution) = self.package.type_output.pattern_resolutions.get(&key) {
-                    if matches!(
-                        resolution.pattern_kind,
-                        PatternKind::StructPattern | PatternKind::TuplePattern
-                    ) {
-                        for binding in resolution.payload_bindings.clone() {
-                            let local = self.declare_local(
-                                Some(binding.binding_name.clone()),
-                                &binding.ty,
+            Pattern::Tuple(patterns) => {
+                if let Ty::Tuple(elem_tys) = scrutinee_ty {
+                    for (idx, subpattern) in patterns.iter().enumerate() {
+                        if matches!(subpattern.0, Pattern::Wildcard) {
+                            continue;
+                        }
+                        let ty = elem_tys.get(idx).cloned().unwrap_or(Ty::Unit);
+                        let field = self.temp_local(&ty, Some(subpattern.1.clone()));
+                        self.emit_instruction(
+                            "record.get",
+                            Some(field.clone()),
+                            vec![
+                                Operand::local(scrutinee_local.to_string()),
+                                Operand::literal(idx as u64),
+                            ],
+                            Some(subpattern.1.clone()),
+                            None,
+                        );
+                        self.bind_pattern_payloads(subpattern, &field, &ty);
+                    }
+                }
+            }
+            Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields } => {
+                if let Some(layout) = self.struct_pattern_layout(scrutinee_ty) {
+                    for field_pattern in fields {
+                        let Some((field_idx, field_ty)) = layout
+                            .iter()
+                            .position(|(name, _)| name == &field_pattern.name)
+                            .map(|idx| (idx, layout[idx].1.clone()))
+                        else {
+                            continue;
+                        };
+                        let field_local = match &field_pattern.pattern {
+                            Some(pattern) if matches!(pattern.0, Pattern::Wildcard) => continue,
+                            Some(pattern) => self.temp_local(&field_ty, Some(pattern.1.clone())),
+                            None => self.declare_local(
+                                Some(field_pattern.name.clone()),
+                                &field_ty,
                                 false,
                                 Some(pattern.1.clone()),
-                            );
-                            self.emit_instruction(
-                                "record.get",
-                                Some(local.clone()),
-                                vec![
-                                    Operand::local(scrutinee_local.to_string()),
-                                    Operand::literal(binding.field_idx as u64),
-                                ],
-                                Some(pattern.1.clone()),
-                                None,
-                            );
-                            self.bindings.insert(binding.binding_name, local);
+                            ),
+                        };
+                        self.emit_instruction(
+                            "record.get",
+                            Some(field_local.clone()),
+                            vec![
+                                Operand::local(scrutinee_local.to_string()),
+                                Operand::literal(field_idx as u64),
+                            ],
+                            Some(pattern.1.clone()),
+                            None,
+                        );
+                        if let Some(subpattern) = &field_pattern.pattern {
+                            self.bind_pattern_payloads(subpattern, &field_local, &field_ty);
+                        } else {
+                            self.bindings
+                                .insert(field_pattern.name.clone(), field_local);
                         }
                     }
                 }
             }
             _ => {}
         }
+    }
+
+    fn struct_pattern_layout(&self, scrutinee_ty: &Ty) -> Option<Vec<(String, Ty)>> {
+        let Ty::Named { name, .. } = scrutinee_ty else {
+            return None;
+        };
+        let type_def = self.package.type_output.type_defs.get(name)?;
+        if !matches!(type_def.kind, TypeDefKind::Record | TypeDefKind::Struct) {
+            return None;
+        }
+        Some(
+            type_def
+                .field_order
+                .iter()
+                .filter_map(|field_name| {
+                    type_def
+                        .fields
+                        .get(field_name)
+                        .cloned()
+                        .map(|ty| (field_name.clone(), ty))
+                })
+                .collect(),
+        )
     }
 
     fn new_match_blocks(&mut self, arms: &[MatchArm]) -> MatchBlocks {

@@ -127,6 +127,8 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     "bitwise_binary_operators",
     "compound_bitwise_assign",
     "shift_out_of_range",
+    "struct_destructure_let",
+    "nested_tuple_destructure_let",
 ];
 
 const SANDBOX_STDIN_HELPER: &str = "__hew_sandbox_stdin_read_line";

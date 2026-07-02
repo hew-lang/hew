@@ -1,0 +1,4 @@
+fn main() {
+    let (a, (b, c)) = (2, (3, 5));
+    println(f"total: {a + b + c}");
+}

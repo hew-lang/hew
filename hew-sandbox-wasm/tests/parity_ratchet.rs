@@ -478,6 +478,23 @@ const CONSTRUCTS: &[Construct] = &[
         coverage: Coverage::Parity("struct_pattern_match"),
     },
     Construct {
+        id: "struct destructure in let",
+        probe: "type Point { x: i64; y: i64; }\nfn main() {\n    let Point { x: a, y: b } = Point { x: 8, y: 13 };\n    println(a + b);\n}\n",
+        coverage: Coverage::Parity("struct_destructure_let"),
+    },
+    Construct {
+        id: "nested tuple destructure in let",
+        probe: "fn main() {\n    let (a, (b, c)) = (2, (3, 5));\n    println(a + b + c);\n}\n",
+        coverage: Coverage::Parity("nested_tuple_destructure_let"),
+    },
+    Construct {
+        id: "let-else refutable pattern",
+        probe: "fn main() {\n    let value = Some(1);\n    let Some(n) = value else { return; };\n    println(n);\n}\n",
+        coverage: Coverage::RejectedByProfile {
+            diagnostic_kind: "reserved_runtime_feature",
+        },
+    },
+    Construct {
         id: "const item reference",
         probe: "const LIMIT: i64 = 100;\nfn main() {\n    println(LIMIT);\n}\n",
         coverage: Coverage::Parity("const_reference"),
@@ -1143,9 +1160,7 @@ mod ast_surface {
                 Some("bitwise binary operators")
             }
             BinaryOp::Shl | BinaryOp::Shr => Some("shift binary operators"),
-            BinaryOp::WrappingAdd
-            | BinaryOp::WrappingSub
-            | BinaryOp::WrappingMul => None,
+            BinaryOp::WrappingAdd | BinaryOp::WrappingSub | BinaryOp::WrappingMul => None,
             BinaryOp::Range | BinaryOp::RangeInclusive => {
                 Some("recursive call + expr-if + range-for + interpolation")
             }

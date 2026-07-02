@@ -103,14 +103,12 @@ fn unsupported_payload_subpattern_label(pattern: &Pattern) -> Option<&'static st
         // Returning `None` here is the safe default for any call site that has not
         // yet added the resolution guard (false-accept rather than false-reject).
         Pattern::Identifier(name) if name.contains("::") => Some("nested constructor"),
-        // Plain binding (bare identifier), wildcard, literal predicates, and aggregate
-        // destructures are supported or deferred to the call site.
-        Pattern::Wildcard
-        | Pattern::Literal(_)
-        | Pattern::Struct { .. }
-        | Pattern::RecordShorthand { .. }
-        | Pattern::Tuple(_)
-        | Pattern::Identifier(_) => None,
+        // Plain binding (bare identifier), wildcard, literal predicates, and tuple
+        // payload aggregates are supported or deferred to the call site.
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Tuple(_) | Pattern::Identifier(_) => {
+            None
+        }
+        Pattern::Struct { .. } | Pattern::RecordShorthand { .. } => Some("record destructure"),
         Pattern::Constructor { .. } => Some("nested constructor"),
         Pattern::Or(_, _) => Some("or-pattern"),
         // Regex literals are only legal as top-level match-arm predicates
@@ -1793,7 +1791,7 @@ impl Checker {
                     let label = match other {
                         Pattern::Literal(_) => "literal predicate inside a nested constructor",
                         Pattern::Struct { .. } | Pattern::RecordShorthand { .. } => {
-                            "struct destructure"
+                            "record destructure"
                         }
                         Pattern::Tuple(_) => "tuple destructure",
                         Pattern::Or(_, _) => "or-pattern",

@@ -1,0 +1,22 @@
+// Regression: integer literal match predicates must admit platform-sized
+// scrutinees through HIR verification, MIR strategy selection, MIR constant
+// lowering, and native execution.
+fn pick_signed(x: isize) -> i64 {
+    match x {
+        5 => 40,
+        _ => 0,
+    }
+}
+
+fn pick_unsigned(x: usize) -> i64 {
+    match x {
+        7 => 3,
+        _ => 0,
+    }
+}
+
+fn main() -> i64 {
+    let total = pick_signed(5) + pick_unsigned(7);
+    println(f"platform-sized literal match total={total}");
+    total
+}

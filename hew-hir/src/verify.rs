@@ -792,9 +792,7 @@ impl Verifier {
 
     fn match_literal_predicate(&mut self, lit: &HirLiteral, ty: &ResolvedTy, span: Range<usize>) {
         let valid = match (lit, ty) {
-            (HirLiteral::Integer(_), ty) => {
-                ty.is_integer() && !matches!(ty, ResolvedTy::Isize | ResolvedTy::Usize)
-            }
+            (HirLiteral::Integer(_), ty) => ty.is_integer_literal_match_scrutinee(),
             (HirLiteral::Float(_), ResolvedTy::F32 | ResolvedTy::F64)
             | (HirLiteral::Bool(_), ResolvedTy::Bool)
             | (HirLiteral::Char(_), ResolvedTy::Char)

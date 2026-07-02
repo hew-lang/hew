@@ -255,17 +255,13 @@ enum ForIterNextCall {
 
 fn literal_match_supported(lit: &HirLiteral, ty: &ResolvedTy) -> bool {
     match (lit, ty) {
-        (HirLiteral::Integer(_), ty) => literal_match_integer_ty(ty),
+        (HirLiteral::Integer(_), ty) => ty.is_integer_literal_match_scrutinee(),
         (HirLiteral::Float(_), ResolvedTy::F32 | ResolvedTy::F64)
         | (HirLiteral::Bool(_), ResolvedTy::Bool)
         | (HirLiteral::Char(_), ResolvedTy::Char)
         | (HirLiteral::String(_), ResolvedTy::String) => true,
         _ => false,
     }
-}
-
-fn literal_match_integer_ty(ty: &ResolvedTy) -> bool {
-    ty.is_integer() && !matches!(ty, ResolvedTy::Isize | ResolvedTy::Usize)
 }
 
 impl TargetArch {
@@ -22816,7 +22812,7 @@ impl LowerCtx {
                     let (lit, literal_ty) = literal_to_hir(lit);
                     let ty = match (&lit, &scrutinee_hir.ty) {
                         (HirLiteral::Integer(_), scrutinee_ty)
-                            if literal_match_integer_ty(scrutinee_ty) =>
+                            if scrutinee_ty.is_integer_literal_match_scrutinee() =>
                         {
                             scrutinee_ty.clone()
                         }
@@ -28653,6 +28649,62 @@ mod tests {
             args: vec![],
             builtin: None,
             is_opaque: false,
+        }
+    }
+
+    #[test]
+    fn match_integer_literals_use_platform_sized_scrutinee_type() {
+        let (_, _, lowered) = parse_typecheck_and_lower(
+            r"
+            fn signed(x: isize) -> i64 {
+                match x {
+                    5 => 1,
+                    _ => 0,
+                }
+            }
+
+            fn unsigned(x: usize) -> i64 {
+                match x {
+                    5 => 1,
+                    _ => 0,
+                }
+            }
+            ",
+        );
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "platform-sized literal match diagnostics: {:#?}",
+            lowered.diagnostics
+        );
+        let verify_diagnostics = crate::verify_hir(&lowered.module);
+        assert!(
+            verify_diagnostics.is_empty(),
+            "platform-sized literal match verifier diagnostics: {verify_diagnostics:#?}"
+        );
+        assert_match_literal_ty(&lowered, "signed", &ResolvedTy::Isize);
+        assert_match_literal_ty(&lowered, "unsigned", &ResolvedTy::Usize);
+    }
+
+    fn assert_match_literal_ty(output: &LowerOutput, function_name: &str, expected: &ResolvedTy) {
+        let function = function_named(output, function_name);
+        let Some(tail) = &function.body.tail else {
+            panic!("expected `{function_name}` to have a match tail");
+        };
+        let HirExprKind::Match { arms, .. } = &tail.kind else {
+            panic!(
+                "expected `{function_name}` tail to be a match, got {:#?}",
+                tail.kind
+            );
+        };
+        let Some(first_arm) = arms.first() else {
+            panic!("expected `{function_name}` match to have a literal arm");
+        };
+        match &first_arm.predicate {
+            HirMatchArmPredicate::Literal {
+                lit: HirLiteral::Integer(5),
+                ty,
+            } => assert_eq!(ty, expected),
+            other => panic!("expected integer literal predicate, got {other:#?}"),
         }
     }
 

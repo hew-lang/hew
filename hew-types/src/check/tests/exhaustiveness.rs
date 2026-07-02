@@ -129,7 +129,7 @@ fn typecheck_integer_literal_missing_catchall_is_error_for_all_widths() {
 
 #[test]
 fn typecheck_integer_literal_with_catchall_is_exhaustive() {
-    for ty in ["i32", "u8"] {
+    for ty in ["i32", "u8", "isize", "usize"] {
         let (errors, warnings) = parse_and_check(&format!(
             "fn main() {{\n\
                  let x: {ty} = 1;\n\
@@ -152,6 +152,39 @@ fn typecheck_integer_literal_with_catchall_is_exhaustive() {
             "catch-all {ty} match must not warn as non-exhaustive: {warnings:?}"
         );
     }
+}
+
+#[test]
+fn unsupported_payload_subpattern_suppresses_non_exhaustive_follow_on() {
+    let (errors, warnings) = parse_and_check(
+        r"
+enum Color { Red; Blue }
+enum Packet { Data { value: Color }; Empty }
+fn f(p: Packet) -> i64 {
+    match p {
+        Packet::Data { value: Red } => 1,
+    }
+}",
+    );
+
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::UnsupportedPayloadSubpattern { .. })),
+        "expected unsupported payload subpattern root error, got: {errors:?}"
+    );
+    assert!(
+        errors
+            .iter()
+            .all(|e| !matches!(e.kind, TypeErrorKind::NonExhaustiveMatch)),
+        "unsupported payload subpattern must suppress non-exhaustive cascade: {errors:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .all(|w| !matches!(w.kind, TypeErrorKind::NonExhaustiveMatch)),
+        "unsupported payload subpattern must suppress non-exhaustive warnings: {warnings:?}"
+    );
 }
 
 #[test]

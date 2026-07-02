@@ -361,6 +361,9 @@ impl Checker {
         if matches!(scrutinee_ty, Ty::Error) {
             return;
         }
+        if self.has_unsupported_payload_subpattern_error_for_arms(arms) {
+            return;
+        }
         let scrutinee_ty = self.subst.resolve(scrutinee_ty);
         let scrutinee_ty = &scrutinee_ty;
 
@@ -559,6 +562,19 @@ impl Checker {
                 }
             }
         }
+    }
+
+    fn has_unsupported_payload_subpattern_error_for_arms(&self, arms: &[MatchArm]) -> bool {
+        self.errors.iter().any(|error| {
+            error.source_module == self.current_module
+                && matches!(
+                    error.kind,
+                    crate::error::TypeErrorKind::UnsupportedPayloadSubpattern { .. }
+                )
+                && arms.iter().any(|arm| {
+                    error.span.start >= arm.pattern.1.start && error.span.end <= arm.pattern.1.end
+                })
+        })
     }
 
     /// Emit a hard error for genuinely non-exhaustive enum-like matches (Option, Result,

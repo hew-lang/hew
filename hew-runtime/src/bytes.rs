@@ -25,7 +25,7 @@
 )]
 
 use crate::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS;
-use crate::trap_code::runtime_bounds_trap;
+use crate::trap_code::{fmt_decimal_i64, fmt_decimal_u64, runtime_bounds_trap};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Size of the header preceding the data region, in bytes.
@@ -452,10 +452,14 @@ pub unsafe extern "C" fn hew_bytes_set(triple: &mut BytesTriple, index: i64, byt
     if index < 0 || index >= i64::from(triple.len) || triple.ptr.is_null() {
         // SAFETY: this is the terminal set bounds path.
         unsafe {
-            bytes_bounds_trap(&format!(
-                "PANIC: bytes.set() index {index} out of bounds (len {})\n",
-                triple.len
-            ))
+            let mut index_buf = [0u8; 20];
+            let mut len_buf = [0u8; 20];
+            write_stderr(b"PANIC: bytes.set() index ");
+            write_stderr(fmt_decimal_i64(index, &mut index_buf));
+            write_stderr(b" out of bounds (len ");
+            write_stderr(fmt_decimal_u64(u64::from(triple.len), &mut len_buf));
+            write_stderr(b")\n");
+            runtime_bounds_trap(HEW_TRAP_INDEX_OUT_OF_BOUNDS);
         };
     }
 
@@ -970,18 +974,33 @@ pub unsafe extern "C" fn hew_bytes_abort_index_oob() -> ! {
 unsafe fn bytes_index_oob_trap(operation: &str, index: i64, len: u32) -> ! {
     // SAFETY: this is a terminal index bounds path.
     unsafe {
-        bytes_bounds_trap(&format!(
-            "PANIC: {operation} index {index} out of bounds (len {len})\n"
-        ))
+        let mut index_buf = [0u8; 20];
+        let mut len_buf = [0u8; 20];
+        write_stderr(b"PANIC: ");
+        write_stderr(operation.as_bytes());
+        write_stderr(b" index ");
+        write_stderr(fmt_decimal_i64(index, &mut index_buf));
+        write_stderr(b" out of bounds (len ");
+        write_stderr(fmt_decimal_u64(u64::from(len), &mut len_buf));
+        write_stderr(b")\n");
+        runtime_bounds_trap(HEW_TRAP_INDEX_OUT_OF_BOUNDS);
     }
 }
 
 unsafe fn bytes_slice_oob_trap(start: i64, end: i64, len: u32) -> ! {
     // SAFETY: this is a terminal slice bounds path.
     unsafe {
-        bytes_bounds_trap(&format!(
-            "PANIC: bytes slice range {start}..{end} out of bounds (len {len})\n"
-        ))
+        let mut start_buf = [0u8; 20];
+        let mut end_buf = [0u8; 20];
+        let mut len_buf = [0u8; 20];
+        write_stderr(b"PANIC: bytes slice range ");
+        write_stderr(fmt_decimal_i64(start, &mut start_buf));
+        write_stderr(b"..");
+        write_stderr(fmt_decimal_i64(end, &mut end_buf));
+        write_stderr(b" out of bounds (len ");
+        write_stderr(fmt_decimal_u64(u64::from(len), &mut len_buf));
+        write_stderr(b")\n");
+        runtime_bounds_trap(HEW_TRAP_INDEX_OUT_OF_BOUNDS);
     }
 }
 
@@ -1005,9 +1024,10 @@ pub unsafe extern "C" fn hew_bytes_abort_offset_overflow() -> ! {
 unsafe fn bytes_offset_overflow_trap(operation: &str) -> ! {
     // SAFETY: this is a terminal offset-overflow path.
     unsafe {
-        bytes_bounds_trap(&format!(
-            "PANIC: {operation} offset arithmetic overflow (u32)\n"
-        ))
+        write_stderr(b"PANIC: ");
+        write_stderr(operation.as_bytes());
+        write_stderr(b" offset arithmetic overflow (u32)\n");
+        runtime_bounds_trap(HEW_TRAP_INDEX_OUT_OF_BOUNDS);
     }
 }
 

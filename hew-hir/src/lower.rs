@@ -265,7 +265,7 @@ fn literal_match_supported(lit: &HirLiteral, ty: &ResolvedTy) -> bool {
 }
 
 fn literal_match_integer_ty(ty: &ResolvedTy) -> bool {
-    ty.is_integer() && !matches!(ty, ResolvedTy::Isize | ResolvedTy::Usize)
+    ty.is_integer()
 }
 
 impl TargetArch {
@@ -28653,6 +28653,54 @@ mod tests {
             args: vec![],
             builtin: None,
             is_opaque: false,
+        }
+    }
+
+    #[test]
+    fn match_integer_literals_use_platform_sized_scrutinee_type() {
+        let (_, _, lowered) = parse_typecheck_and_lower(
+            r"
+            fn signed(x: isize) -> i64 {
+                match x {
+                    5 => 1,
+                    _ => 0,
+                }
+            }
+
+            fn unsigned(x: usize) -> i64 {
+                match x {
+                    5 => 1,
+                    _ => 0,
+                }
+            }
+            ",
+        );
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "platform-sized literal match diagnostics: {:#?}",
+            lowered.diagnostics
+        );
+        assert_match_literal_ty(&lowered, "signed", &ResolvedTy::Isize);
+        assert_match_literal_ty(&lowered, "unsigned", &ResolvedTy::Usize);
+    }
+
+    fn assert_match_literal_ty(output: &LowerOutput, function_name: &str, expected: &ResolvedTy) {
+        let function = function_named(output, function_name);
+        let Some(tail) = &function.body.tail else {
+            panic!("expected `{function_name}` to have a match tail");
+        };
+        let HirExprKind::Match { arms, .. } = &tail.kind else {
+            panic!("expected `{function_name}` tail to be a match, got {:#?}", tail.kind);
+        };
+        let Some(first_arm) = arms.first() else {
+            panic!("expected `{function_name}` match to have a literal arm");
+        };
+        match &first_arm.predicate {
+            HirMatchArmPredicate::Literal {
+                lit: HirLiteral::Integer(5),
+                ty,
+            } => assert_eq!(ty, expected),
+            other => panic!("expected integer literal predicate, got {other:#?}"),
         }
     }
 

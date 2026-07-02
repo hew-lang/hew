@@ -371,7 +371,7 @@ impl Checker {
             // the trait-typed handler pid (`LocalPid<ConnectionHandler>`). A
             // `LocalPid<T>` is an opaque actor-ref pointer (`*mut HewActor`);
             // the inner type parameter is purely a compile-time tag used for
-            // `.tell`/`.ask` message typing and (for handler traits) for
+            // `.send`/`.ask` message typing and (for handler traits) for
             // msg_id synthesis. Narrowing a concrete-actor pid to a
             // handler-trait pid is therefore pointer-identical at runtime — no
             // vtable, no side-table entry, no representation change. Accept it

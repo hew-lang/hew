@@ -36,7 +36,7 @@ const NODE_STATE_STOPPED: u8 = 3;
 
 /// Remote-send rc returned by [`hew_node_send`] when the captured `RemotePid<T>`
 /// names a registration that has since been superseded — the `StaleRef`
-/// fail-closed boundary. The codegen tell-path maps this distinct rc to
+/// fail-closed boundary. The codegen send-path maps this distinct rc to
 /// `SendError::StaleRef`; every OTHER nonzero rc stays the generic routing
 /// failure. `pub` so the codegen cross-crate parity test pins its literal to
 /// this producer.
@@ -1480,11 +1480,11 @@ unsafe extern "C" fn node_inbound_router(
         // Fire-and-forget message — reconstruct the value into THIS node's
         // address space before delivering it to the local mailbox.
         // SAFETY: data is valid for `size` bytes (reader_loop contract).
-        unsafe { deliver_inbound_tell(target_actor_id, msg_type, data, size) };
+        unsafe { deliver_inbound_send(target_actor_id, msg_type, data, size) };
     }
 }
 
-/// Deliver an inbound fire-and-forget (`tell`) frame to its target actor's local
+/// Deliver an inbound fire-and-forget (`send`) frame to its target actor's local
 /// mailbox, reconstructing the value into THIS node's address space first. The
 /// inbound `data` is the serialized wire form; feeding it raw to the mailbox
 /// would make the actor handler dereference sender-side heap pointers and crash.
@@ -1496,7 +1496,7 @@ unsafe extern "C" fn node_inbound_router(
 ///
 /// # Safety
 /// `data` must be valid for `size` bytes (or null when `size == 0`).
-unsafe fn deliver_inbound_tell(target_actor_id: u64, msg_type: i32, data: *mut u8, size: usize) {
+unsafe fn deliver_inbound_send(target_actor_id: u64, msg_type: i32, data: *mut u8, size: usize) {
     if size == 0 {
         // Local delivery into THIS node's mailbox — no cross-node encode, so no
         // codec key needed (null dispatch).
@@ -1522,7 +1522,7 @@ unsafe fn deliver_inbound_tell(target_actor_id: u64, msg_type: i32, data: *mut u
         // never existed). No dispatch pointer resolvable → no codec selectable →
         // drop the message fail-closed rather than fabricate a key.
         set_last_error(format!(
-            "cross-node tell dropped: target actor {target_actor_id} not live \
+            "cross-node send dropped: target actor {target_actor_id} not live \
              for msg_type={msg_type}"
         ));
         return;
@@ -1533,7 +1533,7 @@ unsafe fn deliver_inbound_tell(target_actor_id: u64, msg_type: i32, data: *mut u
     if value.is_null() {
         // No codec or decode failure — drop the message fail-closed.
         set_last_error(format!(
-            "cross-node tell dropped: no codec or decode failure for msg_type={msg_type}"
+            "cross-node send dropped: no codec or decode failure for msg_type={msg_type}"
         ));
         return;
     }
@@ -5475,7 +5475,7 @@ mod tests {
             assert_eq!(hew_node_stop(node.as_ptr()), 0);
         }
         crate::registry::hew_registry_clear();
-        assert!(delivered, "server did not observe two-process tell");
+        assert!(delivered, "server did not observe two-process send");
     }
 
     fn run_registry_gossip_client_helper() {
@@ -5527,7 +5527,7 @@ mod tests {
                 0,
             )
         };
-        assert_eq!(rc, 0, "client tell send");
+        assert_eq!(rc, 0, "client remote send");
 
         // SAFETY: node is owned by this helper process.
         unsafe {

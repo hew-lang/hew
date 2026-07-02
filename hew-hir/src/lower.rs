@@ -6849,7 +6849,7 @@ impl LowerCtx {
             // dispatches on it, never on the callee string. Deliberately
             // narrow: only the families whose intercepts are family-keyed
             // today (`Node::lookup` and the `HashMap::new` / `HashSet::new`
-            // constructor surface forms — `pid.tell` / `conn.attach` and
+            // constructor surface forms — `pid.send` / `conn.attach` and
             // the channel/stream layout entries arrive typed through the
             // checker's method-call rewrites instead). Widening this to
             // every catalog-named row (e.g. the math intrinsic names)
@@ -20480,7 +20480,7 @@ impl LowerCtx {
             }) => {
                 // S5: a method-call rewrite that lands on a builtin-generic
                 // enum result type (e.g. `Result<(), SendError>` for
-                // `RemotePid<T>::tell`) needs the per-instantiation enum
+                // `RemotePid<T>::send`) needs the per-instantiation enum
                 // layout registered here. Unlike struct-ctor/variant-ctor/
                 // match-scrutinee paths — which already invoke
                 // `try_register_enum_instantiation` — the rewrite arm builds

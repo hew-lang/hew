@@ -6955,7 +6955,7 @@ impl Checker {
                         };
                         if matches!(method, "send" | "ask") {
                             // `RemotePid<T>::send` / `::ask` route to the native
-                            // mesh transport (`hew_remote_pid_tell` →
+                            // mesh transport (`hew_remote_pid_send` →
                             // `hew_actor_send_by_id`), which is not compiled for
                             // wasm32. Reject at check time so remote messaging
                             // fails closed with a structured diagnostic instead
@@ -6982,7 +6982,7 @@ impl Checker {
                         if method == "send" {
                             // S5: real RemotePid<T>::send lowering. Record a
                             // direct-call rewrite so HIR/MIR lower the call
-                            // to `hew_remote_pid_tell`, which codegen
+                            // to `hew_remote_pid_send`, which codegen
                             // intercepts and lowers to the
                             // `hew_actor_send_by_id` runtime ABI plus a
                             // `Result<(), SendError>` construction. The
@@ -6994,16 +6994,16 @@ impl Checker {
                             self.method_call_rewrites.insert(
                                 SpanKey::in_module(span, self.current_module_idx),
                                 MethodCallRewrite::RewriteToFunction {
-                                    c_symbol: "hew_remote_pid_tell".to_string(),
+                                    c_symbol: "hew_remote_pid_send".to_string(),
                                     // Closed runtime call dispatched by callee-
                                     // name intercept in codegen; the substrate
                                     // enumerates this family.
                                     descriptor: Some(
                                         crate::runtime_call::RuntimeCallDescriptor::new(
-                                            crate::runtime_call::RuntimeCallFamily::RemotePidTell,
+                                            crate::runtime_call::RuntimeCallFamily::RemotePidSend,
                                             None,
                                         )
-                                        .expect("RemotePidTell rejects elem"),
+                                        .expect("RemotePidSend rejects elem"),
                                     ),
                                     elem_ty: None,
                                     // Fire-and-forget send; borrows the pid

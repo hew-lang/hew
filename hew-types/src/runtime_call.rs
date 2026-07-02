@@ -387,13 +387,13 @@ pub enum RuntimeCallFamily {
     RegexHandle,
     RegexMatch,
 
-    // --- RemotePid<T>::tell intercept --------------------------------------
-    // Pre-staged for codegen-intercept consumers: `pid.tell(msg)` on a
-    // `RemotePid<T>` receiver dispatches via the `hew_remote_pid_tell`
+    // --- RemotePid<T>::send intercept --------------------------------------
+    // Pre-staged for codegen-intercept consumers: `pid.send(msg)` on a
+    // `RemotePid<T>` receiver dispatches via the `hew_remote_pid_send`
     // callee-name intercept (`hew-codegen-rs/src/llvm.rs:25649`); it
     // does NOT call that symbol directly (codegen emits the
     // `hew_actor_send_by_id` sequence + `Result<(), SendError>` wrapping
-    // in-place). The catalog declares `hew_remote_pid_tell` with linkage
+    // in-place). The catalog declares `hew_remote_pid_send` with linkage
     // `BuiltinLinkage::CalleeNameDispatchOnly` so the symbol is a real
     // callee identity but has no extern body.
     //
@@ -403,7 +403,7 @@ pub enum RuntimeCallFamily {
     // lowers to `Terminator::RemoteAsk` — there is no callee-name string
     // anywhere in that path, so it does not belong in a runtime-call
     // descriptor catalog.
-    RemotePidTell,
+    RemotePidSend,
 
     // --- Reply channel surface (select{} actor-ask arm) ---------------------
     ReplyChannelCancel,
@@ -509,7 +509,7 @@ impl RuntimeCallFamily {
     /// For families whose symbols are in `MIR_EMITTER_RUNTIME_SYMBOLS`,
     /// the returned string is allowlist-recognised (consumer
     /// invariant). For pre-staged families (Channel, Stream, Sink,
-    /// Node, Math, `RemotePidTell`, `RemoteActorAsk`, `TcpAttachLocal`), the
+    /// Node, Math, `RemotePidSend`, `RemoteActorAsk`, `TcpAttachLocal`), the
     /// returned string is the codegen `Terminator::Call` intercept
     /// callee name; a follow-up wires those producers and folds them into the
     /// allowlist.
@@ -669,8 +669,8 @@ impl RuntimeCallFamily {
             Self::RegexFreeCapture => "hew_regex_free_capture",
             Self::RegexHandle => "hew_regex_handle",
             Self::RegexMatch => "hew_regex_match",
-            // RemotePid<T>::tell intercept
-            Self::RemotePidTell => "hew_remote_pid_tell",
+            // RemotePid<T>::send intercept
+            Self::RemotePidSend => "hew_remote_pid_send",
             // Reply channel
             Self::ReplyChannelCancel => "hew_reply_channel_cancel",
             Self::ReplyChannelFree => "hew_reply_channel_free",
@@ -922,8 +922,8 @@ impl RuntimeCallFamily {
             "hew_regex_free_capture" => Self::RegexFreeCapture,
             "hew_regex_handle" => Self::RegexHandle,
             "hew_regex_match" => Self::RegexMatch,
-            // RemotePid<T>::tell intercept
-            "hew_remote_pid_tell" => Self::RemotePidTell,
+            // RemotePid<T>::send intercept
+            "hew_remote_pid_send" => Self::RemotePidSend,
             // Reply channel
             "hew_reply_channel_cancel" => Self::ReplyChannelCancel,
             "hew_reply_channel_free" => Self::ReplyChannelFree,
@@ -1195,7 +1195,7 @@ impl RuntimeCallFamily {
             | F::RegexFreeCapture
             | F::RegexHandle
             | F::RegexMatch
-            | F::RemotePidTell
+            | F::RemotePidSend
             | F::ReplyChannelCancel
             | F::ReplyChannelFree
             | F::ReplyChannelNew
@@ -1596,7 +1596,7 @@ pub fn all_runtime_drop_descriptors() -> [RuntimeDropDescriptor; 10] {
 }
 
 /// Families pre-staged (Channel, Stream, Sink, `Node::lookup`,
-/// math intrinsics, `RemotePidTell`, `RemoteActorAsk`, `TcpAttachLocal`,
+/// math intrinsics, `RemotePidSend`, `RemoteActorAsk`, `TcpAttachLocal`,
 /// the `HashMap::new` / `HashSet::new` constructor surface forms, and
 /// the `keys()` / `values()` projection ops).
 /// Their `c_symbol()` is NOT in `MIR_EMITTER_RUNTIME_SYMBOLS` today
@@ -1622,7 +1622,7 @@ pub fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
             | F::HashSetNew
             | F::MathIntrinsic(_)
             | F::NodeLookup
-            | F::RemotePidTell
+            | F::RemotePidSend
             | F::SinkClose
             | F::SinkWrite(_)
             | F::SinkTryWrite(_)

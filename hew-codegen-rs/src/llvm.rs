@@ -1164,7 +1164,7 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::RegexFreeCapture
         | F::RegexHandle
         | F::RegexMatch
-        | F::RemotePidTell
+        | F::RemotePidSend
         | F::ReplyChannelCancel
         | F::ReplyChannelFree
         | F::ReplyChannelNew
@@ -27958,7 +27958,7 @@ fn remote_actor_dispatch_ptr<'ctx>(
 /// Resolve the target actor TYPE name `T` from a `RemotePid<T>` pid place, then
 /// its dispatch global ptr (the `(dispatch, msg_type)` cross-node codec key for
 /// the originating remote ask). Mirrors the `RemotePid<T>` unwrap in
-/// `emit_remote_pid_tell_call`.
+/// `emit_remote_pid_send_call`.
 pub(crate) fn remote_ask_dispatch_ptr<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     pid_place: Place,
@@ -27983,11 +27983,11 @@ pub(crate) fn remote_ask_dispatch_ptr<'ctx>(
     remote_actor_dispatch_ptr(fn_ctx, &actor_name)
 }
 
-/// Emit the call sequence for `RemotePid<T>::tell(pid, msg) -> Result<(), SendError>`.
+/// Emit the call sequence for `RemotePid<T>::send(pid, msg) -> Result<(), SendError>`.
 ///
-/// The checker rewrites `pid.tell(msg)` on a `RemotePid<T>` receiver into a
-/// direct call to `hew_remote_pid_tell` (see hew-types::check::methods); the
-/// HIR catalog entry (CompilerIntrinsic) satisfies fn_registry. This function
+/// The checker rewrites `pid.send(msg)` on a `RemotePid<T>` receiver into a
+/// direct call to `hew_remote_pid_send` (see hew-types::check::methods); the
+/// HIR catalog entry satisfies fn_registry. This function
 /// is the codegen interception that replaces the direct call with a
 /// hew_actor_send_by_id call sequence plus user-visible Result construction.
 ///
@@ -28013,7 +28013,7 @@ pub(crate) fn remote_ask_dispatch_ptr<'ctx>(
 ///
 /// Dispatch is by callee name (not a new `FnSymbol` variant), matching the
 /// Node::lookup precedent (R82-era generalisation).
-fn emit_remote_pid_tell_call<'ctx>(
+fn emit_remote_pid_send_call<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     args: &[Place],
     dest: Option<&Place>,
@@ -28021,13 +28021,13 @@ fn emit_remote_pid_tell_call<'ctx>(
 ) -> CodegenResult<()> {
     let [pid_arg, msg_arg] = args else {
         return Err(CodegenError::FailClosed(format!(
-            "hew_remote_pid_tell expects exactly 2 arguments (pid, msg), got {}",
+            "hew_remote_pid_send expects exactly 2 arguments (pid, msg), got {}",
             args.len()
         )));
     };
     let dest_place = dest.ok_or_else(|| {
         CodegenError::FailClosed(
-            "hew_remote_pid_tell must carry a Terminator::Call dest \
+            "hew_remote_pid_send must carry a Terminator::Call dest \
              (Result<(), SendError> return value)"
                 .into(),
         )
@@ -28036,7 +28036,7 @@ fn emit_remote_pid_tell_call<'ctx>(
         Place::Local(id) => *id,
         other => {
             return Err(CodegenError::FailClosed(format!(
-                "hew_remote_pid_tell dest must be Place::Local(_), got {other:?}"
+                "hew_remote_pid_send dest must be Place::Local(_), got {other:?}"
             )));
         }
     };
@@ -28050,7 +28050,7 @@ fn emit_remote_pid_tell_call<'ctx>(
         ResolvedTy::Named { name, args, .. } if name == "RemotePid" => {
             let inner = args.first().ok_or_else(|| {
                 CodegenError::FailClosed(
-                    "hew_remote_pid_tell pid arg `RemotePid<T>` is missing its T type \
+                    "hew_remote_pid_send pid arg `RemotePid<T>` is missing its T type \
                      parameter"
                         .into(),
                 )
@@ -28059,7 +28059,7 @@ fn emit_remote_pid_tell_call<'ctx>(
                 ResolvedTy::Named { name: t_name, .. } => t_name.clone(),
                 other => {
                     return Err(CodegenError::FailClosed(format!(
-                        "hew_remote_pid_tell: RemotePid<T> inner T must be a named actor \
+                        "hew_remote_pid_send: RemotePid<T> inner T must be a named actor \
                          type, got {other:?}"
                     )));
                 }
@@ -28067,7 +28067,7 @@ fn emit_remote_pid_tell_call<'ctx>(
         }
         other => {
             return Err(CodegenError::FailClosed(format!(
-                "hew_remote_pid_tell pid arg must have resolved type \
+                "hew_remote_pid_send pid arg must have resolved type \
                  ResolvedTy::Named {{ name: \"RemotePid\", .. }}, got {other:?}"
             )));
         }
@@ -28079,7 +28079,7 @@ fn emit_remote_pid_tell_call<'ctx>(
         .find(|layout| layout.name == actor_name)
         .ok_or_else(|| {
             CodegenError::FailClosed(format!(
-                "hew_remote_pid_tell: no ActorLayout for `{actor_name}` (RemotePid<T> \
+                "hew_remote_pid_send: no ActorLayout for `{actor_name}` (RemotePid<T> \
                  receiver T)"
             ))
         })?;
@@ -28100,7 +28100,7 @@ fn emit_remote_pid_tell_call<'ctx>(
                 h.param_tys.len() > 1 && h.param_tys.first().is_some_and(|p| *p == msg_ty)
             }) {
                 return CodegenError::FailClosed(format!(
-                    "E_REMOTE_PAYLOAD_UNSUPPORTED: remote tell on `{actor_name}` would \
+                    "E_REMOTE_PAYLOAD_UNSUPPORTED: remote send on `{actor_name}` would \
                      dispatch to multi-parameter receive fn `{}` ({} parameters); a \
                      remote send carries one message value and the cross-node codec is \
                      not seeded for packed multi-arg payloads. Declare a \
@@ -28111,7 +28111,7 @@ fn emit_remote_pid_tell_call<'ctx>(
                 ));
             }
             CodegenError::FailClosed(format!(
-                "hew_remote_pid_tell: actor `{actor_name}` has no receive handler whose \
+                "hew_remote_pid_send: actor `{actor_name}` has no receive handler whose \
                  first param type matches the msg type `{msg_ty:?}` (handlers: {:?})",
                 actor_layout
                     .handlers
@@ -28130,18 +28130,18 @@ fn emit_remote_pid_tell_call<'ctx>(
     let (pid_slot, pid_slot_ty) = place_pointer(fn_ctx, *pid_arg)?;
     if !matches!(pid_slot_ty, BasicTypeEnum::IntType(t) if t.get_bit_width() == 64) {
         return Err(CodegenError::FailClosed(format!(
-            "hew_remote_pid_tell: RemotePid<T> slot must be i64, got {pid_slot_ty:?}"
+            "hew_remote_pid_send: RemotePid<T> slot must be i64, got {pid_slot_ty:?}"
         )));
     }
     let pid_val = fn_ctx
         .builder
-        .build_load(pid_slot_ty, pid_slot, "remote_tell_pid")
+        .build_load(pid_slot_ty, pid_slot, "remote_send_pid")
         .llvm_ctx("load RemotePid u64")?
         .into_int_value();
 
     // Extract the msg payload pointer and byte size from the msg arg's place.
     let (payload_ptr, payload_size) =
-        actor_payload_ptr_size(fn_ctx, *msg_arg, "remote_tell_payload")?;
+        actor_payload_ptr_size(fn_ctx, *msg_arg, "remote_send_payload")?;
 
     // Resolve the TARGET actor type's dispatch global — the `(dispatch,
     // msg_type)` cross-node serialize codec key. The codec seeder registered
@@ -28178,7 +28178,7 @@ fn emit_remote_pid_tell_call<'ctx>(
                 payload_ptr.into(),
                 payload_size.into(),
             ],
-            "remote_tell_rc",
+            "remote_send_rc",
         )
         .llvm_ctx("hew_actor_send_by_id call")?
         .try_as_basic_value()
@@ -28191,25 +28191,25 @@ fn emit_remote_pid_tell_call<'ctx>(
     let zero32 = i32_ty.const_zero();
     let is_ok = fn_ctx
         .builder
-        .build_int_compare(IntPredicate::EQ, rc, zero32, "remote_tell_is_ok")
-        .llvm_ctx("remote_tell icmp")?;
+        .build_int_compare(IntPredicate::EQ, rc, zero32, "remote_send_is_ok")
+        .llvm_ctx("remote_send icmp")?;
 
     let parent = fn_ctx
         .builder
         .get_insert_block()
         .and_then(|bb| bb.get_parent())
         .ok_or_else(|| {
-            CodegenError::FailClosed("hew_remote_pid_tell call has no parent function".into())
+            CodegenError::FailClosed("hew_remote_pid_send call has no parent function".into())
         })?;
-    let ok_bb = fn_ctx.ctx.append_basic_block(parent, "remote_tell_ok_bb");
-    let err_bb = fn_ctx.ctx.append_basic_block(parent, "remote_tell_err_bb");
+    let ok_bb = fn_ctx.ctx.append_basic_block(parent, "remote_send_ok_bb");
+    let err_bb = fn_ctx.ctx.append_basic_block(parent, "remote_send_err_bb");
     fn_ctx
         .builder
         .build_conditional_branch(is_ok, ok_bb, err_bb)
-        .llvm_ctx("remote_tell condbr")?;
+        .llvm_ctx("remote_send condbr")?;
 
     let next_bb = *fn_ctx.blocks.get(&next).ok_or_else(|| {
-        CodegenError::FailClosed(format!("hew_remote_pid_tell next bb{next} missing"))
+        CodegenError::FailClosed(format!("hew_remote_pid_send next bb{next} missing"))
     })?;
 
     // --- Ok branch: tag=0, payload = `()` (no field store) -------------------
@@ -28219,7 +28219,7 @@ fn emit_remote_pid_tell_call<'ctx>(
         BasicTypeEnum::IntType(t) => t,
         other => {
             return Err(CodegenError::FailClosed(format!(
-                "hew_remote_pid_tell dest Result tag type is not an integer: {other:?}"
+                "hew_remote_pid_send dest Result tag type is not an integer: {other:?}"
             )));
         }
     };
@@ -28230,7 +28230,7 @@ fn emit_remote_pid_tell_call<'ctx>(
     fn_ctx
         .builder
         .build_unconditional_branch(next_bb)
-        .llvm_ctx("remote_tell ok br next")?;
+        .llvm_ctx("remote_send ok br next")?;
 
     // --- Err branch: tag=1, payload = SendError::<mapped> --------------------
     fn_ctx.builder.position_at_end(err_bb);
@@ -28239,7 +28239,7 @@ fn emit_remote_pid_tell_call<'ctx>(
         BasicTypeEnum::IntType(t) => t,
         other => {
             return Err(CodegenError::FailClosed(format!(
-                "hew_remote_pid_tell dest Result tag type is not an integer: {other:?}"
+                "hew_remote_pid_send dest Result tag type is not an integer: {other:?}"
             )));
         }
     };
@@ -28260,8 +28260,8 @@ fn emit_remote_pid_tell_call<'ctx>(
     let stale_rc = rc.get_type().const_int(HEW_ERR_STALE_REF as u64, true);
     let is_stale = fn_ctx
         .builder
-        .build_int_compare(IntPredicate::EQ, rc, stale_rc, "remote_tell_is_stale")
-        .llvm_ctx("remote_tell stale icmp")?;
+        .build_int_compare(IntPredicate::EQ, rc, stale_rc, "remote_send_is_stale")
+        .llvm_ctx("remote_send stale icmp")?;
     let send_err_disc = |ity: inkwell::types::IntType<'ctx>| -> CodegenResult<IntValue<'ctx>> {
         // SendError::StaleRef = 4, SendError::NodeRoutingNotWired = 2.
         let stale = ity.const_int(4, false);
@@ -28298,12 +28298,12 @@ fn emit_remote_pid_tell_call<'ctx>(
             fn_ctx
                 .builder
                 .build_unconditional_branch(next_bb)
-                .llvm_ctx("remote_tell err br next")?;
+                .llvm_ctx("remote_send err br next")?;
             return Ok(());
         }
         other => {
             return Err(CodegenError::FailClosed(format!(
-                "hew_remote_pid_tell Err payload (SendError) must be a struct or int, \
+                "hew_remote_pid_send Err payload (SendError) must be a struct or int, \
                  got {other:?}"
             )));
         }
@@ -28335,7 +28335,7 @@ fn emit_remote_pid_tell_call<'ctx>(
     fn_ctx
         .builder
         .build_unconditional_branch(next_bb)
-        .llvm_ctx("remote_tell err br next")?;
+        .llvm_ctx("remote_send err br next")?;
 
     Ok(())
 }
@@ -28345,7 +28345,7 @@ fn emit_remote_pid_tell_call<'ctx>(
 /// The checker rewrites `conn.attach(handler)` on a `net.Connection` receiver
 /// to a direct `hew_tcp_attach_local(conn, handler)` call (see
 /// hew-types::check::methods); this is the codegen interception, mirroring
-/// `emit_remote_pid_tell_call`.
+/// `emit_remote_pid_send_call`.
 ///
 /// Lowering:
 ///   * Resolve the concrete actor type `A` from `args[1]`'s recorded
@@ -28364,7 +28364,7 @@ fn emit_remote_pid_tell_call<'ctx>(
 ///     (the runtime records the failure in last_error and the fail-closed
 ///     mailbox guard already rejected leak-prone mailboxes at type-check via
 ///     the runtime). Dispatch is by callee name (no new FnSymbol variant),
-///     matching the `hew_remote_pid_tell` precedent.
+///     matching the `hew_remote_pid_send` precedent.
 fn emit_tcp_attach_local_call<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>, args: &[Place]) -> CodegenResult<()> {
     let [conn_arg, handler_arg] = args else {
         return Err(CodegenError::FailClosed(format!(
@@ -29066,8 +29066,8 @@ pub(crate) fn emit_node_lookup_call<'ctx>(
 // substrate — no new GEP plumbing.
 //
 // Precedents these helpers unify (per W2.004 Stage-0 audit §C):
-//   - `emit_remote_pid_tell_call` Ok-arm `llvm.rs:~7533-7551` — `emit_result_ok`
-//   - `emit_remote_pid_tell_call` Err-arm `llvm.rs:~7553-7641` — `emit_result_err`
+//   - `emit_remote_pid_send_call` Ok-arm `llvm.rs:~7533-7551` — `emit_result_ok`
+//   - `emit_remote_pid_send_call` Err-arm `llvm.rs:~7553-7641` — `emit_result_err`
 //   - `emit_node_lookup_call`     Ok-arm `llvm.rs:~7783-7819` — `emit_result_ok`
 //   - `emit_node_lookup_call`     Err-arm `llvm.rs:~7747-7781` — `emit_result_err`
 //   - `Instr::RecordInit` `lower_record_init` — `emit_struct_literal`
@@ -29111,7 +29111,7 @@ pub(crate) fn emit_node_lookup_call<'ctx>(
 /// { local, .. }` against this id.
 ///
 /// Only `Place::Local(_)` is accepted today — the same constraint the
-/// existing bespoke `emit_remote_pid_tell_call` / `emit_node_lookup_call`
+/// existing bespoke `emit_remote_pid_send_call` / `emit_node_lookup_call`
 /// precedents enforce (`llvm.rs:~7395, ~7700`). `Place::ReturnSlot`
 /// composites are constructed via a temporary local + a final `Move`,
 /// not directly — keeping the projection arithmetic uniform.
@@ -29205,7 +29205,7 @@ fn copy_into_variant_field(
 /// via the existing `MachineTag` / `MachineVariant` projections). The
 /// helper stores `tag = 0` (Ok arm) and copies `payload` (when present)
 /// into the Ok-variant's field 0 — matching both the Stage-0 audit
-/// precedents (`emit_remote_pid_tell_call` Ok-arm with `payload = None`,
+/// precedents (`emit_remote_pid_send_call` Ok-arm with `payload = None`,
 /// `emit_node_lookup_call` Ok-arm with `payload = Some(rc_local)`).
 ///
 /// Multi-field Ok-variant payloads are not in current scope: the Result
@@ -30128,22 +30128,22 @@ fn lower_terminator<'ctx>(
                 emit_node_lookup_call(fn_ctx, fn_symbols, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
-            // `hew_remote_pid_tell` is the checker's MethodCallRewrite target
-            // for `pid.tell(msg)` on a `RemotePid<T>` receiver.  The catalog
+            // `hew_remote_pid_send` is the checker's MethodCallRewrite target
+            // for `pid.send(msg)` on a `RemotePid<T>` receiver.  The catalog
             // entry uses `BuiltinLinkage::CalleeNameDispatchOnly` (a fieldless
             // variant — no `symbol` field) so no LLVM extern is declared.
             // Membership in MIR's `module_fn_names` comes from the
             // non-`CompilerIntrinsic` filter at `hew-mir/src/lower.rs:761-767`,
             // which inserts every catalog entry whose linkage is not
             // `CompilerIntrinsic { .. }`.  Codegen intercepts on the carried
-            // `RuntimeCallFamily::RemotePidTell` here (in the
+            // `RuntimeCallFamily::RemotePidSend` here (in the
             // `Terminator::Call` lowering arm) and emits the real
             // `hew_actor_send_by_id` sequence plus the user-visible
             // `Result<(), SendError>` construction in-place.
             // Dispatch is family-keyed (no new `FnSymbol::*Pid*` variant),
             // matching the R82-era Node::lookup precedent.
-            if *builtin == Some(RtFamily::RemotePidTell) {
-                emit_remote_pid_tell_call(fn_ctx, args, dest.as_ref(), *next)?;
+            if *builtin == Some(RtFamily::RemotePidSend) {
+                emit_remote_pid_send_call(fn_ctx, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
             // `hew_tcp_attach_local` is the checker's MethodCallRewrite target
@@ -30151,7 +30151,7 @@ fn lower_terminator<'ctx>(
             // resolves the concrete actor from the handler's `LocalPid<A>`,
             // synthesises the `on_data` / `on_close` msg_ids, and emits the
             // 4-arg runtime attach ABI. Dispatch is on the carried family,
-            // matching the `hew_remote_pid_tell` precedent. `attach` returns
+            // matching the `hew_remote_pid_send` precedent. `attach` returns
             // Unit, so any `dest` would be a checker-boundary bug — fail
             // closed.
             if *builtin == Some(RtFamily::TcpAttachLocal) {
@@ -30186,7 +30186,7 @@ fn lower_terminator<'ctx>(
             // payload — never from the symbol name; the runtime decodes the
             // element directly into the Option's Some payload slot and the
             // return code selects the tag. Dispatch on the carried family,
-            // mirroring the `Node::lookup` / `hew_remote_pid_tell` precedent.
+            // mirroring the `Node::lookup` / `hew_remote_pid_send` precedent.
             if matches!(
                 builtin,
                 Some(
@@ -30307,7 +30307,7 @@ fn lower_terminator<'ctx>(
                     if matches!(
                         family,
                         RtFamily::NodeLookup
-                            | RtFamily::RemotePidTell
+                            | RtFamily::RemotePidSend
                             | RtFamily::TcpAttachLocal
                             | RtFamily::StreamNextLayout
                             | RtFamily::StreamTryNextLayout
@@ -31512,7 +31512,7 @@ fn lower_terminator<'ctx>(
             // on a dead actor.
             // `Terminator::Send` targets a LOCAL actor handle (`LocalPid`);
             // it delivers into a local mailbox and never reaches the cross-node
-            // serialize path (that is the `RemotePid<T>` `emit_remote_pid_tell_call`
+            // serialize path (that is the `RemotePid<T>` `emit_remote_pid_send_call`
             // spine). So the `(dispatch, msg_type)` codec key is irrelevant here —
             // pass a null dispatch, which the local send path ignores.
             let null_dispatch = fn_ctx.ctx.ptr_type(AddressSpace::default()).const_null();
@@ -35161,7 +35161,7 @@ fn module_uses_metric_authority(raw_mir: &[RawMirFunction]) -> bool {
 /// shutdown phase, user metrics) is never touched before the runtime is
 /// installed — the de-globalized `rt_current()` fails closed
 /// (`hew-runtime/src/runtime.rs`) rather than lazily fabricating one, so a
-/// program that calls `Node::start`, `metrics.counter(..)`, or `pid.tell(..)`
+/// program that calls `Node::start`, `metrics.counter(..)`, or `pid.send(..)`
 /// before its first `spawn` site (which also calls `hew_sched_init`) would
 /// otherwise trap.
 /// `hew_sched_init` is idempotent (a second call CAS-fails to a no-op), so the
@@ -36893,7 +36893,7 @@ fn lower_function<'ctx>(
     // Install the default `RuntimeInner` at the native `main` entry for any
     // runtime-using program. The de-globalized runtime (#1228 M1) makes
     // `rt_current()` fail closed when no runtime is installed: a program that
-    // touches a runtime authority — `Node::start`, `pid.tell(..)` via
+    // touches a runtime authority — `Node::start`, `pid.send(..)` via
     // `hew_actor_send_by_id`, the implicit drain epilogue — BEFORE its first
     // `spawn` site (the other place that calls `hew_sched_init`) would trap.
     // Installing once in the prologue removes that ordering hazard. The runtime
@@ -37952,7 +37952,7 @@ fn build_module_for_target<'ctx>(
     // `main`-entry runtime install (#1228 M1): when true, `main` calls
     // `hew_sched_init` in its prologue so the de-globalized `RuntimeInner` is
     // installed before any authority is touched (node setup before the first
-    // spawn, a remote `pid.tell` with no spawn site at all, metrics registry
+    // spawn, a remote `pid.send` with no spawn site at all, metrics registry
     // registration/mutation, the implicit drain epilogue).
     let module_uses_runtime = !pipeline.actor_layouts.is_empty()
         || !pipeline.supervisor_layouts.is_empty()
@@ -46136,7 +46136,7 @@ mod tests {
     // substrate
     //
     // The helpers are private to `llvm.rs` and have no in-tree consumers in
-    // Stage 1 (Stage 2 refactors `emit_remote_pid_tell_call` /
+    // Stage 1 (Stage 2 refactors `emit_remote_pid_send_call` /
     // `emit_node_lookup_call` to call them; Stage 3 wires MIR producers for
     // SendHalf / RecvHalf place lowering). To exercise the helpers directly
     // we synthesise a minimal LLVM `Context` + `Module` + `Builder` + an

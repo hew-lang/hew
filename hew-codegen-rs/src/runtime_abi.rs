@@ -3515,7 +3515,7 @@ pub(crate) fn lower_call_runtime_abi(
         | F::NodeLookup
         | F::RcNew
         | F::RegexCompile
-        | F::RemotePidTell
+        | F::RemotePidSend
         | F::ReplyChannelCancel
         | F::ReplyChannelFree
         | F::ReplyChannelNew

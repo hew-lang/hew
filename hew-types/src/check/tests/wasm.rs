@@ -1318,7 +1318,7 @@ fn main() {
     // The `Node::*` cluster API (`start`, `connect`, `load_keys`, `register`,
     // `lookup`, …) and `RemotePid<T>::send` / `RemotePid<T>::ask` remote
     // messaging lower to the native mesh transport (`hew_node_api_*` /
-    // `hew_remote_pid_tell`), which is not compiled for wasm32.  Without a
+    // `hew_remote_pid_send`), which is not compiled for wasm32.  Without a
     // check-time gate the checker admitted these on wasm32 and codegen emitted a
     // module importing an undefined `env::hew_node_api_*` symbol that fails at
     // instantiation (admit-then-abort).  They must fail closed AT CHECK, like

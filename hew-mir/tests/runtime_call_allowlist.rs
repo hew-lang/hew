@@ -130,12 +130,12 @@ fn drop_descriptor_symbols_in_allowlist_or_pre_staged() {
 fn every_c_symbol_resolves_to_a_real_symbol() {
     // Callee-name dispatch intercepts in codegen — real identities used
     // by `Terminator::Call` matching in `hew-codegen-rs/src/llvm.rs`
-    // (Channel/Stream/Sink pre-staged, RemotePidTell
+    // (Channel/Stream/Sink pre-staged, RemotePidSend
     // `CalleeNameDispatchOnly` linkage in `hew-hir/src/stdlib_catalog.rs`,
     // `Node::lookup`, TCP attach).
     let codegen_intercepts: HashSet<&'static str> = [
         "Node::lookup",
-        "hew_remote_pid_tell",
+        "hew_remote_pid_send",
         "hew_tcp_attach_local",
         "hew_sink_write_bytes",
         "hew_sink_try_write_bytes",

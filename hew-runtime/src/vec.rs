@@ -31,7 +31,7 @@ pub use hew_cabi::vec::{
 };
 
 use crate::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS;
-use crate::trap_code::runtime_bounds_trap;
+use crate::trap_code::{fmt_decimal_usize, runtime_bounds_trap};
 use core::ffi::{c_char, c_void};
 use core::ptr;
 
@@ -111,8 +111,15 @@ unsafe fn ensure_cap_raw(v: *mut HewVec, needed: usize) {
 unsafe fn abort_oob(operation: &str, index: usize, len: usize) -> ! {
     // SAFETY: writing to stderr and trapping is always safe on this failure path.
     unsafe {
-        let msg = format!("PANIC: {operation} index {index} out of bounds (len {len})\n");
-        write_stderr(msg.as_bytes());
+        let mut index_buf = [0u8; 20];
+        let mut len_buf = [0u8; 20];
+        write_stderr(b"PANIC: ");
+        write_stderr(operation.as_bytes());
+        write_stderr(b" index ");
+        write_stderr(fmt_decimal_usize(index, &mut index_buf));
+        write_stderr(b" out of bounds (len ");
+        write_stderr(fmt_decimal_usize(len, &mut len_buf));
+        write_stderr(b")\n");
         runtime_bounds_trap(HEW_TRAP_INDEX_OUT_OF_BOUNDS);
     }
 }
@@ -3624,9 +3631,9 @@ mod tests {
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     fn _helper_vec_pop_i32_empty() {
-        if std::env::var("HEW_DEATH_TEST")
-            .map_or(true, |value| value != "vec::tests::_helper_vec_pop_i32_empty")
-        {
+        if std::env::var("HEW_DEATH_TEST").map_or(true, |value| {
+            value != "vec::tests::_helper_vec_pop_i32_empty"
+        }) {
             return;
         }
         // SAFETY: FFI calls use a valid vec; the pop is intentionally empty.
@@ -3662,9 +3669,9 @@ mod tests {
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     fn _helper_vec_remove_i32_oob() {
-        if std::env::var("HEW_DEATH_TEST")
-            .map_or(true, |value| value != "vec::tests::_helper_vec_remove_i32_oob")
-        {
+        if std::env::var("HEW_DEATH_TEST").map_or(true, |value| {
+            value != "vec::tests::_helper_vec_remove_i32_oob"
+        }) {
             return;
         }
         // SAFETY: FFI calls use a valid vec; the remove is intentionally OOB.

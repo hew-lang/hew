@@ -14,7 +14,7 @@
 
 use crate::cabi::{alloc_cstring_data, cstr_to_str, cstring_retain, free_cstring, malloc_cstring};
 use crate::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS;
-use crate::trap_code::runtime_bounds_trap;
+use crate::trap_code::{fmt_decimal_i64, fmt_decimal_usize, runtime_bounds_trap};
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
@@ -1465,26 +1465,47 @@ pub unsafe extern "C" fn hew_string_abort_index_oob() -> ! {
 unsafe fn string_index_oob_trap(index: i64, len: Option<usize>) -> ! {
     // SAFETY: this is a terminal index bounds path.
     unsafe {
+        let mut index_buf = [0u8; 20];
+        write_stderr(b"PANIC: string[i] ");
         if let Some(len) = len {
-            string_bounds_trap(&format!(
-                "PANIC: string[i] index {index} out of bounds (len {len})\n"
-            ))
+            let mut len_buf = [0u8; 20];
+            write_stderr(b"index ");
+            write_stderr(fmt_decimal_i64(index, &mut index_buf));
+            write_stderr(b" out of bounds (len ");
+            write_stderr(fmt_decimal_usize(len, &mut len_buf));
+            write_stderr(b")\n");
         } else {
-            string_bounds_trap(&format!("PANIC: string[i] invalid index {index}\n"))
+            write_stderr(b"invalid index ");
+            write_stderr(fmt_decimal_i64(index, &mut index_buf));
+            write_stderr(b"\n");
         }
+        runtime_bounds_trap(HEW_TRAP_INDEX_OUT_OF_BOUNDS);
     }
 }
 
 unsafe fn string_slice_oob_trap(start: i64, end: i64, len: Option<usize>) -> ! {
     // SAFETY: this is a terminal slice bounds path.
     unsafe {
+        let mut start_buf = [0u8; 20];
+        let mut end_buf = [0u8; 20];
+        write_stderr(b"PANIC: string slice ");
         if let Some(len) = len {
-            string_bounds_trap(&format!(
-                "PANIC: string slice range {start}..{end} out of bounds (len {len})\n"
-            ))
+            let mut len_buf = [0u8; 20];
+            write_stderr(b"range ");
+            write_stderr(fmt_decimal_i64(start, &mut start_buf));
+            write_stderr(b"..");
+            write_stderr(fmt_decimal_i64(end, &mut end_buf));
+            write_stderr(b" out of bounds (len ");
+            write_stderr(fmt_decimal_usize(len, &mut len_buf));
+            write_stderr(b")\n");
         } else {
-            string_bounds_trap(&format!("PANIC: string slice invalid range {start}..{end}\n"))
+            write_stderr(b"invalid range ");
+            write_stderr(fmt_decimal_i64(start, &mut start_buf));
+            write_stderr(b"..");
+            write_stderr(fmt_decimal_i64(end, &mut end_buf));
+            write_stderr(b"\n");
         }
+        runtime_bounds_trap(HEW_TRAP_INDEX_OUT_OF_BOUNDS);
     }
 }
 

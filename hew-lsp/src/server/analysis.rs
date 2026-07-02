@@ -9,7 +9,7 @@ use hew_parser::ast::{ImportDecl, Item};
 use hew_parser::{ParseDiagnosticKind, ParseResult};
 use hew_types::error::{Severity, TypeErrorKind};
 use hew_types::module_registry::{build_module_search_paths, build_module_search_paths_for};
-use hew_types::{Checker, LintId, TypeCheckOutput};
+use hew_types::{Checker, LintId, LintSources, TypeCheckOutput};
 use tower_lsp::lsp_types::{
     Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag, Location,
     NumberOrString, Url,
@@ -911,6 +911,12 @@ pub(super) fn analyze_document(
             };
         program.module_graph = module_graph;
         let module_sources = build_module_source_map(&program, documents);
+        let mut lint_sources = LintSources::new();
+        lint_sources.set_root(source.to_string());
+        for (module_name, module_source) in &module_sources {
+            lint_sources.set_module(module_name.clone(), module_source.source.clone());
+        }
+        checker.set_lint_sources(lint_sources);
         let type_output = checker.check_program(&program);
         let hir_diagnostics = if type_output.errors.is_empty() {
             collect_hir_diagnostics(&program, &type_output)
@@ -1614,6 +1620,51 @@ mod tests {
                 .iter()
                 .any(|diagnostic| diagnostic.source.as_deref() == Some("hew-hir")),
             "expected HIR diagnostics after successful typecheck: {root_diags:?}"
+        );
+    }
+
+    #[test]
+    fn analyze_document_reports_comment_text_direction_lint() {
+        let uri = Url::parse("file:///project/main.hew").unwrap();
+        let document = analyze_document(&uri, "// \u{202E}\nfn main() {}\n", &DashMap::new(), &[]);
+        let root_diags = document
+            .diagnostics_by_uri
+            .get(&uri)
+            .expect("root document should always have diagnostics");
+
+        assert!(
+            root_diags.iter().any(|diagnostic| {
+                diagnostic.source.as_deref() == Some("hew-types")
+                    && diagnostic.severity == Some(DiagnosticSeverity::ERROR)
+                    && diagnostic.code
+                        == Some(NumberOrString::String(
+                            "text_direction_codepoint_in_comment".to_string(),
+                        ))
+            }),
+            "expected text_direction_codepoint_in_comment diagnostic: {root_diags:?}"
+        );
+    }
+
+    #[test]
+    fn analyze_document_honours_comment_lint_allow_directive() {
+        let uri = Url::parse("file:///project/main.hew").unwrap();
+        let source =
+            "// hew:allow(text_direction_codepoint_in_comment)\n// \u{202E}\nfn main() {}\n";
+        let document = analyze_document(&uri, source, &DashMap::new(), &[]);
+        let root_diags = document
+            .diagnostics_by_uri
+            .get(&uri)
+            .map(|diagnostics| diagnostics.as_slice())
+            .unwrap_or(&[]);
+
+        assert!(
+            !root_diags.iter().any(|diagnostic| {
+                diagnostic.code
+                    == Some(NumberOrString::String(
+                        "text_direction_codepoint_in_comment".to_string(),
+                    ))
+            }),
+            "allow directive must suppress the source lint: {root_diags:?}"
         );
     }
 

@@ -35907,7 +35907,8 @@ fn derive_local_bytes_drop_allowed(
             // classification than the Vec append precedent, which over-excludes
             // arg[1] for a conservative leak).
             if let Instr::CallRuntimeAbi(call) = instr {
-                if is_bytes_all_args_borrow_callee(call.symbol()) {
+                let contract = crate::runtime_symbols::callee_ownership_contract(call.symbol());
+                if contract.borrows_all_bytes_args() {
                     continue;
                 }
             }
@@ -35918,7 +35919,9 @@ fn derive_local_bytes_drop_allowed(
             // a closure env, moved into an aggregate, sent, …). Fail-closed: a
             // bytes triple has no other benign interior instruction read.
             if let Instr::CallRuntimeAbi(call) = instr {
-                if is_bytes_receiver_borrow_callee(call.symbol()) {
+                if crate::runtime_symbols::callee_ownership_contract(call.symbol())
+                    .borrows_bytes_receiver()
+                {
                     scan_places(&call.args()[1..], &alias_of, &mut excluded_roots);
                     continue;
                 }
@@ -35939,7 +35942,10 @@ fn derive_local_bytes_drop_allowed(
         // the `ReturnSlot`, …) is scanned in full: a member read there is an
         // escape.
         match &block.terminator {
-            Terminator::Call { callee, args, .. } if is_bytes_receiver_borrow_callee(callee) => {
+            Terminator::Call { callee, args, .. }
+                if crate::runtime_symbols::callee_ownership_contract(callee)
+                    .borrows_bytes_receiver() =>
+            {
                 scan_places(&args[1..], &alias_of, &mut excluded_roots);
             }
             other => {

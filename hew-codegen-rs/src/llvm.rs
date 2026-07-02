@@ -15069,6 +15069,77 @@ fn int_to_float_payload_and_invalid<'ctx>(
     Ok((payload, invalid))
 }
 
+fn float_nan_or_inf<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    src_v: FloatValue<'ctx>,
+    src_float: FloatType<'ctx>,
+) -> CodegenResult<IntValue<'ctx>> {
+    let nan = fn_ctx
+        .builder
+        .build_float_compare(FloatPredicate::UNO, src_v, src_v, "try_width_ff_nan")
+        .llvm_ctx("try-width float NaN compare")?;
+    let pos_inf = fn_ctx
+        .builder
+        .build_float_compare(
+            FloatPredicate::OEQ,
+            src_v,
+            src_float.const_float(f64::INFINITY),
+            "try_width_ff_pos_inf",
+        )
+        .llvm_ctx("try-width float positive infinity compare")?;
+    let neg_inf = fn_ctx
+        .builder
+        .build_float_compare(
+            FloatPredicate::OEQ,
+            src_v,
+            src_float.const_float(f64::NEG_INFINITY),
+            "try_width_ff_neg_inf",
+        )
+        .llvm_ctx("try-width float negative infinity compare")?;
+    let inf = or_i1(fn_ctx, pos_inf, neg_inf, "try_width_ff_inf")?;
+    or_i1(fn_ctx, nan, inf, "try_width_ff_non_finite")
+}
+
+fn float_to_float_payload_and_invalid<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    src_v: FloatValue<'ctx>,
+    src_float: FloatType<'ctx>,
+    dest_float: FloatType<'ctx>,
+) -> CodegenResult<(FloatValue<'ctx>, IntValue<'ctx>)> {
+    let src_bits = src_float.get_bit_width();
+    let dest_bits = dest_float.get_bit_width();
+    let non_finite = float_nan_or_inf(fn_ctx, src_v, src_float)?;
+    if src_bits == dest_bits {
+        return Ok((src_v, non_finite));
+    }
+    if src_bits < dest_bits {
+        let payload = fn_ctx
+            .builder
+            .build_float_ext(src_v, dest_float, "try_width_float_ext")
+            .llvm_ctx("try-width float extend")?;
+        return Ok((payload, non_finite));
+    }
+    let payload = fn_ctx
+        .builder
+        .build_float_trunc(src_v, dest_float, "try_width_float_trunc")
+        .llvm_ctx("try-width float truncate")?;
+    let roundtrip = fn_ctx
+        .builder
+        .build_float_ext(payload, src_float, "try_width_float_roundtrip")
+        .llvm_ctx("try-width float roundtrip extend")?;
+    let inexact = fn_ctx
+        .builder
+        .build_float_compare(
+            FloatPredicate::ONE,
+            roundtrip,
+            src_v,
+            "try_width_float_inexact",
+        )
+        .llvm_ctx("try-width float roundtrip compare")?;
+    let invalid = or_i1(fn_ctx, non_finite, inexact, "try_width_float_float_invalid")?;
+    Ok((payload, invalid))
+}
+
 fn lower_try_width_cast(
     fn_ctx: &FnCtx<'_, '_>,
     dest: Place,
@@ -15164,11 +15235,31 @@ fn lower_try_width_cast(
                 "try-width int-to-float payload store",
             )
         }
-        other => Err(CodegenError::FailClosed(format!(
-            "TryWidthCast {other:?} from {} to {} requires codegen lowering",
-            from_ty.user_facing(),
-            to_ty.user_facing()
-        ))),
+        hew_types::TryConversionKind::FloatToFloat => {
+            if !from_ty.is_float() || !to_ty.is_float() {
+                return Err(CodegenError::FailClosed(format!(
+                    "TryWidthCast FloatToFloat requires float-to-float types; got {} -> {}",
+                    from_ty.user_facing(),
+                    to_ty.user_facing()
+                )));
+            }
+            let src_float = expect_float_type(src_storage, "try-width float source")?;
+            let dest_float = expect_float_type(slot.payload_ty, "try-width float payload")?;
+            let src_v = fn_ctx
+                .builder
+                .build_load(src_float, src_ptr, "try_width_float_src")
+                .llvm_ctx("try-width float source load")?
+                .into_float_value();
+            let (payload, invalid) =
+                float_to_float_payload_and_invalid(fn_ctx, src_v, src_float, dest_float)?;
+            write_try_width_option(
+                fn_ctx,
+                &slot,
+                invalid,
+                payload.into(),
+                "try-width float-to-float payload store",
+            )
+        }
     }
 }
 

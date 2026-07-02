@@ -6816,6 +6816,67 @@ impl Checker {
                 } else {
                     false
                 };
+                // LocalPid's own `send` method requires the actor's inner
+                // type to carry a real `ActorMsg` envelope (`impl ActorMsg
+                // for X { type Msg = ...; }`) — that binding is what lets
+                // `T::Msg` project to a concrete type. Without it, falling
+                // into the own-methods lookup below leaves `T::Msg`
+                // unresolved and produces a phantom `expected \`X::Msg\``
+                // mismatch instead of an actionable diagnostic. Reject here
+                // with the same actor-name/fix-hint shape the deleted
+                // handler gate used to give.
+                if method == "send" && !has_user_send_handler {
+                    let has_send_envelope = resolved
+                        .as_local_pid()
+                        .and_then(|inner| {
+                            if let Ty::Named { name, .. } = inner {
+                                Some(name.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .is_some_and(|actor_name| {
+                            self.impl_assoc_type_bindings.contains_key(&(
+                                actor_name.clone(),
+                                "ActorMsg".to_string(),
+                                "Msg".to_string(),
+                            )) || matches!(
+                                self.resolve_bare_actor_identity(&actor_name),
+                                BareActorResolution::Resolved(ref id)
+                                    if self.impl_assoc_type_bindings.contains_key(&(
+                                        id.clone(),
+                                        "ActorMsg".to_string(),
+                                        "Msg".to_string(),
+                                    ))
+                            )
+                        });
+                    if !has_send_envelope {
+                        for arg in args {
+                            let (expr, sp) = arg.expr();
+                            self.synthesize(expr, sp);
+                        }
+                        let actor_hint = resolved
+                            .as_local_pid()
+                            .and_then(|inner| {
+                                if let Ty::Named { name, .. } = inner {
+                                    Some(name.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or_else(|| "this actor".to_string());
+                        self.report_error(
+                            TypeErrorKind::UndefinedMethod,
+                            span,
+                            format!(
+                                "no `send` handler on `{actor_hint}` — declare \
+                                 `receive fn send(...)` to accept it, or call a \
+                                 named handler: `ref.method_name(payload)`"
+                            ),
+                        );
+                        return Ty::Error;
+                    }
+                }
                 // Try LocalPid's own methods first.
                 if !has_user_send_handler {
                     if let Ty::Named {

@@ -3674,6 +3674,33 @@ if "${HEW}" check \
 fi
 grep -q 'match-destructure wildcard on owned aggregate field' "${reject_output}"
 
+# Reject (#2359): a generator yielding `Vec<indirect-enum>` fails CLOSED at
+# check time. The indirect-enum element's per-element node free is unwired,
+# so the yielded frame's only release would be the buffer-only `hew_vec_free`
+# — a per-frame element-node leak. The refusal fires at the yield/recv
+# release-verdict consultation (pre-retraction), so the retracted consumer
+# binding cannot bypass it the way it bypassed the final owned-locals scan.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/gen_yield_vec_indirect_enum.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected gen_yield_vec_indirect_enum fixture to fail" >&2
+  exit 1
+fi
+grep -q 'every yielded or received frame would leak its heap nodes' "${reject_output}"
+
+# Guard (#2359, recv leg): `Channel<Vec<indirect-enum>>` stays rejected
+# UPSTREAM by the channel element-layout witness at check time — the recv
+# surface cannot type this element class, so the recv-`Some` release seam is
+# unreachable for it. Pins the witness diagnostic so a future weakening
+# cannot silently open the recv path into the Vec-element release seam.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/channel_vec_indirect_enum.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected channel_vec_indirect_enum fixture to fail" >&2
+  exit 1
+fi
+grep -q 'cannot ride the element-layout queue witness' "${reject_output}"
+
 # A `BindingRef` scrutinee
 # whose owned fields are destructured (full or partial) must transition to
 # `Consumed` at the destructure site so the dataflow checker rejects a

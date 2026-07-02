@@ -38,6 +38,7 @@ use crate::model::{
     Strategy, SuspendKind, Terminator, ThirFunction, TraitObjectStorage, TrapKind,
 };
 use crate::ownership::FailClosedReason;
+use crate::ownership::ReleaseSymbolVerdict;
 use crate::ownership::VecElementRelease;
 
 type TaskEntryAdapterSymbols = Rc<RefCell<HashSet<String>>>;
@@ -14133,31 +14134,69 @@ impl Builder {
                             // No heap ownership — no destructor to emit.
                             continue;
                         }
-                        if self.project_field_inline_drop_symbol(&subst_fty).is_none() {
-                            // Owned-aggregate field (record / tuple / enum): in-place
-                            // drop kinds are function-scope only and cannot be emitted
-                            // as inline `Instr::Drop` here.  Fail closed.
-                            self.diagnostics.push(MirDiagnostic {
-                                kind: MirDiagnosticKind::NotYetImplemented {
-                                    construct:
-                                        "functional-update override of owned-aggregate field"
-                                            .to_string(),
-                                    site: expr.site,
-                                },
-                                note: format!(
-                                    "field `{fname}` of `{name}` has owned-aggregate type \
-                                     `{ty}` (record / tuple / enum with heap fields); \
-                                     overriding an owned-aggregate field in a \
-                                     functional-update expression is not yet supported — \
-                                     in-place drop kinds (`RecordInPlace` / `TupleInPlace` \
-                                     / `EnumInPlace`) cannot be emitted as inline \
-                                     `Instr::Drop` here (follow-on to the \
-                                     functional-update overridden-owned-field \
-                                     leak fix)",
-                                    ty = subst_fty.user_facing(),
-                                ),
-                            });
-                            return None;
+                        // The pre-flight matches the picker's three-way verdict
+                        // exhaustively: only a `Wired` field passes to the
+                        // override-drop below. A bare `is_none()` gate could
+                        // not distinguish "no symbol needed" (owned aggregate,
+                        // released in place) from "every symbol is wrong-ABI"
+                        // (unwired `Vec` element) — the `Unwired` verdict
+                        // carries no symbol, so it cannot slip through as an
+                        // emittable release.
+                        match self.project_field_inline_drop_symbol(&subst_fty) {
+                            ReleaseSymbolVerdict::Wired(_) => {}
+                            ReleaseSymbolVerdict::NoDropPath => {
+                                // Owned-aggregate field (record / tuple / enum): in-place
+                                // drop kinds are function-scope only and cannot be emitted
+                                // as inline `Instr::Drop` here.  Fail closed.
+                                self.diagnostics.push(MirDiagnostic {
+                                    kind: MirDiagnosticKind::NotYetImplemented {
+                                        construct:
+                                            "functional-update override of owned-aggregate field"
+                                                .to_string(),
+                                        site: expr.site,
+                                    },
+                                    note: format!(
+                                        "field `{fname}` of `{name}` has owned-aggregate type \
+                                         `{ty}` (record / tuple / enum with heap fields); \
+                                         overriding an owned-aggregate field in a \
+                                         functional-update expression is not yet supported — \
+                                         in-place drop kinds (`RecordInPlace` / `TupleInPlace` \
+                                         / `EnumInPlace`) cannot be emitted as inline \
+                                         `Instr::Drop` here (follow-on to the \
+                                         functional-update overridden-owned-field \
+                                         leak fix)",
+                                        ty = subst_fty.user_facing(),
+                                    ),
+                                });
+                                return None;
+                            }
+                            ReleaseSymbolVerdict::Unwired(_) => {
+                                // Fail closed: the overridden field is a `Vec`
+                                // whose element release is unwired — the OLD
+                                // value's inline drop would be a buffer-only
+                                // free that leaks every element node.
+                                let elem = self
+                                    .unsupported_vec_element_in_ty(&subst_fty)
+                                    .unwrap_or_else(|| format!("`{}`", subst_fty.user_facing()));
+                                self.diagnostics.push(MirDiagnostic {
+                                    kind: MirDiagnosticKind::NotYetImplemented {
+                                        construct: format!(
+                                            "`{fname}`: a `Vec` whose element is {elem} has no \
+                                             per-element release protocol, so overriding it \
+                                             would leak its heap nodes"
+                                        ),
+                                        site: expr.site,
+                                    },
+                                    note: "a `Vec` of `bytes` or of an indirect-enum element \
+                                           cannot yet be released element-by-element, and a \
+                                           functional-update override must free the old field \
+                                           value it replaces. This construction is rejected at \
+                                           compile rather than silently leaked, and becomes \
+                                           available once the per-element release is wired."
+                                        .to_string(),
+                                });
+                                return None;
+                            }
                         }
                     }
                 }
@@ -14202,7 +14241,10 @@ impl Builder {
                         let subst_fty = self.subst_ty(fty);
                         let vc = ValueClass::of_ty(&subst_fty, &self.type_classes);
                         let sound_carry = matches!(vc, ValueClass::BitCopy | ValueClass::View)
-                            || self.project_field_inline_drop_symbol(&subst_fty).is_some()
+                            || matches!(
+                                self.project_field_inline_drop_symbol(&subst_fty),
+                                ReleaseSymbolVerdict::Wired(_)
+                            )
                             || self.is_owned_aggregate_record_ty(&subst_fty);
                         if sound_carry {
                             continue;
@@ -14258,9 +14300,10 @@ impl Builder {
                     if let Some(base_expr) = base.as_deref() {
                         let emits_override_drop = field_order.iter().any(|(fname, fty)| {
                             explicit.contains_key(fname.as_str())
-                                && self
-                                    .project_field_inline_drop_symbol(&self.subst_ty(fty))
-                                    .is_some()
+                                && matches!(
+                                    self.project_field_inline_drop_symbol(&self.subst_ty(fty)),
+                                    ReleaseSymbolVerdict::Wired(_)
+                                )
                         });
                         if emits_override_drop {
                             // (A) Allowlist backstop — fires for every base shape.
@@ -14307,7 +14350,8 @@ impl Builder {
                         // destructor.
                         if let Some(base_rec) = base_place {
                             let subst_fty = self.subst_ty(fty);
-                            if let Some(symbol) = self.project_field_inline_drop_symbol(&subst_fty)
+                            if let ReleaseSymbolVerdict::Wired(symbol) =
+                                self.project_field_inline_drop_symbol(&subst_fty)
                             {
                                 // Destructively release the OLD value of the
                                 // overridden field, in declaration order, BEFORE
@@ -17416,22 +17460,21 @@ impl Builder {
         // reference where it lands.
     }
 
-    /// True when a generator-yielded `Some(x)` payload of type `ty` has a known
-    /// scope-exit release symbol the consumer-body drop can emit. Restricted to
-    /// the proven leak shapes: a heap-owning `string` and any builtin `Vec<T>`
-    /// (whose buffer — plus, for an owned-element Vec, its elements — must be
-    /// freed). Bytes yields are covered by a codegen-side `BytesTriple` drop
-    /// interceptor; HashMap/HashSet yields are NOT covered here (no validated
-    /// consumer-drop path yet); they leak as before rather than risk a
-    /// double-free, matching the conservative posture of the function-scope
-    /// `CoW` drop allow-set.
-    fn ty_has_generator_yield_drop_symbol(&self, ty: &ResolvedTy) -> bool {
-        self.generator_yield_drop_symbol(ty).is_some()
-    }
-
-    /// The C-ABI release symbol for a generator-yielded value of type `ty`, or
-    /// `None` if the shape has no consumer-body drop path (see
-    /// `ty_has_generator_yield_drop_symbol`). The selection MUST mirror codegen's
+    /// The classified release verdict for a generator-yielded (or
+    /// channel-received) `Some(x)` payload of type `ty`:
+    /// [`ReleaseSymbolVerdict::Wired`] carries the C-ABI symbol the
+    /// consumer-body drop emits, restricted to the proven leak shapes — a
+    /// heap-owning `string`, `bytes`, and any builtin `Vec<T>` whose element
+    /// release is wired. [`ReleaseSymbolVerdict::NoDropPath`] covers shapes
+    /// with no validated consumer-drop path (HashMap/HashSet yields — they
+    /// leak as before rather than risk a double-free, matching the
+    /// conservative posture of the function-scope `CoW` drop allow-set).
+    /// [`ReleaseSymbolVerdict::Unwired`] is the fail-closed refusal: the
+    /// value owns heap the buffer-only free cannot reach (a `Vec` of `bytes`
+    /// or of an indirect-enum element), so the consulting site must reject
+    /// the construct at compile time — never emit a wrong-ABI free.
+    ///
+    /// The `Wired` selection MUST mirror codegen's
     /// `cow_heap_release_symbol` so the inline-drop validator
     /// (`lower_inline_drop` → congruence check) accepts the emitted symbol
     /// (`dedup-semantic-boundary`).
@@ -17451,9 +17494,9 @@ impl Builder {
     /// (`hew-codegen-rs/src/llvm.rs`, "Bytes: stored as a `{ ptr, i32, i32 }`
     /// triple"), kept in sync so the two cannot drift on which byte of the
     /// triple owns the heap allocation.
-    fn generator_yield_drop_symbol(&self, ty: &ResolvedTy) -> Option<&'static str> {
+    fn generator_yield_drop_symbol(&self, ty: &ResolvedTy) -> ReleaseSymbolVerdict {
         match ty {
-            ResolvedTy::String => Some("hew_string_drop"),
+            ResolvedTy::String => ReleaseSymbolVerdict::Wired("hew_string_drop"),
             // Per-iteration release for a `for await frame in <Stream<bytes>>`
             // binding (and any analogous Some-arm `bytes` payload on a recv-call
             // scrutinee). The layout-witness pop hands the consumer a fresh,
@@ -17464,13 +17507,13 @@ impl Builder {
             // `hew_bytes_drop`, leaking one refcounted allocation per frame
             // (observed at 1.0 leak / frame on the `for await stream<bytes>`
             // oracle before this arm was added).
-            ResolvedTy::Bytes => Some("hew_bytes_drop"),
+            ResolvedTy::Bytes => ReleaseSymbolVerdict::Wired("hew_bytes_drop"),
             ResolvedTy::Named {
                 builtin: Some(hew_types::BuiltinType::Vec),
                 args,
                 ..
             } => {
-                // The element's release bucket selects the Vec symbol, read
+                // The element's release bucket selects the Vec verdict, read
                 // from the one typed classification. Its dispatch checks the
                 // closure-pair bucket FIRST, mirroring codegen's
                 // `cow_heap_release_symbol` (a fn/closure element is neither
@@ -17485,35 +17528,70 @@ impl Builder {
                 // first — the asymmetry is pinned by
                 // `yield_and_field_pickers_match_legacy_symbol_table`). A
                 // no-type-arg `Vec` falls through to the plain buffer free.
-                args.first().map_or(Some("hew_vec_free"), |elem| {
-                    #[allow(
-                        clippy::match_same_arms,
-                        reason = "Plain and Unsupported are distinct decisions \
-                                  whose symbols coincide only by transcription: \
-                                  Plain is the wired buffer-only release; \
-                                  Unsupported is an unwired protocol frozen at \
-                                  the legacy verdict. Merging the arms would \
-                                  hide the seam the type-directed drop tables \
-                                  rewire fail-closed"
-                    )]
-                    match self.classify_vec_element_release(elem) {
-                        VecElementRelease::ClosurePair => Some("hew_vec_free_closure_pairs"),
-                        VecElementRelease::OwnedElement => Some("hew_vec_free_owned"),
-                        VecElementRelease::Plain => Some("hew_vec_free"),
-                        // An element no bucket claims keeps the buffer-only
-                        // free: its per-element release is unwired, and
-                        // `unsupported_vec_element_diagnostics` rejects the
-                        // `NoReleaseProtocol` shapes at compile where the Vec
-                        // is constructed. The verdict over the Unsupported
-                        // domain is frozen by
-                        // `yield_and_field_pickers_match_legacy_symbol_table`;
-                        // the honest fail-closed treatment belongs to the
-                        // type-directed drop-table consolidation.
-                        VecElementRelease::Unsupported(_) => Some("hew_vec_free"),
-                    }
-                })
+                args.first()
+                    .map_or(ReleaseSymbolVerdict::Wired("hew_vec_free"), |elem| {
+                        self.vec_release_symbol_verdict(elem)
+                    })
             }
-            _ => None,
+            _ => ReleaseSymbolVerdict::NoDropPath,
+        }
+    }
+
+    /// The shared `Vec<E>` arm of both release-symbol pickers: map the
+    /// element's typed release classification to the picker verdict. One
+    /// body, consulted by `generator_yield_drop_symbol` (raw element) and
+    /// `project_field_inline_drop_symbol` (substituted element), so the two
+    /// pickers cannot drift on the fail-closed boundary
+    /// (`dedup-semantic-boundary`).
+    ///
+    /// The `Unsupported` domain splits three ways, drawing the SAME boundary
+    /// as the compile reject `unsupported_vec_element_walk`:
+    ///   - `NoReleaseProtocol` with no owned-ABI release
+    ///     (`!elem_is_owned_abi_releasable`) — a `bytes` fat triple or an
+    ///     indirect-enum node — is [`ReleaseSymbolVerdict::Unwired`]: the
+    ///     buffer-only free would leak every element node, so the consulting
+    ///     site must refuse at compile time.
+    ///   - `NoReleaseProtocol` where the element IS owned-ABI releasable: the
+    ///     element's release is wired program-wide, but
+    ///     `vec_owned_element_keys` is harvested per function, so a `Vec`
+    ///     constructed in ANOTHER function (a generator body, a callee)
+    ///     classifies unsupported HERE. SHIM: keeps the buffer-only
+    ///     `hew_vec_free` — the pre-consolidation verdict — which frees the
+    ///     buffer but leaks owned element payloads when this function is the
+    ///     final owner. Wiring it means classifying owned elements
+    ///     harvest-independently (construction-ABI aware), the type-directed
+    ///     drop-table consolidation's job; until then the verdict is pinned
+    ///     by `yield_and_field_pickers_match_legacy_symbol_table` and the
+    ///     leak is tracked, not silent.
+    ///   - `UnenumeratedShape` — the element owns NO heap as a flat element
+    ///     (a free `TypeParam` in a generic skeleton, `Unit`, a bare runtime
+    ///     view) — the buffer-only free IS the complete release; refusing
+    ///     would reject un-monomorphised generic `Vec<T>` bodies that
+    ///     instantiate to plain elements.
+    fn vec_release_symbol_verdict(&self, elem: &ResolvedTy) -> ReleaseSymbolVerdict {
+        #[allow(
+            clippy::match_same_arms,
+            reason = "Plain and the residual Unsupported sub-domains are \
+                      distinct decisions whose symbols coincide: Plain is the \
+                      wired, complete buffer release; the residual Unsupported \
+                      arms (UnenumeratedShape, owned-ABI-releasable without \
+                      this function's harvest key) keep the buffer-only \
+                      verdict for the documented boundary reasons above. \
+                      Merging the arms would hide the seam the type-directed \
+                      drop tables rewire"
+        )]
+        match self.classify_vec_element_release(elem) {
+            VecElementRelease::ClosurePair => {
+                ReleaseSymbolVerdict::Wired("hew_vec_free_closure_pairs")
+            }
+            VecElementRelease::OwnedElement => ReleaseSymbolVerdict::Wired("hew_vec_free_owned"),
+            VecElementRelease::Plain => ReleaseSymbolVerdict::Wired("hew_vec_free"),
+            VecElementRelease::Unsupported(reason @ FailClosedReason::NoReleaseProtocol)
+                if !self.elem_is_owned_abi_releasable(elem) =>
+            {
+                ReleaseSymbolVerdict::Unwired(reason)
+            }
+            VecElementRelease::Unsupported(_) => ReleaseSymbolVerdict::Wired("hew_vec_free"),
         }
     }
 
@@ -17534,7 +17612,11 @@ impl Builder {
         body_start_instr_len: usize,
         site: hew_hir::SiteId,
     ) {
-        let Some(symbol) = self.generator_yield_drop_symbol(ty) else {
+        // Only a Wired verdict reaches this emitter: the binding-registration
+        // gate schedules a body-end drop for Wired shapes alone (Unwired is a
+        // fail-closed compile diagnostic there; NoDropPath is never
+        // scheduled).
+        let ReleaseSymbolVerdict::Wired(symbol) = self.generator_yield_drop_symbol(ty) else {
             return;
         };
         let Some(local) = base_local(place) else {
@@ -17762,12 +17844,13 @@ impl Builder {
         }
     }
 
-    /// Leaf C-ABI release symbol for an UNSELECTED owned field discarded in a
-    /// record/tuple match destructure (the `_` arm on an owned-typed field).
+    /// Classified release verdict for an UNSELECTED owned field discarded in a
+    /// record/tuple match destructure (the `_` arm on an owned-typed field),
+    /// and for the functional-update override/carry pre-flights.
     ///
-    /// Returns `Some(symbol)` only for field types whose drop is a single-`ptr`
-    /// release the inline-drop dispatcher (`codegen-rs/llvm.rs ::
-    /// lower_inline_drop`) is allowed to emit:
+    /// Returns [`ReleaseSymbolVerdict::Wired`] only for field types whose drop
+    /// is a single-`ptr` release the inline-drop dispatcher
+    /// (`codegen-rs/llvm.rs :: lower_inline_drop`) is allowed to emit:
     ///   - `string` → `hew_string_drop`
     ///   - `bytes`  → `hew_bytes_drop` (triple-field-0 release)
     ///   - `Vec<T>` → `hew_vec_free`, `hew_vec_free_owned` (per-element-owns-heap),
@@ -17776,27 +17859,34 @@ impl Builder {
     ///   - `HashSet<T>` → `hew_hashset_free_layout`
     ///   - `Generator<Y,R>` / `AsyncGenerator<Y>` → `hew_gen_coro_destroy`
     ///
-    /// Returns `None` for owned-aggregate fields (records/tuples/enums) — their
-    /// in-place drop is `DropKind::RecordInPlace` / `TupleInPlace` /
-    /// `EnumInPlace`, NOT an inline `Instr::Drop`. The caller fails closed for
-    /// these rather than emit a wrong-ABI free (leak-not-double-free posture).
+    /// Returns [`ReleaseSymbolVerdict::Unwired`] for a `Vec` whose element
+    /// release protocol is unwired (a `bytes` fat triple or an indirect-enum
+    /// node — see `vec_release_symbol_verdict`): callers MUST refuse the
+    /// construct at compile time; a `Wired`-gated pre-flight can no longer
+    /// admit the buffer-only free over owned element nodes.
+    ///
+    /// Returns [`ReleaseSymbolVerdict::NoDropPath`] for owned-aggregate fields
+    /// (records/tuples/enums) — their in-place drop is
+    /// `DropKind::RecordInPlace` / `TupleInPlace` / `EnumInPlace`, NOT an
+    /// inline `Instr::Drop`. The caller fails closed for these rather than
+    /// emit a wrong-ABI free (leak-not-double-free posture).
     ///
     /// The symbol authority MUST agree with codegen's `cow_heap_release_symbol`
     /// + Bytes-intercept in `lower_inline_drop` (`dedup-semantic-boundary`,
     ///   `lifecycle-symmetry`). A symbol absent from that authority would be
     ///   rejected at codegen-emit time as a wrong-ABI free.
-    fn project_field_inline_drop_symbol(&self, ty: &ResolvedTy) -> Option<&'static str> {
+    fn project_field_inline_drop_symbol(&self, ty: &ResolvedTy) -> ReleaseSymbolVerdict {
         match self.subst_ty(ty) {
-            ResolvedTy::String => Some("hew_string_drop"),
-            ResolvedTy::Bytes => Some("hew_bytes_drop"),
+            ResolvedTy::String => ReleaseSymbolVerdict::Wired("hew_string_drop"),
+            ResolvedTy::Bytes => ReleaseSymbolVerdict::Wired("hew_bytes_drop"),
             ResolvedTy::Named {
                 builtin: Some(hew_types::BuiltinType::Vec),
                 ref args,
                 ..
             } => {
-                // The element's release bucket selects the Vec symbol, read
-                // from the one typed classification — the same classification
-                // the generator-yield picker reads, so every drop-symbol
+                // The element's release bucket selects the Vec verdict through
+                // `vec_release_symbol_verdict` — the same body the
+                // generator-yield picker consults, so every drop-symbol
                 // authority detects each bucket through one decision and
                 // cannot drift. The dispatch checks the closure-pair bucket
                 // FIRST, mirroring codegen's `cow_heap_release_symbol` (see
@@ -17810,37 +17900,25 @@ impl Builder {
                 // type — the asymmetry is pinned by
                 // `yield_and_field_pickers_match_legacy_symbol_table`). A
                 // no-type-arg `Vec` falls through to the plain buffer free.
-                args.first().map_or(Some("hew_vec_free"), |elem| {
-                    #[allow(
-                        clippy::match_same_arms,
-                        reason = "Plain and Unsupported are distinct decisions \
-                                  whose symbols coincide only by transcription; \
-                                  see the generator-yield picker's Vec arm"
-                    )]
-                    match self.classify_vec_element_release(elem) {
-                        VecElementRelease::ClosurePair => Some("hew_vec_free_closure_pairs"),
-                        VecElementRelease::OwnedElement => Some("hew_vec_free_owned"),
-                        VecElementRelease::Plain => Some("hew_vec_free"),
-                        // Unsupported keeps the legacy buffer-only free — see
-                        // the generator-yield picker's Unsupported arm.
-                        VecElementRelease::Unsupported(_) => Some("hew_vec_free"),
-                    }
-                })
+                args.first()
+                    .map_or(ReleaseSymbolVerdict::Wired("hew_vec_free"), |elem| {
+                        self.vec_release_symbol_verdict(elem)
+                    })
             }
             ResolvedTy::Named {
                 builtin: Some(hew_types::BuiltinType::HashMap),
                 ..
-            } => Some("hew_hashmap_free_layout"),
+            } => ReleaseSymbolVerdict::Wired("hew_hashmap_free_layout"),
             ResolvedTy::Named {
                 builtin: Some(hew_types::BuiltinType::HashSet),
                 ..
-            } => Some("hew_hashset_free_layout"),
+            } => ReleaseSymbolVerdict::Wired("hew_hashset_free_layout"),
             ResolvedTy::Named {
                 builtin:
                     Some(hew_types::BuiltinType::Generator | hew_types::BuiltinType::AsyncGenerator),
                 ..
-            } => Some("hew_gen_coro_destroy"),
-            _ => None,
+            } => ReleaseSymbolVerdict::Wired("hew_gen_coro_destroy"),
+            _ => ReleaseSymbolVerdict::NoDropPath,
         }
     }
 
@@ -18063,8 +18141,12 @@ impl Builder {
     fn emit_local_overwrite_release(&mut self, dest: Place, target_ty: &ResolvedTy) {
         let ty = self.subst_ty(target_ty);
         // Single-pointer / fat-triple COW leaf (string / Vec / HashMap /
-        // HashSet / Generator / bytes): drop the whole slot in place.
-        if let Some(symbol) = self.project_field_inline_drop_symbol(&ty) {
+        // HashSet / Generator / bytes): drop the whole slot in place. Only a
+        // Wired verdict emits; an Unwired `Vec` (element release unwired)
+        // falls through and emits nothing — its binding stayed in
+        // `owned_locals`, so `unsupported_vec_element_diagnostics` rejects
+        // the function at compile time before this leak could run.
+        if let ReleaseSymbolVerdict::Wired(symbol) = self.project_field_inline_drop_symbol(&ty) {
             self.push_instr(Instr::Drop {
                 place: dest,
                 ty,
@@ -18079,14 +18161,18 @@ impl Builder {
         // rest while risking a wrong-ABI release.
         if user_record_layout_key(&ty).is_some() {
             let owned = self.project_record_owned_field_list(&ty);
-            if owned
-                .iter()
-                .any(|(_, fty)| self.project_field_inline_drop_symbol(fty).is_none())
-            {
+            if owned.iter().any(|(_, fty)| {
+                !matches!(
+                    self.project_field_inline_drop_symbol(fty),
+                    ReleaseSymbolVerdict::Wired(_)
+                )
+            }) {
                 return;
             }
             for (idx, fty) in owned {
-                let Some(symbol) = self.project_field_inline_drop_symbol(&fty) else {
+                let ReleaseSymbolVerdict::Wired(symbol) =
+                    self.project_field_inline_drop_symbol(&fty)
+                else {
                     continue;
                 };
                 let offset = FieldOffset(idx);
@@ -18477,8 +18563,14 @@ impl Builder {
                 if extracted.contains(idx) {
                     continue;
                 }
-                if self.project_field_inline_drop_symbol(field_ty).is_none()
-                    && !self.field_drop_in_place_admissible(field_ty)
+                // Admission requires a Wired leaf verdict or classifier
+                // admission. An Unwired `Vec` field (element release
+                // unwired) is refused here: it carries no emittable symbol
+                // and the in-place classifier does not admit leaf `Vec`s.
+                if !matches!(
+                    self.project_field_inline_drop_symbol(field_ty),
+                    ReleaseSymbolVerdict::Wired(_)
+                ) && !self.field_drop_in_place_admissible(field_ty)
                 {
                     self.diagnostics.push(MirDiagnostic {
                         kind: MirDiagnosticKind::NotYetImplemented {
@@ -18711,7 +18803,9 @@ impl Builder {
                 }
                 let field_is_string = matches!(field_ty, ResolvedTy::String);
                 if !field_is_string {
-                    if let Some(drop_symbol) = self.project_field_inline_drop_symbol(&field_ty) {
+                    if let ReleaseSymbolVerdict::Wired(drop_symbol) =
+                        self.project_field_inline_drop_symbol(&field_ty)
+                    {
                         let temp = self.alloc_local(field_ty.clone());
                         match &selected.predicate {
                             hew_hir::HirMatchArmPredicate::RecordProject { .. } => {
@@ -20043,30 +20137,85 @@ impl Builder {
                         binding_ty,
                         arm.body.site,
                     ));
-                } else if (arm_is_generator_some || arm_is_recv_some)
-                    && self.ty_has_generator_yield_drop_symbol(&binding_ty)
-                {
-                    // The yielded/received payload owns heap (a `string`, a
-                    // `Vec`, a `HashMap`/`HashSet`, a `Bytes`). Schedule a
-                    // body-end release and take it back out of `owned_locals`
-                    // so the function-scope drop pass cannot also fire
-                    // (double-free guard). The body-shape drop-safety scan in
-                    // `emit_generator_yield_binding_drop` refuses to emit if
-                    // the value escapes the body. The recv-call surface
-                    // (`for await item in rx`, `match channel.recv(...)`,
-                    // `match stream.recv()`) reuses this exact discipline
-                    // because the recv runtime's ownership contract is
-                    // identical: each `Some(item)` is a fresh heap allocation
-                    // the consumer alone is responsible for releasing.
-                    if keep_for_drop_elab {
-                        self.owned_locals.retain(|(b, _, _)| *b != binding.binding);
+                } else if arm_is_generator_some || arm_is_recv_some {
+                    // The picker verdict is consulted HERE, before this
+                    // binding can be retracted from `owned_locals` — the
+                    // fail-closed check therefore covers every binding that
+                    // reaches the yield/recv release seam, including the ones
+                    // the end-of-pass `unsupported_vec_element_diagnostics`
+                    // scan never sees (that scan reads the FINAL
+                    // `owned_locals`, and a retracted binding is gone from it
+                    // by then).
+                    match self.generator_yield_drop_symbol(&binding_ty) {
+                        ReleaseSymbolVerdict::Wired(_) => {
+                            // The yielded/received payload owns heap (a
+                            // `string`, a `Vec`, a `Bytes`) with a wired
+                            // release. Schedule a body-end release and take it
+                            // back out of `owned_locals` so the function-scope
+                            // drop pass cannot also fire (double-free guard).
+                            // The body-shape drop-safety scan in
+                            // `emit_generator_yield_binding_drop` refuses to
+                            // emit if the value escapes the body. The
+                            // recv-call surface (`for await item in rx`,
+                            // `match channel.recv(...)`,
+                            // `match stream.recv()`) reuses this exact
+                            // discipline because the recv runtime's ownership
+                            // contract is identical: each `Some(item)` is a
+                            // fresh heap allocation the consumer alone is
+                            // responsible for releasing.
+                            if keep_for_drop_elab {
+                                self.owned_locals.retain(|(b, _, _)| *b != binding.binding);
+                            }
+                            generator_yield_drop_bindings.push((
+                                binding.binding,
+                                dest,
+                                binding_ty,
+                                arm.body.site,
+                            ));
+                        }
+                        ReleaseSymbolVerdict::NoDropPath => {
+                            // No validated consumer-drop path (HashMap /
+                            // HashSet yields): the binding keeps its
+                            // `owned_locals` entry and the function-scope
+                            // machinery decides, leak-as-before rather than
+                            // risking a double-free.
+                        }
+                        ReleaseSymbolVerdict::Unwired(_) => {
+                            // Fail closed: the frame owns heap (a `Vec` of
+                            // `bytes` or of an indirect-enum element) that no
+                            // wired symbol can release — a buffer-only
+                            // `hew_vec_free` would leak every element node,
+                            // once per delivered frame. Reject at compile
+                            // time. The binding is still retracted so the
+                            // final-`owned_locals` scan does not stack a
+                            // second diagnostic on the same construct.
+                            if keep_for_drop_elab {
+                                self.owned_locals.retain(|(b, _, _)| *b != binding.binding);
+                            }
+                            let elem = self
+                                .unsupported_vec_element_in_ty(&binding_ty)
+                                .unwrap_or_else(|| format!("`{}`", binding_ty.user_facing()));
+                            self.diagnostics.push(MirDiagnostic {
+                                kind: MirDiagnosticKind::NotYetImplemented {
+                                    construct: format!(
+                                        "`{}`: a `Vec` whose element is {elem} has no \
+                                         per-element release protocol, so every yielded or \
+                                         received frame would leak its heap nodes",
+                                        binding.name
+                                    ),
+                                    site: arm.body.site,
+                                },
+                                note: "a generator yield or channel receive hands the \
+                                       consuming body a fresh, solely-owned `Vec` per frame, \
+                                       and a `Vec` of `bytes` or of an indirect-enum element \
+                                       cannot yet be released element-by-element. This \
+                                       construction is rejected at compile rather than \
+                                       silently leaked once per iteration, and becomes \
+                                       available once the per-element release is wired."
+                                    .to_string(),
+                            });
+                        }
                     }
-                    generator_yield_drop_bindings.push((
-                        binding.binding,
-                        dest,
-                        binding_ty,
-                        arm.body.site,
-                    ));
                 }
             }
 
@@ -20135,7 +20284,7 @@ impl Builder {
             // lowers (the fall-through path uses the body-end drop instead).
             let active_yield_mark = self.active_generator_yield_values.len();
             for (_binding, place, ty, _site) in &generator_yield_drop_bindings {
-                if let Some(symbol) = self.generator_yield_drop_symbol(ty) {
+                if let ReleaseSymbolVerdict::Wired(symbol) = self.generator_yield_drop_symbol(ty) {
                     let depth = self.active_scopes.len();
                     self.active_generator_yield_values.push((
                         depth,
@@ -46681,12 +46830,12 @@ mod binding_ty_is_plain_vec_tuple {
         });
         assert_eq!(
             builder.generator_yield_drop_symbol(&vec_fn),
-            Some("hew_vec_free_closure_pairs"),
+            ReleaseSymbolVerdict::Wired("hew_vec_free_closure_pairs"),
             "a yielded Vec<fn> must release via hew_vec_free_closure_pairs, not hew_vec_free"
         );
         assert_eq!(
             builder.project_field_inline_drop_symbol(&vec_fn),
-            Some("hew_vec_free_closure_pairs"),
+            ReleaseSymbolVerdict::Wired("hew_vec_free_closure_pairs"),
             "a match-destructured Vec<fn> field must release via hew_vec_free_closure_pairs"
         );
         // The owned and plain Vec arms are unchanged and dispatch AFTER the
@@ -46694,17 +46843,17 @@ mod binding_ty_is_plain_vec_tuple {
         // leaf, so it must not fall through to either).
         assert_eq!(
             builder.generator_yield_drop_symbol(&vec_of_ty(ResolvedTy::String)),
-            Some("hew_vec_free"),
+            ReleaseSymbolVerdict::Wired("hew_vec_free"),
             "Vec<string> is a plain release (buffer + runtime string walk)"
         );
         assert_eq!(
             builder.generator_yield_drop_symbol(&vec_of_ty(vec_of_ty(ResolvedTy::I64))),
-            Some("hew_vec_free_owned"),
+            ReleaseSymbolVerdict::Wired("hew_vec_free_owned"),
             "Vec<Vec<i64>> is an owned-element release"
         );
         assert_eq!(
             builder.project_field_inline_drop_symbol(&vec_of_ty(vec_of_ty(ResolvedTy::I64))),
-            Some("hew_vec_free_owned"),
+            ReleaseSymbolVerdict::Wired("hew_vec_free_owned"),
             "match-destructured Vec<Vec<i64>> field is an owned-element release"
         );
     }
@@ -47603,15 +47752,30 @@ mod drop_admission_type_shape_pins {
         );
     }
 
-    /// The complete release-symbol table for both Builder-side pickers —
+    /// The complete release-verdict table for both Builder-side pickers —
     /// `generator_yield_drop_symbol` (matches the RAW type) and
     /// `project_field_inline_drop_symbol` (substitutes FIRST) — frozen per
     /// shape: the `Vec` arm over every `VecElementRelease` variant (both
     /// `FailClosedReason` arms represented), the defensive no-type-arg `Vec`,
-    /// and the non-`Vec` arms. The `Unsupported` rows freeze the legacy
-    /// buffer-only `hew_vec_free` verdict deliberately: the per-element
-    /// release for those shapes is unwired, and the honest fail-closed
-    /// treatment belongs to the type-directed drop-table consolidation.
+    /// and the non-`Vec` arms.
+    ///
+    /// The `Unsupported(NoReleaseProtocol)` rows with no owned-ABI release
+    /// (`Vec<bytes>`, `Vec<indirect enum>`) assert the FAIL-CLOSED verdict
+    /// (`Unwired`): the per-element release for those shapes is unwired, so
+    /// every consulting site must refuse the construct at compile time —
+    /// never emit the buffer-only `hew_vec_free` over owned element nodes.
+    /// Two `Unsupported` sub-domains deliberately KEEP the buffer-only
+    /// verdict, drawing the same boundary as the compile reject
+    /// `unsupported_vec_element_walk`:
+    ///   - `UnenumeratedShape` (`Vec<T>` unsubstituted): the element owns no
+    ///     heap as a flat element, so the buffer free IS the complete
+    ///     release — refusing would reject un-monomorphised generic bodies;
+    ///   - `NoReleaseProtocol` where the element is owned-ABI releasable
+    ///     (a registered heap-owning record observed without this
+    ///     function's harvest key): the release is wired program-wide, and
+    ///     the harvest-independent classification belongs to the
+    ///     type-directed drop-table consolidation (see
+    ///     `vec_release_symbol_verdict`).
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -47620,133 +47784,156 @@ mod drop_admission_type_shape_pins {
                   it would scatter the single-table proof across functions"
     )]
     fn yield_and_field_pickers_match_legacy_symbol_table() {
-        let mut builder = builder_with_indirect_enum_foo();
+        use ReleaseSymbolVerdict::{NoDropPath, Unwired, Wired};
 
-        // (shape, type, generator-yield symbol, project-field symbol) — every
-        // symbol column FROZEN. The two pickers agree on every row here; the
-        // substitution-order asymmetry is pinned separately below.
-        let corpus: Vec<(&str, ResolvedTy, Option<&str>, Option<&str>)> = vec![
+        let mut builder = builder_with_indirect_enum_foo();
+        // A registered heap-owning record whose `Vec` is owned-ABI releasable
+        // program-wide but whose key is NOT in this builder's per-function
+        // harvest set — the boundary row for the releasable `Unsupported`
+        // sub-domain.
+        builder.record_field_orders.insert(
+            "HeapRow".to_string(),
+            vec![("s".to_string(), ResolvedTy::String)],
+        );
+
+        // (shape, type, generator-yield verdict, project-field verdict) —
+        // every verdict column FROZEN. The two pickers agree on every row
+        // here; the substitution-order asymmetry is pinned separately below.
+        let corpus: Vec<(&str, ResolvedTy, ReleaseSymbolVerdict, ReleaseSymbolVerdict)> = vec![
             // Vec arm — Plain elements.
             (
                 "Vec<i64> (Plain)",
                 vec_of(ResolvedTy::I64),
-                Some("hew_vec_free"),
-                Some("hew_vec_free"),
+                Wired("hew_vec_free"),
+                Wired("hew_vec_free"),
             ),
             (
                 "Vec<string> (Plain)",
                 vec_of(ResolvedTy::String),
-                Some("hew_vec_free"),
-                Some("hew_vec_free"),
+                Wired("hew_vec_free"),
+                Wired("hew_vec_free"),
             ),
             // Vec arm — OwnedElement elements.
             (
                 "Vec<Vec<i64>> (OwnedElement)",
                 vec_of(vec_of(ResolvedTy::I64)),
-                Some("hew_vec_free_owned"),
-                Some("hew_vec_free_owned"),
+                Wired("hew_vec_free_owned"),
+                Wired("hew_vec_free_owned"),
             ),
             (
                 "Vec<HashMap<string,i64>> (OwnedElement)",
                 vec_of(hashmap_str_i64()),
-                Some("hew_vec_free_owned"),
-                Some("hew_vec_free_owned"),
+                Wired("hew_vec_free_owned"),
+                Wired("hew_vec_free_owned"),
             ),
             (
                 "Vec<(string,i64)> (OwnedElement)",
                 vec_of(ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64])),
-                Some("hew_vec_free_owned"),
-                Some("hew_vec_free_owned"),
+                Wired("hew_vec_free_owned"),
+                Wired("hew_vec_free_owned"),
             ),
             // Vec arm — ClosurePair elements.
             (
                 "Vec<fn> (ClosurePair)",
                 vec_of(bare_fn()),
-                Some("hew_vec_free_closure_pairs"),
-                Some("hew_vec_free_closure_pairs"),
+                Wired("hew_vec_free_closure_pairs"),
+                Wired("hew_vec_free_closure_pairs"),
             ),
             (
                 "Vec<closure> (ClosurePair)",
                 vec_of(empty_capture_closure()),
-                Some("hew_vec_free_closure_pairs"),
-                Some("hew_vec_free_closure_pairs"),
+                Wired("hew_vec_free_closure_pairs"),
+                Wired("hew_vec_free_closure_pairs"),
             ),
-            // Vec arm — Unsupported elements, frozen at the legacy buffer-only
-            // verdict (see the test doc).
+            // Vec arm — Unsupported elements with NO owned-ABI release: the
+            // FAIL-CLOSED verdict. A buffer-only free over these element
+            // nodes is a per-element leak, so the pickers refuse instead of
+            // picking a symbol; every consulting site rejects at compile
+            // time (see the test doc).
             (
                 "Vec<bytes> (Unsupported/NoReleaseProtocol)",
                 vec_of(ResolvedTy::Bytes),
-                Some("hew_vec_free"),
-                Some("hew_vec_free"),
+                Unwired(FailClosedReason::NoReleaseProtocol),
+                Unwired(FailClosedReason::NoReleaseProtocol),
             ),
             (
                 "Vec<indirect enum> (Unsupported/NoReleaseProtocol)",
                 vec_of(named("Foo")),
-                Some("hew_vec_free"),
-                Some("hew_vec_free"),
+                Unwired(FailClosedReason::NoReleaseProtocol),
+                Unwired(FailClosedReason::NoReleaseProtocol),
             ),
+            // Vec arm — Unsupported sub-domains that KEEP the buffer-only
+            // verdict (the boundary `unsupported_vec_element_walk` draws;
+            // see the test doc).
             (
                 "Vec<T> unsubstituted (Unsupported/UnenumeratedShape)",
                 vec_of(ResolvedTy::TypeParam {
                     name: "T".to_string(),
                 }),
-                Some("hew_vec_free"),
-                Some("hew_vec_free"),
+                Wired("hew_vec_free"),
+                Wired("hew_vec_free"),
+            ),
+            (
+                "Vec<HeapRow> unharvested (Unsupported/NoReleaseProtocol, owned-ABI releasable)",
+                vec_of(named("HeapRow")),
+                Wired("hew_vec_free"),
+                Wired("hew_vec_free"),
             ),
             // Vec arm — defensive no-type-arg fall-through.
             (
                 "Vec with no type arg (defensive)",
                 ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![]),
-                Some("hew_vec_free"),
-                Some("hew_vec_free"),
+                Wired("hew_vec_free"),
+                Wired("hew_vec_free"),
             ),
             // Non-Vec arms — must not move when the Vec arm reroutes.
             (
                 "string",
                 ResolvedTy::String,
-                Some("hew_string_drop"),
-                Some("hew_string_drop"),
+                Wired("hew_string_drop"),
+                Wired("hew_string_drop"),
             ),
             (
                 "bytes",
                 ResolvedTy::Bytes,
-                Some("hew_bytes_drop"),
-                Some("hew_bytes_drop"),
+                Wired("hew_bytes_drop"),
+                Wired("hew_bytes_drop"),
             ),
             // HashMap/HashSet yields have no validated consumer-drop path —
-            // they leak-as-before (a frozen None), never risk a double-free.
+            // they leak-as-before (a frozen NoDropPath), never risk a
+            // double-free.
             (
                 "HashMap (yield leak-as-before)",
                 hashmap_str_i64(),
-                None,
-                Some("hew_hashmap_free_layout"),
+                NoDropPath,
+                Wired("hew_hashmap_free_layout"),
             ),
             (
                 "HashSet (yield leak-as-before)",
                 hashset_i64(),
-                None,
-                Some("hew_hashset_free_layout"),
+                NoDropPath,
+                Wired("hew_hashset_free_layout"),
             ),
             (
                 "Generator",
                 generator_i64(),
-                None,
-                Some("hew_gen_coro_destroy"),
+                NoDropPath,
+                Wired("hew_gen_coro_destroy"),
             ),
-            ("i64", ResolvedTy::I64, None, None),
-            ("unmarked user record", named("Rec"), None, None),
+            ("i64", ResolvedTy::I64, NoDropPath, NoDropPath),
+            ("unmarked user record", named("Rec"), NoDropPath, NoDropPath),
         ];
 
         for (label, ty, want_yield, want_field) in corpus {
             assert_eq!(
                 builder.generator_yield_drop_symbol(&ty),
                 want_yield,
-                "generator-yield release symbol moved for `{label}` ({ty:?})"
+                "generator-yield release verdict moved for `{label}` ({ty:?})"
             );
             assert_eq!(
                 builder.project_field_inline_drop_symbol(&ty),
                 want_field,
-                "project-field release symbol moved for `{label}` ({ty:?})"
+                "project-field release verdict moved for `{label}` ({ty:?})"
             );
         }
 
@@ -47766,6 +47953,15 @@ mod drop_admission_type_shape_pins {
             }),
             VecElementRelease::Unsupported(FailClosedReason::UnenumeratedShape)
         );
+        // The releasable-boundary row rides `NoReleaseProtocol` too — it is
+        // the `elem_is_owned_abi_releasable` exclusion, not the reason, that
+        // keeps it off the fail-closed verdict.
+        assert_eq!(
+            builder.classify_vec_element_release(&named("HeapRow")),
+            VecElementRelease::Unsupported(FailClosedReason::NoReleaseProtocol)
+        );
+        assert!(builder.elem_is_owned_abi_releasable(&named("HeapRow")));
+        assert!(!builder.elem_is_owned_abi_releasable(&named("Foo")));
 
         // Substitution-order asymmetry, frozen: `generator_yield_drop_symbol`
         // classifies the RAW type (a yield's type is already concrete at its
@@ -47780,12 +47976,12 @@ mod drop_admission_type_shape_pins {
         });
         assert_eq!(
             builder.generator_yield_drop_symbol(&vec_t),
-            Some("hew_vec_free"),
+            Wired("hew_vec_free"),
             "the yield picker must classify the raw (unsubstituted) type"
         );
         assert_eq!(
             builder.project_field_inline_drop_symbol(&vec_t),
-            Some("hew_vec_free_closure_pairs"),
+            Wired("hew_vec_free_closure_pairs"),
             "the field picker must substitute before classifying"
         );
     }

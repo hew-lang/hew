@@ -1,0 +1,29 @@
+// Guard: `Channel<Vec<indirect-enum>>` stays rejected UPSTREAM by the
+// channel element-layout witness, at both the send and the recv site. This
+// is the existing check-time reject, not a new diagnostic: no recv surface
+// can currently type a `Vec<indirect-enum>` element, so the recv-`Some`
+// binding seam is unreachable for this element class. The guard exists so a
+// future weakening of the witness cannot silently open the recv path into
+// the Vec-element release seam — if the witness ever admits this shape, the
+// recv binding must instead fail closed at the release-verdict consultation
+// (the same refusal `gen_yield_vec_indirect_enum.hew` pins for the
+// generator leg).
+import std::channel::channel;
+
+indirect enum Wrapped {
+    Val(i64);
+}
+
+fn main() {
+    let (tx, rx): (channel.Sender<Vec<Wrapped>>, channel.Receiver<Vec<Wrapped>>) = channel.new(4);
+    let v: Vec<Wrapped> = Vec::new();
+    v.push(Wrapped::Val(1));
+    v.push(Wrapped::Val(2));
+    tx.send(v);
+    tx.close();
+    match rx.try_recv() {
+        Some(item) => println(item.len()),
+        None => println("drained"),
+    }
+    println("done");
+}

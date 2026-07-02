@@ -411,6 +411,39 @@ impl VecElementRelease {
     }
 }
 
+// ───────────────────────── release-symbol verdict ─────────────────────────
+
+/// Classified verdict from the `Builder`-side release-symbol pickers
+/// (`generator_yield_drop_symbol`, `project_field_inline_drop_symbol`): may a
+/// consulting site emit a whole-value inline release for this type, and with
+/// which C-ABI symbol?
+///
+/// Three-way by design. A two-way `Option<&str>` cannot distinguish "this
+/// shape needs no symbol here" from "this shape owns heap but every available
+/// symbol is a wrong-ABI free" — and a `Some`-gated pre-flight then admits the
+/// wrong-ABI case (a buffer-only `hew_vec_free` over owned element nodes
+/// leaks every node). Consulting sites match the verdict exhaustively: only
+/// [`Wired`](Self::Wired) may emit; [`Unwired`](Self::Unwired) MUST surface a
+/// fail-closed compile diagnostic (it carries no symbol, so it cannot be
+/// emitted by accident); [`NoDropPath`](Self::NoDropPath) keeps the site's
+/// existing no-symbol handling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseSymbolVerdict {
+    /// A wired, ABI-correct release symbol for the whole value at this site.
+    Wired(&'static str),
+    /// No inline release is selected here: the shape owns no heap this picker
+    /// releases, has no validated consumer-drop path (the HashMap/HashSet
+    /// yield posture — leak-as-before, never a double-free risk), or is
+    /// released through a different mechanism (in-place drop kinds).
+    NoDropPath,
+    /// The value owns heap but its per-element release protocol is unwired
+    /// (`VecElementRelease::Unsupported` with the carried
+    /// [`FailClosedReason`]): every available symbol would free with the
+    /// wrong ABI. The consulting site must refuse the construct at compile
+    /// time — never emit a symbol, never fall through silently.
+    Unwired(FailClosedReason),
+}
+
 // ──────────────────────────────── provenance ─────────────────────────────
 
 /// A MIR storage location an ownership fact can be anchored to. The scaffold

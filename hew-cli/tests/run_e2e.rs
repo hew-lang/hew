@@ -1816,6 +1816,79 @@ fn check_match_destructure_wildcard_closure_field_fails_closed() {
     );
 }
 
+/// Fail-closed boundary (#2359): a generator yielding `Vec<indirect-enum>`
+/// is rejected at check time. The element's per-element node free is
+/// unwired, so the consuming body's per-frame release could only be the
+/// buffer-only `hew_vec_free` — a per-frame element-node leak (previously
+/// 2 nodes x N iterations, compiling clean). The refusal must fire at the
+/// yield/recv release-verdict consultation: the consumer binding is
+/// retracted from `owned_locals` before the end-of-pass
+/// `unsupported_vec_element_diagnostics` scan, so a scan-only check never
+/// sees it.
+#[test]
+fn check_gen_yield_vec_indirect_enum_fails_closed() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/reject/gen_yield_vec_indirect_enum.hew");
+    let output = Command::new(hew_binary())
+        .arg("check")
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew check");
+
+    assert!(
+        !output.status.success(),
+        "expected check to fail; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("every yielded or received frame would leak its heap nodes"),
+        "expected the yield/recv fail-closed diagnostic; got: {combined}"
+    );
+}
+
+/// Guard (#2359, recv leg): `Channel<Vec<indirect-enum>>` stays rejected
+/// UPSTREAM by the channel element-layout witness — the existing check-time
+/// diagnostic, not a new one. No recv surface can type this element class
+/// today, so the recv-`Some` release seam is unreachable for it; this guard
+/// pins the witness so a future weakening cannot silently open the recv
+/// path into the Vec-element release seam.
+#[test]
+fn check_channel_vec_indirect_enum_rejected_by_layout_witness() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/reject/channel_vec_indirect_enum.hew");
+    let output = Command::new(hew_binary())
+        .arg("check")
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew check");
+
+    assert!(
+        !output.status.success(),
+        "expected check to fail; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("cannot ride the element-layout queue witness"),
+        "expected the upstream element-layout witness diagnostic; got: {combined}"
+    );
+}
+
 /// Non-BitCopy record match destructure — FULL extraction with a
 /// non-escaping bound owned field.
 ///

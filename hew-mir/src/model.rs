@@ -1492,8 +1492,8 @@ pub trait HeapOwnershipLayouts {
 /// `AsyncGenerator<Y>`, and the `Vec` / `HashMap` / `HashSet` collection
 /// handles (each owns a heap buffer / runtime handle regardless of its element
 /// type — even `Vec<i64>` owns its backing buffer, even `Generator<i64, ()>`
-/// owns its context + OS thread). A record/enum/tuple FIELD of one of these
-/// makes the whole composite heap-owning.
+/// owns its coro frame + heap companion). A record/enum/tuple FIELD of one of
+/// these makes the whole composite heap-owning.
 ///
 /// Every "does this own heap" decision — the MIR drop elaborator's composite
 /// drop-allow derivation, the move/double-free analyses, the owned-Vec element
@@ -1566,11 +1566,12 @@ fn ty_owns_heap_inner(
         // - `string` / `Bytes` own a refcounted buffer.
         // - `CancellationToken` is an owned, ref-counted runtime handle whose
         //   sole release is `hew_cancel_token_release`.
-        // - `Generator<Y, R>` / `AsyncGenerator<Y>` is an owned, affine
-        //   `*mut HewGenCtx` handle (context + OS thread) whose sole release is
-        //   `hew_gen_free` — heap-owning regardless of its generic arguments
-        //   (`Generator<i64, ()>` owns its context + thread even though `i64`
-        //   is bit-copy).
+        // - `Generator<Y, R>` / `AsyncGenerator<Y>` is an owned, affine heap
+        //   companion pointer (coro frame + `{ handle, env, out_drop_thunk,
+        //   started, pending, out_value }`) whose sole release is
+        //   `hew_gen_coro_destroy` — heap-owning regardless of its generic
+        //   arguments (`Generator<i64, ()>` owns its coro frame even though
+        //   `i64` is bit-copy).
         // - `Vec<T>` / `HashMap<K, V>` / `HashSet<T>` owns a heap buffer for
         //   ANY element type — `Vec<i64>` owns its `hew_vec_free`-released
         //   backing buffer. A record/enum/tuple field of such a type therefore
@@ -3056,26 +3057,32 @@ pub enum Terminator {
     /// Declared here so the borrow-liveness check has a place to look.
     Yield { value: Place, next: u32 },
     /// Generator construction at a `gen fn` / `gen { }` call site. Codegen
-    /// emits `hew_gen_ctx_create(<&body_fn>, env_ptr, env_size)` and stores the
-    /// returned `*mut HewGenCtx` handle into `dest` (a `Generator<Y, R>`-typed
-    /// place), then branches to `next`. `body_fn` is the deterministic
-    /// `__hew_gen_body_<owner>_<id>` name minted by `lower_gen_block`; codegen
-    /// resolves its address via `get_function`. Carried explicitly (rather than
-    /// through `Terminator::Call`) because the body-fn pointer is not a `Place`
-    /// and the construction is self-describing without a call-site side table.
+    /// heap-allocates the `Generator<Y, R>` companion (`{ handle, env,
+    /// out_drop_thunk, started, pending, out_value }`, via
+    /// `hew_cont_frame_alloc`) and calls the `__hew_gen_body_*` coro ramp
+    /// directly — the ramp runs the body to its FIRST `yield` and returns the
+    /// `llvm.coro.begin` handle, stored into the companion, whose pointer is
+    /// stored into `dest`. Then branches to `next`. `body_fn` is the
+    /// deterministic `__hew_gen_body_<owner>_<id>` name minted by
+    /// `lower_gen_block`; codegen resolves its address via `get_function`.
+    /// Carried explicitly (rather than through `Terminator::Call`) because the
+    /// body-fn pointer is not a `Place` and the construction is
+    /// self-describing without a call-site side table.
     ///
     /// `env` is the stack `Place` holding the `RecordInit`'d capture-env
-    /// record, or `None` for a capture-free generator (`env_ptr`/`env_size`
-    /// are then null/0). The generator body's free variables — a `gen fn`'s
-    /// formal parameters and a `gen { }`'s captured outer locals — live in
-    /// this record, in `HirGenCapture` order. The runtime deep-copies
-    /// `env_size` bytes of the record into the generator thread
-    /// (`hew_gen_ctx_create`), so the body reads them back through `Local(0)`
-    /// (the body-arg copy) via `ClosureEnvFieldLoad`. Only no-drop capture
-    /// field classes (`BitCopy` scalars, pids) are materialised today; owned
-    /// fields (string/aggregate) fail closed at the construction site because
-    /// the thread runtime's flat byte-copy would alias their heap and risk a
-    /// double-free / UAF without a per-field clone + env-drop protocol.
+    /// record, or `None` for a capture-free generator (the companion's `env`
+    /// field is then null). The generator body's free variables — a `gen
+    /// fn`'s formal parameters and a `gen { }`'s captured outer locals — live
+    /// in this record, in `HirGenCapture` order. Codegen heap-copies the
+    /// record (`hew_cont_frame_alloc` + `memcpy`) so it outlives this
+    /// constructing frame — the body reads it across suspends, long after
+    /// construction returns — and passes the heap copy's address to the ramp,
+    /// which reads it back through `Local(1)` via `ClosureEnvFieldLoad`. Only
+    /// no-drop capture field classes (`BitCopy` scalars, pids) are
+    /// materialised today; owned fields (string/aggregate) fail closed at the
+    /// construction site because the flat heap-copy would alias their heap
+    /// and risk a double-free / UAF without a per-field clone + env-drop
+    /// protocol.
     MakeGenerator {
         dest: Place,
         body_fn: String,
@@ -3101,7 +3108,7 @@ pub enum Terminator {
     /// Carried as a dedicated terminator (not `Terminator::Call` /
     /// `Instr::CallRuntimeAbi`) because the body/state-drop function
     /// pointer args cannot be expressed as MIR `Place` values — same
-    /// constraint as `Terminator::MakeGenerator` and `hew_gen_ctx_create`.
+    /// constraint as `Terminator::MakeGenerator`'s body-fn pointer.
     /// The producer-side `CallRuntimeAbi("hew_lambda_actor_new")` surface
     /// is fail-closed in codegen for the same reason; routing through
     /// `MakeLambdaActor` is the single sanctioned construction path.
@@ -3959,12 +3966,13 @@ pub enum Instr {
     CancellationTokenIsCancelled { dest: Place, token: Place },
     /// `dest = ctx.next()` — generator consumption.
     ///
-    /// `ctx` holds the `*mut HewGenCtx` handle; `dest` is the `Option<yield_ty>`
-    /// enum slot. Codegen emits `hew_gen_next(ctx, &out_size)` and unboxes the
-    /// returned heap pointer into `dest`: null → `None` (tag 1); else load the
-    /// payload, write `Some` (tag 0) + value, and free the heap pointer. The
-    /// `ctx` handle is borrowed — its own scope-exit drop frees it via
-    /// `hew_gen_free`.
+    /// `ctx` holds the heap companion pointer (`{ handle, env, out_drop_thunk,
+    /// started, pending, out_value }`); `dest` is the `Option<yield_ty>` enum
+    /// slot. Codegen drives the coro ramp (`hew_cont_resume` + `hew_cont_done`)
+    /// and unboxes the companion's published `out_value` into `dest`: done →
+    /// `None` (tag 1); else load the payload, write `Some` (tag 0) + value.
+    /// The `ctx` handle is borrowed — its own scope-exit drop frees it via
+    /// `hew_gen_coro_destroy`.
     GeneratorNext {
         dest: Place,
         ctx: Place,
@@ -6167,7 +6175,7 @@ mod heap_owning_tests {
 
     fn generator_ty() -> ResolvedTy {
         // `Generator<i64, ()>` — bit-copy generic args, but the handle itself
-        // owns a runtime context + OS thread.
+        // owns a coro frame + heap companion.
         ResolvedTy::named_builtin(
             "Generator",
             BuiltinType::Generator,
@@ -6187,7 +6195,7 @@ mod heap_owning_tests {
     fn generator_handle_is_heap_owning_despite_bitcopy_args() {
         // Regression: before this arm a `Generator<i64, ()>` was classified
         // non-heap-owning, so a composite carrying it never dropped — leaking
-        // the context + thread.
+        // the coro frame + heap companion.
         assert!(ty_contains_heap_owning(&generator_ty(), &[]));
     }
 
@@ -6205,7 +6213,7 @@ mod heap_owning_tests {
     fn tuple_with_generator_member_is_heap_owning() {
         // The exact Leak 2 shape: `(Generator<i64, ()>, i64)`. The tuple-recursion
         // arm must see the generator member as a heap-owning leaf so the caller's
-        // tuple member-drop fires `hew_gen_free`.
+        // tuple member-drop fires `hew_gen_coro_destroy`.
         let tuple = ResolvedTy::Tuple(vec![generator_ty(), ResolvedTy::I64]);
         assert!(ty_contains_heap_owning(&tuple, &[]));
     }

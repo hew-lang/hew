@@ -173,19 +173,22 @@ fn main() {
 }
 ```
 
-Every integer type (`i8`…`i64`, `isize`, `u8`…`u64`, `usize`) has three
-`add`/`sub`/`mul` method families for spelling overflow intent explicitly.
+The plain `+`, `-`, `*` operators **trap on overflow** — Hew's default
+integer arithmetic is checked, not wrapping. Every integer type (`i8`…`i64`,
+`isize`, `u8`…`u64`, `usize`) also has three `add`/`sub`/`mul` method
+families for opting into a different overflow policy explicitly.
 `.wrapping_add()`/`.wrapping_sub()`/`.wrapping_mul()` wrap on overflow — the
-same behaviour §12.2 already documents for the `&+`/`&-`/`&*` operators,
-spelled as a method rather than an operator. `.checked_add()`/`.checked_sub()`/
+same behaviour §12.2 documents for the `&+`/`&-`/`&*` operators, spelled as a
+method rather than an operator. `.checked_add()`/`.checked_sub()`/
 `.checked_mul()` return `Option<T>` (`None` on overflow, `Some(v)`
 otherwise). `.saturating_add()`/`.saturating_sub()`/`.saturating_mul()` clamp
-to the type's max/min instead of wrapping or failing.
+to the type's max/min instead of wrapping or trapping.
 
 Only `add`/`sub`/`mul` are implemented today — no `div`/`rem`/shift variants
 exist yet, and none of the three families apply to `f32`/`f64`. These
-methods are an explicit-intent spelling, not a different default: the plain
-`+`/`-`/`*` operators already wrap on overflow per §12.2.
+methods and the `&+`/`&-`/`&*` operators are the explicit-intent spellings
+for wrapping (or clamping, or `Option`-returning) arithmetic; the plain
+operators keep trapping by default.
 
 ## Bindings — var and let
 

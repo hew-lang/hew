@@ -4824,7 +4824,7 @@ The methods `.try_to_i8()`, `.try_to_i16()`, `.try_to_i32()`, `.try_to_i64()`, `
 14. Timeout: `| after`
 15. Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`
 
-> **Wrapping arithmetic:** `&+`, `&-`, `&*` are two's-complement wrapping versions of `+`, `-`, `*`. They lower to the same LLVM `IntAdd`/`IntSub`/`IntMul` instructions as the plain operators (LLVM integers wrap by default), and exist as explicit source forms for documentation of intentional wrapping. All three have the same precedence as their plain counterparts.
+> **Overflow behaviour:** the plain `+`, `-`, `*` operators on integer types are checked — they lower to the `llvm.{s,u}{add,sub,mul}.with.overflow.iN` intrinsics and trap with `TrapKind::IntegerOverflow` on overflow. `&+`, `&-`, `&*` are the two's-complement **wrapping** versions of `+`, `-`, `*`: they lower directly to the plain `IntAdd`/`IntSub`/`IntMul` instructions (no overflow check; LLVM integers wrap by default) and exist as explicit source forms for opting into wraparound. All three wrapping operators have the same precedence as their plain counterparts. `.checked_*`/`.saturating_*`/`.wrapping_*` methods (see the language guide) provide the same three overflow policies as callable methods.
 
 > **Comparison associativity:** comparison operators are left-associative. `a < b < c` parses as `(a < b) < c`, which compares a bool against an integer and is almost certainly a bug. Use `a < b && b < c` for chained comparisons.
 

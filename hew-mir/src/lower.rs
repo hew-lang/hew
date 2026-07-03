@@ -17948,6 +17948,68 @@ impl Builder {
         }
     }
 
+    /// True when `local`'s storage is an interior ALIAS of aggregate storage
+    /// that another binding still owns: some defining write of it is a member
+    /// field load (`RecordFieldLoad` / `TupleFieldLoad` byte-copy the member;
+    /// non-string members are never retained) or a `Move` out of an
+    /// interior-projection place (an enum/machine variant payload bind),
+    /// possibly reached through whole-value `Move` copies of such a value.
+    ///
+    /// Consulted by `lower_match_project` to decide the skipped-field
+    /// discharge for a partial destructure. Discharging THROUGH an alias
+    /// frees heap the real owner's composite drop still walks: the in-place
+    /// drop's null-store lands in the ALIAS slot, never the owner's, and the
+    /// non-retaining leaf load+`Drop` path frees the original outright —
+    /// both are double-frees once the owner's composite re-walks the field.
+    /// An alias scrutinee therefore emits NO discharge and the owner's
+    /// composite frees every original exactly once.
+    ///
+    /// The verdict is deliberately ANY-path: one interior defining write
+    /// classifies the local as an alias. Misclassifying owned storage as an
+    /// alias can only leak (the composite covers what the discharge would
+    /// have freed, or — if the owner escaped — nothing frees it: the
+    /// fail-closed direction), while misclassifying an alias as owned
+    /// storage double-frees. Defining writes this walk does not model (call
+    /// results, aggregate construction, constants) are owned storage and
+    /// keep the discharge path.
+    fn local_storage_is_interior_alias(&self, local: u32) -> bool {
+        let mut visited: HashSet<u32> = HashSet::new();
+        let mut work: Vec<u32> = vec![local];
+        while let Some(l) = work.pop() {
+            if !visited.insert(l) {
+                continue;
+            }
+            let all_instrs = self
+                .pending_blocks
+                .iter()
+                .flat_map(|b| b.instructions.iter())
+                .chain(self.instructions.iter());
+            for instr in all_instrs {
+                match instr {
+                    Instr::RecordFieldLoad { dest, .. } | Instr::TupleFieldLoad { dest, .. }
+                        if matches!(dest, Place::Local(_)) && base_local(*dest) == Some(l) =>
+                    {
+                        return true;
+                    }
+                    Instr::Move { dest, src }
+                        if matches!(dest, Place::Local(_)) && base_local(*dest) == Some(l) =>
+                    {
+                        if place_is_interior_projection(*src) {
+                            return true;
+                        }
+                        if matches!(src, Place::Local(_)) {
+                            if let Some(sl) = base_local(*src) {
+                                work.push(sl);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        false
+    }
+
     /// Classified release verdict for an UNSELECTED owned field discarded in a
     /// record/tuple match destructure (the `_` arm on an owned-typed field),
     /// and for the functional-update override/carry pre-flights.
@@ -18889,7 +18951,29 @@ impl Builder {
         // root — is the whole idempotence story for inline-composite fields
         // (they have no null-store; see the `Instr::FieldDropInPlace` model
         // contract).
-        if !selected.bindings.is_empty() && !self.project_match_scrutinee_is_bitcopy(&scrutinee.ty)
+        //
+        // Alias-scrutinee gate. When the scrutinee's storage is an interior
+        // ALIAS of aggregate storage another binding still owns (`let inner =
+        // outer.field; match inner { … }` — the field load byte-copies the
+        // member with no retain; or an enum payload binder `match opt {
+        // Some(row) => match row { … } }`), the originals the wildcarded
+        // fields point at belong to the OUTER aggregate, whose composite drop
+        // frees every one of them exactly once at scope exit (the destructure
+        // consume retracts the alias binding from `owned_locals`, so nothing
+        // seeds the outer root's exclusion). Discharging a skipped field
+        // through the alias frees heap that composite walk re-frees:
+        // `FieldDropInPlace` null-stores the ALIAS slot, never the owner's,
+        // and the non-retaining leaf load+`Drop` path frees the original
+        // outright — both double-free. An alias scrutinee therefore emits NO
+        // skipped-field discharge; bound `string` binders keep their retained
+        // `+1` with its own balancing drop. If the owner's composite is
+        // separately excluded (an unrelated escape), the skipped originals
+        // leak — fail-closed — and the provers' direct `FieldDropInPlace`
+        // binder rules remain the net for any emitter that does discharge
+        // through an alias.
+        let scrutinee_is_interior_alias =
+            scrutinee_is_non_bitcopy && self.local_storage_is_interior_alias(scrutinee_local);
+        if !selected.bindings.is_empty() && scrutinee_is_non_bitcopy && !scrutinee_is_interior_alias
         {
             let extracted: HashSet<u32> = selected.bindings.iter().map(|b| b.field_idx).collect();
             let owned_fields: Vec<(u32, ResolvedTy)> = match &selected.predicate {
@@ -36471,6 +36555,37 @@ fn derive_enum_composite_drop_allowed(
     };
     for block in blocks {
         for instr in &block.instructions {
+            // Direct prover-exclusion rule for the no-temp field-addressed
+            // drop, mirroring `derive_owned_record_drop_allowed` /
+            // `derive_tuple_composite_drop_allowed`: a `FieldDropInPlace`
+            // whose base is an alias-set member or a payload binder
+            // discharges part of the composite's payload through a byte-alias
+            // of ITS storage (`match opt { Some(row) => match row { Row { a,
+            // b: _ } => … } }` frees `row.b` through the payload binder while
+            // the composite still owns the payload). The blanket scan below
+            // exempts the op (an interior discharge is not a payload READ
+            // escaping into an owning sink), so without this rule the
+            // composite would stay admitted and its `EnumInPlace` walk would
+            // re-free the discharged field's leaves — a double-free.
+            // Exclusion (a leak of the payload remainder) is the fail-closed
+            // direction; attribution uses `note_payload_escape`'s every-root
+            // coarsening, matching this prover's posture.
+            if let Instr::FieldDropInPlace { base, .. } = instr {
+                if let Some(l) = base_local(*base) {
+                    if alias_of.contains_key(&l) {
+                        note_alias_escape(l, &mut excluded_roots);
+                    }
+                    if payload_binders.contains_key(&l) {
+                        note_payload_escape(
+                            &payload_binders,
+                            l,
+                            &alias_of,
+                            blocks,
+                            &mut excluded_roots,
+                        );
+                    }
+                }
+            }
             // Move escapes. A `Move` is the one instruction whose `dest`
             // discriminates a benign hand-off from a real escape, so it needs
             // its own analysis rather than the blanket source scan below.
@@ -36553,11 +36668,13 @@ fn derive_enum_composite_drop_allowed(
             // excluded — fail-closed.
             //
             // `FieldDropInPlace` is the same interior shape: it is a skipped
-            // field's extraction AND release in ONE op against a nested
-            // record/tuple payload binder (`Some(Row { inner, tag: _ })`), so
-            // reading it as an owning sink would over-exclude the composite
-            // from its `EnumInPlace` drop and leak the payload remainder the
-            // composite still owns.
+            // field's extraction AND release in ONE op, so it is not a
+            // payload READ escaping into an owning sink. Its
+            // composite-suppression semantics are the DIRECT exclusion rule
+            // at the top of this loop (a base that is an alias member or a
+            // payload binder excludes the composite — the discharge freed
+            // payload leaves the `EnumInPlace` walk would otherwise re-free),
+            // not this blanket scan.
             if !matches!(
                 instr,
                 Instr::Move { .. }
@@ -36889,10 +37006,23 @@ fn derive_owned_record_drop_allowed(
             // composites carry no null-store to short-circuit it). Exclude
             // the root directly; the remaining owned siblings are the
             // emitter's discharge obligation.
+            //
+            // A base that is a field BINDER (an extracted member alias —
+            // `let inner = outer.field; match inner { … }`) discharges a
+            // field of the OUTER root's storage through the binder's
+            // byte-alias: the null-store (when the field shape has one)
+            // lands in the binder's slot, never the root's, so the root's
+            // composite walk would re-free the discharged field's leaves.
+            // Resolve the binder through its provenance and exclude the root
+            // it was loaded from (every record root when unprovable) — the
+            // promise the blanket-scan exemption below relies on.
             if let Instr::FieldDropInPlace { base, .. } = instr {
                 if let Some(l) = base_local(*base) {
                     if alias_of.contains_key(&l) {
                         note_alias_escape(l, &mut excluded_roots);
+                    }
+                    if field_binders.contains(&l) {
+                        note_field_escape(l, &mut excluded_roots);
                     }
                 }
             }
@@ -37787,10 +37917,26 @@ fn derive_tuple_composite_drop_allowed(
             // this rule the tuple's `TupleInPlace` would re-walk the freed
             // element's leaves (double-free; no null-store on inline
             // composites). Exclude the root directly.
+            //
+            // A base that is an ELEMENT BINDER (an extracted member alias —
+            // `let inner = t.0; match inner { … }`) discharges part of the
+            // OUTER root's storage through the binder's byte-alias — the
+            // root's composite walk would re-free the discharged leaves.
+            // The tuple prover carries no binder-provenance attribution
+            // (deliberately blanket — "cannot cheaply attribute"), so the
+            // exclusion is `note_elem_escape`'s every-root coarsening:
+            // over-exclusion leaks, never double-frees. This rule is the
+            // pairing the blanket-scan `FieldDropInPlace` exemption below
+            // depends on — exempting the op there WITHOUT resolving binder
+            // bases here would trade the old over-exclusion leak for a
+            // composite re-walk double-free.
             if let Instr::FieldDropInPlace { base, .. } = instr {
                 if let Some(l) = base_local(*base) {
                     if alias_of.contains_key(&l) {
                         note_alias_escape(l, &mut excluded_roots);
+                    }
+                    if elem_binders.contains(&l) {
+                        note_elem_escape(&mut excluded_roots);
                     }
                 }
             }
@@ -37830,7 +37976,19 @@ fn derive_tuple_composite_drop_allowed(
             // analogue of the record field-binder exemption, DI-017).
             if !matches!(
                 instr,
-                Instr::Move { .. } | Instr::Drop { .. } | Instr::TupleFieldLoad { .. }
+                Instr::Move { .. }
+                    | Instr::Drop { .. }
+                    | Instr::TupleFieldLoad { .. }
+                    // `FieldDropInPlace` is an interior field op (uses base, no
+                    // dest, no alias); its composite-suppression semantics are
+                    // the DIRECT exclusion rule at the top of this loop — which
+                    // resolves an alias-member OR element-binder base — not
+                    // this blanket owning-sink scan (which would misread a
+                    // binder base as an element escape and blanket-exclude
+                    // every tuple root, including roots whose storage the op
+                    // never touches). Mirrors the record and enum provers'
+                    // exemption arms.
+                    | Instr::FieldDropInPlace { .. }
             ) {
                 for p in instr_source_places(instr) {
                     if let Some(l) = base_local(p) {
@@ -45116,6 +45274,68 @@ mod owned_record_drop_derivation {
         );
     }
 
+    /// A `FieldDropInPlace` whose base is a field BINDER — the extracted
+    /// member alias `let inner = outer.field; match inner { Inner { a, b: _ }
+    /// => … }` — discharges a field of the OUTER root's storage through the
+    /// binder's byte-copy (the null-store lands in the binder's slot, never
+    /// the root's). The direct rule must resolve the binder through its
+    /// provenance and exclude exactly the root it was loaded from, while a
+    /// sibling root the binder never touched stays admitted. Red-before: the
+    /// rule consulted `alias_of` only, the loaded-from root stayed admitted,
+    /// and its `RecordInPlace` re-walked the freed field — the reproduced
+    /// Guard-Malloc double-free.
+    #[test]
+    fn field_drop_in_place_on_field_binder_excludes_loaded_root_only() {
+        let outer = BindingId(1);
+        let other = BindingId(2);
+        let owned = vec![
+            (outer, "outer".to_string(), rec_ty()),
+            (other, "other".to_string(), rec_ty()),
+        ];
+        let mut binding_locals: HashMap<BindingId, Place> = HashMap::new();
+        binding_locals.insert(outer, Place::Local(0));
+        binding_locals.insert(other, Place::Local(1));
+        // local 2: the extracted heap-owning member binder (`let inner =
+        // outer.field`); local 3: the match scrutinee copy of the binder.
+        let local_tys = vec![rec_ty(), rec_ty(), rec_ty(), rec_ty()];
+        let instrs = vec![
+            Instr::RecordFieldLoad {
+                record: Place::Local(0),
+                field_offset: FieldOffset(0),
+                dest: Place::Local(2),
+            },
+            Instr::Move {
+                dest: Place::Local(3),
+                src: Place::Local(2),
+            },
+            Instr::FieldDropInPlace {
+                base: Place::Local(3),
+                field: crate::model::FieldAddr::Record(FieldOffset(1)),
+                ty: ResolvedTy::String,
+            },
+        ];
+
+        let allowed = derive(
+            &[block(0, instrs, Terminator::Return)],
+            &owned,
+            &binding_locals,
+            &local_tys,
+        );
+        assert!(
+            !allowed.contains(&outer),
+            "a FieldDropInPlace against a field binder freed part of the \
+             loaded-from root's storage through the binder's byte-alias; the \
+             root must be excluded or its composite walk re-frees it \
+             (double-free); got {allowed:?}"
+        );
+        assert!(
+            allowed.contains(&other),
+            "the binder's provenance names the loaded-from root uniquely; a \
+             sibling root it never touched keeps its composite drop \
+             (precision pin); got {allowed:?}"
+        );
+    }
+
     /// `hew_vec_push_owned` / `hew_vec_set_owned` copy their element into the
     /// destination Vec. The collection-local prover exempts that element operand,
     /// while composite binder scans still treat the tail operand as an escape.
@@ -45930,19 +46150,76 @@ mod tuple_composite_field_drop_exclusion {
              {allowed:?}"
         );
     }
+
+    /// A `FieldDropInPlace` whose base is an ELEMENT BINDER (`let inner =
+    /// t.0; match inner { … }`) discharges part of the outer root's storage
+    /// through the binder's byte-copy; the direct rule must exclude the root.
+    /// This pins the exemption/direct-rule PAIRING: the blanket owning-sink
+    /// scan now exempts `FieldDropInPlace` (so a binder base no longer
+    /// misreads as an element escape), and this test fails if that exemption
+    /// ever lands without the direct rule resolving binder bases — the shape
+    /// that would trade the old over-exclusion leak for a composite re-walk
+    /// double-free.
+    #[test]
+    fn field_drop_in_place_on_elem_binder_excludes_tuple() {
+        let b = BindingId(1);
+        let owned = vec![(b, "p".to_string(), pair_ty())];
+        let mut binding_locals: HashMap<BindingId, Place> = HashMap::new();
+        binding_locals.insert(b, Place::Local(0));
+        // local 1: the extracted heap-owning element binder; local 2: the
+        // match scrutinee copy of the binder.
+        let local_tys = vec![pair_ty(), ResolvedTy::String, ResolvedTy::String];
+        let allowed = derive_tuple_composite_drop_allowed(
+            &[BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![
+                    Instr::TupleFieldLoad {
+                        tuple: Place::Local(0),
+                        field_index: 0,
+                        dest: Place::Local(1),
+                    },
+                    Instr::Move {
+                        dest: Place::Local(2),
+                        src: Place::Local(1),
+                    },
+                    Instr::FieldDropInPlace {
+                        base: Place::Local(2),
+                        field: crate::model::FieldAddr::Tuple(1),
+                        ty: ResolvedTy::String,
+                    },
+                ],
+                terminator: Terminator::Return,
+            }],
+            &HashMap::new(),
+            &owned,
+            &binding_locals,
+            &local_tys,
+            &HashMap::new(),
+            &[],
+        );
+        assert!(
+            !allowed.contains(&b),
+            "a FieldDropInPlace against an element binder freed part of the \
+             tuple root's storage through the binder's byte-alias; the root \
+             must be excluded (leak-not-double-free); got {allowed:?}"
+        );
+    }
 }
 
 #[cfg(test)]
 mod enum_composite_field_drop_exemption {
-    //! Differential pins for the `FieldDropInPlace` entry in
-    //! `derive_enum_composite_drop_allowed`'s owning-sink exemption list. A
-    //! `FieldDropInPlace` against a nested-record payload binder
-    //! (`Some(Row { inner, tag: _ })`) is an interior discharge, NOT an
-    //! owning sink: reading it as one would over-exclude the composite from
-    //! its `EnumInPlace` drop and leak the payload remainder the composite
-    //! still owns. The differential control proves a genuine owning-sink
-    //! read of the same binder still excludes the composite (the exemption
-    //! is exactly one op wide).
+    //! Pins for the enum composite prover's `FieldDropInPlace` handling: the
+    //! blanket-scan exemption (the op is an interior discharge, not a payload
+    //! READ into an owning sink) paired with the DIRECT exclusion rule (a
+    //! base that is an alias member or a payload binder frees payload leaves
+    //! through a byte-alias of the composite's storage, so the composite must
+    //! be excluded — its `EnumInPlace` walk would re-free them; the
+    //! empirically reproduced two-step nested destructure `match opt {
+    //! Some(row) => match row { Row { a, b: _ } => … } }` aborted under
+    //! Guard-Malloc while the composite stayed admitted). The differential
+    //! control proves a genuine owning-sink read of the same binder still
+    //! excludes the composite.
     use super::*;
 
     fn opt_ty() -> ResolvedTy {
@@ -46018,10 +46295,16 @@ mod enum_composite_field_drop_exemption {
     }
 
     /// A `FieldDropInPlace` discharging one skipped field of the payload
-    /// binder is interior — the composite stays admitted (its `EnumInPlace`
-    /// is the one balancing drop for everything the payload still owns).
+    /// binder frees payload leaves through the binder's byte-alias of the
+    /// composite's storage — the composite must be EXCLUDED, or its
+    /// `EnumInPlace` walk re-frees the discharged field (the reproduced
+    /// nested-destructure double-free: Guard-Malloc SIGSEGV on the second
+    /// iteration while the composite stayed admitted). Exclusion leaks the
+    /// payload remainder instead — the fail-closed direction. This is the
+    /// direct rule's pin; the blanket-scan exemption alone left the
+    /// composite admitted.
     #[test]
-    fn field_drop_on_payload_binder_keeps_composite_admitted() {
+    fn field_drop_on_payload_binder_excludes_composite() {
         let (b, allowed) = derive(vec![
             payload_destructure(),
             Instr::FieldDropInPlace {
@@ -46031,10 +46314,10 @@ mod enum_composite_field_drop_exemption {
             },
         ]);
         assert!(
-            allowed.contains(&b),
-            "an interior FieldDropInPlace on the payload binder must not read \
-             as an owning sink — over-excluding the composite leaks the \
-             payload remainder; got {allowed:?}"
+            !allowed.contains(&b),
+            "a FieldDropInPlace against the payload binder discharged payload \
+             leaves the composite's EnumInPlace walk would re-free; the \
+             composite must be excluded (leak-not-double-free); got {allowed:?}"
         );
     }
 

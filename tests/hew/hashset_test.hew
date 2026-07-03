@@ -114,9 +114,26 @@ fn test_len_decreases_after_remove() {
     assert_eq_i64(len, 1);
 }
 
-// NOTE: clear() tests are deferred until the layout-runtime surface has a
-// clear counterpart. The substrate follow-up owns adding hew_hashset_clear_layout
-// plus codegen wiring and re-adding the two removed clear() tests.
+#[test]
+fn test_clear_drops_len_to_zero() {
+    let s: HashSet<i64> = HashSet::<i64>::new();
+    s.insert(1);
+    s.insert(2);
+    s.insert(3);
+    s.clear();
+    let len = s.len();
+    assert_eq_i64(len, 0);
+}
+
+#[test]
+fn test_clear_allows_reinsert() {
+    let s: HashSet<i64> = HashSet::<i64>::new();
+    s.insert(1);
+    s.clear();
+    s.insert(1);
+    let len = s.len();
+    assert_eq_i64(len, 1);
+}
 
 // ── string operations ─────────────────────────────────────────────────
 

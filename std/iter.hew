@@ -296,6 +296,54 @@ pub fn collect<I, A>(it: I) -> Vec<A> where I: Iterator<Item = A> {
     out
 }
 
+/// Return `true` if `f` returns `true` for at least one item produced by
+/// `it`. Short-circuits on the first match.
+pub fn any<I, A>(it: I, f: fn(A) -> bool) -> bool where I: Iterator<Item = A> {
+    var iter = it;
+    loop {
+        match iter.next() {
+            Some(x) => { if f(x) { return true; } },
+            None => { break; },
+        }
+    }
+    false
+}
+
+/// Return `true` if `f` returns `true` for every item produced by `it`.
+/// Short-circuits on the first non-match.
+pub fn all<I, A>(it: I, f: fn(A) -> bool) -> bool where I: Iterator<Item = A> {
+    var iter = it;
+    loop {
+        match iter.next() {
+            Some(x) => { if !f(x) { return false; } },
+            None => { break; },
+        }
+    }
+    true
+}
+
+/// Return the sum of every `i64` item produced by `it`.
+pub fn sum<I>(it: I) -> i64 where I: Iterator<Item = i64> {
+    fold(it, 0, |acc: i64, x: i64| acc + x)
+}
+
+/// Return the sum of every `f64` item produced by `it`.
+pub fn sum_f64<I>(it: I) -> f64 where I: Iterator<Item = f64> {
+    fold(it, 0.0, |acc: f64, x: f64| acc + x)
+}
+
+/// Return the product of every `i64` item produced by `it`. Returns `1`
+/// for an empty iterator (the multiplicative identity).
+pub fn product<I>(it: I) -> i64 where I: Iterator<Item = i64> {
+    fold(it, 1, |acc: i64, x: i64| acc * x)
+}
+
+/// Return the product of every `f64` item produced by `it`. Returns `1.0`
+/// for an empty iterator (the multiplicative identity).
+pub fn product_f64<I>(it: I) -> f64 where I: Iterator<Item = f64> {
+    fold(it, 1.0, |acc: f64, x: f64| acc * x)
+}
+
 // ---------------------------------------------------------------------------
 // Eager Vec-specialised combinators (transitional)
 // ---------------------------------------------------------------------------

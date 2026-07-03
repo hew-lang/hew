@@ -395,6 +395,13 @@ jobs:
         # gates on a fully-green suite with no special handling.
         run: make test-hew-ratchet
 
+      - name: Run -O0-vs-O2 differential-exec parity gate
+        # Every compiled `.hew` program must behave identically at -O0 and -O2;
+        # a divergence is a miscompile in the LLVM middle-end optimizer pipeline.
+        # Runs the Linux/x86_64 portion of the cross-platform parity matrix
+        # tracked in #2104; Windows-MSVC and wasm32 remain separate platform gates.
+        run: make test-o2-differential
+
       - name: Run stdlib type-check suite (ratcheted)
         # Type-checks every std/*.hew file through scripts/stdlib-ratchet.sh.
         # Known failures tracked in scripts/stdlib-expected-failures.txt.

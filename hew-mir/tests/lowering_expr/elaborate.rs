@@ -149,7 +149,7 @@ fn nonescaping_cowvalue_string_gets_function_scope_drop() {
         matches!(
             return_plan.1.drops[0].kind,
             DropKind::CowHeap {
-                drop_fn: "hew_string_drop"
+                release: hew_mir::CowHeapRelease::String
             }
         ),
         "the drop must be a CowHeap release via hew_string_drop; got {:?}",

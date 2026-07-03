@@ -38,7 +38,14 @@ use crate::model::{
     Strategy, SuspendKind, Terminator, ThirFunction, TraitObjectStorage, TrapKind,
 };
 use crate::ownership::FailClosedReason;
+use crate::ownership::LayoutClass;
+use crate::ownership::OwnershipCtx;
+use crate::ownership::OwnershipDecision;
+use crate::ownership::PlaceProvenance;
+use crate::ownership::Projection;
 use crate::ownership::ReleaseSymbolVerdict;
+use crate::ownership::ValueOwnership;
+use crate::ownership::ValueProvenance;
 use crate::ownership::VecElementRelease;
 
 type TaskEntryAdapterSymbols = Rc<RefCell<HashSet<String>>>;
@@ -7831,6 +7838,11 @@ fn lower_function(
         &builder.binding_locals,
         &mut builder.instr_spans,
     );
+    // The scope-exit-live owned-locals view, materialised once for the
+    // escaped-sibling emitter and the double-free gate below — the same
+    // `(binding, name, ty)` tuples they read before the ledger carried richer
+    // facts.
+    let owned_locals_snapshot = builder.owned_locals_snapshot();
     // #2212 — an owned record whose field escapes through a binder loses its
     // composite scope-exit drop (the sole-owner prover excludes it); the
     // record's NON-escaped owned sibling fields still need their release.
@@ -7840,6 +7852,12 @@ fn lower_function(
     // the dataflow observes the discharges and codegen emits them.
     {
         let mut instr_spans = std::mem::take(&mut builder.instr_spans);
+        // The immediate-parent chain of every recorded byte-copy alias, so the
+        // sibling-discharge emitter can walk a MULTI-HOP escape (`let mid = o.mid;
+        // let leaf = mid.leaf; return leaf`) and compensate the non-escaped
+        // siblings at every level — the reach `close_alias_binders_forward` gave
+        // the composite-drop prover's exclusion.
+        let alias_chain = builder.alias_projection_chain();
         let is_owned_record = |ty: &ResolvedTy| builder.is_owned_aggregate_record_ty(ty);
         let owned_field_list = |ty: &ResolvedTy| builder.project_record_owned_field_list(ty);
         let field_dischargeable = |ty: &ResolvedTy| {
@@ -7848,11 +7866,12 @@ fn lower_function(
         apply_escaped_record_sibling_field_drops(
             &mut blocks,
             &builder.suspend_kinds,
-            &builder.owned_locals,
+            &owned_locals_snapshot,
             &builder.binding_locals,
             &builder.locals,
             &builder.record_field_orders,
             &builder.enum_layouts,
+            &alias_chain,
             &is_owned_record,
             &owned_field_list,
             &field_dischargeable,
@@ -7981,14 +8000,21 @@ fn lower_function(
     // built; emits an ElaboratedMirFunction whose `blocks` + `drop_plans`
     // are the authoritative description of what fires on every exit.
     //
-    // The integer-only spine never lowers `@resource` or `@linear`
-    // bindings (no construction surface yet for those types — see
-    // R-C3.5), so on the current ladder `owned_locals` is empty
-    // whenever the function passed type-checking AND the only
-    // non-BitCopy class reaching MIR is `CowValue` (e.g. String) which
-    // does not emit a Drop. The elaboration shape is exercised by
-    // hew-mir's unit tests that hand-construct CheckedMirFunction
-    // inputs with synthesized DecisionFact::value_class values.
+    // `owned_locals` is the per-function ownership ledger. Every binding
+    // whose type obliges a scope-exit drop (`binding_seeds_drop_elaboration`
+    // — `string`, `Vec<E>`, records, collection handles, generators, closure
+    // pairs, resource fields) is registered once at its defining write
+    // through `Builder::register_owned_local`, carrying its classified
+    // `ValueOwnership`, any interior-alias `ValueProvenance`, and a
+    // `Disposition`. The elaborator reads the scope-exit-live view of that
+    // ledger (a consumed / body-end-released binding carries a
+    // non-`ScopeExit` disposition rather than being physically removed), and
+    // the carried provenance keeps a byte-copy field alias from being
+    // mistaken for an independent owner. The pass runs on every function
+    // body and is exercised end-to-end by the compiled leak-oracle
+    // fixtures — real programs whose native binaries are proven leak- and
+    // double-free-clean under `leaks --atExit` and the poisoned allocator —
+    // as well as by hew-mir's hand-constructed CheckedMirFunction unit inputs.
     let elaborated = elaborate(&checked, &builder, &thir.statements, &dataflow_result);
 
     // Fail-closed validation of the elaborated drop plan. Surfaces a
@@ -8049,12 +8075,12 @@ fn lower_function(
     //     the double-free this gate refuses.
     let returned_aggregate_members = derive_returned_aggregate_member_bindings(
         &raw.blocks,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
     );
     let consumed_local_aggregate_members = derive_consumed_local_aggregate_member_bindings(
         &raw.blocks,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.locals,
         &builder.record_field_orders,
@@ -8062,32 +8088,35 @@ fn lower_function(
     );
     let mut source_excluded = returned_aggregate_members;
     source_excluded.extend(consumed_local_aggregate_members);
+    let alias_field_binders = builder.alias_owner_field_binders();
     let tuple_composite_drop_allowed = derive_tuple_composite_drop_allowed(
         &raw.blocks,
         &raw.suspend_kinds,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.locals,
         &builder.record_field_orders,
         &builder.enum_layouts,
+        &alias_field_binders,
     );
     let is_owned_record = |ty: &ResolvedTy| builder.is_owned_aggregate_record_ty(ty);
     let owned_record_drop_allowed = derive_owned_record_drop_allowed(
         &raw.blocks,
         &raw.suspend_kinds,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.locals,
         &is_owned_record,
         &builder.record_field_orders,
         &builder.enum_layouts,
+        &alias_field_binders,
     );
     let mut composite_drop_allowed = tuple_composite_drop_allowed;
     composite_drop_allowed.extend(owned_record_drop_allowed);
     for check in detect_unproven_aggregate_handle_double_free(
         &raw.blocks,
         &raw.suspend_kinds,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.locals,
         &builder.record_field_orders,
@@ -8675,6 +8704,131 @@ struct FungibleChildRef {
     slot_index: u32,
 }
 
+/// How an owned local's release obligation is dispositioned within the
+/// per-function ledger. The live drop-elaboration view
+/// ([`Builder::owned_locals_snapshot`]) is exactly the `ScopeExit` entries — a
+/// binding whose release is handled elsewhere (consumed, released at the end of
+/// a consuming body, closed at an inner scope) is dispositioned OFF the
+/// scope-exit set rather than physically removed. The whole ledger
+/// ([`Builder::owned_locals_ledger`]) still carries the retracted entry, so an
+/// end-of-pass scan can observe a binding whose release was handled
+/// mid-lowering — the retraction-invisible class that a physical
+/// `owned_locals.retain(...)` removal used to make unobservable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Disposition {
+    /// Released by the function-exit LIFO drop pass, narrowed per exit edge —
+    /// the default for every entry the registration authority mints.
+    ScopeExit,
+    /// Released at the end of the consuming body on every exit edge rather than
+    /// at function scope exit: a generator-yielded / channel-received `Some(x)`
+    /// payload, or a `for x in vec` string cursor, whose per-iteration heap
+    /// reference the body owns and releases each frame. Dispositioned off the
+    /// scope-exit set so the function-exit LIFO pass cannot fire a second
+    /// release on the same slot (double-free guard).
+    BodyEndReleased,
+    /// Consumed (moved out) before scope exit — the value's new owner drops it,
+    /// so the scope-exit release is suppressed. A later overwrite on a different
+    /// control-flow path is gated by the path-sensitive drop flag, independent
+    /// of this disposition.
+    ConsumedAt,
+    /// Released inline when an INNER scope closes (a generator coro frame or a
+    /// `VecIter` cursor handle declared in a nested block), so the release fires
+    /// once per outer-loop iteration instead of accumulating to function exit.
+    ScopeReleased,
+    /// A byte-copy interior ALIAS of a still-live owner: the binder of a
+    /// `let mid = o.mid` / `let inner = t.0` field projection whose field type
+    /// is an inline aggregate (record / tuple / inline-enum). Codegen byte-copies
+    /// such a field with no retain, so the binder does not own the copied heap —
+    /// the projected root's composite drop frees every original exactly once.
+    /// Dispositioned off the scope-exit-live set so (a) the function-exit LIFO
+    /// pass emits no composite drop for the alias (a re-walk of heap the root
+    /// still owns would double-free), and (b) the alias's base local is excluded
+    /// from the record/tuple provers' `release_owner_bases` derivation, so an
+    /// alias binder no longer trips their Defect-1 blanket every-root exclusion.
+    /// The owner it aliases is named on the entry's `provenance`
+    /// ([`OwnershipDecision::InteriorAlias`]-shaped). This is the recorded twin
+    /// of the whole-local alias classifier
+    /// [`Builder::local_storage_is_interior_alias`].
+    AliasOf,
+}
+
+/// The three-way ownership class of a `let`-bound field load — the frozen
+/// classification [`Builder::classify_field_load`] returns, mirroring exactly
+/// what codegen emits for a `RecordFieldLoad` / `TupleFieldLoad`. Only
+/// [`ByteCopyAlias`](FieldLoadClass::ByteCopyAlias) changes drop behaviour (it
+/// dispositions the binder [`Disposition::AliasOf`]); the other two keep today's
+/// `ScopeExit` ownership. Misassigning a class is the load-bearing double-free
+/// risk, so it keys on the same facts codegen implements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FieldLoadClass {
+    /// A `string` field: codegen `hew_string_clone`s the load, so the binder
+    /// owns a fresh `+1` released by its own drop; the root keeps the original.
+    Retained,
+    /// An inline aggregate field (record / tuple / array / inline-enum): the load
+    /// byte-copies the member with no retain, so the binder is an interior ALIAS
+    /// — the projected root's composite drop frees every original exactly once.
+    ByteCopyAlias,
+    /// A single-pointer heap leaf (`Vec` / `bytes` / `HashMap` / `HashSet` /
+    /// `Generator` / indirect-enum node): the load transfers the one owned
+    /// handle, so the binder becomes the owner and the root's whole-root
+    /// exclusion posture is correct.
+    HandleTransfer,
+}
+
+/// One entry in the per-function owned-locals ledger: the binding whose
+/// scope-exit release drop elaboration owns, recorded ONCE at its defining write
+/// through [`Builder::register_owned_local`] (the single registration
+/// authority) instead of pushed ad hoc at each lowering seam.
+///
+/// The tracked unit is the whole binding. The `(binding, name, ty)` triple is
+/// the shape every downstream allow-set prover, `build_lifo_drops`, and the
+/// unwired-`Vec`-element diagnostic already consume (via
+/// [`Builder::owned_locals_snapshot`]); the richer facts (`ownership`,
+/// `provenance`, `disposition`) are carried on the value so later drop stages
+/// read a written-down fact rather than re-deriving ownership from the
+/// instruction stream at each pass.
+#[derive(Debug, Clone)]
+struct OwnedLocalEntry {
+    /// The HIR binding this owned local backs.
+    binding: BindingId,
+    /// Source-level binding name (drop-statement rendering + diagnostics).
+    name: String,
+    /// The binding's (substituted) resolved type — the drop-shape input.
+    ty: ResolvedTy,
+    /// The rich ownership/drop/ABI decision classified once at registration.
+    ///
+    /// Recorded here so ownership is a fact written at the defining write; the
+    /// provenance-aware provers and the type-directed drop-table selection in
+    /// later drop-elaboration stages read it instead of re-classifying the type
+    /// per pass. Not yet consumed at this stage — the drop passes still read the
+    /// `(binding, name, ty)` view.
+    #[allow(
+        dead_code,
+        reason = "written-once ownership fact; consumed by the provenance-aware \
+                  provers and the type-directed drop-table selection in later \
+                  drop-elaboration stages"
+    )]
+    ownership: ValueOwnership,
+    /// Where the value's ownership traces to, when trivially proven at the
+    /// defining write (an interior-alias projection of a still-live owner names
+    /// its root). `None` = the value owns itself / provenance not recorded, which
+    /// is today's semantics for every entry this stage mints.
+    ///
+    /// Not yet consumed at this stage — the interior-alias suppression that reads
+    /// it is a later drop stage.
+    #[allow(
+        dead_code,
+        reason = "carried provenance consumed by the interior-alias drop \
+                  suppression in a later drop-elaboration stage"
+    )]
+    provenance: Option<ValueProvenance>,
+    /// How this entry's release obligation is dispositioned. Minted `ScopeExit`
+    /// (the function-exit LIFO pass owns it) and retracted off that set by a
+    /// [`Builder::set_owned_local_disposition`] write when its release is handled
+    /// mid-lowering (consumed, body-end-released, inner-scope-released).
+    disposition: Disposition,
+}
+
 #[derive(Debug, Default)]
 struct Builder {
     /// Checker-authority stream for the *current* basic block. Drained
@@ -8823,7 +8977,7 @@ struct Builder {
     /// carrier/Terminator field) so the carriers collapse onto one
     /// `Terminator::Suspend` while the emitted IR stays byte-identical.
     suspend_kinds: HashMap<u32, SuspendKind>,
-    owned_locals: Vec<(hew_hir::BindingId, String, ResolvedTy)>,
+    owned_locals: Vec<OwnedLocalEntry>,
     /// Generator/`AsyncGenerator` owned bindings tagged with the HIR scope they
     /// were declared in, recorded so a per-scope-exit `hew_gen_coro_destroy`
     /// fires when that scope closes — INCLUDING when the scope is re-executed
@@ -9584,6 +9738,362 @@ impl Builder {
         }
     }
 
+    /// The ownership classify context over this builder's live registries — the
+    /// same three tables the drop derivations read, bundled so
+    /// [`ValueOwnership::classify`] builds its answer from the one authority.
+    fn ownership_ctx(&self) -> OwnershipCtx<'_> {
+        OwnershipCtx::new(
+            &self.record_field_orders,
+            &self.enum_layouts,
+            &self.type_classes,
+        )
+    }
+
+    /// The single registration authority for the per-function owned-locals
+    /// ledger: every seam that introduces a scope-exit drop obligation routes
+    /// through here instead of pushing a bare tuple. Ownership is classified
+    /// ONCE at this defining write and recorded on the entry; the drop passes
+    /// read the written-down fact rather than re-deriving it per pass.
+    ///
+    /// The binding's backing place drives classify's handle-vs-type dispatch. It
+    /// is resolved from `binding_locals` when the slot is already wired (the
+    /// `let` / param / dyn-trait seams insert it first); a match binder registers
+    /// before its `Place` insert, but a match binder always stores into a plain
+    /// local, so the type-driven arm is the correct one and the exact local id is
+    /// immaterial (the fallback local only feeds the never-firing handle
+    /// dispatch). Provenance stays `None` at this stage — it is recorded only
+    /// where a later stage can trivially prove it at the defining write. Every
+    /// entry is minted `Disposition::ScopeExit`; a retraction seam later
+    /// dispositions it off the scope-exit set via
+    /// [`Builder::set_owned_local_disposition`] when its release is handled
+    /// mid-lowering.
+    fn register_owned_local(&mut self, binding: BindingId, name: String, ty: ResolvedTy) {
+        let place = self
+            .binding_locals
+            .get(&binding)
+            .copied()
+            .unwrap_or(Place::Local(0));
+        let ownership = ValueOwnership::classify(&ty, place, &self.ownership_ctx());
+        self.owned_locals.push(OwnedLocalEntry {
+            binding,
+            name,
+            ty,
+            ownership,
+            provenance: None,
+            disposition: Disposition::ScopeExit,
+        });
+    }
+
+    /// Register a `let`-bound field projection whose result is a byte-copy
+    /// interior ALIAS of the still-live owner named by `provenance` — the
+    /// [`ByteCopyAlias`](FieldLoadClass::ByteCopyAlias) class of the field-load
+    /// three-way split (record / tuple / inline-enum aggregate field). The entry
+    /// carries its
+    /// [`OwnershipDecision::InteriorAlias`]-shaped provenance and is minted
+    /// [`Disposition::AliasOf`], so it drops out of the scope-exit-live view the
+    /// drop-elaboration provers and `build_lifo_drops` read: the alias emits no
+    /// composite drop of its own (the owner's composite frees the whole tree),
+    /// and its base local never seeds the record/tuple provers'
+    /// `release_owner_bases`, so it no longer trips their Defect-1 blanket
+    /// exclusion of every root (#2375).
+    fn register_owned_local_alias(
+        &mut self,
+        binding: BindingId,
+        name: String,
+        ty: ResolvedTy,
+        provenance: ValueProvenance,
+    ) {
+        let place = self
+            .binding_locals
+            .get(&binding)
+            .copied()
+            .unwrap_or(Place::Local(0));
+        let ownership = ValueOwnership::classify(&ty, place, &self.ownership_ctx());
+        self.owned_locals.push(OwnedLocalEntry {
+            binding,
+            name,
+            ty,
+            ownership,
+            provenance: Some(provenance),
+            disposition: Disposition::AliasOf,
+        });
+    }
+
+    /// Provenance of a `let`-bound field projection that is a byte-copy interior
+    /// ALIAS of a still-live owner — the
+    /// [`ByteCopyAlias`](FieldLoadClass::ByteCopyAlias) class of the three-way
+    /// field-load classification. Returns `Some` ONLY for a `root.field` /
+    /// `root.N` projection (`let mid = o.mid`, `let inner = t.0`) of a live
+    /// binding whose FIELD type is an inline aggregate
+    /// (`OwnsHeap { layout: Product | TaggedUnion }` — record / tuple /
+    /// inline-enum). Codegen byte-copies such a field with no retain, so the
+    /// binder does not own the copied heap; the projected root's composite drop
+    /// frees every original exactly once.
+    ///
+    /// Returns `None` — keeping today's `ScopeExit` ownership — for the other two
+    /// load classes the split names, so their behaviour is unchanged:
+    /// [`Retained`](FieldLoadClass::Retained) (a `string` field: codegen
+    /// `hew_string_clone`s the load, so the binder owns a fresh `+1` released by
+    /// its own drop) and [`HandleTransfer`](FieldLoadClass::HandleTransfer) (a
+    /// single-pointer heap leaf — `Vec` / `bytes` / `HashMap` / `HashSet` /
+    /// `Generator` / indirect-enum node: the load transfers the one handle, the
+    /// binder becomes the owner, and the root's whole-root exclusion posture is
+    /// correct).
+    ///
+    /// It also returns `None` for any non-projection RHS (a fresh call result /
+    /// constructor owns itself) and whenever the owner root cannot be named at
+    /// this defining write — so unrecorded provenance keeps the fail-closed
+    /// blanket (leak-never-double-free).
+    ///
+    /// The mirror of the whole-local classifier
+    /// [`Builder::local_storage_is_interior_alias`]; this one keys on the FIELD
+    /// TYPE so the `string`-retain class is separated from the aggregate
+    /// byte-copy class, which the whole-local walk does not distinguish.
+    fn field_projection_alias_provenance(
+        &self,
+        value: &HirExpr,
+        binding_ty: &ResolvedTy,
+    ) -> Option<ValueProvenance> {
+        // Only an inline aggregate field is a ByteCopyAlias. `string` (Retained)
+        // and single-pointer handles (HandleTransfer) keep `ScopeExit`
+        // ownership — the exact facts codegen implements (retain vs copy vs
+        // transfer), so the classification cannot admit an owner the binder
+        // also releases (the load-bearing double-free risk).
+        if self.classify_field_load(binding_ty) != Some(FieldLoadClass::ByteCopyAlias) {
+            return None;
+        }
+        // The RHS must be a field projection of a live owner: `root.field` /
+        // `root.N`. A fresh producer (call result / constructor) owns itself.
+        let (root_binding, projection) = match &value.kind {
+            HirExprKind::FieldAccess { object, field } => {
+                let root = binding_ref_target(object)?;
+                let ordinal = self.record_field_ordinal(object, field)?;
+                (root, Projection::Field(ordinal))
+            }
+            HirExprKind::TupleIndex { tuple, index } => {
+                let root = binding_ref_target(tuple)?;
+                let ordinal = u32::try_from(*index).ok()?;
+                (root, Projection::Field(ordinal))
+            }
+            _ => return None,
+        };
+        let root_place = self.binding_locals.get(&root_binding).copied()?;
+        Some(ValueProvenance::projection(
+            PlaceProvenance::from(root_place),
+            vec![projection],
+        ))
+    }
+
+    /// The three-way ownership class of a `let`-bound field LOAD, keyed on the
+    /// field type and frozen to mirror exactly what codegen emits for the load.
+    /// Returns `None` for a heap-free field (no drop obligation to classify).
+    /// This is the authority the field-projection alias seam and its verdict-
+    /// table pin read; misassigning a class here is the load-bearing double-free
+    /// risk, so it keys on the same facts codegen implements.
+    fn classify_field_load(&self, ty: &ResolvedTy) -> Option<FieldLoadClass> {
+        let ty = self.subst_ty(ty);
+        let owned = ValueOwnership::classify(&ty, Place::Local(0), &self.ownership_ctx());
+        match owned.decision() {
+            // Inline aggregate (record / tuple / array / inline-enum): the load
+            // byte-copies the member with no retain, so the binder is an
+            // interior alias the owner's composite still frees.
+            OwnershipDecision::OwnsHeap {
+                layout: LayoutClass::Product | LayoutClass::TaggedUnion,
+                ..
+            } => Some(FieldLoadClass::ByteCopyAlias),
+            // Every other heap-owning field is a single release handle. `string`
+            // is the ONE retaining leaf (codegen `hew_string_clone`s the load →
+            // the binder owns a fresh `+1`); every other leaf (`Vec` / `bytes` /
+            // `HashMap` / `HashSet` / `Generator` / indirect-enum node) transfers
+            // its one handle to the binder.
+            OwnershipDecision::OwnsHeap { .. } => {
+                if matches!(ty, ResolvedTy::String) {
+                    Some(FieldLoadClass::Retained)
+                } else {
+                    Some(FieldLoadClass::HandleTransfer)
+                }
+            }
+            // Heap-free / borrowed / already-an-alias / unsupported: no
+            // scope-exit drop obligation for the field-projection seam to record.
+            _ => None,
+        }
+    }
+
+    /// Declaration-order ordinal of `field` on the record type of `object`, from
+    /// the field-order table. `None` when the object type is not a registered
+    /// record (a tuple projection uses its literal index instead).
+    fn record_field_ordinal(&self, object: &HirExpr, field: &str) -> Option<u32> {
+        let ResolvedTy::Named {
+            name: type_name, ..
+        } = self.subst_ty(&object.ty)
+        else {
+            return None;
+        };
+        let order = self.lookup_record_field_order(type_name.as_str())?;
+        let idx = order.iter().position(|(f, _)| f == field)?;
+        u32::try_from(idx).ok()
+    }
+
+    /// The `(alias_local, owner_root_local)` pairs for every `AliasOf` ledger
+    /// entry: a `let mid = o.mid` / `let leaf = mid.leaf` byte-copy interior
+    /// alias mapped to the base local of the still-live OWNER root its recorded
+    /// provenance chains to, resolving intermediate aliases to the first
+    /// non-alias owner (a `leaf -> mid -> o` chain resolves both `leaf` and
+    /// `mid` to `o`).
+    ///
+    /// The record and tuple composite provers fold these into their field-
+    /// binder set. The whole-value alias map and the field-load scan they build
+    /// from the instruction stream only reach a ONE-hop alias (`mid` reads the
+    /// root directly, so it is collected); a DEEPER alias (`leaf` reads `mid`,
+    /// not the root) is invisible to them. Without the carried provenance a deep
+    /// alias that ESCAPES into an owning sink (returned, stored into an owning
+    /// record, sent) would leave the owner's composite admitted to free a
+    /// subtree the escapee already handed to the caller — a double-free. Folding
+    /// the recorded alias in, attributed to its owner, excludes exactly that
+    /// owner when the deep alias escapes, and leaves the owner admitted when the
+    /// alias is only read interiorly (the consumed-match path).
+    ///
+    /// An entry whose owner root is not a nameable local is dropped — the prover
+    /// keeps its fail-closed blanket for it (leak, never double-free).
+    fn alias_owner_field_binders(&self) -> Vec<(u32, u32)> {
+        // One hop: each alias's base local -> its recorded provenance root local.
+        // Keyed on the carried alias PROVENANCE, not the live disposition: a
+        // recorded byte-copy alias that is later consumed (moved into the return
+        // slot / a sink) is dispositioned off `AliasOf`, but consuming an alias
+        // moves no ownership — the owner still holds the heap. Its escape must
+        // still exclude the owner, so the provenance keeps it in scope here even
+        // after the disposition flips.
+        let mut one_hop: HashMap<u32, u32> = HashMap::new();
+        for entry in &self.owned_locals {
+            let Some(PlaceProvenance::Local(root_local)) =
+                entry.provenance.as_ref().map(|p| p.root)
+            else {
+                continue;
+            };
+            let Some(alias_local) = self
+                .binding_locals
+                .get(&entry.binding)
+                .and_then(|p| base_local(*p))
+            else {
+                continue;
+            };
+            one_hop.insert(alias_local, root_local);
+        }
+        // Resolve each alias to the ultimate owner by chasing intermediate
+        // aliases. The hop count is bounded by the alias count, so the walk
+        // terminates even if a (malformed) cycle ever appears.
+        let mut resolved = Vec::with_capacity(one_hop.len());
+        for (&alias_local, &first_root) in &one_hop {
+            let mut owner = first_root;
+            for _ in 0..one_hop.len() {
+                match one_hop.get(&owner) {
+                    Some(&next) => owner = next,
+                    None => break,
+                }
+            }
+            resolved.push((alias_local, owner));
+        }
+        resolved
+    }
+
+    /// The `(alias_local, immediate_parent_local, field_ordinal)` triples for
+    /// every recorded byte-copy interior alias ([`Disposition::AliasOf`]) whose
+    /// provenance is a single record/tuple field projection of a nameable parent
+    /// local — the IMMEDIATE hop of a `let mid = o.mid; let leaf = mid.leaf`
+    /// chain (`leaf -> (mid, 0)`, `mid -> (o, 0)`). Unlike
+    /// [`Builder::alias_owner_field_binders`], which resolves each alias straight
+    /// to its ultimate owner, this preserves the intermediate structure so the
+    /// escaped-record sibling-discharge emitter can walk the chain and compensate
+    /// the non-escaped siblings at EVERY level (the outer `c` through the root,
+    /// the intermediate `mid.x` through the `mid` alias) — matching the multi-hop
+    /// reach `close_alias_binders_forward` gave the composite-drop prover's
+    /// exclusion. Without it the widened exclusion removes the owner's composite
+    /// drop while the one-hop sibling emitter (blind past a one-hop alias) leaves
+    /// every deeper sibling to leak unconditionally.
+    ///
+    /// An entry whose parent is not a named local, or whose provenance path is
+    /// not a single field step, is dropped — the emitter keeps its fail-closed
+    /// leak-as-before for it (leak, never a double-free).
+    fn alias_projection_chain(&self) -> Vec<(u32, u32, u32)> {
+        let mut chain = Vec::new();
+        for entry in &self.owned_locals {
+            let Some(provenance) = entry.provenance.as_ref() else {
+                continue;
+            };
+            let PlaceProvenance::Local(parent_local) = provenance.root else {
+                continue;
+            };
+            let [Projection::Field(field)] = provenance.path.as_slice() else {
+                continue;
+            };
+            let Some(alias_local) = self
+                .binding_locals
+                .get(&entry.binding)
+                .and_then(|p| base_local(*p))
+            else {
+                continue;
+            };
+            chain.push((alias_local, parent_local, *field));
+        }
+        chain
+    }
+
+    /// The scope-exit-live owned locals as `(binding, name, ty)` tuples — the
+    /// compat shape the twelve allow-set provers, `build_lifo_drops`, and the
+    /// double-free gate consume. The `Disposition::ScopeExit` filter narrows the
+    /// ledger to exactly the bindings the function-exit LIFO pass still owns:
+    /// entries retracted by a [`Builder::set_owned_local_disposition`] write
+    /// (consumed, body-end-released, inner-scope-released) are excluded, which is
+    /// the same set the former `owned_locals.retain(...)` physical removals left
+    /// behind — so the drop-elaboration view is byte-identical to the pre-
+    /// disposition ledger. The retracted entries survive in the whole ledger
+    /// ([`Builder::owned_locals_ledger`]) for an end-of-pass scan to observe.
+    fn owned_locals_snapshot(&self) -> Vec<(BindingId, String, ResolvedTy)> {
+        self.owned_locals
+            .iter()
+            .filter(|entry| entry.disposition == Disposition::ScopeExit)
+            .map(|entry| (entry.binding, entry.name.clone(), entry.ty.clone()))
+            .collect()
+    }
+
+    /// The WHOLE per-function owned-locals ledger — every entry regardless of
+    /// disposition, in registration order — including bindings retracted off the
+    /// scope-exit-live set by a [`Builder::set_owned_local_disposition`] write.
+    ///
+    /// An end-of-pass scan reads this (rather than [`owned_locals_snapshot`],
+    /// the scope-exit-live view) when it must observe a binding whose release
+    /// was handled mid-lowering. Under the former physical-removal model that
+    /// binding was gone from the ledger by scan time — the retraction-invisible
+    /// class behind the double-free and #2375. The disposition write keeps the
+    /// entry observable while excluding it from the live drop set.
+    ///
+    /// [`owned_locals_snapshot`]: Builder::owned_locals_snapshot
+    #[allow(
+        dead_code,
+        reason = "whole-ledger scan option consumed by the provenance-aware \
+                  provers and end-of-pass scans in later drop-elaboration stages"
+    )]
+    fn owned_locals_ledger(&self) -> &[OwnedLocalEntry] {
+        &self.owned_locals
+    }
+
+    /// Disposition a binding OFF the scope-exit-live set — the retraction-to-
+    /// disposition replacement for `owned_locals.retain(|e| e.binding != b)`.
+    /// The entry stays in the ledger (an end-of-pass whole-ledger scan can still
+    /// observe it via [`Builder::owned_locals_ledger`]) but leaves the
+    /// scope-exit view [`Builder::owned_locals_snapshot`] projects, so the
+    /// function-exit LIFO drop pass no longer fires on it — byte-identical to the
+    /// physical removal it replaces. Sets every entry matching `binding`,
+    /// mirroring `retain`'s remove-all semantics (at most one exists in
+    /// practice).
+    fn set_owned_local_disposition(&mut self, binding: BindingId, disposition: Disposition) {
+        for entry in &mut self.owned_locals {
+            if entry.binding == binding {
+                entry.disposition = disposition;
+            }
+        }
+    }
+
     /// Apply the per-monomorphisation substitution map to a type.
     /// Returns the input unchanged when `subst` is empty (the
     /// non-generic-function case).
@@ -10039,7 +10549,7 @@ impl Builder {
             let Some(place) = self.binding_locals.get(&binding).copied() else {
                 continue;
             };
-            self.owned_locals.retain(|(b, _, _)| *b != binding);
+            self.set_owned_local_disposition(binding, Disposition::ScopeReleased);
             self.push_instr(Instr::Drop {
                 place,
                 ty,
@@ -10098,7 +10608,7 @@ impl Builder {
                 builtin: Some(BuiltinType::Vec),
                 is_opaque: false,
             };
-            self.owned_locals.retain(|(b, _, _)| *b != binding);
+            self.set_owned_local_disposition(binding, Disposition::ScopeReleased);
             self.push_instr(Instr::RecordFieldDrop {
                 record: place,
                 field_offset: crate::model::FieldOffset(0),
@@ -10365,8 +10875,7 @@ impl Builder {
                 == Some(true)
             {
                 let owned_ty = self.subst_ty(&param.ty);
-                self.owned_locals
-                    .push((param.id, param.name.clone(), owned_ty.clone()));
+                self.register_owned_local(param.id, param.name.clone(), owned_ty.clone());
                 // Register the param in the function's top body scope so it
                 // participates in the elaborator's path-sensitive drop passes
                 // (forward-`Goto` scope-close + per-exit narrowing) exactly like
@@ -11132,7 +11641,7 @@ impl Builder {
     /// union is total over `ResolvedTy` by construction — a `Vec<E>` local can
     /// never silently fall through every bucket and skip its release.
     ///
-    /// Order matters and mirrors codegen's `cow_heap_release_symbol`: a closure
+    /// Order matters and mirrors codegen's `resolved_ty_cow_heap_release`: a closure
     /// pair is checked BEFORE the owned/plain arms (a `fn`/closure element is
     /// neither an owned composite nor a plain leaf — it has its own pair-box
     /// release), and the owned composite is checked before the plain leaf (an
@@ -11325,9 +11834,11 @@ impl Builder {
     ) -> Vec<MirDiagnostic> {
         self.owned_locals
             .iter()
-            .filter_map(|(binding, name, ty)| {
-                let elem = self.unsupported_vec_element_in_ty(ty)?;
-                let site = bind_sites.get(binding).copied().unwrap_or(SiteId(0));
+            .filter(|entry| entry.disposition == Disposition::ScopeExit)
+            .filter_map(|entry| {
+                let name = &entry.name;
+                let elem = self.unsupported_vec_element_in_ty(&entry.ty)?;
+                let site = bind_sites.get(&entry.binding).copied().unwrap_or(SiteId(0));
                 Some(MirDiagnostic {
                     kind: MirDiagnosticKind::NotYetImplemented {
                         construct: format!(
@@ -12228,11 +12739,11 @@ impl Builder {
                     match classify_dyn_trait_storage(value, &self.dyn_trait_storage) {
                         Ok(storage) => {
                             self.dyn_trait_storage.insert(binding.id, storage);
-                            self.owned_locals.push((
+                            self.register_owned_local(
                                 binding.id,
                                 binding.name.clone(),
                                 value_ty.clone(),
-                            ));
+                            );
                             // Transitive `dyn -> dyn` rebind suppression.
                             //
                             // For `let d2 = d1;` (and `let d3 = { d2 };`
@@ -12314,8 +12825,29 @@ impl Builder {
                     // no backend Place, so it must not enter
                     // `owned_locals` either. LESSONS:
                     // boundary-fail-closed, raii-null-after-move.
-                    self.owned_locals
-                        .push((binding.id, binding.name.clone(), binding_ty.clone()));
+                    //
+                    // A `let mid = o.mid` / `let inner = t.0` projection whose
+                    // field is an inline aggregate is a byte-copy interior ALIAS
+                    // (`field_projection_alias_provenance` — the ByteCopyAlias
+                    // class): register it `AliasOf` so the owner's composite
+                    // frees the tree and the alias never trips the composite
+                    // provers' blanket (#2375). Every other binding — including
+                    // the `string`-Retained and single-pointer HandleTransfer
+                    // load classes, and every fresh producer — keeps its
+                    // `ScopeExit` ownership.
+                    match self.field_projection_alias_provenance(value, &binding_ty) {
+                        Some(provenance) => self.register_owned_local_alias(
+                            binding.id,
+                            binding.name.clone(),
+                            binding_ty.clone(),
+                            provenance,
+                        ),
+                        None => self.register_owned_local(
+                            binding.id,
+                            binding.name.clone(),
+                            binding_ty.clone(),
+                        ),
+                    }
                     // Tag generator/`AsyncGenerator` handle bindings with their
                     // declaring scope so a per-scope-exit `hew_gen_coro_destroy` fires
                     // when the scope closes — covering the loop-re-entry case the
@@ -12626,8 +13158,11 @@ impl Builder {
             });
             self.record_binding_scope(binding.binding);
             if self.binding_seeds_drop_elaboration(&binding_ty) {
-                self.owned_locals
-                    .push((binding.binding, binding.name.clone(), binding_ty.clone()));
+                self.register_owned_local(
+                    binding.binding,
+                    binding.name.clone(),
+                    binding_ty.clone(),
+                );
             }
             let dest = self.alloc_local(binding.ty.clone());
             self.push_instr(Instr::Move {
@@ -12651,8 +13186,11 @@ impl Builder {
             });
             self.record_binding_scope(binding.binding);
             if self.binding_seeds_drop_elaboration(&binding_ty) {
-                self.owned_locals
-                    .push((binding.binding, binding.name.clone(), binding_ty.clone()));
+                self.register_owned_local(
+                    binding.binding,
+                    binding.name.clone(),
+                    binding_ty.clone(),
+                );
             }
             let dest = self.alloc_local(binding.ty.clone());
             self.push_instr(Instr::Move {
@@ -12877,11 +13415,14 @@ impl Builder {
                         });
                     } else {
                         // #53: gated on the binding still owning live heap
-                        // (`owned_locals` membership) -- a self-reassign
-                        // r = T{..r} or a move-out RHS already consumed it
-                        // (removed from `owned_locals`), so this is skipped and
-                        // never double-frees.
-                        if self.owned_locals.iter().any(|(b, _, _)| b == binding) {
+                        // (scope-exit-live `owned_locals` membership) -- a
+                        // self-reassign r = T{..r} or a move-out RHS already
+                        // consumed it (dispositioned off the scope-exit set by
+                        // `mark_binding_moved`, so absent from the live view),
+                        // so this is skipped and never double-frees.
+                        if self.owned_locals.iter().any(|entry| {
+                            &entry.binding == binding && entry.disposition == Disposition::ScopeExit
+                        }) {
                             self.emit_local_overwrite_release(dest, &target.ty);
                         }
                         self.push_instr(Instr::Move { dest, src });
@@ -14497,7 +15038,7 @@ impl Builder {
                                 // and must be reached through `RecordFieldLoad` +
                                 // `Instr::Drop` (which materialises the fat value).
                                 // `field_override_uses_record_field_drop` mirrors
-                                // codegen's `cow_heap_release_symbol` single-ptr set
+                                // codegen's `resolved_ty_cow_heap_release` single-ptr set
                                 // so the `RecordFieldDrop` congruence assert agrees.
                                 if field_override_uses_record_field_drop(&subst_fty) {
                                     self.push_instr(Instr::RecordFieldDrop {
@@ -17585,17 +18126,17 @@ impl Builder {
     /// the construct at compile time — never emit a wrong-ABI free.
     ///
     /// The `Wired` selection MUST mirror codegen's
-    /// `cow_heap_release_symbol` so the inline-drop validator
+    /// `resolved_ty_cow_heap_release` so the inline-drop validator
     /// (`lower_inline_drop` → congruence check) accepts the emitted symbol
     /// (`dedup-semantic-boundary`).
     ///
-    /// `Bytes` does NOT appear in `cow_heap_release_symbol` (a native `bytes`
+    /// `Bytes` does NOT appear in `resolved_ty_cow_heap_release` (a native `bytes`
     /// value is a stack-resident `BytesTriple { ptr, i32, i32 }`, not a single
     /// owned pointer, so the generic single-`ptr`-load release shape that
-    /// `cow_heap_release_symbol` describes does not apply). The inline-drop
+    /// `resolved_ty_cow_heap_release` describes does not apply). The inline-drop
     /// dispatcher (`lower_inline_drop`) intercepts the
     /// `(ty == Bytes, drop_fn == "hew_bytes_drop")` pair BEFORE the
-    /// `cow_heap_release_symbol` congruence check and routes it through the
+    /// `resolved_ty_cow_heap_release` congruence check and routes it through the
     /// `BytesTriple`-aware emitter (`emit_bytes_inplace_drop`): GEP field 0,
     /// load the data ptr, call `hew_bytes_drop(data_ptr)`, null-store the
     /// field to make a structurally-reachable second drop a no-op against
@@ -17626,7 +18167,7 @@ impl Builder {
                 // The element's release bucket selects the Vec verdict, read
                 // from the one typed classification. Its dispatch checks the
                 // closure-pair bucket FIRST, mirroring codegen's
-                // `cow_heap_release_symbol` (a fn/closure element is neither
+                // `resolved_ty_cow_heap_release` (a fn/closure element is neither
                 // an owned composite nor a plain leaf; the inline-drop
                 // congruence check rejects a mis-picked `hew_vec_free` for a
                 // yielded `Vec<fn>` — `dedup-semantic-boundary`), and its
@@ -18044,7 +18585,7 @@ impl Builder {
     /// inline `Instr::Drop`. The caller fails closed for these rather than
     /// emit a wrong-ABI free (leak-not-double-free posture).
     ///
-    /// The symbol authority MUST agree with codegen's `cow_heap_release_symbol`
+    /// The symbol authority MUST agree with codegen's `resolved_ty_cow_heap_release`
     /// + Bytes-intercept in `lower_inline_drop` (`dedup-semantic-boundary`,
     ///   `lifecycle-symmetry`). A symbol absent from that authority would be
     ///   rejected at codegen-emit time as a wrong-ABI free.
@@ -18062,7 +18603,7 @@ impl Builder {
                 // generator-yield picker consults, so every drop-symbol
                 // authority detects each bucket through one decision and
                 // cannot drift. The dispatch checks the closure-pair bucket
-                // FIRST, mirroring codegen's `cow_heap_release_symbol` (see
+                // FIRST, mirroring codegen's `resolved_ty_cow_heap_release` (see
                 // `classify_vec_element_release`'s order doc; both
                 // authorities are documented to agree —
                 // `dedup-semantic-boundary`, `is_known_cow_heap_drop_symbol`
@@ -18107,7 +18648,7 @@ impl Builder {
     /// dispatcher can resolve?"), so MIR admission and codegen capability
     /// cannot drift (`dedup-semantic-boundary` — the same discipline
     /// `project_field_inline_drop_symbol` documents against codegen's
-    /// `cow_heap_release_symbol`).
+    /// `resolved_ty_cow_heap_release`).
     ///
     /// Admitted top-level shapes, mirroring `emit_heap_slot_drop`'s dispatch:
     ///   - user record with a registered layout — every field dischargeable
@@ -18801,6 +19342,17 @@ impl Builder {
             _ => None,
         };
 
+        // Classify the scrutinee's storage once, above the bind loop, so both
+        // the bound-string discharge inside it and the skipped-field discharge
+        // below read the same verdict. `local_storage_is_interior_alias` is a
+        // pure classifier over the already-emitted loads that define
+        // `scrutinee_local` (an interior alias is minted by a `let inner =
+        // outer.field` byte copy BEFORE this match lowers); the bind loop only
+        // adds loads whose dest is a binder, never `scrutinee_local`, so the
+        // verdict is invariant to where it is read.
+        let scrutinee_is_interior_alias =
+            scrutinee_is_non_bitcopy && self.local_storage_is_interior_alias(scrutinee_local);
+
         let mut overwritten_bindings = Vec::with_capacity(selected.bindings.len());
         for binding in &selected.bindings {
             let binding_ty = self.subst_ty(&binding.ty);
@@ -18823,9 +19375,13 @@ impl Builder {
             // BitCopy bindings stay out: their copy is free of heap ownership
             // and the surrounding scrutinee's composite drop covers them.
             let keep_for_drop_elab = self.binding_seeds_drop_elaboration(&binding_ty);
+            let binding_is_string = matches!(binding_ty, ResolvedTy::String);
             if keep_for_drop_elab {
-                self.owned_locals
-                    .push((binding.binding, binding.name.clone(), binding_ty.clone()));
+                self.register_owned_local(
+                    binding.binding,
+                    binding.name.clone(),
+                    binding_ty.clone(),
+                );
                 // A generator/AsyncGenerator handle bound via match destructure
                 // gets the same per-scope-exit `hew_gen_coro_destroy` registration the
                 // `Let` path uses, so the per-iteration release fires for a
@@ -18911,6 +19467,48 @@ impl Builder {
                     panic!("checker invariant violated: refutable arm in project match lowering");
                 }
             }
+            // Bound-string original discharge. A `string`-typed field bound on
+            // a consumed, non-alias root strands its original. Codegen retains
+            // the string on the field load (`retain_string_field_load` →
+            // `hew_string_clone`, rc 2): the binder owns the clone, but the
+            // ORIGINAL handle still sits in the root slot with a `+1` nothing
+            // releases — the root's composite drop is suppressed (the binder
+            // seeds `release_owner_bases`) and the consume mark below retracts
+            // the root from `owned_locals`. Discharge the original IN PLACE
+            // right after the load: `FieldDropInPlace` raw-loads the root's
+            // field handle, releases it (rc 1), and null-stores the slot; the
+            // binder is then the sole owner — safe even when the arm returns
+            // the binder (its own drop balances the retained clone).
+            //
+            // Gated exactly like the skipped-field discharge below:
+            //   - consume-marked scrutinee: a non-consumed root keeps its
+            //     composite drop, which frees the original — discharging here
+            //     would double-free.
+            //   - non-alias root: on an interior alias the original belongs to
+            //     the OUTER composite, which frees it; `FieldDropInPlace`
+            //     null-stores the alias slot, not the owner's (the alias gate
+            //     below is the authority) — discharging would double-free.
+            //   - `string`-typed field only: the retaining-load class. Non-
+            //     string bound fields (`Vec` / `bytes` / handles / aggregates)
+            //     load without a retain, so the binder takes the one handle and
+            //     the root slot is dead — they do not strand and MUST NOT be
+            //     discharged here.
+            if consume_scrutinee.is_some() && !scrutinee_is_interior_alias && binding_is_string {
+                let field = match &selected.predicate {
+                    hew_hir::HirMatchArmPredicate::RecordProject { .. } => {
+                        crate::model::FieldAddr::Record(FieldOffset(binding.field_idx))
+                    }
+                    hew_hir::HirMatchArmPredicate::TupleProject { .. } => {
+                        crate::model::FieldAddr::Tuple(binding.field_idx)
+                    }
+                    _ => unreachable!("bound-string discharge only reached for project predicates"),
+                };
+                self.push_instr(Instr::FieldDropInPlace {
+                    base: Place::Local(scrutinee_local),
+                    field,
+                    ty: ResolvedTy::String,
+                });
+            }
             let previous = self.binding_locals.insert(binding.binding, dest);
             overwritten_bindings.push((binding.binding, previous, keep_for_drop_elab));
         }
@@ -18978,8 +19576,6 @@ impl Builder {
         // leak — fail-closed — and the provers' direct `FieldDropInPlace`
         // binder rules remain the net for any emitter that does discharge
         // through an alias.
-        let scrutinee_is_interior_alias =
-            scrutinee_is_non_bitcopy && self.local_storage_is_interior_alias(scrutinee_local);
         if !selected.bindings.is_empty() && scrutinee_is_non_bitcopy && !scrutinee_is_interior_alias
         {
             let extracted: HashSet<u32> = selected.bindings.iter().map(|b| b.field_idx).collect();
@@ -20290,11 +20886,11 @@ impl Builder {
                 self.record_binding_scope(binding.binding);
                 let keep_for_drop_elab = self.binding_seeds_drop_elaboration(&binding_ty);
                 if keep_for_drop_elab {
-                    self.owned_locals.push((
+                    self.register_owned_local(
                         binding.binding,
                         binding.name.clone(),
                         binding_ty.clone(),
-                    ));
+                    );
                 }
                 let dest = self.alloc_local(binding.ty.clone());
                 self.push_instr(Instr::Move {
@@ -20325,7 +20921,10 @@ impl Builder {
                     // the reference to a longer-lived owner), matching the
                     // generator-yield posture.
                     if keep_for_drop_elab {
-                        self.owned_locals.retain(|(b, _, _)| *b != binding.binding);
+                        self.set_owned_local_disposition(
+                            binding.binding,
+                            Disposition::BodyEndReleased,
+                        );
                     }
                     retained_vec_string_iter_bindings.push((
                         binding.binding,
@@ -20360,7 +20959,10 @@ impl Builder {
                             // fresh heap allocation the consumer alone is
                             // responsible for releasing.
                             if keep_for_drop_elab {
-                                self.owned_locals.retain(|(b, _, _)| *b != binding.binding);
+                                self.set_owned_local_disposition(
+                                    binding.binding,
+                                    Disposition::BodyEndReleased,
+                                );
                             }
                             generator_yield_drop_bindings.push((
                                 binding.binding,
@@ -20386,7 +20988,10 @@ impl Builder {
                             // final-`owned_locals` scan does not stack a
                             // second diagnostic on the same construct.
                             if keep_for_drop_elab {
-                                self.owned_locals.retain(|(b, _, _)| *b != binding.binding);
+                                self.set_owned_local_disposition(
+                                    binding.binding,
+                                    Disposition::BodyEndReleased,
+                                );
                             }
                             let elem = self
                                 .unsupported_vec_element_in_ty(&binding_ty)
@@ -20435,8 +21040,7 @@ impl Builder {
                 self.record_binding_scope(binding.binding);
                 let keep_for_drop_elab = self.binding_seeds_drop_elaboration(&binding_ty);
                 if keep_for_drop_elab {
-                    self.owned_locals
-                        .push((binding.binding, binding.name.clone(), binding_ty));
+                    self.register_owned_local(binding.binding, binding.name.clone(), binding_ty);
                 }
                 let dest = self.alloc_local(binding.ty.clone());
                 self.push_instr(Instr::Move {
@@ -20956,8 +21560,11 @@ impl Builder {
             });
             self.record_binding_scope(binding.binding);
             if self.binding_seeds_drop_elaboration(&binding_ty) {
-                self.owned_locals
-                    .push((binding.binding, binding.name.clone(), binding_ty.clone()));
+                self.register_owned_local(
+                    binding.binding,
+                    binding.name.clone(),
+                    binding_ty.clone(),
+                );
             }
             let dest = self.alloc_local(binding.ty.clone());
             self.push_instr(Instr::Move {
@@ -20981,8 +21588,11 @@ impl Builder {
             });
             self.record_binding_scope(binding.binding);
             if self.binding_seeds_drop_elaboration(&binding_ty) {
-                self.owned_locals
-                    .push((binding.binding, binding.name.clone(), binding_ty.clone()));
+                self.register_owned_local(
+                    binding.binding,
+                    binding.name.clone(),
+                    binding_ty.clone(),
+                );
             }
             let dest = self.alloc_local(binding.ty.clone());
             self.push_instr(Instr::Move {
@@ -21179,8 +21789,11 @@ impl Builder {
             });
             self.record_binding_scope(binding.binding);
             if self.binding_seeds_drop_elaboration(&binding_ty) {
-                self.owned_locals
-                    .push((binding.binding, binding.name.clone(), binding_ty.clone()));
+                self.register_owned_local(
+                    binding.binding,
+                    binding.name.clone(),
+                    binding_ty.clone(),
+                );
             }
             let dest = self.alloc_local(binding.ty.clone());
             self.push_instr(Instr::Move {
@@ -21204,8 +21817,11 @@ impl Builder {
             });
             self.record_binding_scope(binding.binding);
             if self.binding_seeds_drop_elaboration(&binding_ty) {
-                self.owned_locals
-                    .push((binding.binding, binding.name.clone(), binding_ty.clone()));
+                self.register_owned_local(
+                    binding.binding,
+                    binding.name.clone(),
+                    binding_ty.clone(),
+                );
             }
             let dest = self.alloc_local(binding.ty.clone());
             self.push_instr(Instr::Move {
@@ -24006,13 +24622,11 @@ impl Builder {
         });
         self.record_binding_scope(binding_id);
         if self.binding_seeds_drop_elaboration(ty)
-            && !self
-                .owned_locals
-                .iter()
-                .any(|(binding, _, _)| *binding == binding_id)
+            && !self.owned_locals.iter().any(|entry| {
+                entry.binding == binding_id && entry.disposition == Disposition::ScopeExit
+            })
         {
-            self.owned_locals
-                .push((binding_id, name.to_string(), ty.clone()));
+            self.register_owned_local(binding_id, name.to_string(), ty.clone());
         }
     }
 
@@ -31033,7 +31647,11 @@ impl Builder {
         if !self.prepass_reassigned_bindings.contains(&binding.id) {
             return;
         }
-        if !self.owned_locals.iter().any(|(b, _, _)| *b == binding.id) {
+        if !self
+            .owned_locals
+            .iter()
+            .any(|entry| entry.binding == binding.id && entry.disposition == Disposition::ScopeExit)
+        {
             return;
         }
         if self.overwrite_guard_flags.contains_key(&binding.id) {
@@ -31100,8 +31718,9 @@ impl Builder {
     fn mark_binding_moved(&mut self, id: BindingId) {
         // #2301 -- record the move-out at runtime for a binding that carries a
         // path-sensitive overwrite-release flag. Setting the flag on EVERY
-        // `owned_locals` removal (every consume site, not just the primary
-        // `Use{Consume}` lowering) means a later overwrite on a DIFFERENT
+        // consume retraction (the `ConsumedAt` disposition write below, every
+        // consume site, not just the primary `Use{Consume}` lowering) means a
+        // later overwrite on a DIFFERENT
         // control-flow path correctly SKIPS the release (the moved-out value's
         // new owner drops it), while the non-consuming path keeps `flag == 0`
         // and releases. The flag is reset to 0 after that overwrite's store. A
@@ -31112,7 +31731,7 @@ impl Builder {
                 value: 1,
             });
         }
-        self.owned_locals.retain(|(binding, _, _)| *binding != id);
+        self.set_owned_local_disposition(id, Disposition::ConsumedAt);
     }
 
     // JUSTIFIED: this predicate deliberately stays adjacent to the aggregate
@@ -32058,7 +32677,12 @@ fn elaborate(
     // block's `statements` in construction order — Slice 1 maintains
     // pre-CFG snapshot continuity by feeding the same union here.
     let mut elaborated_statements: Vec<MirStatement> = flat_statements.to_vec();
-    for (binding, name, ty) in builder.owned_locals.iter().rev() {
+    // The scope-exit-live owned-locals view, materialised once for the
+    // reverse-declaration drop stream and every per-class allow-set derivation
+    // below — the same `(binding, name, ty)` tuples the provers read before the
+    // ledger carried richer facts, in the same declaration order.
+    let owned_locals_snapshot = builder.owned_locals_snapshot();
+    for (binding, name, ty) in owned_locals_snapshot.iter().rev() {
         elaborated_statements.push(MirStatement::Drop {
             binding: *binding,
             name: name.clone(),
@@ -32106,7 +32730,7 @@ fn elaborate(
     let mut cow_drop_allowed = derive_cow_sole_owner(
         &checked.blocks,
         &builder.suspend_kinds,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.match_project_consumed_binder_locals,
         &builder.locals,
@@ -32123,7 +32747,7 @@ fn elaborate(
     cow_drop_allowed.extend(derive_cow_fresh_borrowed_owner(
         &checked.blocks,
         &builder.suspend_kinds,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.locals,
     ));
@@ -32148,7 +32772,7 @@ fn elaborate(
     let enum_composite_drop_allowed = derive_enum_composite_drop_allowed(
         &checked.blocks,
         &builder.suspend_kinds,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.binding_scope,
         &builder.locals,
@@ -32183,7 +32807,7 @@ fn elaborate(
     let mut owned_vec_drop_allowed = derive_local_collection_drop_allowed(
         &checked.blocks,
         &builder.suspend_kinds,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
         |ty| builder.binding_ty_is_owned_element_vec(ty),
     );
@@ -32248,7 +32872,7 @@ fn elaborate(
     let mut local_collection_drop_allowed = derive_local_collection_drop_allowed(
         &checked.blocks,
         &builder.suspend_kinds,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
         ty_is_local_collection_handle,
     );
@@ -32278,7 +32902,7 @@ fn elaborate(
     let mut local_bytes_drop_allowed = derive_local_bytes_drop_allowed(
         &checked.blocks,
         &builder.suspend_kinds,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
     );
     for states in dataflow_result.exit_states.values() {
@@ -32302,7 +32926,7 @@ fn elaborate(
     let mut closure_vec_drop_allowed = derive_local_collection_drop_allowed(
         &checked.blocks,
         &builder.suspend_kinds,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
         ty_is_closure_pair_vec,
     );
@@ -32336,7 +32960,7 @@ fn elaborate(
     let mut plain_vec_drop_allowed = derive_local_collection_drop_allowed(
         &checked.blocks,
         &builder.suspend_kinds,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
         |ty| builder.binding_ty_is_plain_vec(ty),
     );
@@ -32384,16 +33008,18 @@ fn elaborate(
     // arm but live on another is still dropped on the live arm. The legacy
     // `owned_string_record_bindings` membership is folded into the same gate (a
     // string record is a subset of the owned-aggregate records covered here).
+    let alias_field_binders = builder.alias_owner_field_binders();
     let is_owned_record = |ty: &ResolvedTy| builder.is_owned_aggregate_record_ty(ty);
     let owned_record_drop_allowed = derive_owned_record_drop_allowed(
         &checked.blocks,
         &builder.suspend_kinds,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.locals,
         &is_owned_record,
         &builder.record_field_orders,
         &builder.enum_layouts,
+        &alias_field_binders,
     );
 
     // W5.021 — fail-closed sole-owner allow-set for heap-owning **tuple**
@@ -32409,18 +33035,19 @@ fn elaborate(
     let tuple_composite_drop_allowed = derive_tuple_composite_drop_allowed(
         &checked.blocks,
         &builder.suspend_kinds,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.locals,
         &builder.record_field_orders,
         &builder.enum_layouts,
+        &alias_field_binders,
     );
 
     // W5.021 (defect #1) — owned members the caller now owns via a returned
     // aggregate; excluded from every drop class below (see the function doc).
     let returned_aggregate_members = derive_returned_aggregate_member_bindings(
         &checked.blocks,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
     );
 
@@ -32431,7 +33058,7 @@ fn elaborate(
     // `returned_aggregate_members` (see the function doc).
     let consumed_local_aggregate_members = derive_consumed_local_aggregate_member_bindings(
         &checked.blocks,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.locals,
         &builder.record_field_orders,
@@ -32475,7 +33102,7 @@ fn elaborate(
     // skip and the `Consumed`/`MaybeConsumed` exit filter below complete it.
     let mut indirect_enum_drop_allowed = derive_indirect_enum_drop_allowed(
         &checked.blocks,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.enum_layouts,
     );
@@ -32491,7 +33118,7 @@ fn elaborate(
     }
 
     let lifo_drops = build_lifo_drops(
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.type_classes,
         &builder.dyn_trait_storage,
@@ -32727,19 +33354,19 @@ fn expected_drop_kind_for_validation(drop: &ElabDrop) -> DropKind {
         // re-derives via the dispatcher so a non-Vec place cannot silently
         // carry the owned-Vec release symbol.
         DropKind::CowHeap {
-            drop_fn: "hew_vec_free_owned",
+            release: crate::ownership::CowHeapRelease::VecOwnedElement,
         } if matches!(drop.place, Place::Local(_)) && ty_is_vec(&drop.ty) => DropKind::CowHeap {
-            drop_fn: "hew_vec_free_owned",
+            release: crate::ownership::CowHeapRelease::VecOwnedElement,
         },
         // Closure-pair `Vec<fn(...)>` scope-exit release: same dedicated-kind
         // acceptance shape as the owned-Vec arm — a local Vec whose element
         // is a closure pair may carry the closure-pair release symbol; any
         // other shape re-derives via the Place-driven dispatcher.
         DropKind::CowHeap {
-            drop_fn: "hew_vec_free_closure_pairs",
+            release: crate::ownership::CowHeapRelease::VecClosurePairs,
         } if matches!(drop.place, Place::Local(_)) && ty_is_closure_pair_vec(&drop.ty) => {
             DropKind::CowHeap {
-                drop_fn: "hew_vec_free_closure_pairs",
+                release: crate::ownership::CowHeapRelease::VecClosurePairs,
             }
         }
         // Plain `Vec<T>` scope-exit release: same dedicated-kind acceptance
@@ -32751,9 +33378,9 @@ fn expected_drop_kind_for_validation(drop: &ElabDrop) -> DropKind {
         // carry the plain-Vec release symbol. Codegen re-validates the
         // (type, symbol) congruence again before emitting the call.
         DropKind::CowHeap {
-            drop_fn: "hew_vec_free",
+            release: crate::ownership::CowHeapRelease::VecPlain,
         } if matches!(drop.place, Place::Local(_)) && ty_is_vec(&drop.ty) => DropKind::CowHeap {
-            drop_fn: "hew_vec_free",
+            release: crate::ownership::CowHeapRelease::VecPlain,
         },
         // W5.021 — heap-owning tuple drops are keyed by both kind and
         // `ElabDrop::ty` (the structural tuple shape selects the synthesized
@@ -33762,6 +34389,41 @@ fn propagate_whole_value_alias_roots(
 /// `derive_owned_record_drop_allowed` (the composite-drop prover) and
 /// `apply_escaped_record_sibling_field_drops` (the #2212 sibling-discharge
 /// emitter) so the two agree on what counts as a field binder.
+/// Forward whole-value-`Move` closure of the recorded interior-alias binders:
+/// starting from each `(alias_local, owner_local)` seed, every local the alias
+/// value flows into via `Move { dest, src }` inherits the same owner. The
+/// record and tuple composite provers fold the whole closure into their binder
+/// set (and, for records, its provenance) so a deep projection alias that
+/// escapes through a return / hand-off temp (`ret = move leaf`) still names the
+/// owner it aliases — the field-load scan's own move-propagation runs before
+/// the alias is folded in, so it never reaches these copies.
+fn close_alias_binders_forward(blocks: &[BasicBlock], seeds: &[(u32, u32)]) -> HashMap<u32, u32> {
+    let mut owner_of: HashMap<u32, u32> = seeds.iter().copied().collect();
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                if let Instr::Move { dest, src } = instr {
+                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
+                        if let Some(&owner) = owner_of.get(&sl) {
+                            if let std::collections::hash_map::Entry::Vacant(slot) =
+                                owner_of.entry(dl)
+                            {
+                                slot.insert(owner);
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    owner_of
+}
+
 fn collect_record_field_binders(
     blocks: &[BasicBlock],
     alias_of: &HashMap<u32, u32>,
@@ -34022,6 +34684,20 @@ fn place_is_interior_projection(place: Place) -> bool {
         | Place::RecvHalf(_)
         | Place::MachineTag(_)
         | Place::EnumTag(_) => true,
+    }
+}
+
+/// The [`BindingId`] a `root.field` / `root.N` projection's object resolves to
+/// when it is a direct reference to a live binding. `None` for a nested or
+/// non-binding object (a projection chain, a call result, `this`) — the caller
+/// then fails closed and records no alias provenance.
+fn binding_ref_target(object: &HirExpr) -> Option<BindingId> {
+    match &object.kind {
+        HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(id),
+            ..
+        } => Some(*id),
+        _ => None,
     }
 }
 
@@ -35223,7 +35899,7 @@ fn cow_owned_string_terminator_escapes(
 /// W5.011 P3 — borrowing-read-aware owned-`string` cleanup. Returns the subset
 /// of `owned_locals` that hold a **proven fresh sole owner used only in
 /// borrowing reads**, which therefore earns a scope-exit
-/// `DropKind::CowHeap { drop_fn: "hew_string_drop" }`.
+/// `DropKind::CowHeap { release: String }` (`hew_string_drop`).
 ///
 /// ## Why this exists (the leak `derive_cow_sole_owner` leaves behind)
 ///
@@ -35913,6 +36589,7 @@ fn apply_escaped_record_sibling_field_drops(
     local_tys: &[ResolvedTy],
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
+    alias_chain: &[(u32, u32, u32)],
     is_owned_record: &dyn Fn(&ResolvedTy) -> bool,
     owned_field_list: &dyn Fn(&ResolvedTy) -> Vec<(u32, ResolvedTy)>,
     field_dischargeable: &dyn Fn(&ResolvedTy) -> bool,
@@ -36244,6 +36921,22 @@ fn apply_escaped_record_sibling_field_drops(
         }
         insertions.push((esc_block, esc_idx + 1, siblings));
     }
+    // The one-hop scan above sees only a binder loaded DIRECTLY off a whole-value
+    // alias member, so a ≥2-hop escape (`let mid = o.mid; let leaf = mid.leaf;
+    // return leaf`) is invisible to it — yet the composite-drop prover DOES
+    // exclude the owner for it (via `close_alias_binders_forward`). Walk the
+    // recorded alias chain and discharge the non-escaped siblings at every level
+    // so the widened exclusion never outruns its compensation.
+    insertions.extend(compute_escaped_record_chain_sibling_drops(
+        blocks,
+        suspend_kinds,
+        &root_record_ty,
+        &alias_of,
+        alias_chain,
+        local_tys,
+        owned_field_list,
+        field_dischargeable,
+    ));
     if insertions.is_empty() {
         return;
     }
@@ -36271,6 +36964,278 @@ fn apply_escaped_record_sibling_field_drops(
             }
         }
     }
+}
+
+/// Multi-hop sibling discharge for the ESCAPED deep-alias chain
+/// (`let mid = o.mid; let leaf = mid.leaf; return leaf`), the ≥2-hop companion
+/// to the one-hop scan in [`apply_escaped_record_sibling_field_drops`].
+///
+/// `derive_owned_record_drop_allowed` folds the recorded deep aliases into its
+/// exclusion via `close_alias_binders_forward`, so when a ≥2-hop alias escapes
+/// into an owning sink it suppresses the OWNER root's whole composite drop —
+/// otherwise the owner would free a subtree the escapee already handed to the
+/// caller (the #2375 double-free). The one-hop scan cannot see a ≥2-hop alias
+/// (its field-binder scan reaches only a binder loaded DIRECTLY off a whole-
+/// value alias member), so the widened exclusion removed the composite drop but
+/// nothing discharged the non-escaped siblings ALONG the chain — the outer `c`
+/// and the intermediate `mid.x` leaked unconditionally (the P0 regression).
+///
+/// This walk mirrors the exclusion's reach: from the escapee up its immediate-
+/// parent chain to the owning root, it emits one `FieldDropInPlace` per owned
+/// field that does NOT lead to the next (escaping) hop, addressed through the
+/// still-live byte-copy alias local at each level (`mid.x` through `mid`, `o.c`
+/// through `o`). Exactly-once invariant: the escaped field at each level is
+/// never discharged (the escapee owns that subtree), every other owned field is
+/// discharged exactly once through its level's alias slot.
+///
+/// Fail-closed, coupled to the prover's exclusion so the two never disagree:
+/// exactly ONE chain alias may escape, at a single INSTRUCTION whose escape
+/// trigger (a `Move` to a non-member/non-carrier slot, a `RecordInit` field, a
+/// `RecordFieldStore` source) is a strict subset of the prover's exclusion
+/// triggers; the chain must resolve cleanly to a single candidate root through
+/// ≥2 byte-copy hops (a one-hop escape is the scan above's job); the escape
+/// block must not be reachable from itself (no loop — the inline-composite
+/// discharges have no null-store to make a re-run idempotent); and NO node of
+/// the chain may be read after the escape point. Any use of a chain alias this
+/// walk cannot model bails the whole pass (leak-as-before, never a double-free).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct caller-owned input the walk needs — \
+              the MIR, the suspend table, the candidate-root and whole-value \
+              alias maps, the recorded chain, the local type table, and the two \
+              type-shape predicates; bundling them into a struct would only \
+              relocate the same fields at the single call site"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one linear pipeline — carrier closure, escape scan, chain walk, \
+              after-escape liveness guard, per-level discharge — whose \
+              fail-closed ordering the soundness argument depends on; splitting \
+              it would scatter the shared carrier/escape state"
+)]
+#[allow(
+    clippy::similar_names,
+    reason = "`escapee` (the escaping alias) and `escapes` (the collected escape \
+              events) are the domain terms; renaming either obscures the walk"
+)]
+fn compute_escaped_record_chain_sibling_drops(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    root_record_ty: &HashMap<u32, ResolvedTy>,
+    alias_of: &HashMap<u32, u32>,
+    alias_chain: &[(u32, u32, u32)],
+    local_tys: &[ResolvedTy],
+    owned_field_list: &dyn Fn(&ResolvedTy) -> Vec<(u32, ResolvedTy)>,
+    field_dischargeable: &dyn Fn(&ResolvedTy) -> bool,
+) -> Vec<(u32, usize, Vec<Instr>)> {
+    // Immediate-parent map: alias_local -> (parent_local, field ordinal it reads).
+    let parent_of: HashMap<u32, (u32, u32)> = alias_chain
+        .iter()
+        .copied()
+        .map(|(alias, parent, field)| (alias, (parent, field)))
+        .collect();
+    if parent_of.is_empty() {
+        return Vec::new();
+    }
+
+    // Forward whole-value-`Move` closure of the chain alias binding locals: every
+    // slot a chain alias value flows into (`let l2 = leaf`) carries the same
+    // escapee identity, so a later escape of the copy is still attributed to the
+    // recorded alias — and, symmetrically, a `Move` INTO a carrier is a benign
+    // hand-off, never an escape (so the escape scan below can never disagree with
+    // the prover's `field_binders`-benign move rule).
+    let mut carrier_of: HashMap<u32, u32> = parent_of.keys().map(|&a| (a, a)).collect();
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                if let Instr::Move { dest, src } = instr {
+                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
+                        if matches!(src, Place::Local(_)) && matches!(dest, Place::Local(_)) {
+                            if let Some(&alias) = carrier_of.get(&sl) {
+                                if let std::collections::hash_map::Entry::Vacant(slot) =
+                                    carrier_of.entry(dl)
+                                {
+                                    slot.insert(alias);
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // Escape scan. A chain carrier read into an owning sink is an escape; an
+    // interior descent (`RecordFieldLoad`/`TupleFieldLoad` reading the carrier —
+    // the next hop of the chain, or the consumed-match destructure) and a
+    // benign whole-value hand-off into another carrier/alias member are not.
+    // Any owning use this walk cannot classify bails the whole pass.
+    let mut escapes: Vec<(u32, u32, usize)> = Vec::new();
+    for block in blocks {
+        for (idx, instr) in block.instructions.iter().enumerate() {
+            match instr {
+                // Interior descent read: feeds the next hop, never escapes.
+                Instr::RecordFieldLoad { .. } | Instr::TupleFieldLoad { .. } => {}
+                Instr::Move { dest, src } => {
+                    if let Some(sl) = base_local(*src).filter(|_| matches!(src, Place::Local(_))) {
+                        if let Some(&escapee) = carrier_of.get(&sl) {
+                            let dest_local =
+                                base_local(*dest).filter(|_| matches!(dest, Place::Local(_)));
+                            let benign = dest_local.is_some_and(|dl| {
+                                carrier_of.contains_key(&dl) || alias_of.contains_key(&dl)
+                            });
+                            if !benign {
+                                escapes.push((escapee, block.id, idx));
+                            }
+                        }
+                    }
+                }
+                Instr::RecordInit { fields, .. } => {
+                    for (_, place) in fields {
+                        if let Some(l) = base_local(*place) {
+                            if let Some(&escapee) = carrier_of.get(&l) {
+                                escapes.push((escapee, block.id, idx));
+                            }
+                        }
+                    }
+                }
+                Instr::RecordFieldStore { src, .. } => {
+                    if let Some(l) = base_local(*src) {
+                        if let Some(&escapee) = carrier_of.get(&l) {
+                            escapes.push((escapee, block.id, idx));
+                        }
+                    }
+                }
+                other => {
+                    let (reads, _) = crate::dataflow::instr_reads_writes(other);
+                    for place in reads {
+                        if let Some(l) = base_local(place) {
+                            if carrier_of.contains_key(&l)
+                                && !binder_read_is_borrow_safe_instr(other, l)
+                            {
+                                // An owning use of a chain alias this walk does
+                                // not model: fail closed (leak-as-before).
+                                return Vec::new();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for place in terminator_source_places(&block.terminator, suspend_kinds.get(&block.id)) {
+            if let Some(l) = base_local(place) {
+                if carrier_of.contains_key(&l)
+                    && !binder_read_is_borrow_safe_terminator(
+                        &block.terminator,
+                        suspend_kinds.get(&block.id),
+                        l,
+                    )
+                {
+                    // A terminator escape has no post-escape insertion point.
+                    return Vec::new();
+                }
+            }
+        }
+    }
+
+    // Exactly one chain alias may escape, at a single instruction.
+    let &[(escapee, esc_block, esc_idx)] = &escapes[..] else {
+        return Vec::new();
+    };
+
+    // Walk the escapee's immediate-parent chain to its candidate root, recording
+    // `(node_local, field-that-leads-to-the-next-hop)` at each level. Requires ≥2
+    // byte-copy hops and a clean termination at a candidate record root.
+    let mut chain_nodes: Vec<(u32, u32)> = Vec::new();
+    let mut cursor = escapee;
+    let mut reached_root = false;
+    for _ in 0..=parent_of.len() {
+        let Some(&(parent, field)) = parent_of.get(&cursor) else {
+            break;
+        };
+        chain_nodes.push((parent, field));
+        if root_record_ty.contains_key(&parent) {
+            reached_root = true;
+            break;
+        }
+        cursor = parent;
+    }
+    if !reached_root || chain_nodes.len() < 2 {
+        return Vec::new();
+    }
+
+    // No node of the chain (root, intermediate aliases, escapee carriers) may be
+    // read after the escape point — discharging a sibling before a live read
+    // would free a slot the read still observes. A self-reachable escape block is
+    // a loop the inline-composite discharges cannot make idempotent.
+    let node_locals: HashSet<u32> = chain_nodes
+        .iter()
+        .map(|&(node, _)| node)
+        .chain(carrier_of.keys().copied())
+        .collect();
+    let reach = blocks_reachable_from(blocks, esc_block);
+    if reach.contains(&esc_block) {
+        return Vec::new();
+    }
+    let in_region = |block_id: u32, position: Option<usize>| -> bool {
+        if block_id == esc_block {
+            position.is_none_or(|i| i > esc_idx)
+        } else {
+            reach.contains(&block_id)
+        }
+    };
+    for block in blocks {
+        for (idx, instr) in block.instructions.iter().enumerate() {
+            if block.id == esc_block && idx == esc_idx {
+                // The escape instruction itself reads the escapee; that read is
+                // AT the escape, not after it.
+                continue;
+            }
+            let reads_node = instr_source_places(instr)
+                .into_iter()
+                .filter_map(base_local)
+                .any(|l| node_locals.contains(&l));
+            if reads_node && in_region(block.id, Some(idx)) {
+                return Vec::new();
+            }
+        }
+        let term_reads_node =
+            terminator_source_places(&block.terminator, suspend_kinds.get(&block.id))
+                .into_iter()
+                .filter_map(base_local)
+                .any(|l| node_locals.contains(&l));
+        if term_reads_node && in_region(block.id, None) {
+            return Vec::new();
+        }
+    }
+
+    // Emit the per-level sibling discharges: at each chain node, every owned
+    // field except the one that leads to the next (escaping) hop.
+    let mut siblings: Vec<Instr> = Vec::new();
+    for &(node_local, escaped_field) in &chain_nodes {
+        let Some(node_ty) = local_tys.get(node_local as usize) else {
+            continue;
+        };
+        for (field_idx, field_ty) in owned_field_list(node_ty) {
+            if field_idx == escaped_field || !field_dischargeable(&field_ty) {
+                continue;
+            }
+            siblings.push(Instr::FieldDropInPlace {
+                base: Place::Local(node_local),
+                field: crate::model::FieldAddr::Record(FieldOffset(field_idx)),
+                ty: field_ty,
+            });
+        }
+    }
+    if siblings.is_empty() {
+        return Vec::new();
+    }
+    vec![(esc_block, esc_idx + 1, siblings)]
 }
 
 /// W5.020 — fail-closed sole-owner derivation for **heap-owning enum
@@ -36831,6 +37796,7 @@ fn derive_owned_record_drop_allowed(
     is_owned_record: &dyn Fn(&ResolvedTy) -> bool,
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
+    alias_field_binders: &[(u32, u32)],
 ) -> HashSet<BindingId> {
     // A local carries a heap-owning value iff its registered type says so. Used
     // to decide whether a `RecordFieldLoad` dest is an owned-field binder (a
@@ -36879,11 +37845,35 @@ fn derive_owned_record_drop_allowed(
     // Owned-field-binder set: destinations of `RecordFieldLoad { record: alias-
     // set member }` whose loaded field is itself heap-owning, closed forward
     // through whole-value Move so a binder copied onward is still tracked.
-    let field_binders = collect_record_field_binders(blocks, &alias_of, &local_is_heap_owning);
+    let mut field_binders = collect_record_field_binders(blocks, &alias_of, &local_is_heap_owning);
     // Per-binder escape attribution (#2212): where the load scan + alias map
     // prove which root a binder came from, its escape excludes exactly that
     // root; unprovable provenance keeps the blanket every-root exclusion.
-    let binder_provenance = attribute_field_binder_provenance(blocks, &alias_of, &field_binders);
+    let mut binder_provenance =
+        attribute_field_binder_provenance(blocks, &alias_of, &field_binders);
+
+    // Fold the recorded byte-copy interior-alias binders (the `let mid = o.mid;
+    // let leaf = mid.leaf` projection chain) into the field-binder set,
+    // attributed to the OWNER root their carried provenance chains to. The
+    // whole-value alias map + the `RecordFieldLoad` scan above only reach a ONE-
+    // hop alias (`mid` reads the record root directly); a deeper alias (`leaf`
+    // reads `mid`, not the root) is invisible to them, so its ESCAPE would leave
+    // the owner admitted to free a subtree the escapee handed to the caller (the
+    // #2375 double-free). Recording it here excludes exactly the owner when the
+    // deep alias escapes, and — because a `RecordFieldLoad` reading the alias is
+    // interior (exempt) — leaves the owner admitted when the alias is only read
+    // interiorly (the consumed-match path). `or_insert` never overrides the
+    // precise `Unique { root, field }` a one-hop binder already earned (the
+    // sibling-discharge emitter needs that field).
+    for (&alias_local, &owner_local) in &close_alias_binders_forward(blocks, alias_field_binders) {
+        if !candidate_local_to_binding.contains_key(&owner_local) {
+            continue;
+        }
+        field_binders.insert(alias_local);
+        binder_provenance
+            .entry(alias_local)
+            .or_insert(FieldBinderProvenance::RootOnly { root: owner_local });
+    }
 
     let mut excluded_roots: HashSet<u32> = HashSet::new();
 
@@ -37472,7 +38462,7 @@ fn derive_local_collection_drop_allowed(
 /// Fail-closed sole-owner derivation for **local `bytes`** bindings. Returns
 /// the subset of `owned_locals` whose `BytesTriple` is proven to still solely
 /// own its refcounted data buffer at every exit, and therefore earns a
-/// `DropKind::CowHeap { drop_fn: "hew_bytes_drop" }` scope-exit drop (lowered
+/// `DropKind::CowHeap { release: Bytes }` (`hew_bytes_drop`) scope-exit drop (lowered
 /// by codegen's `emit_bytes_inplace_drop`: GEP field 0, load the data pointer,
 /// `hew_bytes_drop(data_ptr)`, null-store the field).
 ///
@@ -37729,6 +38719,13 @@ fn derive_local_bytes_drop_allowed(
               escape scan) sharing fixpoint state, mirroring derive_owned_\
               record_drop_allowed; splitting scatters the fail-closed ordering"
 )]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the function's MIR + binding registries + the layout lookups + the \
+              carried interior-alias binder pairs the composite prover reads; a \
+              struct would only relocate the same fields, mirroring \
+              derive_owned_record_drop_allowed"
+)]
 fn derive_tuple_composite_drop_allowed(
     blocks: &[BasicBlock],
     suspend_kinds: &HashMap<u32, SuspendKind>,
@@ -37737,6 +38734,7 @@ fn derive_tuple_composite_drop_allowed(
     local_tys: &[ResolvedTy],
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
+    alias_field_binders: &[(u32, u32)],
 ) -> HashSet<BindingId> {
     // A local carries a heap-owning value iff its registered type says so. Used
     // to decide whether a `TupleFieldLoad` dest is an owned-element binder (a
@@ -37808,6 +38806,21 @@ fn derive_tuple_composite_drop_allowed(
         }
         if !changed {
             break;
+        }
+    }
+
+    // Fold the recorded byte-copy interior-alias binders (the `let mid = o.0;
+    // let leaf = mid.0` projection chain) into the element-binder set. The
+    // `TupleFieldLoad` scan above only reaches a ONE-hop alias (`mid` reads the
+    // tuple root directly); a deeper alias (`leaf` reads `mid`, not the root) is
+    // invisible to it, so its ESCAPE would leave the owner admitted to free a
+    // subtree the escapee handed to the caller (the tuple twin of the #2375
+    // double-free). Recording it here makes `note_elem_escape` exclude the tuple
+    // roots when the deep alias escapes; a `TupleFieldLoad` reading the alias is
+    // interior (exempt), so the owner stays admitted on the consumed-match path.
+    for (&alias_local, &owner_local) in &close_alias_binders_forward(blocks, alias_field_binders) {
+        if candidate_local_to_binding.contains_key(&owner_local) {
+            elem_binders.insert(alias_local);
         }
     }
 
@@ -39664,7 +40677,7 @@ fn drop_kind_for(
         // identical kind (see `cow_value_leaf_drop_symbol`).
         Place::Local(_) | Place::ReturnSlot if matches!(ty, ResolvedTy::String) => {
             DropKind::CowHeap {
-                drop_fn: "hew_string_drop",
+                release: crate::ownership::CowHeapRelease::String,
             }
         }
         // A `bytes` owned local is a by-value `BytesTriple { ptr, i32, i32 }`
@@ -39682,7 +40695,7 @@ fn drop_kind_for(
         // `derive_local_bytes_drop_allowed`).
         Place::Local(_) | Place::ReturnSlot if matches!(ty, ResolvedTy::Bytes) => {
             DropKind::CowHeap {
-                drop_fn: "hew_bytes_drop",
+                release: crate::ownership::CowHeapRelease::Bytes,
             }
         }
         // A `Generator<Y, R>` / `AsyncGenerator<Y>` owned local holds the heap
@@ -39705,7 +40718,7 @@ fn drop_kind_for(
             ) =>
         {
             DropKind::CowHeap {
-                drop_fn: "hew_gen_coro_destroy",
+                release: crate::ownership::CowHeapRelease::Generator,
             }
         }
         // A local `HashMap<K, V>` / `HashSet<E>` owned binding holds a single
@@ -39740,7 +40753,7 @@ fn drop_kind_for(
             ) =>
         {
             DropKind::CowHeap {
-                drop_fn: "hew_hashmap_free_layout",
+                release: crate::ownership::CowHeapRelease::HashMap,
             }
         }
         Place::Local(_) | Place::ReturnSlot
@@ -39753,7 +40766,7 @@ fn drop_kind_for(
             ) =>
         {
             DropKind::CowHeap {
-                drop_fn: "hew_hashset_free_layout",
+                release: crate::ownership::CowHeapRelease::HashSet,
             }
         }
         // Machine tag and variant fields are sub-structure of a machine value,
@@ -40650,7 +41663,7 @@ fn build_lifo_drops(
                 ty: ty.clone(),
                 drop_fn: None,
                 kind: DropKind::CowHeap {
-                    drop_fn: "hew_vec_free_closure_pairs",
+                    release: crate::ownership::CowHeapRelease::VecClosurePairs,
                 },
                 guard: None,
             });
@@ -40669,7 +41682,7 @@ fn build_lifo_drops(
                 ty: ty.clone(),
                 drop_fn: None,
                 kind: DropKind::CowHeap {
-                    drop_fn: "hew_vec_free_owned",
+                    release: crate::ownership::CowHeapRelease::VecOwnedElement,
                 },
                 guard: None,
             });
@@ -40706,7 +41719,7 @@ fn build_lifo_drops(
                 ty: ty.clone(),
                 drop_fn: None,
                 kind: DropKind::CowHeap {
-                    drop_fn: "hew_vec_free",
+                    release: crate::ownership::CowHeapRelease::VecPlain,
                 },
                 guard: None,
             });
@@ -41187,7 +42200,7 @@ fn cow_value_leaf_drop_symbol(ty: &ResolvedTy) -> Option<&'static str> {
 /// `bytes` is deliberately EXCLUDED: it is a fat `{ ptr, len, cap }` triple,
 /// not a single pointer. Its destructor takes the by-value triple, so it is
 /// reached through `RecordFieldLoad` + `Instr::Drop` (which materialises the
-/// fat value into a temp). The set mirrors codegen's `cow_heap_release_symbol`
+/// fat value into a temp). The set mirrors codegen's `resolved_ty_cow_heap_release`
 /// (which returns `None` for `bytes`), so the `RecordFieldDrop` symbol/type
 /// congruence assertion in codegen always agrees with what is emitted here.
 ///
@@ -45132,6 +46145,7 @@ mod owned_record_drop_derivation {
             &is_rec,
             &record_field_orders,
             &[],
+            &[],
         )
     }
 
@@ -45716,6 +46730,7 @@ mod escaped_sibling_field_discharge {
             local_tys,
             &field_orders(),
             &[],
+            &[],
             &is_rec,
             &owned_fields,
             &dischargeable,
@@ -46075,6 +47090,7 @@ mod escaped_sibling_field_discharge {
             &local_tys,
             &field_orders(),
             &[],
+            &[],
             &is_rec,
             &three_fields,
             &dischargeable,
@@ -46130,6 +47146,7 @@ mod tuple_composite_field_drop_exclusion {
             &binding_locals,
             &local_tys,
             &HashMap::new(),
+            &[],
             &[],
         );
         (b, allowed)
@@ -46207,6 +47224,7 @@ mod tuple_composite_field_drop_exclusion {
             &binding_locals,
             &local_tys,
             &HashMap::new(),
+            &[],
             &[],
         );
         assert!(
@@ -48700,7 +49718,7 @@ mod binding_ty_is_plain_vec_tuple {
 
     /// Closure-pair release-symbol pin: the generator-yield and match-field
     /// release-symbol pickers must check the closure-pair bucket BEFORE the
-    /// owned/plain split, matching codegen's `cow_heap_release_symbol` dispatch
+    /// owned/plain split, matching codegen's `resolved_ty_cow_heap_release` dispatch
     /// order. A yielded or match-destructured `Vec<fn>` releases via
     /// `hew_vec_free_closure_pairs`; the pre-fix `generator_yield_drop_symbol`
     /// had only an owned/plain split and computed `hew_vec_free`, which diverges
@@ -48950,11 +49968,11 @@ mod binding_ty_is_plain_vec_tuple {
     #[test]
     fn unsupported_vec_element_diagnostics_rejects_unwired_owned_local() {
         let mut builder = builder_with_indirect_enum();
-        builder.owned_locals = vec![(
+        builder.register_owned_local(
             BindingId(7),
             "nodes".to_string(),
             vec_of_ty(unregistered_named("Foo")),
-        )];
+        );
         // The construction site is sourced from the finalized `Bind` statements,
         // keyed by the owned local's binding id.
         let bind_sites = std::collections::HashMap::from([(BindingId(7), SiteId(42))]);
@@ -48974,15 +49992,212 @@ mod binding_ty_is_plain_vec_tuple {
         // A releasable owned `Vec<string>` local emits nothing — behaviour
         // preserved for every constructible, releasable shape.
         let mut ok = builder_with_indirect_enum();
-        ok.owned_locals = vec![(
+        ok.register_owned_local(
             BindingId(8),
             "names".to_string(),
             vec_of_ty(ResolvedTy::String),
-        )];
+        );
         assert!(
             ok.unsupported_vec_element_diagnostics(&bind_sites)
                 .is_empty(),
             "a Vec<string> owned local has a wired release — no diagnostic"
+        );
+    }
+
+    /// The single registration authority records the classified ownership fact
+    /// ONCE at the defining write, defaults the disposition to scope exit, and
+    /// exposes the binding through the `(binding, name, ty)` compat view every
+    /// drop prover consumes — the byte-identical shape of the former tuple
+    /// ledger.
+    #[test]
+    fn register_owned_local_records_classified_ownership_and_scope_exit() {
+        use crate::ownership::{DropClass, HeapLeaf};
+
+        let mut builder = builder_with_indirect_enum();
+        builder.register_owned_local(BindingId(3), "s".to_string(), ResolvedTy::String);
+
+        // The compat view is exactly the registered triple, in registration
+        // order — what `owned_locals_snapshot` feeds the provers.
+        assert_eq!(
+            builder.owned_locals_snapshot(),
+            vec![(BindingId(3), "s".to_string(), ResolvedTy::String)],
+            "the live view is the registered (binding, name, ty) triple"
+        );
+
+        // The richer facts are carried on the entry: a `string` owns a single
+        // copy-on-write heap leaf, the disposition is scope exit, and no
+        // provenance is proven at this seam.
+        let entry = &builder.owned_locals[0];
+        assert_eq!(entry.disposition, Disposition::ScopeExit);
+        assert_eq!(
+            entry.ownership.drop_class(),
+            Some(DropClass::CowHeapLeaf {
+                leaf: HeapLeaf::String
+            }),
+            "ownership is classified once at registration and recorded on the entry"
+        );
+        assert_eq!(
+            entry.provenance, None,
+            "no provenance is proven at this seam"
+        );
+    }
+
+    /// Frozen three-way verdict table for the `let`-bound field-load
+    /// classification — the load-bearing double-free boundary. A `string` field retains
+    /// (codegen clones), an inline aggregate (record / tuple) byte-copies to an
+    /// interior alias, and every single-pointer heap leaf (`Vec` / `bytes` /
+    /// `Generator` / indirect-enum node) transfers its one handle. Only
+    /// `ByteCopyAlias` dispositions its binder `AliasOf`; the table freezes the
+    /// class each shape maps to so a mis-tag (which would admit an owner the
+    /// binder also releases — a double-free) fails this test first.
+    #[test]
+    fn classify_field_load_freezes_the_three_way_verdict_table() {
+        let mut builder = builder_with_indirect_enum();
+        // A heap-owning user record `Rec { a: string }`.
+        builder.record_field_orders.insert(
+            "Rec".to_string(),
+            vec![("a".to_string(), ResolvedTy::String)],
+        );
+
+        // Retained: `string` — codegen `hew_string_clone`s the load.
+        assert_eq!(
+            builder.classify_field_load(&ResolvedTy::String),
+            Some(FieldLoadClass::Retained),
+        );
+
+        // ByteCopyAlias: inline aggregates — record and tuple.
+        assert_eq!(
+            builder.classify_field_load(&unregistered_named("Rec")),
+            Some(FieldLoadClass::ByteCopyAlias),
+            "a heap-owning record field is byte-copied to an interior alias",
+        );
+        assert_eq!(
+            builder.classify_field_load(&ResolvedTy::Tuple(vec![
+                ResolvedTy::String,
+                ResolvedTy::String,
+            ])),
+            Some(FieldLoadClass::ByteCopyAlias),
+            "a heap-owning tuple field is byte-copied to an interior alias",
+        );
+
+        // HandleTransfer: every single-pointer heap leaf.
+        for (label, ty) in [
+            ("Vec", vec_of_ty(ResolvedTy::String)),
+            ("bytes", ResolvedTy::Bytes),
+            (
+                "Generator",
+                ResolvedTy::named_builtin(
+                    "Generator",
+                    BuiltinType::Generator,
+                    vec![ResolvedTy::I64, ResolvedTy::Unit],
+                ),
+            ),
+            ("indirect enum", unregistered_named("Foo")),
+        ] {
+            assert_eq!(
+                builder.classify_field_load(&ty),
+                Some(FieldLoadClass::HandleTransfer),
+                "{label} transfers its one owned handle to the binder",
+            );
+        }
+
+        // Heap-free field: no scope-exit drop obligation to classify.
+        assert_eq!(builder.classify_field_load(&ResolvedTy::I64), None);
+    }
+
+    /// A byte-copy aggregate field projection registers its binder `AliasOf`
+    /// with the owner's provenance recorded — and that disposition removes it
+    /// from the scope-exit-live view the record/tuple provers and
+    /// `build_lifo_drops` read, so the alias emits no composite drop of its own
+    /// and its base local never seeds the provers' `release_owner_bases` (the
+    /// #2375 blanket no longer trips). The entry survives in the whole ledger.
+    #[test]
+    fn byte_copy_alias_registers_aliasof_and_leaves_the_live_view() {
+        let mut builder = builder_with_indirect_enum();
+        builder.record_field_orders.insert(
+            "Rec".to_string(),
+            vec![("a".to_string(), ResolvedTy::String)],
+        );
+        builder.binding_locals.insert(BindingId(1), Place::Local(7));
+
+        let provenance =
+            ValueProvenance::projection(PlaceProvenance::Local(3), vec![Projection::Field(0)]);
+        builder.register_owned_local_alias(
+            BindingId(1),
+            "mid".to_string(),
+            unregistered_named("Rec"),
+            provenance.clone(),
+        );
+
+        let entry = &builder.owned_locals[0];
+        assert_eq!(entry.disposition, Disposition::AliasOf);
+        assert_eq!(
+            entry.provenance.as_ref(),
+            Some(&provenance),
+            "the owner it aliases is recorded on the entry",
+        );
+        assert!(
+            builder.owned_locals_snapshot().is_empty(),
+            "an AliasOf entry is excluded from the scope-exit-live drop view — no \
+             composite drop, and it never seeds the provers' release_owner_bases",
+        );
+        assert_eq!(
+            builder.owned_locals_ledger().len(),
+            1,
+            "the alias survives in the whole ledger regardless of disposition",
+        );
+    }
+
+    /// Retraction is a disposition write, not a physical removal: a binding
+    /// dispositioned off the scope-exit set leaves the live drop view
+    /// (`owned_locals_snapshot`) yet stays observable in the whole ledger
+    /// (`owned_locals_ledger`). This is the invariant that kills the
+    /// retracted-invisible-to-final-scan class — the mechanism behind the
+    /// double-free and #2375, where a physically-removed binding was gone from
+    /// the ledger before an end-of-pass scan could see it.
+    #[test]
+    fn dispositioned_binding_leaves_live_view_but_survives_whole_ledger() {
+        let mut builder = builder_with_indirect_enum();
+        builder.register_owned_local(BindingId(3), "kept".to_string(), ResolvedTy::String);
+        builder.register_owned_local(BindingId(4), "moved".to_string(), ResolvedTy::String);
+
+        // Both are scope-exit-live before any retraction.
+        assert_eq!(
+            builder.owned_locals_snapshot(),
+            vec![
+                (BindingId(3), "kept".to_string(), ResolvedTy::String),
+                (BindingId(4), "moved".to_string(), ResolvedTy::String),
+            ],
+            "both registered bindings are in the live view before retraction"
+        );
+
+        // Retract one via a consume disposition (what `mark_binding_moved` does).
+        builder.set_owned_local_disposition(BindingId(4), Disposition::ConsumedAt);
+
+        // The live view now excludes the retracted binding — exactly the set the
+        // former `owned_locals.retain(...)` physical removal would have left.
+        assert_eq!(
+            builder.owned_locals_snapshot(),
+            vec![(BindingId(3), "kept".to_string(), ResolvedTy::String)],
+            "the retracted binding leaves the scope-exit-live view"
+        );
+
+        // The whole ledger still carries BOTH entries, in registration order —
+        // the retracted one is observable to an end-of-pass scan, carrying its
+        // recorded disposition. Physical removal made this impossible.
+        let ledger = builder.owned_locals_ledger();
+        assert_eq!(
+            ledger.len(),
+            2,
+            "the whole ledger keeps the retracted entry"
+        );
+        assert_eq!(ledger[0].binding, BindingId(3));
+        assert_eq!(ledger[0].disposition, Disposition::ScopeExit);
+        assert_eq!(ledger[1].binding, BindingId(4));
+        assert_eq!(
+            ledger[1].disposition,
+            Disposition::ConsumedAt,
+            "the retracted entry survives carrying its recorded disposition"
         );
     }
 
@@ -49209,7 +50424,7 @@ mod drop_admission_type_shape_pins {
     //! reclassification. An admission that widens over-drops (double-free,
     //! the worst outcome); one that narrows leaks.
     use super::*;
-    use crate::ownership::{DropClass, HeapLeaf, OwnershipCtx, OwnershipDecision};
+    use crate::ownership::{DropClass, HeapLeaf};
 
     fn vec_of(elem: ResolvedTy) -> ResolvedTy {
         ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![elem])

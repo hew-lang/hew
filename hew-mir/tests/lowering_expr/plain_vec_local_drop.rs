@@ -93,7 +93,7 @@ fn drops_matching(
 
 /// True when `drop` is a `CowHeap` release naming `symbol`.
 fn is_cow_heap_free(drop: &ElabDrop, symbol: &str) -> bool {
-    matches!(drop.kind, DropKind::CowHeap { drop_fn } if drop_fn == symbol)
+    matches!(drop.kind, DropKind::CowHeap { release } if release.release_symbol() == symbol)
 }
 
 fn count_free(drops: &[ElabDrop], symbol: &str) -> usize {

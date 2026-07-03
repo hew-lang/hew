@@ -1,0 +1,601 @@
+//! Tests for FC-P1-A1 task/fork/deadline gates.
+//!
+//! Validates that spawned calls, fork children, fork blocks, deadline scopes,
+//! and await expressions are correctly validated at HIR lowering.
+
+use crate::support;
+
+use hew_hir::HirDiagnosticKind;
+
+fn lower(source: &str) -> hew_hir::LowerOutput {
+    support::checker_pipeline::lower_through_checker(source)
+}
+
+// ── ForkChild signature/callee tests ────────────────────────────────────────
+
+#[test]
+fn fork_child_direct_fn_unit_accepted() {
+    // Valid: fork child calling direct module function with no args
+    let source = r"
+        fn worker() {}
+        fn main() {
+            scope {
+                fork child = worker();
+            }
+        }
+    ";
+    let output = lower(source);
+
+    let has_gate_diagnostic = output.diagnostics.iter().any(|d| {
+        matches!(
+            d.kind,
+            HirDiagnosticKind::TaskSpawnSignatureUnsupported { .. }
+                | HirDiagnosticKind::TaskSpawnCalleeUnsupported { .. }
+        )
+    });
+    assert!(
+        !has_gate_diagnostic,
+        "Valid fork child should not trigger gate; got: {:#?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn fork_child_with_args_accepted() {
+    // Valid since the arg-bearing fork lift: a direct module-fn fork child
+    // with arguments passes the HIR gates — the args ride the fork-entry
+    // shim env at MIR, where the per-arg type restriction (BitCopy scalars
+    // + string) is enforced fail-closed.
+    let source = r"
+        fn worker(x: int) {}
+        fn main() {
+            scope {
+                fork child = worker(42);
+                await child;
+            }
+        }
+    ";
+    let output = lower(source);
+
+    let has_gate_diagnostic = output.diagnostics.iter().any(|d| {
+        matches!(
+            d.kind,
+            HirDiagnosticKind::TaskSpawnSignatureUnsupported { .. }
+                | HirDiagnosticKind::TaskSpawnCalleeUnsupported { .. }
+        )
+    });
+    assert!(
+        !has_gate_diagnostic,
+        "Arg-bearing direct-fn fork child must pass the HIR gates; got: {:#?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn fork_child_indirect_call_rejected() {
+    // Invalid: callee is not a direct module function (variable reference)
+    let source = r"
+        fn worker() {}
+        fn main() {
+            let f = worker;
+            scope {
+                fork child = f();
+            }
+        }
+    ";
+    let output = lower(source);
+
+    let has_callee_unsupported = output
+        .diagnostics
+        .iter()
+        .any(|d| matches!(d.kind, HirDiagnosticKind::TaskSpawnCalleeUnsupported { .. }));
+    assert!(
+        has_callee_unsupported,
+        "Fork child with indirect call must emit TaskSpawnCalleeUnsupported; got: {:#?}",
+        output.diagnostics
+    );
+
+    let result = output.into_result();
+    assert!(
+        result.is_err(),
+        "into_result() must return Err for invalid fork child callee"
+    );
+}
+
+// ── Spawned closure tests ───────────────────────────────────────────────────
+
+#[test]
+fn spawned_closure_zero_params_accepted() {
+    // Valid: spawned closure has no parameters
+    let source = r"
+        fn main() {
+            scope {
+                fork child = { || work() }();
+            }
+        }
+        fn work() {}
+    ";
+    let output = lower(source);
+
+    let has_gate_diagnostic = output.diagnostics.iter().any(|d| {
+        matches!(
+            d.kind,
+            HirDiagnosticKind::SpawnedClosureSignatureUnsupported { .. }
+        )
+    });
+    assert!(
+        !has_gate_diagnostic,
+        "Valid spawned closure should not trigger gate; got: {:#?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn spawned_closure_with_params_rejected() {
+    // Invalid: spawned closure has parameters. The block-wrapped closure shape
+    // currently reaches the broader callee gate, which still proves rejection.
+    let source = r"
+        fn main() {
+            scope {
+                fork child = { |x| work(x) }();
+            }
+        }
+        fn work(x: int) {}
+    ";
+    let output = lower(source);
+
+    let has_closure_gate = output.diagnostics.iter().any(|d| {
+        matches!(
+            d.kind,
+            HirDiagnosticKind::SpawnedClosureSignatureUnsupported { .. }
+                | HirDiagnosticKind::TaskSpawnCalleeUnsupported { .. }
+        )
+    });
+    assert!(
+        has_closure_gate,
+        "Spawned closure with params must emit closure gate diagnostic; got: {:#?}",
+        output.diagnostics
+    );
+
+    let result = output.into_result();
+    assert!(
+        result.is_err(),
+        "into_result() must return Err for invalid spawned closure signature"
+    );
+}
+
+// ── ForkBlock body tests ────────────────────────────────────────────────────
+
+#[test]
+fn fork_block_single_call_accepted() {
+    // Valid: fork block with single direct function call
+    let source = r"
+        fn worker() {}
+        fn main() {
+            scope {
+                fork { worker() }
+            }
+        }
+    ";
+    let output = lower(source);
+
+    let has_gate_diagnostic = output
+        .diagnostics
+        .iter()
+        .any(|d| matches!(d.kind, HirDiagnosticKind::ForkBlockBodyUnsupported { .. }));
+    assert!(
+        !has_gate_diagnostic,
+        "Valid fork block should not trigger gate; got: {:#?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn fork_block_with_args_accepted() {
+    // RI-08 fold: an argument-bearing single-call fork body is now a
+    // first-class form. The checker type-checks the callee arguments and MIR
+    // lowers the arg-bearing spawn, so the old zero-argument gate is retired —
+    // no ForkBlockBodyUnsupported diagnostic must fire.
+    let source = r"
+        fn work(n: i64) {}
+        fn main() {
+            scope {
+                fork { work(5) }
+            }
+        }
+    ";
+    let output = lower(source);
+
+    let has_gate_diagnostic = output
+        .diagnostics
+        .iter()
+        .any(|d| matches!(d.kind, HirDiagnosticKind::ForkBlockBodyUnsupported { .. }));
+    assert!(
+        !has_gate_diagnostic,
+        "Arg-bearing single-call fork block must not trigger the shape gate; got: {:#?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn fork_block_empty_rejected() {
+    // Invalid: fork block has empty body
+    let source = r"
+        fn main() {
+            scope {
+                fork {}
+            }
+        }
+    ";
+    let output = lower(source);
+
+    let has_fork_block_unsupported = output
+        .diagnostics
+        .iter()
+        .any(|d| matches!(d.kind, HirDiagnosticKind::ForkBlockBodyUnsupported { .. }));
+    assert!(
+        has_fork_block_unsupported,
+        "Empty fork block must emit ForkBlockBodyUnsupported; got: {:#?}",
+        output.diagnostics
+    );
+
+    let result = output.into_result();
+    assert!(
+        result.is_err(),
+        "into_result() must return Err for empty fork block"
+    );
+}
+
+#[test]
+fn fork_block_multi_statement_rejected() {
+    // Fail-closed: a multi-statement fork body is type-checked by the checker
+    // (post RI-08 fold), but MIR cannot yet spawn it. It rejects here at the
+    // earliest clean point with an actionable diagnostic rather than reaching
+    // MIR as a less-legible NotYetImplemented.
+    let source = r"
+        fn a() {}
+        fn b() {}
+        fn main() {
+            scope {
+                fork {
+                    a();
+                    b();
+                }
+            }
+        }
+    ";
+    let output = lower(source);
+
+    // Pin the fail-closed diagnostic: it must be the typed shape gate AND carry
+    // an actionable message that names the workaround, so a future refactor
+    // cannot silently degrade it to an opaque NotYetImplemented.
+    let multi_stmt_gate = output.diagnostics.iter().find(|d| {
+        matches!(d.kind, HirDiagnosticKind::ForkBlockBodyUnsupported { .. })
+            && d.note.contains("multi-statement")
+    });
+    let multi_stmt_gate = multi_stmt_gate.unwrap_or_else(|| {
+        panic!(
+            "Multi-statement fork block must emit an actionable ForkBlockBodyUnsupported; \
+             got: {:#?}",
+            output.diagnostics
+        )
+    });
+    assert!(
+        multi_stmt_gate.note.contains("not yet supported")
+            && multi_stmt_gate.note.contains("fork { the_fn() }"),
+        "multi-statement reject must name the workaround; got note: {:?}",
+        multi_stmt_gate.note
+    );
+
+    let result = output.into_result();
+    assert!(
+        result.is_err(),
+        "into_result() must return Err for multi-statement fork block"
+    );
+}
+
+#[test]
+fn fork_block_not_call_rejected() {
+    // Fail-closed: a non-call fork body (here a bare literal) is type-checked by
+    // the checker, but MIR can only spawn a direct function call. It rejects
+    // here with an actionable diagnostic rather than reaching MIR.
+    let source = r"
+        fn main() {
+            scope {
+                fork { 42 }
+            }
+        }
+    ";
+    let output = lower(source);
+
+    let has_fork_block_unsupported = output
+        .diagnostics
+        .iter()
+        .any(|d| matches!(d.kind, HirDiagnosticKind::ForkBlockBodyUnsupported { .. }));
+    assert!(
+        has_fork_block_unsupported,
+        "Non-call fork block must emit ForkBlockBodyUnsupported; got: {:#?}",
+        output.diagnostics
+    );
+
+    let result = output.into_result();
+    assert!(
+        result.is_err(),
+        "into_result() must return Err for non-call fork block"
+    );
+}
+
+// ── ScopeDeadline tests ─────────────────────────────────────────────────────
+
+#[test]
+fn deadline_empty_body_accepted() {
+    // Valid: deadline has empty body (syntax sugar for timeout-only scope)
+    let source = r"
+        fn main() {
+            scope {
+                after(1ms);
+            }
+        }
+    ";
+    let output = lower(source);
+
+    let has_gate_diagnostic = output
+        .diagnostics
+        .iter()
+        .any(|d| matches!(d.kind, HirDiagnosticKind::DeadlineBodyUnsupported { .. }));
+    assert!(
+        !has_gate_diagnostic,
+        "Empty deadline should not trigger gate; got: {:#?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn deadline_non_empty_body_accepted_at_hir() {
+    // A non-empty `after(...) { body }` is no longer rejected at HIR: the body is
+    // lowered downstream (an execution-context caller emits the
+    // SuspendingScopeDeadline carrier with the body as the timer-fired edge; a
+    // contextless caller fails closed at MIR). The HIR body-shape gate that
+    // previously emitted `DeadlineBodyUnsupported` is retired, so HIR must now
+    // produce no such diagnostic for a non-empty timeout body.
+    let source = r"
+        fn main() {
+            scope {
+                after(1ms) {
+                    work();
+                }
+            }
+        }
+        fn work() {}
+    ";
+    let output = lower(source);
+
+    let has_deadline_unsupported = output
+        .diagnostics
+        .iter()
+        .any(|d| matches!(d.kind, HirDiagnosticKind::DeadlineBodyUnsupported { .. }));
+    assert!(
+        !has_deadline_unsupported,
+        "Non-empty deadline body must pass HIR (the gate is retired; MIR owns the \
+         call-conv decision); got: {:#?}",
+        output.diagnostics
+    );
+}
+
+// ── AwaitTask tests ─────────────────────────────────────────────────────────
+
+#[test]
+fn await_unit_task_in_scope_accepted() {
+    // Valid: awaiting a unit-returning worker as a statement inside a `scope{}`
+    // body must not trip the position gate.
+    let source = r"
+        fn main() {
+            scope {
+                fork task = worker();
+                await task;
+            }
+        }
+        fn worker() {}
+    ";
+    let output = lower(source);
+
+    let has_position_reject = output
+        .diagnostics
+        .iter()
+        .any(|d| matches!(d.kind, HirDiagnosticKind::AwaitOutOfPosition));
+    assert!(
+        !has_position_reject,
+        "unit task statement await in scope should not trip the position gate; got: {:#?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn value_await_in_let_accepted() {
+    // `let v = await x;` over a value-returning `Task<i64>` fork binding is a
+    // bindable, value-producing await: the child's `T` is read back on the
+    // resume edge through the value-task result channel. It must NOT trip the
+    // let-value position gate (which rejects only awaits with no bindable
+    // value, e.g. a unit `await t` in let position).
+    let source = r"
+        fn compute() -> i64 { 42 }
+        fn main() {
+            scope {
+                fork x = compute();
+                let v = await x;
+                let _ = v;
+            }
+        }
+    ";
+    let output = lower(source);
+
+    let has_let_value_reject = output.diagnostics.iter().any(|d| {
+        matches!(d.kind, HirDiagnosticKind::AwaitOutOfPosition) && d.note.contains("let-value")
+    });
+    assert!(
+        !has_let_value_reject,
+        "value await in let position must be accepted (bindable); got: {:#?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn unit_task_await_in_let_rejected() {
+    // `let x = await t` where `t: Task<()>` (unit-returning) must still trip
+    // `AwaitOutOfPosition` with the "let-value" note. A unit-returning worker
+    // has nothing to bind: `is_value_task_await` returns false, so the bindable
+    // guard fires. The value-let path must NOT accidentally pass unit awaits.
+    let source = r"
+        fn worker() {}
+        fn main() {
+            scope {
+                fork t = worker();
+                let x = await t;
+                let _ = x;
+            }
+        }
+    ";
+    let output = lower(source);
+
+    let has_let_value_reject = output.diagnostics.iter().any(|d| {
+        matches!(d.kind, HirDiagnosticKind::AwaitOutOfPosition) && d.note.contains("let-value")
+    });
+    assert!(
+        has_let_value_reject,
+        "unit task `await t` in let position must emit AwaitOutOfPosition with 'let-value' note; \
+         got: {:#?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn await_expression_parses() {
+    // Ensure await expressions are parsed correctly
+    let source = r"
+        fn main() {
+            await task_handle;
+        }
+    ";
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "Parse errors: {:?}",
+        parsed.errors
+    );
+
+    let output = lower(source);
+
+    // The walker should traverse await expressions without panicking
+    // Gate diagnostics depend on checker type information.
+    // This test validates that the walker code doesn't crash
+    let _ = output;
+}
+
+// ── Integration tests ───────────────────────────────────────────────────────
+
+#[test]
+fn multiple_gates_can_fire() {
+    // Multiple violations in one program should all be reported. The non-empty
+    // `after(...)` body is no longer a HIR violation (the body-shape gate is
+    // retired); the two unsupported fork-block shapes are still reported.
+    let source = r"
+        fn main() {
+            scope {
+                fork { a(); b(); }
+                fork {}
+                after(1ms) { work(); }
+            }
+        }
+        fn a() {}
+        fn b() {}
+        fn work() {}
+    ";
+    let output = lower(source);
+
+    let fork_gate_count = output
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.kind, HirDiagnosticKind::ForkBlockBodyUnsupported { .. }))
+        .count();
+
+    assert!(
+        fork_gate_count >= 2,
+        "Expected at least 2 fork-block gate diagnostics; got: {:#?}",
+        output.diagnostics
+    );
+
+    // The retired deadline gate must NOT fire on the non-empty after(...) body.
+    let has_deadline_unsupported = output
+        .diagnostics
+        .iter()
+        .any(|d| matches!(d.kind, HirDiagnosticKind::DeadlineBodyUnsupported { .. }));
+    assert!(
+        !has_deadline_unsupported,
+        "the retired deadline body-shape gate must not fire; got: {:#?}",
+        output.diagnostics
+    );
+
+    let result = output.into_result();
+    assert!(
+        result.is_err(),
+        "into_result() must return Err when the fork-block gates fire"
+    );
+}
+
+#[test]
+fn nested_fork_block_detected() {
+    // Ensure walker descends into nested structures
+    let source = r"
+        fn main() {
+            scope {
+                if true {
+                    fork {}
+                }
+            }
+        }
+    ";
+    let output = lower(source);
+
+    let has_fork_block_unsupported = output
+        .diagnostics
+        .iter()
+        .any(|d| matches!(d.kind, HirDiagnosticKind::ForkBlockBodyUnsupported { .. }));
+    assert!(
+        has_fork_block_unsupported,
+        "Nested fork block violation must be detected; got: {:#?}",
+        output.diagnostics
+    );
+}
+
+// ── FC-P1-A1 (revision pass 2, Finding 2) ───────────────────────────────────
+
+/// Module-qualified spawn callees (`mod::worker()`) must not false-reject.
+///
+/// The parser concatenates path segments into a single
+/// `Expr::Identifier("mod::worker")` (hew-parser/src/parser.rs:5334-5356),
+/// but `fn_registry` is keyed on bare function names. The Finding-2 fix
+/// strips the `mod::` prefix before lookup so cross-module spawns are
+/// accepted as direct module functions.
+#[test]
+fn mod_qualified_spawn_accepted() {
+    let source = r"
+        fn worker() {}
+        fn main() {
+            scope {
+                mod::worker();
+            }
+        }
+    ";
+    let output = lower(source);
+
+    let has_callee_unsupported = output
+        .diagnostics
+        .iter()
+        .any(|d| matches!(d.kind, HirDiagnosticKind::TaskSpawnCalleeUnsupported { .. }));
+    assert!(
+        !has_callee_unsupported,
+        "module-qualified spawn `mod::worker()` must not false-reject as \
+         TaskSpawnCalleeUnsupported; got: {:#?}",
+        output.diagnostics
+    );
+}

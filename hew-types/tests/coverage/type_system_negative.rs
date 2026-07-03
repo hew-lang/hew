@@ -1,0 +1,2745 @@
+use crate::common;
+
+use common::typecheck_isolated as typecheck;
+use hew_types::error::TypeErrorKind;
+use hew_types::Ty;
+
+fn generic_param(name: &str) -> Ty {
+    Ty::Named {
+        builtin: None,
+        name: name.to_string(),
+        args: vec![],
+    }
+}
+
+fn assert_resolved_return_hole(source: &str, sig_name: &str, expected_return_type: &Ty) {
+    let output = typecheck(source);
+    assert!(
+        output.errors.is_empty(),
+        "Expected return hole to resolve cleanly for {}, got errors: {:?}",
+        sig_name,
+        output.errors
+    );
+
+    let sig = output.fn_sigs.get(sig_name).unwrap_or_else(|| {
+        panic!(
+            "Expected signature for {}, got {:?}",
+            sig_name, output.fn_sigs
+        )
+    });
+    assert_eq!(
+        &sig.return_type, expected_return_type,
+        "Unexpected return type for {sig_name}: {sig:?}"
+    );
+}
+
+fn ty_contains_unresolved_var(ty: &Ty) -> bool {
+    match ty {
+        Ty::Var(_) => true,
+        Ty::Tuple(elems) => elems.iter().any(ty_contains_unresolved_var),
+        Ty::Array(elem, _) | Ty::Slice(elem) => ty_contains_unresolved_var(elem),
+        Ty::Named { args, .. } => args.iter().any(ty_contains_unresolved_var),
+        Ty::Function { params, ret } => {
+            params.iter().any(ty_contains_unresolved_var) || ty_contains_unresolved_var(ret)
+        }
+        Ty::Closure {
+            params,
+            ret,
+            captures,
+        } => {
+            params.iter().any(ty_contains_unresolved_var)
+                || ty_contains_unresolved_var(ret)
+                || captures.iter().any(ty_contains_unresolved_var)
+        }
+        Ty::Pointer { pointee, .. } | Ty::Borrow { pointee } => ty_contains_unresolved_var(pointee),
+        Ty::TraitObject { traits } => traits
+            .iter()
+            .flat_map(|bound| bound.args.iter())
+            .any(ty_contains_unresolved_var),
+        Ty::I8
+        | Ty::I16
+        | Ty::I32
+        | Ty::I64
+        | Ty::U8
+        | Ty::U16
+        | Ty::U32
+        | Ty::U64
+        | Ty::Isize
+        | Ty::Usize
+        | Ty::F32
+        | Ty::F64
+        | Ty::IntLiteral
+        | Ty::FloatLiteral
+        | Ty::Bool
+        | Ty::Char
+        | Ty::String
+        | Ty::Bytes
+        | Ty::CancellationToken
+        | Ty::Duration
+        | Ty::Unit
+        | Ty::Never
+        | Ty::Error => false,
+        // Task<T> is compiler-internal; checking its inner type for inference
+        // variables is still meaningful if Task<T> were ever produced during
+        // type-checking (today it is only produced during HIR lowering after
+        // the checker has run, so this arm is structurally unreachable here).
+        Ty::Task(inner) => ty_contains_unresolved_var(inner),
+        // AssocType { base, .. }: recurse into the base carrier, matching the
+        // Task<T> precedent. A still-unresolved projection carrier is itself
+        // a checker-internal leak, but this helper is for inference-var
+        // detection specifically.
+        Ty::AssocType { base, .. } => ty_contains_unresolved_var(base),
+    }
+}
+
+fn assert_expr_type_output_has_no_unresolved_ty_vars(output: &hew_types::TypeCheckOutput) {
+    assert!(
+        output
+            .expr_types
+            .values()
+            .all(|ty| !ty_contains_unresolved_var(ty)),
+        "expr_types leaked unresolved Ty::Var: {:?}",
+        output.expr_types
+    );
+}
+
+// ── 1. MutabilityError — assign to a `let` binding ──────────────────
+
+#[test]
+fn mutability_error_assign_to_let_binding() {
+    let output = typecheck(
+        r"
+        fn main() {
+            let x = 5;
+            x = 10;
+        }
+    ",
+    );
+    let err = output
+        .errors
+        .iter()
+        .find(|e| e.kind == TypeErrorKind::MutabilityError)
+        .unwrap_or_else(|| panic!("Expected MutabilityError, got errors: {:?}", output.errors));
+    assert!(
+        err.suggestions.iter().any(|s| s.contains("var x")),
+        "Expected `var` suggestion in MutabilityError, got: {:?}",
+        err.suggestions
+    );
+}
+
+#[test]
+fn if_let_bound_name_is_immutable() {
+    let output = typecheck(
+        r"
+        fn main(opt: Option<i64>) {
+            if let Some(x) = opt {
+                x = 5;
+            }
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::MutabilityError
+                && e.message
+                    .contains("cannot assign to immutable variable `x`")),
+        "Expected if-let binding MutabilityError, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn while_let_bound_name_is_immutable() {
+    let output = typecheck(
+        r"
+        fn main(opt: Option<i64>) {
+            while let Some(x) = opt {
+                x = 5;
+            }
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::MutabilityError
+                && e.message
+                    .contains("cannot assign to immutable variable `x`")),
+        "Expected while-let binding MutabilityError, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn mutable_param_can_be_reassigned_no_error() {
+    let output = typecheck(
+        r"
+        fn bump(var x: i64) -> i64 {
+            x = x + 1;
+            x
+        }
+    ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "mutable param reassignment should succeed, got errors: {:?}",
+        output.errors
+    );
+    assert!(
+        !output
+            .warnings
+            .iter()
+            .any(|w| w.message.contains("never reassigned")),
+        "mutable param reassignment should suppress unused-mut warning, got: {:?}",
+        output.warnings
+    );
+}
+
+#[test]
+fn var_never_reassigned_emits_unusedmut_warning() {
+    let output = typecheck(
+        r"
+        fn main() {
+            var x = 10;
+            println(x);
+        }
+    ",
+    );
+    let warning = output
+        .warnings
+        .iter()
+        .find(|w| w.message.contains("never reassigned"))
+        .unwrap_or_else(|| {
+            panic!(
+                "Expected never-reassigned warning, got: {:?}",
+                output.warnings
+            )
+        });
+    assert!(
+        matches!(warning.kind, TypeErrorKind::UnusedMut),
+        "Expected UnusedMut warning kind, got: {:?}",
+        warning.kind
+    );
+    assert!(
+        warning.suggestions.iter().any(|s| s.contains("let")),
+        "Expected `let` suggestion, got: {:?}",
+        warning.suggestions
+    );
+}
+
+#[test]
+fn let_field_assign_immutable_root_is_rejected() {
+    let output = typecheck(
+        r"
+        type Point { x: i64; }
+
+        fn main() {
+            let p = Point { x: 1 };
+            p.x = 2;
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::MutabilityError
+                && e.message
+                    .contains("cannot assign to immutable variable `p`")),
+        "Expected immutable field root MutabilityError, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn let_index_assign_immutable_root_is_rejected() {
+    let output = typecheck(
+        r"
+        fn main() {
+            let xs = [1, 2];
+            xs[0] = 3;
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::MutabilityError
+                && e.message
+                    .contains("cannot assign to immutable variable `xs`")),
+        "Expected immutable index root MutabilityError, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 2. ArityMismatch — wrong number of arguments ────────────────────
+
+#[test]
+fn arity_mismatch_too_few_arguments() {
+    let output = typecheck(
+        r"
+        fn add(a: i64, b: i64) -> i64 { a + b }
+        fn main() { add(1); }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::ArityMismatch),
+        "Expected ArityMismatch, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 3. ReturnTypeMismatch — explicit empty return in non-unit fn ─────
+// The checker emits ReturnTypeMismatch only for explicit `return;` when
+// the function signature requires a non-unit return type. Implicit
+// trailing-expression mismatches produce Mismatch instead.
+
+#[test]
+fn return_type_mismatch_empty_return_in_non_unit_fn() {
+    let output = typecheck(
+        r"
+        fn get_name() -> string { return; }
+        fn main() { get_name(); }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::ReturnTypeMismatch),
+        "Expected ReturnTypeMismatch, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 4. UndefinedField — access nonexistent struct field ──────────────
+
+#[test]
+fn undefined_field_on_struct() {
+    let output = typecheck(
+        r"
+        type Point { x: i64; y: i64; }
+        fn main() {
+            let p = Point { x: 1, y: 2 };
+            let z = p.z;
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::UndefinedField),
+        "Expected UndefinedField, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 5. UndefinedMethod — call method that doesn't exist ─────────────
+
+#[test]
+fn undefined_method_on_struct() {
+    let output = typecheck(
+        r"
+        type Foo { x: i64; }
+        fn main() {
+            let f = Foo { x: 1 };
+            f.bar();
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::UndefinedMethod),
+        "Expected UndefinedMethod, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 6. DuplicateDefinition — define same function twice ─────────────
+
+#[test]
+fn duplicate_definition_same_function() {
+    let output = typecheck(
+        r"
+        fn foo() {}
+        fn foo() {}
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
+        "Expected DuplicateDefinition, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 6b. DuplicateDefinition — define same struct twice ──────────────
+
+#[test]
+fn duplicate_definition_same_struct() {
+    let output = typecheck(
+        r"
+        type Foo { x: i64; }
+        type Foo { y: i64; }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
+        "Expected DuplicateDefinition, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 6c. DuplicateDefinition — define same enum twice ────────────────
+
+#[test]
+fn duplicate_definition_same_enum() {
+    let output = typecheck(
+        r"
+        enum Colour { Red; }
+        enum Colour { Green; }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
+        "Expected DuplicateDefinition, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 6d. DuplicateDefinition — define same trait twice ───────────────
+
+#[test]
+fn duplicate_definition_same_trait() {
+    let output = typecheck(
+        r"
+        trait Printable { fn render(val: Self) -> i64; }
+        trait Printable { fn print(val: Self) -> i64; }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
+        "Expected DuplicateDefinition, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 6e. DuplicateDefinition — define same actor twice ───────────────
+
+#[test]
+fn duplicate_definition_same_actor() {
+    let output = typecheck(
+        r"
+        actor Worker { let id: i64; }
+        actor Worker { let count: i64; }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
+        "Expected DuplicateDefinition, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 6f. DuplicateDefinition — define same machine twice ─────────────
+
+#[test]
+fn duplicate_definition_same_machine() {
+    let output = typecheck(
+        r"
+        machine Traffic {
+            events {
+                Tick;
+            }
+
+            state Red;
+            state Green;
+            on Tick: Red => Green;
+            on Tick: Green => Red;
+        }
+        machine Traffic {
+            events {
+                Tick;
+            }
+
+            state Idle;
+            state Busy;
+            on Tick: Idle => Busy;
+            on Tick: Busy => Idle;
+        }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
+        "Expected DuplicateDefinition, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 6g. DuplicateDefinition — machine companion event collides with type ──
+
+#[test]
+fn duplicate_definition_machine_companion_event_same_type() {
+    let output = typecheck(
+        r"
+        machine Light {
+            events {
+                Toggle;
+            }
+
+            state Off;
+            state On;
+            on Toggle: Off => On;
+            on Toggle: On => Off;
+        }
+        type LightEvent { code: i64; }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
+        "Expected DuplicateDefinition, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn duplicate_definition_machine_companion_event_type_before_machine() {
+    let output = typecheck(
+        r"
+        type LightEvent { code: i64; }
+        machine Light {
+            events {
+                Toggle;
+            }
+
+            state Off;
+            state On;
+            on Toggle: Off => On;
+            on Toggle: On => Off;
+        }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
+        "Expected DuplicateDefinition, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 6h. DuplicateDefinition — machine companion event collides with trait ──
+
+#[test]
+fn duplicate_definition_machine_companion_event_same_trait() {
+    let output = typecheck(
+        r"
+        machine Light {
+            events {
+                Toggle;
+            }
+
+            state Off;
+            state On;
+            on Toggle: Off => On;
+            on Toggle: On => Off;
+        }
+        trait LightEvent { fn render(val: Self) -> i64; }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
+        "Expected DuplicateDefinition, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn duplicate_definition_machine_companion_event_trait_before_machine() {
+    let output = typecheck(
+        r"
+        trait LightEvent { fn render(val: Self) -> i64; }
+        machine Light {
+            events {
+                Toggle;
+            }
+
+            state Off;
+            state On;
+            on Toggle: Off => On;
+            on Toggle: On => Off;
+        }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
+        "Expected DuplicateDefinition, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 6i. DuplicateDefinition — define same wire type twice ────────────
+
+#[test]
+fn duplicate_definition_same_wire_type() {
+    let output = typecheck(
+        r"
+        #[wire]
+        type Packet {
+            id: i32 @1;
+        }
+        #[wire]
+        type Packet {
+            name: string @1;
+        }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
+        "Expected DuplicateDefinition, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 6j. DuplicateDefinition — define same type alias twice ────────────
+
+#[test]
+fn duplicate_definition_same_type_alias() {
+    let output = typecheck(
+        r"
+        type Foo = i64;
+        type Foo = i64;
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
+        "Expected DuplicateDefinition, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 6k. DuplicateDefinition — type alias collides with struct ─────────
+
+#[test]
+fn duplicate_definition_type_alias_collides_with_struct() {
+    let output = typecheck(
+        r"
+        type Foo { x: i64; }
+        type Foo = i64;
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
+        "Expected DuplicateDefinition, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 6l. DuplicateDefinition — type alias collides with trait ──────────
+
+#[test]
+fn duplicate_definition_type_alias_collides_with_trait() {
+    let output = typecheck(
+        r"
+        trait Foo { fn render(val: Self) -> i64; }
+        type Foo = i64;
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
+        "Expected DuplicateDefinition, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 6m. InferenceFailed — unresolved top-level type alias hole ───────
+
+#[test]
+fn inference_failed_unresolved_type_alias_hole() {
+    let output = typecheck(
+        r"
+        type Foo = _;
+        fn main() {}
+    ",
+    );
+    let inference_failed_count = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
+        .count();
+    assert_eq!(
+        inference_failed_count, 1,
+        "Expected exactly one InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 6n. Narrow fix — nested type alias hole does not fail closed ─────
+
+#[test]
+fn nested_type_alias_hole_does_not_fail_closed() {
+    let output = typecheck(
+        r"
+        type Pair = (i64, _);
+        fn main() {}
+    ",
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+        "Nested type alias holes should not fail closed here, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 7. Shadowing — inner scope binding shadows outer scope ───────────
+// Nested/child scope shadowing emits a warning (not an error); only same-scope
+// rebinding and actor field shadowing are hard errors.
+
+#[test]
+fn shadowing_inner_scope_shadows_outer_binding() {
+    let output = typecheck(
+        r"
+        fn main() {
+            let x = 5;
+            if true {
+                let x = 10;
+                println(x);
+            }
+            println(x);
+        }
+    ",
+    );
+    assert!(
+        output
+            .warnings
+            .iter()
+            .any(|w| w.kind == TypeErrorKind::Shadowing),
+        "Expected Shadowing warning, got warnings: {:?}, errors: {:?}",
+        output.warnings,
+        output.errors
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::Shadowing),
+        "Nested scope shadowing should be a warning, not an error, got: {:?}",
+        output.errors
+    );
+}
+
+// ── 8. InvalidOperation — binary op on incompatible types ───────────
+
+#[test]
+fn invalid_operation_string_plus_int() {
+    let output = typecheck(
+        r#"
+        fn main() { let x = "hello" + 5; }
+    "#,
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation),
+        "Expected InvalidOperation, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 9. UseAfterMove — send non-Copy value to actor twice ───────────
+// The checker marks non-Copy values as moved at actor message boundaries.
+// A struct with a `string` field is non-Copy, triggering move semantics.
+
+#[test]
+fn use_after_move_send_to_actor_twice() {
+    let output = typecheck(
+        r#"
+        type Payload { data: string; }
+        actor Sink {
+            let val: i64;
+            receive fn consume(h: Payload) {}
+        }
+        fn main() {
+            let s = spawn Sink(val: 0);
+            let h = Payload { data: "hello" };
+            s.consume(h);
+            s.consume(h);
+        }
+    "#,
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::UseAfterMove),
+        "Expected UseAfterMove, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 11. YieldOutsideGenerator — yield in a regular function ─────────
+
+#[test]
+fn yield_outside_generator_in_regular_fn() {
+    let output = typecheck(
+        r"
+        fn main() { yield 42; }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::YieldOutsideGenerator),
+        "Expected YieldOutsideGenerator, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 12. UnusedVariable — declared but never used (warning) ──────────
+
+#[test]
+fn unused_variable_warning_for_unread_binding() {
+    let output = typecheck(
+        r#"
+        fn main() {
+            let _used = 1;
+            let unused_val = 2;
+            println(f"{_used}");
+        }
+    "#,
+    );
+    assert!(
+        output
+            .warnings
+            .iter()
+            .any(|w| w.kind == TypeErrorKind::UnusedVariable),
+        "Expected UnusedVariable warning, got warnings: {:?}",
+        output.warnings
+    );
+}
+
+// ── 13. NonExhaustiveMatch — Option missing None arm (error) ──────
+
+#[test]
+fn nonexhaustive_match_option_missing_none() {
+    let output = typecheck(
+        r"
+        fn check(x: Option<i64>) -> i64 {
+            match x {
+                Some(v) => v,
+            }
+        }
+        fn main() {
+            check(Some(1));
+        }
+    ",
+    );
+    // Option is enum-like → non-exhaustive is a hard error.
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::NonExhaustiveMatch),
+        "Expected NonExhaustiveMatch error for Option, got errors: {:?}",
+        output.errors
+    );
+    assert!(
+        !output
+            .warnings
+            .iter()
+            .any(|w| w.kind == TypeErrorKind::NonExhaustiveMatch),
+        "NonExhaustiveMatch for Option must not appear as warning"
+    );
+}
+
+// ── 14. NonExhaustiveMatch — Result missing Err arm (error) ───────
+
+#[test]
+fn nonexhaustive_match_result_missing_err() {
+    let output = typecheck(
+        r"
+        fn check(r: Result<i64, string>) -> i64 {
+            match r {
+                Ok(v) => v,
+            }
+        }
+        fn main() {
+            check(Ok(1));
+        }
+    ",
+    );
+    // Result is enum-like → non-exhaustive is a hard error.
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::NonExhaustiveMatch),
+        "Expected NonExhaustiveMatch error for Result, got errors: {:?}",
+        output.errors
+    );
+    assert!(
+        !output
+            .warnings
+            .iter()
+            .any(|w| w.kind == TypeErrorKind::NonExhaustiveMatch),
+        "NonExhaustiveMatch for Result must not appear as warning"
+    );
+}
+
+// ── 15. NonExhaustiveMatch — enum missing variant (error) ─────────
+
+#[test]
+fn nonexhaustive_match_enum_missing_variant() {
+    let output = typecheck(
+        r#"
+        enum Colour { Red; Green; Blue; }
+        fn label(c: Colour) -> string {
+            match c {
+                Red => "red",
+                Green => "green",
+            }
+        }
+        fn main() {
+            println(label(Red));
+        }
+    "#,
+    );
+    // User enum is enum-like → non-exhaustive is a hard error.
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::NonExhaustiveMatch),
+        "Expected NonExhaustiveMatch error for missing Blue, got errors: {:?}",
+        output.errors
+    );
+    assert!(
+        !output
+            .warnings
+            .iter()
+            .any(|w| w.kind == TypeErrorKind::NonExhaustiveMatch),
+        "NonExhaustiveMatch for enum must not appear as warning"
+    );
+}
+
+// ── 16. MachineExhaustivenessError — fewer than 2 states ────────────
+
+#[test]
+fn machine_exhaustiveness_too_few_states() {
+    let output = typecheck(
+        r"
+        machine Broken {
+            events {
+                Ping;
+            }
+
+            state Only;
+            on Ping: Only => Only;
+        }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::MachineExhaustivenessError),
+        "Expected MachineExhaustivenessError for < 2 states, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 17. MachineExhaustivenessError — no events declared ─────────────
+
+#[test]
+fn machine_exhaustiveness_no_events() {
+    let output = typecheck(
+        r"
+        machine Broken {
+            state A;
+            state B;
+        }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::MachineExhaustivenessError),
+        "Expected MachineExhaustivenessError for 0 events, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 18. MachineExhaustivenessError — unknown event in transition ────
+
+#[test]
+fn machine_exhaustiveness_unknown_event() {
+    let output = typecheck(
+        r"
+        machine Broken {
+            events {
+                X;
+            }
+
+            state A;
+            state B;
+            on X: A => B;
+            on X: B => A;
+            on Ghost: A => B;
+        }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::MachineExhaustivenessError
+                && e.message.contains("unknown event")),
+        "Expected MachineExhaustivenessError for unknown event, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 19. MachineExhaustivenessError — unknown state in transition ────
+
+#[test]
+fn machine_exhaustiveness_unknown_state() {
+    let output = typecheck(
+        r"
+        machine Broken {
+            events {
+                X;
+            }
+
+            state A;
+            state B;
+            on X: A => B;
+            on X: B => Phantom;
+        }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::MachineExhaustivenessError
+                && e.message.contains("unknown state")),
+        "Expected MachineExhaustivenessError for unknown state, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 20. MachineExhaustivenessError — duplicate wildcard ─────────────
+
+#[test]
+fn machine_exhaustiveness_duplicate_wildcard() {
+    let output = typecheck(
+        r"
+        machine Broken {
+            events {
+                X;
+            }
+
+            state A;
+            state B;
+            on X: _ => _ { state }
+            on X: _ => _ { state }
+        }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::MachineExhaustivenessError
+                && e.message.contains("duplicate wildcard")),
+        "Expected MachineExhaustivenessError for duplicate wildcard, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn inference_hole_function_parameter_signature_is_rejected() {
+    let output = typecheck(
+        r"
+        fn f(x: _) {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+        "Expected InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+    assert!(
+        !output.fn_sigs.contains_key("f"),
+        "failing function signature should be stripped from checker output: {:?}",
+        output.fn_sigs
+    );
+}
+
+#[test]
+fn checker_output_does_not_expose_unresolved_ty_var_survivors() {
+    let output = typecheck(
+        r"
+        fn helper() {
+            let x: _ = None;
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+        "Expected InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+    assert_expr_type_output_has_no_unresolved_ty_vars(&output);
+}
+
+#[test]
+fn match_over_error_scrutinee_no_arm_body_cascade() {
+    let output = typecheck(
+        r"
+        fn main() {
+            let _ = match missing() {
+                Some(x) => {
+                    let _ = x;
+                    0
+                },
+                None => 0,
+            };
+        }
+    ",
+    );
+    assert_eq!(
+        output.errors.len(),
+        1,
+        "expected only the original scrutinee error, got: {:?}",
+        output.errors
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::UndefinedFunction && e.message.contains("missing")),
+        "expected undefined function error for scrutinee, got: {:?}",
+        output.errors
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| e.kind != TypeErrorKind::UndefinedVariable),
+        "match arm binding must not cascade into undefined-variable errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn for_over_non_iterable_no_loop_body_cascade() {
+    let output = typecheck(
+        r"
+        fn main() {
+            for item in true {
+                let _ = item;
+            }
+        }
+    ",
+    );
+    assert_eq!(
+        output.errors.len(),
+        1,
+        "expected only the non-iterable error, got: {:?}",
+        output.errors
+    );
+    assert!(
+        output.errors.iter().any(
+            |e| e.kind == TypeErrorKind::InvalidOperation && e.message.contains("not iterable")
+        ),
+        "expected non-iterable diagnostic, got: {:?}",
+        output.errors
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| e.kind != TypeErrorKind::UndefinedVariable),
+        "loop element binding must not cascade into undefined-variable errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn iflet_over_error_scrutinee_no_bound_var_error() {
+    let output = typecheck(
+        r"
+        fn main() {
+            if let Some(x) = missing() {
+                let _ = x;
+            } else {}
+        }
+    ",
+    );
+    assert_eq!(
+        output.errors.len(),
+        1,
+        "expected only the original scrutinee error, got: {:?}",
+        output.errors
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::UndefinedFunction && e.message.contains("missing")),
+        "expected undefined function error for scrutinee, got: {:?}",
+        output.errors
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| e.kind != TypeErrorKind::UndefinedVariable),
+        "if-let binding must not cascade into undefined-variable errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn or_pattern_error_scrutinee_single_error() {
+    let output = typecheck(
+        r"
+        enum Colour { Red; Green; }
+
+        fn main() {
+            let _ = match missing() {
+                Red | Green => 0,
+            };
+        }
+    ",
+    );
+    assert_eq!(
+        output.errors.len(),
+        1,
+        "expected only the original scrutinee error, got: {:?}",
+        output.errors
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::UndefinedFunction && e.message.contains("missing")),
+        "expected undefined function error for scrutinee, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn tuple_pattern_error_scrutinee_silent() {
+    let output = typecheck(
+        r"
+        fn main() {
+            let _ = match missing() {
+                (left, right) => {
+                    let _ = left;
+                    let _ = right;
+                    0
+                }
+            };
+        }
+    ",
+    );
+    assert_eq!(
+        output.errors.len(),
+        1,
+        "expected only the original scrutinee error, got: {:?}",
+        output.errors
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::UndefinedFunction && e.message.contains("missing")),
+        "expected undefined function error for scrutinee, got: {:?}",
+        output.errors
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| e.kind != TypeErrorKind::UndefinedVariable),
+        "tuple pattern must not cascade into undefined-variable errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn checker_output_success_path_contains_no_unresolved_ty_var() {
+    let output = typecheck(
+        r"
+        type Box<T> { value: T; }
+
+        fn id<T>(x: T) -> _ { x }
+
+        fn main() {
+            let v = id(1);
+            let _w = v;
+        }
+    ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Expected successful typecheck, got errors: {:?}",
+        output.errors
+    );
+    assert_expr_type_output_has_no_unresolved_ty_vars(&output);
+    let sig = output
+        .fn_sigs
+        .get("id")
+        .unwrap_or_else(|| panic!("expected function signature for id"));
+    assert!(
+        sig.params.iter().all(|ty| !ty_contains_unresolved_var(ty))
+            && !ty_contains_unresolved_var(&sig.return_type),
+        "signature id leaked unresolved Ty::Var: {sig:?}"
+    );
+    let ty_def = output
+        .type_defs
+        .get("Box")
+        .unwrap_or_else(|| panic!("expected type def for Box"));
+    assert!(
+        ty_def
+            .fields
+            .values()
+            .all(|ty| !ty_contains_unresolved_var(ty)),
+        "Box fields leaked unresolved Ty::Var: {:?}",
+        ty_def.fields
+    );
+}
+
+#[test]
+fn inference_hole_function_return_signature_is_resolved() {
+    let output = typecheck(
+        r"
+        fn f() -> _ {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| e.kind != TypeErrorKind::InferenceFailed),
+        "Did not expect InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+    assert_eq!(
+        output.fn_sigs.get("f").map(|sig| &sig.return_type),
+        Some(&hew_types::Ty::Unit)
+    );
+}
+
+#[test]
+fn inference_hole_generic_free_function_return_signature_is_resolved() {
+    assert_resolved_return_hole(
+        r"
+        fn f<T>(x: T) -> _ { x }
+        fn main() {}
+    ",
+        "f",
+        &generic_param("T"),
+    );
+}
+
+#[test]
+fn inference_hole_generic_impl_method_return_signature_is_resolved() {
+    assert_resolved_return_hole(
+        r"
+        type Box<T> { value: T; }
+        impl<T> Box<T> {
+            fn get(boxed: Box<T>, x: T) -> _ { x }
+        }
+        fn main() {}
+    ",
+        "Box::get",
+        &generic_param("T"),
+    );
+}
+
+#[test]
+fn inference_hole_generic_actor_receive_return_signature_is_resolved() {
+    assert_resolved_return_hole(
+        r"
+        actor Foo {
+            receive fn bar<T>(x: T) -> _ { x }
+        }
+        fn main() {}
+    ",
+        "Foo::bar",
+        &generic_param("T"),
+    );
+}
+
+#[test]
+fn inference_hole_generic_actor_method_return_signature_is_resolved() {
+    assert_resolved_return_hole(
+        r"
+        actor Foo {
+            fn bar<T>(x: T) -> _ { x }
+        }
+        fn main() {}
+    ",
+        "Foo::bar",
+        &generic_param("T"),
+    );
+}
+
+#[test]
+fn inference_hole_type_field_is_rejected() {
+    let output = typecheck(
+        r"
+        type Box { value: _; }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+        "Expected InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+    assert!(
+        !output.type_defs.contains_key("Box"),
+        "failing type definition should be stripped from checker output: {:?}",
+        output.type_defs
+    );
+}
+
+#[test]
+fn inference_hole_enum_variant_constructor_is_stripped_from_output() {
+    let output = typecheck(
+        r"
+        enum Maybe {
+            Some(_);
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+        "Expected InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+    assert!(
+        !output.type_defs.contains_key("Maybe"),
+        "failing enum definition should be stripped from checker output: {:?}",
+        output.type_defs
+    );
+    assert!(
+        !output.fn_sigs.contains_key("Some"),
+        "failing variant constructor should be stripped from checker output: {:?}",
+        output.fn_sigs
+    );
+}
+
+#[test]
+fn explicit_hole_nonitem_local_var_annotation_is_rejected() {
+    let output = typecheck(
+        r"
+        fn main() {
+            var value: _ = None;
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+        "Expected InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn explicit_hole_nonitem_local_let_annotation_is_resolved_from_later_use() {
+    let output = typecheck(
+        r"
+        fn takes(value: Option<i64>) {}
+
+        fn main() {
+            let value: _ = None;
+            takes(value);
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| e.kind != TypeErrorKind::InferenceFailed),
+        "Did not expect InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn explicit_hole_nonitem_const_annotation_is_rejected() {
+    let output = typecheck(
+        r"
+        const MAYBE: _ = None;
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+        "Expected InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn explicit_hole_nonitem_const_annotation_is_resolved_from_later_use() {
+    let output = typecheck(
+        r"
+        const MAYBE: _ = None;
+
+        fn takes(value: Option<i64>) {}
+
+        fn main() {
+            takes(MAYBE);
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| e.kind != TypeErrorKind::InferenceFailed),
+        "Did not expect InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn explicit_hole_nonitem_lambda_param_annotation_is_rejected() {
+    let output = typecheck(
+        r"
+        fn main() {
+            let _f = |x: _| 1;
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+        "Expected InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn explicit_hole_nonitem_lambda_param_annotation_is_inferred_from_expected_type() {
+    let output = typecheck(
+        r"
+        fn main() {
+            let _f: fn(i64) -> i64 = |x: _| 1;
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| e.kind != TypeErrorKind::InferenceFailed),
+        "Did not expect InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn explicit_hole_nonitem_lambda_return_annotation_is_rejected() {
+    let output = typecheck(
+        r"
+        fn main() {
+            let _f = || -> _ { None };
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+        "Expected InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn explicit_hole_nonitem_lambda_return_annotation_is_resolved_from_body() {
+    let output = typecheck(
+        r"
+        fn main() {
+            let _f = || -> _ { 1 };
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| e.kind != TypeErrorKind::InferenceFailed),
+        "Did not expect InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn explicit_hole_nonitem_actor_init_param_annotation_is_rejected() {
+    let output = typecheck(
+        r"
+        actor Greeter {
+            let name: string;
+            init(prefix: _) {
+                println(name);
+            }
+        }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+        "Expected InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn explicit_hole_nonitem_actor_init_param_annotation_is_resolved_from_body() {
+    let output = typecheck(
+        r"
+        actor Greeter {
+            let name: string;
+            init(prefix: _) {
+                name = prefix;
+            }
+        }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| e.kind != TypeErrorKind::InferenceFailed),
+        "Did not expect InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn explicit_hole_nonitem_cast_target_annotation_is_rejected() {
+    let output = typecheck(
+        r"
+        fn main() {
+            let x = 42;
+            let y = x as _;
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+        "Expected InferenceFailed, got errors: {:?}",
+        output.errors
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| !matches!(e.kind, TypeErrorKind::Mismatch { .. })),
+        "Did not expect cast mismatch before inference failure, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn explicit_hole_nonitem_cast_target_annotation_is_resolved_from_later_use() {
+    let output = typecheck(
+        r"
+        fn takes_i32(value: i32) {}
+
+        fn main() {
+            let x = 42;
+            let y = x as _;
+            takes_i32(y);
+        }
+    ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Expected cast target hole to resolve from later use, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn explicit_hole_nonitem_cast_target_annotation_still_rejects_invalid_inferred_cast() {
+    let output = typecheck(
+        r"
+        fn takes_string(value: string) {}
+
+        fn main() {
+            let x = 42;
+            let y = x as _;
+            takes_string(y);
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::Mismatch { .. })
+                && e.message.contains("cannot cast")),
+        "Expected cast mismatch, got errors: {:?}",
+        output.errors
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| e.kind != TypeErrorKind::InferenceFailed),
+        "Did not expect InferenceFailed once cast target was inferred, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 21. MachineExhaustivenessError — duplicate explicit transition ──
+
+#[test]
+fn machine_exhaustiveness_duplicate_explicit() {
+    let output = typecheck(
+        r"
+        machine Broken {
+            events {
+                X;
+            }
+
+            state A;
+            state B;
+            on X: A => B;
+            on X: A => A;
+            on X: B => A;
+        }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::MachineExhaustivenessError
+                && e.message.contains("duplicate transition")),
+        "Expected MachineExhaustivenessError for duplicate transition, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 22. InvalidOperation — `?` in non-Option/Result function ────────
+
+#[test]
+fn postfix_try_in_non_option_result_function() {
+    // Regression: `?` on an Option inside a function that returns a plain
+    // type must be rejected at typecheck time, not silently emitted as bad IR.
+    let output = typecheck(
+        r"
+        fn maybe(x: i32) -> Option<i32> {
+            if x > 0 { Some(x) } else { None }
+        }
+        fn plain(x: i32) -> i32 {
+            let v = maybe(x)?;
+            v * 2
+        }
+        fn main() { plain(5); }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("enclosing function must return")),
+        "Expected InvalidOperation for `?` in non-Option/Result function, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn postfix_try_valid_in_option_function() {
+    // Sanity: `?` on an Option inside a function that also returns Option is fine.
+    let output = typecheck(
+        r"
+        fn maybe(x: i32) -> Option<i32> {
+            if x > 0 { Some(x) } else { None }
+        }
+        fn double_maybe(x: i32) -> Option<i32> {
+            let v = maybe(x)?;
+            Some(v * 2)
+        }
+        fn main() { double_maybe(5); }
+    ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Expected no errors for valid `?` in Option-returning function, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn postfix_try_in_option_lambda_inside_plain_fn_is_valid() {
+    // False-rejection regression: `?` inside a lambda with an annotated
+    // `-> Option<i32>` return must not be rejected just because the *outer*
+    // function returns `i32`.
+    let output = typecheck(
+        r"
+        fn maybe(x: i32) -> Option<i32> {
+            if x > 0 { Some(x) } else { None }
+        }
+        fn outer(x: i32) {
+            let _f = |v: i32| -> Option<i32> {
+                let w = maybe(v)?;
+                Some(w)
+            };
+        }
+        fn main() { outer(3); }
+    ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Expected no errors for `?` inside Option-returning lambda in plain fn, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn postfix_try_in_plain_lambda_inside_option_fn_is_invalid() {
+    // False-acceptance regression: `?` inside a lambda annotated `-> i32`
+    // must still be rejected even though the *outer* function returns Option.
+    let output = typecheck(
+        r"
+        fn maybe(x: i32) -> Option<i32> {
+            if x > 0 { Some(x) } else { None }
+        }
+        fn outer(x: i32) -> Option<i32> {
+            let _f = |v: i32| -> i32 {
+                let w = maybe(v)?;
+                w
+            };
+            None
+        }
+        fn main() { outer(3); }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("enclosing function must return")),
+        "Expected InvalidOperation for `?` in i32-returning lambda, got: {:?}",
+        output.errors
+    );
+}
+
+// ── 23. BoundsNotSatisfied — type missing required trait ────────────
+
+#[test]
+fn bounds_not_satisfied_missing_trait_impl() {
+    let output = typecheck(
+        r"
+        trait Printable {
+            fn describe(val: Self) -> string;
+        }
+        type Dog { name: string; }
+        impl Printable for Dog {
+            fn describe(d: Dog) -> string { d.name }
+        }
+        type Rock { weight: i64; }
+        fn show<T: Printable>(val: T) -> string {
+            val.describe()
+        }
+        fn main() {
+            let r = Rock { weight: 42 };
+            println(show<Rock>(r));
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::BoundsNotSatisfied),
+        "Expected BoundsNotSatisfied, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── string::chars() typechecks and arity-guards ─────────────────────────────
+
+#[test]
+fn string_chars_returns_vec_char() {
+    // chars() must typecheck cleanly and produce Vec<char> with zero args.
+    let output = typecheck(
+        r#"
+        fn main() {
+            let s = "hello";
+            let cs: Vec<char> = s.chars();
+        }
+    "#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "string::chars() should typecheck without errors; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn string_chars_rejects_extra_args() {
+    let output = typecheck(
+        r#"
+        fn main() {
+            let s = "hello";
+            let cs = s.chars(1);
+        }
+    "#,
+    );
+    assert!(
+        !output.errors.is_empty(),
+        "string::chars(arg) should produce a typecheck error"
+    );
+}
+
+// ── 24. ArityMismatch — empty `<>` on generic struct / enum-variant init ──────
+//
+// `Wrapper<> { … }` is arity-0 explicit notation on a 1-param struct.
+// The checker must not silently treat `Some([])` as "infer from fields".
+
+#[test]
+fn empty_type_args_on_generic_struct_init_is_arity_mismatch() {
+    // `Wrapper<T>` has one type parameter; `Wrapper<> { … }` supplies zero.
+    let output = typecheck(
+        r"
+        type Wrapper<T> { value: T; }
+
+        fn main() {
+            let _w = Wrapper<> { value: 42 };
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::ArityMismatch),
+        "Expected ArityMismatch for `Wrapper<>`, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn empty_type_args_on_generic_enum_variant_init_is_arity_mismatch() {
+    // `Event<T>` has one type parameter; `Event::Move<> { … }` supplies zero.
+    let output = typecheck(
+        r"
+        enum Event<T> {
+            Move { x: T };
+        }
+
+        fn main() {
+            let _e = Event::Move<> { x: 10 };
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::ArityMismatch),
+        "Expected ArityMismatch for `Event::Move<>`, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn let_propagate_sugar_on_non_result_rejected() {
+    // `let r? = expr;` requires the RHS to be Result<T,E> or Option<T>.
+    // A plain integer RHS must be rejected by the type-checker with the
+    // same diagnostic as a bare `expr?` on a non-Result expression.
+    let output = typecheck(
+        r"
+        fn plain() -> i64 {
+            let r? = 42;
+            r
+        }
+        fn main() { plain(); }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("requires Result or Option")),
+        "Expected InvalidOperation for `let r? = 42` (non-Result RHS), got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn let_propagate_sugar_in_non_result_fn_rejected() {
+    // `let r? = result_expr;` inside a function that does not return
+    // Result or Option must be rejected — same rule as bare `?`.
+    let output = typecheck(
+        r"
+        fn make_result(x: i64) -> Result<i64, string> {
+            Ok(x)
+        }
+        fn plain(x: i64) -> i64 {
+            let r? = make_result(x);
+            r
+        }
+        fn main() { plain(5); }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("enclosing function must return")),
+        "Expected InvalidOperation for `let r?` in non-Result fn, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 23. Vec layout-element accepted/fail-closed boundary ─────────────
+//
+// BitCopy Plain layout Vec push/get/set/pop are now backed by runtime + codegen
+// for Copy record and tuple elements; the checker accepts those calls and
+// records a `_layout`-suffix rewrite. Every other layout-backed Vec method
+// (contains, remove, clear, clone, append, extend) still has no runtime
+// backing and must fail closed with `InvalidOperation` at the call site
+// naming the would-be runtime symbol — rather than cascading as
+// `UnresolvedSymbol` from HIR/MIR.
+
+#[test]
+fn vec_push_copy_record_element_is_accepted() {
+    let output = typecheck(
+        r"
+        type Point {
+            x: i32;
+            y: i32;
+        }
+        fn main() {
+            let v: Vec<Point> = Vec::new();
+            v.push(Point { x: 1, y: 2 });
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Copy record Vec::push must type-check, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_push_copy_tuple_element_is_accepted() {
+    let output = typecheck(
+        r"
+        fn main() {
+            let v: Vec<(i32, f64)> = Vec::new();
+            v.push((1, 2.0));
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Copy tuple Vec::push must type-check, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_push_nested_owned_tuple_element_is_accepted() {
+    let output = typecheck(
+        r#"
+        fn main() {
+            let v: Vec<((string, i64), bool)> = Vec::new();
+            v.push((("a", 1), true));
+        }
+        "#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "nested owned tuple Vec::push must type-check, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_clone_nested_owned_tuple_element_is_accepted() {
+    let output = typecheck(
+        r#"
+        fn main() {
+            let v: Vec<((string, i64), bool)> = Vec::new();
+            v.push((("a", 1), true));
+            let _copy = v.clone();
+        }
+        "#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "nested owned tuple Vec::clone must type-check, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_push_nested_tuple_with_inner_vec_stays_rejected() {
+    let output = typecheck(
+        r"
+        fn main() {
+            let inner: Vec<i64> = Vec::new();
+            let v: Vec<((Vec<i64>, i64), bool)> = Vec::new();
+            v.push(((inner, 1), true));
+        }
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("contains a `Vec`/`HashMap`/`HashSet`")
+        }),
+        "nested tuple with inner Vec must stay rejected, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_push_nested_tuple_with_function_stays_rejected() {
+    let output = typecheck(
+        r"
+        fn f() -> i64 { return 1; }
+        fn main() {
+            let v: Vec<((fn() -> i64, i64), bool)> = Vec::new();
+            v.push(((f, 1), true));
+        }
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("contains a function value")
+        }),
+        "nested tuple with function field must stay rejected, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_get_copy_record_element_is_accepted() {
+    let output = typecheck(
+        r"
+        type Point {
+            x: i32;
+            y: i32;
+        }
+        fn main() {
+            let v: Vec<Point> = Vec::new();
+            let _p = v.get(0);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Copy record Vec::get must type-check, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 23b. Fix-forward: contains / remove / clear / clone / append / extend ──
+//
+// The initial squash wired the fail-closed fence for push/pop/get/set but
+// missed three classes of bug:
+//
+//   (1) `contains` — returned `None` from `resolve_vec_method` for layout
+//       types (because the match had no `"layout"` arm), which caused
+//       `resolve_vec_runtime_symbol` to early-return `None` without emitting
+//       any diagnostic. `Ty::Bool` was returned silently.
+//
+//   (2) `remove` — `resolve_vec_method` always returned the monomorphic
+//       `hew_vec_remove_at` for every element type, so the `_layout` suffix
+//       check in `resolve_vec_runtime_symbol` never triggered.
+//
+//   (3) `clear` / `clone` / `append` / `extend` — same as (2): always
+//       returned monomorphic symbols, bypassing the fence entirely.
+
+#[test]
+fn vec_contains_eligible_copy_record_compiles_after_w3_032_slice_3() {
+    // W3.032 Slice 3e: equality-eligible Copy records (all integer fields) are
+    // now lifted via `hew_vec_contains_thunk`.  Compiles cleanly with no
+    // diagnostic.
+    let output = typecheck(
+        r"
+        type Point {
+            x: i32;
+            y: i32;
+        }
+        fn main() {
+            let v: Vec<Point> = Vec::new();
+            let p = Point { x: 1, y: 2 };
+            let _ = v.contains(p);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Vec<Point>::contains (eligible Copy record) must compile: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_contains_float_tuple_element_now_typechecks() {
+    // A `(i32, f64)` tuple is equality-eligible (floats compare bitwise) and
+    // Copy, so `Vec<(i32, f64)>::contains` is admitted; the float leaves hash
+    // and compare on their bit pattern in the layout thunk.
+    let output = typecheck(
+        r"
+        fn main() {
+            let v: Vec<(i32, f64)> = Vec::new();
+            let _ = v.contains((1, 2.0));
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Vec<(i32,f64)>::contains must compile under bitwise float equality: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_contains_float_record_element_now_typechecks() {
+    // A record with an `f32` field is equality-eligible and Copy: `contains`
+    // is admitted and the float field compares on its bit pattern.
+    let output = typecheck(
+        r"
+        type Measurement {
+            value: f32;
+        }
+        fn main() {
+            let v: Vec<Measurement> = Vec::new();
+            let needle = Measurement { value: 1.0 };
+            let _ = v.contains(needle);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Vec<Measurement>::contains (Copy float record) must compile: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_contains_layout_managed_record_element_has_eq_eligibility_diagnostic() {
+    let output = typecheck(
+        r"
+        type Packet {
+            data: bytes;
+        }
+        fn has_packet(v: Vec<Packet>, needle: Packet) -> bool {
+            v.contains(needle)
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("`Vec::contains`")
+                && e.message.contains("layout-managed/non-Copy")
+                && e.message.contains("bytes")),
+        "Expected layout-managed equality eligibility diagnostic, got: {:?}",
+        output.errors
+    );
+}
+
+// Vec::remove is now runtime-backed for BitCopy layout elements (W3.003).
+// These tests verify the happy path; the old fail-closed behaviour is gone.
+#[test]
+fn vec_remove_copy_record_element_now_succeeds() {
+    // Vec<T>::remove where T is a Copy record must resolve without errors
+    // after W3.003 lifts the gate.
+    let output = typecheck(
+        r"
+        type Point {
+            x: i32;
+            y: i32;
+        }
+        fn main() {
+            let v: Vec<Point> = Vec::new();
+            v.remove(0);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Vec<Point>::remove must succeed after W3.003, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_remove_copy_tuple_element_now_succeeds() {
+    // Vec<T>::remove where T is a Copy tuple must resolve without errors
+    // after W3.003 lifts the gate.
+    let output = typecheck(
+        r"
+        fn main() {
+            let v: Vec<(i32, i64)> = Vec::new();
+            v.remove(0);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Vec<(i32,i64)>::remove must succeed after W3.003, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_clear_record_element_is_layout_fail_closed() {
+    let output = typecheck(
+        r"
+        type Point {
+            x: i32;
+            y: i32;
+        }
+        fn main() {
+            let v: Vec<Point> = Vec::new();
+            v.clear();
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("`Vec::clear`")
+                && e.message.contains("not runtime-backed yet")
+                && e.message.contains("hew_vec_clear_layout")),
+        "Expected layout fail-closed diagnostic for Vec<Point>::clear, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_clear_tuple_element_is_layout_fail_closed() {
+    let output = typecheck(
+        r"
+        fn main() {
+            let v: Vec<(i32, f64)> = Vec::new();
+            v.clear();
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("`Vec::clear`")
+                && e.message.contains("not runtime-backed yet")
+                && e.message.contains("hew_vec_clear_layout")),
+        "Expected layout fail-closed diagnostic for Vec<(i32,f64)>::clear, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_clone_bitcopy_record_element_is_permitted() {
+    // Point has only i32 fields → Copy → clone is allowed via hew_vec_clone_layout.
+    let output = typecheck(
+        r"
+        type Point {
+            x: i32;
+            y: i32;
+        }
+        fn main() {
+            let v: Vec<Point> = Vec::new();
+            let _ = v.clone();
+        }
+        ",
+    );
+    let layout_fence_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| {
+            e.kind == TypeErrorKind::InvalidOperation && e.message.contains("hew_vec_clone_layout")
+        })
+        .collect();
+    assert!(
+        layout_fence_errors.is_empty(),
+        "Vec<Point>::clone (BitCopy record) must NOT trigger the layout fence: {layout_fence_errors:?}",
+    );
+}
+
+#[test]
+fn vec_clone_bitcopy_tuple_element_is_permitted() {
+    // (i32, f64) has only scalar fields → Copy → clone is allowed via hew_vec_clone_layout.
+    let output = typecheck(
+        r"
+        fn main() {
+            let v: Vec<(i32, f64)> = Vec::new();
+            let _ = v.clone();
+        }
+        ",
+    );
+    let layout_fence_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| {
+            e.kind == TypeErrorKind::InvalidOperation && e.message.contains("hew_vec_clone_layout")
+        })
+        .collect();
+    assert!(
+        layout_fence_errors.is_empty(),
+        "Vec<(i32,f64)>::clone (BitCopy tuple) must NOT trigger the layout fence: {layout_fence_errors:?}",
+    );
+}
+
+#[test]
+fn vec_clone_owning_record_element_is_permitted() {
+    let output = typecheck(
+        r"
+        type Person {
+            name: string;
+            age: i64;
+        }
+        fn main() {
+            let v: Vec<Person> = Vec::new();
+            let _ = v.clone();
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Vec<Person>::clone must route through owned-element clone, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_clone_owning_tuple_element_is_permitted() {
+    let output = typecheck(
+        r"
+        fn main() {
+            let v: Vec<(string, i64)> = Vec::new();
+            let _ = v.clone();
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Vec<(string, i64)>::clone must route through owned-element clone, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_append_record_element_is_layout_fail_closed() {
+    let output = typecheck(
+        r"
+        type Point {
+            x: i32;
+            y: i32;
+        }
+        fn main() {
+            let v: Vec<Point> = Vec::new();
+            let other: Vec<Point> = Vec::new();
+            v.append(other);
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("`Vec::append`")
+                && e.message.contains("not runtime-backed yet")
+                && e.message.contains("hew_vec_append_layout")),
+        "Expected layout fail-closed diagnostic for Vec<Point>::append, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_extend_retired_is_undefined_method() {
+    // `.extend` was retired; the canonical bulk-append method is `.append`.
+    // The type-checker must reject `.extend` with UndefinedMethod so callers
+    // are steered to the replacement rather than silently doing nothing.
+    let output = typecheck(
+        r"
+        type Point {
+            x: i32;
+            y: i32;
+        }
+        fn main() {
+            let v: Vec<Point> = Vec::new();
+            let other: Vec<Point> = Vec::new();
+            v.extend(other);
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::UndefinedMethod && e.message.contains("extend")),
+        "Expected UndefinedMethod for retired Vec::extend, got: {:?}",
+        output.errors
+    );
+}
+
+// ── 23c. `len` and `is_empty` are header-only and must NOT fire the fence ──
+//
+// `Vec::len` bypasses `resolve_vec_runtime_symbol` entirely (hardcoded
+// `len_vec` rewrite in `check_vec_method`). `Vec::is_empty` routes through
+// the resolver but `resolve_vec_method` returns the monomorphic
+// `hew_vec_is_empty` which does not end with `_layout`, so no diagnostic
+// is emitted. Both methods are provably safe for layout-backed Vecs because
+// they only read the length header, not the element data.
+
+#[test]
+fn vec_len_and_is_empty_on_layout_element_do_not_fire_fence() {
+    let output = typecheck(
+        r"
+        type Point {
+            x: i32;
+            y: i32;
+        }
+        fn main() {
+            let v: Vec<Point> = Vec::new();
+            let _n = v.len();
+            let _e = v.is_empty();
+        }
+        ",
+    );
+    // Neither `len` nor `is_empty` should emit layout-fence diagnostics.
+    let layout_fence_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| {
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("not runtime-backed yet")
+        })
+        .collect();
+    assert!(
+        layout_fence_errors.is_empty(),
+        "`Vec::len` and `Vec::is_empty` must not trigger the layout fence: {layout_fence_errors:?}",
+    );
+}
+
+// ── NTC-01 — no implicit i32 → bool coercion ─────────────────────────────────
+
+#[test]
+fn i32_where_bool_expected_is_type_error() {
+    // Passing an i32 directly where bool is required must be a type error.
+    // Hew has no implicit numeric-to-bool coercion (§12.1).
+    let output = typecheck(
+        r"
+        fn check(x: bool) -> bool { x }
+        fn main() {
+            let n: i32 = 1;
+            check(n);
+        }
+    ",
+    );
+    assert!(
+        output.errors.iter().any(
+            |e| matches!(&e.kind, TypeErrorKind::Mismatch { expected, actual }
+                if expected.contains("bool") && actual.contains("i32"))
+        ),
+        "Expected Mismatch(bool, i32) for implicit i32→bool coercion, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn explicit_ne_zero_coercion_to_bool_is_accepted() {
+    // Explicit `n != 0` comparison yields bool — no error.
+    let output = typecheck(
+        r"
+        fn check(x: bool) -> bool { x }
+        fn main() {
+            let n: i32 = 1;
+            check(n != 0);
+        }
+    ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Explicit != 0 comparison must typecheck without error, got: {:?}",
+        output.errors
+    );
+}
+
+// ── NTC-07 — module.Type vs module::Type diagnostic ──────────────────────────
+
+#[test]
+fn double_colon_in_type_position_emits_module_separator_hint() {
+    // `geometry::Point` in a type position should produce an UndefinedType error
+    // with a suggestion to use `geometry.Point` instead of `geometry::Point`.
+    let output = typecheck(
+        r"
+        fn main() {
+            let _p: geometry::Point = 0;
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::UndefinedType
+                && e.message.contains("geometry::Point")
+                && (e.message.contains("module separator")
+                    || e.suggestions.iter().any(|s| s.contains("geometry.Point")))),
+        "Expected UndefinedType with module.Type hint for geometry::Point, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn dot_qualified_type_in_type_position_resolves_correctly() {
+    // `geometry.Point` in a type position (with a defined type) must not emit
+    // the module-separator diagnostic — the dot form is correct Hew syntax.
+    // We use a locally-defined type to confirm the dot path resolves.
+    let output = typecheck(
+        r"
+        type Point { x: i64; y: i64; }
+        fn make() -> Point {
+            Point { x: 1, y: 2 }
+        }
+        fn main() {
+            let _p = make();
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| !e.message.contains("module separator")),
+        "Dot-qualified type must not trigger the module-separator diagnostic, got: {:?}",
+        output.errors
+    );
+}

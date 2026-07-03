@@ -8825,13 +8825,14 @@ struct Builder {
     suspend_kinds: HashMap<u32, SuspendKind>,
     owned_locals: Vec<(hew_hir::BindingId, String, ResolvedTy)>,
     /// Generator/`AsyncGenerator` owned bindings tagged with the HIR scope they
-    /// were declared in, recorded so a per-scope-exit `hew_gen_free` fires when
-    /// that scope closes — INCLUDING when the scope is re-executed by an
-    /// enclosing loop. The function-exit LIFO drop only releases the final
-    /// content of each binding's slot, so a generator declared inside a loop
-    /// body (e.g. the `__hew_for_iter_*` binding of a `for x in gen()` nested in
-    /// a `while`) leaks one context + one OS thread per outer iteration without
-    /// this per-scope-exit release. Entries are removed from `owned_locals` once
+    /// were declared in, recorded so a per-scope-exit `hew_gen_coro_destroy`
+    /// fires when that scope closes — INCLUDING when the scope is re-executed
+    /// by an enclosing loop. The function-exit LIFO drop only releases the
+    /// final content of each binding's slot, so a generator declared inside a
+    /// loop body (e.g. the `__hew_for_iter_*` binding of a `for x in gen()`
+    /// nested in a `while`) leaks one coro frame + heap companion per outer
+    /// iteration without this per-scope-exit release. Entries are removed from
+    /// `owned_locals` once
     /// the scope-exit drop is emitted so the function-exit pass cannot
     /// double-free (the drop also null-stores the slot as defence-in-depth).
     scope_generator_bindings: Vec<(ScopeId, hew_hir::BindingId, ResolvedTy)>,
@@ -9207,8 +9208,9 @@ struct Builder {
     poisoned_let_bindings: HashSet<BindingId>,
     /// Generator/`gen fn` capture bindings the enclosing `lower_gen_block`
     /// rejected with a root `NotYetImplemented` (an inadmissible opaque/owned
-    /// value that cannot cross the generator's thread boundary). The synthetic
-    /// body still names the capture as a free variable, but it was never
+    /// value that cannot be admitted into the generator's flat-copied env
+    /// record). The synthetic body still names the capture as a free variable,
+    /// but it was never
     /// materialised into the env record — so its body-side `BindingRef` would
     /// otherwise stack two cascade secondaries on the root: a
     /// `MirStatement::Use` of an un-`Bind`-ed binding (→ dataflow
@@ -9658,19 +9660,21 @@ impl Builder {
     /// plain, recursively-copyable value — every leaf `BitCopy` AND the whole
     /// transitively free of `#[opaque]` runtime handles.
     ///
-    /// A generator body runs in its own runtime thread; its only window onto the
-    /// enclosing frame is the env `hew_gen_ctx_create` flat-`memcpy`s across the
-    /// thread boundary (freeing the copy when the body thread ends). An admitted
-    /// value must therefore be safe to bit-copy with no ownership consequence.
+    /// The generator's env record is heap-copied once, at construction
+    /// (`Terminator::MakeGenerator`'s `hew_cont_frame_alloc` + flat `memcpy`),
+    /// and the coro ramp reads that heap copy by address across every suspend
+    /// — no per-field clone or drop protocol exists for it. An admitted value
+    /// must therefore be safe to bit-copy with no ownership consequence.
     ///
     /// Three shapes are admitted:
     ///   1. `ValueClass::BitCopy` scalars (i64/f64/bool/char/…), actor pids, and
     ///      `#[copy]` records — provided they are transitively free of `#[opaque]`
     ///      runtime handles (gate 2 below).
     ///   2. `ResolvedTy::Function { .. }` — a fn-typed value. Safety rests on
-    ///      four properties: (a) `hew_gen_ctx_create` flat-`memcpy`s the arg
-    ///      block and only `libc::free`s the flat buffer at thread end — it
-    ///      never recurses into inner pointers, so a non-null env-box is not
+    ///      four properties: (a) `Terminator::MakeGenerator` flat-`memcpy`s
+    ///      the whole env record once at construction, and the companion's
+    ///      release (`hew_gen_coro_destroy`) only frees that flat buffer —
+    ///      neither recurses into inner pointers, so a non-null env-box is not
     ///      freed by the generator; (b) `Function` is `PersistentShare`, so
     ///      the body side never drops the fn value; (c) a named fn literal
     ///      produced by the compiler has a null env word; and (d) a capturing
@@ -10004,20 +10008,21 @@ impl Builder {
             });
     }
 
-    /// Emit a `hew_gen_free` release for every generator/`AsyncGenerator`
+    /// Emit a `hew_gen_coro_destroy` release for every generator/`AsyncGenerator`
     /// handle binding declared in `scope_id`, at the point this scope closes.
     /// This runs on the NORMAL scope-exit path of a block; because a block
     /// nested inside a loop re-executes (and its scope re-closes) once per
-    /// outer iteration, the generator's context + OS thread are released every
-    /// iteration instead of accumulating until function exit.
+    /// outer iteration, the generator's coro frame + heap companion are
+    /// released every iteration instead of accumulating until function exit.
     ///
     /// Each released binding is removed from `owned_locals` and
     /// `scope_generator_bindings` so the function-exit LIFO drop never fires a
-    /// second `hew_gen_free` on the same slot — and the inline `Instr::Drop`
-    /// null-stores the slot afterwards, so even a structurally-reachable second
-    /// drop observes null (`raii-null-after-move`; the runtime also null-guards).
-    /// A binding whose slot was already consumed (moved out) earlier on the path
-    /// is still safe: `hew_gen_free(null)` is a no-op.
+    /// second `hew_gen_coro_destroy` on the same slot — and the inline
+    /// `Instr::Drop` null-stores the slot afterwards, so even a
+    /// structurally-reachable second drop observes null
+    /// (`raii-null-after-move`; the runtime also null-guards). A binding whose
+    /// slot was already consumed (moved out) earlier on the path is still
+    /// safe: `hew_gen_coro_destroy(null)` is a no-op.
     fn emit_scope_generator_drops(&mut self, scope_id: ScopeId) {
         // Collect this scope's generator bindings (LIFO: reverse declaration
         // order) and drop them, leaving other scopes' entries in place.
@@ -10164,12 +10169,13 @@ impl Builder {
         }
     }
 
-    /// Emit `hew_gen_free` for every generator binding declared in the in-loop
-    /// window (`active_scopes[loop_scope_depth..]`) on a `break`/`continue`
-    /// edge. Without this, a generator declared in a loop body and then skipped
-    /// past by `continue` (or escaped by `break`) leaks its context + thread for
-    /// that iteration, because the back-edge `emit_scope_generator_drops` on the
-    /// normal fall-through path is never reached on the break/continue path.
+    /// Emit `hew_gen_coro_destroy` for every generator binding declared in the
+    /// in-loop window (`active_scopes[loop_scope_depth..]`) on a
+    /// `break`/`continue` edge. Without this, a generator declared in a loop
+    /// body and then skipped past by `continue` (or escaped by `break`) leaks
+    /// its coro frame + heap companion for that iteration, because the
+    /// back-edge `emit_scope_generator_drops` on the normal fall-through path
+    /// is never reached on the break/continue path.
     ///
     /// CLONE discipline (mirrors `emit_defers_for_break_continue`): the entries
     /// are NOT removed from `scope_generator_bindings` here, because the normal
@@ -12311,7 +12317,7 @@ impl Builder {
                     self.owned_locals
                         .push((binding.id, binding.name.clone(), binding_ty.clone()));
                     // Tag generator/`AsyncGenerator` handle bindings with their
-                    // declaring scope so a per-scope-exit `hew_gen_free` fires
+                    // declaring scope so a per-scope-exit `hew_gen_coro_destroy` fires
                     // when the scope closes — covering the loop-re-entry case the
                     // function-exit drop misses (see `scope_generator_bindings`).
                     if ty_is_generator_handle(&binding_ty) {
@@ -13867,7 +13873,7 @@ impl Builder {
                 self.emit_pending_defers(block.scope);
                 // Release any generator handle declared in this block's scope
                 // before it closes — so a `for x in gen()` block nested in an
-                // enclosing loop frees its `__hew_for_iter_*` context + thread
+                // enclosing loop frees its `__hew_for_iter_*` coro frame + heap companion
                 // every outer iteration instead of leaking one per iteration.
                 self.emit_scope_generator_drops(block.scope);
                 // #1949 — release any sole-owner `for x in …` cursor (`VecIter`)
@@ -15927,10 +15933,10 @@ impl Builder {
                 // Free the break-iteration's yielded heap value(s) on the break
                 // edge (the body-end drop is past the break — would leak it).
                 // Value before handle: the yielded buffer is inner heap, the
-                // handle owns the thread (LIFO inner-first).
+                // handle owns the coro frame + heap companion (LIFO inner-first).
                 self.emit_generator_yield_value_drops_for_break_continue(frame.scope_depth);
                 // Release in-loop generators on the break edge so the
-                // break-iteration's context + thread are not leaked.
+                // break-iteration's coro frame + heap companion are not leaked.
                 self.emit_generator_drops_for_break_continue(frame.scope_depth);
                 self.finish_current_block(Terminator::Goto {
                     target: frame.exit_target,
@@ -15984,7 +15990,7 @@ impl Builder {
                 // leak it). Value before handle (LIFO inner-first).
                 self.emit_generator_yield_value_drops_for_break_continue(frame.scope_depth);
                 // Release in-loop generators on the continue edge so the
-                // skipped iteration's context + thread are not leaked.
+                // skipped iteration's coro frame + heap companion are not leaked.
                 self.emit_generator_drops_for_break_continue(frame.scope_depth);
                 // Register THIS block as a loop back-edge so `enumerate_exits`
                 // populates its `Goto` `DropPlan` with the scope-filtered
@@ -17415,10 +17421,10 @@ impl Builder {
     /// (`HirExprKind::GeneratorNext`) — either a source-level `g.next()` or the
     /// `for x in gen()` desugar's synthetic next-call. The yielded value bound by
     /// the `Some` arm is a FRESH, solely-owned heap value the runtime handed to
-    /// the consumer (`hew_gen_next` returns an owned payload), so — like a
-    /// `Vec<String>` iterator's retained string — it must be released at the end
-    /// of the consuming body. Without that release every yielded heap value
-    /// (a `Vec` yield, an `f"…"` string yield) leaks.
+    /// the consumer (the coro `.next()` drive hands back an owned payload), so
+    /// — like a `Vec<String>` iterator's retained string — it must be
+    /// released at the end of the consuming body. Without that release every
+    /// yielded heap value (a `Vec` yield, an `f"…"` string yield) leaks.
     fn is_generator_next_scrutinee(scrutinee: &HirExpr) -> bool {
         matches!(&scrutinee.kind, HirExprKind::GeneratorNext { .. })
     }
@@ -17700,13 +17706,14 @@ impl Builder {
     }
 
     /// Emit a body-end release for a generator-yielded `Some(x)` binding. The
-    /// yielded value is a fresh, solely-owned heap value `hew_gen_next` handed
-    /// the consumer; releasing it here (per-iteration for a `for`-in loop) is
-    /// what frees the otherwise-leaked yield. Gated on the same body-shape
-    /// drop-safety scan the `Vec<String>` iterator path uses: if the binding's
-    /// pointer escapes the consuming body (read as a non-print source operand,
-    /// returned, re-yielded), MIR refuses to emit the drop and the value leaks
-    /// rather than risking a use-after-free against the escaped alias.
+    /// yielded value is a fresh, solely-owned heap value the coro `.next()`
+    /// drive handed the consumer; releasing it here (per-iteration for a
+    /// `for`-in loop) is what frees the otherwise-leaked yield. Gated on the
+    /// same body-shape drop-safety scan the `Vec<String>` iterator path uses:
+    /// if the binding's pointer escapes the consuming body (read as a
+    /// non-print source operand, returned, re-yielded), MIR refuses to emit
+    /// the drop and the value leaks rather than risking a use-after-free
+    /// against the escaped alias.
     fn emit_generator_yield_binding_drop(
         &mut self,
         binding: BindingId,
@@ -18820,7 +18827,7 @@ impl Builder {
                 self.owned_locals
                     .push((binding.binding, binding.name.clone(), binding_ty.clone()));
                 // A generator/AsyncGenerator handle bound via match destructure
-                // gets the same per-scope-exit `hew_gen_free` registration the
+                // gets the same per-scope-exit `hew_gen_coro_destroy` registration the
                 // `Let` path uses, so the per-iteration release fires for a
                 // match inside a loop (see `scope_generator_bindings`).
                 if ty_is_generator_handle(&binding_ty) {
@@ -20257,19 +20264,20 @@ impl Builder {
             // block for `string`, a fresh `Bytes` header for `bytes`). The
             // payload binding's only release path is the consuming body's
             // per-iteration drop — identical ownership shape to a generator
-            // yield (`hew_gen_next` returns the same kind of fresh owned value).
-            // Without this drop every received frame leaks a heap block per
-            // iteration: the leak this fix closes for `for await item in rx` /
-            // `match channel.recv(...) { ... }` / `match stream.recv() { ... }`.
+            // yield (the coro `.next()` drive returns the same kind of fresh
+            // owned value). Without this drop every received frame leaks a
+            // heap block per iteration: the leak this fix closes for
+            // `for await item in rx` / `match channel.recv(...) { ... }` /
+            // `match stream.recv() { ... }`.
             let arm_is_recv_some = recv_next_scrutinee && arm_is_some;
             let mut overwritten_bindings = Vec::with_capacity(arm.bindings.len());
             let mut retained_vec_string_iter_bindings = Vec::new();
             // Generator-yielded `Some(x)` bindings whose payload owns heap. The
-            // yielded value is a fresh, solely-owned heap value `hew_gen_next`
-            // handed the consumer; it is released at the end of the consuming
-            // body (per-iteration for a `for`-in loop). Removed from
-            // `owned_locals` below so the function-scope drop pass does not also
-            // fire (which would double-free).
+            // yielded value is a fresh, solely-owned heap value the coro
+            // `.next()` drive handed the consumer; it is released at the end
+            // of the consuming body (per-iteration for a `for`-in loop).
+            // Removed from `owned_locals` below so the function-scope drop
+            // pass does not also fire (which would double-free).
             let mut generator_yield_drop_bindings = Vec::new();
             for binding in &arm.bindings {
                 let binding_ty = self.subst_ty(&binding.ty);
@@ -20774,8 +20782,8 @@ impl Builder {
         }
         self.emit_pending_defers(body.scope);
         // Release generators declared in the loop body before the back-edge so
-        // a `let g = gen()` (consumed or not) frees its context + thread every
-        // iteration rather than accumulating one per pass (see
+        // a `let g = gen()` (consumed or not) frees its coro frame + heap
+        // companion every iteration rather than accumulating one per pass (see
         // `emit_scope_generator_drops`).
         self.emit_scope_generator_drops(body.scope);
         // #1949 — release sole-owner `for x in …` cursors (`VecIter`) declared
@@ -21007,7 +21015,7 @@ impl Builder {
         }
         self.emit_pending_defers(body.scope);
         // Release generators declared in the loop body before the back-edge
-        // (per-iteration `hew_gen_free`; see `emit_scope_generator_drops`).
+        // (per-iteration `hew_gen_coro_destroy`; see `emit_scope_generator_drops`).
         self.emit_scope_generator_drops(body.scope);
         // #1949 — release sole-owner `for x in …` cursors (`VecIter`) declared
         // directly in this loop body before the back-edge, the cursor analogue of
@@ -21618,7 +21626,7 @@ impl Builder {
         }
         self.emit_pending_defers(body.scope);
         // Release generators declared in the loop body before the increment +
-        // back-edge (per-iteration `hew_gen_free`; see
+        // back-edge (per-iteration `hew_gen_coro_destroy`; see
         // `emit_scope_generator_drops`).
         self.emit_scope_generator_drops(body.scope);
         // #1949 — release sole-owner `for x in …` cursors (`VecIter`) declared
@@ -21742,7 +21750,7 @@ impl Builder {
         }
         self.emit_pending_defers(body.scope);
         // Release generators declared in the loop body before the back-edge
-        // (per-iteration `hew_gen_free`; see `emit_scope_generator_drops`).
+        // (per-iteration `hew_gen_coro_destroy`; see `emit_scope_generator_drops`).
         self.emit_scope_generator_drops(body.scope);
         // #1949 — release sole-owner `for x in …` cursors (`VecIter`) declared
         // directly in this loop body before the back-edge, the cursor analogue of
@@ -24144,10 +24152,10 @@ impl Builder {
         // CAP-11 fail-closed gate: a generator-constructor call (`gen fn` —
         // the only direct calls typed `Generator<..>`) flat-copies every
         // argument its body captures into the generator env
-        // (`hew_gen_ctx_create`), and the body side never drops a fn-typed
-        // capture. A capturing closure laundered through a `fn(..)`-typed
-        // parameter therefore carries a heap env box NOTHING can ever
-        // release — refuse it here, at the launder crossing, where the
+        // (`Terminator::MakeGenerator`'s heap-copy), and the body side never
+        // drops a fn-typed capture. A capturing closure laundered through a
+        // `fn(..)`-typed parameter therefore carries a heap env box NOTHING
+        // can ever release — refuse it here, at the launder crossing, where the
         // argument's real shape is still visible (the callee's own frame
         // sees only the null-env-presumptive `fn(..)` type). Named-fn
         // references and capture-free closures stay admitted: their env
@@ -30285,19 +30293,22 @@ impl Builder {
 
         // ── Capture-env synthesis (mirrors `lower_spawn_lambda_actor`) ──
         //
-        // A generator body runs in its own runtime thread; its only window onto
-        // the enclosing frame is the env the runtime deep-copies into that
-        // thread (`hew_gen_ctx_create`'s `body_arg`). Each free variable — a
-        // `gen fn`'s formal parameters, a `gen { }` block's captured outer
-        // locals (HIR computed this set, in `captures`) — becomes one field of
-        // a synthetic env record built HERE in the enclosing frame, in capture
-        // order. The body reads them back through `Local(0)` (the body-arg
-        // copy) via `ClosureEnvFieldLoad` (registered below).
+        // The generator body is a coro ramp (`__hew_gen_body_*`); its only
+        // window onto the enclosing frame is the env record
+        // `Terminator::MakeGenerator` heap-copies at construction (so it
+        // outlives this constructing frame — the body reads it across
+        // suspends). Each free variable — a `gen fn`'s formal parameters, a
+        // `gen { }` block's captured outer locals (HIR computed this set, in
+        // `captures`) — becomes one field of a synthetic env record built HERE
+        // in the enclosing frame, in capture order. The body reads them back
+        // through `Local(1)` (the env-pointer param; `Local(0)` is the
+        // out-pointer) via `ClosureEnvFieldLoad` (registered below).
         //
         // SCOPE / FAIL-CLOSED: `gen_env_capture_admissible` governs what may
-        // cross the thread boundary. `hew_gen_ctx_create` copies `env_size`
-        // bytes flat and frees that copy when the body thread ends
-        // (`generator.rs`). Admitted shapes:
+        // be admitted to the flat-copied env. `Terminator::MakeGenerator`
+        // copies the env's bytes flat once, at construction, and its release
+        // (`hew_gen_coro_destroy`, `hew-runtime/src/cont.rs`) frees only that
+        // flat buffer. Admitted shapes:
         //   * `BitCopy` scalars transitively free of `#[opaque]` handles.
         //   * `ResolvedTy::Function` — a bare named-fn reference whose runtime
         //     env word is null; safe to flat-copy.
@@ -30306,8 +30317,8 @@ impl Builder {
         //   * owned / non-`BitCopy` (string/Vec/record): flat-copying
         //     shallow-aliases the caller's heap → double-free / UAF; and
         //   * `#[opaque]`-only handles: classifies as `BitCopy` (pointer-width,
-        //     no implicit drop) yet is a runtime handle — bit-copying it across
-        //     the body thread aliases the caller's handle → the same UAF; and
+        //     no implicit drop) yet is a runtime handle — bit-copying it into
+        //     the env aliases the caller's handle → the same UAF; and
         //   * `Closure` with non-empty `captures`: heap-boxed env — same
         //     shallow-alias hazard. Admitting it takes the `genfn-owned-captures`
         //     clone-into-env + env-field-drop-on-destroy protocol.
@@ -30352,14 +30363,14 @@ impl Builder {
                         //     handle (or an aggregate transitively containing
                         //     one) classifies as `BitCopy` yet aliases a runtime
                         //     resource.
-                        // `hew_gen_ctx_create` deep-copies the env's flat bytes
-                        // across the body thread, so shallow-copying any of these
-                        // would alias the caller's resource → double-free / UAF at
-                        // generator teardown.
+                        // `Terminator::MakeGenerator` deep-copies the env's flat
+                        // bytes once, at construction, so shallow-copying any of
+                        // these would alias the caller's resource → double-free /
+                        // UAF at generator teardown.
                         let reason = match &ty {
                             ResolvedTy::Closure { captures, .. } if !captures.is_empty() => {
-                                "a closure with a captured environment cannot yet cross the \
-                                 generator's thread boundary; its heap env would be \
+                                "a closure with a captured environment cannot yet be admitted \
+                                 into the generator's flat-copied env; its heap env would be \
                                  shallow-aliased (double-free / UAF at teardown). \
                                  Owned/closure-env captures need the clone-into-env + \
                                  env-field-drop-on-destroy protocol"
@@ -30369,14 +30380,13 @@ impl Builder {
                             {
                                 "it transitively contains an `#[opaque]` runtime handle; an \
                                  opaque handle is a pointer-width value with no clone helper, \
-                                 so flat-copying it across the generator's body thread would \
-                                 alias the caller's handle and double-free / use-after-free at \
-                                 teardown"
+                                 so flat-copying it into the generator's env would alias the \
+                                 caller's handle and double-free / use-after-free at teardown"
                             }
                             _ => {
-                                "it is an owned / non-BitCopy value; the thread-runtime env \
-                                 channel deep-copies flat bytes and can carry only plain \
-                                 copyable values"
+                                "it is an owned / non-BitCopy value; the generator's env is a \
+                                 flat heap copy taken once at construction and can carry only \
+                                 plain copyable values"
                             }
                         };
                         self.diagnostics.push(MirDiagnostic {
@@ -30389,11 +30399,11 @@ impl Builder {
                             },
                             note: format!(
                                 "cannot capture `{}` (type `{}`) into a generator: {reason}. \
-                                 Only plain copyable values and null-env fn references may \
-                                 cross the generator's thread boundary. DROP-TODO: a per-field \
-                                 clone-into-env + env-field-drop-on-destroy protocol (mirroring \
-                                 the lambda `state_drop_fn`) would admit owned/closure-env \
-                                 captures safely.",
+                                 Only plain copyable values and null-env fn references may be \
+                                 admitted into the generator's flat-copied env. DROP-TODO: a \
+                                 per-field clone-into-env + env-field-drop-on-destroy protocol \
+                                 (mirroring the lambda `state_drop_fn`) would admit \
+                                 owned/closure-env captures safely.",
                                 capture.name,
                                 ty.user_facing()
                             ),
@@ -30672,12 +30682,12 @@ impl Builder {
         // Materialize the generator value at the construction site: emit
         // `Terminator::MakeGenerator`. When the body captures BitCopy free
         // variables, `env` is the freshly-built env record place in this
-        // (enclosing) frame: codegen passes a pointer to it plus its byte size
-        // to `hew_gen_ctx_create(<&body_fn>, &env, sizeof(env))`, which
-        // deep-copies the env into the body thread. When there are no captures
-        // `env` is `None` and codegen passes `(null, 0)` as before. The
-        // returned `*mut HewGenCtx` handle is stored into `gen_place`; the
-        // gen-block expression evaluates to that handle place.
+        // (enclosing) frame: codegen heap-copies it (`hew_cont_frame_alloc` +
+        // `memcpy`) and passes the copy's address to the `__hew_gen_body_*`
+        // coro ramp. When there are no captures `env` is `None` and codegen
+        // passes a null env to the ramp. The heap companion pointer (holding
+        // the ramp's returned `llvm.coro.begin` handle) is stored into
+        // `gen_place`; the gen-block expression evaluates to that place.
         let next = self.alloc_block();
         self.finish_current_block(Terminator::MakeGenerator {
             dest: gen_place,
@@ -31635,10 +31645,11 @@ impl Builder {
     /// `Some(description)` when a generator-constructor call argument is a
     /// capturing closure (or a binding that may hold one) laundered behind a
     /// `fn(..)` view — the CAP-11 fail-closed gate. The generator env is a
-    /// flat `memcpy` (`hew_gen_ctx_create`) that never recurses into inner
-    /// pointers and the body side never drops a fn-typed capture, so a
-    /// non-null env word crossing this boundary is an unreleasable heap box:
-    /// every constructed generator would leak it. `None` admits the argument.
+    /// flat `memcpy` (`Terminator::MakeGenerator`'s heap-copy) that never
+    /// recurses into inner pointers and the body side never drops a fn-typed
+    /// capture, so a non-null env word crossing this boundary is an
+    /// unreleasable heap box: every constructed generator would leak it.
+    /// `None` admits the argument.
     ///
     /// Admitted (provably or presumptively null-env):
     ///   * named-fn references (`Item`-resolved — env word null by
@@ -34103,10 +34114,10 @@ pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
         | Instr::FloatRem { lhs, rhs, .. } => vec![*lhs, *rhs],
         Instr::CancellationTokenIsCancelled { token, .. } => vec![*token],
         // `.next()` borrows the generator handle — it does NOT alias it out.
-        // The handle stays the sole owner of its `*mut HewGenCtx` so its
-        // scope-exit drop fires `hew_gen_free` exactly once. Excluding `ctx`
-        // here (classifying it as a source) would suppress that drop and leak
-        // the generator context + thread.
+        // The handle stays the sole owner of its heap companion pointer so its
+        // scope-exit drop fires `hew_gen_coro_destroy` exactly once. Excluding
+        // `ctx` here (classifying it as a source) would suppress that drop and
+        // leak the generator's coro frame + heap companion.
         Instr::GeneratorNext { .. } => vec![],
         // The wire codec only READS its operand (the serialize thunk walks the
         // value; the deserialize thunk reads the bytes) — neither copies the
@@ -37823,14 +37834,14 @@ fn derive_tuple_composite_drop_allowed(
     // `Generator`/`CancellationToken`/owned handle) loads element 0 into `g`'s
     // slot. The extracted handle is then released exactly once through `g`'s own
     // path — EITHER its standalone scope-exit drop (`g` lands in `owned_locals`,
-    // so the AffineResource arm in `build_lifo_drops` fires `hew_gen_free(g)`),
+    // so the AffineResource arm in `build_lifo_drops` fires `hew_gen_coro_destroy(g)`),
     // OR a for-in consume (`for n in g` moves `g` into the loop iterator binding,
-    // whose per-loop-exit `hew_gen_free` releases it; that iterator binding is in
+    // whose per-loop-exit `hew_gen_coro_destroy` releases it; that iterator binding is in
     // `extracted_consumer_bases`). If the tuple is ALSO admitted to
     // `TupleInPlace`, its member-drop thunk frees the SAME aliased ctx pointer a
     // second time — the codegen null-store nulls the consuming binding's slot but
     // never the tuple's field-0 slot, so the runtime sees a non-null (dangling)
-    // pointer and double-frees (verified: two `hew_gen_free` call sites on one
+    // pointer and double-frees (verified: two `hew_gen_coro_destroy` call sites on one
     // ctx). The extracted binder is the sole owner now, so the tuple must NOT
     // drop that element. Over-exclude the WHOLE tuple (fail-closed: leak a
     // sibling, never double-free) — symmetric to the `__tuple_N` destructure-temp
@@ -37847,7 +37858,7 @@ fn derive_tuple_composite_drop_allowed(
     // Plus any local that is the place of an inline generator/owned-handle
     // release `Drop` already emitted into the finalized MIR — the for-in iterator
     // binding (`for n in t.0`) is released by an inline `Instr::Drop { drop_fn:
-    // Some("hew_gen_free") }` from `emit_scope_generator_drops` at loop-scope
+    // Some("hew_gen_coro_destroy") }` from `emit_scope_generator_drops` at loop-scope
     // close. That binding is drained out of `scope_generator_bindings` once its
     // scope drop is emitted, so an `owned_locals` snapshot misses it; reading the
     // emitted Drop places recovers every consumer regardless of which mechanism
@@ -38304,7 +38315,7 @@ fn derive_returned_aggregate_member_bindings(
 /// generator field is then consumed out of the aggregate by a for-in iterator
 /// binding (`for n in packed.0`) or a `let` extraction binding (`let x =
 /// packed.0; for n in x`). That consumer takes ownership of the SAME ctx pointer
-/// and releases it exactly once via its own inline `hew_gen_free` (loop-scope or
+/// and releases it exactly once via its own inline `hew_gen_coro_destroy` (loop-scope or
 /// break/continue-edge drop). `g`'s standalone scope-exit drop then frees the
 /// SAME ctx a second time → use-after-free. The aggregate's own in-place member
 /// spine is already excluded by [`derive_tuple_composite_drop_allowed`] /
@@ -38369,7 +38380,7 @@ fn derive_consumed_local_aggregate_member_bindings(
 
     // Release-consumer locals: the base local of every inline release `Drop`
     // already emitted into the finalized MIR (`drop_fn: Some(_)` — the for-in
-    // iterator binding's loop-scope/break/continue `hew_gen_free`, the standalone
+    // iterator binding's loop-scope/break/continue `hew_gen_coro_destroy`, the standalone
     // owned-handle drop, etc.). This mirrors the `release_owner_bases` seed in
     // `derive_tuple_composite_drop_allowed`.
     let mut release_owner_bases: HashSet<u32> = HashSet::new();
@@ -38776,7 +38787,7 @@ fn detect_unproven_aggregate_handle_double_free(
         }
     }
     // Three drop sources free a context; counting them per origin reconstructs
-    // the LLVM `hew_gen_free` (etc.) site count the elaborator + codegen emit:
+    // the LLVM `hew_gen_coro_destroy` (etc.) site count the elaborator + codegen emit:
     //
     //   1. inline release `Drop { drop_fn: Some(_) }` already in the stream
     //      (the for-in / extraction consumer's free) — frees every origin the
@@ -40599,7 +40610,7 @@ fn build_lifo_drops(
         // W3.053 — an owned handle moved into a LOCAL aggregate and then
         // extracted-and-consumed back out (for-in / `let` extraction) is owned by
         // the downstream consumer now; the source binding must NOT also drop it or
-        // it double-frees the ctx the consumer's inline `hew_gen_free` already
+        // it double-frees the ctx the consumer's inline `hew_gen_coro_destroy` already
         // releases (the value-flow `derive_consumed_local_aggregate_member_
         // bindings` authority). Field-precise, so a no-consume sibling field keeps
         // the source binding's own sole drop. Skip BEFORE any drop-class arm.

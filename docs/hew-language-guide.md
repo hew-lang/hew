@@ -173,19 +173,22 @@ fn main() {
 }
 ```
 
-Every integer type (`i8`…`i64`, `isize`, `u8`…`u64`, `usize`) has three
-`add`/`sub`/`mul` method families for spelling overflow intent explicitly.
+The plain `+`, `-`, `*` operators **trap on overflow** — Hew's default
+integer arithmetic is checked, not wrapping. Every integer type (`i8`…`i64`,
+`isize`, `u8`…`u64`, `usize`) also has three `add`/`sub`/`mul` method
+families for opting into a different overflow policy explicitly.
 `.wrapping_add()`/`.wrapping_sub()`/`.wrapping_mul()` wrap on overflow — the
-same behaviour §12.2 already documents for the `&+`/`&-`/`&*` operators,
-spelled as a method rather than an operator. `.checked_add()`/`.checked_sub()`/
+same behaviour §12.2 documents for the `&+`/`&-`/`&*` operators, spelled as a
+method rather than an operator. `.checked_add()`/`.checked_sub()`/
 `.checked_mul()` return `Option<T>` (`None` on overflow, `Some(v)`
 otherwise). `.saturating_add()`/`.saturating_sub()`/`.saturating_mul()` clamp
-to the type's max/min instead of wrapping or failing.
+to the type's max/min instead of wrapping or trapping.
 
 Only `add`/`sub`/`mul` are implemented today — no `div`/`rem`/shift variants
 exist yet, and none of the three families apply to `f32`/`f64`. These
-methods are an explicit-intent spelling, not a different default: the plain
-`+`/`-`/`*` operators already wrap on overflow per §12.2.
+methods and the `&+`/`&-`/`&*` operators are the explicit-intent spellings
+for wrapping (or clamping, or `Option`-returning) arithmetic; the plain
+operators keep trapping by default.
 
 ## Bindings — var and let
 
@@ -1890,14 +1893,6 @@ forms: `println(f"{val}")` (f-string interpolation) or a generic function
 that takes `T: Display` and calls `println` internally. The `fmt` method is
 also callable directly: `val.fmt()` returns the string representation.
 
-### Generics NYI — current limitations
-
-Two patterns type-check but fail at call or check time:
-
-1. **Generic constructor functions without turbofish** (`fn ctor<T>() -> MyType<T>` called without turbofish): call sites emit `E_NOT_YET_IMPLEMENTED: MIR lowering for function call is not implemented yet` (or `cannot infer type for local binding` when `T` is unconstrained). Annotating the binding without turbofish (`let x: MyType<i64> = ctor()`) does not resolve it — `E_NOT_YET_IMPLEMENTED` still fires. Fix: add turbofish (`ctor::<i64>()`) or skip the ctor fn and construct inline with an annotated binding (`let x: MyType<i64> = MyType { ... }`). See the Turbofish section above for examples.
-
-2. **`impl Trait for GenericRecord<ConcreteType>`**: trait method body type-checking for multiple concrete instantiations of the same generic record has a known resolution bug where the later-declared impl's type substitution is used for all impls. Until this is fixed, implement trait methods for a concrete (non-generic) record type.
-
 ## Errors — Result and Option
 
 ### Result construction and matching
@@ -2484,7 +2479,7 @@ fn main() {
 }
 ```
 
-**Fallible parsing with `try_parse`** returns `Result<Value, ParseError>`. Match `Err(_)` for the error case — the module-qualified `ParseError::Invalid(msg)` pattern in match arms is currently unsupported at parse time:
+**Fallible parsing with `try_parse`** returns `Result<Value, ParseError>`. Match on the module-qualified `ParseError::Invalid(msg)` pattern to recover the native parser's message, or match `Err(_)` to ignore it:
 
 ```hew
 import std::encoding::json;
@@ -2495,11 +2490,11 @@ fn main() {
             println("parsed ok");
             v.free();
         },
-        Err(_) => println("parse failed"),
+        Err(ParseError::Invalid(msg)) => println(f"parse failed: {msg}"),
     }
     match json.try_parse("not valid json {") {
         Ok(v) => { v.free(); },
-        Err(_) => println("bad json rejected"),
+        Err(ParseError::Invalid(msg)) => println(f"bad json rejected: {msg}"),
     }
 }
 ```
@@ -2817,9 +2812,9 @@ canonical method names are `recv()` / `send()` — not `next()` / `write()`. `re
 yields `Option<bytes>` (`None` is EOF); match it, never unwrap. `await sink.send`
 is statement-position only. Build the pipe with the public
 `std::stream.bytes_pipe(capacity)` constructor — no raw extern, no `unsafe` — and
-turn text into a frame with the public `string.to_bytes()` surface. In v0.5 keep
-both ends in one handler: moving an owned `Stream`/`Sink` into actor state is NYI
-(owned-handle aggregate state lands in v0.5.1). Full example:
+turn text into a frame with the public `string.to_bytes()` surface. Keep both
+ends in one handler: moving an owned `Stream`/`Sink` into actor state is not
+yet supported (`OwnedHandleAggregateExtractionUnsupported`). Full example:
 [`examples/v05/surfaces/typed_streams.hew`](../examples/v05/surfaces/typed_streams.hew).
 
 ### Channels — `channel.new`, `await rx.recv()`, and select arms
@@ -3125,15 +3120,10 @@ Use the FREE-FUNCTION surface — `tls.connect(host, port)` (system-root verifie
 are `bytes`: build a payload with the public `string.to_bytes()` surface and decode
 with `bytes.to_string()`. The method form (`stream.read(n)`) is NOT supported yet.
 
-> **Known gap (v0.5):** the TLS data-plane FFI bridge
-> (`hew_tls_write_result` / `hew_tls_read_result`) is wired to the legacy
-> `(ptr, len)` / `HewVec` byte ABI while Hew's `bytes` is a `BytesTriple`, so
-> `tls.write` currently transmits 0 bytes (the length is dropped at the boundary)
-> and the response read does not complete. `tls.connect` also does not record a
-> failed handshake in `last_error()`. The snippet above is the correct caller
-> shape and type-checks/runs to completion (reporting the short write); the
-> encrypted round-trip works once the runtime bridge adopts the `BytesTriple`
-> ABI. Tracked for the under-the-hood TLS workstream.
+> **Known gap:** `tls.connect` does not record a failed handshake in
+> `last_error()` — a failed connect returns a zero-value `TlsStream` with no
+> way to retrieve why. The encrypted round-trip itself (`tls.write` /
+> `tls.read`) works correctly; the data-plane FFI bridge takes `bytes` by
+> pointer to a `BytesTriple`, matching the runtime's representation.
 
-Full example (fail-closed on the short write so it terminates):
-[`examples/net/tls_client.hew`](../examples/net/tls_client.hew).
+Full example: [`examples/net/tls_client.hew`](../examples/net/tls_client.hew).

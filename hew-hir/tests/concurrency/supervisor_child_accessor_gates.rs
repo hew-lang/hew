@@ -1,22 +1,23 @@
 //! Lane FC-P1-C: HIR fail-closed gates for unsupported supervisor child
 //! accessor patterns.
 //!
-//! Two diagnostic kinds are exercised here:
+//! One diagnostic kind is still live here:
 //!
-//! - `SupervisorPoolChildAccessorUnsupported` — `sup.pool_child` field access
-//!   where the named child was declared with `pool name: Type`. Pool slot
-//!   routing requires the `hew_supervisor_pool_route` ABI call which lands in
-//!   v0.6. Currently fail-closed at `hew-mir/src/lower.rs:4413` as
+//! - `SupervisorPoolChildAccessorUnsupported` — the bare (unindexed)
+//!   `sup.pool_child` field access, where the named child was declared with
+//!   `pool name: Type`. A pool has no member index to route on without one,
+//!   so this stays fail-closed permanently by design (indexed access,
+//!   `sup.pool_child[i]`, is a separate, shipped path). Currently fail-closed
+//!   at `hew-mir/src/lower.rs` (`ChildKind::Pool` arm) as
 //!   `NotYetImplemented`; this gate moves the rejection to HIR pre-pass so
 //!   the program never reaches MIR.
 //!
-//! - `NestedSupervisorAccessorUnsupported` — `sup.nested` field access where
-//!   the named child is itself a supervisor. Multi-segment supervisor dotted
-//!   access requires the `hew_supervisor_nested_get` ABI call which lands in
-//!   v0.6. Currently fail-closed at `hew-mir/src/lower.rs:4443` as
-//!   `NotYetImplemented`; this gate moves the rejection to HIR pre-pass.
+//! `NestedSupervisorAccessorUnsupported` no longer fires: `sup.nested` field
+//! access where the named child is itself a supervisor now lowers through
+//! the `hew_supervisor_nested_get` ABI call (see the "nested supervisor
+//! accessor: now implemented" tests below).
 //!
-//! Positive coverage confirms static (non-pool, non-nested) child access
+//! Positive coverage confirms static (non-pool) and nested child access
 //! continues to compile cleanly.
 
 use hew_hir::{lower_program, HirDiagnosticKind, ResolutionCtx};

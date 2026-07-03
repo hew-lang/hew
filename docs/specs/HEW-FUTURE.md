@@ -76,9 +76,9 @@ for the shipped arms):
   binding `Option<T>`). Deferred because no usable `Stream<T>` handle can
   be obtained today: every acquisition path (`stream.pipe()` tuple
   extraction, `stream.from_file(...)?` Result extraction) trips the
-  owned-handle aggregate-extraction fail-closed (`OwnedHandleAggregate*`,
-  tracked for v0.5.1), and a bare `Stream<T>.recv()` is not yet ABI-wired
-  in codegen. Returns once stream-handle binding lands.
+  owned-handle aggregate-extraction fail-closed (`OwnedHandleAggregate*`),
+  and a bare `Stream<T>.recv()` is not yet ABI-wired in codegen. Returns
+  once stream-handle binding lands.
 - **Task-await arm** (`<id> from await <task>`, binding `T` for
   `Task<T>`). Deferred because `Task<T>` is not nameable (§4.3) and
   `fork name = expr;` is parser-only in this build, so there is no
@@ -151,15 +151,20 @@ field that is neither escalation-only nor `@resource`-backed.
 
 ## 2. Type-system surfaces deferred from edition 2026
 
-### 2.1 Closures with captured environment
+### 2.1 Closures — transitive (skip-level) capture
 
-**[Target: v0.6 / gated on Cluster 4]**
+**[Target: v0.6]**
 
-Closure literals parse today and lower in narrow cases. The full surface
-— captured-state closures, `Option<T>`-returning closures, closure-typed
-struct fields, nested closures, `move` captures — is the focus of
-Cluster 4 alongside generators. Edition 2026 admits closures whose body
-and captures both type-check trivially; everything else is deferred.
+Closure literals parse and lower for the general case: captured-state
+closures, `move` captures, closure-typed record/struct fields, and
+`Option<T>`-returning closures are all implemented with drop-safe
+handling of the captured environment. The remaining gap is narrower —
+transitive capture through two or more nested scope levels (a closure
+capturing a binding from an enclosing closure that itself captured it
+from a further-enclosing scope) fails with `E_HIR
+CheckerBoundaryViolation`. Direct one-level closure-captures-closure
+(`let wrap = |y| base(y);` where `base` is itself a closure) already
+works.
 
 ### 2.2 Advanced trait surface (dyn, object safety, associated-type bounds, heavy where-clauses)
 
@@ -194,23 +199,32 @@ The intended invariant is that only deeply-immutable (`Frozen`) data is
 shareable across actors; until that surface lands, cross-actor sharing
 is via owned messages and actor state.
 
-### 2.4 Full `Iterator` trait hierarchy
+### 2.4 `DoubleEndedIterator`
 
 **[Target: v0.6 / Cluster 6]**
 
-Edition 2026 ships `std::iter` as concrete monomorphised helpers
-(`map_int`, `filter_int`, `fold_int`, `any`, `all`, `sum`). The full
-trait hierarchy — `Iterator`, `IntoIterator`, `DoubleEndedIterator`,
-chainable combinators returning generic adapter types — is deferred to
-Cluster 6's stdlib port-forward.
+Edition 2026 ships the lazy `Iterator`/`IntoIterator` trait hierarchy
+(`std/builtins.hew`) with chainable adapter types — `Map`, `Filter`,
+`Take`, `Skip` (`std/iter.hew`) — and terminals (`fold`, `count`,
+`collect`, `any`, `all`, `sum`, `product`) over `Vec`, `HashMap`,
+`Generator`, and `AsyncGenerator`. The earlier eager per-type helper
+table (`map_int`, `filter_int`, `fold_int`, ...) has been retired. The
+only member of the hierarchy still absent is `DoubleEndedIterator`
+(back-to-front adapters like `.rev()`), which is deferred to Cluster 6's
+stdlib port-forward.
 
 ### 2.5 Generic `HashMap<K, V>` over arbitrary `K`
 
 **[Target: v0.6 / Cluster 6]**
 
-Edition 2026 admits `HashMap<string, V>` for a fixed set of `V`. Generic
-key types and the full hash/equality protocol land with the stdlib port
-in Cluster 6.
+Edition 2026 admits `HashMap<K, V>`/`HashSet<K>` keys for any
+structural-hash-eligible `K` — scalars, strings, and records/enums whose
+leaves are hash-eligible (structural hashing descends string fields via
+FNV-1a, the hash twin of structural equality). The remaining gap is
+narrower than "generic keys": keys containing an owned `Vec`/`bytes`
+field, and float-typed keys, are rejected with a diagnostic (not a
+fixed-size-`Copy` shape). Lifting that gap lands with the stdlib port in
+Cluster 6.
 
 ---
 
@@ -251,8 +265,9 @@ does not yet make normative guarantees about their stability.
 `hew debug`, `HEW_PPROF`, `hew-observe`, and the LSP surface all have
 working implementations and changelog histories, but their behavioural
 guarantees do not belong in the language specification. They are tracked
-in `docs/operations/` and the per-component documentation; future
-specification work will reference them rather than duplicate them here.
+in `docs/observe.md`, `docs/troubleshooting.md`, `docs/dev/lsp-editor-setup.md`,
+and the per-component documentation; future specification work will
+reference them rather than duplicate them here.
 
 ### 4.2 Distributed computing and the Node API
 

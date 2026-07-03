@@ -74,7 +74,7 @@ The **Checker disposition** column documents what the type checker emits when
 | Feature | Checker disposition | Runtime status | Tracking |
 |---------|-------------------|----------------|----------|
 | Basic actors (`spawn`, `send`, `receive`, `ask/await`) | ✅ Pass | Implemented | — |
-| Generators / async streams | ⚠️ WASM-TODO (not checker-gated; codegen fail-closed at `hew_gen_yield`) | Scoped for v0.5; generator substrate wasm parity is in progress, not passing today | WASM-TODO(#1451) |
+| Generators (`gen fn`) | ✅ Pass (not checker-gated — Tier 2 has no dedicated `WasmUnsupportedFeature` guard) | Scalar-parameter and fn-typed-parameter `gen fn` forms execute and tear down correctly on Tier 2 via the unified `llvm.coro` switched-resume substrate (identical IR to native) | Note below |
 | Pattern matching, ADTs, generics | ✅ Pass | Implemented | — |
 | Arithmetic and wasm-safe collection surfaces | ✅ Pass | Implemented | — |
 | Layout-backed `HashMap` / `HashSet` | ✅ Pass | Supported on Tier 2; descriptor ABI uses target-width layout fields and descriptor hook pointers are value-correct under wasmtime | #1820 |
@@ -103,7 +103,6 @@ The **Checker disposition** column documents what the type checker emits when
 | **`std::os.*`** | 🚫 Error (`OsEnv`) | Hew OS/env helpers are native-only today even where WASI may offer host data | WASM-TODO |
 | **`Node::*` (`start`, `shutdown`, `connect`, `set_transport`, `load_keys`, `allow_peer`, `register`, `lookup`), `RemotePid<T>::send` / `::ask`** | 🚫 Error (`Distributed`) | Native mesh transport (`hew_node_api_*` / `hew_remote_pid_send`); not compiled for wasm32 | WASM-TODO |
 | **`std::crypto::crypto.random_bytes`** | 🚫 Error (`CryptoRandom`) | Secure entropy source is native-only; fail-closed rejection until wasm32 cryptographic entropy exists | WASM-TODO |
-| Generators on WASM | ✅ Pass (basic syntax) | Cooperative scheduler | Note below |
 
 ---
 
@@ -240,10 +239,16 @@ dedicated checker warning/error for them.
 
 ## Generators on WASM — note
 
-The checker currently admits basic generator syntax for Tier 2, but wasm
-codegen still fail-closes when the lowered program reaches the native-only
-`hew_gen_yield` substrate. Generator parity is scoped for v0.5 under
-WASM-TODO(#1451), so this is an in-progress gap rather than a supported PASS.
+`gen fn` lowers onto the unified `llvm.coro` switched-resume continuation
+substrate (`hew-runtime/src/cont.rs`), which emits identical IR on native and
+wasm32. The wasm32 backend synthesizes its own `hew_gen_coro_destroy` that
+routes coro-frame teardown through `llvm.coro.destroy`, so construction,
+`.next()` consumption, and scope-exit teardown all release exactly one frame —
+verified end-to-end under `wasmtime`
+(`hew-codegen-rs/tests/exec/wasm_generator_exec.rs`).
+
+Generator forms not yet implemented on any target are tracked in
+HEW-FUTURE.md §1.6 — that is a language-surface gap, not a WASM-specific one.
 
 Generators that depend on blocking I/O (e.g. a generator that calls
 `stream.next()` internally) are additionally covered by the Streams reject

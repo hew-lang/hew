@@ -773,15 +773,15 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
             if *overwrite {
                 format!(
                     "overwriting an owned handle field (`{name}`: {handle_ty}) in an aggregate \
-                     in this shape is not yet supported in v0.5 — the previous handle would leak \
+                     in this shape is not yet supported — the previous handle would leak \
                      (its `close` never runs) and the new one would be double-owned; rebuild the \
-                     whole record instead of reassigning the field (full support lands in v0.5.1)"
+                     whole record instead of reassigning the field"
                 )
             } else {
                 format!(
                     "extracting an owned handle (`{name}`: {handle_ty}) out of an aggregate in this \
-                     shape is not yet supported in v0.5 — iterate or consume the handle directly, or \
-                     return it without re-aggregating (full support lands in v0.5.1)"
+                     shape is not yet supported — iterate or consume the handle directly, or \
+                     return it without re-aggregating"
                 )
             }
         }

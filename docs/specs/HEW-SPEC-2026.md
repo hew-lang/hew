@@ -851,11 +851,10 @@ Three-tier model — written as a prefix keyword before the item keyword:
 
 The same prefix applies to any item kind: `package type`, `package const`, `package actor`, etc.
 
-> **Implementation note:** `package` visibility is accepted and parsed correctly.
-> Enforcement of the package boundary (rejecting callers outside the package) is
-> planned for a future edition.  Code written with `package` visibility today will
-> keep compiling after the restriction is applied, because callers within the
-> package are unaffected.
+> **Implementation note:** both boundaries are enforced at every cross-module
+> reference site: a private item referenced from outside its module is
+> rejected with `E_VISIBILITY_PRIVATE`, and a `package` item referenced from
+> outside its package is rejected with `E_VISIBILITY_PACKAGE`.
 
 #### 3.5.1 Directory-form modules (peer-file composition)
 
@@ -1450,7 +1449,7 @@ produces identical results with or without them.
 | No GC pauses      | No tracing GC; deterministic refcounting and scope-based drops |
 | No memory leaks\* | RAII ensures cleanup; cycles in `Rc` can leak (use weak refs)  |
 
-\*Reference cycles in `Rc<T>` can cause leaks. `Weak<T>` is the intended cycle-breaker but is **not yet implemented** — `Weak::new(...)` is rejected at HIR. Supervision trees naturally avoid cycles by keeping ownership parent-to-child only.
+\*Reference cycles in `Rc<T>` can cause leaks. `Weak<T>` is the intended cycle-breaker but is **not yet implemented** — `Weak<T>` is not a registered builtin type, so `Weak::new(...)` is rejected during type-checking as an unknown type before it reaches HIR. Supervision trees naturally avoid cycles by keeping ownership parent-to-child only.
 
 #### 3.7.8 Resource markers (`#[resource]` and `#[linear]`)
 
@@ -2995,15 +2994,16 @@ not needed.
 
 **Substrate (informative):**
 
-The β surface lowers each child to an OS-thread-per-task substrate
-(`hew-runtime/src/task_scope.rs`). A cooperative coroutine layer
-(`hew-runtime/src/coro.rs`) exists in the runtime but is not exposed at
-the source level; the source surface is a single `fork` child production
-whose scheduling discipline is the runtime's concern. The earlier drafts
-exposed two child verbs (`s.launch` for cooperative coroutines vs
-`s.spawn` for OS threads) on a `scope |s| { ... }` handle; that surface
-was removed entirely in the 2026 edition — see "Historical note" at the
-end of §4.9.
+The β surface lowers each child's execution to an OS-thread-per-task
+substrate (`hew-runtime/src/task_scope.rs`, `hew_task_spawn_thread`). The
+parent's `await` of a child lowers onto the same unified `llvm.coro`
+switched-resume continuation substrate (`hew-runtime/src/cont.rs`,
+`hew_cont_*`) used by generator `yield` and actor `await`; the source
+surface is a single `fork` child production whose scheduling discipline
+is the runtime's concern. The earlier drafts exposed two child verbs
+(`s.launch` for cooperative coroutines vs `s.spawn` for OS threads) on a
+`scope |s| { ... }` handle; that surface was removed entirely in the 2026
+edition — see "Historical note" at the end of §4.9.
 
 **Yield points (normative):**
 
@@ -3342,7 +3342,7 @@ fn heavy_computation() {
 | Failure       | First error becomes `ScopeError::primary`; siblings cancel | Traps isolated to actor   |
 | Lifetime      | Bound to enclosing `scope` block                     | Independent                      |
 | Cancellation  | Automatic at safepoints                             | Supervisor control               |
-| Scheduling    | OS thread per child (substrate); cooperative coroutines are an internal runtime layer | M:N work-stealing scheduler |
+| Scheduling    | OS thread per child (execution); `await`/join suspension via the `llvm.coro` continuation substrate | M:N work-stealing scheduler |
 
 **Design rationale:**
 
@@ -3357,12 +3357,12 @@ isolation and Swift/Kotlin/Loom-grade structured concurrency:
 
 `scope { ... }` is the scope boundary; `fork name = call(...);` inside a
 scope is the child-start verb. These are not synonyms, and no
-`s.launch / s.spawn / s.cancel` methods exist. The cooperative coroutine
-layer (`hew-runtime/src/coro.rs`) and the OS-thread-per-task runtime
-(`hew-runtime/src/task_scope.rs`) both exist below the source surface;
-the source-level choice between them is not user-visible. The current
-substrate is OS-thread-per-task; the cooperative layer is an
-implementation detail that may be re-engaged without changing the surface.
+`s.launch / s.spawn / s.cancel` methods exist. Child execution runs on
+the OS-thread-per-task runtime (`hew-runtime/src/task_scope.rs`); the
+parent's `await` of a child suspends on the same unified `llvm.coro`
+switched-resume continuation substrate (`hew-runtime/src/cont.rs`) used
+by generator `yield` and actor `await`. The source-level choice between
+spawn strategies is not user-visible.
 
 ### 4.10 Actor Await and Synchronization
 
@@ -3672,13 +3672,13 @@ The supervisor's `intensity: N within <window>` budget caps restarts; exceeding 
 
 ### 5.5 Nested Supervisors
 
-Nested supervisors are not yet implemented. Child declarations whose target
-is itself a supervisor with children fail closed during lowering as
-`nested supervisor child accessor`. Keep supervisor children as actors and
-compose larger trees outside the child-access surface until nested-supervisor
-support lands.
+A `child` declaration whose target is itself a supervisor with children is
+implemented end-to-end. Dotted access to a nested child (`root.sub`) and
+chained access through it (`root.sub.worker`) both lower through the
+`hew_supervisor_nested_get` runtime call and return a fully typed
+`LocalPid`.
 
-The intended shape is:
+The shape is:
 
 ```hew
 supervisor Inner {
@@ -4434,7 +4434,7 @@ Hew uses an **M:N work-stealing scheduler** inspired by Go, Tokio, and BEAM:
 
 1. **Message budget (256 msgs/activation):** Coarse scheduler preemption — after processing 256 messages, the actor yields to the scheduler so other actors can run.
 2. **Reduction budget (4000/dispatch):** The compiler inserts `cooperate` safepoints at function entry and loop back-edges. Each operation decrements a reduction counter; when exhausted, the actor yields to the scheduler.
-3. **Cooperative task yield:** When the runtime's coroutine layer is engaged (see §4.3 "Substrate" — internal to `hew-runtime`, not a source-level distinction), `await` and compiler-inserted `cooperate` safepoints trigger `coro_switch` to the next ready coroutine within the actor.
+3. **Cooperative task yield:** `await` and compiler-inserted `cooperate` safepoints suspend on the `llvm.coro` switched-resume continuation substrate (see §4.3 "Substrate" — internal to `hew-runtime`, not a source-level distinction), parking the current coroutine so the actor's executor can resume the next ready one.
 
 - Round-robin within priority levels
 - Starvation prevention through queue aging
@@ -4657,8 +4657,9 @@ mailbox 100 overflow coalesce(request_id);
 > See HEW-FUTURE.md §4.1 for the tooling specification (`hew debug`,
 > `HEW_PPROF`, `hew-observe`, LSP). Tooling tracks separately from the
 > language edition; the implementations exist today, but their
-> behavioural contracts are owned by `docs/operations/` rather than this
-> document.
+> behavioural contracts are owned by `docs/observe.md`,
+> `docs/troubleshooting.md`, and `docs/dev/lsp-editor-setup.md` rather
+> than this document.
 
 ---
 
@@ -4823,7 +4824,7 @@ The methods `.try_to_i8()`, `.try_to_i16()`, `.try_to_i32()`, `.try_to_i64()`, `
 14. Timeout: `| after`
 15. Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`
 
-> **Wrapping arithmetic:** `&+`, `&-`, `&*` are two's-complement wrapping versions of `+`, `-`, `*`. They lower to the same LLVM `IntAdd`/`IntSub`/`IntMul` instructions as the plain operators (LLVM integers wrap by default), and exist as explicit source forms for documentation of intentional wrapping. All three have the same precedence as their plain counterparts.
+> **Overflow behaviour:** the plain `+`, `-`, `*` operators on integer types are checked — they lower to the `llvm.{s,u}{add,sub,mul}.with.overflow.iN` intrinsics and trap with `TrapKind::IntegerOverflow` on overflow. `&+`, `&-`, `&*` are the two's-complement **wrapping** versions of `+`, `-`, `*`: they lower directly to the plain `IntAdd`/`IntSub`/`IntMul` instructions (no overflow check; LLVM integers wrap by default) and exist as explicit source forms for opting into wraparound. All three wrapping operators have the same precedence as their plain counterparts. `.checked_*`/`.saturating_*`/`.wrapping_*` methods (see the language guide) provide the same three overflow policies as callable methods.
 
 > **Comparison associativity:** comparison operators are left-associative. `a < b < c` parses as `(a < b) < c`, which compares a bool against an integer and is almost certainly a bug. Use `a < b && b < c` for chained comparisons.
 
@@ -5066,8 +5067,10 @@ If you want this to be directly executable as an engineering project, the next m
   MessagePack-AST pipeline is no longer the design.
 - **Deferred to next edition.** Generators (`async gen fn` /
   `receive gen fn` / `Lazy<T>` / `#[prefetch(N)]`), closures with captured
-  environment, user-facing `Arc<T>`, `dyn Trait`, full `Iterator` trait
-  hierarchy, generic `HashMap<K, V>`, cancellation tokens, channels, actor
-  await + read-after-send barrier, and the self-hosting roadmap. See
-  HEW-FUTURE.md for the surface and version targets. Cross-node actor
+  environment, user-facing `Arc<T>`, `dyn Trait`, `DoubleEndedIterator`,
+  generic `HashMap<K, V>` over owned-aggregate/float keys, cancellation
+  tokens, actor await + read-after-send barrier, and the self-hosting
+  roadmap. See HEW-FUTURE.md for the surface and version targets.
+  Channels (`std::channel`) and the rest of the `Iterator`/`IntoIterator`
+  trait hierarchy shipped in this edition (§2.4, §2.5). Cross-node actor
   communication is shipped and normative — see §11 and HEW-DIST-SPEC.md.

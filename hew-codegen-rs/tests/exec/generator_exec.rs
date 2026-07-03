@@ -240,7 +240,7 @@ fn for_in_gen_block_sums_yielded_values() {
 
 /// GROUNDING PROBE (plan Risk 4): a local live ACROSS a yield. `k = 10` is
 /// defined before `yield 1` and read by `yield k` after the suspension. If the
-/// thread model preserves the stack frame across the yield, the second
+/// coro switched-resume frame preserves the local across the yield, the second
 /// `.next()` returns `Some(10)`. A wrong value here would mean the
 /// state-machine switch-prologue (Slice 4) is required for cross-yield local
 /// liveness — it is not.
@@ -262,8 +262,8 @@ fn gen_cross_yield_live_local_is_preserved() {
     );
     assert_eq!(
         stdout, "10",
-        "cross-yield-live local: expected '10' (thread model preserves the \
-         frame across the yield), got {stdout:?}"
+        "cross-yield-live local: expected '10' (the coro switched-resume \
+         frame preserves state across the yield), got {stdout:?}"
     );
 }
 
@@ -272,9 +272,9 @@ fn gen_cross_yield_live_local_is_preserved() {
 //
 // The portable exactly-once ORACLE is the dump-mir drop count (the same oracle
 // the W5.021 returned-aggregate tests use): `leaks --atExit` cannot see a live
-// blocked generator thread's still-reachable context, and exit-success does not
-// prove no-double-free, so the count of release symbols in the elaborated MIR
-// is the authoritative assertion. Each is paired with a `hew run` value-oracle
+// suspended generator's still-heap-reachable coro frame, and exit-success does
+// not prove no-double-free, so the count of release symbols in the elaborated
+// MIR is the authoritative assertion. Each is paired with a `hew run` value-oracle
 // as the runtime negative-control (a wrong drop count usually SIGSEGVs or hangs
 // the run). The `leaks --atExit` evidence is recorded in the lane report.
 // ---------------------------------------------------------------------------
@@ -509,7 +509,7 @@ fn main() {
 
 /// Leak 3: `for n in count()` nested inside a `while` must free one generator
 /// context per OUTER iteration, on the block-scope-exit edge — not accumulate
-/// one leaked context + thread per iteration. The fix emits a per-scope-exit
+/// one leaked coro frame per iteration. The fix emits a per-scope-exit
 /// `hew_gen_coro_destroy`; verified 23 leaks → 0 under `leaks --atExit`.
 #[test]
 fn for_in_generator_nested_in_loop_frees_each_iteration() {

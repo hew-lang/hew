@@ -1,10 +1,12 @@
 # Handle safety and resource lifetime
 
 **Status:** Accepted design spec. Records the durable language invariant for
-owned, FFI-backed resource handles and the staged work that earns it.
-Implementation is in progress, staged across stop-the-bleeding,
-calibration and per-handle migration, and runtime-scope cleanup, tracked
-by issues #1228, #1251, #1252, #1295, #1399.
+owned, FFI-backed resource handles and the staged work that earns it. The
+stop-the-bleeding, calibration, and runtime-scope-cleanup tracking issues
+(#1228, #1251, #1252, #1295, #1399) are closed; `#[resource]` and
+`#[linear]` (§3.7.8 of HEW-SPEC-2026.md) ship unconditionally as the
+mechanism this spec's staged work converges on. Per-handle migration
+continues incrementally — see §11 for the remaining handle types.
 **Audience:** Hew language designers, stdlib maintainers, codegen and runtime
 implementers, and reviewers of the migration PRs that follow.
 **Scope:** the language-surface contract for owned, FFI-backed resource handles
@@ -376,7 +378,7 @@ by the PR itself; this spec fixes the *shape*.
 
 | Handle | User-facing change | Stdlib-internal change | Codegen change |
 | --- | --- | --- | --- |
-| `regex.Pattern` (calibration) | `pat.free()` becomes a no-op; lines may be deleted | `Pattern` re-marked tier-1 affine; `free` annotated `#[deprecated]` (or equivalent) | Drop emission for `Pattern` registered behind `--experimental-handle-safety` flag; null-after-move enforced |
+| `regex.Pattern` (calibration; not yet migrated — still `#[opaque]` with manual `.free()`) | `pat.free()` becomes a no-op; lines may be deleted | `Pattern` re-marked `#[resource]`; `free` becomes the `close` method the compiler calls implicitly | Drop emission for `Pattern` registered unconditionally (the `--experimental-handle-safety` flag this row described was never built — `#[resource]`/`#[linear]` ship unconditionally); null-after-move enforced |
 | `url.Url` | `url.free()` becomes a no-op | tier-1 affine | drop registered |
 | `json.Value` | `val.free()` becomes a no-op; nested `get_field` results no longer require manual frees | tier-1 affine; FieldAlias must be live in the move-checker substrate (issue #1399) | drop registered; field-alias pre-scan enforced |
 | `http_client.Response` | `resp.free()` becomes a no-op | tier-1 affine | drop registered |
@@ -411,21 +413,22 @@ adds:
 - A C consumer test that calls `hew_<module>_<release>` twice and verifies
   the second call is a no-op (idempotence) — *not* a crash, *not* a
   double-free.
-- A mixed test where the Hew side auto-releases (under the
-  `--experimental-handle-safety` flag) and a C consumer also calls the
-  release function; the result must be exactly-one-release.
+- A mixed test where the Hew side auto-releases (unconditionally, via
+  `#[resource]`) and a C consumer also calls the release function; the
+  result must be exactly-one-release.
 
 Without these tests passing for a given handle, that handle's per-handle
 migration PR is held.
 
 ---
 
-## 13. Stop-the-bleeding rules (binding for v0.4.x)
+## 13. Stop-the-bleeding rules (historical — superseded)
 
-Until tier-1 (per-call resource) discipline is settled by a successful
-calibration *and* the owned-handle validator (issues #1252, #1251) has
-merged *and* the move-checker substrate (issue #1399) prototype has merged
-behind a flag, the following rules apply:
+The gating conditions below (successful calibration, the owned-handle
+validator #1252/#1251, and the move-checker substrate #1399) are all
+closed, and `#[resource]`/`#[linear]` ship unconditionally as the
+converged mechanism. These interim rules are no longer binding; retained
+as a record of the discipline the v0.4.x → v0.5 migration followed:
 
 1. **No new stdlib handle types** that require user-visible manual `free()` /
    `close()`. A new module that needs a handle type must either (a) wait for

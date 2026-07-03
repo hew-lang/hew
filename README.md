@@ -304,7 +304,7 @@ everything else falls back to broader local preflight commands.
 
 ### Browser / Playground Validation
 
-The sandbox VM (`hew-sandbox-vm`) runs admitted Hew programs in a deterministic browser-hosted runtime with a virtual clock, seeded randomness, M4–M7 actor/channel/supervision semantics, and structured-concurrency coordination. Almost all of Hew runs in a browser today; the only native-only class is features that depend on OS threads (parallel work-stealing, production supervision trees, real-time network I/O). The full browser execution runtime for thread-dependent features is planned for v0.6.0.
+The sandbox VM (`hew-sandbox-vm`) runs admitted Hew programs in a deterministic browser-hosted runtime with a virtual clock, seeded randomness, M4–M7 actor/channel/supervision semantics, and structured-concurrency coordination. Almost all of Hew runs in a browser today; the native-only class today is features that depend on OS threads (production supervision trees, real-time network I/O). A scoped browser runtime for those thread-dependent features (channel/select/sleep/supervisor/TCP) is a ratified v0.6.0 goal. Parallel work-stealing is a permanent native-only limitation — cooperative single-threaded execution is the final shape for the browser target, not an interim state.
 
 This repo carries the analysis-side browser tooling (`hew-wasm`) plus the sandbox bytecode emission crate (`hew-sandbox-wasm`); the downstream browser app and the `hew-sandbox-vm` TypeScript worker are in `hew-lang/playground`.
 

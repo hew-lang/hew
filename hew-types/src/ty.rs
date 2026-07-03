@@ -358,15 +358,16 @@ impl Substitution {
 /// `canonical_lowering_name` returns.  All other aliases in `row.1` are
 /// user-facing spellings that the parser and type-checker accept.
 ///
-/// This is the **single source of truth** for primitive name resolution.
-/// `primitive_from_name`, `canonical_lowering_name`, and the wirecodec
-/// `PRIMITIVE_DESCS` table all derive their alias lists from here.
+/// This is the **single source of truth** for primitive name resolution
+/// (`primitive_from_name`, `canonical_lowering_name`, and the completion
+/// engine's primitive-name list in `hew-analysis` all derive from here).
+/// The wire-boundary contract lives separately in
+/// `hew-types/src/type_descriptor.rs`'s `canonical_string()` (the
+/// `hew-wirecodec` crate this table's `PRIMITIVE_DESCS` twin once fed has
+/// been retired).
 ///
 /// Row order: numeric types first (signed, then unsigned, then floats),
 /// followed by non-numeric scalars, then the special forms `()` and `!`.
-/// The `!` row is consumed by `primitive_from_name` only; wirecodec has no
-/// wire representation for `never`. Unit has an explicit wirecodec nil kind,
-/// whose canonical wire spelling is `unit`.
 pub const PRIMITIVE_ALIASES: &[(&str, &[&str])] = &[
     ("i8", &["i8"]),
     ("i16", &["i16"]),
@@ -393,9 +394,10 @@ pub const PRIMITIVE_ALIASES: &[(&str, &[&str])] = &[
 
 /// Return the alias slice for the given canonical primitive name.
 ///
-/// Intended for use in `const` initializers in downstream crates so the
-/// wirecodec's `PRIMITIVE_DESCS` can reference the same alias lists without
-/// duplicating the string literals.
+/// Intended for use in `const` initializers in downstream crates that need
+/// to reference an alias list without duplicating the string literals. No
+/// current caller (the `hew-wirecodec` crate this was built for has been
+/// retired), kept as the public accessor for `PRIMITIVE_ALIASES`.
 ///
 /// # Panics
 ///

@@ -1,0 +1,30 @@
+// Reject: `ref.send(msg)` on a named actor that DOES implement `ActorMsg`
+// (a message-envelope binding, `impl ActorMsg for X { type Msg = ...; }`)
+// but declares no `receive fn send` handler is rejected at the
+// type-checker with the SAME actionable diagnostic as the no-envelope
+// case (#2367). An `ActorMsg` binding records the envelope type but does
+// not, by itself, wire local-mailbox delivery — there is no receive fn
+// resolved to accept it.
+//
+// Sibling of `actor_builtin_send_no_handler.hew` (no envelope either).
+record Job {
+    n: i64,
+}
+
+actor Adder {
+    var count: i64;
+    receive fn increment(job: Job) {
+        count = count + job.n;
+    }
+}
+
+impl ActorMsg for Adder {
+    type Msg = Job;
+    type Reply = ();
+}
+
+fn main() -> i64 {
+    let a = spawn Adder(count: 0);
+    a.send(Job { n: 10 });
+    0
+}

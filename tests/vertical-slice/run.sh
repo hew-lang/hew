@@ -1076,6 +1076,16 @@ expect_check_fail_contains \
     'no `send` handler on `Adder` — declare `receive fn send(...)` to accept it, or call a named handler' \
     "actor_builtin_send_no_handler"
 
+# Reject: `ref.send(msg)` on a named actor that DOES implement `ActorMsg`
+# (envelope binding) but has no `receive fn send` handler is rejected with
+# the same diagnostic as the no-envelope case (#2367) — the envelope
+# alone does not wire local-mailbox delivery.
+# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/actor_local_pid_send_envelope_no_handler.hew" \
+    'no `send` handler on `Adder` — declare `receive fn send(...)` to accept it, or call a named handler' \
+    "actor_local_pid_send_envelope_no_handler"
+
 # Accept: the recommended alternative — a named `receive fn` dispatched by
 # name is the correct shape that replaces the retired anonymous-payload
 # `.send()` surface. add(10) + add(32) = 42.

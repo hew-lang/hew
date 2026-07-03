@@ -1,0 +1,51 @@
+//! Regression for #2352: `Generator<Y, R>` and `AsyncGenerator<Y>` formally
+//! implement `Iterator` via `std/builtins.hew`, replacing three checker-level
+//! special cases that made bare `for`-in work without a real trait impl.
+//! These fixtures pin the two things that must survive the special-case
+//! retirement: bare for-in still runs correctly for both generator kinds
+//! (compiled and RUN, not just `hew check`).
+//!
+//! Composing a generator value with `std::iter` adapters (`iter::map`,
+//! `iter::collect`, ...) now type-checks through the real trait, but hits a
+//! separate, pre-existing, already-tracked ownership limitation
+//! (`OwnedHandleAggregateExtractionUnsupported`) — see
+//! `tests/vertical-slice/reject/generator_iter_map_owned_handle_aggregate.hew`
+//! and the `check_generator_iter_map_owned_handle_aggregate_fails_closed`
+//! integration test for that fail-closed pin.
+
+import std::testing;
+
+gen fn counter(n: i64) -> i64 {
+    var i: i64 = 0;
+    while i < n {
+        yield i;
+        i = i + 1;
+    }
+}
+
+async gen fn async_counter(n: i64) -> i64 {
+    var i: i64 = 0;
+    while i < n {
+        yield i;
+        i = i + 1;
+    }
+}
+
+#[test]
+fn test_generator_bare_for_in_accumulates() {
+    var total: i64 = 0;
+    for x in counter(4) {
+        total = total + x;
+    }
+    // Yields 0,1,2,3 -> sum 6.
+    testing.assert_eq(total, 6);
+}
+
+#[test]
+fn test_async_generator_bare_for_in_accumulates() {
+    var total: i64 = 0;
+    for x in async_counter(4) {
+        total = total + x;
+    }
+    testing.assert_eq(total, 6);
+}

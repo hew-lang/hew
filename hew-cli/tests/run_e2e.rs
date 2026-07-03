@@ -1854,6 +1854,45 @@ fn check_gen_yield_vec_indirect_enum_fails_closed() {
     );
 }
 
+/// Known limitation (#2352): `Generator`/`AsyncGenerator` formally implement
+/// `Iterator`, so a generator value type-checks against `std::iter`'s
+/// generic adapters (`iter::map`, `iter::filter`, ...). Passing one in
+/// aggregates the owned handle into the adapter's own struct, and the drop
+/// analysis cannot yet prove the handle is freed exactly once after that
+/// aggregate extraction — full aggregate-extraction support for owned
+/// handles is separately tracked ownership work, not part of Iterator trait
+/// completion. The compiler must refuse cleanly rather than emit a
+/// double-free or crash.
+#[test]
+fn check_generator_iter_map_owned_handle_aggregate_fails_closed() {
+    require_codegen();
+
+    let source = repo_root()
+        .join("tests/vertical-slice/reject/generator_iter_map_owned_handle_aggregate.hew");
+    let output = Command::new(hew_binary())
+        .arg("check")
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew check");
+
+    assert!(
+        !output.status.success(),
+        "expected check to fail; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("extracting an owned handle") && combined.contains("not yet supported"),
+        "expected the owned-handle aggregate-extraction fail-closed diagnostic; got: {combined}"
+    );
+}
+
 /// Guard (#2359, recv leg): `Channel<Vec<indirect-enum>>` stays rejected
 /// UPSTREAM by the channel element-layout witness — the existing check-time
 /// diagnostic, not a new one. No recv surface can type this element class

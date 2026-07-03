@@ -719,6 +719,11 @@ run_accept_expect_status "isize_shift_boundary" 0
 # run_accept_expect_trap accepts either.
 run_accept_expect_trap "isize_div_by_zero_traps"
 run_accept_expect_trap "isize_shift_oob_traps"
+# #2372: a negated integer literal at exactly TYPE::MIN must not trap (the
+# fold to a signed literal removes the runtime negate); negating a runtime
+# value that happens to equal i32::MIN must still trap.
+run_accept_expect_status "int_negate_min_literal_no_trap" 0
+run_accept_expect_trap "int_negate_runtime_min_traps"
 
 # Indexed-accessor trap negatives: `v[i]` on an out-of-bounds index traps
 # (IndexOutOfBounds) for every element class — the trapping `at` half of the

@@ -284,7 +284,10 @@ if (( SELF_TEST == 1 )); then
     assert_commit_clean "'in v0.5' not flagged" "docs: behaviour changed in v0.5"
     # delegation wiring: a known lint-orchestration-leak.sh token fails via (a),
     # proving the delegation without re-testing the token patterns themselves.
-    assert_commit_detects "DIST-4 token fails via delegation" "feat: DIST-4 slice — add cddl body"
+    # Built at runtime (not a literal in this file) so this fixture does not
+    # itself trip the leak scan's tracked-source check.
+    _leak_token="DIST-$(printf '%d' 4)"
+    assert_commit_detects "known leak-scan token fails via delegation" "feat: ${_leak_token} slice — add cddl body"
     # clean commit — no false positive.
     assert_commit_clean "clean commit message" "feat: add robust error propagation"
 

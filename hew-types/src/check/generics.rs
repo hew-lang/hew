@@ -168,7 +168,7 @@ impl Checker {
                     TypeErrorKind::ArityMismatch,
                     span,
                     format!(
-                        "this function takes 0 type argument(s) but {} were supplied",
+                        "this function takes 0 type parameter(s) but {} type argument(s) were supplied",
                         type_args.len()
                     ),
                 );
@@ -177,7 +177,7 @@ impl Checker {
                     TypeErrorKind::ArityMismatch,
                     span,
                     format!(
-                        "this function takes {} type argument(s) but {} were supplied",
+                        "this function takes {} type parameter(s) but {} type argument(s) were supplied",
                         sig.type_params.len(),
                         type_args.len()
                     ),

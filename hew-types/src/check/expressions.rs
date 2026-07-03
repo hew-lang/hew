@@ -3023,7 +3023,7 @@ impl Checker {
                             TypeErrorKind::ArityMismatch,
                             span,
                             format!(
-                                "{kind_label} `{name}` has {} type parameter(s) but {} were supplied",
+                                "{kind_label} `{name}` has {} type parameter(s) but {} type argument(s) were supplied",
                                 expected_args.len(),
                                 explicit_args.len()
                             ),
@@ -6417,7 +6417,7 @@ impl Checker {
                         TypeErrorKind::ArityMismatch,
                         span,
                         format!(
-                            "{} `{name}` has {} type parameter(s) but {} were supplied",
+                            "{} `{name}` has {} type parameter(s) but {} type argument(s) were supplied",
                             value_type_kind_label(td.kind),
                             td.type_params.len(),
                             explicit_args.len()
@@ -6596,7 +6596,7 @@ impl Checker {
                         TypeErrorKind::ArityMismatch,
                         span,
                         format!(
-                            "enum variant `{name}` has {} type parameter(s) but {} were supplied",
+                            "enum variant `{name}` has {} type parameter(s) but {} type argument(s) were supplied",
                             enum_type_params.len(),
                             explicit_args.len()
                         ),

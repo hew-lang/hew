@@ -884,7 +884,7 @@ impl Checker {
                             TypeErrorKind::ArityMismatch,
                             span,
                             format!(
-                                "this constructor takes 0 type argument(s) but {} were supplied",
+                                "this constructor takes 0 type parameter(s) but {} type argument(s) were supplied",
                                 type_args_provided.len()
                             ),
                         );
@@ -899,7 +899,7 @@ impl Checker {
                             TypeErrorKind::ArityMismatch,
                             span,
                             format!(
-                                "this constructor takes {} type argument(s) but {} were supplied",
+                                "this constructor takes {} type parameter(s) but {} type argument(s) were supplied",
                                 type_param_count,
                                 type_args_provided.len()
                             ),

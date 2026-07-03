@@ -23,7 +23,7 @@ A service that handles errors in child workers.
 
 Define a network message format.
 
-- **Hew**: `#[wire] struct` is a language type. Schema evolution rules enforced at compile time.
+- **Hew**: `#[wire] type` is a language type. Schema evolution rules enforced at compile time.
 - **Go**: Requires protobuf/gRPC external toolchain. Code generation step.
 - **Rust**: Requires serde + format crate. Derive macros. No compile-time evolution checking.
 

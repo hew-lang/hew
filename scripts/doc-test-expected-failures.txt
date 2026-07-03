@@ -94,7 +94,7 @@ spec-0063   3032467602   # SNIPPET: bare `let` — generic function call illustr
 spec-0065   4058908296   # SNIPPET: bare `let` — generic function illustration
 spec-0068   1058274598   # SPEC-BUG: struct `impl` using incorrect syntax (stray `;` before `fn`)
 spec-0072   820125999   # SPEC-BUG: enum variants separated by `,` not `;` — illustrates wrong syntax
-spec-0074   1532708690   # SPEC-BUG: malformed struct `impl` syntax — aspirational
+spec-0074   4120679691   # SPEC-BUG: malformed struct `impl` syntax — aspirational (re-verified after Vec<T> method-table correction, still fails identically: signature-only `;`-terminated impl bodies, no `{ }`)
 spec-0075   1066583139   # SNIPPET: bare `var` — machine state body illustration
 spec-0076   3711765580   # SNIPPET: bare `let`/`var` — machine state illustration
 spec-0077   403715057   # SNIPPET: bare `let` after machine transitions — illustration

@@ -2306,19 +2306,19 @@ fn main() {
 
 `abs`/`min`/`max` are generic over Num (work on `i64` and `f64`); `sqrt`/`pow`/`floor`/`ceil`/`round` take `f64`. Use `math.pi()`/`math.e()` (functions, not bare constants).
 
-### std::iter Vec helpers
+### std::iter — lazy iterator combinators
 
 ```hew
 import std::iter;
 fn main() {
-    let v = [1, 2, 3, 4, 5];
-    println(iter.sum(iter.map_int(v, |x| x * 2)));         // 30
-    println(iter.sum(iter.filter_int(v, |x| x % 2 == 0))); // 6
-    println(iter.fold_int(v, 0, |acc, x| acc + x));        // 15
+    let v: Vec<i64> = [1, 2, 3, 4, 5];
+    println(iter.sum(iter.map(v.iter(), |x: i64| x * 2)));         // 30
+    println(iter.sum(iter.filter(v.iter(), |x: i64| x % 2 == 0))); // 6
+    println(iter.fold(v.iter(), 0, |acc: i64, x: i64| acc + x));   // 15
 }
 ```
 
-For Vec processing use the typed monomorphic helpers (`map_int`/`map_str`/`map_f64`, `filter_*`, `fold_*`, `sum`, `any`/`all`, `take_*`/`skip_*`/`count_*`). Pass closures as `|x| body`.
+`std::iter` builds lazy adapters (`map`, `filter`, `take`, `skip`) over any `Iterator`; terminal helpers (`fold`, `count`, `collect`, `any`, `all`, `sum`, `sum_f64`, `product`, `product_f64`) drive an adapter chain to completion. Drive a `Vec<T>` through the lazy surface via `v.iter()` (clones elements out, `v` stays live) or `v.into_iter()` (consumes `v`).
 
 ### std::sort — sorting vectors
 
@@ -2420,8 +2420,8 @@ import std::math;
 import std::iter;
 fn main() {
     println(string.from_int(math.max(2, 9)));   // 9
-    let v = [1, 2, 3];
-    println(iter.sum(v));                        // 6
+    let v: Vec<i64> = [1, 2, 3];
+    println(iter.sum(v.into_iter()));            // 6
 }
 ```
 

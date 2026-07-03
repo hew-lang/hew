@@ -2408,8 +2408,10 @@ Important current details:
   payloads; collection element admissibility also requires the internal RcFree
   boundary, so `HashSet<Rc<T>>`, named wrappers that contain `Rc`, and
   `LocalPid<A>` handles to actors with `Rc` state are rejected
-- `std::iter` is presently specialised to `Vec<i64>` helpers such as
-  `map_int`, `filter_int`, `fold_int`, `any`, `all`, and `sum`
+- `std::iter` exposes lazy adapters (`map`, `filter`, `take`, `skip`) over
+  any `Iterator`, driven by terminal helpers (`fold`, `count`, `collect`,
+  `any`, `all`, `sum`, `sum_f64`, `product`, `product_f64`); drive a
+  `Vec<T>` through it via `.iter()` or `.into_iter()`
 - `std::sort` exposes concrete helpers like `sort_ints`, `sort_strings`,
   `sort_floats`, `reverse_ints`, `reverse_strings`, and `reverse_floats`
 - `std::testing` is a pure-Hew assertion library layered on top of `panic()`

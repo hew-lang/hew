@@ -6586,7 +6586,6 @@ machine Traffic {
             .iter()
             .filter(|diagnostic| {
                 diagnostic.source.as_deref() == Some("hew-types")
-                    && diagnostic.message.starts_with(&format!("{expected_code}:"))
                     && diagnostic
                         .data
                         .as_ref()

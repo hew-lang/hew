@@ -1494,7 +1494,7 @@ impl Checker {
                 },
                 span,
                 format!(
-                    "E_CLOSURE_RECURSIVE: closure cannot call itself via binding \
+                    "closure cannot call itself via binding \
                      `{func_name}` — recursive closures require a fixed-point surface \
                      that is not available in this version; use a named function instead"
                 ),

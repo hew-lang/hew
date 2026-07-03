@@ -2327,7 +2327,8 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/gen_block_empty.hew" >"${
   echo "expected gen-block-empty fixture to fail" >&2
   exit 1
 fi
-grep -q 'E_EMPTY_GENERATOR' "${reject_output}"
+# shellcheck disable=SC2016  # backtick in the pattern is Hew diagnostic syntax, not shell expansion
+grep -q 'body contains no `yield` expression' "${reject_output}"
 
 # Reject: gen{} inside an actor receive handler is permanently forbidden.
 # Pins GenBlockInActorReceive from fa8e8c64.
@@ -2335,7 +2336,7 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/genblock_in_actor_receive
   echo "expected genblock-in-actor-receive fixture to fail" >&2
   exit 1
 fi
-grep -q 'E_GENBLOCK_IN_ACTOR_RECEIVE' "${reject_output}"
+grep -q 'blocks are forbidden inside actor receive handlers' "${reject_output}"
 
 # Accept: gen{} with a tail expression but no yield — Return component inferred as i64.
 # Exercises the return_var inference path; E_EMPTY_GENERATOR must NOT fire.

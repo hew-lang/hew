@@ -125,6 +125,138 @@ actor Counter {
     );
 }
 
+// ── LocalPid<T> dispatch rejects plain (non-receive) actor methods ─────────
+//
+// `pid.method(...)` may only reach a `receive fn` handler — MIR's actor
+// handler layout is built from `receive_fns` only, so a plain `fn` has no
+// dispatchable shape through a pid. The checker rejects this before HIR/MIR
+// ever sees the call (#2366).
+
+#[test]
+fn pid_call_to_plain_actor_method_is_rejected() {
+    let output = check_source(
+        r"
+actor Counter {
+    var n: i64 = 0;
+    fn bump() { n = n + 1; }
+    receive fn get() -> i64 { n }
+}
+fn main() {
+    let c = spawn Counter(n: 0);
+    c.bump();
+}
+",
+    );
+    let undefined_method: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| matches!(e.kind, TypeErrorKind::UndefinedMethod))
+        .collect();
+    assert_eq!(
+        undefined_method.len(),
+        1,
+        "a pid call to a plain actor method must emit exactly one UndefinedMethod; got: {:#?}",
+        output.errors
+    );
+    let msg = &undefined_method[0].message;
+    assert!(
+        msg.contains("bump"),
+        "message must name the method; got: {msg}"
+    );
+    assert!(
+        msg.contains("internal actor method"),
+        "message must explain the method is internal; got: {msg}"
+    );
+    assert!(
+        msg.contains("receive fn"),
+        "message must suggest `receive fn`; got: {msg}"
+    );
+}
+
+#[test]
+fn pid_call_to_plain_send_method_is_rejected() {
+    let output = check_source(
+        r"
+actor Counter {
+    var n: i64 = 0;
+    fn send() { n = n + 1; }
+}
+fn main() {
+    let c = spawn Counter(n: 0);
+    c.send();
+}
+",
+    );
+    let undefined_method: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| matches!(e.kind, TypeErrorKind::UndefinedMethod))
+        .collect();
+    assert_eq!(
+        undefined_method.len(),
+        1,
+        "a plain `fn send` must not satisfy LocalPid's own `send`; got: {:#?}",
+        output.errors
+    );
+    let msg = &undefined_method[0].message;
+    assert!(
+        msg.contains("no `send` handler on `Counter`"),
+        "must route through the existing envelope-check diagnostic; got: {msg}"
+    );
+    assert!(
+        msg.contains("receive fn send"),
+        "message must suggest `receive fn send`; got: {msg}"
+    );
+}
+
+#[test]
+fn pid_call_to_receive_fn_still_dispatches() {
+    let output = check_source(
+        "actor Doubler { receive fn process(n: i64) -> i64 { n * 2 } }\n\
+         fn main() { let d = spawn Doubler; await d.process(5); }",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "pid dispatch to a receive fn must remain unaffected; got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn plain_method_self_call_from_receive_fn_does_not_gain_undefined_method() {
+    // Bare-name self-dispatch (`bump()` with no receiver) never reaches the
+    // `LocalPid<T>` match arm this lane touches — it resolves through
+    // call-expression lookup (`hew-types/src/check/calls.rs`), a distinct
+    // path. That path independently emits `UndefinedFunction` for this
+    // fixture already (pre-existing, unrelated to #2366 — bare self-calls to
+    // plain actor methods are not yet wired to resolve as calls). This test
+    // pins the regression boundary for THIS lane only: the new pid-dispatch
+    // guard in the `LocalPid<T>` arm must not additionally fire
+    // `UndefinedMethod` on a fixture it was never meant to see.
+    let output = check_source(
+        r"
+actor Counter {
+    let count: i64;
+    receive fn poke() {
+        bump();
+    }
+    fn bump() {
+        count = count + 1;
+    }
+}
+",
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::UndefinedMethod)),
+        "bare self-dispatch never reaches the LocalPid<T> arm, so the new \
+         pid-dispatch guard must not fire UndefinedMethod here; got: {:#?}",
+        output.errors
+    );
+}
+
 #[test]
 fn let_field_assignment_in_on_stop_hook_is_rejected() {
     let output = check_source(

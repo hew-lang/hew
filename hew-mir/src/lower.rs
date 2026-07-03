@@ -18801,6 +18801,17 @@ impl Builder {
             _ => None,
         };
 
+        // Classify the scrutinee's storage once, above the bind loop, so both
+        // the bound-string discharge inside it and the skipped-field discharge
+        // below read the same verdict. `local_storage_is_interior_alias` is a
+        // pure classifier over the already-emitted loads that define
+        // `scrutinee_local` (an interior alias is minted by a `let inner =
+        // outer.field` byte copy BEFORE this match lowers); the bind loop only
+        // adds loads whose dest is a binder, never `scrutinee_local`, so the
+        // verdict is invariant to where it is read.
+        let scrutinee_is_interior_alias =
+            scrutinee_is_non_bitcopy && self.local_storage_is_interior_alias(scrutinee_local);
+
         let mut overwritten_bindings = Vec::with_capacity(selected.bindings.len());
         for binding in &selected.bindings {
             let binding_ty = self.subst_ty(&binding.ty);
@@ -18823,6 +18834,7 @@ impl Builder {
             // BitCopy bindings stay out: their copy is free of heap ownership
             // and the surrounding scrutinee's composite drop covers them.
             let keep_for_drop_elab = self.binding_seeds_drop_elaboration(&binding_ty);
+            let binding_is_string = matches!(binding_ty, ResolvedTy::String);
             if keep_for_drop_elab {
                 self.owned_locals
                     .push((binding.binding, binding.name.clone(), binding_ty.clone()));
@@ -18911,6 +18923,48 @@ impl Builder {
                     panic!("checker invariant violated: refutable arm in project match lowering");
                 }
             }
+            // Bound-string original discharge. A `string`-typed field bound on
+            // a consumed, non-alias root strands its original. Codegen retains
+            // the string on the field load (`retain_string_field_load` →
+            // `hew_string_clone`, rc 2): the binder owns the clone, but the
+            // ORIGINAL handle still sits in the root slot with a `+1` nothing
+            // releases — the root's composite drop is suppressed (the binder
+            // seeds `release_owner_bases`) and the consume mark below retracts
+            // the root from `owned_locals`. Discharge the original IN PLACE
+            // right after the load: `FieldDropInPlace` raw-loads the root's
+            // field handle, releases it (rc 1), and null-stores the slot; the
+            // binder is then the sole owner — safe even when the arm returns
+            // the binder (its own drop balances the retained clone).
+            //
+            // Gated exactly like the skipped-field discharge below:
+            //   - consume-marked scrutinee: a non-consumed root keeps its
+            //     composite drop, which frees the original — discharging here
+            //     would double-free.
+            //   - non-alias root: on an interior alias the original belongs to
+            //     the OUTER composite, which frees it; `FieldDropInPlace`
+            //     null-stores the alias slot, not the owner's (the alias gate
+            //     below is the authority) — discharging would double-free.
+            //   - `string`-typed field only: the retaining-load class. Non-
+            //     string bound fields (`Vec` / `bytes` / handles / aggregates)
+            //     load without a retain, so the binder takes the one handle and
+            //     the root slot is dead — they do not strand and MUST NOT be
+            //     discharged here.
+            if consume_scrutinee.is_some() && !scrutinee_is_interior_alias && binding_is_string {
+                let field = match &selected.predicate {
+                    hew_hir::HirMatchArmPredicate::RecordProject { .. } => {
+                        crate::model::FieldAddr::Record(FieldOffset(binding.field_idx))
+                    }
+                    hew_hir::HirMatchArmPredicate::TupleProject { .. } => {
+                        crate::model::FieldAddr::Tuple(binding.field_idx)
+                    }
+                    _ => unreachable!("bound-string discharge only reached for project predicates"),
+                };
+                self.push_instr(Instr::FieldDropInPlace {
+                    base: Place::Local(scrutinee_local),
+                    field,
+                    ty: ResolvedTy::String,
+                });
+            }
             let previous = self.binding_locals.insert(binding.binding, dest);
             overwritten_bindings.push((binding.binding, previous, keep_for_drop_elab));
         }
@@ -18978,8 +19032,6 @@ impl Builder {
         // leak — fail-closed — and the provers' direct `FieldDropInPlace`
         // binder rules remain the net for any emitter that does discharge
         // through an alias.
-        let scrutinee_is_interior_alias =
-            scrutinee_is_non_bitcopy && self.local_storage_is_interior_alias(scrutinee_local);
         if !selected.bindings.is_empty() && scrutinee_is_non_bitcopy && !scrutinee_is_interior_alias
         {
             let extracted: HashSet<u32> = selected.bindings.iter().map(|b| b.field_idx).collect();

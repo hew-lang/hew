@@ -42,18 +42,17 @@ color brightwhite "\<(yield|defer|select|join|cooperate|after|from|await|scope)\
 # Declaration keywords
 color green "\<(let|var|const|mut|fn|gen|async|pub|import|package)\>"
 color green "\<(super|extern|where|record|type|indirect|enum|trait|impl|as)\>"
-color green "\<(struct)\>"
 
 # Actor & concurrency
 color brightgreen "\<(actor|supervisor|spawn|receive|init|scope|fork|move|select|join)\>"
-color brightgreen "\<(after|from|await|this)\>"
+color brightgreen "\<(after|from|await|await_restart|this)\>"
 
 # Supervisor configuration
 color brightgreen "\<(child|restart|budget|strategy|permanent|transient|temporary|brutal_kill|one_for_one|one_for_all)\>"
 color brightgreen "\<(rest_for_one|simple_one_for_one|pool)\>"
 
 # Wire protocol
-color green "\<(wire|reserved|optional|deprecated|default)\>"
+color green "\<(reserved|optional|deprecated|default)\>"
 
 # Machine keywords
 color green "\<(machine|state|event|on|when|entry|exit|emit)\>"
@@ -70,7 +69,7 @@ color brightblue "\<(bool|char|string|bytes|void|never|duration)\>"
 
 # Types — generic / collection / concurrency
 color brightblue "\<(HashMap|HashSet|Vec|Option|Result|Ok|Err|Some|Box|Arc|Rc|Weak|Range)\>"
-color brightblue "\<(ActorRef|Stream|Sink|Task|Scope|Generator|AsyncGenerator)\>"
+color brightblue "\<(LocalPid|RemotePid|LambdaPid|Stream|Sink|Task|Scope|Generator|AsyncGenerator)\>"
 
 # Traits
 color brightblue "\<(Send|Frozen|Copy|Drop|Clone|Eq|Ord|Hash|Display|Debug)\>"

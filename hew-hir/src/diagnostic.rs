@@ -638,30 +638,28 @@ pub enum HirDiagnosticKind {
         /// Site identifier for error reporting.
         site: SiteId,
     },
-    /// Pool supervisor child accessor is not yet implemented. The program
-    /// performs a field access on a supervisor-typed handle (`sup.child_name`)
-    /// where the named child is declared with `pool name: Type` rather than
-    /// `child name: Type`. Routing pool slots requires the
-    /// `hew_supervisor_pool_route` ABI call which is scheduled for v0.6;
-    /// reaching the MIR fail-closed arm at `hew-mir/src/lower.rs:4413` from
-    /// the runtime would mean a compile that should have rejected the program.
-    /// Fail-closed per slepp A222: compile-time diagnostic instead of
-    /// `unreachable`/`NotYetImplemented` trap at MIR lowering.
+    /// Bare (unindexed) pool-supervisor child accessor. The program performs
+    /// a field access on a supervisor-typed handle (`sup.child_name`) where
+    /// the named child is declared with `pool name: Type` rather than
+    /// `child name: Type`, with no index. Indexed pool access
+    /// (`sup.pool[i]` / `sup.pool.len()`) is a separate, already-implemented
+    /// path (`hew_supervisor_pool_child_get`/`hew_supervisor_pool_len`); the
+    /// bare accessor has no member index to route on and is rejected
+    /// permanently by design, not pending a future ABI. Fail-closed per
+    /// slepp A222: compile-time diagnostic instead of `unreachable`/
+    /// `NotYetImplemented` trap at MIR lowering.
     SupervisorPoolChildAccessorUnsupported {
         /// Supervisor type name (e.g. `"Pool"`).
         supervisor: String,
         /// Pool child name being accessed (e.g. `"worker"`).
         child: String,
     },
-    /// Nested supervisor child accessor is not yet implemented. The program
-    /// performs a field access on a supervisor-typed handle (`root.sub`)
-    /// where the named child is itself a supervisor (rather than an actor).
-    /// Multi-segment supervisor dotted access requires the
-    /// `hew_supervisor_nested_get` ABI call which is scheduled for v0.6;
-    /// reaching the MIR fail-closed arm at `hew-mir/src/lower.rs:4443` from
-    /// the runtime would mean a compile that should have rejected the program.
-    /// Fail-closed per slepp A222: compile-time diagnostic instead of
-    /// `unreachable`/`NotYetImplemented` trap at MIR lowering.
+    /// Dead code: nested-supervisor field access (`root.sub`, including
+    /// chained `root.sub.worker`) now lowers end-to-end through the
+    /// `hew_supervisor_nested_get` ABI call and never constructs this
+    /// variant (`check_supervisor_child_accessor_gates`'s `ChildKind::Static`
+    /// arm no longer gates it). Retained because
+    /// `LowerOutput::into_result`'s fatal-diagnostic match still lists it.
     NestedSupervisorAccessorUnsupported {
         /// Outer supervisor type name (e.g. `"RootSupervisor"`).
         supervisor: String,

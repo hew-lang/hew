@@ -688,12 +688,13 @@ impl LowerOutput {
     /// - [`HirDiagnosticKind::BlockingChannelRecvUnsupportedOnWasm`] — the
     ///   program calls blocking channel recv on wasm32.
     /// - [`HirDiagnosticKind::SupervisorPoolChildAccessorUnsupported`] — the
-    ///   program performs `sup.pool_child` field access on a pool slot
-    ///   (v0.6 `hew_supervisor_pool_route` ABI not yet implemented).
-    /// - [`HirDiagnosticKind::NestedSupervisorAccessorUnsupported`] — the
-    ///   program performs `sup.nested` field access where the named child
-    ///   is itself a supervisor (v0.6 `hew_supervisor_nested_get` ABI not
-    ///   yet implemented).
+    ///   program performs a bare (unindexed) `sup.pool_child` field access on
+    ///   a pool slot; permanently rejected by design (no member index to
+    ///   route on). Indexed access (`sup.pool[i]`) is a separate, shipped
+    ///   path.
+    /// - [`HirDiagnosticKind::NestedSupervisorAccessorUnsupported`] — dead
+    ///   code; `sup.nested` field access on a nested supervisor now lowers
+    ///   via `hew_supervisor_nested_get` and never constructs this variant.
     /// - [`HirDiagnosticKind::BinaryOperatorUnsupportedInMir`] — value-position
     ///   range operator (FC-P1-D).
     /// - [`HirDiagnosticKind::CallableUnsupportedInMir`] — a call expression
@@ -2426,12 +2427,13 @@ pub fn lower_program_with_mono_cap(
     // P1-C: Supervisor child accessor gates. Dispatched HERE (after
     // diagnostics.clear above) so the gate's diagnostics survive into the
     // final LowerOutput. Reads checker side-table `supervisor_child_slots`
-    // and emits fail-closed diagnostics for pool-child and nested-supervisor
-    // accessors — both currently land in `unreachable`/`NotYetImplemented`
-    // arms at MIR lowering (hew-mir/src/lower.rs:4413, :4443) because their
-    // backing ABI calls (`hew_supervisor_pool_route`, `hew_supervisor_nested_get`)
-    // are scheduled for v0.6. Gate runs unconditionally on every target
-    // because the underlying ABI gap is target-independent.
+    // and emits a fail-closed diagnostic for the bare (unindexed) pool-child
+    // accessor, which lands in an `unreachable`/`NotYetImplemented` arm at
+    // MIR lowering (hew-mir/src/lower.rs, `ChildKind::Pool` arm) because it
+    // has no member index to route on — permanent by design, not a future
+    // ABI wait. The nested-supervisor accessor is no longer gated here: it
+    // lowers through `hew_supervisor_nested_get`. Gate runs unconditionally
+    // on every target because the pool-accessor gap is target-independent.
     check_supervisor_child_accessor_gates(&mut ctx, type_check_output);
 
     // FC-P1-D: HIR pre-pass binary-operator gates. Dispatched HERE (after
@@ -25443,11 +25445,11 @@ fn check_supervisor_child_accessor_gates(ctx: &mut LowerCtx, tc_output: &TypeChe
                     },
                     span,
                     format!(
-                        "pool child accessor `{sup_name}.{child_name}` is not yet \
-                         implemented: pool slot routing requires the \
-                         `hew_supervisor_pool_route` ABI call which lands in v0.6. \
-                         Use a static child (`child {child_name}: {ty}`) if the \
-                         pool semantics are not required.",
+                        "bare pool child accessor `{sup_name}.{child_name}` is not \
+                         supported: a pool has no member index to route on without \
+                         one. Use indexed access (`{sup_name}.{child_name}[i]`) or a \
+                         static child (`child {child_name}: {ty}`) if the pool \
+                         semantics are not required.",
                         ty = slot.child_ty,
                     ),
                 ));

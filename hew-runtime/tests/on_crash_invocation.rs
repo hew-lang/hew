@@ -390,3 +390,109 @@ fn on_crash_kill_return_terminates_child_overriding_restart_policy() {
 
     hew_deterministic_reset();
 }
+
+/// G-S-A: a handler returning `CrashAction::Escalate` (tag 1) on a ROOT
+/// supervisor must not dereference a null parent pointer.
+///
+/// `TestSupervisor::new` constructs a root supervisor: `hew_supervisor_new`
+/// sets `parent: ptr::null_mut()`. Before the fix, `apply_restart`'s
+/// `CRASH_ACTION_ESCALATE` arm called `escalate_to_parent(sup)`
+/// unconditionally, which dereferenced that null parent
+/// (`hew-runtime/src/supervisor.rs:987`) and aborted the process. The fixed
+/// arm guards the call exactly like the sibling `stop_and_maybe_escalate`,
+/// so escalating past the root is a safe no-op: the handler still fires,
+/// the restart is suppressed (same shape as `Kill`), and the supervisor
+/// keeps running.
+unsafe extern "C" fn escalate_on_crash(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
+    crash_code: i64,
+    _crash_message: *const std::ffi::c_char,
+    _actor_state_ptr: *mut c_void,
+) -> HewCrashActionAbi {
+    ON_CRASH_CALLS.fetch_add(1, Ordering::SeqCst);
+    LAST_CRASH_CODE.store(crash_code, Ordering::SeqCst);
+    HewCrashActionAbi {
+        tag: 1, // CrashAction::Escalate
+        payload_pad: [0],
+    }
+}
+
+#[test]
+fn on_crash_escalate_on_root_supervisor_does_not_abort() {
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ensure_scheduler();
+    hew_deterministic_reset();
+    DISPATCH_COUNT.store(0, Ordering::SeqCst);
+    ON_CRASH_CALLS.store(0, Ordering::SeqCst);
+
+    let sup = TestSupervisor::new(STRATEGY_ONE_FOR_ONE, 10, 60);
+    let name = cstr("escalate-on-crash-worker");
+    let mut state: i32 = 0;
+
+    // SAFETY: sup is live; spec lives across the FFI call.
+    unsafe {
+        hew_supervisor_set_restart_notify(sup.as_ptr());
+
+        let spec = HewChildSpec {
+            name: name.as_ptr(),
+            init_state: (&raw mut state).cast(),
+            init_state_size: std::mem::size_of::<i32>(),
+            dispatch: Some(noop_dispatch),
+            restart_policy: RESTART_PERMANENT,
+            mailbox_capacity: -1,
+            overflow: OVERFLOW_DROP_NEW,
+            arena_cap_bytes: 0,
+            cycle_capable: 0,
+            on_crash: Some(escalate_on_crash),
+            lifecycle_fn: None,
+            init_fn: None,
+            config: std::ptr::null_mut(),
+            config_size: 0,
+        };
+        assert_eq!(
+            hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
+            0
+        );
+        assert_eq!(sup.start(), 0);
+
+        let child = wait_for_child(sup.as_ptr(), 0, 2000);
+        crash_child(child);
+
+        // The handler fires; Escalate (like Kill) short-circuits the
+        // restart path entirely — no restart cycle should occur.
+        let count = hew_supervisor_wait_restart(sup.as_ptr(), 1, 1500);
+        assert_eq!(
+            count, 0,
+            "Escalate return must suppress the restart cycle (got {count})"
+        );
+        assert_eq!(
+            ON_CRASH_CALLS.load(Ordering::SeqCst),
+            1,
+            "the Escalate handler must still fire exactly once"
+        );
+
+        // The process did not abort: the supervisor is still alive and
+        // running. This is the guard under test — escalating past a root
+        // supervisor with no parent must not null-deref `sup.parent`.
+        assert!(
+            sup.is_running(),
+            "supervisor must remain running after an Escalate return with no parent to escalate to"
+        );
+
+        // The child slot stays null: no restart happened, matching the
+        // Kill-return shape.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(800);
+        while std::time::Instant::now() < deadline {
+            let slot = hew_runtime::supervisor::hew_supervisor_get_child(sup.as_ptr(), 0);
+            assert!(
+                slot.is_null(),
+                "Escalate return with no parent must leave child slot 0 null (no restart)"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    hew_deterministic_reset();
+}

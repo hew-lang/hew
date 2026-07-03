@@ -70,7 +70,7 @@ stateDiagram-v2
 | ----------------- | -------------------------------------------- | ------------------------------------------------------------------ |
 | Message budget    | `HEW_MSG_BUDGET = 256` messages/activation   | Coarse scheduler preemption — yield after 256 messages             |
 | Reduction budget  | `HEW_DEFAULT_REDUCTIONS = 4000` per dispatch | Compiler-inserted `cooperate` safepoints at function entry and loop back-edges |
-| Cooperative yield | Per-coroutine                                | `coro_switch` on `await` of a `fork`-spawned task in a `scope` block |
+| Cooperative yield | Per-continuation                             | `llvm.coro.suspend` (`hew_cont_resume`) on `await` of a `fork`-spawned task in a `scope` block |
 
 **Actor dispatch signature** (§9.1.1):
 
@@ -156,8 +156,8 @@ block-beta
         columns 4
         task_scope["task_scope.rs<br/>HewTask / HewTaskScope<br/>Ready→Running→Suspended→Done"]
         timer_wheel["timer_wheel.rs<br/>2-level hierarchical wheel<br/>L0: 256×1ms, L1: 64×256ms"]
-        coro["coro.rs<br/>Stackful coroutines<br/>coro_switch"]
-        generator["generator.rs<br/>gen fn / async gen fn"]
+        cont["cont.rs<br/>HewCont frame + C ABI<br/>await / scope join / gen fn"]
+        coro_exec["coro_exec.rs<br/>Slice-4 poll/resume executor<br/>FG1-FG4 serialization"]
     end
 
     block:L3["<b>L3: Actors & Supervision</b>"]

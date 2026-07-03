@@ -339,16 +339,17 @@ fn gen_block_body_cfg_is_connected() {
 
 /// Security gate (UAF / FFI-ownership): a `gen { }` block that captures an
 /// `#[opaque]` runtime handle as a free variable must FAIL CLOSED at MIR
-/// lowering, not shallow-copy the handle across the body thread.
+/// lowering, not shallow-copy the handle into the generator's env.
 ///
 /// An `#[opaque]`-only type classifies as `ValueClass::BitCopy` (pointer-width,
 /// no implicit drop), so the capture gate's `BitCopy` admission check ALONE
-/// would admit it. But `hew_gen_ctx_create` flat-`memcpy`s the capture env
-/// across the body-thread boundary and frees the copy when that thread ends:
-/// shallow-copying an opaque handle aliases the caller's handle, a
-/// use-after-free / double-free at generator teardown. The gate additionally
-/// rejects any value transitively containing an opaque handle, surfacing a
-/// `NotYetImplemented` diagnostic instead of materialising an env field.
+/// would admit it. But the generator's env is a flat `memcpy` of the capture
+/// record into the coro companion's heap env block (freed with the companion
+/// at generator teardown): shallow-copying an opaque handle aliases the
+/// caller's handle, a use-after-free / double-free at generator teardown. The
+/// gate additionally rejects any value transitively containing an opaque
+/// handle, surfacing a `NotYetImplemented` diagnostic instead of
+/// materialising an env field.
 #[test]
 fn gen_block_capturing_opaque_handle_fails_closed() {
     let pipeline = lower_checked(
@@ -378,8 +379,8 @@ fn gen_block_capturing_opaque_handle_fails_closed() {
     assert!(
         opaque_capture_rejected,
         "a generator capture of an `#[opaque]` handle must fail closed with a \
-         NotYetImplemented diagnostic (shallow-copying it across the body thread \
-         is a use-after-free); got: {:#?}",
+         NotYetImplemented diagnostic (shallow-copying it into the generator's \
+         env is a use-after-free); got: {:#?}",
         pipeline.diagnostics
     );
 }
@@ -481,7 +482,7 @@ fn gen_block_capturing_scalar_is_admitted() {
 ///
 /// A `Function` type's runtime representation is a two-word `{code_ptr, env_ptr}`
 /// fat pointer where `env_ptr` is null by construction (no captures). Both words
-/// are non-owning addresses; flat-copying them across the generator thread boundary
+/// are non-owning addresses; flat-copying them into the generator's captured env
 /// is safe (no heap ownership to alias). Before this fix the gate returned `false`
 /// for `PersistentShare` values, emitting `NotYetImplemented` for the fn param and
 /// cascading `InitialisedBeforeUse`/`UnresolvedPlace` onto every sibling scalar
@@ -516,8 +517,8 @@ fn gen_block_capturing_fn_typed_param_is_admitted() {
 /// fn-typed-param admission gate is widened.
 ///
 /// A closure literal that captures outer bindings carries a heap-boxed env pointer.
-/// Flat-copying the two-word `{code_ptr, env_ptr}` across the generator thread
-/// boundary shallow-aliases the caller's heap env → double-free / UAF at generator
+/// Flat-copying the two-word `{code_ptr, env_ptr}` into the generator's captured
+/// env shallow-aliases the caller's heap env → double-free / UAF at generator
 /// teardown. This test is the boundary guard that proves the lane did NOT over-widen
 /// the gate to all `PersistentShare` values.
 ///

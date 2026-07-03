@@ -1,11 +1,9 @@
 //! Regression tests for stream bugs.
 //!
-//! The generator regression tests that lived here exercised the thread-based
-//! generator runtime (`hew_runtime::generator`), which was deleted when
-//! generators moved onto the `llvm.coro` continuation substrate. The generator
-//! behaviours they covered (post-completion `next` returns null, a null yield
-//! does not terminate) are now proven on the coro path by the generator `.hew`
-//! corpus (`tests/hew/generator_coro_corpus_test.hew`).
+//! Generator behaviours (post-completion `next` returns null, a null yield
+//! does not terminate) are proven on the `llvm.coro` switched-resume path by
+//! the generator `.hew` corpus (`tests/hew/generator_coro_corpus_test.hew`),
+//! not by Rust-level regression tests in this file.
 
 use hew_runtime::stream::{hew_stream_lines, hew_stream_next_sized, HewStream};
 

@@ -15427,8 +15427,8 @@ fn lower_instruction(
             //        done  → write None (tag 1),
             //        !done → read `v = companion.out_value`, write Some (tag 0) +
             //                `v`, set `started = 1`.
-            // The Option tag convention (Some = 0, None = 1) is preserved exactly
-            // from the prior thread-runtime path.
+            // The Option tag convention (Some = 0, None = 1) matches the
+            // `Option<T>` enum-layout convention used elsewhere in codegen.
             //
             // Resume-before-read on every call AFTER the first is what gives the
             // lazy interleaving: the consumer observes value N, runs its loop
@@ -46496,13 +46496,6 @@ mod tests {
         );
     }
 
-    /// Synthetic gen-body function (mirrors what `lower_gen_block` produces):
-    /// two leading pointer params (Local(0)=arg, Local(1)=ctx), one i64 local
-    /// for the yielded value, and a single Yield → Return chain. Asserts the
-    /// module verifies and that the emitted IR calls `hew_gen_yield`. This is
-    /// the codegen-side contract for `Terminator::Yield` — full e2e execution
-    /// of `g.next()` requires `.next()` HIR rewrite + `hew_gen_ctx_create`
-    /// emission from the enclosing fn, both of which are tracked separately.
     #[test]
     fn yield_terminator_lowers_to_coro_suspend_and_publishes_out_pointer() {
         // A generator body carrying `Terminator::Yield` lowers to an

@@ -2995,15 +2995,16 @@ not needed.
 
 **Substrate (informative):**
 
-The β surface lowers each child to an OS-thread-per-task substrate
-(`hew-runtime/src/task_scope.rs`). A cooperative coroutine layer
-(`hew-runtime/src/coro.rs`) exists in the runtime but is not exposed at
-the source level; the source surface is a single `fork` child production
-whose scheduling discipline is the runtime's concern. The earlier drafts
-exposed two child verbs (`s.launch` for cooperative coroutines vs
-`s.spawn` for OS threads) on a `scope |s| { ... }` handle; that surface
-was removed entirely in the 2026 edition — see "Historical note" at the
-end of §4.9.
+The β surface lowers each child's execution to an OS-thread-per-task
+substrate (`hew-runtime/src/task_scope.rs`, `hew_task_spawn_thread`). The
+parent's `await` of a child lowers onto the same unified `llvm.coro`
+switched-resume continuation substrate (`hew-runtime/src/cont.rs`,
+`hew_cont_*`) used by generator `yield` and actor `await`; the source
+surface is a single `fork` child production whose scheduling discipline
+is the runtime's concern. The earlier drafts exposed two child verbs
+(`s.launch` for cooperative coroutines vs `s.spawn` for OS threads) on a
+`scope |s| { ... }` handle; that surface was removed entirely in the 2026
+edition — see "Historical note" at the end of §4.9.
 
 **Yield points (normative):**
 
@@ -3342,7 +3343,7 @@ fn heavy_computation() {
 | Failure       | First error becomes `ScopeError::primary`; siblings cancel | Traps isolated to actor   |
 | Lifetime      | Bound to enclosing `scope` block                     | Independent                      |
 | Cancellation  | Automatic at safepoints                             | Supervisor control               |
-| Scheduling    | OS thread per child (substrate); cooperative coroutines are an internal runtime layer | M:N work-stealing scheduler |
+| Scheduling    | OS thread per child (execution); `await`/join suspension via the `llvm.coro` continuation substrate | M:N work-stealing scheduler |
 
 **Design rationale:**
 
@@ -3357,12 +3358,12 @@ isolation and Swift/Kotlin/Loom-grade structured concurrency:
 
 `scope { ... }` is the scope boundary; `fork name = call(...);` inside a
 scope is the child-start verb. These are not synonyms, and no
-`s.launch / s.spawn / s.cancel` methods exist. The cooperative coroutine
-layer (`hew-runtime/src/coro.rs`) and the OS-thread-per-task runtime
-(`hew-runtime/src/task_scope.rs`) both exist below the source surface;
-the source-level choice between them is not user-visible. The current
-substrate is OS-thread-per-task; the cooperative layer is an
-implementation detail that may be re-engaged without changing the surface.
+`s.launch / s.spawn / s.cancel` methods exist. Child execution runs on
+the OS-thread-per-task runtime (`hew-runtime/src/task_scope.rs`); the
+parent's `await` of a child suspends on the same unified `llvm.coro`
+switched-resume continuation substrate (`hew-runtime/src/cont.rs`) used
+by generator `yield` and actor `await`. The source-level choice between
+spawn strategies is not user-visible.
 
 ### 4.10 Actor Await and Synchronization
 
@@ -4434,7 +4435,7 @@ Hew uses an **M:N work-stealing scheduler** inspired by Go, Tokio, and BEAM:
 
 1. **Message budget (256 msgs/activation):** Coarse scheduler preemption — after processing 256 messages, the actor yields to the scheduler so other actors can run.
 2. **Reduction budget (4000/dispatch):** The compiler inserts `cooperate` safepoints at function entry and loop back-edges. Each operation decrements a reduction counter; when exhausted, the actor yields to the scheduler.
-3. **Cooperative task yield:** When the runtime's coroutine layer is engaged (see §4.3 "Substrate" — internal to `hew-runtime`, not a source-level distinction), `await` and compiler-inserted `cooperate` safepoints trigger `coro_switch` to the next ready coroutine within the actor.
+3. **Cooperative task yield:** `await` and compiler-inserted `cooperate` safepoints suspend on the `llvm.coro` switched-resume continuation substrate (see §4.3 "Substrate" — internal to `hew-runtime`, not a source-level distinction), parking the current coroutine so the actor's executor can resume the next ready one.
 
 - Round-robin within priority levels
 - Starvation prevention through queue aging

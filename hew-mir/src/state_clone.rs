@@ -522,16 +522,17 @@ pub enum IoHandleKind {
     /// symbol `Sink.close()` and the single-handle drop path use). No dup
     /// helper; clone/restart fails closed, drop is wired (W5.021).
     Sink,
-    /// `Generator<Y, R>` / `AsyncGenerator<Y>` runtime handle (`*mut HewGenCtx`).
-    /// Scope-exit release is `hew_gen_free` (cancel-if-running, join the
-    /// generator thread, drain unconsumed yields, free the context) — the same
-    /// symbol the standalone-binding drop (`drop_kind_for`) uses. No dup helper
-    /// exists, so the clone/restart direction fails closed, exactly like
-    /// `Stream`/`Sink`. A composite carrying this handle (e.g. a returned
-    /// `(Generator<i64, ()>, i64)`) must free it exactly once at the owner's
-    /// scope exit; the exactly-once discipline rests on the move-checker plus the
-    /// MIR drop-allow derivations, with the runtime's `hew_gen_free` null-guard
-    /// as a backstop.
+    /// `Generator<Y, R>` / `AsyncGenerator<Y>` runtime handle — a heap companion
+    /// block allocated by codegen and pointed at by the `Generator<Y, R>` value.
+    /// Scope-exit release is `hew_gen_coro_destroy` (destroy the `llvm.coro`
+    /// switched-resume frame, drop any pending unconsumed yield, free the
+    /// companion) — the same symbol the standalone-binding drop (`drop_kind_for`)
+    /// uses. No dup helper exists, so the clone/restart direction fails closed,
+    /// exactly like `Stream`/`Sink`. A composite carrying this handle (e.g. a
+    /// returned `(Generator<i64, ()>, i64)`) must free it exactly once at the
+    /// owner's scope exit; the exactly-once discipline rests on the
+    /// move-checker plus the MIR drop-allow derivations, with the runtime's
+    /// `hew_gen_coro_destroy` null-guard as a backstop.
     Generator,
     /// `CancellationToken` runtime handle (`*mut HewCancellationToken`).
     /// Scope-exit release is `hew_cancel_token_release` (ref-count decrement,

@@ -874,6 +874,7 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
         // Collection receiver reads and in-place mutations borrow arg[0]; tail
         // operands remain ordinary escapes.
         "hew_bytes_get"
+        | "hew_hashmap_clear_layout"
         | "hew_hashmap_clone_layout"
         | "hew_hashmap_contains_key_layout"
         | "hew_hashmap_get_clone_layout"
@@ -883,6 +884,7 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
         | "hew_hashmap_len_layout"
         | "hew_hashmap_remove_layout"
         | "hew_hashmap_values_layout"
+        | "hew_hashset_clear_layout"
         | "hew_hashset_clone_layout"
         | "hew_hashset_contains_layout"
         | "hew_hashset_insert_layout"
@@ -1105,6 +1107,7 @@ mod tests {
         "hew_bytes_to_string",
         "hew_char_to_string",
         "hew_float_to_string",
+        "hew_hashmap_clear_layout",
         "hew_hashmap_clone_layout",
         "hew_hashmap_contains_key_layout",
         "hew_hashmap_get_clone_layout",
@@ -1114,6 +1117,7 @@ mod tests {
         "hew_hashmap_len_layout",
         "hew_hashmap_remove_layout",
         "hew_hashmap_values_layout",
+        "hew_hashset_clear_layout",
         "hew_hashset_clone_layout",
         "hew_hashset_contains_layout",
         "hew_hashset_insert_layout",
@@ -1300,7 +1304,7 @@ mod tests {
     #[test]
     fn callee_ownership_contract_symbols_are_unique_positive_rows() {
         let unique = CONTRACT_SYMBOLS.iter().copied().collect::<BTreeSet<_>>();
-        assert_eq!(CONTRACT_SYMBOLS.len(), 156);
+        assert_eq!(CONTRACT_SYMBOLS.len(), 158);
         assert_eq!(
             unique.len(),
             CONTRACT_SYMBOLS.len(),

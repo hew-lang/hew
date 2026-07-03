@@ -233,6 +233,7 @@ pub enum HashMapMethod {
     Keys,
     Values,
     Clone,
+    Clear,
 }
 
 /// `HashSet` dispatch methods. Mirrors the methods registered for the
@@ -247,6 +248,7 @@ pub enum HashSetMethod {
     Clone,
     /// Snapshot all elements into an owned `Vec<T>` (the `for x in s` source).
     ToVec,
+    Clear,
 }
 
 /// Vec dispatch methods. Mirrors the methods registered for the

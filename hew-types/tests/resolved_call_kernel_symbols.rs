@@ -64,6 +64,7 @@ extern "C" {
     fn hew_hashmap_keys_layout(m: *const c_void) -> *mut c_void;
     fn hew_hashmap_values_layout(m: *const c_void) -> *mut c_void;
     fn hew_hashmap_clone_layout(m: *const c_void) -> *mut c_void;
+    fn hew_hashmap_clear_layout(m: *mut c_void);
     fn hew_hashset_insert_layout(s: *mut c_void, elem: *const c_void) -> bool;
     fn hew_hashset_contains_layout(s: *const c_void, elem: *const c_void) -> bool;
     fn hew_hashset_remove_layout(s: *mut c_void, elem: *const c_void) -> bool;
@@ -71,6 +72,7 @@ extern "C" {
     fn hew_hashset_is_empty_layout(s: *const c_void) -> bool;
     fn hew_hashset_to_vec_layout(s: *const c_void) -> *mut c_void;
     fn hew_hashset_clone_layout(s: *const c_void) -> *mut c_void;
+    fn hew_hashset_clear_layout(s: *mut c_void);
 }
 
 /// Statically-known set of kernel symbols this gate has *proved linkable*.
@@ -113,6 +115,10 @@ fn known_linked_kernel_symbols() -> HashMap<&'static str, *const ()> {
         hew_hashmap_clone_layout as *const (),
     );
     m.insert(
+        "hew_hashmap_clear_layout",
+        hew_hashmap_clear_layout as *const (),
+    );
+    m.insert(
         "hew_hashset_insert_layout",
         hew_hashset_insert_layout as *const (),
     );
@@ -139,6 +145,10 @@ fn known_linked_kernel_symbols() -> HashMap<&'static str, *const ()> {
     m.insert(
         "hew_hashset_clone_layout",
         hew_hashset_clone_layout as *const (),
+    );
+    m.insert(
+        "hew_hashset_clear_layout",
+        hew_hashset_clear_layout as *const (),
     );
     m
 }

@@ -1503,6 +1503,63 @@ pub unsafe extern "C" fn hew_hashmap_free_layout(m: *mut HewLayoutHashMap) {
     }
 }
 
+/// Remove every entry, dropping owned K/V blobs, but keep the `entries`
+/// buffer allocated for reuse (mirrors [`hew_vec_clear`](crate::vec::hew_vec_clear)'s
+/// retain-capacity contract). Both `OCCUPIED` and stale `TOMBSTONE` slots are
+/// reset to `EMPTY`.
+///
+/// # Safety
+///
+/// `m` must be a valid `HewLayoutHashMap` pointer (non-null).
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashmap_clear_layout(m: *mut HewLayoutHashMap) {
+    // SAFETY: shared fail-closed gate; aborts on null (a genuine caller bug —
+    // unlike `free_layout`, `clear` has no legitimate null-no-op use).
+    unsafe { validate_op_map(m) };
+    // SAFETY: m non-null per gate.
+    let map = unsafe { &mut *m };
+    let entries = map.entries;
+    let cap = map.cap;
+    let stride = map.stride;
+    let key_offset = map.key_offset;
+    let val_offset = map.val_offset;
+    let kl = &map.key_layout;
+    let vl = &map.val_layout;
+    let key_drop_fn_opt = kl.drop_fn;
+    let val_drop_fn_opt = vl.drop_fn;
+    let val_size = vl.size;
+
+    if !entries.is_null() && cap > 0 {
+        for idx in 0..cap {
+            // SAFETY: idx < cap; stride matches allocation.
+            let state_ptr = unsafe { slot_state(entries, idx, stride) };
+            // SAFETY: state byte in-bounds.
+            let state = unsafe { *state_ptr };
+            if state == OCCUPIED {
+                if let Some(key_drop) = key_drop_fn_opt {
+                    // SAFETY: occupied slot has a valid K blob at key_offset.
+                    let slot_key_ptr = unsafe { slot_key(entries, idx, stride, key_offset) };
+                    key_drop(slot_key_ptr.cast::<c_void>());
+                }
+                if val_size > 0 {
+                    if let Some(val_drop) = val_drop_fn_opt {
+                        // SAFETY: occupied slot has a valid V blob at val_offset.
+                        let slot_val_ptr = unsafe { slot_val(entries, idx, stride, val_offset) };
+                        val_drop(slot_val_ptr.cast::<c_void>());
+                    }
+                }
+            }
+            if state != EMPTY {
+                // SAFETY: state byte in-bounds; resets both OCCUPIED and
+                // stale TOMBSTONE slots so probing starts fresh post-clear.
+                unsafe { *state_ptr = EMPTY };
+            }
+        }
+    }
+
+    map.len = 0;
+}
+
 // ---------------------------------------------------------------------------
 // keys_layout / values_layout — eager Vec snapshot (Gap A)
 // ---------------------------------------------------------------------------

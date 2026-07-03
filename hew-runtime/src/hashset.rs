@@ -22,9 +22,10 @@ use hew_cabi::map::{HewMapKeyLayout, HewMapValueLayout};
 use hew_cabi::vec::HewTypeOwnershipKind;
 
 use crate::hashmap::{
-    hew_hashmap_clone_layout, hew_hashmap_contains_key_layout, hew_hashmap_free_layout,
-    hew_hashmap_insert_layout, hew_hashmap_keys_layout, hew_hashmap_len_layout,
-    hew_hashmap_new_with_layout, hew_hashmap_remove_layout, HewLayoutHashMap,
+    hew_hashmap_clear_layout, hew_hashmap_clone_layout, hew_hashmap_contains_key_layout,
+    hew_hashmap_free_layout, hew_hashmap_insert_layout, hew_hashmap_keys_layout,
+    hew_hashmap_len_layout, hew_hashmap_new_with_layout, hew_hashmap_remove_layout,
+    HewLayoutHashMap,
 };
 use crate::vec::HewVec;
 
@@ -304,6 +305,26 @@ pub unsafe extern "C" fn hew_hashset_remove_layout(
     unsafe { validate_set_op_elem(set.cast_const(), elem) };
     // SAFETY: set non-null per validator; map pointer valid.
     unsafe { hew_hashmap_remove_layout((*set).map, elem) }
+}
+
+// ---------------------------------------------------------------------------
+// Clear
+// ---------------------------------------------------------------------------
+
+/// Remove every element from the set, keeping the underlying storage
+/// allocated for reuse.
+///
+/// `set` must be non-null.
+///
+/// # Safety
+///
+/// `set` must be a valid `HewLayoutHashSet` pointer.
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashset_clear_layout(set: *mut HewLayoutHashSet) {
+    // SAFETY: shared validator; panics if set is null.
+    unsafe { validate_set_op(set.cast_const()) };
+    // SAFETY: set non-null per validator; map pointer valid.
+    unsafe { hew_hashmap_clear_layout((*set).map) }
 }
 
 // ---------------------------------------------------------------------------

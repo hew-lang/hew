@@ -22174,6 +22174,8 @@ fn is_hashmap_layout_runtime_symbol(symbol: &str) -> bool {
             | "hew_hashset_is_empty_layout"
             | "hew_hashset_to_vec_layout"
             | "hew_hashset_clone_layout"
+            | "hew_hashmap_clear_layout"
+            | "hew_hashset_clear_layout"
     )
 }
 
@@ -22345,6 +22347,8 @@ fn layout_hashmap_fn_type<'ctx>(
         "hew_hashmap_values_layout" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
         // `*mut HewLayoutHashMap hew_hashmap_clone_layout(map)`
         "hew_hashmap_clone_layout" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
+        // `void hew_hashmap_clear_layout(map)`
+        "hew_hashmap_clear_layout" => Ok(ctx.void_type().fn_type(&[ptr_ty.into()], false)),
         // `bool hew_hashset_insert_layout(set, elem_ptr)`
         "hew_hashset_insert_layout" => Ok(i1_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false)),
         // `bool hew_hashset_contains_layout(set, elem_ptr)`
@@ -22359,6 +22363,8 @@ fn layout_hashmap_fn_type<'ctx>(
         "hew_hashset_to_vec_layout" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
         // `*mut HewLayoutHashSet hew_hashset_clone_layout(set)`
         "hew_hashset_clone_layout" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
+        // `void hew_hashset_clear_layout(set)`
+        "hew_hashset_clear_layout" => Ok(ctx.void_type().fn_type(&[ptr_ty.into()], false)),
         _ => Err(CodegenError::FailClosed(format!(
             "not a layout HashMap/HashSet runtime symbol: {symbol}"
         ))),
@@ -23760,13 +23766,15 @@ fn lower_hashmap_layout_direct_call(
         "hew_hashmap_len_layout"
         | "hew_hashmap_keys_layout"
         | "hew_hashmap_values_layout"
-        | "hew_hashmap_clone_layout" => 1,
+        | "hew_hashmap_clone_layout"
+        | "hew_hashmap_clear_layout" => 1,
         "hew_hashset_insert_layout"
         | "hew_hashset_contains_layout"
         | "hew_hashset_remove_layout" => 2,
         "hew_hashset_len_layout" | "hew_hashset_is_empty_layout" => 1,
         "hew_hashset_to_vec_layout" => 1,
         "hew_hashset_clone_layout" => 1,
+        "hew_hashset_clear_layout" => 1,
         _ => {
             return Err(CodegenError::FailClosed(format!(
                 "lower_hashmap_layout_direct_call called with non-layout symbol `{callee}`"
@@ -23972,6 +23980,14 @@ fn lower_hashmap_layout_direct_call(
                 .build_store(dest_ptr, cloned_ptr)
                 .llvm_ctx("hew_hashmap_clone_layout store")?;
         }
+        "hew_hashmap_clear_layout" => {
+            // `void hew_hashmap_clear_layout(map)` — drops owned K/V on every
+            // occupied slot and resets len to 0; returns Unit, no dest.
+            fn_ctx
+                .builder
+                .build_call(fv, &[map_ptr.into()], "hew_hashmap_clear_layout_call")
+                .llvm_ctx("hew_hashmap_clear_layout call")?;
+        }
         "hew_hashset_insert_layout" => {
             // `bool hew_hashset_insert_layout(set, elem_ptr)`.
             let (elem_ptr, _elem_ty) = place_pointer(fn_ctx, args[1])?;
@@ -24159,6 +24175,14 @@ fn lower_hashmap_layout_direct_call(
                 .builder
                 .build_store(dest_ptr, vec_ptr)
                 .llvm_ctx("hew_hashset_to_vec_layout store")?;
+        }
+        "hew_hashset_clear_layout" => {
+            // `void hew_hashset_clear_layout(set)` — delegates to the inner
+            // map's clear; returns Unit, no dest.
+            fn_ctx
+                .builder
+                .build_call(fv, &[map_ptr.into()], "hew_hashset_clear_layout_call")
+                .llvm_ctx("hew_hashset_clear_layout call")?;
         }
         _ => unreachable!("matched above"),
     }

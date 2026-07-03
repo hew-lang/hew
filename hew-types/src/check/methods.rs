@@ -199,6 +199,7 @@ fn collection_method_desc(kind: CollectionKind, method: &str) -> Option<Collecti
             "clone" => desc(Some(0), &[], SelfTy),
             "len" => desc(None, &[], RetI64),
             "is_empty" => desc(None, &[], Bool),
+            "clear" => desc(None, &[], Unit),
             _ => return None,
         },
         CollectionKind::HashSet => match method {
@@ -4163,6 +4164,7 @@ impl Checker {
                         | "keys"
                         | "values"
                         | "clone"
+                        | "clear"
                 ) {
                     self.record_resolved_hashmap_call(method, &cx.key, &cx.val, span);
                 }
@@ -4181,7 +4183,7 @@ impl Checker {
                 self.record_hashset_lowering_fact(span, &cx.elem);
                 if matches!(
                     method,
-                    "insert" | "contains" | "remove" | "len" | "is_empty" | "clone"
+                    "insert" | "contains" | "remove" | "len" | "is_empty" | "clone" | "clear"
                 ) {
                     self.record_resolved_hashset_call(method, &cx.elem, span);
                 }
@@ -8595,6 +8597,16 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
                     consumes_receiver: false,
                 },
             ),
+            (
+                "clear".to_string(),
+                MethodTarget {
+                    symbol_name: "hew_hashmap_clear_layout".to_string(),
+                    family: MethodTargetFamily::HashMap(HashMapMethod::Clear),
+                    abi: RuntimeAbi::ByRefMut,
+                    call_hint: CallAbiHint::RuntimeShim,
+                    consumes_receiver: false,
+                },
+            ),
         ],
     });
     registry.register(ImplDef {
@@ -8683,6 +8695,16 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
                     symbol_name: "hew_hashset_to_vec_layout".to_string(),
                     family: MethodTargetFamily::HashSet(HashSetMethod::ToVec),
                     abi: RuntimeAbi::ByRef,
+                    call_hint: CallAbiHint::RuntimeShim,
+                    consumes_receiver: false,
+                },
+            ),
+            (
+                "clear".to_string(),
+                MethodTarget {
+                    symbol_name: "hew_hashset_clear_layout".to_string(),
+                    family: MethodTargetFamily::HashSet(HashSetMethod::Clear),
+                    abi: RuntimeAbi::ByRefMut,
                     call_hint: CallAbiHint::RuntimeShim,
                     consumes_receiver: false,
                 },

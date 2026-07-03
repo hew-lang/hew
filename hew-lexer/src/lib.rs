@@ -1349,6 +1349,55 @@ mod tests {
         );
     }
 
+    // WHY: hand-maintained editor grammars silently drift from the real
+    // keyword/attribute surface — nothing failed CI when PR #2370 removed
+    // `struct` or when `#[resource]`/`#[linear]`/`#[opaque]` shipped without
+    // a downstream grammar update. This guards the sublime grammar (the most
+    // structured of the 3 hand-maintained files) as a representative canary.
+    // WHEN: extend to editors/emacs and editors/nano if they grow their own
+    // structured (machine-parseable) format; today they are free-form regex
+    // lists not worth round-tripping through serde_json.
+    // WHAT: every hand-maintained grammar file should agree with
+    // ALL_KEYWORDS and the parser's known type-decl attribute set.
+    #[test]
+    fn sublime_grammar_keywords_match_lexer_surface() {
+        let json_str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../editors/sublime/Hew.tmLanguage.json"
+        ));
+        let data: serde_json::Value =
+            serde_json::from_str(json_str).expect("Hew.tmLanguage.json should be valid JSON");
+
+        let declaration_match = data["repository"]["keywords"]["patterns"]
+            .as_array()
+            .expect("keywords.patterns should be an array")
+            .iter()
+            .find(|p| p["name"] == "keyword.declaration.hew")
+            .expect("keyword.declaration.hew pattern should exist")["match"]
+            .as_str()
+            .expect("match should be a string");
+        assert!(
+            !declaration_match.contains("struct"),
+            "sublime grammar's keyword.declaration.hew still lists the removed `struct` keyword"
+        );
+
+        let contextual_match = data["repository"]["variables"]["patterns"]
+            .as_array()
+            .expect("variables.patterns should be an array")
+            .iter()
+            .find(|p| p["name"] == "variable.language.contextual.hew")
+            .expect("variable.language.contextual.hew pattern should exist")["match"]
+            .as_str()
+            .expect("match should be a string");
+        for attr in ["resource", "linear", "opaque"] {
+            assert!(
+                contextual_match.contains(attr),
+                "sublime grammar's variable.language.contextual.hew is missing the \
+                 recognised type-decl attribute `{attr}` (see hew-parser KNOWN_TYPE_ATTRS)"
+            );
+        }
+    }
+
     #[test]
     fn struct_lexes_as_identifier() {
         assert_eq!(tokens("struct"), vec![Token::Identifier("struct")]);

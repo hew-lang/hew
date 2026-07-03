@@ -1,0 +1,60 @@
+// Acceptance fixture (G-S-A): a #[on(crash)] hook returning
+// `CrashAction::Escalate` on a ROOT supervisor (no parent) must not abort
+// the process.
+//
+// `App` is a root supervisor: `hew_supervisor_new` sets its `parent` field
+// to null. When `Worker`'s crash hook returns `CrashAction::Escalate`, the
+// pre-fix arm in `apply_restart` (`hew-runtime/src/supervisor.rs`) called
+// `escalate_to_parent(sup)` unconditionally, which dereferenced the null
+// `sup.parent` and aborted the process with SIGABRT. The fixed arm guards
+// the call exactly like the sibling `stop_and_maybe_escalate`: escalating
+// past the root has nowhere to go, so it becomes a safe no-op — the crash
+// is recorded, the child is not restarted, and the supervisor (and the
+// process) keep running.
+//
+// Teeth: before the fix, this binary aborts (exit 134, SIGABRT) the moment
+// `Worker` crashes. After the fix, the process survives and the independent
+// `Probe` actor still answers a fresh `ask`, proving the scheduler stayed
+// healthy through the escalation — not just that the process happened to
+// exit before the abort landed.
+import std::failure;
+
+actor Worker {
+    #[on(crash)]
+    fn on_crash(info: CrashInfo) -> CrashAction {
+        CrashAction::Escalate
+    }
+
+    receive fn boom() {
+        panic("forced crash to fire on(crash)");
+    }
+}
+
+actor Probe {
+    receive fn ping() -> i64 {
+        0
+    }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 5 within 60s;
+
+    child w: Worker;
+}
+
+fn main() -> i64 {
+    let sup = spawn App;
+    let probe = spawn Probe;
+    let w = sup.w;
+    // Fire-and-forget crash: the on_crash hook returns Escalate, which the
+    // root supervisor has nowhere to route.
+    w.boom();
+    // Give the crash-handling dispatch time to run to completion. A
+    // pre-fix binary aborts the whole process during this window.
+    sleep(300ms);
+    match await probe.ping() {
+        Ok(v) => v,
+        Err(_) => 1,
+    }
+}

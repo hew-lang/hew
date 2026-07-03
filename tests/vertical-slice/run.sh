@@ -1442,6 +1442,15 @@ run_accept_expect_status "on_crash_action_restart" 42
 # scripts/asan-fixture-check.sh (Linux) and the macOS leaks oracle.
 run_accept_expect_status "on_crash_action_restart_real_crash" 42
 
+# Accept (G-S-A): a REAL crash fires an #[on(crash)] hook that returns
+# CrashAction::Escalate on a ROOT supervisor (no parent). Before the fix,
+# the Escalate arm in apply_restart dereferenced the root's null parent
+# pointer and aborted the process (exit 134, SIGABRT). The fixed arm guards
+# the call like the sibling stop_and_maybe_escalate, so the escalation is a
+# safe no-op: the process survives and an independent probe actor still
+# answers, proving the scheduler stayed healthy through the crash.
+run_accept_expect_status "on_crash_escalate_root" 0
+
 # Accept: #[on(exit)] linked-actor exit hook compiles end-to-end (M-7-R). The
 # checker accepts `fn on_peer_exit(note: CrashNotification)`; MIR emits
 # Watcher__on_exit; codegen routes SYS_MSG_EXIT to it in the dispatch

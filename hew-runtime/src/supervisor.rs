@@ -2260,8 +2260,12 @@ unsafe fn apply_restart(
             }
             Some(CRASH_ACTION_ESCALATE) => {
                 // Propagate the failure to the supervisor's supervisor instead
-                // of restarting locally.
-                escalate_to_parent(sup);
+                // of restarting locally. A root supervisor has no parent to
+                // escalate to; treat escalation with no parent as a safe
+                // no-op rather than dereferencing a null parent pointer.
+                if !sup.parent.is_null() {
+                    escalate_to_parent(sup);
+                }
                 return;
             }
             // Some(CRASH_ACTION_RESTART) or any out-of-range tag (fail-closed

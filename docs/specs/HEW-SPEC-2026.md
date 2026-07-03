@@ -2359,6 +2359,7 @@ Available `HashMap` methods:
 | `m.is_empty()`            | `bool`          | True if no entries               |
 | `m.keys()`                | `Vec<string>`   | Snapshot of all keys             |
 | `m.values()`              | `Vec<V>`        | Snapshot of all values, same order as `keys()` |
+| `m.clear()`               | `()`            | Remove all entries               |
 
 Available `HashSet<T>` methods (supported element types: `i64` and
 `string`):

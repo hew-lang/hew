@@ -648,7 +648,7 @@ fn main() {
 }
 ```
 
-`.contains_key(k)` and `.remove(k)` both return `bool`. Bind a method result to a `let` before interpolating — nested double-quotes break the f-string parser. Test emptiness with `m.len() == 0`.
+`.contains_key(k)` and `.remove(k)` both return `bool`. Bind a method result to a `let` before interpolating — nested double-quotes break the f-string parser. Test emptiness with `m.len() == 0`, or remove every entry at once with `m.clear()`.
 
 ### Supported HashMap value types
 

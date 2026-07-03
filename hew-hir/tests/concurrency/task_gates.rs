@@ -3,8 +3,7 @@
 //! Validates that spawned calls, fork children, fork blocks, deadline scopes,
 //! and await expressions are correctly validated at HIR lowering.
 
-#[path = "support/mod.rs"]
-mod support;
+use crate::support;
 
 use hew_hir::HirDiagnosticKind;
 

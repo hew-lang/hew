@@ -1,6 +1,6 @@
 use hew_hir::{HirDiagnosticKind, HirExprKind, HirItem, HirStmtKind};
 
-mod support;
+use crate::support;
 
 fn main_fn(output: &hew_hir::LowerOutput) -> &hew_hir::HirFn {
     output

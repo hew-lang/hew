@@ -14,7 +14,7 @@
 
 use hew_hir::{HirDiagnosticKind, MachineMonoEntry};
 
-#[path = "support/mod.rs"]
+#[path = "../support/mod.rs"]
 mod support;
 
 fn lower(source: &str) -> hew_hir::LowerOutput {

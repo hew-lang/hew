@@ -16,8 +16,7 @@
 //! - V13: Method on a bound not present → `UndefinedMethod` (fail-closed)
 //! - V14: Nested bounds (T: B where trait B: A) accessing A's method via B bound
 
-#[path = "support/mod.rs"]
-mod support;
+use crate::support;
 
 use hew_hir::dump_hir;
 

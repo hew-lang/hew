@@ -7,8 +7,7 @@
 //! `unsupported(…, "type-expression", "slice-2")` and returned `Unit`,
 //! preventing any `dyn Trait` annotation from reaching MIR.
 
-#[path = "support/mod.rs"]
-mod support;
+use crate::support;
 
 use hew_hir::HirDiagnosticKind;
 

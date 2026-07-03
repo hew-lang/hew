@@ -7,8 +7,7 @@
 //! checker accepting `fork name = call(...)` and remain the direct-predicate
 //! coverage for facts end-to-end source cannot isolate.
 
-#[path = "support/mod.rs"]
-mod support;
+use crate::support;
 
 use hew_hir::{lower_program_host_target, HirDiagnostic, HirDiagnosticKind, ResolutionCtx};
 

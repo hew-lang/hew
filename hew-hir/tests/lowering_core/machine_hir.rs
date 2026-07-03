@@ -2,8 +2,7 @@
 
 use hew_hir::{HirDiagnosticKind, HirExpr, HirExprKind, HirItem, HirLiteral, HirStmtKind};
 
-#[path = "support/mod.rs"]
-mod support;
+use crate::support;
 
 fn lower(source: &str) -> hew_hir::LowerOutput {
     support::checker_pipeline::lower_through_checker(source)

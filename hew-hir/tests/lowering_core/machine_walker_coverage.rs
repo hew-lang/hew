@@ -13,8 +13,7 @@
 
 use hew_hir::{HirDiagnosticKind, TargetArch};
 
-#[path = "support/mod.rs"]
-mod support;
+use crate::support;
 
 // ── helpers ────────────────────────────────────────────────────────────────
 

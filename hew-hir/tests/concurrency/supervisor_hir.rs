@@ -7,8 +7,7 @@
 
 use hew_hir::{HirItem, HirSupervisorChild, HirSupervisorDecl};
 
-#[path = "support/mod.rs"]
-mod support;
+use crate::support;
 
 fn lower(source: &str) -> hew_hir::LowerOutput {
     support::checker_pipeline::lower_through_checker(source)

@@ -15,8 +15,7 @@ use hew_hir::{HirExprKind, HirItem, HirStmtKind};
 use hew_parser::ast::{Item, Program};
 use hew_parser::module::{Module, ModuleGraph, ModuleId};
 
-#[path = "support/mod.rs"]
-mod support;
+use crate::support;
 
 /// Build a `Program` with a non-root module containing the imported
 /// `Toggle` machine and a root module whose `main` references it via the

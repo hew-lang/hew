@@ -23,8 +23,7 @@ use hew_hir::{HirDiagnosticKind, HirItem};
 use hew_parser::ast::{Item, Program};
 use hew_parser::module::{Module, ModuleGraph, ModuleId};
 
-#[path = "support/mod.rs"]
-mod support;
+use crate::support;
 
 /// Build a `Program` whose non-root `shapes` module contains:
 ///  - `pub type Foo { n: i64; }`

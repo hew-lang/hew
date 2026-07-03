@@ -24,7 +24,7 @@
 //! `root_item_ids` inserts makes the builtin items leak, failing the middle
 //! assertion.
 
-mod support;
+use crate::support;
 
 use hew_hir::HirItem;
 use support::checker_pipeline::lower_through_checker;

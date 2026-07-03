@@ -32,7 +32,7 @@ use std::collections::HashSet;
 /// WHY: avoids adding a toml crate test-dep; the format has been stable since
 /// the file was introduced and is enforced by the verifier (scripts/verify-jit-symbols.sh).
 fn parse_stable_symbols() -> HashSet<String> {
-    let raw = include_str!("../../scripts/jit-symbol-classification.toml");
+    let raw = include_str!("../../../scripts/jit-symbol-classification.toml");
     let mut inside = false;
     let mut symbols = HashSet::new();
 

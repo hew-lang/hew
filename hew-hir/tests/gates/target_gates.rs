@@ -4,8 +4,7 @@
 
 use hew_hir::{HirDiagnosticKind, TargetArch};
 
-#[path = "support/mod.rs"]
-mod support;
+use crate::support;
 
 fn lower(source: &str, target: TargetArch) -> hew_hir::LowerOutput {
     support::checker_pipeline::lower_through_checker_for_target(source, target)

@@ -10,8 +10,7 @@ use hew_hir::HirDiagnosticKind;
 use hew_parser::ast::{Item, Program};
 use hew_parser::module::{Module, ModuleGraph, ModuleId};
 
-#[path = "support/mod.rs"]
-mod support;
+use crate::support;
 
 fn lower(source: &str) -> hew_hir::LowerOutput {
     support::checker_pipeline::lower_through_checker(source)

@@ -998,7 +998,8 @@ fn wasm_excluded_drop_symbol(spec: &hew_mir::DropFnSpec) -> Option<String> {
     match spec {
         hew_mir::DropFnSpec::Runtime(d) => match d {
             D::DuplexClose | D::SendHalfClose | D::RecvHalfClose => Some(d.c_symbol().to_string()),
-            // `hew_actor_demonitor` is native-only (actors are not supported on wasm32).
+            // `hew_actor_demonitor` is native-only: link/monitor are OS-thread-
+            // dependent and not supported on wasm32 (basic actors are).
             D::MonitorRefClose => Some(d.c_symbol().to_string()),
             D::StreamClose
             | D::SinkClose
@@ -2286,7 +2287,8 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // hew_actor_demonitor(ref_id: u64) -> void
         // (`hew-runtime/src/monitor.rs:281`). Cancels a monitor by ref_id.
         // Called from the MonitorRef::close drop ritual (RuntimeDropDescriptor::MonitorRefClose).
-        // Native-only: actors are not supported on wasm32.
+        // Native-only: link/monitor/demonitor are OS-thread-dependent and not
+        // supported on wasm32 (basic actors — spawn/send/receive/ask — are).
         "hew_actor_demonitor" => ctx.void_type().fn_type(&[i64_ty.into()], false),
         // hew_node_monitor(target_pid: i64) -> i64
         // (`hew-runtime/src/dist_monitor.rs`). Registers a distributed monitor

@@ -91,7 +91,7 @@ use crate::model::{EnumLayout, RecordLayout};
 pub enum StateFieldCloneKind {
     /// Field whose bits constitute the value: primitives, `bool`, `char`,
     /// `Duration`, `Unit`, `Never`, and `#[repr(C)]` bit-copy aggregates
-    /// such as `HewActorRef` / `LocalPid<T>` / `Actor<T>` / `ActorRef<T>`.
+    /// such as `HewActorRef` / `LocalPid<T>` / `RemotePid<T>` / `LambdaPid<M,R>`.
     ///
     /// Plan §4.5 A: "`HewActorRef` is `#[repr(C)]` bit-copyable — NOT
     /// refcount-bump". The Stage 3 wholesale `memcpy(dst, src,

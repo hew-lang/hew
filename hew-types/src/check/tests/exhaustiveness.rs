@@ -1459,3 +1459,170 @@ fn explicit_cooperate_expression_is_parse_error() {
         result.errors
     );
 }
+
+/// #2340: a non-empty tuple payload destructure with every element
+/// irrefutable (plain bindings) must be credited as covering the variant,
+/// not rejected as non-exhaustive.
+#[test]
+fn typecheck_tuple_payload_destructure_is_exhaustive() {
+    let (errors, _) = parse_and_check(
+        r"
+fn main() {
+    let x: Option<(i64, i64)> = Some((1, 2));
+    let r = match x {
+        Some((a, b)) => a + b,
+        None => 0,
+    };
+    let _done = r;
+}",
+    );
+    assert!(
+        errors.is_empty(),
+        "irrefutable tuple payload destructure must be exhaustive: {errors:?}"
+    );
+}
+
+/// Sibling of the #2340 fix: a struct-variant field typed as a tuple, fully
+/// destructured with bindings, must also be credited as irrefutable via the
+/// same unified predicate (routed through the now-typed
+/// `VariantPayloadShape::Struct`).
+#[test]
+fn typecheck_struct_variant_tuple_field_destructure_is_exhaustive() {
+    let (errors, _) = parse_and_check(
+        r"
+enum Packet { Data { value: (i64, i64) }; Empty }
+fn main() {
+    let p: Packet = Data { value: (1, 2) };
+    let r = match p {
+        Data { value: (a, b) } => a + b,
+        Empty => 0,
+    };
+    let _done = r;
+}",
+    );
+    assert!(
+        errors.is_empty(),
+        "irrefutable tuple-typed struct-variant field destructure must be exhaustive: {errors:?}"
+    );
+}
+
+/// Negative control mirroring the struct-variant sibling: a literal inside
+/// the tuple-typed field makes the field sub-pattern refutable, so the match
+/// must still be non-exhaustive.
+#[test]
+fn typecheck_struct_variant_tuple_field_with_literal_still_non_exhaustive() {
+    let (errors, warnings) = parse_and_check(
+        r"
+enum Packet { Data { value: (i64, i64) }; Empty }
+fn main() {
+    let p: Packet = Data { value: (1, 2) };
+    match p {
+        Data { value: (1, b) } => b,
+        Empty => 0,
+    }
+    let _done = 0;
+}",
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::NonExhaustiveMatch)),
+        "literal element inside a tuple-typed struct-variant field must keep the match \
+         non-exhaustive: {errors:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .all(|w| !matches!(w.kind, TypeErrorKind::NonExhaustiveMatch)),
+        "non-exhaustive struct-variant tuple-field match must not be downgraded to a warning: \
+         {warnings:?}"
+    );
+}
+
+/// Negative control: a literal inside one tuple element makes the whole
+/// element-wise AND-recursion refutable, so the match must still be
+/// non-exhaustive. Catches an over-eager fix that credits any non-empty
+/// tuple instead of recursing element-wise.
+#[test]
+fn typecheck_tuple_payload_with_literal_element_still_non_exhaustive() {
+    let (errors, warnings) = parse_and_check(
+        r"
+fn main() {
+    let x: Option<(i64, i64)> = Some((1, 2));
+    match x {
+        Some((1, b)) => b,
+        None => 0,
+    }
+    let _done = 0;
+}",
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::NonExhaustiveMatch)),
+        "literal element inside tuple payload must keep the match non-exhaustive: {errors:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .all(|w| !matches!(w.kind, TypeErrorKind::NonExhaustiveMatch)),
+        "non-exhaustive tuple-payload match must not be downgraded to a warning: {warnings:?}"
+    );
+}
+
+/// Negative control: arity mismatch between the tuple pattern and the
+/// resolved tuple payload type must stay refutable — the new recursive
+/// predicate must not credit a shape it can't actually zip element-wise.
+/// The parser-adjacent `bind_pattern` arity check (patterns.rs, the
+/// `Ty::Tuple` binding arm) independently reports `ArityMismatch` for the
+/// same shape; this test additionally confirms the exhaustiveness predicate
+/// does not compensate by wrongly crediting the arm, which would otherwise
+/// suppress the `NonExhaustiveMatch` alongside it.
+#[test]
+fn typecheck_tuple_payload_arity_mismatch_still_non_exhaustive() {
+    let (errors, _) = parse_and_check(
+        r"
+fn main() {
+    let x: Option<(i64, i64)> = Some((1, 2));
+    match x {
+        Some((a, b, c)) => a,
+        None => 0,
+    }
+    let _done = 0;
+}",
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::ArityMismatch)),
+        "expected the pre-existing tuple-pattern arity check to fire: {errors:?}"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::NonExhaustiveMatch)),
+        "arity-mismatched tuple payload must not be credited as covering Some: {errors:?}"
+    );
+}
+
+/// Recursion depth: a two-level nested tuple (tuple-in-tuple) with every
+/// leaf a plain binding must be credited as irrefutable, proving the
+/// recursion is not hardcoded to a single level.
+#[test]
+fn typecheck_nested_tuple_payload_destructure_is_exhaustive() {
+    let (errors, _) = parse_and_check(
+        r"
+fn main() {
+    let x: Option<(i64, (i64, i64))> = Some((1, (2, 3)));
+    let r = match x {
+        Some((a, (b, c))) => a + b + c,
+        None => 0,
+    };
+    let _done = r;
+}",
+    );
+    assert!(
+        errors.is_empty(),
+        "two-level nested tuple payload destructure must be exhaustive: {errors:?}"
+    );
+}

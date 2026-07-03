@@ -144,35 +144,15 @@ fn unsupported_project_subpattern_label(pattern: &Pattern) -> Option<&'static st
     }
 }
 
-/// True for payload subpatterns that match every value of their slot type:
-/// wildcards, plain bindings (any casing), and the unit tuple `()`.
-///
-/// Bare unqualified identifiers — whether lowercase or uppercase — are
-/// treated as irrefutable bindings here.  Qualified names (containing `::`
-/// such as `Shape::Line`) are always constructor paths and therefore
-/// refutable.  This is used for struct-variant field position exhaustiveness
-/// where concrete field types are not threaded through
-/// `VariantPayloadShape::Struct`; for tuple-payload positions use the
-/// resolution-aware `is_payload_irrefutable_for_ty` method instead.
-fn payload_subpattern_is_irrefutable(pattern: &Pattern) -> bool {
-    match pattern {
-        Pattern::Wildcard => true,
-        // Qualified name — always a constructor path, never a binder.
-        // Bare name (any casing) — treated as a binding (irrefutable).
-        Pattern::Identifier(name) => !name.contains("::"),
-        Pattern::Tuple(pats) => pats.is_empty(),
-        _ => false,
-    }
-}
-
 /// Payload shape of one enum variant for exhaustiveness coverage.
 pub(super) enum VariantPayloadShape {
     Unit,
     Tuple(Vec<Ty>),
-    /// Struct-variant fields; coverage only needs the names, not the types,
-    /// because nested constructor subpatterns are not admitted in
-    /// struct-variant field position.
-    Struct,
+    /// Struct-variant fields with their (substituted) resolved types, so
+    /// field-position sub-patterns can be checked for irrefutability against
+    /// their real payload type via `Checker::is_payload_irrefutable_for_ty`
+    /// instead of the type-blind free function this shape used to require.
+    Struct(Vec<(String, Ty)>),
 }
 
 impl Checker {
@@ -227,7 +207,17 @@ impl Checker {
                                 .map(|f| substitute_pattern_field_ty(f, &type_params, &type_args))
                                 .collect(),
                         ),
-                        VariantDef::Struct(_) => VariantPayloadShape::Struct,
+                        VariantDef::Struct(fields) => VariantPayloadShape::Struct(
+                            fields
+                                .iter()
+                                .map(|(name, f)| {
+                                    (
+                                        name.clone(),
+                                        substitute_pattern_field_ty(f, &type_params, &type_args),
+                                    )
+                                })
+                                .collect(),
+                        ),
                     };
                     (name.clone(), shape)
                 })
@@ -300,9 +290,10 @@ impl Checker {
             .all(|(name, shape)| self.variant_covered(patterns, name, shape))
     }
 
-    /// Resolution-based irrefutability test for a single payload subpattern
-    /// slot.  Replaces the static `payload_subpattern_is_irrefutable` for
-    /// contexts where the concrete payload type is known.
+    /// Resolution-based irrefutability test for a payload subpattern slot,
+    /// used for every context where the concrete payload type is known:
+    /// tuple-variant payload slots and (via their substituted field types)
+    /// struct-variant fields.
     ///
     /// A subpattern is irrefutable (catches every value of `payload_ty`) when:
     /// - It is a wildcard `_` or the empty-tuple unit `()`.
@@ -311,6 +302,12 @@ impl Checker {
     ///
     /// Constructor identifiers (qualified with `::`, or resolving to a known
     /// variant) are refutable and return `false`.
+    ///
+    /// A tuple sub-pattern is irrefutable when it is the empty tuple `()`, or
+    /// when its resolved payload type is itself `Ty::Tuple` of equal arity and
+    /// every element sub-pattern is (recursively) irrefutable against its
+    /// corresponding element type. Any arity mismatch or non-tuple resolved
+    /// payload type stays refutable (fail-closed) rather than being credited.
     fn is_payload_irrefutable_for_ty(&self, pattern: &Pattern, payload_ty: &Ty) -> bool {
         match pattern {
             Pattern::Wildcard => true,
@@ -324,7 +321,20 @@ impl Checker {
                 let short = name.rsplit("::").next().unwrap_or(name);
                 self.resolve_variant_match(short, &resolved, name).is_none()
             }
-            Pattern::Tuple(pats) => pats.is_empty(),
+            Pattern::Tuple(pats) => {
+                if pats.is_empty() {
+                    return true;
+                }
+                let resolved = self.project_assoc_types(&self.subst.resolve(payload_ty));
+                let Ty::Tuple(elem_tys) = &resolved else {
+                    return false;
+                };
+                pats.len() == elem_tys.len()
+                    && pats
+                        .iter()
+                        .zip(elem_tys.iter())
+                        .all(|((sub, _), elem_ty)| self.is_payload_irrefutable_for_ty(sub, elem_ty))
+            }
             _ => false,
         }
     }
@@ -337,6 +347,13 @@ impl Checker {
         variant_name: &str,
         shape: &VariantPayloadShape,
     ) -> bool {
+        let struct_field_tys: HashMap<&str, &Ty> = match shape {
+            VariantPayloadShape::Struct(fields) => fields
+                .iter()
+                .map(|(name, ty)| (name.as_str(), ty))
+                .collect(),
+            _ => HashMap::new(),
+        };
         let mut ctor_rows: Vec<&[(Pattern, Span)]> = Vec::new();
         let mut has_unit_row = false;
         let mut has_struct_cover = false;
@@ -358,9 +375,13 @@ impl Checker {
                     let short = name.rsplit("::").next().unwrap_or(name);
                     if short == variant_name
                         && fields.iter().all(|pf| {
-                            pf.pattern
-                                .as_ref()
-                                .is_none_or(|(sub, _)| payload_subpattern_is_irrefutable(sub))
+                            pf.pattern.as_ref().is_none_or(|(sub, _)| {
+                                struct_field_tys
+                                    .get(pf.name.as_str())
+                                    .is_some_and(|field_ty| {
+                                        self.is_payload_irrefutable_for_ty(sub, field_ty)
+                                    })
+                            })
                         })
                     {
                         has_struct_cover = true;
@@ -371,7 +392,7 @@ impl Checker {
         }
         match shape {
             VariantPayloadShape::Unit => has_unit_row || !ctor_rows.is_empty(),
-            VariantPayloadShape::Struct => has_struct_cover,
+            VariantPayloadShape::Struct(_) => has_struct_cover,
             VariantPayloadShape::Tuple(payload_tys) => {
                 // Use resolution-based irrefutability so that a plain uppercase
                 // binder (e.g. `Some(MAX)` where `MAX` is not a variant of the

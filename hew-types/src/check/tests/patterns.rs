@@ -861,17 +861,14 @@ fn main() -> i64 {
     let p = Pair::Both((1, 2));
     match p {
         Pair::Both((a, b)) => a,
-        Pair::Both(_) => 0,
         Pair::None => 0,
     }
 }",
     );
     assert!(
-        !output.errors.iter().any(|e| matches!(
-            &e.kind,
-            crate::error::TypeErrorKind::UnsupportedPayloadSubpattern { .. }
-        )),
-        "tuple-in-payload must not emit UnsupportedPayloadSubpattern; got errors: {:#?}",
+        output.errors.is_empty(),
+        "tuple-in-payload destructure must be fully accepted (both HIR-supported \
+         and exhaustiveness-credited) without an extra catch-all arm; got errors: {:#?}",
         output.errors
     );
 }

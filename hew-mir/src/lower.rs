@@ -7852,6 +7852,12 @@ fn lower_function(
     // the dataflow observes the discharges and codegen emits them.
     {
         let mut instr_spans = std::mem::take(&mut builder.instr_spans);
+        // The immediate-parent chain of every recorded byte-copy alias, so the
+        // sibling-discharge emitter can walk a MULTI-HOP escape (`let mid = o.mid;
+        // let leaf = mid.leaf; return leaf`) and compensate the non-escaped
+        // siblings at every level — the reach `close_alias_binders_forward` gave
+        // the composite-drop prover's exclusion.
+        let alias_chain = builder.alias_projection_chain();
         let is_owned_record = |ty: &ResolvedTy| builder.is_owned_aggregate_record_ty(ty);
         let owned_field_list = |ty: &ResolvedTy| builder.project_record_owned_field_list(ty);
         let field_dischargeable = |ty: &ResolvedTy| {
@@ -7865,6 +7871,7 @@ fn lower_function(
             &builder.locals,
             &builder.record_field_orders,
             &builder.enum_layouts,
+            &alias_chain,
             &is_owned_record,
             &owned_field_list,
             &field_dischargeable,
@@ -9987,6 +9994,48 @@ impl Builder {
             resolved.push((alias_local, owner));
         }
         resolved
+    }
+
+    /// The `(alias_local, immediate_parent_local, field_ordinal)` triples for
+    /// every recorded byte-copy interior alias ([`Disposition::AliasOf`]) whose
+    /// provenance is a single record/tuple field projection of a nameable parent
+    /// local — the IMMEDIATE hop of a `let mid = o.mid; let leaf = mid.leaf`
+    /// chain (`leaf -> (mid, 0)`, `mid -> (o, 0)`). Unlike
+    /// [`Builder::alias_owner_field_binders`], which resolves each alias straight
+    /// to its ultimate owner, this preserves the intermediate structure so the
+    /// escaped-record sibling-discharge emitter can walk the chain and compensate
+    /// the non-escaped siblings at EVERY level (the outer `c` through the root,
+    /// the intermediate `mid.x` through the `mid` alias) — matching the multi-hop
+    /// reach `close_alias_binders_forward` gave the composite-drop prover's
+    /// exclusion. Without it the widened exclusion removes the owner's composite
+    /// drop while the one-hop sibling emitter (blind past a one-hop alias) leaves
+    /// every deeper sibling to leak unconditionally.
+    ///
+    /// An entry whose parent is not a named local, or whose provenance path is
+    /// not a single field step, is dropped — the emitter keeps its fail-closed
+    /// leak-as-before for it (leak, never a double-free).
+    fn alias_projection_chain(&self) -> Vec<(u32, u32, u32)> {
+        let mut chain = Vec::new();
+        for entry in &self.owned_locals {
+            let Some(provenance) = entry.provenance.as_ref() else {
+                continue;
+            };
+            let PlaceProvenance::Local(parent_local) = provenance.root else {
+                continue;
+            };
+            let [Projection::Field(field)] = provenance.path.as_slice() else {
+                continue;
+            };
+            let Some(alias_local) = self
+                .binding_locals
+                .get(&entry.binding)
+                .and_then(|p| base_local(*p))
+            else {
+                continue;
+            };
+            chain.push((alias_local, parent_local, *field));
+        }
+        chain
     }
 
     /// The scope-exit-live owned locals as `(binding, name, ty)` tuples — the
@@ -36540,6 +36589,7 @@ fn apply_escaped_record_sibling_field_drops(
     local_tys: &[ResolvedTy],
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
+    alias_chain: &[(u32, u32, u32)],
     is_owned_record: &dyn Fn(&ResolvedTy) -> bool,
     owned_field_list: &dyn Fn(&ResolvedTy) -> Vec<(u32, ResolvedTy)>,
     field_dischargeable: &dyn Fn(&ResolvedTy) -> bool,
@@ -36871,6 +36921,22 @@ fn apply_escaped_record_sibling_field_drops(
         }
         insertions.push((esc_block, esc_idx + 1, siblings));
     }
+    // The one-hop scan above sees only a binder loaded DIRECTLY off a whole-value
+    // alias member, so a ≥2-hop escape (`let mid = o.mid; let leaf = mid.leaf;
+    // return leaf`) is invisible to it — yet the composite-drop prover DOES
+    // exclude the owner for it (via `close_alias_binders_forward`). Walk the
+    // recorded alias chain and discharge the non-escaped siblings at every level
+    // so the widened exclusion never outruns its compensation.
+    insertions.extend(compute_escaped_record_chain_sibling_drops(
+        blocks,
+        suspend_kinds,
+        &root_record_ty,
+        &alias_of,
+        alias_chain,
+        local_tys,
+        owned_field_list,
+        field_dischargeable,
+    ));
     if insertions.is_empty() {
         return;
     }
@@ -36898,6 +36964,278 @@ fn apply_escaped_record_sibling_field_drops(
             }
         }
     }
+}
+
+/// Multi-hop sibling discharge for the ESCAPED deep-alias chain
+/// (`let mid = o.mid; let leaf = mid.leaf; return leaf`), the ≥2-hop companion
+/// to the one-hop scan in [`apply_escaped_record_sibling_field_drops`].
+///
+/// `derive_owned_record_drop_allowed` folds the recorded deep aliases into its
+/// exclusion via `close_alias_binders_forward`, so when a ≥2-hop alias escapes
+/// into an owning sink it suppresses the OWNER root's whole composite drop —
+/// otherwise the owner would free a subtree the escapee already handed to the
+/// caller (the #2375 double-free). The one-hop scan cannot see a ≥2-hop alias
+/// (its field-binder scan reaches only a binder loaded DIRECTLY off a whole-
+/// value alias member), so the widened exclusion removed the composite drop but
+/// nothing discharged the non-escaped siblings ALONG the chain — the outer `c`
+/// and the intermediate `mid.x` leaked unconditionally (the P0 regression).
+///
+/// This walk mirrors the exclusion's reach: from the escapee up its immediate-
+/// parent chain to the owning root, it emits one `FieldDropInPlace` per owned
+/// field that does NOT lead to the next (escaping) hop, addressed through the
+/// still-live byte-copy alias local at each level (`mid.x` through `mid`, `o.c`
+/// through `o`). Exactly-once invariant: the escaped field at each level is
+/// never discharged (the escapee owns that subtree), every other owned field is
+/// discharged exactly once through its level's alias slot.
+///
+/// Fail-closed, coupled to the prover's exclusion so the two never disagree:
+/// exactly ONE chain alias may escape, at a single INSTRUCTION whose escape
+/// trigger (a `Move` to a non-member/non-carrier slot, a `RecordInit` field, a
+/// `RecordFieldStore` source) is a strict subset of the prover's exclusion
+/// triggers; the chain must resolve cleanly to a single candidate root through
+/// ≥2 byte-copy hops (a one-hop escape is the scan above's job); the escape
+/// block must not be reachable from itself (no loop — the inline-composite
+/// discharges have no null-store to make a re-run idempotent); and NO node of
+/// the chain may be read after the escape point. Any use of a chain alias this
+/// walk cannot model bails the whole pass (leak-as-before, never a double-free).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct caller-owned input the walk needs — \
+              the MIR, the suspend table, the candidate-root and whole-value \
+              alias maps, the recorded chain, the local type table, and the two \
+              type-shape predicates; bundling them into a struct would only \
+              relocate the same fields at the single call site"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one linear pipeline — carrier closure, escape scan, chain walk, \
+              after-escape liveness guard, per-level discharge — whose \
+              fail-closed ordering the soundness argument depends on; splitting \
+              it would scatter the shared carrier/escape state"
+)]
+#[allow(
+    clippy::similar_names,
+    reason = "`escapee` (the escaping alias) and `escapes` (the collected escape \
+              events) are the domain terms; renaming either obscures the walk"
+)]
+fn compute_escaped_record_chain_sibling_drops(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    root_record_ty: &HashMap<u32, ResolvedTy>,
+    alias_of: &HashMap<u32, u32>,
+    alias_chain: &[(u32, u32, u32)],
+    local_tys: &[ResolvedTy],
+    owned_field_list: &dyn Fn(&ResolvedTy) -> Vec<(u32, ResolvedTy)>,
+    field_dischargeable: &dyn Fn(&ResolvedTy) -> bool,
+) -> Vec<(u32, usize, Vec<Instr>)> {
+    // Immediate-parent map: alias_local -> (parent_local, field ordinal it reads).
+    let parent_of: HashMap<u32, (u32, u32)> = alias_chain
+        .iter()
+        .copied()
+        .map(|(alias, parent, field)| (alias, (parent, field)))
+        .collect();
+    if parent_of.is_empty() {
+        return Vec::new();
+    }
+
+    // Forward whole-value-`Move` closure of the chain alias binding locals: every
+    // slot a chain alias value flows into (`let l2 = leaf`) carries the same
+    // escapee identity, so a later escape of the copy is still attributed to the
+    // recorded alias — and, symmetrically, a `Move` INTO a carrier is a benign
+    // hand-off, never an escape (so the escape scan below can never disagree with
+    // the prover's `field_binders`-benign move rule).
+    let mut carrier_of: HashMap<u32, u32> = parent_of.keys().map(|&a| (a, a)).collect();
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                if let Instr::Move { dest, src } = instr {
+                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
+                        if matches!(src, Place::Local(_)) && matches!(dest, Place::Local(_)) {
+                            if let Some(&alias) = carrier_of.get(&sl) {
+                                if let std::collections::hash_map::Entry::Vacant(slot) =
+                                    carrier_of.entry(dl)
+                                {
+                                    slot.insert(alias);
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // Escape scan. A chain carrier read into an owning sink is an escape; an
+    // interior descent (`RecordFieldLoad`/`TupleFieldLoad` reading the carrier —
+    // the next hop of the chain, or the consumed-match destructure) and a
+    // benign whole-value hand-off into another carrier/alias member are not.
+    // Any owning use this walk cannot classify bails the whole pass.
+    let mut escapes: Vec<(u32, u32, usize)> = Vec::new();
+    for block in blocks {
+        for (idx, instr) in block.instructions.iter().enumerate() {
+            match instr {
+                // Interior descent read: feeds the next hop, never escapes.
+                Instr::RecordFieldLoad { .. } | Instr::TupleFieldLoad { .. } => {}
+                Instr::Move { dest, src } => {
+                    if let Some(sl) = base_local(*src).filter(|_| matches!(src, Place::Local(_))) {
+                        if let Some(&escapee) = carrier_of.get(&sl) {
+                            let dest_local =
+                                base_local(*dest).filter(|_| matches!(dest, Place::Local(_)));
+                            let benign = dest_local.is_some_and(|dl| {
+                                carrier_of.contains_key(&dl) || alias_of.contains_key(&dl)
+                            });
+                            if !benign {
+                                escapes.push((escapee, block.id, idx));
+                            }
+                        }
+                    }
+                }
+                Instr::RecordInit { fields, .. } => {
+                    for (_, place) in fields {
+                        if let Some(l) = base_local(*place) {
+                            if let Some(&escapee) = carrier_of.get(&l) {
+                                escapes.push((escapee, block.id, idx));
+                            }
+                        }
+                    }
+                }
+                Instr::RecordFieldStore { src, .. } => {
+                    if let Some(l) = base_local(*src) {
+                        if let Some(&escapee) = carrier_of.get(&l) {
+                            escapes.push((escapee, block.id, idx));
+                        }
+                    }
+                }
+                other => {
+                    let (reads, _) = crate::dataflow::instr_reads_writes(other);
+                    for place in reads {
+                        if let Some(l) = base_local(place) {
+                            if carrier_of.contains_key(&l)
+                                && !binder_read_is_borrow_safe_instr(other, l)
+                            {
+                                // An owning use of a chain alias this walk does
+                                // not model: fail closed (leak-as-before).
+                                return Vec::new();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for place in terminator_source_places(&block.terminator, suspend_kinds.get(&block.id)) {
+            if let Some(l) = base_local(place) {
+                if carrier_of.contains_key(&l)
+                    && !binder_read_is_borrow_safe_terminator(
+                        &block.terminator,
+                        suspend_kinds.get(&block.id),
+                        l,
+                    )
+                {
+                    // A terminator escape has no post-escape insertion point.
+                    return Vec::new();
+                }
+            }
+        }
+    }
+
+    // Exactly one chain alias may escape, at a single instruction.
+    let &[(escapee, esc_block, esc_idx)] = &escapes[..] else {
+        return Vec::new();
+    };
+
+    // Walk the escapee's immediate-parent chain to its candidate root, recording
+    // `(node_local, field-that-leads-to-the-next-hop)` at each level. Requires ≥2
+    // byte-copy hops and a clean termination at a candidate record root.
+    let mut chain_nodes: Vec<(u32, u32)> = Vec::new();
+    let mut cursor = escapee;
+    let mut reached_root = false;
+    for _ in 0..=parent_of.len() {
+        let Some(&(parent, field)) = parent_of.get(&cursor) else {
+            break;
+        };
+        chain_nodes.push((parent, field));
+        if root_record_ty.contains_key(&parent) {
+            reached_root = true;
+            break;
+        }
+        cursor = parent;
+    }
+    if !reached_root || chain_nodes.len() < 2 {
+        return Vec::new();
+    }
+
+    // No node of the chain (root, intermediate aliases, escapee carriers) may be
+    // read after the escape point — discharging a sibling before a live read
+    // would free a slot the read still observes. A self-reachable escape block is
+    // a loop the inline-composite discharges cannot make idempotent.
+    let node_locals: HashSet<u32> = chain_nodes
+        .iter()
+        .map(|&(node, _)| node)
+        .chain(carrier_of.keys().copied())
+        .collect();
+    let reach = blocks_reachable_from(blocks, esc_block);
+    if reach.contains(&esc_block) {
+        return Vec::new();
+    }
+    let in_region = |block_id: u32, position: Option<usize>| -> bool {
+        if block_id == esc_block {
+            position.is_none_or(|i| i > esc_idx)
+        } else {
+            reach.contains(&block_id)
+        }
+    };
+    for block in blocks {
+        for (idx, instr) in block.instructions.iter().enumerate() {
+            if block.id == esc_block && idx == esc_idx {
+                // The escape instruction itself reads the escapee; that read is
+                // AT the escape, not after it.
+                continue;
+            }
+            let reads_node = instr_source_places(instr)
+                .into_iter()
+                .filter_map(base_local)
+                .any(|l| node_locals.contains(&l));
+            if reads_node && in_region(block.id, Some(idx)) {
+                return Vec::new();
+            }
+        }
+        let term_reads_node =
+            terminator_source_places(&block.terminator, suspend_kinds.get(&block.id))
+                .into_iter()
+                .filter_map(base_local)
+                .any(|l| node_locals.contains(&l));
+        if term_reads_node && in_region(block.id, None) {
+            return Vec::new();
+        }
+    }
+
+    // Emit the per-level sibling discharges: at each chain node, every owned
+    // field except the one that leads to the next (escaping) hop.
+    let mut siblings: Vec<Instr> = Vec::new();
+    for &(node_local, escaped_field) in &chain_nodes {
+        let Some(node_ty) = local_tys.get(node_local as usize) else {
+            continue;
+        };
+        for (field_idx, field_ty) in owned_field_list(node_ty) {
+            if field_idx == escaped_field || !field_dischargeable(&field_ty) {
+                continue;
+            }
+            siblings.push(Instr::FieldDropInPlace {
+                base: Place::Local(node_local),
+                field: crate::model::FieldAddr::Record(FieldOffset(field_idx)),
+                ty: field_ty,
+            });
+        }
+    }
+    if siblings.is_empty() {
+        return Vec::new();
+    }
+    vec![(esc_block, esc_idx + 1, siblings)]
 }
 
 /// W5.020 — fail-closed sole-owner derivation for **heap-owning enum
@@ -46392,6 +46730,7 @@ mod escaped_sibling_field_discharge {
             local_tys,
             &field_orders(),
             &[],
+            &[],
             &is_rec,
             &owned_fields,
             &dischargeable,
@@ -46750,6 +47089,7 @@ mod escaped_sibling_field_discharge {
             &binding_locals,
             &local_tys,
             &field_orders(),
+            &[],
             &[],
             &is_rec,
             &three_fields,

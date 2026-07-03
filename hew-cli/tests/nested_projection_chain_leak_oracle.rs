@@ -525,6 +525,30 @@ fn bystander_root_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("chain_bystander", bystander_root_source);
 }
 
+/// Escaped-return record holds a FLAT slope: when the deep alias escapes into
+/// the return, the owner's composite drop is excluded (so the caller frees the
+/// escapee's subtree exactly once), and the multi-hop sibling-discharge walk
+/// releases the non-escaped siblings ALONG the chain — the outer `c` through the
+/// owner and the intermediate `mid.x` through the `mid` alias — each exactly
+/// once. Without that walk the widened exclusion removed the composite drop
+/// while nothing discharged the deeper siblings, so `mid.x` and the outer `c`
+/// leaked every frame (2 strings / call). This is the slope check that was
+/// missing for the escape shapes; the double-free pin below only proved no
+/// re-free, not the absence of a per-iteration leak.
+#[test]
+fn escaped_return_record_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance("chain_escaped_return", escaped_return_record_source);
+}
+
+/// Escaped-into-record holds a FLAT slope: the deep alias is stored into a fresh
+/// owning record the caller keeps, so the owner's composite is excluded and the
+/// same multi-hop sibling walk discharges the non-escaped siblings along the
+/// chain exactly once. The `RecordInit` twin of the returned-record slope.
+#[test]
+fn escaped_into_record_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance("chain_escaped_store", escaped_into_record_source);
+}
+
 // ── scribble (double-free / use-after-free) pins ────────────────────────
 
 fn assert_scribble_clean(name: &str, source: &str) {

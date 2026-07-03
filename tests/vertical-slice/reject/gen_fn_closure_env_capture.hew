@@ -2,9 +2,9 @@
 // closure-with-env as a free variable must fail closed at MIR lowering.
 //
 // A closure literal that captures an outer binding carries a heap-boxed env
-// pointer. Flat-copying the two-word {code_ptr, env_ptr} across the generator
-// thread boundary shallow-aliases the caller's heap env — a double-free / UAF
-// at generator teardown when the generator runtime frees its copy of the env.
+// pointer. Flat-copying the two-word {code_ptr, env_ptr} into the generator's
+// captured env shallow-aliases the caller's heap env — a double-free / UAF
+// at generator teardown when the generator frees its copy of the env.
 //
 // This fixture is the boundary guard for the fn-typed-param admission gate:
 // the gate was widened to admit `ResolvedTy::Function` and empty-capture

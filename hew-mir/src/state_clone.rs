@@ -419,8 +419,8 @@ impl StateFieldCloneKind {
     /// `IoHandle` (`Generator`/`Stream`/`Sink`/`Connection`/`CancellationToken`)
     /// is admitted: a `ValueClass::AffineResource`/`Linear` field is NOT
     /// owned-aggregate-by-value, so a record carrying one is dropped field-wise
-    /// through the resource-drop path (`hew_gen_free` / `*_close`) and is NEVER
-    /// seeded for `RecordInPlace`, so its clone body is never synthesised. The
+    /// through the resource-drop path (`hew_gen_coro_destroy` / `*_close`) and is
+    /// NEVER seeded for `RecordInPlace`, so its clone body is never synthesised. The
     /// proven `Holder { inner: Generator<i64,()> }` corpus (`generator_exec`)
     /// drops the handle exactly once with no record clone/drop thunk emitted —
     /// rejecting `IoHandle` here would over-reject that working shape at the

@@ -8,15 +8,16 @@
 //! closed at MIR check. Capture-FREE generators always worked. These fixtures
 //! pin the parameter and capture paths so they cannot silently regress.
 //!
-//! Captures travel through the generator's runtime env channel
-//! (`hew_gen_ctx_create`), which deep-copies the env into the body thread —
-//! safe for BitCopy scalars, which is all these fixtures exercise.
+//! Captures travel through the generator's heap env block
+//! (`hew_cont_frame_alloc`), copied in at construction and read back by the
+//! coro-ramp `__hew_gen_body_*` entry — safe for BitCopy scalars, which is
+//! all these fixtures exercise.
 
 import std::testing;
 
 // A parameterized generator: the body reads the formal parameter `n` in both
 // the loop bound and the yielded value. `n` is a free variable of the body,
-// so it travels through the env channel into the generator thread.
+// so it travels through the generator's heap env block into the coro frame.
 gen fn count_up_to(n: i64) -> i64 {
     var i = 0;
     while i < n {

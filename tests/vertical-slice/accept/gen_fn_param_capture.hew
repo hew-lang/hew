@@ -2,9 +2,9 @@
 //
 // Regression fixture for the never-completed generator free-variable
 // lowering. `n` is a free variable of the generator body (its only binding
-// site is the enclosing parameter scope), so it travels through the runtime
-// env channel (`hew_gen_ctx_create` deep-copies the env into the body thread)
-// and is read back in the body via a closure-env field load. Before the fix
+// site is the enclosing parameter scope), so it travels through the
+// generator's heap env block (`hew_cont_frame_alloc`) and is read back in
+// the body via a closure-env field load. Before the fix
 // the body read of `n` lowered to an unresolved place and failed closed at
 // MIR check. Prints each yielded value, then the running total — exercising
 // both the per-yield parameter read and a cross-yield-live consumer

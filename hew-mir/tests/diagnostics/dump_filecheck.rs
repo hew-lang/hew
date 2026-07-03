@@ -9,6 +9,7 @@
 //! a negative test proving CHECK-NOT rejects bad input — required by the
 //! "a feature is done when it rejects bad input" quality bar).
 
+#[path = "../support/mod.rs"]
 mod support;
 use hew_mir::{dump_mir, DumpStage};
 use support::filecheck::check_directives;

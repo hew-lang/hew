@@ -28,7 +28,7 @@ use hew_types::error::TypeErrorKind;
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
 
-const FIXTURE: &str = include_str!("fixtures/link_monitor_spawn_binding.hew");
+const FIXTURE: &str = include_str!("../fixtures/link_monitor_spawn_binding.hew");
 
 #[test]
 fn link_monitor_after_four_spawns_lowers_without_panic() {

@@ -416,7 +416,7 @@ fn workspace_fixture_exercises_user_record_recursion_end_to_end() {
     // Plan §4.6 + dispatcher synthetic fixture requirement. This is the
     // ONLY exercise of the `UserRecord` arm + visited-set machinery in
     // the corpus; audit §1 confirms zero organic users.
-    let source = include_str!("fixtures/state_clone_workspace.hew");
+    let source = include_str!("../fixtures/state_clone_workspace.hew");
     let pipeline = lower_source(source);
     assert!(
         pipeline.diagnostics.is_empty(),

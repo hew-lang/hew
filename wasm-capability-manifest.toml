@@ -67,7 +67,7 @@ use_case = "WASI execution — `hew build --target=wasm32-wasi`"
 runnable = true
 
 # ---------------------------------------------------------------------------
-# Feature disposition table (31 rows; mirror of the markdown table).
+# Feature disposition table (30 rows; mirror of the markdown table).
 # Row order matches docs/wasm-capability-matrix.md top-to-bottom.
 # ---------------------------------------------------------------------------
 
@@ -80,12 +80,15 @@ runtime_status = "Implemented"
 categories = ["runtime", "actors"]
 
 [[feature]]
-id = "generators-async-streams"
-label = "Generators / async streams"
+id = "generators"
+label = "Generators (`gen fn`)"
 checker = "pass"
 runtime = "implemented"
-runtime_status = "Implemented"
+runtime_status = "Scalar-parameter and fn-typed-parameter `gen fn` forms execute and tear down correctly on Tier 2 via the unified `llvm.coro` switched-resume substrate (identical IR to native)"
 categories = ["runtime", "generators"]
+checker_detail = "Pass (not checker-gated — Tier 2 has no dedicated `WasmUnsupportedFeature` guard)"
+tracking_label = "Note below"
+note = "`gen fn` lowers onto the unified `llvm.coro` switched-resume continuation substrate (`hew-runtime/src/cont.rs`), which emits identical IR on native and wasm32. The wasm32 backend synthesizes its own `hew_gen_coro_destroy` routing coro-frame teardown through `llvm.coro.destroy`, so construction, `.next()` consumption, and scope-exit teardown each release exactly one frame — verified end-to-end under wasmtime (`hew-codegen-rs/tests/exec/wasm_generator_exec.rs`). Generator forms not yet implemented on any target are tracked in HEW-FUTURE.md §1.6. Generators that depend on blocking I/O (e.g. a generator that calls `stream.next()` internally) encounter the Streams reject at the point of the stream call."
 
 [[feature]]
 id = "patterns-adts-generics"
@@ -419,17 +422,6 @@ runtime_status = "Seeded PRNG fallback on wasm32; not cryptographically secure"
 categories = ["stdlib", "crypto"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO: crypto-random"
-
-[[feature]]
-id = "generators-on-wasm"
-label = "Generators on WASM"
-checker = "pass"
-runtime = "implemented"
-runtime_status = "Cooperative scheduler"
-categories = ["runtime", "generators"]
-checker_detail = "Pass (basic syntax)"
-tracking_label = "Note below"
-note = "Basic generator syntax and the cooperative scheduler do work on Tier 2. Generators that depend on blocking I/O (e.g. a generator that calls `stream.next()` internally) encounter the Streams reject at the point of the stream call, not at the generator declaration itself. Purely computational generators work on WASM unchanged."
 
 # ---------------------------------------------------------------------------
 # WASM-TODO backlog (16 rows; mirror of the backlog table).

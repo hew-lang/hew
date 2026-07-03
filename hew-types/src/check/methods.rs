@@ -6700,10 +6700,10 @@ impl Checker {
                             None
                         }
                     }).is_some_and(|actor_name| {
-                        self.fn_sigs.contains_key(&format!("{actor_name}::send"))
+                        self.actor_receive_methods.contains(&format!("{actor_name}::send"))
                             || matches!(
                                 self.resolve_bare_actor_identity(&actor_name),
-                                BareActorResolution::Resolved(ref id) if self.fn_sigs.contains_key(&format!("{id}::send"))
+                                BareActorResolution::Resolved(ref id) if self.actor_receive_methods.contains(&format!("{id}::send"))
                             )
                     })
                 } else {
@@ -6822,6 +6822,30 @@ impl Checker {
                         actor_name.clone()
                     };
                     let method_key = format!("{actor_identity}::{method}");
+                    // A plain (non-receive) `fn` on the actor lands in `fn_sigs` under the
+                    // same `{identity}::{method}` key as a `receive fn` handler (see
+                    // `register_actor_base`), but only `register_receive_fn` adds to
+                    // `actor_receive_methods`. A key present in the former but absent from
+                    // the latter names an internal method with no mailbox-handler shape —
+                    // MIR has no `ActorHandlerLayout` row for it (#2366). Reject here,
+                    // fail-closed, instead of deferring to a MIR NotYetImplemented.
+                    if self.fn_sigs.contains_key(&method_key)
+                        && !self.actor_receive_methods.contains(&method_key)
+                    {
+                        for arg in args {
+                            let (expr, sp) = arg.expr();
+                            self.synthesize(expr, sp);
+                        }
+                        self.report_error(
+                            TypeErrorKind::UndefinedMethod,
+                            span,
+                            format!(
+                                "`{method}` is an internal actor method, not a message \
+                                 handler — declare it `receive fn` to expose it"
+                            ),
+                        );
+                        return Ty::Error;
+                    }
                     if let Some(sig) = self.fn_sigs.get(&method_key).cloned() {
                         for (i, arg) in args.iter().enumerate() {
                             let (expr, sp) = arg.expr();

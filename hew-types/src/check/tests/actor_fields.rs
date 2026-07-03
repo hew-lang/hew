@@ -225,14 +225,14 @@ fn pid_call_to_receive_fn_still_dispatches() {
 #[test]
 fn plain_method_self_call_from_receive_fn_does_not_gain_undefined_method() {
     // Bare-name self-dispatch (`bump()` with no receiver) never reaches the
-    // `LocalPid<T>` match arm this lane touches — it resolves through
-    // call-expression lookup (`hew-types/src/check/calls.rs`), a distinct
-    // path. That path independently emits `UndefinedFunction` for this
-    // fixture already (pre-existing, unrelated to #2366 — bare self-calls to
-    // plain actor methods are not yet wired to resolve as calls). This test
-    // pins the regression boundary for THIS lane only: the new pid-dispatch
-    // guard in the `LocalPid<T>` arm must not additionally fire
-    // `UndefinedMethod` on a fixture it was never meant to see.
+    // `LocalPid<T>` match arm — it resolves through call-expression lookup
+    // (`hew-types/src/check/calls.rs`), a distinct path. That path
+    // independently emits `UndefinedFunction` for this fixture already
+    // (pre-existing, unrelated to #2366 — bare self-calls to plain actor
+    // methods are not yet wired to resolve as calls). This test pins the
+    // regression boundary for the new pid-dispatch guard: the guard in the
+    // `LocalPid<T>` arm must not additionally fire `UndefinedMethod` on a
+    // fixture it was never meant to see.
     let output = check_source(
         r"
 actor Counter {

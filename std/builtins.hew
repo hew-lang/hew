@@ -446,21 +446,21 @@ impl<K, V> Iterator for HashMapIter<K, V> {
 // ---------------------------------------------------------------------------
 // Generator / AsyncGenerator — Iterator impls
 // ---------------------------------------------------------------------------
-/// `Generator<Y, R>` and `AsyncGenerator<Y>` formally implement `Iterator`
-/// so `for x in gen { ... }` and `std::iter` adapters (`iter::map`,
-/// `iter::filter`, ...) compose over generator values through the same
-/// trait surface as `Vec`/`HashMap`, instead of a checker-level special
-/// case. `Generator` carries two type arguments (yield, return);
-/// `AsyncGenerator` carries one (yield only) — see `Ty::as_generator` /
-/// `Ty::as_async_generator`.
-///
-/// `next`'s body calls the receiver's own `.next()`. This is NOT recursion:
-/// method dispatch on a `Generator`/`AsyncGenerator` receiver is intercepted
-/// by a checker-level special case (`methods.rs`, the
-/// `(Ty::Named{builtin:Some(Generator|AsyncGenerator)}, "next")` arm) BEFORE
-/// any trait-impl lookup, rewriting the call to the `GeneratorNext` HIR node
-/// that drives the runtime's `hew_gen_next` resume protocol. This impl's
-/// body reuses that existing dispatch rather than duplicating it.
+//
+// `Generator<Y, R>` and `AsyncGenerator<Y>` formally implement `Iterator` so
+// `for x in gen { ... }` and `std::iter` adapters (`iter::map`,
+// `iter::filter`, ...) compose over generator values through the same trait
+// surface as `Vec`/`HashMap`, instead of a checker-level special case.
+// `Generator` carries two type arguments (yield, return); `AsyncGenerator`
+// carries one (yield only) — see `Ty::as_generator` / `Ty::as_async_generator`.
+//
+// `next`'s body calls the receiver's own `.next()`. This is NOT recursion:
+// method dispatch on a `Generator`/`AsyncGenerator` receiver is intercepted
+// by a checker-level special case (`methods.rs`, the
+// `(Ty::Named{builtin:Some(Generator|AsyncGenerator)}, "next")` arm) BEFORE
+// any trait-impl lookup, rewriting the call to the `GeneratorNext` HIR node
+// that drives the runtime's `hew_gen_next` resume protocol. This impl's body
+// reuses that existing dispatch rather than duplicating it.
 impl<Y, R> Iterator for Generator<Y, R> {
     type Item = Y;
     fn next(var self) -> Option<Y> {

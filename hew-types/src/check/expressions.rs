@@ -3016,11 +3016,14 @@ impl Checker {
                             }
                         }
                     } else {
+                        let kind_label = self
+                            .lookup_type_def(name)
+                            .map_or("type", |type_def| value_type_kind_label(type_def.kind));
                         self.report_error(
                             TypeErrorKind::ArityMismatch,
                             span,
                             format!(
-                                "type `{name}` has {} type parameter(s) but {} were supplied",
+                                "{kind_label} `{name}` has {} type parameter(s) but {} were supplied",
                                 expected_args.len(),
                                 explicit_args.len()
                             ),
@@ -3065,7 +3068,10 @@ impl Checker {
                                 self.report_error_with_suggestions(
                                     TypeErrorKind::UndefinedField,
                                     span,
-                                    format!("no field `{field_name}` on type `{name}`"),
+                                    format!(
+                                        "no field `{field_name}` on {} `{name}`",
+                                        value_type_kind_label(td.kind)
+                                    ),
                                     similar,
                                 );
                             }
@@ -6411,7 +6417,8 @@ impl Checker {
                         TypeErrorKind::ArityMismatch,
                         span,
                         format!(
-                            "type `{name}` has {} type parameter(s) but {} were supplied",
+                            "{} `{name}` has {} type parameter(s) but {} were supplied",
+                            value_type_kind_label(td.kind),
                             td.type_params.len(),
                             explicit_args.len()
                         ),
@@ -6480,7 +6487,10 @@ impl Checker {
                     self.report_error_with_suggestions(
                         TypeErrorKind::UndefinedField,
                         span,
-                        format!("no field `{field_name}` on type `{name}`"),
+                        format!(
+                            "no field `{field_name}` on {} `{name}`",
+                            value_type_kind_label(td.kind)
+                        ),
                         similar,
                     );
                 }

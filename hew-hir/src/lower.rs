@@ -15334,11 +15334,11 @@ impl LowerCtx {
 
     /// Compute the free-variable capture set of a generator body.
     ///
-    /// A generator body lowers into a synthesised `__hew_gen_body_*` function
-    /// whose only window onto the enclosing frame is the runtime env channel
-    /// (`hew_gen_ctx_create`'s deep-copied `body_arg`). Every binding the body
-    /// reads that is NOT defined within the body itself must travel through
-    /// that env:
+    /// A generator body lowers into a synthesised `__hew_gen_body_*` coro ramp
+    /// whose only window onto the enclosing frame is the runtime env channel:
+    /// `Terminator::MakeGenerator` heap-copies the capture-env record and
+    /// passes it to the ramp by address. Every binding the body reads that is
+    /// NOT defined within the body itself must travel through that env:
     ///   - for a `gen fn`, these are the generator's own formal parameters
     ///     (the param scope is the immediate enclosing scope);
     ///   - for a `gen { }` block, these are the captured outer locals.
@@ -15353,9 +15353,9 @@ impl LowerCtx {
     /// `capture_env_sources` entry at the matching field offset.
     ///
     /// This is the substrate-independent front-half: WHICH variables are free
-    /// is identical whether the body later runs on the thread runtime (env is
-    /// the body-arg copy) or a future coroutine frame (env is spilled into the
-    /// frame). Only the MIR/codegen tail chooses where the env lives.
+    /// is decided here, independent of how the MIR/codegen tail lowers the
+    /// body (the `llvm.coro` switched-resume substrate, since 5ef20d915) or
+    /// stores the env (heap-copied into the coro ramp's frame).
     fn collect_gen_captures(
         body: &HirBlock,
         outer_bindings: &HashMap<BindingId, OuterClosureBinding>,
@@ -20803,10 +20803,10 @@ impl LowerCtx {
                 // codegen can size the enum slot the unbox writes into.
                 self.register_option_layout(&yield_ty, &span, "Generator::next");
                 let option_ty = Self::resolved_option_ty(yield_ty.clone());
-                // The receiver is borrowed (Read): `hew_gen_next` resumes the
-                // generator but does not consume the handle — it stays live for
-                // subsequent `.next()` calls and is freed by `hew_gen_free` on
-                // its own scope-exit drop.
+                // The receiver is borrowed (Read): the coro `.next()` drive
+                // resumes the generator but does not consume the handle — it
+                // stays live for subsequent `.next()` calls and is freed by
+                // `hew_gen_coro_destroy` on its own scope-exit drop.
                 let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
                 (
                     HirExprKind::GeneratorNext {

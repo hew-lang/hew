@@ -400,7 +400,7 @@ fn emitted_trap_codes_equal_runtime_constants() {
 fn no_raw_integer_in_emit_trap_with_code_calls() {
     // Include llvm.rs at compile time so the path is always resolved against
     // the actual source tree, regardless of test working directory.
-    let source = include_str!("../src/llvm.rs");
+    let source = include_str!("../../src/llvm.rs");
 
     // Strip single-line comment tails so doc-comment mentions like
     // `hew_trap_with_code(HEW_TRAP_ACTOR_SEND_FAILED=206)` in `///` lines

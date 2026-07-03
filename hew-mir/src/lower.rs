@@ -38,7 +38,11 @@ use crate::model::{
     Strategy, SuspendKind, Terminator, ThirFunction, TraitObjectStorage, TrapKind,
 };
 use crate::ownership::FailClosedReason;
+use crate::ownership::LayoutClass;
 use crate::ownership::OwnershipCtx;
+use crate::ownership::OwnershipDecision;
+use crate::ownership::PlaceProvenance;
+use crate::ownership::Projection;
 use crate::ownership::ReleaseSymbolVerdict;
 use crate::ownership::ValueOwnership;
 use crate::ownership::ValueProvenance;
@@ -8070,6 +8074,7 @@ fn lower_function(
     );
     let mut source_excluded = returned_aggregate_members;
     source_excluded.extend(consumed_local_aggregate_members);
+    let alias_field_binders = builder.alias_owner_field_binders();
     let tuple_composite_drop_allowed = derive_tuple_composite_drop_allowed(
         &raw.blocks,
         &raw.suspend_kinds,
@@ -8078,6 +8083,7 @@ fn lower_function(
         &builder.locals,
         &builder.record_field_orders,
         &builder.enum_layouts,
+        &alias_field_binders,
     );
     let is_owned_record = |ty: &ResolvedTy| builder.is_owned_aggregate_record_ty(ty);
     let owned_record_drop_allowed = derive_owned_record_drop_allowed(
@@ -8089,6 +8095,7 @@ fn lower_function(
         &is_owned_record,
         &builder.record_field_orders,
         &builder.enum_layouts,
+        &alias_field_binders,
     );
     let mut composite_drop_allowed = tuple_composite_drop_allowed;
     composite_drop_allowed.extend(owned_record_drop_allowed);
@@ -8714,6 +8721,44 @@ enum Disposition {
     /// `VecIter` cursor handle declared in a nested block), so the release fires
     /// once per outer-loop iteration instead of accumulating to function exit.
     ScopeReleased,
+    /// A byte-copy interior ALIAS of a still-live owner: the binder of a
+    /// `let mid = o.mid` / `let inner = t.0` field projection whose field type
+    /// is an inline aggregate (record / tuple / inline-enum). Codegen byte-copies
+    /// such a field with no retain, so the binder does not own the copied heap —
+    /// the projected root's composite drop frees every original exactly once.
+    /// Dispositioned off the scope-exit-live set so (a) the function-exit LIFO
+    /// pass emits no composite drop for the alias (a re-walk of heap the root
+    /// still owns would double-free), and (b) the alias's base local is excluded
+    /// from the record/tuple provers' `release_owner_bases` derivation, so an
+    /// alias binder no longer trips their Defect-1 blanket every-root exclusion.
+    /// The owner it aliases is named on the entry's `provenance`
+    /// ([`OwnershipDecision::InteriorAlias`]-shaped). This is the recorded twin
+    /// of the whole-local alias classifier
+    /// [`Builder::local_storage_is_interior_alias`].
+    AliasOf,
+}
+
+/// The three-way ownership class of a `let`-bound field load — the frozen
+/// classification [`Builder::classify_field_load`] returns, mirroring exactly
+/// what codegen emits for a `RecordFieldLoad` / `TupleFieldLoad`. Only
+/// [`ByteCopyAlias`](FieldLoadClass::ByteCopyAlias) changes drop behaviour (it
+/// dispositions the binder [`Disposition::AliasOf`]); the other two keep today's
+/// `ScopeExit` ownership. Misassigning a class is the load-bearing double-free
+/// risk, so it keys on the same facts codegen implements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FieldLoadClass {
+    /// A `string` field: codegen `hew_string_clone`s the load, so the binder
+    /// owns a fresh `+1` released by its own drop; the root keeps the original.
+    Retained,
+    /// An inline aggregate field (record / tuple / array / inline-enum): the load
+    /// byte-copies the member with no retain, so the binder is an interior ALIAS
+    /// — the projected root's composite drop frees every original exactly once.
+    ByteCopyAlias,
+    /// A single-pointer heap leaf (`Vec` / `bytes` / `HashMap` / `HashSet` /
+    /// `Generator` / indirect-enum node): the load transfers the one owned
+    /// handle, so the binder becomes the owner and the root's whole-root
+    /// exclusion posture is correct.
+    HandleTransfer,
 }
 
 /// One entry in the per-function owned-locals ledger: the binding whose
@@ -9723,6 +9768,218 @@ impl Builder {
             provenance: None,
             disposition: Disposition::ScopeExit,
         });
+    }
+
+    /// Register a `let`-bound field projection whose result is a byte-copy
+    /// interior ALIAS of the still-live owner named by `provenance` — the
+    /// [`ByteCopyAlias`](FieldLoadClass::ByteCopyAlias) class of the field-load
+    /// three-way split (record / tuple / inline-enum aggregate field). The entry
+    /// carries its
+    /// [`OwnershipDecision::InteriorAlias`]-shaped provenance and is minted
+    /// [`Disposition::AliasOf`], so it drops out of the scope-exit-live view the
+    /// drop-elaboration provers and `build_lifo_drops` read: the alias emits no
+    /// composite drop of its own (the owner's composite frees the whole tree),
+    /// and its base local never seeds the record/tuple provers'
+    /// `release_owner_bases`, so it no longer trips their Defect-1 blanket
+    /// exclusion of every root (#2375).
+    fn register_owned_local_alias(
+        &mut self,
+        binding: BindingId,
+        name: String,
+        ty: ResolvedTy,
+        provenance: ValueProvenance,
+    ) {
+        let place = self
+            .binding_locals
+            .get(&binding)
+            .copied()
+            .unwrap_or(Place::Local(0));
+        let ownership = ValueOwnership::classify(&ty, place, &self.ownership_ctx());
+        self.owned_locals.push(OwnedLocalEntry {
+            binding,
+            name,
+            ty,
+            ownership,
+            provenance: Some(provenance),
+            disposition: Disposition::AliasOf,
+        });
+    }
+
+    /// Provenance of a `let`-bound field projection that is a byte-copy interior
+    /// ALIAS of a still-live owner — the
+    /// [`ByteCopyAlias`](FieldLoadClass::ByteCopyAlias) class of the three-way
+    /// field-load classification. Returns `Some` ONLY for a `root.field` /
+    /// `root.N` projection (`let mid = o.mid`, `let inner = t.0`) of a live
+    /// binding whose FIELD type is an inline aggregate
+    /// (`OwnsHeap { layout: Product | TaggedUnion }` — record / tuple /
+    /// inline-enum). Codegen byte-copies such a field with no retain, so the
+    /// binder does not own the copied heap; the projected root's composite drop
+    /// frees every original exactly once.
+    ///
+    /// Returns `None` — keeping today's `ScopeExit` ownership — for the other two
+    /// load classes the split names, so their behaviour is unchanged:
+    /// [`Retained`](FieldLoadClass::Retained) (a `string` field: codegen
+    /// `hew_string_clone`s the load, so the binder owns a fresh `+1` released by
+    /// its own drop) and [`HandleTransfer`](FieldLoadClass::HandleTransfer) (a
+    /// single-pointer heap leaf — `Vec` / `bytes` / `HashMap` / `HashSet` /
+    /// `Generator` / indirect-enum node: the load transfers the one handle, the
+    /// binder becomes the owner, and the root's whole-root exclusion posture is
+    /// correct).
+    ///
+    /// It also returns `None` for any non-projection RHS (a fresh call result /
+    /// constructor owns itself) and whenever the owner root cannot be named at
+    /// this defining write — so unrecorded provenance keeps the fail-closed
+    /// blanket (leak-never-double-free).
+    ///
+    /// The mirror of the whole-local classifier
+    /// [`Builder::local_storage_is_interior_alias`]; this one keys on the FIELD
+    /// TYPE so the `string`-retain class is separated from the aggregate
+    /// byte-copy class, which the whole-local walk does not distinguish.
+    fn field_projection_alias_provenance(
+        &self,
+        value: &HirExpr,
+        binding_ty: &ResolvedTy,
+    ) -> Option<ValueProvenance> {
+        // Only an inline aggregate field is a ByteCopyAlias. `string` (Retained)
+        // and single-pointer handles (HandleTransfer) keep `ScopeExit`
+        // ownership — the exact facts codegen implements (retain vs copy vs
+        // transfer), so the classification cannot admit an owner the binder
+        // also releases (the load-bearing double-free risk).
+        if self.classify_field_load(binding_ty) != Some(FieldLoadClass::ByteCopyAlias) {
+            return None;
+        }
+        // The RHS must be a field projection of a live owner: `root.field` /
+        // `root.N`. A fresh producer (call result / constructor) owns itself.
+        let (root_binding, projection) = match &value.kind {
+            HirExprKind::FieldAccess { object, field } => {
+                let root = binding_ref_target(object)?;
+                let ordinal = self.record_field_ordinal(object, field)?;
+                (root, Projection::Field(ordinal))
+            }
+            HirExprKind::TupleIndex { tuple, index } => {
+                let root = binding_ref_target(tuple)?;
+                let ordinal = u32::try_from(*index).ok()?;
+                (root, Projection::Field(ordinal))
+            }
+            _ => return None,
+        };
+        let root_place = self.binding_locals.get(&root_binding).copied()?;
+        Some(ValueProvenance::projection(
+            PlaceProvenance::from(root_place),
+            vec![projection],
+        ))
+    }
+
+    /// The three-way ownership class of a `let`-bound field LOAD, keyed on the
+    /// field type and frozen to mirror exactly what codegen emits for the load.
+    /// Returns `None` for a heap-free field (no drop obligation to classify).
+    /// This is the authority the field-projection alias seam and its verdict-
+    /// table pin read; misassigning a class here is the load-bearing double-free
+    /// risk, so it keys on the same facts codegen implements.
+    fn classify_field_load(&self, ty: &ResolvedTy) -> Option<FieldLoadClass> {
+        let ty = self.subst_ty(ty);
+        let owned = ValueOwnership::classify(&ty, Place::Local(0), &self.ownership_ctx());
+        match owned.decision() {
+            // Inline aggregate (record / tuple / array / inline-enum): the load
+            // byte-copies the member with no retain, so the binder is an
+            // interior alias the owner's composite still frees.
+            OwnershipDecision::OwnsHeap {
+                layout: LayoutClass::Product | LayoutClass::TaggedUnion,
+                ..
+            } => Some(FieldLoadClass::ByteCopyAlias),
+            // Every other heap-owning field is a single release handle. `string`
+            // is the ONE retaining leaf (codegen `hew_string_clone`s the load →
+            // the binder owns a fresh `+1`); every other leaf (`Vec` / `bytes` /
+            // `HashMap` / `HashSet` / `Generator` / indirect-enum node) transfers
+            // its one handle to the binder.
+            OwnershipDecision::OwnsHeap { .. } => {
+                if matches!(ty, ResolvedTy::String) {
+                    Some(FieldLoadClass::Retained)
+                } else {
+                    Some(FieldLoadClass::HandleTransfer)
+                }
+            }
+            // Heap-free / borrowed / already-an-alias / unsupported: no
+            // scope-exit drop obligation for the field-projection seam to record.
+            _ => None,
+        }
+    }
+
+    /// Declaration-order ordinal of `field` on the record type of `object`, from
+    /// the field-order table. `None` when the object type is not a registered
+    /// record (a tuple projection uses its literal index instead).
+    fn record_field_ordinal(&self, object: &HirExpr, field: &str) -> Option<u32> {
+        let ResolvedTy::Named {
+            name: type_name, ..
+        } = self.subst_ty(&object.ty)
+        else {
+            return None;
+        };
+        let order = self.lookup_record_field_order(type_name.as_str())?;
+        let idx = order.iter().position(|(f, _)| f == field)?;
+        u32::try_from(idx).ok()
+    }
+
+    /// The `(alias_local, owner_root_local)` pairs for every `AliasOf` ledger
+    /// entry: a `let mid = o.mid` / `let leaf = mid.leaf` byte-copy interior
+    /// alias mapped to the base local of the still-live OWNER root its recorded
+    /// provenance chains to, resolving intermediate aliases to the first
+    /// non-alias owner (a `leaf -> mid -> o` chain resolves both `leaf` and
+    /// `mid` to `o`).
+    ///
+    /// The record and tuple composite provers fold these into their field-
+    /// binder set. The whole-value alias map and the field-load scan they build
+    /// from the instruction stream only reach a ONE-hop alias (`mid` reads the
+    /// root directly, so it is collected); a DEEPER alias (`leaf` reads `mid`,
+    /// not the root) is invisible to them. Without the carried provenance a deep
+    /// alias that ESCAPES into an owning sink (returned, stored into an owning
+    /// record, sent) would leave the owner's composite admitted to free a
+    /// subtree the escapee already handed to the caller — a double-free. Folding
+    /// the recorded alias in, attributed to its owner, excludes exactly that
+    /// owner when the deep alias escapes, and leaves the owner admitted when the
+    /// alias is only read interiorly (the consumed-match path).
+    ///
+    /// An entry whose owner root is not a nameable local is dropped — the prover
+    /// keeps its fail-closed blanket for it (leak, never double-free).
+    fn alias_owner_field_binders(&self) -> Vec<(u32, u32)> {
+        // One hop: each alias's base local -> its recorded provenance root local.
+        // Keyed on the carried alias PROVENANCE, not the live disposition: a
+        // recorded byte-copy alias that is later consumed (moved into the return
+        // slot / a sink) is dispositioned off `AliasOf`, but consuming an alias
+        // moves no ownership — the owner still holds the heap. Its escape must
+        // still exclude the owner, so the provenance keeps it in scope here even
+        // after the disposition flips.
+        let mut one_hop: HashMap<u32, u32> = HashMap::new();
+        for entry in &self.owned_locals {
+            let Some(PlaceProvenance::Local(root_local)) =
+                entry.provenance.as_ref().map(|p| p.root)
+            else {
+                continue;
+            };
+            let Some(alias_local) = self
+                .binding_locals
+                .get(&entry.binding)
+                .and_then(|p| base_local(*p))
+            else {
+                continue;
+            };
+            one_hop.insert(alias_local, root_local);
+        }
+        // Resolve each alias to the ultimate owner by chasing intermediate
+        // aliases. The hop count is bounded by the alias count, so the walk
+        // terminates even if a (malformed) cycle ever appears.
+        let mut resolved = Vec::with_capacity(one_hop.len());
+        for (&alias_local, &first_root) in &one_hop {
+            let mut owner = first_root;
+            for _ in 0..one_hop.len() {
+                match one_hop.get(&owner) {
+                    Some(&next) => owner = next,
+                    None => break,
+                }
+            }
+            resolved.push((alias_local, owner));
+        }
+        resolved
     }
 
     /// The scope-exit-live owned locals as `(binding, name, ty)` tuples — the
@@ -12512,7 +12769,29 @@ impl Builder {
                     // no backend Place, so it must not enter
                     // `owned_locals` either. LESSONS:
                     // boundary-fail-closed, raii-null-after-move.
-                    self.register_owned_local(binding.id, binding.name.clone(), binding_ty.clone());
+                    //
+                    // A `let mid = o.mid` / `let inner = t.0` projection whose
+                    // field is an inline aggregate is a byte-copy interior ALIAS
+                    // (`field_projection_alias_provenance` — the ByteCopyAlias
+                    // class): register it `AliasOf` so the owner's composite
+                    // frees the tree and the alias never trips the composite
+                    // provers' blanket (#2375). Every other binding — including
+                    // the `string`-Retained and single-pointer HandleTransfer
+                    // load classes, and every fresh producer — keeps its
+                    // `ScopeExit` ownership.
+                    match self.field_projection_alias_provenance(value, &binding_ty) {
+                        Some(provenance) => self.register_owned_local_alias(
+                            binding.id,
+                            binding.name.clone(),
+                            binding_ty.clone(),
+                            provenance,
+                        ),
+                        None => self.register_owned_local(
+                            binding.id,
+                            binding.name.clone(),
+                            binding_ty.clone(),
+                        ),
+                    }
                     // Tag generator/`AsyncGenerator` handle bindings with their
                     // declaring scope so a per-scope-exit `hew_gen_coro_destroy` fires
                     // when the scope closes — covering the loop-re-entry case the
@@ -32673,6 +32952,7 @@ fn elaborate(
     // arm but live on another is still dropped on the live arm. The legacy
     // `owned_string_record_bindings` membership is folded into the same gate (a
     // string record is a subset of the owned-aggregate records covered here).
+    let alias_field_binders = builder.alias_owner_field_binders();
     let is_owned_record = |ty: &ResolvedTy| builder.is_owned_aggregate_record_ty(ty);
     let owned_record_drop_allowed = derive_owned_record_drop_allowed(
         &checked.blocks,
@@ -32683,6 +32963,7 @@ fn elaborate(
         &is_owned_record,
         &builder.record_field_orders,
         &builder.enum_layouts,
+        &alias_field_binders,
     );
 
     // W5.021 — fail-closed sole-owner allow-set for heap-owning **tuple**
@@ -32703,6 +32984,7 @@ fn elaborate(
         &builder.locals,
         &builder.record_field_orders,
         &builder.enum_layouts,
+        &alias_field_binders,
     );
 
     // W5.021 (defect #1) — owned members the caller now owns via a returned
@@ -34051,6 +34333,41 @@ fn propagate_whole_value_alias_roots(
 /// `derive_owned_record_drop_allowed` (the composite-drop prover) and
 /// `apply_escaped_record_sibling_field_drops` (the #2212 sibling-discharge
 /// emitter) so the two agree on what counts as a field binder.
+/// Forward whole-value-`Move` closure of the recorded interior-alias binders:
+/// starting from each `(alias_local, owner_local)` seed, every local the alias
+/// value flows into via `Move { dest, src }` inherits the same owner. The
+/// record and tuple composite provers fold the whole closure into their binder
+/// set (and, for records, its provenance) so a deep projection alias that
+/// escapes through a return / hand-off temp (`ret = move leaf`) still names the
+/// owner it aliases — the field-load scan's own move-propagation runs before
+/// the alias is folded in, so it never reaches these copies.
+fn close_alias_binders_forward(blocks: &[BasicBlock], seeds: &[(u32, u32)]) -> HashMap<u32, u32> {
+    let mut owner_of: HashMap<u32, u32> = seeds.iter().copied().collect();
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                if let Instr::Move { dest, src } = instr {
+                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
+                        if let Some(&owner) = owner_of.get(&sl) {
+                            if let std::collections::hash_map::Entry::Vacant(slot) =
+                                owner_of.entry(dl)
+                            {
+                                slot.insert(owner);
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    owner_of
+}
+
 fn collect_record_field_binders(
     blocks: &[BasicBlock],
     alias_of: &HashMap<u32, u32>,
@@ -34311,6 +34628,20 @@ fn place_is_interior_projection(place: Place) -> bool {
         | Place::RecvHalf(_)
         | Place::MachineTag(_)
         | Place::EnumTag(_) => true,
+    }
+}
+
+/// The [`BindingId`] a `root.field` / `root.N` projection's object resolves to
+/// when it is a direct reference to a live binding. `None` for a nested or
+/// non-binding object (a projection chain, a call result, `this`) — the caller
+/// then fails closed and records no alias provenance.
+fn binding_ref_target(object: &HirExpr) -> Option<BindingId> {
+    match &object.kind {
+        HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(id),
+            ..
+        } => Some(*id),
+        _ => None,
     }
 }
 
@@ -37120,6 +37451,7 @@ fn derive_owned_record_drop_allowed(
     is_owned_record: &dyn Fn(&ResolvedTy) -> bool,
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
+    alias_field_binders: &[(u32, u32)],
 ) -> HashSet<BindingId> {
     // A local carries a heap-owning value iff its registered type says so. Used
     // to decide whether a `RecordFieldLoad` dest is an owned-field binder (a
@@ -37168,11 +37500,35 @@ fn derive_owned_record_drop_allowed(
     // Owned-field-binder set: destinations of `RecordFieldLoad { record: alias-
     // set member }` whose loaded field is itself heap-owning, closed forward
     // through whole-value Move so a binder copied onward is still tracked.
-    let field_binders = collect_record_field_binders(blocks, &alias_of, &local_is_heap_owning);
+    let mut field_binders = collect_record_field_binders(blocks, &alias_of, &local_is_heap_owning);
     // Per-binder escape attribution (#2212): where the load scan + alias map
     // prove which root a binder came from, its escape excludes exactly that
     // root; unprovable provenance keeps the blanket every-root exclusion.
-    let binder_provenance = attribute_field_binder_provenance(blocks, &alias_of, &field_binders);
+    let mut binder_provenance =
+        attribute_field_binder_provenance(blocks, &alias_of, &field_binders);
+
+    // Fold the recorded byte-copy interior-alias binders (the `let mid = o.mid;
+    // let leaf = mid.leaf` projection chain) into the field-binder set,
+    // attributed to the OWNER root their carried provenance chains to. The
+    // whole-value alias map + the `RecordFieldLoad` scan above only reach a ONE-
+    // hop alias (`mid` reads the record root directly); a deeper alias (`leaf`
+    // reads `mid`, not the root) is invisible to them, so its ESCAPE would leave
+    // the owner admitted to free a subtree the escapee handed to the caller (the
+    // #2375 double-free). Recording it here excludes exactly the owner when the
+    // deep alias escapes, and — because a `RecordFieldLoad` reading the alias is
+    // interior (exempt) — leaves the owner admitted when the alias is only read
+    // interiorly (the consumed-match path). `or_insert` never overrides the
+    // precise `Unique { root, field }` a one-hop binder already earned (the
+    // sibling-discharge emitter needs that field).
+    for (&alias_local, &owner_local) in &close_alias_binders_forward(blocks, alias_field_binders) {
+        if !candidate_local_to_binding.contains_key(&owner_local) {
+            continue;
+        }
+        field_binders.insert(alias_local);
+        binder_provenance
+            .entry(alias_local)
+            .or_insert(FieldBinderProvenance::RootOnly { root: owner_local });
+    }
 
     let mut excluded_roots: HashSet<u32> = HashSet::new();
 
@@ -38018,6 +38374,13 @@ fn derive_local_bytes_drop_allowed(
               escape scan) sharing fixpoint state, mirroring derive_owned_\
               record_drop_allowed; splitting scatters the fail-closed ordering"
 )]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the function's MIR + binding registries + the layout lookups + the \
+              carried interior-alias binder pairs the composite prover reads; a \
+              struct would only relocate the same fields, mirroring \
+              derive_owned_record_drop_allowed"
+)]
 fn derive_tuple_composite_drop_allowed(
     blocks: &[BasicBlock],
     suspend_kinds: &HashMap<u32, SuspendKind>,
@@ -38026,6 +38389,7 @@ fn derive_tuple_composite_drop_allowed(
     local_tys: &[ResolvedTy],
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
+    alias_field_binders: &[(u32, u32)],
 ) -> HashSet<BindingId> {
     // A local carries a heap-owning value iff its registered type says so. Used
     // to decide whether a `TupleFieldLoad` dest is an owned-element binder (a
@@ -38097,6 +38461,21 @@ fn derive_tuple_composite_drop_allowed(
         }
         if !changed {
             break;
+        }
+    }
+
+    // Fold the recorded byte-copy interior-alias binders (the `let mid = o.0;
+    // let leaf = mid.0` projection chain) into the element-binder set. The
+    // `TupleFieldLoad` scan above only reaches a ONE-hop alias (`mid` reads the
+    // tuple root directly); a deeper alias (`leaf` reads `mid`, not the root) is
+    // invisible to it, so its ESCAPE would leave the owner admitted to free a
+    // subtree the escapee handed to the caller (the tuple twin of the #2375
+    // double-free). Recording it here makes `note_elem_escape` exclude the tuple
+    // roots when the deep alias escapes; a `TupleFieldLoad` reading the alias is
+    // interior (exempt), so the owner stays admitted on the consumed-match path.
+    for (&alias_local, &owner_local) in &close_alias_binders_forward(blocks, alias_field_binders) {
+        if candidate_local_to_binding.contains_key(&owner_local) {
+            elem_binders.insert(alias_local);
         }
     }
 
@@ -45421,6 +45800,7 @@ mod owned_record_drop_derivation {
             &is_rec,
             &record_field_orders,
             &[],
+            &[],
         )
     }
 
@@ -46420,6 +46800,7 @@ mod tuple_composite_field_drop_exclusion {
             &local_tys,
             &HashMap::new(),
             &[],
+            &[],
         );
         (b, allowed)
     }
@@ -46496,6 +46877,7 @@ mod tuple_composite_field_drop_exclusion {
             &binding_locals,
             &local_tys,
             &HashMap::new(),
+            &[],
             &[],
         );
         assert!(
@@ -49313,6 +49695,112 @@ mod binding_ty_is_plain_vec_tuple {
         );
     }
 
+    /// Frozen three-way verdict table for the `let`-bound field-load
+    /// classification — the load-bearing double-free boundary. A `string` field retains
+    /// (codegen clones), an inline aggregate (record / tuple) byte-copies to an
+    /// interior alias, and every single-pointer heap leaf (`Vec` / `bytes` /
+    /// `Generator` / indirect-enum node) transfers its one handle. Only
+    /// `ByteCopyAlias` dispositions its binder `AliasOf`; the table freezes the
+    /// class each shape maps to so a mis-tag (which would admit an owner the
+    /// binder also releases — a double-free) fails this test first.
+    #[test]
+    fn classify_field_load_freezes_the_three_way_verdict_table() {
+        let mut builder = builder_with_indirect_enum();
+        // A heap-owning user record `Rec { a: string }`.
+        builder.record_field_orders.insert(
+            "Rec".to_string(),
+            vec![("a".to_string(), ResolvedTy::String)],
+        );
+
+        // Retained: `string` — codegen `hew_string_clone`s the load.
+        assert_eq!(
+            builder.classify_field_load(&ResolvedTy::String),
+            Some(FieldLoadClass::Retained),
+        );
+
+        // ByteCopyAlias: inline aggregates — record and tuple.
+        assert_eq!(
+            builder.classify_field_load(&unregistered_named("Rec")),
+            Some(FieldLoadClass::ByteCopyAlias),
+            "a heap-owning record field is byte-copied to an interior alias",
+        );
+        assert_eq!(
+            builder.classify_field_load(&ResolvedTy::Tuple(vec![
+                ResolvedTy::String,
+                ResolvedTy::String,
+            ])),
+            Some(FieldLoadClass::ByteCopyAlias),
+            "a heap-owning tuple field is byte-copied to an interior alias",
+        );
+
+        // HandleTransfer: every single-pointer heap leaf.
+        for (label, ty) in [
+            ("Vec", vec_of_ty(ResolvedTy::String)),
+            ("bytes", ResolvedTy::Bytes),
+            (
+                "Generator",
+                ResolvedTy::named_builtin(
+                    "Generator",
+                    BuiltinType::Generator,
+                    vec![ResolvedTy::I64, ResolvedTy::Unit],
+                ),
+            ),
+            ("indirect enum", unregistered_named("Foo")),
+        ] {
+            assert_eq!(
+                builder.classify_field_load(&ty),
+                Some(FieldLoadClass::HandleTransfer),
+                "{label} transfers its one owned handle to the binder",
+            );
+        }
+
+        // Heap-free field: no scope-exit drop obligation to classify.
+        assert_eq!(builder.classify_field_load(&ResolvedTy::I64), None);
+    }
+
+    /// A byte-copy aggregate field projection registers its binder `AliasOf`
+    /// with the owner's provenance recorded — and that disposition removes it
+    /// from the scope-exit-live view the record/tuple provers and
+    /// `build_lifo_drops` read, so the alias emits no composite drop of its own
+    /// and its base local never seeds the provers' `release_owner_bases` (the
+    /// #2375 blanket no longer trips). The entry survives in the whole ledger.
+    #[test]
+    fn byte_copy_alias_registers_aliasof_and_leaves_the_live_view() {
+        let mut builder = builder_with_indirect_enum();
+        builder.record_field_orders.insert(
+            "Rec".to_string(),
+            vec![("a".to_string(), ResolvedTy::String)],
+        );
+        builder.binding_locals.insert(BindingId(1), Place::Local(7));
+
+        let provenance =
+            ValueProvenance::projection(PlaceProvenance::Local(3), vec![Projection::Field(0)]);
+        builder.register_owned_local_alias(
+            BindingId(1),
+            "mid".to_string(),
+            unregistered_named("Rec"),
+            provenance.clone(),
+        );
+
+        let entry = &builder.owned_locals[0];
+        assert_eq!(entry.disposition, Disposition::AliasOf);
+        assert_eq!(
+            entry.provenance.as_ref(),
+            Some(&provenance),
+            "the owner it aliases is recorded on the entry",
+        );
+        assert!(
+            builder.owned_locals_snapshot().is_empty(),
+            "an AliasOf entry is excluded from the scope-exit-live drop view — no \
+             composite drop, and it never seeds the provers' release_owner_bases",
+        );
+        assert_eq!(
+            builder.owned_locals_ledger().len(),
+            1,
+            "the alias survives in the whole ledger regardless of disposition",
+        );
+    }
+
     /// Retraction is a disposition write, not a physical removal: a binding
     /// dispositioned off the scope-exit set leaves the live drop view
     /// (`owned_locals_snapshot`) yet stays observable in the whole ledger
@@ -49589,7 +50077,7 @@ mod drop_admission_type_shape_pins {
     //! reclassification. An admission that widens over-drops (double-free,
     //! the worst outcome); one that narrows leaks.
     use super::*;
-    use crate::ownership::{DropClass, HeapLeaf, OwnershipDecision};
+    use crate::ownership::{DropClass, HeapLeaf};
 
     fn vec_of(elem: ResolvedTy) -> ResolvedTy {
         ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![elem])

@@ -100,7 +100,7 @@ fn return_exit_string_drops(pl: &IrPipeline, fn_name: &str) -> usize {
                 .filter(|d| {
                     matches!(
                         &d.kind,
-                        DropKind::CowHeap { drop_fn } if *drop_fn == "hew_string_drop"
+                        DropKind::CowHeap { release } if release.release_symbol() == "hew_string_drop"
                     )
                 })
                 .count()
@@ -138,7 +138,7 @@ fn panic_exit_string_drops(pl: &IrPipeline, fn_name: &str) -> usize {
                 .filter(|d| {
                     matches!(
                         &d.kind,
-                        DropKind::CowHeap { drop_fn } if *drop_fn == "hew_string_drop"
+                        DropKind::CowHeap { release } if release.release_symbol() == "hew_string_drop"
                     )
                 })
                 .count()

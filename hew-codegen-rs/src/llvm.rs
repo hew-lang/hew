@@ -18292,17 +18292,19 @@ fn lower_record_field_drop(
              for COW-heap scalar fields (LESSONS: boundary-fail-closed)"
         )));
     };
-    // Validate symbol/type congruence before emitting any call. If the MIR
-    // emitter drifted from the codegen table, fail loudly rather than silently
-    // calling an unrelated release function (LESSONS: boundary-fail-closed,
-    // dedup-semantic-boundary).
-    if cow_heap_release_symbol(fn_ctx, ty) != Some(symbol) {
+    // Fail closed on an unknown release symbol before emitting any call: a
+    // `RecordFieldDrop` carries its `Release` symbol as a MIR literal, so a
+    // symbol outside the closed copy-on-write release set is producer drift
+    // and must not reach a call to an unvalidated runtime entry
+    // (LESSONS: boundary-fail-closed). The per-type congruence re-derivation
+    // is retired with the Row-C dual-derivation seam — codegen no longer keeps
+    // its own `(type, symbol)` table to double-check the MIR pick against.
+    if !is_known_cow_heap_drop_symbol(symbol) {
         return Err(CodegenError::FailClosed(format!(
-            "RecordFieldDrop @ field[{idx}]: drop_fn=Release({symbol:?}) is \
-             incongruent with field type {ty:?} (expected release symbol \
-             {expected:?}); refusing to emit (LESSONS: boundary-fail-closed)",
+            "RecordFieldDrop @ field[{idx}] (type {ty:?}): drop_fn=Release({symbol:?}) \
+             is not a known copy-on-write release symbol; refusing to emit \
+             (LESSONS: boundary-fail-closed)",
             idx = field_offset.0,
-            expected = cow_heap_release_symbol(fn_ctx, ty),
         )));
     }
     let (record_ptr, record_slot_ty) = place_pointer(fn_ctx, record)?;
@@ -25300,7 +25302,7 @@ fn lower_inline_drop(
     // { ptr, i32, i32 }`, NOT a single owned pointer. The data buffer's sole
     // release is `hew_bytes_drop(data_ptr)` (`hew-runtime/src/bytes.rs`'s
     // refcount-decrement-and-free-at-zero entry), where `data_ptr` is the
-    // FIRST field of the triple. The generic `cow_heap_release_symbol` path
+    // FIRST field of the triple. The generic `resolved_ty_cow_heap_release` path
     // (single-`ptr`-load → call) does not fit this shape, so Bytes is
     // deliberately absent from that table; intercept here BEFORE the cow_heap
     // congruence check and route to the triple-field-0 emitter.
@@ -25327,16 +25329,19 @@ fn lower_inline_drop(
         return emit_bytes_inplace_drop(fn_ctx, place);
     }
     if let hew_mir::DropFnSpec::Release(symbol) = drop_fn {
-        // A release ritual is only ever congruent with its own type's cow
-        // release symbol; anything else would free through the wrong ABI.
-        if cow_heap_release_symbol(fn_ctx, ty) == Some(symbol) {
+        // A `Release` ritual carries its symbol as a MIR literal; fail closed on
+        // one outside the closed copy-on-write release set rather than free
+        // through an unvalidated runtime entry (LESSONS: boundary-fail-closed).
+        // The per-type congruence re-derivation is retired with the Row-C
+        // dual-derivation seam — codegen no longer keeps its own `(type,
+        // symbol)` table to re-check the MIR pick against.
+        if is_known_cow_heap_drop_symbol(symbol) {
             return emit_cow_heap_drop(fn_ctx, place, symbol);
         }
         return Err(CodegenError::FailClosed(format!(
-            "inline Instr::Drop @ {place:?} carries release ritual {symbol:?} \
-             incongruent with its type {ty:?} (whose release symbol is {expected:?}); \
-             refusing to route a heap-owning value through the generic drop dispatcher",
-            expected = cow_heap_release_symbol(fn_ctx, ty),
+            "inline Instr::Drop @ {place:?} carries release ritual {symbol:?} that is \
+             not a known copy-on-write release symbol; refusing to route a heap-owning \
+             value through the generic drop dispatcher (LESSONS: boundary-fail-closed)",
         )));
     }
     lower_drop(fn_ctx, place, drop_fn)
@@ -26339,9 +26344,9 @@ fn emit_one_elab_drop_unguarded(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> Code
         // their release symbol (or recursion intent) in `kind`, not in
         // `drop_fn`, so they bypass the W3.030 runtime-vs-user
         // `resolve_drop_fn` dispatch entirely.
-        hew_mir::DropKind::CowHeap { drop_fn } => {
+        hew_mir::DropKind::CowHeap { release } => {
             // Fail-closed (release-mode, not debug_assert): a CowHeap drop
-            // MUST carry its release symbol in the kind. A populated
+            // MUST carry its release protocol in the kind. A populated
             // ElabDrop::drop_fn signals a producer that mixed the W3.030
             // close-symbol path with the W5.011 kind-carried path; refuse
             // rather than silently ignore it.
@@ -26349,71 +26354,29 @@ fn emit_one_elab_drop_unguarded(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> Code
                 return Err(CodegenError::FailClosed(format!(
                     "CowHeap ElabDrop @ {place:?} unexpectedly carries \
                      ElabDrop::drop_fn = {df:?}; a CowHeap drop MUST carry its \
-                     release symbol in the kind, not in drop_fn — refusing to emit \
+                     release protocol in the kind, not in drop_fn — refusing to emit \
                      (LESSONS: boundary-fail-closed).",
                     place = drop.place,
                     df = drop.drop_fn,
                 )));
             }
+            // The release protocol is a typed `CowHeapRelease`, so the C-ABI
+            // symbol is resolved from the carried fact — never re-derived from
+            // `drop.ty` and cross-checked (the dual-derivation congruence the
+            // literal `drop_fn` carrier required is gone with the literal). An
+            // unknown or type-incongruent release symbol is unrepresentable.
+            //
             // Bytes ABI intercept: a native `bytes` value is a stack-resident
             // `BytesTriple { ptr, i32, i32 }`, NOT a single owned pointer, so
-            // it does not fit the single-`ptr`-load shape the generic CowHeap
-            // path (and its `cow_heap_release_symbol` congruence table)
-            // describes. Route it through the triple-field-0 emitter — the
-            // SAME `emit_bytes_inplace_drop` the inline `Instr::Drop` bytes
-            // path uses (`lower_inline_drop`), so scope-exit and inline bytes
-            // drops cannot drift on which field of the triple owns the heap
-            // allocation. The MIR-side symbol authority is `drop_kind_for`'s
-            // Bytes arm; any other symbol on a Bytes drop is producer drift —
-            // refuse (LESSONS: boundary-fail-closed, dedup-semantic-boundary,
-            // lifecycle-symmetry).
-            if matches!(drop.ty, ResolvedTy::Bytes) {
-                if drop_fn != "hew_bytes_drop" {
-                    return Err(CodegenError::FailClosed(format!(
-                        "CowHeap ElabDrop @ {place:?} on type Bytes carries release \
-                         symbol {drop_fn:?}; the only admissible Bytes release is \
-                         `hew_bytes_drop` (the `drop_kind_for` Bytes-arm authority — \
-                         `hew-mir/src/lower.rs`). Refusing to route a BytesTriple \
-                         through the generic single-ptr-load CowHeap path \
-                         (LESSONS: boundary-fail-closed).",
-                        place = drop.place,
-                    )));
-                }
+            // it does not fit the single-`ptr`-load shape. Route it through the
+            // triple-field-0 emitter — the SAME `emit_bytes_inplace_drop` the
+            // inline `Instr::Drop` bytes path uses (`lower_inline_drop`), so
+            // scope-exit and inline bytes drops cannot drift on which field of
+            // the triple owns the heap allocation.
+            if matches!(release, hew_mir::CowHeapRelease::Bytes) {
                 return emit_bytes_inplace_drop(fn_ctx, drop.place);
             }
-            // Validate the kind-carried symbol against the closed release
-            // table before emitting any call (Fix #2.3).
-            if !is_known_cow_heap_drop_symbol(drop_fn) {
-                return Err(CodegenError::FailClosed(format!(
-                    "CowHeap ElabDrop @ {place:?} carries unknown release symbol \
-                     {drop_fn:?}; only the closed set {{hew_string_drop, hew_vec_free, \
-                     hew_hashmap_free_layout, hew_hashset_free_layout}} is permitted — \
-                     refusing to emit a call to an unvalidated runtime entry \
-                     (LESSONS: boundary-fail-closed).",
-                    place = drop.place,
-                )));
-            }
-            // Membership alone is insufficient: a symbol in the closed set
-            // that does NOT match `drop.ty`'s own release symbol would emit a
-            // wrong-ABI free (e.g. `hew_vec_free` on a `string` handle frees
-            // a non-Vec layout). Require congruence with the type-directed
-            // `(type, symbol)` table — the same table `cow_value_leaf_drop_symbol`
-            // / the `AggregateRecursive` walk use — so the kind-carried symbol
-            // and the leaf type can never silently diverge (LESSONS:
-            // boundary-fail-closed, lifecycle-symmetry).
-            if cow_heap_release_symbol(fn_ctx, &drop.ty) != Some(drop_fn) {
-                return Err(CodegenError::FailClosed(format!(
-                    "CowHeap ElabDrop @ {place:?} carries release symbol {drop_fn:?} \
-                     incongruent with its leaf type {ty:?} (whose release symbol is \
-                     {expected:?}); emitting this call would free a {ty:?} handle through \
-                     the wrong-ABI release entry — refusing \
-                     (LESSONS: boundary-fail-closed, lifecycle-symmetry).",
-                    place = drop.place,
-                    ty = drop.ty,
-                    expected = cow_heap_release_symbol(fn_ctx, &drop.ty),
-                )));
-            }
-            emit_cow_heap_drop(fn_ctx, drop.place, drop_fn)
+            emit_cow_heap_drop(fn_ctx, drop.place, release.release_symbol())
         }
         hew_mir::DropKind::AggregateRecursive => {
             if drop.drop_fn.is_some() {
@@ -26871,7 +26834,7 @@ pub(crate) fn resolved_ty_element_owns_heap_for_owned_vec(
         // Nested collection elements (Vec<E> / HashMap / HashSet) are owned
         // heap handles — route the outer Vec through the W5.016 owned descriptor
         // ABI (#1722). A closure-pair Vec<fn>/Vec<closure> keeps its
-        // pointer/closure-pairs release (`cow_heap_release_symbol` checks
+        // pointer/closure-pairs release (`resolved_ty_cow_heap_release` checks
         // fn/closure FIRST); exclude it here so the constructor never builds an
         // owned descriptor for a closure-pair element (which has no managed
         // clone primitive — `collection_elem_clone_drop_syms` returns None).
@@ -26968,9 +26931,24 @@ fn resolved_ty_contains_heap_leaf(
     hew_mir::ty_owns_heap(ty, &CgHeapLayouts { fn_ctx })
 }
 
-fn cow_heap_release_symbol(fn_ctx: &FnCtx<'_, '_>, ty: &ResolvedTy) -> Option<&'static str> {
+/// Resolve a `ResolvedTy` to its typed [`hew_mir::CowHeapRelease`] protocol, or
+/// `None` when the type is not a single copy-on-write heap leaf. This is the
+/// address-based aggregate walk's per-field picker (`emit_heap_slot_drop`), the
+/// one place codegen still classifies a bare type to a release — nested
+/// aggregate fields carry no MIR fact of their own. It reads the SINGLE symbol
+/// authority (`CowHeapRelease::release_symbol`, built on
+/// `HeapLeaf::release_symbol`) rather than a codegen-local string table, so MIR
+/// and codegen agree per shape by construction (`dedup-semantic-boundary`).
+///
+/// `Bytes` is deliberately absent — a `BytesTriple` is not a single-`ptr` load,
+/// so `emit_heap_slot_drop` intercepts it before consulting this picker.
+fn resolved_ty_cow_heap_release(
+    fn_ctx: &FnCtx<'_, '_>,
+    ty: &ResolvedTy,
+) -> Option<hew_mir::CowHeapRelease> {
+    use hew_mir::CowHeapRelease;
     match ty {
-        ResolvedTy::String => Some("hew_string_drop"),
+        ResolvedTy::String => Some(CowHeapRelease::String),
         // Dispatch on the compiler-known `builtin` discriminant, NOT the
         // `name` string: a user-defined `type Vec { ... }` resolves to
         // `Named { name: "Vec", builtin: None }` and must NOT be routed to
@@ -26995,24 +26973,24 @@ fn cow_heap_release_symbol(fn_ctx: &FnCtx<'_, '_>, ty: &ResolvedTy) -> Option<&'
             if args.first().is_some_and(|e| {
                 matches!(e, ResolvedTy::Function { .. } | ResolvedTy::Closure { .. })
             }) {
-                Some("hew_vec_free_closure_pairs")
+                Some(CowHeapRelease::VecClosurePairs)
             } else if args
                 .first()
                 .is_some_and(|e| resolved_ty_element_owns_heap_for_owned_vec(fn_ctx, e))
             {
-                Some("hew_vec_free_owned")
+                Some(CowHeapRelease::VecOwnedElement)
             } else {
-                Some("hew_vec_free")
+                Some(CowHeapRelease::VecPlain)
             }
         }
         ResolvedTy::Named {
             builtin: Some(hew_types::BuiltinType::HashMap),
             ..
-        } => Some(HASHMAP_FREE_LAYOUT_SYMBOL),
+        } => Some(CowHeapRelease::HashMap),
         ResolvedTy::Named {
             builtin: Some(hew_types::BuiltinType::HashSet),
             ..
-        } => Some(HASHSET_FREE_LAYOUT_SYMBOL),
+        } => Some(CowHeapRelease::HashSet),
         // A `Generator<Y, R>` / `AsyncGenerator<Y>` value releases via
         // `hew_gen_coro_destroy`: the value is the heap companion
         // `{ ptr handle, ptr env, ptr out_drop_thunk, i8 started, i8 pending,
@@ -27027,7 +27005,7 @@ fn cow_heap_release_symbol(fn_ctx: &FnCtx<'_, '_>, ty: &ResolvedTy) -> Option<&'
             builtin:
                 Some(hew_types::BuiltinType::Generator | hew_types::BuiltinType::AsyncGenerator),
             ..
-        } => Some("hew_gen_coro_destroy"),
+        } => Some(CowHeapRelease::Generator),
         _ => None,
     }
 }
@@ -27336,7 +27314,8 @@ fn emit_heap_slot_drop<'ctx>(
     if matches!(ty, ResolvedTy::Bytes) {
         return emit_bytes_slot_drop(fn_ctx, slot_ptr, label);
     }
-    if let Some(symbol) = cow_heap_release_symbol(fn_ctx, ty) {
+    if let Some(release) = resolved_ty_cow_heap_release(fn_ctx, ty) {
+        let symbol = release.release_symbol();
         let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
         let handle = fn_ctx
             .builder
@@ -48286,7 +48265,7 @@ mod tests {
         fn_ctx.builder.build_return(Some(&zero)).expect("ret 0");
     }
 
-    /// W5.011 Slice 1: a `DropKind::CowHeap { drop_fn: "hew_string_drop" }`
+    /// W5.011 Slice 1: a `DropKind::CowHeap { release: String }`
     /// ElabDrop on a `string` local must emit a single-`ptr`-arg call to
     /// `hew_string_drop` and null-store the slot afterwards
     /// (`raii-null-after-move`).
@@ -48303,7 +48282,7 @@ mod tests {
             ty: ResolvedTy::String,
             drop_fn: None,
             kind: DropKind::CowHeap {
-                drop_fn: "hew_string_drop",
+                release: hew_mir::CowHeapRelease::String,
             },
             guard: None,
         };
@@ -48347,7 +48326,7 @@ mod tests {
             ty: ResolvedTy::String,
             drop_fn: None,
             kind: DropKind::CowHeap {
-                drop_fn: "hew_string_drop",
+                release: hew_mir::CowHeapRelease::String,
             },
             guard: Some(Place::Local(1)),
         };
@@ -48398,7 +48377,7 @@ mod tests {
             ty: ResolvedTy::String,
             drop_fn: None,
             kind: DropKind::CowHeap {
-                drop_fn: "hew_string_drop",
+                release: hew_mir::CowHeapRelease::String,
             },
             guard: None,
         };
@@ -48420,7 +48399,7 @@ mod tests {
         );
     }
 
-    /// A `DropKind::CowHeap { drop_fn: "hew_bytes_drop" }` ElabDrop on a
+    /// A `DropKind::CowHeap { release: Bytes }` ElabDrop on a
     /// `bytes` local must route through the BytesTriple-aware emitter
     /// (`emit_bytes_inplace_drop`): GEP field 0, load the data pointer, call
     /// `hew_bytes_drop(data_ptr)`, null-store the field — NOT the generic
@@ -48439,7 +48418,7 @@ mod tests {
             ty: ResolvedTy::Bytes,
             drop_fn: None,
             kind: DropKind::CowHeap {
-                drop_fn: "hew_bytes_drop",
+                release: hew_mir::CowHeapRelease::Bytes,
             },
             guard: None,
         };
@@ -48468,44 +48447,13 @@ mod tests {
         );
     }
 
-    /// A `DropKind::CowHeap` on a `bytes` local carrying any symbol other
-    /// than `hew_bytes_drop` is producer drift and must fail closed before
-    /// emitting any call (a wrong-ABI free of the triple's buffer).
-    #[test]
-    fn cow_heap_bytes_drop_wrong_symbol_fails_closed() {
-        use hew_mir::{DropKind, ElabDrop};
-        let ctx = Context::create();
-        let m = ctx.create_module("cow_heap_bytes_wrong_sym_test");
-        let harness = build_harness(&ctx, &[], &[]);
-        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
-        alloc_local(&mut fn_ctx, 0, ResolvedTy::Bytes);
-        let drop = ElabDrop {
-            place: Place::Local(0),
-            ty: ResolvedTy::Bytes,
-            drop_fn: None,
-            kind: DropKind::CowHeap {
-                // In the closed set, but the wrong release for Bytes.
-                drop_fn: "hew_string_drop",
-            },
-            guard: None,
-        };
-        let err = emit_one_elab_drop(&fn_ctx, &drop)
-            .expect_err("non-hew_bytes_drop symbol on a Bytes drop must fail closed");
-        match err {
-            CodegenError::FailClosed(msg) => assert!(
-                msg.contains("Bytes"),
-                "diagnostic must name the Bytes intercept; got: {msg}"
-            ),
-            other => panic!("expected FailClosed, got {other:?}"),
-        }
-        let ir = m.print_to_string().to_string();
-        assert!(
-            !ir.contains("call void @hew_string_drop("),
-            "no call must be emitted for a rejected Bytes symbol; got:\n{ir}"
-        );
-    }
+    // (Removed `cow_heap_bytes_drop_wrong_symbol_fails_closed`: a wrong release
+    // symbol on a Bytes drop is now unrepresentable. `DropKind::CowHeap` carries
+    // a typed `CowHeapRelease`, and the Bytes-triple emitter is selected by
+    // `CowHeapRelease::Bytes` — the type system enforces what the runtime
+    // congruence check used to.)
 
-    /// W5.011 Slice 1: a `DropKind::CowHeap { drop_fn: "hew_vec_free" }`
+    /// W5.011 Slice 1: a `DropKind::CowHeap { release: VecPlain }`
     /// ElabDrop on a `Vec<string>` local must emit the `hew_vec_free`
     /// release call (the designated local-Vec free symbol).
     #[test]
@@ -48520,8 +48468,7 @@ mod tests {
             args: vec![ResolvedTy::String],
             // Canonical compiler-produced Vec: the `builtin` discriminant is
             // what routes to `hew_vec_free` (a user `type Vec` with
-            // `builtin: None` must NOT — see `cow_heap_release_symbol`). The
-            // congruence guard in `emit_one_elab_drop` now enforces this.
+            // `builtin: None` must NOT — see `resolved_ty_cow_heap_release`).
             builtin: Some(hew_types::BuiltinType::Vec),
             is_opaque: false,
         };
@@ -48531,7 +48478,7 @@ mod tests {
             ty: vec_ty,
             drop_fn: None,
             kind: DropKind::CowHeap {
-                drop_fn: "hew_vec_free",
+                release: hew_mir::CowHeapRelease::VecPlain,
             },
             guard: None,
         };
@@ -48622,84 +48569,15 @@ mod tests {
         finish_test_fn(&fn_ctx);
     }
 
-    /// W5.011 P3 (Fix #2.3): a `DropKind::CowHeap` carrying a release symbol
-    /// outside the closed table must fail closed BEFORE emitting any call —
-    /// codegen never calls an unvalidated runtime entry against a loaded
-    /// handle (`boundary-fail-closed`).
-    #[test]
-    fn cow_heap_drop_unknown_symbol_fails_closed() {
-        use hew_mir::{DropKind, ElabDrop};
-        let ctx = Context::create();
-        let m = ctx.create_module("cow_heap_unknown_sym_test");
-        let harness = build_harness(&ctx, &[], &[]);
-        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
-        alloc_local(&mut fn_ctx, 0, ResolvedTy::String);
-        let drop = ElabDrop {
-            place: Place::Local(0),
-            ty: ResolvedTy::String,
-            drop_fn: None,
-            kind: DropKind::CowHeap {
-                drop_fn: "free", // not in the closed release table
-            },
-            guard: None,
-        };
-        let err = emit_one_elab_drop(&fn_ctx, &drop)
-            .expect_err("unknown CowHeap release symbol must fail closed");
-        match err {
-            CodegenError::FailClosed(msg) => assert!(
-                msg.contains("unknown release symbol"),
-                "diagnostic must name the unknown symbol; got: {msg}"
-            ),
-            other => panic!("expected FailClosed, got {other:?}"),
-        }
-        let ir = m.print_to_string().to_string();
-        assert!(
-            !ir.contains("call void @free("),
-            "no call must be emitted for a rejected symbol; got:\n{ir}"
-        );
-    }
-
-    /// W5.011 P3 (round-3 Fix #2): a `DropKind::CowHeap` carrying a symbol
-    /// that IS in the closed release table but is INCONGRUENT with the
-    /// drop's leaf `ty` (e.g. `hew_vec_free` on a `string` handle) must fail
-    /// closed. Membership alone would let a malformed producer free a
-    /// `string` through the Vec-layout release entry (wrong-ABI free);
-    /// requiring `cow_heap_release_symbol(&ty) == Some(symbol)` keeps the
-    /// kind-carried symbol and the leaf type from silently diverging
-    /// (`boundary-fail-closed`, `lifecycle-symmetry`).
-    #[test]
-    fn cow_heap_drop_symbol_incongruent_with_type_fails_closed() {
-        use hew_mir::{DropKind, ElabDrop};
-        let ctx = Context::create();
-        let m = ctx.create_module("cow_heap_incongruent_test");
-        let harness = build_harness(&ctx, &[], &[]);
-        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
-        alloc_local(&mut fn_ctx, 0, ResolvedTy::String);
-        let drop = ElabDrop {
-            place: Place::Local(0),
-            ty: ResolvedTy::String,
-            drop_fn: None,
-            kind: DropKind::CowHeap {
-                // In the closed set, but the wrong release for `String`.
-                drop_fn: "hew_vec_free",
-            },
-            guard: None,
-        };
-        let err = emit_one_elab_drop(&fn_ctx, &drop)
-            .expect_err("type-incongruent CowHeap release symbol must fail closed");
-        match err {
-            CodegenError::FailClosed(msg) => assert!(
-                msg.contains("incongruent"),
-                "diagnostic must name the type/symbol incongruence; got: {msg}"
-            ),
-            other => panic!("expected FailClosed, got {other:?}"),
-        }
-        let ir = m.print_to_string().to_string();
-        assert!(
-            !ir.contains("call void @hew_vec_free("),
-            "no wrong-ABI free must be emitted for an incongruent symbol; got:\n{ir}"
-        );
-    }
+    // (Removed `cow_heap_drop_unknown_symbol_fails_closed` and
+    // `cow_heap_drop_symbol_incongruent_with_type_fails_closed`: both tested
+    // producer drift on the pre-consolidation literal `drop_fn` carrier — an
+    // unknown symbol, and a known-but-type-incongruent symbol. With the typed
+    // `CowHeapRelease` carrier neither is constructible (there is no symbol to
+    // fabricate and no `(leaf, refinement)` pair the type system does not
+    // enforce), so the ElabDrop arm resolves the symbol from the carried fact
+    // with no re-derivation or congruence check. The type system now provides
+    // the guarantee these runtime checks used to.)
 
     /// W5.011 P3 (Fix #2.4): a `DropKind::CowHeap` whose `ElabDrop::drop_fn`
     /// is also populated mixes the W3.030 close-symbol path with the
@@ -48718,7 +48596,7 @@ mod tests {
             ty: ResolvedTy::String,
             drop_fn: Some(hew_mir::DropFnSpec::Release("hew_string_drop")),
             kind: DropKind::CowHeap {
-                drop_fn: "hew_string_drop",
+                release: hew_mir::CowHeapRelease::String,
             },
             guard: None,
         };
@@ -48726,7 +48604,7 @@ mod tests {
             .expect_err("CowHeap with populated drop_fn must fail closed");
         match err {
             CodegenError::FailClosed(msg) => assert!(
-                msg.contains("MUST carry its release symbol in the kind"),
+                msg.contains("MUST carry its release protocol in the kind"),
                 "diagnostic must explain the kind-vs-drop_fn rule; got: {msg}"
             ),
             other => panic!("expected FailClosed, got {other:?}"),
@@ -48787,16 +48665,20 @@ mod tests {
         finish_test_fn(&fn_ctx);
     }
 
-    /// W5.011 P3 (Fix #2.2): `cow_heap_release_symbol` dispatches on the
+    /// W5.011 P3 (Fix #2.2): `resolved_ty_cow_heap_release` dispatches on the
     /// `builtin` discriminant, NOT the `name` string. A user-defined type
     /// named "Vec" with `builtin: None` must NOT be routed to `hew_vec_free`
-    /// (which would free a non-Vec layout).
+    /// (which would free a non-Vec layout). The resolved release's symbol reads
+    /// the single `CowHeapRelease::release_symbol` authority.
     #[test]
-    fn cow_heap_release_symbol_ignores_user_named_collision() {
+    fn resolved_ty_cow_heap_release_ignores_user_named_collision() {
         let ctx = Context::create();
         let llvm_mod = ctx.create_module("cow_heap_release_test");
         let harness = build_harness(&ctx, &[], &[]);
         let fn_ctx = make_test_fn_ctx(&ctx, &llvm_mod, &harness, "cow_heap_release_probe");
+
+        let sym =
+            |ty: &ResolvedTy| resolved_ty_cow_heap_release(&fn_ctx, ty).map(|r| r.release_symbol());
 
         // User type literally named "Vec" but not the builtin.
         let user_vec = ResolvedTy::Named {
@@ -48806,7 +48688,7 @@ mod tests {
             is_opaque: false,
         };
         assert_eq!(
-            cow_heap_release_symbol(&fn_ctx, &user_vec),
+            sym(&user_vec),
             None,
             "a user `Named {{ name: \"Vec\", builtin: None }}` must not resolve to hew_vec_free"
         );
@@ -48819,9 +48701,10 @@ mod tests {
             is_opaque: false,
         };
         assert_eq!(
-            cow_heap_release_symbol(&fn_ctx, &builtin_vec),
-            Some("hew_vec_free")
+            resolved_ty_cow_heap_release(&fn_ctx, &builtin_vec),
+            Some(hew_mir::CowHeapRelease::VecPlain)
         );
+        assert_eq!(sym(&builtin_vec), Some("hew_vec_free"));
         // W5.016: a Vec of an owned tuple releases via the owned ABI.
         let owned_vec = ResolvedTy::Named {
             name: "Vec".to_string(),
@@ -48833,9 +48716,10 @@ mod tests {
             is_opaque: false,
         };
         assert_eq!(
-            cow_heap_release_symbol(&fn_ctx, &owned_vec),
-            Some("hew_vec_free_owned")
+            resolved_ty_cow_heap_release(&fn_ctx, &owned_vec),
+            Some(hew_mir::CowHeapRelease::VecOwnedElement)
         );
+        assert_eq!(sym(&owned_vec), Some("hew_vec_free_owned"));
     }
 
     /// A `Vec` whose element is a `fn` / closure releases via
@@ -48843,12 +48727,11 @@ mod tests {
     /// checked BEFORE the owned-element and plain arms. This must match the MIR
     /// authority `project_field_inline_drop_symbol`: when the two disagreed,
     /// the closure-pair Vec routed to a `RecordFieldDrop` whose `drop_fn`
-    /// (`hew_vec_free`) failed the codegen congruence assert
-    /// (`cow_heap_release_symbol` expected `hew_vec_free_closure_pairs`) — a
-    /// fail-closed hard error on a previously-leaking shape. Pin both the
-    /// dispatch and that the symbol is in the permitted closed set.
+    /// (`hew_vec_free`) previously failed a codegen congruence assert that
+    /// expected `hew_vec_free_closure_pairs`. Pin both the dispatch and that the
+    /// symbol is in the permitted closed set.
     #[test]
-    fn cow_heap_release_symbol_routes_closure_pair_vec() {
+    fn resolved_ty_cow_heap_release_routes_closure_pair_vec() {
         let ctx = Context::create();
         let llvm_mod = ctx.create_module("cow_heap_release_closure_pair_test");
         let harness = build_harness(&ctx, &[], &[]);
@@ -48865,8 +48748,8 @@ mod tests {
             is_opaque: false,
         };
         assert_eq!(
-            cow_heap_release_symbol(&fn_ctx, &vec_of_fn),
-            Some("hew_vec_free_closure_pairs"),
+            resolved_ty_cow_heap_release(&fn_ctx, &vec_of_fn),
+            Some(hew_mir::CowHeapRelease::VecClosurePairs),
             "a `Vec<fn>` element must release via the closure-pair ABI"
         );
 
@@ -48882,7 +48765,7 @@ mod tests {
             is_opaque: false,
         };
         assert_eq!(
-            cow_heap_release_symbol(&fn_ctx, &vec_of_closure),
+            resolved_ty_cow_heap_release(&fn_ctx, &vec_of_closure).map(|r| r.release_symbol()),
             Some("hew_vec_free_closure_pairs"),
             "a `Vec<closure>` element must release via the closure-pair ABI"
         );

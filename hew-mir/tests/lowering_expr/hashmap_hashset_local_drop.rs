@@ -85,7 +85,7 @@ fn drops_matching(
 
 /// True when `drop` is a `CowHeap` release naming `symbol`.
 fn is_cow_heap_free(drop: &ElabDrop, symbol: &str) -> bool {
-    matches!(drop.kind, DropKind::CowHeap { drop_fn } if drop_fn == symbol)
+    matches!(drop.kind, DropKind::CowHeap { release } if release.release_symbol() == symbol)
 }
 
 fn count_free(drops: &[ElabDrop], symbol: &str) -> usize {
@@ -163,10 +163,11 @@ fn hashmap_hashset_local_drop_admits_map_and_set_in_lifo_order() {
     let frees: Vec<&str> = drops
         .iter()
         .filter_map(|d| match d.kind {
-            DropKind::CowHeap { drop_fn }
-                if drop_fn == "hew_hashmap_free_layout" || drop_fn == "hew_hashset_free_layout" =>
+            DropKind::CowHeap { release }
+                if release.release_symbol() == "hew_hashmap_free_layout"
+                    || release.release_symbol() == "hew_hashset_free_layout" =>
             {
-                Some(drop_fn)
+                Some(release.release_symbol())
             }
             _ => None,
         })

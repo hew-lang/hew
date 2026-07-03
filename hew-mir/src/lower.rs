@@ -11585,7 +11585,7 @@ impl Builder {
     /// union is total over `ResolvedTy` by construction — a `Vec<E>` local can
     /// never silently fall through every bucket and skip its release.
     ///
-    /// Order matters and mirrors codegen's `cow_heap_release_symbol`: a closure
+    /// Order matters and mirrors codegen's `resolved_ty_cow_heap_release`: a closure
     /// pair is checked BEFORE the owned/plain arms (a `fn`/closure element is
     /// neither an owned composite nor a plain leaf — it has its own pair-box
     /// release), and the owned composite is checked before the plain leaf (an
@@ -14982,7 +14982,7 @@ impl Builder {
                                 // and must be reached through `RecordFieldLoad` +
                                 // `Instr::Drop` (which materialises the fat value).
                                 // `field_override_uses_record_field_drop` mirrors
-                                // codegen's `cow_heap_release_symbol` single-ptr set
+                                // codegen's `resolved_ty_cow_heap_release` single-ptr set
                                 // so the `RecordFieldDrop` congruence assert agrees.
                                 if field_override_uses_record_field_drop(&subst_fty) {
                                     self.push_instr(Instr::RecordFieldDrop {
@@ -18070,17 +18070,17 @@ impl Builder {
     /// the construct at compile time — never emit a wrong-ABI free.
     ///
     /// The `Wired` selection MUST mirror codegen's
-    /// `cow_heap_release_symbol` so the inline-drop validator
+    /// `resolved_ty_cow_heap_release` so the inline-drop validator
     /// (`lower_inline_drop` → congruence check) accepts the emitted symbol
     /// (`dedup-semantic-boundary`).
     ///
-    /// `Bytes` does NOT appear in `cow_heap_release_symbol` (a native `bytes`
+    /// `Bytes` does NOT appear in `resolved_ty_cow_heap_release` (a native `bytes`
     /// value is a stack-resident `BytesTriple { ptr, i32, i32 }`, not a single
     /// owned pointer, so the generic single-`ptr`-load release shape that
-    /// `cow_heap_release_symbol` describes does not apply). The inline-drop
+    /// `resolved_ty_cow_heap_release` describes does not apply). The inline-drop
     /// dispatcher (`lower_inline_drop`) intercepts the
     /// `(ty == Bytes, drop_fn == "hew_bytes_drop")` pair BEFORE the
-    /// `cow_heap_release_symbol` congruence check and routes it through the
+    /// `resolved_ty_cow_heap_release` congruence check and routes it through the
     /// `BytesTriple`-aware emitter (`emit_bytes_inplace_drop`): GEP field 0,
     /// load the data ptr, call `hew_bytes_drop(data_ptr)`, null-store the
     /// field to make a structurally-reachable second drop a no-op against
@@ -18111,7 +18111,7 @@ impl Builder {
                 // The element's release bucket selects the Vec verdict, read
                 // from the one typed classification. Its dispatch checks the
                 // closure-pair bucket FIRST, mirroring codegen's
-                // `cow_heap_release_symbol` (a fn/closure element is neither
+                // `resolved_ty_cow_heap_release` (a fn/closure element is neither
                 // an owned composite nor a plain leaf; the inline-drop
                 // congruence check rejects a mis-picked `hew_vec_free` for a
                 // yielded `Vec<fn>` — `dedup-semantic-boundary`), and its
@@ -18529,7 +18529,7 @@ impl Builder {
     /// inline `Instr::Drop`. The caller fails closed for these rather than
     /// emit a wrong-ABI free (leak-not-double-free posture).
     ///
-    /// The symbol authority MUST agree with codegen's `cow_heap_release_symbol`
+    /// The symbol authority MUST agree with codegen's `resolved_ty_cow_heap_release`
     /// + Bytes-intercept in `lower_inline_drop` (`dedup-semantic-boundary`,
     ///   `lifecycle-symmetry`). A symbol absent from that authority would be
     ///   rejected at codegen-emit time as a wrong-ABI free.
@@ -18547,7 +18547,7 @@ impl Builder {
                 // generator-yield picker consults, so every drop-symbol
                 // authority detects each bucket through one decision and
                 // cannot drift. The dispatch checks the closure-pair bucket
-                // FIRST, mirroring codegen's `cow_heap_release_symbol` (see
+                // FIRST, mirroring codegen's `resolved_ty_cow_heap_release` (see
                 // `classify_vec_element_release`'s order doc; both
                 // authorities are documented to agree —
                 // `dedup-semantic-boundary`, `is_known_cow_heap_drop_symbol`
@@ -18592,7 +18592,7 @@ impl Builder {
     /// dispatcher can resolve?"), so MIR admission and codegen capability
     /// cannot drift (`dedup-semantic-boundary` — the same discipline
     /// `project_field_inline_drop_symbol` documents against codegen's
-    /// `cow_heap_release_symbol`).
+    /// `resolved_ty_cow_heap_release`).
     ///
     /// Admitted top-level shapes, mirroring `emit_heap_slot_drop`'s dispatch:
     ///   - user record with a registered layout — every field dischargeable
@@ -33298,19 +33298,19 @@ fn expected_drop_kind_for_validation(drop: &ElabDrop) -> DropKind {
         // re-derives via the dispatcher so a non-Vec place cannot silently
         // carry the owned-Vec release symbol.
         DropKind::CowHeap {
-            drop_fn: "hew_vec_free_owned",
+            release: crate::ownership::CowHeapRelease::VecOwnedElement,
         } if matches!(drop.place, Place::Local(_)) && ty_is_vec(&drop.ty) => DropKind::CowHeap {
-            drop_fn: "hew_vec_free_owned",
+            release: crate::ownership::CowHeapRelease::VecOwnedElement,
         },
         // Closure-pair `Vec<fn(...)>` scope-exit release: same dedicated-kind
         // acceptance shape as the owned-Vec arm — a local Vec whose element
         // is a closure pair may carry the closure-pair release symbol; any
         // other shape re-derives via the Place-driven dispatcher.
         DropKind::CowHeap {
-            drop_fn: "hew_vec_free_closure_pairs",
+            release: crate::ownership::CowHeapRelease::VecClosurePairs,
         } if matches!(drop.place, Place::Local(_)) && ty_is_closure_pair_vec(&drop.ty) => {
             DropKind::CowHeap {
-                drop_fn: "hew_vec_free_closure_pairs",
+                release: crate::ownership::CowHeapRelease::VecClosurePairs,
             }
         }
         // Plain `Vec<T>` scope-exit release: same dedicated-kind acceptance
@@ -33322,9 +33322,9 @@ fn expected_drop_kind_for_validation(drop: &ElabDrop) -> DropKind {
         // carry the plain-Vec release symbol. Codegen re-validates the
         // (type, symbol) congruence again before emitting the call.
         DropKind::CowHeap {
-            drop_fn: "hew_vec_free",
+            release: crate::ownership::CowHeapRelease::VecPlain,
         } if matches!(drop.place, Place::Local(_)) && ty_is_vec(&drop.ty) => DropKind::CowHeap {
-            drop_fn: "hew_vec_free",
+            release: crate::ownership::CowHeapRelease::VecPlain,
         },
         // W5.021 — heap-owning tuple drops are keyed by both kind and
         // `ElabDrop::ty` (the structural tuple shape selects the synthesized
@@ -35843,7 +35843,7 @@ fn cow_owned_string_terminator_escapes(
 /// W5.011 P3 — borrowing-read-aware owned-`string` cleanup. Returns the subset
 /// of `owned_locals` that hold a **proven fresh sole owner used only in
 /// borrowing reads**, which therefore earns a scope-exit
-/// `DropKind::CowHeap { drop_fn: "hew_string_drop" }`.
+/// `DropKind::CowHeap { release: String }` (`hew_string_drop`).
 ///
 /// ## Why this exists (the leak `derive_cow_sole_owner` leaves behind)
 ///
@@ -38117,7 +38117,7 @@ fn derive_local_collection_drop_allowed(
 /// Fail-closed sole-owner derivation for **local `bytes`** bindings. Returns
 /// the subset of `owned_locals` whose `BytesTriple` is proven to still solely
 /// own its refcounted data buffer at every exit, and therefore earns a
-/// `DropKind::CowHeap { drop_fn: "hew_bytes_drop" }` scope-exit drop (lowered
+/// `DropKind::CowHeap { release: Bytes }` (`hew_bytes_drop`) scope-exit drop (lowered
 /// by codegen's `emit_bytes_inplace_drop`: GEP field 0, load the data pointer,
 /// `hew_bytes_drop(data_ptr)`, null-store the field).
 ///
@@ -40332,7 +40332,7 @@ fn drop_kind_for(
         // identical kind (see `cow_value_leaf_drop_symbol`).
         Place::Local(_) | Place::ReturnSlot if matches!(ty, ResolvedTy::String) => {
             DropKind::CowHeap {
-                drop_fn: "hew_string_drop",
+                release: crate::ownership::CowHeapRelease::String,
             }
         }
         // A `bytes` owned local is a by-value `BytesTriple { ptr, i32, i32 }`
@@ -40350,7 +40350,7 @@ fn drop_kind_for(
         // `derive_local_bytes_drop_allowed`).
         Place::Local(_) | Place::ReturnSlot if matches!(ty, ResolvedTy::Bytes) => {
             DropKind::CowHeap {
-                drop_fn: "hew_bytes_drop",
+                release: crate::ownership::CowHeapRelease::Bytes,
             }
         }
         // A `Generator<Y, R>` / `AsyncGenerator<Y>` owned local holds the heap
@@ -40373,7 +40373,7 @@ fn drop_kind_for(
             ) =>
         {
             DropKind::CowHeap {
-                drop_fn: "hew_gen_coro_destroy",
+                release: crate::ownership::CowHeapRelease::Generator,
             }
         }
         // A local `HashMap<K, V>` / `HashSet<E>` owned binding holds a single
@@ -40408,7 +40408,7 @@ fn drop_kind_for(
             ) =>
         {
             DropKind::CowHeap {
-                drop_fn: "hew_hashmap_free_layout",
+                release: crate::ownership::CowHeapRelease::HashMap,
             }
         }
         Place::Local(_) | Place::ReturnSlot
@@ -40421,7 +40421,7 @@ fn drop_kind_for(
             ) =>
         {
             DropKind::CowHeap {
-                drop_fn: "hew_hashset_free_layout",
+                release: crate::ownership::CowHeapRelease::HashSet,
             }
         }
         // Machine tag and variant fields are sub-structure of a machine value,
@@ -41318,7 +41318,7 @@ fn build_lifo_drops(
                 ty: ty.clone(),
                 drop_fn: None,
                 kind: DropKind::CowHeap {
-                    drop_fn: "hew_vec_free_closure_pairs",
+                    release: crate::ownership::CowHeapRelease::VecClosurePairs,
                 },
                 guard: None,
             });
@@ -41337,7 +41337,7 @@ fn build_lifo_drops(
                 ty: ty.clone(),
                 drop_fn: None,
                 kind: DropKind::CowHeap {
-                    drop_fn: "hew_vec_free_owned",
+                    release: crate::ownership::CowHeapRelease::VecOwnedElement,
                 },
                 guard: None,
             });
@@ -41374,7 +41374,7 @@ fn build_lifo_drops(
                 ty: ty.clone(),
                 drop_fn: None,
                 kind: DropKind::CowHeap {
-                    drop_fn: "hew_vec_free",
+                    release: crate::ownership::CowHeapRelease::VecPlain,
                 },
                 guard: None,
             });
@@ -41855,7 +41855,7 @@ fn cow_value_leaf_drop_symbol(ty: &ResolvedTy) -> Option<&'static str> {
 /// `bytes` is deliberately EXCLUDED: it is a fat `{ ptr, len, cap }` triple,
 /// not a single pointer. Its destructor takes the by-value triple, so it is
 /// reached through `RecordFieldLoad` + `Instr::Drop` (which materialises the
-/// fat value into a temp). The set mirrors codegen's `cow_heap_release_symbol`
+/// fat value into a temp). The set mirrors codegen's `resolved_ty_cow_heap_release`
 /// (which returns `None` for `bytes`), so the `RecordFieldDrop` symbol/type
 /// congruence assertion in codegen always agrees with what is emitted here.
 ///
@@ -49371,7 +49371,7 @@ mod binding_ty_is_plain_vec_tuple {
 
     /// Closure-pair release-symbol pin: the generator-yield and match-field
     /// release-symbol pickers must check the closure-pair bucket BEFORE the
-    /// owned/plain split, matching codegen's `cow_heap_release_symbol` dispatch
+    /// owned/plain split, matching codegen's `resolved_ty_cow_heap_release` dispatch
     /// order. A yielded or match-destructured `Vec<fn>` releases via
     /// `hew_vec_free_closure_pairs`; the pre-fix `generator_yield_drop_symbol`
     /// had only an owned/plain split and computed `hew_vec_free`, which diverges

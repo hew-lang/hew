@@ -66,8 +66,8 @@ pub use model::{
     ThirFunction, TraitObjectStorage, TrapKind, WitnessOperand,
 };
 pub use ownership::{
-    AbiClass, DropClass, FailClosedReason, HandleRole, HeapLeaf, LayoutClass, OwnershipCtx,
-    OwnershipDecision, PlaceProvenance, Projection, ProvenanceOrigin, ValueOwnership,
+    AbiClass, CowHeapRelease, DropClass, FailClosedReason, HandleRole, HeapLeaf, LayoutClass,
+    OwnershipCtx, OwnershipDecision, PlaceProvenance, Projection, ProvenanceOrigin, ValueOwnership,
     ValueProvenance,
 };
 pub use runtime_symbols::UnknownRuntimeSymbol;

@@ -5606,13 +5606,21 @@ pub enum DropKind {
     /// `hew_hashset_free_layout`. Codegen loads the pointer, calls the
     /// symbol, and null-stores the slot (`raii-null-after-move`).
     ///
-    /// `ElabDrop::drop_fn` stays `None` for this kind — the symbol lives in
-    /// the variant so the runtime-vs-user `resolve_drop_fn` dispatch (which
-    /// only fires for `ElabDrop::drop_fn = Some(_)`) is not consulted and
-    /// the `CowHeap` arm is a single, self-describing release call. The symbol
-    /// is `&'static str` (a fixed runtime release-symbol literal); the
-    /// emitter declares it as `void(ptr)` via `get_or_declare_drop_helper`.
-    CowHeap { drop_fn: &'static str },
+    /// `ElabDrop::drop_fn` stays `None` for this kind — the release protocol
+    /// lives in the variant so the runtime-vs-user `resolve_drop_fn` dispatch
+    /// (which only fires for `ElabDrop::drop_fn = Some(_)`) is not consulted and
+    /// the `CowHeap` arm is a single, self-describing release call.
+    ///
+    /// The protocol is a typed [`CowHeapRelease`] — the heap-leaf identity
+    /// folded with the `Vec<E>` element refinement — not a `&'static str`
+    /// literal. Codegen resolves the C-ABI symbol from the carried fact
+    /// (`CowHeapRelease::release_symbol`, declared `void(ptr)` via
+    /// `get_or_declare_drop_helper`); because the fact is typed, an unknown or
+    /// type-incongruent release symbol is unrepresentable, so the codegen
+    /// congruence re-derivation the literal carrier required is gone.
+    CowHeap {
+        release: crate::ownership::CowHeapRelease,
+    },
     /// owned-string-record — function-scope in-place drop of a stack-local user record whose
     /// direct fields are only `BitCopy` values plus one or more `string` fields.
     /// The record identity lives in the paired [`ElabDrop::ty`], so the kind can

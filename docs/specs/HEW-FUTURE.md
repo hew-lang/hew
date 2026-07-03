@@ -151,15 +151,20 @@ field that is neither escalation-only nor `@resource`-backed.
 
 ## 2. Type-system surfaces deferred from edition 2026
 
-### 2.1 Closures with captured environment
+### 2.1 Closures — transitive (skip-level) capture
 
-**[Target: v0.6 / gated on Cluster 4]**
+**[Target: v0.6]**
 
-Closure literals parse today and lower in narrow cases. The full surface
-— captured-state closures, `Option<T>`-returning closures, closure-typed
-struct fields, nested closures, `move` captures — is the focus of
-Cluster 4 alongside generators. Edition 2026 admits closures whose body
-and captures both type-check trivially; everything else is deferred.
+Closure literals parse and lower for the general case: captured-state
+closures, `move` captures, closure-typed record/struct fields, and
+`Option<T>`-returning closures are all implemented with drop-safe
+handling of the captured environment. The remaining gap is narrower —
+transitive capture through two or more nested scope levels (a closure
+capturing a binding from an enclosing closure that itself captured it
+from a further-enclosing scope) fails with `E_HIR
+CheckerBoundaryViolation`. Direct one-level closure-captures-closure
+(`let wrap = |y| base(y);` where `base` is itself a closure) already
+works.
 
 ### 2.2 Advanced trait surface (dyn, object safety, associated-type bounds, heavy where-clauses)
 

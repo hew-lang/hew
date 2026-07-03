@@ -1893,14 +1893,6 @@ forms: `println(f"{val}")` (f-string interpolation) or a generic function
 that takes `T: Display` and calls `println` internally. The `fmt` method is
 also callable directly: `val.fmt()` returns the string representation.
 
-### Generics NYI — current limitations
-
-Two patterns type-check but fail at call or check time:
-
-1. **Generic constructor functions without turbofish** (`fn ctor<T>() -> MyType<T>` called without turbofish): call sites emit `E_NOT_YET_IMPLEMENTED: MIR lowering for function call is not implemented yet` (or `cannot infer type for local binding` when `T` is unconstrained). Annotating the binding without turbofish (`let x: MyType<i64> = ctor()`) does not resolve it — `E_NOT_YET_IMPLEMENTED` still fires. Fix: add turbofish (`ctor::<i64>()`) or skip the ctor fn and construct inline with an annotated binding (`let x: MyType<i64> = MyType { ... }`). See the Turbofish section above for examples.
-
-2. **`impl Trait for GenericRecord<ConcreteType>`**: trait method body type-checking for multiple concrete instantiations of the same generic record has a known resolution bug where the later-declared impl's type substitution is used for all impls. Until this is fixed, implement trait methods for a concrete (non-generic) record type.
-
 ## Errors — Result and Option
 
 ### Result construction and matching
@@ -2487,7 +2479,7 @@ fn main() {
 }
 ```
 
-**Fallible parsing with `try_parse`** returns `Result<Value, ParseError>`. Match `Err(_)` for the error case — the module-qualified `ParseError::Invalid(msg)` pattern in match arms is currently unsupported at parse time:
+**Fallible parsing with `try_parse`** returns `Result<Value, ParseError>`. Match on the module-qualified `ParseError::Invalid(msg)` pattern to recover the native parser's message, or match `Err(_)` to ignore it:
 
 ```hew
 import std::encoding::json;
@@ -2498,11 +2490,11 @@ fn main() {
             println("parsed ok");
             v.free();
         },
-        Err(_) => println("parse failed"),
+        Err(ParseError::Invalid(msg)) => println(f"parse failed: {msg}"),
     }
     match json.try_parse("not valid json {") {
         Ok(v) => { v.free(); },
-        Err(_) => println("bad json rejected"),
+        Err(ParseError::Invalid(msg)) => println(f"bad json rejected: {msg}"),
     }
 }
 ```

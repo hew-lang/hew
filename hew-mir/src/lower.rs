@@ -7860,6 +7860,7 @@ fn lower_function(
         let alias_chain = builder.alias_projection_chain();
         let is_owned_record = |ty: &ResolvedTy| builder.is_owned_aggregate_record_ty(ty);
         let owned_field_list = |ty: &ResolvedTy| builder.project_record_owned_field_list(ty);
+        let owned_tuple_field_list = |ty: &ResolvedTy| builder.project_tuple_owned_field_list(ty);
         let field_dischargeable = |ty: &ResolvedTy| {
             matches!(ty, ResolvedTy::String) || builder.field_drop_in_place_admissible(ty)
         };
@@ -7874,6 +7875,7 @@ fn lower_function(
             &alias_chain,
             &is_owned_record,
             &owned_field_list,
+            &owned_tuple_field_list,
             &field_dischargeable,
             &mut instr_spans,
         );
@@ -36678,7 +36680,7 @@ struct RootScan {
 #[allow(
     clippy::too_many_arguments,
     reason = "each argument is a distinct Builder-owned input (blocks, the \
-              ownership ledgers, the layout tables, the three type-shape \
+              ownership ledgers, the layout tables, the four type-shape \
               predicates, the debug line table); bundling them into a struct \
               would add indirection at the single call site"
 )]
@@ -36701,6 +36703,7 @@ fn apply_escaped_record_sibling_field_drops(
     alias_chain: &[(u32, u32, u32)],
     is_owned_record: &dyn Fn(&ResolvedTy) -> bool,
     owned_field_list: &dyn Fn(&ResolvedTy) -> Vec<(u32, ResolvedTy)>,
+    owned_tuple_field_list: &dyn Fn(&ResolvedTy) -> Vec<(u32, ResolvedTy)>,
     field_dischargeable: &dyn Fn(&ResolvedTy) -> bool,
     instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
 ) {
@@ -36719,11 +36722,31 @@ fn apply_escaped_record_sibling_field_drops(
         };
         root_record_ty.insert(local, ty.clone());
     }
-    if root_record_ty.is_empty() {
+    // Tuple candidate roots (#2383): base locals of owned heap-owning TUPLE
+    // bindings — the tuple composite prover's candidate set. The one-hop scan
+    // below is record-only; the multi-hop chain compensator walks BOTH root
+    // kinds, because `derive_tuple_composite_drop_allowed` folds the recorded
+    // deep aliases into its exclusion exactly as the record prover does, and
+    // a widened exclusion without compensation leaks every chain sibling.
+    let mut root_tuple_ty: HashMap<u32, ResolvedTy> = HashMap::new();
+    for (binding, _name, ty) in owned_locals {
+        if !ty_is_heap_owning_tuple(ty, record_field_orders, enum_layouts) {
+            continue;
+        }
+        let Some(place) = binding_locals.get(binding) else {
+            continue;
+        };
+        let Some(local) = base_local(*place) else {
+            continue;
+        };
+        root_tuple_ty.insert(local, ty.clone());
+    }
+    if root_record_ty.is_empty() && root_tuple_ty.is_empty() {
         return;
     }
 
     let alias_of = propagate_whole_value_alias_roots(blocks, root_record_ty.keys().copied());
+    let tuple_alias_of = propagate_whole_value_alias_roots(blocks, root_tuple_ty.keys().copied());
     let local_is_heap_owning = |local: u32| -> bool {
         local_tys
             .get(local as usize)
@@ -37032,18 +37055,22 @@ fn apply_escaped_record_sibling_field_drops(
     }
     // The one-hop scan above sees only a binder loaded DIRECTLY off a whole-value
     // alias member, so a ≥2-hop escape (`let mid = o.mid; let leaf = mid.leaf;
-    // return leaf`) is invisible to it — yet the composite-drop prover DOES
+    // return leaf`) is invisible to it — yet the composite-drop provers DO
     // exclude the owner for it (via `close_alias_binders_forward`). Walk the
-    // recorded alias chain and discharge the non-escaped siblings at every level
-    // so the widened exclusion never outruns its compensation.
-    insertions.extend(compute_escaped_record_chain_sibling_drops(
+    // recorded alias chain — record AND tuple roots (#2383) — and discharge the
+    // non-escaped siblings at every level so the widened exclusion never
+    // outruns its compensation.
+    insertions.extend(compute_escaped_chain_sibling_drops(
         blocks,
         suspend_kinds,
         &root_record_ty,
+        &root_tuple_ty,
         &alias_of,
+        &tuple_alias_of,
         alias_chain,
         local_tys,
         owned_field_list,
+        owned_tuple_field_list,
         field_dischargeable,
     ));
     if insertions.is_empty() {
@@ -37076,31 +37103,39 @@ fn apply_escaped_record_sibling_field_drops(
 }
 
 /// Multi-hop sibling discharge for the ESCAPED deep-alias chain
-/// (`let mid = o.mid; let leaf = mid.leaf; return leaf`), the ≥2-hop companion
-/// to the one-hop scan in [`apply_escaped_record_sibling_field_drops`].
+/// (`let mid = o.mid; let leaf = mid.leaf; return leaf` and its tuple twin
+/// `let mid = o.0; let leaf = mid.0; leaf`), the ≥2-hop companion to the
+/// one-hop scan in [`apply_escaped_record_sibling_field_drops`].
 ///
-/// `derive_owned_record_drop_allowed` folds the recorded deep aliases into its
-/// exclusion via `close_alias_binders_forward`, so when a ≥2-hop alias escapes
-/// into an owning sink it suppresses the OWNER root's whole composite drop —
-/// otherwise the owner would free a subtree the escapee already handed to the
-/// caller (the #2375 double-free). The one-hop scan cannot see a ≥2-hop alias
-/// (its field-binder scan reaches only a binder loaded DIRECTLY off a whole-
-/// value alias member), so the widened exclusion removed the composite drop but
+/// `derive_owned_record_drop_allowed` and `derive_tuple_composite_drop_allowed`
+/// fold the recorded deep aliases into their exclusion via
+/// `close_alias_binders_forward`, so when a ≥2-hop alias escapes into an owning
+/// sink they suppress the OWNER root's whole composite drop — otherwise the
+/// owner would free a subtree the escapee already handed to the caller (the
+/// #2375 double-free). The one-hop scan cannot see a ≥2-hop alias (its
+/// field-binder scan reaches only a binder loaded DIRECTLY off a whole-value
+/// alias member), so the widened exclusion removed the composite drop but
 /// nothing discharged the non-escaped siblings ALONG the chain — the outer `c`
-/// and the intermediate `mid.x` leaked unconditionally (the P0 regression).
+/// and the intermediate `mid.x` leaked unconditionally (the P0 regression),
+/// and the tuple path leaked every chain sibling the same way (#2383,
+/// ~4 strings/call on the nested-tuple return shape).
 ///
 /// This walk mirrors the exclusion's reach: from the escapee up its immediate-
 /// parent chain to the owning root, it emits one `FieldDropInPlace` per owned
 /// field that does NOT lead to the next (escaping) hop, addressed through the
 /// still-live byte-copy alias local at each level (`mid.x` through `mid`, `o.c`
-/// through `o`). Exactly-once invariant: the escaped field at each level is
-/// never discharged (the escapee owns that subtree), every other owned field is
-/// discharged exactly once through its level's alias slot.
+/// through `o`; `mid.1` / `o.1` on the tuple chain). Each node's address kind
+/// follows its own type — `FieldAddr::Tuple` for a tuple node,
+/// `FieldAddr::Record` otherwise — so a mixed record/tuple chain discharges
+/// each level through the matching selector. Exactly-once invariant: the
+/// escaped field at each level is never discharged (the escapee owns that
+/// subtree), every other owned field is discharged exactly once through its
+/// level's alias slot.
 ///
-/// Fail-closed, coupled to the prover's exclusion so the two never disagree:
+/// Fail-closed, coupled to the provers' exclusion so the two never disagree:
 /// exactly ONE chain alias may escape, at a single INSTRUCTION whose escape
 /// trigger (a `Move` to a non-member/non-carrier slot, a `RecordInit` field, a
-/// `RecordFieldStore` source) is a strict subset of the prover's exclusion
+/// `RecordFieldStore` source) is a strict subset of the provers' exclusion
 /// triggers; the chain must resolve cleanly to a single candidate root through
 /// ≥2 byte-copy hops (a one-hop escape is the scan above's job); the escape
 /// block must not be reachable from itself (no loop — the inline-composite
@@ -37110,10 +37145,10 @@ fn apply_escaped_record_sibling_field_drops(
 #[allow(
     clippy::too_many_arguments,
     reason = "each argument is a distinct caller-owned input the walk needs — \
-              the MIR, the suspend table, the candidate-root and whole-value \
-              alias maps, the recorded chain, the local type table, and the two \
-              type-shape predicates; bundling them into a struct would only \
-              relocate the same fields at the single call site"
+              the MIR, the suspend table, the record/tuple candidate-root and \
+              whole-value alias maps, the recorded chain, the local type table, \
+              and the three type-shape predicates; bundling them into a struct \
+              would only relocate the same fields at the single call site"
 )]
 #[allow(
     clippy::too_many_lines,
@@ -37127,14 +37162,17 @@ fn apply_escaped_record_sibling_field_drops(
     reason = "`escapee` (the escaping alias) and `escapes` (the collected escape \
               events) are the domain terms; renaming either obscures the walk"
 )]
-fn compute_escaped_record_chain_sibling_drops(
+fn compute_escaped_chain_sibling_drops(
     blocks: &[BasicBlock],
     suspend_kinds: &HashMap<u32, SuspendKind>,
     root_record_ty: &HashMap<u32, ResolvedTy>,
+    root_tuple_ty: &HashMap<u32, ResolvedTy>,
     alias_of: &HashMap<u32, u32>,
+    tuple_alias_of: &HashMap<u32, u32>,
     alias_chain: &[(u32, u32, u32)],
     local_tys: &[ResolvedTy],
     owned_field_list: &dyn Fn(&ResolvedTy) -> Vec<(u32, ResolvedTy)>,
+    owned_tuple_field_list: &dyn Fn(&ResolvedTy) -> Vec<(u32, ResolvedTy)>,
     field_dischargeable: &dyn Fn(&ResolvedTy) -> bool,
 ) -> Vec<(u32, usize, Vec<Instr>)> {
     // Immediate-parent map: alias_local -> (parent_local, field ordinal it reads).
@@ -37196,7 +37234,9 @@ fn compute_escaped_record_chain_sibling_drops(
                             let dest_local =
                                 base_local(*dest).filter(|_| matches!(dest, Place::Local(_)));
                             let benign = dest_local.is_some_and(|dl| {
-                                carrier_of.contains_key(&dl) || alias_of.contains_key(&dl)
+                                carrier_of.contains_key(&dl)
+                                    || alias_of.contains_key(&dl)
+                                    || tuple_alias_of.contains_key(&dl)
                             });
                             if !benign {
                                 escapes.push((escapee, block.id, idx));
@@ -37259,7 +37299,7 @@ fn compute_escaped_record_chain_sibling_drops(
 
     // Walk the escapee's immediate-parent chain to its candidate root, recording
     // `(node_local, field-that-leads-to-the-next-hop)` at each level. Requires ≥2
-    // byte-copy hops and a clean termination at a candidate record root.
+    // byte-copy hops and a clean termination at a candidate record or tuple root.
     let mut chain_nodes: Vec<(u32, u32)> = Vec::new();
     let mut cursor = escapee;
     let mut reached_root = false;
@@ -37268,7 +37308,7 @@ fn compute_escaped_record_chain_sibling_drops(
             break;
         };
         chain_nodes.push((parent, field));
-        if root_record_ty.contains_key(&parent) {
+        if root_record_ty.contains_key(&parent) || root_tuple_ty.contains_key(&parent) {
             reached_root = true;
             break;
         }
@@ -37324,19 +37364,34 @@ fn compute_escaped_record_chain_sibling_drops(
     }
 
     // Emit the per-level sibling discharges: at each chain node, every owned
-    // field except the one that leads to the next (escaping) hop.
+    // field except the one that leads to the next (escaping) hop. The address
+    // selector follows the NODE's own type — `FieldAddr::Tuple` on a tuple
+    // node, `FieldAddr::Record` otherwise — so mixed record/tuple chains
+    // discharge each level through the matching selector; a node shape neither
+    // list recognizes contributes no discharges (leak-as-before at that level).
     let mut siblings: Vec<Instr> = Vec::new();
     for &(node_local, escaped_field) in &chain_nodes {
         let Some(node_ty) = local_tys.get(node_local as usize) else {
             continue;
         };
-        for (field_idx, field_ty) in owned_field_list(node_ty) {
+        let node_is_tuple = matches!(node_ty, ResolvedTy::Tuple(_));
+        let owned_fields = if node_is_tuple {
+            owned_tuple_field_list(node_ty)
+        } else {
+            owned_field_list(node_ty)
+        };
+        for (field_idx, field_ty) in owned_fields {
             if field_idx == escaped_field || !field_dischargeable(&field_ty) {
                 continue;
             }
+            let field = if node_is_tuple {
+                crate::model::FieldAddr::Tuple(field_idx)
+            } else {
+                crate::model::FieldAddr::Record(FieldOffset(field_idx))
+            };
             siblings.push(Instr::FieldDropInPlace {
                 base: Place::Local(node_local),
-                field: crate::model::FieldAddr::Record(FieldOffset(field_idx)),
+                field,
                 ty: field_ty,
             });
         }
@@ -39045,6 +39100,25 @@ fn derive_tuple_composite_drop_allowed(
     // emitted Drop places recovers every consumer regardless of which mechanism
     // (owned_locals standalone drop, loop-scope drop, or break/continue edge)
     // released it.
+    //
+    // EXCEPT the string read-temps (#54, the record prover's exemption mirrored
+    // for tuples — #2383): the spliced `hew_string_drop` for a `string`
+    // `TupleFieldLoad` dest (`apply_nested_fresh_string_temp_drops`) releases a
+    // FRESH, codegen-cloned (`retain_string_field_load` → `hew_string_clone`)
+    // refcount of the element — NOT the tuple's original `+1`. Counting it as a
+    // `release_owner_base` treats a benign borrowing READ of a tuple element
+    // (`l.0.len()`, `println(pair.1)`) as an element-ownership EXTRACTION and
+    // wrongly drops the whole tuple's `TupleInPlace` — the caller-side half of
+    // the #2383 leak (a returned pair whose elements were only read leaked both
+    // strings every call). A NON-string element extracted into an owning
+    // binding (a generator handle `let g = pair.0`) is not a
+    // `string_field_load_producer_dest` and still seeds.
+    let exempt_read_temp_locals: HashSet<u32> = blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter_map(|instr| string_field_load_producer_dest(instr, local_tys))
+        .filter_map(base_local)
+        .collect();
     for block in blocks {
         for instr in &block.instructions {
             if let Instr::Drop {
@@ -39054,6 +39128,9 @@ fn derive_tuple_composite_drop_allowed(
             } = instr
             {
                 if let Some(l) = base_local(*place) {
+                    if exempt_read_temp_locals.contains(&l) {
+                        continue;
+                    }
                     release_owner_bases.insert(l);
                 }
             }
@@ -46861,6 +46938,19 @@ mod escaped_sibling_field_discharge {
         matches!(ty, ResolvedTy::String)
     }
 
+    /// Tuple owned-element list: every `string` element of a tuple node.
+    fn owned_tuple_fields(ty: &ResolvedTy) -> Vec<(u32, ResolvedTy)> {
+        let ResolvedTy::Tuple(items) = ty else {
+            return Vec::new();
+        };
+        items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| matches!(item, ResolvedTy::String))
+            .filter_map(|(idx, item)| u32::try_from(idx).ok().map(|i| (i, item.clone())))
+            .collect()
+    }
+
     fn field_orders() -> HashMap<String, Vec<(String, ResolvedTy)>> {
         let mut orders = HashMap::new();
         orders.insert(
@@ -46900,6 +46990,7 @@ mod escaped_sibling_field_discharge {
             &[],
             &is_rec,
             &owned_fields,
+            &owned_tuple_fields,
             &dischargeable,
             &mut instr_spans,
         );
@@ -47260,6 +47351,7 @@ mod escaped_sibling_field_discharge {
             &[],
             &is_rec,
             &three_fields,
+            &owned_tuple_fields,
             &dischargeable,
             &mut instr_spans,
         );

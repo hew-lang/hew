@@ -652,6 +652,21 @@ fn escaped_into_record_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("chain_escaped_store", escaped_into_record_source);
 }
 
+/// Escaped-return TUPLE holds a FLAT slope (#2383): when the deep tuple alias
+/// escapes into the return, the tuple prover excludes the owner's composite
+/// drop (the caller frees the escapee's pair exactly once), and the multi-hop
+/// chain-sibling walk discharges the non-escaped siblings ALONG the chain —
+/// the intermediate `mid.1` through the `mid` alias and the outer `o.1`
+/// through the owner — each exactly once. Before the walk covered tuple
+/// roots, the widened exclusion removed the composite drop while nothing
+/// discharged the deeper siblings, so all four strings of the nested tuple
+/// leaked every frame (slope 4/call; the double-free pin above only proved no
+/// re-free, not the absence of a per-iteration leak).
+#[test]
+fn escaped_return_tuple_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance("chain_escaped_tuple", escaped_return_tuple_source);
+}
+
 // ── scribble (double-free / use-after-free) pins ────────────────────────
 
 fn assert_scribble_clean(name: &str, source: &str) {

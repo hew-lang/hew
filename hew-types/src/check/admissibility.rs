@@ -1755,7 +1755,7 @@ impl Checker {
             span,
             format!(
                 "`Rc<{}>` is not currently supported; Rc only accepts Copy payloads, \
-                `String`, `bytes`, and nested `Rc` values because the current Rc \
+                `string`, `bytes`, and nested `Rc` values because the current Rc \
                 drop path does not recursively drop owned contents or forward \
                 arbitrary user-defined drop impls",
                 resolved.user_facing()

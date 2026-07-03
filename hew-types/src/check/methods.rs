@@ -5340,7 +5340,7 @@ impl Checker {
                         TypeErrorKind::UndefinedMethod,
                         span,
                         format!(
-                            "`Vec::join` is only available on Vec<String>, not Vec<{}>",
+                            "`Vec::join` is only available on Vec<string>, not Vec<{}>",
                             elem_ty.user_facing()
                         ),
                     );

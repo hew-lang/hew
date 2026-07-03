@@ -194,23 +194,32 @@ The intended invariant is that only deeply-immutable (`Frozen`) data is
 shareable across actors; until that surface lands, cross-actor sharing
 is via owned messages and actor state.
 
-### 2.4 Full `Iterator` trait hierarchy
+### 2.4 `DoubleEndedIterator`
 
 **[Target: v0.6 / Cluster 6]**
 
-Edition 2026 ships `std::iter` as concrete monomorphised helpers
-(`map_int`, `filter_int`, `fold_int`, `any`, `all`, `sum`). The full
-trait hierarchy — `Iterator`, `IntoIterator`, `DoubleEndedIterator`,
-chainable combinators returning generic adapter types — is deferred to
-Cluster 6's stdlib port-forward.
+Edition 2026 ships the lazy `Iterator`/`IntoIterator` trait hierarchy
+(`std/builtins.hew`) with chainable adapter types — `Map`, `Filter`,
+`Take`, `Skip` (`std/iter.hew`) — and terminals (`fold`, `count`,
+`collect`, `any`, `all`, `sum`, `product`) over `Vec`, `HashMap`,
+`Generator`, and `AsyncGenerator`. The earlier eager per-type helper
+table (`map_int`, `filter_int`, `fold_int`, ...) has been retired. The
+only member of the hierarchy still absent is `DoubleEndedIterator`
+(back-to-front adapters like `.rev()`), which is deferred to Cluster 6's
+stdlib port-forward.
 
 ### 2.5 Generic `HashMap<K, V>` over arbitrary `K`
 
 **[Target: v0.6 / Cluster 6]**
 
-Edition 2026 admits `HashMap<string, V>` for a fixed set of `V`. Generic
-key types and the full hash/equality protocol land with the stdlib port
-in Cluster 6.
+Edition 2026 admits `HashMap<K, V>`/`HashSet<K>` keys for any
+structural-hash-eligible `K` — scalars, strings, and records/enums whose
+leaves are hash-eligible (structural hashing descends string fields via
+FNV-1a, the hash twin of structural equality). The remaining gap is
+narrower than "generic keys": keys containing an owned `Vec`/`bytes`
+field, and float-typed keys, are rejected with a diagnostic (not a
+fixed-size-`Copy` shape). Lifting that gap lands with the stdlib port in
+Cluster 6.
 
 ---
 

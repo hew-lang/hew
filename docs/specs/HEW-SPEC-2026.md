@@ -851,11 +851,10 @@ Three-tier model — written as a prefix keyword before the item keyword:
 
 The same prefix applies to any item kind: `package type`, `package const`, `package actor`, etc.
 
-> **Implementation note:** `package` visibility is accepted and parsed correctly.
-> Enforcement of the package boundary (rejecting callers outside the package) is
-> planned for a future edition.  Code written with `package` visibility today will
-> keep compiling after the restriction is applied, because callers within the
-> package are unaffected.
+> **Implementation note:** both boundaries are enforced at every cross-module
+> reference site: a private item referenced from outside its module is
+> rejected with `E_VISIBILITY_PRIVATE`, and a `package` item referenced from
+> outside its package is rejected with `E_VISIBILITY_PACKAGE`.
 
 #### 3.5.1 Directory-form modules (peer-file composition)
 
@@ -1450,7 +1449,7 @@ produces identical results with or without them.
 | No GC pauses      | No tracing GC; deterministic refcounting and scope-based drops |
 | No memory leaks\* | RAII ensures cleanup; cycles in `Rc` can leak (use weak refs)  |
 
-\*Reference cycles in `Rc<T>` can cause leaks. `Weak<T>` is the intended cycle-breaker but is **not yet implemented** — `Weak::new(...)` is rejected at HIR. Supervision trees naturally avoid cycles by keeping ownership parent-to-child only.
+\*Reference cycles in `Rc<T>` can cause leaks. `Weak<T>` is the intended cycle-breaker but is **not yet implemented** — `Weak<T>` is not a registered builtin type, so `Weak::new(...)` is rejected during type-checking as an unknown type before it reaches HIR. Supervision trees naturally avoid cycles by keeping ownership parent-to-child only.
 
 #### 3.7.8 Resource markers (`#[resource]` and `#[linear]`)
 
@@ -3673,13 +3672,13 @@ The supervisor's `intensity: N within <window>` budget caps restarts; exceeding 
 
 ### 5.5 Nested Supervisors
 
-Nested supervisors are not yet implemented. Child declarations whose target
-is itself a supervisor with children fail closed during lowering as
-`nested supervisor child accessor`. Keep supervisor children as actors and
-compose larger trees outside the child-access surface until nested-supervisor
-support lands.
+A `child` declaration whose target is itself a supervisor with children is
+implemented end-to-end. Dotted access to a nested child (`root.sub`) and
+chained access through it (`root.sub.worker`) both lower through the
+`hew_supervisor_nested_get` runtime call and return a fully typed
+`LocalPid`.
 
-The intended shape is:
+The shape is:
 
 ```hew
 supervisor Inner {
@@ -5067,8 +5066,10 @@ If you want this to be directly executable as an engineering project, the next m
   MessagePack-AST pipeline is no longer the design.
 - **Deferred to next edition.** Generators (`async gen fn` /
   `receive gen fn` / `Lazy<T>` / `#[prefetch(N)]`), closures with captured
-  environment, user-facing `Arc<T>`, `dyn Trait`, full `Iterator` trait
-  hierarchy, generic `HashMap<K, V>`, cancellation tokens, channels, actor
-  await + read-after-send barrier, and the self-hosting roadmap. See
-  HEW-FUTURE.md for the surface and version targets. Cross-node actor
+  environment, user-facing `Arc<T>`, `dyn Trait`, `DoubleEndedIterator`,
+  generic `HashMap<K, V>` over owned-aggregate/float keys, cancellation
+  tokens, actor await + read-after-send barrier, and the self-hosting
+  roadmap. See HEW-FUTURE.md for the surface and version targets.
+  Channels (`std::channel`) and the rest of the `Iterator`/`IntoIterator`
+  trait hierarchy shipped in this edition (§2.4, §2.5). Cross-node actor
   communication is shipped and normative — see §11 and HEW-DIST-SPEC.md.

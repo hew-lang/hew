@@ -48,7 +48,7 @@ pub fn format_program(program: &Program) -> String {
 /// Format an AST [`Program`] as canonical Hew source text, preserving comments from `source`.
 #[must_use]
 pub fn format_source(source: &str, program: &Program) -> String {
-    let comments = extract_comments(source);
+    let comments = extract_comments(source, false);
     let mut f = Formatter::new(source, comments);
     f.format_program(program);
     f.flush_comments_before(usize::MAX);
@@ -3433,7 +3433,8 @@ fn compound_assign_op_str(op: CompoundAssignOp) -> &'static str {
 ///
 /// Note: Cs (Surrogate) codepoints are not valid Rust `char` values and
 /// therefore never reach this function.
-fn is_printable_non_ascii(c: char) -> bool {
+#[must_use]
+pub fn is_printable_non_ascii(c: char) -> bool {
     debug_assert!(!c.is_ascii(), "only call for non-ASCII chars");
 
     // Escape the C categories that are invisible, confusable, or unrendered.
@@ -3687,19 +3688,19 @@ fn escape_char_literal(c: char, out: &mut String) {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-struct Comment {
-    text: String,
-    span: Range<usize>,
+pub struct Comment {
+    pub text: String,
+    pub span: Range<usize>,
 }
 
 /// Scan source text and extract all comments with their byte positions.
 ///
-/// Doc-comments (`///` and `//!`) are intentionally skipped: the parser
-/// captures their content into AST fields (`doc_comment` / `module_doc`),
-/// and the formatter re-emits them via `write_outer_doc` /
-/// `format_program`. Including them here as raw comments would cause
-/// double emission and break AST round-trip.
-fn extract_comments(source: &str) -> Vec<Comment> {
+/// When `include_doc_comments` is false, doc-comments (`///` and `//!`) are
+/// skipped because the parser captures their content into AST fields
+/// (`doc_comment` / `module_doc`) and the formatter re-emits them via
+/// `write_outer_doc` / `format_program`.
+#[must_use]
+pub fn extract_comments(source: &str, include_doc_comments: bool) -> Vec<Comment> {
     let mut comments = Vec::new();
     let bytes = source.as_bytes();
     let mut i = 0;
@@ -3714,7 +3715,7 @@ fn extract_comments(source: &str) -> Vec<Comment> {
                     while i < bytes.len() && bytes[i] != b'\n' {
                         i += 1;
                     }
-                    if !is_doc_comment {
+                    if include_doc_comments || !is_doc_comment {
                         comments.push(Comment {
                             text: source[start..i].to_string(),
                             span: start..i,

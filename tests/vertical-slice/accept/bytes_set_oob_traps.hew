@@ -1,6 +1,7 @@
-// `bytes.set(i, b)` with an out-of-range index fails closed: the runtime aborts
-// via the bytes index-OOB trap rather than writing past the buffer. Aborts via
-// libc::abort() -> exit 134 (SIGABRT+128), matching bytes_index_oob_traps.
+// `bytes.set(i, b)` with an out-of-range index fails closed: the runtime routes
+// through the bytes index-OOB trap rather than writing past the buffer. In main
+// context there is no actor recovery frame, so the helper aborts with exit 134,
+// matching bytes_index_oob_traps.
 fn main() -> i64 {
     let b: bytes = bytes::new();
     b.push(1);

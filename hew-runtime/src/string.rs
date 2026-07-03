@@ -13,8 +13,38 @@
 )]
 
 use crate::cabi::{alloc_cstring_data, cstr_to_str, cstring_retain, free_cstring, malloc_cstring};
+use crate::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS;
+use crate::trap_code::{fmt_decimal_i64, fmt_decimal_usize, runtime_bounds_trap};
 use std::ffi::CStr;
 use std::os::raw::c_char;
+
+/// Write a message to stderr.
+///
+/// # Safety
+///
+/// `msg` must be valid for reads for its full length.
+unsafe fn write_stderr(msg: &[u8]) {
+    // SAFETY: msg.as_ptr() is valid for msg.len() bytes, and fd 2 is stderr.
+    unsafe {
+        #[cfg(not(target_os = "windows"))]
+        libc::write(2, msg.as_ptr().cast(), msg.len());
+        #[cfg(target_os = "windows")]
+        libc::write(2, msg.as_ptr().cast(), msg.len() as core::ffi::c_uint);
+    }
+}
+
+/// Emit a string bounds diagnostic and route through the trap seam.
+///
+/// # Safety
+///
+/// Call only from a fail-closed string bounds path.
+unsafe fn string_bounds_trap(message: &str) -> ! {
+    // SAFETY: writing the diagnostic and trapping is the terminal failure path.
+    unsafe {
+        write_stderr(message.as_bytes());
+        runtime_bounds_trap(HEW_TRAP_INDEX_OUT_OF_BOUNDS);
+    }
+}
 
 /// Helper: get byte length of a C string, returning 0 for null pointers.
 ///
@@ -947,7 +977,10 @@ pub unsafe extern "C" fn hew_string_char_at(s: *const c_char, idx: i32) -> i32 {
     i32::from(unsafe { *s.cast::<u8>().add(i) })
 }
 
-/// Abort with an out-of-bounds message for string `char_at`.
+/// Legacy exported abort for byte-indexed string access.
+///
+/// The compiler does not emit calls to this symbol for user-facing string
+/// index/slice operations; those route through `hew_string_abort_index_oob`.
 ///
 /// # Safety
 ///
@@ -1418,21 +1451,61 @@ pub unsafe extern "C" fn hew_string_join(
 // corrupted user code; the new intrinsics abort the process on any invalid
 // input rather than producing a poisoned value.
 
-/// Abort with a string-indexing panic message (codepoint OOB / invalid bounds).
+/// Trap with a string-indexing panic message (codepoint OOB / invalid bounds).
 ///
 /// # Safety
 ///
 /// Always aborts — safe to call from any context.
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_abort_index_oob() -> ! {
-    // SAFETY: writing to stderr and aborting is always safe.
+    // SAFETY: this exported fallback has no operand context.
+    unsafe { string_bounds_trap("PANIC: string index/slice out of bounds or invalid UTF-8\n") }
+}
+
+unsafe fn string_index_oob_trap(index: i64, len: Option<usize>) -> ! {
+    // SAFETY: this is a terminal index bounds path.
     unsafe {
-        let msg = b"PANIC: string index/slice out of bounds or invalid UTF-8\n";
-        #[cfg(not(target_os = "windows"))]
-        libc::write(2, msg.as_ptr().cast(), msg.len());
-        #[cfg(target_os = "windows")]
-        libc::write(2, msg.as_ptr().cast(), msg.len() as core::ffi::c_uint);
-        libc::abort();
+        let mut index_buf = [0u8; 20];
+        write_stderr(b"PANIC: string[i] ");
+        if let Some(len) = len {
+            let mut len_buf = [0u8; 20];
+            write_stderr(b"index ");
+            write_stderr(fmt_decimal_i64(index, &mut index_buf));
+            write_stderr(b" out of bounds (len ");
+            write_stderr(fmt_decimal_usize(len, &mut len_buf));
+            write_stderr(b")\n");
+        } else {
+            write_stderr(b"invalid index ");
+            write_stderr(fmt_decimal_i64(index, &mut index_buf));
+            write_stderr(b"\n");
+        }
+        runtime_bounds_trap(HEW_TRAP_INDEX_OUT_OF_BOUNDS);
+    }
+}
+
+unsafe fn string_slice_oob_trap(start: i64, end: i64, len: Option<usize>) -> ! {
+    // SAFETY: this is a terminal slice bounds path.
+    unsafe {
+        let mut start_buf = [0u8; 20];
+        let mut end_buf = [0u8; 20];
+        write_stderr(b"PANIC: string slice ");
+        if let Some(len) = len {
+            let mut len_buf = [0u8; 20];
+            write_stderr(b"range ");
+            write_stderr(fmt_decimal_i64(start, &mut start_buf));
+            write_stderr(b"..");
+            write_stderr(fmt_decimal_i64(end, &mut end_buf));
+            write_stderr(b" out of bounds (len ");
+            write_stderr(fmt_decimal_usize(len, &mut len_buf));
+            write_stderr(b")\n");
+        } else {
+            write_stderr(b"invalid range ");
+            write_stderr(fmt_decimal_i64(start, &mut start_buf));
+            write_stderr(b"..");
+            write_stderr(fmt_decimal_i64(end, &mut end_buf));
+            write_stderr(b"\n");
+        }
+        runtime_bounds_trap(HEW_TRAP_INDEX_OUT_OF_BOUNDS);
     }
 }
 
@@ -1459,20 +1532,21 @@ pub unsafe extern "C" fn hew_string_abort_index_oob() -> ! {
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_index(s: *const c_char, index: i64) -> i32 {
     if s.is_null() || index < 0 {
-        // SAFETY: abort is always safe.
-        unsafe { hew_string_abort_index_oob() };
+        // SAFETY: this is the terminal index bounds path.
+        unsafe { string_index_oob_trap(index, None) };
     }
     // SAFETY: Caller guarantees s is a valid NUL-terminated C string.
     let Some(rust_str) = (unsafe { cstr_to_str(s) }) else {
-        // SAFETY: abort is always safe.
-        unsafe { hew_string_abort_index_oob() };
+        // SAFETY: this is the terminal invalid-UTF-8 path.
+        unsafe { string_bounds_trap("PANIC: string[i] invalid UTF-8\n") };
     };
     // i64 -> usize: index is non-negative; truncation only matters when
     // index > usize::MAX which is unrepresentable in a real string.
     let idx = index as usize;
     let Some(ch) = rust_str.chars().nth(idx) else {
-        // SAFETY: abort is always safe.
-        unsafe { hew_string_abort_index_oob() };
+        let len = rust_str.chars().count();
+        // SAFETY: this is the terminal index bounds path.
+        unsafe { string_index_oob_trap(index, Some(len)) };
     };
     ch as i32
 }
@@ -1506,35 +1580,24 @@ pub unsafe extern "C" fn hew_string_slice_codepoints(
     end: i64,
 ) -> *mut c_char {
     if s.is_null() || start < 0 || end < 0 || start > end {
-        // SAFETY: abort is always safe.
-        unsafe { hew_string_abort_index_oob() };
+        // SAFETY: this is the terminal slice bounds path.
+        unsafe { string_slice_oob_trap(start, end, None) };
     }
     // SAFETY: Caller guarantees s is a valid NUL-terminated C string.
     let Some(rust_str) = (unsafe { cstr_to_str(s) }) else {
-        // SAFETY: abort is always safe.
-        unsafe { hew_string_abort_index_oob() };
+        // SAFETY: this is the terminal invalid-UTF-8 path.
+        unsafe { string_bounds_trap("PANIC: string slice invalid UTF-8\n") };
     };
     let start_idx = start as usize;
     let end_idx = end as usize;
-    // Two-pass: confirm end is in range, then materialise. We cannot collect
-    // first and then bounds-check on the collected length because that would
-    // silently clamp `end > char_count` to the available codepoints. Walk
-    // once to find char_count up to end+1 to detect over-runs.
-    let mut chars = rust_str.chars();
-    // Skip `start` codepoints; if we run out, that is also OOB.
-    for _ in 0..start_idx {
-        if chars.next().is_none() {
-            // SAFETY: abort is always safe.
-            unsafe { hew_string_abort_index_oob() };
-        }
+    let char_len = rust_str.chars().count();
+    if start_idx > char_len || end_idx > char_len {
+        // SAFETY: this is the terminal slice bounds path.
+        unsafe { string_slice_oob_trap(start, end, Some(char_len)) };
     }
     let take_n = end_idx - start_idx;
     let mut buf = String::new();
-    for _ in 0..take_n {
-        let Some(ch) = chars.next() else {
-            // SAFETY: abort is always safe.
-            unsafe { hew_string_abort_index_oob() };
-        };
+    for ch in rust_str.chars().skip(start_idx).take(take_n) {
         buf.push(ch);
     }
     let bytes = buf.as_bytes();

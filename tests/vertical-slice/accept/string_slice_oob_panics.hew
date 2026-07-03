@@ -1,8 +1,8 @@
 // W3 collections-sugar S2: out-of-bounds string slice ABORTS (no clamp / null).
 //
-// "hello"[1..10]: end exceeds char_count(5) → runtime calls libc::abort()
-// from hew_string_slice_codepoints. Vertical-slice harness checks the exit
-// is non-zero (abort exits via signal).
+// "hello"[1..10]: end exceeds char_count(5), so
+// hew_string_slice_codepoints routes through the runtime bounds trap. In main
+// context there is no actor recovery frame, so the helper aborts with exit 134.
 fn main() -> i64 {
     let s: string = "hello";
     let slice: string = s[1..10];

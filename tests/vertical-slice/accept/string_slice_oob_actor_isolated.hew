@@ -1,0 +1,24 @@
+actor StringSliceCrasher {
+    receive fn boom() {
+        let s: string = "hello";
+        let _slice: string = s[1..99];
+    }
+}
+
+actor StringSliceProbe {
+    receive fn ping() -> i64 {
+        0
+    }
+}
+
+fn main() -> i64 {
+    let crasher = spawn StringSliceCrasher;
+    let probe = spawn StringSliceProbe;
+    crasher.boom();
+    sleep(300ms);
+    match await probe.ping() {
+        Ok(v) => v,
+        Err(_) => 1,
+    }
+}
+

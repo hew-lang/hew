@@ -24,6 +24,8 @@
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
+use crate::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS;
+use crate::trap_code::{fmt_decimal_i64, fmt_decimal_u64, runtime_bounds_trap};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Size of the header preceding the data region, in bytes.
@@ -31,6 +33,34 @@ const HEADER_SIZE: usize = 8;
 
 /// Minimum capacity for new or grown buffers.
 const MIN_CAPACITY: u32 = 16;
+
+/// Write a message to stderr.
+///
+/// # Safety
+///
+/// `msg` must be valid for reads for its full length.
+unsafe fn write_stderr(msg: &[u8]) {
+    // SAFETY: msg.as_ptr() is valid for msg.len() bytes, and fd 2 is stderr.
+    unsafe {
+        #[cfg(not(target_os = "windows"))]
+        libc::write(2, msg.as_ptr().cast(), msg.len());
+        #[cfg(target_os = "windows")]
+        libc::write(2, msg.as_ptr().cast(), msg.len() as core::ffi::c_uint);
+    }
+}
+
+/// Emit a bytes bounds diagnostic and route through the trap seam.
+///
+/// # Safety
+///
+/// Call only from a fail-closed bytes bounds path.
+unsafe fn bytes_bounds_trap(message: &str) -> ! {
+    // SAFETY: writing the diagnostic and trapping is the terminal failure path.
+    unsafe {
+        write_stderr(message.as_bytes());
+        runtime_bounds_trap(HEW_TRAP_INDEX_OUT_OF_BOUNDS);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // BytesTriple — the C-ABI value type
@@ -355,27 +385,19 @@ pub unsafe extern "C" fn hew_bytes_push(triple: &mut BytesTriple, byte: u8) {
     }
 }
 
-/// Abort with a bytes empty-buffer panic message.
+/// Trap with a bytes empty-buffer panic message.
 ///
 /// Backs `bytes.pop()` on an empty buffer: the spec signature is `() -> i64`
 /// with no `Option`, so the empty case fails closed (boundary-fail-closed)
-/// rather than returning a fabricated sentinel. Same `libc::abort()` mechanism
-/// as [`hew_bytes_abort_index_oob`], so the process terminates with SIGABRT.
+/// rather than returning a fabricated sentinel.
 ///
 /// # Safety
 ///
 /// Always aborts — safe to call from any context.
 #[no_mangle]
 pub unsafe extern "C" fn hew_bytes_abort_empty_pop() -> ! {
-    // SAFETY: writing to stderr and aborting is always safe.
-    unsafe {
-        let msg = b"PANIC: bytes.pop() on an empty buffer\n";
-        #[cfg(not(target_os = "windows"))]
-        libc::write(2, msg.as_ptr().cast(), msg.len());
-        #[cfg(target_os = "windows")]
-        libc::write(2, msg.as_ptr().cast(), msg.len() as core::ffi::c_uint);
-        libc::abort();
-    }
+    // SAFETY: this is the terminal empty-pop path.
+    unsafe { bytes_bounds_trap("PANIC: bytes.pop() on an empty buffer\n") }
 }
 
 /// Remove and return the last byte, using copy-on-write if shared.
@@ -428,8 +450,17 @@ pub unsafe extern "C" fn hew_bytes_pop(triple: &mut BytesTriple) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn hew_bytes_set(triple: &mut BytesTriple, index: i64, byte: u8) {
     if index < 0 || index >= i64::from(triple.len) || triple.ptr.is_null() {
-        // SAFETY: abort is always safe; it does not return.
-        unsafe { hew_bytes_abort_index_oob() };
+        // SAFETY: this is the terminal set bounds path.
+        unsafe {
+            let mut index_buf = [0u8; 20];
+            let mut len_buf = [0u8; 20];
+            write_stderr(b"PANIC: bytes.set() index ");
+            write_stderr(fmt_decimal_i64(index, &mut index_buf));
+            write_stderr(b" out of bounds (len ");
+            write_stderr(fmt_decimal_u64(u64::from(triple.len), &mut len_buf));
+            write_stderr(b")\n");
+            runtime_bounds_trap(HEW_TRAP_INDEX_OUT_OF_BOUNDS);
+        };
     }
 
     // Ensure unique ownership (CoW) before the in-place write.
@@ -454,8 +485,8 @@ pub unsafe extern "C" fn hew_bytes_set(triple: &mut BytesTriple, index: i64, byt
     // capacity could overflow here; in release mode `+` wraps silently and
     // would mis-point the write. Abort explicitly (boundary-fail-closed).
     let Some(byte_off) = triple.offset.checked_add(idx) else {
-        // SAFETY: abort is always safe; it does not return.
-        unsafe { hew_bytes_abort_offset_overflow() };
+        // SAFETY: this is the terminal set offset-overflow path.
+        unsafe { bytes_offset_overflow_trap("bytes.set()") };
     };
     // SAFETY: byte_off < offset + len <= capacity per the bounds check above;
     // the checked_add proved the u32 add did not wrap.
@@ -929,25 +960,51 @@ pub unsafe extern "C" fn hew_bytes_len(triple: *const BytesTriple) -> i64 {
 // clamp. Codegen will pass the receiver as a `BytesTriple` (ptr/offset/len)
 // and the integer endpoints as i64.
 
-/// Abort with a bytes-indexing panic message (OOB / invalid bounds).
+/// Trap with a bytes-indexing panic message (OOB / invalid bounds).
 ///
 /// # Safety
 ///
 /// Always aborts — safe to call from any context.
 #[no_mangle]
 pub unsafe extern "C" fn hew_bytes_abort_index_oob() -> ! {
-    // SAFETY: writing to stderr and aborting is always safe.
+    // SAFETY: this exported fallback has no operand context.
+    unsafe { bytes_bounds_trap("PANIC: bytes index/slice out of bounds\n") }
+}
+
+unsafe fn bytes_index_oob_trap(operation: &str, index: i64, len: u32) -> ! {
+    // SAFETY: this is a terminal index bounds path.
     unsafe {
-        let msg = b"PANIC: bytes index/slice out of bounds\n";
-        #[cfg(not(target_os = "windows"))]
-        libc::write(2, msg.as_ptr().cast(), msg.len());
-        #[cfg(target_os = "windows")]
-        libc::write(2, msg.as_ptr().cast(), msg.len() as core::ffi::c_uint);
-        libc::abort();
+        let mut index_buf = [0u8; 20];
+        let mut len_buf = [0u8; 20];
+        write_stderr(b"PANIC: ");
+        write_stderr(operation.as_bytes());
+        write_stderr(b" index ");
+        write_stderr(fmt_decimal_i64(index, &mut index_buf));
+        write_stderr(b" out of bounds (len ");
+        write_stderr(fmt_decimal_u64(u64::from(len), &mut len_buf));
+        write_stderr(b")\n");
+        runtime_bounds_trap(HEW_TRAP_INDEX_OUT_OF_BOUNDS);
     }
 }
 
-/// Abort with a bytes offset-arithmetic-overflow panic message.
+unsafe fn bytes_slice_oob_trap(start: i64, end: i64, len: u32) -> ! {
+    // SAFETY: this is a terminal slice bounds path.
+    unsafe {
+        let mut start_buf = [0u8; 20];
+        let mut end_buf = [0u8; 20];
+        let mut len_buf = [0u8; 20];
+        write_stderr(b"PANIC: bytes slice range ");
+        write_stderr(fmt_decimal_i64(start, &mut start_buf));
+        write_stderr(b"..");
+        write_stderr(fmt_decimal_i64(end, &mut end_buf));
+        write_stderr(b" out of bounds (len ");
+        write_stderr(fmt_decimal_u64(u64::from(len), &mut len_buf));
+        write_stderr(b")\n");
+        runtime_bounds_trap(HEW_TRAP_INDEX_OUT_OF_BOUNDS);
+    }
+}
+
+/// Trap with a bytes offset-arithmetic-overflow panic message.
 ///
 /// Used by `hew_bytes_index` / `hew_bytes_slice` when `offset + N`
 /// would wrap past `u32::MAX`. A wrapped offset would silently shift
@@ -960,14 +1017,17 @@ pub unsafe extern "C" fn hew_bytes_abort_index_oob() -> ! {
 /// Always aborts — safe to call from any context.
 #[no_mangle]
 pub unsafe extern "C" fn hew_bytes_abort_offset_overflow() -> ! {
-    // SAFETY: writing to stderr and aborting is always safe.
+    // SAFETY: this exported fallback has no operation context.
+    unsafe { bytes_offset_overflow_trap("bytes slice/index") }
+}
+
+unsafe fn bytes_offset_overflow_trap(operation: &str) -> ! {
+    // SAFETY: this is a terminal offset-overflow path.
     unsafe {
-        let msg = b"PANIC: bytes slice/index offset arithmetic overflow (u32)\n";
-        #[cfg(not(target_os = "windows"))]
-        libc::write(2, msg.as_ptr().cast(), msg.len());
-        #[cfg(target_os = "windows")]
-        libc::write(2, msg.as_ptr().cast(), msg.len() as core::ffi::c_uint);
-        libc::abort();
+        write_stderr(b"PANIC: ");
+        write_stderr(operation.as_bytes());
+        write_stderr(b" offset arithmetic overflow (u32)\n");
+        runtime_bounds_trap(HEW_TRAP_INDEX_OUT_OF_BOUNDS);
     }
 }
 
@@ -996,8 +1056,8 @@ pub unsafe extern "C" fn hew_bytes_abort_offset_overflow() -> ! {
 #[no_mangle]
 pub unsafe extern "C" fn hew_bytes_index(ptr: *mut u8, offset: u32, len: u32, index: i64) -> u8 {
     if index < 0 || index >= i64::from(len) || ptr.is_null() {
-        // SAFETY: abort is always safe.
-        unsafe { hew_bytes_abort_index_oob() };
+        // SAFETY: this is the terminal index bounds path.
+        unsafe { bytes_index_oob_trap("bytes[i]", index, len) };
     }
     let idx = index as u32;
     // Checked `offset + idx`: a triple constructed via `hew_bytes_slice`
@@ -1007,8 +1067,8 @@ pub unsafe extern "C" fn hew_bytes_index(ptr: *mut u8, offset: u32, len: u32, in
     // the read pointer to a wrong place in the allocation. Abort
     // explicitly (boundary-fail-closed, LESSONS P0:49).
     let Some(byte_off) = offset.checked_add(idx) else {
-        // SAFETY: abort is always safe.
-        unsafe { hew_bytes_abort_offset_overflow() };
+        // SAFETY: this is the terminal index offset-overflow path.
+        unsafe { bytes_offset_overflow_trap("bytes[i]") };
     };
     // SAFETY: ptr is non-null and byte_off < offset+len <= allocation
     // capacity per caller contract; the checked_add above proved the
@@ -1050,8 +1110,8 @@ pub unsafe extern "C" fn hew_bytes_slice(
     end: i64,
 ) -> BytesTriple {
     if start < 0 || end < 0 || start > end || end > i64::from(len) {
-        // SAFETY: abort is always safe.
-        unsafe { hew_bytes_abort_index_oob() };
+        // SAFETY: this is the terminal slice bounds path.
+        unsafe { bytes_slice_oob_trap(start, end, len) };
     }
     let s = start as u32;
     let e = end as u32;
@@ -1072,8 +1132,8 @@ pub unsafe extern "C" fn hew_bytes_slice(
     // at the wrong place in the allocation — boundary-fail-closed
     // LESSONS P0:49).
     let Some(new_offset) = offset.checked_add(s) else {
-        // SAFETY: abort is always safe.
-        unsafe { hew_bytes_abort_offset_overflow() };
+        // SAFETY: this is the terminal slice offset-overflow path.
+        unsafe { bytes_offset_overflow_trap("bytes slice") };
     };
     // Bump the refcount so the slice owner can independently drop
     // their handle (drop-safety triad: sync/async-cancel/actor-

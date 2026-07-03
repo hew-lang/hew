@@ -38,7 +38,10 @@ use crate::model::{
     Strategy, SuspendKind, Terminator, ThirFunction, TraitObjectStorage, TrapKind,
 };
 use crate::ownership::FailClosedReason;
+use crate::ownership::OwnershipCtx;
 use crate::ownership::ReleaseSymbolVerdict;
+use crate::ownership::ValueOwnership;
+use crate::ownership::ValueProvenance;
 use crate::ownership::VecElementRelease;
 
 type TaskEntryAdapterSymbols = Rc<RefCell<HashSet<String>>>;
@@ -7831,6 +7834,11 @@ fn lower_function(
         &builder.binding_locals,
         &mut builder.instr_spans,
     );
+    // The scope-exit-live owned-locals view, materialised once for the
+    // escaped-sibling emitter and the double-free gate below — the same
+    // `(binding, name, ty)` tuples they read before the ledger carried richer
+    // facts.
+    let owned_locals_snapshot = builder.owned_locals_snapshot();
     // #2212 — an owned record whose field escapes through a binder loses its
     // composite scope-exit drop (the sole-owner prover excludes it); the
     // record's NON-escaped owned sibling fields still need their release.
@@ -7848,7 +7856,7 @@ fn lower_function(
         apply_escaped_record_sibling_field_drops(
             &mut blocks,
             &builder.suspend_kinds,
-            &builder.owned_locals,
+            &owned_locals_snapshot,
             &builder.binding_locals,
             &builder.locals,
             &builder.record_field_orders,
@@ -8049,12 +8057,12 @@ fn lower_function(
     //     the double-free this gate refuses.
     let returned_aggregate_members = derive_returned_aggregate_member_bindings(
         &raw.blocks,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
     );
     let consumed_local_aggregate_members = derive_consumed_local_aggregate_member_bindings(
         &raw.blocks,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.locals,
         &builder.record_field_orders,
@@ -8065,7 +8073,7 @@ fn lower_function(
     let tuple_composite_drop_allowed = derive_tuple_composite_drop_allowed(
         &raw.blocks,
         &raw.suspend_kinds,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.locals,
         &builder.record_field_orders,
@@ -8075,7 +8083,7 @@ fn lower_function(
     let owned_record_drop_allowed = derive_owned_record_drop_allowed(
         &raw.blocks,
         &raw.suspend_kinds,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.locals,
         &is_owned_record,
@@ -8087,7 +8095,7 @@ fn lower_function(
     for check in detect_unproven_aggregate_handle_double_free(
         &raw.blocks,
         &raw.suspend_kinds,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.locals,
         &builder.record_field_orders,
@@ -8675,6 +8683,76 @@ struct FungibleChildRef {
     slot_index: u32,
 }
 
+/// How an owned local's release obligation is currently dispositioned within the
+/// per-function ledger. The live drop-elaboration view is exactly the
+/// `ScopeExit` entries — a binding whose release is handled elsewhere (moved
+/// into an aggregate, consumed, closed at an inner scope) is dispositioned off
+/// the scope-exit set rather than physically removed, so an end-of-pass scan can
+/// still see the whole ledger.
+///
+/// This stage records only `ScopeExit`; the retraction-to-disposition migration
+/// that adds the moved/consumed/inner-scope dispositions is a later drop
+/// stage. Every entry the registration authority mints is `ScopeExit`, so the
+/// live-view filter is a no-op here and behaviour is unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Disposition {
+    /// Released by the function-exit LIFO drop pass, narrowed per exit edge —
+    /// the default, and the only disposition this stage records.
+    ScopeExit,
+}
+
+/// One entry in the per-function owned-locals ledger: the binding whose
+/// scope-exit release drop elaboration owns, recorded ONCE at its defining write
+/// through [`Builder::register_owned_local`] (the single registration
+/// authority) instead of pushed ad hoc at each lowering seam.
+///
+/// The tracked unit is the whole binding. The `(binding, name, ty)` triple is
+/// the shape every downstream allow-set prover, `build_lifo_drops`, and the
+/// unwired-`Vec`-element diagnostic already consume (via
+/// [`Builder::owned_locals_snapshot`]); the richer facts (`ownership`,
+/// `provenance`, `disposition`) are carried on the value so later drop stages
+/// read a written-down fact rather than re-deriving ownership from the
+/// instruction stream at each pass.
+#[derive(Debug, Clone)]
+struct OwnedLocalEntry {
+    /// The HIR binding this owned local backs.
+    binding: BindingId,
+    /// Source-level binding name (drop-statement rendering + diagnostics).
+    name: String,
+    /// The binding's (substituted) resolved type — the drop-shape input.
+    ty: ResolvedTy,
+    /// The rich ownership/drop/ABI decision classified once at registration.
+    ///
+    /// Recorded here so ownership is a fact written at the defining write; the
+    /// provenance-aware provers and the type-directed drop-table selection in
+    /// later drop-elaboration stages read it instead of re-classifying the type
+    /// per pass. Not yet consumed at this stage — the drop passes still read the
+    /// `(binding, name, ty)` view.
+    #[allow(
+        dead_code,
+        reason = "written-once ownership fact; consumed by the provenance-aware \
+                  provers and the type-directed drop-table selection in later \
+                  drop-elaboration stages"
+    )]
+    ownership: ValueOwnership,
+    /// Where the value's ownership traces to, when trivially proven at the
+    /// defining write (an interior-alias projection of a still-live owner names
+    /// its root). `None` = the value owns itself / provenance not recorded, which
+    /// is today's semantics for every entry this stage mints.
+    ///
+    /// Not yet consumed at this stage — the interior-alias suppression that reads
+    /// it is a later drop stage.
+    #[allow(
+        dead_code,
+        reason = "carried provenance consumed by the interior-alias drop \
+                  suppression in a later drop-elaboration stage"
+    )]
+    provenance: Option<ValueProvenance>,
+    /// How this entry's release obligation is dispositioned. `ScopeExit` (the
+    /// only value this stage records) means the function-exit LIFO pass owns it.
+    disposition: Disposition,
+}
+
 #[derive(Debug, Default)]
 struct Builder {
     /// Checker-authority stream for the *current* basic block. Drained
@@ -8823,7 +8901,7 @@ struct Builder {
     /// carrier/Terminator field) so the carriers collapse onto one
     /// `Terminator::Suspend` while the emitted IR stays byte-identical.
     suspend_kinds: HashMap<u32, SuspendKind>,
-    owned_locals: Vec<(hew_hir::BindingId, String, ResolvedTy)>,
+    owned_locals: Vec<OwnedLocalEntry>,
     /// Generator/`AsyncGenerator` owned bindings tagged with the HIR scope they
     /// were declared in, recorded so a per-scope-exit `hew_gen_coro_destroy`
     /// fires when that scope closes — INCLUDING when the scope is re-executed
@@ -9584,6 +9662,64 @@ impl Builder {
         }
     }
 
+    /// The ownership classify context over this builder's live registries — the
+    /// same three tables the drop derivations read, bundled so
+    /// [`ValueOwnership::classify`] builds its answer from the one authority.
+    fn ownership_ctx(&self) -> OwnershipCtx<'_> {
+        OwnershipCtx::new(
+            &self.record_field_orders,
+            &self.enum_layouts,
+            &self.type_classes,
+        )
+    }
+
+    /// The single registration authority for the per-function owned-locals
+    /// ledger: every seam that introduces a scope-exit drop obligation routes
+    /// through here instead of pushing a bare tuple. Ownership is classified
+    /// ONCE at this defining write and recorded on the entry; the drop passes
+    /// read the written-down fact rather than re-deriving it per pass.
+    ///
+    /// The binding's backing place drives classify's handle-vs-type dispatch. It
+    /// is resolved from `binding_locals` when the slot is already wired (the
+    /// `let` / param / dyn-trait seams insert it first); a match binder registers
+    /// before its `Place` insert, but a match binder always stores into a plain
+    /// local, so the type-driven arm is the correct one and the exact local id is
+    /// immaterial (the fallback local only feeds the never-firing handle
+    /// dispatch). Provenance stays `None` at this stage — it is recorded only
+    /// where a later stage can trivially prove it at the defining write. Every
+    /// entry is `Disposition::ScopeExit`.
+    fn register_owned_local(&mut self, binding: BindingId, name: String, ty: ResolvedTy) {
+        let place = self
+            .binding_locals
+            .get(&binding)
+            .copied()
+            .unwrap_or(Place::Local(0));
+        let ownership = ValueOwnership::classify(&ty, place, &self.ownership_ctx());
+        self.owned_locals.push(OwnedLocalEntry {
+            binding,
+            name,
+            ty,
+            ownership,
+            provenance: None,
+            disposition: Disposition::ScopeExit,
+        });
+    }
+
+    /// The scope-exit-live owned locals as `(binding, name, ty)` tuples — the
+    /// compat shape the twelve allow-set provers, `build_lifo_drops`, and the
+    /// double-free gate consume. Every entry this stage records is
+    /// `Disposition::ScopeExit`, so the live-view filter admits all of them and
+    /// the snapshot is byte-identical to the former `owned_locals` vec (same
+    /// contents, same declaration order). The disposition seam is where a later
+    /// stage narrows the live set without a per-pass re-scan.
+    fn owned_locals_snapshot(&self) -> Vec<(BindingId, String, ResolvedTy)> {
+        self.owned_locals
+            .iter()
+            .filter(|entry| entry.disposition == Disposition::ScopeExit)
+            .map(|entry| (entry.binding, entry.name.clone(), entry.ty.clone()))
+            .collect()
+    }
+
     /// Apply the per-monomorphisation substitution map to a type.
     /// Returns the input unchanged when `subst` is empty (the
     /// non-generic-function case).
@@ -10039,7 +10175,7 @@ impl Builder {
             let Some(place) = self.binding_locals.get(&binding).copied() else {
                 continue;
             };
-            self.owned_locals.retain(|(b, _, _)| *b != binding);
+            self.owned_locals.retain(|entry| entry.binding != binding);
             self.push_instr(Instr::Drop {
                 place,
                 ty,
@@ -10098,7 +10234,7 @@ impl Builder {
                 builtin: Some(BuiltinType::Vec),
                 is_opaque: false,
             };
-            self.owned_locals.retain(|(b, _, _)| *b != binding);
+            self.owned_locals.retain(|entry| entry.binding != binding);
             self.push_instr(Instr::RecordFieldDrop {
                 record: place,
                 field_offset: crate::model::FieldOffset(0),
@@ -10365,8 +10501,7 @@ impl Builder {
                 == Some(true)
             {
                 let owned_ty = self.subst_ty(&param.ty);
-                self.owned_locals
-                    .push((param.id, param.name.clone(), owned_ty.clone()));
+                self.register_owned_local(param.id, param.name.clone(), owned_ty.clone());
                 // Register the param in the function's top body scope so it
                 // participates in the elaborator's path-sensitive drop passes
                 // (forward-`Goto` scope-close + per-exit narrowing) exactly like
@@ -11325,9 +11460,11 @@ impl Builder {
     ) -> Vec<MirDiagnostic> {
         self.owned_locals
             .iter()
-            .filter_map(|(binding, name, ty)| {
-                let elem = self.unsupported_vec_element_in_ty(ty)?;
-                let site = bind_sites.get(binding).copied().unwrap_or(SiteId(0));
+            .filter(|entry| entry.disposition == Disposition::ScopeExit)
+            .filter_map(|entry| {
+                let name = &entry.name;
+                let elem = self.unsupported_vec_element_in_ty(&entry.ty)?;
+                let site = bind_sites.get(&entry.binding).copied().unwrap_or(SiteId(0));
                 Some(MirDiagnostic {
                     kind: MirDiagnosticKind::NotYetImplemented {
                         construct: format!(
@@ -12228,11 +12365,11 @@ impl Builder {
                     match classify_dyn_trait_storage(value, &self.dyn_trait_storage) {
                         Ok(storage) => {
                             self.dyn_trait_storage.insert(binding.id, storage);
-                            self.owned_locals.push((
+                            self.register_owned_local(
                                 binding.id,
                                 binding.name.clone(),
                                 value_ty.clone(),
-                            ));
+                            );
                             // Transitive `dyn -> dyn` rebind suppression.
                             //
                             // For `let d2 = d1;` (and `let d3 = { d2 };`
@@ -12314,8 +12451,7 @@ impl Builder {
                     // no backend Place, so it must not enter
                     // `owned_locals` either. LESSONS:
                     // boundary-fail-closed, raii-null-after-move.
-                    self.owned_locals
-                        .push((binding.id, binding.name.clone(), binding_ty.clone()));
+                    self.register_owned_local(binding.id, binding.name.clone(), binding_ty.clone());
                     // Tag generator/`AsyncGenerator` handle bindings with their
                     // declaring scope so a per-scope-exit `hew_gen_coro_destroy` fires
                     // when the scope closes — covering the loop-re-entry case the
@@ -12626,8 +12762,11 @@ impl Builder {
             });
             self.record_binding_scope(binding.binding);
             if self.binding_seeds_drop_elaboration(&binding_ty) {
-                self.owned_locals
-                    .push((binding.binding, binding.name.clone(), binding_ty.clone()));
+                self.register_owned_local(
+                    binding.binding,
+                    binding.name.clone(),
+                    binding_ty.clone(),
+                );
             }
             let dest = self.alloc_local(binding.ty.clone());
             self.push_instr(Instr::Move {
@@ -12651,8 +12790,11 @@ impl Builder {
             });
             self.record_binding_scope(binding.binding);
             if self.binding_seeds_drop_elaboration(&binding_ty) {
-                self.owned_locals
-                    .push((binding.binding, binding.name.clone(), binding_ty.clone()));
+                self.register_owned_local(
+                    binding.binding,
+                    binding.name.clone(),
+                    binding_ty.clone(),
+                );
             }
             let dest = self.alloc_local(binding.ty.clone());
             self.push_instr(Instr::Move {
@@ -12881,7 +13023,11 @@ impl Builder {
                         // r = T{..r} or a move-out RHS already consumed it
                         // (removed from `owned_locals`), so this is skipped and
                         // never double-frees.
-                        if self.owned_locals.iter().any(|(b, _, _)| b == binding) {
+                        if self
+                            .owned_locals
+                            .iter()
+                            .any(|entry| &entry.binding == binding)
+                        {
                             self.emit_local_overwrite_release(dest, &target.ty);
                         }
                         self.push_instr(Instr::Move { dest, src });
@@ -18836,8 +18982,11 @@ impl Builder {
             let keep_for_drop_elab = self.binding_seeds_drop_elaboration(&binding_ty);
             let binding_is_string = matches!(binding_ty, ResolvedTy::String);
             if keep_for_drop_elab {
-                self.owned_locals
-                    .push((binding.binding, binding.name.clone(), binding_ty.clone()));
+                self.register_owned_local(
+                    binding.binding,
+                    binding.name.clone(),
+                    binding_ty.clone(),
+                );
                 // A generator/AsyncGenerator handle bound via match destructure
                 // gets the same per-scope-exit `hew_gen_coro_destroy` registration the
                 // `Let` path uses, so the per-iteration release fires for a
@@ -20342,11 +20491,11 @@ impl Builder {
                 self.record_binding_scope(binding.binding);
                 let keep_for_drop_elab = self.binding_seeds_drop_elaboration(&binding_ty);
                 if keep_for_drop_elab {
-                    self.owned_locals.push((
+                    self.register_owned_local(
                         binding.binding,
                         binding.name.clone(),
                         binding_ty.clone(),
-                    ));
+                    );
                 }
                 let dest = self.alloc_local(binding.ty.clone());
                 self.push_instr(Instr::Move {
@@ -20377,7 +20526,8 @@ impl Builder {
                     // the reference to a longer-lived owner), matching the
                     // generator-yield posture.
                     if keep_for_drop_elab {
-                        self.owned_locals.retain(|(b, _, _)| *b != binding.binding);
+                        self.owned_locals
+                            .retain(|entry| entry.binding != binding.binding);
                     }
                     retained_vec_string_iter_bindings.push((
                         binding.binding,
@@ -20412,7 +20562,8 @@ impl Builder {
                             // fresh heap allocation the consumer alone is
                             // responsible for releasing.
                             if keep_for_drop_elab {
-                                self.owned_locals.retain(|(b, _, _)| *b != binding.binding);
+                                self.owned_locals
+                                    .retain(|entry| entry.binding != binding.binding);
                             }
                             generator_yield_drop_bindings.push((
                                 binding.binding,
@@ -20438,7 +20589,8 @@ impl Builder {
                             // final-`owned_locals` scan does not stack a
                             // second diagnostic on the same construct.
                             if keep_for_drop_elab {
-                                self.owned_locals.retain(|(b, _, _)| *b != binding.binding);
+                                self.owned_locals
+                                    .retain(|entry| entry.binding != binding.binding);
                             }
                             let elem = self
                                 .unsupported_vec_element_in_ty(&binding_ty)
@@ -20487,8 +20639,7 @@ impl Builder {
                 self.record_binding_scope(binding.binding);
                 let keep_for_drop_elab = self.binding_seeds_drop_elaboration(&binding_ty);
                 if keep_for_drop_elab {
-                    self.owned_locals
-                        .push((binding.binding, binding.name.clone(), binding_ty));
+                    self.register_owned_local(binding.binding, binding.name.clone(), binding_ty);
                 }
                 let dest = self.alloc_local(binding.ty.clone());
                 self.push_instr(Instr::Move {
@@ -21008,8 +21159,11 @@ impl Builder {
             });
             self.record_binding_scope(binding.binding);
             if self.binding_seeds_drop_elaboration(&binding_ty) {
-                self.owned_locals
-                    .push((binding.binding, binding.name.clone(), binding_ty.clone()));
+                self.register_owned_local(
+                    binding.binding,
+                    binding.name.clone(),
+                    binding_ty.clone(),
+                );
             }
             let dest = self.alloc_local(binding.ty.clone());
             self.push_instr(Instr::Move {
@@ -21033,8 +21187,11 @@ impl Builder {
             });
             self.record_binding_scope(binding.binding);
             if self.binding_seeds_drop_elaboration(&binding_ty) {
-                self.owned_locals
-                    .push((binding.binding, binding.name.clone(), binding_ty.clone()));
+                self.register_owned_local(
+                    binding.binding,
+                    binding.name.clone(),
+                    binding_ty.clone(),
+                );
             }
             let dest = self.alloc_local(binding.ty.clone());
             self.push_instr(Instr::Move {
@@ -21231,8 +21388,11 @@ impl Builder {
             });
             self.record_binding_scope(binding.binding);
             if self.binding_seeds_drop_elaboration(&binding_ty) {
-                self.owned_locals
-                    .push((binding.binding, binding.name.clone(), binding_ty.clone()));
+                self.register_owned_local(
+                    binding.binding,
+                    binding.name.clone(),
+                    binding_ty.clone(),
+                );
             }
             let dest = self.alloc_local(binding.ty.clone());
             self.push_instr(Instr::Move {
@@ -21256,8 +21416,11 @@ impl Builder {
             });
             self.record_binding_scope(binding.binding);
             if self.binding_seeds_drop_elaboration(&binding_ty) {
-                self.owned_locals
-                    .push((binding.binding, binding.name.clone(), binding_ty.clone()));
+                self.register_owned_local(
+                    binding.binding,
+                    binding.name.clone(),
+                    binding_ty.clone(),
+                );
             }
             let dest = self.alloc_local(binding.ty.clone());
             self.push_instr(Instr::Move {
@@ -24061,10 +24224,9 @@ impl Builder {
             && !self
                 .owned_locals
                 .iter()
-                .any(|(binding, _, _)| *binding == binding_id)
+                .any(|entry| entry.binding == binding_id)
         {
-            self.owned_locals
-                .push((binding_id, name.to_string(), ty.clone()));
+            self.register_owned_local(binding_id, name.to_string(), ty.clone());
         }
     }
 
@@ -31085,7 +31247,11 @@ impl Builder {
         if !self.prepass_reassigned_bindings.contains(&binding.id) {
             return;
         }
-        if !self.owned_locals.iter().any(|(b, _, _)| *b == binding.id) {
+        if !self
+            .owned_locals
+            .iter()
+            .any(|entry| entry.binding == binding.id)
+        {
             return;
         }
         if self.overwrite_guard_flags.contains_key(&binding.id) {
@@ -31164,7 +31330,7 @@ impl Builder {
                 value: 1,
             });
         }
-        self.owned_locals.retain(|(binding, _, _)| *binding != id);
+        self.owned_locals.retain(|entry| entry.binding != id);
     }
 
     // JUSTIFIED: this predicate deliberately stays adjacent to the aggregate
@@ -32110,7 +32276,12 @@ fn elaborate(
     // block's `statements` in construction order — Slice 1 maintains
     // pre-CFG snapshot continuity by feeding the same union here.
     let mut elaborated_statements: Vec<MirStatement> = flat_statements.to_vec();
-    for (binding, name, ty) in builder.owned_locals.iter().rev() {
+    // The scope-exit-live owned-locals view, materialised once for the
+    // reverse-declaration drop stream and every per-class allow-set derivation
+    // below — the same `(binding, name, ty)` tuples the provers read before the
+    // ledger carried richer facts, in the same declaration order.
+    let owned_locals_snapshot = builder.owned_locals_snapshot();
+    for (binding, name, ty) in owned_locals_snapshot.iter().rev() {
         elaborated_statements.push(MirStatement::Drop {
             binding: *binding,
             name: name.clone(),
@@ -32158,7 +32329,7 @@ fn elaborate(
     let mut cow_drop_allowed = derive_cow_sole_owner(
         &checked.blocks,
         &builder.suspend_kinds,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.match_project_consumed_binder_locals,
         &builder.locals,
@@ -32175,7 +32346,7 @@ fn elaborate(
     cow_drop_allowed.extend(derive_cow_fresh_borrowed_owner(
         &checked.blocks,
         &builder.suspend_kinds,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.locals,
     ));
@@ -32200,7 +32371,7 @@ fn elaborate(
     let enum_composite_drop_allowed = derive_enum_composite_drop_allowed(
         &checked.blocks,
         &builder.suspend_kinds,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.binding_scope,
         &builder.locals,
@@ -32235,7 +32406,7 @@ fn elaborate(
     let mut owned_vec_drop_allowed = derive_local_collection_drop_allowed(
         &checked.blocks,
         &builder.suspend_kinds,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
         |ty| builder.binding_ty_is_owned_element_vec(ty),
     );
@@ -32300,7 +32471,7 @@ fn elaborate(
     let mut local_collection_drop_allowed = derive_local_collection_drop_allowed(
         &checked.blocks,
         &builder.suspend_kinds,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
         ty_is_local_collection_handle,
     );
@@ -32330,7 +32501,7 @@ fn elaborate(
     let mut local_bytes_drop_allowed = derive_local_bytes_drop_allowed(
         &checked.blocks,
         &builder.suspend_kinds,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
     );
     for states in dataflow_result.exit_states.values() {
@@ -32354,7 +32525,7 @@ fn elaborate(
     let mut closure_vec_drop_allowed = derive_local_collection_drop_allowed(
         &checked.blocks,
         &builder.suspend_kinds,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
         ty_is_closure_pair_vec,
     );
@@ -32388,7 +32559,7 @@ fn elaborate(
     let mut plain_vec_drop_allowed = derive_local_collection_drop_allowed(
         &checked.blocks,
         &builder.suspend_kinds,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
         |ty| builder.binding_ty_is_plain_vec(ty),
     );
@@ -32440,7 +32611,7 @@ fn elaborate(
     let owned_record_drop_allowed = derive_owned_record_drop_allowed(
         &checked.blocks,
         &builder.suspend_kinds,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.locals,
         &is_owned_record,
@@ -32461,7 +32632,7 @@ fn elaborate(
     let tuple_composite_drop_allowed = derive_tuple_composite_drop_allowed(
         &checked.blocks,
         &builder.suspend_kinds,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.locals,
         &builder.record_field_orders,
@@ -32472,7 +32643,7 @@ fn elaborate(
     // aggregate; excluded from every drop class below (see the function doc).
     let returned_aggregate_members = derive_returned_aggregate_member_bindings(
         &checked.blocks,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
     );
 
@@ -32483,7 +32654,7 @@ fn elaborate(
     // `returned_aggregate_members` (see the function doc).
     let consumed_local_aggregate_members = derive_consumed_local_aggregate_member_bindings(
         &checked.blocks,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.locals,
         &builder.record_field_orders,
@@ -32527,7 +32698,7 @@ fn elaborate(
     // skip and the `Consumed`/`MaybeConsumed` exit filter below complete it.
     let mut indirect_enum_drop_allowed = derive_indirect_enum_drop_allowed(
         &checked.blocks,
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.enum_layouts,
     );
@@ -32543,7 +32714,7 @@ fn elaborate(
     }
 
     let lifo_drops = build_lifo_drops(
-        &builder.owned_locals,
+        &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.type_classes,
         &builder.dyn_trait_storage,
@@ -49002,11 +49173,11 @@ mod binding_ty_is_plain_vec_tuple {
     #[test]
     fn unsupported_vec_element_diagnostics_rejects_unwired_owned_local() {
         let mut builder = builder_with_indirect_enum();
-        builder.owned_locals = vec![(
+        builder.register_owned_local(
             BindingId(7),
             "nodes".to_string(),
             vec_of_ty(unregistered_named("Foo")),
-        )];
+        );
         // The construction site is sourced from the finalized `Bind` statements,
         // keyed by the owned local's binding id.
         let bind_sites = std::collections::HashMap::from([(BindingId(7), SiteId(42))]);
@@ -49026,15 +49197,53 @@ mod binding_ty_is_plain_vec_tuple {
         // A releasable owned `Vec<string>` local emits nothing — behaviour
         // preserved for every constructible, releasable shape.
         let mut ok = builder_with_indirect_enum();
-        ok.owned_locals = vec![(
+        ok.register_owned_local(
             BindingId(8),
             "names".to_string(),
             vec_of_ty(ResolvedTy::String),
-        )];
+        );
         assert!(
             ok.unsupported_vec_element_diagnostics(&bind_sites)
                 .is_empty(),
             "a Vec<string> owned local has a wired release — no diagnostic"
+        );
+    }
+
+    /// The single registration authority records the classified ownership fact
+    /// ONCE at the defining write, defaults the disposition to scope exit, and
+    /// exposes the binding through the `(binding, name, ty)` compat view every
+    /// drop prover consumes — the byte-identical shape of the former tuple
+    /// ledger.
+    #[test]
+    fn register_owned_local_records_classified_ownership_and_scope_exit() {
+        use crate::ownership::{DropClass, HeapLeaf};
+
+        let mut builder = builder_with_indirect_enum();
+        builder.register_owned_local(BindingId(3), "s".to_string(), ResolvedTy::String);
+
+        // The compat view is exactly the registered triple, in registration
+        // order — what `owned_locals_snapshot` feeds the provers.
+        assert_eq!(
+            builder.owned_locals_snapshot(),
+            vec![(BindingId(3), "s".to_string(), ResolvedTy::String)],
+            "the live view is the registered (binding, name, ty) triple"
+        );
+
+        // The richer facts are carried on the entry: a `string` owns a single
+        // copy-on-write heap leaf, the disposition is scope exit, and no
+        // provenance is proven at this seam.
+        let entry = &builder.owned_locals[0];
+        assert_eq!(entry.disposition, Disposition::ScopeExit);
+        assert_eq!(
+            entry.ownership.drop_class(),
+            Some(DropClass::CowHeapLeaf {
+                leaf: HeapLeaf::String
+            }),
+            "ownership is classified once at registration and recorded on the entry"
+        );
+        assert_eq!(
+            entry.provenance, None,
+            "no provenance is proven at this seam"
         );
     }
 
@@ -49261,7 +49470,7 @@ mod drop_admission_type_shape_pins {
     //! reclassification. An admission that widens over-drops (double-free,
     //! the worst outcome); one that narrows leaks.
     use super::*;
-    use crate::ownership::{DropClass, HeapLeaf, OwnershipCtx, OwnershipDecision};
+    use crate::ownership::{DropClass, HeapLeaf, OwnershipDecision};
 
     fn vec_of(elem: ResolvedTy) -> ResolvedTy {
         ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![elem])

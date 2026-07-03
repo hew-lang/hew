@@ -3859,14 +3859,14 @@ impl Checker {
             self.errors.push(TypeError::new(
                 TypeErrorKind::MachineExhaustivenessError,
                 span.clone(),
-                format!("machine '{}' must declare at least 2 states", md.name),
+                format!("machine `{}` must declare at least 2 states", md.name),
             ));
         }
         if md.events.is_empty() {
             self.errors.push(TypeError::new(
                 TypeErrorKind::MachineExhaustivenessError,
                 span.clone(),
-                format!("machine '{}' must declare at least 1 event", md.name),
+                format!("machine `{}` must declare at least 1 event", md.name),
             ));
         }
 
@@ -3884,7 +3884,7 @@ impl Checker {
                     TypeErrorKind::MachineExhaustivenessError,
                     span.clone(),
                     format!(
-                        "machine '{}': transition references unknown event '{}'",
+                        "machine `{}`: transition references unknown event `{}`",
                         md.name, transition.event_name
                     ),
                 ));
@@ -3898,7 +3898,7 @@ impl Checker {
                     TypeErrorKind::MachineExhaustivenessError,
                     span.clone(),
                     format!(
-                        "machine '{}': transition references unknown state '{}'",
+                        "machine `{}`: transition references unknown state `{}`",
                         md.name, transition.source_state
                     ),
                 ));
@@ -3910,7 +3910,7 @@ impl Checker {
                     TypeErrorKind::MachineExhaustivenessError,
                     span.clone(),
                     format!(
-                        "machine '{}': transition references unknown state '{}'",
+                        "machine `{}`: transition references unknown state `{}`",
                         md.name, transition.target_state
                     ),
                 ));
@@ -3923,7 +3923,7 @@ impl Checker {
                         TypeErrorKind::MachineExhaustivenessError,
                         span.clone(),
                         format!(
-                            "machine '{}': duplicate wildcard transition for event '{}'",
+                            "machine `{}`: duplicate wildcard transition for event `{}`",
                             md.name, transition.event_name
                         ),
                     ));
@@ -3940,7 +3940,7 @@ impl Checker {
                         TypeErrorKind::MachineExhaustivenessError,
                         span.clone(),
                         format!(
-                            "machine '{}': duplicate transition for event '{}' in state '{}'",
+                            "machine `{}`: duplicate transition for event `{}` in state `{}`",
                             md.name, transition.event_name, transition.source_state
                         ),
                     ));
@@ -4134,7 +4134,7 @@ impl Checker {
                         TypeErrorKind::MachineExhaustivenessError,
                         span.clone(),
                         format!(
-                            "machine '{}': state '{}' does not handle event '{}'",
+                            "machine `{}`: state `{}` does not handle event `{}`",
                             md.name, state, event
                         ),
                     ));

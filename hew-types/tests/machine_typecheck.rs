@@ -175,7 +175,7 @@ fn missing_transition_error() {
     assert!(
         messages
             .iter()
-            .any(|m| m.contains("does not handle event 'Dim'")),
+            .any(|m| m.contains("does not handle event `Dim`")),
         "expected Dim error, got: {messages:?}"
     );
 }
@@ -298,7 +298,7 @@ fn duplicate_transition_error() {
     assert!(
         output.errors.iter().any(|e| e
             .message
-            .contains("duplicate transition for event 'Toggle' in state 'Off'")),
+            .contains("duplicate transition for event `Toggle` in state `Off`")),
         "expected duplicate transition error, got: {:?}",
         output.errors
     );
@@ -322,7 +322,7 @@ fn unknown_state_name_error() {
     assert!(
         messages
             .iter()
-            .any(|m| m.contains("transition references unknown state 'Onn'")),
+            .any(|m| m.contains("transition references unknown state `Onn`")),
         "expected unknown state error, got: {messages:?}"
     );
 }
@@ -345,7 +345,7 @@ fn unknown_event_name_error() {
     assert!(
         messages
             .iter()
-            .any(|m| m.contains("transition references unknown event 'Toggl'")),
+            .any(|m| m.contains("transition references unknown event `Toggl`")),
         "expected unknown event error, got: {messages:?}"
     );
 }
@@ -368,7 +368,7 @@ fn duplicate_wildcard_error() {
     assert!(
         messages
             .iter()
-            .any(|m| m.contains("duplicate wildcard transition for event 'Toggle'")),
+            .any(|m| m.contains("duplicate wildcard transition for event `Toggle`")),
         "expected duplicate wildcard error, got: {messages:?}"
     );
 }
@@ -1221,7 +1221,7 @@ fn imported_machine_exhaustiveness_runs() {
     assert!(
         messages
             .iter()
-            .any(|m| m.contains("does not handle event 'Dim'")),
+            .any(|m| m.contains("does not handle event `Dim`")),
         "expected missing-Dim exhaustiveness error for imported machine, got: {messages:?}"
     );
 }

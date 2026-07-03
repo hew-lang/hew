@@ -1606,7 +1606,7 @@ impl Checker {
             args,
             span,
             SignatureArgApplication::PositionalOnly {
-                arity_context: format!("method '{method}'"),
+                arity_context: format!("method `{method}`"),
             },
             true,
         );
@@ -2133,7 +2133,7 @@ impl Checker {
                 args,
                 span,
                 SignatureArgApplication::PositionalOnly {
-                    arity_context: format!("method '{method}'"),
+                    arity_context: format!("method `{method}`"),
                 },
                 true,
             )
@@ -5568,7 +5568,7 @@ impl Checker {
             args,
             span,
             SignatureArgApplication::PositionalOnly {
-                arity_context: format!("method '{method}'"),
+                arity_context: format!("method `{method}`"),
             },
             true,
         );
@@ -5911,7 +5911,7 @@ impl Checker {
             trailing_args,
             span,
             SignatureArgApplication::PositionalOnly {
-                arity_context: format!("method '{trait_name}::{method_name}'"),
+                arity_context: format!("method `{trait_name}::{method_name}`"),
             },
             true,
         );
@@ -6785,7 +6785,7 @@ impl Checker {
                                 args,
                                 span,
                                 SignatureArgApplication::PositionalOnly {
-                                    arity_context: format!("method '{method}'"),
+                                    arity_context: format!("method `{method}`"),
                                 },
                                 true,
                             );
@@ -6895,7 +6895,7 @@ impl Checker {
                             args,
                             span,
                             SignatureArgApplication::PositionalOnly {
-                                arity_context: format!("method '{method}'"),
+                                arity_context: format!("method `{method}`"),
                             },
                             true,
                         );
@@ -7606,7 +7606,7 @@ impl Checker {
                         args,
                         span,
                         SignatureArgApplication::PositionalOnly {
-                            arity_context: format!("method '{method}'"),
+                            arity_context: format!("method `{method}`"),
                         },
                         true,
                     );
@@ -8043,7 +8043,7 @@ impl Checker {
                             args,
                             span,
                             SignatureArgApplication::PositionalOnly {
-                                arity_context: format!("method '{method}'"),
+                                arity_context: format!("method `{method}`"),
                             },
                             true,
                         );
@@ -8330,7 +8330,7 @@ impl Checker {
                         args,
                         span,
                         SignatureArgApplication::PositionalOnly {
-                            arity_context: format!("method '{method}'"),
+                            arity_context: format!("method `{method}`"),
                         },
                         true,
                     );

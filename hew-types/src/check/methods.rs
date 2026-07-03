@@ -199,7 +199,7 @@ fn collection_method_desc(kind: CollectionKind, method: &str) -> Option<Collecti
             "clone" => desc(Some(0), &[], SelfTy),
             "len" => desc(None, &[], RetI64),
             "is_empty" => desc(None, &[], Bool),
-            "clear" => desc(None, &[], Unit),
+            "clear" => desc(Some(0), &[], Unit),
             _ => return None,
         },
         CollectionKind::HashSet => match method {
@@ -208,7 +208,7 @@ fn collection_method_desc(kind: CollectionKind, method: &str) -> Option<Collecti
             "clone" => desc(Some(0), &[], SelfTy),
             "len" => desc(None, &[], RetI64),
             "is_empty" => desc(None, &[], Bool),
-            "clear" => desc(None, &[], Unit),
+            "clear" => desc(Some(0), &[], Unit),
             _ => return None,
         },
         CollectionKind::Vec => match method {

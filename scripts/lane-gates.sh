@@ -58,10 +58,11 @@ BASE_REF_ARG=""
 SKIP_ORACLE=0
 FAIL_FAST=0
 DRY_RUN=0
+SELF_TEST=0
 
 usage() {
     cat <<'EOF'
-Usage: scripts/lane-gates.sh -p <crate> [-p <crate> ...] [--base <ref>] [--skip-oracle] [--fail-fast] [--dry-run] [--help|-h]
+Usage: scripts/lane-gates.sh -p <crate> [-p <crate> ...] [--base <ref>] [--skip-oracle] [--fail-fast] [--dry-run] [--self-test] [--help|-h]
 
 Mechanical per-lane gate battery: fmt-check, workspace clippy, targeted crate
 tests, commit-body lint, and the fuzz-oracle two-gate ratchet check. Run this
@@ -77,6 +78,7 @@ before `make ci-preflight`, not instead of it.
   --dry-run        Print the resolved crate list, base ref, commit range, and
                     ordered step list with budgets; exit 0 without running
                     anything.
+  --self-test      Run the commit-body lint's isolated self-test suite and exit.
   --help, -h       Show this help and exit 0.
 EOF
 }
@@ -110,6 +112,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --dry-run)
             DRY_RUN=1
+            shift
+            ;;
+        --self-test)
+            SELF_TEST=1
             shift
             ;;
         --help|-h)
@@ -149,23 +155,160 @@ resolve_base_ref() {
     return 1
 }
 
-if ! BASE_REF="$(resolve_base_ref)"; then
-    echo "error: lane-gates: no resolvable base ref (tried --base, CI_PREFLIGHT_BASE, origin/main, main)." >&2
-    echo "  Pass an explicit ref: scripts/lane-gates.sh -p <crate> --base <ref>" >&2
-    exit 2
-fi
-RANGE="${BASE_REF}..HEAD"
+if (( SELF_TEST == 0 )); then
+    if ! BASE_REF="$(resolve_base_ref)"; then
+        echo "error: lane-gates: no resolvable base ref (tried --base, CI_PREFLIGHT_BASE, origin/main, main)." >&2
+        echo "  Pass an explicit ref: scripts/lane-gates.sh -p <crate> --base <ref>" >&2
+        exit 2
+    fi
+    RANGE="${BASE_REF}..HEAD"
 
-if [[ ${#CRATES[@]} -eq 0 ]]; then
-    die "at least one -p <crate> is required"
+    if [[ ${#CRATES[@]} -eq 0 ]]; then
+        die "at least one -p <crate> is required"
+    fi
 fi
 
-# ── Commit-body lint (Slice 2 replaces this stub) ─────────────────────────────
-# TODO(lane-gates Slice 2): replace with the real 3-sub-check implementation
-# (orchestration-framing delegation, literal-\n check, tombstone-word check).
+# ── Commit-body lint ───────────────────────────────────────────────────────────
+# Three sub-checks over every commit in $1 (a "<ref>..HEAD"-shaped range):
+#   (a) orchestration framing — delegates to lint-orchestration-leak.sh, does
+#       not reimplement its T1-T10 patterns.
+#   (b) literal `\n` — fixed-string match for the two-byte backslash+n
+#       sequence, via `cat -v` (matches the manual proof method that found
+#       this defect 3x: ledger `\n\n` commit-body evidence).
+#   (c) tombstone words — case-insensitive `used to be` / `legacy` only.
+#       Deliberately narrower than U134's full sweep pattern (measured ~43%
+#       false-positive rate on "before the" alone) and narrower still to
+#       avoid conflicting with the mandatory bug-fix commit template, which
+#       requires describing prior-wrong behaviour ("previously this trapped
+#       incorrectly", "no longer accepts negative values" are legitimate).
+# Aggregate verdict: fail if ANY sub-check fails for ANY commit in range.
 run_commit_lint() {
-    return 0
+    local range="$1"
+    local fail=0
+    local leak_scan_out
+    leak_scan_out="$(mktemp)"
+
+    if ! bash "${REPO_ROOT}/scripts/lint-orchestration-leak.sh" --scan-commits "$range" >"$leak_scan_out" 2>&1; then
+        fail=1
+        echo "  ${range}: (a) orchestration framing: FAILED"
+        sed 's/^/    /' "$leak_scan_out" >&2
+    fi
+    rm -f "$leak_scan_out"
+
+    local sha cat_v_msg raw_msg
+    while IFS= read -r sha; do
+        [[ -n "$sha" ]] || continue
+        cat_v_msg="$(git log -1 --format='%B' "$sha" | cat -v)"
+        if printf '%s' "$cat_v_msg" | grep -qF '\n'; then
+            fail=1
+            echo "  ${sha}: (b) literal backslash-n escape found in commit body"
+        fi
+        # Tombstone check runs against the raw %B text (not the cat -v output):
+        # tombstone detection has nothing to do with non-printing bytes.
+        raw_msg="$(git log -1 --format='%B' "$sha")"
+        if printf '%s' "$raw_msg" | grep -qiE '\bused to be\b'; then
+            fail=1
+            echo "  ${sha}: (c) tombstone word 'used to be' found"
+        fi
+        if printf '%s' "$raw_msg" | grep -qiE '\blegacy\b'; then
+            fail=1
+            echo "  ${sha}: (c) tombstone word 'legacy' found"
+        fi
+    done < <(git log --format='%H' "$range" 2>/dev/null)
+
+    return "$fail"
 }
+
+# ── Self-test ──────────────────────────────────────────────────────────────────
+# Same isolated-tmp-repo scaffolding pattern as lint-orchestration-leak.sh's own
+# --self-test (init_repo, assert_commit_detects/assert_commit_clean helpers).
+if (( SELF_TEST == 1 )); then
+    _tmpdir=$(mktemp -d)
+    trap 'rm -rf "$_tmpdir"' EXIT
+    _pass=0
+    _fail=0
+
+    # Initial branch is deliberately NOT "main": lane-gates.sh's fallback chain
+    # resolves a same-repo "main" branch, so a repo whose default branch is
+    # literally named "main" (git's own init.defaultBranch default) would make
+    # the fail-closed assertion below trivially pass for the wrong reason.
+    init_repo() {
+        git -C "$_tmpdir" init -q --initial-branch=scratch
+        git -C "$_tmpdir" config user.email "test@test"
+        git -C "$_tmpdir" config user.name "test"
+        git -C "$_tmpdir" commit --allow-empty -m "root"
+    }
+
+    assert_commit_detects() {
+        local desc="$1"
+        local msg="$2"
+        git -C "$_tmpdir" commit --allow-empty -m "$msg" 2>/dev/null
+        if (cd "$_tmpdir" && run_commit_lint "HEAD~1..HEAD" >/dev/null 2>&1); then
+            echo "FAIL: $desc — expected non-zero exit but got zero"
+            _fail=$((_fail + 1))
+        else
+            echo "PASS: $desc"
+            _pass=$((_pass + 1))
+        fi
+        git -C "$_tmpdir" reset --hard HEAD~1 >/dev/null 2>&1
+    }
+
+    assert_commit_clean() {
+        local desc="$1"
+        local msg="$2"
+        git -C "$_tmpdir" commit --allow-empty -m "$msg" 2>/dev/null
+        if (cd "$_tmpdir" && run_commit_lint "HEAD~1..HEAD" >/dev/null 2>&1); then
+            echo "PASS: $desc"
+            _pass=$((_pass + 1))
+        else
+            echo "FAIL: $desc — expected zero exit (clean) but got non-zero"
+            _fail=$((_fail + 1))
+        fi
+        git -C "$_tmpdir" reset --hard HEAD~1 >/dev/null 2>&1
+    }
+
+    init_repo
+
+    # literal \n detected: a single-quoted -m string puts a raw backslash-n
+    # into the commit object (bash does not expand escapes in single quotes).
+    assert_commit_detects "literal backslash-n detected" 'Subject\n\nBody with literal escape'
+    # real newlines NOT flagged.
+    assert_commit_clean "real newlines not flagged" "$(printf 'Subject\n\nReal body.')"
+    # tombstone words detected.
+    assert_commit_detects "'used to be' detected" "fix: correct the thing that used to be broken"
+    assert_commit_detects "'legacy' detected" "chore: remove legacy fallback path"
+    # scoped-narrower vocabulary NOT flagged (decision 8c) — protects the
+    # scoping choice from later accidental broadening.
+    assert_commit_clean "'previously' not flagged" "fix: previously this trapped incorrectly"
+    assert_commit_clean "'no longer' not flagged" "fix: no longer accepts negative values"
+    assert_commit_clean "'in v0.5' not flagged" "docs: behaviour changed in v0.5"
+    # delegation wiring: a known lint-orchestration-leak.sh token fails via (a),
+    # proving the delegation without re-testing the token patterns themselves.
+    assert_commit_detects "DIST-4 token fails via delegation" "feat: DIST-4 slice — add cddl body"
+    # clean commit — no false positive.
+    assert_commit_clean "clean commit message" "feat: add robust error propagation"
+
+    # fail-closed: no resolvable base ref and no --base (mirrors
+    # lint-orchestration-leak.sh's own --scan-commits fail-closed behaviour).
+    # lane-gates.sh resolves REPO_ROOT from its own script path (decision 2,
+    # not the caller's cwd), so `cd "$_tmpdir"` alone would not redirect its
+    # git calls into the scratch repo — GIT_DIR/GIT_WORK_TREE overrides do.
+    _fail_closed_status=0
+    GIT_DIR="$_tmpdir/.git" GIT_WORK_TREE="$_tmpdir" \
+        bash "${REPO_ROOT}/scripts/lane-gates.sh" -p hew-lexer --dry-run >/dev/null 2>&1 || _fail_closed_status=$?
+    if [[ "$_fail_closed_status" -eq 2 ]]; then
+        echo "PASS: no-resolvable-base fail-closed"
+        _pass=$((_pass + 1))
+    else
+        echo "FAIL: no-resolvable-base fail-closed — expected exit 2, got ${_fail_closed_status}"
+        _fail=$((_fail + 1))
+    fi
+
+    echo ""
+    echo "lane-gates self-test: ${_pass} passed, ${_fail} failed"
+    [[ "$_fail" -eq 0 ]]
+    exit $?
+fi
 
 # ── Step list (decision 4) ────────────────────────────────────────────────────
 NEXTEST_ARGS=()
@@ -183,7 +326,7 @@ if (( DRY_RUN == 1 )); then
     echo "  1. cargo fmt --all -- --check  (budget: ${LANE_GATES_TIMEOUT_FMT}s)"
     echo "  2. cargo clippy --workspace --tests -- -D warnings  (budget: ${LANE_GATES_TIMEOUT_CLIPPY}s)"
     echo "  3. ${NEXTEST_CMD}  (budget: ${LANE_GATES_TIMEOUT_TESTS}s)"
-    echo "  4. commit-body lint (${RANGE})  (not yet implemented)"
+    echo "  4. commit-body lint (${RANGE})"
     if (( SKIP_ORACLE == 1 )); then
         echo "  5. make fuzz-oracle  SKIPPED (--skip-oracle)"
     else

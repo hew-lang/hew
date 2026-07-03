@@ -495,6 +495,109 @@ fn escaped_return_tuple_source(frames: usize) -> String {
     )
 }
 
+/// Match-hop escape (record): an INTERMEDIATE hop of the return alias chain is
+/// destructured via `match` (not a field projection) and the leaf bound out of
+/// the destructure is returned. The match-bound leaf is a byte-copy alias of
+/// the owner's subtree (the destructure load copies the inline aggregate with
+/// no retain), so the owner's composite must NOT free the subtree the caller
+/// now holds — a re-walk here is the #2384 double-free (`free_cstring` header
+/// sentinel abort). Fail-closed posture: the owner is excluded and its
+/// non-escaped siblings leak; the pin is no double-free, not a flat slope.
+fn match_intermediate_return_leaf_source(frames: usize) -> String {
+    format!(
+        "type Leaf {{\n\
+         \x20   s: string,\n\
+         \x20   t: string,\n\
+         }}\n\
+         \n\
+         type Mid {{\n\
+         \x20   leaf: Leaf,\n\
+         \x20   x: string,\n\
+         }}\n\
+         \n\
+         type Outer {{\n\
+         \x20   mid: Mid,\n\
+         \x20   c: string,\n\
+         }}\n\
+         \n\
+         fn make_outer(k: i64) -> Outer {{\n\
+         \x20   Outer {{\n\
+         \x20       mid: Mid {{\n\
+         \x20           leaf: Leaf {{\n\
+         \x20               s: \"esc-s-heap-payload\".to_upper(),\n\
+         \x20               t: \"esc-t-heap-payload\".to_upper(),\n\
+         \x20           }},\n\
+         \x20           x: \"esc-x-heap-payload\".to_upper(),\n\
+         \x20       }},\n\
+         \x20       c: \"esc-c-heap-payload\".to_upper(),\n\
+         \x20   }}\n\
+         }}\n\
+         \n\
+         fn deep(k: i64) -> Leaf {{\n\
+         \x20   let o = make_outer(k);\n\
+         \x20   let mid = o.mid;\n\
+         \x20   let leaf = match mid {{\n\
+         \x20       Mid {{ leaf, x: _ }} => leaf,\n\
+         \x20   }};\n\
+         \x20   leaf\n\
+         }}\n\
+         \n\
+         fn run_cycle(k: i64) -> i64 {{\n\
+         \x20   let l = deep(k);\n\
+         \x20   l.s.len()\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       total = total + run_cycle(i);\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   if total > 0 {{ 0 }} else {{ 1 }}\n\
+         }}\n"
+    )
+}
+
+/// Match-hop escape (TUPLE twin): the intermediate tuple hop is destructured
+/// via `match (l, _)` and the bound element returned — the tuple prover's twin
+/// of the match-hop double-free boundary.
+fn match_intermediate_return_tuple_source(frames: usize) -> String {
+    format!(
+        "fn make_nested(k: i64) -> (((string, string), string), string) {{\n\
+         \x20   let a = \"esc-a-heap-payload\".to_upper();\n\
+         \x20   let b = \"esc-b-heap-payload\".to_upper();\n\
+         \x20   let c = \"esc-c-heap-payload\".to_upper();\n\
+         \x20   let d = \"esc-d-heap-payload\".to_upper();\n\
+         \x20   ((( a, b ), c ), d)\n\
+         }}\n\
+         \n\
+         fn deep(k: i64) -> (string, string) {{\n\
+         \x20   let o = make_nested(k);\n\
+         \x20   let mid = o.0;\n\
+         \x20   let leaf = match mid {{\n\
+         \x20       (l, _) => l,\n\
+         \x20   }};\n\
+         \x20   leaf\n\
+         }}\n\
+         \n\
+         fn run_cycle(k: i64) -> i64 {{\n\
+         \x20   let l = deep(k);\n\
+         \x20   l.0.len()\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       total = total + run_cycle(i);\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   if total > 0 {{ 0 }} else {{ 1 }}\n\
+         }}\n"
+    )
+}
+
 // ── slope oracles (leak half) ───────────────────────────────────────────
 
 /// Two-level record chain holds a flat slope — the outer composite frees the
@@ -624,6 +727,32 @@ fn escaped_into_record_no_double_free_under_malloc_scribble() {
 #[test]
 fn escaped_return_tuple_no_double_free_under_malloc_scribble() {
     assert_scribble_clean("chain_escaped_tuple", &escaped_return_tuple_source(6));
+}
+
+/// #2384 — match-hop escape (record): the leaf bound out of a `match` on an
+/// intermediate alias hop and returned must run clean under the poisoned
+/// allocator. Before the fix the match-bound binder was invisible to the
+/// composite-drop prover (the alias forward-walk followed only whole-value
+/// `Move`s, and the destructure hop is a field load off the scrutinee copy),
+/// so the owner's composite re-freed the strings the returned `Leaf` still
+/// owns — the `free_cstring` header-sentinel abort.
+#[test]
+fn match_intermediate_return_leaf_no_double_free_under_malloc_scribble() {
+    assert_scribble_clean(
+        "chain_match_hop_return",
+        &match_intermediate_return_leaf_source(6),
+    );
+}
+
+/// #2384 tuple twin: the element bound out of a `match` on an intermediate
+/// tuple hop and returned — same double-free boundary through the tuple
+/// prover.
+#[test]
+fn match_intermediate_return_tuple_no_double_free_under_malloc_scribble() {
+    assert_scribble_clean(
+        "chain_match_hop_return_tuple",
+        &match_intermediate_return_tuple_source(6),
+    );
 }
 
 // ── MIR emission pins ────────────────────────────────────────────────────

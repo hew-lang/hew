@@ -34424,6 +34424,115 @@ fn close_alias_binders_forward(blocks: &[BasicBlock], seeds: &[(u32, u32)]) -> H
     owner_of
 }
 
+/// True when `Place::Local(local)` holds a heap-owning INLINE aggregate — a
+/// tuple, fixed array, user record, or inline enum — whose field/element load
+/// codegen BYTE-COPIES with no retain (the
+/// [`ByteCopyAlias`](FieldLoadClass::ByteCopyAlias) load class). The free-
+/// function mirror of [`Builder::classify_field_load`]'s `ByteCopyAlias` arm
+/// for the drop-allow provers, which have no `Builder` in scope.
+///
+/// Deliberately under-approximating (fail-closed): `string` (codegen retains
+/// the load — the dest owns a fresh `+1`), the single-pointer handle leaves
+/// (`Vec` / `bytes` / `HashMap` / `Generator` / …, which TRANSFER their one
+/// handle), indirect enums (a single owned node pointer), and opaque types are
+/// all refused. Refusing keeps a dest invisible to the match-hop descent —
+/// exactly today's posture for it — never a wrong alias attribution.
+fn local_is_byte_copy_aggregate(
+    local: u32,
+    local_tys: &[ResolvedTy],
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    enum_layouts: &[crate::model::EnumLayout],
+) -> bool {
+    let Some(ty) = local_tys.get(local as usize) else {
+        return false;
+    };
+    if !crate::model::ty_owns_heap_mir(ty, record_field_orders, enum_layouts) {
+        return false;
+    }
+    match ty {
+        ResolvedTy::Tuple(_) | ResolvedTy::Array(_, _) => true,
+        ResolvedTy::Named {
+            builtin: None,
+            is_opaque: false,
+            ..
+        } => !ty_is_indirect_enum(ty, enum_layouts),
+        _ => false,
+    }
+}
+
+/// #2384 — forward closure of the interior-alias binders through MATCH-BOUND
+/// hops. [`close_alias_binders_forward`] follows only whole-value `Move`s, so
+/// a chain hop bound via `match` (`let leaf = match mid { Mid { leaf, x: _ }
+/// => leaf }`) is invisible to the composite-drop provers: the destructure
+/// lowers to a `RecordFieldLoad` / `TupleFieldLoad` off the scrutinee COPY
+/// (itself a `Move` of the alias), and the loaded inline aggregate byte-copies
+/// the member with no retain — the binder is still an alias of the OWNER
+/// root's storage, not a fresh owner. When such a binder then escaped
+/// (returned), the owner's composite stayed admitted and re-freed the subtree
+/// the escapee handed to the caller (the `free_cstring` sentinel abort).
+///
+/// This walk extends the `Move` closure with one gated descent rule: a
+/// `RecordFieldLoad` / `TupleFieldLoad` whose base is a tracked local marks
+/// the DEST as an alias of the same owner IFF the dest is a byte-copy inline
+/// aggregate ([`local_is_byte_copy_aggregate`] — a retained `string` or a
+/// transferred handle dest is a real owner and must NOT be attributed).
+///
+/// Consumers fold the result into their ESCAPE arms only — never into the
+/// `release_owner_bases` Defect-1 blanket. A match-bound binder is an owned
+/// binding with its own (prover-suppressed) release path, so blanket-scanning
+/// it would newly exclude owners in today-clean non-escaping shapes (turning
+/// an exactly-once composite into a whole-tree leak); the escape arms widen
+/// exclusion only when the binder actually leaves the function.
+fn descend_match_bound_hop_aliases(
+    blocks: &[BasicBlock],
+    seeds: &HashMap<u32, u32>,
+    dest_is_byte_copy_aggregate: &dyn Fn(u32) -> bool,
+) -> HashMap<u32, u32> {
+    let mut owner_of: HashMap<u32, u32> = seeds.clone();
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                let (base, dest) = match instr {
+                    Instr::Move { dest, src } => (*src, *dest),
+                    Instr::RecordFieldLoad { record, dest, .. } => {
+                        let Some(dl) = base_local(*dest) else {
+                            continue;
+                        };
+                        if !dest_is_byte_copy_aggregate(dl) {
+                            continue;
+                        }
+                        (*record, *dest)
+                    }
+                    Instr::TupleFieldLoad { tuple, dest, .. } => {
+                        let Some(dl) = base_local(*dest) else {
+                            continue;
+                        };
+                        if !dest_is_byte_copy_aggregate(dl) {
+                            continue;
+                        }
+                        (*tuple, *dest)
+                    }
+                    _ => continue,
+                };
+                if let (Some(sl), Some(dl)) = (base_local(base), base_local(dest)) {
+                    if let Some(&owner) = owner_of.get(&sl) {
+                        if let std::collections::hash_map::Entry::Vacant(slot) = owner_of.entry(dl)
+                        {
+                            slot.insert(owner);
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    owner_of
+}
+
 fn collect_record_field_binders(
     blocks: &[BasicBlock],
     alias_of: &HashMap<u32, u32>,
@@ -37865,7 +37974,8 @@ fn derive_owned_record_drop_allowed(
     // interiorly (the consumed-match path). `or_insert` never overrides the
     // precise `Unique { root, field }` a one-hop binder already earned (the
     // sibling-discharge emitter needs that field).
-    for (&alias_local, &owner_local) in &close_alias_binders_forward(blocks, alias_field_binders) {
+    let folded_aliases = close_alias_binders_forward(blocks, alias_field_binders);
+    for (&alias_local, &owner_local) in &folded_aliases {
         if !candidate_local_to_binding.contains_key(&owner_local) {
             continue;
         }
@@ -37874,6 +37984,39 @@ fn derive_owned_record_drop_allowed(
             .entry(alias_local)
             .or_insert(FieldBinderProvenance::RootOnly { root: owner_local });
     }
+
+    // #2384 — match-bound hop aliases: a chain hop bound out of a `match`
+    // destructure (a byte-copy aggregate loaded off the scrutinee COPY of a
+    // recorded alias) is still an alias of the OWNER root's storage. The
+    // `Move`-only closure above cannot see through the destructure's field
+    // load, so such a binder's ESCAPE left the owner admitted to re-free the
+    // subtree the escapee handed to the caller (the `free_cstring` sentinel
+    // double-free). Fold the gated field-load descent into the ESCAPE arms
+    // only — deliberately NOT into `field_binders`, whose
+    // `release_owner_bases` Defect-1 blanket below would newly exclude owners
+    // in today-clean NON-escaping match shapes (the binder is an owned
+    // binding, so the blanket would always trip and leak the whole tree).
+    let candidate_owned_aliases: HashMap<u32, u32> = folded_aliases
+        .iter()
+        .filter(|(_, owner)| candidate_local_to_binding.contains_key(owner))
+        .map(|(&alias, &owner)| (alias, owner))
+        .collect();
+    let dest_is_byte_copy_aggregate = |local: u32| -> bool {
+        local_is_byte_copy_aggregate(local, local_tys, record_field_orders, enum_layouts)
+    };
+    let mut match_hop_binders = descend_match_bound_hop_aliases(
+        blocks,
+        &candidate_owned_aliases,
+        &dest_is_byte_copy_aggregate,
+    );
+    match_hop_binders.retain(|binder, _| !field_binders.contains(binder));
+    for (&binder, &owner_local) in &match_hop_binders {
+        binder_provenance
+            .entry(binder)
+            .or_insert(FieldBinderProvenance::RootOnly { root: owner_local });
+    }
+    let is_escape_binder =
+        |l: u32| field_binders.contains(&l) || match_hop_binders.contains_key(&l);
 
     let mut excluded_roots: HashSet<u32> = HashSet::new();
 
@@ -38022,7 +38165,7 @@ fn derive_owned_record_drop_allowed(
                     if alias_of.contains_key(&l) {
                         note_alias_escape(l, &mut excluded_roots);
                     }
-                    if field_binders.contains(&l) {
+                    if is_escape_binder(l) {
                         note_field_escape(l, &mut excluded_roots);
                     }
                 }
@@ -38043,8 +38186,8 @@ fn derive_owned_record_drop_allowed(
                     if src_is_member && !dest_is_member {
                         note_alias_escape(sl, &mut excluded_roots);
                     }
-                    if field_binders.contains(&sl) {
-                        let benign = dest_local.is_some_and(|dl| field_binders.contains(&dl))
+                    if is_escape_binder(sl) {
+                        let benign = dest_local.is_some_and(is_escape_binder)
                             && matches!(dest, Place::Local(_));
                         if !benign {
                             note_field_escape(sl, &mut excluded_roots);
@@ -38102,8 +38245,7 @@ fn derive_owned_record_drop_allowed(
                         {
                             note_alias_escape(l, &mut excluded_roots);
                         }
-                        if field_binders.contains(&l) && !binder_read_is_borrow_safe_instr(instr, l)
-                        {
+                        if is_escape_binder(l) && !binder_read_is_borrow_safe_instr(instr, l) {
                             note_field_escape(l, &mut excluded_roots);
                         }
                     }
@@ -38127,7 +38269,7 @@ fn derive_owned_record_drop_allowed(
                 {
                     note_alias_escape(l, &mut excluded_roots);
                 }
-                if field_binders.contains(&l)
+                if is_escape_binder(l)
                     && !binder_read_is_borrow_safe_terminator(
                         &block.terminator,
                         suspend_kinds.get(&block.id),
@@ -38818,11 +38960,37 @@ fn derive_tuple_composite_drop_allowed(
     // double-free). Recording it here makes `note_elem_escape` exclude the tuple
     // roots when the deep alias escapes; a `TupleFieldLoad` reading the alias is
     // interior (exempt), so the owner stays admitted on the consumed-match path.
-    for (&alias_local, &owner_local) in &close_alias_binders_forward(blocks, alias_field_binders) {
+    let folded_aliases = close_alias_binders_forward(blocks, alias_field_binders);
+    for (&alias_local, &owner_local) in &folded_aliases {
         if candidate_local_to_binding.contains_key(&owner_local) {
             elem_binders.insert(alias_local);
         }
     }
+
+    // #2384 (tuple twin) — match-bound hop aliases: an element bound out of a
+    // `match` destructure of a chain alias (`let leaf = match mid { (l, _) =>
+    // l }`) byte-copies the owner root's storage; the `Move`-only closure
+    // above cannot see through the destructure's `TupleFieldLoad`, so such a
+    // binder's escape left the owner admitted to re-free the subtree the
+    // caller now holds. Folded into the ESCAPE arms only — never into
+    // `elem_binders`, whose `release_owner_bases` Defect-1 blanket below would
+    // newly exclude owners in today-clean non-escaping match shapes (the
+    // binder is an owned binding, so the blanket would always trip).
+    let candidate_owned_aliases: HashMap<u32, u32> = folded_aliases
+        .iter()
+        .filter(|(_, owner)| candidate_local_to_binding.contains_key(owner))
+        .map(|(&alias, &owner)| (alias, owner))
+        .collect();
+    let dest_is_byte_copy_aggregate = |local: u32| -> bool {
+        local_is_byte_copy_aggregate(local, local_tys, record_field_orders, enum_layouts)
+    };
+    let mut match_hop_binders = descend_match_bound_hop_aliases(
+        blocks,
+        &candidate_owned_aliases,
+        &dest_is_byte_copy_aggregate,
+    );
+    match_hop_binders.retain(|binder, _| !elem_binders.contains(binder));
+    let is_escape_binder = |l: u32| elem_binders.contains(&l) || match_hop_binders.contains_key(&l);
 
     let mut excluded_roots: HashSet<u32> = HashSet::new();
 
@@ -38959,7 +39127,7 @@ fn derive_tuple_composite_drop_allowed(
                     if alias_of.contains_key(&l) {
                         note_alias_escape(l, &mut excluded_roots);
                     }
-                    if elem_binders.contains(&l) {
+                    if is_escape_binder(l) {
                         note_elem_escape(&mut excluded_roots);
                     }
                 }
@@ -38980,8 +39148,8 @@ fn derive_tuple_composite_drop_allowed(
                     if src_is_member && !dest_is_member {
                         note_alias_escape(sl, &mut excluded_roots);
                     }
-                    if elem_binders.contains(&sl) {
-                        let benign = dest_local.is_some_and(|dl| elem_binders.contains(&dl))
+                    if is_escape_binder(sl) {
+                        let benign = dest_local.is_some_and(is_escape_binder)
                             && matches!(dest, Place::Local(_));
                         if !benign {
                             note_elem_escape(&mut excluded_roots);
@@ -39021,8 +39189,7 @@ fn derive_tuple_composite_drop_allowed(
                         {
                             note_alias_escape(l, &mut excluded_roots);
                         }
-                        if elem_binders.contains(&l) && !binder_read_is_borrow_safe_instr(instr, l)
-                        {
+                        if is_escape_binder(l) && !binder_read_is_borrow_safe_instr(instr, l) {
                             note_elem_escape(&mut excluded_roots);
                         }
                     }
@@ -39046,7 +39213,7 @@ fn derive_tuple_composite_drop_allowed(
                 {
                     note_alias_escape(l, &mut excluded_roots);
                 }
-                if elem_binders.contains(&l)
+                if is_escape_binder(l)
                     && !binder_read_is_borrow_safe_terminator(
                         &block.terminator,
                         suspend_kinds.get(&block.id),

@@ -366,6 +366,7 @@ jobs:
         # is the dominant target/ cost and nothing in CI reads it.
         env:
           CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+          CARGO_INCREMENTAL: "0"
         run: >-  # parity-cmd: make test
           cargo nextest run --workspace
           --exclude hew-wasm

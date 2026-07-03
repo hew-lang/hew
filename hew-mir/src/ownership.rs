@@ -30,11 +30,18 @@
 //! **exactly**, for every shape — the contract the consolidation relies on when it swaps a
 //! seam's direct authority call for the projection.
 //!
-//! This landing is **additive and unused**: it defines the types, the
-//! [`ValueOwnership::classify`] / [`OwnershipDecision::classify`] constructor
-//! scaffold, the seed conversions, and the totality + round-trip tests. It
-//! switches **no** production call site — the release-bucket consolidation routes the existing
-//! authorities through it.
+//! This carrier is now **read**, not merely defined. The per-function
+//! owned-locals ledger records a [`ValueOwnership`] on every entry at its
+//! defining write ([`OwnershipDecision::classify`] time), and the record /
+//! tuple composite drop provers consume the carried
+//! [`InteriorAlias`](OwnershipDecision::InteriorAlias)-shaped
+//! [`ValueProvenance`] so a byte-copy field alias names its owner by location
+//! instead of each prover re-deriving it from the instruction stream. The
+//! coarser per-value facts (fresh / parameter provenance, and the drop / ABI
+//! kind on non-alias entries) travel on the ledger and are read as their
+//! consuming seams land; the release-bucket and type-directed drop
+//! consolidations route the remaining shape-walkers through it (see the Walker
+//! inventory below).
 //!
 //! # Subsumes (does not reinvent) the existing seeds
 //!

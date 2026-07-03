@@ -7993,14 +7993,21 @@ fn lower_function(
     // built; emits an ElaboratedMirFunction whose `blocks` + `drop_plans`
     // are the authoritative description of what fires on every exit.
     //
-    // The integer-only spine never lowers `@resource` or `@linear`
-    // bindings (no construction surface yet for those types — see
-    // R-C3.5), so on the current ladder `owned_locals` is empty
-    // whenever the function passed type-checking AND the only
-    // non-BitCopy class reaching MIR is `CowValue` (e.g. String) which
-    // does not emit a Drop. The elaboration shape is exercised by
-    // hew-mir's unit tests that hand-construct CheckedMirFunction
-    // inputs with synthesized DecisionFact::value_class values.
+    // `owned_locals` is the per-function ownership ledger. Every binding
+    // whose type obliges a scope-exit drop (`binding_seeds_drop_elaboration`
+    // — `string`, `Vec<E>`, records, collection handles, generators, closure
+    // pairs, resource fields) is registered once at its defining write
+    // through `Builder::register_owned_local`, carrying its classified
+    // `ValueOwnership`, any interior-alias `ValueProvenance`, and a
+    // `Disposition`. The elaborator reads the scope-exit-live view of that
+    // ledger (a consumed / body-end-released binding carries a
+    // non-`ScopeExit` disposition rather than being physically removed), and
+    // the carried provenance keeps a byte-copy field alias from being
+    // mistaken for an independent owner. The pass runs on every function
+    // body and is exercised end-to-end by the compiled leak-oracle
+    // fixtures — real programs whose native binaries are proven leak- and
+    // double-free-clean under `leaks --atExit` and the poisoned allocator —
+    // as well as by hew-mir's hand-constructed CheckedMirFunction unit inputs.
     let elaborated = elaborate(&checked, &builder, &thir.statements, &dataflow_result);
 
     // Fail-closed validation of the elaborated drop plan. Surfaces a

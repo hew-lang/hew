@@ -75,6 +75,29 @@ pub(crate) fn parse_int_literal(s: &str) -> Result<(i64, IntRadix), std::num::Pa
     }
 }
 
+/// Parse the digits following a unary `-` as a single negated integer literal.
+///
+/// Delegates to [`parse_int_literal`] and negates the result for every
+/// magnitude that already fits a positive `i64`. Falls back to parsing
+/// `-<digits>` directly (decimal only) so `i64::MIN`/`isize::MIN`'s
+/// magnitude (`9223372036854775808`, one past `i64::MAX`) — which cannot be
+/// tokenized as a positive `i64` at all — still parses when written with its
+/// sign attached.
+pub(crate) fn parse_negated_int_literal(
+    s: &str,
+) -> Result<(i64, IntRadix), std::num::ParseIntError> {
+    match parse_int_literal(s) {
+        Ok((val, radix)) => Ok((-val, radix)),
+        Err(original_err) => {
+            let cleaned: String = s.chars().filter(|c| *c != '_').collect();
+            match format!("-{cleaned}").parse::<i64>() {
+                Ok(v) => Ok((v, IntRadix::Decimal)),
+                Err(_) => Err(original_err),
+            }
+        }
+    }
+}
+
 /// Parse a duration literal string (e.g. "100ns", "5s") into nanoseconds.
 /// Parse a duration literal source string (e.g. `"60s"`, `"5m"`, `"100ms"`)
 /// into a count of nanoseconds. Returns `None` on an unrecognised unit suffix

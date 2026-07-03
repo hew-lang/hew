@@ -105,15 +105,34 @@ impl Parser<'_> {
                     )
                 }
                 Token::Minus => {
-                    let operand = self.parse_expr_bp(rbp)?;
-                    let end = operand.1.end;
-                    (
-                        Expr::Unary {
-                            op: UnaryOp::Negate,
-                            operand: Box::new(operand),
-                        },
-                        start..end,
-                    )
+                    // Fold `-<digits>` into a single signed literal only when the
+                    // bare (positive) parse already failed -- today that's just
+                    // i64::MIN/isize::MIN's magnitude (one past i64::MAX), which
+                    // can't be tokenized as a positive i64 at all. Every literal
+                    // that DOES fit positively (including i8/i16/i32/isize-32-bit
+                    // MIN) is untouched here; that fold happens later, in HIR
+                    // lowering, once the checker has picked a concrete width.
+                    let folded = match self.peek() {
+                        Some(Token::Integer(s)) if parse_int_literal(s).is_err() => {
+                            parse_negated_int_literal(s).ok()
+                        }
+                        _ => None,
+                    };
+                    if let Some((value, radix)) = folded {
+                        self.advance(); // consume the integer token
+                        let end = self.peek_span().start;
+                        (Expr::Literal(Literal::Integer { value, radix }), start..end)
+                    } else {
+                        let operand = self.parse_expr_bp(rbp)?;
+                        let end = operand.1.end;
+                        (
+                            Expr::Unary {
+                                op: UnaryOp::Negate,
+                                operand: Box::new(operand),
+                            },
+                            start..end,
+                        )
+                    }
                 }
                 Token::Tilde => {
                     let operand = self.parse_expr_bp(rbp)?;

@@ -1309,19 +1309,6 @@ mod tests {
         assert!(!Token::If.is_type_decl_keyword());
     }
 
-    // WHY: `docs/syntax-data.json` still lists `struct` for editor-grammar
-    // consumers even though the lexer no longer treats it as a keyword;
-    // regenerating that file is scoped to the editor-grammar update, not this
-    // one. Filtering `json_all` down to `ALL_KEYWORDS` before comparing
-    // tolerates that one extra entry, but it also means this test no longer
-    // catches a keyword present in syntax-data.json and absent from the
-    // lexer's `ALL_KEYWORDS` — the pending-future gap is deliberately not
-    // fabricated as a pass.
-    // WHEN: re-tighten to the exact bijection (`json_all == ALL_KEYWORDS`,
-    // no filter) once the editor-grammar update regenerates syntax-data.json
-    // to drop `struct`.
-    // WHAT: the real check is exact equality between `json_all` and
-    // `ALL_KEYWORDS` (order-sensitive, no filtering either side).
     #[test]
     fn syntax_data_json_covers_all_keywords() {
         let json_str = include_str!(concat!(
@@ -1338,14 +1325,9 @@ mod tests {
             .iter()
             .map(|v| v.as_str().expect("keyword should be a string"))
             .collect();
-        let json_lexer_keywords: Vec<&str> = json_all
-            .iter()
-            .copied()
-            .filter(|kw| ALL_KEYWORDS.contains(kw))
-            .collect();
         assert_eq!(
-            json_lexer_keywords, ALL_KEYWORDS,
-            "all lexer keywords must appear in syntax-data.json in lexer order"
+            json_all, ALL_KEYWORDS,
+            "all_keywords in syntax-data.json must exactly match the lexer's ALL_KEYWORDS, in order"
         );
 
         // Verify the union of categorized keywords equals all_keywords.

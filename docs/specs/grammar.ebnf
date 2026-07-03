@@ -329,7 +329,7 @@ Type           = Ident TypeArgs?
                | "Weak" "<" Type ">"              (* Weak reference: Weak<T> *)
                | "Result" "<" Type "," Type ">"
                | "Option" "<" Type ">"
-               | "Generator" "<" Type ">"          (* Sync generator: Generator<Y> *)
+               | "Generator" "<" Type "," Type ">"  (* Sync generator: Generator<Yield, Return> *)
                | "AsyncGenerator" "<" Type ">"     (* Async generator: AsyncGenerator<Y> *)
                | "Stream" "<" Type ">"            (* First-class readable stream: Stream<T> *)
                | "Sink" "<" Type ">"              (* First-class writable sink: Sink<T> *)

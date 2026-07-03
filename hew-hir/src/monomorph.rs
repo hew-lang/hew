@@ -544,6 +544,19 @@ pub fn substitute_type_params(
         "param/arg arity mismatch — caller must validate before substituting"
     );
     match ty {
+        // Structural type-parameter reference (e.g. the `T` in `Option<T>`
+        // once `ResolvedTy::from_ty_with_type_params` has resolved it) —
+        // substitute directly. This is the modern encoding for a bare
+        // parameter reference; `Named { args: [] }` below is the legacy
+        // encoding some callers still produce and is handled separately so
+        // both are substituted.
+        ResolvedTy::TypeParam { name } => {
+            if let Some(idx) = params.iter().position(|p| p == name) {
+                args[idx].clone()
+            } else {
+                ty.clone()
+            }
+        }
         ResolvedTy::Named {
             name,
             args: named_args,
@@ -970,6 +983,31 @@ mod tests {
         let args = vec![ResolvedTy::I64];
         let ty = ResolvedTy::named_user("Label", vec![]);
         assert_eq!(substitute_type_params(&ty, &params, &args), ty);
+    }
+
+    #[test]
+    fn substitute_replaces_structural_type_param_variant() {
+        // `ResolvedTy::TypeParam` is the encoding `from_ty_with_type_params`
+        // produces for a bare parameter reference (e.g. an impl method's
+        // `-> Option<T>` return type); it is a distinct enum variant from
+        // the legacy `Named { args: [] }` form and must substitute the
+        // same way.
+        let params = vec!["T".to_string()];
+        let args = vec![ResolvedTy::I64];
+        let ty = ResolvedTy::TypeParam { name: "T".into() };
+        assert_eq!(substitute_type_params(&ty, &params, &args), ResolvedTy::I64);
+    }
+
+    #[test]
+    fn substitute_descends_into_nested_type_param_variant() {
+        // Option<T> where T is the structural TypeParam variant -> Option<i64>.
+        let params = vec!["T".to_string()];
+        let args = vec![ResolvedTy::I64];
+        let ty = ResolvedTy::named_user("Option", vec![ResolvedTy::TypeParam { name: "T".into() }]);
+        assert_eq!(
+            substitute_type_params(&ty, &params, &args),
+            ResolvedTy::named_user("Option", vec![ResolvedTy::I64])
+        );
     }
 
     #[test]

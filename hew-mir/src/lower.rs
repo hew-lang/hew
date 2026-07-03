@@ -8683,22 +8683,37 @@ struct FungibleChildRef {
     slot_index: u32,
 }
 
-/// How an owned local's release obligation is currently dispositioned within the
-/// per-function ledger. The live drop-elaboration view is exactly the
-/// `ScopeExit` entries — a binding whose release is handled elsewhere (moved
-/// into an aggregate, consumed, closed at an inner scope) is dispositioned off
-/// the scope-exit set rather than physically removed, so an end-of-pass scan can
-/// still see the whole ledger.
-///
-/// This stage records only `ScopeExit`; the retraction-to-disposition migration
-/// that adds the moved/consumed/inner-scope dispositions is a later drop
-/// stage. Every entry the registration authority mints is `ScopeExit`, so the
-/// live-view filter is a no-op here and behaviour is unchanged.
+/// How an owned local's release obligation is dispositioned within the
+/// per-function ledger. The live drop-elaboration view
+/// ([`Builder::owned_locals_snapshot`]) is exactly the `ScopeExit` entries — a
+/// binding whose release is handled elsewhere (consumed, released at the end of
+/// a consuming body, closed at an inner scope) is dispositioned OFF the
+/// scope-exit set rather than physically removed. The whole ledger
+/// ([`Builder::owned_locals_ledger`]) still carries the retracted entry, so an
+/// end-of-pass scan can observe a binding whose release was handled
+/// mid-lowering — the retraction-invisible class that a physical
+/// `owned_locals.retain(...)` removal used to make unobservable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Disposition {
     /// Released by the function-exit LIFO drop pass, narrowed per exit edge —
-    /// the default, and the only disposition this stage records.
+    /// the default for every entry the registration authority mints.
     ScopeExit,
+    /// Released at the end of the consuming body on every exit edge rather than
+    /// at function scope exit: a generator-yielded / channel-received `Some(x)`
+    /// payload, or a `for x in vec` string cursor, whose per-iteration heap
+    /// reference the body owns and releases each frame. Dispositioned off the
+    /// scope-exit set so the function-exit LIFO pass cannot fire a second
+    /// release on the same slot (double-free guard).
+    BodyEndReleased,
+    /// Consumed (moved out) before scope exit — the value's new owner drops it,
+    /// so the scope-exit release is suppressed. A later overwrite on a different
+    /// control-flow path is gated by the path-sensitive drop flag, independent
+    /// of this disposition.
+    ConsumedAt,
+    /// Released inline when an INNER scope closes (a generator coro frame or a
+    /// `VecIter` cursor handle declared in a nested block), so the release fires
+    /// once per outer-loop iteration instead of accumulating to function exit.
+    ScopeReleased,
 }
 
 /// One entry in the per-function owned-locals ledger: the binding whose
@@ -8748,8 +8763,10 @@ struct OwnedLocalEntry {
                   suppression in a later drop-elaboration stage"
     )]
     provenance: Option<ValueProvenance>,
-    /// How this entry's release obligation is dispositioned. `ScopeExit` (the
-    /// only value this stage records) means the function-exit LIFO pass owns it.
+    /// How this entry's release obligation is dispositioned. Minted `ScopeExit`
+    /// (the function-exit LIFO pass owns it) and retracted off that set by a
+    /// [`Builder::set_owned_local_disposition`] write when its release is handled
+    /// mid-lowering (consumed, body-end-released, inner-scope-released).
     disposition: Disposition,
 }
 
@@ -9687,7 +9704,10 @@ impl Builder {
     /// immaterial (the fallback local only feeds the never-firing handle
     /// dispatch). Provenance stays `None` at this stage — it is recorded only
     /// where a later stage can trivially prove it at the defining write. Every
-    /// entry is `Disposition::ScopeExit`.
+    /// entry is minted `Disposition::ScopeExit`; a retraction seam later
+    /// dispositions it off the scope-exit set via
+    /// [`Builder::set_owned_local_disposition`] when its release is handled
+    /// mid-lowering.
     fn register_owned_local(&mut self, binding: BindingId, name: String, ty: ResolvedTy) {
         let place = self
             .binding_locals
@@ -9707,17 +9727,58 @@ impl Builder {
 
     /// The scope-exit-live owned locals as `(binding, name, ty)` tuples — the
     /// compat shape the twelve allow-set provers, `build_lifo_drops`, and the
-    /// double-free gate consume. Every entry this stage records is
-    /// `Disposition::ScopeExit`, so the live-view filter admits all of them and
-    /// the snapshot is byte-identical to the former `owned_locals` vec (same
-    /// contents, same declaration order). The disposition seam is where a later
-    /// stage narrows the live set without a per-pass re-scan.
+    /// double-free gate consume. The `Disposition::ScopeExit` filter narrows the
+    /// ledger to exactly the bindings the function-exit LIFO pass still owns:
+    /// entries retracted by a [`Builder::set_owned_local_disposition`] write
+    /// (consumed, body-end-released, inner-scope-released) are excluded, which is
+    /// the same set the former `owned_locals.retain(...)` physical removals left
+    /// behind — so the drop-elaboration view is byte-identical to the pre-
+    /// disposition ledger. The retracted entries survive in the whole ledger
+    /// ([`Builder::owned_locals_ledger`]) for an end-of-pass scan to observe.
     fn owned_locals_snapshot(&self) -> Vec<(BindingId, String, ResolvedTy)> {
         self.owned_locals
             .iter()
             .filter(|entry| entry.disposition == Disposition::ScopeExit)
             .map(|entry| (entry.binding, entry.name.clone(), entry.ty.clone()))
             .collect()
+    }
+
+    /// The WHOLE per-function owned-locals ledger — every entry regardless of
+    /// disposition, in registration order — including bindings retracted off the
+    /// scope-exit-live set by a [`Builder::set_owned_local_disposition`] write.
+    ///
+    /// An end-of-pass scan reads this (rather than [`owned_locals_snapshot`],
+    /// the scope-exit-live view) when it must observe a binding whose release
+    /// was handled mid-lowering. Under the former physical-removal model that
+    /// binding was gone from the ledger by scan time — the retraction-invisible
+    /// class behind the double-free and #2375. The disposition write keeps the
+    /// entry observable while excluding it from the live drop set.
+    ///
+    /// [`owned_locals_snapshot`]: Builder::owned_locals_snapshot
+    #[allow(
+        dead_code,
+        reason = "whole-ledger scan option consumed by the provenance-aware \
+                  provers and end-of-pass scans in later drop-elaboration stages"
+    )]
+    fn owned_locals_ledger(&self) -> &[OwnedLocalEntry] {
+        &self.owned_locals
+    }
+
+    /// Disposition a binding OFF the scope-exit-live set — the retraction-to-
+    /// disposition replacement for `owned_locals.retain(|e| e.binding != b)`.
+    /// The entry stays in the ledger (an end-of-pass whole-ledger scan can still
+    /// observe it via [`Builder::owned_locals_ledger`]) but leaves the
+    /// scope-exit view [`Builder::owned_locals_snapshot`] projects, so the
+    /// function-exit LIFO drop pass no longer fires on it — byte-identical to the
+    /// physical removal it replaces. Sets every entry matching `binding`,
+    /// mirroring `retain`'s remove-all semantics (at most one exists in
+    /// practice).
+    fn set_owned_local_disposition(&mut self, binding: BindingId, disposition: Disposition) {
+        for entry in &mut self.owned_locals {
+            if entry.binding == binding {
+                entry.disposition = disposition;
+            }
+        }
     }
 
     /// Apply the per-monomorphisation substitution map to a type.
@@ -10175,7 +10236,7 @@ impl Builder {
             let Some(place) = self.binding_locals.get(&binding).copied() else {
                 continue;
             };
-            self.owned_locals.retain(|entry| entry.binding != binding);
+            self.set_owned_local_disposition(binding, Disposition::ScopeReleased);
             self.push_instr(Instr::Drop {
                 place,
                 ty,
@@ -10234,7 +10295,7 @@ impl Builder {
                 builtin: Some(BuiltinType::Vec),
                 is_opaque: false,
             };
-            self.owned_locals.retain(|entry| entry.binding != binding);
+            self.set_owned_local_disposition(binding, Disposition::ScopeReleased);
             self.push_instr(Instr::RecordFieldDrop {
                 record: place,
                 field_offset: crate::model::FieldOffset(0),
@@ -13019,15 +13080,14 @@ impl Builder {
                         });
                     } else {
                         // #53: gated on the binding still owning live heap
-                        // (`owned_locals` membership) -- a self-reassign
-                        // r = T{..r} or a move-out RHS already consumed it
-                        // (removed from `owned_locals`), so this is skipped and
-                        // never double-frees.
-                        if self
-                            .owned_locals
-                            .iter()
-                            .any(|entry| &entry.binding == binding)
-                        {
+                        // (scope-exit-live `owned_locals` membership) -- a
+                        // self-reassign r = T{..r} or a move-out RHS already
+                        // consumed it (dispositioned off the scope-exit set by
+                        // `mark_binding_moved`, so absent from the live view),
+                        // so this is skipped and never double-frees.
+                        if self.owned_locals.iter().any(|entry| {
+                            &entry.binding == binding && entry.disposition == Disposition::ScopeExit
+                        }) {
                             self.emit_local_overwrite_release(dest, &target.ty);
                         }
                         self.push_instr(Instr::Move { dest, src });
@@ -20526,8 +20586,10 @@ impl Builder {
                     // the reference to a longer-lived owner), matching the
                     // generator-yield posture.
                     if keep_for_drop_elab {
-                        self.owned_locals
-                            .retain(|entry| entry.binding != binding.binding);
+                        self.set_owned_local_disposition(
+                            binding.binding,
+                            Disposition::BodyEndReleased,
+                        );
                     }
                     retained_vec_string_iter_bindings.push((
                         binding.binding,
@@ -20562,8 +20624,10 @@ impl Builder {
                             // fresh heap allocation the consumer alone is
                             // responsible for releasing.
                             if keep_for_drop_elab {
-                                self.owned_locals
-                                    .retain(|entry| entry.binding != binding.binding);
+                                self.set_owned_local_disposition(
+                                    binding.binding,
+                                    Disposition::BodyEndReleased,
+                                );
                             }
                             generator_yield_drop_bindings.push((
                                 binding.binding,
@@ -20589,8 +20653,10 @@ impl Builder {
                             // final-`owned_locals` scan does not stack a
                             // second diagnostic on the same construct.
                             if keep_for_drop_elab {
-                                self.owned_locals
-                                    .retain(|entry| entry.binding != binding.binding);
+                                self.set_owned_local_disposition(
+                                    binding.binding,
+                                    Disposition::BodyEndReleased,
+                                );
                             }
                             let elem = self
                                 .unsupported_vec_element_in_ty(&binding_ty)
@@ -24221,10 +24287,9 @@ impl Builder {
         });
         self.record_binding_scope(binding_id);
         if self.binding_seeds_drop_elaboration(ty)
-            && !self
-                .owned_locals
-                .iter()
-                .any(|entry| entry.binding == binding_id)
+            && !self.owned_locals.iter().any(|entry| {
+                entry.binding == binding_id && entry.disposition == Disposition::ScopeExit
+            })
         {
             self.register_owned_local(binding_id, name.to_string(), ty.clone());
         }
@@ -31250,7 +31315,7 @@ impl Builder {
         if !self
             .owned_locals
             .iter()
-            .any(|entry| entry.binding == binding.id)
+            .any(|entry| entry.binding == binding.id && entry.disposition == Disposition::ScopeExit)
         {
             return;
         }
@@ -31318,8 +31383,9 @@ impl Builder {
     fn mark_binding_moved(&mut self, id: BindingId) {
         // #2301 -- record the move-out at runtime for a binding that carries a
         // path-sensitive overwrite-release flag. Setting the flag on EVERY
-        // `owned_locals` removal (every consume site, not just the primary
-        // `Use{Consume}` lowering) means a later overwrite on a DIFFERENT
+        // consume retraction (the `ConsumedAt` disposition write below, every
+        // consume site, not just the primary `Use{Consume}` lowering) means a
+        // later overwrite on a DIFFERENT
         // control-flow path correctly SKIPS the release (the moved-out value's
         // new owner drops it), while the non-consuming path keeps `flag == 0`
         // and releases. The flag is reset to 0 after that overwrite's store. A
@@ -31330,7 +31396,7 @@ impl Builder {
                 value: 1,
             });
         }
-        self.owned_locals.retain(|entry| entry.binding != id);
+        self.set_owned_local_disposition(id, Disposition::ConsumedAt);
     }
 
     // JUSTIFIED: this predicate deliberately stays adjacent to the aggregate
@@ -49244,6 +49310,59 @@ mod binding_ty_is_plain_vec_tuple {
         assert_eq!(
             entry.provenance, None,
             "no provenance is proven at this seam"
+        );
+    }
+
+    /// Retraction is a disposition write, not a physical removal: a binding
+    /// dispositioned off the scope-exit set leaves the live drop view
+    /// (`owned_locals_snapshot`) yet stays observable in the whole ledger
+    /// (`owned_locals_ledger`). This is the invariant that kills the
+    /// retracted-invisible-to-final-scan class — the mechanism behind the
+    /// double-free and #2375, where a physically-removed binding was gone from
+    /// the ledger before an end-of-pass scan could see it.
+    #[test]
+    fn dispositioned_binding_leaves_live_view_but_survives_whole_ledger() {
+        let mut builder = builder_with_indirect_enum();
+        builder.register_owned_local(BindingId(3), "kept".to_string(), ResolvedTy::String);
+        builder.register_owned_local(BindingId(4), "moved".to_string(), ResolvedTy::String);
+
+        // Both are scope-exit-live before any retraction.
+        assert_eq!(
+            builder.owned_locals_snapshot(),
+            vec![
+                (BindingId(3), "kept".to_string(), ResolvedTy::String),
+                (BindingId(4), "moved".to_string(), ResolvedTy::String),
+            ],
+            "both registered bindings are in the live view before retraction"
+        );
+
+        // Retract one via a consume disposition (what `mark_binding_moved` does).
+        builder.set_owned_local_disposition(BindingId(4), Disposition::ConsumedAt);
+
+        // The live view now excludes the retracted binding — exactly the set the
+        // former `owned_locals.retain(...)` physical removal would have left.
+        assert_eq!(
+            builder.owned_locals_snapshot(),
+            vec![(BindingId(3), "kept".to_string(), ResolvedTy::String)],
+            "the retracted binding leaves the scope-exit-live view"
+        );
+
+        // The whole ledger still carries BOTH entries, in registration order —
+        // the retracted one is observable to an end-of-pass scan, carrying its
+        // recorded disposition. Physical removal made this impossible.
+        let ledger = builder.owned_locals_ledger();
+        assert_eq!(
+            ledger.len(),
+            2,
+            "the whole ledger keeps the retracted entry"
+        );
+        assert_eq!(ledger[0].binding, BindingId(3));
+        assert_eq!(ledger[0].disposition, Disposition::ScopeExit);
+        assert_eq!(ledger[1].binding, BindingId(4));
+        assert_eq!(
+            ledger[1].disposition,
+            Disposition::ConsumedAt,
+            "the retracted entry survives carrying its recorded disposition"
         );
     }
 

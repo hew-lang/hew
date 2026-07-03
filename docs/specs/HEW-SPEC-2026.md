@@ -4657,8 +4657,9 @@ mailbox 100 overflow coalesce(request_id);
 > See HEW-FUTURE.md §4.1 for the tooling specification (`hew debug`,
 > `HEW_PPROF`, `hew-observe`, LSP). Tooling tracks separately from the
 > language edition; the implementations exist today, but their
-> behavioural contracts are owned by `docs/operations/` rather than this
-> document.
+> behavioural contracts are owned by `docs/observe.md`,
+> `docs/troubleshooting.md`, and `docs/dev/lsp-editor-setup.md` rather
+> than this document.
 
 ---
 

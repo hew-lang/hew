@@ -265,8 +265,9 @@ does not yet make normative guarantees about their stability.
 `hew debug`, `HEW_PPROF`, `hew-observe`, and the LSP surface all have
 working implementations and changelog histories, but their behavioural
 guarantees do not belong in the language specification. They are tracked
-in `docs/operations/` and the per-component documentation; future
-specification work will reference them rather than duplicate them here.
+in `docs/observe.md`, `docs/troubleshooting.md`, `docs/dev/lsp-editor-setup.md`,
+and the per-component documentation; future specification work will
+reference them rather than duplicate them here.
 
 ### 4.2 Distributed computing and the Node API
 

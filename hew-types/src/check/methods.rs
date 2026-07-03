@@ -199,6 +199,7 @@ fn collection_method_desc(kind: CollectionKind, method: &str) -> Option<Collecti
             "clone" => desc(Some(0), &[], SelfTy),
             "len" => desc(None, &[], RetI64),
             "is_empty" => desc(None, &[], Bool),
+            "clear" => desc(Some(0), &[], Unit),
             _ => return None,
         },
         CollectionKind::HashSet => match method {
@@ -207,7 +208,7 @@ fn collection_method_desc(kind: CollectionKind, method: &str) -> Option<Collecti
             "clone" => desc(Some(0), &[], SelfTy),
             "len" => desc(None, &[], RetI64),
             "is_empty" => desc(None, &[], Bool),
-            "clear" => desc(None, &[], Unit),
+            "clear" => desc(Some(0), &[], Unit),
             _ => return None,
         },
         CollectionKind::Vec => match method {
@@ -466,7 +467,7 @@ impl Checker {
                                             TypeErrorKind::InvalidOperation,
                                             span,
                                             format!(
-                                                "HashSet element type `{name}` has zero size \
+                                                "`HashSet` element type `{name}` has zero size \
                                                  or contains a type whose layout cannot be \
                                                  determined; layout element types must have \
                                                  non-zero size",
@@ -491,7 +492,7 @@ impl Checker {
                                     )
                                 } else {
                                     format!(
-                                        "HashSet element type `{name}` contains a managed field \
+                                        "`HashSet` element type `{name}` contains a managed field \
                                          (`{}`); layout-element hashing requires fixed-size Copy \
                                          fields — use a type without heap-managed fields",
                                         bad_ty.user_facing(),
@@ -514,7 +515,7 @@ impl Checker {
                                     TypeErrorKind::InvalidOperation,
                                     span,
                                     format!(
-                                        "HashSet element type `{name}` contains a field of type \
+                                        "`HashSet` element type `{name}` contains a field of type \
                                          `{}` which is not a fixed-size Copy type; layout element \
                                          types require all fields to be fixed-width primitives or \
                                          nested Copy records",
@@ -532,7 +533,7 @@ impl Checker {
                                     TypeErrorKind::InvalidOperation,
                                     span,
                                     format!(
-                                        "HashSet element type `{}` must be a `record`-keyword type \
+                                        "`HashSet` element type `{}` must be a `record`-keyword type \
                                          to use the layout element ABI; non-record named types are \
                                          not guaranteed to be Copy value-semantic",
                                         bad_ty.user_facing(),
@@ -705,7 +706,7 @@ impl Checker {
                                                                         TypeErrorKind::InvalidOperation,
                                                                         check.span.clone(),
                                                                         format!(
-                                                                            "HashMap value type `{val_name}` has zero size or contains a type whose layout cannot be determined; layout-value types must have non-zero size",
+                                                                            "`HashMap` value type `{val_name}` has zero size or contains a type whose layout cannot be determined; layout-value types must have non-zero size",
                                                                         ),
                                                                     );
                                                                     if let Some(module) =
@@ -725,7 +726,7 @@ impl Checker {
                                                                 TypeErrorKind::InvalidOperation,
                                                                 check.span.clone(),
                                                                 format!(
-                                                                    "HashMap value type `{val_name}` is not defined; cannot compute layout for layout-key HashMap",
+                                                                    "`HashMap` value type `{val_name}` is not defined; cannot compute layout for layout-key `HashMap`",
                                                                 ),
                                                             );
                                                             if let Some(module) =
@@ -1078,7 +1079,7 @@ impl Checker {
                 let mut err = crate::error::TypeError::new(
                     TypeErrorKind::InvalidOperation,
                     span_key.start..span_key.end,
-                    format!("Channel<{resolved}> is not supported: {reason}"),
+                    format!("`Channel<{resolved}>` is not supported: {reason}"),
                 );
                 if let Some(module) = &entry.source_module {
                     err = err.with_source_module(module.clone());
@@ -1606,7 +1607,7 @@ impl Checker {
             args,
             span,
             SignatureArgApplication::PositionalOnly {
-                arity_context: format!("method '{method}'"),
+                arity_context: format!("method `{method}`"),
             },
             true,
         );
@@ -2133,7 +2134,7 @@ impl Checker {
                 args,
                 span,
                 SignatureArgApplication::PositionalOnly {
-                    arity_context: format!("method '{method}'"),
+                    arity_context: format!("method `{method}`"),
                 },
                 true,
             )
@@ -4163,6 +4164,7 @@ impl Checker {
                         | "keys"
                         | "values"
                         | "clone"
+                        | "clear"
                 ) {
                     self.record_resolved_hashmap_call(method, &cx.key, &cx.val, span);
                 }
@@ -4181,7 +4183,7 @@ impl Checker {
                 self.record_hashset_lowering_fact(span, &cx.elem);
                 if matches!(
                     method,
-                    "insert" | "contains" | "remove" | "len" | "is_empty" | "clone"
+                    "insert" | "contains" | "remove" | "len" | "is_empty" | "clone" | "clear"
                 ) {
                     self.record_resolved_hashset_call(method, &cx.elem, span);
                 }
@@ -5340,7 +5342,7 @@ impl Checker {
                         TypeErrorKind::UndefinedMethod,
                         span,
                         format!(
-                            "`Vec::join` is only available on Vec<String>, not Vec<{}>",
+                            "`Vec::join` is only available on Vec<string>, not Vec<{}>",
                             elem_ty.user_facing()
                         ),
                     );
@@ -5568,7 +5570,7 @@ impl Checker {
             args,
             span,
             SignatureArgApplication::PositionalOnly {
-                arity_context: format!("method '{method}'"),
+                arity_context: format!("method `{method}`"),
             },
             true,
         );
@@ -5911,7 +5913,7 @@ impl Checker {
             trailing_args,
             span,
             SignatureArgApplication::PositionalOnly {
-                arity_context: format!("method '{trait_name}::{method_name}'"),
+                arity_context: format!("method `{trait_name}::{method_name}`"),
             },
             true,
         );
@@ -6698,25 +6700,34 @@ impl Checker {
                             None
                         }
                     }).is_some_and(|actor_name| {
-                        self.fn_sigs.contains_key(&format!("{actor_name}::send"))
+                        self.actor_receive_methods.contains(&format!("{actor_name}::send"))
                             || matches!(
                                 self.resolve_bare_actor_identity(&actor_name),
-                                BareActorResolution::Resolved(ref id) if self.fn_sigs.contains_key(&format!("{id}::send"))
+                                BareActorResolution::Resolved(ref id) if self.actor_receive_methods.contains(&format!("{id}::send"))
                             )
                     })
                 } else {
                     false
                 };
-                // LocalPid's own `send` method requires the actor's inner
-                // type to carry a real `ActorMsg` envelope (`impl ActorMsg
-                // for X { type Msg = ...; }`) — that binding is what lets
-                // `T::Msg` project to a concrete type. Without it, falling
-                // into the own-methods lookup below leaves `T::Msg`
-                // unresolved and produces a phantom `expected \`X::Msg\``
-                // mismatch instead of an actionable diagnostic. Reject here
-                // with the same actor-name/fix-hint shape.
+                // A concrete `LocalPid<T>.send(msg)` with no user
+                // `receive fn send` handler has no lowerable local-
+                // mailbox delivery path (#2367). Declaring `impl
+                // ActorMsg for T` records a message-envelope binding but
+                // does not, by itself, wire delivery — no receive fn is
+                // ever resolved to receive the message. Admitting this
+                // case let it reach HIR lowering with no
+                // `method_call_rewrites` / `actor_method_dispatch` entry
+                // and fail closed there with an internal
+                // `MethodCallNoRewrite` diagnostic instead of an
+                // actionable one. Reject uniformly here, whether or not
+                // the actor declares `impl ActorMsg` — same diagnostic
+                // as the no-envelope case.
                 if method == "send" && !has_user_send_handler {
-                    let has_send_envelope = resolved
+                    for arg in args {
+                        let (expr, sp) = arg.expr();
+                        self.synthesize(expr, sp);
+                    }
+                    let actor_hint = resolved
                         .as_local_pid()
                         .and_then(|inner| {
                             if let Ty::Named { name, .. } = inner {
@@ -6725,47 +6736,17 @@ impl Checker {
                                 None
                             }
                         })
-                        .is_some_and(|actor_name| {
-                            self.impl_assoc_type_bindings.contains_key(&(
-                                actor_name.clone(),
-                                "ActorMsg".to_string(),
-                                "Msg".to_string(),
-                            )) || matches!(
-                                self.resolve_bare_actor_identity(&actor_name),
-                                BareActorResolution::Resolved(ref id)
-                                    if self.impl_assoc_type_bindings.contains_key(&(
-                                        id.clone(),
-                                        "ActorMsg".to_string(),
-                                        "Msg".to_string(),
-                                    ))
-                            )
-                        });
-                    if !has_send_envelope {
-                        for arg in args {
-                            let (expr, sp) = arg.expr();
-                            self.synthesize(expr, sp);
-                        }
-                        let actor_hint = resolved
-                            .as_local_pid()
-                            .and_then(|inner| {
-                                if let Ty::Named { name, .. } = inner {
-                                    Some(name.clone())
-                                } else {
-                                    None
-                                }
-                            })
-                            .unwrap_or_else(|| "this actor".to_string());
-                        self.report_error(
-                            TypeErrorKind::UndefinedMethod,
-                            span,
-                            format!(
-                                "no `send` handler on `{actor_hint}` — declare \
-                                 `receive fn send(...)` to accept it, or call a \
-                                 named handler: `ref.method_name(payload)`"
-                            ),
-                        );
-                        return Ty::Error;
-                    }
+                        .unwrap_or_else(|| "this actor".to_string());
+                    self.report_error(
+                        TypeErrorKind::UndefinedMethod,
+                        span,
+                        format!(
+                            "no `send` handler on `{actor_hint}` — declare \
+                             `receive fn send(...)` to accept it, or call a \
+                             named handler: `ref.method_name(payload)`"
+                        ),
+                    );
+                    return Ty::Error;
                 }
                 // Try LocalPid's own methods first.
                 if !has_user_send_handler {
@@ -6785,7 +6766,7 @@ impl Checker {
                                 args,
                                 span,
                                 SignatureArgApplication::PositionalOnly {
-                                    arity_context: format!("method '{method}'"),
+                                    arity_context: format!("method `{method}`"),
                                 },
                                 true,
                             );
@@ -6820,6 +6801,30 @@ impl Checker {
                         actor_name.clone()
                     };
                     let method_key = format!("{actor_identity}::{method}");
+                    // A plain (non-receive) `fn` on the actor lands in `fn_sigs` under the
+                    // same `{identity}::{method}` key as a `receive fn` handler (see
+                    // `register_actor_base`), but only `register_receive_fn` adds to
+                    // `actor_receive_methods`. A key present in the former but absent from
+                    // the latter names an internal method with no mailbox-handler shape —
+                    // MIR has no `ActorHandlerLayout` row for it (#2366). Reject here,
+                    // fail-closed, instead of deferring to a MIR NotYetImplemented.
+                    if self.fn_sigs.contains_key(&method_key)
+                        && !self.actor_receive_methods.contains(&method_key)
+                    {
+                        for arg in args {
+                            let (expr, sp) = arg.expr();
+                            self.synthesize(expr, sp);
+                        }
+                        self.report_error(
+                            TypeErrorKind::UndefinedMethod,
+                            span,
+                            format!(
+                                "`{method}` is an internal actor method, not a message \
+                                 handler — declare it `receive fn` to expose it"
+                            ),
+                        );
+                        return Ty::Error;
+                    }
                     if let Some(sig) = self.fn_sigs.get(&method_key).cloned() {
                         for (i, arg) in args.iter().enumerate() {
                             let (expr, sp) = arg.expr();
@@ -6895,7 +6900,7 @@ impl Checker {
                             args,
                             span,
                             SignatureArgApplication::PositionalOnly {
-                                arity_context: format!("method '{method}'"),
+                                arity_context: format!("method `{method}`"),
                             },
                             true,
                         );
@@ -7606,7 +7611,7 @@ impl Checker {
                         args,
                         span,
                         SignatureArgApplication::PositionalOnly {
-                            arity_context: format!("method '{method}'"),
+                            arity_context: format!("method `{method}`"),
                         },
                         true,
                     );
@@ -8043,7 +8048,7 @@ impl Checker {
                             args,
                             span,
                             SignatureArgApplication::PositionalOnly {
-                                arity_context: format!("method '{method}'"),
+                                arity_context: format!("method `{method}`"),
                             },
                             true,
                         );
@@ -8330,7 +8335,7 @@ impl Checker {
                         args,
                         span,
                         SignatureArgApplication::PositionalOnly {
-                            arity_context: format!("method '{method}'"),
+                            arity_context: format!("method `{method}`"),
                         },
                         true,
                     );
@@ -8595,6 +8600,16 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
                     consumes_receiver: false,
                 },
             ),
+            (
+                "clear".to_string(),
+                MethodTarget {
+                    symbol_name: "hew_hashmap_clear_layout".to_string(),
+                    family: MethodTargetFamily::HashMap(HashMapMethod::Clear),
+                    abi: RuntimeAbi::ByRefMut,
+                    call_hint: CallAbiHint::RuntimeShim,
+                    consumes_receiver: false,
+                },
+            ),
         ],
     });
     registry.register(ImplDef {
@@ -8683,6 +8698,16 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
                     symbol_name: "hew_hashset_to_vec_layout".to_string(),
                     family: MethodTargetFamily::HashSet(HashSetMethod::ToVec),
                     abi: RuntimeAbi::ByRef,
+                    call_hint: CallAbiHint::RuntimeShim,
+                    consumes_receiver: false,
+                },
+            ),
+            (
+                "clear".to_string(),
+                MethodTarget {
+                    symbol_name: "hew_hashset_clear_layout".to_string(),
+                    family: MethodTargetFamily::HashSet(HashSetMethod::Clear),
+                    abi: RuntimeAbi::ByRefMut,
                     call_hint: CallAbiHint::RuntimeShim,
                     consumes_receiver: false,
                 },

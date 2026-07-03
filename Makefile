@@ -70,7 +70,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew hew-native adze observe observe-functional-test runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
-.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-runtime-net test-runtime-unit test-real-timing test-lane test-lane-all test-fast test-stdlib test-hew test-hew-ratchet test-o2-differential o2-differential-selftest test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo leak-scan hew-fmt-check grammar
+.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-runtime-net test-runtime-unit test-real-timing test-lane test-lane-all lane-gates test-fast test-stdlib test-hew test-hew-ratchet test-o2-differential o2-differential-selftest test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo leak-scan hew-fmt-check grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -702,6 +702,16 @@ endif
 test-lane-all:
 	@echo "==> fast tier — exec corpus runs at the integrated gate"
 	cargo nextest run --workspace --profile lane
+
+# lane-gates: mechanical per-lane gate battery (fmt-check, workspace clippy,
+# targeted crate tests, commit-body lint, fuzz-oracle two-gate ratchet).
+# Single-crate ergonomics only; for multiple crates call the script directly:
+#   scripts/lane-gates.sh -p <crate1> -p <crate2>
+lane-gates:
+ifndef CRATE
+	$(error CRATE is required: make lane-gates CRATE=<crate-name>. For multiple crates run scripts/lane-gates.sh -p <crate1> -p <crate2> directly.)
+endif
+	scripts/lane-gates.sh -p $(CRATE) $(LANE_GATES_ARGS)
 
 # ── Affected-crate fast tier ─────────────────────────────────────────────────
 # Derives scope from git diff: runs nextest --profile lane restricted to the

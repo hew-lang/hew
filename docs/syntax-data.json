@@ -36,8 +36,7 @@
       "enum",
       "trait",
       "impl",
-      "as",
-      "struct"
+      "as"
     ],
     "actors": [
       "actor",
@@ -123,7 +122,6 @@
     "pub",
     "package",
     "super",
-    "struct",
     "indirect",
     "enum",
     "trait",
@@ -203,6 +201,10 @@
     "infinity": "Supervisor child shutdown: wait indefinitely (accepted-only)",
     "wired_to": "Supervisor child sibling-wiring clause",
     "export": "FFI export attribute",
+    "resource": "Type-decl ownership attribute — move-only, non-duplicable value",
+    "linear": "Type-decl ownership attribute — must be consumed exactly once",
+    "opaque": "Type-decl attribute — pointer-width opaque runtime handle (empty-body struct only)",
+    "wire": "Type-decl attribute — marks a type/enum for wire (CBOR/JSON) serialization",
     "json": "Wire serialization format",
     "yaml": "Wire serialization format",
     "repeated": "Wire field qualifier",

@@ -229,7 +229,7 @@ fn lower_file_to_mir(
 
     let tco = state.typecheck_result.tco.ok_or_else(|| {
         eprintln!(
-            "error: hew compile requires a type-checked program; \
+            "Error: hew compile requires a type-checked program; \
              this path should be unreachable (no_typecheck = false)"
         );
     })?;
@@ -320,7 +320,7 @@ fn lower_file_to_mir_for_target(
 
     let tco = state.typecheck_result.tco.ok_or_else(|| {
         eprintln!(
-            "error: hew build requires a type-checked program; \
+            "Error: hew build requires a type-checked program; \
              this path should be unreachable (no_typecheck = false)"
         );
     })?;
@@ -555,7 +555,7 @@ fn emit_module_with_triple(
     match result {
         Ok(artefacts) => Ok(artefacts),
         Err(e @ hew_codegen_rs::CodegenError::WasmUnsupportedSubstrate { .. }) => {
-            eprintln!("error: {e}");
+            eprintln!("Error: {e}");
             Err(())
         }
         Err(e) => {
@@ -674,7 +674,7 @@ pub(crate) fn compile_native_from_program(
 
     let tco = state.typecheck_result.tco.ok_or_else(|| {
         eprintln!(
-            "error: eval compilation requires a type-checked program; \
+            "Error: eval compilation requires a type-checked program; \
              this path should be unreachable (no_typecheck = false)"
         );
     })?;
@@ -1901,7 +1901,7 @@ fn exec_sibling_binary(binary_name: &str, extra_args: &[String]) -> ! {
         let error = cmd.exec();
         // exec() only returns on failure.
         eprintln!(
-            "error: failed to launch `{}`: {error}",
+            "Error: failed to launch `{}`: {error}",
             binary_path.display()
         );
         std::process::exit(1);
@@ -1915,7 +1915,7 @@ fn exec_sibling_binary(binary_name: &str, extra_args: &[String]) -> ! {
         match status {
             Ok(s) => std::process::exit(s.code().unwrap_or(1)),
             Err(e) => {
-                eprintln!("error: failed to launch `{}`: {e}", binary_path.display());
+                eprintln!("Error: failed to launch `{}`: {e}", binary_path.display());
                 std::process::exit(1);
             }
         }

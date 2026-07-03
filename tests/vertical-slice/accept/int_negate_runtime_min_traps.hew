@@ -1,0 +1,14 @@
+// #2372 companion: negating a RUNTIME value that happens to equal
+// i32::MIN must still trap IntegerOverflow -- only a literal token
+// written as `-<digits>` folds at compile time; `-n` for a
+// non-literal `n` still goes through the checked-negate runtime
+// instruction and correctly traps when `n == i32::MIN`.
+fn main() -> i64 {
+    let n: i32 = min_i32();
+    let r = -n;
+    r as i64
+}
+
+fn min_i32() -> i32 {
+    -2147483648
+}

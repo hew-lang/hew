@@ -27,7 +27,8 @@ Hew tracks **two version axes** that move independently:
   accumulated breaking changes are worth a migration, expected every two
   to three years.
 
-A compiler binary advertises its supported editions:
+A compiler binary will advertise its supported editions once this
+surface ships (planned, tracked for post-rc1):
 
 ```
 $ hew --supported-editions
@@ -42,9 +43,10 @@ compiler releases. Anything that would reject previously-accepted code is
 an edition-breaking change and waits for the next edition.
 
 Hew does not adopt per-file edition pragmas. The edition stamp is
-package-level. Migration tooling (`hew migrate --edition <year>`) is the
-supported path between editions; cross-edition dependencies are a
-future-edition feature.
+package-level. Migration tooling (`hew migrate --edition <year>`) is
+planned as the supported path between editions once a second edition
+exists (tracked for post-rc1) — it is not yet implemented. Cross-edition
+dependencies are a future-edition feature.
 
 Surfaces that have been designed but are not normative in edition 2026
 live in `HEW-FUTURE.md` with explicit version targets. See the non-normative
@@ -2268,9 +2270,13 @@ type Vec<T> {}
 impl<T> Vec<T> {
     fn new() -> Vec<T>;
     fn push(v: Vec<T>, item: T);
-    fn pop(v: Vec<T>) -> T;    // panics on empty vec
+    fn pop(v: Vec<T>) -> T;                     // traps on empty vec
     fn len(v: Vec<T>) -> i64;
-    fn get(v: Vec<T>, index: i64) -> T;
+    fn get(v: Vec<T>, index: i64) -> Option<T>;
+    fn set(v: Vec<T>, index: i64, item: T);      // traps out of bounds
+    fn contains(v: Vec<T>, item: T) -> bool;
+    fn clear(v: Vec<T>);
+    fn append(v: Vec<T>, other: Vec<T>);
 }
 ```
 
@@ -2351,6 +2357,20 @@ Available `HashMap` methods:
 | `m.contains_key(key)`     | `bool`          | Test membership                  |
 | `m.len()`                 | `i64`           | Number of entries                |
 | `m.is_empty()`            | `bool`          | True if no entries               |
+| `m.keys()`                | `Vec<string>`   | Snapshot of all keys             |
+| `m.values()`              | `Vec<V>`        | Snapshot of all values, same order as `keys()` |
+| `m.clear()`               | `()`            | Remove all entries               |
+
+Available `HashSet<T>` methods (supported element types: `i64` and
+`string`):
+
+| Method                    | Returns         | Description                      |
+| ------------------------- | --------------- | -------------------------------- |
+| `HashSet::new()`          | `HashSet<T>`    | Create empty set                 |
+| `s.insert(item)`          | `()`            | Insert; duplicate inserts are a no-op |
+| `s.contains(item)`        | `bool`          | Test membership                  |
+| `s.remove(item)`          | `bool`          | Remove an item; true if present  |
+| `s.len()`                 | `i64`           | Number of entries                |
 
 #### 3.10.4 Collections, I/O, and Utility Modules
 
@@ -2388,8 +2408,10 @@ Important current details:
   payloads; collection element admissibility also requires the internal RcFree
   boundary, so `HashSet<Rc<T>>`, named wrappers that contain `Rc`, and
   `LocalPid<A>` handles to actors with `Rc` state are rejected
-- `std::iter` is presently specialised to `Vec<i64>` helpers such as
-  `map_int`, `filter_int`, `fold_int`, `any`, `all`, and `sum`
+- `std::iter` exposes lazy adapters (`map`, `filter`, `take`, `skip`) over
+  any `Iterator`, driven by terminal helpers (`fold`, `count`, `collect`,
+  `any`, `all`, `sum`, `sum_f64`, `product`, `product_f64`); drive a
+  `Vec<T>` through it via `.iter()` or `.into_iter()`
 - `std::sort` exposes concrete helpers like `sort_ints`, `sort_strings`,
   `sort_floats`, `reverse_ints`, `reverse_strings`, and `reverse_floats`
 - `std::testing` is a pure-Hew assertion library layered on top of `panic()`
@@ -4847,9 +4869,10 @@ duration + i64      → COMPILE ERROR (type mismatch — enforced)
 ```
 
 **Accessor methods** (return `i64`): `.nanos()`, `.micros()`, `.millis()`,
-`.secs()`, `.minutes()`, `.hours()`. **Instant arithmetic** is also
-available via `std::time::Instant` — subtraction of two instants yields a
-`duration`. Both `duration` and `Instant` implement `Display`.
+`.secs()`, `.mins()`, `.hours()`. **Instant arithmetic** is also
+available via the builtin `instant` primitive (`instant::now()` — no
+import required) — subtraction of two instants yields a `duration`. Both
+`duration` and `instant` implement `Display`.
 
 **Timeouts:**
 
@@ -5041,7 +5064,7 @@ If you want this to be directly executable as an engineering project, the next m
   ladder: AST → Resolved HIR → THIR → Raw MIR → Checked MIR → Elaborated
   MIR → LLVM IR via inkwell. The v0.4 Rust-frontend / C++ backend /
   MessagePack-AST pipeline is no longer the design.
-- **Deferred to next edition.** Generators (`gen fn` / `async gen fn` /
+- **Deferred to next edition.** Generators (`async gen fn` /
   `receive gen fn` / `Lazy<T>` / `#[prefetch(N)]`), closures with captured
   environment, user-facing `Arc<T>`, `dyn Trait`, full `Iterator` trait
   hierarchy, generic `HashMap<K, V>`, cancellation tokens, channels, actor

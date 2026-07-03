@@ -43,8 +43,22 @@ fn bool_not_emits_bool_not_instr() {
 }
 
 #[test]
-fn integer_negate_emits_checked_neg_instr() {
+fn integer_negate_of_literal_folds_no_checked_neg_instr() {
+    // #2372: `-5` folds to a signed literal at HIR-lowering time; there is
+    // no runtime negation left to overflow-check.
     let p = pipeline("fn main() -> i64 { -5 }");
+    assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+    assert_eq!(
+        instr_count(&p, |i| matches!(i, Instr::IntNegChecked { .. })),
+        0
+    );
+}
+
+#[test]
+fn integer_negate_of_non_literal_emits_checked_neg_instr() {
+    // Negating a runtime value (not a literal) still goes through the
+    // checked-negate MIR instruction -- only literal negation folds.
+    let p = pipeline("fn main(n: i64) -> i64 { -n }");
     assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
     assert_eq!(
         instr_count(&p, |i| matches!(i, Instr::IntNegChecked { .. })),

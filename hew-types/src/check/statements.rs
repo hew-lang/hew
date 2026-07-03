@@ -31,22 +31,6 @@ impl Checker {
             }
         }
 
-        if let Ty::Named {
-            name,
-            args,
-            builtin: Some(BuiltinType::Generator | BuiltinType::AsyncGenerator),
-        } = &resolved
-        {
-            return args.first().cloned().or_else(|| {
-                self.report_error(
-                    TypeErrorKind::InvalidOperation,
-                    span,
-                    format!("`for` over a {name} requires a resolved yield type"),
-                );
-                Some(Ty::Error)
-            });
-        }
-
         if self.type_satisfies_trait_bound(&resolved, "IntoIterator") {
             let item_projection = Ty::AssocType {
                 base: Box::new(resolved),
@@ -1375,11 +1359,6 @@ impl Checker {
                         }
                         elem_ty
                     }
-                    Ty::Named {
-                        builtin: Some(BuiltinType::Generator | BuiltinType::AsyncGenerator),
-                        args,
-                        ..
-                    } if !args.is_empty() => args[0].clone(),
                     Ty::Named {
                         builtin: Some(BuiltinType::Receiver),
                         args,

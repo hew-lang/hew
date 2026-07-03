@@ -1,0 +1,26 @@
+// #2372 regression: a negated integer literal at exactly TYPE::MIN
+// must lower to a single signed literal, not `negate(magnitude)` --
+// the magnitude alone (e.g. 2147483648 for i32) doesn't fit the
+// target width, so a runtime checked-negate on it traps
+// IntegerOverflow even though `-2147483648` is a perfectly valid i32
+// value. Covers every signed width native to this harness
+// (isize here is the native 64-bit width -- see run.sh's
+// isize_shift_boundary.hew for the same native-width scoping note).
+fn main() -> i64 {
+    let a: i8 = -128;
+    assert_eq(a as i64, -128);
+
+    let b: i16 = -32768;
+    assert_eq(b as i64, -32768);
+
+    let c: i32 = -2147483648;
+    assert_eq(c as i64, -2147483648);
+
+    let d: i64 = -9223372036854775808;
+    assert_eq(d, -9223372036854775808);
+
+    let e: isize = -9223372036854775808;
+    assert_eq(e as i64, -9223372036854775808);
+
+    0
+}

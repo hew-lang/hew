@@ -31,7 +31,17 @@ trap 'rm -f "${accept_output}" "${reject_output}" "${stdout_output}" "${stderr_o
 
 compile_accept() {
   local fixture="$1"
-  "${HEW}" compile "${ROOT}/tests/vertical-slice/accept/${fixture}.hew" >"${accept_output}" 2>&1
+  local status=0
+  if "${HEW}" compile "${ROOT}/tests/vertical-slice/accept/${fixture}.hew" >"${accept_output}" 2>&1; then
+    status=0
+  else
+    status=$?
+  fi
+  if [[ "${status}" -ne 0 ]]; then
+    echo "expected ${fixture} to compile cleanly, got exit ${status}" >&2
+    cat "${accept_output}" >&2
+    exit 1
+  fi
 }
 
 run_fixture_path_expect_status() {
@@ -709,6 +719,11 @@ run_accept_expect_status "isize_shift_boundary" 0
 # run_accept_expect_trap accepts either.
 run_accept_expect_trap "isize_div_by_zero_traps"
 run_accept_expect_trap "isize_shift_oob_traps"
+# #2372: a negated integer literal at exactly TYPE::MIN must not trap (the
+# fold to a signed literal removes the runtime negate); negating a runtime
+# value that happens to equal i32::MIN must still trap.
+run_accept_expect_status "int_negate_min_literal_no_trap" 0
+run_accept_expect_trap "int_negate_runtime_min_traps"
 
 # Indexed-accessor trap negatives: `v[i]` on an out-of-bounds index traps
 # (IndexOutOfBounds) for every element class — the trapping `at` half of the
@@ -1065,6 +1080,16 @@ expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/actor_builtin_send_no_handler.hew" \
     'no `send` handler on `Adder` — declare `receive fn send(...)` to accept it, or call a named handler' \
     "actor_builtin_send_no_handler"
+
+# Reject: `ref.send(msg)` on a named actor that DOES implement `ActorMsg`
+# (envelope binding) but has no `receive fn send` handler is rejected with
+# the same diagnostic as the no-envelope case (#2367) — the envelope
+# alone does not wire local-mailbox delivery.
+# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/actor_local_pid_send_envelope_no_handler.hew" \
+    'no `send` handler on `Adder` — declare `receive fn send(...)` to accept it, or call a named handler' \
+    "actor_local_pid_send_envelope_no_handler"
 
 # Accept: the recommended alternative — a named `receive fn` dispatched by
 # name is the correct shape that replaces the retired anonymous-payload
@@ -2317,7 +2342,8 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/gen_block_empty.hew" >"${
   echo "expected gen-block-empty fixture to fail" >&2
   exit 1
 fi
-grep -q 'E_EMPTY_GENERATOR' "${reject_output}"
+# shellcheck disable=SC2016  # backtick in the pattern is Hew diagnostic syntax, not shell expansion
+grep -q 'body contains no `yield` expression' "${reject_output}"
 
 # Reject: gen{} inside an actor receive handler is permanently forbidden.
 # Pins GenBlockInActorReceive from fa8e8c64.
@@ -2325,7 +2351,7 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/genblock_in_actor_receive
   echo "expected genblock-in-actor-receive fixture to fail" >&2
   exit 1
 fi
-grep -q 'E_GENBLOCK_IN_ACTOR_RECEIVE' "${reject_output}"
+grep -q 'blocks are forbidden inside actor receive handlers' "${reject_output}"
 
 # Accept: gen{} with a tail expression but no yield — Return component inferred as i64.
 # Exercises the return_var inference path; E_EMPTY_GENERATOR must NOT fire.
@@ -2714,7 +2740,7 @@ run_accept_expect_status "for_wildcard_range" 3
 # produce a spanned checker error, not an unspanned codegen error.
 expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/vec_array_element.hew" \
-  "Vec<[i64; 2]> is not supported; vec lowering does not support array element types yet" \
+  "\`Vec<[i64; 2]>\` is not supported; vec lowering does not support array element types yet" \
   "vec_array_element"
 expect_check_fail_error_count \
   "${ROOT}/tests/vertical-slice/reject/vec_array_element.hew" \

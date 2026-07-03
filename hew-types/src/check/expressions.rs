@@ -1504,7 +1504,7 @@ impl Checker {
                     },
                     span,
                     format!(
-                        "E_CLOSURE_RECURSIVE: closure cannot refer to its own binding \
+                        "closure cannot refer to its own binding \
                          `{name}` — recursive closures require a fixed-point surface that \
                          is not available in this version; use a named function instead"
                     ),
@@ -2345,7 +2345,7 @@ impl Checker {
                     self.report_error(
                         TypeErrorKind::GenBlockInActorReceive,
                         span,
-                        "E_GENBLOCK_IN_ACTOR_RECEIVE: `gen { }` blocks are forbidden inside \
+                        "`gen { }` blocks are forbidden inside \
                          actor receive handlers — the scheduler holds the actor-state lock for \
                          the entire handler invocation; use a named generator function outside \
                          the handler instead"
@@ -2400,7 +2400,7 @@ impl Checker {
                     self.report_error(
                         TypeErrorKind::EmptyGenerator,
                         span,
-                        "E_EMPTY_GENERATOR: `gen { }` body contains no `yield` expression \
+                        "`gen { }` body contains no `yield` expression \
                          and no value-producing tail expression or `return`; \
                          the yield type cannot be inferred — add at least one \
                          `yield <value>` statement"
@@ -3016,11 +3016,14 @@ impl Checker {
                             }
                         }
                     } else {
+                        let kind_label = self
+                            .lookup_type_def(name)
+                            .map_or("type", |type_def| value_type_kind_label(type_def.kind));
                         self.report_error(
                             TypeErrorKind::ArityMismatch,
                             span,
                             format!(
-                                "type `{name}` has {} type parameter(s) but {} were supplied",
+                                "{kind_label} `{name}` has {} type parameter(s) but {} type argument(s) were supplied",
                                 expected_args.len(),
                                 explicit_args.len()
                             ),
@@ -3065,7 +3068,10 @@ impl Checker {
                                 self.report_error_with_suggestions(
                                     TypeErrorKind::UndefinedField,
                                     span,
-                                    format!("no field `{field_name}` on type `{name}`"),
+                                    format!(
+                                        "no field `{field_name}` on {} `{name}`",
+                                        value_type_kind_label(td.kind)
+                                    ),
                                     similar,
                                 );
                             }
@@ -6411,7 +6417,8 @@ impl Checker {
                         TypeErrorKind::ArityMismatch,
                         span,
                         format!(
-                            "type `{name}` has {} type parameter(s) but {} were supplied",
+                            "{} `{name}` has {} type parameter(s) but {} type argument(s) were supplied",
+                            value_type_kind_label(td.kind),
                             td.type_params.len(),
                             explicit_args.len()
                         ),
@@ -6480,7 +6487,10 @@ impl Checker {
                     self.report_error_with_suggestions(
                         TypeErrorKind::UndefinedField,
                         span,
-                        format!("no field `{field_name}` on type `{name}`"),
+                        format!(
+                            "no field `{field_name}` on {} `{name}`",
+                            value_type_kind_label(td.kind)
+                        ),
                         similar,
                     );
                 }
@@ -6586,7 +6596,7 @@ impl Checker {
                         TypeErrorKind::ArityMismatch,
                         span,
                         format!(
-                            "enum variant `{name}` has {} type parameter(s) but {} were supplied",
+                            "enum variant `{name}` has {} type parameter(s) but {} type argument(s) were supplied",
                             enum_type_params.len(),
                             explicit_args.len()
                         ),

@@ -89,8 +89,8 @@ pub enum Command {
     Lsp(LspArgs),
     /// Manage packages and dependencies (delegates to the bundled package manager).
     ///
-    /// Forwards all arguments to the package manager. Requires its binary to be
-    /// in the same directory as `hew` or on PATH.
+    /// Forwards all arguments to the in-process `adze-cli` package-manager
+    /// library. No sibling `adze` binary is invoked.
     ///
     /// Examples:
     ///   hew package init

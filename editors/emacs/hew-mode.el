@@ -62,14 +62,16 @@
 ;; Keywords — sourced from hew-lexer ALL_KEYWORDS (single source of truth).
 ;; v0.5 additions: is, emit, entry, exit, transitions, drives (machine sub-keywords);
 ;;                 link, monitor (actor sub-keywords); fork promoted from actor group.
+;; v0.6: struct keyword removed (#[wire] type/enum only); wire keyword removed
+;;       (attribute-only via #[wire]); await_restart added; ActorRef -> LocalPid/RemotePid/LambdaPid.
 (defconst hew-keywords
   '("if" "else" "is" "match" "loop" "for" "in" "while"
     "break" "continue" "return"
-    "let" "var" "const" "fn" "gen" "type" "struct" "record" "indirect" "enum"
+    "let" "var" "const" "fn" "gen" "type" "record" "indirect" "enum"
     "trait" "impl" "import" "pub" "super" "where"
-    "actor" "fork" "link" "monitor" "receive" "init" "spawn" "async" "move" "await" "this"
+    "actor" "fork" "link" "monitor" "receive" "init" "spawn" "async" "move" "await" "await_restart" "this"
     "supervisor" "child" "restart" "budget" "strategy"
-    "wire" "reserved" "optional" "deprecated" "default"
+    "reserved" "optional" "deprecated" "default"
     "machine" "state" "event" "on" "when" "entry" "exit" "emit" "transitions" "drives"
     "try" "catch" "select" "join" "yield" "cooperate" "after" "from"
     "scope" "race" "defer" "foreign"
@@ -83,7 +85,7 @@
     "bool" "char" "string" "bytes" "void"
     "Result" "Option" "Vec" "HashMap" "HashSet"
     "Box" "Arc" "Rc" "Weak"
-    "Actor" "ActorRef" "Task" "Scope"
+    "Actor" "LocalPid" "RemotePid" "LambdaPid" "Task" "Scope"
     "Generator" "AsyncGenerator" "Stream" "Sink"
     "Self")
   "Hew built-in types.")
@@ -127,14 +129,14 @@
       ;; Function definitions: fn name(
       ("\\<fn\\s-+\\([a-zA-Z_][a-zA-Z0-9_]*\\)" 1 font-lock-function-name-face)
 
-      ;; Actor/struct/enum/trait/impl definitions
-      ("\\<\\(actor\\|struct\\|enum\\|trait\\|impl\\|supervisor\\)\\s-+\\([A-Z][a-zA-Z0-9_]*\\)"
+      ;; Actor/enum/trait/impl definitions
+      ("\\<\\(actor\\|enum\\|trait\\|impl\\|supervisor\\)\\s-+\\([A-Z][a-zA-Z0-9_]*\\)"
        2 font-lock-type-face)
 
       ;; PascalCase type names
       ("\\<\\([A-Z][a-zA-Z0-9_]*\\)\\>" 1 font-lock-type-face)
 
-      ;; this — the current actor/struct receiver
+      ;; this — the current actor/record receiver
       ("\\<this\\>" . font-lock-variable-name-face)
 
       ;; Numeric literals

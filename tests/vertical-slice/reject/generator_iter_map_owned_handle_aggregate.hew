@@ -1,0 +1,23 @@
+// Reject fixture (#2352 known limitation): passing an owned `Generator`
+// handle into a std::iter adapter aggregates it into the adapter's own
+// struct (`Map { iter: I; f: fn(A) -> B; }`), and the drop analysis cannot
+// yet prove the handle is freed exactly once after that aggregate
+// extraction. The compiler must refuse with a clean diagnostic rather than
+// emit a double-free — full aggregate-extraction support for owned handles
+// is tracked separately (v0.5.1 ownership work), not part of the Iterator
+// trait completion this fixture pins.
+import std::iter;
+
+gen fn counter(n: i64) -> i64 {
+    var i: i64 = 0;
+    while i < n {
+        yield i;
+        i = i + 1;
+    }
+}
+
+fn main() {
+    let g = counter(3);
+    let doubled = iter::collect(iter::map(g, |x: i64| x * 2));
+    println(doubled.len());
+}

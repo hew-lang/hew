@@ -822,6 +822,28 @@ fn parse_negative_literal_pattern() {
 }
 
 #[test]
+fn parse_negative_i64_min_literal_pattern() {
+    // #2372 companion: the pattern-position fold has the same i64::MIN
+    // magnitude gap as the expression-position fold, fixed by the same
+    // `parse_negated_int_literal` helper.
+    let source = "fn main() { match x { -9223372036854775808 => 0, _ => 1, } }";
+    let result = parse(source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    let Item::Function(func) = &result.program.items[0].0 else {
+        panic!("expected function item");
+    };
+    let Some((Expr::Match { arms, .. }, _)) = func.body.trailing_expr.as_deref() else {
+        panic!("expected trailing match expression");
+    };
+    let (Pattern::Literal(Literal::Integer { value, radix }), _) = &arms[0].pattern else {
+        panic!("expected literal integer pattern");
+    };
+    assert_eq!(*value, i64::MIN);
+    assert_eq!(*radix, IntRadix::Decimal);
+}
+
+#[test]
 fn parse_pattern_contextual_keywords() {
     // All contextual keywords that can appear as identifiers in patterns.
     // state/event/on/when/join were previously missing from the inline list.
@@ -1401,6 +1423,60 @@ fn parse_octal_integer_literal() {
                 panic!("expected integer literal");
             }
         }
+    }
+}
+
+#[test]
+fn parse_negative_i64_min_literal_folds_to_bare_literal() {
+    // #2372: i64::MIN's magnitude (9223372036854775808) overflows a
+    // positive i64, so the `-<digits>` fold at parse time is the only way
+    // to produce this value as a literal at all -- it must land as a bare
+    // `Expr::Literal`, never an `Expr::Unary{Negate, ..}` wrapper.
+    let source = "fn main() -> i64 { -9223372036854775808 }";
+    let result = parse(source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    if let Item::Function(f) = &result.program.items[0].0 {
+        if let Some(boxed) = &f.body.trailing_expr {
+            if let (Expr::Literal(Literal::Integer { value, .. }), _) = boxed.as_ref() {
+                assert_eq!(*value, i64::MIN);
+            } else {
+                panic!("expected bare integer literal, got {boxed:?}");
+            }
+        } else {
+            panic!("expected trailing expr");
+        }
+    } else {
+        panic!("expected function item");
+    }
+}
+
+#[test]
+fn parse_negative_literal_with_postfix_keeps_unary_wrapper() {
+    // The fold must not fire when a postfix chain follows the literal
+    // token: `-5.wrapping_as_i32()` is `Negate(MethodCall(5, ..))`, not
+    // `MethodCall(Negate(5), ..)` -- postfix already binds tighter than
+    // prefix negate in this grammar.
+    let source = "fn main() -> i32 { -5.wrapping_as_i32() }";
+    let result = parse(source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    if let Item::Function(f) = &result.program.items[0].0 {
+        if let Some(boxed) = &f.body.trailing_expr {
+            let (expr, _) = boxed.as_ref();
+            assert!(
+                matches!(
+                    expr,
+                    Expr::Unary {
+                        op: UnaryOp::Negate,
+                        ..
+                    }
+                ),
+                "expected top-level Unary{{Negate}}, got {expr:?}"
+            );
+        } else {
+            panic!("expected trailing expr");
+        }
+    } else {
+        panic!("expected function item");
     }
 }
 

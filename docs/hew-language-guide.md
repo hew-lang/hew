@@ -154,6 +154,39 @@ fn main() {
 
 Never mix widths in one expression. Cast the narrower operand with `as` before combining; integer literals adopt the surrounding type.
 
+### Explicit-intent arithmetic — `.wrapping_*` / `.checked_*` / `.saturating_*`
+
+```hew
+fn main() {
+    let a: i32 = 2147483647;
+    let wrapped: i32 = a.wrapping_add(1);
+    println(wrapped);          // -2147483648 (wraps around)
+
+    let checked: Option<i32> = a.checked_add(1);
+    match checked {
+        Some(v) => println(v),
+        None => println("overflow"),   // overflow
+    }
+
+    let clamped: i32 = a.saturating_add(1);
+    println(clamped);          // 2147483647 (clamped to i32::MAX)
+}
+```
+
+Every integer type (`i8`…`i64`, `isize`, `u8`…`u64`, `usize`) has three
+`add`/`sub`/`mul` method families for spelling overflow intent explicitly.
+`.wrapping_add()`/`.wrapping_sub()`/`.wrapping_mul()` wrap on overflow — the
+same behaviour §12.2 already documents for the `&+`/`&-`/`&*` operators,
+spelled as a method rather than an operator. `.checked_add()`/`.checked_sub()`/
+`.checked_mul()` return `Option<T>` (`None` on overflow, `Some(v)`
+otherwise). `.saturating_add()`/`.saturating_sub()`/`.saturating_mul()` clamp
+to the type's max/min instead of wrapping or failing.
+
+Only `add`/`sub`/`mul` are implemented today — no `div`/`rem`/shift variants
+exist yet, and none of the three families apply to `f32`/`f64`. These
+methods are an explicit-intent spelling, not a different default: the plain
+`+`/`-`/`*` operators already wrap on overflow per §12.2.
+
 ## Bindings — var and let
 
 ### var for mutable, let for immutable
@@ -615,7 +648,7 @@ fn main() {
 }
 ```
 
-`.contains_key(k)` and `.remove(k)` both return `bool`. Bind a method result to a `let` before interpolating — nested double-quotes break the f-string parser. Test emptiness with `m.len() == 0`.
+`.contains_key(k)` and `.remove(k)` both return `bool`. Bind a method result to a `let` before interpolating — nested double-quotes break the f-string parser. Test emptiness with `m.len() == 0`, or remove every entry at once with `m.clear()`.
 
 ### Supported HashMap value types
 
@@ -707,6 +740,8 @@ fn main() {
 ```
 
 Set membership is `.contains(x)` (note: `.contains_key` is the HashMap spelling). Inserts dedup automatically. Supported element types are `i64` and `string`.
+
+`.to_vec()` returns a `Vec<T>` snapshot of every element (order unspecified) — the same eager-clone pattern `HashMap.keys()`/`.values()` use. `.clear()` removes every element and resets `.len()` to 0, same as `HashMap.clear()`.
 
 ## Functions and ownership
 
@@ -2271,19 +2306,19 @@ fn main() {
 
 `abs`/`min`/`max` are generic over Num (work on `i64` and `f64`); `sqrt`/`pow`/`floor`/`ceil`/`round` take `f64`. Use `math.pi()`/`math.e()` (functions, not bare constants).
 
-### std::iter Vec helpers
+### std::iter — lazy iterator combinators
 
 ```hew
 import std::iter;
 fn main() {
-    let v = [1, 2, 3, 4, 5];
-    println(iter.sum(iter.map_int(v, |x| x * 2)));         // 30
-    println(iter.sum(iter.filter_int(v, |x| x % 2 == 0))); // 6
-    println(iter.fold_int(v, 0, |acc, x| acc + x));        // 15
+    let v: Vec<i64> = [1, 2, 3, 4, 5];
+    println(iter.sum(iter.map(v.iter(), |x: i64| x * 2)));         // 30
+    println(iter.sum(iter.filter(v.iter(), |x: i64| x % 2 == 0))); // 6
+    println(iter.fold(v.iter(), 0, |acc: i64, x: i64| acc + x));   // 15
 }
 ```
 
-For Vec processing use the typed monomorphic helpers (`map_int`/`map_str`/`map_f64`, `filter_*`, `fold_*`, `sum`, `any`/`all`, `take_*`/`skip_*`/`count_*`). Pass closures as `|x| body`.
+`std::iter` builds lazy adapters (`map`, `filter`, `take`, `skip`) over any `Iterator`; terminal helpers (`fold`, `count`, `collect`, `any`, `all`, `sum`, `sum_f64`, `product`, `product_f64`) drive an adapter chain to completion. Drive a `Vec<T>` through the lazy surface via `v.iter()` (clones elements out, `v` stays live) or `v.into_iter()` (consumes `v`).
 
 ### std::sort — sorting vectors
 
@@ -2385,8 +2420,8 @@ import std::math;
 import std::iter;
 fn main() {
     println(string.from_int(math.max(2, 9)));   // 9
-    let v = [1, 2, 3];
-    println(iter.sum(v));                        // 6
+    let v: Vec<i64> = [1, 2, 3];
+    println(iter.sum(v.into_iter()));            // 6
 }
 ```
 
@@ -2639,6 +2674,110 @@ Each subsection below is a runnable snippet; a full idiomatic program per
 surface lives under [`examples/v05/surfaces/`](../examples/v05/surfaces)
 (text surfaces), [`examples/channel/`](../examples/channel) (channels), or
 [`examples/net/`](../examples/net) (networking).
+
+### `#[wire]` — network-serializable schema types
+
+```hew
+#[wire]
+type UserCreated {
+    id: u64 @1,
+    name: string @2,
+}
+
+fn main() {
+    let e = UserCreated { id: 42, name: "ada" };
+    let j = e.to_json();
+    println(j);                          // {"id":42,"name":"ada"}
+    match UserCreated.from_json(j) {
+        Ok(back) => println(back.name),  // ada
+        Err(_) => println("parse failed"),
+    }
+}
+```
+
+Each field carries a `@N` tag — a stable wire identifier that must never be
+reused, even if the field is later removed (HEW-SPEC-2026.md §7.2). A field
+can also be marked `optional`, which only affects wire-decode behaviour (a
+missing field decodes without error); the field's Hew-level type stays the
+bare element type, not `Option<T>` — see
+[`examples/playground/types/wire_types.hew`](../examples/playground/types/wire_types.hew)
+for that form.
+
+`e.to_json()` and `TypeName.from_json(text)` (a call on the type name
+itself, not `::`) round-trip a wire type through JSON. The runtime envelope
+used for actor-to-actor message transport is CBOR; the `std::encoding::*`
+surface (JSON, MessagePack, ...) is for cross-service and file I/O. Use `hew
+wire check <file.hew> --against <baseline.hew>` to check schema
+compatibility between two versions of a wire type.
+
+Full example: [`examples/playground/types/wire_types.hew`](../examples/playground/types/wire_types.hew). Spec: HEW-SPEC-2026.md §7.
+
+### `#[resource]` and `#[linear]` — compiler-checked resource ownership
+
+```hew
+#[resource]
+type Conn {
+    fd: i64
+}
+impl Conn {
+    fn close(c: Conn) {
+        println(f"closing fd {c.fd}");
+    }
+}
+
+fn main() {
+    let c: Conn = Conn { fd: 7 };
+    println("work");
+    // c drops at scope exit here; Conn::close(c) runs automatically.
+}
+```
+
+```hew
+#[linear]
+type Tx { id: i64 }
+impl Tx {
+    fn commit(consuming self) { println(f"commit {self.id}"); }
+    fn rollback(consuming self) { println(f"rollback {self.id}"); }
+}
+
+fn main() {
+    let t = Tx { id: 1 };
+    t.commit();   // commit 1
+}
+```
+
+Both attributes are affine — the compiler enforces a single live binding per
+value via the move checker — but they differ in what happens at scope exit.
+A `#[resource]` type auto-closes (discarding the `Result`) unless closed
+early; a `#[linear]` type has **no** implicit drop at all — leaving one
+unconsumed at scope exit is a compile error. Neither supports a
+user-defined `impl Drop`.
+
+The `close` method (for `#[resource]`) and any `consuming self` method (for
+`#[linear]`) must be declared in a sibling `impl` block, never inline in the
+type body — an inline declaration is rejected at parse time.
+
+Full example (`#[linear]`): [`examples/v05/linear/accept/linear_consumed_via_rollback_on_err.hew`](../examples/v05/linear/accept/linear_consumed_via_rollback_on_err.hew). For `#[resource]`, see HEW-SPEC-2026.md §3.7.8.
+
+### `#[opaque]` — FFI-backed handle types
+
+```hew
+#[opaque]
+pub type FileHandle {
+}
+```
+
+An `#[opaque]` type body must be empty — it declares a handle with no
+fields, produced only via FFI. There is no struct-literal constructor;
+values come only from a foreign function. Most opaque types require an
+explicit `.close()`/`.free()` call since there is no implicit drop
+(HEW-SPEC-2026.md §3.10.7). Over twenty stdlib types use this pattern,
+including `Deque`, `json.Value`, `csv.Reader`, `regex.Pattern`, and
+`net.Connection`.
+
+`std/deque.hew`'s `#[opaque]\npub type Deque { }` plus its sibling `trait
+DequeMethods` / `impl DequeMethods for Deque` is the canonical shape to
+copy for a new opaque type.
 
 ### Typed streams — `await sink.send(x)` / `await stream.recv()`
 

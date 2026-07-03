@@ -884,7 +884,7 @@ impl Checker {
                             TypeErrorKind::ArityMismatch,
                             span,
                             format!(
-                                "this constructor takes 0 type argument(s) but {} were supplied",
+                                "this constructor takes 0 type parameter(s) but {} type argument(s) were supplied",
                                 type_args_provided.len()
                             ),
                         );
@@ -899,7 +899,7 @@ impl Checker {
                             TypeErrorKind::ArityMismatch,
                             span,
                             format!(
-                                "this constructor takes {} type argument(s) but {} were supplied",
+                                "this constructor takes {} type parameter(s) but {} type argument(s) were supplied",
                                 type_param_count,
                                 type_args_provided.len()
                             ),
@@ -1494,7 +1494,7 @@ impl Checker {
                 },
                 span,
                 format!(
-                    "E_CLOSURE_RECURSIVE: closure cannot call itself via binding \
+                    "closure cannot call itself via binding \
                      `{func_name}` — recursive closures require a fixed-point surface \
                      that is not available in this version; use a named function instead"
                 ),
@@ -1750,7 +1750,7 @@ impl Checker {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
-                format!("Channel<{resolved}> is not supported in `for await`: {reason}"),
+                format!("`Channel<{resolved}>` is not supported in `for await`: {reason}"),
             );
             return;
         }

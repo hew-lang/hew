@@ -312,7 +312,7 @@ impl TypeError {
             },
             acc_span,
             format!(
-                "E_VISIBILITY_PRIVATE: `{symbol}` is private to module `{decl_module}`; \
+                "`{symbol}` is private to module `{decl_module}`; \
                  not accessible from `{acc_module}`"
             ),
         )
@@ -351,7 +351,7 @@ impl TypeError {
             },
             acc_span,
             format!(
-                "E_VISIBILITY_PACKAGE: `{symbol}` is package-visible (package `{decl_package}`); \
+                "`{symbol}` is package-visible (package `{decl_package}`); \
                  not accessible from `{acc_module}`"
             ),
         )

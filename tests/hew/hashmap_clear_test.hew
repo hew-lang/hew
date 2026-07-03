@@ -1,0 +1,41 @@
+//! Tests for HashMap<K, V>.clear().
+
+fn assert_eq_i64(actual: i64, expected: i64) {
+    if actual != expected {
+        panic(f"assertion failed: expected {expected}, got {actual}");
+    }
+}
+
+#[test]
+fn test_clear_drops_len_to_zero() {
+    let m: HashMap<i64, i64> = HashMap::<i64, i64>::new();
+    m.insert(1, 10);
+    m.insert(2, 20);
+    m.insert(3, 30);
+    m.clear();
+    let len = m.len();
+    assert_eq_i64(len, 0);
+}
+
+#[test]
+fn test_clear_allows_reinsert() {
+    let m: HashMap<i64, i64> = HashMap::<i64, i64>::new();
+    m.insert(1, 10);
+    m.clear();
+    m.insert(1, 99);
+    let len = m.len();
+    assert_eq_i64(len, 1);
+}
+
+#[test]
+fn test_clear_on_string_keyed_map() {
+    let m: HashMap<string, string> = HashMap::<string, string>::new();
+    m.insert("a", "alpha");
+    m.insert("b", "beta");
+    m.remove("a");
+    m.clear();
+    let len = m.len();
+    assert_eq_i64(len, 0);
+    m.insert("c", "gamma");
+    assert_eq_i64(m.len(), 1);
+}

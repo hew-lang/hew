@@ -82,11 +82,17 @@ fn emit_supervised_ir() -> String {
         "MIR diagnostics: {:#?}",
         pipeline.diagnostics
     );
-    let tmp = std::env::temp_dir().join("hew-supervised-handler-name-reg");
-    std::fs::create_dir_all(&tmp).expect("create tmp dir");
+    // RAII temp dir — dropped at function exit (after `.ll` is slurped
+    // into memory), and unique per call so the two sibling tests below
+    // (which both call this fixture) never race on the same path under
+    // parallel nextest execution. LESSONS: `cleanup-all-exits` P0.
+    let tmp = tempfile::Builder::new()
+        .prefix("hew-supervised-handler-name-reg-")
+        .tempdir()
+        .expect("create temp dir");
     let options = EmitOptions {
         module_name: "probe",
-        out_dir: &tmp,
+        out_dir: tmp.path(),
         native: false,
         wasm: false,
         target_triple: Some("x86_64-unknown-linux-gnu"),

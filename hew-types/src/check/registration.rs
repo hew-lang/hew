@@ -3308,13 +3308,13 @@ impl Checker {
         for (kind, span, label) in &hits {
             let message = match kind {
                 TypeErrorKind::GenBlockInMachineTransition => format!(
-                    "E_GENBLOCK_IN_MACHINE_TRANSITION: `gen {{ }}` blocks are forbidden inside \
+                    "`gen {{ }}` blocks are forbidden inside \
                      machine `{machine_name}` transition `{}`: {} -> {}; transition bodies \
                      must be pure and cannot suspend",
                     transition.event_name, transition.source_state, transition.target_state
                 ),
                 TypeErrorKind::AwaitInMachineTransition => format!(
-                    "E_AWAIT_IN_MACHINE_TRANSITION: `{label}` is forbidden inside machine \
+                    "`{label}` is forbidden inside machine \
                      `{machine_name}` transition `{}`: {} -> {}; transition bodies must be pure \
                      and cannot suspend",
                     transition.event_name, transition.source_state, transition.target_state
@@ -3859,14 +3859,14 @@ impl Checker {
             self.errors.push(TypeError::new(
                 TypeErrorKind::MachineExhaustivenessError,
                 span.clone(),
-                format!("machine '{}' must declare at least 2 states", md.name),
+                format!("machine `{}` must declare at least 2 states", md.name),
             ));
         }
         if md.events.is_empty() {
             self.errors.push(TypeError::new(
                 TypeErrorKind::MachineExhaustivenessError,
                 span.clone(),
-                format!("machine '{}' must declare at least 1 event", md.name),
+                format!("machine `{}` must declare at least 1 event", md.name),
             ));
         }
 
@@ -3884,7 +3884,7 @@ impl Checker {
                     TypeErrorKind::MachineExhaustivenessError,
                     span.clone(),
                     format!(
-                        "machine '{}': transition references unknown event '{}'",
+                        "machine `{}`: transition references unknown event `{}`",
                         md.name, transition.event_name
                     ),
                 ));
@@ -3898,7 +3898,7 @@ impl Checker {
                     TypeErrorKind::MachineExhaustivenessError,
                     span.clone(),
                     format!(
-                        "machine '{}': transition references unknown state '{}'",
+                        "machine `{}`: transition references unknown state `{}`",
                         md.name, transition.source_state
                     ),
                 ));
@@ -3910,7 +3910,7 @@ impl Checker {
                     TypeErrorKind::MachineExhaustivenessError,
                     span.clone(),
                     format!(
-                        "machine '{}': transition references unknown state '{}'",
+                        "machine `{}`: transition references unknown state `{}`",
                         md.name, transition.target_state
                     ),
                 ));
@@ -3923,7 +3923,7 @@ impl Checker {
                         TypeErrorKind::MachineExhaustivenessError,
                         span.clone(),
                         format!(
-                            "machine '{}': duplicate wildcard transition for event '{}'",
+                            "machine `{}`: duplicate wildcard transition for event `{}`",
                             md.name, transition.event_name
                         ),
                     ));
@@ -3940,7 +3940,7 @@ impl Checker {
                         TypeErrorKind::MachineExhaustivenessError,
                         span.clone(),
                         format!(
-                            "machine '{}': duplicate transition for event '{}' in state '{}'",
+                            "machine `{}`: duplicate transition for event `{}` in state `{}`",
                             md.name, transition.event_name, transition.source_state
                         ),
                     ));
@@ -4134,7 +4134,7 @@ impl Checker {
                         TypeErrorKind::MachineExhaustivenessError,
                         span.clone(),
                         format!(
-                            "machine '{}': state '{}' does not handle event '{}'",
+                            "machine `{}`: state `{}` does not handle event `{}`",
                             md.name, state, event
                         ),
                     ));
@@ -5731,7 +5731,7 @@ impl Checker {
                 },
                 span: fd.decl_span.clone(),
                 message: format!(
-                    "E_INTRINSIC_ON_METHOD: `#[intrinsic(\"{intrinsic_key}\")]` on \
+                    "`#[intrinsic(\"{intrinsic_key}\")]` on \
                      `{name}` (key `{key}`) is declared on an impl method — \
                      the `#[intrinsic]` surface is valid only on top-level free \
                      functions inside a stdlib-floor module; method dispatch \
@@ -5775,7 +5775,7 @@ impl Checker {
             },
             span: fd.decl_span.clone(),
             message: format!(
-                "E_INTRINSIC_OUTSIDE_FLOOR: `#[intrinsic(\"{intrinsic_key}\")]` on \
+                "`#[intrinsic(\"{intrinsic_key}\")]` on \
                  `{name}` is declared in `{module_label}`, which is not a \
                  stdlib-floor module — the `#[intrinsic]` surface is \
                  compiler-internal-only and cannot be declared by user code"

@@ -90,7 +90,7 @@ impl Checker {
             ),
             notes: vec![],
             suggestions: vec![
-                "Consider using basic actors (spawn/send/ask) which work on WASM.".to_string(),
+                "consider using basic actors (spawn/send/ask) which work on WASM".to_string(),
             ],
             source_module: self.current_module.clone(),
         });
@@ -124,8 +124,8 @@ impl Checker {
             ),
             notes: vec![],
             suggestions: vec![
-                "See docs/wasm-capability-matrix.md for the capability tier table.".to_string(),
-                "Consider using basic actors (spawn/send/ask) which work on WASM.".to_string(),
+                "see docs/wasm-capability-matrix.md for the capability tier table".to_string(),
+                "consider using basic actors (spawn/send/ask) which work on WASM".to_string(),
             ],
             source_module: self.current_module.clone(),
         });

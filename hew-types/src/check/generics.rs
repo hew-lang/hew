@@ -168,7 +168,7 @@ impl Checker {
                     TypeErrorKind::ArityMismatch,
                     span,
                     format!(
-                        "this function takes 0 type argument(s) but {} were supplied",
+                        "this function takes 0 type parameter(s) but {} type argument(s) were supplied",
                         type_args.len()
                     ),
                 );
@@ -177,7 +177,7 @@ impl Checker {
                     TypeErrorKind::ArityMismatch,
                     span,
                     format!(
-                        "this function takes {} type argument(s) but {} were supplied",
+                        "this function takes {} type parameter(s) but {} type argument(s) were supplied",
                         sig.type_params.len(),
                         type_args.len()
                     ),
@@ -1092,11 +1092,6 @@ impl Checker {
 
     pub(super) fn type_satisfies_trait_bound(&mut self, ty: &Ty, trait_name: &str) -> bool {
         match ty {
-            Ty::Named {
-                builtin: Some(crate::BuiltinType::Generator | crate::BuiltinType::AsyncGenerator),
-                args,
-                ..
-            } if trait_name == "Iterator" && !args.is_empty() => true,
             // `instant` is a monotonic i64-nanos timestamp; it canonicalises to
             // i64 at the MIR boundary and renders through the i64 Display arm
             // (raw nanos), so it satisfies any bound that i64 satisfies —

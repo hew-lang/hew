@@ -248,6 +248,24 @@ slow-timeout = { period = "120s", terminate-after = 3 }
 filter = "test(tcp_stream_backing_records_error_on_reset)"
 slow-timeout = { period = "120s", terminate-after = 6 }
 
+[[profile.ci.overrides]]
+# close_reaps_a_live_blocked_reader_without_hanging and
+# attach_reader_delivers_decrypted_data_and_reaps_on_close each measure how
+# long hew_tls_close's blocking join of the attached reader thread takes
+# (close_elapsed < 2s) after tearing down a real loopback TLS connection.
+# The join itself is deterministic (JoinHandle::join, not a sleep-poll),
+# but the elapsed-time assertion is an irreducibly real OS-scheduling
+# measurement — it times how promptly two real OS threads get scheduled to
+# completion. Under full-workspace parallel nextest load the scheduler can
+# delay that handoff past the 2s bound even though no reader is actually
+# stuck (#2358, verified pre-existing; passes reliably in isolation and
+# under the lane profile — load-only under full-suite parallelism). The
+# real-timing group (max-threads = 1) removes the contention at its source
+# instead of widening the in-test deadline, which would mask a genuine
+# future hang rather than fix the flake.
+filter = "test(close_reaps_a_live_blocked_reader_without_hanging) | test(attach_reader_delivers_decrypted_data_and_reaps_on_close)"
+test-group = "real-timing"
+
 [profile.ci.junit]
 path = "junit.xml"
 

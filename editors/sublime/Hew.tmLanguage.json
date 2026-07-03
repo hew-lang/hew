@@ -249,7 +249,7 @@
         {
           "comment": "Declarations",
           "name": "keyword.declaration.hew",
-          "match": "\\b(as|async|const|enum|extern|fn|gen|impl|import|indirect|let|mut|package|pub|record|struct|super|trait|type|var|where)\\b"
+          "match": "\\b(as|async|const|enum|extern|fn|gen|impl|import|indirect|let|mut|package|pub|record|super|trait|type|var|where)\\b"
         },
         {
           "comment": "Actor and concurrency",
@@ -269,7 +269,7 @@
         {
           "comment": "Wire protocol keywords",
           "name": "keyword.wire.hew",
-          "match": "\\b(default|deprecated|optional|reserved|wire)\\b"
+          "match": "\\b(default|deprecated|optional|reserved)\\b"
         },
         {
           "comment": "State machine keywords",
@@ -477,18 +477,6 @@
           }
         },
         {
-          "comment": "Struct declaration",
-          "match": "\\b(struct)\\s+([A-Z][a-zA-Z0-9_]*)",
-          "captures": {
-            "1": {
-              "name": "keyword.declaration.hew"
-            },
-            "2": {
-              "name": "entity.name.type.struct.hew"
-            }
-          }
-        },
-        {
           "comment": "Enum declaration",
           "match": "\\b(enum)\\s+([A-Z][a-zA-Z0-9_]*)",
           "captures": {
@@ -515,21 +503,6 @@
             },
             "4": {
               "name": "entity.name.type.hew"
-            }
-          }
-        },
-        {
-          "comment": "Wire type/enum declaration",
-          "match": "\\b(wire)\\s+(type|enum)\\s+([A-Z][a-zA-Z0-9_]*)",
-          "captures": {
-            "1": {
-              "name": "keyword.wire.hew"
-            },
-            "2": {
-              "name": "keyword.declaration.hew"
-            },
-            "3": {
-              "name": "entity.name.type.wire.hew"
             }
           }
         },
@@ -784,7 +757,7 @@
         {
           "comment": "Contextual identifiers (special meaning in specific contexts)",
           "name": "variable.language.contextual.hew",
-          "match": "\\b(block|coalesce|drop_new|drop_old|emits|events|export|fail|fallback|infinity|initial|intensity|json|mailbox|overflow|reenter|repeated|shutdown|wired_to|within|yaml)\\b"
+          "match": "\\b(block|coalesce|drop_new|drop_old|emits|events|export|fail|fallback|infinity|initial|intensity|json|linear|mailbox|opaque|overflow|reenter|repeated|resource|shutdown|wire|wired_to|within|yaml)\\b"
         },
         {
           "comment": "Identifier (catch-all for variables, parameters, fields)",

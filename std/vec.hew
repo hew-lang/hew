@@ -16,7 +16,7 @@ pub fn index_of_i32(v: Vec<i32>, val: i32) -> i64 { // INTERNAL-ABI: typed for 3
 }
 
 /// Return the index of `val` in a `Vec<i64>`, or `-1` if not found.
-pub fn index_of_i64(v: Vec<i64>, val: i64) -> i64 { // INTERNAL-ABI: legacy typed alias; Vec<i64> == Vec<i64> in Hew
+pub fn index_of_i64(v: Vec<i64>, val: i64) -> i64 { // INTERNAL-ABI: i64-typed twin of the _i32 family below, kept for naming symmetry; i64 is Hew's canonical/default integer width
     let n = v.len();
     for i in 0 .. n {
         if v[i] == val {
@@ -71,7 +71,7 @@ pub fn index_of_str(v: Vec<string>, val: string) -> i64 {
 
 // ── first / last ──────────────────────────────────────────────────────────
 /// Return `Some` of the first element of a `Vec<i64>`, or `None` if empty.
-pub fn first_i64(v: Vec<i64>) -> Option<i64> { // INTERNAL-ABI: legacy typed alias; Vec<i64> == Vec<i64> in Hew
+pub fn first_i64(v: Vec<i64>) -> Option<i64> { // INTERNAL-ABI: i64-typed twin of the _i32 family below, kept for naming symmetry; i64 is Hew's canonical/default integer width
     if v.len() == 0 {
         return None;
     }
@@ -95,7 +95,7 @@ pub fn first_str(v: Vec<string>) -> Option<string> {
 }
 
 /// Return `Some` of the last element of a `Vec<i64>`, or `None` if empty.
-pub fn last_i64(v: Vec<i64>) -> Option<i64> { // INTERNAL-ABI: legacy typed alias; Vec<i64> == Vec<i64> in Hew
+pub fn last_i64(v: Vec<i64>) -> Option<i64> { // INTERNAL-ABI: i64-typed twin of the _i32 family below, kept for naming symmetry; i64 is Hew's canonical/default integer width
     let n = v.len();
     if n == 0 {
         return None;
@@ -139,7 +139,7 @@ pub fn min_i32(v: Vec<i32>) -> Option<i64> { // INTERNAL-ABI: typed for 32-bit i
 }
 
 /// Return `Some` of the smallest element in a `Vec<i64>`, or `None` if empty.
-pub fn min_i64(v: Vec<i64>) -> Option<i64> { // INTERNAL-ABI: legacy typed alias; Vec<i64> == Vec<i64> in Hew
+pub fn min_i64(v: Vec<i64>) -> Option<i64> { // INTERNAL-ABI: i64-typed twin of the _i32 family below, kept for naming symmetry; i64 is Hew's canonical/default integer width
     if v.len() == 0 {
         return None;
     }
@@ -188,7 +188,7 @@ pub fn max_i32(v: Vec<i32>) -> Option<i64> { // INTERNAL-ABI: typed for 32-bit i
 }
 
 /// Return `Some` of the largest element in a `Vec<i64>`, or `None` if empty.
-pub fn max_i64(v: Vec<i64>) -> Option<i64> { // INTERNAL-ABI: legacy typed alias; Vec<i64> == Vec<i64> in Hew
+pub fn max_i64(v: Vec<i64>) -> Option<i64> { // INTERNAL-ABI: i64-typed twin of the _i32 family below, kept for naming symmetry; i64 is Hew's canonical/default integer width
     if v.len() == 0 {
         return None;
     }

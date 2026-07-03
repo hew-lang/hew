@@ -2073,6 +2073,121 @@ fn cyclic_trait_hierarchy_bound_check_surfaces_diagnostic() {
     );
 }
 
+// ── Generator/AsyncGenerator formally implement Iterator (#2352) ──────────────
+//
+// `Generator<Y, R>` and `AsyncGenerator<Y>` satisfy the `Iterator` trait bound
+// through the real `impl Iterator for Generator<Y, R>` / `impl Iterator for
+// AsyncGenerator<Y>` blocks in `std/builtins.hew`, not a checker-level special
+// case. These regressions pin both halves of the bug found during grounding:
+// `type_satisfies_trait_bound` must return true for a real reason (an
+// `impl_type_params_map` entry is required for `builtin_generic_type_params`
+// to find), AND the `Item` associated-type projection must resolve to the
+// receiver's concrete yield type — not the literal impl type-param name ("Y")
+// — which is only true once `builtin_generic_type_params` knows Generator's
+// param names. A function requiring `I: Iterator<Item = i64>` type-checks
+// against a `Generator<i64, ()>` / `AsyncGenerator<i64>` argument only when
+// both halves hold.
+
+#[test]
+fn generator_satisfies_iterator_bound_with_item_resolved_to_concrete_yield_type() {
+    let source = concat!(
+        "gen fn counter(n: i64) -> i64 {\n",
+        "    var i: i64 = 0;\n",
+        "    while i < n {\n",
+        "        yield i;\n",
+        "        i = i + 1;\n",
+        "    }\n",
+        "}\n",
+        "fn takes_i64_iterator<I>(it: I) -> i64 where I: Iterator<Item = i64> {\n",
+        "    0\n",
+        "}\n",
+        "fn main() {\n",
+        "    takes_i64_iterator(counter(3));\n",
+        "}\n"
+    );
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output.errors.is_empty(),
+        "Generator<i64, ()> should satisfy `Iterator<Item = i64>` through the \
+         real impl with a correctly-substituted associated type; got {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn generator_iterator_item_mismatch_is_rejected() {
+    // The converse of the test above: if `Item` resolution silently fell back
+    // to an unsubstituted or wrong type, a mismatched bound would incorrectly
+    // pass. Requiring `Item = string` against a `Generator<i64, ()>` must fail.
+    let source = concat!(
+        "gen fn counter(n: i64) -> i64 {\n",
+        "    var i: i64 = 0;\n",
+        "    while i < n {\n",
+        "        yield i;\n",
+        "        i = i + 1;\n",
+        "    }\n",
+        "}\n",
+        "fn takes_string_iterator<I>(it: I) -> i64 where I: Iterator<Item = string> {\n",
+        "    0\n",
+        "}\n",
+        "fn main() {\n",
+        "    takes_string_iterator(counter(3));\n",
+        "}\n"
+    );
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        !output.errors.is_empty(),
+        "Generator<i64, ()> must not satisfy `Iterator<Item = string>`"
+    );
+}
+
+#[test]
+fn async_generator_satisfies_iterator_bound_with_item_resolved_to_concrete_yield_type() {
+    let source = concat!(
+        "async gen fn counter(n: i64) -> i64 {\n",
+        "    var i: i64 = 0;\n",
+        "    while i < n {\n",
+        "        yield i;\n",
+        "        i = i + 1;\n",
+        "    }\n",
+        "}\n",
+        "fn takes_i64_iterator<I>(it: I) -> i64 where I: Iterator<Item = i64> {\n",
+        "    0\n",
+        "}\n",
+        "fn main() {\n",
+        "    takes_i64_iterator(counter(3));\n",
+        "}\n"
+    );
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output.errors.is_empty(),
+        "AsyncGenerator<i64> should satisfy `Iterator<Item = i64>` through the \
+         real impl with a correctly-substituted associated type; got {:?}",
+        output.errors
+    );
+}
+
 // ── Non-root module inference-hole fail-closed regression tests ───────────────
 //
 // These cover the `report_unresolved_inference_holes` path for non-root module

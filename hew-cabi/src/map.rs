@@ -24,6 +24,7 @@
 //! | `hew_hashmap_get_clone_layout`            | **borrowed**            | n/a                     | Clones the stored V into caller-provided out storage via `val_layout.clone_fn` when V is non-Plain; caller owns the out value.                       |
 //! | `hew_hashmap_remove_layout`               | **borrowed**            | n/a                     | Invoke `key_layout.drop_fn` on the slot K and `val_layout.drop_fn` on the slot V before tombstoning. Caller's lookup K is untouched.                |
 //! | `hew_hashmap_free_layout`                 | n/a                     | n/a                     | Iterate occupied slots, invoke key + value `drop_fn` on each, then deallocate the entries buffer. Tombstoned slots already had their blobs dropped at remove-time. |
+//! | `hew_hashmap_clear_layout`                | n/a                     | n/a                     | Iterate occupied slots, invoke key + value `drop_fn` on each, reset every slot (including stale tombstones) to `EMPTY`, set `len = 0`. Entries buffer stays allocated for reuse. |
 //!
 //! **Invariants (P0):**
 //!

@@ -1,148 +1,69 @@
-//! Tests for std::iter helpers — string and f64 variants.
+//! Tests for std::iter's lazy adapters and terminals, driven over the
+//! `Vec<T>::into_iter()` surface — string and f64 element types (the i64
+//! case is covered by `vec_iter_test.hew`).
+//!
+//! These behaviours previously lived on the eager per-type table
+//! (`map_str`, `filter_f64`, `count_str`, ...), retired once the lazy
+//! `Iterator` surface could drive a `Vec` end-to-end. Each case below
+//! preserves the original edge-case coverage (empty-vec, negative-`n`
+//! clamping, short-circuit, prefix-match predicates) through the generic
+//! adapters instead of a type-specific function name.
 
 import std::iter;
+
 import std::testing;
 
-// ── map_str ────────────────────────────────────────────────────────────────
-
+// ── map ────────────────────────────────────────────────────────────────────
 #[test]
 fn test_map_str_transforms_each_element() {
     let v: Vec<string> = Vec::new();
     v.push("hello");
     v.push("world");
-    let result = iter.map_str(v, |s: string| s + "!");
+    let result = iter::collect(iter::map(v.into_iter(), |s: string| s + "!"));
     testing.assert_eq(result.len(), 2);
     testing.assert_eq_str(result[0], "hello!");
     testing.assert_eq_str(result[1], "world!");
 }
 
 #[test]
-fn test_map_str_empty_vec() {
+fn test_map_empty_vec_yields_empty() {
     let v: Vec<string> = Vec::new();
-    let result = iter.map_str(v, |s: string| s + "!");
+    let result = iter::collect(iter::map(v.into_iter(), |s: string| s + "!"));
     testing.assert_eq(result.len(), 0);
 }
-
-// ── filter_str ─────────────────────────────────────────────────────────────
-
-#[test]
-fn test_filter_str_keeps_matching_elements() {
-    let v: Vec<string> = Vec::new();
-    v.push("foo");
-    v.push("bar");
-    v.push("baz");
-    let result = iter.filter_str(v, |s: string| s.starts_with("b"));
-    testing.assert_eq(result.len(), 2);
-    testing.assert_eq_str(result[0], "bar");
-    testing.assert_eq_str(result[1], "baz");
-}
-
-#[test]
-fn test_filter_str_none_match() {
-    let v: Vec<string> = Vec::new();
-    v.push("foo");
-    v.push("qux");
-    let result = iter.filter_str(v, |s: string| s.starts_with("z"));
-    testing.assert_eq(result.len(), 0);
-}
-
-#[test]
-fn test_filter_str_all_match() {
-    let v: Vec<string> = Vec::new();
-    v.push("abc");
-    v.push("axy");
-    let result = iter.filter_str(v, |s: string| s.starts_with("a"));
-    testing.assert_eq(result.len(), 2);
-}
-
-// ── fold_str ───────────────────────────────────────────────────────────────
-
-#[test]
-fn test_fold_str_concatenates() {
-    let v: Vec<string> = Vec::new();
-    v.push("a");
-    v.push("b");
-    v.push("c");
-    let result = iter.fold_str(v, "", |acc: string, s: string| acc + s);
-    testing.assert_eq_str(result, "abc");
-}
-
-#[test]
-fn test_fold_str_empty_vec_returns_init() {
-    let v: Vec<string> = Vec::new();
-    let result = iter.fold_str(v, "init", |acc: string, s: string| acc + s);
-    testing.assert_eq_str(result, "init");
-}
-
-// ── any_str ────────────────────────────────────────────────────────────────
-
-#[test]
-fn test_any_str_true_when_one_matches() {
-    let v: Vec<string> = Vec::new();
-    v.push("foo");
-    v.push("bar");
-    testing.assert_true(iter.any_str(v, |s: string| s == "bar"));
-}
-
-#[test]
-fn test_any_str_false_when_none_match() {
-    let v: Vec<string> = Vec::new();
-    v.push("foo");
-    v.push("bar");
-    testing.assert_false(iter.any_str(v, |s: string| s == "baz"));
-}
-
-#[test]
-fn test_any_str_false_on_empty() {
-    let v: Vec<string> = Vec::new();
-    testing.assert_false(iter.any_str(v, |s: string| s == "x"));
-}
-
-// ── all_str ────────────────────────────────────────────────────────────────
-
-#[test]
-fn test_all_str_true_when_all_match() {
-    let v: Vec<string> = Vec::new();
-    v.push("foo");
-    v.push("fob");
-    testing.assert_true(iter.all_str(v, |s: string| s.starts_with("fo")));
-}
-
-#[test]
-fn test_all_str_false_when_one_fails() {
-    let v: Vec<string> = Vec::new();
-    v.push("foo");
-    v.push("bar");
-    testing.assert_false(iter.all_str(v, |s: string| s.starts_with("fo")));
-}
-
-#[test]
-fn test_all_str_true_on_empty() {
-    let v: Vec<string> = Vec::new();
-    testing.assert_true(iter.all_str(v, |s: string| s == "x"));
-}
-
-// ── map_f64 ────────────────────────────────────────────────────────────────
 
 #[test]
 fn test_map_f64_doubles_elements() {
     let v: Vec<f64> = Vec::new();
     v.push(1.0);
     v.push(2.5);
-    let result = iter.map_f64(v, |x: f64| x * 2.0);
+    let result = iter::collect(iter::map(v.into_iter(), |x: f64| x * 2.0));
     testing.assert_eq(result.len(), 2);
     testing.assert_true(result[0] == 2.0);
     testing.assert_true(result[1] == 5.0);
 }
 
+// ── filter ─────────────────────────────────────────────────────────────────
 #[test]
-fn test_map_f64_empty_vec() {
-    let v: Vec<f64> = Vec::new();
-    let result = iter.map_f64(v, |x: f64| x + 1.0);
-    testing.assert_eq(result.len(), 0);
+fn test_filter_str_keeps_matching_elements() {
+    let v: Vec<string> = Vec::new();
+    v.push("foo");
+    v.push("bar");
+    v.push("baz");
+    let result = iter::collect(iter::filter(v.into_iter(), |s: string| s.starts_with("b")));
+    testing.assert_eq(result.len(), 2);
+    testing.assert_eq_str(result[0], "bar");
+    testing.assert_eq_str(result[1], "baz");
 }
 
-// ── filter_f64 ─────────────────────────────────────────────────────────────
+#[test]
+fn test_filter_none_match_yields_empty() {
+    let v: Vec<string> = Vec::new();
+    v.push("foo");
+    v.push("qux");
+    let result = iter::collect(iter::filter(v.into_iter(), |s: string| s.starts_with("z")));
+    testing.assert_eq(result.len(), 0);
+}
 
 #[test]
 fn test_filter_f64_keeps_positives() {
@@ -150,22 +71,29 @@ fn test_filter_f64_keeps_positives() {
     v.push(-1.0);
     v.push(2.5);
     v.push(3.0);
-    let result = iter.filter_f64(v, |x: f64| x > 0.0);
+    let result = iter::collect(iter::filter(v.into_iter(), |x: f64| x > 0.0));
     testing.assert_eq(result.len(), 2);
     testing.assert_true(result[0] == 2.5);
     testing.assert_true(result[1] == 3.0);
 }
 
+// ── fold ───────────────────────────────────────────────────────────────────
 #[test]
-fn test_filter_f64_none_match() {
-    let v: Vec<f64> = Vec::new();
-    v.push(1.0);
-    v.push(2.0);
-    let result = iter.filter_f64(v, |x: f64| x > 10.0);
-    testing.assert_eq(result.len(), 0);
+fn test_fold_str_concatenates() {
+    let v: Vec<string> = Vec::new();
+    v.push("a");
+    v.push("b");
+    v.push("c");
+    let result = iter::fold(v.into_iter(), "", |acc: string, s: string| acc + s);
+    testing.assert_eq_str(result, "abc");
 }
 
-// ── fold_f64 ───────────────────────────────────────────────────────────────
+#[test]
+fn test_fold_empty_vec_returns_init() {
+    let v: Vec<string> = Vec::new();
+    let result = iter::fold(v.into_iter(), "init", |acc: string, s: string| acc + s);
+    testing.assert_eq_str(result, "init");
+}
 
 #[test]
 fn test_fold_f64_sums_elements() {
@@ -173,18 +101,32 @@ fn test_fold_f64_sums_elements() {
     v.push(1.0);
     v.push(2.0);
     v.push(3.0);
-    let result = iter.fold_f64(v, 0.0, |acc: f64, x: f64| acc + x);
+    let result = iter::fold(v.into_iter(), 0.0, |acc: f64, x: f64| acc + x);
     testing.assert_true(result == 6.0);
 }
 
+// ── any / all ──────────────────────────────────────────────────────────────
 #[test]
-fn test_fold_f64_empty_returns_init() {
-    let v: Vec<f64> = Vec::new();
-    let result = iter.fold_f64(v, 42.0, |acc: f64, x: f64| acc + x);
-    testing.assert_true(result == 42.0);
+fn test_any_str_true_when_one_matches() {
+    let v: Vec<string> = Vec::new();
+    v.push("foo");
+    v.push("bar");
+    testing.assert_true(iter::any(v.into_iter(), |s: string| s == "bar"));
 }
 
-// ── any_f64 ────────────────────────────────────────────────────────────────
+#[test]
+fn test_any_false_when_none_match() {
+    let v: Vec<string> = Vec::new();
+    v.push("foo");
+    v.push("bar");
+    testing.assert_false(iter::any(v.into_iter(), |s: string| s == "baz"));
+}
+
+#[test]
+fn test_any_false_on_empty() {
+    let v: Vec<string> = Vec::new();
+    testing.assert_false(iter::any(v.into_iter(), |s: string| s == "x"));
+}
 
 #[test]
 fn test_any_f64_true_when_one_matches() {
@@ -192,32 +134,29 @@ fn test_any_f64_true_when_one_matches() {
     v.push(1.0);
     v.push(2.0);
     v.push(3.0);
-    testing.assert_true(iter.any_f64(v, |x: f64| x > 2.5));
+    testing.assert_true(iter::any(v.into_iter(), |x: f64| x > 2.5));
 }
 
 #[test]
-fn test_any_f64_false_when_none_match() {
-    let v: Vec<f64> = Vec::new();
-    v.push(1.0);
-    v.push(2.0);
-    testing.assert_false(iter.any_f64(v, |x: f64| x > 9.0));
+fn test_all_str_true_when_all_match() {
+    let v: Vec<string> = Vec::new();
+    v.push("foo");
+    v.push("fob");
+    testing.assert_true(iter::all(v.into_iter(), |s: string| s.starts_with("fo")));
 }
 
 #[test]
-fn test_any_f64_false_on_empty() {
-    let v: Vec<f64> = Vec::new();
-    testing.assert_false(iter.any_f64(v, |x: f64| x > 0.0));
+fn test_all_false_when_one_fails() {
+    let v: Vec<string> = Vec::new();
+    v.push("foo");
+    v.push("bar");
+    testing.assert_false(iter::all(v.into_iter(), |s: string| s.starts_with("fo")));
 }
 
-// ── all_f64 ────────────────────────────────────────────────────────────────
-
 #[test]
-fn test_all_f64_true_when_all_match() {
-    let v: Vec<f64> = Vec::new();
-    v.push(1.0);
-    v.push(2.0);
-    v.push(3.0);
-    testing.assert_true(iter.all_f64(v, |x: f64| x > 0.0));
+fn test_all_true_on_empty() {
+    let v: Vec<string> = Vec::new();
+    testing.assert_true(iter::all(v.into_iter(), |s: string| s == "x"));
 }
 
 #[test]
@@ -225,388 +164,196 @@ fn test_all_f64_false_when_one_fails() {
     let v: Vec<f64> = Vec::new();
     v.push(1.0);
     v.push(-1.0);
-    testing.assert_false(iter.all_f64(v, |x: f64| x > 0.0));
+    testing.assert_false(iter::all(v.into_iter(), |x: f64| x > 0.0));
 }
 
-#[test]
-fn test_all_f64_true_on_empty() {
-    let v: Vec<f64> = Vec::new();
-    testing.assert_true(iter.all_f64(v, |x: f64| x > 0.0));
-}
-
-// ── sum_f64 ────────────────────────────────────────────────────────────────
-
+// ── sum / sum_f64 ──────────────────────────────────────────────────────────
 #[test]
 fn test_sum_f64_three_elements() {
     let v: Vec<f64> = Vec::new();
     v.push(1.0);
     v.push(2.5);
     v.push(3.0);
-    testing.assert_true(iter.sum_f64(v) == 6.5);
+    testing.assert_true(iter::sum_f64(v.into_iter()) == 6.5);
 }
 
 #[test]
-fn test_sum_f64_empty_vec() {
+fn test_sum_f64_empty_vec_returns_zero() {
     let v: Vec<f64> = Vec::new();
-    testing.assert_true(iter.sum_f64(v) == 0.0);
+    testing.assert_true(iter::sum_f64(v.into_iter()) == 0.0);
 }
 
+// ── take ───────────────────────────────────────────────────────────────────
 #[test]
-fn test_sum_f64_single_element() {
-    let v: Vec<f64> = Vec::new();
-    v.push(7.5);
-    testing.assert_true(iter.sum_f64(v) == 7.5);
-}
-
-// ── take_int ───────────────────────────────────────────────────────────────
-
-#[test]
-fn test_take_int_fewer_than_length() {
-    let v: Vec<i64> = Vec::new();
-    v.push(10); v.push(20); v.push(30);
-    let result = iter.take_int(v, 2);
-    testing.assert_eq(result.len(), 2);
-    testing.assert_eq(result[0], 10);
-    testing.assert_eq(result[1], 20);
-}
-
-#[test]
-fn test_take_int_more_than_length_clamps() {
-    let v: Vec<i64> = Vec::new();
-    v.push(1); v.push(2);
-    let result = iter.take_int(v, 10);
-    testing.assert_eq(result.len(), 2);
-}
-
-#[test]
-fn test_take_int_zero_returns_empty() {
-    let v: Vec<i64> = Vec::new();
-    v.push(1); v.push(2);
-    let result = iter.take_int(v, 0);
-    testing.assert_eq(result.len(), 0);
-}
-
-#[test]
-fn test_take_int_empty_vec() {
-    let v: Vec<i64> = Vec::new();
-    let result = iter.take_int(v, 3);
-    testing.assert_eq(result.len(), 0);
-}
-
-// ── skip_int ───────────────────────────────────────────────────────────────
-
-#[test]
-fn test_skip_int_drops_first_n() {
-    let v: Vec<i64> = Vec::new();
-    v.push(10); v.push(20); v.push(30);
-    let result = iter.skip_int(v, 1);
-    testing.assert_eq(result.len(), 2);
-    testing.assert_eq(result[0], 20);
-    testing.assert_eq(result[1], 30);
-}
-
-#[test]
-fn test_skip_int_more_than_length_returns_empty() {
-    let v: Vec<i64> = Vec::new();
-    v.push(1); v.push(2);
-    let result = iter.skip_int(v, 5);
-    testing.assert_eq(result.len(), 0);
-}
-
-#[test]
-fn test_skip_int_zero_returns_all() {
-    let v: Vec<i64> = Vec::new();
-    v.push(1); v.push(2); v.push(3);
-    let result = iter.skip_int(v, 0);
-    testing.assert_eq(result.len(), 3);
-}
-
-// ── count_int ──────────────────────────────────────────────────────────────
-
-#[test]
-fn test_count_int_even_elements() {
-    let v: Vec<i64> = Vec::new();
-    v.push(1); v.push(2); v.push(3); v.push(4);
-    testing.assert_eq(iter.count_int(v, |x: i64| x % 2 == 0), 2);
-}
-
-#[test]
-fn test_count_int_none_match() {
-    let v: Vec<i64> = Vec::new();
-    v.push(1); v.push(3);
-    testing.assert_eq(iter.count_int(v, |x: i64| x % 2 == 0), 0);
-}
-
-#[test]
-fn test_count_int_empty_vec() {
-    let v: Vec<i64> = Vec::new();
-    testing.assert_eq(iter.count_int(v, |x: i64| x > 0), 0);
-}
-
-// ── take_str ───────────────────────────────────────────────────────────────
-
-#[test]
-fn test_take_str_fewer_than_length() {
+fn test_take_fewer_than_length() {
     let v: Vec<string> = Vec::new();
-    v.push("a"); v.push("b"); v.push("c");
-    let result = iter.take_str(v, 2);
+    v.push("a");
+    v.push("b");
+    v.push("c");
+    let result = iter::collect(iter::take(v.into_iter(), 2));
     testing.assert_eq(result.len(), 2);
     testing.assert_eq_str(result[0], "a");
     testing.assert_eq_str(result[1], "b");
 }
 
 #[test]
-fn test_take_str_more_than_length_clamps() {
+fn test_take_more_than_length_clamps() {
     let v: Vec<string> = Vec::new();
-    v.push("x"); v.push("y");
-    let result = iter.take_str(v, 99);
+    v.push("x");
+    v.push("y");
+    let result = iter::collect(iter::take(v.into_iter(), 99));
     testing.assert_eq(result.len(), 2);
 }
 
 #[test]
-fn test_take_str_zero_returns_empty() {
+fn test_take_zero_returns_empty() {
     let v: Vec<string> = Vec::new();
     v.push("x");
-    let result = iter.take_str(v, 0);
+    let result = iter::collect(iter::take(v.into_iter(), 0));
     testing.assert_eq(result.len(), 0);
 }
 
-// ── skip_str ───────────────────────────────────────────────────────────────
+#[test]
+fn test_take_negative_n_returns_empty() {
+    let v: Vec<string> = Vec::new();
+    v.push("a");
+    v.push("b");
+    let result = iter::collect(iter::take(v.into_iter(), -5));
+    testing.assert_eq(result.len(), 0);
+}
 
 #[test]
-fn test_skip_str_drops_first_n() {
+fn test_take_f64_fewer_than_length() {
+    let v: Vec<f64> = Vec::new();
+    v.push(1.0);
+    v.push(2.0);
+    v.push(3.0);
+    let result = iter::collect(iter::take(v.into_iter(), 2));
+    testing.assert_eq(result.len(), 2);
+    testing.assert_true(result[0] == 1.0);
+    testing.assert_true(result[1] == 2.0);
+}
+
+// ── skip ───────────────────────────────────────────────────────────────────
+#[test]
+fn test_skip_drops_first_n() {
     let v: Vec<string> = Vec::new();
-    v.push("a"); v.push("b"); v.push("c");
-    let result = iter.skip_str(v, 1);
+    v.push("a");
+    v.push("b");
+    v.push("c");
+    let result = iter::collect(iter::skip(v.into_iter(), 1));
     testing.assert_eq(result.len(), 2);
     testing.assert_eq_str(result[0], "b");
     testing.assert_eq_str(result[1], "c");
 }
 
 #[test]
-fn test_skip_str_more_than_length_returns_empty() {
+fn test_skip_more_than_length_returns_empty() {
     let v: Vec<string> = Vec::new();
-    v.push("a"); v.push("b");
-    let result = iter.skip_str(v, 10);
+    v.push("a");
+    v.push("b");
+    let result = iter::collect(iter::skip(v.into_iter(), 10));
     testing.assert_eq(result.len(), 0);
 }
 
 #[test]
-fn test_skip_str_zero_returns_all() {
+fn test_skip_zero_returns_all() {
     let v: Vec<string> = Vec::new();
-    v.push("p"); v.push("q");
-    let result = iter.skip_str(v, 0);
+    v.push("p");
+    v.push("q");
+    let result = iter::collect(iter::skip(v.into_iter(), 0));
     testing.assert_eq(result.len(), 2);
 }
 
-// ── count_str ──────────────────────────────────────────────────────────────
-
+// Regression: skip with n < 0 previously aborted with a Vec
+// index-out-of-bounds panic on the eager `skip_int`/`skip_str`/`skip_f64`
+// helpers. The lazy `Skip` adapter never indexes by `n` directly (it burns
+// items one at a time while `remaining > 0`), so a negative `remaining`
+// leaves the burn loop a no-op and the full sequence is yielded unchanged —
+// same observable clamp-to-zero behaviour, different mechanism.
 #[test]
-fn test_count_str_prefix_match() {
+fn test_skip_negative_n_returns_all() {
     let v: Vec<string> = Vec::new();
-    v.push("foo"); v.push("bar"); v.push("baz");
-    testing.assert_eq(iter.count_str(v, |s: string| s.starts_with("b")), 2);
-}
-
-#[test]
-fn test_count_str_none_match() {
-    let v: Vec<string> = Vec::new();
-    v.push("foo"); v.push("qux");
-    testing.assert_eq(iter.count_str(v, |s: string| s.starts_with("z")), 0);
-}
-
-#[test]
-fn test_count_str_empty_vec() {
-    let v: Vec<string> = Vec::new();
-    testing.assert_eq(iter.count_str(v, |s: string| s.len() > 0), 0);
-}
-
-// ── take_f64 ───────────────────────────────────────────────────────────────
-
-#[test]
-fn test_take_f64_fewer_than_length() {
-    let v: Vec<f64> = Vec::new();
-    v.push(1.0); v.push(2.0); v.push(3.0);
-    let result = iter.take_f64(v, 2);
-    testing.assert_eq(result.len(), 2);
-    testing.assert_true(result[0] == 1.0);
-    testing.assert_true(result[1] == 2.0);
-}
-
-#[test]
-fn test_take_f64_more_than_length_clamps() {
-    let v: Vec<f64> = Vec::new();
-    v.push(1.0); v.push(2.0);
-    let result = iter.take_f64(v, 100);
-    testing.assert_eq(result.len(), 2);
-}
-
-#[test]
-fn test_take_f64_zero_returns_empty() {
-    let v: Vec<f64> = Vec::new();
-    v.push(1.0);
-    let result = iter.take_f64(v, 0);
-    testing.assert_eq(result.len(), 0);
-}
-
-// ── skip_f64 ───────────────────────────────────────────────────────────────
-
-#[test]
-fn test_skip_f64_drops_first_n() {
-    let v: Vec<f64> = Vec::new();
-    v.push(1.0); v.push(2.0); v.push(3.0);
-    let result = iter.skip_f64(v, 1);
-    testing.assert_eq(result.len(), 2);
-    testing.assert_true(result[0] == 2.0);
-    testing.assert_true(result[1] == 3.0);
-}
-
-#[test]
-fn test_skip_f64_more_than_length_returns_empty() {
-    let v: Vec<f64> = Vec::new();
-    v.push(1.0);
-    let result = iter.skip_f64(v, 5);
-    testing.assert_eq(result.len(), 0);
-}
-
-#[test]
-fn test_skip_f64_zero_returns_all() {
-    let v: Vec<f64> = Vec::new();
-    v.push(1.0); v.push(2.0);
-    let result = iter.skip_f64(v, 0);
-    testing.assert_eq(result.len(), 2);
-}
-
-// ── count_f64 ─────────────────────────────────────────────────────────────
-
-#[test]
-fn test_count_f64_positives() {
-    let v: Vec<f64> = Vec::new();
-    v.push(1.0); v.push(-1.0); v.push(2.5);
-    testing.assert_eq(iter.count_f64(v, |x: f64| x > 0.0), 2);
-}
-
-#[test]
-fn test_count_f64_none_match() {
-    let v: Vec<f64> = Vec::new();
-    v.push(-1.0); v.push(-2.0);
-    testing.assert_eq(iter.count_f64(v, |x: f64| x > 0.0), 0);
-}
-
-#[test]
-fn test_count_f64_empty_vec() {
-    let v: Vec<f64> = Vec::new();
-    testing.assert_eq(iter.count_f64(v, |x: f64| x > 0.0), 0);
-}
-
-// ── product ────────────────────────────────────────────────────────────────
-
-#[test]
-fn test_product_three_elements() {
-    let v: Vec<i64> = Vec::new();
-    v.push(2); v.push(3); v.push(4);
-    testing.assert_eq(iter.product(v), 24);
-}
-
-#[test]
-fn test_product_empty_vec_returns_one() {
-    let v: Vec<i64> = Vec::new();
-    testing.assert_eq(iter.product(v), 1);
-}
-
-#[test]
-fn test_product_single_element() {
-    let v: Vec<i64> = Vec::new();
-    v.push(7);
-    testing.assert_eq(iter.product(v), 7);
-}
-
-// ── product_f64 ───────────────────────────────────────────────────────────
-
-#[test]
-fn test_product_f64_three_elements() {
-    let v: Vec<f64> = Vec::new();
-    v.push(2.0); v.push(0.5); v.push(4.0);
-    testing.assert_true(iter.product_f64(v) == 4.0);
-}
-
-#[test]
-fn test_product_f64_empty_vec_returns_one() {
-    let v: Vec<f64> = Vec::new();
-    testing.assert_true(iter.product_f64(v) == 1.0);
-}
-
-#[test]
-fn test_product_f64_single_element() {
-    let v: Vec<f64> = Vec::new();
-    v.push(3.5);
-    testing.assert_true(iter.product_f64(v) == 3.5);
-}
-
-// ── skip_* negative-n regression tests ────────────────────────────────────
-// Regression: skip_int/skip_str/skip_f64 with n < 0 previously aborted with
-// Vec index out of bounds. The fix clamps negative n to 0, returning the
-// full vector.
-
-#[test]
-fn test_skip_int_negative_n_returns_all() {
-    let v: Vec<i64> = Vec::new();
-    v.push(1); v.push(2); v.push(3);
-    let result = iter.skip_int(v, -1);
-    testing.assert_eq(result.len(), 3);
-    testing.assert_eq(result[0], 1);
-}
-
-#[test]
-fn test_skip_str_negative_n_returns_all() {
-    let v: Vec<string> = Vec::new();
-    v.push("a"); v.push("b");
-    let result = iter.skip_str(v, -5);
+    v.push("a");
+    v.push("b");
+    let result = iter::collect(iter::skip(v.into_iter(), -5));
     testing.assert_eq(result.len(), 2);
     testing.assert_eq_str(result[0], "a");
 }
 
 #[test]
-fn test_skip_f64_negative_n_returns_all() {
+fn test_skip_f64_drops_first_n() {
     let v: Vec<f64> = Vec::new();
-    v.push(1.0); v.push(2.0); v.push(3.0);
-    let result = iter.skip_f64(v, -99);
-    testing.assert_eq(result.len(), 3);
-    testing.assert_true(result[0] == 1.0);
+    v.push(1.0);
+    v.push(2.0);
+    v.push(3.0);
+    let result = iter::collect(iter::skip(v.into_iter(), 1));
+    testing.assert_eq(result.len(), 2);
+    testing.assert_true(result[0] == 2.0);
+    testing.assert_true(result[1] == 3.0);
 }
 
-// ── take_* negative-n clamp tests ─────────────────────────────────────────
-// Negative n should behave like n=0 (return empty vector), mirroring the
-// skip_* negative-clamp behaviour already present on that family.
-
+// ── count with predicate (via filter + count) ─────────────────────────────
+// The eager `count_str(v, pred)`/`count_f64(v, pred)`/`count_int(v, pred)`
+// counted matches, not every element — that composes as
+// `count(filter(it, pred))`, distinct from the unconditional `count(it)`
+// already covered by `vec_iter_test.hew`.
 #[test]
-fn test_take_int_negative_n_returns_empty() {
-    let v: Vec<i64> = Vec::new();
-    v.push(1); v.push(2); v.push(3);
-    let result = iter.take_int(v, -1);
-    testing.assert_eq(result.len(), 0);
-}
-
-#[test]
-fn test_take_int_negative_large_returns_empty() {
-    let v: Vec<i64> = Vec::new();
-    v.push(10);
-    let result = iter.take_int(v, -100);
-    testing.assert_eq(result.len(), 0);
-}
-
-#[test]
-fn test_take_str_negative_n_returns_empty() {
+fn test_count_of_filter_prefix_match() {
     let v: Vec<string> = Vec::new();
-    v.push("a"); v.push("b");
-    let result = iter.take_str(v, -5);
-    testing.assert_eq(result.len(), 0);
+    v.push("foo");
+    v.push("bar");
+    v.push("baz");
+    let matched = iter::count(iter::filter(v.into_iter(), |s: string| s.starts_with("b")));
+    testing.assert_eq(matched, 2);
 }
 
 #[test]
-fn test_take_f64_negative_n_returns_empty() {
+fn test_count_of_filter_none_match_is_zero() {
+    let v: Vec<string> = Vec::new();
+    v.push("foo");
+    v.push("qux");
+    let matched = iter::count(iter::filter(v.into_iter(), |s: string| s.starts_with("z")));
+    testing.assert_eq(matched, 0);
+}
+
+#[test]
+fn test_count_of_filter_f64_positives() {
     let v: Vec<f64> = Vec::new();
-    v.push(1.0); v.push(2.0); v.push(3.0);
-    let result = iter.take_f64(v, -99);
-    testing.assert_eq(result.len(), 0);
+    v.push(1.0);
+    v.push(-1.0);
+    v.push(2.5);
+    let matched = iter::count(iter::filter(v.into_iter(), |x: f64| x > 0.0));
+    testing.assert_eq(matched, 2);
+}
+
+// ── product / product_f64 ─────────────────────────────────────────────────
+#[test]
+fn test_product_three_elements() {
+    let v: Vec<i64> = Vec::new();
+    v.push(2);
+    v.push(3);
+    v.push(4);
+    testing.assert_eq(iter::product(v.into_iter()), 24);
+}
+
+#[test]
+fn test_product_empty_vec_returns_one() {
+    let v: Vec<i64> = Vec::new();
+    testing.assert_eq(iter::product(v.into_iter()), 1);
+}
+
+#[test]
+fn test_product_f64_three_elements() {
+    let v: Vec<f64> = Vec::new();
+    v.push(2.0);
+    v.push(0.5);
+    v.push(4.0);
+    testing.assert_true(iter::product_f64(v.into_iter()) == 4.0);
+}
+
+#[test]
+fn test_product_f64_empty_vec_returns_one() {
+    let v: Vec<f64> = Vec::new();
+    testing.assert_true(iter::product_f64(v.into_iter()) == 1.0);
 }

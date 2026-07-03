@@ -1,0 +1,49 @@
+//! Regression for #2350: a user-defined generic `Iterator` impl driven by a
+//! bare `for`-in inside a non-generic function previously hit a MIR-boundary
+//! "unknown type `TypeParam { name: "T" }`" failure — the for-in's own next-
+//! call shape substitution never replaced the impl's own `T` in `Option<T>`
+//! because `substitute_type_params` only recognised the legacy
+//! `Named { args: [] }` bare-parameter encoding, not the structural
+//! `ResolvedTy::TypeParam` variant `from_ty_with_type_params` actually
+//! produces for a method's own return type.
+
+import std::testing;
+
+type Repeat<T> {
+    value: T;
+    remaining: i64;
+}
+
+impl<T> Iterator for Repeat<T> {
+    type Item = T;
+    fn next(var self) -> Option<T> {
+        if self.remaining <= 0 {
+            None
+        } else {
+            self.remaining = self.remaining - 1;
+            Some(self.value)
+        }
+    }
+}
+
+#[test]
+fn test_generic_iterator_for_in_accumulates() {
+    var total: i64 = 0;
+    for x in Repeat { value: 7, remaining: 3 } {
+        total = total + x;
+    }
+    testing.assert_eq(total, 21);
+}
+
+// Exercises Display dispatch on the for-in's resolved element type, the
+// other failure mode seen for this bug (a raw MIR-boundary abstract-type
+// rejection when the loop body reads the yielded value through a trait
+// method rather than plain arithmetic).
+#[test]
+fn test_generic_iterator_for_in_display_dispatch() {
+    var out: string = "";
+    for x in Repeat { value: 5, remaining: 2 } {
+        out = out + f"{x}";
+    }
+    testing.assert_eq_str(out, "55");
+}

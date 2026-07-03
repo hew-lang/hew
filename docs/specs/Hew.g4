@@ -856,7 +856,7 @@ yieldExpr
 //  are syntactically just ident typeArgs?, so they are folded
 //  into the first alternative.  Listed in comments for reference:
 //    Task<T>, LocalPid<A>, RemotePid<A>, LambdaPid<M,R>, Arc<T>, Rc<T>,
-//    Weak<T>, Result<T,E>, Option<T>, Generator<Y>,
+//    Weak<T>, Result<T,E>, Option<T>, Generator<Yield,Return>,
 //    AsyncGenerator<Y>, Vec<T>, HashMap<K,V>
 // ----------------------------------------------------------------
 

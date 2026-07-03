@@ -196,6 +196,88 @@ fn hashset_new_turbofish_arity_mismatch_is_rejected() {
 }
 
 #[test]
+fn hashmap_clear_extra_arg_is_rejected_at_check_time() {
+    let output = check_source(
+        r"
+        fn main() {
+            var m: HashMap<string, i64> = HashMap::new();
+            m.clear(123);
+        }
+        ",
+    );
+
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::ArityMismatch
+                && error.message.contains("HashMap::clear")),
+        "HashMap::clear with an extra argument must be rejected at check time \
+         with an arity diagnostic, got {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn hashmap_clear_no_args_typechecks() {
+    let output = check_source(
+        r"
+        fn main() {
+            var m: HashMap<string, i64> = HashMap::new();
+            m.clear();
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "HashMap::clear() with no arguments should type-check cleanly: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn hashset_clear_extra_arg_is_rejected_at_check_time() {
+    let output = check_source(
+        r"
+        fn main() {
+            var s: HashSet<i64> = HashSet::new();
+            s.clear(456);
+        }
+        ",
+    );
+
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::ArityMismatch
+                && error.message.contains("HashSet::clear")),
+        "HashSet::clear with an extra argument must be rejected at check time \
+         with an arity diagnostic, got {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn hashset_clear_no_args_typechecks() {
+    let output = check_source(
+        r"
+        fn main() {
+            var s: HashSet<i64> = HashSet::new();
+            s.clear();
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "HashSet::clear() with no arguments should type-check cleanly: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn vec_new_with_error_element_remains_error_typed() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let span = 0..8;

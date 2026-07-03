@@ -1,7 +1,6 @@
 mod common;
 
 use common::typecheck;
-use hew_types::Ty;
 
 #[test]
 fn pid_trait_generic_send_fails_closed_without_serializable_projection_bound() {
@@ -85,8 +84,14 @@ fn local_pid_generic_pid_send_still_fails_closed_without_projection_bound() {
 }
 
 #[test]
-fn local_pid_send_returns_result_send_error() {
-    let (prog, output) = common::parse_and_typecheck_inline(
+fn local_pid_send_without_handler_rejected_even_with_actor_msg_envelope() {
+    // #2367: an `impl ActorMsg for T` binding records a message-envelope
+    // type but does not by itself wire local-mailbox delivery — there is
+    // no receive fn resolved to accept the message. Previously admitted
+    // here and failed closed later at HIR lowering with an internal
+    // `MethodCallNoRewrite` diagnostic; now rejected uniformly with the
+    // same actionable diagnostic as the no-envelope case.
+    let output = typecheck(
         r"
         record Job {
             n: i32,
@@ -110,35 +115,15 @@ fn local_pid_send_returns_result_send_error() {
         ",
     );
     assert!(
-        output.errors.is_empty(),
-        "LocalPid.send should type-check cleanly: {:#?}",
+        output.errors.iter().any(|error| {
+            error.kind == hew_types::error::TypeErrorKind::UndefinedMethod
+                && error.message.contains("no `send` handler on `Worker`")
+        }),
+        "LocalPid.send with an ActorMsg envelope but no send handler must \
+         be rejected at type-check with the same actionable diagnostic as \
+         the no-envelope case: {:#?}",
         output.errors
     );
-    let main = prog
-        .items
-        .iter()
-        .find_map(|(item, _)| match item {
-            hew_parser::ast::Item::Function(fd) if fd.name == "main" => Some(fd),
-            _ => None,
-        })
-        .expect("no main");
-    let send_span = main
-        .body
-        .stmts
-        .iter()
-        .find_map(|(stmt, _)| match stmt {
-            hew_parser::ast::Stmt::Let {
-                value: Some((hew_parser::ast::Expr::MethodCall { method, .. }, span)),
-                ..
-            } if method == "send" => Some(span.clone()),
-            _ => None,
-        })
-        .expect("no send call");
-    let ty = output
-        .expr_types
-        .get(&hew_types::check::SpanKey::from(&send_span))
-        .expect("send expression type missing");
-    assert_eq!(ty, &Ty::result(Ty::Unit, Ty::send_error()));
 }
 
 #[test]

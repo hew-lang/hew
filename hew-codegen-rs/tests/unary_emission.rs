@@ -62,11 +62,22 @@ fn unary_bool_not_emits_logical_not_compare() {
 }
 
 #[test]
-fn unary_integer_negate_emits_checked_sub_overflow() {
-    let ll = emit_ll("fn main() -> i64 { -5 }", "unary_int_neg");
+fn unary_integer_negate_of_literal_emits_no_checked_sub() {
+    let ll = emit_ll("fn main() -> i64 { -5 }", "unary_int_neg_literal");
+    assert!(
+        !ll.contains("llvm.ssub.with.overflow"),
+        "literal unary - must fold at compile time, not emit a runtime \
+         checked-subtract; got:\n{ll}"
+    );
+}
+
+#[test]
+fn unary_integer_negate_of_param_emits_checked_sub_overflow() {
+    let ll = emit_ll("fn main(n: i64) -> i64 { -n }", "unary_int_neg_param");
     assert!(
         ll.contains("llvm.ssub.with.overflow.i64"),
-        "integer unary - must emit signed checked subtraction; got:\n{ll}"
+        "integer unary - on a non-literal operand must still emit signed \
+         checked subtraction; got:\n{ll}"
     );
 }
 

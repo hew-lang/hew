@@ -1044,7 +1044,7 @@ pub struct HirFn {
     /// `true` when this function was declared `gen fn`. The body falls off the
     /// end (unit-expectation) and `yield` expressions inside it bind to the
     /// `return_ty` yield element type. Threaded HIR → MIR → codegen so the
-    /// generator construction seam (`hew_gen_ctx_create`) materializes a
+    /// generator construction seam (`Terminator::MakeGenerator`) materializes a
     /// generator value at the call site (mirrors `HirActorReceiveFn`).
     pub is_generator: bool,
     /// When `Some(catalog_key)`, this function is a `#[intrinsic("key")]`
@@ -1581,16 +1581,17 @@ pub enum HirExprKind {
     ///
     /// The checker owns `Generator<Yield, Return>` inference. HIR carries the
     /// lowered body plus the extracted yield/return parameters so MIR can later
-    /// build the generator state machine without re-inferring the signature.
+    /// build the generator's `llvm.coro` lowering without re-inferring the
+    /// signature.
     ///
     /// `captures` lists the body's free variables — for a `gen fn` these are
     /// the generator's own formal parameters; for a `gen { }` block they are
     /// the captured outer locals. Both are bindings that live in the enclosing
     /// MIR frame and must be threaded into the synthesised generator-body
-    /// function through the runtime env channel (`hew_gen_ctx_create`'s
-    /// `body_arg`). Empty for a capture-free generator. This is the
+    /// coro ramp through the runtime env channel (`Terminator::MakeGenerator`'s
+    /// heap-copied env). Empty for a capture-free generator. This is the
     /// substrate-independent "which variables are free" front-half; where the
-    /// env physically lives (thread body-arg today, coro frame later) is the
+    /// env physically lives (heap-copied into the coro ramp's frame) is the
     /// MIR/codegen tail.
     GenBlock {
         body: HirBlock,
@@ -1861,11 +1862,11 @@ pub enum HirExprKind {
     ///
     /// The checker records this as a structured rewrite so frontend lowering
     /// carries the borrowed generator handle and the yield element type; MIR
-    /// lowers it to `Instr::GeneratorNext` and codegen emits
-    /// `hew_gen_next(ctx, &out_size)` and unboxes the returned heap pointer into
-    /// `Option<yield_ty>` (null → `None`, else load + `Some` + free the
-    /// payload). The receiver is borrowed; the handle is freed by
-    /// `hew_gen_free` on its own scope-exit drop.
+    /// lowers it to `Instr::GeneratorNext` and codegen drives the coro ramp
+    /// (`hew_cont_resume` + `hew_cont_done`) and unboxes the published
+    /// out-pointer value into `Option<yield_ty>` (done → `None`, else load +
+    /// `Some` + free the payload). The receiver is borrowed; the handle is
+    /// freed by `hew_gen_coro_destroy` on its own scope-exit drop.
     GeneratorNext {
         receiver: Box<HirExpr>,
         yield_ty: ResolvedTy,
@@ -2509,7 +2510,7 @@ pub struct HirClosureCapture {
 /// `gen { }` block they are the captured outer locals. Both reduce to the
 /// same thing: a binding that lives in the enclosing MIR frame and is read
 /// inside the generator body. MIR boxes these into an env record passed to
-/// `hew_gen_ctx_create` (deep-copied into the body thread) and resolves the
+/// `Terminator::MakeGenerator` (heap-copied for the coro ramp) and resolves the
 /// body-side reads through `ClosureEnvFieldLoad`. Mirrors `HirLambdaCapture`
 /// but carries the resolved field type (no Weak/self-recursion case — a
 /// generator has no self-handle).

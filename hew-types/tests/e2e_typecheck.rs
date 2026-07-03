@@ -3430,7 +3430,7 @@ fn vec_array_annotation_rejected() {
             let v: Vec<[i64; 2]> = Vec::new();
             println(v.len());
         }",
-        "Vec<[i64; 2]> is not supported",
+        "`Vec<[i64; 2]>` is not supported",
         "annotated Vec<[i64; 2]>",
     );
 }
@@ -3452,7 +3452,7 @@ fn vec_nested_vec_array_annotation_rejected() {
             let v: Vec<Vec<[i64; 2]>> = Vec::new();
             println(v.len());
         }",
-        "Vec<[i64; 2]> is not supported",
+        "`Vec<[i64; 2]>` is not supported",
         "annotated Vec<Vec<[i64; 2]>>",
     );
 }
@@ -3469,7 +3469,7 @@ fn vec_generic_wrapper_array_annotation_rejected() {
             let v: Vec<Box<[i64; 2]>> = Vec::new();
             println(v.len());
         }",
-        "Vec<Box<[i64; 2]>> is not supported",
+        "`Vec<Box<[i64; 2]>>` is not supported",
         "annotated Vec<Box<[i64; 2]>>",
     );
 }
@@ -3482,7 +3482,7 @@ fn vec_option_wrapper_array_annotation_rejected() {
             let v: Vec<Option<[i64; 2]>> = Vec::new();
             println(v.len());
         }",
-        "Vec<Option<[i64; 2]>> is not supported",
+        "`Vec<Option<[i64; 2]>>` is not supported",
         "annotated Vec<Option<[i64; 2]>>",
     );
 }
@@ -3495,7 +3495,7 @@ fn vec_result_wrapper_array_annotation_rejected() {
             let v: Vec<Result<[i64; 2], string>> = Vec::new();
             println(v.len());
         }",
-        "Vec<Result<[i64; 2], string>> is not supported",
+        "`Vec<Result<[i64; 2], string>>` is not supported",
         "annotated Vec<Result<[i64; 2], string>>",
     );
 }

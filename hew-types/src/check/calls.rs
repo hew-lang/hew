@@ -1750,7 +1750,7 @@ impl Checker {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
-                format!("Channel<{resolved}> is not supported in `for await`: {reason}"),
+                format!("`Channel<{resolved}>` is not supported in `for await`: {reason}"),
             );
             return;
         }

@@ -2724,7 +2724,7 @@ run_accept_expect_status "for_wildcard_range" 3
 # produce a spanned checker error, not an unspanned codegen error.
 expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/vec_array_element.hew" \
-  "Vec<[i64; 2]> is not supported; vec lowering does not support array element types yet" \
+  "\`Vec<[i64; 2]>\` is not supported; vec lowering does not support array element types yet" \
   "vec_array_element"
 expect_check_fail_error_count \
   "${ROOT}/tests/vertical-slice/reject/vec_array_element.hew" \

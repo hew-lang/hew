@@ -1587,7 +1587,7 @@ impl Checker {
                 TypeErrorKind::InvalidOperation,
                 span,
                 format!(
-                    "Vec<{}> is not supported; vec lowering does not support array element types yet",
+                    "`Vec<{}>` is not supported; vec lowering does not support array element types yet",
                     resolved.user_facing()
                 ),
             );
@@ -1605,7 +1605,7 @@ impl Checker {
                     TypeErrorKind::InvalidOperation,
                     span,
                     format!(
-                        "Vec<{}> is not supported: the element type contains a function \
+                        "`Vec<{}>` is not supported: the element type contains a function \
                          value, and each closure environment has a sole owner — store \
                          the functions directly in a Vec<fn(...)> instead",
                         resolved.user_facing()

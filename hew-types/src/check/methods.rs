@@ -466,7 +466,7 @@ impl Checker {
                                             TypeErrorKind::InvalidOperation,
                                             span,
                                             format!(
-                                                "HashSet element type `{name}` has zero size \
+                                                "`HashSet` element type `{name}` has zero size \
                                                  or contains a type whose layout cannot be \
                                                  determined; layout element types must have \
                                                  non-zero size",
@@ -491,7 +491,7 @@ impl Checker {
                                     )
                                 } else {
                                     format!(
-                                        "HashSet element type `{name}` contains a managed field \
+                                        "`HashSet` element type `{name}` contains a managed field \
                                          (`{}`); layout-element hashing requires fixed-size Copy \
                                          fields — use a type without heap-managed fields",
                                         bad_ty.user_facing(),
@@ -514,7 +514,7 @@ impl Checker {
                                     TypeErrorKind::InvalidOperation,
                                     span,
                                     format!(
-                                        "HashSet element type `{name}` contains a field of type \
+                                        "`HashSet` element type `{name}` contains a field of type \
                                          `{}` which is not a fixed-size Copy type; layout element \
                                          types require all fields to be fixed-width primitives or \
                                          nested Copy records",
@@ -532,7 +532,7 @@ impl Checker {
                                     TypeErrorKind::InvalidOperation,
                                     span,
                                     format!(
-                                        "HashSet element type `{}` must be a `record`-keyword type \
+                                        "`HashSet` element type `{}` must be a `record`-keyword type \
                                          to use the layout element ABI; non-record named types are \
                                          not guaranteed to be Copy value-semantic",
                                         bad_ty.user_facing(),
@@ -705,7 +705,7 @@ impl Checker {
                                                                         TypeErrorKind::InvalidOperation,
                                                                         check.span.clone(),
                                                                         format!(
-                                                                            "HashMap value type `{val_name}` has zero size or contains a type whose layout cannot be determined; layout-value types must have non-zero size",
+                                                                            "`HashMap` value type `{val_name}` has zero size or contains a type whose layout cannot be determined; layout-value types must have non-zero size",
                                                                         ),
                                                                     );
                                                                     if let Some(module) =
@@ -725,7 +725,7 @@ impl Checker {
                                                                 TypeErrorKind::InvalidOperation,
                                                                 check.span.clone(),
                                                                 format!(
-                                                                    "HashMap value type `{val_name}` is not defined; cannot compute layout for layout-key HashMap",
+                                                                    "`HashMap` value type `{val_name}` is not defined; cannot compute layout for layout-key `HashMap`",
                                                                 ),
                                                             );
                                                             if let Some(module) =
@@ -1078,7 +1078,7 @@ impl Checker {
                 let mut err = crate::error::TypeError::new(
                     TypeErrorKind::InvalidOperation,
                     span_key.start..span_key.end,
-                    format!("Channel<{resolved}> is not supported: {reason}"),
+                    format!("`Channel<{resolved}>` is not supported: {reason}"),
                 );
                 if let Some(module) = &entry.source_module {
                     err = err.with_source_module(module.clone());

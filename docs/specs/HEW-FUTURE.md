@@ -76,9 +76,9 @@ for the shipped arms):
   binding `Option<T>`). Deferred because no usable `Stream<T>` handle can
   be obtained today: every acquisition path (`stream.pipe()` tuple
   extraction, `stream.from_file(...)?` Result extraction) trips the
-  owned-handle aggregate-extraction fail-closed (`OwnedHandleAggregate*`,
-  tracked for v0.5.1), and a bare `Stream<T>.recv()` is not yet ABI-wired
-  in codegen. Returns once stream-handle binding lands.
+  owned-handle aggregate-extraction fail-closed (`OwnedHandleAggregate*`),
+  and a bare `Stream<T>.recv()` is not yet ABI-wired in codegen. Returns
+  once stream-handle binding lands.
 - **Task-await arm** (`<id> from await <task>`, binding `T` for
   `Task<T>`). Deferred because `Task<T>` is not nameable (§4.3) and
   `fork name = expr;` is parser-only in this build, so there is no

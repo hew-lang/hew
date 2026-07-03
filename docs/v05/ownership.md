@@ -1,17 +1,19 @@
 # Hew v0.5 Value-Semantics and Ownership Contract
 
-> **Status**: P0 (surface). Codegen/runtime support lands in P1–P4.
+## Core principle: single ownership, move by default
 
-## Core principle: value semantics by default
+Hew's owned heap types (`string`, `bytes`, `Vec<T>`, `HashMap<K,V>`, and
+user-defined types) have exactly one owner at a time. Assigning a binding,
+passing an owned value to a function, or sending it to an actor **moves**
+it — the source binding becomes invalid, and using it afterward is a
+compile-time `use of moved value` error. There is no implicit copy-on-call.
 
-Hew programs reason in values, not references. When you pass a `string` to a function,
-the callee gets its own copy of that value — it cannot observe mutations the caller makes
-later, and the caller cannot observe changes inside the callee.
+Reaching for a second independent copy is explicit: `val.clone()` (method
+form) or `clone val` (prefix form) — see below.
 
-Under the hood, Hew uses **copy-on-write (COW)** with atomic reference-counting so that
-physically distinct copies are only allocated when one side mutates the shared payload
-(similar to the `bytes` mechanism, generalized to `string`, `Vec`, and other heap types in P2+).
-The surface contract is pure value semantics — the COW mechanism is invisible.
+Sending a value to another actor is also a move at the language level, with a
+runtime-level optimization for immutable-shareable types (`string`, `bytes`)
+— see "Move on send" below.
 
 ## `&T` — immutable borrow marker
 
@@ -40,45 +42,51 @@ fn describe(s: &string) -> string {
 The parser will reject `&mut T` with a diagnostic. `&var T` is also rejected. These forms
 are reserved for future work.
 
-## `.clone()` — explicit deep copy (P2+)
+## `.clone()` / `clone x` — explicit copy
 
-The `CloneNotYetSupported` diagnostic is emitted for **unresolved, zero-argument `.clone()`
-calls** — i.e. a bare `x.clone()` that the type-checker has not mapped to any real method
-(the M-COW value-clone path that is not yet wired):
+`val.clone()` (method form) and `clone val` (prefix form, unary precedence) are
+equivalent and are the canonical way to get a second independent copy of an
+owned value without consuming the original:
 
 ```hew
-let y = x.clone();  // error: CloneNotYetSupported  (unresolved M-COW deep-copy)
+let a: Vec<i64> = Vec::new();
+a.push(1); a.push(2);
+let b = clone a;      // == a.clone() — independent copy
+b.push(99);
+println(a.len());     // 2
+println(b.len());     // 3
 ```
 
-**Already-resolved `.clone()` methods remain legal and compile normally.** For example, a
-user-declared `trait Clone { fn clone(val: Self) -> Self; }` whose call the type-checker
-resolved — or a standard-library type that ships its own `.clone()` method — is not
-affected by this diagnostic. The intercept is limited to unresolved, zero-arg calls that
-would otherwise silently return the same handle and violate value semantics.
+`string`, `Vec<T>`, `HashMap<K,V>`, `HashSet<T>`, and records (via the
+`RecordCloneInplace`/`CopyCloneNoop` MIR rewrites) all have a wired copy path
+and clone correctly. The `CloneNotYetSupported` diagnostic is a fail-closed
+backstop: it fires for a `.clone()` call the checker cannot map to any real
+copy path (a type with no clone method at all, or a heap type whose runtime
+copy path genuinely isn't wired yet, e.g. `bytes`). It never fires for
+already-resolved clones, and it never silently aliases — every unresolved
+`.clone()` call is a compile-time error, not a runtime surprise.
 
-The runtime deep-copy path (`VWT.copy` / COW `ensure_unique`) will be connected to the
-unresolved `.clone()` case in P2 once the COW refcount infrastructure has been generalized
-across heap types. Until then the fail-closed diagnostic ensures no silent alias is
-produced.
+## Move on send
 
-**Workaround for P0:** if you need an explicit copy today and have no resolved `.clone()`
-method, restructure to pass by value. By-value pass already retains under M-COW (the
-`IntentKind::Read` path), so the value the callee holds is semantically independent.
-
-## Send = value-equal copy
-
-When an actor sends a value to another actor via a `receive fn` call, the value is
-**copied** (retain-then-use in the recipient, not a move from the sender):
+When a value crosses an actor boundary — a `receive fn` method call or
+`.send()` on a lambda-actor handle — it is **moved**: the sender can no
+longer use it.
 
 ```hew
 let greeting = "hello";
 printer.print_message(greeting);
-// `greeting` is still valid here — send does NOT consume it
+// println(greeting);  // compile error: use of moved value `greeting`
 ```
 
-This is the M-COW contract: by-value pass = RETAIN (`VWT.copy`), never a move. The move
-fast path (`Linear`/`iso` zero-copy handoff) is planned for P6 for provably-unique
-single-recipient sends.
+At the runtime level the send mechanism is gated by the value's
+admissibility class: immutable-shareable owned types (`string`, `bytes`) are
+alias-shared by refcount retain (no byte copy, with a copy-on-write fork on
+first mutation of a shared buffer); mutable collections (`Vec<T>`,
+`HashMap<K,V>`, `HashSet<T>`) are deep-copied into the receiver's per-actor
+heap. From the program's perspective both are indistinguishable from
+move-then-independent-value — the sender's binding is invalid either way.
+Reach for `.clone()` first if you need to keep using the value after
+sending it. See HEW-SPEC-2026.md §3.4.4 and §3.7.2 for the full model.
 
 ## Equality: structural only (Q322)
 
@@ -102,13 +110,10 @@ cycle collector nor weak references exist yet).
 **Guideline:** design data structures as DAGs (trees, acyclic graphs). Cycles are a
 documented limitation for v0.5; future work will evaluate ORCA-style cycle collection.
 
-## Roadmap
+## Remaining work
 
-| Phase | Content |
-|-------|---------|
-| P0 (now) | `&T` surface syntax, fail-closed diagnostic for unresolved `.clone()`, value-semantics contract |
-| P1 | Layout-witness VWT defined and bound to `bytes` |
-| P2 | COW refcount generalized to `string`/`Vec`/`Array`/`HashMap`/`HashSet`; `.clone()` wired |
-| P3 | Drop-site emission via VWT; MIR `build_lifo_drops` integration |
-| P4 | `std/`/`examples/` full migration; diagnostics polish |
-| P6 | `Linear`/`iso` zero-copy move fast path for provably-unique actor sends |
+A zero-copy ownership-move fast path for provably-unique, single-recipient
+sends of `Linear`/`iso` values is designed but not yet surfaced in edition
+2026 — see HEW-SPEC-2026.md §3.7.2. Every other mechanism described above
+(move-on-assignment, move-on-send with the alias-share/deep-copy gate,
+`.clone()`/`clone x`) is shipped.

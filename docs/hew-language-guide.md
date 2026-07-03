@@ -2812,9 +2812,9 @@ canonical method names are `recv()` / `send()` — not `next()` / `write()`. `re
 yields `Option<bytes>` (`None` is EOF); match it, never unwrap. `await sink.send`
 is statement-position only. Build the pipe with the public
 `std::stream.bytes_pipe(capacity)` constructor — no raw extern, no `unsafe` — and
-turn text into a frame with the public `string.to_bytes()` surface. In v0.5 keep
-both ends in one handler: moving an owned `Stream`/`Sink` into actor state is NYI
-(owned-handle aggregate state lands in v0.5.1). Full example:
+turn text into a frame with the public `string.to_bytes()` surface. Keep both
+ends in one handler: moving an owned `Stream`/`Sink` into actor state is not
+yet supported (`OwnedHandleAggregateExtractionUnsupported`). Full example:
 [`examples/v05/surfaces/typed_streams.hew`](../examples/v05/surfaces/typed_streams.hew).
 
 ### Channels — `channel.new`, `await rx.recv()`, and select arms
@@ -3120,15 +3120,10 @@ Use the FREE-FUNCTION surface — `tls.connect(host, port)` (system-root verifie
 are `bytes`: build a payload with the public `string.to_bytes()` surface and decode
 with `bytes.to_string()`. The method form (`stream.read(n)`) is NOT supported yet.
 
-> **Known gap (v0.5):** the TLS data-plane FFI bridge
-> (`hew_tls_write_result` / `hew_tls_read_result`) is wired to the legacy
-> `(ptr, len)` / `HewVec` byte ABI while Hew's `bytes` is a `BytesTriple`, so
-> `tls.write` currently transmits 0 bytes (the length is dropped at the boundary)
-> and the response read does not complete. `tls.connect` also does not record a
-> failed handshake in `last_error()`. The snippet above is the correct caller
-> shape and type-checks/runs to completion (reporting the short write); the
-> encrypted round-trip works once the runtime bridge adopts the `BytesTriple`
-> ABI. Tracked for the under-the-hood TLS workstream.
+> **Known gap:** `tls.connect` does not record a failed handshake in
+> `last_error()` — a failed connect returns a zero-value `TlsStream` with no
+> way to retrieve why. The encrypted round-trip itself (`tls.write` /
+> `tls.read`) works correctly; the data-plane FFI bridge takes `bytes` by
+> pointer to a `BytesTriple`, matching the runtime's representation.
 
-Full example (fail-closed on the short write so it terminates):
-[`examples/net/tls_client.hew`](../examples/net/tls_client.hew).
+Full example: [`examples/net/tls_client.hew`](../examples/net/tls_client.hew).

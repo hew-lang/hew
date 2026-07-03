@@ -764,16 +764,16 @@ pub enum HirDiagnosticKind {
         /// (e.g. `"bool"`, `"char"`, `"f32"`).
         element_ty: String,
     },
-    /// `.clone()` called on a value whose runtime copy path is not yet wired
-    /// to the HIR/MIR pipeline in this phase.
+    /// `.clone()` called on a value whose runtime copy path is not wired
+    /// to the HIR/MIR pipeline.
     ///
     /// Fail-closed per the no-silent-stub invariant (M-COW P0):
-    /// `.clone()` must NEVER be a silent no-op. For types whose runtime
-    /// already has a copy path (e.g. `Bytes` → `hew_bytes_clone_ref`), the
-    /// wiring will be completed in P2.  For types without a refcount copy
-    /// path yet (String/Vec/HashMap/HashSet), P2 adds the refcount mechanism
-    /// first.  In both cases the user should restructure to avoid `.clone()`
-    /// for now, or wait for P2.
+    /// `.clone()` must NEVER be a silent no-op. `String`, `Vec`, `HashMap`,
+    /// `HashSet`, and records (via `RecordCloneInplace`/`CopyCloneNoop`) all
+    /// have wired copy paths and are resolved by the checker before this
+    /// gate is reached. This diagnostic is the fail-closed backstop for the
+    /// remaining unresolved cases — e.g. a type with no known clone method
+    /// at all.
     CloneNotYetSupported {
         /// Human-readable rendering of the receiver's type.
         receiver_ty: String,

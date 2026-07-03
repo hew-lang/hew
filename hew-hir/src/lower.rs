@@ -16008,12 +16008,44 @@ impl LowerCtx {
         }
     }
 
+    /// #2372: fold `-<int-literal>` into a single signed literal instead of
+    /// negating an already-narrowed-to-width literal at runtime.
+    ///
+    /// Mirrors the `Expr::Literal(lit)` arm of `lower_expr_inner` exactly
+    /// (same `expr_types` lookup, same `unwrap_or(default_ty)` fallback):
+    /// after the fold this expression IS semantically a literal, so it
+    /// inherits the literal contract rather than the compound-expression one.
+    /// `value` is always non-negative here -- the parser only ever hands
+    /// `lower_unary_expr` a bare `Literal` operand under `Negate` when the
+    /// digits parsed positively (see `parse_negated_int_literal`), so
+    /// `-value` never itself overflows `i64`.
+    fn lower_negated_int_literal(&mut self, value: i64, span: &Span) -> (HirExprKind, ResolvedTy) {
+        let negated = -value;
+        let default_ty = ResolvedTy::I64;
+        let ty = {
+            let checker_key = self.mk_key(span);
+            if let Some(checker_ty) = self.expr_types.get(&checker_key) {
+                ResolvedTy::from_ty(checker_ty).unwrap_or(default_ty)
+            } else {
+                default_ty
+            }
+        };
+        self.assert_resolved_ty_totality(span);
+        (HirExprKind::Literal(HirLiteral::Integer(negated)), ty)
+    }
+
     fn lower_unary_expr(
         &mut self,
         op: UnaryOp,
         operand: &Spanned<Expr>,
         span: &Span,
     ) -> (HirExprKind, ResolvedTy) {
+        if op == UnaryOp::Negate {
+            if let Expr::Literal(Literal::Integer { value, .. }) = &operand.0 {
+                return self.lower_negated_int_literal(*value, span);
+            }
+        }
+
         let operand_expr = self.lower_expr(operand, IntentKind::Read);
 
         if op == UnaryOp::RawDeref {

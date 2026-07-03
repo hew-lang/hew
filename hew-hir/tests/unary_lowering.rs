@@ -87,3 +87,20 @@ fn unary_missing_checker_type_info_fails_closed() {
     );
     assert!(output.into_result().is_err());
 }
+
+#[test]
+fn negated_int_min_literal_lowers_without_unary_node() {
+    // #2372: `-2147483648` at exactly i32::MIN must not carry a
+    // HirExprKind::Unary{Negate, ..} node -- that shape is what caused the
+    // runtime IntegerOverflow trap.
+    let output = checked_lower("fn main() -> i32 { -2147483648 }");
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let HirItem::Function(function) = &output.module.items[0] else {
+        panic!("expected function item");
+    };
+    let tail = function.body.tail.as_deref().expect("main has tail expr");
+    assert!(
+        !contains_unary(tail, UnaryOp::Negate),
+        "tail should not contain a Negate unary node after the #2372 fold: {tail:#?}"
+    );
+}

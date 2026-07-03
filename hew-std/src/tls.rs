@@ -1656,7 +1656,10 @@ mod tests {
 
         // The reap proof: hew_tls_close must join the reader promptly (no hang).
         // The reader's worst-case exit latency is TLS_READER_TIMEOUT (250 ms);
-        // closing must return well within a generous bound.
+        // closing must return well within a generous bound. Routed into the
+        // `real-timing` nextest group (.config/nextest.toml) alongside its
+        // sibling below — both measure a real OS-scheduled thread join and
+        // starve under full-workspace parallel load otherwise (#2358).
         let close_start = Instant::now();
         // SAFETY: `stream_ptr` was produced by `from_stream` and not yet freed.
         unsafe { hew_tls_close(stream_ptr) };
@@ -1741,6 +1744,11 @@ mod tests {
         let inner_arc = Arc::clone(unsafe { &(*stream_ptr).inner });
 
         // The reap proof: closing a live, blocked reader returns promptly.
+        // This measurement is an irreducibly real OS-scheduling bound (a live
+        // thread parked in a socket read, joined via a real JoinHandle), so it
+        // is routed into the `real-timing` nextest group (max-threads = 1,
+        // .config/nextest.toml) — full-workspace parallel runs would otherwise
+        // starve it past the deadline below (#2358).
         let close_start = Instant::now();
         // SAFETY: `stream_ptr` was produced by `from_stream` and not yet freed.
         unsafe { hew_tls_close(stream_ptr) };

@@ -1,0 +1,75 @@
+// MIR-corpus fixture: skipped AGGREGATE fields in a partial match
+// destructure — the exact-drop-op matrix for inline-composite shapes.
+//
+// Every arm binds only the BitCopy `n` field and wildcards one owned
+// aggregate sibling. The raw golden pins that each skipped aggregate emits
+// `drop_field_in_place` (the `Instr::FieldDropInPlace` op, type-directed at
+// codegen through `emit_heap_slot_drop`), never a field load + `drop` pair
+// (the load path has no wired release for aggregates and would be a
+// wrong-ABI free):
+//
+//   - user record field (`Inner`) — this is also the bitcopy-binder
+//     suppression pin: with NO heap-owning extracted binder, only the
+//     provers' direct `FieldDropInPlace` exclusion rule suppresses the
+//     scrutinee's composite drop;
+//   - nested tuple field (`(string, i64)`);
+//   - inline enum field (`Shade`, string payload).
+//
+// Inline composites have no null-store postcondition; exactly-once
+// discharge rests on straight-line pre-body emission plus parent
+// suppression. The elab golden therefore pins that no exit or back-edge
+// drop plan contains the destructured scrutinee root.
+type Inner {
+    value: string;
+}
+
+enum Shade {
+    Plain;
+    Named(string);
+}
+
+type HoldsRecord {
+    n: i64;
+    inner: Inner;
+}
+
+type HoldsTuple {
+    n: i64;
+    pair: (string, i64);
+}
+
+type HoldsEnum {
+    n: i64;
+    shade: Shade;
+}
+
+fn skip_record_field(k: i64) -> i64 {
+    let t = HoldsRecord { n: k, inner: Inner { value: string_concat("agg-r-", "payload") } };
+    let x = match t {
+        HoldsRecord { n: x, inner: _ } => x,
+    };
+    x
+}
+
+fn skip_tuple_field(k: i64) -> i64 {
+    let t = HoldsTuple { n: k, pair: (string_concat("agg-t-", "payload"), k) };
+    let x = match t {
+        HoldsTuple { n: x, pair: _ } => x,
+    };
+    x
+}
+
+fn skip_enum_field(k: i64) -> i64 {
+    let t = HoldsEnum { n: k, shade: Shade::Named(string_concat("agg-e-", "payload")) };
+    let x = match t {
+        HoldsEnum { n: x, shade: _ } => x,
+    };
+    x
+}
+
+fn main() -> i64 {
+    let a = skip_record_field(1);
+    let b = skip_tuple_field(2);
+    let c = skip_enum_field(3);
+    a + b + c - 6
+}

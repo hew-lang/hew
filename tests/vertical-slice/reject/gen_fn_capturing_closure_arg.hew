@@ -1,0 +1,28 @@
+// Reject: a CAPTURING closure passed where a generator declares a `fn(..)`
+// parameter fails CLOSED at check time. The closure structurally unifies
+// with `fn(i64) -> i64` but carries a non-null env word (the heap box holding
+// `k`); the generator env is a flat copy that never recurses into inner
+// pointers and the body side never drops a fn-typed capture, so nothing
+// could ever release that box — every constructed generator would leak it.
+// The refusal fires at the generator-constructor call boundary, where the
+// argument's real closure shape is still visible (the generator's own frame
+// sees only the null-env-presumptive `fn(..)` type).
+gen fn mapped(n: i64, f: fn(i64) -> i64) -> i64 {
+    var i = 0;
+    while i < n {
+        yield f(i);
+        i = i + 1;
+    }
+}
+
+fn run_once(k: i64) -> i64 {
+    var total = 0;
+    for v in mapped(3, |x: i64| x * k) {
+        total = total + v;
+    }
+    total
+}
+
+fn main() {
+    println(run_once(2));
+}

@@ -1714,11 +1714,13 @@ fn run_match_tuple_destructure_owned_drops_once() {
 
 /// Non-BitCopy record match destructure — PARTIAL extraction (wildcard on
 /// an owned `string` sibling) across 100k iterations. The partial-extraction
-/// emitter loads the wildcarded field into a temp and emits an inline
-/// `Instr::Drop` with the leaf release symbol (`hew_string_drop`). Without
-/// that emission the wildcarded sibling leaked — the drop spine's composite
-/// suppression already kicks in once any binder owns release. A double-free
-/// (composite + binder + inline drop all firing) aborts; a leak grows RSS.
+/// emitter discharges the wildcarded `string` through
+/// `Instr::FieldDropInPlace` (raw slot load + `hew_string_drop` +
+/// null-store — string field LOADS retain via `hew_string_clone`, so a
+/// load+drop pair would retain-cancel and leak the original slot value).
+/// The drop spine's composite suppression already kicks in once any binder
+/// owns release. A double-free (composite + binder + in-place drop all
+/// firing) aborts; a leak grows RSS.
 #[test]
 fn run_match_record_partial_extraction_owned_drops_once() {
     require_codegen();
@@ -1744,20 +1746,52 @@ fn run_match_record_partial_extraction_owned_drops_once() {
     assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
 }
 
-/// Fail-closed: match-destructure wildcard on an owned-aggregate field
-/// (here `Inner` is a record carrying a `string`). The inline-drop
-/// dispatcher cannot emit `DropKind::RecordInPlace`, so
-/// `project_field_inline_drop_symbol` returns `None` for owned record /
-/// tuple / enum field types and the pre-flight emits
-/// `E_NOT_YET_IMPLEMENTED: MIR lowering for match-destructure wildcard on
-/// owned aggregate field`. The guard guarantees the lift never silently
-/// leaks an owned-aggregate sibling.
+/// Match-destructure wildcard on an owned-AGGREGATE field (here `Inner`
+/// is a record carrying a `string`) — the skipped field is discharged in
+/// place through `Instr::FieldDropInPlace` (type-directed at codegen via
+/// `emit_heap_slot_drop`), with the composite-drop provers excluding the
+/// scrutinee root directly on the op's base. A regression that
+/// re-admitted the composite alongside the in-place drop would double-free
+/// the nested string leaf and abort at `free_cstring`'s sentinel.
 #[test]
-fn check_match_destructure_wildcard_owned_aggregate_fails_closed() {
+fn run_match_record_wildcard_owned_aggregate_field_drops_once() {
     require_codegen();
 
     let source = repo_root()
-        .join("tests/vertical-slice/reject/match_destructure_wildcard_owned_aggregate.hew");
+        .join("tests/vertical-slice/accept/match_record_wildcard_owned_aggregate_field.hew");
+    let expected =
+        std::fs::read_to_string(repo_root().join(
+            "tests/vertical-slice/accept/match_record_wildcard_owned_aggregate_field.expected",
+        ))
+        .expect("read match_record_wildcard_owned_aggregate_field.expected");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "match_record_wildcard_owned_aggregate_field should run cleanly (a composite \
+         re-drop of the in-place-discharged field would abort); stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
+/// Fail-closed boundary: match-destructure wildcard on a CLOSURE-typed
+/// field. Neither discharge path can place it — no leaf release symbol
+/// (`project_field_inline_drop_symbol` returns `None`) and the in-place
+/// classifier (`field_drop_in_place_admissible`) refuses closure shapes
+/// (the env box hides behind a non-owning `fn` surface). The pre-flight
+/// emits `E_NOT_YET_IMPLEMENTED: MIR lowering for match-destructure
+/// wildcard on owned aggregate field`, guaranteeing no silent leak or
+/// wrong-ABI free for shapes without a proven in-place release.
+#[test]
+fn check_match_destructure_wildcard_closure_field_fails_closed() {
+    require_codegen();
+
+    let source = repo_root()
+        .join("tests/vertical-slice/reject/match_destructure_wildcard_closure_field.hew");
     let output = Command::new(hew_binary())
         .arg("check")
         .arg(&source)
@@ -1780,6 +1814,176 @@ fn check_match_destructure_wildcard_owned_aggregate_fails_closed() {
         combined.contains("match-destructure wildcard on owned aggregate field"),
         "expected fail-closed diagnostic; got: {combined}"
     );
+}
+
+/// Fail-closed boundary (#2359): a generator yielding `Vec<indirect-enum>`
+/// is rejected at check time. The element's per-element node free is
+/// unwired, so the consuming body's per-frame release could only be the
+/// buffer-only `hew_vec_free` — a per-frame element-node leak (previously
+/// 2 nodes x N iterations, compiling clean). The refusal must fire at the
+/// yield/recv release-verdict consultation: the consumer binding is
+/// retracted from `owned_locals` before the end-of-pass
+/// `unsupported_vec_element_diagnostics` scan, so a scan-only check never
+/// sees it.
+#[test]
+fn check_gen_yield_vec_indirect_enum_fails_closed() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/reject/gen_yield_vec_indirect_enum.hew");
+    let output = Command::new(hew_binary())
+        .arg("check")
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew check");
+
+    assert!(
+        !output.status.success(),
+        "expected check to fail; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("every yielded or received frame would leak its heap nodes"),
+        "expected the yield/recv fail-closed diagnostic; got: {combined}"
+    );
+}
+
+/// Guard (#2359, recv leg): `Channel<Vec<indirect-enum>>` stays rejected
+/// UPSTREAM by the channel element-layout witness — the existing check-time
+/// diagnostic, not a new one. No recv surface can type this element class
+/// today, so the recv-`Some` release seam is unreachable for it; this guard
+/// pins the witness so a future weakening cannot silently open the recv
+/// path into the Vec-element release seam.
+#[test]
+fn check_channel_vec_indirect_enum_rejected_by_layout_witness() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/reject/channel_vec_indirect_enum.hew");
+    let output = Command::new(hew_binary())
+        .arg("check")
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew check");
+
+    assert!(
+        !output.status.success(),
+        "expected check to fail; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("cannot ride the element-layout queue witness"),
+        "expected the upstream element-layout witness diagnostic; got: {combined}"
+    );
+}
+
+/// CAP-11 fail-closed gate: a CAPTURING closure passed where a generator
+/// declares a `fn(..)` parameter is refused at check time. The closure
+/// unifies structurally with `fn(..)` but carries a non-null env word; the
+/// generator env is a flat copy nothing can ever release, so admitting the
+/// launder leaks one env box per constructed generator (previously: compiled
+/// clean and leaked exactly that box per launder).
+#[test]
+fn check_gen_fn_capturing_closure_arg_fails_closed() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/reject/gen_fn_capturing_closure_arg.hew");
+    let output = Command::new(hew_binary())
+        .arg("check")
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew check");
+
+    assert!(
+        !output.status.success(),
+        "expected check to fail; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("can never release a capturing closure"),
+        "expected the laundered-closure fail-closed diagnostic; got: {combined}"
+    );
+}
+
+/// CAP-11 rebind leg: a `fn(..)`-typed `var` REASSIGNED a capturing closure
+/// is tainted by a whole-body pre-pass, so the launder cannot hide behind
+/// the binding's `fn(..)` static type or behind statement order (a back-edge
+/// assignment runs before the generator call on the second loop iteration).
+#[test]
+fn check_gen_fn_capturing_closure_rebind_fails_closed() {
+    require_codegen();
+
+    let source =
+        repo_root().join("tests/vertical-slice/reject/gen_fn_capturing_closure_rebind.hew");
+    let output = Command::new(hew_binary())
+        .arg("check")
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew check");
+
+    assert!(
+        !output.status.success(),
+        "expected check to fail; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("can never release a capturing closure"),
+        "expected the laundered-closure fail-closed diagnostic; got: {combined}"
+    );
+}
+
+/// CAP-11 admitted boundary: the two null-env `fn(..)` value shapes — a
+/// named-fn reference and a capture-free closure — still compile and run
+/// with exact stdout. Both pairs carry a null env word by construction, so
+/// the generator's flat env copy has no heap box to leak or alias; a gate
+/// regression that over-tightened onto these shapes would fail this test at
+/// compile time.
+#[test]
+fn run_gen_fn_null_env_fn_values_exact_stdout() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/gen_fn_null_env_fn_values.hew");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/gen_fn_null_env_fn_values.expected"),
+    )
+    .expect("read gen_fn_null_env_fn_values.expected");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "gen_fn_null_env_fn_values should run cleanly; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
 }
 
 /// Non-BitCopy record match destructure — FULL extraction with a

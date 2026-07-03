@@ -3657,21 +3657,79 @@ if "${HEW}" compile \
 fi
 grep -q 'non-literal duration' "${reject_output}"
 
-# `lower_match_project` lowers non-BitCopy
-# record/tuple match destructure (heap-owning fields), but a wildcard `_` on
-# an *owned-aggregate* field (record/tuple/enum carrying heap payload) still
-# fails closed — the inline-drop dispatcher only emits leaf release symbols
-# (`hew_string_drop`, `hew_vec_free*`, `hew_hashmap_free_layout`,
-# `hew_hashset_free_layout`, `hew_gen_free`, `hew_bytes_drop`), not
-# `DropKind::RecordInPlace`. Loading such a field into a temp + inline-Drop
-# would emit a wrong-ABI free, so MIR refuses. This pins the diagnostic.
+# `lower_match_project` discharges a wildcard `_` on an owned-aggregate
+# field (record/tuple/enum/fixed-array carrying heap payload) through
+# `Instr::FieldDropInPlace` — see
+# `accept/match_record_wildcard_owned_aggregate_field.hew`. Shapes the
+# in-place classifier cannot place (closures, affine handles, slices,
+# `dyn Trait` fields) still fail closed at MIR construction time: a
+# closure field hides an env box behind a non-owning `fn` surface, so a
+# structural free would leak or free with the wrong ABI. This pins the
+# fail-closed boundary diagnostic.
 if "${HEW}" check \
-    "${ROOT}/tests/vertical-slice/reject/match_destructure_wildcard_owned_aggregate.hew" \
+    "${ROOT}/tests/vertical-slice/reject/match_destructure_wildcard_closure_field.hew" \
     >"${reject_output}" 2>&1; then
-  echo "expected match_destructure_wildcard_owned_aggregate fixture to fail" >&2
+  echo "expected match_destructure_wildcard_closure_field fixture to fail" >&2
   exit 1
 fi
 grep -q 'match-destructure wildcard on owned aggregate field' "${reject_output}"
+
+# Reject (#2359): a generator yielding `Vec<indirect-enum>` fails CLOSED at
+# check time. The indirect-enum element's per-element node free is unwired,
+# so the yielded frame's only release would be the buffer-only `hew_vec_free`
+# — a per-frame element-node leak. The refusal fires at the yield/recv
+# release-verdict consultation (pre-retraction), so the retracted consumer
+# binding cannot bypass it the way it bypassed the final owned-locals scan.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/gen_yield_vec_indirect_enum.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected gen_yield_vec_indirect_enum fixture to fail" >&2
+  exit 1
+fi
+grep -q 'every yielded or received frame would leak its heap nodes' "${reject_output}"
+
+# Guard (#2359, recv leg): `Channel<Vec<indirect-enum>>` stays rejected
+# UPSTREAM by the channel element-layout witness at check time — the recv
+# surface cannot type this element class, so the recv-`Some` release seam is
+# unreachable for it. Pins the witness diagnostic so a future weakening
+# cannot silently open the recv path into the Vec-element release seam.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/channel_vec_indirect_enum.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected channel_vec_indirect_enum fixture to fail" >&2
+  exit 1
+fi
+grep -q 'cannot ride the element-layout queue witness' "${reject_output}"
+
+# Reject (CAP-11): a CAPTURING closure passed where a generator declares a
+# `fn(..)` parameter fails CLOSED at check time. The closure unifies
+# structurally with `fn(..)` but carries a non-null env word; the generator
+# env is a flat copy nothing can ever release, so admitting the launder
+# leaks one env box per constructed generator.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/gen_fn_capturing_closure_arg.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected gen_fn_capturing_closure_arg fixture to fail" >&2
+  exit 1
+fi
+grep -q 'can never release a capturing closure' "${reject_output}"
+
+# Reject (CAP-11, rebind leg): a `fn(..)`-typed var REASSIGNED a capturing
+# closure is tainted by a whole-body pre-pass — including back-edge
+# assignments that textually follow the generator call — so the launder
+# cannot hide behind statement order or the binding's `fn(..)` static type.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/gen_fn_capturing_closure_rebind.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected gen_fn_capturing_closure_rebind fixture to fail" >&2
+  exit 1
+fi
+grep -q 'can never release a capturing closure' "${reject_output}"
+
+# Accept (CAP-11 boundary): the two null-env `fn(..)` shapes stay admitted —
+# a named-fn reference and a capture-free closure both carry a null env word
+# by construction, so the generator's flat env copy has nothing to leak.
+run_accept_expect_stdout "gen_fn_null_env_fn_values"
 
 # A `BindingRef` scrutinee
 # whose owned fields are destructured (full or partial) must transition to

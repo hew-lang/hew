@@ -9,11 +9,13 @@
 //! aggregate's composite drop once any extracted binder owns release, but
 //! the wildcarded sibling has nobody to release it.
 //!
-//! The fix emits an inline `RecordFieldLoad` + `Instr::Drop` (with the
-//! leaf release symbol `hew_string_drop`) for every owned field NOT in
-//! `selected.bindings`. The extracted binder + the inline drop both seed
-//! release-owner attribution, the composite stays excluded, and every
-//! owned field is freed exactly once.
+//! The safety-drop loop emits `Instr::FieldDropInPlace` for every skipped
+//! `string` field NOT in `selected.bindings`: a raw slot load,
+//! `hew_string_drop` on the ORIGINAL handle, and a pointer-word null-store
+//! (string field LOADS retain via `hew_string_clone`, so a load+drop pair
+//! would retain-cancel and leak the slot value). The extracted binder and
+//! the in-place drop both suppress the scrutinee's composite drop, and the
+//! skipped field is freed exactly once.
 //!
 //! Observable contract: across many iterations the program prints `done`
 //! and exits 0 with bounded RSS. A regressed lift that leaked the

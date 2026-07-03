@@ -17434,6 +17434,10 @@ fn lower_instruction(
             lower_record_field_drop(fn_ctx, *record, *field_offset, ty, drop_fn)?;
             let _ = ctx;
         }
+        Instr::FieldDropInPlace { base, field, ty } => {
+            lower_field_drop_in_place(fn_ctx, *base, *field, ty)?;
+            let _ = ctx;
+        }
         Instr::RecordFieldStore {
             record,
             field_offset,
@@ -26784,42 +26788,15 @@ fn emit_one_elab_drop_unguarded(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> Code
                     df = drop.drop_fn,
                 )));
             }
-            let enum_name = crate::layout::enum_layout_key_for_ty(fn_ctx, &drop.ty)?;
-            // Synthesise the recursive free body on first reference, then resolve
-            // it. A declaration with no body would link-fail; refuse a dangling
-            // call.
-            emit_indirect_enum_free_body_only(fn_ctx, &enum_name)?;
-            let helper = get_or_declare_indirect_enum_free(fn_ctx.ctx, fn_ctx.llvm_mod, &enum_name);
-            if helper.count_basic_blocks() == 0 {
-                return Err(CodegenError::FailClosed(format!(
-                    "IndirectEnum ElabDrop @ {place:?} for enum `{enum_name}` resolved \
-                     `__hew_indirect_enum_free_{enum_name}`, but it has no body after \
-                     synthesis; refusing to emit a dangling helper call (LESSONS: \
-                     boundary-fail-closed).",
-                    place = drop.place,
-                )));
-            }
-            // Load the node pointer from the binding's alloca slot.
+            // The node free is the shared slot-addressed ritual: the binding's
+            // alloca slot IS the node-pointer word.
             let (slot, _) = place_pointer(fn_ctx, drop.place)?;
-            let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
-            let node_ptr = fn_ctx
-                .builder
-                .build_load(ptr_ty, slot, "indirect_enum_node_ptr")
-                .llvm_ctx("load indirect-enum node pointer for drop")?
-                .into_pointer_value();
-            // The thunk null-checks internally, so an already-null slot (moved
-            // out) calls it harmlessly; the call returns immediately. Pass the
-            // loaded node pointer; the thunk owns the recursion + dealloc.
-            fn_ctx
-                .builder
-                .build_call(helper, &[node_ptr.into()], "indirect_enum_free")
-                .llvm_ctx("indirect enum free call")?;
-            // raii-null-after-move: a second drop of this slot must be a no-op.
-            fn_ctx
-                .builder
-                .build_store(slot, ptr_ty.const_null())
-                .llvm_ctx("null-store indirect-enum slot after free")?;
-            Ok(())
+            emit_indirect_enum_node_free_at_slot(
+                fn_ctx,
+                slot,
+                &drop.ty,
+                &format!("IndirectEnum ElabDrop @ {place:?}", place = drop.place),
+            )
         }
     }
 }
@@ -27467,6 +27444,182 @@ fn emit_heap_slot_drop<'ctx>(
              refusing to silently no-op its drop (LESSONS: boundary-fail-closed)."
         ))),
     }
+}
+
+/// Free the indirect-enum heap node whose pointer is held in the word at
+/// `slot`, then null-store the slot. The single implementation of the
+/// indirect-enum release ritual — the whole-binding scope-exit drop
+/// (`DropKind::IndirectEnum`) and the field-addressed drop
+/// (`Instr::FieldDropInPlace`) both call it, so the two release paths cannot
+/// drift on symbol, null-tolerance, or postcondition.
+///
+/// Sequence: resolve the enum's registered layout key → synthesise the
+/// recursive `__hew_indirect_enum_free_<key>` body on first reference (a
+/// declaration with no body would link-fail; a dangling call is refused) →
+/// load the node pointer from `slot` → call the thunk (it null-checks
+/// internally, so a moved-out slot is a harmless no-op; the thunk owns the
+/// child recursion + `hew_dealloc`) → null-store `slot` so a structurally
+/// reachable second drop observes null (`raii-null-after-move`).
+fn emit_indirect_enum_node_free_at_slot<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    slot: PointerValue<'ctx>,
+    ty: &ResolvedTy,
+    label: &str,
+) -> CodegenResult<()> {
+    let enum_name = crate::layout::enum_layout_key_for_ty(fn_ctx, ty)?;
+    emit_indirect_enum_free_body_only(fn_ctx, &enum_name)?;
+    let helper = get_or_declare_indirect_enum_free(fn_ctx.ctx, fn_ctx.llvm_mod, &enum_name);
+    if helper.count_basic_blocks() == 0 {
+        return Err(CodegenError::FailClosed(format!(
+            "{label}: enum `{enum_name}` resolved \
+             `__hew_indirect_enum_free_{enum_name}`, but it has no body after \
+             synthesis; refusing to emit a dangling helper call (LESSONS: \
+             boundary-fail-closed).",
+        )));
+    }
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    let node_ptr = fn_ctx
+        .builder
+        .build_load(ptr_ty, slot, "indirect_enum_node_ptr")
+        .llvm_ctx("load indirect-enum node pointer for drop")?
+        .into_pointer_value();
+    fn_ctx
+        .builder
+        .build_call(helper, &[node_ptr.into()], "indirect_enum_free")
+        .llvm_ctx("indirect enum free call")?;
+    // raii-null-after-move: a second drop of this slot must be a no-op.
+    fn_ctx
+        .builder
+        .build_store(slot, ptr_ty.const_null())
+        .llvm_ctx("null-store indirect-enum slot after free")?;
+    Ok(())
+}
+
+/// Lower `Instr::FieldDropInPlace { base, field, ty }` — release one owned
+/// field of a record or tuple aggregate IN PLACE at its field address, the
+/// release resolved from `ty` alone (the op carries no `drop_fn`; see the
+/// instruction's model contract in `hew-mir/src/model.rs`).
+///
+/// Sequence: `place_pointer(base)` → struct GEP to the addressed field slot
+/// → `is_indirect_enum`-FIRST dispatch → otherwise
+/// `emit_heap_slot_drop(field_ptr, ty, …)`.
+///
+/// WHY the indirect-enum probe runs FIRST: an indirect-enum field slot holds
+/// a heap node POINTER whose release is the recursive
+/// `__hew_indirect_enum_free_<key>` node path (free owned children by tag,
+/// `hew_dealloc` the node, null-store the slot).  `emit_heap_slot_drop`
+/// classifies every named enum as `StateFieldCloneKind::Enum` and calls the
+/// INLINE `__hew_enum_drop_inplace_<key>` helper, which walks inline
+/// tagged-union storage — applied to a boxed node pointer that is a
+/// wrong-ABI drop.  The dispatch is explicit, never inferred from the slot
+/// shape.
+///
+/// Per-shape postconditions (the instruction's model contract):
+/// - pointer leaves (`string`, collection handles) and fat leaves (`bytes`):
+///   the dispatcher's arms null-store the released word;
+/// - indirect-enum fields: node free + null-store of the pointer word, via
+///   the shared slot ritual above;
+/// - inline composites (record / tuple / inline enum / fixed array): the
+///   in-place helpers free the composite's leaves and store NOTHING —
+///   idempotence rests on exactly-once execution plus prover-side parent
+///   suppression, both enforced MIR-side (the drop-plan verifier's
+///   inline-composite pairing rule).
+///
+/// Fail-closed guards (the MIR verifier rejects these shapes upstream;
+/// codegen re-checks rather than release a mistyped slot):
+/// - the selector must agree with the base's resolved type (`Record`
+///   addresses a named record local, `Tuple` a tuple local), and a tuple
+///   base's declared element type must equal the carried `ty`;
+/// - the addressed slot's LLVM type must match the carried `ty` exactly —
+///   one pointer word for an indirect-enum field (indirect-enum values are
+///   node pointers wherever they are stored), `resolve_ty(ty)` for every
+///   other shape.  An offset/type drift here would free the wrong slot with
+///   the wrong ABI.
+fn lower_field_drop_in_place(
+    fn_ctx: &FnCtx<'_, '_>,
+    base: Place,
+    field: hew_mir::FieldAddr,
+    ty: &ResolvedTy,
+) -> CodegenResult<()> {
+    let base_ty = place_resolved_ty(fn_ctx, base)?;
+    let idx = match (field, base_ty) {
+        (hew_mir::FieldAddr::Record(offset), ResolvedTy::Named { .. }) => offset.0,
+        (hew_mir::FieldAddr::Tuple(index), ResolvedTy::Tuple(elems)) => {
+            let declared = elems.get(index as usize).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "FieldDropInPlace element index {index} is out of bounds for \
+                     tuple base type {base_ty:?}"
+                ))
+            })?;
+            if declared != ty {
+                return Err(CodegenError::FailClosed(format!(
+                    "FieldDropInPlace @ element[{index}]: carried field type \
+                     {ty:?} does not match the base tuple's declared element \
+                     type {declared:?}; refusing to release a mistyped slot \
+                     (LESSONS: boundary-fail-closed)"
+                )));
+            }
+            index
+        }
+        (selector, other) => {
+            return Err(CodegenError::FailClosed(format!(
+                "FieldDropInPlace selector {selector:?} does not agree with the \
+                 base's resolved type {other:?} (a `Record` address requires a \
+                 named record base, a `Tuple` address a tuple base); refusing \
+                 to GEP a mistyped aggregate (LESSONS: boundary-fail-closed)"
+            )));
+        }
+    };
+    let (base_ptr, base_slot_ty) = place_pointer(fn_ctx, base)?;
+    let BasicTypeEnum::StructType(struct_ty) = base_slot_ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "FieldDropInPlace base place has non-struct slot type: {base_slot_ty:?}"
+        )));
+    };
+    let idx_usize = usize::try_from(idx).map_err(|_| {
+        CodegenError::FailClosed(format!(
+            "FieldDropInPlace field index {idx} exceeds usize::MAX — impossible"
+        ))
+    })?;
+    let element_tys = struct_ty.get_field_types();
+    let Some(slot_llvm_ty) = element_tys.get(idx_usize).copied() else {
+        return Err(CodegenError::FailClosed(format!(
+            "FieldDropInPlace field index {idx} is out of bounds for base \
+             struct with {} fields",
+            element_tys.len()
+        )));
+    };
+    let field_is_indirect_enum = matches!(
+        ty,
+        ResolvedTy::Named { name, .. }
+            if crate::layout::is_indirect_enum(name, fn_ctx.enum_layouts)
+    );
+    let expected_slot_ty: BasicTypeEnum = if field_is_indirect_enum {
+        fn_ctx.ctx.ptr_type(AddressSpace::default()).into()
+    } else {
+        resolve_ty(fn_ctx.ctx, ty, fn_ctx.record_layouts)?
+    };
+    if slot_llvm_ty != expected_slot_ty {
+        return Err(CodegenError::FailClosed(format!(
+            "FieldDropInPlace @ field[{idx}]: slot type {slot_llvm_ty:?} does \
+             not match the carried field type {ty:?} (expected \
+             {expected_slot_ty:?}); refusing to release a mistyped slot \
+             (LESSONS: boundary-fail-closed)"
+        )));
+    }
+    let field_ptr = fn_ctx
+        .builder
+        .build_struct_gep(struct_ty, base_ptr, idx, &format!("fdip_{idx}_gep"))
+        .llvm_ctx_with(|| format!("FieldDropInPlace struct_gep field {idx}"))?;
+    if field_is_indirect_enum {
+        return emit_indirect_enum_node_free_at_slot(
+            fn_ctx,
+            field_ptr,
+            ty,
+            &format!("FieldDropInPlace @ field[{idx}]"),
+        );
+    }
+    emit_heap_slot_drop(fn_ctx, field_ptr, ty, 0, &format!("fdip_f{idx}"))
 }
 
 /// Load an integer-typed `Place` and return its value coerced to the
@@ -50151,6 +50304,480 @@ mod tests {
         assert!(
             machine_layouts.contains_key("B"),
             "layout for indirect enum B must be registered"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // `Instr::FieldDropInPlace` — field-addressed type-directed drops
+    // ---------------------------------------------------------------
+
+    /// `indirect enum Node { Leaf(i64); Nil; }` — every value is a heap node
+    /// pointer.
+    fn fixture_indirect_node_layout() -> MirEnumLayout {
+        MirEnumLayout {
+            name: "Node".to_string(),
+            tag_width: 1,
+            variants: vec![
+                MachineVariantLayout {
+                    name: "Leaf".to_string(),
+                    field_tys: vec![ResolvedTy::I64],
+                    field_names: vec![],
+                },
+                MachineVariantLayout {
+                    name: "Nil".to_string(),
+                    field_tys: vec![],
+                    field_names: vec![],
+                },
+            ],
+            is_indirect: true,
+        }
+    }
+
+    /// A skipped `string` record field drops IN PLACE: raw slot load (never
+    /// the retaining `hew_string_clone` — a retain here cancels the release
+    /// and leaks the original handle), `hew_string_drop` on the original
+    /// value, then the pointer-word null-store postcondition.
+    #[test]
+    fn field_drop_in_place_string_record_field_releases_raw_and_null_stores() {
+        let outer = MirRecordLayout {
+            name: "Outer".to_string(),
+            field_tys: vec![ResolvedTy::String, ResolvedTy::I64],
+            field_names: vec![],
+        };
+        let ctx = Context::create();
+        let m = ctx.create_module("fdip_string_record");
+        let harness = build_harness(&ctx, std::slice::from_ref(&outer), &[]);
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "fdip_string_record_fn");
+        alloc_local(&mut fn_ctx, 0, ResolvedTy::named_user("Outer", vec![]));
+        lower_instruction(
+            &fn_ctx,
+            &Instr::FieldDropInPlace {
+                base: Place::Local(0),
+                field: hew_mir::FieldAddr::Record(FieldOffset(0)),
+                ty: ResolvedTy::String,
+            },
+            0,
+            &[],
+        )
+        .expect("string FieldDropInPlace on a record base must lower");
+        finish_test_fn(&fn_ctx);
+        assert!(m.verify().is_ok(), "string field-drop module must verify");
+        let ir = m.print_to_string().to_string();
+        assert_eq!(
+            ir.matches("call void @hew_string_drop(").count(),
+            1,
+            "exactly one hew_string_drop release of the original slot value; ir:\n{ir}"
+        );
+        assert!(
+            ir.contains("store ptr null"),
+            "the released pointer word must be null-stored (raii-null-after-move); ir:\n{ir}"
+        );
+        assert!(
+            !ir.contains("hew_string_clone"),
+            "no retain anywhere in the skipped-field sequence — a clone here \
+             cancels the release and leaks; ir:\n{ir}"
+        );
+    }
+
+    /// The same string release + null-store + no-retain contract for a TUPLE
+    /// parent addressed by positional element index.
+    #[test]
+    fn field_drop_in_place_string_tuple_element_releases_raw_and_null_stores() {
+        let ctx = Context::create();
+        let m = ctx.create_module("fdip_string_tuple");
+        let harness = build_harness(&ctx, &[], &[]);
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "fdip_string_tuple_fn");
+        alloc_local(
+            &mut fn_ctx,
+            0,
+            ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64]),
+        );
+        lower_instruction(
+            &fn_ctx,
+            &Instr::FieldDropInPlace {
+                base: Place::Local(0),
+                field: hew_mir::FieldAddr::Tuple(0),
+                ty: ResolvedTy::String,
+            },
+            0,
+            &[],
+        )
+        .expect("string FieldDropInPlace on a tuple base must lower");
+        finish_test_fn(&fn_ctx);
+        assert!(m.verify().is_ok(), "tuple field-drop module must verify");
+        let ir = m.print_to_string().to_string();
+        assert_eq!(
+            ir.matches("call void @hew_string_drop(").count(),
+            1,
+            "exactly one hew_string_drop release of the tuple element; ir:\n{ir}"
+        );
+        assert!(
+            ir.contains("store ptr null"),
+            "the released pointer word must be null-stored; ir:\n{ir}"
+        );
+        assert!(
+            !ir.contains("hew_string_clone"),
+            "no retain in the skipped-element sequence; ir:\n{ir}"
+        );
+    }
+
+    /// The mandatory `is_indirect_enum`-first dispatch: an indirect-enum
+    /// field frees through the recursive `__hew_indirect_enum_free_<key>`
+    /// node path — NEVER the inline `__hew_enum_drop_inplace_<key>` helper,
+    /// which walks inline tagged-union storage and is a wrong-ABI drop on a
+    /// boxed node pointer. Also pins the on-demand body synthesis (a real
+    /// `define`, not a dangling declaration) and the node-pointer
+    /// null-store postcondition.
+    #[test]
+    fn field_drop_in_place_indirect_enum_field_frees_node_never_inline_helper() {
+        let enum_fixtures = vec![fixture_indirect_node_layout()];
+        let ctx = Context::create();
+        let m = ctx.create_module("fdip_indirect_enum");
+        let harness = build_harness(&ctx, &[], &enum_fixtures);
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "fdip_indirect_enum_fn");
+        fn_ctx.enum_layouts = &enum_fixtures;
+        // The base is a tuple whose element 0 is the indirect-enum field. An
+        // indirect-enum value is one node-POINTER word wherever it is stored
+        // (enum payload slots and Vec elements lay out exactly this way), so
+        // the storage is built by hand as `{ ptr, i64 }`. `alloc_local`'s
+        // `resolve_ty` would embed the enum's OUTER struct — the inline
+        // layout this op refuses (see the congruence test below).
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let storage_ty = ctx.struct_type(&[ptr_ty.into(), ctx.i64_type().into()], false);
+        let slot = fn_ctx
+            .builder
+            .build_alloca(storage_ty, "local_0")
+            .expect("hand-built tuple storage alloca");
+        fn_ctx.locals.insert(0, (slot, storage_ty.into()));
+        fn_ctx.local_tys.insert(
+            0,
+            ResolvedTy::Tuple(vec![
+                ResolvedTy::named_user("Node", vec![]),
+                ResolvedTy::I64,
+            ]),
+        );
+        lower_instruction(
+            &fn_ctx,
+            &Instr::FieldDropInPlace {
+                base: Place::Local(0),
+                field: hew_mir::FieldAddr::Tuple(0),
+                ty: ResolvedTy::named_user("Node", vec![]),
+            },
+            0,
+            &[],
+        )
+        .expect("indirect-enum FieldDropInPlace must lower through the node-free path");
+        finish_test_fn(&fn_ctx);
+        assert!(m.verify().is_ok(), "indirect field-drop module must verify");
+        let ir = m.print_to_string().to_string();
+        assert!(
+            ir.contains("call void @__hew_indirect_enum_free_Node("),
+            "the field release must call the recursive node-free thunk; ir:\n{ir}"
+        );
+        assert!(
+            ir.contains("define internal void @__hew_indirect_enum_free_Node("),
+            "the thunk body must be synthesised on first reference, not left \
+             a dangling declaration; ir:\n{ir}"
+        );
+        assert!(
+            !ir.contains("__hew_enum_drop_inplace_Node"),
+            "mandatory-dispatch negative pin: the INLINE enum helper is a \
+             wrong-ABI drop on a boxed node pointer and must not appear; ir:\n{ir}"
+        );
+        assert!(
+            ir.contains("store ptr null"),
+            "the node-pointer word must be null-stored after the free; ir:\n{ir}"
+        );
+    }
+
+    /// An inline (non-indirect) enum field dispatches to the inline
+    /// tagged-union helper, whose body `emit_heap_slot_drop` synthesises on
+    /// demand from the registered layout — no up-front seed pass is needed
+    /// for `FieldDropInPlace`-carried types.
+    #[test]
+    fn field_drop_in_place_inline_enum_field_synthesizes_inline_drop_helper() {
+        let enum_fixtures = vec![MirEnumLayout {
+            name: "Wrap".to_string(),
+            tag_width: 1,
+            variants: vec![
+                MachineVariantLayout {
+                    name: "S".to_string(),
+                    field_tys: vec![ResolvedTy::String],
+                    field_names: vec![],
+                },
+                MachineVariantLayout {
+                    name: "N".to_string(),
+                    field_tys: vec![],
+                    field_names: vec![],
+                },
+            ],
+            is_indirect: false,
+        }];
+        let holder = MirRecordLayout {
+            name: "Holder".to_string(),
+            field_tys: vec![ResolvedTy::named_user("Wrap", vec![]), ResolvedTy::I64],
+            field_names: vec![],
+        };
+        let ctx = Context::create();
+        let m = ctx.create_module("fdip_inline_enum");
+        let harness = build_harness(&ctx, std::slice::from_ref(&holder), &enum_fixtures);
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "fdip_inline_enum_fn");
+        fn_ctx.enum_layouts = &enum_fixtures;
+        alloc_local(&mut fn_ctx, 0, ResolvedTy::named_user("Holder", vec![]));
+        lower_instruction(
+            &fn_ctx,
+            &Instr::FieldDropInPlace {
+                base: Place::Local(0),
+                field: hew_mir::FieldAddr::Record(FieldOffset(0)),
+                ty: ResolvedTy::named_user("Wrap", vec![]),
+            },
+            0,
+            &[],
+        )
+        .expect("inline-enum FieldDropInPlace must lower through the inline helper");
+        finish_test_fn(&fn_ctx);
+        assert!(
+            m.verify().is_ok(),
+            "inline-enum field-drop module must verify"
+        );
+        let ir = m.print_to_string().to_string();
+        assert!(
+            ir.contains("call void @__hew_enum_drop_inplace_Wrap("),
+            "an inline enum field drops through the tag-dispatched inline helper; ir:\n{ir}"
+        );
+        assert!(
+            ir.contains("define internal void @__hew_enum_drop_inplace_Wrap("),
+            "the inline helper body must be synthesised on demand; ir:\n{ir}"
+        );
+        assert!(
+            !ir.contains("__hew_indirect_enum_free_Wrap"),
+            "a non-indirect enum must not route to the node-free path; ir:\n{ir}"
+        );
+    }
+
+    /// A user-record field dispatches to `__hew_record_drop_inplace_<key>`,
+    /// synthesised on demand from the registered record layout — the record
+    /// half of the on-demand-synthesis coverage.
+    #[test]
+    fn field_drop_in_place_record_field_synthesizes_record_drop_helper() {
+        let inner = MirRecordLayout {
+            name: "Inner".to_string(),
+            field_tys: vec![ResolvedTy::String],
+            field_names: vec![],
+        };
+        let outer = MirRecordLayout {
+            name: "Outer2".to_string(),
+            field_tys: vec![ResolvedTy::named_user("Inner", vec![]), ResolvedTy::I64],
+            field_names: vec![],
+        };
+        let records = vec![inner, outer];
+        let ctx = Context::create();
+        let m = ctx.create_module("fdip_record_field");
+        let mut harness = build_harness(&ctx, &records, &[]);
+        harness
+            .record_field_resolved_tys
+            .insert("Inner".to_string(), vec![ResolvedTy::String]);
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "fdip_record_field_fn");
+        alloc_local(&mut fn_ctx, 0, ResolvedTy::named_user("Outer2", vec![]));
+        lower_instruction(
+            &fn_ctx,
+            &Instr::FieldDropInPlace {
+                base: Place::Local(0),
+                field: hew_mir::FieldAddr::Record(FieldOffset(0)),
+                ty: ResolvedTy::named_user("Inner", vec![]),
+            },
+            0,
+            &[],
+        )
+        .expect("record-field FieldDropInPlace must lower through the record helper");
+        finish_test_fn(&fn_ctx);
+        assert!(m.verify().is_ok(), "record field-drop module must verify");
+        let ir = m.print_to_string().to_string();
+        assert!(
+            ir.contains("call void @__hew_record_drop_inplace_Inner("),
+            "a record field drops through its in-place record helper; ir:\n{ir}"
+        );
+        assert!(
+            ir.contains("define internal void @__hew_record_drop_inplace_Inner("),
+            "the record helper body must be synthesised on demand; ir:\n{ir}"
+        );
+    }
+
+    /// A tuple-TYPED record field walks its elements through
+    /// `emit_aggregate_recursive_drop`: the owned `string` element is
+    /// released exactly once at its slot (raw load — never the retaining
+    /// clone), the BitCopy element emits nothing.
+    #[test]
+    fn field_drop_in_place_tuple_typed_field_walks_elements() {
+        let tuple_field_ty = ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64]);
+        let outer = MirRecordLayout {
+            name: "OuterTup".to_string(),
+            field_tys: vec![tuple_field_ty.clone(), ResolvedTy::I64],
+            field_names: vec![],
+        };
+        let ctx = Context::create();
+        let m = ctx.create_module("fdip_tuple_typed_field");
+        let harness = build_harness(&ctx, std::slice::from_ref(&outer), &[]);
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "fdip_tuple_typed_field_fn");
+        alloc_local(&mut fn_ctx, 0, ResolvedTy::named_user("OuterTup", vec![]));
+        lower_instruction(
+            &fn_ctx,
+            &Instr::FieldDropInPlace {
+                base: Place::Local(0),
+                field: hew_mir::FieldAddr::Record(FieldOffset(0)),
+                ty: tuple_field_ty,
+            },
+            0,
+            &[],
+        )
+        .expect("tuple-typed FieldDropInPlace must lower through the recursive walk");
+        finish_test_fn(&fn_ctx);
+        assert!(
+            m.verify().is_ok(),
+            "tuple-typed field-drop module must verify"
+        );
+        let ir = m.print_to_string().to_string();
+        assert_eq!(
+            ir.matches("call void @hew_string_drop(").count(),
+            1,
+            "exactly one release of the tuple's owned string element; ir:\n{ir}"
+        );
+        assert!(
+            !ir.contains("hew_string_clone"),
+            "no retain anywhere in the per-element walk; ir:\n{ir}"
+        );
+    }
+
+    /// The selector must agree with the base's resolved type in BOTH
+    /// directions — a `Record` address on a tuple base and a `Tuple` address
+    /// on a record base are producer bugs codegen refuses.
+    #[test]
+    fn field_drop_in_place_selector_base_disagreement_fails_closed() {
+        let outer = MirRecordLayout {
+            name: "Outer".to_string(),
+            field_tys: vec![ResolvedTy::String, ResolvedTy::I64],
+            field_names: vec![],
+        };
+        let ctx = Context::create();
+        let m = ctx.create_module("fdip_selector_mismatch");
+        let harness = build_harness(&ctx, std::slice::from_ref(&outer), &[]);
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "fdip_selector_mismatch_fn");
+        alloc_local(&mut fn_ctx, 0, ResolvedTy::named_user("Outer", vec![]));
+        alloc_local(
+            &mut fn_ctx,
+            1,
+            ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64]),
+        );
+
+        let err = lower_instruction(
+            &fn_ctx,
+            &Instr::FieldDropInPlace {
+                base: Place::Local(0),
+                field: hew_mir::FieldAddr::Tuple(0),
+                ty: ResolvedTy::String,
+            },
+            0,
+            &[],
+        )
+        .expect_err("a Tuple selector on a record base must fail closed");
+        assert!(
+            matches!(err, CodegenError::FailClosed(ref msg) if msg.contains("does not agree")),
+            "diagnostic must name the selector/base disagreement, got: {err:?}"
+        );
+
+        let err = lower_instruction(
+            &fn_ctx,
+            &Instr::FieldDropInPlace {
+                base: Place::Local(1),
+                field: hew_mir::FieldAddr::Record(FieldOffset(0)),
+                ty: ResolvedTy::String,
+            },
+            0,
+            &[],
+        )
+        .expect_err("a Record selector on a tuple base must fail closed");
+        assert!(
+            matches!(err, CodegenError::FailClosed(ref msg) if msg.contains("does not agree")),
+            "diagnostic must name the selector/base disagreement, got: {err:?}"
+        );
+    }
+
+    /// The carried `ty` must match the addressed slot's layout exactly: an
+    /// index/type drift (here `ty = string` addressing the `i64` slot) would
+    /// release the wrong slot with the wrong ABI — refused, and no release
+    /// call is emitted.
+    #[test]
+    fn field_drop_in_place_mistyped_slot_fails_closed_without_release() {
+        let outer = MirRecordLayout {
+            name: "Outer".to_string(),
+            field_tys: vec![ResolvedTy::String, ResolvedTy::I64],
+            field_names: vec![],
+        };
+        let ctx = Context::create();
+        let m = ctx.create_module("fdip_mistyped_slot");
+        let harness = build_harness(&ctx, std::slice::from_ref(&outer), &[]);
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "fdip_mistyped_slot_fn");
+        alloc_local(&mut fn_ctx, 0, ResolvedTy::named_user("Outer", vec![]));
+        let err = lower_instruction(
+            &fn_ctx,
+            &Instr::FieldDropInPlace {
+                base: Place::Local(0),
+                field: hew_mir::FieldAddr::Record(FieldOffset(1)),
+                ty: ResolvedTy::String,
+            },
+            0,
+            &[],
+        )
+        .expect_err("a string ty addressing the i64 slot must fail closed");
+        assert!(
+            matches!(err, CodegenError::FailClosed(ref msg) if msg.contains("does not match the carried field type")),
+            "diagnostic must name the slot/ty mismatch, got: {err:?}"
+        );
+        let ir = m.print_to_string().to_string();
+        assert!(
+            !ir.contains("hew_string_drop"),
+            "no release may be emitted on the refused path; ir:\n{ir}"
+        );
+    }
+
+    /// A record field slot that embeds an indirect enum's OUTER struct
+    /// inline (the layout today's record body fill produces — such records
+    /// already fail closed at `RecordInit`) is not a node-pointer word; the
+    /// node-free path must refuse rather than reinterpret struct bytes as a
+    /// pointer and free through them.
+    #[test]
+    fn field_drop_in_place_inline_embedded_indirect_enum_slot_fails_closed() {
+        let enum_fixtures = vec![fixture_indirect_node_layout()];
+        let holder = MirRecordLayout {
+            name: "IndHolder".to_string(),
+            field_tys: vec![ResolvedTy::named_user("Node", vec![]), ResolvedTy::I64],
+            field_names: vec![],
+        };
+        let ctx = Context::create();
+        let m = ctx.create_module("fdip_inline_embedded_indirect");
+        let harness = build_harness(&ctx, std::slice::from_ref(&holder), &enum_fixtures);
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "fdip_inline_embedded_indirect_fn");
+        fn_ctx.enum_layouts = &enum_fixtures;
+        alloc_local(&mut fn_ctx, 0, ResolvedTy::named_user("IndHolder", vec![]));
+        let err = lower_instruction(
+            &fn_ctx,
+            &Instr::FieldDropInPlace {
+                base: Place::Local(0),
+                field: hew_mir::FieldAddr::Record(FieldOffset(0)),
+                ty: ResolvedTy::named_user("Node", vec![]),
+            },
+            0,
+            &[],
+        )
+        .expect_err("an inline-embedded indirect-enum slot must fail closed");
+        assert!(
+            matches!(err, CodegenError::FailClosed(ref msg) if msg.contains("does not match the carried field type")),
+            "diagnostic must name the slot/ty mismatch, got: {err:?}"
+        );
+        let ir = m.print_to_string().to_string();
+        assert!(
+            !ir.contains("__hew_indirect_enum_free_Node("),
+            "no node free may be emitted against inline struct storage; ir:\n{ir}"
         );
     }
 

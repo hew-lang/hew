@@ -1,0 +1,78 @@
+// MIR-corpus fixture: skipped LEAF fields in a partial match destructure —
+// the exact-drop-op matrix for leaf shapes.
+//
+// Every arm binds only the BitCopy `n` field, so the skipped owned leaf's
+// discharge op is the only release in the arm and the golden pins WHICH op
+// the safety-drop loop emits per leaf shape:
+//
+//   - `string` (record AND tuple parents) — `drop_field_in_place` (the
+//     in-place `Instr::FieldDropInPlace`, raw slot load + `hew_string_drop`
+//     + pointer-word null-store at codegen). NOT a `RecordFieldLoad` /
+//     `TupleFieldLoad` + `drop` pair: string-typed field loads retain via
+//     `hew_string_clone`, so a load+drop pair retain-cancels and leaks the
+//     original slot value.
+//   - `Vec<string>` — field load into a temp + `drop` with the element-kind
+//     release symbol `hew_vec_free` (`string` is a Plain element: the
+//     runtime's buffer free walks `ElemKind::String` and frees each element;
+//     non-string loads do not retain, so the load+drop pair stays the
+//     correct discharge).
+//   - `bytes` — field load + `drop` with `hew_bytes_drop`.
+//
+// The elab golden additionally pins exactly-once parent suppression: no
+// exit or back-edge drop plan contains the destructured scrutinee root.
+type TaggedString {
+    n: i64;
+    s: string;
+}
+
+type TaggedVec {
+    n: i64;
+    items: Vec<string>;
+}
+
+type TaggedBytes {
+    n: i64;
+    payload: bytes;
+}
+
+fn skip_string_record(k: i64) -> i64 {
+    let t = TaggedString { n: k, s: string_concat("leaf-s-", "payload") };
+    let x = match t {
+        TaggedString { n: x, s: _ } => x,
+    };
+    x
+}
+
+fn skip_string_tuple(k: i64) -> i64 {
+    let t = (k, string_concat("leaf-t-", "payload"));
+    let x = match t {
+        (x, _) => x,
+    };
+    x
+}
+
+fn skip_vec_record(k: i64) -> i64 {
+    let v: Vec<string> = Vec::new();
+    v.push(string_concat("leaf-v-", "payload"));
+    let t = TaggedVec { n: k, items: v };
+    let x = match t {
+        TaggedVec { n: x, items: _ } => x,
+    };
+    x
+}
+
+fn skip_bytes_record(k: i64) -> i64 {
+    let t = TaggedBytes { n: k, payload: "leaf-b-payload".to_bytes() };
+    let x = match t {
+        TaggedBytes { n: x, payload: _ } => x,
+    };
+    x
+}
+
+fn main() -> i64 {
+    let a = skip_string_record(1);
+    let b = skip_string_tuple(2);
+    let c = skip_vec_record(3);
+    let d = skip_bytes_record(4);
+    a + b + c + d - 10
+}

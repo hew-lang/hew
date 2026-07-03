@@ -1,0 +1,32 @@
+// Reject: a `fn(..)`-typed `var` that is REASSIGNED a capturing closure and
+// then passed to a generator's `fn(..)` parameter fails CLOSED at check
+// time. The binding's static type (`fn(i64) -> i64`) proves nothing about
+// its env word once any assignment laundered a capturing closure into it —
+// including an assignment on a loop back-edge that runs before the call on
+// the second iteration — so the launder taint is collected in a whole-body
+// pre-pass, not from the statement order at the call site.
+gen fn mapped(n: i64, f: fn(i64) -> i64) -> i64 {
+    var i = 0;
+    while i < n {
+        yield f(i);
+        i = i + 1;
+    }
+}
+
+fn triple(x: i64) -> i64 {
+    x * 3
+}
+
+fn run_once(k: i64) -> i64 {
+    var g: fn(i64) -> i64 = triple;
+    g = |x: i64| x * k;
+    var total = 0;
+    for v in mapped(3, g) {
+        total = total + v;
+    }
+    total
+}
+
+fn main() {
+    println(run_once(2));
+}

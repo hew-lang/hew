@@ -1,0 +1,35 @@
+// MIR-corpus fixture: escaped-sibling field discharge (#2212).
+//
+// `extract` loads ONE owned field (`inner`) out of a two-owned-field record
+// and returns it. The escapee's ownership moves to the caller, so the
+// record's composite scope-exit drop is excluded — and the NON-escaped
+// owned sibling (`tag`) must not leak with it.
+//
+// The raw golden pins the discharge: one `drop_field_in_place` addressing
+// the sibling slot (`.field[1] ty=string`) spliced directly after the
+// escaping move, based on the record root. The escaped field (`.field[0]`)
+// never appears as a discharge — releasing it would free the buffer the
+// caller now owns.
+//
+// The elab golden pins the suppression half: no exit drop plan in `extract`
+// contains the record root (the composite drop stays excluded), while the
+// caller's plans still release the returned `Inner` binding exactly once.
+type Inner {
+    label: string;
+    n: i64;
+}
+
+type Outer {
+    inner: Inner;
+    tag: string;
+}
+
+fn extract() -> Inner {
+    let b = Outer { inner: Inner { label: "inner-heap-payload".to_upper(), n: 7 }, tag: "tag-heap-payload".to_upper() };
+    b.inner
+}
+
+fn main() -> i64 {
+    let inner = extract();
+    inner.n - 7
+}

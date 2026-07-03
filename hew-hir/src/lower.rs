@@ -1284,7 +1284,10 @@ fn is_builtin_vec_iterator_impl(item: &Item) -> bool {
     };
     matches!(
         (trait_name, name.as_str()),
-        ("Iterator", "VecIter" | "HashMapIter") | ("IntoIterator", "Vec")
+        (
+            "Iterator",
+            "VecIter" | "HashMapIter" | "Generator" | "AsyncGenerator"
+        ) | ("IntoIterator", "Vec")
     )
 }
 

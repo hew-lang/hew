@@ -2999,6 +2999,52 @@ pub fn lower_hir_module_with_facts(
     }
 }
 
+/// Build the synthetic `HirFn` params + return type for a `receive fn`
+/// handler shell. For an ordinary handler this is just `(handler.params,
+/// handler.return_ty)`, unchanged.
+///
+/// For a generator handler (`receive gen fn`), the HIR-lowered body is a thin
+/// block whose tail is a `HirExprKind::GenBlock` typed `Generator<Yield,
+/// Unit>` (see `lower_actor_generator_body` in hew-hir). Lowering with
+/// `is_generator: true` routes the body through the `GenBlock` →
+/// `Terminator::Yield` state-machine path (`lower_gen_block`), same as a
+/// standalone `gen fn`. Unlike a standalone generator, this shell does NOT
+/// return the generator handle to a caller: `lower_function` detects
+/// `is_generator && FunctionCallConv::ActorHandler` and reshapes it into a
+/// stream-producer PUMP (`Builder::build_stream_producer_pump`) that drives
+/// the handle to completion, forwarding each yielded value into a sink — so
+/// the shell's *MIR* return type is `Unit`, not the generator handle type.
+///
+/// The pump needs a destination for the forwarded values: one trailing
+/// pointer-word sink param, appended after the handler's own params
+/// (`ActorHandlerLayout.param_tys` mirrors this exactly — see
+/// `lower_actor_handler_layouts`). The sink param carries a synthetic
+/// `BindingId` — no HIR `BindingRef` in the (real) handler body ever names
+/// it; `lower_function` locates it positionally (`func.params.len() - 1`),
+/// not by id.
+fn stream_producer_shell_params_and_return_ty(
+    handler: &hew_hir::HirActorReceiveFn,
+) -> (Vec<HirBinding>, ResolvedTy) {
+    if !handler.is_generator {
+        return (handler.params.clone(), handler.return_ty.clone());
+    }
+    let mut params = handler.params.clone();
+    let sink_ty = ResolvedTy::named_builtin(
+        "Sink",
+        hew_types::BuiltinType::Sink,
+        vec![handler.return_ty.clone()],
+    );
+    params.push(HirBinding {
+        id: BindingId(u32::MAX),
+        name: "__hew_gen_sink".to_string(),
+        ty: sink_ty,
+        mutable: false,
+        span: handler.span.clone(),
+        is_consume: false,
+    });
+    (params, ResolvedTy::Unit)
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "actor receive lowering threads the same module tables as regular function lowering"
@@ -3066,33 +3112,18 @@ fn lower_actor_receive_handlers(
         }
         emitted_symbols.insert(emit_name.clone(), duplicate_label);
 
-        // For a generator handler (`receive gen fn`) the HIR-lowered body is a
-        // thin block whose tail is a `HirExprKind::GenBlock` typed
-        // `Generator<Yield, Unit>` (see `lower_actor_generator_body` in
-        // hew-hir). The handler function's *MIR* return type is therefore the
-        // generator handle type carried on that tail, NOT the declared element
-        // type recorded on `handler.return_ty` (which the protocol/ABI layer
-        // still consults as the stream element type). Lowering with
-        // `is_generator: true` and the generator return type routes the body
-        // through the `GenBlock` → `Terminator::Yield` state-machine path
-        // (`lower_gen_block`): the handler becomes a thin shell that emits
-        // `MakeGenerator` and returns the generator handle, and the actual
-        // yield body is surfaced as a sibling `__hew_gen_body_*` function.
-        let fn_return_ty = if handler.is_generator {
-            handler
-                .body
-                .tail
-                .as_ref()
-                .map_or_else(|| handler.return_ty.clone(), |tail| tail.ty.clone())
-        } else {
-            handler.return_ty.clone()
-        };
+        // A generator handler (`receive gen fn`) lowers its `GenBlock`-tailed
+        // body the same way a standalone `gen fn` does, but `lower_function`
+        // reshapes the shell into a stream-producer PUMP (see
+        // `stream_producer_shell_params_and_return_ty`) rather than returning
+        // the generator handle.
+        let (params, fn_return_ty) = stream_producer_shell_params_and_return_ty(handler);
         let synthetic_fn = HirFn {
             id: actor.id,
             node: actor.node,
             name: format!("{}::{}", actor.name, handler.name),
             type_params: Vec::new(),
-            params: handler.params.clone(),
+            params,
             return_ty: fn_return_ty,
             body: handler.body.clone(),
             span: handler.span.clone(),
@@ -5391,33 +5422,60 @@ fn lower_actor_handler_layouts(actor: &HirActorDecl) -> Vec<ActorHandlerLayout> 
     let descriptor = actor.protocol_descriptor.as_ref();
     let mut layouts = Vec::with_capacity(actor.receive_handlers.len());
     for handler in &actor.receive_handlers {
-        // Generator handlers (`receive gen fn`) DO have a lowered MIR body now
-        // (`lower_actor_receive_handlers` routes them through the `GenBlock`
-        // state-machine path, emitting the handler shell plus a sibling
-        // `__hew_gen_body_*`). They are NOT message-dispatch handlers, though:
-        // a `receive gen fn` is invoked as a `Stream<T>` producer
-        // (`for await x in actor.count_up()`), not via the request/reply
-        // protocol the trampoline routes. Until the consumer-side
-        // stream-dispatch bridge lands (each call → a per-call channel-backed
-        // `Stream<T>`), they stay out of the protocol dispatch layout — their
-        // function return type is `Generator<T, Unit>`, not the `T` the
-        // request/reply trampoline would reply with. Keeping the body present
-        // but the dispatch row absent is consistent: codegen validates the
-        // generator body without a trampoline arm that would mis-handle the
-        // reply.
-        if handler.is_generator {
-            continue;
-        }
         // The checker is the only authority for state-guard facts.
         // `HirActorStateGuard` is intentionally closed at one variant; any
         // future variant addition is a compile error here and must pair
-        // with a policy decision in this match.
+        // with a policy decision in this match. Populated for a generator
+        // handler exactly like any other (`lower_actor_receive_fn` computes
+        // it unconditionally).
         let requires_state_guard = match handler.state_guard {
             hew_hir::HirActorStateGuard::Exclusive => true,
         };
         let msg_type = descriptor
             .and_then(|d| d.msg_id_for(&handler.name))
             .map_or(i32::MAX, |id| i32::from_ne_bytes(id.to_ne_bytes()));
+
+        if handler.is_generator {
+            // A `receive gen fn` IS a message-dispatch handler — the third
+            // handler kind beside tell (`Fire`) and ask (`Ask`): a per-call
+            // stream-producer PUMP, started by a tell-shaped "start" message
+            // (decision 4; the checker/HIR/MIR call-site bridge that
+            // constructs and sends that message is Stage 4). `param_tys`
+            // mirrors the shell's actual MIR signature built in
+            // `lower_actor_receive_handlers`: the handler's own params plus
+            // one trailing pointer-word sink — this row IS the single
+            // pack/unpack authority for the start message on both the
+            // trampoline (unpack) and the future call-site (pack) ends.
+            // `every_ms` stays `None`: a generator handler cannot be
+            // periodic (Risk 6 — `#[every]` on `receive gen fn` is a
+            // checker/HIR-level reject, not a layout concern). `return_ty`
+            // is `Unit`, matching the pump's actual MIR return type — the
+            // stream element type lives on the checker's
+            // `ActorMethodKind::StreamProducer` fact and the HIR
+            // `ActorGenStream` expression, not this row.
+            let mut param_tys: Vec<ResolvedTy> = handler
+                .params
+                .iter()
+                .map(|param| param.ty.clone())
+                .collect();
+            param_tys.push(ResolvedTy::named_builtin(
+                "Sink",
+                hew_types::BuiltinType::Sink,
+                vec![handler.return_ty.clone()],
+            ));
+            layouts.push(ActorHandlerLayout {
+                name: handler.name.clone(),
+                symbol: mangle_actor_receive_handler(&actor_symbol_base(actor), &handler.name),
+                msg_type,
+                every_ms: None,
+                param_tys,
+                return_ty: ResolvedTy::Unit,
+                requires_state_guard,
+                is_stream_producer: true,
+            });
+            continue;
+        }
+
         // ns→ms truncating divide — the runtime timer ABI
         // (`hew_actor_schedule_periodic`) is millisecond-grained. The
         // checker rejects sub-millisecond intervals, so 0 is unreachable
@@ -5438,6 +5496,7 @@ fn lower_actor_handler_layouts(actor: &HirActorDecl) -> Vec<ActorHandlerLayout> 
                 .collect(),
             return_ty: handler.return_ty.clone(),
             requires_state_guard,
+            is_stream_producer: false,
         });
     }
     layouts
@@ -7972,6 +8031,30 @@ fn lower_function(
     // (enforced by `alloc_local`'s monotone `locals.len()` counter).
     // Codegen emits a parameter-prologue that stores each LLVM function
     // argument into the corresponding alloca slot before the first instruction.
+    // Derive the stream-producer pump context from information `lower_function`
+    // already carries — `func.is_generator` and `call_conv` — rather than
+    // threading a new parameter through this (already heavily-shared) function
+    // and its dozen call sites. Only a `receive gen fn` handler shell (built by
+    // `lower_actor_receive_handlers`, which appends a synthetic trailing sink
+    // param and lowers with `FunctionCallConv::ActorHandler`) matches both
+    // conditions; a standalone `gen fn`/`gen {}` shell lowers `is_generator`
+    // under `FunctionCallConv::Default` and is untouched.
+    if func.is_generator && call_conv == crate::model::FunctionCallConv::ActorHandler {
+        let yield_ty = func.body.tail.as_ref().and_then(|tail| match &tail.kind {
+            HirExprKind::GenBlock { yield_ty, .. } => Some(yield_ty.clone()),
+            _ => None,
+        });
+        if let Some(yield_ty) = yield_ty {
+            let sink_idx = u32::try_from(func.params.len().checked_sub(1).expect(
+                "receive-gen-fn shell must carry at least the synthetic trailing sink param",
+            ))
+            .expect("stream-producer handler param count exceeds u32::MAX");
+            builder.stream_producer_pump = Some(StreamProducerPumpCtx {
+                sink: Place::Local(sink_idx),
+                yield_ty,
+            });
+        }
+    }
     builder.lower_params(func);
     builder.funcupdate_base_proven =
         compute_funcupdate_base_provenance(func, funcupdate_fn_returns_fresh);
@@ -9011,6 +9094,21 @@ struct OwnedLocalEntry {
     disposition: Disposition,
 }
 
+/// Pump context for a `receive gen fn` handler shell, set on `Builder`
+/// only when `lower_function` derives `func.is_generator &&
+/// call_conv == FunctionCallConv::ActorHandler` (see `Builder::stream_producer_pump`).
+#[derive(Debug, Clone)]
+struct StreamProducerPumpCtx {
+    /// The trailing pointer-word sink parameter's local slot — always the
+    /// LAST param local (`Place::Local(func.params.len() - 1)`), because
+    /// `lower_actor_receive_handlers` appends the synthetic sink param after
+    /// the handler's real params before calling `lower_function`.
+    sink: Place,
+    /// The generator's yield element type (the handler's declared `-> T`),
+    /// read off the `HirExprKind::GenBlock` tail's own `yield_ty` field.
+    yield_ty: ResolvedTy,
+}
+
 #[derive(Debug, Default)]
 struct Builder {
     /// Checker-authority stream for the *current* basic block. Drained
@@ -9678,6 +9776,19 @@ struct Builder {
     /// S3b will extend this context with the cross-yield live-set
     /// accumulator once liveness analysis lands.
     in_gen_body: bool,
+    /// Set on the SHELL builder of a `receive gen fn` handler (a `HirFn`
+    /// with `is_generator: true` lowered under `FunctionCallConv::ActorHandler`
+    /// — derived in `lower_function`, never threaded as a separate parameter).
+    /// When present, the `HirExprKind::GenBlock` dispatch arm in `lower_value`
+    /// reshapes the shell into a stream-producer PUMP instead of returning the
+    /// freshly-constructed generator handle: `gen_place` is driven with
+    /// `Instr::GeneratorNext` in a loop, each yielded value is forwarded via
+    /// `Terminator::Suspend`/`SuspendKind::StreamSend { sink, value }`, and a
+    /// `None` result closes `sink` and falls off the end (Unit return). `None`
+    /// for every other function, including a standalone `gen fn`/`gen {}`
+    /// shell (`Default` call conv), which still returns the generator handle
+    /// to its caller unchanged.
+    stream_producer_pump: Option<StreamProducerPumpCtx>,
     /// Per-scope deferred bodies collected during statement lowering.
     /// Key: the `ScopeId` of the HIR scope that owns the defer.
     /// Value: deferred body expressions in registration order (FIFO).
@@ -16838,7 +16949,26 @@ impl Builder {
                 yield_ty,
                 return_ty,
                 captures,
-            } => Some(self.lower_gen_block(expr, body, yield_ty, return_ty, captures)),
+            } => {
+                let gen_place = self.lower_gen_block(expr, body, yield_ty, return_ty, captures);
+                // `receive gen fn` shell reshape (Stage 3): when this GenBlock is
+                // the tail of a stream-producer handler shell, the freshly
+                // constructed generator handle is consumed HERE by the pump —
+                // driven to completion and forwarded element-by-element into the
+                // sink — rather than returned to a caller. `lower_gen_block`
+                // itself is UNCHANGED (env capture / MakeGenerator emission stay
+                // identical to a standalone generator); only what happens to its
+                // result differs. Evaluates to `None` (unit), matching `Yield`'s
+                // own unit-in-body convention just below — `function_body`'s
+                // existing `if let Some(src) = value_place { Move... }` already
+                // skips the return-slot move for a `None` tail value.
+                if let Some(pump) = self.stream_producer_pump.clone() {
+                    self.build_stream_producer_pump(gen_place, &pump);
+                    None
+                } else {
+                    Some(gen_place)
+                }
+            }
             HirExprKind::Yield { value, yield_ty: _ } => {
                 self.lower_yield_expr(expr, value.as_deref())
             }
@@ -31578,6 +31708,121 @@ impl Builder {
         });
         self.start_block(next);
         gen_place
+    }
+
+    /// Reshape a `receive gen fn` handler shell into a stream-producer PUMP
+    /// (decision 3, receive-gen-fn Stage 3). Called immediately after
+    /// `lower_gen_block` constructs `gen_place` (the freshly-made generator
+    /// handle) for a shell whose `Builder::stream_producer_pump` is `Some`.
+    ///
+    /// Emits, in the current (post-`MakeGenerator`) block:
+    /// ```text
+    /// loop_head:
+    ///   opt = GeneratorNext(gen_place)          ; Option<Yield>
+    ///   branch tag(opt) == 0 (Some) ? send : close
+    /// send:
+    ///   value = opt.0                            ; MachineVariant payload
+    ///   suspend StreamSend { sink, value } -> after_send
+    /// after_send:
+    ///   goto loop_head
+    /// close:
+    ///   call hew_sink_close(sink) -> close_next
+    /// close_next:
+    ///   <cursor left open — `lower_function`'s `finalize_blocks(Terminator::Return)`
+    ///    seals it as the implicit unit return>
+    /// ```
+    ///
+    /// The `Option<Yield>` tag convention (`Some` = 0, `None` = 1) mirrors
+    /// `Instr::GeneratorNext`'s own documented codegen contract; the tag-test +
+    /// payload-extract shape mirrors the general enum-match lowering's
+    /// `arm_is_generator_some` arm (`lower_match_enum_tag`) — both read a
+    /// `GeneratorNext` dest via `Place::EnumTag`/`Place::MachineVariant { local,
+    /// variant_idx: 0, field_idx: 0 }`, the same substrate an ordinary `for v in
+    /// gen()` loop already exercises.
+    ///
+    /// Stage 3 uses the bare `hew_sink_close` runtime call on the `None` exit;
+    /// Stage 5 swaps this for the registered `hew_actor_gen_sink_complete` (the
+    /// death-signal-aware close) without touching the loop shape above.
+    fn build_stream_producer_pump(&mut self, gen_place: Place, pump: &StreamProducerPumpCtx) {
+        let loop_head = self.alloc_block();
+        self.finish_current_block(Terminator::Goto { target: loop_head });
+        self.start_block(loop_head);
+
+        let option_ty = ResolvedTy::Named {
+            name: "Option".to_string(),
+            args: vec![pump.yield_ty.clone()],
+            builtin: None,
+            is_opaque: false,
+        };
+        let opt_dest = self.alloc_local(option_ty);
+        self.push_instr(Instr::GeneratorNext {
+            dest: opt_dest,
+            ctx: gen_place,
+            yield_ty: pump.yield_ty.clone(),
+        });
+        let Place::Local(opt_local) = opt_dest else {
+            unreachable!("Builder::alloc_local always returns Place::Local")
+        };
+
+        let tag_local = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::Move {
+            dest: tag_local,
+            src: Place::EnumTag(opt_local),
+        });
+        let some_tag = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::ConstI64 {
+            dest: some_tag,
+            value: 0,
+        });
+        let is_some = self.alloc_local(ResolvedTy::Bool);
+        self.push_instr(Instr::IntCmp {
+            pred: crate::model::CmpPred::Eq,
+            lhs: tag_local,
+            rhs: some_tag,
+            dest: is_some,
+        });
+
+        let send_bb = self.alloc_block();
+        let close_bb = self.alloc_block();
+        self.finish_current_block(Terminator::Branch {
+            cond: is_some,
+            then_target: send_bb,
+            else_target: close_bb,
+        });
+
+        self.start_block(send_bb);
+        let value_local = self.alloc_local(pump.yield_ty.clone());
+        self.push_instr(Instr::Move {
+            dest: value_local,
+            src: Place::MachineVariant {
+                local: opt_local,
+                variant_idx: 0,
+                field_idx: 0,
+            },
+        });
+        let after_send = self.alloc_block();
+        self.record_suspend_kind(SuspendKind::StreamSend {
+            sink: pump.sink,
+            value: value_local,
+        });
+        self.finish_current_block(Terminator::Suspend {
+            resume: after_send,
+            cleanup: after_send,
+            is_final: false,
+        });
+        self.start_block(after_send);
+        self.finish_current_block(Terminator::Goto { target: loop_head });
+
+        self.start_block(close_bb);
+        let close_next = self.alloc_block();
+        self.finish_current_block(Terminator::Call {
+            callee: "hew_sink_close".to_string(),
+            builtin: Some(hew_types::runtime_call::RuntimeCallFamily::SinkClose),
+            args: vec![pump.sink],
+            dest: None,
+            next: close_next,
+        });
+        self.start_block(close_next);
     }
 
     /// Lower `HirExprKind::Yield { value, yield_ty }` inside a gen-block body.

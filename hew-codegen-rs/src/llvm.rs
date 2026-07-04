@@ -52997,6 +52997,7 @@ mod tests {
             return_ty: ResolvedTy::Unit,
             requires_state_guard: true,
             every_ms: None,
+            is_stream_producer: false,
         }
     }
 
@@ -53013,6 +53014,7 @@ mod tests {
             return_ty: ResolvedTy::I64,
             requires_state_guard: true,
             every_ms: None,
+            is_stream_producer: false,
         }
     }
 
@@ -53825,6 +53827,7 @@ fn main() {
             return_ty: ResolvedTy::Unit,
             requires_state_guard: false,
             every_ms: None,
+            is_stream_producer: false,
         };
         // The MIR function for the handler uses ActorHandler call-conv.  Because
         // the function name contains `__recv__`, `declare_function` appends a

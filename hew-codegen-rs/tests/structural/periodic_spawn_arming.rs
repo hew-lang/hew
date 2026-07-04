@@ -128,6 +128,7 @@ fn spawn_pipeline(every_ms: Option<u64>) -> IrPipeline {
             return_ty: ResolvedTy::Unit,
             requires_state_guard: true,
             every_ms,
+            is_stream_producer: false,
         }],
         state_clone_fn_symbol: None,
         state_drop_fn_symbol: None,

@@ -829,6 +829,24 @@ pub struct ActorHandlerLayout {
     /// periodic handler, using this row's `msg_type` (the same
     /// protocol-descriptor id the send path uses).
     pub every_ms: Option<u64>,
+    /// `true` for a `receive gen fn` handler — the third handler kind beside
+    /// tell (`Fire`) and ask (`Ask`): a per-call, channel-backed `Stream<T>`
+    /// whose producer is a coro generator driven inside the actor (a PUMP).
+    ///
+    /// `param_tys` for such a row is the handler's own params PLUS one
+    /// trailing pointer-word sink — the single pack/unpack authority for the
+    /// tell-shaped "start" message both the dispatch trampoline (unpack) and
+    /// the call-site stream construction (pack) read. `return_ty` is `Unit`
+    /// (the pump's actual MIR return type, since it never replies) — the
+    /// stream element type lives on the checker's
+    /// `ActorMethodKind::StreamProducer` fact, not this row.
+    ///
+    /// `false` for every ordinary tell/ask handler — set explicitly at every
+    /// construction site rather than left to a `Default`, so a future new row
+    /// producer cannot forget the discriminant (`type-info-survival`: MIR/
+    /// codegen consume this flag rather than re-deriving stream-producer-ness
+    /// from `is_generator` on a different struct or from `return_ty` shape).
+    pub is_stream_producer: bool,
 }
 
 /// Layout descriptor for a `supervisor` declaration.

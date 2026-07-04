@@ -115,6 +115,21 @@ const SENTINEL_CRASH_MESSAGE_BINDING: BindingId = BindingId(u32::MAX - 1);
 const SENTINEL_EXIT_ACTOR_ID_BINDING: BindingId = BindingId(u32::MAX - 2);
 const SENTINEL_EXIT_KIND_TAG_BINDING: BindingId = BindingId(u32::MAX - 3);
 
+/// Sentinel HIR binding ID for the synthetic generator-companion local the
+/// `receive gen fn` stream-producer pump drives (A239). The pump nests an inner
+/// generator handle (`gen_place`) that has NO real HIR binding — a standalone
+/// `gen fn` returns its handle to a caller who owns and drops it, but the pump
+/// consumes the handle in place and had no owner for it, so its coroutine frame
+/// and heap companion leaked on every pump exit. Registering `gen_place` under
+/// this sentinel gives the drop-elaboration authority an owner, so
+/// `hew_gen_coro_destroy` fires on every pump exit (Return, Panic, Cancel).
+///
+/// Must be distinct from the sink param's `BindingId(u32::MAX)` — BOTH live in
+/// the pump function's `binding_locals` at once — and from the crash/exit
+/// sentinels above (those are local to their own synthetic functions, but a
+/// dedicated value keeps the pump self-contained and future-proof).
+const SENTINEL_RECV_GEN_COMPANION_BINDING: BindingId = BindingId(u32::MAX - 4);
+
 /// `CrashKind` variants in declaration order (`std/failure.hew`). An
 /// `#[on(exit)]` prologue builds the `kind` field by matching the runtime
 /// `__exit_kind_tag` against these (Crashed=0, HeapExceeded=1,
@@ -16980,6 +16995,37 @@ impl Builder {
                 // existing `if let Some(src) = value_place { Move... }` already
                 // skips the return-slot move for a `None` tail value.
                 if let Some(pump) = self.stream_producer_pump.clone() {
+                    // Register the generator companion `gen_place` with the
+                    // drop-elaboration authority so `hew_gen_coro_destroy` fires
+                    // on EVERY pump exit (Return / Panic / Cancel) instead of
+                    // leaking its coro frame + heap companion. THIS branch (pump
+                    // context) consumes the handle in place — nothing else owns
+                    // it — so this is the sole release authority.
+                    //
+                    // Scoped to the pump branch ONLY: in the standalone `else`
+                    // branch `gen_place` is the expression value, moved OUT to
+                    // the caller's `let g = <genblock>` binding, which already
+                    // owns and drops it. Registering there — or inside the
+                    // shared `lower_gen_block` — would elaborate a second drop
+                    // over a moved-out handle: the #2384 double-free class. It
+                    // stays here, and `lower_gen_block` registers nothing.
+                    let companion = SENTINEL_RECV_GEN_COMPANION_BINDING;
+                    let companion_name = "__hew_recv_gen_companion".to_string();
+                    let companion_ty = self.subst_ty(&expr.ty);
+                    self.statements.push(MirStatement::Bind {
+                        binding: companion,
+                        name: companion_name.clone(),
+                        site: expr.site,
+                        ty: companion_ty.clone(),
+                    });
+                    // Wire `binding_locals` BEFORE `register_owned_local`:
+                    // `register_owned_local` reads the slot to classify
+                    // ownership, and drop elaboration resolves the drop place
+                    // from `binding_locals` at exit. A missing slot silently
+                    // defaults to `Place::Local(0)` — dropping the WRONG local.
+                    self.binding_locals.insert(companion, gen_place);
+                    self.record_binding_scope(companion);
+                    self.register_owned_local(companion, companion_name, companion_ty);
                     self.build_stream_producer_pump(gen_place, &pump);
                     None
                 } else {

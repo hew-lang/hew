@@ -6,7 +6,9 @@ use hew_hir::{
     HirLifecycleHookKind, HirLiteral, HirModule, HirStmt, HirStmtKind, HirSupervisorChild,
     HirSupervisorDecl, IntentKind, ResolvedRef, ScopeId, ValueClass,
 };
-use hew_mir::{lower_hir_module, FunctionCallConv, Instr, MirDiagnosticKind, Terminator};
+use hew_mir::{
+    lower_hir_module, FunctionCallConv, Instr, MirDiagnosticKind, MirStatement, Terminator,
+};
 use hew_types::{ActorHandlerSpec, ActorProtocolDescriptor, BuiltinType, ResolvedTy};
 
 fn empty_module(items: Vec<HirItem>) -> HirModule {
@@ -608,6 +610,80 @@ fn ticks_generator_actor(ids: &mut IdGen) -> HirActorDecl {
     actor(ids, "Counter", vec![ticks])
 }
 
+/// A standalone `gen fn stream_twin() -> Generator<i64, ()> { yield 7; }` — the
+/// non-actor twin of `ticks_generator_actor`'s handler body. Its `GenBlock`
+/// lowers through the SAME `lower_gen_block` path the pump uses, but with no
+/// `stream_producer_pump` context: the handle flows OUT as the function's
+/// return value, so the caller owns and drops it. The pump's companion
+/// registration must NOT reach this path (else the returned-then-registered
+/// handle double-frees — the #2384 class).
+fn standalone_ticks_gen_fn(ids: &mut IdGen) -> HirFn {
+    let yield_value = literal_expr(ids, HirLiteral::Integer(7), ResolvedTy::I64);
+    let yield_expr = HirExpr {
+        node: ids.node(),
+        site: ids.site(),
+        ty: ResolvedTy::Unit,
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::Yield {
+            value: Some(Box::new(yield_value)),
+            yield_ty: ResolvedTy::I64,
+        },
+        span: 0..0,
+    };
+    let yield_stmt = HirStmt {
+        node: ids.node(),
+        kind: HirStmtKind::Expr(yield_expr),
+        span: 0..0,
+    };
+    let gen_inner = block(ids, vec![yield_stmt], None, ResolvedTy::Unit);
+    let generator_ty = ResolvedTy::Named {
+        name: "Generator".to_string(),
+        args: vec![ResolvedTy::I64, ResolvedTy::Unit],
+        builtin: Some(BuiltinType::Generator),
+        is_opaque: false,
+    };
+    let gen_block = HirExpr {
+        node: ids.node(),
+        site: ids.site(),
+        ty: generator_ty.clone(),
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::GenBlock {
+            body: gen_inner,
+            yield_ty: ResolvedTy::I64,
+            return_ty: ResolvedTy::Unit,
+            captures: Vec::new(),
+        },
+        span: 0..0,
+    };
+    let body = block(ids, vec![], Some(gen_block), generator_ty.clone());
+    HirFn {
+        id: ids.item(),
+        node: ids.node(),
+        name: "stream_twin".to_string(),
+        type_params: vec![],
+        params: vec![],
+        return_ty: generator_ty,
+        body,
+        span: 0..0,
+        is_generator: true,
+        intrinsic_id: None,
+    }
+}
+
+/// Whether any function in `funcs` has a flat-statement `MirStatement::Drop`
+/// naming the receive-gen pump companion — i.e. the companion was registered
+/// with the drop-elaboration authority and its `hew_gen_coro_destroy` release
+/// was elaborated onto the function's exits.
+fn drops_recv_gen_companion(funcs: &[hew_mir::ElaboratedMirFunction]) -> bool {
+    funcs.iter().any(|f| {
+        f.statements.iter().any(
+            |s| matches!(s, MirStatement::Drop { name, .. } if name == "__hew_recv_gen_companion"),
+        )
+    })
+}
+
 #[test]
 fn actor_handler_generator_receive_fn_lowers_to_generator_body() {
     // A `receive gen fn` handler lowers its `HirExprKind::GenBlock`-tailed
@@ -727,6 +803,31 @@ fn generator_handler_pump_registers_checks_peer_and_completes_sink() {
     assert!(
         !calls_runtime_symbol(handler, "hew_sink_close"),
         "the bare hew_sink_close placeholder must be fully replaced"
+    );
+
+    // The pump drives an inner generator handle (`gen_place`) that has no real
+    // HIR binding; it must be registered with the drop-elaboration authority so
+    // its `hew_gen_coro_destroy` release fires on every pump exit instead of
+    // leaking the coro frame + heap companion (A239 Wave 3b-2). The elaborated
+    // pump function must carry the companion drop.
+    assert!(
+        drops_recv_gen_companion(&pipeline.elaborated_mir),
+        "the pump must register its generator companion so `hew_gen_coro_destroy` \
+         is elaborated onto its exits (Return/Panic/Cancel)"
+    );
+
+    // ...and the registration must NOT leak into the standalone-generator-shell
+    // path: a plain `gen fn` returns its handle to a caller who owns and drops
+    // it, so registering the companion there would double-free the moved-out
+    // handle (the #2384 class). Lower a standalone `gen fn` alone and confirm no
+    // companion drop is elaborated anywhere.
+    let mut standalone_ids = IdGen::default();
+    let standalone = standalone_ticks_gen_fn(&mut standalone_ids);
+    let standalone_pipeline = lower_hir_module(&empty_module(vec![HirItem::Function(standalone)]));
+    assert!(
+        !drops_recv_gen_companion(&standalone_pipeline.elaborated_mir),
+        "a standalone `gen fn` returns its handle to the caller; the pump companion \
+         registration must never reach the shared lower_gen_block/standalone path"
     );
 }
 

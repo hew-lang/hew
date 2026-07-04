@@ -1,0 +1,50 @@
+//! #2391: an HTTP server (`std::net::http`) and client
+//! (`std::net::http::http_client`) in ONE compilation unit must link and run.
+//!
+//! `import std::net::http` resolves to a directory module that peer-absorbs
+//! `http_client.hew`; `import std::net::http::http_client` re-imports the same
+//! file as its own module. Before the fix, `impl ResponseMethods for Response`
+//! lowered once PER MODULE under identical bare `Response::<method>` symbols, so
+//! codegen declared each twice and the first stayed a bodiless internal-linkage
+//! declaration that `Module::verify()` rejected:
+//!   Global is external, but doesn't have external or weak linkage!
+//!   ptr @"Response::status"  (and ::body ::header ::content_type ::headers ::free)
+//! After the fix the shared file's impl lowers exactly once and every
+//! previously-bodiless accessor is executable.
+
+import std::net::http;
+
+import std::net::http::http_client;
+
+import std::testing;
+
+/// Server-side impl (`impl ServerMethods for Server`) is reachable and
+/// executable in the dual-import unit. `:0` binds an ephemeral port (the
+/// CI-safe pattern, cf. `net_try_api_test.hew` `net.try_listen(":0")`), so no
+/// fixed port is held across the test run.
+#[test]
+fn test_server_impl_linked_in_dual_import_unit() {
+    let server = http.listen(":0");
+    let _prev = server.set_request_timeout_ms(1000);
+    server.close();
+    testing.assert_true(true);
+}
+
+/// Every `Response` accessor that was previously a bodiless declaration is now
+/// executable. Nothing listens on 127.0.0.1:1, so the request fails at the
+/// transport and `status()` returns the documented -1 error status (see
+/// `http_client.hew` `status()` doc: "Returns -1 on error"). Each of the six
+/// accessors named in the pre-fix verify failure is invoked, so a regression
+/// re-introducing the bodiless declaration would fail to link this test.
+#[test]
+fn test_response_accessors_linked_in_dual_import_unit() {
+    http_client.set_timeout(100);
+    let resp = http_client.get("http://127.0.0.1:1");
+    testing.assert_eq(resp.status(), -1);
+    let _body = resp.body();
+    let _content_type = resp.content_type();
+    let _header = resp.header("content-type");
+    let _headers = resp.headers();
+    resp.free();
+    testing.assert_true(true);
+}

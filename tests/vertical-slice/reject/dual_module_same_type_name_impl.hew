@@ -1,0 +1,23 @@
+// Reject (#2391 follow-up class): two imported modules each define a DISTINCT
+// type named `Server` with an `impl ServerMethods for Server` block. Impl
+// methods lower under the unqualified `Server::<method>` symbol family, so the
+// http and websocket `Server::accept` / `Server::close` bodies collide on one
+// raw-MIR name. Unlike the #2391 dual-import case (one file re-imported under
+// two overlapping package modules — deduped in HIR), these are two genuinely
+// different function bodies that cannot share a compilation unit until impl
+// symbols become module-qualified.
+//
+// Codegen must fail CLOSED with a structured duplicate-symbol diagnostic
+// naming the colliding symbol and the actionable cause — NOT the raw LLVM
+// "Global is external, but doesn't have external or weak linkage!" verifier
+// dump, and NOT a silent linkonce merge of the two distinct bodies.
+import std::net::http;
+
+import std::net::websocket;
+
+fn main() {
+    let http_server = http.listen(":0");
+    http_server.close();
+    let ws_server = websocket.listen(":0");
+    ws_server.close();
+}

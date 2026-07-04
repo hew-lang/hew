@@ -1,0 +1,77 @@
+//! #2391 behavioural proof: a blocking HTTP server (`std::net::http`) and the
+//! HTTP client (`std::net::http::http_client`) do a REAL loopback round-trip in
+//! ONE process. This proves the impl-dedup fix picked a WORKING surviving copy
+//! (Fix A keeps the superset `std::net::http` module's lowering of the shared
+//! `Response`/`Server` impls) — not merely that the unit links.
+//!
+//! Imports are in the REVERSE order of `http_dual_import_link_test.hew`
+//! (client first, server second) so the subsumption dedup is proven
+//! order-independent (#2391 validation): whichever package module the loader
+//! visits first, the maximal superset survives and one definition serves both
+//! import paths.
+//!
+//! Shape: `main`/the test fn binds the listener synchronously (kernel backlog
+//! then holds the client connection), a `Client` actor runs the blocking
+//! `http_client.get` on a worker while the test thread `accept`s and responds,
+//! and mailbox ordering (`fetch` before `status_result`) makes the readback
+//! race-free without any sleep. The `Client` holds only `string`/`i64` state —
+//! no opaque handle crosses the actor boundary (the supervisor-restart clone
+//! gate rejects opaque handles in actor state).
+
+import std::net::http::http_client;
+
+import std::net::http;
+
+import std::testing;
+
+/// The `Client` runs the blocking outbound request on its own worker; the test
+/// thread serves the single request. `status`/`body` are read back via asks
+/// that the mailbox necessarily processes AFTER `fetch` completes.
+actor Client {
+    let url: string;
+    var status: i64;
+    var body: string;
+
+    receive fn fetch(unused: i64) {
+        http_client.set_timeout(3000);
+        let resp = http_client.get(url);
+        status = resp.status();
+        body = resp.body();
+        resp.free();
+    }
+
+    receive fn status_result() -> i64 {
+        status
+    }
+
+    receive fn body_result() -> string {
+        body
+    }
+}
+
+/// One-process round-trip: bind, fire the client, accept + respond 200 with the
+/// request path echoed, then assert the client observed EXACTLY 200 and the
+/// echoed body. A wrong surviving impl copy (topo-order risk) would either fail
+/// to respond or corrupt the body — a `> 0` smoke check would not catch that,
+/// so the assertions pin the exact status and the exact echoed body.
+#[test]
+fn test_server_client_roundtrip_returns_200_and_echoes_path() {
+    let server = http.listen("127.0.0.1:19717");
+    let client = spawn Client(url: "http://127.0.0.1:19717/ping", status: 0, body: "");
+    client.fetch(0);
+
+    let req = server.accept();
+    let path = req.path();
+    let _ = req.try_respond_text(200, "pong:" + path);
+    req.free();
+    server.close();
+
+    match await client.status_result() {
+        Ok(status) => testing.assert_eq(status, 200),
+        Err(_e) => testing.assert_true(false),
+    }
+    match await client.body_result() {
+        Ok(body) => testing.assert_eq_str(body, "pong:/ping"),
+        Err(_e) => testing.assert_true(false),
+    }
+}

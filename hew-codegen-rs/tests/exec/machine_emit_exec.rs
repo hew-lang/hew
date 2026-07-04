@@ -7,8 +7,9 @@
 //!    `emit_module` succeeds (LLVM `Module::verify()` green).
 //!
 //! 2. **JIT execution**: the JIT-compiled caller invokes the runtime step
-//!    enter/exit wrapper; events pushed by the step drain at the outermost
-//!    frame.
+//!    enter / exit-keep wrapper; events pushed by the step stay queued
+//!    (the deliver-design step-exit never drains — `m.take_emits(ev)` is
+//!    the typed consume surface).
 //!
 //! ## MIR shape
 //!
@@ -122,11 +123,13 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
                 Instr::MachineEmitPlaceholder {
                     event_idx: 0,
                     payload: Vec::new(),
+                    machine_emit_id: 0xAAAA_BBBB_CCCC_DDDD,
                 },
                 // emit AckReceive (index 1) — unit event, no payload.
                 Instr::MachineEmitPlaceholder {
                     event_idx: 1,
                     payload: Vec::new(),
+                    machine_emit_id: 0xAAAA_BBBB_CCCC_DDDD,
                 },
                 // Store self (local 0 — the unchanged machine value) into
                 // the return slot so Terminator::Return can load from it.
@@ -258,8 +261,12 @@ fn emit_ll(pipeline: &IrPipeline, module_name: &str) -> String {
 /// - `emit_module` succeeds (LLVM `Module::verify()` passes).
 /// - The emitted `.ll` contains a declaration of `@hew_machine_emit_push`.
 /// - The step function body contains two `call` sites targeting the push.
-/// - The call passes a constant `u32` event tag and a null payload.
-/// - The caller wraps the `__step` invocation in enter/exit calls.
+/// - The call passes the machine's stable `machine_id` (u64), a constant
+///   `u32` event tag, and a null payload.
+/// - The caller wraps the `__step` invocation with `hew_machine_emit_step_enter`
+///   / `hew_machine_emit_step_exit_keep` (the deliver-design step-exit — NOT
+///   the legacy drain-and-discard `hew_machine_emit_step_exit`, which is no
+///   longer codegen-reachable).
 #[test]
 fn machine_emit_placeholder_lowers_to_push_call() {
     let pipeline = tcp_handshake_emit_pipeline();
@@ -288,6 +295,15 @@ fn machine_emit_placeholder_lowers_to_push_call() {
         "IR must contain `i32 1` as the event tag=1 argument:\n{ir}"
     );
 
+    // The machine_id constant (0xAAAA_BBBB_CCCC_DDDD) must appear as an i64
+    // argument — proves codegen transports MIR's machine_emit_id verbatim
+    // rather than dropping or re-deriving it. LLVM prints i64 constants in
+    // their signed two's-complement decimal form (the high bit is set here).
+    assert!(
+        ir.contains("i64 -6148895925951734307"),
+        "IR must pass the machine_emit_id constant as an i64 argument:\n{ir}"
+    );
+
     // The null payload pointer: LLVM 17+ opaque-pointer mode emits `null`
     // for `ptr_type.const_null()`.
     assert!(
@@ -295,8 +311,15 @@ fn machine_emit_placeholder_lowers_to_push_call() {
         "IR must pass a null payload pointer for unit events:\n{ir}"
     );
     assert!(
-        ir.contains("@hew_machine_emit_step_enter") && ir.contains("@hew_machine_emit_step_exit"),
-        "caller must wrap the __step invocation with machine emit enter/exit calls:\n{ir}"
+        ir.contains("@hew_machine_emit_step_enter")
+            && ir.contains("@hew_machine_emit_step_exit_keep"),
+        "caller must wrap the __step invocation with the deliver-design machine emit \
+         enter / exit_keep calls:\n{ir}"
+    );
+    assert!(
+        !ir.contains("@hew_machine_emit_step_exit("),
+        "codegen must NOT call the legacy drain-and-discard hew_machine_emit_step_exit \
+         (only hew_machine_emit_step_exit_keep is codegen-reachable):\n{ir}"
     );
 }
 
@@ -367,8 +390,8 @@ fn machine_emit_push_populates_thread_queue_in_fifo_order() {
         .get_function("hew_machine_emit_step_enter")
         .expect("emitted module must declare hew_machine_emit_step_enter");
     let step_exit_decl = module
-        .get_function("hew_machine_emit_step_exit")
-        .expect("emitted module must declare hew_machine_emit_step_exit");
+        .get_function("hew_machine_emit_step_exit_keep")
+        .expect("emitted module must declare hew_machine_emit_step_exit_keep");
 
     let ee = module
         .create_jit_execution_engine(OptimizationLevel::None)
@@ -384,10 +407,14 @@ fn machine_emit_push_populates_thread_queue_in_fifo_order() {
     // resolver and directly wires the JIT reference to the in-process function
     // pointer, which is always reachable by address.
     extern "C" {
-        fn hew_machine_emit_push(queue: *mut std::ffi::c_void, tag: u32, payload: *const u8)
-            -> i32;
+        fn hew_machine_emit_push(
+            queue: *mut std::ffi::c_void,
+            machine_id: u64,
+            tag: u32,
+            payload: *const u8,
+        ) -> i32;
         fn hew_machine_emit_step_enter(queue: *mut std::ffi::c_void) -> i32;
-        fn hew_machine_emit_step_exit(queue: *mut std::ffi::c_void) -> i32;
+        fn hew_machine_emit_step_exit_keep(queue: *mut std::ffi::c_void) -> i32;
     }
     ee.add_global_mapping(&emit_push_decl, hew_machine_emit_push as *const () as usize);
     ee.add_global_mapping(
@@ -396,7 +423,7 @@ fn machine_emit_push_populates_thread_queue_in_fifo_order() {
     );
     ee.add_global_mapping(
         &step_exit_decl,
-        hew_machine_emit_step_exit as *const () as usize,
+        hew_machine_emit_step_exit_keep as *const () as usize,
     );
 
     // Clear any stale events from a prior test on this thread.
@@ -421,11 +448,13 @@ fn machine_emit_push_populates_thread_queue_in_fifo_order() {
 
     // ── Assertions ───────────────────────────────────────────────────────────
 
-    // The caller wrapped the step invocation, so the outermost exit drained the
-    // two pushed events before returning.
+    // The caller wrapped the step invocation; the deliver-design step-exit
+    // (`hew_machine_emit_step_exit_keep`) does NOT drain — both pushed
+    // events must still be queued for a later `take_emits`.
     assert_eq!(
         thread_emit_pending(),
-        0,
-        "outermost step exit must drain queued MachineEmitPlaceholder events"
+        2,
+        "the deliver-design step-exit must KEEP queued MachineEmitPlaceholder events, \
+         not drain them"
     );
 }

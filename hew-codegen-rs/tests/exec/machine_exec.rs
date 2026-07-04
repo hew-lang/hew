@@ -90,6 +90,17 @@ const FIXTURES: &[MachineFixture] = &[
         has_default: true,
         has_guard: true,
     },
+    MachineFixture {
+        // unit-event `emit` delivered through the deliver-design ABI
+        // (`hew_machine_emit_push` → keep-on-step-exit →
+        // `hew_machine_emit_take`). Exercises the step-exit-keep wrapper
+        // (never drains) alongside the standard dispatch-shape assertions.
+        stem: "run_emit_signal",
+        machine: "Signal",
+        states: 2,
+        has_default: false,
+        has_guard: false,
+    },
 ];
 
 fn repo_root() -> PathBuf {
@@ -482,6 +493,32 @@ fn guard_true_fires_executes_with_expected_stdout() {
 #[test]
 fn guard_default_stays_executes_with_expected_stdout() {
     execute_fixture("guard_default_stays");
+}
+
+#[test]
+fn run_emit_signal_fixture_executes() {
+    execute_fixture("run_emit_signal");
+}
+
+/// Two machine TYPES declaring the same-named event (`Trigger`, tag 0 in
+/// both). Only `Alarm` emits. `b.take_emits(Trigger)` must report `0` —
+/// proving `take_emits` filters by (machine-type id, event tag) and never
+/// by tag alone. Without the machine-id filter this would misattribute
+/// `Alarm`'s queued event to `Beacon` and wrongly report `1` (red).
+#[test]
+fn run_emit_two_machines_fixture_executes() {
+    let repo = repo_root();
+    ensure_hew_runtime_lib(&repo);
+    let path = repo
+        .join("examples")
+        .join("machine")
+        .join("run_emit_two_machines.hew");
+    let expected_path = path.with_extension("expected");
+    let expected = std::fs::read_to_string(&expected_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", expected_path.display()));
+
+    let (_build_dir, bin) = build_fixture_binary(&repo, &path, "run_emit_two_machines");
+    run_prebuilt(&bin, "run run_emit_two_machines fixture", &expected);
 }
 
 /// an all-guards-false step with NO `default` arm must TRAP with a

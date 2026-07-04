@@ -139,7 +139,7 @@ fn every_c_symbol_resolves_to_a_real_symbol() {
         "hew_tcp_attach_local",
         "hew_sink_write_bytes",
         "hew_sink_try_write_bytes",
-        // receive-gen-fn stream-producer pump (A239): bare `Terminator::Call`s
+        // receive-gen-fn stream-producer pump: bare `Terminator::Call`s
         // emitted only by `build_stream_producer_pump`
         // (`hew-mir/src/lower.rs`), predeclared in codegen alongside
         // `hew_sink_close` (`predeclare_stream_producer_runtime_symbols`,

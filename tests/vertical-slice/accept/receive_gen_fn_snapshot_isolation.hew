@@ -1,4 +1,4 @@
-// A238: a `receive gen fn` stream's read of actor state is a point-in-time
+// A `receive gen fn` stream's read of actor state is a point-in-time
 // SNAPSHOT taken when the stream starts, not a live view. Draining the first
 // value of a stream started against `base=100`, then mutating `base` to 500
 // via an awaited ask (so the mutation is strictly ordered after the first

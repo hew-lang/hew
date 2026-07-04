@@ -222,10 +222,10 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     "hew_metric_histogram_register",
     "hew_metric_vec_register",
     "hew_metric_vec_with",
-    // -- receive-gen-fn stream-producer pump (A239, Stage 5): emitted only
+    // -- receive-gen-fn stream-producer pump: emitted only
     //    by `build_stream_producer_pump` (hew-mir/src/lower.rs), never by a
     //    checker-registered user-facing surface. The golden checked-mir
-    //    corpus has no `receive gen fn` fixture yet (Stage 6 promotes the
+    //    corpus has no `receive gen fn` fixture yet (a later pass promotes the
     //    probes to fixtures under `tests/vertical-slice`, a different
     //    corpus); pin as uncovered here until a golden dump exercises one.
     "hew_actor_gen_sink_complete",

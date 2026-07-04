@@ -2526,7 +2526,7 @@ run_accept_expect_stdout "receive_gen_fn_state_param"
 # sequences must compare equal — the "feels identical" proof.
 run_accept_expect_stdout "receive_gen_fn_parity_twin"
 
-# A238 snapshot isolation: a stream's actor-state read is a point-in-time
+# Snapshot isolation: a stream's actor-state read is a point-in-time
 # snapshot taken at stream start, not a live view. Draining the first value of
 # a stream started against base=100, mutating base to 500 via an awaited ask
 # (ordering the mutation strictly after the first stream's snapshot), then
@@ -2549,7 +2549,7 @@ run_accept_expect_stdout "receive_gen_fn_string_yield"
 run_accept_expect_stdout "receive_gen_fn_record_yield"
 run_accept_expect_stdout "receive_gen_fn_enum_yield"
 
-# A239 fault (producer crash): the gen body yields once, then traps on a
+# Fault (producer crash): the gen body yields once, then traps on a
 # runtime div-by-zero. The consumer, having already received the first value,
 # must observe the fault on its next resume — never a clean, silent EOF. The
 # trap crashes the actor (SIGABRT via the runtime's abort-on-internal-panic
@@ -2557,7 +2557,7 @@ run_accept_expect_stdout "receive_gen_fn_enum_yield"
 run_accept_expect_status "receive_gen_fn_fault_trap" 134
 grep -qF 'receive-gen stream: producer actor' "${stderr_output}"
 
-# A239 fault (producer teardown): an actor stopped (via `supervisor_stop`)
+# Fault (producer teardown): an actor stopped (via `supervisor_stop`)
 # while its stream is live and undrained must fault-close the stream on the
 # consumer's next resume — not a hang, not a silent EOF. Same fault mechanism
 # and exit code as the crash case above; the deterministic buffered-value

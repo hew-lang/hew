@@ -1,6 +1,6 @@
 // A `receive gen fn` handler whose body reads both a handler parameter (`n`)
 // and an actor state field (`base`) — free variables of the generator body
-// snapshotted into its env at stream construction (A238: point-in-time copy,
+// snapshotted into its env at stream construction (point-in-time copy,
 // not a live view of the actor's state).
 actor Ticker {
     var base: i64;

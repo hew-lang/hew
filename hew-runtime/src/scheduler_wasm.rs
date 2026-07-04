@@ -136,7 +136,7 @@ pub struct HewActor {
     // this counter to reach 0 before reclaiming the allocation.
     pub send_pin_count: AtomicU32,
     // ── Receive-gen stream-producer sink registry (appended; matches native
-    // exactly) ── A239: `receive gen fn` is native-only today (the WASM
+    // exactly) ── `receive gen fn` is native-only today (the WASM
     // scheduler never drives a stream-producer pump), so this field is
     // never read/written here — it exists purely to preserve the layout
     // parity this module asserts.

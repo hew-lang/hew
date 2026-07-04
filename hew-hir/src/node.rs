@@ -2568,7 +2568,8 @@ pub enum HirGenCaptureSource {
     Local,
     /// An actor state field read inside a `receive gen fn` handler body. MIR
     /// snapshots this at generator-construction time (a point-in-time copy,
-    /// not a live reference — see A238 in the receive-gen-fn design).
+    /// not a live reference — the snapshot is taken once, at stream start,
+    /// and never re-reads the actor's live state).
     ActorStateField,
 }
 

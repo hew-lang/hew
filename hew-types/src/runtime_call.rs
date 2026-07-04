@@ -168,14 +168,14 @@ pub enum RuntimeCallFamily {
     ActorDemonitor,
     /// `hew_actor_gen_sink_complete(actor, sink) -> void` — a `receive gen
     /// fn` stream-producer pump's clean (generator-exhausted) exit:
-    /// deregisters the actor's gen-sink slot and frees the sink (A239
-    /// decision 7). Emitted only by `build_stream_producer_pump`
+    /// deregisters the actor's gen-sink slot and frees the sink (decision
+    /// 7). Emitted only by `build_stream_producer_pump`
     /// (`hew-mir/src/lower.rs`); no user-facing Hew syntax reaches it.
     /// Pre-staged like `SinkClose`, which it replaces in the pump.
     ActorGenSinkComplete,
     /// `hew_actor_gen_sink_register(actor, sink) -> void` — a `receive gen
     /// fn` pump's prologue registration of its own producer sink, so a
-    /// terminal actor teardown can find and fault-close it (A239 decision
+    /// terminal actor teardown can find and fault-close it (decision
     /// 7). Emitted only by `build_stream_producer_pump`.
     ActorGenSinkRegister,
     ActorLink,
@@ -445,7 +445,7 @@ pub enum RuntimeCallFamily {
     // `Sink::try_send` from the same table.
     SinkClose,
     /// `hew_sink_peer_closed(sink) -> i32` — a `receive gen fn` pump's
-    /// per-iteration peer-closed check (A239 decision 6): 1 once the
+    /// per-iteration peer-closed check (decision 6): 1 once the
     /// consumer stream has closed/detached, so the pump breaks its loop
     /// WITHOUT resuming the generator further (cancellation; an infinite
     /// generator plus a consumer `break` must not livelock the actor).

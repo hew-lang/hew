@@ -1,4 +1,4 @@
-// A239: a `receive gen fn` producer that is torn down (its actor stopped)
+// A `receive gen fn` producer that is torn down (its actor stopped)
 // while its stream is live and undrained must fault-close the stream — the
 // consumer observes the fault on the next resume, not a hang and not a
 // silent EOF.

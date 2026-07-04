@@ -1724,8 +1724,8 @@ pub unsafe extern "C" fn hew_sink_close(sink: *mut HewSink) {
 }
 
 /// Whether the sink's peer (the consumer / `Stream<T>` half) has closed or
-/// detached. Read by a `receive gen fn` pump before every resume (A239
-/// decision 6): once the peer is gone, the pump breaks its loop WITHOUT
+/// detached. Read by a `receive gen fn` pump before every resume (decision
+/// 6): once the peer is gone, the pump breaks its loop WITHOUT
 /// resuming the generator further, so an infinite generator with a consumer
 /// `break` cannot livelock the actor.
 ///
@@ -1753,7 +1753,7 @@ pub unsafe extern "C" fn hew_sink_peer_closed(sink: *mut HewSink) -> i32 {
     i32::from(core.is_stream_closed())
 }
 
-/// Fault-close a receive-gen producer's abandoned sink (A239): mark the
+/// Fault-close a receive-gen producer's abandoned sink: mark the
 /// shared `ChannelCore` permanently faulted, wake any parked consumer so it
 /// observes the fault immediately instead of hanging, then free the sink
 /// allocation. Called only by the runtime's own actor-teardown paths

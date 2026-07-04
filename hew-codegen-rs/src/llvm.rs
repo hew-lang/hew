@@ -4225,9 +4225,9 @@ pub(crate) fn build_state_name_table<'ctx>(
 ///     `fn_symbols` entry was ever wired for it. The pump is the first
 ///     producer.
 ///   * `hew_sink_peer_closed` / `hew_actor_gen_sink_register` /
-///     `hew_actor_gen_sink_complete` (A239, Stage 5) are brand-new runtime
-///     exports with no user-facing Hew syntax at all — the pump is their
-///     ONLY caller.
+///     `hew_actor_gen_sink_complete` (new for the receive-gen-fn pump) are
+///     brand-new runtime exports with no user-facing Hew syntax at all —
+///     the pump is their ONLY caller.
 ///
 /// All eight declarations here are hand-written against the runtime's real
 /// C-ABI shapes (every handle param/return is an opaque `ptr` at the LLVM
@@ -4580,7 +4580,7 @@ fn resolved_ty_contains_actor_handle(ty: &ResolvedTy) -> bool {
 
 /// True when `ty` is — or transitively carries — a `Sink`/`Stream` builtin: a
 /// `receive gen fn` producer row's trailing sink param (`Sink<T>`, per
-/// `lower_actor_handler_layouts`'s Stage 3 row shape). Same process-local,
+/// `lower_actor_handler_layouts`'s stream-producer row shape). Same process-local,
 /// no-cross-node-wire-layout reasoning as the channel/actor-handle siblings
 /// above: a `Sink`/`Stream` lowers to a bare runtime pointer with no
 /// `Serializable` impl, so seeding a codec for it would fail the WHOLE

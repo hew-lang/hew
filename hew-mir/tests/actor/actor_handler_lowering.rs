@@ -787,10 +787,11 @@ fn is_inline_stream_close(instr: &Instr) -> bool {
 
 #[test]
 fn generator_handler_pump_registers_checks_peer_and_completes_sink() {
-    // Stage 5 (A239 decisions 6+7): the pump's prologue registers its own
-    // sink with its actor, checks the consumer peer before every resume,
-    // and closes through the registered `hew_actor_gen_sink_complete` —
-    // never the bare `hew_sink_close` Stage 3 used as a placeholder.
+    // The pump's fault-close and cancellation wiring (decisions 6+7): its
+    // prologue registers its own sink with its actor, checks the consumer
+    // peer before every resume, and closes through the registered
+    // `hew_actor_gen_sink_complete` — never the bare `hew_sink_close` the
+    // shell used earlier as a placeholder.
     let mut ids = IdGen::default();
     let actor = ticks_generator_actor(&mut ids);
 
@@ -823,7 +824,7 @@ fn generator_handler_pump_registers_checks_peer_and_completes_sink() {
     // The pump drives an inner generator handle (`gen_place`) that has no real
     // HIR binding; it must be registered with the drop-elaboration authority so
     // its `hew_gen_coro_destroy` release fires on every pump exit instead of
-    // leaking the coro frame + heap companion (A239 Wave 3b-2). The elaborated
+    // leaking the coro frame + heap companion. The elaborated
     // pump function must carry the companion drop.
     assert!(
         drops_recv_gen_companion(&pipeline.elaborated_mir),

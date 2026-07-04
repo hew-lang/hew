@@ -69,7 +69,7 @@ struct Inner {
     sink_closed: bool,
     /// The consumer cancelled (`stream.close()` / stream drop).
     stream_closed: bool,
-    /// A239 terminal FAULT: the producer (a `receive gen fn` pump) crashed
+    /// Terminal FAULT: the producer (a `receive gen fn` pump) crashed
     /// or was torn down while still registered, instead of reaching a clean
     /// `sink_closed` EOF. Orthogonal to `sink_closed` — set only by
     /// [`ChannelCore::fault_close`], never by a normal close edge. Once
@@ -236,7 +236,7 @@ impl ChannelCore {
     pub unsafe fn await_next(&self, actor: *mut HewActor, slot: *mut HewReadSlot) -> i32 {
         let mut inner = self.locked();
         if !inner.queue.is_empty() || inner.sink_closed || inner.sink_fault {
-            // A239: a faulted-and-empty pipe is READY, never a park — the
+            // A faulted-and-empty pipe is READY, never a park — the
             // bind edge's `pop`/`blocking_recv` observes the fault there and
             // panics fail-closed instead of leaving the consumer parked
             // forever on a producer that will never resume.
@@ -557,7 +557,7 @@ impl ChannelCore {
     /// Whether the consumer has closed/detached (`stream.close()` / stream
     /// drop). Read by `hew_sink_peer_closed` so a `receive gen fn` pump can
     /// check its peer before every resume and break the loop without
-    /// resuming further once the consumer is gone (cancellation, A239
+    /// resuming further once the consumer is gone (cancellation,
     /// decision 6) — an infinite generator plus a consumer `break` must not
     /// livelock the actor.
     #[must_use]
@@ -613,7 +613,7 @@ impl ChannelCore {
         self.cv.notify_all();
     }
 
-    /// Mark this pipe permanently FAULTED (A239): the registered producer (a
+    /// Mark this pipe permanently FAULTED: the registered producer (a
     /// `receive gen fn` pump) crashed or was torn down instead of reaching a
     /// clean EOF. Distinct from [`Self::close_sink`] — set only by the
     /// runtime's actor-teardown paths, never by a normal producer close.
@@ -642,7 +642,7 @@ impl ChannelCore {
         self.cv.notify_all();
     }
 
-    /// Fail closed on an empty-and-faulted read (A239): never a silent EOF.
+    /// Fail closed on an empty-and-faulted read: never a silent EOF.
     /// Named so the panic message identifies the faulted producer actor.
     fn panic_faulted(actor_id: u64) -> ! {
         panic!(

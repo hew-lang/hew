@@ -1138,7 +1138,7 @@ pub struct HewActor {
     pub send_pin_count: AtomicU32,
 
     /// The `receive gen fn` stream-producer pump's own `Sink<T>*` while its
-    /// activation is alive (A239). Registered by
+    /// activation is alive. Registered by
     /// [`hew_actor_gen_sink_register`] in the pump's prologue, cleared by
     /// [`hew_actor_gen_sink_complete`] on a clean (generator-exhausted) exit.
     /// A terminal actor teardown that reaches this actor while the slot is
@@ -3473,7 +3473,7 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor, suppress_state_drop: bool) 
         // race-free against a resume (which would have refused the destroy).
         if destroyed.is_ok() {
             clear_suspended_cancel_token(a);
-            // A239 (Risk 1): `destroy_parked` above just ran the pump frame's
+            // Risk 1: `destroy_parked` above just ran the pump frame's
             // `coro.destroy` cleanup outline, which releases the generator
             // companion (heap env + coro handle) living as a local INSIDE
             // that frame via its normal scope-exit drop
@@ -4962,10 +4962,10 @@ pub(crate) unsafe fn hew_reply_data_size(_ptr: *mut c_void) -> usize {
     LAST_REPLY_SIZE.get()
 }
 
-// ── Receive-gen stream-producer sink registry (A239) ─────────────────────
+// ── Receive-gen stream-producer sink registry ─────────────────────────────
 
 /// Register the `receive gen fn` pump's own producer sink with its actor
-/// (A239 decision 7). Called once in the pump's PROLOGUE, before its first
+/// (decision 7). Called once in the pump's PROLOGUE, before its first
 /// `GeneratorNext`, so a terminal teardown reaching this actor while the
 /// pump is still live (crashed, or parked on backpressure) can find and
 /// fault-close the sink instead of leaving the consumer to hang.
@@ -4992,8 +4992,8 @@ pub unsafe extern "C" fn hew_actor_gen_sink_register(
 }
 
 /// Clean close + deregister: the pump's `None` (generator-exhausted) exit
-/// (A239 decision 7). Replaces the bare `hew_sink_close` call the pump used
-/// through Stage 3/4 — deregisters first so a terminal teardown racing this
+/// (decision 7). Replaces the bare `hew_sink_close` call the pump used
+/// earlier — deregisters first so a terminal teardown racing this
 /// exit cannot ALSO fault-close a sink this call is about to free, then
 /// frees the sink exactly as `hew_sink_close` did.
 ///
@@ -5027,7 +5027,7 @@ pub unsafe extern "C" fn hew_actor_gen_sink_complete(
     unsafe { crate::stream::hew_sink_close(sink) };
 }
 
-/// Fault-close this actor's still-registered gen-sink, if any (A239 decision
+/// Fault-close this actor's still-registered gen-sink, if any (decision
 /// 7). Called from BOTH terminal finalize paths — [`hew_actor_trap`] (the
 /// crash path) and `hew_actor_free_inner`'s parked-activation reclaim (the
 /// stop/teardown-with-a-live-parked-pump path) — so a consumer awaiting the
@@ -5111,7 +5111,7 @@ pub unsafe extern "C" fn hew_actor_trap(actor: *mut HewActor, error_code: i32) {
         }
     }
 
-    // A239: this actor just became terminal — the crash/trap path. Any
+    // This actor just became terminal — the crash/trap path. Any
     // `receive gen fn` pump this actor was running (or had parked) will
     // never produce another value; fault-close its still-registered sink so
     // a consumer awaiting the stream observes the fault rather than hanging.

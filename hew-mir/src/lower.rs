@@ -68,7 +68,7 @@ const HEW_CTX_OFFSET_TRACE_SPAN: usize = HEW_CTX_OFFSET_TRACE + HEW_TRACE_OFFSET
 const CHILD_LOOKUP_RESULT_TY_NAME: &str = "__HewChildLookupResult";
 
 /// Per-call `receive gen fn` stream channel capacity
-/// (`lower_actor_gen_stream`). A laziness/throughput tunable: A239 chose
+/// (`lower_actor_gen_stream`). A laziness/throughput tunable: delivery is
 /// eager producer drive with bounded-channel backpressure over strict
 /// pull-per-element dispatch; a small buffer keeps the consumer experience
 /// pull-equivalent without a user-facing capacity-tuning surface.
@@ -116,7 +116,7 @@ const SENTINEL_EXIT_ACTOR_ID_BINDING: BindingId = BindingId(u32::MAX - 2);
 const SENTINEL_EXIT_KIND_TAG_BINDING: BindingId = BindingId(u32::MAX - 3);
 
 /// Sentinel HIR binding ID for the synthetic generator-companion local the
-/// `receive gen fn` stream-producer pump drives (A239). The pump nests an inner
+/// `receive gen fn` stream-producer pump drives. The pump nests an inner
 /// generator handle (`gen_place`) that has NO real HIR binding — a standalone
 /// `gen fn` returns its handle to a caller who owns and drops it, but the pump
 /// consumes the handle in place and had no owner for it, so its coroutine frame
@@ -5472,8 +5472,8 @@ fn lower_actor_handler_layouts(actor: &HirActorDecl) -> Vec<ActorHandlerLayout> 
             // A `receive gen fn` IS a message-dispatch handler — the third
             // handler kind beside tell (`Fire`) and ask (`Ask`): a per-call
             // stream-producer PUMP, started by a tell-shaped "start" message
-            // (decision 4; the checker/HIR/MIR call-site bridge that
-            // constructs and sends that message is Stage 4). `param_tys`
+            // (decision 4; the checker/HIR/MIR call-site bridge constructs
+            // and sends that message). `param_tys`
             // mirrors the shell's actual MIR signature built in
             // `lower_actor_receive_handlers`: the handler's own params plus
             // one trailing pointer-word sink — this row IS the single
@@ -17131,7 +17131,7 @@ impl Builder {
                 captures,
             } => {
                 let gen_place = self.lower_gen_block(expr, body, yield_ty, return_ty, captures);
-                // `receive gen fn` shell reshape (Stage 3): when this GenBlock is
+                // `receive gen fn` shell reshape: when this GenBlock is
                 // the tail of a stream-producer handler shell, the freshly
                 // constructed generator handle is consumed HERE by the pump —
                 // driven to completion and forwarded element-by-element into the
@@ -19977,7 +19977,7 @@ impl Builder {
                 }
                 // NB: unlike generators, `Stream<T>` / `Receiver<T>` handles are
                 // NOT registered for a per-scope-exit close when bound via match
-                // destructure. The deadlock this wave fixes is caused by the
+                // destructure. The deadlock fixed here is caused by the
                 // `for await` desugar's synthetic `__hew_for_iter_*` CURSOR
                 // (always a `Let` binding) staying open; a plain source binding
                 // (`let (a, s) = …`) that is later consumed into that cursor
@@ -28554,7 +28554,7 @@ impl Builder {
     }
 
     /// Lower a `receive gen fn` call (`e.ticks()`, `t.stream(3)`) — decision 4
-    /// of the receive-gen-fn lane. Constructs a per-call bounded channel, then
+    /// for receive-gen-fn. Constructs a per-call bounded channel, then
     /// tell-sends a "start" message (the call's args plus the sink half) to
     /// the actor's stream-producer pump; the expression value is the stream
     /// half. No `await` here — the checker's ask-without-await guard already
@@ -28653,9 +28653,9 @@ impl Builder {
     /// `pair` is a no-op rather than a fault. Skipping the free leaks the
     /// carrier box once per call.
     ///
-    /// The capacity is a laziness/throughput tunable (A239 chose eager producer
-    /// drive with bounded-channel backpressure; a small buffer keeps it
-    /// pull-equivalent).
+    /// The capacity is a laziness/throughput tunable (delivery is eager
+    /// producer drive with bounded-channel backpressure; a small buffer keeps
+    /// it pull-equivalent).
     fn build_receive_gen_channel(
         &mut self,
         sink_ty: &ResolvedTy,
@@ -31724,8 +31724,8 @@ impl Builder {
                 // capture has none — actor state fields resolve by NAME
                 // through `current_actor_state_fields`, not by binding id —
                 // so its value is snapshotted into a fresh shell local via
-                // `ActorStateFieldLoad` first (A238: a point-in-time copy
-                // taken now, in the enclosing actor-handler frame where state
+                // `ActorStateFieldLoad` first (state is snapshot-isolated: a
+                // point-in-time copy taken now, in the enclosing actor-handler frame where state
                 // is addressable, never a live reference); the resulting slot
                 // then feeds `RecordInit` exactly like a `Local` capture's.
                 let (slot, capture_ty) = match capture.source {
@@ -32105,7 +32105,7 @@ impl Builder {
     }
 
     /// Reshape a `receive gen fn` handler shell into a stream-producer PUMP
-    /// (decision 3, receive-gen-fn Stage 3). Called immediately after
+    /// (decision 3). Called immediately after
     /// `lower_gen_block` constructs `gen_place` (the freshly-made generator
     /// handle) for a shell whose `Builder::stream_producer_pump` is `Some`.
     ///
@@ -32134,16 +32134,17 @@ impl Builder {
     /// variant_idx: 0, field_idx: 0 }`, the same substrate an ordinary `for v in
     /// gen()` loop already exercises.
     ///
-    /// Stage 5 (A239 decisions 6+7): a PROLOGUE registers the pump's sink
-    /// with its own actor (`hew_actor_gen_sink_register`) so a terminal
-    /// teardown reaching this actor while the pump is live can find and
-    /// fault-close it; each loop iteration checks the consumer peer
-    /// (`hew_sink_peer_closed`) BEFORE resuming the generator, breaking
-    /// WITHOUT resuming further once the peer has closed (cancellation —
-    /// an infinite generator plus a consumer `break` must not livelock the
-    /// actor); the shared close path (generator exhausted OR peer closed)
-    /// deregisters + frees the sink via `hew_actor_gen_sink_complete`
-    /// (replacing Stage 3's bare `hew_sink_close`).
+    /// The pump's fault-close and cancellation wiring (decisions 6+7): a
+    /// PROLOGUE registers the pump's sink with its own actor
+    /// (`hew_actor_gen_sink_register`) so a terminal teardown reaching this
+    /// actor while the pump is live can find and fault-close it; each loop
+    /// iteration checks the consumer peer (`hew_sink_peer_closed`) BEFORE
+    /// resuming the generator, breaking WITHOUT resuming further once the
+    /// peer has closed (cancellation — an infinite generator plus a consumer
+    /// `break` must not livelock the actor); the shared close path (generator
+    /// exhausted OR peer closed) deregisters + frees the sink via
+    /// `hew_actor_gen_sink_complete` (replacing the shell's earlier bare
+    /// `hew_sink_close`).
     ///
     /// Emits the peer-closed check (decision 6): calls `hew_sink_peer_closed`,
     /// compares its C-ABI `i32` result against zero, and branches on it.

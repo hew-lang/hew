@@ -1,4 +1,4 @@
-// A239: a `receive gen fn` producer that crashes mid-stream must fault-close
+// A `receive gen fn` producer that crashes mid-stream must fault-close
 // the stream — never a silent, clean EOF. The gen body yields one value, then
 // traps on a runtime div-by-zero; the consumer, having already received the
 // first value, observes the fault on its next resume rather than a clean

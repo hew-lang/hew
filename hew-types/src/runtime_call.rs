@@ -166,6 +166,18 @@ pub enum RuntimeCallFamily {
     /// Present as a `RuntimeCallFamily` variant for allowlist parity only;
     /// the canonical path is `RuntimeDropDescriptor::MonitorRefClose`.
     ActorDemonitor,
+    /// `hew_actor_gen_sink_complete(actor, sink) -> void` — a `receive gen
+    /// fn` stream-producer pump's clean (generator-exhausted) exit:
+    /// deregisters the actor's gen-sink slot and frees the sink (A239
+    /// decision 7). Emitted only by `build_stream_producer_pump`
+    /// (`hew-mir/src/lower.rs`); no user-facing Hew syntax reaches it.
+    /// Pre-staged like `SinkClose`, which it replaces in the pump.
+    ActorGenSinkComplete,
+    /// `hew_actor_gen_sink_register(actor, sink) -> void` — a `receive gen
+    /// fn` pump's prologue registration of its own producer sink, so a
+    /// terminal actor teardown can find and fault-close it (A239 decision
+    /// 7). Emitted only by `build_stream_producer_pump`.
+    ActorGenSinkRegister,
     ActorLink,
     /// `link_remote(RemotePid<T>, PartitionPolicy)` →
     /// `hew_node_link_remote(target_pid, policy_tag) -> i64`. Establishes a
@@ -432,6 +444,14 @@ pub enum RuntimeCallFamily {
     // `hew-types/src/builtin_names.rs:253-265`. `SinkTryWrite` mirrors
     // `Sink::try_send` from the same table.
     SinkClose,
+    /// `hew_sink_peer_closed(sink) -> i32` — a `receive gen fn` pump's
+    /// per-iteration peer-closed check (A239 decision 6): 1 once the
+    /// consumer stream has closed/detached, so the pump breaks its loop
+    /// WITHOUT resuming the generator further (cancellation; an infinite
+    /// generator plus a consumer `break` must not livelock the actor).
+    /// Emitted only by `build_stream_producer_pump`; pre-staged like
+    /// `SinkClose`.
+    SinkPeerClosed,
     SinkWrite(StreamElementKind),
     SinkTryWrite(StreamElementKind),
 
@@ -525,6 +545,8 @@ impl RuntimeCallFamily {
             Self::ActorAskWithChannel => "hew_actor_ask_with_channel",
             Self::ActorCooperate => "hew_actor_cooperate",
             Self::ActorDemonitor => "hew_actor_demonitor",
+            Self::ActorGenSinkComplete => "hew_actor_gen_sink_complete",
+            Self::ActorGenSinkRegister => "hew_actor_gen_sink_register",
             Self::ActorLink => "hew_actor_link",
             Self::LinkRemote => "hew_node_link_remote",
             Self::ActorMonitor => "hew_actor_monitor",
@@ -685,6 +707,7 @@ impl RuntimeCallFamily {
             // Sink (pre-staged consumers; both element kinds real per
             // hew-types/src/builtin_names.rs:253-265)
             Self::SinkClose => "hew_sink_close",
+            Self::SinkPeerClosed => "hew_sink_peer_closed",
             Self::SinkWrite(StreamElementKind::Bytes) => "hew_sink_write_bytes",
             Self::SinkWrite(StreamElementKind::String) => "hew_sink_write_string",
             Self::SinkTryWrite(StreamElementKind::Bytes) => "hew_sink_try_write_bytes",
@@ -778,6 +801,8 @@ impl RuntimeCallFamily {
             "hew_actor_ask_with_channel" => Self::ActorAskWithChannel,
             "hew_actor_cooperate" => Self::ActorCooperate,
             "hew_actor_demonitor" => Self::ActorDemonitor,
+            "hew_actor_gen_sink_complete" => Self::ActorGenSinkComplete,
+            "hew_actor_gen_sink_register" => Self::ActorGenSinkRegister,
             "hew_actor_link" => Self::ActorLink,
             "hew_node_link_remote" => Self::LinkRemote,
             "hew_actor_monitor" => Self::ActorMonitor,
@@ -937,6 +962,7 @@ impl RuntimeCallFamily {
             "hew_send_half_try_send" => Self::SendHalfTrySend,
             // Sink
             "hew_sink_close" => Self::SinkClose,
+            "hew_sink_peer_closed" => Self::SinkPeerClosed,
             "hew_sink_write_bytes" => Self::SinkWrite(StreamElementKind::Bytes),
             "hew_sink_write_string" => Self::SinkWrite(StreamElementKind::String),
             "hew_sink_try_write_bytes" => Self::SinkTryWrite(StreamElementKind::Bytes),
@@ -1081,6 +1107,9 @@ impl RuntimeCallFamily {
             | F::SinkWrite(StreamElementKind::String)
             | F::SinkTryWrite(_)
             | F::SinkClose
+            | F::SinkPeerClosed
+            | F::ActorGenSinkComplete
+            | F::ActorGenSinkRegister
             | F::ChannelSendLayout
             | F::ChannelTryRecvLayout
             | F::ChannelSenderClose
@@ -1611,7 +1640,9 @@ pub fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
     use RuntimeCallFamily as F;
     matches!(
         family,
-        F::ChannelRecvLayout
+        F::ActorGenSinkComplete
+            | F::ActorGenSinkRegister
+            | F::ChannelRecvLayout
             | F::ChannelSendLayout
             | F::ChannelTryRecvLayout
             | F::ChannelSenderClose
@@ -1624,6 +1655,7 @@ pub fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
             | F::NodeLookup
             | F::RemotePidSend
             | F::SinkClose
+            | F::SinkPeerClosed
             | F::SinkWrite(_)
             | F::SinkTryWrite(_)
             | F::StreamClose

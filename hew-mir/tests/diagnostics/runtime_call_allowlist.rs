@@ -139,6 +139,15 @@ fn every_c_symbol_resolves_to_a_real_symbol() {
         "hew_tcp_attach_local",
         "hew_sink_write_bytes",
         "hew_sink_try_write_bytes",
+        // receive-gen-fn stream-producer pump (A239): bare `Terminator::Call`s
+        // emitted only by `build_stream_producer_pump`
+        // (`hew-mir/src/lower.rs`), predeclared in codegen alongside
+        // `hew_sink_close` (`predeclare_stream_producer_runtime_symbols`,
+        // `hew-codegen-rs/src/llvm.rs`). No user-facing Hew syntax reaches
+        // them.
+        "hew_sink_peer_closed",
+        "hew_actor_gen_sink_register",
+        "hew_actor_gen_sink_complete",
         // Channel/stream element-layout-witness entries: codegen
         // intercepts the `Terminator::Call` and emits the layout-witness
         // ABI (`hew-codegen-rs/src/llvm.rs` recv/send intercept arms).

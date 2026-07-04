@@ -1723,6 +1723,82 @@ pub unsafe extern "C" fn hew_sink_close(sink: *mut HewSink) {
     }
 }
 
+/// Whether the sink's peer (the consumer / `Stream<T>` half) has closed or
+/// detached. Read by a `receive gen fn` pump before every resume (A239
+/// decision 6): once the peer is gone, the pump breaks its loop WITHOUT
+/// resuming the generator further, so an infinite generator with a consumer
+/// `break` cannot livelock the actor.
+///
+/// Returns 1 if the peer has closed, 0 otherwise — including a null sink or
+/// a non-channel sink (a `receive gen fn` pump only ever registers a
+/// channel-backed sink; a "still connected" default is the fail-safe choice
+/// for an unrecognised backing since it never falsely aborts a live pump).
+///
+/// # Safety
+///
+/// `sink` must be null or a valid `HewSink` pointer.
+#[no_mangle]
+pub unsafe extern "C" fn hew_sink_peer_closed(sink: *mut HewSink) -> i32 {
+    if sink.is_null() {
+        return 0;
+    }
+    // SAFETY: sink is valid per caller contract.
+    let core_raw = unsafe { (*sink).channel_core_ptr() };
+    if core_raw.is_null() {
+        return 0;
+    }
+    // SAFETY: core_raw borrows the live `Arc<ChannelCore>` owned by the sink
+    // backing (alive for the duration of this call).
+    let core = unsafe { &*core_raw.cast::<crate::channel_core::ChannelCore>() };
+    i32::from(core.is_stream_closed())
+}
+
+/// Fault-close a receive-gen producer's abandoned sink (A239): mark the
+/// shared `ChannelCore` permanently faulted, wake any parked consumer so it
+/// observes the fault immediately instead of hanging, then free the sink
+/// allocation. Called only by the runtime's own actor-teardown paths
+/// (`hew_actor_trap`'s crash handling, `hew_actor_free_inner`'s
+/// parked-activation reclaim) against a sink `hew_actor_gen_sink_register`
+/// recorded — never reachable from Hew source. A no-op on a null sink.
+///
+/// The pump's own generated body never reaches its `hew_actor_gen_sink_complete`
+/// call on this path (the activation crashed or was torn down first), so this
+/// function is the sink's ONLY release: it takes the same consuming,
+/// free-the-allocation contract `hew_sink_close` has, just with the fault
+/// stamped on the shared core FIRST (before the sink's `Drop` clears the
+/// core borrow) so a consumer racing the teardown still observes the fault
+/// rather than a bare clean close.
+///
+/// Does NOT touch the generator companion (heap env + coro handle) living as
+/// a local inside the pump's own coroutine frame — that is released via the
+/// pump's own coro `cleanup` outline when the frame is destroyed (normal
+/// scope-exit drop, or `coro_exec::destroy_parked` for a mid-suspend
+/// teardown). This function's sole job is the SINK, so the two release paths
+/// never overlap.
+///
+/// # Safety
+///
+/// `sink` must be null or a live `HewSink` pointer not yet freed — the exact
+/// pointer `hew_actor_gen_sink_register` recorded. After this call `sink` is
+/// dangling (mirrors `hew_sink_close`'s contract).
+pub(crate) unsafe fn fault_close_registered_sink(sink: *mut HewSink, faulted_actor_id: u64) {
+    if sink.is_null() {
+        return;
+    }
+    // SAFETY: sink is valid per caller contract.
+    let core_raw = unsafe { (*sink).channel_core_ptr() };
+    if !core_raw.is_null() {
+        // SAFETY: core_raw borrows the live `Arc<ChannelCore>` owned by the
+        // sink backing; stamp the fault BEFORE `hew_sink_close` below runs
+        // `HewSink::close()`, which nulls this borrow.
+        let core = unsafe { &*core_raw.cast::<crate::channel_core::ChannelCore>() };
+        core.fault_close(faulted_actor_id);
+    }
+    // SAFETY: sink is the live, not-yet-freed pointer per the fn contract;
+    // this is the sink's single release on the abandoned-pump path.
+    unsafe { hew_sink_close(sink) };
+}
+
 /// Pipe all items from a stream into a sink, then close both.
 ///
 /// Reads items from `stream` until EOF and writes each to `sink`.

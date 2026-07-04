@@ -1175,6 +1175,9 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::SendHalfSend
         | F::SendHalfTrySend
         | F::SinkClose
+        | F::SinkPeerClosed
+        | F::ActorGenSinkComplete
+        | F::ActorGenSinkRegister
         | F::SinkWrite(_)
         | F::SinkTryWrite(_)
         | F::StreamClose
@@ -4201,12 +4204,14 @@ pub(crate) fn build_state_name_table<'ctx>(
 /// and its call-site lowering emit as bare `Terminator::Call`s
 /// (`hew-mir/src/lower.rs`, `build_stream_producer_pump` +
 /// `lower_actor_gen_stream`): `hew_stream_channel`, `hew_stream_pair_sink`,
-/// `hew_stream_pair_stream`, `hew_sink_close`.
+/// `hew_stream_pair_stream`, `hew_sink_close`, `hew_sink_peer_closed`,
+/// `hew_actor_gen_sink_register`, `hew_actor_gen_sink_complete`.
 ///
-/// These are EXISTING `hew-runtime/src/stream.rs` exports, already classified
-/// in `scripts/jit-symbol-classification.toml`'s `stable` tier, but reached
-/// through `Terminator::Call` for the first time here — and none of them
-/// have a `fn_symbols` entry through any EXISTING path:
+/// These are EXISTING `hew-runtime/src/stream.rs` / `hew-runtime/src/actor.rs`
+/// exports, already classified in `scripts/jit-symbol-classification.toml`'s
+/// `stable` tier, but reached through `Terminator::Call` for the first time
+/// here — and none of them have a `fn_symbols` entry through any EXISTING
+/// path:
 ///   * The channel-construction trio has no stdlib-catalog entry at all (no
 ///     user-facing Hew syntax calls `hew_stream_channel(..)` directly).
 ///   * `hew_sink_close` DOES back real user syntax (`Sink::close`,
@@ -4216,15 +4221,23 @@ pub(crate) fn build_state_name_table<'ctx>(
 ///     `RuntimeCallFamily` yet, so no `Terminator::Call` codegen intercept or
 ///     `fn_symbols` entry was ever wired for it. The pump is the first
 ///     producer.
+///   * `hew_sink_peer_closed` / `hew_actor_gen_sink_register` /
+///     `hew_actor_gen_sink_complete` (A239, Stage 5) are brand-new runtime
+///     exports with no user-facing Hew syntax at all — the pump is their
+///     ONLY caller.
 ///
-/// All four declarations here are hand-written against the runtime's real
-/// C-ABI shapes (every param/return is an opaque handle at the LLVM level,
-/// `ptr`, except the plain `i64` capacity and the `void` close return):
+/// All seven declarations here are hand-written against the runtime's real
+/// C-ABI shapes (every handle param/return is an opaque `ptr` at the LLVM
+/// level, except the plain `i64` capacity, the `i32` peer-closed/fault
+/// witness, and the `void` close/register/complete returns):
 ///
 ///   * `hew_stream_channel(capacity: i64) -> *mut HewStreamPair`
 ///   * `hew_stream_pair_sink(pair: *mut HewStreamPair) -> *mut HewSink`
 ///   * `hew_stream_pair_stream(pair: *mut HewStreamPair) -> *mut HewStream`
 ///   * `hew_sink_close(sink: *mut HewSink) -> void`
+///   * `hew_sink_peer_closed(sink: *mut HewSink) -> i32`
+///   * `hew_actor_gen_sink_register(actor: *mut HewActor, sink: *mut HewSink) -> void`
+///   * `hew_actor_gen_sink_complete(actor: *mut HewActor, sink: *mut HewSink) -> void`
 fn predeclare_stream_producer_runtime_symbols<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
@@ -4232,7 +4245,11 @@ fn predeclare_stream_producer_runtime_symbols<'ctx>(
 ) {
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let i64_ty = ctx.i64_type();
+    let i32_ty = ctx.i32_type();
     let unary_ptr_fn_ty = ptr_ty.fn_type(&[ptr_ty.into()], false);
+    let binary_ptr_void_fn_ty = ctx
+        .void_type()
+        .fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
     for (name, fn_ty, return_ty, returns_unit) in [
         (
             "hew_stream_channel",
@@ -4255,6 +4272,24 @@ fn predeclare_stream_producer_runtime_symbols<'ctx>(
         (
             "hew_sink_close",
             ctx.void_type().fn_type(&[ptr_ty.into()], false),
+            ctx.i8_type().into(),
+            true,
+        ),
+        (
+            "hew_sink_peer_closed",
+            i32_ty.fn_type(&[ptr_ty.into()], false),
+            BasicTypeEnum::from(i32_ty),
+            false,
+        ),
+        (
+            "hew_actor_gen_sink_register",
+            binary_ptr_void_fn_ty,
+            ctx.i8_type().into(),
+            true,
+        ),
+        (
+            "hew_actor_gen_sink_complete",
+            binary_ptr_void_fn_ty,
             ctx.i8_type().into(),
             true,
         ),

@@ -687,6 +687,49 @@ fn body_contains(func: &hew_mir::RawMirFunction, pred: fn(&Instr) -> bool) -> bo
     func.blocks.iter().flat_map(|b| &b.instructions).any(pred)
 }
 
+/// Whether any block's terminator is a `Terminator::Call` to `callee`.
+fn calls_runtime_symbol(func: &hew_mir::RawMirFunction, callee: &str) -> bool {
+    func.blocks
+        .iter()
+        .any(|b| matches!(&b.terminator, Terminator::Call { callee: c, .. } if c == callee))
+}
+
+#[test]
+fn generator_handler_pump_registers_checks_peer_and_completes_sink() {
+    // Stage 5 (A239 decisions 6+7): the pump's prologue registers its own
+    // sink with its actor, checks the consumer peer before every resume,
+    // and closes through the registered `hew_actor_gen_sink_complete` —
+    // never the bare `hew_sink_close` Stage 3 used as a placeholder.
+    let mut ids = IdGen::default();
+    let actor = ticks_generator_actor(&mut ids);
+
+    let pipeline = lower_hir_module(&empty_module(vec![HirItem::Actor(actor)]));
+
+    let handler = pipeline
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "Counter__recv__ticks")
+        .expect("generator handler must produce a MIR function");
+
+    assert!(
+        calls_runtime_symbol(handler, "hew_actor_gen_sink_register"),
+        "the pump prologue must register its sink with its own actor"
+    );
+    assert!(
+        calls_runtime_symbol(handler, "hew_sink_peer_closed"),
+        "the pump must check its consumer peer before resuming the generator"
+    );
+    assert!(
+        calls_runtime_symbol(handler, "hew_actor_gen_sink_complete"),
+        "the pump's close path must deregister + free the sink via the \
+         registered complete call"
+    );
+    assert!(
+        !calls_runtime_symbol(handler, "hew_sink_close"),
+        "the bare hew_sink_close placeholder must be fully replaced"
+    );
+}
+
 /// A `receive gen fn` body that reads an actor state field (`count`, an
 /// `HirGenCaptureSource::ActorStateField` capture per `lower_actor_generator_body`)
 /// must snapshot it in the ENCLOSING shell frame — where actor state is

@@ -31887,14 +31887,85 @@ impl Builder {
     /// variant_idx: 0, field_idx: 0 }`, the same substrate an ordinary `for v in
     /// gen()` loop already exercises.
     ///
-    /// Stage 3 uses the bare `hew_sink_close` runtime call on the `None` exit;
-    /// Stage 5 swaps this for the registered `hew_actor_gen_sink_complete` (the
-    /// death-signal-aware close) without touching the loop shape above.
+    /// Stage 5 (A239 decisions 6+7): a PROLOGUE registers the pump's sink
+    /// with its own actor (`hew_actor_gen_sink_register`) so a terminal
+    /// teardown reaching this actor while the pump is live can find and
+    /// fault-close it; each loop iteration checks the consumer peer
+    /// (`hew_sink_peer_closed`) BEFORE resuming the generator, breaking
+    /// WITHOUT resuming further once the peer has closed (cancellation —
+    /// an infinite generator plus a consumer `break` must not livelock the
+    /// actor); the shared close path (generator exhausted OR peer closed)
+    /// deregisters + frees the sink via `hew_actor_gen_sink_complete`
+    /// (replacing Stage 3's bare `hew_sink_close`).
+    ///
+    /// Emits the peer-closed check (decision 6): calls `hew_sink_peer_closed`,
+    /// compares its C-ABI `i32` result against zero, and branches on it.
+    /// Returns `(resume_bb, close_bb)` — the caller starts `resume_bb` to
+    /// drive the generator, and starts (or shares) `close_bb` for the
+    /// registered-complete close. Factored out of `build_stream_producer_pump`
+    /// to keep that function under the `too_many_lines` threshold.
+    fn emit_pump_peer_closed_check(&mut self, sink: Place) -> (u32, u32) {
+        use hew_types::runtime_call::RuntimeCallFamily;
+
+        let peer_closed = self.alloc_local(ResolvedTy::I32);
+        let after_peer_check = self.alloc_block();
+        self.finish_current_block(Terminator::Call {
+            callee: "hew_sink_peer_closed".to_string(),
+            builtin: Some(RuntimeCallFamily::SinkPeerClosed),
+            args: vec![sink],
+            dest: Some(peer_closed),
+            next: after_peer_check,
+        });
+        self.start_block(after_peer_check);
+
+        let zero_i32 = self.alloc_local(ResolvedTy::I32);
+        self.push_instr(Instr::ConstI64 {
+            dest: zero_i32,
+            value: 0,
+        });
+        let is_peer_closed = self.alloc_local(ResolvedTy::Bool);
+        self.push_instr(Instr::IntCmp {
+            pred: crate::model::CmpPred::NotEq,
+            lhs: peer_closed,
+            rhs: zero_i32,
+            dest: is_peer_closed,
+        });
+
+        let resume_bb = self.alloc_block();
+        let close_bb = self.alloc_block();
+        self.finish_current_block(Terminator::Branch {
+            cond: is_peer_closed,
+            then_target: close_bb,
+            else_target: resume_bb,
+        });
+        (resume_bb, close_bb)
+    }
+
     fn build_stream_producer_pump(&mut self, gen_place: Place, pump: &StreamProducerPumpCtx) {
+        use hew_types::runtime_call::RuntimeCallFamily;
+
+        // Prologue: register this pump's own sink with its own actor.
+        let actor_self = self.emit_actor_self_handle();
+        let after_register = self.alloc_block();
+        self.finish_current_block(Terminator::Call {
+            callee: "hew_actor_gen_sink_register".to_string(),
+            builtin: Some(RuntimeCallFamily::ActorGenSinkRegister),
+            args: vec![actor_self, pump.sink],
+            dest: None,
+            next: after_register,
+        });
+        self.start_block(after_register);
+
         let loop_head = self.alloc_block();
         self.finish_current_block(Terminator::Goto { target: loop_head });
         self.start_block(loop_head);
 
+        // Peer-closed check (decision 6): before every resume, not just the
+        // first. Branches to `close_bb` without resuming when the consumer
+        // has closed, else falls through into the caller's `resume_bb`.
+        let (resume_bb, close_bb) = self.emit_pump_peer_closed_check(pump.sink);
+
+        self.start_block(resume_bb);
         let option_ty = ResolvedTy::Named {
             name: "Option".to_string(),
             args: vec![pump.yield_ty.clone()],
@@ -31930,7 +32001,6 @@ impl Builder {
         });
 
         let send_bb = self.alloc_block();
-        let close_bb = self.alloc_block();
         self.finish_current_block(Terminator::Branch {
             cond: is_some,
             then_target: send_bb,
@@ -31960,12 +32030,15 @@ impl Builder {
         self.start_block(after_send);
         self.finish_current_block(Terminator::Goto { target: loop_head });
 
+        // Shared close path: reached with the generator exhausted (`None`)
+        // OR the consumer peer already closed. Either way the sink is done;
+        // deregister + free it exactly once.
         self.start_block(close_bb);
         let close_next = self.alloc_block();
         self.finish_current_block(Terminator::Call {
-            callee: "hew_sink_close".to_string(),
-            builtin: Some(hew_types::runtime_call::RuntimeCallFamily::SinkClose),
-            args: vec![pump.sink],
+            callee: "hew_actor_gen_sink_complete".to_string(),
+            builtin: Some(RuntimeCallFamily::ActorGenSinkComplete),
+            args: vec![actor_self, pump.sink],
             dest: None,
             next: close_next,
         });

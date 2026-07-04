@@ -3523,6 +3523,9 @@ pub(crate) fn lower_call_runtime_abi(
         | F::ReplyWait
         | F::SelectFirst
         | F::SinkClose
+        | F::SinkPeerClosed
+        | F::ActorGenSinkComplete
+        | F::ActorGenSinkRegister
         | F::SinkWrite(_)
         | F::SinkTryWrite(_)
         | F::StreamClose

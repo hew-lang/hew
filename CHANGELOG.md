@@ -1,13 +1,26 @@
 # Changelog
 
-## [Unreleased]
+## [0.6.0-rc1] — unreleased (in preparation)
 
-### Added
+This is the first release candidate for v0.6. **The tag is not cut yet** — this
+entry tracks the major work landed on the v0.6 line and will be finalized when
+the candidate ships. v0.6 completes the ownership model, closes a batch of
+actor and machine correctness gaps, and reshapes several language surfaces. The
+headline change is that ownership and drop elaboration are now unconditional and
+type-directed: every owned value is released exactly once, with no reliance on
+ad-hoc per-shape heap walkers.
 
-- **Actor sleep-loop mailbox lint.** `hew check` now warns when an actor
-  receive handler loops around `sleep`/`sleep_until` without an in-handler exit
-  path, and the guide documents the cancellable `#[every(duration)]` + flag
-  pattern. (closes #2271)
+### Changed — ownership and drop elaboration
+
+- **Unconditional, type-directed exactly-once drop elaboration.** MIR drop
+  elaboration now walks each owned value's type and drops its fields exactly
+  once from a single seed authority, replacing the conditional per-shape release
+  paths. Match-bound and tuple-chain escapes are compensated so no owned value
+  is dropped twice or leaked, the legacy CBOR heap walker is retired onto the one
+  ownership authority, and borrow classification is unified into a single
+  ownership table. (#2382, #2386)
+- **`#[resource]` fields embedded in records are released.** A record that embeds
+  a `#[resource]` field now runs field-wise close on scope exit. (#2312)
 
 ### Removed (breaking)
 
@@ -19,6 +32,40 @@
   required. Stdlib `Child` (`std::process`) and `MonitorRef`
   (`std::link_monitor`) have been migrated to the `#[resource]` close model.
   (#1986)
+
+### Fixed — actor and machine correctness (correctness fence)
+
+- **Bounded mailboxes.** Codegen now honours a declared mailbox capacity and its
+  overflow policy instead of treating every mailbox as unbounded. (#2389)
+- **Machine `when` guards are evaluated.** A state-machine `when` guard is now
+  evaluated at the transition, and an exhaustiveness fallthrough traps instead of
+  silently taking a wrong edge. (#2390)
+- **Machine `emit` delivery.** Unit `emit` from a machine is delivered through
+  `take_emits` so emitted events are not dropped. (#2393)
+- **`for-in` over an array literal is drop-safe.** HIR captures the array-literal
+  iterator source, so iterating a temporary array no longer double-frees. (#2394)
+- **Fault-isolation hardening.** Root-supervisor escalation guards against a null
+  parent, collection bounds failures route through actor fault isolation, and
+  `SIGPIPE` is ignored so a broken-pipe send fails closed rather than killing the
+  process. (#2327)
+
+### Added — language surface
+
+- **`try_to_*` numeric conversions.** Fallible numeric conversions with exactness
+  checking (`try_to_i32`, `try_to_u8`, …) return an error on an out-of-range or
+  lossy conversion instead of truncating silently. (#2368)
+- **Unified `.send()`.** Actor fire-and-forget sends use one `.send()` verb
+  across local and remote targets. (#2369)
+- **`#[wire]` types.** Wire-format declarations use the `#[wire]` type attribute;
+  the `struct` keyword has been removed. (#2370, closes #2365)
+- **Iterator-trait completion.** The iterator surface is completed across
+  diagnostics, docs, and the standard collections, including `Vec<T>::iter()`
+  non-consuming iteration and `HashMap::into_iter()`, so pipeline and `for-in`
+  forms match across collections. (#2323, #2299)
+- **Actor sleep-loop mailbox lint.** `hew check` now warns when an actor receive
+  handler loops around `sleep`/`sleep_until` without an in-handler exit path, and
+  the guide documents the cancellable `#[every(duration)]` + flag pattern.
+  (closes #2271)
 
 ## [0.5.1] — 2026-06-14
 

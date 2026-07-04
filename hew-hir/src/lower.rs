@@ -4265,6 +4265,7 @@ fn collect_call_sites_in_expr(
         }
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::ActorGenStream { receiver, args, .. }
         | HirExprKind::ResolvedImplCall { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. } => {
             collect_call_sites_in_expr(receiver, out, trait_out);
@@ -7494,6 +7495,11 @@ impl LowerCtx {
                 ..
             }
             | HirExprKind::ActorAsk {
+                receiver: target,
+                args,
+                ..
+            }
+            | HirExprKind::ActorGenStream {
                 receiver: target,
                 args,
                 ..
@@ -14966,7 +14972,12 @@ impl LowerCtx {
                         );
                         ResolvedTy::from_ty(&reply_ty).unwrap_or(ResolvedTy::Unit)
                     }
-                    Some(ActorMethodKind::Fire(_)) | None => ResolvedTy::Unit,
+                    // A `receive gen fn` dispatch never reaches a `select`
+                    // ActorAsk arm — `for await` is its only consumer surface
+                    // — but fold it into the same Unit fallback as `Fire`/
+                    // `None` rather than panicking on a table mismatch.
+                    Some(ActorMethodKind::Fire(_) | ActorMethodKind::StreamProducer(_, _))
+                    | None => ResolvedTy::Unit,
                 }
             }
             HirSelectArmKind::ChannelRecv { receiver } => {
@@ -20309,6 +20320,43 @@ impl LowerCtx {
                         )
                     }
                 },
+                ActorMethodKind::StreamProducer(method_id, elem_ty) => {
+                    match ResolvedTy::from_ty(&elem_ty) {
+                        Ok(elem_ty) => {
+                            let stream_ty = ResolvedTy::named_builtin(
+                                "Stream",
+                                hew_types::BuiltinType::Stream,
+                                vec![elem_ty],
+                            );
+                            (
+                                HirExprKind::ActorGenStream {
+                                    receiver: Box::new(lowered_receiver),
+                                    method: method_id,
+                                    args: lowered_args,
+                                },
+                                stream_ty,
+                            )
+                        }
+                        Err(err) => {
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::CheckerBoundaryViolation {
+                                    name: format!("actor method `.{method}`"),
+                                    reason: err.to_string(),
+                                },
+                                span.clone(),
+                                "checker-authoritative actor_method_dispatch stream element \
+                                 type failed boundary conversion",
+                            ));
+                            (
+                                HirExprKind::Unsupported(format!(
+                                    "actor method `.{method}` has poisoned dispatch stream \
+                                     element type"
+                                )),
+                                ResolvedTy::Unit,
+                            )
+                        }
+                    }
+                }
             };
         }
         if matches!(
@@ -24068,6 +24116,7 @@ fn collect_captures_walk(
         }
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::ActorGenStream { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
         | HirExprKind::ResolvedImplCall { receiver, args, .. }
         | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
@@ -24387,6 +24436,7 @@ fn collect_general_closure_captures_walk(
         }
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::ActorGenStream { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
         | HirExprKind::ResolvedImplCall { receiver, args, .. }
         | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
@@ -25164,6 +25214,7 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
         // Additional expression forms whose sub-expressions can contain emits.
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::ActorGenStream { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
         | HirExprKind::ResolvedImplCall { receiver, args, .. }
         | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
@@ -27559,7 +27610,8 @@ fn scan_expr_for_call_shape(
             }
         }
         HirExprKind::ActorSend { receiver, args, .. }
-        | HirExprKind::ActorAsk { receiver, args, .. } => {
+        | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::ActorGenStream { receiver, args, .. } => {
             scan_expr_for_call_shape(receiver, callable, diagnostics);
             for a in args {
                 scan_expr_for_call_shape(a, callable, diagnostics);

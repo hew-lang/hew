@@ -4310,8 +4310,10 @@ pub(crate) fn emit_suspending_stream_send_terminator<'ctx>(
         .ok_or_else(|| CodegenError::FailClosed("hew_actor_self returned void".into()))?
         .into_pointer_value();
     let sink_ptr = load_duplex_handle(fn_ctx, term.sink, "suspending_stream_send sink")?;
-    // The bytes value is passed BY POINTER (the triple alloca address), exactly
-    // like the blocking `hew_sink_write_bytes` consumer.
+    // The value is passed BY POINTER (the triple alloca address for
+    // bytes/string, or the plain slot address for anything else), exactly
+    // like the blocking `hew_sink_write_bytes` / `hew_stream_send_layout`
+    // consumers.
     let (value_ptr, _value_ty) = place_pointer(fn_ctx, term.value)?;
 
     let slot_new = intern_runtime_decl(
@@ -4329,17 +4331,47 @@ pub(crate) fn emit_suspending_stream_send_terminator<'ctx>(
         .ok_or_else(|| CodegenError::FailClosed("hew_read_slot_new returned void".into()))?
         .into_pointer_value();
 
-    let rc = fn_ctx.call_runtime_int(
-        "hew_stream_await_send",
-        &[
-            sink_ptr.into(),
-            self_actor.into(),
-            slot.into(),
-            value_ptr.into(),
-        ],
-        "suspending_stream_send_register",
-        "hew_stream_await_send call",
-    )?;
+    // `await sink.send(x)` over a bytes/string sink (the ONLY shape this
+    // suspending path served before the receive-gen-fn pump) rides the
+    // native `BytesTriple`-shaped `hew_stream_await_send`, unchanged. A
+    // `receive gen fn` pump forwarding a non-bytes/string yielded value
+    // (`SuspendKind::StreamSend` minted directly by
+    // `build_stream_producer_pump`, hew-mir/src/lower.rs — never through a
+    // source-level `await sink.send`) needs the layout-generic sibling: the
+    // native path would read a `BytesTriple` header out of e.g. an `i64`
+    // slot and crash.
+    let value_resolved_ty = place_resolved_ty(fn_ctx, term.value)?.clone();
+    let rc = if matches!(value_resolved_ty, ResolvedTy::String | ResolvedTy::Bytes) {
+        fn_ctx.call_runtime_int(
+            "hew_stream_await_send",
+            &[
+                sink_ptr.into(),
+                self_actor.into(),
+                slot.into(),
+                value_ptr.into(),
+            ],
+            "suspending_stream_send_register",
+            "hew_stream_await_send call",
+        )?
+    } else {
+        let witness = crate::layout::channel_elem_layout_witness_ptr(
+            fn_ctx,
+            &value_resolved_ty,
+            "suspending_stream_send_layout",
+        )?;
+        fn_ctx.call_runtime_int(
+            "hew_stream_await_send_layout",
+            &[
+                sink_ptr.into(),
+                self_actor.into(),
+                slot.into(),
+                value_ptr.into(),
+                witness.into(),
+            ],
+            "suspending_stream_send_layout_register",
+            "hew_stream_await_send_layout call",
+        )?
+    };
 
     let parent = fn_ctx
         .builder

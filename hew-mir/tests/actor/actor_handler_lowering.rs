@@ -798,6 +798,129 @@ fn generator_handler_body_reads_state_field_via_env() {
     );
 }
 
+/// The call-site bridge: `e.ticks()` on a `LocalPid<Counter>` receiver,
+/// HIR-lowered to `HirExprKind::ActorGenStream` (mirroring the checker's
+/// `ActorMethodKind::StreamProducer` dispatch), must lower to per-call
+/// channel construction (`hew_stream_channel` → `hew_stream_pair_sink`/
+/// `_stream`) plus a tell-shaped `Terminator::Send` — NEVER the `unknown
+/// actor handler` `NotYetImplemented` the dispatch bridge used to produce.
+/// `fn main() { let e = spawn Counter(initial: 0); e.ticks(); }` — a caller
+/// that spawns `actor_name` and dispatches its zero-arg generator handler
+/// `method` (unqualified name) via a hand-built `HirExprKind::ActorGenStream`.
+fn main_calling_gen_stream(ids: &mut IdGen, actor_name: &str, method: &str) -> HirFn {
+    let pid_ty = local_pid_of(actor_name);
+    let initial = literal_expr(ids, HirLiteral::Integer(0), ResolvedTy::I64);
+    let spawn = spawn_expr(
+        ids,
+        actor_name,
+        vec![("initial".to_string(), initial)],
+        pid_ty.clone(),
+    );
+    let e_binding = binding(ids, "e", pid_ty.clone());
+    let let_e = HirStmt {
+        node: ids.node(),
+        kind: HirStmtKind::Let(e_binding.clone(), Some(spawn)),
+        span: 0..0,
+    };
+    let receiver_ref = HirExpr {
+        node: ids.node(),
+        site: ids.site(),
+        ty: pid_ty,
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::BindingRef {
+            name: "e".to_string(),
+            resolved: ResolvedRef::Binding(e_binding.id),
+        },
+        span: 0..0,
+    };
+    let stream_ty = ResolvedTy::named_builtin("Stream", BuiltinType::Stream, vec![ResolvedTy::I64]);
+    let gen_stream_call = HirExpr {
+        node: ids.node(),
+        site: ids.site(),
+        ty: stream_ty,
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::ActorGenStream {
+            receiver: Box::new(receiver_ref),
+            method: format!("{actor_name}::{method}"),
+            args: vec![],
+        },
+        span: 0..0,
+    };
+    let call_stmt = HirStmt {
+        node: ids.node(),
+        kind: HirStmtKind::Expr(gen_stream_call),
+        span: 0..0,
+    };
+    let main_body = block(ids, vec![let_e, call_stmt], None, ResolvedTy::Unit);
+    HirFn {
+        id: ids.item(),
+        node: ids.node(),
+        name: "main".to_string(),
+        type_params: vec![],
+        params: vec![],
+        return_ty: ResolvedTy::Unit,
+        body: main_body,
+        span: 0..0,
+        is_generator: false,
+        intrinsic_id: None,
+    }
+}
+
+#[test]
+fn generator_handler_call_lowers_to_stream_dispatch() {
+    let mut ids = IdGen::default();
+    let actor = ticks_generator_actor(&mut ids);
+    let main = main_calling_gen_stream(&mut ids, "Counter", "ticks");
+
+    let pipeline = lower_hir_module(&empty_module(vec![
+        HirItem::Actor(actor),
+        HirItem::Function(main),
+    ]));
+
+    assert!(
+        !pipeline
+            .diagnostics
+            .iter()
+            .any(|d| matches!(&d.kind, MirDiagnosticKind::NotYetImplemented { .. })),
+        "the call-site bridge must close gap (b): no NotYetImplemented diagnostic \
+         (in particular no `unknown actor handler`); got: {:?}",
+        pipeline.diagnostics
+    );
+
+    let main_fn = pipeline
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "main")
+        .expect("caller function must produce a MIR function");
+    let callees: Vec<&str> = main_fn
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.terminator {
+            Terminator::Call { callee, .. } => Some(callee.as_str()),
+            _ => None,
+        })
+        .collect();
+    for expected in [
+        "hew_stream_channel",
+        "hew_stream_pair_sink",
+        "hew_stream_pair_stream",
+    ] {
+        assert!(
+            callees.contains(&expected),
+            "call site must construct the per-call channel via `{expected}`; got calls: {callees:?}"
+        );
+    }
+    assert!(
+        main_fn
+            .blocks
+            .iter()
+            .any(|b| matches!(b.terminator, Terminator::Send { .. })),
+        "call site must tell-send the start message (args + sink) to the actor"
+    );
+}
+
 #[test]
 fn actor_lifecycle_start_lowers_and_unwired_hooks_fail_closed() {
     let mut ids = IdGen::default();

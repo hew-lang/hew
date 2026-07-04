@@ -2191,6 +2191,22 @@ pub(crate) fn intern_runtime_decl<'ctx>(
             &[ptr_ty.into(), ptr_ty.into(), ptr_ty.into(), ptr_ty.into()],
             false,
         ),
+        // Layout-generic sibling of `hew_stream_await_send` (receive-gen-fn
+        // pump forward, ANY witness-describable element — not just
+        // bytes/string): `hew_stream_await_send_layout(sink, actor, slot,
+        // data: *const c_void, layout: *const HewVecElemLayout) -> i32`
+        // (`hew-runtime/src/stream.rs`). Same STREAM_AWAIT_READY/SUSPEND
+        // return convention as `hew_stream_await_send`.
+        "hew_stream_await_send_layout" => i32_ty.fn_type(
+            &[
+                ptr_ty.into(),
+                ptr_ty.into(),
+                ptr_ty.into(),
+                ptr_ty.into(),
+                ptr_ty.into(),
+            ],
+            false,
+        ),
         // hew_sink_detach_await(sink: *mut HewSink, slot: *mut HewReadSlot) ->
         //   void (`hew-runtime/src/stream.rs`). The abandon edge for a parked
         // producer: releases the core's in-flight ref + drops the pending item.
@@ -4181,6 +4197,80 @@ pub(crate) fn build_state_name_table<'ctx>(
     Ok(table_global)
 }
 
+/// Predeclare the runtime symbols the `receive gen fn` stream-producer pump
+/// and its call-site lowering emit as bare `Terminator::Call`s
+/// (`hew-mir/src/lower.rs`, `build_stream_producer_pump` +
+/// `lower_actor_gen_stream`): `hew_stream_channel`, `hew_stream_pair_sink`,
+/// `hew_stream_pair_stream`, `hew_sink_close`.
+///
+/// These are EXISTING `hew-runtime/src/stream.rs` exports, already classified
+/// in `scripts/jit-symbol-classification.toml`'s `stable` tier, but reached
+/// through `Terminator::Call` for the first time here — and none of them
+/// have a `fn_symbols` entry through any EXISTING path:
+///   * The channel-construction trio has no stdlib-catalog entry at all (no
+///     user-facing Hew syntax calls `hew_stream_channel(..)` directly).
+///   * `hew_sink_close` DOES back real user syntax (`Sink::close`,
+///     `sink.close()`) and a checker-side `RuntimeCallFamily::SinkClose` /
+///     `RuntimeDropDescriptor::SinkClose` already exist for it — but both are
+///     "pre-staged" (`is_pre_staged_family`): no MIR producer had used the
+///     `RuntimeCallFamily` yet, so no `Terminator::Call` codegen intercept or
+///     `fn_symbols` entry was ever wired for it. The pump is the first
+///     producer.
+///
+/// All four declarations here are hand-written against the runtime's real
+/// C-ABI shapes (every param/return is an opaque handle at the LLVM level,
+/// `ptr`, except the plain `i64` capacity and the `void` close return):
+///
+///   * `hew_stream_channel(capacity: i64) -> *mut HewStreamPair`
+///   * `hew_stream_pair_sink(pair: *mut HewStreamPair) -> *mut HewSink`
+///   * `hew_stream_pair_stream(pair: *mut HewStreamPair) -> *mut HewStream`
+///   * `hew_sink_close(sink: *mut HewSink) -> void`
+fn predeclare_stream_producer_runtime_symbols<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    fn_symbols: &mut FnSymbolMap<'ctx>,
+) {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.i64_type();
+    let unary_ptr_fn_ty = ptr_ty.fn_type(&[ptr_ty.into()], false);
+    for (name, fn_ty, return_ty, returns_unit) in [
+        (
+            "hew_stream_channel",
+            ptr_ty.fn_type(&[i64_ty.into()], false),
+            BasicTypeEnum::from(ptr_ty),
+            false,
+        ),
+        (
+            "hew_stream_pair_sink",
+            unary_ptr_fn_ty,
+            ptr_ty.into(),
+            false,
+        ),
+        (
+            "hew_stream_pair_stream",
+            unary_ptr_fn_ty,
+            ptr_ty.into(),
+            false,
+        ),
+        (
+            "hew_sink_close",
+            ctx.void_type().fn_type(&[ptr_ty.into()], false),
+            ctx.i8_type().into(),
+            true,
+        ),
+    ] {
+        let value = llvm_mod.add_function(name, fn_ty, Some(Linkage::External));
+        fn_symbols.insert(
+            name.to_string(),
+            FnSymbol::Real {
+                value,
+                return_ty,
+                returns_unit,
+            },
+        );
+    }
+}
+
 fn const_global_symbol(c: &MirConst) -> String {
     format!(
         "__hew_const__{}__{}",
@@ -4435,6 +4525,32 @@ fn resolved_ty_contains_actor_handle(ty: &ResolvedTy) -> bool {
         ResolvedTy::Tuple(elems) => elems.iter().any(resolved_ty_contains_actor_handle),
         ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
             resolved_ty_contains_actor_handle(inner)
+        }
+        _ => false,
+    }
+}
+
+/// True when `ty` is — or transitively carries — a `Sink`/`Stream` builtin: a
+/// `receive gen fn` producer row's trailing sink param (`Sink<T>`, per
+/// `lower_actor_handler_layouts`'s Stage 3 row shape). Same process-local,
+/// no-cross-node-wire-layout reasoning as the channel/actor-handle siblings
+/// above: a `Sink`/`Stream` lowers to a bare runtime pointer with no
+/// `Serializable` impl, so seeding a codec for it would fail the WHOLE
+/// compile for a purely local program. Checked at the codec-seeder call site
+/// alongside the other two so a single-param stream-producer handler (no
+/// real args — just the sink) skips codec generation exactly like a
+/// single-param channel-handle handler does.
+fn resolved_ty_contains_stream_handle(ty: &ResolvedTy) -> bool {
+    match ty {
+        ResolvedTy::Named { args, builtin, .. } => {
+            matches!(
+                builtin,
+                Some(hew_types::BuiltinType::Sink | hew_types::BuiltinType::Stream)
+            ) || args.iter().any(resolved_ty_contains_stream_handle)
+        }
+        ResolvedTy::Tuple(elems) => elems.iter().any(resolved_ty_contains_stream_handle),
+        ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
+            resolved_ty_contains_stream_handle(inner)
         }
         _ => false,
     }
@@ -38594,6 +38710,7 @@ fn build_module_for_target<'ctx>(
     }
     let mut fn_symbols: FnSymbolMap<'ctx> = HashMap::new();
     predeclare_stdlib_catalog(ctx, &llvm_mod, &mut fn_symbols, &record_layouts)?;
+    predeclare_stream_producer_runtime_symbols(ctx, &llvm_mod, &mut fn_symbols);
     predeclare_extern_decls(
         ctx,
         &llvm_mod,
@@ -43548,6 +43665,8 @@ fn emit_actor_codec_module_init<'ctx>(
                 || resolved_ty_contains_channel_handle(&h.return_ty)
                 || resolved_ty_contains_actor_handle(msg_ty)
                 || resolved_ty_contains_actor_handle(&h.return_ty)
+                || resolved_ty_contains_stream_handle(msg_ty)
+                || resolved_ty_contains_stream_handle(&h.return_ty)
             {
                 continue;
             }

@@ -306,7 +306,11 @@ fn walk_expr_for_suspend(expr: &HirExpr, found: &mut bool) {
         // `await_restart sup.child` parks the actor on the supervisor restart
         // observer — a direct cooperative suspend point.
         | HirExprKind::AwaitRestart { .. }
-        | HirExprKind::ActorSend { .. } => {
+        | HirExprKind::ActorSend { .. }
+        // A `receive gen fn` call constructs a channel and tell-sends a start
+        // message over a bounded mailbox — same conservative suspend-possible
+        // reasoning as `ActorSend` just above.
+        | HirExprKind::ActorGenStream { .. } => {
             *found = true;
         }
         HirExprKind::ForkBlock { body, .. } => {

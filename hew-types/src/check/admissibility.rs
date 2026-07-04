@@ -721,6 +721,11 @@ impl Checker {
                 ActorMethodKind::Ask(_, reply_ty) => {
                     !reply_ty.has_inference_var() && !reply_ty.contains_error()
                 }
+                // Same output-contract pruning as `Ask`: retain only when the
+                // stream element type is fully resolved and error-free.
+                ActorMethodKind::StreamProducer(_, elem_ty) => {
+                    !elem_ty.has_inference_var() && !elem_ty.contains_error()
+                }
             }
         });
     }

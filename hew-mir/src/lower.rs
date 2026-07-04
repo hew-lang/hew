@@ -67,6 +67,13 @@ const HEW_CTX_OFFSET_TRACE_SPAN: usize = HEW_CTX_OFFSET_TRACE + HEW_TRACE_OFFSET
 /// The double-underscore prefix (`__`) is outside the user-identifier namespace.
 const CHILD_LOOKUP_RESULT_TY_NAME: &str = "__HewChildLookupResult";
 
+/// Per-call `receive gen fn` stream channel capacity
+/// (`lower_actor_gen_stream`). A laziness/throughput tunable: A239 chose
+/// eager producer drive with bounded-channel backpressure over strict
+/// pull-per-element dispatch; a small buffer keeps the consumer experience
+/// pull-equivalent without a user-facing capacity-tuning surface.
+const RECEIVE_GEN_STREAM_CAPACITY: i64 = 8;
+
 /// Sentinel HIR IDs for the synthetic `__crash_code: i64` ABI binding injected
 /// into `#[on(crash)]` handler prologues.
 ///
@@ -5619,6 +5626,7 @@ fn collect_unknown_self_fields_in_expr(
         }
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::ActorGenStream { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
         | HirExprKind::ResolvedImplCall { receiver, args, .. }
         | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
@@ -6095,6 +6103,7 @@ fn collect_binding_defs_in_expr<'f>(
         }
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::ActorGenStream { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
         | HirExprKind::ResolvedImplCall { receiver, args, .. }
         | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
@@ -6815,7 +6824,8 @@ fn scan_expr_for_consume(expr: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) -> bo
             args.iter().any(|(_, a)| scan_expr_for_consume(a, b_p, pc))
         }
         HirExprKind::ActorSend { receiver, args, .. }
-        | HirExprKind::ActorAsk { receiver, args, .. } => {
+        | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::ActorGenStream { receiver, args, .. } => {
             scan_expr_for_consume(receiver, b_p, pc)
                 || args.iter().any(|a| scan_expr_for_consume(a, b_p, pc))
         }
@@ -7108,6 +7118,7 @@ fn collect_borrow_arg_sites_in_expr(
         }
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::ActorGenStream { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
         | HirExprKind::ResolvedImplCall { receiver, args, .. }
         | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
@@ -7652,6 +7663,7 @@ fn collect_return_values_in_expr<'f>(expr: &'f HirExpr, out: &mut Vec<&'f HirExp
         }
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::ActorGenStream { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
         | HirExprKind::ResolvedImplCall { receiver, args, .. }
         | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
@@ -15657,6 +15669,11 @@ impl Builder {
                 reply_ty,
                 deadline_ns,
             } => self.lower_actor_ask(receiver, method_id, args, reply_ty, *deadline_ns, expr),
+            HirExprKind::ActorGenStream {
+                receiver,
+                method,
+                args,
+            } => self.lower_actor_gen_stream(receiver, method, args, expr),
             HirExprKind::ConnAwaitRead {
                 conn,
                 to_string,
@@ -28322,6 +28339,136 @@ impl Builder {
         });
         self.start_block(next);
         None
+    }
+
+    /// Lower a `receive gen fn` call (`e.ticks()`, `t.stream(3)`) — decision 4
+    /// of the receive-gen-fn lane. Constructs a per-call bounded channel, then
+    /// tell-sends a "start" message (the call's args plus the sink half) to
+    /// the actor's stream-producer pump; the expression value is the stream
+    /// half. No `await` here — the checker's ask-without-await guard already
+    /// exempts generator methods.
+    ///
+    /// `ActorHandlerLayout`'s producer row (`lower_actor_handler_layouts`)
+    /// carries `param_tys` = the handler's own params PLUS one trailing
+    /// sink — the single pack/unpack authority shared with the dispatch
+    /// trampoline's generic per-handler arg-unpack loop. Packing here mirrors
+    /// `lower_actor_send`'s convention exactly: a single total field rides
+    /// bare (no pack); two or more use `pack_actor_payload_from_places`.
+    fn lower_actor_gen_stream(
+        &mut self,
+        receiver: &HirExpr,
+        method: &str,
+        args: &[hew_hir::HirExpr],
+        expr: &HirExpr,
+    ) -> Option<Place> {
+        let site = expr.site;
+        let info = self.actor_method_info(&receiver.ty, method, site)?;
+        let Some((sink_ty, real_param_tys)) = info
+            .param_tys
+            .split_last()
+            .map(|(sink, rest)| (sink.clone(), rest.to_vec()))
+        else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!("actor stream-producer `{method}` has no sink param"),
+                    site,
+                },
+                note: "the producer row must carry at least the synthetic trailing sink \
+                       (lower_actor_handler_layouts)"
+                    .to_string(),
+            });
+            return None;
+        };
+        if real_param_tys.len() != args.len() {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!("actor stream-producer arity mismatch for `{method}`"),
+                    site,
+                },
+                note: format!(
+                    "handler expects {} argument(s), call supplied {}",
+                    real_param_tys.len(),
+                    args.len()
+                ),
+            });
+            return None;
+        }
+
+        let actor = self.lower_value(receiver)?;
+        let mut lowered: Vec<(Place, ResolvedTy)> = Vec::with_capacity(args.len() + 1);
+        for arg in args {
+            let place = self.lower_value(arg)?;
+            let ty = self.subst_ty(&arg.ty);
+            lowered.push((place, ty));
+        }
+
+        // Per-call bounded channel. The capacity is a laziness/throughput
+        // tunable (A239 chose eager producer drive with bounded-channel
+        // backpressure; a small buffer keeps it pull-equivalent).
+        let capacity = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::ConstI64 {
+            dest: capacity,
+            value: RECEIVE_GEN_STREAM_CAPACITY,
+        });
+        let opaque_ptr_ty = ResolvedTy::Pointer {
+            is_mutable: true,
+            pointee: Box::new(ResolvedTy::Unit),
+        };
+        let pair = self.alloc_local(opaque_ptr_ty);
+        let after_channel = self.alloc_block();
+        self.finish_current_block(Terminator::Call {
+            callee: "hew_stream_channel".to_string(),
+            builtin: None,
+            args: vec![capacity],
+            dest: Some(pair),
+            next: after_channel,
+        });
+        self.start_block(after_channel);
+
+        let sink = self.alloc_local(sink_ty.clone());
+        let after_sink = self.alloc_block();
+        self.finish_current_block(Terminator::Call {
+            callee: "hew_stream_pair_sink".to_string(),
+            builtin: None,
+            args: vec![pair],
+            dest: Some(sink),
+            next: after_sink,
+        });
+        self.start_block(after_sink);
+
+        let stream = self.alloc_local(self.subst_ty(&expr.ty));
+        let after_stream = self.alloc_block();
+        self.finish_current_block(Terminator::Call {
+            callee: "hew_stream_pair_stream".to_string(),
+            builtin: None,
+            args: vec![pair],
+            dest: Some(stream),
+            next: after_stream,
+        });
+        self.start_block(after_stream);
+
+        lowered.push((sink, sink_ty));
+        let value = if let [(place, _)] = &lowered[..] {
+            *place
+        } else {
+            let (field_places, field_tys): (Vec<Place>, Vec<ResolvedTy>) =
+                lowered.into_iter().unzip();
+            self.pack_actor_payload_from_places(field_places, field_tys)
+        };
+
+        let next = self.alloc_block();
+        self.finish_current_block(Terminator::Send {
+            actor,
+            msg_type: info.msg_type,
+            value,
+            next,
+            // Args crossing into a stream-producer start message use the same
+            // fail-closed default as the zero/multi-arg `ActorSend` cases;
+            // per-arg alias classification for stream calls is a follow-on.
+            alias_mode: crate::model::SendAliasMode::Copy,
+        });
+        self.start_block(next);
+        Some(stream)
     }
 
     /// Lower a sealed `select{}` expression to MIR.

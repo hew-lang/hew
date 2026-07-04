@@ -1319,6 +1319,19 @@ pub enum HirExprKind {
         /// side-table); non-literal durations fail closed at CHECK time.
         deadline_ns: Option<i64>,
     },
+    /// `receive gen fn` dispatch, selected from the checker's
+    /// `actor_method_dispatch` side table (`ActorMethodKind::StreamProducer`).
+    /// The expression type is `Stream<T>`, `T` the checker-resolved stream
+    /// element type. MIR lowers this to per-call channel construction (a
+    /// bounded pipe) plus a tell-shaped "start" message carrying `args` and
+    /// the sink half to the actor's stream-producer pump; the expression
+    /// value is the stream half. No `await` at the call site — the checker's
+    /// ask-without-await guard already exempts generator methods.
+    ActorGenStream {
+        receiver: Box<HirExpr>,
+        method: String,
+        args: Vec<HirExpr>,
+    },
     /// Cross-node request/reply dispatch on `RemotePid<T>::ask(msg, timeout_ms)`.
     ///
     /// The expression type is the full `Result<T::Reply, AskError>`; `reply_ty`

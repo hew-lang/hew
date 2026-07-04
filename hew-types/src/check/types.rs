@@ -1778,6 +1778,13 @@ pub enum ActorMethodKind {
     Fire(String),
     /// Request/reply dispatch to an actor receive handler with a non-unit reply.
     Ask(String, Ty),
+    /// Dispatch to a `receive gen fn` handler: a per-call, channel-backed
+    /// `Stream<T>` whose producer runs inside the actor. The carried `Ty` is
+    /// the stream's element type (the handler's declared `-> T`), recorded
+    /// wherever `receive_generator_methods` names the method — HIR/MIR
+    /// consume this fact directly rather than re-deriving stream-producer-ness
+    /// from `is_generator` or return-type shape (`type-info-survival`).
+    StreamProducer(String, Ty),
 }
 
 /// Checker-authoritative machine method dispatch discriminator.

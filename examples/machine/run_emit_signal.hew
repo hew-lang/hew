@@ -1,20 +1,25 @@
 // Runnable fixture: machine with unit-event emit, executed end-to-end.
 //
-// Drives the MachineEmitPlaceholder → hew_machine_emit_push codegen path
-// via `hew run`:
+// Drives the MachineEmitPlaceholder → hew_machine_emit_push → hew_machine_emit_take
+// codegen path via `hew run`:
 //   1. Construct a `Signal` machine at its initial state.
 //   2. Step with `Start`, which triggers `emit Ready {}` then transitions
 //      to `Active`.
 //   3. Observe that the step succeeds and state_name() reflects the new state.
+//   4. Consume the emitted event with `take_emits(Ready)` and prove delivery:
+//      the first call removes the one queued `Ready` event (count 1); a
+//      second call finds nothing left (count 0); `take_emits(Stop)` was
+//      never emitted, so it is always 0.
 //
 // The emit call (`emit Ready {}`) is a unit-payload Mealy output. It lowers
 // through `Instr::MachineEmitPlaceholder` → `call void @hew_machine_emit_push`
-// in the LLVM IR. The thread-local EmitQueue records the event; it is not
-// drained by the host program yet (drain is deferred to the actor scheduler
-// integration slice). This fixture validates that the codegen path does not
-// trap, corrupt state, or prevent the transition from completing normally.
+// in the LLVM IR, tagged with the machine's stable type id. The thread-local
+// EmitQueue keeps the event (the step-exit wrapper calls
+// `hew_machine_emit_step_exit_keep`, never draining) until `m.take_emits(ev)`
+// removes it — delivery is per-thread, per-machine-TYPE (see
+// docs/specs/MACHINE-SPEC.md's emit section).
 //
-// `tests/machine_exec.rs::run_emit_signal_fixture_executes` is the
+// `tests/exec/machine_exec.rs::run_emit_signal_fixture_executes` is the
 // end-to-end signal for this fixture.
 machine Signal {
     events {
@@ -56,6 +61,10 @@ fn main() {
     println(s.state_name());
     s.step(Start);
     println(s.state_name());
+    println(s.take_emits(Ready));
+    println(s.take_emits(Ready));
+    println(s.take_emits(Stop));
     s.step(Stop);
     println(s.state_name());
 }
+

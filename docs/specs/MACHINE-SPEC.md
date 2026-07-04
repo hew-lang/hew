@@ -248,7 +248,16 @@ actor ConnectionManager {
 }
 ```
 
-_A dedicated `/ Output` arrow syntax is a declined non-goal — `emit` covers Mealy outputs. Unit-event `emit` lowers; non-unit payload `emit` is not yet wired in codegen._
+_A dedicated `/ Output` arrow syntax is a declined non-goal — `emit` covers Mealy outputs. Unit-event `emit` lowers; non-unit payload `emit` is not yet wired in codegen (`emit EventName { field: value, ... }` with a non-empty payload fails closed at codegen)._
+
+**Delivery semantics.** A unit `emit` pushes onto a thread-local emit queue tagged with the emitting machine's stable type id (a name-derived digest, not the instance). `step()`'s implicit queue wrapper keeps every pushed event queued — it never drains or discards. A machine method `m.take_emits(EventName) -> i64` removes every queued event matching (this machine's TYPE, `EventName`'s tag) and returns the count removed; unconsumed events — of other tags, or from other machine instances that share the same type — accumulate on the queue exactly like today's unbounded default mailbox. Delivery is per-thread, per-machine-TYPE: it is NOT per-instance and NOT per-actor. A machine stepped inside an actor's `receive fn` must call `take_emits` within that same handler activation — cross-activation delivery (routing an emit to a specific actor or scheduler slot) is deferred to the actor-scheduler integration slice and composes on top of this ABI without changing it.
+
+```hew
+var s = Signal::Idle;
+s.step(Start);            // transitions to Active, emits Ready {}
+s.take_emits(Ready);       // 1 — removes the queued Ready event
+s.take_emits(Ready);       // 0 — nothing left to remove
+```
 
 ---
 

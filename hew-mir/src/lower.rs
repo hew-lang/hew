@@ -32275,6 +32275,33 @@ impl Builder {
             is_final: false,
         });
         self.start_block(after_send);
+        // The stream send BORROWS the yielded value: `hew_stream_await_send`
+        // and its layout sibling both copy the content out of the slot and
+        // document the argument as borrowed, so the pump stays the sole owner
+        // of the original and must release it exactly once per yield. Emit that
+        // release here, on the resume edge, before the `Goto` loops back to
+        // overwrite `value_local` on the next iteration. This edge is reached
+        // ONLY when the send resumes (delivered/ready); the abandon-while-parked
+        // path routes to the coro cleanup epilogue instead (it cancels + detaches
+        // the slot's borrowed copy), so the value is never double-released, and an
+        // abandoned in-flight value leaks — a tracked teardown gap, not a defect
+        // here. `SuspendKind::StreamSend`'s value is escape-poisoned
+        // (`terminator_escape_places`), so no scope-exit drop competes with this
+        // one — it is the sole dropper. The release symbol comes from the same
+        // authority the consumer-side yield-binding drop uses
+        // (`generator_yield_drop_symbol`), so it stays congruent with the codegen
+        // inline-drop validator. `string`/`bytes` release here; records/enums and
+        // BitCopy scalars carry no wired inline release (`NoDropPath`) and keep
+        // leaking their producer copy for now — tracked, never a wrong-ABI free.
+        if let ReleaseSymbolVerdict::Wired(symbol) =
+            self.generator_yield_drop_symbol(&pump.yield_ty)
+        {
+            self.push_instr(Instr::Drop {
+                place: value_local,
+                ty: pump.yield_ty.clone(),
+                drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
+            });
+        }
         self.finish_current_block(Terminator::Goto { target: loop_head });
 
         // Shared close path: reached with the generator exhausted (`None`)

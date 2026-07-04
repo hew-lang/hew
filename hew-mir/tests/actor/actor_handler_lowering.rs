@@ -846,6 +846,116 @@ fn generator_handler_pump_registers_checks_peer_and_completes_sink() {
     );
 }
 
+/// A `receive gen fn names() -> string { yield "hi"; }` — the string-yielding
+/// twin of `ticks_generator_actor`. Its pump forwards an OWNED heap `string`
+/// per yield; the send BORROWS (the runtime copies the content), so the pump
+/// stays the sole owner and must release the value on the resume edge or leak
+/// one node per yield.
+fn string_yield_generator_actor(ids: &mut IdGen) -> HirActorDecl {
+    let yield_value = literal_expr(
+        ids,
+        HirLiteral::String("hi".to_string()),
+        ResolvedTy::String,
+    );
+    let yield_expr = HirExpr {
+        node: ids.node(),
+        site: ids.site(),
+        ty: ResolvedTy::Unit,
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::Yield {
+            value: Some(Box::new(yield_value)),
+            yield_ty: ResolvedTy::String,
+        },
+        span: 0..0,
+    };
+    let yield_stmt = HirStmt {
+        node: ids.node(),
+        kind: HirStmtKind::Expr(yield_expr),
+        span: 0..0,
+    };
+    let gen_inner = block(ids, vec![yield_stmt], None, ResolvedTy::Unit);
+    let generator_ty = ResolvedTy::Named {
+        name: "Generator".to_string(),
+        args: vec![ResolvedTy::String, ResolvedTy::Unit],
+        builtin: Some(BuiltinType::Generator),
+        is_opaque: false,
+    };
+    let gen_block = HirExpr {
+        node: ids.node(),
+        site: ids.site(),
+        ty: generator_ty.clone(),
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::GenBlock {
+            body: gen_inner,
+            yield_ty: ResolvedTy::String,
+            return_ty: ResolvedTy::Unit,
+            captures: Vec::new(),
+        },
+        span: 0..0,
+    };
+    let generator_body = block(ids, vec![], Some(gen_block), generator_ty);
+    let names = receive("names", true, vec![], ResolvedTy::String, generator_body);
+    actor(ids, "Namer", vec![names])
+}
+
+/// The first inline `Instr::Drop` in the raw handler body whose `drop_fn` is a
+/// cow-heap `Release` — the pump's per-yield value release. The generator
+/// companion is registered with the drop-elaboration authority and surfaces as
+/// an ELABORATED `MirStatement::Drop`, never a raw inline `Instr::Drop`, so this
+/// isolates the value release specifically. Scope stream closes carry a
+/// `DropFnSpec::Runtime`, not `Release`, so they are excluded too.
+fn pump_body_inline_release_drop(handler: &hew_mir::RawMirFunction) -> Option<&'static str> {
+    handler
+        .blocks
+        .iter()
+        .flat_map(|b| &b.instructions)
+        .find_map(|i| match i {
+            Instr::Drop {
+                drop_fn: Some(hew_mir::DropFnSpec::Release(sym)),
+                ..
+            } => Some(*sym),
+            _ => None,
+        })
+}
+
+#[test]
+fn generator_pump_releases_string_yield_value_but_not_i64() {
+    // The pump's stream send BORROWS the yielded value (the runtime copies the
+    // content out of the slot), so an OWNED heap yield (`string`) leaks one node
+    // per yield unless the pump releases it on the resume edge. A `string` pump
+    // must carry exactly that inline `hew_string_drop`; an `i64` pump (BitCopy,
+    // nothing to free) must carry no inline value release at all.
+    let mut ids = IdGen::default();
+    let string_actor = string_yield_generator_actor(&mut ids);
+    let string_pipeline = lower_hir_module(&empty_module(vec![HirItem::Actor(string_actor)]));
+    let string_handler = string_pipeline
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "Namer__recv__names")
+        .expect("string generator handler must lower");
+    assert_eq!(
+        pump_body_inline_release_drop(string_handler),
+        Some("hew_string_drop"),
+        "the string-yield pump must release its borrowed-out value each yield via hew_string_drop"
+    );
+
+    let mut i64_ids = IdGen::default();
+    let i64_actor = ticks_generator_actor(&mut i64_ids);
+    let i64_pipeline = lower_hir_module(&empty_module(vec![HirItem::Actor(i64_actor)]));
+    let i64_handler = i64_pipeline
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "Counter__recv__ticks")
+        .expect("i64 generator handler must lower");
+    assert_eq!(
+        pump_body_inline_release_drop(i64_handler),
+        None,
+        "an i64 yield is BitCopy — the pump must not emit an inline value release for it"
+    );
+}
+
 /// A `receive gen fn` body that reads an actor state field (`count`, an
 /// `HirGenCaptureSource::ActorStateField` capture per `lower_actor_generator_body`)
 /// must snapshot it in the ENCLOSING shell frame — where actor state is

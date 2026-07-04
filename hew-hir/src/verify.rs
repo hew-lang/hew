@@ -667,6 +667,9 @@ impl Verifier {
             }
             HirExprKind::MachineStep {
                 receiver, event, ..
+            }
+            | HirExprKind::MachineTakeEmits {
+                receiver, event, ..
             } => {
                 self.expr(receiver);
                 self.expr(event);

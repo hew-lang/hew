@@ -2090,6 +2090,32 @@ fn walk_expr(
                 cap_diag_emitted,
             );
         }
+        HirExprKind::MachineTakeEmits {
+            receiver, event, ..
+        } => {
+            walk_expr(
+                receiver,
+                subst,
+                machine_decls,
+                residual_domain,
+                seen,
+                order,
+                cap,
+                diagnostics,
+                cap_diag_emitted,
+            );
+            walk_expr(
+                event,
+                subst,
+                machine_decls,
+                residual_domain,
+                seen,
+                order,
+                cap,
+                diagnostics,
+                cap_diag_emitted,
+            );
+        }
         HirExprKind::MachineStateName { receiver, .. } => walk_expr(
             receiver,
             subst,

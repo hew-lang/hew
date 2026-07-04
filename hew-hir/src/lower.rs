@@ -4473,6 +4473,9 @@ fn collect_call_sites_in_expr(
         }
         HirExprKind::MachineStep {
             receiver, event, ..
+        }
+        | HirExprKind::MachineTakeEmits {
+            receiver, event, ..
         } => {
             collect_call_sites_in_expr(receiver, out, trait_out);
             collect_call_sites_in_expr(event, out, trait_out);
@@ -7611,6 +7614,11 @@ impl LowerCtx {
                 }
             }
             HirExprKind::MachineStep {
+                receiver: target,
+                event,
+                ..
+            }
+            | HirExprKind::MachineTakeEmits {
                 receiver: target,
                 event,
                 ..
@@ -20322,6 +20330,27 @@ impl LowerCtx {
                     },
                     ResolvedTy::String,
                 ),
+                hew_types::MachineMethodKind::TakeEmits { machine_name } => {
+                    let event = lowered_args.into_iter().next().unwrap_or_else(|| HirExpr {
+                        node: self.ids.node(),
+                        site: self.ids.site(),
+                        value_class: ValueClass::PersistentShare,
+                        ty: ResolvedTy::Unit,
+                        intent: IntentKind::Read,
+                        kind: HirExprKind::Unsupported(
+                            "machine take_emits: missing event argument".into(),
+                        ),
+                        span: span.clone(),
+                    });
+                    (
+                        HirExprKind::MachineTakeEmits {
+                            machine_name,
+                            receiver: Box::new(lowered_receiver),
+                            event: Box::new(event),
+                        },
+                        ResolvedTy::I64,
+                    )
+                }
             };
         }
         // `dyn Trait` receivers take precedence: the checker's
@@ -24151,6 +24180,13 @@ fn collect_captures_walk(
             collect_captures_walk(receiver, param_ids, seen, captures, self_id);
             collect_captures_walk(event, param_ids, seen, captures, self_id);
         }
+        HirExprKind::MachineTakeEmits {
+            receiver, event, ..
+        } => {
+            // Same defensive rationale as `MachineStep` above.
+            collect_captures_walk(receiver, param_ids, seen, captures, self_id);
+            collect_captures_walk(event, param_ids, seen, captures, self_id);
+        }
         HirExprKind::ChannelRecvAwait { receiver, .. }
         | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
@@ -24471,6 +24507,9 @@ fn collect_general_closure_captures_walk(
             }
         }
         HirExprKind::MachineStep {
+            receiver, event, ..
+        }
+        | HirExprKind::MachineTakeEmits {
             receiver, event, ..
         } => {
             collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
@@ -25199,6 +25238,12 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
             collect_hir_emitted_events_walk(arg, event_names, out);
         }
         HirExprKind::MachineStep {
+            receiver, event, ..
+        } => {
+            collect_hir_emitted_events_walk(receiver, event_names, out);
+            collect_hir_emitted_events_walk(event, event_names, out);
+        }
+        HirExprKind::MachineTakeEmits {
             receiver, event, ..
         } => {
             collect_hir_emitted_events_walk(receiver, event_names, out);
@@ -27620,6 +27665,12 @@ fn scan_expr_for_call_shape(
             }
         }
         HirExprKind::MachineStep {
+            receiver, event, ..
+        } => {
+            scan_expr_for_call_shape(receiver, callable, diagnostics);
+            scan_expr_for_call_shape(event, callable, diagnostics);
+        }
+        HirExprKind::MachineTakeEmits {
             receiver, event, ..
         } => {
             scan_expr_for_call_shape(receiver, callable, diagnostics);

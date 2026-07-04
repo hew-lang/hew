@@ -1799,6 +1799,12 @@ pub enum MachineMethodKind {
     ///
     /// `machine_name` is the unqualified machine type name (e.g. `"TrafficLight"`).
     StateName { machine_name: String },
+    /// `.take_emits(event: NameEvent) -> i64` — removes every queued emit
+    /// matching (this machine's type id, the argument's event tag) from the
+    /// thread-local emit queue and returns the count removed.
+    ///
+    /// `machine_name` is the unqualified machine type name (e.g. `"TrafficLight"`).
+    TakeEmits { machine_name: String },
 }
 
 #[derive(Debug, Clone)]

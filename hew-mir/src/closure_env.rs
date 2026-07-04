@@ -458,6 +458,12 @@ fn walk_expr_for_suspend(expr: &HirExpr, found: &mut bool) {
             walk_expr_for_suspend(receiver, found);
             walk_expr_for_suspend(event, found);
         }
+        HirExprKind::MachineTakeEmits {
+            receiver, event, ..
+        } => {
+            walk_expr_for_suspend(receiver, found);
+            walk_expr_for_suspend(event, found);
+        }
         HirExprKind::MachineStateName { receiver, .. } => walk_expr_for_suspend(receiver, found),
         HirExprKind::MachineFieldAccess { .. } | HirExprKind::MachineEventFieldAccess { .. } => {
             // Machine-field accesses are HIR-side-resolved leaves that

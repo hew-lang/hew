@@ -165,6 +165,9 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
         }
         HirExprKind::MachineStep {
             receiver, event, ..
+        }
+        | HirExprKind::MachineTakeEmits {
+            receiver, event, ..
         } => {
             visit_expr(receiver, out);
             visit_expr(event, out);

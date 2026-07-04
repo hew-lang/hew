@@ -688,6 +688,12 @@ fn walk_expr(
             walk_expr(receiver, subst, residual_domain, disc);
             walk_expr(event, subst, residual_domain, disc);
         }
+        HirExprKind::MachineTakeEmits {
+            receiver, event, ..
+        } => {
+            walk_expr(receiver, subst, residual_domain, disc);
+            walk_expr(event, subst, residual_domain, disc);
+        }
         HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::MachineStateName { receiver, .. }

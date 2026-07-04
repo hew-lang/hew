@@ -120,7 +120,7 @@ pub fn cmd_eval(args: &crate::args::EvalArgs) {
         return;
     }
 
-    execute_eval_request(&request, timeout, target, args.jit);
+    execute_eval_request(&request, timeout, target, args.jit, args.quiet);
 }
 
 fn resolve_eval_timeout(raw: &str) -> std::time::Duration {
@@ -213,12 +213,13 @@ fn execute_eval_request(
     timeout: std::time::Duration,
     target: Option<&str>,
     jit: Option<crate::args::JitMode>,
+    quiet: bool,
 ) {
     match request {
         EvalRequest::File(path) => emit_eval_output(repl::eval_file(path, timeout, target, jit)),
         EvalRequest::Expr(expr) => emit_eval_output(repl::eval_one(expr, timeout, target, jit)),
         EvalRequest::Repl => {
-            if let Err(e) = repl::run_interactive(timeout, target, jit) {
+            if let Err(e) = repl::run_interactive(timeout, target, jit, quiet) {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
             }

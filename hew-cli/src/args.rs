@@ -566,6 +566,13 @@ pub struct EvalArgs {
     /// expression.
     #[arg(long)]
     pub json: bool,
+    /// Suppress the interactive REPL's startup banner and help line.
+    ///
+    /// The banner is already suppressed automatically when stdout is not a
+    /// terminal (piped or redirected); this flag suppresses it explicitly,
+    /// including in an interactive terminal.
+    #[arg(long, short = 'q')]
+    pub quiet: bool,
     /// Expression to evaluate (if no -f given).
     pub expr: Vec<String>,
 }

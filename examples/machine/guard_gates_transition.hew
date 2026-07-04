@@ -1,0 +1,39 @@
+// Runnable fixture: a `when` guard gates a machine transition at runtime.
+//
+// Regression fixture for a key invariant: `synthesize_machine_step_fn`
+// previously never read `transition.guard` — the event-tag comparison alone
+// decided the arm, so the FIRST same-cell transition in source order fired
+// unconditionally regardless of its guard. Two guarded `(Closed, Try)`
+// transitions race here — `self.code == 42` and `self.code != 42` — starting
+// from `Closed { code: 1 }`. The `== 42` guard is false, so the CORRECT arm
+// is the `!= 42` one, a self-transition that stays `Closed`.
+//
+// Before the fix this printed "Open" (the first arm fired regardless of the
+// guard's value); after the fix it prints "Closed" (the guard correctly
+// gates which arm commits).
+//
+// Gate: stdout must match `guard_gates_transition.expected` exactly.
+machine Latch {
+    events {
+        Try;
+    }
+
+    state Closed { code: i64; }
+    state Open;
+
+    on Try: Closed => Open when self.code == 42 {
+        Open
+    }
+    on Try: Closed => Closed reenter when self.code != 42 {
+        Closed { code: self.code }
+    }
+    on Try: Open => Open reenter {
+        Open
+    }
+}
+
+fn main() {
+    var m = Closed { code: 1 };
+    m.step(Try);
+    println(m.state_name());
+}

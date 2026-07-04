@@ -16,6 +16,13 @@ struct MachineFixture {
     /// fall-through returns `self` (no LLVM `unreachable` trap). The IR-shape
     /// assertions invert the trap/return check for these fixtures.
     has_default: bool,
+    /// When true (and `has_default` is false) at least one transition in the
+    /// machine carries a `when` guard, so the dispatch fall-through is a
+    /// user-reachable condition (an all-guards-false step) rather than a
+    /// compiler invariant. These fixtures' fall-through must lower to
+    /// a real `TrapKind::ExhaustivenessFallthrough` trap call, never the
+    /// bare LLVM `unreachable` a guard-free machine gets.
+    has_guard: bool,
 }
 
 const FIXTURES: &[MachineFixture] = &[
@@ -24,12 +31,14 @@ const FIXTURES: &[MachineFixture] = &[
         machine: "TrafficLight",
         states: 3,
         has_default: false,
+        has_guard: false,
     },
     MachineFixture {
         stem: "run_tcp_handshake",
         machine: "TcpHandshake",
         states: 3,
         has_default: false,
+        has_guard: false,
     },
     MachineFixture {
         // `default { state }` machine: unhandled cells stay in the current
@@ -39,6 +48,7 @@ const FIXTURES: &[MachineFixture] = &[
         machine: "Tank",
         states: 2,
         has_default: true,
+        has_guard: false,
     },
     MachineFixture {
         // Depth-1 composite: `Connected` groups three substates which desugar
@@ -50,6 +60,35 @@ const FIXTURES: &[MachineFixture] = &[
         machine: "ConnectionLifecycle",
         states: 4,
         has_default: false,
+        has_guard: false,
+    },
+    MachineFixture {
+        // a false `when` guard must fall through to the sibling
+        // guarded arm, not fire the first same-cell arm in source order.
+        stem: "guard_gates_transition",
+        machine: "Latch",
+        states: 2,
+        has_default: false,
+        has_guard: true,
+    },
+    MachineFixture {
+        // a true `when` guard fires its arm — proves the
+        // guard is actually evaluated both ways, not just "always false".
+        stem: "guard_true_fires",
+        machine: "Latch",
+        states: 2,
+        has_default: false,
+        has_guard: true,
+    },
+    MachineFixture {
+        // an all-guards-false step with `default { state }` present
+        // stays put (clean exit 0) — `default` still absorbs it regardless
+        // of the guard.
+        stem: "guard_default_stays",
+        machine: "Latch",
+        states: 2,
+        has_default: true,
+        has_guard: true,
     },
 ];
 
@@ -261,6 +300,31 @@ fn main_function_body(ir: &str) -> &str {
     &tail[..end]
 }
 
+/// True when `body` contains a "bare" `unreachable` terminator — one NOT
+/// immediately preceded by `call void @llvm.trap()`. Every real trap
+/// (`emit_trap_with_code`) lowers to `hew_trap_with_code` + `llvm.trap()` +
+/// `unreachable` as its three-instruction sequence (the `unreachable` is
+/// LLVM block-well-formedness boilerplate after the noreturn-ish trap call,
+/// present for EVERY trap kind including `ExhaustivenessFallthrough`). The
+/// bare/UB form (`TrapKind::MachineDispatchUnreachable`'s
+/// `build_unreachable()`) skips both calls entirely. A plain
+/// `step_body.contains("unreachable")` cannot tell these apart because
+/// every guard-bearing fixture also contains OTHER trap sites (e.g. the
+/// `state_name`/field-access traps) whose `unreachable` IS trap-backed.
+fn has_bare_unreachable(body: &str) -> bool {
+    let lines: Vec<&str> = body.lines().collect();
+    for (idx, line) in lines.iter().enumerate() {
+        if line.trim() != "unreachable" {
+            continue;
+        }
+        let prev_is_llvm_trap = idx > 0 && lines[idx - 1].trim() == "call void @llvm.trap()";
+        if !prev_is_llvm_trap {
+            return true;
+        }
+    }
+    false
+}
+
 #[test]
 fn run_machine_fixtures_compile_to_step_dispatch_and_state_table() {
     let repo = repo_root();
@@ -291,10 +355,37 @@ fn run_machine_fixtures_compile_to_step_dispatch_and_state_table() {
                 fixture.stem,
                 step_body
             );
+            assert!(
+                !step_body.contains("@hew_trap_with_code(i32 208)"),
+                "{} default-arm step dispatch must NOT trap (stays in current state):\n{}",
+                fixture.stem,
+                step_body
+            );
+        } else if fixture.has_guard {
+            // a guard-bearing machine's fall-through is a
+            // user-reachable condition (an all-guards-false step), never a
+            // compiler invariant — it must lower to a real
+            // `ExhaustivenessFallthrough` trap call, NEVER a bare
+            // `unreachable` (which would be UB once a guard can evaluate
+            // false at runtime).
+            assert!(
+                !has_bare_unreachable(step_body),
+                "{} guard-bearing step dispatch fallthrough must NOT lower to bare \
+                 `unreachable` (UB hazard once a guard can fail at runtime):\n{}",
+                fixture.stem,
+                step_body
+            );
+            assert!(
+                step_body.contains("@hew_trap_with_code(i32 208)"),
+                "{} guard-bearing step dispatch fallthrough must lower to a real \
+                 ExhaustivenessFallthrough trap (code 208):\n{}",
+                fixture.stem,
+                step_body
+            );
         } else {
             assert!(
-                step_body.contains("unreachable"),
-                "{} step dispatch fallthrough must lower to LLVM unreachable:\n{}",
+                has_bare_unreachable(step_body),
+                "{} step dispatch fallthrough must lower to bare LLVM unreachable:\n{}",
                 fixture.stem,
                 step_body
             );
@@ -376,6 +467,64 @@ fn default_stay_executes_with_expected_stdout() {
 #[test]
 fn connection_lifecycle_executes_with_expected_stdout() {
     execute_fixture("run_connection_lifecycle");
+}
+
+#[test]
+fn guard_gates_transition_executes_with_expected_stdout() {
+    execute_fixture("guard_gates_transition");
+}
+
+#[test]
+fn guard_true_fires_executes_with_expected_stdout() {
+    execute_fixture("guard_true_fires");
+}
+
+#[test]
+fn guard_default_stays_executes_with_expected_stdout() {
+    execute_fixture("guard_default_stays");
+}
+
+/// an all-guards-false step with NO `default` arm must TRAP with a
+/// real, documented exit code — never silently fire the wrong arm (the
+/// pre-fix bug) and never lower to UB (the `unreachable`-is-not-a-trap
+/// hazard). `hew run` catches the trap in main context and exits
+/// non-zero with a clean diagnostic (mirrors `hashmap_index_exec`'s
+/// `read_absent_key_traps` oracle style), rather than propagating a raw
+/// signal — which is exactly what a bare LLVM `unreachable` could do
+/// instead (crash with no diagnostic, or silently miscompile).
+#[test]
+fn guard_fallthrough_no_default_traps_not_ub() {
+    let repo = repo_root();
+    ensure_hew_runtime_lib(&repo);
+    let path = fixture_path(&repo, "guard_fallthrough_traps");
+
+    let mut cmd = hew_command(&repo);
+    cmd.arg("run").arg(&path);
+    let output = hew_testutil::run_command_bounded(
+        &mut cmd,
+        format!("hew run {}", path.display()),
+        hew_testutil::DEFAULT_EXEC_TIMEOUT,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+
+    let code = output.status.code().unwrap_or_else(|| {
+        panic!(
+            "guard_fallthrough_traps was killed by signal (expected a clean trap exit, \
+             not a raw signal — that would mean the fall-through is still UB); stderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+    });
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_ne!(
+        code, 0,
+        "an all-guards-false step with no `default` must trap (non-zero exit), got {code}; \
+         stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("trap in main context"),
+        "the fall-through must surface a real trap diagnostic, not a silent/garbled exit; \
+         exit={code}, stderr:\n{stderr}"
+    );
 }
 
 #[test]

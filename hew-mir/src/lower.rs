@@ -3973,12 +3973,24 @@ fn mangle_machine_step(name: &str) -> String {
 /// cascades a chain of state-equality checks. Each matched state-block
 /// cascades event-equality checks for that state's declared transitions
 /// (in source order). Wildcard transitions (`_ -> Target`) are appended
-/// to every state's cascade after the specific arms. Undeclared
-/// `(state, event)` pairs fall through to `Terminator::Trap { kind:
-/// TrapKind::MachineDispatchUnreachable }`. HIR exhaustiveness checks
-/// already guarantee the trap is dead code in well-typed programs;
-/// surfacing it is the fail-closed runtime backstop (LESSONS P0
-/// `fail-closed-not-pretend`).
+/// to every state's cascade after the specific arms. When an arm carries
+/// a `when <guard>` clause, an event match is not sufficient: a guard
+/// block evaluates `transition.guard` (in the same self/event binding env
+/// the transition body sees, before any hook or transition-out drop) and
+/// only branches into the arm body if the guard is true; a false guard
+/// falls through to the next arm exactly as an event mismatch would.
+/// Undeclared `(state, event)` pairs — and, once any transition in the
+/// machine carries a guard, an all-guards-false cell too — fall through
+/// to `Terminator::Trap`. Guard-free machines trap with
+/// `TrapKind::MachineDispatchUnreachable`, which codegen lowers to a bare
+/// LLVM `unreachable`: HIR exhaustiveness checks already guarantee that
+/// trap is dead code in well-typed programs. Guard-bearing machines
+/// instead trap with `TrapKind::ExhaustivenessFallthrough`, a real,
+/// user-reachable trap code — reaching the fall-through is no longer a
+/// compiler-invariant violation once a guard can evaluate false at
+/// runtime, so lowering it to `unreachable` would be UB. Both are the
+/// fail-closed runtime backstop (LESSONS P0 `fail-closed-not-pretend` /
+/// `match-fail-closed`).
 ///
 /// Matched arms lower the transition body in-place and return the machine
 /// value produced by that HIR body. Real transitions (state tag changes)
@@ -4178,8 +4190,10 @@ fn synthesize_machine_step_fn(
         }
 
         // Emit the event cascade. Each arm: ConstI64(event_idx), IntCmp,
-        // Branch(then=arm_body, else=next_arm_check). Last arm's else
-        // points at the trap.
+        // Branch(then=arm_body, else=next_arm_check) — or, when the arm
+        // carries a `when` guard, Branch(then=guard_block, else=next_arm_check)
+        // with the guard_block itself branching (then=arm_body,
+        // else=next_arm_check). Last arm's else points at the trap.
         let arm_check_blocks: Vec<u32> = (0..arms.len()).map(|_| builder.alloc_block()).collect();
         let arm_body_blocks: Vec<u32> = (0..arms.len()).map(|_| builder.alloc_block()).collect();
         // state_body cascades directly to first arm_check (or trap if no arms).
@@ -4207,11 +4221,80 @@ fn synthesize_machine_step_fn(
                 .get(arm_idx + 1)
                 .copied()
                 .unwrap_or(trap_block);
+
+            // A guarded arm inserts a guard-check block between the
+            // event-eq branch and the arm body: the event matching this
+            // arm is necessary but not sufficient — the guard must also
+            // evaluate true, or dispatch falls through to the next arm
+            // (or the trap) exactly as an event mismatch would. Unguarded
+            // arms branch straight to their body, unchanged.
+            let event_matched_target = if transition.guard.is_some() {
+                builder.alloc_block()
+            } else {
+                arm_body_blocks[arm_idx]
+            };
             builder.finish_current_block(Terminator::Branch {
                 cond: ev_eq,
-                then_target: arm_body_blocks[arm_idx],
+                then_target: event_matched_target,
                 else_target: next_arm,
             });
+
+            if let Some(guard_expr) = &transition.guard {
+                // ── guard_block: evaluate `transition.guard` in the same
+                // self/event binding env the transition body sees (the
+                // exact dance `emit_machine_step_transition_return` uses),
+                // BEFORE any hook or transition-out drop runs — guards are
+                // pure reads and must not observe or trigger side effects.
+                builder.start_block(event_matched_target);
+                let prev_machine_self = builder.current_machine_self_binding.replace(self_binding);
+                let prev_machine_event =
+                    builder.current_machine_event_binding.replace(event_binding);
+                let prev_self_place = builder.binding_locals.insert(self_binding, self_place);
+                let prev_event_place = builder.binding_locals.insert(event_binding, event_place);
+                let guard_val = builder.lower_value(guard_expr);
+                if let Some(place) = prev_self_place {
+                    builder.binding_locals.insert(self_binding, place);
+                } else {
+                    builder.binding_locals.remove(&self_binding);
+                }
+                if let Some(place) = prev_event_place {
+                    builder.binding_locals.insert(event_binding, place);
+                } else {
+                    builder.binding_locals.remove(&event_binding);
+                }
+                builder.current_machine_self_binding = prev_machine_self;
+                builder.current_machine_event_binding = prev_machine_event;
+
+                if let Some(cond) = guard_val {
+                    builder.finish_current_block(Terminator::Branch {
+                        cond,
+                        then_target: arm_body_blocks[arm_idx],
+                        else_target: next_arm,
+                    });
+                } else {
+                    // The checker guarantees every guard is a `Ty::Bool`
+                    // expression; a lowering failure here is a compiler
+                    // invariant violation, not a user-reachable error.
+                    // Fail closed: treat it as if the guard were false
+                    // rather than fabricate a true branch into the arm.
+                    builder.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnsupportedNode {
+                            reason: format!(
+                                "machine `{}` transition `on {}` from `{}` to `{}` guard \
+                                 did not produce a value",
+                                md.name,
+                                transition.event_name,
+                                transition.source_state,
+                                transition.target_state
+                            ),
+                        },
+                        note: "guard expressions must lower to a boolean value before the \
+                               step arm can branch on it"
+                            .to_string(),
+                    });
+                    builder.finish_current_block(Terminator::Goto { target: next_arm });
+                }
+            }
 
             // ── arm_body_j: run hooks/body and return the next state.
             builder.start_block(arm_body_blocks[arm_idx]);
@@ -4247,6 +4330,17 @@ fn synthesize_machine_step_fn(
             src: self_place,
         });
         builder.finish_current_block(Terminator::Return);
+    } else if md.transitions.iter().any(|t| t.guard.is_some()) {
+        // A guarded transition can fail its guard at runtime, so a
+        // no-`default` machine with at least one guard can genuinely
+        // reach this fall-through on a well-typed program (all guards for
+        // the matched state×event cell evaluated false). That is no
+        // longer a compiler-invariant violation — it is a user-reachable
+        // condition — so it must trap with a real, documented exit code
+        // instead of lowering to LLVM `unreachable` (which would be UB).
+        builder.finish_current_block(Terminator::Trap {
+            kind: TrapKind::ExhaustivenessFallthrough,
+        });
     } else {
         builder.finish_current_block(Terminator::Trap {
             kind: TrapKind::MachineDispatchUnreachable,

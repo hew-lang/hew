@@ -1,0 +1,29 @@
+// Runnable fixture: an all-guards-false step with a `default { state }` arm
+// STAYS in the current state (clean, exit 0) — it does not fall to any
+// trap. `default` covers every uncovered `(state, event)` cell regardless
+// of whether the cell was "uncovered" because no arm named it, or because
+// the only arm(s) that named it all had false guards at runtime. Only the
+// no-`default` case (see `guard_fallthrough_traps.hew`) can reach the
+// dispatch fall-through trap.
+//
+// Gate: stdout must match `guard_default_stays.expected` exactly, exit 0.
+machine Latch {
+    events {
+        Try;
+    }
+
+    state Closed { code: i64; }
+    state Open;
+
+    on Try: Closed => Open when self.code == 42 {
+        Open
+    }
+
+    default { state }
+}
+
+fn main() {
+    var m = Closed { code: 1 };
+    m.step(Try);
+    println(m.state_name());
+}

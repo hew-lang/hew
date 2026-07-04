@@ -1,0 +1,47 @@
+// Runnable fixture: an all-guards-false step with NO `default` arm TRAPS
+// with a real, documented exit code — it must never be UB.
+//
+// This is the key invariant here. `Try: Closed => Open when
+// self.code == 42` is the ONLY transition declared for `(Closed, Try)`; a
+// guarded arm counts as full coverage for the machine exhaustiveness
+// checker today (a guard-aware exhaustiveness rule — requiring `default`
+// or an unguarded arm to also cover the cell — is a separate, deliberately
+// out-of-scope spec question), so this machine compiles without `default`.
+// Once guards are evaluated at runtime (see `guard_gates_transition.hew`),
+// an all-guards-false step for this cell has nowhere left to go: the
+// shared dispatch fall-through, which for a guard-free machine is a bare,
+// dead-code LLVM `unreachable` (HIR exhaustiveness proves it unreachable),
+// becomes a genuinely reachable, user-visible condition the moment any
+// transition in the machine carries a guard. Reaching `unreachable` there
+// would be undefined behaviour, not a diagnostic. The fix routes any
+// guard-bearing machine's fall-through to a real
+// `TrapKind::ExhaustivenessFallthrough` trap instead.
+//
+// `m` starts `Closed { code: 1 }`; the guard evaluates false; the fixture
+// must exit non-zero with a "trap in main context" diagnostic on stderr —
+// never a silent wrong transition (the pre-guard-eval bug) and never a
+// crash with no diagnostic (the UB hazard).
+//
+// Gate: see `hew-codegen-rs/tests/exec/machine_exec.rs` —
+// `guard_fallthrough_no_default_traps_not_ub`.
+machine Latch {
+    events {
+        Try;
+    }
+
+    state Closed { code: i64; }
+    state Open;
+
+    on Try: Closed => Open when self.code == 42 {
+        Open
+    }
+    on Try: Open => Open reenter {
+        Open
+    }
+}
+
+fn main() {
+    var m = Closed { code: 1 };
+    m.step(Try);
+    println(m.state_name());
+}

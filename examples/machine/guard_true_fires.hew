@@ -1,0 +1,32 @@
+// Runnable fixture: the sibling of `guard_gates_transition.hew` — proves a
+// guard does not simply always block. Same `Latch` machine shape, started
+// from `Closed { code: 42 }`: the `self.code == 42` guard is now TRUE, so
+// the `Try` transition to `Open` fires. Together the two fixtures prove the
+// guard is actually evaluated both ways, not just "always false" by
+// coincidence of the fix.
+//
+// Gate: stdout must match `guard_true_fires.expected` exactly.
+machine Latch {
+    events {
+        Try;
+    }
+
+    state Closed { code: i64; }
+    state Open;
+
+    on Try: Closed => Open when self.code == 42 {
+        Open
+    }
+    on Try: Closed => Closed reenter when self.code != 42 {
+        Closed { code: self.code }
+    }
+    on Try: Open => Open reenter {
+        Open
+    }
+}
+
+fn main() {
+    var m = Closed { code: 42 };
+    m.step(Try);
+    println(m.state_name());
+}

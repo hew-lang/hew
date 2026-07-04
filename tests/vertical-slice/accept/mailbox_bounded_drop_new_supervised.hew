@@ -1,0 +1,48 @@
+// G-A1: the SAME bound must hold for a SUPERVISED actor — the second
+// codegen zero-hardcode site. `SupervisorChildLayout.mailbox_capacity` /
+// `.overflow_policy` are mirrored from `ActorLayout` by the MIR post-loop
+// pass, but codegen's `HewChildSpec` literal stored `const_zero` at fields
+// 5/6 regardless, so every supervised actor stayed unbounded even after the
+// direct-spawn path (`hew_actor_spawn_opts`) was fixed.
+//
+// Same boolean, non-flaky invariant as `mailbox_bounded_drop_new.hew`:
+//   - before the fix: processed == 20 (unbounded)       -> exit 1
+//   - after the fix:  processed  < 20 (bounded to ~4-5) -> exit 0
+actor MailboxWorker {
+    var processed: i64;
+
+    mailbox 4 overflow drop_new;
+    receive fn process(value: i32) {
+        sleep(20ms);
+        processed = processed + 1;
+    }
+    receive fn report() -> i64 {
+        processed
+    }
+}
+
+supervisor MailboxSupervisor {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child w1: MailboxWorker(processed: 0);
+}
+
+fn main() -> i64 {
+    let sup = spawn MailboxSupervisor;
+    let w = sup.w1;
+    for i in 0 .. 20 {
+        w.process(i);
+    }
+    sleep(1000ms);
+    let result = await w.report();
+    let final_count = match result {
+        Ok(value) => value,
+        Err(_) => -1,
+    };
+    if final_count < 20 {
+        0
+    } else {
+        1
+    }
+}

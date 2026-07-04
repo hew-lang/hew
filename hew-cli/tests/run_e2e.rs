@@ -944,6 +944,107 @@ fn run_generic_vec_for_in_count_across_element_abis() {
     assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
 }
 
+/// Compile `tests/vertical-slice/accept/<fixture>.hew` to a native binary via
+/// `hew compile --emit-dir` and return the binary path `hew compile` reports.
+/// Bypasses `hew run`'s interpreter path entirely, so a scope-exit double
+/// free that `hew run` downgrades to a nonzero exit still aborts here.
+fn compile_vertical_slice_fixture_to_native(
+    fixture: &str,
+    dir: &std::path::Path,
+) -> std::path::PathBuf {
+    let source = repo_root().join(format!("tests/vertical-slice/accept/{fixture}.hew"));
+    let compile_out = Command::new(hew_binary())
+        .args([
+            "compile",
+            "--emit-dir",
+            dir.to_str().expect("emit-dir utf-8"),
+            source.to_str().expect("source utf-8"),
+        ])
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew compile");
+    assert!(
+        compile_out.status.success(),
+        "{fixture} compile failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&compile_out.stdout),
+        String::from_utf8_lossy(&compile_out.stderr),
+    );
+    let stdout_str = String::from_utf8_lossy(&compile_out.stdout);
+    stdout_str
+        .lines()
+        .find_map(|l| l.strip_prefix("native: "))
+        .unwrap_or_else(|| {
+            panic!("no `native:` line in compile output for {fixture}:\n{stdout_str}")
+        })
+        .into()
+}
+
+/// #2356: `for x in [<array literal>]` must exit 0 against the BUILT NATIVE
+/// binary, not just `hew run` (which downgrades the abort to a nonzero exit
+/// instead of surfacing it). Pre-fix, the array literal's synthetic Vec temp
+/// was borrowed (`Read`) into the for-in loop's `VecIter` cursor instead of
+/// captured (`Capture`) like a named binding, so the cursor's scope-exit
+/// release double-freed the temp's buffer alongside the temp's own drop — a
+/// libmalloc invalid-free abort (native exit 133).
+#[test]
+fn run_for_in_array_literal_native_exit_zero() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let bin_path = compile_vertical_slice_fixture_to_native("for_in_array_literal", dir.path());
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/for_in_array_literal.expected"),
+    )
+    .expect("read for_in_array_literal.expected");
+
+    let output = Command::new(&bin_path)
+        .output()
+        .unwrap_or_else(|e| panic!("run for_in_array_literal native binary: {e}"));
+
+    assert!(
+        output.status.success(),
+        "for_in_array_literal native binary must exit 0 (pre-fix: 133, a libmalloc \
+         invalid-free abort); stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for for_in_array_literal");
+}
+
+/// #2356 companion: the same fixture shape with an explicit `-> i64` main
+/// and a `return 0` after the loop must also exit 0 against the built native
+/// binary — the scope-exit double free fires regardless of whether the
+/// function ends via a tail expression or an explicit `return`.
+#[test]
+fn run_for_in_array_literal_return_native_exit_zero() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let bin_path =
+        compile_vertical_slice_fixture_to_native("for_in_array_literal_return", dir.path());
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/for_in_array_literal_return.expected"),
+    )
+    .expect("read for_in_array_literal_return.expected");
+
+    let output = Command::new(&bin_path)
+        .output()
+        .unwrap_or_else(|e| panic!("run for_in_array_literal_return native binary: {e}"));
+
+    assert!(
+        output.status.success(),
+        "for_in_array_literal_return native binary must exit 0; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(
+        actual, expected,
+        "stdout mismatch for for_in_array_literal_return"
+    );
+}
+
 /// #1929 Stage 3 / #1565: generic `println` / `print` / `to_string` of a value
 /// typed by a `T: Display` type parameter. The builtin print surfaces no longer
 /// re-derive a monomorphic overload from the concrete argument type; instead

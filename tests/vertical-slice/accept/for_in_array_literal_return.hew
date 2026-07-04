@@ -1,0 +1,10 @@
+// #2356 companion: an explicit `-> i64` main with a `return 0` after the
+// loop must also exit 0 against the built native binary — the invalid free
+// fired at scope-exit regardless of whether the function ends via a tail
+// expression or an explicit `return`, so both shapes are proven.
+fn main() -> i64 {
+    for x in [99, 6, 100] {
+        println(x);
+    }
+    return 0;
+}

@@ -1,0 +1,16 @@
+// #2356: `for x in [<array literal>]` must exit clean, matching its
+// let-bound equivalent (`let a = [...]; for x in a { ... }`).
+//
+// The array literal desugars to a synthetic Vec (`__hew_array_N`) that keeps
+// its own scope-exit drop; the for-in loop's `VecIter` cursor must share
+// (not solely own) that handle exactly like a named binding's cursor does,
+// or the cursor's scope-exit release double-frees the temp's buffer
+// alongside the temp's own drop — an invalid free the interpreted `hew run`
+// path silently downgrades to a nonzero exit, while the compiled native
+// binary aborts (SIGTRAP under libmalloc). Asserted against the BUILT
+// NATIVE binary so the double free cannot hide behind `hew run`'s masking.
+fn main() {
+    for x in [99, 6, 100] {
+        println(x);
+    }
+}

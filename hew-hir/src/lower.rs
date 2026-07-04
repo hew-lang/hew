@@ -19414,8 +19414,33 @@ impl LowerCtx {
                 // source binding Live, so the collection is usable after the loop.
                 // Use Capture intent to signal "share, not move" to the MIR; the MIR
                 // alias_moved_owned_operand skips AggregateAlias for Capture+CowValue.
-                lowered_iterable.intent = IntentKind::Capture;
+                //
+                // A literal/repeat-desugared source (`for x in [1, 2, 3]`) lowers to
+                // a synthetic `Block` whose tail is a `BindingRef` to a named temp
+                // (`__hew_array_N` / `__hew_repeat_N`) that keeps its OWN scope-exit
+                // drop, exactly like a user `let` binding — but that `BindingRef`
+                // arrives wrapped inside the `Block` and hardcoded to `Read`. MIR's
+                // `vec_iter_let_cursor_owns_handle` only recognises the CowShare
+                // place-source shape when the `vec` field is a BARE `BindingRef`
+                // with `Capture` intent; the `Block` wrapper fails that match, so
+                // the cursor is wrongly treated as the sole owner and its
+                // scope-exit `RecordFieldDrop` double-frees the temp's buffer
+                // alongside the temp's own drop (#2356). Hoist the block's
+                // statements into the prelude and use its tail directly, so a
+                // literal source takes exactly the shape a named binding takes.
                 let elem_ty = args[0].clone();
+                match lowered_iterable.kind {
+                    HirExprKind::Block(block) if block.tail.is_some() => {
+                        let mut tail = *block.tail.expect("checked by guard above");
+                        tail.intent = IntentKind::Capture;
+                        source_prelude.extend(block.statements);
+                        lowered_iterable = tail;
+                    }
+                    kind => {
+                        lowered_iterable.kind = kind;
+                        lowered_iterable.intent = IntentKind::Capture;
+                    }
+                }
                 (
                     self.make_vec_iter_init(lowered_iterable, elem_ty.clone(), iterable.1.clone()),
                     Self::resolved_vec_iter_ty(elem_ty.clone()),

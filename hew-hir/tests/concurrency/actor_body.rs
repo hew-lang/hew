@@ -55,8 +55,10 @@ fn assert_binding_ref(expr: &HirExpr, expected: hew_hir::BindingId, name: &str) 
 /// the real body — including the `let seen = <param>;` referencing the handler
 /// param — lives inside the `GenBlock` body. This routes the handler through
 /// the shared `Terminator::Yield` state-machine path in MIR. Asserts the
-/// handler is a generator and the first `GenBlock`-body statement binds
-/// `param_name`.
+/// handler is a generator, the first `GenBlock`-body statement binds
+/// `param_name`, and the handler param reached the `GenBlock`'s capture list
+/// tagged `HirGenCaptureSource::Local` (the free-var channel MIR's
+/// `lower_gen_block` reads to build the generator's env record).
 fn assert_generator_handler_param_bound(handler: &hew_hir::HirActorReceiveFn, param_name: &str) {
     assert!(handler.is_generator);
     assert!(
@@ -68,13 +70,20 @@ fn assert_generator_handler_param_bound(handler: &hew_hir::HirActorReceiveFn, pa
         .tail
         .as_ref()
         .expect("generator handler body must have a GenBlock tail");
-    let HirExprKind::GenBlock { body, .. } = &tail.kind else {
+    let HirExprKind::GenBlock { body, captures, .. } = &tail.kind else {
         panic!("expected GenBlock tail, got {:?}", tail.kind);
     };
     let HirStmtKind::Let(_, Some(value)) = &body.statements[0].kind else {
         panic!("generator body should contain a let initialized from its param");
     };
     assert_binding_ref(value, handler.params[0].id, param_name);
+    let param_capture = captures
+        .iter()
+        .find(|capture| capture.binding == handler.params[0].id)
+        .unwrap_or_else(|| {
+            panic!("expected handler param `{param_name}` in gen captures: {captures:?}")
+        });
+    assert_eq!(param_capture.source, hew_hir::HirGenCaptureSource::Local);
 }
 
 #[test]

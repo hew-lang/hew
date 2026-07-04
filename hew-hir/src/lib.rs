@@ -42,14 +42,14 @@ pub use monomorph::{
 pub use node::{
     HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn, HirActorStateGuard, HirBinding,
     HirBlock, HirCaptureKind, HirClosureCapture, HirConst, HirConstValue, HirExpr, HirExprKind,
-    HirField, HirFn, HirGenCapture, HirItem, HirJoin, HirJoinBranch, HirLambdaCapture,
-    HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMachineBound, HirMachineDecl,
-    HirMachineEvent, HirMachineState, HirMachineTransition, HirMatchArm, HirMatchArmBinding,
-    HirMatchArmPredicate, HirModule, HirPayloadPredicate, HirPayloadVariantPredicate,
-    HirRecordDecl, HirRegexLiteral, HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind,
-    HirShutdownDirective, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
-    HirSupervisorStrategy, HirTypeDecl, HirVarSelfMethodTarget, HirVariant, HirVariantKind,
-    WhereOrigin,
+    HirField, HirFn, HirGenCapture, HirGenCaptureSource, HirItem, HirJoin, HirJoinBranch,
+    HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMachineBound,
+    HirMachineDecl, HirMachineEvent, HirMachineState, HirMachineTransition, HirMatchArm,
+    HirMatchArmBinding, HirMatchArmPredicate, HirModule, HirPayloadPredicate,
+    HirPayloadVariantPredicate, HirRecordDecl, HirRegexLiteral, HirRestartPolicy, HirSelect,
+    HirSelectArm, HirSelectArmKind, HirShutdownDirective, HirStmt, HirStmtKind, HirSupervisorChild,
+    HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl, HirVarSelfMethodTarget, HirVariant,
+    HirVariantKind, WhereOrigin,
 };
 pub use value_class::{
     contains_named_type, lookup_type_marker, lookup_type_marker_for_ty, named_type_components,

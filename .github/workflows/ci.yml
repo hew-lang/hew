@@ -269,7 +269,13 @@ jobs:
   build-and-test:
     name: Build & test (Linux)
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # Was 60. Successful runs on main land at 51-56 min wall time (checked
+    # 2026-07-04 across 5 recent green runs), leaving only 4-9 min of
+    # headroom against normal runner-to-runner variance -- PRs #2396 and
+    # #2397 both got CANCELLED at exactly 60m00-16s. 90 min restores real
+    # headroom without masking a genuine regression (see the diagnosis in
+    # the commit that introduced this change).
+    timeout-minutes: 90
     env:
       # mold is installed by the "Install build tools" step below.
       # Use gcc's -fuse-ld=mold flag (no clang-as-driver dependency) to

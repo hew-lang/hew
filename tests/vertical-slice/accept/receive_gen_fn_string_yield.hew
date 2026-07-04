@@ -1,0 +1,22 @@
+// Yield-type generalization: a `receive gen fn -> string` must forward every
+// yielded string through the pump's layout-witness send path with byte-exact
+// content. The native path dereferences its argument as a 16-byte BytesTriple,
+// but a string local is a single 8-byte `char*` slot — routing a string there
+// misreads the adjacent frame field as offset/len (empty content, or a wild
+// read / SIGSEGV under a guard allocator). This is the exact shape that
+// previously corrupted every yielded string to empty; it must feel identical to
+// a standalone `gen fn -> string`.
+actor Namer {
+    receive gen fn names() -> string {
+        yield "alpha";
+        yield "beta";
+        yield "gamma";
+    }
+}
+
+fn main() {
+    let n = spawn Namer;
+    for await v in n.names() {
+        println(f"len={v.len()} val={v}");
+    }
+}

@@ -1,0 +1,23 @@
+// Yield-type generalization: a payload-carrying `enum` yield crosses the pump's
+// layout-witness send path with its discriminant and payload intact.
+enum Shape {
+    Circle(i64);
+    Square(i64);
+}
+
+actor Shaper {
+    receive gen fn shapes() -> Shape {
+        yield Shape::Circle(5);
+        yield Shape::Square(7);
+    }
+}
+
+fn main() {
+    let s = spawn Shaper;
+    for await sh in s.shapes() {
+        match sh {
+            Shape::Circle(r) => println(f"circle {r}"),
+            Shape::Square(w) => println(f"square {w}"),
+        }
+    }
+}

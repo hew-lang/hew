@@ -2539,6 +2539,16 @@ run_accept_expect_stdout "receive_gen_fn_snapshot_isolation"
 # the actor answers a later ask normally.
 run_accept_expect_stdout "receive_gen_fn_cancellation"
 
+# Yield-type generalization (closes the i64-only monoculture): the pump must
+# forward every yield type, not just scalars. A `string` yield rides the
+# layout-witness send path with byte-exact content (the native BytesTriple path
+# misreads a string's single `char*` slot); a BitCopy `record` and a
+# payload-carrying `enum` cross the same path with all fields/discriminant
+# intact.
+run_accept_expect_stdout "receive_gen_fn_string_yield"
+run_accept_expect_stdout "receive_gen_fn_record_yield"
+run_accept_expect_stdout "receive_gen_fn_enum_yield"
+
 # A239 fault (producer crash): the gen body yields once, then traps on a
 # runtime div-by-zero. The consumer, having already received the first value,
 # must observe the fault on its next resume — never a clean, silent EOF. The

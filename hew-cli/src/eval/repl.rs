@@ -1600,6 +1600,10 @@ fn run_wasm_eval_compiled(
 
 /// Run the interactive REPL with a custom execution timeout.
 ///
+/// The startup banner and help line are printed only when stdout is an
+/// interactive terminal and `quiet` is `false`; piped/redirected stdout or
+/// an explicit `quiet` suppresses them.
+///
 /// # Errors
 ///
 /// Returns an error if readline fails fatally.
@@ -1607,28 +1611,18 @@ pub fn run_interactive(
     timeout: Duration,
     target: Option<&str>,
     jit: Option<crate::args::JitMode>,
+    quiet: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::IsTerminal;
+
     let mut rl = rustyline::DefaultEditor::new()?;
     let mut session = ReplSession::with_timeout_and_target(timeout, target);
     session.set_jit_mode(jit);
 
-    // Record startup in the host-death counter and retrieve the crash count.
-    // `startup()` writes the clean-exit marker for this session; `on_clean_exit()`
-    // below removes it on normal exit.
-    let death_count = crate::host_death::startup();
-
-    println!("Hew REPL v{}", env!("CARGO_PKG_VERSION"));
-    if death_count > 0 {
-        eprintln!(
-            "note: a previous session ended without a clean :quit \
-             ({death_count} time{} in the last 7 days) — usually from closing \
-             the terminal or stopping the process, not a defect. Each input is \
-             evaluated in its own subprocess, so a crash there cannot take this \
-             REPL down with it.",
-            if death_count == 1 { "" } else { "s" }
-        );
+    if !quiet && std::io::stdout().is_terminal() {
+        println!("Hew REPL v{}", env!("CARGO_PKG_VERSION"));
+        println!("Type :help for commands, :items to list definitions, :quit to exit.\n");
     }
-    println!("Type :help for commands, :items to list definitions, :quit to exit.\n");
 
     loop {
         let prompt = "hew> ";
@@ -1641,7 +1635,6 @@ pub fn run_interactive(
                 break;
             }
             Err(e) => {
-                crate::host_death::on_clean_exit();
                 return Err(e.into());
             }
         };
@@ -1680,7 +1673,6 @@ pub fn run_interactive(
         }
     }
 
-    crate::host_death::on_clean_exit();
     Ok(())
 }
 

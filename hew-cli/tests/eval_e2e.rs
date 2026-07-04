@@ -2546,21 +2546,22 @@ fn eval_json_file_cross_chunk_failure_preserves_prior_chunk_stdout() {
 /// default.  Without an explicit `stdout().flush()` after each `print!`,
 /// output is held in the buffer until exit — the reported symptom.
 ///
-/// The test waits for the REPL banner before it starts the per-submission
-/// flush clock, then sends one statement and requires the resulting output to
-/// become observable in the parent before any process-exit boundary.  The
-/// deadline is a bounded budget for that observation, not the invariant.
+/// Piped stdout is non-interactive, so `hew eval` suppresses its startup
+/// banner here (see `run_interactive`'s tty check) — there is no readiness
+/// marker to wait on before sending input. The pipe buffers writes
+/// regardless of whether the child has reached `readline()` yet, so the
+/// statement is written immediately; the flush invariant is proven by
+/// waiting for its output to arrive before the process exits.
 ///
 /// `--timeout 120` is passed to the child so the child's internal
 /// compile+codegen+link budget matches the harness's load-invariant
 /// expectation.  Without it the child defaults to 30 s, which on a
 /// cold or heavily loaded machine can expire before the first statement
-/// compiles — causing `hew eval` to self-abort at the FLUSH path, not
-/// the STARTUP path, making the flake invisible to `STARTUP_BUDGET`.
+/// compiles — causing `hew eval` to self-abort before `FLUSH_BUDGET` expires,
+/// making the flake look like a flush-invariant failure.
 #[test]
 fn eval_repl_piped_stdout_flushes_per_submission() {
-    const STARTUP_BUDGET: Duration = Duration::from_mins(1);
-    const FLUSH_BUDGET: Duration = Duration::from_mins(1);
+    const FLUSH_BUDGET: Duration = Duration::from_mins(2);
 
     require_codegen();
 
@@ -2600,19 +2601,14 @@ fn eval_repl_piped_stdout_flushes_per_submission() {
         buf
     });
 
-    let startup_outcome = wait_for_line(&rx, "Hew REPL v", STARTUP_BUDGET);
+    // Send one statement that produces output.
+    stdin
+        .write_all(b"println(\"flush-check\");\n")
+        .expect("write to hew eval stdin");
+    // Ensure the line reaches the child's stdin buffer.
+    stdin.flush().expect("flush hew eval stdin");
 
-    let mut wait_outcome = None;
-    if matches!(startup_outcome, WaitOutcome::Found) {
-        // Send one statement that produces output.
-        stdin
-            .write_all(b"println(\"flush-check\");\n")
-            .expect("write to hew eval stdin");
-        // Ensure the line reaches the child's stdin buffer.
-        stdin.flush().expect("flush hew eval stdin");
-
-        wait_outcome = Some(wait_for_line(&rx, "flush-check", FLUSH_BUDGET));
-    }
+    let wait_outcome = wait_for_line(&rx, "flush-check", FLUSH_BUDGET);
 
     // Gracefully terminate the process regardless of outcome.
     let _ = stdin.write_all(b":quit\n");
@@ -2629,31 +2625,76 @@ fn eval_repl_piped_stdout_flushes_per_submission() {
         format!("\nstderr: {stderr_output}")
     };
 
-    match startup_outcome {
+    match wait_outcome {
         WaitOutcome::Found => {}
         WaitOutcome::Timeout => panic!(
-            "REPL banner not observed within {STARTUP_BUDGET:?}; child did not reach readline \
-             before the startup budget expired\nstatus: {child_status}{stderr_suffix}"
-        ),
-        WaitOutcome::ChildClosed => panic!(
-            "child stdout closed before the REPL banner was observed; child likely exited or \
-             crashed before reaching readline\nstatus: {child_status}{stderr_suffix}"
-        ),
-    }
-
-    match wait_outcome.expect("wait outcome should be set after startup readiness") {
-        WaitOutcome::Found => {}
-        WaitOutcome::Timeout => panic!(
-            "'flush-check' did not arrive in the pipe within {FLUSH_BUDGET:?} after the REPL \
-             banner was observed, while the child process was still alive — per-submission \
+            "'flush-check' did not arrive in the pipe within {FLUSH_BUDGET:?} — per-submission \
              stdout flush is missing or stalled\nstatus: {child_status}{stderr_suffix}"
         ),
         WaitOutcome::ChildClosed => panic!(
             "child stdout closed before 'flush-check' was observed; child likely exited or \
-             crashed — this is not a flush invariant failure, investigate the child process\n\
-             status: {child_status}{stderr_suffix}"
+             crashed — investigate the child process\nstatus: {child_status}{stderr_suffix}"
         ),
     }
+}
+
+/// Piped (non-interactive) stdout must never show the REPL startup banner
+/// or help line — it is interactive-terminal chrome, not part of scripted
+/// output. Regression test for the boilerplate leaking into piped/redirected
+/// consumption of `hew eval`.
+#[test]
+fn eval_repl_non_tty_suppresses_startup_boilerplate() {
+    require_codegen();
+
+    let output = run_eval_with_stdin(&["eval"], ":quit\n");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("Hew REPL"),
+        "piped hew eval must not print the startup banner: {stdout}"
+    );
+    assert!(
+        !stdout.contains("Type :help"),
+        "piped hew eval must not print the startup help line: {stdout}"
+    );
+}
+
+/// `--quiet` explicitly suppresses the startup banner, in addition to the
+/// automatic non-tty suppression covered above.
+#[test]
+fn eval_repl_quiet_flag_suppresses_startup_boilerplate() {
+    require_codegen();
+
+    let output = run_eval_with_stdin(&["eval", "--quiet"], ":quit\n");
+
+    assert!(
+        output.status.success(),
+        "hew eval --quiet exited non-zero\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("Hew REPL"),
+        "hew eval --quiet must not print the startup banner: {stdout}"
+    );
+}
+
+/// `hew eval` no longer tracks or surfaces a cumulative cross-session
+/// failure/crash counter — regression test for the removed "previous session
+/// ended without a clean :quit (N times in the last 7 days)" note, which
+/// was not useful to users and has been deleted along with the
+/// `host_death` module.
+#[test]
+fn eval_repl_never_prints_cumulative_failure_counter() {
+    require_codegen();
+
+    let output = run_eval_with_stdin(&["eval"], ":quit\n");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("previous session ended"),
+        "the removed cumulative failure counter must not resurface: {stderr}"
+    );
 }
 
 /// Clap-level smoke test: `--jit=worker` is a recognised flag and the

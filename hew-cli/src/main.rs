@@ -30,7 +30,6 @@ mod diagnostic_json;
 mod doc;
 mod eval;
 mod explain_cow;
-mod host_death;
 mod jit;
 mod link;
 mod machine;

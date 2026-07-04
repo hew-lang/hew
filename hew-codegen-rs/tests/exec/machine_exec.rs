@@ -487,8 +487,7 @@ fn guard_default_stays_executes_with_expected_stdout() {
 /// G-M1: an all-guards-false step with NO `default` arm must TRAP with a
 /// real, documented exit code — never silently fire the wrong arm (the
 /// pre-fix bug) and never lower to UB (the `unreachable`-is-not-a-trap
-/// hazard the fence brief calls out as the single highest-severity risk in
-/// this lane). `hew run` catches the trap in main context and exits
+/// hazard the fence brief calls out as a risk. `hew run` catches the trap in main context and exits
 /// non-zero with a clean diagnostic (mirrors `hashmap_index_exec`'s
 /// `read_absent_key_traps` oracle style), rather than propagating a raw
 /// signal — which is exactly what a bare LLVM `unreachable` could do

@@ -1,7 +1,7 @@
 // Runnable fixture: an all-guards-false step with NO `default` arm TRAPS
 // with a real, documented exit code — it must never be UB.
 //
-// This is the G-M1 fence item's key discovery. `Try: Closed => Open when
+// This is the key invariant here. `Try: Closed => Open when
 // self.code == 42` is the ONLY transition declared for `(Closed, Try)`; a
 // guarded arm counts as full coverage for the machine exhaustiveness
 // checker today (a guard-aware exhaustiveness rule — requiring `default`

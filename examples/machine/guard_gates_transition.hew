@@ -1,6 +1,6 @@
 // Runnable fixture: a `when` guard gates a machine transition at runtime.
 //
-// Regression fixture for the G-M1 fence item: `synthesize_machine_step_fn`
+// Regression fixture for a key invariant: `synthesize_machine_step_fn`
 // previously never read `transition.guard` — the event-tag comparison alone
 // decided the arm, so the FIRST same-cell transition in source order fired
 // unconditionally regardless of its guard. Two guarded `(Closed, Try)`

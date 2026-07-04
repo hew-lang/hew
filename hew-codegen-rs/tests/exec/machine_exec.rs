@@ -19,7 +19,7 @@ struct MachineFixture {
     /// When true (and `has_default` is false) at least one transition in the
     /// machine carries a `when` guard, so the dispatch fall-through is a
     /// user-reachable condition (an all-guards-false step) rather than a
-    /// compiler invariant. G-M1: these fixtures' fall-through must lower to
+    /// compiler invariant. These fixtures' fall-through must lower to
     /// a real `TrapKind::ExhaustivenessFallthrough` trap call, never the
     /// bare LLVM `unreachable` a guard-free machine gets.
     has_guard: bool,
@@ -63,7 +63,7 @@ const FIXTURES: &[MachineFixture] = &[
         has_guard: false,
     },
     MachineFixture {
-        // G-M1: a false `when` guard must fall through to the sibling
+        // a false `when` guard must fall through to the sibling
         // guarded arm, not fire the first same-cell arm in source order.
         stem: "guard_gates_transition",
         machine: "Latch",
@@ -72,7 +72,7 @@ const FIXTURES: &[MachineFixture] = &[
         has_guard: true,
     },
     MachineFixture {
-        // G-M1 sibling: a true `when` guard fires its arm — proves the
+        // a true `when` guard fires its arm — proves the
         // guard is actually evaluated both ways, not just "always false".
         stem: "guard_true_fires",
         machine: "Latch",
@@ -81,7 +81,7 @@ const FIXTURES: &[MachineFixture] = &[
         has_guard: true,
     },
     MachineFixture {
-        // G-M1: an all-guards-false step with `default { state }` present
+        // an all-guards-false step with `default { state }` present
         // stays put (clean exit 0) — `default` still absorbs it regardless
         // of the guard.
         stem: "guard_default_stays",
@@ -362,7 +362,7 @@ fn run_machine_fixtures_compile_to_step_dispatch_and_state_table() {
                 step_body
             );
         } else if fixture.has_guard {
-            // G-M1: a guard-bearing machine's fall-through is a
+            // a guard-bearing machine's fall-through is a
             // user-reachable condition (an all-guards-false step), never a
             // compiler invariant — it must lower to a real
             // `ExhaustivenessFallthrough` trap call, NEVER a bare
@@ -484,10 +484,10 @@ fn guard_default_stays_executes_with_expected_stdout() {
     execute_fixture("guard_default_stays");
 }
 
-/// G-M1: an all-guards-false step with NO `default` arm must TRAP with a
+/// an all-guards-false step with NO `default` arm must TRAP with a
 /// real, documented exit code — never silently fire the wrong arm (the
 /// pre-fix bug) and never lower to UB (the `unreachable`-is-not-a-trap
-/// hazard the fence brief calls out as a risk. `hew run` catches the trap in main context and exits
+/// hazard). `hew run` catches the trap in main context and exits
 /// non-zero with a clean diagnostic (mirrors `hashmap_index_exec`'s
 /// `read_absent_key_traps` oracle style), rather than propagating a raw
 /// signal — which is exactly what a bare LLVM `unreachable` could do

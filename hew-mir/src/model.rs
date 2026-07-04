@@ -6070,7 +6070,7 @@ pub enum MirDiagnosticKind {
         field_name: String,
         reason: String,
     },
-    /// G-A1: `overflow coalesce(key)` parses and type-checks, but codegen has
+    /// `overflow coalesce(key)` parses and type-checks, but codegen has
     /// no coalesce key-function ABI slice to thread through the FFI boundary
     /// yet. Threading a bare `Coalesce` tag through `HewOverflowPolicy`
     /// without a key function would silently miscarry the declared policy —

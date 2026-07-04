@@ -1478,7 +1478,7 @@ run_accept_expect_status "actor_max_heap_basic" 42
 grep -q 'max_heap=131072' "${accept_output}"
 run_accept_expect_status "supervisor_max_heap" 42
 
-# G-A1: declared mailbox capacity + overflow policy must genuinely bound the
+# declared mailbox capacity + overflow policy must genuinely bound the
 # mailbox instead of being silently discarded (unbounded).
 #   1. MIR dump confirms SpawnActor carries mailbox_capacity=4 overflow=DropNew,
 #      proving capacity + policy propagated from HIR through MIR (previously
@@ -1492,13 +1492,13 @@ run_accept_expect_status "supervisor_max_heap" 42
 grep -q 'mailbox_capacity=4 overflow=DropNew' "${accept_output}"
 run_accept_expect_status "mailbox_bounded_drop_new" 0
 
-# G-A1 second zero-hardcode site: the SAME bound must hold for a SUPERVISED
+# second zero-hardcode site: the SAME bound must hold for a SUPERVISED
 # actor. `HewChildSpec` stored `const_zero` at the mailbox_capacity/overflow
 # fields regardless of the direct-spawn fix, so every supervised actor stayed
 # unbounded until both codegen sites were fixed together.
 run_accept_expect_status "mailbox_bounded_drop_new_supervised" 0
 
-# G-A1 fail-closed: `overflow coalesce(key)` parses and type-checks, but
+# fail-closed: `overflow coalesce(key)` parses and type-checks, but
 # codegen has no coalesce key-function ABI slice yet. Threading a bare
 # `Coalesce` tag through `HewOverflowPolicy` without a key function would
 # silently miscarry the declared policy, so this must fail closed at MIR

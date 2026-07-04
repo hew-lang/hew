@@ -1,4 +1,4 @@
-// G-A1: a declared `mailbox N overflow drop_new;` clause must genuinely bound
+// a declared `mailbox N overflow drop_new;` clause must genuinely bound
 // the actor's mailbox. Before the fix, capacity + overflow policy were
 // silently dropped between HIR and codegen (`HewActorOpts.mailbox_capacity`
 // / `.overflow` were hardcoded to zero), so the runtime's existing

@@ -1,4 +1,4 @@
-// G-A1: the SAME bound must hold for a SUPERVISED actor — the second
+// the SAME bound must hold for a SUPERVISED actor — the second
 // codegen zero-hardcode site. `SupervisorChildLayout.mailbox_capacity` /
 // `.overflow_policy` are mirrored from `ActorLayout` by the MIR post-loop
 // pass, but codegen's `HewChildSpec` literal stored `const_zero` at fields

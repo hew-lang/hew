@@ -1737,7 +1737,7 @@ pub fn lower_hir_module_with_facts(
                 }
             }
         };
-        // G-A1: `overflow coalesce(key)` genuinely parses and type-checks,
+        // `overflow coalesce(key)` genuinely parses and type-checks,
         // but codegen has no coalesce key-function ABI slice yet. Threading
         // a bare `Coalesce` tag through `HewOverflowPolicy` without a key
         // function would silently miscarry the declared policy — fail

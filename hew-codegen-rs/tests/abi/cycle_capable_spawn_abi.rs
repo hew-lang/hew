@@ -48,6 +48,8 @@ fn spawn_pipeline(
                     dest: Place::Local(0),
                     max_heap_bytes,
                     cycle_capable,
+                    mailbox_capacity: None,
+                    overflow_policy: None,
                 },
                 Instr::Move {
                     dest: Place::ReturnSlot,
@@ -81,6 +83,8 @@ fn spawn_pipeline(
         on_exit_symbol: None,
         max_heap_bytes,
         cycle_capable,
+        mailbox_capacity: None,
+        overflow_policy: None,
         handlers: vec![],
         state_clone_fn_symbol: None,
         state_drop_fn_symbol: None,

@@ -6296,6 +6296,44 @@ fn emit_actor_state_clone_drop_registration<'ctx>(
     Ok(())
 }
 
+/// Maps a declared `overflow <policy>;` clause to the runtime's
+/// `HewOverflowPolicy` `#[repr(i32)]` encoding
+/// (`hew-runtime/src/internal/types.rs`: `Block = 0, DropNew = 1,
+/// DropOld = 2, Fail = 3, Coalesce = 4`) BY NAME. The parser's
+/// `OverflowPolicy` enum (`hew-parser/src/ast.rs`) declares its variants in a
+/// DIFFERENT order (`DropNew, DropOld, Block, Fail, Coalesce`) — an ordinal
+/// `as i32` cast across the two enums is wrong-code, so this is the single
+/// mapping authority both the direct-spawn opts path (`emit_spawn_actor`) and
+/// the supervised `HewChildSpec` literal route through.
+///
+/// `None` maps to `Block` — `mailbox N;` with no explicit `overflow` clause
+/// defaults to `block` per spec §6.2 ("default: capacity=1024, overflow=block").
+///
+/// `Coalesce { .. }` fails closed: MIR lowering already refuses to compile a
+/// program that declares it
+/// (`MirDiagnosticKind::MailboxOverflowCoalesceNotYetImplemented`), so
+/// reaching this arm means that gate was bypassed — belt-and-brace, never
+/// silently remap to another policy.
+fn overflow_policy_to_i32(
+    actor_name: &str,
+    policy: Option<&hew_parser::ast::OverflowPolicy>,
+) -> CodegenResult<i32> {
+    use hew_parser::ast::OverflowPolicy;
+    match policy {
+        None | Some(OverflowPolicy::Block) => Ok(0),
+        Some(OverflowPolicy::DropNew) => Ok(1),
+        Some(OverflowPolicy::DropOld) => Ok(2),
+        Some(OverflowPolicy::Fail) => Ok(3),
+        Some(OverflowPolicy::Coalesce { key_field, .. }) => Err(CodegenError::FailClosed(format!(
+            "actor `{actor_name}` declares `overflow coalesce({key_field})`, which has no \
+             codegen key-function ABI slice yet; this should have been rejected at MIR \
+             lowering (MailboxOverflowCoalesceNotYetImplemented) — refusing to silently \
+             thread an unimplemented policy through the FFI boundary"
+        ))),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn emit_spawn_actor(
     fn_ctx: &FnCtx<'_, '_>,
     actor_name: &str,
@@ -6304,6 +6342,8 @@ fn emit_spawn_actor(
     dest: Place,
     max_heap_bytes: Option<u64>,
     cycle_capable: bool,
+    mailbox_capacity: Option<u32>,
+    overflow_policy: Option<&hew_parser::ast::OverflowPolicy>,
 ) -> CodegenResult<()> {
     let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
     let i32_ty = fn_ctx.ctx.i32_type();
@@ -6345,11 +6385,12 @@ fn emit_spawn_actor(
     emit_wasm_actor_metadata_registration(fn_ctx, actor_name)?;
     emit_native_actor_metadata_registration(fn_ctx, actor_name, dispatch)?;
 
-    let spawned = if max_heap_bytes.is_some() || cycle_capable {
-        // `#[max_heap(N)]` and/or `cycle_capable` is set — route through
-        // `hew_actor_spawn_opts` so the runtime applies all spawn policy bits.
-        // The `HewActorOpts` struct is stack-allocated, populated with the
-        // minimal fields, and passed by pointer.
+    let spawned = if max_heap_bytes.is_some() || cycle_capable || mailbox_capacity.is_some() {
+        // `#[max_heap(N)]` and/or `cycle_capable` and/or a declared `mailbox`
+        // clause is set — route through `hew_actor_spawn_opts` so the
+        // runtime applies all spawn policy bits. The `HewActorOpts` struct
+        // is stack-allocated, populated with the minimal fields, and passed
+        // by pointer.
         //
         // `HewActorOpts` `#[repr(C)]` field order (hew-runtime/src/actor.rs:1456):
         //   0  init_state:       *mut c_void   → ptr
@@ -6364,6 +6405,14 @@ fn emit_spawn_actor(
         //   9  cycle_capable:    i32           → i32
         let arena_cap = max_heap_bytes.unwrap_or(0);
         let cycle_flag = if cycle_capable { 1 } else { 0 };
+        // `-1`/`0` = unbounded (`HewActorOpts.mailbox_capacity` doc). No
+        // declared `mailbox` clause stores `0`; a declared capacity clamps
+        // to `i32::MAX` on the (practically unreachable) overflow case
+        // rather than wrapping into a negative/unbounded value.
+        let mailbox_capacity_i32 = mailbox_capacity
+            .map(|n| i32::try_from(n).unwrap_or(i32::MAX))
+            .unwrap_or(0);
+        let overflow_i32 = overflow_policy_to_i32(actor_name, overflow_policy)?;
         let opts_ty = fn_ctx.ctx.struct_type(
             &[
                 ptr_ty.into(), // init_state
@@ -6387,8 +6436,11 @@ fn emit_spawn_actor(
             (0, state_ptr.into()),
             (1, state_size.into()),
             (2, dispatch.as_global_value().as_pointer_value().into()),
-            (3, i32_ty.const_zero().into()),
-            (4, i32_ty.const_zero().into()),
+            (
+                3,
+                i32_ty.const_int(mailbox_capacity_i32 as u64, true).into(),
+            ),
+            (4, i32_ty.const_int(overflow_i32 as u64, true).into()),
             (5, ptr_ty.const_null().into()),
             (6, i32_ty.const_zero().into()),
             (7, i32_ty.const_zero().into()),
@@ -7447,6 +7499,16 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
     // MIR post-loop pass). Zero means unbounded — matches runtime default.
     let arena_cap = child.max_heap_bytes.unwrap_or(0);
     let cycle_flag = if child.cycle_capable { 1 } else { 0 };
+    // mailbox_capacity / overflow: mirrored from ActorLayout by the MIR
+    // post-loop pass. Without this, every supervised actor stays unbounded
+    // across (re)spawns regardless of its declared `mailbox` clause — the
+    // second of the two codegen zero-hardcode sites closed by this fix.
+    // `-1`/`0` = unbounded, matching `HewActorOpts.mailbox_capacity`.
+    let mailbox_capacity_i32 = child
+        .mailbox_capacity
+        .map(|n| i32::try_from(n).unwrap_or(i32::MAX))
+        .unwrap_or(0);
+    let overflow_i32 = overflow_policy_to_i32(&child.actor_name, child.overflow_policy.as_ref())?;
 
     // ── Init-closure (config) path vs literal-template path ─────────────
     //
@@ -7726,8 +7788,11 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
         (2, init_state_size),
         (3, dispatch_fn.as_global_value().as_pointer_value().into()),
         (4, i32_ty.const_int(restart_int as u64, true).into()),
-        (5, i32_ty.const_zero().into()),
-        (6, i32_ty.const_zero().into()),
+        (
+            5,
+            i32_ty.const_int(mailbox_capacity_i32 as u64, true).into(),
+        ), // mailbox_capacity from declared `mailbox N;`
+        (6, i32_ty.const_int(overflow_i32 as u64, true).into()), // overflow: mapped by name from declared `overflow <policy>;`
         (7, i64_ty.const_int(arena_cap, false).into()), // arena_cap_bytes from #[max_heap(N)]
         (8, i32_ty.const_int(cycle_flag, false).into()), // cycle_capable from checker side-table
         (9, on_crash_ptr), // on_crash: fn-pointer when child's actor has #[on(crash)], null otherwise
@@ -17764,6 +17829,8 @@ fn lower_instruction(
             dest,
             max_heap_bytes,
             cycle_capable,
+            mailbox_capacity,
+            overflow_policy,
         } => {
             emit_spawn_actor(
                 fn_ctx,
@@ -17773,6 +17840,8 @@ fn lower_instruction(
                 *dest,
                 *max_heap_bytes,
                 *cycle_capable,
+                *mailbox_capacity,
+                overflow_policy.as_ref(),
             )?;
             let _ = ctx;
         }
@@ -32233,11 +32302,19 @@ fn lower_terminator<'ctx>(
                 "actor send payload size",
             )?;
             let msg_type = fn_ctx.ctx.i32_type().const_int(*msg_type as u64, false);
-            // Bind the i32 return value. A nonzero status means the recipient
-            // was gone, the mailbox was full, or the remote partition rejected
-            // the message. We must not silently proceed — that could leave the
-            // caller operating on stale state or attempting a follow-up ask
-            // on a dead actor.
+            // Bind the i32 return value. `0` (`HewError::Ok`) is the only
+            // non-trapping status: `hew_actor_send_by_id` already resolves a
+            // declared bounded-mailbox policy-drop (`drop_new`/`drop_old`/
+            // `coalesce`; spec §6.2, silent by definition) down to `0` below
+            // this call, at the mailbox-send seam
+            // (`hew_mailbox_send_fire_and_forget` in the runtime) — NOT here.
+            // Every other status this call can return (recipient gone,
+            // `fail`-policy overflow, OOM, foreign-runtime, remote partition
+            // rejection) is a genuine, caller-visible failure and must trap:
+            // proceeding past one could leave the caller operating on stale
+            // state or attempting a follow-up ask on a dead actor. Do not
+            // special-case any particular non-zero value here — every
+            // failure code is, and must stay, caller-visible.
             // `Terminator::Send` targets a LOCAL actor handle (`LocalPid`);
             // it delivers into a local mailbox and never reaches the cross-node
             // serialize path (that is the `RemotePid<T>` `emit_remote_pid_send_call`
@@ -32265,22 +32342,20 @@ fn lower_terminator<'ctx>(
                 })?
                 .into_int_value();
 
-            // Branch: status == 0 → next_bb; status != 0 → send_fail_bb.
+            // Branch: status == 0 → next_bb; any nonzero status →
+            // send_fail_bb. No status value is excluded — see the comment
+            // above the call for why every nonzero code must trap.
             let send_fail_bb = fn_ctx
                 .builder
                 .get_insert_block()
                 .and_then(|bb| bb.get_parent())
                 .map(|f| fn_ctx.ctx.append_basic_block(f, "actor_send_fail"))
                 .ok_or_else(|| CodegenError::Llvm("send block has no parent function".into()))?;
-            let zero = fn_ctx.ctx.i32_type().const_zero();
+            let i32_ty = fn_ctx.ctx.i32_type();
+            let zero = i32_ty.const_zero();
             let send_failed = fn_ctx
                 .builder
-                .build_int_compare(
-                    inkwell::IntPredicate::NE,
-                    send_status,
-                    zero,
-                    "actor_send_failed",
-                )
+                .build_int_compare(inkwell::IntPredicate::NE, send_status, zero, "send_not_ok")
                 .llvm_ctx("send status cmp")?;
 
             let next_bb = *fn_ctx
@@ -51893,6 +51968,8 @@ mod tests {
                 on_exit_symbol: None,
                 max_heap_bytes: None,
                 cycle_capable: false,
+                mailbox_capacity: None,
+                overflow_policy: None,
                 handlers: vec![],
                 state_clone_fn_symbol: None,
                 state_drop_fn_symbol: None,
@@ -52032,6 +52109,8 @@ mod tests {
             on_exit_symbol: None,
             max_heap_bytes: None,
             cycle_capable: false,
+            mailbox_capacity: None,
+            overflow_policy: None,
             handlers: vec![],
             state_clone_fn_symbol: Some("__hew_state_clone_ConnActor".to_string()),
             state_drop_fn_symbol: Some("__hew_state_drop_ConnActor".to_string()),
@@ -52738,6 +52817,8 @@ mod tests {
             on_exit_symbol: None,
             max_heap_bytes: None,
             cycle_capable: false,
+            mailbox_capacity: None,
+            overflow_policy: None,
             handlers: handler_layouts,
             state_clone_fn_symbol: None,
             state_drop_fn_symbol: None,
@@ -53248,6 +53329,8 @@ mod tests {
             on_exit_symbol: None,
             max_heap_bytes: None,
             cycle_capable: false,
+            mailbox_capacity: None,
+            overflow_policy: None,
             handlers: vec![unit_suspendable_layout(symbol, 9)],
             state_clone_fn_symbol: None,
             state_drop_fn_symbol: None,

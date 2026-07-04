@@ -1327,7 +1327,14 @@ pub unsafe extern "C" fn hew_mailbox_set_coalesce_config(
 /// Outcome of an overflow-policy-aware send into the user queue.
 ///
 /// FFI entry points map these variants to their own return conventions.
-enum SendOutcome {
+/// `pub(crate)` (rather than private) because the fire-and-forget local
+/// send seam (`actor::actor_send_result_internal_reply`) needs the raw
+/// variant, not just a collapsed status code: whether the actor must be
+/// woken/scheduled depends on whether a node actually reached the queue
+/// (`Enqueued`/`Coalesced`/`DroppedOld`), which is a different question
+/// from whether the call should report success to the caller (`Dropped`
+/// also reports success, but nothing was queued, so nothing to schedule).
+pub(crate) enum SendOutcome {
     /// Message was successfully enqueued.
     Enqueued,
     /// Mailbox is closed — message was not sent.
@@ -1903,6 +1910,43 @@ pub unsafe extern "C" fn hew_mailbox_send(
         SendOutcome::Dropped | SendOutcome::Failed => HewError::ErrMailboxFull as i32,
         SendOutcome::Oom => HewError::ErrOom as i32,
     }
+}
+
+/// Send a fire-and-forget message to the mailbox (user queue), deep-copying
+/// `data`. Returns the raw [`SendOutcome`] rather than a collapsed status
+/// code: the caller (`actor::actor_send_result_internal_reply`) needs both
+/// (a) the `HewError` status to report, and (b) whether a node actually
+/// reached the queue, since only an actual enqueue needs to wake/schedule
+/// the actor — a policy-drop reports success but enqueued nothing.
+///
+/// A **policy-drop** (`DropNew` silently discards the new message) is
+/// spec-silent per §6.2 and must be reported as success by the caller,
+/// while a genuine failure (`Fail` policy rejects, the mailbox is closed,
+/// or allocation fails) must keep its own distinct non-zero code.
+///
+/// Not an FFI entry point — used only by the local no-reply-channel send
+/// path ([`actor::actor_send_result_internal_reply`](crate::actor)) that
+/// backs `Terminator::Send` (fire-and-forget `w.msg()` sends) and
+/// `hew_actor_send`. The ask/reply-channel path keeps calling
+/// [`hew_mailbox_send_with_reply`], whose contract is intentionally
+/// untouched: an ask that silently dropped its message would leave the
+/// caller's reply channel waiting forever for a reply that will never
+/// arrive, so a full mailbox must stay caller-visible there regardless of
+/// overflow policy.
+///
+/// # Safety
+///
+/// Same requirements as [`hew_mailbox_send`].
+pub(crate) unsafe fn hew_mailbox_send_fire_and_forget(
+    mb: *mut HewMailbox,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+) -> SendOutcome {
+    // SAFETY: Caller guarantees `mb` is valid.
+    let mb_ref = unsafe { &*mb };
+    // SAFETY: Caller guarantees `data` points to `size` readable bytes.
+    unsafe { send_with_overflow(mb_ref, msg_type, data, size, true, false, ptr::null_mut()) }
 }
 
 /// Send a message with an associated reply channel.

@@ -716,6 +716,24 @@ pub struct ActorLayout {
     /// cycle. Codegen serializes this into spawn opts for the future
     /// cycle-detection / Machine Lane B runtime consumer.
     pub cycle_capable: bool,
+    /// `mailbox <N>;` fixed mailbox capacity, mirrored verbatim from
+    /// `HirActorDecl::mailbox_capacity`. `None` means the runtime default
+    /// (unbounded) applies. Codegen threads `Some(N)` through
+    /// `hew_actor_spawn_opts`'s `mailbox_capacity` field so the runtime's
+    /// existing `if opts.mailbox_capacity > 0` bounding path actually
+    /// engages — previously this was silently dropped between HIR and
+    /// codegen, leaving every declared-bounded mailbox unbounded.
+    pub mailbox_capacity: Option<u32>,
+    /// `overflow <policy>;` mailbox overflow policy, mirrored verbatim from
+    /// `HirActorDecl::overflow_policy`. `None` with `Some(mailbox_capacity)`
+    /// means the spec §6.2 default (`Block`) applies. Codegen maps this
+    /// enum to the runtime's `HewOverflowPolicy` i32 encoding BY NAME (the
+    /// two enums have different discriminant orders — an ordinal cast is
+    /// wrong-code). `Coalesce { .. }` fails closed at MIR lowering with a
+    /// `MailboxOverflowCoalesceNotYetImplemented` diagnostic rather than
+    /// silently threading a policy the codegen key-function ABI cannot
+    /// honour yet.
+    pub overflow_policy: Option<hew_parser::ast::OverflowPolicy>,
     /// Receive handlers in message-type order.
     pub handlers: Vec<ActorHandlerLayout>,
     /// Mangled symbol of the per-actor synthesized C-ABI clone fn that
@@ -961,6 +979,17 @@ pub struct SupervisorChildLayout {
     /// planning. Codegen serializes this into `HewChildSpec` so the runtime
     /// preserves the bit across supervisor restarts.
     pub cycle_capable: bool,
+    /// Mirrored from `ActorLayout.mailbox_capacity` in the post-loop pass.
+    /// Codegen populates `HewChildSpec.mailbox_capacity` from this field so
+    /// supervised actors are bounded identically to direct-spawned ones —
+    /// without this mirror every supervised actor stays unbounded across
+    /// restarts (the "second zero-hardcode site" fixed alongside the
+    /// direct-spawn opts path).
+    pub mailbox_capacity: Option<u32>,
+    /// Mirrored from `ActorLayout.overflow_policy` in the post-loop pass.
+    /// Codegen maps this to `HewChildSpec.overflow` via the same by-name
+    /// helper used for the direct-spawn opts path — never an ordinal cast.
+    pub overflow_policy: Option<hew_parser::ast::OverflowPolicy>,
     /// Per-field literal init args for this child's actor state template.
     ///
     /// Each entry is `(field_name, value)` in actor-state-field declaration order.
@@ -4230,6 +4259,18 @@ pub enum Instr {
         /// Codegen routes `true` through spawn opts even without `#[max_heap]`
         /// so the runtime receives the Machine Lane B policy bit.
         cycle_capable: bool,
+        /// `mailbox <N>;` declared capacity, mirrored from
+        /// `ActorLayout.mailbox_capacity`. `Some(_)` (or `cycle_capable`, or
+        /// `max_heap_bytes.is_some()`) routes the spawn through
+        /// `hew_actor_spawn_opts`; `None` alongside the other two `None`/
+        /// `false` uses the plain `hew_actor_spawn` path (unbounded, matching
+        /// today's behaviour for actors that declare no mailbox clause).
+        mailbox_capacity: Option<u32>,
+        /// `overflow <policy>;` declared policy, mirrored from
+        /// `ActorLayout.overflow_policy`. Codegen maps this to the runtime's
+        /// `HewOverflowPolicy` i32 encoding by name (never an ordinal cast —
+        /// the two enums' discriminant orders differ).
+        overflow_policy: Option<hew_parser::ast::OverflowPolicy>,
     },
     /// Call a first-class callable pair. Codegen loads the function pointer and
     /// environment pointer from `callee`, then emits an indirect call with the
@@ -6029,6 +6070,14 @@ pub enum MirDiagnosticKind {
         field_name: String,
         reason: String,
     },
+    /// `overflow coalesce(key)` parses and type-checks, but codegen has
+    /// no coalesce key-function ABI slice to thread through the FFI boundary
+    /// yet. Threading a bare `Coalesce` tag through `HewOverflowPolicy`
+    /// without a key function would silently miscarry the declared policy —
+    /// exactly the "declared-and-accepted surface silently discarded" class
+    /// this fence closes — so lowering fails closed here with an honest NYI
+    /// diagnostic instead of a silent remap to another policy.
+    MailboxOverflowCoalesceNotYetImplemented { actor: String, key_field: String },
     /// W3.022 V10: A `CallTraitMethodStatic` reached MIR with no concrete
     /// substitution for its `receiver_type_param`. After Stage 3 (impl-level
     /// type params flow into `HirFn::type_params`), unspecialised generic

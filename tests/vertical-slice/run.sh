@@ -1478,6 +1478,39 @@ run_accept_expect_status "actor_max_heap_basic" 42
 grep -q 'max_heap=131072' "${accept_output}"
 run_accept_expect_status "supervisor_max_heap" 42
 
+# declared mailbox capacity + overflow policy must genuinely bound the
+# mailbox instead of being silently discarded (unbounded).
+#   1. MIR dump confirms SpawnActor carries mailbox_capacity=4 overflow=DropNew,
+#      proving capacity + policy propagated from HIR through MIR (previously
+#      dropped entirely — the dump showed neither field).
+#   2. Flood a 20ms-handler actor with 20 fire-and-forget sends well past its
+#      declared capacity of 4; a boolean PASS/FAIL (0/1) rather than an exact
+#      processed-count, because the EXACT number accepted before the queue
+#      fills is a scheduling race — the invariant under test is strictly
+#      "fewer than the flood count" (before the fix: processed == 20).
+"${HEW}" compile --dump-mir raw "${ROOT}/tests/vertical-slice/accept/mailbox_bounded_drop_new.hew" >"${accept_output}" 2>&1
+grep -q 'mailbox_capacity=4 overflow=DropNew' "${accept_output}"
+run_accept_expect_status "mailbox_bounded_drop_new" 0
+
+# second zero-hardcode site: the SAME bound must hold for a SUPERVISED
+# actor. `HewChildSpec` stored `const_zero` at the mailbox_capacity/overflow
+# fields regardless of the direct-spawn fix, so every supervised actor stayed
+# unbounded until both codegen sites were fixed together.
+run_accept_expect_status "mailbox_bounded_drop_new_supervised" 0
+
+# fail-closed: `overflow coalesce(key)` parses and type-checks, but
+# codegen has no coalesce key-function ABI slice yet. Threading a bare
+# `Coalesce` tag through `HewOverflowPolicy` without a key function would
+# silently miscarry the declared policy, so this must fail closed at MIR
+# lowering with an honest NYI diagnostic — never a silent remap to another
+# overflow policy.
+if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/mailbox_overflow_coalesce_nyi.hew" >"${reject_output}" 2>&1; then
+  echo "expected mailbox-overflow-coalesce-nyi fixture to fail" >&2
+  exit 1
+fi
+grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
+grep -qF 'overflow coalesce(id)' "${reject_output}"
+
 # Reject: accessing a non-existent child name on a supervisor LHS.
 # `app.w2` does not exist — App declares only `w1`.  The checker emits
 # UndefinedField with a fuzzy suggestion for `w1`.

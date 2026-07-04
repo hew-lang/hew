@@ -56,6 +56,8 @@ fn spawn_pipeline(every_ms: Option<u64>) -> IrPipeline {
                     dest: Place::Local(0),
                     max_heap_bytes: None,
                     cycle_capable: false,
+                    mailbox_capacity: None,
+                    overflow_policy: None,
                 },
                 Instr::Move {
                     dest: Place::ReturnSlot,
@@ -116,6 +118,8 @@ fn spawn_pipeline(every_ms: Option<u64>) -> IrPipeline {
         on_exit_symbol: None,
         max_heap_bytes: None,
         cycle_capable: false,
+        mailbox_capacity: None,
+        overflow_policy: None,
         handlers: vec![ActorHandlerLayout {
             name: "tick".to_string(),
             symbol: handler_symbol,

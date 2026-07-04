@@ -1,0 +1,48 @@
+// a declared `mailbox N overflow drop_new;` clause must genuinely bound
+// the actor's mailbox. Before the fix, capacity + overflow policy were
+// silently dropped between HIR and codegen (`HewActorOpts.mailbox_capacity`
+// / `.overflow` were hardcoded to zero), so the runtime's existing
+// `hew_actor_spawn_opts` bounding path never engaged and every declared
+// mailbox stayed unbounded — flooding 20 messages into a `mailbox 4` actor
+// delivered all 20.
+//
+// Observation mechanism: flood a slow-handler actor with 20 fire-and-forget
+// sends well past its declared capacity of 4, let it settle, then read back
+// the processed count. The EXACT number accepted before the queue fills is a
+// scheduling race (never asserted exactly); the invariant under test is
+// strictly "fewer than the flood count" — a boolean, not a specific number —
+// so the fixture is not flaky:
+//   - before the fix: processed == 20 (unbounded)      -> exit 1
+//   - after the fix:  processed  < 20 (bounded to ~4-5) -> exit 0
+actor MailboxWorker {
+    var processed: i64;
+
+    mailbox 4 overflow drop_new;
+    receive fn process(value: i32) {
+        sleep(20ms);
+        processed = processed + 1;
+    }
+    receive fn report() -> i64 {
+        processed
+    }
+}
+
+fn main() -> i64 {
+    let w = spawn MailboxWorker(processed: 0);
+    for i in 0 .. 20 {
+        w.process(i);
+    }
+    // Let every accepted message finish processing (well past the 4-5 * 20ms
+    // it would take even in the worst accepted-batch case).
+    sleep(1000ms);
+    let result = await w.report();
+    let final_count = match result {
+        Ok(value) => value,
+        Err(_) => -1,
+    };
+    if final_count < 20 {
+        0
+    } else {
+        1
+    }
+}

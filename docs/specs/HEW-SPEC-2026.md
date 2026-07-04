@@ -3742,6 +3742,7 @@ Every actor mailbox has a bounded capacity and an overflow policy that determine
 
 ### 6.1 Mailbox Declaration
 
+<!-- doctest: skip -->
 ```hew
 actor MyActor {
     mailbox 1024;                              // default: capacity=1024, overflow=block
@@ -3750,6 +3751,8 @@ actor MyActor {
     mailbox 100 overflow coalesce(request_id) fallback drop_new; // explicit fallback
 }
 ```
+
+> **Note:** The `coalesce` policy is planned for a future release and is not yet implemented.
 
 ### 6.2 Overflow Policies
 

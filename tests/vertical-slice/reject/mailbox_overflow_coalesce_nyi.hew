@@ -1,0 +1,20 @@
+// `overflow coalesce(key)` genuinely parses and type-checks, but
+// codegen has no coalesce key-function ABI slice yet. Threading a bare
+// `Coalesce` tag through `HewOverflowPolicy` without a key function would
+// silently miscarry the declared policy — this must fail closed at MIR
+// lowering with an honest NYI diagnostic, never a silent remap to another
+// overflow policy (e.g. quietly falling back to `drop_new`).
+actor Batcher {
+    var count: i64;
+    let id: i64;
+
+    mailbox 4 overflow coalesce(id);
+    receive fn process(value: i32) {
+        count = count + 1;
+    }
+}
+
+fn main() {
+    let w = spawn Batcher(count: 0, id: 1);
+    w.process(1);
+}

@@ -192,3 +192,62 @@ fn send_terminator_checks_return_status_and_traps_on_failure() {
         "send fail block must end with unreachable; got:\n{ll}"
     );
 }
+
+/// `Terminator::Send` must trap on every nonzero `hew_actor_send_by_id`
+/// status, including `-1`. A prior version excluded `-1` from the trap
+/// condition, thinking it only represented a policy-drop result; but
+/// `-1` is also returned for genuine failures (actor not found locally).
+/// Excluding it silently swallowed those genuine failures.
+///
+/// The fix moved the policy-drop/genuine-failure distinction into the
+/// runtime seam (`hew_mailbox_send_fire_and_forget`), so policy-drop
+/// resolves to status `0` at that layer and every other status at the
+/// codegen boundary is a genuine failure. This test verifies the codegen
+/// side: exactly one status comparison (against zero, not `-1`), and no
+/// `and i1` combining two comparisons — the shape a `-1` exclusion would
+/// require.
+#[test]
+fn send_terminator_traps_on_every_nonzero_status_no_special_cased_value() {
+    let pipeline = send_status_pipeline();
+    let tmp = std::env::temp_dir().join("hew-actor-send-status-check-no-exclusion");
+    std::fs::create_dir_all(&tmp).expect("create out_dir");
+    let options = EmitOptions {
+        module_name: "send_status_no_exclusion_probe",
+        out_dir: &tmp,
+        native: false,
+        wasm: false,
+        target_triple: None,
+        debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
+        source_path: None,
+    };
+    let artefacts =
+        emit_module(&pipeline, &options).expect("send_status pipeline must emit successfully");
+    let ll_path: &Path = artefacts
+        .ll_path
+        .as_deref()
+        .expect("emit_module must populate ll_path");
+    let ll = std::fs::read_to_string(ll_path).expect("read emitted .ll");
+
+    // Exactly one `icmp` on the send status: `status != 0`. A `-1`-exclusion
+    // shape would need a second `icmp` (`status != -1`) combined via `and`.
+    let icmp_count = ll.matches("icmp").count();
+    assert_eq!(
+        icmp_count, 1,
+        "Terminator::Send must compare the send status exactly once (status \
+         != 0), with no second comparison singling out a particular status \
+         value for exclusion; got {icmp_count} `icmp` occurrences in:\n{ll}"
+    );
+    // No combining `and i1` of two trap conditions.
+    assert!(
+        !ll.contains("and i1"),
+        "Terminator::Send must not AND two status comparisons together \
+         (that shape is what a special-cased-value exclusion, like the \
+         reverted `-1` exclusion, would produce); got:\n{ll}"
+    );
+    // The comparison must be against the literal constant zero, not `-1`.
+    assert!(
+        ll.contains("icmp ne i32") && ll.contains(", 0"),
+        "Terminator::Send's status comparison must be against 0; got:\n{ll}"
+    );
+}

@@ -1151,6 +1151,17 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             writeln!(out, "{pad}  machine-state-name {machine_name}").expect("write to string");
             dump_expr(out, receiver, indent + 4);
         }
+        HirExprKind::MachineTakeEmits {
+            machine_name,
+            receiver,
+            event,
+        } => {
+            writeln!(out, "{pad}  machine-take-emits {machine_name}").expect("write to string");
+            writeln!(out, "{pad}    receiver:").expect("write to string");
+            dump_expr(out, receiver, indent + 6);
+            writeln!(out, "{pad}    event:").expect("write to string");
+            dump_expr(out, event, indent + 6);
+        }
         HirExprKind::MachineVariantCtor {
             machine_name,
             state_idx,

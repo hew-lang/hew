@@ -4898,28 +4898,33 @@ pub enum Instr {
         /// `clippy::large_enum_variant` threshold.
         signature: Box<hew_types::FnSig>,
     },
-    /// Typed placeholder for a machine `emit(Event { ... })` expression
-    /// inside a transition body.
+    /// Typed carrier for a machine `emit(Event { ... })` expression inside a
+    /// transition body, or an `entry {}`/`exit {}` lifecycle block.
     ///
-    /// WHY this placeholder exists: the emit-queue runtime ABI (async event
-    /// delivery from a state-machine transition to its own event queue) is
-    /// wired in a later slice. Recording the intent here preserves
-    /// type-correct MIR through pipeline stages that would otherwise skip the
-    /// expression.
+    /// Despite the name, this is NOT a dead placeholder: codegen lowers it
+    /// directly to a `hew_machine_emit_push` call against the thread-local
+    /// emit queue (see `hew-codegen-rs/src/llvm.rs`). The name predates that
+    /// wiring and is kept for continuity with the historical MIR dumps this
+    /// variant already appears in.
     ///
-    /// WHEN-OBSOLETE: replaced by a real runtime-call sequence when the
-    /// emit-queue ABI lands. This variant must be searched and replaced at
-    /// that time — its presence in final codegen-input MIR is an error.
-    ///
-    /// WHAT the real solution looks like: `Instr::CallRuntimeAbi` to
-    /// `hew_machine_emit` with the machine binding, event-index constant,
-    /// and serialised payload — wired when the emit-queue ABI is finalised.
+    /// Non-unit events (`payload` non-empty) are fail-closed NYI in codegen
+    /// pending a payload serialisation scheme; only unit `emit EventName {}`
+    /// currently lowers.
     MachineEmitPlaceholder {
         /// Zero-based index into `HirMachineDecl.events` (declaration order).
         event_idx: usize,
         /// Lowered payload field places in source-declaration order.
         /// Empty for unit events (no payload).
         payload: Vec<Place>,
+        /// Stable machine-type id (`hew_mir::lower::machine_emit_type_id`,
+        /// `SipHasher13::new_with_keys(0, 0)` over the machine's unqualified
+        /// type name — the single hashing authority, mirroring the actor
+        /// `msg_type` precedent). Codegen transports this value verbatim as
+        /// the `machine_id` argument to `hew_machine_emit_push`; it never
+        /// re-derives it. Distinguishes emits from same-tag events declared
+        /// on different machine types so `m.take_emits(ev)` cannot be
+        /// misattributed across machine types.
+        machine_emit_id: u64,
     },
     /// Load the discriminant tag of an enum-typed value into an integer dest.
     ///
@@ -4969,6 +4974,26 @@ pub enum Instr {
     MachineStateName {
         machine_name: String,
         src_local: u32,
+        dest: Place,
+    },
+    /// `dest: i64` = removed-count of every queued `EmitEvent` matching
+    /// `(machine_emit_id, event_tag)`.
+    ///
+    /// Lowers the user-visible `m.take_emits(event)` surface. Codegen calls
+    /// `hew_machine_emit_take(queue, machine_id: u64, tag: u32) -> i64`
+    /// against the thread-local emit queue (null queue = calling thread's
+    /// owner, same resolution as the push/step-enter/step-exit ABI).
+    /// `event_tag` is the `Place` produced by an `Instr::EnumTagLoad` on the
+    /// `take_emits` argument (widened to whatever integer width that
+    /// instruction's `dest` uses; codegen narrows/widens to the ABI's `u32`
+    /// as needed).
+    ///
+    /// `machine_emit_id` is the SAME stable machine-type id
+    /// (`machine_emit_type_id`) the corresponding `MachineEmitPlaceholder`
+    /// carries — computed once in MIR, transported verbatim by codegen.
+    MachineEmitTake {
+        machine_emit_id: u64,
+        event_tag: Place,
         dest: Place,
     },
 }

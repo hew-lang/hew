@@ -674,6 +674,9 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
         Instr::MachineStateName {
             src_local, dest, ..
         } => (vec![Place::Local(*src_local)], vec![*dest]),
+        Instr::MachineEmitTake {
+            event_tag, dest, ..
+        } => (vec![*event_tag], vec![*dest]),
     }
 }
 

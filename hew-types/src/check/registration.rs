@@ -3279,7 +3279,7 @@ impl Checker {
                 "step".to_string(),
                 FnSig {
                     param_names: vec!["event".to_string()],
-                    params: vec![event_ty],
+                    params: vec![event_ty.clone()],
                     ..FnSig::default()
                 },
             );
@@ -3288,6 +3288,20 @@ impl Checker {
                 "state_name".to_string(),
                 FnSig {
                     return_type: Ty::String,
+                    ..FnSig::default()
+                },
+            );
+            // Register take_emits(event) method: removes every queued emit
+            // matching (this machine's type id, the argument's event tag)
+            // from the thread-local emit queue and returns the count
+            // removed. Sibling of `step`/`state_name` — same event
+            // companion enum param.
+            td.methods.insert(
+                "take_emits".to_string(),
+                FnSig {
+                    param_names: vec!["event".to_string()],
+                    params: vec![event_ty],
+                    return_type: Ty::I64,
                     ..FnSig::default()
                 },
             );

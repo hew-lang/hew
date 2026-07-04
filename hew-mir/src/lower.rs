@@ -3947,6 +3947,28 @@ fn mangle_machine_step(name: &str) -> String {
     format!("{name}__step")
 }
 
+/// Compute the stable machine-type id tagging every `EmitEvent` a machine's
+/// `emit` pushes, and the filter `m.take_emits(ev)` reads back.
+///
+/// Algorithm: `SipHasher13::new_with_keys(0, 0)` over the UTF-8 bytes of the
+/// machine's unqualified type name — the exact stable-hash precedent the
+/// actor `msg_type` uses (`hew-types/src/actor_protocol.rs`,
+/// `compute_default_msg_id`), except the full 64-bit digest is kept (no
+/// truncation to 32 bits) because the runtime ABI's `machine_id` is `u64`.
+///
+/// This is the ONE hashing authority: MIR computes it once per machine
+/// declaration and threads the resulting `u64` through
+/// `Instr::MachineEmitPlaceholder` / `Instr::MachineEmitTake`; codegen only
+/// transports the value, it never re-derives it.
+fn machine_emit_type_id(name: &str) -> u64 {
+    use siphasher::sip::SipHasher13;
+    use std::hash::Hasher;
+
+    let mut hasher = SipHasher13::new_with_keys(0, 0);
+    hasher.write(name.as_bytes());
+    hasher.finish()
+}
+
 /// Synthesise the `<Name>__step(self, event) -> Name` MIR function for a
 /// machine declaration.
 ///
@@ -4448,6 +4470,7 @@ fn emit_machine_step_transition_return(
 ) {
     let (self_binding, self_place) = self_info;
     let (event_binding, event_place) = event_info;
+    let machine_emit_id = machine_emit_type_id(&md.name);
 
     let target_idx = md
         .states
@@ -4458,13 +4481,16 @@ fn emit_machine_step_transition_return(
 
     if invokes_lifecycle_hooks {
         if let Some(exit) = &state.exit {
-            lower_machine_lifecycle_block(builder, self_binding, self_place, exit);
+            lower_machine_lifecycle_block(builder, self_binding, self_place, exit, machine_emit_id);
         }
         emit_machine_transition_out_drops(builder, state, state_idx, self_place);
     }
 
     let prev_machine_self = builder.current_machine_self_binding.replace(self_binding);
     let prev_machine_event = builder.current_machine_event_binding.replace(event_binding);
+    let prev_machine_emit_type_id = builder
+        .current_machine_emit_type_id
+        .replace(machine_emit_id);
     let prev_self_place = builder.binding_locals.insert(self_binding, self_place);
     let prev_event_place = builder.binding_locals.insert(event_binding, event_place);
     let next = if is_machine_state_passthrough(&transition.body) {
@@ -4484,6 +4510,7 @@ fn emit_machine_step_transition_return(
     }
     builder.current_machine_self_binding = prev_machine_self;
     builder.current_machine_event_binding = prev_machine_event;
+    builder.current_machine_emit_type_id = prev_machine_emit_type_id;
 
     let Some(next) = next else {
         builder.diagnostics.push(MirDiagnostic {
@@ -4523,7 +4550,7 @@ fn emit_machine_step_transition_return(
     if invokes_lifecycle_hooks {
         if let Some(target_state) = md.states.get(target_idx) {
             if let Some(entry) = &target_state.entry {
-                lower_machine_lifecycle_block(builder, self_binding, next, entry);
+                lower_machine_lifecycle_block(builder, self_binding, next, entry, machine_emit_id);
             }
         }
     }
@@ -4703,8 +4730,12 @@ fn lower_machine_lifecycle_block(
     self_binding: BindingId,
     self_place: Place,
     block: &hew_hir::HirBlock,
+    machine_emit_id: u64,
 ) {
     let prev_machine_self = builder.current_machine_self_binding.replace(self_binding);
+    let prev_machine_emit_type_id = builder
+        .current_machine_emit_type_id
+        .replace(machine_emit_id);
     let prev_self_place = builder.binding_locals.insert(self_binding, self_place);
     for stmt in &block.statements {
         builder.stmt(stmt);
@@ -4718,6 +4749,7 @@ fn lower_machine_lifecycle_block(
         builder.binding_locals.remove(&self_binding);
     }
     builder.current_machine_self_binding = prev_machine_self;
+    builder.current_machine_emit_type_id = prev_machine_emit_type_id;
 }
 
 /// Topologically sort supervisor children by `wired_to:` dependencies via
@@ -5661,6 +5693,9 @@ fn collect_unknown_self_fields_in_expr(
         }
         HirExprKind::MachineStep {
             receiver, event, ..
+        }
+        | HirExprKind::MachineTakeEmits {
+            receiver, event, ..
         } => {
             collect_unknown_self_fields_in_expr(receiver, state_fields, seen, unknown);
             collect_unknown_self_fields_in_expr(event, state_fields, seen, unknown);
@@ -6122,6 +6157,9 @@ fn collect_binding_defs_in_expr<'f>(
             }
         }
         HirExprKind::MachineStep {
+            receiver, event, ..
+        }
+        | HirExprKind::MachineTakeEmits {
             receiver, event, ..
         } => {
             collect_binding_defs_in_expr(receiver, defs, let_ids);
@@ -6817,6 +6855,9 @@ fn scan_expr_for_consume(expr: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) -> bo
         HirExprKind::MachineStep {
             receiver, event, ..
         } => scan_expr_for_consume(receiver, b_p, pc) || scan_expr_for_consume(event, b_p, pc),
+        HirExprKind::MachineTakeEmits {
+            receiver, event, ..
+        } => scan_expr_for_consume(receiver, b_p, pc) || scan_expr_for_consume(event, b_p, pc),
         HirExprKind::ChannelRecvAwait { receiver, .. }
         | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
@@ -7112,6 +7153,12 @@ fn collect_borrow_arg_sites_in_expr(
             }
         }
         HirExprKind::MachineStep {
+            receiver, event, ..
+        } => {
+            go!(receiver);
+            go!(event);
+        }
+        HirExprKind::MachineTakeEmits {
             receiver, event, ..
         } => {
             go!(receiver);
@@ -7670,6 +7717,12 @@ fn collect_return_values_in_expr<'f>(expr: &'f HirExpr, out: &mut Vec<&'f HirExp
             }
         }
         HirExprKind::MachineStep {
+            receiver, event, ..
+        } => {
+            collect_return_values_in_expr(receiver, out);
+            collect_return_values_in_expr(event, out);
+        }
+        HirExprKind::MachineTakeEmits {
             receiver, event, ..
         } => {
             collect_return_values_in_expr(receiver, out);
@@ -9606,6 +9659,16 @@ struct Builder {
     /// 4c reads the emitted `Place::MachineVariant` places.
     current_machine_self_binding: Option<BindingId>,
     current_machine_event_binding: Option<BindingId>,
+    /// Stable machine-type id (`machine_emit_type_id`) for the machine step
+    /// function currently being lowered. Set alongside
+    /// `current_machine_self_binding` / `current_machine_event_binding` by
+    /// `emit_machine_step_transition_return` (transition bodies) and
+    /// `lower_machine_lifecycle_block` (HIR admits `emit` inside `entry {}`
+    /// / `exit {}` too — both call sites must set this so
+    /// `HirExprKind::MachineEmit` can stamp `Instr::MachineEmitPlaceholder`'s
+    /// `machine_emit_id` regardless of which machine body context it
+    /// appears in). `None` outside a machine step/lifecycle body.
+    current_machine_emit_type_id: Option<u64>,
     /// Set to `true` inside a gen-block body builder to enable
     /// `HirExprKind::Yield` → `Terminator::Yield` construction.
     /// The parent builder's field stays `false` (the `Default`).
@@ -16183,18 +16246,39 @@ impl Builder {
                         payload.push(p);
                     }
                 }
-                // Emit a typed placeholder that records the event index and
-                // lowered payload places. The actual emit-queue runtime call
-                // sequence is wired in a later slice when the ABI is finalised.
+                // Stable machine-type id, set by `emit_machine_step_transition_return`
+                // / `lower_machine_lifecycle_block` alongside the self/event binding
+                // swap. Absent only if `emit` reached MIR outside a machine
+                // transition/lifecycle body — a checker/HIR invariant violation
+                // (HIR's `current_machine_events` resolution already fails closed
+                // for that case), so fail closed here too rather than fabricate an
+                // id that would misattribute the emit to the wrong machine type.
+                let Some(machine_emit_id) = self.current_machine_emit_type_id else {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnsupportedNode {
+                            reason: format!(
+                                "MachineEmit(event_idx={event_idx}) — outside a machine \
+                                 transition/lifecycle body"
+                            ),
+                        },
+                        note: "machine emit is only legal inside a transition body or an \
+                               `entry {}`/`exit {}` lifecycle block, where the step fn's \
+                               machine-type id is in scope"
+                            .to_string(),
+                    });
+                    return None;
+                };
+                // Emit a typed placeholder that records the event index,
+                // machine-type id, and lowered payload places. The actual
+                // emit-queue runtime call sequence is wired in codegen.
                 //
-                // WHY placeholder: the emit-queue ABI (hew_machine_emit) is not
-                // yet defined. Emitting a recognised placeholder keeps MIR
-                // pipeline stages type-correct without silently dropping the
-                // emit. WHEN-OBSOLETE: replaced by CallRuntimeAbi once the
-                // emit-queue ABI lands (see Instr::MachineEmitPlaceholder doc).
+                // WHY placeholder: keeps MIR pipeline stages type-correct
+                // through stages that would otherwise skip the expression,
+                // without silently dropping the emit.
                 self.push_instr(Instr::MachineEmitPlaceholder {
                     event_idx: *event_idx,
                     payload,
+                    machine_emit_id,
                 });
                 None
             }
@@ -16526,6 +16610,32 @@ impl Builder {
                 self.push_instr(Instr::MachineStateName {
                     machine_name: machine_name.clone(),
                     src_local,
+                    dest,
+                });
+                Some(dest)
+            }
+            HirExprKind::MachineTakeEmits {
+                machine_name,
+                receiver,
+                event,
+            } => {
+                // `m.take_emits(ev)` filters the thread-local emit queue by
+                // (this machine's stable type id, `ev`'s discriminant tag).
+                // Delivery is per-thread, per-machine-TYPE — never
+                // per-instance (see MACHINE-SPEC) — so the receiver is
+                // lowered for its side effects only; its resulting place is
+                // not read.
+                let _ = self.lower_value(receiver)?;
+                let event_place = self.lower_value(event)?;
+                let event_tag = self.alloc_local(ResolvedTy::I64);
+                self.push_instr(Instr::EnumTagLoad {
+                    src: event_place,
+                    dest: event_tag,
+                });
+                let dest = self.alloc_local(ResolvedTy::I64);
+                self.push_instr(Instr::MachineEmitTake {
+                    machine_emit_id: machine_emit_type_id(machine_name),
+                    event_tag,
                     dest,
                 });
                 Some(dest)
@@ -34367,6 +34477,9 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         Instr::MachineStateName {
             src_local, dest, ..
         } => vec![Place::Local(*src_local), *dest],
+        Instr::MachineEmitTake {
+            event_tag, dest, ..
+        } => vec![*event_tag, *dest],
     }
 }
 
@@ -35116,6 +35229,7 @@ pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
         Instr::MachineEmitPlaceholder { payload, .. } => payload.clone(),
         Instr::EnumTagLoad { src, .. } => vec![*src],
         Instr::MachineStateName { src_local, .. } => vec![Place::Local(*src_local)],
+        Instr::MachineEmitTake { event_tag, .. } => vec![*event_tag],
     }
 }
 
@@ -35467,6 +35581,7 @@ fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
         | Instr::MachineEmitPlaceholder { .. }
         | Instr::EnumTagLoad { .. }
         | Instr::MachineStateName { .. }
+        | Instr::MachineEmitTake { .. }
         // RecordCloneInplace borrows src (non-consuming read); it does not
         // transfer ownership of any local out of the frame.
         | Instr::RecordCloneInplace { .. }
@@ -35724,6 +35839,7 @@ fn projection_alias_dest(instr: &Instr) -> Option<Place> {
         | Instr::MachineEmitPlaceholder { .. }
         | Instr::EnumTagLoad { .. }
         | Instr::MachineStateName { .. }
+        | Instr::MachineEmitTake { .. }
         // RecordCloneInplace allocates a fresh clone — its dest does NOT alias
         // the src or any parent aggregate field (the thunk overwrites heap
         // pointer fields in dst with independently-owned clones).

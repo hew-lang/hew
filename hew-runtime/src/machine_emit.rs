@@ -55,6 +55,12 @@ fn panic_reentrancy_exceeded(depth: usize, cap: usize) -> ! {
 /// with ownership/length so this substrate can copy bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EmitEvent {
+    /// Stable machine-type id (`hew-mir`'s `machine_emit_type_id`, a
+    /// `SipHasher13`-over-name digest — the same hashing authority the
+    /// actor `msg_type` precedent uses). Distinguishes same-tag events
+    /// declared on different machine types so `hew_machine_emit_take`
+    /// cannot be misattributed across machine types.
+    pub machine_id: u64,
     /// Zero-based event tag from the machine event declaration order.
     pub tag: u32,
     /// Back-compat alias for earlier tests and callers.
@@ -72,11 +78,11 @@ pub struct EmitQueueAppend<'a> {
 
 impl EmitQueueAppend<'_> {
     /// Append a nested emit to the same FIFO drain.
-    pub fn push(&mut self, tag: u32, payload: *const u8) {
+    pub fn push(&mut self, machine_id: u64, tag: u32, payload: *const u8) {
         // SAFETY: `EmitQueueAppend` is only constructed by `EmitQueue::drain`
         // for the queue currently being drained on this thread.
         unsafe {
-            (*self.queue).push(tag, payload);
+            (*self.queue).push(machine_id, tag, payload);
         }
     }
 }
@@ -137,8 +143,9 @@ impl EmitQueue {
     }
 
     /// Push an event onto the FIFO tail.
-    pub fn push(&mut self, tag: u32, payload: *const u8) {
+    pub fn push(&mut self, machine_id: u64, tag: u32, payload: *const u8) {
         self.queue.push_back(EmitEvent {
+            machine_id,
             tag,
             event_idx: tag as usize,
             payload,
@@ -179,6 +186,30 @@ impl EmitQueue {
         } else {
             Ok(())
         }
+    }
+
+    /// Exit a generated `step()` frame WITHOUT draining: decrement
+    /// `reentrancy_depth` only, leaving every queued event in place for a
+    /// later `take` (or a future drain-based consumer) to observe.
+    ///
+    /// Reuses the exact `reentrancy_depth == 0` guard shape `exit_step`
+    /// uses, so a spurious exit call with no matching `enter_step` is a
+    /// silent no-op rather than an underflow panic.
+    pub fn exit_step_keep(&mut self) {
+        if self.reentrancy_depth == 0 {
+            return;
+        }
+        self.reentrancy_depth -= 1;
+    }
+
+    /// Remove every queued event matching `(machine_id, tag)` and return the
+    /// count removed. Unconsumed events of other tags/machines stay queued
+    /// in their original relative order.
+    pub fn take(&mut self, machine_id: u64, tag: u32) -> usize {
+        let before = self.queue.len();
+        self.queue
+            .retain(|event| !(event.machine_id == machine_id && event.tag == tag));
+        before - self.queue.len()
     }
 
     /// Drain all pending events in FIFO order.
@@ -320,13 +351,15 @@ fn resolve_queue(queue: *mut EmitQueue) -> *mut EmitQueue {
 /// # ABI
 ///
 /// ```text
-/// hew_machine_emit_push(queue: *mut EmitQueue, tag: u32, payload: *const u8) -> i32
+/// hew_machine_emit_push(queue: *mut EmitQueue, machine_id: u64, tag: u32, payload: *const u8) -> i32
 /// ```
 ///
-/// `queue == null` selects the calling thread's queue. `tag` is the event
-/// declaration index. `payload` is borrowed and never dereferenced by this
-/// function; it must remain valid until the outermost `step()` drain completes
-/// if a downstream handler dereferences it. Slice 7 codegen passes null.
+/// `queue == null` selects the calling thread's queue. `machine_id` is the
+/// emitting machine's stable type id (`hew-mir`'s `machine_emit_type_id`).
+/// `tag` is the event declaration index. `payload` is borrowed and never
+/// dereferenced by this function; it must remain valid until the outermost
+/// `step()` drain completes if a downstream handler dereferences it. Codegen
+/// passes null for unit events.
 ///
 /// # Safety
 ///
@@ -335,6 +368,7 @@ fn resolve_queue(queue: *mut EmitQueue) -> *mut EmitQueue {
 #[no_mangle]
 pub unsafe extern "C" fn hew_machine_emit_push(
     queue: *mut EmitQueue,
+    machine_id: u64,
     tag: u32,
     payload: *const u8,
 ) -> i32 {
@@ -345,7 +379,7 @@ pub unsafe extern "C" fn hew_machine_emit_push(
     // SAFETY: caller supplied a valid queue pointer or we resolved the current
     // thread's owner.
     unsafe {
-        (*queue).push(tag, payload);
+        (*queue).push(machine_id, tag, payload);
     }
     0
 }
@@ -368,11 +402,13 @@ pub unsafe extern "C-unwind" fn hew_machine_emit_step_enter(queue: *mut EmitQueu
     0
 }
 
-/// Mark exit from a generated `step()` frame.
+/// Mark exit from a generated `step()` frame, draining and DISCARDING every
+/// event queued during the step.
 ///
-/// The C ABI drain sink is intentionally scheduler-free in Slice 7: events are
-/// drained and discarded. Rust tests and future stdlib lifecycle dispatch use
-/// [`thread_emit_drain`] / [`EmitQueue::exit_step`] with an explicit handler.
+/// Kept for its existing Rust test coverage
+/// (`hew-runtime/tests/machine_emit.rs`); codegen no longer calls this —
+/// generated code uses [`hew_machine_emit_step_exit_keep`] so `emit`'d events
+/// survive for `m.take_emits(...)` to observe.
 ///
 /// # Safety
 ///
@@ -391,6 +427,56 @@ pub unsafe extern "C-unwind" fn hew_machine_emit_step_exit(queue: *mut EmitQueue
         }
     }
     0
+}
+
+/// Mark exit from a generated `step()` frame WITHOUT draining: decrements
+/// `reentrancy_depth` only, leaving every queued event in place. This is the
+/// deliver-design step-exit codegen calls — `emit`'d events accumulate on the
+/// thread-local queue until a matching [`hew_machine_emit_take`] removes
+/// them.
+///
+/// # Safety
+///
+/// Same pointer contract as [`hew_machine_emit_push`].
+#[no_mangle]
+pub unsafe extern "C-unwind" fn hew_machine_emit_step_exit_keep(queue: *mut EmitQueue) -> i32 {
+    let queue = resolve_queue(queue);
+    if queue.is_null() {
+        return -1;
+    }
+    // SAFETY: pointer contract documented above.
+    unsafe {
+        (*queue).exit_step_keep();
+    }
+    0
+}
+
+/// Remove every queued event matching `(machine_id, tag)` from the queue and
+/// return the count removed.
+///
+/// `queue == null` selects the calling thread's queue, same resolution as
+/// [`hew_machine_emit_push`]. Lowers the user-visible `m.take_emits(event)`
+/// surface: `machine_id` is the receiver's stable machine-type id and `tag`
+/// is `event`'s discriminant. Unconsumed events of other tags/machines stay
+/// queued. Returns `-1` if the queue pointer cannot be resolved (mirrors the
+/// other emit-queue ABI functions' null-queue sentinel).
+///
+/// # Safety
+///
+/// Same pointer contract as [`hew_machine_emit_push`].
+#[no_mangle]
+pub unsafe extern "C-unwind" fn hew_machine_emit_take(
+    queue: *mut EmitQueue,
+    machine_id: u64,
+    tag: u32,
+) -> i64 {
+    let queue = resolve_queue(queue);
+    if queue.is_null() {
+        return -1;
+    }
+    // SAFETY: pointer contract documented above.
+    let removed = unsafe { (*queue).take(machine_id, tag) };
+    i64::try_from(removed).unwrap_or(i64::MAX)
 }
 
 /// Drain the calling thread's queue with a Rust handler.

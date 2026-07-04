@@ -17894,16 +17894,23 @@ fn lower_instruction(
             )?;
             let _ = ctx;
         }
-        Instr::MachineEmitPlaceholder { event_idx, payload } => {
+        Instr::MachineEmitPlaceholder {
+            event_idx,
+            payload,
+            machine_emit_id,
+        } => {
             // Lower a machine emit expression to a call to `hew_machine_emit_push`.
             //
-            // ABI: `hew_machine_emit_push(queue: *mut EmitQueue, tag: u32,
-            //                             payload_ptr: *const u8) -> i32`
+            // ABI: `hew_machine_emit_push(queue: *mut EmitQueue, machine_id: u64,
+            //                             tag: u32, payload_ptr: *const u8) -> i32`
             //
             // The per-thread emit queue (a `thread_local!` `EmitQueue` in
-            // `hew-runtime/src/machine_emit.rs`) receives the push. After the
-            // enclosing `step()` boundary the scheduler (or test harness) calls
-            // `thread_emit_drain` / `hew_machine_emit_drain` to process events.
+            // `hew-runtime/src/machine_emit.rs`) receives the push, tagged with
+            // the machine's stable type id so `m.take_emits(ev)` cannot
+            // misattribute it to another machine type. The step-exit wrapper
+            // (`emit_machine_step_exit_call`) calls `hew_machine_emit_step_exit_keep`,
+            // which never drains — events accumulate until `take_emits` removes
+            // them.
             //
             // SHIM: only unit events (empty payload) are supported in this slice.
             // Non-unit emits require a serialisation scheme (likely MessagePack)
@@ -17925,9 +17932,11 @@ fn lower_instruction(
                 )));
             }
             let i32_ty = fn_ctx.ctx.i32_type();
+            let i64_ty = fn_ctx.ctx.i64_type();
             let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
             let emit_push_fn = get_or_declare_machine_emit_push(fn_ctx);
             let queue_ptr = ptr_ty.const_null();
+            let machine_id_val = i64_ty.const_int(*machine_emit_id, false);
             let tag = u32::try_from(*event_idx).map_err(|_| {
                 CodegenError::FailClosed(format!(
                     "Instr::MachineEmitPlaceholder event_idx {event_idx} exceeds u32::MAX"
@@ -17940,7 +17949,12 @@ fn lower_instruction(
                 .builder
                 .build_call(
                     emit_push_fn,
-                    &[queue_ptr.into(), tag_val.into(), null_ptr.into()],
+                    &[
+                        queue_ptr.into(),
+                        machine_id_val.into(),
+                        tag_val.into(),
+                        null_ptr.into(),
+                    ],
                     "machine_emit_push_call",
                 )
                 .llvm_ctx("hew_machine_emit_push call")?;
@@ -18116,6 +18130,89 @@ fn lower_instruction(
                 .builder
                 .build_store(dest_ptr, name_ptr)
                 .llvm_ctx("store state-name ptr")?;
+        }
+        Instr::MachineEmitTake {
+            machine_emit_id,
+            event_tag,
+            dest,
+        } => {
+            // Lower `m.take_emits(ev)` to a call to `hew_machine_emit_take`.
+            //
+            // ABI: `hew_machine_emit_take(queue: *mut EmitQueue, machine_id: u64,
+            //                             tag: u32) -> i64`
+            //
+            // `machine_emit_id` is the same stable machine-type id the
+            // corresponding `MachineEmitPlaceholder` push carries — computed
+            // once in MIR (`machine_emit_type_id`), transported verbatim here;
+            // codegen never re-derives it. `event_tag` is the integer Place an
+            // `Instr::EnumTagLoad` wrote; narrow/widen it to the ABI's u32.
+            let i64_ty = ctx.i64_type();
+            let i32_ty = ctx.i32_type();
+            let ptr_ty = ctx.ptr_type(AddressSpace::default());
+            let (tag_ptr, tag_ty) = place_pointer(fn_ctx, *event_tag)?;
+            let tag_int_ty = match tag_ty {
+                BasicTypeEnum::IntType(t) => t,
+                other => {
+                    return Err(CodegenError::FailClosed(format!(
+                        "Instr::MachineEmitTake event_tag must be an integer-typed Place; \
+                         got {other:?}"
+                    )));
+                }
+            };
+            let tag_loaded = fn_ctx
+                .builder
+                .build_load(tag_int_ty, tag_ptr, "machine_emit_take_tag")
+                .llvm_ctx("load machine_emit_take tag")?
+                .into_int_value();
+            let tag_u32 = if tag_int_ty.get_bit_width() == 32 {
+                tag_loaded
+            } else {
+                fn_ctx
+                    .builder
+                    .build_int_truncate(tag_loaded, i32_ty, "machine_emit_take_tag_trunc")
+                    .llvm_ctx("truncate machine_emit_take tag")?
+            };
+            let machine_id_val = i64_ty.const_int(*machine_emit_id, false);
+            let queue_ptr = ptr_ty.const_null();
+            let take_fn = get_or_declare_machine_emit_take(fn_ctx);
+            let call_result = fn_ctx
+                .builder
+                .build_call(
+                    take_fn,
+                    &[queue_ptr.into(), machine_id_val.into(), tag_u32.into()],
+                    "machine_emit_take_call",
+                )
+                .llvm_ctx("hew_machine_emit_take call")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(
+                        "hew_machine_emit_take unexpectedly returned void".into(),
+                    )
+                })?
+                .into_int_value();
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            let dest_int_ty = match dest_ty {
+                BasicTypeEnum::IntType(t) => t,
+                other => {
+                    return Err(CodegenError::FailClosed(format!(
+                        "Instr::MachineEmitTake dest must be an integer-typed Place; got \
+                         {other:?}"
+                    )));
+                }
+            };
+            let result_widened = if dest_int_ty.get_bit_width() == 64 {
+                call_result
+            } else {
+                fn_ctx
+                    .builder
+                    .build_int_truncate(call_result, dest_int_ty, "machine_emit_take_result")
+                    .llvm_ctx("truncate machine_emit_take result")?
+            };
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, result_widened)
+                .llvm_ctx("store machine_emit_take result")?;
         }
     }
     Ok(())
@@ -28136,7 +28233,12 @@ fn get_or_declare_machine_emit_push<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> FunctionV
     fn_ctx.llvm_mod.add_function(
         "hew_machine_emit_push",
         fn_ctx.ctx.i32_type().fn_type(
-            &[ptr_ty.into(), fn_ctx.ctx.i32_type().into(), ptr_ty.into()],
+            &[
+                ptr_ty.into(),
+                fn_ctx.ctx.i64_type().into(),
+                fn_ctx.ctx.i32_type().into(),
+                ptr_ty.into(),
+            ],
             false,
         ),
         Some(Linkage::External),
@@ -28155,14 +28257,46 @@ fn get_or_declare_machine_emit_step_enter<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> Fun
     )
 }
 
-fn get_or_declare_machine_emit_step_exit<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> FunctionValue<'ctx> {
-    if let Some(fv) = fn_ctx.llvm_mod.get_function("hew_machine_emit_step_exit") {
+/// Declare the deliver-design step-exit: decrements `reentrancy_depth`
+/// only, WITHOUT draining, so `emit`'d events survive for
+/// `hew_machine_emit_take` to observe. Codegen calls this instead of the
+/// legacy `hew_machine_emit_step_exit` (drain-and-discard), which stays in
+/// the runtime for its existing Rust test coverage but is no longer
+/// codegen-reachable.
+fn get_or_declare_machine_emit_step_exit_keep<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+) -> FunctionValue<'ctx> {
+    if let Some(fv) = fn_ctx
+        .llvm_mod
+        .get_function("hew_machine_emit_step_exit_keep")
+    {
         return fv;
     }
     let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
     fn_ctx.llvm_mod.add_function(
-        "hew_machine_emit_step_exit",
+        "hew_machine_emit_step_exit_keep",
         fn_ctx.ctx.i32_type().fn_type(&[ptr_ty.into()], false),
+        Some(Linkage::External),
+    )
+}
+
+/// Declare `hew_machine_emit_take(queue: *mut EmitQueue, machine_id: u64,
+/// tag: u32) -> i64` — the `m.take_emits(ev)` consume surface.
+fn get_or_declare_machine_emit_take<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> FunctionValue<'ctx> {
+    if let Some(fv) = fn_ctx.llvm_mod.get_function("hew_machine_emit_take") {
+        return fv;
+    }
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    fn_ctx.llvm_mod.add_function(
+        "hew_machine_emit_take",
+        fn_ctx.ctx.i64_type().fn_type(
+            &[
+                ptr_ty.into(),
+                fn_ctx.ctx.i64_type().into(),
+                fn_ctx.ctx.i32_type().into(),
+            ],
+            false,
+        ),
         Some(Linkage::External),
     )
 }
@@ -28183,11 +28317,11 @@ fn emit_machine_step_exit_call<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     queue: PointerValue<'ctx>,
 ) -> CodegenResult<()> {
-    let step_exit_fn = get_or_declare_machine_emit_step_exit(fn_ctx);
+    let step_exit_fn = get_or_declare_machine_emit_step_exit_keep(fn_ctx);
     fn_ctx
         .builder
-        .build_call(step_exit_fn, &[queue.into()], "machine_emit_step_exit")
-        .llvm_ctx("hew_machine_emit_step_exit call")?;
+        .build_call(step_exit_fn, &[queue.into()], "machine_emit_step_exit_keep")
+        .llvm_ctx("hew_machine_emit_step_exit_keep call")?;
     Ok(())
 }
 

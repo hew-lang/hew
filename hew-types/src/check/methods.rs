@@ -7754,6 +7754,14 @@ impl Checker {
                                     },
                                 );
                             }
+                            "take_emits" => {
+                                self.machine_method_dispatch.insert(
+                                    SpanKey::in_module(span, self.current_module_idx),
+                                    MachineMethodKind::TakeEmits {
+                                        machine_name: name.clone(),
+                                    },
+                                );
+                            }
                             _ => {}
                         }
                     }

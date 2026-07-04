@@ -1953,6 +1953,22 @@ pub enum HirExprKind {
         machine_name: String,
         receiver: Box<HirExpr>,
     },
+    /// `m.take_emits(event) -> i64` — remove every queued emit matching
+    /// (this machine's type id, `event`'s discriminant tag) from the
+    /// thread-local emit queue and return the count removed.
+    ///
+    /// MIR/codegen consumers lower this to an `Instr::EnumTagLoad` on `event`
+    /// followed by `Instr::MachineEmitTake` keyed by the machine's stable
+    /// type id (`hew-mir`'s `machine_emit_type_id`, the same
+    /// `SipHasher13`-over-name authority the actor `msg_type` precedent
+    /// uses). Unconsumed events of other tags/machines stay queued.
+    ///
+    /// `machine_name` is the unqualified machine type name (e.g. `"TrafficLight"`).
+    MachineTakeEmits {
+        machine_name: String,
+        receiver: Box<HirExpr>,
+        event: Box<HirExpr>,
+    },
     /// Tagged-union variant constructor — shared by machine states and user-defined
     /// enum unit variants.
     ///

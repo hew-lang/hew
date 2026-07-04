@@ -1174,13 +1174,17 @@ fn render_instr(instr: &Instr) -> String {
         }
 
         // Machine ops
-        Instr::MachineEmitPlaceholder { event_idx, payload } => {
+        Instr::MachineEmitPlaceholder {
+            event_idx,
+            payload,
+            machine_emit_id,
+        } => {
             let pld = payload
                 .iter()
                 .map(render_place)
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("machine_emit event[{event_idx}] [{pld}]")
+            format!("machine_emit event[{event_idx}] machine_id={machine_emit_id:#x} [{pld}]")
         }
         Instr::EnumTagLoad { src, dest } => format!(
             "{} = enum_tag_load {}",
@@ -1195,6 +1199,15 @@ fn render_instr(instr: &Instr) -> String {
             "{} = machine_state_name {} local=_{src_local}",
             render_place(dest),
             machine_name
+        ),
+        Instr::MachineEmitTake {
+            machine_emit_id,
+            event_tag,
+            dest,
+        } => format!(
+            "{} = machine_emit_take machine_id={machine_emit_id:#x} tag={}",
+            render_place(dest),
+            render_place(event_tag)
         ),
     }
 }

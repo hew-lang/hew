@@ -1909,6 +1909,7 @@ dependencies = [
  "hew-types",
  "proptest",
  "serde",
+ "siphasher",
 ]
 
 [[package]]

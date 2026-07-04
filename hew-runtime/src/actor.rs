@@ -4531,8 +4531,8 @@ unsafe fn actor_send_result_internal_reply(
             // there is nothing to wake the actor for.
             mailbox::SendOutcome::Dropped => HewError::Ok as i32,
             mailbox::SendOutcome::Closed => HewError::ErrActorStopped as i32,
-            // `Fail`-policy overflow is a genuine, caller-visible failure
-            // (fail-closed, F2) — never silently dropped.
+            // `Fail`-policy overflow is a genuine, caller-visible failure —
+            // never silently dropped.
             mailbox::SendOutcome::Failed => HewError::ErrMailboxFull as i32,
             mailbox::SendOutcome::Oom => HewError::ErrOom as i32,
         };
@@ -6635,20 +6635,17 @@ mod tests {
         }
     }
 
-    /// G-A1 fail-open regression (F1): a fire-and-forget send-by-id to an
-    /// actor ID that is no longer tracked locally (freed, stopped, or never
-    /// existed) is a genuine, caller-visible failure, and must report a code
-    /// that is DISTINCT from `ErrMailboxFull` (`-1`) — the shared status a
-    /// declared bounded mailbox's `DropNew`/`DropOld`/`Coalesce` policy-drop
-    /// resolves to `Ok` at (see `send_by_id_dropnew_policy_drop_is_silent`
-    /// below).
+    /// A fire-and-forget send-by-id to an actor ID that is no longer
+    /// tracked locally (freed, stopped, or never existed) is a genuine,
+    /// caller-visible failure. It must report a code DISTINCT from
+    /// `ErrMailboxFull` — the status that a declared bounded mailbox's
+    /// `DropNew`/`DropOld`/`Coalesce` policy-drop resolves to `Ok` and
+    /// returns (see `send_by_id_dropnew_policy_drop_is_silent` below).
     ///
-    /// Before the fix, `hew_actor_send_by_id` returned the same `-1` for
-    /// BOTH this case and a declared-silent policy-drop, so codegen's
-    /// `Terminator::Send` trap check could not exclude the policy-drop
-    /// without ALSO swallowing this genuine failure — exactly the
-    /// fail-open the cross-eco review caught (a fire-and-forget send to a
-    /// permanently-stopped supervised child silently "succeeded").
+    /// Before this fix, `hew_actor_send_by_id` returned the same `-1` for
+    /// both cases, preventing codegen's `Terminator::Send` from
+    /// distinguishing genuine failure from policy-drop without swallowing
+    /// the genuine failure.
     #[test]
     fn send_by_id_after_free_returns_genuine_failure_not_mailbox_full() {
         let _guard = crate::runtime_test_guard();
@@ -6683,12 +6680,12 @@ mod tests {
         );
     }
 
-    /// G-A1 fail-open regression (F1), the other half: a fire-and-forget
-    /// send-by-id into a `DropNew` bounded mailbox that is at capacity is a
-    /// declared-silent policy outcome (spec §6.2) and must report success
-    /// (`0`), not `ErrMailboxFull`. Paired with the test above: the two
-    /// scenarios must produce DIFFERENT codes so `Terminator::Send` can trap
-    /// on the genuine failure while still treating this outcome as success.
+    /// A fire-and-forget send-by-id into a `DropNew` bounded mailbox that
+    /// is at capacity is a declared-silent policy outcome (spec §6.2) and
+    /// must report success (`0`), not `ErrMailboxFull`. Paired with
+    /// `send_by_id_after_free_returns_genuine_failure_not_mailbox_full`:
+    /// the two scenarios must produce DIFFERENT codes so `Terminator::Send`
+    /// can trap on genuine failure while treating policy-drop as success.
     #[test]
     fn send_by_id_dropnew_policy_drop_is_silent() {
         let _guard = crate::runtime_test_guard();
@@ -6742,10 +6739,10 @@ mod tests {
         assert_eq!(unsafe { hew_actor_free(actor) }, 0);
     }
 
-    /// F2: `overflow fail` is fail-closed for fire-and-forget sends. Unlike
-    /// `DropNew`/`DropOld`/`Coalesce` (spec-silent), the `Fail` policy is an
-    /// explicit, genuine rejection and must stay caller-visible (a distinct
-    /// non-zero code) even on the no-reply-channel send path, so
+    /// The `Fail` overflow policy is fail-closed for fire-and-forget sends.
+    /// Unlike `DropNew`/`DropOld`/`Coalesce` (which are spec-silent), the
+    /// `Fail` policy is an explicit, genuine rejection: it must report a
+    /// distinct non-zero code even on the no-reply-channel send path, so
     /// `Terminator::Send` traps rather than silently dropping the message.
     #[test]
     fn send_by_id_fail_policy_overflow_is_genuine_failure() {
@@ -6780,8 +6777,7 @@ mod tests {
         assert_ne!(
             rc,
             HewError::Ok as i32,
-            "overflow fail must not silently succeed on a fire-and-forget send \
-             (fail-closed, F2)"
+            "Fail-policy overflow must not silently succeed on a fire-and-forget send"
         );
 
         // SAFETY: actor is valid; stopping a live actor is safe.

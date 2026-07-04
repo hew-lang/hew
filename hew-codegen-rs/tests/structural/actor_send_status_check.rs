@@ -193,22 +193,19 @@ fn send_terminator_checks_return_status_and_traps_on_failure() {
     );
 }
 
-/// G-A1 fail-open regression (F1): `Terminator::Send` must trap on **every**
-/// nonzero `hew_actor_send_by_id` status, not just a subset. A prior version
-/// of this codegen excluded `-1` (`HewError::ErrMailboxFull`) from the trap
-/// condition to avoid trapping on a declared bounded-mailbox policy-drop —
-/// but `hew_actor_send_by_id` also returned `-1` for an unrelated genuine
-/// failure (actor not found locally), so the exclusion silently swallowed
-/// that failure too (a cross-eco review caught this: a fire-and-forget send
-/// to a permanently-stopped supervised child no longer trapped).
+/// `Terminator::Send` must trap on every nonzero `hew_actor_send_by_id`
+/// status, including `-1`. A prior version excluded `-1` from the trap
+/// condition, thinking it only represented a policy-drop result; but
+/// `-1` is also returned for genuine failures (actor not found locally).
+/// Excluding it silently swallowed those genuine failures.
 ///
-/// The fix moved the policy-drop/genuine-failure distinction BELOW this
-/// call, into the runtime seam (`hew_mailbox_send_fire_and_forget`), so a
-/// policy-drop now resolves all the way down to status `0` and every other
-/// status is a genuine failure. This test asserts the codegen side of that
-/// fix stays reverted: exactly one status comparison (against zero, not
-/// `-1`), and no `and i1` combining two comparisons — the shape a `-1`
-/// exclusion would require.
+/// The fix moved the policy-drop/genuine-failure distinction into the
+/// runtime seam (`hew_mailbox_send_fire_and_forget`), so policy-drop
+/// resolves to status `0` at that layer and every other status at the
+/// codegen boundary is a genuine failure. This test verifies the codegen
+/// side: exactly one status comparison (against zero, not `-1`), and no
+/// `and i1` combining two comparisons — the shape a `-1` exclusion would
+/// require.
 #[test]
 fn send_terminator_traps_on_every_nonzero_status_no_special_cased_value() {
     let pipeline = send_status_pipeline();

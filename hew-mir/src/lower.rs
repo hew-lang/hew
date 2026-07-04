@@ -12853,6 +12853,7 @@ impl Builder {
                 | hew_types::VecMethod::Get
                 | hew_types::VecMethod::Set
                 | hew_types::VecMethod::Pop
+                | hew_types::VecMethod::Remove
                 | hew_types::VecMethod::Contains
         ) {
             return None;
@@ -12881,11 +12882,12 @@ impl Builder {
                 hew_types::VecMethod::Get => "hew_vec_get_owned",
                 hew_types::VecMethod::Set => "hew_vec_set_owned",
                 hew_types::VecMethod::Pop => "hew_vec_pop_owned",
+                hew_types::VecMethod::Remove => "hew_vec_remove_at_owned",
                 hew_types::VecMethod::Contains => "hew_vec_contains_owned",
                 other => unreachable!(
                     "resolve_polymorphic_vec_element_symbol reached the owned arm \
                      for non-element Vec method {other:?}; the `matches!` guard \
-                     above admits only push/get/set/pop/contains"
+                     above admits only push/get/set/pop/remove/contains"
                 ),
             };
             Some(owned_symbol.to_string())
@@ -45496,8 +45498,19 @@ mod runtime_callee_ownership_contract_parity {
         "hew_vec_push_str",
         "hew_vec_push_u16",
         "hew_vec_push_u8",
-        "hew_vec_remove_at",
+        "hew_vec_remove_at_bool",
+        "hew_vec_remove_at_f32",
+        "hew_vec_remove_at_f64",
+        "hew_vec_remove_at_i16",
+        "hew_vec_remove_at_i32",
+        "hew_vec_remove_at_i64",
+        "hew_vec_remove_at_i8",
         "hew_vec_remove_at_layout",
+        "hew_vec_remove_at_owned",
+        "hew_vec_remove_at_ptr",
+        "hew_vec_remove_at_str",
+        "hew_vec_remove_at_u16",
+        "hew_vec_remove_at_u8",
         "hew_vec_set_bool",
         "hew_vec_set_f32",
         "hew_vec_set_f64",
@@ -45592,8 +45605,19 @@ mod runtime_callee_ownership_contract_parity {
         "hew_vec_push_str",
         "hew_vec_push_u16",
         "hew_vec_push_u8",
-        "hew_vec_remove_at",
+        "hew_vec_remove_at_bool",
+        "hew_vec_remove_at_f32",
+        "hew_vec_remove_at_f64",
+        "hew_vec_remove_at_i16",
+        "hew_vec_remove_at_i32",
+        "hew_vec_remove_at_i64",
+        "hew_vec_remove_at_i8",
         "hew_vec_remove_at_layout",
+        "hew_vec_remove_at_owned",
+        "hew_vec_remove_at_ptr",
+        "hew_vec_remove_at_str",
+        "hew_vec_remove_at_u16",
+        "hew_vec_remove_at_u8",
         "hew_vec_set_bool",
         "hew_vec_set_f32",
         "hew_vec_set_f64",
@@ -45707,6 +45731,8 @@ mod runtime_callee_ownership_contract_parity {
         "hew_u64_to_string",
         "hew_uint_to_string",
         "hew_vec_get_str",
+        "hew_vec_pop_str",
+        "hew_vec_remove_at_str",
         "to_string_bool",
         "to_string_char",
         "to_string_f64",
@@ -45734,7 +45760,7 @@ mod runtime_callee_ownership_contract_parity {
 
     #[test]
     fn callee_ownership_contract_matches_literal_projection_sets() {
-        assert_eq!(CLASSIFIER_SYMBOLS.len(), 156);
+        assert_eq!(CLASSIFIER_SYMBOLS.len(), 167);
         let vec_receiver = expected_set(VEC_RECEIVER_SYMBOLS);
         let collection_receiver = expected_set(COLLECTION_RECEIVER_SYMBOLS);
         let copy_in = expected_set(COPY_IN_SYMBOLS);
@@ -45745,11 +45771,11 @@ mod runtime_callee_ownership_contract_parity {
         let fresh_string = expected_set(FRESH_STRING_SYMBOLS);
         let interior_alias = expected_set(INTERIOR_ALIAS_SYMBOLS);
 
-        assert_eq!(vec_receiver.len(), 80);
+        assert_eq!(vec_receiver.len(), 91);
         assert_eq!(collection_receiver.len(), 18);
         assert_eq!(bytes_receiver.len(), 11);
         assert_eq!(string_use.len(), 27);
-        assert_eq!(fresh_string.len(), 27);
+        assert_eq!(fresh_string.len(), 29);
 
         for symbol in parity_symbols() {
             let contract = callee_ownership_contract(symbol);

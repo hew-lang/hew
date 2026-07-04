@@ -1538,15 +1538,19 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::Bool,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
-    // W3.003: `Vec<T>::remove(index: i64)` for BitCopy layout-backed elements.
-    // Routes through `hew_vec_remove_at_layout`; the hidden `HewTypeLayout*`
-    // operand is synthesized by codegen from the Vec element type.
-    // Arity: receiver Vec + explicit index = 2 source-level parameters.
+    // `Vec<T>::remove(index) -> T` for BitCopy layout-backed elements. Routes
+    // through `hew_vec_remove_at_layout`, which moves the removed element into
+    // a codegen-supplied out slot (mirroring `pop_layout`) and shifts the tail;
+    // the hidden `out` and `HewTypeLayout*` operands are synthesized by codegen
+    // from the Vec element type. Arity: receiver Vec + explicit index = 2
+    // source-level parameters. The return is the removed element, materialised
+    // by the codegen dispatch (`CalleeNameDispatchOnly`) exactly like
+    // `pop_layout`.
     direct(
         "hew_vec_remove_at_layout",
         BuiltinClass::ClassA,
         VEC_ANY_I64,
-        BuiltinTy::Unit,
+        BuiltinTy::VecAny,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     // W3.003: `Vec<T>::clone()` for BitCopy layout-backed elements.
@@ -1984,13 +1988,109 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_vec_append",
         },
     ),
+    // `Vec<T>::remove(index) -> T` — index-based move-out mirroring `pop`, one
+    // symbol per element class. Params are receiver Vec + explicit index
+    // (`VEC_ANY_I64`); the return is the removed element `T` (transferred to
+    // the caller — no clone, no drop). The bool arm rides a named codegen
+    // dispatch (i1 marshalling) like `pop_bool`; the scalar/str/ptr arms flow
+    // through the generic FFI-shim path typed by their `BuiltinTy` return.
     direct(
-        "hew_vec_remove_at",
+        "hew_vec_remove_at_bool",
         BuiltinClass::ClassA,
         VEC_ANY_I64,
-        BuiltinTy::Unit,
+        BuiltinTy::Bool,
         BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_vec_remove_at",
+            symbol: "hew_vec_remove_at_bool",
+        },
+    ),
+    direct(
+        "hew_vec_remove_at_i8",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::I8,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_remove_at_i8",
+        },
+    ),
+    direct(
+        "hew_vec_remove_at_u8",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::U8,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_remove_at_u8",
+        },
+    ),
+    direct(
+        "hew_vec_remove_at_i16",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::I16,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_remove_at_i16",
+        },
+    ),
+    direct(
+        "hew_vec_remove_at_u16",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::U16,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_remove_at_u16",
+        },
+    ),
+    direct(
+        "hew_vec_remove_at_i32",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::I32,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_remove_at_i32",
+        },
+    ),
+    direct(
+        "hew_vec_remove_at_i64",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::I64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_remove_at_i64",
+        },
+    ),
+    direct(
+        "hew_vec_remove_at_f32",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::F32,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_remove_at_f32",
+        },
+    ),
+    direct(
+        "hew_vec_remove_at_f64",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::F64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_remove_at_f64",
+        },
+    ),
+    direct(
+        "hew_vec_remove_at_str",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::String,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_remove_at_str",
+        },
+    ),
+    direct(
+        "hew_vec_remove_at_ptr",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::Pointer,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_remove_at_ptr",
         },
     ),
     direct(

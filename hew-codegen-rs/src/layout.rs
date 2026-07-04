@@ -983,12 +983,16 @@ pub(crate) fn layout_vec_fn_type<'ctx>(
         "hew_vec_contains_thunk" => {
             Ok(i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false))
         }
-        // W3.003: `void hew_vec_remove_at_layout(ptr vec, i64 index, ptr layout)`.
-        // Index-based remove for BitCopy layout-backed elements; the hidden
-        // layout pointer is synthesized by codegen from the Vec element type.
-        "hew_vec_remove_at_layout" => Ok(ctx
-            .void_type()
-            .fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false)),
+        // `i32 hew_vec_remove_at_layout(ptr vec, i64 index, ptr out, ptr layout)`.
+        // Index-based move-out for BitCopy layout-backed elements (the twin of
+        // `pop_layout`): the removed element is copied into the codegen-supplied
+        // `out` slot and the tail is shifted; the hidden `out` and `layout`
+        // pointers are synthesized by codegen from the Vec element type. Returns
+        // 1 on success (the runtime traps internally on an out-of-bounds index).
+        "hew_vec_remove_at_layout" => Ok(i32_ty.fn_type(
+            &[ptr_ty.into(), i64_ty.into(), ptr_ty.into(), ptr_ty.into()],
+            false,
+        )),
         // W3.003: `ptr hew_vec_clone_layout(ptr vec, ptr layout) -> ptr`.
         // BitCopy bulk-copy clone; returns a freshly allocated *mut HewVec.
         // The hidden layout pointer is synthesized by codegen from the Vec element type.

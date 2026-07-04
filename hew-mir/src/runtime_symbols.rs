@@ -915,15 +915,23 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
             Untracked,
         ),
 
-        // Vec string getters retain the string element and hand the caller a +1
-        // owned string.
-        "hew_vec_get_str" => CalleeOwnershipContract::new(
-            BorrowsReceiver {
-                scans: ReceiverScanSet::VEC,
-            },
-            Escaping,
-            FreshOwnedString,
-        ),
+        // Vec string element handoffs — the getter (`get`, clone-out) and the
+        // move-out ops (`pop`/`remove`) all hand the caller a +1 owned string
+        // that must be balanced with exactly one `hew_string_drop`. The getter
+        // retains a clone (the vec keeps its copy); the move-out ops transfer
+        // the sole owner (the element leaves the vec via pop's length decrement
+        // or remove's tail shift, so there is no double owner). Both shapes
+        // share the identical ownership contract — the caller owes one drop.
+        // (Scalar/ptr `pop`/`remove` classes stay `Untracked`: no heap to drop.)
+        "hew_vec_get_str" | "hew_vec_pop_str" | "hew_vec_remove_at_str" => {
+            CalleeOwnershipContract::new(
+                BorrowsReceiver {
+                    scans: ReceiverScanSet::VEC,
+                },
+                Escaping,
+                FreshOwnedString,
+            )
+        }
 
         // Vec owned-element getters return aliases into the receiver storage.
         "hew_vec_get_owned" | "hew_vec_get_ptr" => CalleeOwnershipContract::new(
@@ -972,7 +980,6 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
         | "hew_vec_pop_layout"
         | "hew_vec_pop_owned"
         | "hew_vec_pop_ptr"
-        | "hew_vec_pop_str"
         | "hew_vec_pop_u16"
         | "hew_vec_pop_u8"
         | "hew_vec_push_bool"
@@ -987,8 +994,18 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
         | "hew_vec_push_ptr"
         | "hew_vec_push_u16"
         | "hew_vec_push_u8"
-        | "hew_vec_remove_at"
+        | "hew_vec_remove_at_bool"
+        | "hew_vec_remove_at_f32"
+        | "hew_vec_remove_at_f64"
+        | "hew_vec_remove_at_i16"
+        | "hew_vec_remove_at_i32"
+        | "hew_vec_remove_at_i64"
+        | "hew_vec_remove_at_i8"
         | "hew_vec_remove_at_layout"
+        | "hew_vec_remove_at_owned"
+        | "hew_vec_remove_at_ptr"
+        | "hew_vec_remove_at_u16"
+        | "hew_vec_remove_at_u8"
         | "hew_vec_set_bool"
         | "hew_vec_set_f32"
         | "hew_vec_set_f64"
@@ -1229,8 +1246,19 @@ mod tests {
         "hew_vec_push_str",
         "hew_vec_push_u16",
         "hew_vec_push_u8",
-        "hew_vec_remove_at",
+        "hew_vec_remove_at_bool",
+        "hew_vec_remove_at_f32",
+        "hew_vec_remove_at_f64",
+        "hew_vec_remove_at_i16",
+        "hew_vec_remove_at_i32",
+        "hew_vec_remove_at_i64",
+        "hew_vec_remove_at_i8",
         "hew_vec_remove_at_layout",
+        "hew_vec_remove_at_owned",
+        "hew_vec_remove_at_ptr",
+        "hew_vec_remove_at_str",
+        "hew_vec_remove_at_u16",
+        "hew_vec_remove_at_u8",
         "hew_vec_set_bool",
         "hew_vec_set_f32",
         "hew_vec_set_f64",
@@ -1319,7 +1347,7 @@ mod tests {
     #[test]
     fn callee_ownership_contract_symbols_are_unique_positive_rows() {
         let unique = CONTRACT_SYMBOLS.iter().copied().collect::<BTreeSet<_>>();
-        assert_eq!(CONTRACT_SYMBOLS.len(), 158);
+        assert_eq!(CONTRACT_SYMBOLS.len(), 169);
         assert_eq!(
             unique.len(),
             CONTRACT_SYMBOLS.len(),

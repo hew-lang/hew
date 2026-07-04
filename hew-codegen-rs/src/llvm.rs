@@ -21715,7 +21715,11 @@ fn lower_tuple_field_load(
 fn is_bool_vec_runtime_symbol(symbol: &str) -> bool {
     matches!(
         symbol,
-        "hew_vec_push_bool" | "hew_vec_get_bool" | "hew_vec_set_bool" | "hew_vec_pop_bool"
+        "hew_vec_push_bool"
+            | "hew_vec_get_bool"
+            | "hew_vec_set_bool"
+            | "hew_vec_pop_bool"
+            | "hew_vec_remove_at_bool"
     )
 }
 
@@ -22149,6 +22153,7 @@ fn is_owned_vec_runtime_symbol(symbol: &str) -> bool {
             | "hew_vec_get_owned"
             | "hew_vec_set_owned"
             | "hew_vec_pop_owned"
+            | "hew_vec_remove_at_owned"
             | "hew_vec_clone_owned"
             | "hew_vec_contains_owned"
             | "hew_vec_slice_range_owned"
@@ -22179,6 +22184,10 @@ fn owned_vec_fn_type<'ctx>(
             .fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false)),
         // i32 hew_vec_pop_owned(ptr vec, ptr out)
         "hew_vec_pop_owned" => Ok(i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false)),
+        // i32 hew_vec_remove_at_owned(ptr vec, i64 index, ptr out)
+        "hew_vec_remove_at_owned" => {
+            Ok(i32_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false))
+        }
         // ptr hew_vec_clone_owned(ptr vec)
         "hew_vec_clone_owned" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
         // i32 hew_vec_contains_owned(ptr vec, ptr data, ptr eq_fn)
@@ -22231,6 +22240,7 @@ fn lower_owned_vec_direct_call(
         | "hew_vec_contains_owned" => 2,
         "hew_vec_set_owned" => 3,
         "hew_vec_slice_range_owned" => 3,
+        "hew_vec_remove_at_owned" => 2,
         "hew_vec_pop_owned" | "hew_vec_clone_owned" => 1,
         _ => {
             return Err(CodegenError::FailClosed(format!(
@@ -22344,6 +22354,33 @@ fn lower_owned_vec_direct_call(
                     "hew_vec_pop_owned_call",
                 )
                 .llvm_ctx("hew_vec_pop_owned call")?;
+        }
+        "hew_vec_remove_at_owned" => {
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_vec_remove_at_owned moves an element out; producer must supply a dest"
+                        .into(),
+                )
+            })?;
+            let index = load_int_arg(
+                fn_ctx,
+                args[1],
+                fn_ctx.ctx.i64_type(),
+                "hew_vec_remove_at_owned_arg1",
+            )?;
+            // remove moves the element at `index` into the dest local (no clone,
+            // no drop) — possession transfers to the caller. The runtime writes
+            // the raw element bytes into `out`, shifts the tail, and traps on an
+            // out-of-bounds index (so codegen needs no empty/OOB branch).
+            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+            fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[vec_ptr.into(), index.into(), dest_ptr.into()],
+                    "hew_vec_remove_at_owned_call",
+                )
+                .llvm_ctx("hew_vec_remove_at_owned call")?;
         }
         "hew_vec_clone_owned" => {
             let dest_place = dest.ok_or_else(|| {
@@ -23523,6 +23560,8 @@ fn bool_vec_fn_type<'ctx>(
             .void_type()
             .fn_type(&[ptr_ty.into(), i64_ty.into(), i1_ty.into()], false)),
         "hew_vec_pop_bool" => Ok(i1_ty.fn_type(&[ptr_ty.into()], false)),
+        // `remove_at_bool(vec, index) -> i1` — index-based move-out twin of get.
+        "hew_vec_remove_at_bool" => Ok(i1_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false)),
         _ => Err(CodegenError::FailClosed(format!(
             "not a bool Vec runtime symbol: {symbol}"
         ))),
@@ -23753,7 +23792,7 @@ fn lower_bool_vec_direct_call(
     next: u32,
 ) -> CodegenResult<()> {
     let expected_arity = match callee {
-        "hew_vec_push_bool" | "hew_vec_get_bool" => 2,
+        "hew_vec_push_bool" | "hew_vec_get_bool" | "hew_vec_remove_at_bool" => 2,
         "hew_vec_set_bool" => 3,
         "hew_vec_pop_bool" => 1,
         _ => {
@@ -23812,6 +23851,22 @@ fn lower_bool_vec_direct_call(
             .builder
             .build_call(fv, &[vec_ptr.into()], "hew_vec_pop_bool_call")
             .llvm_ctx("hew_vec_pop_bool call")?,
+        "hew_vec_remove_at_bool" => {
+            let index = load_int_arg(
+                fn_ctx,
+                args[1],
+                fn_ctx.ctx.i64_type(),
+                "hew_vec_remove_at_bool_arg1",
+            )?;
+            fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[vec_ptr.into(), index.into()],
+                    "hew_vec_remove_at_bool_call",
+                )
+                .llvm_ctx("hew_vec_remove_at_bool call")?
+        }
         _ => unreachable!("matched above"),
     };
 
@@ -23822,7 +23877,7 @@ fn lower_bool_vec_direct_call(
             )));
         }
         ("hew_vec_push_bool" | "hew_vec_set_bool", None) => {}
-        ("hew_vec_get_bool" | "hew_vec_pop_bool", Some(dest_place)) => {
+        ("hew_vec_get_bool" | "hew_vec_pop_bool" | "hew_vec_remove_at_bool", Some(dest_place)) => {
             let ret_val = call_site
                 .try_as_basic_value()
                 .basic()
@@ -23835,7 +23890,7 @@ fn lower_bool_vec_direct_call(
                 .build_store(dest_ptr, store_val)
                 .llvm_ctx_with(|| format!("{callee} store"))?;
         }
-        ("hew_vec_get_bool" | "hew_vec_pop_bool", None) => {
+        ("hew_vec_get_bool" | "hew_vec_pop_bool" | "hew_vec_remove_at_bool", None) => {
             return Err(CodegenError::FailClosed(format!(
                 "{callee} returns bool; producer must supply a dest"
             )));
@@ -24415,50 +24470,38 @@ pub(crate) fn lower_layout_vec_direct_call(
                 .llvm_ctx("contains_thunk store")?;
         }
         "hew_vec_remove_at_layout" => {
-            // W3.003: index-based remove for BitCopy layout-backed Vec elements.
-            // Source-level: `vec.remove(index)` → void; no dest expected.
-            // Runtime ABI: `void hew_vec_remove_at_layout(ptr vec, i64 index, ptr layout)`.
-            // The hidden `layout` ptr is synthesized here from the Vec element type.
-            if let Some(d) = dest {
-                return Err(CodegenError::FailClosed(format!(
-                    "hew_vec_remove_at_layout returns unit; producer must not supply dest={d:?}"
-                )));
-            }
+            // `Vec<T>::remove(index) -> T` for BitCopy layout-backed elements —
+            // the index-based move-out twin of `pop_layout`. Source-level:
+            // `vec.remove(i)` → the removed element in `dest`. Runtime ABI:
+            // `i32 hew_vec_remove_at_layout(ptr vec, i64 index, ptr out, ptr layout)`.
+            // The hidden `out` (the dest slot) and `layout` ptr are synthesized
+            // here; the runtime moves the element bytes into `out`, shifts the
+            // tail (no clone, no drop — possession transfers), and traps
+            // internally on an out-of-bounds index (so codegen needs no branch).
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_vec_remove_at_layout moves an element out; producer must supply a dest"
+                        .into(),
+                )
+            })?;
             let index = load_int_arg(
                 fn_ctx,
                 args[1],
                 fn_ctx.ctx.i64_type(),
                 "hew_vec_remove_at_layout_arg1",
             )?;
-            // Derive the LLVM element type from the Vec<T> resolved type so
-            // we can synthesize the layout descriptor without a value operand.
-            let vec_resolved_ty = place_resolved_ty(fn_ctx, args[0])?.clone();
-            let elem_hew_ty = match &vec_resolved_ty {
-                ResolvedTy::Named {
-                    name,
-                    args: vec_args,
-                    ..
-                } if name == "Vec" && vec_args.len() == 1 => vec_args[0].clone(),
-                other => {
-                    return Err(CodegenError::FailClosed(format!(
-                        "hew_vec_remove_at_layout: arg0 must be Vec<T>, got {other:?}"
-                    )));
-                }
-            };
-            let layout_elem_ty = layout_vec_element_needs_descriptor(fn_ctx, &elem_hew_ty)?
-                .ok_or_else(|| {
-                    CodegenError::FailClosed(format!(
-                        "hew_vec_remove_at_layout: element type {elem_hew_ty:?} \
-                         is not a layout-descriptor-backed record/tuple"
-                    ))
-                })?;
-            let layout_ptr =
-                crate::layout::layout_descriptor_ptr(fn_ctx, layout_elem_ty, "remove")?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+            let layout_ptr = crate::layout::layout_descriptor_ptr(fn_ctx, dest_ty, "remove")?;
             fn_ctx
                 .builder
                 .build_call(
                     fv,
-                    &[vec_ptr.into(), index.into(), layout_ptr.into()],
+                    &[
+                        vec_ptr.into(),
+                        index.into(),
+                        dest_ptr.into(),
+                        layout_ptr.into(),
+                    ],
                     "hew_vec_remove_at_layout_call",
                 )
                 .llvm_ctx("hew_vec_remove_at_layout call")?;

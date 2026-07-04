@@ -68,10 +68,6 @@ pub fn vec_method_template(method: &str) -> Option<&'static str> {
         "clear" => Some("hew_vec_clear"),
         "clone" => Some("hew_vec_clone"),
         "append" => Some("hew_vec_append"),
-        // `Vec::remove(i64)` removes by index — runtime symbol is
-        // monomorphic (`hew_vec_remove_at`); mirrors the legacy
-        // `resolve_vec_method` "remove" arm.
-        "remove" => Some("hew_vec_remove_at"),
         // Element-typed — `{T}` expands to the canonical token of the
         // calling-convention class for the element type.
         "push" => Some("hew_vec_push_{T}"),
@@ -79,6 +75,10 @@ pub fn vec_method_template(method: &str) -> Option<&'static str> {
         "get" => Some("hew_vec_get_{T}"),
         "set" => Some("hew_vec_set_{T}"),
         "contains" => Some("hew_vec_contains_{T}"),
+        // `Vec::remove(i64) -> T` removes by index and moves the element OUT —
+        // the index-based move-out twin of `pop`, so it has one runtime symbol
+        // per element class (`hew_vec_remove_at_{T}`).
+        "remove" => Some("hew_vec_remove_at_{T}"),
         // `Vec::join` is `Vec<string>`-only by typecheck. The template
         // is monomorphic (no `{T}` placeholder); the diff test pins
         // expansion to `"hew_vec_join_str"` and the typecheck-side
@@ -202,7 +202,6 @@ mod tests {
             ("clear", "hew_vec_clear"),
             ("clone", "hew_vec_clone"),
             ("append", "hew_vec_append"),
-            ("remove", "hew_vec_remove_at"),
             ("join", "hew_vec_join_str"),
         ] {
             let out = expand_vec_method(method, &Ty::I32, &HashMap::new())
@@ -249,6 +248,15 @@ mod tests {
             ("set", Ty::Bool, "hew_vec_set_bool"),
             ("set", Ty::Char, "hew_vec_set_i32"),
             ("contains", Ty::String, "hew_vec_contains_str"),
+            ("remove", Ty::I8, "hew_vec_remove_at_i8"),
+            ("remove", Ty::U8, "hew_vec_remove_at_u8"),
+            ("remove", Ty::I16, "hew_vec_remove_at_i16"),
+            ("remove", Ty::I32, "hew_vec_remove_at_i32"),
+            ("remove", Ty::I64, "hew_vec_remove_at_i64"),
+            ("remove", Ty::F64, "hew_vec_remove_at_f64"),
+            ("remove", Ty::Bool, "hew_vec_remove_at_bool"),
+            ("remove", Ty::Char, "hew_vec_remove_at_i32"),
+            ("remove", Ty::String, "hew_vec_remove_at_str"),
         ];
         for (method, ty, expected) in cases {
             let out = expand_vec_method(method, &ty, &HashMap::new())

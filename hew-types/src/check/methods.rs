@@ -32,6 +32,9 @@ fn owned_vec_runtime_symbol(method: &str) -> Option<&'static str> {
         "get" => Some("hew_vec_get_owned"),
         "set" => Some("hew_vec_set_owned"),
         "pop" => Some("hew_vec_pop_owned"),
+        // `remove(i)` moves the owned element OUT (no clone, no drop) and
+        // shifts the tail — the index-based twin of `pop`.
+        "remove" => Some("hew_vec_remove_at_owned"),
         "contains" => Some("hew_vec_contains_owned"),
         "clone" => Some("hew_vec_clone_owned"),
         _ => None,
@@ -221,7 +224,9 @@ fn collection_method_desc(kind: CollectionKind, method: &str) -> Option<Collecti
             // falls through to `try_dispatch_primitive_trait_method`, which
             // projects `Option<T>` and records the `hew_vec_get_clone`
             // intrinsic via the `index_get` lang-item seam.
-            "remove" => desc(Some(1), &[I64], Unit),
+            // `remove(i)` moves element `i` OUT and returns it (`-> T`),
+            // mirroring `pop`; it traps on an out-of-bounds index like `v[i]`.
+            "remove" => desc(Some(1), &[I64], RetElem),
             "is_empty" => desc(None, &[], Bool),
             "clear" => desc(Some(0), &[], Unit),
             "clone" => desc(Some(0), &[], SelfTy),
@@ -3866,8 +3871,10 @@ impl Checker {
             // `vec_element_op_symbol`). Scoped to the element-typed ops with a
             // runtime-backed generic path; every other method/element keeps
             // failing closed by dropping the entry.
-            if matches!(method, "push" | "get" | "set" | "pop" | "contains")
-                && self.is_vec_element_abstract_type_param(&elem_ty)
+            if matches!(
+                method,
+                "push" | "get" | "set" | "pop" | "remove" | "contains"
+            ) && self.is_vec_element_abstract_type_param(&elem_ty)
             {
                 return;
             }
@@ -4633,12 +4640,12 @@ impl Checker {
             // ownership has a synthesizable clone/drop thunk path (and which is
             // RcFree, so the runtime can drop it deterministically) routes
             // through the `hew_vec_*_owned` ABI instead of failing closed. The
-            // owned routing only covers the methods the owned runtime ops
-            // implement (`hew_vec_{push,get,set,pop,clone}_owned`); `remove`
-            // on owned elements remains fail-closed until its owned op lands.
+            // owned routing covers the methods the owned runtime ops implement
+            // (`hew_vec_{push,get,set,pop,remove,clone}_owned`); `remove(i)`
+            // moves the owned element OUT to the caller (no clone, no drop).
             if matches!(
                 method,
-                "push" | "get" | "set" | "pop" | "contains" | "clone"
+                "push" | "get" | "set" | "pop" | "remove" | "contains" | "clone"
             ) && self.vec_owned_element_admissible(elem_ty)
             {
                 if let Some(owned) = owned_vec_runtime_symbol(method) {

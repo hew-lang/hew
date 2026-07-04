@@ -145,7 +145,7 @@ pub fn vec_element_runtime_suffix<S: std::hash::BuildHasher>(
         // per-element drop_fn — exactly like `Vec<OwnedRecord>` (whose value
         // records also resolve to `"layout"` below). The checker's owned
         // routing (`vec_owned_element_admissible`) upgrades the `_layout`
-        // push/get/set/pop symbols to the `_owned` ABI; clone/append/remove
+        // push/get/set/pop/remove symbols to the `_owned` ABI; clone/append
         // stay fail-closed for owned elements (parity with owned records).
         crate::Ty::Named {
             builtin:
@@ -314,6 +314,21 @@ pub fn vec_element_op_symbol(method: &str, token: VecElementToken) -> Option<&'s
         ("contains", F64) => "hew_vec_contains_f64",
         ("contains", Str) => "hew_vec_contains_str",
         ("contains", Layout) => "hew_vec_contains_thunk",
+        // `remove(i)` is the index-based move-out twin of `pop` — it removes
+        // element `i`, moves it OUT to the caller (no clone, no drop), and
+        // shifts the tail left. One symbol per element class, mirroring `pop`.
+        ("remove", Bool) => "hew_vec_remove_at_bool",
+        ("remove", I8) => "hew_vec_remove_at_i8",
+        ("remove", U8) => "hew_vec_remove_at_u8",
+        ("remove", I16) => "hew_vec_remove_at_i16",
+        ("remove", U16) => "hew_vec_remove_at_u16",
+        ("remove", I32) => "hew_vec_remove_at_i32",
+        ("remove", I64) => "hew_vec_remove_at_i64",
+        ("remove", F32) => "hew_vec_remove_at_f32",
+        ("remove", F64) => "hew_vec_remove_at_f64",
+        ("remove", Str) => "hew_vec_remove_at_str",
+        ("remove", Ptr) => "hew_vec_remove_at_ptr",
+        ("remove", Layout) => "hew_vec_remove_at_layout",
         _ => return None,
     })
 }
@@ -326,10 +341,11 @@ pub fn vec_element_op_symbol(method: &str, token: VecElementToken) -> Option<&'s
 /// absent so the downstream HIR/MIR/codegen fail closed".
 ///
 /// In-scope V0a methods (per the vec-iterator substrate plan):
-/// - Monomorphic: `len`, `is_empty`, `clear`, `clone`, `append`/`extend`,
-///   `remove` (by index — uses `hew_vec_remove_at`).
+/// - Monomorphic: `len`, `is_empty`, `clear`, `clone`, `append`/`extend`.
 /// - Element-typed: `push`, `pop`, `get`, `set`, `contains` (the last has no
-///   pointer-shaped overload in the runtime today).
+///   pointer-shaped overload in the runtime today), and `remove` (index-based
+///   move-out mirroring `pop` — one `hew_vec_remove_at_*` symbol per element
+///   class).
 ///
 /// Out of V0a: `map`, `filter`, `fold`, `iter` (closure substrate / V0b
 /// dependencies), and any element type the runtime has no monomorphic shim
@@ -370,18 +386,14 @@ pub fn resolve_vec_method<S: std::hash::BuildHasher>(
             Some("layout") => Some("hew_vec_append_layout"),
             _ => Some("hew_vec_append"),
         },
-        // `Vec::remove(i64)` removes by index. For scalar/ptr elements the
-        // operation is monomorphic (`hew_vec_remove_at`). For value-record
-        // and tuple elements the layout-descriptor protocol is required —
-        // route through `_layout` suffix so the fail-closed diagnostic fires.
-        "remove" => match vec_element_runtime_suffix(elem_ty, type_defs) {
-            Some("layout") => Some("hew_vec_remove_at_layout"),
-            _ => Some("hew_vec_remove_at"),
-        },
         // Element-typed ops route through the single `(method, token)` →
         // symbol authority so the concrete path and the per-monomorphisation
-        // generic path (#1929) cannot drift.
-        "push" | "pop" | "get" | "set" | "contains" => {
+        // generic path (#1929) cannot drift. `Vec::remove(i64)` is an
+        // index-based move-out mirroring `pop` (it returns the removed `T`),
+        // so it rides the same element-op authority; owned-element receivers
+        // are upgraded to `hew_vec_remove_at_owned` by the checker's
+        // `owned_vec_runtime_symbol` override, exactly as `pop` is.
+        "push" | "pop" | "get" | "set" | "contains" | "remove" => {
             let suffix = vec_element_runtime_suffix(elem_ty, type_defs)?;
             vec_element_op_symbol(method, VecElementToken::from_runtime_suffix(suffix)?)
         }
@@ -572,7 +584,6 @@ mod tests {
             ("clear", "hew_vec_clear"),
             ("clone", "hew_vec_clone"),
             ("append", "hew_vec_append"),
-            ("remove", "hew_vec_remove_at"),
         ] {
             assert_eq!(
                 resolve_vec_method(method, &Ty::I64, &type_defs),
@@ -986,6 +997,15 @@ mod tests {
             ("set", Ptr, Some("hew_vec_set_ptr")),
             ("pop", U16, Some("hew_vec_pop_u16")),
             ("pop", Str, Some("hew_vec_pop_str")),
+            // `remove` is the index-based move-out twin of `pop`: one symbol
+            // per element class (scalar / str / ptr / layout), same coverage.
+            ("remove", Bool, Some("hew_vec_remove_at_bool")),
+            ("remove", I32, Some("hew_vec_remove_at_i32")),
+            ("remove", I64, Some("hew_vec_remove_at_i64")),
+            ("remove", F64, Some("hew_vec_remove_at_f64")),
+            ("remove", Str, Some("hew_vec_remove_at_str")),
+            ("remove", Ptr, Some("hew_vec_remove_at_ptr")),
+            ("remove", Layout, Some("hew_vec_remove_at_layout")),
             // `contains` has no pointer, bool, or narrow-int overload in the runtime.
             ("contains", I64, Some("hew_vec_contains_i64")),
             ("contains", Ptr, None),

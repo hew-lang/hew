@@ -8579,30 +8579,30 @@ limitations under the License.
 
 ================================================================================
 Apache License 2.0
-  * adze-cli 0.5.6 — https://github.com/hew-lang/hew
-  * hew-analysis 0.5.6 — https://github.com/hew-lang/hew
-  * hew-cabi 0.5.6 — https://github.com/hew-lang/hew
-  * hew-capability-gen 0.5.6 — https://github.com/hew-lang/hew
-  * hew-cli 0.5.6 — https://github.com/hew-lang/hew
-  * hew-codegen-rs 0.5.6 — https://github.com/hew-lang/hew
-  * hew-compile 0.5.6 — https://github.com/hew-lang/hew
-  * hew-hir 0.5.6 — https://github.com/hew-lang/hew
-  * hew-lexer 0.5.6 — https://github.com/hew-lang/hew
-  * hew-lib 0.5.6
-  * hew-lsp 0.5.6 — https://github.com/hew-lang/hew
-  * hew-mir 0.5.6 — https://github.com/hew-lang/hew
-  * hew-observe 0.5.6 — https://github.com/hew-lang/hew
-  * hew-parser 0.5.6 — https://github.com/hew-lang/hew
-  * hew-runtime 0.5.6 — https://github.com/hew-lang/hew
-  * hew-runtime-testkit 0.5.6 — https://github.com/hew-lang/hew
-  * hew-sandbox-wasm 0.5.6 — https://github.com/hew-lang/hew
-  * hew-std 0.5.6 — https://github.com/hew-lang/hew
-  * hew-testutil 0.5.6
-  * hew-types 0.5.6 — https://github.com/hew-lang/hew
-  * hew-wasm 0.5.6 — https://github.com/hew-lang/hew
-  * hew-std-encoding-binary 0.5.6 — https://github.com/hew-lang/hew
-  * hew-std-text-template 0.5.6 — https://github.com/hew-lang/hew
-  * xtask 0.5.6 — https://github.com/hew-lang/hew
+  * adze-cli 0.6.0-rc1 — https://github.com/hew-lang/hew
+  * hew-analysis 0.6.0-rc1 — https://github.com/hew-lang/hew
+  * hew-cabi 0.6.0-rc1 — https://github.com/hew-lang/hew
+  * hew-capability-gen 0.6.0-rc1 — https://github.com/hew-lang/hew
+  * hew-cli 0.6.0-rc1 — https://github.com/hew-lang/hew
+  * hew-codegen-rs 0.6.0-rc1 — https://github.com/hew-lang/hew
+  * hew-compile 0.6.0-rc1 — https://github.com/hew-lang/hew
+  * hew-hir 0.6.0-rc1 — https://github.com/hew-lang/hew
+  * hew-lexer 0.6.0-rc1 — https://github.com/hew-lang/hew
+  * hew-lib 0.6.0-rc1
+  * hew-lsp 0.6.0-rc1 — https://github.com/hew-lang/hew
+  * hew-mir 0.6.0-rc1 — https://github.com/hew-lang/hew
+  * hew-observe 0.6.0-rc1 — https://github.com/hew-lang/hew
+  * hew-parser 0.6.0-rc1 — https://github.com/hew-lang/hew
+  * hew-runtime 0.6.0-rc1 — https://github.com/hew-lang/hew
+  * hew-runtime-testkit 0.6.0-rc1 — https://github.com/hew-lang/hew
+  * hew-sandbox-wasm 0.6.0-rc1 — https://github.com/hew-lang/hew
+  * hew-std 0.6.0-rc1 — https://github.com/hew-lang/hew
+  * hew-testutil 0.6.0-rc1
+  * hew-types 0.6.0-rc1 — https://github.com/hew-lang/hew
+  * hew-wasm 0.6.0-rc1 — https://github.com/hew-lang/hew
+  * hew-std-encoding-binary 0.6.0-rc1 — https://github.com/hew-lang/hew
+  * hew-std-text-template 0.6.0-rc1 — https://github.com/hew-lang/hew
+  * xtask 0.6.0-rc1 — https://github.com/hew-lang/hew
   * abnf_to_pest 0.5.1 — https://github.com/Nadrieril/dhall-rust
   * allocator-api2 0.2.21 — https://github.com/zakarumych/allocator-api2
   * android_system_properties 0.1.5 — https://github.com/nical/android_system_properties

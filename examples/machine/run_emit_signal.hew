@@ -67,4 +67,3 @@ fn main() {
     s.step(Stop);
     println(s.state_name());
 }
-

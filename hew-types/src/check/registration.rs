@@ -3295,7 +3295,7 @@ impl Checker {
             // matching (this machine's type id, the argument's event tag)
             // from the thread-local emit queue and returns the count
             // removed. Sibling of `step`/`state_name` — same event
-            // companion enum param, deliver design decided in G-M2.
+            // companion enum param.
             td.methods.insert(
                 "take_emits".to_string(),
                 FnSig {

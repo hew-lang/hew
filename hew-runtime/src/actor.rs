@@ -4978,6 +4978,7 @@ pub(crate) unsafe fn hew_reply_data_size(_ptr: *mut c_void) -> usize {
 /// NOT consumed here — the pump's own scope-exit path still owns freeing it
 /// (via [`hew_actor_gen_sink_complete`] on a clean exit, or the fault-close
 /// teardown walk on an abandoned one).
+#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_gen_sink_register(
     actor: *mut HewActor,
@@ -5002,6 +5003,7 @@ pub unsafe extern "C" fn hew_actor_gen_sink_register(
 /// actor). `sink` must be the same live pointer
 /// [`hew_actor_gen_sink_register`] recorded; ownership of `sink` transfers
 /// to this call exactly like `hew_sink_close` — do not use `sink` after.
+#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_gen_sink_complete(
     actor: *mut HewActor,
@@ -5035,6 +5037,7 @@ pub unsafe extern "C" fn hew_actor_gen_sink_complete(
 /// Idempotent: swaps the slot to null before touching the sink, so a second
 /// call (or a race between the two callers) sees an already-null slot and is
 /// a no-op — the sink is fault-closed exactly once.
+#[cfg(not(target_arch = "wasm32"))]
 fn fault_close_registered_gen_sink(a: &HewActor) {
     let raw = a.gen_sink.swap(ptr::null_mut(), Ordering::AcqRel);
     if raw.is_null() {

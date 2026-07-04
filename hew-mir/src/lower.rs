@@ -130,6 +130,17 @@ const SENTINEL_EXIT_KIND_TAG_BINDING: BindingId = BindingId(u32::MAX - 3);
 /// dedicated value keeps the pump self-contained and future-proof).
 const SENTINEL_RECV_GEN_COMPANION_BINDING: BindingId = BindingId(u32::MAX - 4);
 
+/// Prefix of the synthetic for-iteration cursor binding minted by the HIR
+/// for-loop desugar (`hew-hir/src/lower.rs`, `lower_for_iter_desugar`:
+/// `format!("__hew_for_iter_{}", …)`). The scope-exit `Stream`/`Receiver` close
+/// (3b-1) is scoped to THIS cursor only: it is internal to the loop and never
+/// returned or consumed elsewhere, so closing it at block-scope exit is always
+/// safe. A user `let s = <stream>` binding — which may be RETURNED (e.g.
+/// `std/stream.hew`'s `bytes_pipe` returns its `let input = …` stream) or moved
+/// into another binding — must keep its move-checked function-exit drop-plan
+/// close instead, or the inline close would free a handle that was moved out.
+const FOR_ITER_CURSOR_NAME_PREFIX: &str = "__hew_for_iter_";
+
 /// `CrashKind` variants in declaration order (`std/failure.hew`). An
 /// `#[on(exit)]` prologue builds the `kind` field by matching the runtime
 /// `__exit_kind_tag` against these (Crashed=0, HeapExceeded=1,
@@ -9312,6 +9323,22 @@ struct Builder {
     /// pass cannot double-free; the inline `Instr::Drop` null-stores the slot as
     /// defence in depth (`raii-null-after-move`).
     scope_vec_iter_bindings: Vec<(ScopeId, hew_hir::BindingId, ResolvedTy)>,
+    /// `Stream<T>` / `Receiver<T>` for-await cursor bindings tagged with the
+    /// block scope they were declared in, so a per-scope-exit close
+    /// (`hew_stream_close` / `hew_channel_receiver_close`) fires when that scope
+    /// closes. The `Generator`/`VecIter` analogue of #1949 for the general
+    /// `for await` consumption path: a `for await v in <stream>` desugars to a
+    /// `__hew_for_iter_*` cursor whose close was otherwise deferred to the
+    /// ENCLOSING FUNCTION's exit-LIFO plan, so `break`/exhaustion left the
+    /// stream open — deadlocking any function that abandons a live stream then
+    /// does more work before returning (the producer stays parked on
+    /// backpressure, its peer never observed as closed). Closing at block-scope
+    /// exit wakes the parked producer promptly. Mirrors
+    /// `scope_generator_bindings`: entries are dispositioned `ScopeReleased`
+    /// once the inline close is emitted so the function-exit LIFO cannot fire a
+    /// second close, and the inline `Instr::Drop` null-stores the slot
+    /// (`raii-null-after-move`; the runtime close symbols also null-guard).
+    scope_stream_bindings: Vec<(ScopeId, hew_hir::BindingId, ResolvedTy)>,
     /// Active per-iteration generator-yielded heap value bindings, recorded
     /// while lowering a `for v in gen()` (or `match g.next()`) consuming body so
     /// a `break`/`continue` inside that body frees the current iteration's
@@ -10944,6 +10971,92 @@ impl Builder {
                 field_offset: crate::model::FieldOffset(0),
                 ty: vec_ty,
                 drop_fn: crate::model::DropFnSpec::Release("hew_vec_free"),
+            });
+        }
+    }
+
+    /// Close every `Stream<T>` / `Receiver<T>` for-await cursor declared in
+    /// `scope_id` when that scope closes — the `Generator`/`VecIter` analogue of
+    /// #1949 for the general `for await` consumption path. A `for await v in
+    /// <stream> { ...; break; }` (or natural exhaustion) followed by more code
+    /// in the same function otherwise leaves the stream open until the ENCLOSING
+    /// FUNCTION returns; the producer stays parked on backpressure and its peer
+    /// is never observed closed, so the function deadlocks on any subsequent
+    /// blocking work. Closing at block-scope exit (where the `break`/`None`
+    /// loop-exit edges both land, inside the desugar block) wakes the parked
+    /// producer promptly.
+    ///
+    /// Mirrors [`Self::emit_scope_generator_drops`]: removes the binding from
+    /// `scope_stream_bindings`, dispositions it `ScopeReleased` so the
+    /// function-exit LIFO cannot fire a second close, and the inline
+    /// `Instr::Drop` (`RuntimeSymbol` close path) null-stores the slot after the
+    /// close (`raii-null-after-move`; `hew_stream_close` /
+    /// `hew_channel_receiver_close` also null-guard, so a moved-out or
+    /// already-closed slot is a no-op). The `Runtime(StreamClose | ReceiverClose)`
+    /// spec matches the exit-plan close exactly.
+    fn emit_scope_stream_drops(&mut self, scope_id: ScopeId) {
+        let mut to_drop: Vec<(hew_hir::BindingId, ResolvedTy)> = Vec::new();
+        self.scope_stream_bindings.retain(|(s, binding, ty)| {
+            if *s == scope_id {
+                to_drop.push((*binding, ty.clone()));
+                false
+            } else {
+                true
+            }
+        });
+        for (binding, ty) in to_drop.into_iter().rev() {
+            let Some(place) = self.binding_locals.get(&binding).copied() else {
+                continue;
+            };
+            let Some(descriptor) = stream_handle_drop_descriptor(&ty) else {
+                continue;
+            };
+            self.set_owned_local_disposition(binding, Disposition::ScopeReleased);
+            self.push_instr(Instr::Drop {
+                place,
+                ty,
+                drop_fn: Some(crate::model::DropFnSpec::Runtime(descriptor)),
+            });
+        }
+    }
+
+    /// Close a `Stream<T>` / `Receiver<T>` for-await cursor opened INSIDE a loop
+    /// body on the `break`/`continue` edge — the analogue of
+    /// [`Self::emit_generator_drops_for_break_continue`] for the stream handle.
+    /// A stream abandoned per-iteration must close on that edge, because the
+    /// block-scope close on the fall-through path is never reached on
+    /// break/continue.
+    ///
+    /// CLONE discipline (mirrors the generator handle release): entries are NOT
+    /// removed from `scope_stream_bindings` — the mutually-exclusive
+    /// fall-through path still closes via the block-scope drain, and the inline
+    /// close's null-after-close makes a structurally-reachable second close a
+    /// no-op (`raii-null-after-move`; the runtime symbols also null-guard).
+    fn emit_stream_drops_for_break_continue(&mut self, loop_scope_depth: usize) {
+        let window: HashSet<ScopeId> = self.active_scopes[loop_scope_depth..]
+            .iter()
+            .copied()
+            .collect();
+        let to_drop: Vec<(Place, ResolvedTy)> = self
+            .scope_stream_bindings
+            .iter()
+            .rev()
+            .filter(|(s, _, _)| window.contains(s))
+            .filter_map(|(_, binding, ty)| {
+                self.binding_locals
+                    .get(binding)
+                    .copied()
+                    .map(|place| (place, ty.clone()))
+            })
+            .collect();
+        for (place, ty) in to_drop {
+            let Some(descriptor) = stream_handle_drop_descriptor(&ty) else {
+                continue;
+            };
+            self.push_instr(Instr::Drop {
+                place,
+                ty,
+                drop_fn: Some(crate::model::DropFnSpec::Runtime(descriptor)),
             });
         }
     }
@@ -13191,6 +13304,28 @@ impl Builder {
                             ));
                         }
                     }
+                    // 3b-1 — tag the `for await` desugar's synthetic
+                    // `Stream<T>` / `Receiver<T>` CURSOR with its declaring scope
+                    // so a per-scope-exit `hew_stream_close` /
+                    // `hew_channel_receiver_close` fires when the scope closes,
+                    // closing the stream on `break` / exhaustion instead of
+                    // deferring to function exit (the deadlock this fixes — see
+                    // `scope_stream_bindings`). Gated to the cursor binding: a
+                    // user `let s = <stream>` that is returned or consumed
+                    // elsewhere must keep its move-checked function-exit close,
+                    // or the unconditional inline close would free a moved-out
+                    // handle (see `FOR_ITER_CURSOR_NAME_PREFIX`).
+                    if ty_is_stream_handle(&binding_ty)
+                        && binding.name.starts_with(FOR_ITER_CURSOR_NAME_PREFIX)
+                    {
+                        if let Some(scope) = self.active_scopes.last().copied() {
+                            self.scope_stream_bindings.push((
+                                scope,
+                                binding.id,
+                                binding_ty.clone(),
+                            ));
+                        }
+                    }
                     // #1949 — tag a sole-owner `for x in …` cursor (`VecIter<T>`)
                     // with its declaring scope so a per-scope-exit
                     // `__hew_record_drop_inplace_VecIter$$T` frees its `vec`
@@ -14753,6 +14888,13 @@ impl Builder {
                 // iteration instead of leaking one per iteration (the generator
                 // analogue above).
                 self.emit_scope_vec_iter_drops(block.scope);
+                // 3b-1 — close any `Stream<T>` / `Receiver<T>` for-await cursor
+                // declared in this block's scope before it closes. `break` and
+                // the synthesized `None`-arm exit both land in the post-loop
+                // merge INSIDE the desugar block, so this fires the stream close
+                // before the enclosing function continues — waking a parked
+                // producer and preventing the deadlock.
+                self.emit_scope_stream_drops(block.scope);
                 self.active_scopes.pop();
                 result
             }
@@ -16861,6 +17003,9 @@ impl Builder {
                 // Release in-loop generators on the break edge so the
                 // break-iteration's coro frame + heap companion are not leaked.
                 self.emit_generator_drops_for_break_continue(frame.scope_depth);
+                // 3b-1 — close in-loop for-await stream cursors on this edge
+                // (the block-scope close on the fall-through path is skipped).
+                self.emit_stream_drops_for_break_continue(frame.scope_depth);
                 self.finish_current_block(Terminator::Goto {
                     target: frame.exit_target,
                 });
@@ -16915,6 +17060,9 @@ impl Builder {
                 // Release in-loop generators on the continue edge so the
                 // skipped iteration's coro frame + heap companion are not leaked.
                 self.emit_generator_drops_for_break_continue(frame.scope_depth);
+                // 3b-1 — close in-loop for-await stream cursors on this edge
+                // (the block-scope close on the fall-through path is skipped).
+                self.emit_stream_drops_for_break_continue(frame.scope_depth);
                 // Register THIS block as a loop back-edge so `enumerate_exits`
                 // populates its `Goto` `DropPlan` with the scope-filtered
                 // releases for body-scope heap-owning bindings (a live
@@ -19827,6 +19975,20 @@ impl Builder {
                         ));
                     }
                 }
+                // NB: unlike generators, `Stream<T>` / `Receiver<T>` handles are
+                // NOT registered for a per-scope-exit close when bound via match
+                // destructure. The deadlock this wave fixes is caused by the
+                // `for await` desugar's synthetic `__hew_for_iter_*` CURSOR
+                // (always a `Let` binding) staying open; a plain source binding
+                // (`let (a, s) = …`) that is later consumed into that cursor
+                // must NOT get its own scope-exit close, or it double-closes the
+                // handle the cursor owns (the source binding's slot is not
+                // null-stored on the consume in every destructure shape). The
+                // `Let`-path registration + the function-exit LIFO (which
+                // respects the consume) cover every real case; there is no valid
+                // shape where a for-await cursor is bound via match destructure.
+                // Mirrors the vec-iter cursor registration, which is likewise
+                // `Let`-path-only.
             }
             let dest = self.alloc_local(binding_ty);
             // Pair the binder with the scrutinee's consume mark: register the
@@ -21826,6 +21988,7 @@ impl Builder {
         // directly in this loop body before the back-edge, the cursor analogue of
         // the generator release above (see `emit_scope_vec_iter_drops`).
         self.emit_scope_vec_iter_drops(body.scope);
+        self.emit_scope_stream_drops(body.scope);
         // Record this block as a loop-body back-edge so `enumerate_exits`
         // populates its `Goto` `DropPlan` with per-iteration releases for
         // heap-owning bindings declared in `body.scope`. Without this, an
@@ -22063,6 +22226,7 @@ impl Builder {
         // directly in this loop body before the back-edge, the cursor analogue of
         // the generator release above (see `emit_scope_vec_iter_drops`).
         self.emit_scope_vec_iter_drops(body.scope);
+        self.emit_scope_stream_drops(body.scope);
         // Record this block as a loop-body back-edge so `enumerate_exits`
         // populates its `Goto` `DropPlan` with per-iteration releases for
         // heap-owning bindings declared in `body.scope` (including the
@@ -22681,6 +22845,7 @@ impl Builder {
         // directly in this loop body before the back-edge, the cursor analogue of
         // the generator release above (see `emit_scope_vec_iter_drops`).
         self.emit_scope_vec_iter_drops(body.scope);
+        self.emit_scope_stream_drops(body.scope);
         // Record body→inc as the per-iteration back-edge for body-scope
         // bindings. body.scope closes here (active_scopes.pop next), so any
         // heap-owning let-binding declared inside the body must be released
@@ -22804,6 +22969,7 @@ impl Builder {
         // directly in this loop body before the back-edge, the cursor analogue of
         // the generator release above (see `emit_scope_vec_iter_drops`).
         self.emit_scope_vec_iter_drops(body.scope);
+        self.emit_scope_stream_drops(body.scope);
         // Record this block as a loop-body back-edge so `enumerate_exits`
         // populates its `Goto` `DropPlan` with per-iteration releases for
         // heap-owning bindings declared in `body.scope`. `loop { ... }` has
@@ -43298,6 +43464,39 @@ fn ty_is_generator_handle(ty: &ResolvedTy) -> bool {
             ..
         }
     )
+}
+
+/// The runtime close descriptor for a `Stream<T>` / `Receiver<T>` for-await
+/// cursor: `StreamClose` (→ `hew_stream_close`) or `ReceiverClose`
+/// (→ `hew_channel_receiver_close`). `None` for any other type. Selecting the
+/// typed [`RuntimeDropDescriptor`](hew_types::runtime_call::RuntimeDropDescriptor)
+/// (rather than a `Release` string) matches the `rt(StreamClose)` the
+/// function-exit drop plan already emits for these cursors, so the inline
+/// scope-close and the exit-plan close codegen identically.
+fn stream_handle_drop_descriptor(
+    ty: &ResolvedTy,
+) -> Option<hew_types::runtime_call::RuntimeDropDescriptor> {
+    use hew_types::runtime_call::RuntimeDropDescriptor;
+    let ResolvedTy::Named {
+        builtin: Some(builtin),
+        ..
+    } = ty
+    else {
+        return None;
+    };
+    match builtin {
+        hew_types::BuiltinType::Stream => Some(RuntimeDropDescriptor::StreamClose),
+        hew_types::BuiltinType::Receiver => Some(RuntimeDropDescriptor::ReceiverClose),
+        _ => None,
+    }
+}
+
+/// Whether `ty` is a `Stream<T>` / `Receiver<T>` for-await cursor handle — the
+/// registration gate for `scope_stream_bindings`, mirroring
+/// [`ty_is_generator_handle`]. Single source of truth with
+/// [`stream_handle_drop_descriptor`].
+fn ty_is_stream_handle(ty: &ResolvedTy) -> bool {
+    stream_handle_drop_descriptor(ty).is_some()
 }
 
 /// True when a `for x in …` cursor `let __hew_for_iter = <value>` makes the

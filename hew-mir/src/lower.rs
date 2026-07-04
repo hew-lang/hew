@@ -1737,6 +1737,31 @@ pub fn lower_hir_module_with_facts(
                 }
             }
         };
+        // G-A1: `overflow coalesce(key)` genuinely parses and type-checks,
+        // but codegen has no coalesce key-function ABI slice yet. Threading
+        // a bare `Coalesce` tag through `HewOverflowPolicy` without a key
+        // function would silently miscarry the declared policy — fail
+        // closed here with an honest NYI diagnostic instead. The layout
+        // still carries the declared policy verbatim (never remapped) so a
+        // future codegen slice can pick it up unchanged once the ABI
+        // exists; only the diagnostic gates compilation today.
+        if let Some(hew_parser::ast::OverflowPolicy::Coalesce { key_field, .. }) =
+            &actor.overflow_policy
+        {
+            diagnostics.push(crate::model::MirDiagnostic {
+                kind: crate::model::MirDiagnosticKind::MailboxOverflowCoalesceNotYetImplemented {
+                    actor: actor.name.clone(),
+                    key_field: key_field.clone(),
+                },
+                note: format!(
+                    "actor `{}` declares `overflow coalesce({key_field})`; the coalesce \
+                     key-function slice is not yet implemented in codegen — declaring a \
+                     policy that would be silently miscarried is a hard error, not a \
+                     silent remap to another overflow policy",
+                    actor.name
+                ),
+            });
+        }
         actor_layouts.push(crate::model::ActorLayout {
             // The registry key is the actor's qualified identity: dotted
             // `module.Name` for module actors, bare for root actors. It
@@ -1798,6 +1823,8 @@ pub fn lower_hir_module_with_facts(
                 .map(|_| mangle_actor_exit_handler(&actor_symbol_base(actor))),
             max_heap_bytes: actor.max_heap_bytes,
             cycle_capable: actor.cycle_capable,
+            mailbox_capacity: actor.mailbox_capacity,
+            overflow_policy: actor.overflow_policy.clone(),
             handlers: lower_actor_handler_layouts(actor),
             state_clone_fn_symbol: clone_sym,
             state_drop_fn_symbol: drop_sym,
@@ -1880,6 +1907,8 @@ pub fn lower_hir_module_with_facts(
             });
             child.max_heap_bytes = al.and_then(|al| al.max_heap_bytes);
             child.cycle_capable = al.is_some_and(|al| al.cycle_capable);
+            child.mailbox_capacity = al.and_then(|al| al.mailbox_capacity);
+            child.overflow_policy = al.and_then(|al| al.overflow_policy.clone());
 
             // Build the complete init_state_fields plan for this child's actor.
             //
@@ -4759,6 +4788,10 @@ fn build_supervisor_layout(
             lifecycle_symbol: None,
             max_heap_bytes: None,
             cycle_capable: false,
+            // Populated in the post-loop pass along with max_heap_bytes /
+            // cycle_capable, mirroring the actor's declared mailbox clause.
+            mailbox_capacity: None,
+            overflow_policy: None,
             // Populated in the post-loop pass along with actor layout fields.
             init_state_fields: Vec::new(),
             // Populated in the post-loop pass, where the full set of declared
@@ -29299,6 +29332,8 @@ impl Builder {
             dest,
             max_heap_bytes: layout.max_heap_bytes,
             cycle_capable: layout.cycle_capable,
+            mailbox_capacity: layout.mailbox_capacity,
+            overflow_policy: layout.overflow_policy.clone(),
         });
         Some(dest)
     }

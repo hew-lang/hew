@@ -847,6 +847,8 @@ fn render_instr(instr: &Instr) -> String {
             dest,
             max_heap_bytes,
             cycle_capable,
+            mailbox_capacity,
+            overflow_policy,
         } => {
             let state_str = state
                 .as_ref()
@@ -867,8 +869,15 @@ fn render_instr(instr: &Instr) -> String {
             let heap = max_heap_bytes
                 .map(|n| format!(" max_heap={n}"))
                 .unwrap_or_default();
+            let mailbox = mailbox_capacity
+                .map(|n| format!(" mailbox_capacity={n}"))
+                .unwrap_or_default();
+            let overflow = overflow_policy
+                .as_ref()
+                .map(|p| format!(" overflow={p:?}"))
+                .unwrap_or_default();
             format!(
-                "{} = spawn_actor {actor_name}{state_str}{args_str}{heap} cycle_capable={cycle_capable}",
+                "{} = spawn_actor {actor_name}{state_str}{args_str}{heap} cycle_capable={cycle_capable}{mailbox}{overflow}",
                 render_place(dest),
             )
         }
@@ -1501,6 +1510,9 @@ fn render_diag_kind(kind: &MirDiagnosticKind) -> String {
         } => format!(
             "ActorStateCloneClassificationFailed {actor}.{field_index}({field_name}) {reason:?}"
         ),
+        MirDiagnosticKind::MailboxOverflowCoalesceNotYetImplemented { actor, key_field } => {
+            format!("MailboxOverflowCoalesceNotYetImplemented {actor} key_field={key_field}")
+        }
         MirDiagnosticKind::UnresolvedStaticDispatchSubstitution {
             receiver_type_param,
             declaring_trait,

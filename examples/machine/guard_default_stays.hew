@@ -15,11 +15,11 @@ machine Latch {
     state Closed { code: i64; }
     state Open;
 
-    default { state }
-
     on Try: Closed => Open when self.code == 42 {
         Open
     }
+
+    default { state }
 }
 
 fn main() {

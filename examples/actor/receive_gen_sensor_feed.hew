@@ -1,0 +1,40 @@
+// `receive gen fn` lets an actor stream values back to a caller instead of
+// replying once. Each call opens its own stream backed by the actor's
+// running generator; the consumer drains it with `for await`, exactly like
+// draining a plain `gen fn`.
+//
+// A stream's reads of actor state are a snapshot taken when the stream
+// starts, not a live view — later state changes never leak into an
+// already-open stream.
+//
+// Draining is cooperative: holding a stream open without draining it blocks
+// the actor's mailbox once its internal buffer fills up, so a consumer that
+// no longer wants values should let the stream go out of scope (or `break`
+// out of its `for await` loop) rather than hold it indefinitely.
+actor SensorFeed {
+    var offset: i64;
+    init(start_offset: i64) {
+        offset = start_offset;
+    }
+    receive gen fn readings(count: i64) -> i64 {
+        var i: i64 = 0;
+        while i < count {
+            yield offset + i;
+            i = i + 1;
+        }
+    }
+    receive fn calibrate(new_offset: i64) {
+        offset = new_offset;
+    }
+}
+
+fn main() {
+    let sensor = spawn SensorFeed(start_offset: 0);
+    for await reading in sensor.readings(3) {
+        println(f"reading: {reading}");
+    }
+    sensor.calibrate(1000);
+    for await reading in sensor.readings(3) {
+        println(f"reading: {reading}");
+    }
+}

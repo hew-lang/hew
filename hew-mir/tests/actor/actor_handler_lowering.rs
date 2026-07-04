@@ -770,6 +770,21 @@ fn calls_runtime_symbol(func: &hew_mir::RawMirFunction, callee: &str) -> bool {
         .any(|b| matches!(&b.terminator, Terminator::Call { callee: c, .. } if c == callee))
 }
 
+/// Whether `instr` is the scope-inline `Stream<T>` close `emit_scope_stream_drops`
+/// pushes directly into a block's instruction stream (as opposed to a
+/// function-exit LIFO drop-plan entry).
+fn is_inline_stream_close(instr: &Instr) -> bool {
+    matches!(
+        instr,
+        Instr::Drop {
+            drop_fn: Some(hew_mir::DropFnSpec::Runtime(
+                hew_types::runtime_call::RuntimeDropDescriptor::StreamClose
+            )),
+            ..
+        }
+    )
+}
+
 #[test]
 fn generator_handler_pump_registers_checks_peer_and_completes_sink() {
     // Stage 5 (A239 decisions 6+7): the pump's prologue registers its own
@@ -1372,5 +1387,113 @@ fn actor_lifecycle_crash_lowers_to_actor_handler_function() {
         pipeline.diagnostics.is_empty(),
         "on(crash) lowering must not emit diagnostics; got: {:?}",
         pipeline.diagnostics
+    );
+}
+
+/// A `for await` cursor over a `Stream<T>` must close INLINE at its enclosing
+/// block's scope exit (#1949's `Stream`/`Receiver` sibling) — not only on the
+/// function's Return/Panic/Cancel exits — so a `break` or natural-exhaustion
+/// loop exit wakes a parked producer before any later code in the same
+/// function runs. A plain (non-cursor) `Stream<T>` binding that is returned
+/// out of its own function must NOT receive this inline treatment: it flows
+/// through the existing move-aware function-exit LIFO drop plan, which
+/// already skips a moved-out place.
+///
+/// This pins a regression found the hard way while building the fix: an
+/// early cut registered every `let`-bound stream for the inline close,
+/// including one about to be RETURNED from `std/stream.hew`'s `bytes_pipe`,
+/// and closed it out from under the caller (a SIGSEGV in the
+/// `stream_pipe_roundtrip` corpus fixture). The real gate is narrower: only
+/// the for-await desugar's synthetic `__hew_for_iter_*` cursor is a `Let`
+/// binding registered for the inline close.
+///
+/// Uses real source text (rather than hand-built HIR): the for-await
+/// desugar's synthetic cursor is fragile to reconstruct by hand.
+#[test]
+fn for_await_stream_cursor_gets_scope_inline_close_but_returned_binding_does_not() {
+    let source = r#"
+        actor Ticker {
+            receive gen fn stream() -> i64 {
+                yield 1;
+                yield 2;
+            }
+        }
+
+        fn drain(t: LocalPid<Ticker>) {
+            for await v in t.stream() {
+                println(f"{v}");
+            }
+        }
+
+        fn passthrough(t: LocalPid<Ticker>) -> Stream<i64> {
+            let s = t.stream();
+            s
+        }
+    "#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:#?}",
+        parsed.errors
+    );
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    assert!(
+        tc_output.errors.is_empty(),
+        "type errors: {:#?}",
+        tc_output.errors
+    );
+    let hir = hew_hir::lower_program(
+        &parsed.program,
+        &tc_output,
+        &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(
+        hir.diagnostics.is_empty(),
+        "HIR diagnostics: {:#?}",
+        hir.diagnostics
+    );
+    let pipeline = lower_hir_module(&hir.module);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "MIR diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+
+    let drain_fn = pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "drain")
+        .expect("drain fn must lower");
+    let drain_closes = drain_fn
+        .blocks
+        .iter()
+        .flat_map(|b| &b.instructions)
+        .filter(|i| is_inline_stream_close(i))
+        .count();
+    assert_eq!(
+        drain_closes, 1,
+        "the for-await desugar's synthetic cursor must get exactly one \
+         scope-inline StreamClose drop: {drain_fn:#?}"
+    );
+
+    let passthrough_fn = pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "passthrough")
+        .expect("passthrough fn must lower");
+    let passthrough_closes = passthrough_fn
+        .blocks
+        .iter()
+        .flat_map(|b| &b.instructions)
+        .filter(|i| is_inline_stream_close(i))
+        .count();
+    assert_eq!(
+        passthrough_closes, 0,
+        "a plain `let`-bound stream returned out of its function must NOT \
+         get an inline scope-exit close — it relies on the move-aware \
+         function-exit LIFO drop plan instead: {passthrough_fn:#?}"
     );
 }

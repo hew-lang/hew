@@ -2506,6 +2506,67 @@ run_accept_expect_stdout "gen_mid_iteration_drop"
 run_accept_expect_stdout "gen_drop_before_first_next"
 
 # ---------------------------------------------------------------------------
+# `receive gen fn` — actor receive-generators (per-call stream-producer
+# dispatch). A `receive gen fn` handler must feel identical to a standalone
+# `gen fn` at the consumer surface (`for await` vs `for`), with actor state
+# reads snapshotted at stream start (never a live view) and cancellation/fault
+# behaviour matching a real, fail-closed producer.
+# ---------------------------------------------------------------------------
+
+# No env: the minimal stream-producer dispatch (channel construction,
+# tell-shaped start message, pump activation), no captured state or params.
+run_accept_expect_stdout "receive_gen_fn_no_env"
+
+# Param + actor-state-field capture: both a handler param and a read state
+# field are free variables of the generator body, snapshotted into its env.
+run_accept_expect_stdout "receive_gen_fn_state_param"
+
+# Parity twin: the same base+i sequence, once drained from an actor stream via
+# `for await` and once from a standalone `gen fn` via `for`. The two rendered
+# sequences must compare equal — the "feels identical" proof.
+run_accept_expect_stdout "receive_gen_fn_parity_twin"
+
+# A238 snapshot isolation: a stream's actor-state read is a point-in-time
+# snapshot taken at stream start, not a live view. Draining the first value of
+# a stream started against base=100, mutating base to 500 via an awaited ask
+# (ordering the mutation strictly after the first stream's snapshot), then
+# draining the rest of that same stream must still see the original snapshot;
+# a second, freshly-started stream sees the new value.
+run_accept_expect_stdout "receive_gen_fn_snapshot_isolation"
+
+# Cancellation: `for await ... break` on an infinite generator must not
+# livelock the producer actor — the peer-closed check unwedges the pump, and
+# the actor answers a later ask normally.
+run_accept_expect_stdout "receive_gen_fn_cancellation"
+
+# A239 fault (producer crash): the gen body yields once, then traps on a
+# runtime div-by-zero. The consumer, having already received the first value,
+# must observe the fault on its next resume — never a clean, silent EOF. The
+# trap crashes the actor (SIGABRT via the runtime's abort-on-internal-panic
+# convention, same as the bytes/string index-oob traps), exit 134.
+run_accept_expect_status "receive_gen_fn_fault_trap" 134
+grep -qF 'receive-gen stream: producer actor' "${stderr_output}"
+
+# A239 fault (producer teardown): an actor stopped (via `supervisor_stop`)
+# while its stream is live and undrained must fault-close the stream on the
+# consumer's next resume — not a hang, not a silent EOF. Same fault mechanism
+# and exit code as the crash case above; the deterministic buffered-value
+# count (8, the receive-gen stream capacity) is asserted via stdout.
+run_accept_expect_status "receive_gen_fn_teardown_fault" 134
+grep -qF 'receive-gen stream: producer actor' "${stderr_output}"
+
+# Reject: an actor state field of an owned (non-BitCopy) type read inside a
+# `receive gen fn` body fails closed with the SAME generator
+# capture-admissibility gate a standalone `gen fn` uses — never the
+# unknown-actor-handler NYI the dispatch bridge would otherwise mask it
+# behind.
+expect_check_fail_error_count_no_cascade \
+  "${ROOT}/tests/vertical-slice/reject/receive_gen_fn_owned_state_capture.hew" \
+  1 \
+  "receive_gen_fn_owned_state_capture" \
+  "unknown actor handler"
+
+# ---------------------------------------------------------------------------
 # Sink<T> / Stream<T> Wire-capability admissibility gate
 # ---------------------------------------------------------------------------
 

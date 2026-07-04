@@ -1,0 +1,24 @@
+// A `receive gen fn` handler whose body reads both a handler parameter (`n`)
+// and an actor state field (`base`) — free variables of the generator body
+// snapshotted into its env at stream construction (A238: point-in-time copy,
+// not a live view of the actor's state).
+actor Ticker {
+    var base: i64;
+    init(b: i64) {
+        base = b;
+    }
+    receive gen fn stream(n: i64) -> i64 {
+        var i = 0;
+        while i < n {
+            yield base + i;
+            i = i + 1;
+        }
+    }
+}
+
+fn main() {
+    let t = spawn Ticker(b: 100);
+    for await v in t.stream(3) {
+        println(f"{v}");
+    }
+}

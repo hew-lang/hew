@@ -31193,12 +31193,38 @@ impl Builder {
                 let offset =
                     FieldOffset(u32::try_from(idx).expect("gen capture count exceeds u32::MAX"));
                 // The captured binding's MIR slot in the ENCLOSING frame is the
-                // authority for both the value source and the field type.
-                let slot = self.binding_locals.get(&capture.binding).copied();
-                let capture_ty = slot
-                    .and_then(base_local)
-                    .and_then(|local| self.locals.get(local as usize))
-                    .cloned();
+                // authority for both the value source and the field type. A
+                // `Local` capture (a `gen fn`'s own params, a `gen {}`
+                // block's outer locals, or a `receive gen fn` handler param)
+                // already has a slot in `binding_locals`. An `ActorStateField`
+                // capture has none — actor state fields resolve by NAME
+                // through `current_actor_state_fields`, not by binding id —
+                // so its value is snapshotted into a fresh shell local via
+                // `ActorStateFieldLoad` first (A238: a point-in-time copy
+                // taken now, in the enclosing actor-handler frame where state
+                // is addressable, never a live reference); the resulting slot
+                // then feeds `RecordInit` exactly like a `Local` capture's.
+                let (slot, capture_ty) = match capture.source {
+                    hew_hir::HirGenCaptureSource::Local => {
+                        let slot = self.binding_locals.get(&capture.binding).copied();
+                        let ty = slot
+                            .and_then(base_local)
+                            .and_then(|local| self.locals.get(local as usize))
+                            .cloned();
+                        (slot, ty)
+                    }
+                    hew_hir::HirGenCaptureSource::ActorStateField => {
+                        match self.current_actor_state_fields.get(&capture.name).cloned() {
+                            Some((field_offset, ty)) => {
+                                let dest = self.alloc_local(ty.clone());
+                                self.instructions
+                                    .push(Instr::ActorStateFieldLoad { field_offset, dest });
+                                (Some(dest), Some(ty))
+                            }
+                            None => (None, None),
+                        }
+                    }
+                };
                 match (slot, capture_ty) {
                     (Some(src), Some(ty)) if self.gen_env_capture_admissible(&ty) => {
                         init_fields.push((offset, src));

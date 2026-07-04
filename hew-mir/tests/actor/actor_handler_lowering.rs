@@ -2,9 +2,9 @@ use std::collections::HashMap;
 
 use hew_hir::{
     ids::IdGen, HirActorDecl, HirActorReceiveFn, HirActorStateGuard, HirBinding, HirBlock, HirExpr,
-    HirExprKind, HirField, HirFn, HirItem, HirLifecycleHook, HirLifecycleHookKind, HirLiteral,
-    HirModule, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl, IntentKind,
-    ResolvedRef, ScopeId, ValueClass,
+    HirExprKind, HirField, HirFn, HirGenCapture, HirGenCaptureSource, HirItem, HirLifecycleHook,
+    HirLifecycleHookKind, HirLiteral, HirModule, HirStmt, HirStmtKind, HirSupervisorChild,
+    HirSupervisorDecl, IntentKind, ResolvedRef, ScopeId, ValueClass,
 };
 use hew_mir::{lower_hir_module, FunctionCallConv, Instr, MirDiagnosticKind, Terminator};
 use hew_types::{ActorHandlerSpec, ActorProtocolDescriptor, BuiltinType, ResolvedTy};
@@ -653,6 +653,121 @@ fn actor_handler_generator_receive_fn_lowers_to_generator_body() {
             .iter()
             .any(|b| matches!(b.terminator, Terminator::Yield { .. })),
         "generator body must contain a Terminator::Yield"
+    );
+}
+
+fn body_contains(func: &hew_mir::RawMirFunction, pred: fn(&Instr) -> bool) -> bool {
+    func.blocks.iter().flat_map(|b| &b.instructions).any(pred)
+}
+
+/// A `receive gen fn` body that reads an actor state field (`count`, an
+/// `HirGenCaptureSource::ActorStateField` capture per `lower_actor_generator_body`)
+/// must snapshot it in the ENCLOSING shell frame — where actor state is
+/// addressable — via `Instr::ActorStateFieldLoad`, feed that snapshot into the
+/// generator's env record, and have the `__hew_gen_body_*` sibling read it
+/// back through `Instr::ClosureEnvFieldLoad`. The gen body itself must never
+/// contain an `ActorStateFieldLoad` — it has no actor-state addressability
+/// (`current_actor_state_fields` is not populated in the gen-body
+/// sub-builder); a state-field read there would silently mis-route.
+#[test]
+fn generator_handler_body_reads_state_field_via_env() {
+    let mut ids = IdGen::default();
+    let count_binding = binding(&mut ids, "count", ResolvedTy::I64);
+    let yield_value = HirExpr {
+        node: ids.node(),
+        site: ids.site(),
+        ty: ResolvedTy::I64,
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::BindingRef {
+            name: "count".to_string(),
+            resolved: ResolvedRef::Binding(count_binding.id),
+        },
+        span: 0..0,
+    };
+    let yield_expr = HirExpr {
+        node: ids.node(),
+        site: ids.site(),
+        ty: ResolvedTy::Unit,
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::Yield {
+            value: Some(Box::new(yield_value)),
+            yield_ty: ResolvedTy::I64,
+        },
+        span: 0..0,
+    };
+    let yield_stmt = HirStmt {
+        node: ids.node(),
+        kind: HirStmtKind::Expr(yield_expr),
+        span: 0..0,
+    };
+    let gen_inner = block(&mut ids, vec![yield_stmt], None, ResolvedTy::Unit);
+    let generator_ty = ResolvedTy::Named {
+        name: "Generator".to_string(),
+        args: vec![ResolvedTy::I64, ResolvedTy::Unit],
+        builtin: Some(BuiltinType::Generator),
+        is_opaque: false,
+    };
+    let gen_block = HirExpr {
+        node: ids.node(),
+        site: ids.site(),
+        ty: generator_ty.clone(),
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::GenBlock {
+            body: gen_inner,
+            yield_ty: ResolvedTy::I64,
+            return_ty: ResolvedTy::Unit,
+            captures: vec![HirGenCapture {
+                binding: count_binding.id,
+                name: "count".to_string(),
+                ty: ResolvedTy::I64,
+                source: HirGenCaptureSource::ActorStateField,
+            }],
+        },
+        span: 0..0,
+    };
+    let generator_body = block(&mut ids, vec![], Some(gen_block), generator_ty);
+    // `actor()` below hardcodes a single `count: i64` state field, matching
+    // the capture built above.
+    let stream = receive("stream", true, vec![], ResolvedTy::I64, generator_body);
+    let actor = actor(&mut ids, "Counter", vec![stream]);
+
+    let pipeline = lower_hir_module(&empty_module(vec![HirItem::Actor(actor)]));
+
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "state-field capture must materialise into the generator env with no diagnostics: {:?}",
+        pipeline.diagnostics
+    );
+
+    let shell = pipeline
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "Counter__recv__stream")
+        .expect("generator handler shell must produce a MIR function");
+    assert!(
+        body_contains(shell, |i| matches!(i, Instr::ActorStateFieldLoad { .. })),
+        "shell must snapshot the state field via ActorStateFieldLoad before MakeGenerator"
+    );
+
+    let gen_body = pipeline
+        .raw_mir
+        .iter()
+        .find(|func| {
+            func.name
+                .starts_with("__hew_gen_body_Counter__recv__stream_")
+        })
+        .expect("generator handler must surface a __hew_gen_body_* function");
+    assert!(
+        body_contains(gen_body, |i| matches!(i, Instr::ClosureEnvFieldLoad { .. })),
+        "gen body must read the snapshotted state field back via ClosureEnvFieldLoad"
+    );
+    assert!(
+        !body_contains(gen_body, |i| matches!(i, Instr::ActorStateFieldLoad { .. })),
+        "gen body has no actor-state addressability; it must never re-derive the field via \
+         ActorStateFieldLoad instead of reading the env snapshot"
     );
 }
 

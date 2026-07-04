@@ -3018,8 +3018,17 @@ pub unsafe extern "C" fn hew_actor_send_wire(
 
 /// Send a message to an actor by actor ID.
 ///
-/// Returns 0 on success, -1 if the actor ID is not currently live on this
-/// node or the local send fails.
+/// Returns `0` ([`HewError::Ok`]) on success — including a declared bounded
+/// mailbox's silent policy-drop (`DropNew`/`DropOld`/`Coalesce`; spec §6.2).
+/// A genuine, caller-visible failure keeps its own distinct non-zero
+/// [`HewError`] code: `-1` (`ErrMailboxFull`) for a `Fail`-policy rejection,
+/// `-2` (`ErrActorStopped`) if the actor is gone (not tracked locally,
+/// stopped, or crashed), `-5` (`ErrOom`) on allocation failure, `-6`
+/// (`ErrForeignRuntime`) for a cross-runtime pointer, or a remote-send error
+/// code if the PID belongs to another node. Callers must trap on any
+/// non-zero result rather than special-casing `-1` — see
+/// `hew_mailbox_send_fire_and_forget` for why the two failure shapes are no
+/// longer conflated.
 ///
 /// `dispatch` is the TARGET actor TYPE's dispatch function pointer
 /// (`__hew_actor_dispatch_<Actor>`), supplied by codegen at the remote-send
@@ -3054,18 +3063,27 @@ pub unsafe extern "C" fn hew_actor_send_by_id(
     // two are mutually exclusive: this send either pins before the freer
     // untracks (freer waits) or the freer untracks before this map lookup
     // (lookup returns None, no pin, no UAF).
-    let sent = live_actors::with_actor_send_by_id(actor_id, |actor| {
+    //
+    // The closure returns the actual `HewError` code from
+    // `actor_send_result_internal` — NOT a collapsed bool. Every genuine
+    // failure (actor gone/stopped, OOM, foreign-runtime, a `Fail`-policy
+    // overflow) keeps its own distinct non-zero code; only the
+    // deliberately-silent `DropNew`/`DropOld`/`Coalesce` policy outcomes
+    // come back as `Ok`. Collapsing these into a single reused code (as a
+    // prior version of this function did) is what let a genuine send
+    // failure hide behind the same value as a declared-silent overflow drop.
+    let send_result = live_actors::with_actor_send_by_id(actor_id, |actor| {
         // SAFETY: `actor` is pinned live by `with_actor_send_by_id`;
         // the allocation is guaranteed valid for the duration of this
         // closure.  Same data/size preconditions as hew_actor_send.
-        unsafe { actor_send_internal(actor, msg_type, data, size) }
+        unsafe { actor_send_result_internal(actor, msg_type, data, size) }
     });
-    if sent == Some(true) {
-        return 0;
+    if let Some(code) = send_result {
+        return code;
     }
 
-    // Actor not found locally (or send failed). If the PID belongs to a remote node,
-    // route through the distributed node infrastructure (which serializes the
+    // Actor not tracked locally. If the PID belongs to a remote node, route
+    // through the distributed node infrastructure (which serializes the
     // payload under the `(dispatch, msg_type)` codec key).
     if crate::pid::hew_pid_is_local(actor_id) == 0 {
         // SAFETY: data validity is guaranteed by caller contract.
@@ -3073,7 +3091,11 @@ pub unsafe extern "C" fn hew_actor_send_by_id(
             crate::hew_node::try_remote_send(actor_id, dispatch, msg_type, data, size)
         };
     }
-    -1
+    // A local PID with no live actor behind it is gone — already stopped,
+    // freed, or never existed — a genuine, caller-visible failure. Report
+    // it as `ErrActorStopped`, never the overloaded `ErrMailboxFull`, so it
+    // can never be mistaken for a declared bounded-mailbox overflow outcome.
+    HewError::ErrActorStopped as i32
 }
 
 /// Try to send a message, returning an error code on failure.
@@ -4486,13 +4508,42 @@ unsafe fn actor_send_result_internal_reply(
 
     let mb = a.mailbox.cast::<HewMailbox>();
 
-    let result = if reply_channel.is_null() {
+    if reply_channel.is_null() {
+        // Fire-and-forget (no reply channel expected): resolve against the
+        // raw `SendOutcome` rather than a collapsed status code. A
+        // `DropNew` policy-drop is spec-silent per §6.2 — it must report
+        // success — but unlike an actual enqueue, it queued nothing, so it
+        // must NOT wake/schedule the actor (there is no new message for it
+        // to find). See `hew_mailbox_send_fire_and_forget` for the seam
+        // rationale.
         // SAFETY: Mailbox is valid for the actor's lifetime; data/size from caller.
-        unsafe { mailbox::hew_mailbox_send(mb, msg_type, data, size) }
-    } else {
-        // SAFETY: Mailbox is valid for the actor's lifetime; reply_channel is non-null and valid.
-        unsafe { mailbox::hew_mailbox_send_with_reply(mb, msg_type, data, size, reply_channel) }
-    };
+        return match unsafe { mailbox::hew_mailbox_send_fire_and_forget(mb, msg_type, data, size) }
+        {
+            mailbox::SendOutcome::Enqueued
+            | mailbox::SendOutcome::Coalesced
+            | mailbox::SendOutcome::DroppedOld => {
+                // SAFETY: `actor`/`a` valid; a node actually reached the
+                // queue, so the actor may be scheduled to run.
+                unsafe { schedule_actor_after_enqueue(actor, a, msg_type) };
+                HewError::Ok as i32
+            }
+            // Policy-drop: silent per spec §6.2, nothing was queued, so
+            // there is nothing to wake the actor for.
+            mailbox::SendOutcome::Dropped => HewError::Ok as i32,
+            mailbox::SendOutcome::Closed => HewError::ErrActorStopped as i32,
+            // `Fail`-policy overflow is a genuine, caller-visible failure
+            // (fail-closed, F2) — never silently dropped.
+            mailbox::SendOutcome::Failed => HewError::ErrMailboxFull as i32,
+            mailbox::SendOutcome::Oom => HewError::ErrOom as i32,
+        };
+    }
+
+    // Ask (reply channel attached): every overflow outcome, including a
+    // policy-drop, must stay caller-visible — a silently dropped ask would
+    // leave the caller waiting forever for a reply that will never arrive.
+    // SAFETY: Mailbox is valid for the actor's lifetime; reply_channel is non-null and valid.
+    let result =
+        unsafe { mailbox::hew_mailbox_send_with_reply(mb, msg_type, data, size, reply_channel) };
     if result != 0 {
         return result;
     }
@@ -6584,8 +6635,22 @@ mod tests {
         }
     }
 
+    /// G-A1 fail-open regression (F1): a fire-and-forget send-by-id to an
+    /// actor ID that is no longer tracked locally (freed, stopped, or never
+    /// existed) is a genuine, caller-visible failure, and must report a code
+    /// that is DISTINCT from `ErrMailboxFull` (`-1`) — the shared status a
+    /// declared bounded mailbox's `DropNew`/`DropOld`/`Coalesce` policy-drop
+    /// resolves to `Ok` at (see `send_by_id_dropnew_policy_drop_is_silent`
+    /// below).
+    ///
+    /// Before the fix, `hew_actor_send_by_id` returned the same `-1` for
+    /// BOTH this case and a declared-silent policy-drop, so codegen's
+    /// `Terminator::Send` trap check could not exclude the policy-drop
+    /// without ALSO swallowing this genuine failure — exactly the
+    /// fail-open the cross-eco review caught (a fire-and-forget send to a
+    /// permanently-stopped supervised child silently "succeeded").
     #[test]
-    fn send_by_id_after_free_returns_not_live() {
+    fn send_by_id_after_free_returns_genuine_failure_not_mailbox_full() {
         let _guard = crate::runtime_test_guard();
 
         // SAFETY: null state + valid dispatch are valid spawn args.
@@ -6604,7 +6669,126 @@ mod tests {
         // SAFETY: caller only provides message bytes; the runtime should reject
         // the now-untracked actor ID instead of crashing.
         let rc = unsafe { hew_actor_send_by_id(actor_id, ptr::null(), 1, ptr::null_mut(), 0) };
-        assert_eq!(rc, -1);
+        assert_eq!(
+            rc,
+            HewError::ErrActorStopped as i32,
+            "send-by-id to a gone actor must report ErrActorStopped, not the \
+             ErrMailboxFull code a declared overflow policy-drop also used to \
+             report — the two must never collapse onto the same value"
+        );
+        assert_ne!(
+            rc,
+            HewError::ErrMailboxFull as i32,
+            "a genuine send failure must never be confused with a policy-drop"
+        );
+    }
+
+    /// G-A1 fail-open regression (F1), the other half: a fire-and-forget
+    /// send-by-id into a `DropNew` bounded mailbox that is at capacity is a
+    /// declared-silent policy outcome (spec §6.2) and must report success
+    /// (`0`), not `ErrMailboxFull`. Paired with the test above: the two
+    /// scenarios must produce DIFFERENT codes so `Terminator::Send` can trap
+    /// on the genuine failure while still treating this outcome as success.
+    #[test]
+    fn send_by_id_dropnew_policy_drop_is_silent() {
+        let _guard = crate::runtime_test_guard();
+
+        let opts = HewActorOpts {
+            init_state: ptr::null_mut(),
+            state_size: 0,
+            dispatch: Some(noop_dispatch),
+            mailbox_capacity: 1,
+            overflow: HewOverflowPolicy::DropNew as i32,
+            coalesce_key_fn: None,
+            coalesce_fallback: 0,
+            budget: 0,
+            arena_cap_bytes: 0,
+            cycle_capable: 0,
+        };
+        // SAFETY: opts is valid for the duration of the call.
+        let actor = unsafe { hew_actor_spawn_opts(&raw const opts) };
+        assert!(!actor.is_null(), "bounded DropNew spawn must succeed");
+        // SAFETY: actor is valid; the mailbox pointer is valid for its lifetime.
+        let actor_id = unsafe { (*actor).id };
+        // SAFETY: actor is valid; the mailbox pointer is valid for its lifetime.
+        let mb = unsafe { (*actor).mailbox.cast::<mailbox::HewMailbox>() };
+
+        // Directly fill the one capacity slot, bypassing the scheduler so the
+        // actor stays Idle and the slot stays occupied (same technique as
+        // `native_ask_bounded_mailbox_full_sets_mailbox_full_error`).
+        // SAFETY: mb is a valid, non-null pointer to a HewMailbox owned by this actor.
+        let pre_fill = unsafe { mailbox::hew_mailbox_send(mb, 1, ptr::null_mut(), 0) };
+        assert_eq!(pre_fill, HewError::Ok as i32, "pre-fill must succeed");
+
+        // The mailbox is now at capacity; this send must overflow into the
+        // DropNew policy and be reported as silent success.
+        // SAFETY: actor remains live for this call.
+        let rc = unsafe { hew_actor_send_by_id(actor_id, ptr::null(), 1, ptr::null_mut(), 0) };
+        assert_eq!(
+            rc,
+            HewError::Ok as i32,
+            "a DropNew policy-drop on a fire-and-forget send must be silent (Ok), \
+             per spec §6.2"
+        );
+
+        // Actor is still Idle (no state transition occurred: the DropNew
+        // overflow never enqueues, so nothing wakes the scheduler).
+        // hew_actor_stop CAS Idle → Stopped succeeds directly; no scheduler
+        // needed — mirrors `native_ask_bounded_mailbox_full_sets_mailbox_full_error`.
+        // SAFETY: actor is valid; stopping a live actor is safe.
+        unsafe { hew_actor_stop(actor) };
+        // SAFETY: actor is Stopped (quiescent); hew_mailbox_free drains the
+        // pre-filled message during free_actor_resources.
+        assert_eq!(unsafe { hew_actor_free(actor) }, 0);
+    }
+
+    /// F2: `overflow fail` is fail-closed for fire-and-forget sends. Unlike
+    /// `DropNew`/`DropOld`/`Coalesce` (spec-silent), the `Fail` policy is an
+    /// explicit, genuine rejection and must stay caller-visible (a distinct
+    /// non-zero code) even on the no-reply-channel send path, so
+    /// `Terminator::Send` traps rather than silently dropping the message.
+    #[test]
+    fn send_by_id_fail_policy_overflow_is_genuine_failure() {
+        let _guard = crate::runtime_test_guard();
+
+        let opts = HewActorOpts {
+            init_state: ptr::null_mut(),
+            state_size: 0,
+            dispatch: Some(noop_dispatch),
+            mailbox_capacity: 1,
+            overflow: HewOverflowPolicy::Fail as i32,
+            coalesce_key_fn: None,
+            coalesce_fallback: 0,
+            budget: 0,
+            arena_cap_bytes: 0,
+            cycle_capable: 0,
+        };
+        // SAFETY: opts is valid for the duration of the call.
+        let actor = unsafe { hew_actor_spawn_opts(&raw const opts) };
+        assert!(!actor.is_null(), "bounded Fail spawn must succeed");
+        // SAFETY: actor is valid; the mailbox pointer is valid for its lifetime.
+        let actor_id = unsafe { (*actor).id };
+        // SAFETY: actor is valid; the mailbox pointer is valid for its lifetime.
+        let mb = unsafe { (*actor).mailbox.cast::<mailbox::HewMailbox>() };
+
+        // SAFETY: mb is a valid, non-null pointer to a HewMailbox owned by this actor.
+        let pre_fill = unsafe { mailbox::hew_mailbox_send(mb, 1, ptr::null_mut(), 0) };
+        assert_eq!(pre_fill, HewError::Ok as i32, "pre-fill must succeed");
+
+        // SAFETY: actor remains live for this call.
+        let rc = unsafe { hew_actor_send_by_id(actor_id, ptr::null(), 1, ptr::null_mut(), 0) };
+        assert_ne!(
+            rc,
+            HewError::Ok as i32,
+            "overflow fail must not silently succeed on a fire-and-forget send \
+             (fail-closed, F2)"
+        );
+
+        // SAFETY: actor is valid; stopping a live actor is safe.
+        unsafe { hew_actor_stop(actor) };
+        // SAFETY: actor is Stopped (quiescent); hew_mailbox_free drains the
+        // pre-filled message during free_actor_resources.
+        assert_eq!(unsafe { hew_actor_free(actor) }, 0);
     }
 
     /// A held actor pointer stamped with a different `runtime_id` than the

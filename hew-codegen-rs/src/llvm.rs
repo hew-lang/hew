@@ -7502,7 +7502,7 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
     // mailbox_capacity / overflow: mirrored from ActorLayout by the MIR
     // post-loop pass. Without this, every supervised actor stays unbounded
     // across (re)spawns regardless of its declared `mailbox` clause — the
-    // second of the two codegen zero-hardcode sites this fence closes.
+    // second of the two codegen zero-hardcode sites closed by this fix.
     // `-1`/`0` = unbounded, matching `HewActorOpts.mailbox_capacity`.
     let mailbox_capacity_i32 = child
         .mailbox_capacity
@@ -32302,23 +32302,19 @@ fn lower_terminator<'ctx>(
                 "actor send payload size",
             )?;
             let msg_type = fn_ctx.ctx.i32_type().const_int(*msg_type as u64, false);
-            // Bind the i32 return value. `0` (`HewError::Ok`) is success.
-            // `-1` (`HewError::ErrMailboxFull`) is ALSO not a caller-visible
-            // failure: it is the shared status `hew_mailbox_send` returns for
-            // every declared bounded-mailbox overflow outcome — `drop_new`
-            // and `drop_old` silently discard/evict per spec §6.2 ("New
-            // message is silently discarded" / "Oldest message ... is
-            // evicted"), and `fail` has no Result-returning fire-and-forget
-            // ABI to surface an error through yet. Trapping the SENDER on a
-            // declared, spec-silent overflow policy would make a genuinely
-            // bounded mailbox (G-A1) worse than the previous unbounded
-            // default — this status must fall through to `next_bb` exactly
-            // like success. Any OTHER nonzero status (recipient gone, OOM,
-            // foreign-runtime, remote partition rejection) is a real,
-            // caller-visible failure that must still trap — we must not
-            // silently proceed there, as that could leave the caller
-            // operating on stale state or attempting a follow-up ask on a
-            // dead actor.
+            // Bind the i32 return value. `0` (`HewError::Ok`) is the only
+            // non-trapping status: `hew_actor_send_by_id` already resolves a
+            // declared bounded-mailbox policy-drop (`drop_new`/`drop_old`/
+            // `coalesce`; spec §6.2, silent by definition) down to `0` below
+            // this call, at the mailbox-send seam
+            // (`hew_mailbox_send_fire_and_forget` in the runtime) — NOT here.
+            // Every other status this call can return (recipient gone,
+            // `fail`-policy overflow, OOM, foreign-runtime, remote partition
+            // rejection) is a genuine, caller-visible failure and must trap:
+            // proceeding past one could leave the caller operating on stale
+            // state or attempting a follow-up ask on a dead actor. Do not
+            // special-case any particular non-zero value here — every
+            // failure code is, and must stay, caller-visible.
             // `Terminator::Send` targets a LOCAL actor handle (`LocalPid`);
             // it delivers into a local mailbox and never reaches the cross-node
             // serialize path (that is the `RemotePid<T>` `emit_remote_pid_send_call`
@@ -32346,9 +32342,9 @@ fn lower_terminator<'ctx>(
                 })?
                 .into_int_value();
 
-            // Branch: status == 0 or status == -1 (ErrMailboxFull, a declared
-            // overflow policy outcome) → next_bb; any other nonzero status
-            // → send_fail_bb.
+            // Branch: status == 0 → next_bb; any nonzero status →
+            // send_fail_bb. No status value is excluded — see the comment
+            // above the call for why every nonzero code must trap.
             let send_fail_bb = fn_ctx
                 .builder
                 .get_insert_block()
@@ -32357,24 +32353,10 @@ fn lower_terminator<'ctx>(
                 .ok_or_else(|| CodegenError::Llvm("send block has no parent function".into()))?;
             let i32_ty = fn_ctx.ctx.i32_type();
             let zero = i32_ty.const_zero();
-            let err_mailbox_full = i32_ty.const_int((-1i32) as u64, true);
-            let not_ok = fn_ctx
+            let send_failed = fn_ctx
                 .builder
                 .build_int_compare(inkwell::IntPredicate::NE, send_status, zero, "send_not_ok")
                 .llvm_ctx("send status cmp")?;
-            let not_mailbox_full = fn_ctx
-                .builder
-                .build_int_compare(
-                    inkwell::IntPredicate::NE,
-                    send_status,
-                    err_mailbox_full,
-                    "send_not_mailbox_full",
-                )
-                .llvm_ctx("send status mailbox-full cmp")?;
-            let send_failed = fn_ctx
-                .builder
-                .build_and(not_ok, not_mailbox_full, "actor_send_failed")
-                .llvm_ctx("send status combine")?;
 
             let next_bb = *fn_ctx
                 .blocks

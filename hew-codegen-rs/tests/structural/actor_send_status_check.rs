@@ -192,3 +192,65 @@ fn send_terminator_checks_return_status_and_traps_on_failure() {
         "send fail block must end with unreachable; got:\n{ll}"
     );
 }
+
+/// G-A1 fail-open regression (F1): `Terminator::Send` must trap on **every**
+/// nonzero `hew_actor_send_by_id` status, not just a subset. A prior version
+/// of this codegen excluded `-1` (`HewError::ErrMailboxFull`) from the trap
+/// condition to avoid trapping on a declared bounded-mailbox policy-drop —
+/// but `hew_actor_send_by_id` also returned `-1` for an unrelated genuine
+/// failure (actor not found locally), so the exclusion silently swallowed
+/// that failure too (a cross-eco review caught this: a fire-and-forget send
+/// to a permanently-stopped supervised child no longer trapped).
+///
+/// The fix moved the policy-drop/genuine-failure distinction BELOW this
+/// call, into the runtime seam (`hew_mailbox_send_fire_and_forget`), so a
+/// policy-drop now resolves all the way down to status `0` and every other
+/// status is a genuine failure. This test asserts the codegen side of that
+/// fix stays reverted: exactly one status comparison (against zero, not
+/// `-1`), and no `and i1` combining two comparisons — the shape a `-1`
+/// exclusion would require.
+#[test]
+fn send_terminator_traps_on_every_nonzero_status_no_special_cased_value() {
+    let pipeline = send_status_pipeline();
+    let tmp = std::env::temp_dir().join("hew-actor-send-status-check-no-exclusion");
+    std::fs::create_dir_all(&tmp).expect("create out_dir");
+    let options = EmitOptions {
+        module_name: "send_status_no_exclusion_probe",
+        out_dir: &tmp,
+        native: false,
+        wasm: false,
+        target_triple: None,
+        debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
+        source_path: None,
+    };
+    let artefacts =
+        emit_module(&pipeline, &options).expect("send_status pipeline must emit successfully");
+    let ll_path: &Path = artefacts
+        .ll_path
+        .as_deref()
+        .expect("emit_module must populate ll_path");
+    let ll = std::fs::read_to_string(ll_path).expect("read emitted .ll");
+
+    // Exactly one `icmp` on the send status: `status != 0`. A `-1`-exclusion
+    // shape would need a second `icmp` (`status != -1`) combined via `and`.
+    let icmp_count = ll.matches("icmp").count();
+    assert_eq!(
+        icmp_count, 1,
+        "Terminator::Send must compare the send status exactly once (status \
+         != 0), with no second comparison singling out a particular status \
+         value for exclusion; got {icmp_count} `icmp` occurrences in:\n{ll}"
+    );
+    // No combining `and i1` of two trap conditions.
+    assert!(
+        !ll.contains("and i1"),
+        "Terminator::Send must not AND two status comparisons together \
+         (that shape is what a special-cased-value exclusion, like the \
+         reverted `-1` exclusion, would produce); got:\n{ll}"
+    );
+    // The comparison must be against the literal constant zero, not `-1`.
+    assert!(
+        ll.contains("icmp ne i32") && ll.contains(", 0"),
+        "Terminator::Send's status comparison must be against 0; got:\n{ll}"
+    );
+}

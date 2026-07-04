@@ -38601,7 +38601,37 @@ fn build_module_for_target<'ctx>(
         &pipeline.extern_decls,
         &record_layouts,
     )?;
+    // #2391 fail-closed guard: two raw-MIR functions sharing one name (e.g. two
+    // imported modules each defining a DISTINCT type with the same bare name and
+    // method — `std::net::http` and `std::net::websocket` both define a `Server`
+    // with `impl ServerMethods for Server`, so both emit `Server::accept` /
+    // `Server::close`). Without this, `add_function` is called twice with the
+    // same name; LLVM auto-renames the second, `lower_function` appends BOTH
+    // bodies to the winner, and the first survives as a bodiless
+    // internal-linkage declaration that `Module::verify()` rejects with the
+    // opaque "Global is external, but doesn't have external or weak linkage!"
+    // dump. Weak/linkonce linkage would be FAIL-OPEN here — it would silently
+    // keep one of the two DISTINCT bodies — so the collision is converted to a
+    // structured diagnosable error instead. Any duplicate raw-MIR name today
+    // already produces that verify failure or a silent garbage block, so this
+    // guard cannot regress a working program; it also fences the
+    // impossible-today partial-overlap edge left by the HIR subsumed-module
+    // dedup. Names are tracked WITHIN this loop ONLY: raw-MIR functions may
+    // legitimately share a name with a predeclared stdlib-catalog / extern
+    // symbol (the intrinsic-floor path relies on lookup-or-declare), so the
+    // predeclared sets are deliberately NOT consulted.
+    let mut seen_raw_mir_symbols: HashSet<&str> = HashSet::new();
     for func in &pipeline.raw_mir {
+        if !seen_raw_mir_symbols.insert(func.name.as_str()) {
+            return Err(CodegenError::FailClosed(format!(
+                "duplicate function symbol `{}`: two impl blocks lowered to the same \
+                 unqualified symbol. Two imported modules each define a type named the \
+                 same with this method; distinct same-named types cannot yet share one \
+                 compilation unit (see #2400). Rename one of the types, or import only \
+                 one of the modules.",
+                func.name
+            )));
+        }
         let sym = declare_function(
             ctx,
             &llvm_mod,

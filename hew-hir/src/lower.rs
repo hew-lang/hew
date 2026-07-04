@@ -1556,6 +1556,106 @@ fn file_import_module_ids(program: &Program) -> HashSet<hew_parser::module::Modu
     ids
 }
 
+/// Identify, by PROVENANCE (file-set subsumption), the package-import graph
+/// modules whose `impl` blocks must NOT be re-lowered by the fourth pass
+/// because a *superset* package module already lowers the identical impl
+/// items under the same unqualified `<SelfType>::<method>` symbols.
+///
+/// WHY this exists: a directory module (`import std::net::http` resolves to
+/// `std/net/http/http.hew`, whose stem matches its directory, so it is a
+/// *directory module* that peer-absorbs every sibling `.hew`) and an explicit
+/// sub-file import of one of those peers (`import std::net::http::http_client`)
+/// register as two distinct graph modules whose `source_paths` sets are
+/// `{http_client.hew} ⊂ {http.hew, http_client.hew, …}`. Both survive the
+/// `file_import_module_ids` guard (both are PACKAGE imports, not file-path
+/// imports), so `lower_impl_block` runs on `http_client.hew`'s
+/// `impl ResponseMethods for Response` TWICE — once per module — emitting
+/// `Response::status` … `Response::free` under identical bare symbols. Two
+/// `RawMirFunction`s with one name make codegen declare the LLVM function
+/// twice; the first stays a bodiless internal-linkage declaration and
+/// `Module::verify()` rejects it ("Global is external, but doesn't have
+/// external or weak linkage!"). See #2391.
+///
+/// SEMANTICS: over package modules only (the root and every
+/// `file_import_modules` id are excluded — file-import doubles are already
+/// handled by the splice-dedup guard), treat each module's `source_paths` as a
+/// canonical path set. Module M is *subsumed* iff some N ≠ M has
+/// `files(M) ⊆ files(N)` and EITHER `files(M) ⊊ files(N)` (a strict subset
+/// always loses, so the maximal superset survives — subset is transitive) OR
+/// the sets are equal and N precedes M in `topo_order` (a deterministic
+/// tiebreak that keeps exactly one of two identical modules). Today's loader
+/// only ever yields disjoint, equal, or single-file ⊂ directory sets (peer
+/// absorption is a non-recursive `read_dir`), so partial overlap cannot arise;
+/// if it ever did, both copies lower and the codegen duplicate-raw-symbol guard
+/// catches the collision fail-closed rather than silently.
+///
+/// WHY only impl methods: pub free fns lower under module-qualified
+/// `{module_short}$fn` names (both copies are needed — `http_client.get(...)`
+/// binds `http_client$get`), consts under `{module_short}.NAME`, actors under
+/// per-module layouts; only impl methods use the bare `<SelfType>::<method>`
+/// family, so the subsumed skip is applied ONLY in the `Item::Impl` arm.
+///
+/// WHEN OBSOLETE / WHAT REPLACES IT: this provenance dedup disappears once
+/// impl-method symbols become module-qualified (the foundational fix that also
+/// unblocks two DISTINCT same-named types in one unit, e.g. http + websocket
+/// each defining `Server`); tracked as the #2391 follow-up. Until then this
+/// keeps the #2391 flagship shape (one program importing both `std::net::http`
+/// and `std::net::http::http_client`) linking.
+fn subsumed_package_module_ids(
+    program: &Program,
+    file_import_modules: &HashSet<hew_parser::module::ModuleId>,
+) -> HashSet<hew_parser::module::ModuleId> {
+    use std::path::{Path, PathBuf};
+
+    let mut subsumed = HashSet::new();
+    let Some(mg) = &program.module_graph else {
+        return subsumed;
+    };
+
+    // Candidate = package module actually visited by the fourth pass. Build in
+    // `topo_order` so each carries its position, giving the equal-set tiebreak
+    // for free (earlier position survives). Modules absent from `mg.modules`
+    // are never lowered, so they cannot subsume or be subsumed.
+    let mut candidates: Vec<(&hew_parser::module::ModuleId, HashSet<&Path>, usize)> = Vec::new();
+    for (pos, id) in mg.topo_order.iter().enumerate() {
+        if *id == mg.root || file_import_modules.contains(id) {
+            continue;
+        }
+        let Some(module) = mg.modules.get(id) else {
+            continue;
+        };
+        let files: HashSet<&Path> = module.source_paths.iter().map(PathBuf::as_path).collect();
+        // A module with no source paths cannot meaningfully subset another;
+        // leave it to lower normally.
+        if files.is_empty() {
+            continue;
+        }
+        candidates.push((id, files, pos));
+    }
+
+    for i in 0..candidates.len() {
+        let (m_files, m_pos) = (&candidates[i].1, candidates[i].2);
+        for j in 0..candidates.len() {
+            if i == j {
+                continue;
+            }
+            let (n_files, n_pos) = (&candidates[j].1, candidates[j].2);
+            if !m_files.is_subset(n_files) {
+                continue;
+            }
+            // files(M) ⊆ files(N). A strict subset is always subsumed; equal
+            // sets subsume only the one later in topo order, so exactly one of
+            // the pair survives.
+            let equal = m_files.len() == n_files.len();
+            if !equal || n_pos < m_pos {
+                subsumed.insert(candidates[i].0.clone());
+                break;
+            }
+        }
+    }
+    subsumed
+}
+
 #[must_use]
 pub fn lower_program(
     program: &Program,
@@ -3154,6 +3254,13 @@ pub fn lower_program_with_mono_cap(
         // impl. `file_import_module_ids` cannot misroute a package impl: package
         // modules are never in the set, so this walk emits them exactly once.
         let file_import_modules = file_import_module_ids(program);
+        // Package modules whose impl blocks are byte-identical clones of a
+        // superset package module's (a directory module and an explicit
+        // sub-file import of one of its peers). Their impls MUST be skipped
+        // here or they lower twice under the same bare `<SelfType>::<method>`
+        // symbols — the #2391 dual-import link failure. See
+        // `subsumed_package_module_ids` for the full mechanism.
+        let subsumed_modules = subsumed_package_module_ids(program, &file_import_modules);
         // Mirror the checker's 1-based non-root module index. The checker
         // increments `current_module_idx` before each non-root topo-order
         // module and uses it to stamp `SpanKey`s in `expr_types`. The HIR
@@ -3414,7 +3521,29 @@ pub fn lower_program_with_mono_cap(
                             // identity, so a package-import impl that merely
                             // shares a bare type/trait name with a file-import
                             // or root impl is never skipped.
-                            if file_import_modules.contains(mod_id) {
+                            //
+                            // Also skip SUBSUMED package modules: a directory
+                            // module (`import std::net::http`) peer-absorbs a
+                            // file that an explicit sub-file import
+                            // (`import std::net::http::http_client`) re-imports
+                            // as its own module. Both survive the file-import
+                            // guard, so without this the shared file's impl
+                            // (`impl ResponseMethods for Response`) lowers twice
+                            // under identical bare symbols → the #2391
+                            // dual-import LLVM-verify failure. The superset
+                            // module lowers the identical items once; its larger
+                            // `same_module_pub_fns`/`fn_registry` view means it
+                            // resolves a SUPERSET of names, so the surviving copy
+                            // skips no method the subsumed copy would have kept
+                            // (strictly fewer `skip_methods`, never more). Both
+                            // guards are per-ITEM `continue`s — the enclosing
+                            // module loop and its `module_idx` increment are
+                            // never skipped, keeping the HIR/checker module-index
+                            // mirroring in sync. See
+                            // `subsumed_package_module_ids`.
+                            if file_import_modules.contains(mod_id)
+                                || subsumed_modules.contains(mod_id)
+                            {
                                 continue;
                             }
                             if let TypeExpr::Named {

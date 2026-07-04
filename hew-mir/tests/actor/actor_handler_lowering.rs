@@ -2,11 +2,13 @@ use std::collections::HashMap;
 
 use hew_hir::{
     ids::IdGen, HirActorDecl, HirActorReceiveFn, HirActorStateGuard, HirBinding, HirBlock, HirExpr,
-    HirExprKind, HirField, HirFn, HirItem, HirLifecycleHook, HirLifecycleHookKind, HirLiteral,
-    HirModule, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl, IntentKind,
-    ResolvedRef, ScopeId, ValueClass,
+    HirExprKind, HirField, HirFn, HirGenCapture, HirGenCaptureSource, HirItem, HirLifecycleHook,
+    HirLifecycleHookKind, HirLiteral, HirModule, HirStmt, HirStmtKind, HirSupervisorChild,
+    HirSupervisorDecl, IntentKind, ResolvedRef, ScopeId, ValueClass,
 };
-use hew_mir::{lower_hir_module, FunctionCallConv, Instr, MirDiagnosticKind, Terminator};
+use hew_mir::{
+    lower_hir_module, FunctionCallConv, Instr, MirDiagnosticKind, MirStatement, Terminator,
+};
 use hew_types::{ActorHandlerSpec, ActorProtocolDescriptor, BuiltinType, ResolvedTy};
 
 fn empty_module(items: Vec<HirItem>) -> HirModule {
@@ -561,18 +563,425 @@ fn actor_handler_every_ns_lowers_to_layout_every_ms() {
     );
 }
 
+/// A single-yield `receive gen fn ticks() -> i64 { yield 7; }` fixture on an
+/// otherwise-empty `Counter` actor.
+fn ticks_generator_actor(ids: &mut IdGen) -> HirActorDecl {
+    let yield_value = literal_expr(ids, HirLiteral::Integer(7), ResolvedTy::I64);
+    let yield_expr = HirExpr {
+        node: ids.node(),
+        site: ids.site(),
+        ty: ResolvedTy::Unit,
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::Yield {
+            value: Some(Box::new(yield_value)),
+            yield_ty: ResolvedTy::I64,
+        },
+        span: 0..0,
+    };
+    let yield_stmt = HirStmt {
+        node: ids.node(),
+        kind: HirStmtKind::Expr(yield_expr),
+        span: 0..0,
+    };
+    let gen_inner = block(ids, vec![yield_stmt], None, ResolvedTy::Unit);
+    let generator_ty = ResolvedTy::Named {
+        name: "Generator".to_string(),
+        args: vec![ResolvedTy::I64, ResolvedTy::Unit],
+        builtin: Some(BuiltinType::Generator),
+        is_opaque: false,
+    };
+    let gen_block = HirExpr {
+        node: ids.node(),
+        site: ids.site(),
+        ty: generator_ty.clone(),
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::GenBlock {
+            body: gen_inner,
+            yield_ty: ResolvedTy::I64,
+            return_ty: ResolvedTy::Unit,
+            captures: Vec::new(),
+        },
+        span: 0..0,
+    };
+    let generator_body = block(ids, vec![], Some(gen_block), generator_ty);
+    let ticks = receive("ticks", true, vec![], ResolvedTy::I64, generator_body);
+    actor(ids, "Counter", vec![ticks])
+}
+
+/// A standalone `gen fn stream_twin() -> Generator<i64, ()> { yield 7; }` — the
+/// non-actor twin of `ticks_generator_actor`'s handler body. Its `GenBlock`
+/// lowers through the SAME `lower_gen_block` path the pump uses, but with no
+/// `stream_producer_pump` context: the handle flows OUT as the function's
+/// return value, so the caller owns and drops it. The pump's companion
+/// registration must NOT reach this path (else the returned-then-registered
+/// handle double-frees — the #2384 class).
+fn standalone_ticks_gen_fn(ids: &mut IdGen) -> HirFn {
+    let yield_value = literal_expr(ids, HirLiteral::Integer(7), ResolvedTy::I64);
+    let yield_expr = HirExpr {
+        node: ids.node(),
+        site: ids.site(),
+        ty: ResolvedTy::Unit,
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::Yield {
+            value: Some(Box::new(yield_value)),
+            yield_ty: ResolvedTy::I64,
+        },
+        span: 0..0,
+    };
+    let yield_stmt = HirStmt {
+        node: ids.node(),
+        kind: HirStmtKind::Expr(yield_expr),
+        span: 0..0,
+    };
+    let gen_inner = block(ids, vec![yield_stmt], None, ResolvedTy::Unit);
+    let generator_ty = ResolvedTy::Named {
+        name: "Generator".to_string(),
+        args: vec![ResolvedTy::I64, ResolvedTy::Unit],
+        builtin: Some(BuiltinType::Generator),
+        is_opaque: false,
+    };
+    let gen_block = HirExpr {
+        node: ids.node(),
+        site: ids.site(),
+        ty: generator_ty.clone(),
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::GenBlock {
+            body: gen_inner,
+            yield_ty: ResolvedTy::I64,
+            return_ty: ResolvedTy::Unit,
+            captures: Vec::new(),
+        },
+        span: 0..0,
+    };
+    let body = block(ids, vec![], Some(gen_block), generator_ty.clone());
+    HirFn {
+        id: ids.item(),
+        node: ids.node(),
+        name: "stream_twin".to_string(),
+        type_params: vec![],
+        params: vec![],
+        return_ty: generator_ty,
+        body,
+        span: 0..0,
+        is_generator: true,
+        intrinsic_id: None,
+    }
+}
+
+/// Whether any function in `funcs` has a flat-statement `MirStatement::Drop`
+/// naming the receive-gen pump companion — i.e. the companion was registered
+/// with the drop-elaboration authority and its `hew_gen_coro_destroy` release
+/// was elaborated onto the function's exits.
+fn drops_recv_gen_companion(funcs: &[hew_mir::ElaboratedMirFunction]) -> bool {
+    funcs.iter().any(|f| {
+        f.statements.iter().any(
+            |s| matches!(s, MirStatement::Drop { name, .. } if name == "__hew_recv_gen_companion"),
+        )
+    })
+}
+
 #[test]
 fn actor_handler_generator_receive_fn_lowers_to_generator_body() {
-    // A `receive gen fn` handler lowers through the shared GenBlock state-machine
-    // path: the HIR lower wraps the handler body in a `HirExprKind::GenBlock`
-    // tail typed `Generator<Yield = i64, Return = Unit>` (see
-    // `lower_actor_generator_body`). MIR lowers that handler as a generator —
-    // the handler shell emits `Terminator::MakeGenerator` and the yield body is
-    // surfaced as a sibling `__hew_gen_body_*` function — with NO UnsupportedNode
-    // diagnostic. Before the fix, the handler was skipped with a "separate lane"
-    // diagnostic and produced no MIR body.
+    // A `receive gen fn` handler lowers its `HirExprKind::GenBlock`-tailed
+    // body (see `lower_actor_generator_body`) then reshapes the shell into a
+    // stream-producer pump (see `build_stream_producer_pump`) — no
+    // UnsupportedNode diagnostic, no bare returned generator handle.
     let mut ids = IdGen::default();
-    let yield_value = literal_expr(&mut ids, HirLiteral::Integer(7), ResolvedTy::I64);
+    let actor = ticks_generator_actor(&mut ids);
+
+    let pipeline = lower_hir_module(&empty_module(vec![HirItem::Actor(actor)]));
+
+    // No "separate lane" UnsupportedNode diagnostic for the generator handler.
+    assert!(!pipeline.diagnostics.iter().any(|diag| {
+        matches!(
+            &diag.kind,
+            MirDiagnosticKind::UnsupportedNode { reason }
+                if reason == "actor receive fn declared as generator; generator MIR lowering is a separate lane"
+        )
+    }));
+    // The shell materialises the handle then drives it (pump reshape): `Unit`
+    // return, trailing sink param, GeneratorNext + suspending forward below.
+    let handler = pipeline
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "Counter__recv__ticks")
+        .expect("generator handler must produce a MIR function");
+    assert!(
+        handler
+            .blocks
+            .iter()
+            .any(|b| matches!(b.terminator, Terminator::MakeGenerator { .. })),
+        "generator handler must emit Terminator::MakeGenerator"
+    );
+    assert_eq!(
+        handler.return_ty,
+        ResolvedTy::Unit,
+        "the pump shell returns Unit, not the generator handle — it never replies"
+    );
+    assert!(
+        matches!(handler.params.last(), Some(ResolvedTy::Named { name, .. }) if name == "Sink"),
+        "the shell's trailing param must be the synthetic sink; got {:?}",
+        handler.params
+    );
+    assert!(
+        body_contains(handler, |i| matches!(i, Instr::GeneratorNext { .. })),
+        "the pump must drive the generator via Instr::GeneratorNext"
+    );
+    assert!(
+        handler.blocks.iter().any(|b| matches!(
+            b.terminator,
+            Terminator::Suspend {
+                is_final: false,
+                ..
+            }
+        )),
+        "the pump must forward each yielded value via a non-final Suspend (StreamSend)"
+    );
+    // The yield body is surfaced as a sibling gen-body function with a Yield.
+    let gen_body = pipeline
+        .raw_mir
+        .iter()
+        .find(|func| {
+            func.name
+                .starts_with("__hew_gen_body_Counter__recv__ticks_")
+        })
+        .expect("generator handler must surface a __hew_gen_body_* function");
+    assert!(
+        gen_body
+            .blocks
+            .iter()
+            .any(|b| matches!(b.terminator, Terminator::Yield { .. })),
+        "generator body must contain a Terminator::Yield"
+    );
+}
+
+fn body_contains(func: &hew_mir::RawMirFunction, pred: fn(&Instr) -> bool) -> bool {
+    func.blocks.iter().flat_map(|b| &b.instructions).any(pred)
+}
+
+/// Whether any block's terminator is a `Terminator::Call` to `callee`.
+fn calls_runtime_symbol(func: &hew_mir::RawMirFunction, callee: &str) -> bool {
+    func.blocks
+        .iter()
+        .any(|b| matches!(&b.terminator, Terminator::Call { callee: c, .. } if c == callee))
+}
+
+/// Whether `instr` is the scope-inline `Stream<T>` close `emit_scope_stream_drops`
+/// pushes directly into a block's instruction stream (as opposed to a
+/// function-exit LIFO drop-plan entry).
+fn is_inline_stream_close(instr: &Instr) -> bool {
+    matches!(
+        instr,
+        Instr::Drop {
+            drop_fn: Some(hew_mir::DropFnSpec::Runtime(
+                hew_types::runtime_call::RuntimeDropDescriptor::StreamClose
+            )),
+            ..
+        }
+    )
+}
+
+#[test]
+fn generator_handler_pump_registers_checks_peer_and_completes_sink() {
+    // The pump's fault-close and cancellation wiring (decisions 6+7): its
+    // prologue registers its own sink with its actor, checks the consumer
+    // peer before every resume, and closes through the registered
+    // `hew_actor_gen_sink_complete` — never the bare `hew_sink_close` the
+    // shell used earlier as a placeholder.
+    let mut ids = IdGen::default();
+    let actor = ticks_generator_actor(&mut ids);
+
+    let pipeline = lower_hir_module(&empty_module(vec![HirItem::Actor(actor)]));
+
+    let handler = pipeline
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "Counter__recv__ticks")
+        .expect("generator handler must produce a MIR function");
+
+    assert!(
+        calls_runtime_symbol(handler, "hew_actor_gen_sink_register"),
+        "the pump prologue must register its sink with its own actor"
+    );
+    assert!(
+        calls_runtime_symbol(handler, "hew_sink_peer_closed"),
+        "the pump must check its consumer peer before resuming the generator"
+    );
+    assert!(
+        calls_runtime_symbol(handler, "hew_actor_gen_sink_complete"),
+        "the pump's close path must deregister + free the sink via the \
+         registered complete call"
+    );
+    assert!(
+        !calls_runtime_symbol(handler, "hew_sink_close"),
+        "the bare hew_sink_close placeholder must be fully replaced"
+    );
+
+    // The pump drives an inner generator handle (`gen_place`) that has no real
+    // HIR binding; it must be registered with the drop-elaboration authority so
+    // its `hew_gen_coro_destroy` release fires on every pump exit instead of
+    // leaking the coro frame + heap companion. The elaborated
+    // pump function must carry the companion drop.
+    assert!(
+        drops_recv_gen_companion(&pipeline.elaborated_mir),
+        "the pump must register its generator companion so `hew_gen_coro_destroy` \
+         is elaborated onto its exits (Return/Panic/Cancel)"
+    );
+
+    // ...and the registration must NOT leak into the standalone-generator-shell
+    // path: a plain `gen fn` returns its handle to a caller who owns and drops
+    // it, so registering the companion there would double-free the moved-out
+    // handle (the #2384 class). Lower a standalone `gen fn` alone and confirm no
+    // companion drop is elaborated anywhere.
+    let mut standalone_ids = IdGen::default();
+    let standalone = standalone_ticks_gen_fn(&mut standalone_ids);
+    let standalone_pipeline = lower_hir_module(&empty_module(vec![HirItem::Function(standalone)]));
+    assert!(
+        !drops_recv_gen_companion(&standalone_pipeline.elaborated_mir),
+        "a standalone `gen fn` returns its handle to the caller; the pump companion \
+         registration must never reach the shared lower_gen_block/standalone path"
+    );
+}
+
+/// A `receive gen fn names() -> string { yield "hi"; }` — the string-yielding
+/// twin of `ticks_generator_actor`. Its pump forwards an OWNED heap `string`
+/// per yield; the send BORROWS (the runtime copies the content), so the pump
+/// stays the sole owner and must release the value on the resume edge or leak
+/// one node per yield.
+fn string_yield_generator_actor(ids: &mut IdGen) -> HirActorDecl {
+    let yield_value = literal_expr(
+        ids,
+        HirLiteral::String("hi".to_string()),
+        ResolvedTy::String,
+    );
+    let yield_expr = HirExpr {
+        node: ids.node(),
+        site: ids.site(),
+        ty: ResolvedTy::Unit,
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::Yield {
+            value: Some(Box::new(yield_value)),
+            yield_ty: ResolvedTy::String,
+        },
+        span: 0..0,
+    };
+    let yield_stmt = HirStmt {
+        node: ids.node(),
+        kind: HirStmtKind::Expr(yield_expr),
+        span: 0..0,
+    };
+    let gen_inner = block(ids, vec![yield_stmt], None, ResolvedTy::Unit);
+    let generator_ty = ResolvedTy::Named {
+        name: "Generator".to_string(),
+        args: vec![ResolvedTy::String, ResolvedTy::Unit],
+        builtin: Some(BuiltinType::Generator),
+        is_opaque: false,
+    };
+    let gen_block = HirExpr {
+        node: ids.node(),
+        site: ids.site(),
+        ty: generator_ty.clone(),
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::GenBlock {
+            body: gen_inner,
+            yield_ty: ResolvedTy::String,
+            return_ty: ResolvedTy::Unit,
+            captures: Vec::new(),
+        },
+        span: 0..0,
+    };
+    let generator_body = block(ids, vec![], Some(gen_block), generator_ty);
+    let names = receive("names", true, vec![], ResolvedTy::String, generator_body);
+    actor(ids, "Namer", vec![names])
+}
+
+/// The first inline `Instr::Drop` in the raw handler body whose `drop_fn` is a
+/// cow-heap `Release` — the pump's per-yield value release. The generator
+/// companion is registered with the drop-elaboration authority and surfaces as
+/// an ELABORATED `MirStatement::Drop`, never a raw inline `Instr::Drop`, so this
+/// isolates the value release specifically. Scope stream closes carry a
+/// `DropFnSpec::Runtime`, not `Release`, so they are excluded too.
+fn pump_body_inline_release_drop(handler: &hew_mir::RawMirFunction) -> Option<&'static str> {
+    handler
+        .blocks
+        .iter()
+        .flat_map(|b| &b.instructions)
+        .find_map(|i| match i {
+            Instr::Drop {
+                drop_fn: Some(hew_mir::DropFnSpec::Release(sym)),
+                ..
+            } => Some(*sym),
+            _ => None,
+        })
+}
+
+#[test]
+fn generator_pump_releases_string_yield_value_but_not_i64() {
+    // The pump's stream send BORROWS the yielded value (the runtime copies the
+    // content out of the slot), so an OWNED heap yield (`string`) leaks one node
+    // per yield unless the pump releases it on the resume edge. A `string` pump
+    // must carry exactly that inline `hew_string_drop`; an `i64` pump (BitCopy,
+    // nothing to free) must carry no inline value release at all.
+    let mut ids = IdGen::default();
+    let string_actor = string_yield_generator_actor(&mut ids);
+    let string_pipeline = lower_hir_module(&empty_module(vec![HirItem::Actor(string_actor)]));
+    let string_handler = string_pipeline
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "Namer__recv__names")
+        .expect("string generator handler must lower");
+    assert_eq!(
+        pump_body_inline_release_drop(string_handler),
+        Some("hew_string_drop"),
+        "the string-yield pump must release its borrowed-out value each yield via hew_string_drop"
+    );
+
+    let mut i64_ids = IdGen::default();
+    let i64_actor = ticks_generator_actor(&mut i64_ids);
+    let i64_pipeline = lower_hir_module(&empty_module(vec![HirItem::Actor(i64_actor)]));
+    let i64_handler = i64_pipeline
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "Counter__recv__ticks")
+        .expect("i64 generator handler must lower");
+    assert_eq!(
+        pump_body_inline_release_drop(i64_handler),
+        None,
+        "an i64 yield is BitCopy — the pump must not emit an inline value release for it"
+    );
+}
+
+/// A `receive gen fn` body that reads an actor state field (`count`, an
+/// `HirGenCaptureSource::ActorStateField` capture per `lower_actor_generator_body`)
+/// must snapshot it in the ENCLOSING shell frame — where actor state is
+/// addressable — via `Instr::ActorStateFieldLoad`, feed that snapshot into the
+/// generator's env record, and have the `__hew_gen_body_*` sibling read it
+/// back through `Instr::ClosureEnvFieldLoad`. The gen body itself must never
+/// contain an `ActorStateFieldLoad` — it has no actor-state addressability
+/// (`current_actor_state_fields` is not populated in the gen-body
+/// sub-builder); a state-field read there would silently mis-route.
+#[test]
+fn generator_handler_body_reads_state_field_via_env() {
+    let mut ids = IdGen::default();
+    let count_binding = binding(&mut ids, "count", ResolvedTy::I64);
+    let yield_value = HirExpr {
+        node: ids.node(),
+        site: ids.site(),
+        ty: ResolvedTy::I64,
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::BindingRef {
+            name: "count".to_string(),
+            resolved: ResolvedRef::Binding(count_binding.id),
+        },
+        span: 0..0,
+    };
     let yield_expr = HirExpr {
         node: ids.node(),
         site: ids.site(),
@@ -607,52 +1016,181 @@ fn actor_handler_generator_receive_fn_lowers_to_generator_body() {
             body: gen_inner,
             yield_ty: ResolvedTy::I64,
             return_ty: ResolvedTy::Unit,
-            captures: Vec::new(),
+            captures: vec![HirGenCapture {
+                binding: count_binding.id,
+                name: "count".to_string(),
+                ty: ResolvedTy::I64,
+                source: HirGenCaptureSource::ActorStateField,
+            }],
         },
         span: 0..0,
     };
     let generator_body = block(&mut ids, vec![], Some(gen_block), generator_ty);
-    let ticks = receive("ticks", true, vec![], ResolvedTy::I64, generator_body);
-    let actor = actor(&mut ids, "Counter", vec![ticks]);
+    // `actor()` below hardcodes a single `count: i64` state field, matching
+    // the capture built above.
+    let stream = receive("stream", true, vec![], ResolvedTy::I64, generator_body);
+    let actor = actor(&mut ids, "Counter", vec![stream]);
 
     let pipeline = lower_hir_module(&empty_module(vec![HirItem::Actor(actor)]));
 
-    // No "separate lane" UnsupportedNode diagnostic for the generator handler.
-    assert!(!pipeline.diagnostics.iter().any(|diag| {
-        matches!(
-            &diag.kind,
-            MirDiagnosticKind::UnsupportedNode { reason }
-                if reason == "actor receive fn declared as generator; generator MIR lowering is a separate lane"
-        )
-    }));
-    // The handler shell exists and materialises the generator handle.
-    let handler = pipeline
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "state-field capture must materialise into the generator env with no diagnostics: {:?}",
+        pipeline.diagnostics
+    );
+
+    let shell = pipeline
         .raw_mir
         .iter()
-        .find(|func| func.name == "Counter__recv__ticks")
-        .expect("generator handler must produce a MIR function");
+        .find(|func| func.name == "Counter__recv__stream")
+        .expect("generator handler shell must produce a MIR function");
     assert!(
-        handler
-            .blocks
-            .iter()
-            .any(|b| matches!(b.terminator, Terminator::MakeGenerator { .. })),
-        "generator handler must emit Terminator::MakeGenerator"
+        body_contains(shell, |i| matches!(i, Instr::ActorStateFieldLoad { .. })),
+        "shell must snapshot the state field via ActorStateFieldLoad before MakeGenerator"
     );
-    // The yield body is surfaced as a sibling gen-body function with a Yield.
+
     let gen_body = pipeline
         .raw_mir
         .iter()
         .find(|func| {
             func.name
-                .starts_with("__hew_gen_body_Counter__recv__ticks_")
+                .starts_with("__hew_gen_body_Counter__recv__stream_")
         })
         .expect("generator handler must surface a __hew_gen_body_* function");
     assert!(
-        gen_body
+        body_contains(gen_body, |i| matches!(i, Instr::ClosureEnvFieldLoad { .. })),
+        "gen body must read the snapshotted state field back via ClosureEnvFieldLoad"
+    );
+    assert!(
+        !body_contains(gen_body, |i| matches!(i, Instr::ActorStateFieldLoad { .. })),
+        "gen body has no actor-state addressability; it must never re-derive the field via \
+         ActorStateFieldLoad instead of reading the env snapshot"
+    );
+}
+
+/// The call-site bridge: `e.ticks()` on a `LocalPid<Counter>` receiver,
+/// HIR-lowered to `HirExprKind::ActorGenStream` (mirroring the checker's
+/// `ActorMethodKind::StreamProducer` dispatch), must lower to per-call
+/// channel construction (`hew_stream_channel` → `hew_stream_pair_sink`/
+/// `_stream`) plus a tell-shaped `Terminator::Send` — NEVER the `unknown
+/// actor handler` `NotYetImplemented` the dispatch bridge used to produce.
+/// `fn main() { let e = spawn Counter(initial: 0); e.ticks(); }` — a caller
+/// that spawns `actor_name` and dispatches its zero-arg generator handler
+/// `method` (unqualified name) via a hand-built `HirExprKind::ActorGenStream`.
+fn main_calling_gen_stream(ids: &mut IdGen, actor_name: &str, method: &str) -> HirFn {
+    let pid_ty = local_pid_of(actor_name);
+    let initial = literal_expr(ids, HirLiteral::Integer(0), ResolvedTy::I64);
+    let spawn = spawn_expr(
+        ids,
+        actor_name,
+        vec![("initial".to_string(), initial)],
+        pid_ty.clone(),
+    );
+    let e_binding = binding(ids, "e", pid_ty.clone());
+    let let_e = HirStmt {
+        node: ids.node(),
+        kind: HirStmtKind::Let(e_binding.clone(), Some(spawn)),
+        span: 0..0,
+    };
+    let receiver_ref = HirExpr {
+        node: ids.node(),
+        site: ids.site(),
+        ty: pid_ty,
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::BindingRef {
+            name: "e".to_string(),
+            resolved: ResolvedRef::Binding(e_binding.id),
+        },
+        span: 0..0,
+    };
+    let stream_ty = ResolvedTy::named_builtin("Stream", BuiltinType::Stream, vec![ResolvedTy::I64]);
+    let gen_stream_call = HirExpr {
+        node: ids.node(),
+        site: ids.site(),
+        ty: stream_ty,
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::ActorGenStream {
+            receiver: Box::new(receiver_ref),
+            method: format!("{actor_name}::{method}"),
+            args: vec![],
+        },
+        span: 0..0,
+    };
+    let call_stmt = HirStmt {
+        node: ids.node(),
+        kind: HirStmtKind::Expr(gen_stream_call),
+        span: 0..0,
+    };
+    let main_body = block(ids, vec![let_e, call_stmt], None, ResolvedTy::Unit);
+    HirFn {
+        id: ids.item(),
+        node: ids.node(),
+        name: "main".to_string(),
+        type_params: vec![],
+        params: vec![],
+        return_ty: ResolvedTy::Unit,
+        body: main_body,
+        span: 0..0,
+        is_generator: false,
+        intrinsic_id: None,
+    }
+}
+
+#[test]
+fn generator_handler_call_lowers_to_stream_dispatch() {
+    let mut ids = IdGen::default();
+    let actor = ticks_generator_actor(&mut ids);
+    let main = main_calling_gen_stream(&mut ids, "Counter", "ticks");
+
+    let pipeline = lower_hir_module(&empty_module(vec![
+        HirItem::Actor(actor),
+        HirItem::Function(main),
+    ]));
+
+    assert!(
+        !pipeline
+            .diagnostics
+            .iter()
+            .any(|d| matches!(&d.kind, MirDiagnosticKind::NotYetImplemented { .. })),
+        "the call-site bridge must close gap (b): no NotYetImplemented diagnostic \
+         (in particular no `unknown actor handler`); got: {:?}",
+        pipeline.diagnostics
+    );
+
+    let main_fn = pipeline
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "main")
+        .expect("caller function must produce a MIR function");
+    let callees: Vec<&str> = main_fn
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.terminator {
+            Terminator::Call { callee, .. } => Some(callee.as_str()),
+            _ => None,
+        })
+        .collect();
+    for expected in [
+        "hew_stream_channel",
+        "hew_stream_pair_sink",
+        "hew_stream_pair_stream",
+        // The carrier box is freed at the call site once both halves are
+        // extracted — otherwise the empty `HewStreamPair` box leaks per call.
+        "hew_stream_pair_free",
+    ] {
+        assert!(
+            callees.contains(&expected),
+            "call site must construct the per-call channel via `{expected}`; got calls: {callees:?}"
+        );
+    }
+    assert!(
+        main_fn
             .blocks
             .iter()
-            .any(|b| matches!(b.terminator, Terminator::Yield { .. })),
-        "generator body must contain a Terminator::Yield"
+            .any(|b| matches!(b.terminator, Terminator::Send { .. })),
+        "call site must tell-send the start message (args + sink) to the actor"
     );
 }
 
@@ -960,5 +1498,113 @@ fn actor_lifecycle_crash_lowers_to_actor_handler_function() {
         pipeline.diagnostics.is_empty(),
         "on(crash) lowering must not emit diagnostics; got: {:?}",
         pipeline.diagnostics
+    );
+}
+
+/// A `for await` cursor over a `Stream<T>` must close INLINE at its enclosing
+/// block's scope exit (#1949's `Stream`/`Receiver` sibling) — not only on the
+/// function's Return/Panic/Cancel exits — so a `break` or natural-exhaustion
+/// loop exit wakes a parked producer before any later code in the same
+/// function runs. A plain (non-cursor) `Stream<T>` binding that is returned
+/// out of its own function must NOT receive this inline treatment: it flows
+/// through the existing move-aware function-exit LIFO drop plan, which
+/// already skips a moved-out place.
+///
+/// This pins a regression found the hard way while building the fix: an
+/// early cut registered every `let`-bound stream for the inline close,
+/// including one about to be RETURNED from `std/stream.hew`'s `bytes_pipe`,
+/// and closed it out from under the caller (a SIGSEGV in the
+/// `stream_pipe_roundtrip` corpus fixture). The real gate is narrower: only
+/// the for-await desugar's synthetic `__hew_for_iter_*` cursor is a `Let`
+/// binding registered for the inline close.
+///
+/// Uses real source text (rather than hand-built HIR): the for-await
+/// desugar's synthetic cursor is fragile to reconstruct by hand.
+#[test]
+fn for_await_stream_cursor_gets_scope_inline_close_but_returned_binding_does_not() {
+    let source = r#"
+        actor Ticker {
+            receive gen fn stream() -> i64 {
+                yield 1;
+                yield 2;
+            }
+        }
+
+        fn drain(t: LocalPid<Ticker>) {
+            for await v in t.stream() {
+                println(f"{v}");
+            }
+        }
+
+        fn passthrough(t: LocalPid<Ticker>) -> Stream<i64> {
+            let s = t.stream();
+            s
+        }
+    "#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:#?}",
+        parsed.errors
+    );
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    assert!(
+        tc_output.errors.is_empty(),
+        "type errors: {:#?}",
+        tc_output.errors
+    );
+    let hir = hew_hir::lower_program(
+        &parsed.program,
+        &tc_output,
+        &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(
+        hir.diagnostics.is_empty(),
+        "HIR diagnostics: {:#?}",
+        hir.diagnostics
+    );
+    let pipeline = lower_hir_module(&hir.module);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "MIR diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+
+    let drain_fn = pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "drain")
+        .expect("drain fn must lower");
+    let drain_closes = drain_fn
+        .blocks
+        .iter()
+        .flat_map(|b| &b.instructions)
+        .filter(|i| is_inline_stream_close(i))
+        .count();
+    assert_eq!(
+        drain_closes, 1,
+        "the for-await desugar's synthetic cursor must get exactly one \
+         scope-inline StreamClose drop: {drain_fn:#?}"
+    );
+
+    let passthrough_fn = pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "passthrough")
+        .expect("passthrough fn must lower");
+    let passthrough_closes = passthrough_fn
+        .blocks
+        .iter()
+        .flat_map(|b| &b.instructions)
+        .filter(|i| is_inline_stream_close(i))
+        .count();
+    assert_eq!(
+        passthrough_closes, 0,
+        "a plain `let`-bound stream returned out of its function must NOT \
+         get an inline scope-exit close — it relies on the move-aware \
+         function-exit LIFO drop plan instead: {passthrough_fn:#?}"
     );
 }

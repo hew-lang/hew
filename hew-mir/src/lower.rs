@@ -67,6 +67,13 @@ const HEW_CTX_OFFSET_TRACE_SPAN: usize = HEW_CTX_OFFSET_TRACE + HEW_TRACE_OFFSET
 /// The double-underscore prefix (`__`) is outside the user-identifier namespace.
 const CHILD_LOOKUP_RESULT_TY_NAME: &str = "__HewChildLookupResult";
 
+/// Per-call `receive gen fn` stream channel capacity
+/// (`lower_actor_gen_stream`). A laziness/throughput tunable: delivery is
+/// eager producer drive with bounded-channel backpressure over strict
+/// pull-per-element dispatch; a small buffer keeps the consumer experience
+/// pull-equivalent without a user-facing capacity-tuning surface.
+const RECEIVE_GEN_STREAM_CAPACITY: i64 = 8;
+
 /// Sentinel HIR IDs for the synthetic `__crash_code: i64` ABI binding injected
 /// into `#[on(crash)]` handler prologues.
 ///
@@ -107,6 +114,32 @@ const SENTINEL_CRASH_MESSAGE_BINDING: BindingId = BindingId(u32::MAX - 1);
 /// rebuilds `note = CrashNotification { actor_id, kind }` from them.
 const SENTINEL_EXIT_ACTOR_ID_BINDING: BindingId = BindingId(u32::MAX - 2);
 const SENTINEL_EXIT_KIND_TAG_BINDING: BindingId = BindingId(u32::MAX - 3);
+
+/// Sentinel HIR binding ID for the synthetic generator-companion local the
+/// `receive gen fn` stream-producer pump drives. The pump nests an inner
+/// generator handle (`gen_place`) that has NO real HIR binding — a standalone
+/// `gen fn` returns its handle to a caller who owns and drops it, but the pump
+/// consumes the handle in place and had no owner for it, so its coroutine frame
+/// and heap companion leaked on every pump exit. Registering `gen_place` under
+/// this sentinel gives the drop-elaboration authority an owner, so
+/// `hew_gen_coro_destroy` fires on every pump exit (Return, Panic, Cancel).
+///
+/// Must be distinct from the sink param's `BindingId(u32::MAX)` — BOTH live in
+/// the pump function's `binding_locals` at once — and from the crash/exit
+/// sentinels above (those are local to their own synthetic functions, but a
+/// dedicated value keeps the pump self-contained and future-proof).
+const SENTINEL_RECV_GEN_COMPANION_BINDING: BindingId = BindingId(u32::MAX - 4);
+
+/// Prefix of the synthetic for-iteration cursor binding minted by the HIR
+/// for-loop desugar (`hew-hir/src/lower.rs`, `lower_for_iter_desugar`:
+/// `format!("__hew_for_iter_{}", …)`). The scope-exit `Stream`/`Receiver` close
+/// (3b-1) is scoped to THIS cursor only: it is internal to the loop and never
+/// returned or consumed elsewhere, so closing it at block-scope exit is always
+/// safe. A user `let s = <stream>` binding — which may be RETURNED (e.g.
+/// `std/stream.hew`'s `bytes_pipe` returns its `let input = …` stream) or moved
+/// into another binding — must keep its move-checked function-exit drop-plan
+/// close instead, or the inline close would free a handle that was moved out.
+const FOR_ITER_CURSOR_NAME_PREFIX: &str = "__hew_for_iter_";
 
 /// `CrashKind` variants in declaration order (`std/failure.hew`). An
 /// `#[on(exit)]` prologue builds the `kind` field by matching the runtime
@@ -2999,6 +3032,52 @@ pub fn lower_hir_module_with_facts(
     }
 }
 
+/// Build the synthetic `HirFn` params + return type for a `receive fn`
+/// handler shell. For an ordinary handler this is just `(handler.params,
+/// handler.return_ty)`, unchanged.
+///
+/// For a generator handler (`receive gen fn`), the HIR-lowered body is a thin
+/// block whose tail is a `HirExprKind::GenBlock` typed `Generator<Yield,
+/// Unit>` (see `lower_actor_generator_body` in hew-hir). Lowering with
+/// `is_generator: true` routes the body through the `GenBlock` →
+/// `Terminator::Yield` state-machine path (`lower_gen_block`), same as a
+/// standalone `gen fn`. Unlike a standalone generator, this shell does NOT
+/// return the generator handle to a caller: `lower_function` detects
+/// `is_generator && FunctionCallConv::ActorHandler` and reshapes it into a
+/// stream-producer PUMP (`Builder::build_stream_producer_pump`) that drives
+/// the handle to completion, forwarding each yielded value into a sink — so
+/// the shell's *MIR* return type is `Unit`, not the generator handle type.
+///
+/// The pump needs a destination for the forwarded values: one trailing
+/// pointer-word sink param, appended after the handler's own params
+/// (`ActorHandlerLayout.param_tys` mirrors this exactly — see
+/// `lower_actor_handler_layouts`). The sink param carries a synthetic
+/// `BindingId` — no HIR `BindingRef` in the (real) handler body ever names
+/// it; `lower_function` locates it positionally (`func.params.len() - 1`),
+/// not by id.
+fn stream_producer_shell_params_and_return_ty(
+    handler: &hew_hir::HirActorReceiveFn,
+) -> (Vec<HirBinding>, ResolvedTy) {
+    if !handler.is_generator {
+        return (handler.params.clone(), handler.return_ty.clone());
+    }
+    let mut params = handler.params.clone();
+    let sink_ty = ResolvedTy::named_builtin(
+        "Sink",
+        hew_types::BuiltinType::Sink,
+        vec![handler.return_ty.clone()],
+    );
+    params.push(HirBinding {
+        id: BindingId(u32::MAX),
+        name: "__hew_gen_sink".to_string(),
+        ty: sink_ty,
+        mutable: false,
+        span: handler.span.clone(),
+        is_consume: false,
+    });
+    (params, ResolvedTy::Unit)
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "actor receive lowering threads the same module tables as regular function lowering"
@@ -3066,33 +3145,18 @@ fn lower_actor_receive_handlers(
         }
         emitted_symbols.insert(emit_name.clone(), duplicate_label);
 
-        // For a generator handler (`receive gen fn`) the HIR-lowered body is a
-        // thin block whose tail is a `HirExprKind::GenBlock` typed
-        // `Generator<Yield, Unit>` (see `lower_actor_generator_body` in
-        // hew-hir). The handler function's *MIR* return type is therefore the
-        // generator handle type carried on that tail, NOT the declared element
-        // type recorded on `handler.return_ty` (which the protocol/ABI layer
-        // still consults as the stream element type). Lowering with
-        // `is_generator: true` and the generator return type routes the body
-        // through the `GenBlock` → `Terminator::Yield` state-machine path
-        // (`lower_gen_block`): the handler becomes a thin shell that emits
-        // `MakeGenerator` and returns the generator handle, and the actual
-        // yield body is surfaced as a sibling `__hew_gen_body_*` function.
-        let fn_return_ty = if handler.is_generator {
-            handler
-                .body
-                .tail
-                .as_ref()
-                .map_or_else(|| handler.return_ty.clone(), |tail| tail.ty.clone())
-        } else {
-            handler.return_ty.clone()
-        };
+        // A generator handler (`receive gen fn`) lowers its `GenBlock`-tailed
+        // body the same way a standalone `gen fn` does, but `lower_function`
+        // reshapes the shell into a stream-producer PUMP (see
+        // `stream_producer_shell_params_and_return_ty`) rather than returning
+        // the generator handle.
+        let (params, fn_return_ty) = stream_producer_shell_params_and_return_ty(handler);
         let synthetic_fn = HirFn {
             id: actor.id,
             node: actor.node,
             name: format!("{}::{}", actor.name, handler.name),
             type_params: Vec::new(),
-            params: handler.params.clone(),
+            params,
             return_ty: fn_return_ty,
             body: handler.body.clone(),
             span: handler.span.clone(),
@@ -5391,33 +5455,60 @@ fn lower_actor_handler_layouts(actor: &HirActorDecl) -> Vec<ActorHandlerLayout> 
     let descriptor = actor.protocol_descriptor.as_ref();
     let mut layouts = Vec::with_capacity(actor.receive_handlers.len());
     for handler in &actor.receive_handlers {
-        // Generator handlers (`receive gen fn`) DO have a lowered MIR body now
-        // (`lower_actor_receive_handlers` routes them through the `GenBlock`
-        // state-machine path, emitting the handler shell plus a sibling
-        // `__hew_gen_body_*`). They are NOT message-dispatch handlers, though:
-        // a `receive gen fn` is invoked as a `Stream<T>` producer
-        // (`for await x in actor.count_up()`), not via the request/reply
-        // protocol the trampoline routes. Until the consumer-side
-        // stream-dispatch bridge lands (each call → a per-call channel-backed
-        // `Stream<T>`), they stay out of the protocol dispatch layout — their
-        // function return type is `Generator<T, Unit>`, not the `T` the
-        // request/reply trampoline would reply with. Keeping the body present
-        // but the dispatch row absent is consistent: codegen validates the
-        // generator body without a trampoline arm that would mis-handle the
-        // reply.
-        if handler.is_generator {
-            continue;
-        }
         // The checker is the only authority for state-guard facts.
         // `HirActorStateGuard` is intentionally closed at one variant; any
         // future variant addition is a compile error here and must pair
-        // with a policy decision in this match.
+        // with a policy decision in this match. Populated for a generator
+        // handler exactly like any other (`lower_actor_receive_fn` computes
+        // it unconditionally).
         let requires_state_guard = match handler.state_guard {
             hew_hir::HirActorStateGuard::Exclusive => true,
         };
         let msg_type = descriptor
             .and_then(|d| d.msg_id_for(&handler.name))
             .map_or(i32::MAX, |id| i32::from_ne_bytes(id.to_ne_bytes()));
+
+        if handler.is_generator {
+            // A `receive gen fn` IS a message-dispatch handler — the third
+            // handler kind beside tell (`Fire`) and ask (`Ask`): a per-call
+            // stream-producer PUMP, started by a tell-shaped "start" message
+            // (decision 4; the checker/HIR/MIR call-site bridge constructs
+            // and sends that message). `param_tys`
+            // mirrors the shell's actual MIR signature built in
+            // `lower_actor_receive_handlers`: the handler's own params plus
+            // one trailing pointer-word sink — this row IS the single
+            // pack/unpack authority for the start message on both the
+            // trampoline (unpack) and the future call-site (pack) ends.
+            // `every_ms` stays `None`: a generator handler cannot be
+            // periodic (Risk 6 — `#[every]` on `receive gen fn` is a
+            // checker/HIR-level reject, not a layout concern). `return_ty`
+            // is `Unit`, matching the pump's actual MIR return type — the
+            // stream element type lives on the checker's
+            // `ActorMethodKind::StreamProducer` fact and the HIR
+            // `ActorGenStream` expression, not this row.
+            let mut param_tys: Vec<ResolvedTy> = handler
+                .params
+                .iter()
+                .map(|param| param.ty.clone())
+                .collect();
+            param_tys.push(ResolvedTy::named_builtin(
+                "Sink",
+                hew_types::BuiltinType::Sink,
+                vec![handler.return_ty.clone()],
+            ));
+            layouts.push(ActorHandlerLayout {
+                name: handler.name.clone(),
+                symbol: mangle_actor_receive_handler(&actor_symbol_base(actor), &handler.name),
+                msg_type,
+                every_ms: None,
+                param_tys,
+                return_ty: ResolvedTy::Unit,
+                requires_state_guard,
+                is_stream_producer: true,
+            });
+            continue;
+        }
+
         // ns→ms truncating divide — the runtime timer ABI
         // (`hew_actor_schedule_periodic`) is millisecond-grained. The
         // checker rejects sub-millisecond intervals, so 0 is unreachable
@@ -5438,6 +5529,7 @@ fn lower_actor_handler_layouts(actor: &HirActorDecl) -> Vec<ActorHandlerLayout> 
                 .collect(),
             return_ty: handler.return_ty.clone(),
             requires_state_guard,
+            is_stream_producer: false,
         });
     }
     layouts
@@ -5560,6 +5652,7 @@ fn collect_unknown_self_fields_in_expr(
         }
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::ActorGenStream { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
         | HirExprKind::ResolvedImplCall { receiver, args, .. }
         | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
@@ -6036,6 +6129,7 @@ fn collect_binding_defs_in_expr<'f>(
         }
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::ActorGenStream { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
         | HirExprKind::ResolvedImplCall { receiver, args, .. }
         | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
@@ -6756,7 +6850,8 @@ fn scan_expr_for_consume(expr: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) -> bo
             args.iter().any(|(_, a)| scan_expr_for_consume(a, b_p, pc))
         }
         HirExprKind::ActorSend { receiver, args, .. }
-        | HirExprKind::ActorAsk { receiver, args, .. } => {
+        | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::ActorGenStream { receiver, args, .. } => {
             scan_expr_for_consume(receiver, b_p, pc)
                 || args.iter().any(|a| scan_expr_for_consume(a, b_p, pc))
         }
@@ -7049,6 +7144,7 @@ fn collect_borrow_arg_sites_in_expr(
         }
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::ActorGenStream { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
         | HirExprKind::ResolvedImplCall { receiver, args, .. }
         | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
@@ -7593,6 +7689,7 @@ fn collect_return_values_in_expr<'f>(expr: &'f HirExpr, out: &mut Vec<&'f HirExp
         }
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::ActorGenStream { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
         | HirExprKind::ResolvedImplCall { receiver, args, .. }
         | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
@@ -7972,6 +8069,30 @@ fn lower_function(
     // (enforced by `alloc_local`'s monotone `locals.len()` counter).
     // Codegen emits a parameter-prologue that stores each LLVM function
     // argument into the corresponding alloca slot before the first instruction.
+    // Derive the stream-producer pump context from information `lower_function`
+    // already carries — `func.is_generator` and `call_conv` — rather than
+    // threading a new parameter through this (already heavily-shared) function
+    // and its dozen call sites. Only a `receive gen fn` handler shell (built by
+    // `lower_actor_receive_handlers`, which appends a synthetic trailing sink
+    // param and lowers with `FunctionCallConv::ActorHandler`) matches both
+    // conditions; a standalone `gen fn`/`gen {}` shell lowers `is_generator`
+    // under `FunctionCallConv::Default` and is untouched.
+    if func.is_generator && call_conv == crate::model::FunctionCallConv::ActorHandler {
+        let yield_ty = func.body.tail.as_ref().and_then(|tail| match &tail.kind {
+            HirExprKind::GenBlock { yield_ty, .. } => Some(yield_ty.clone()),
+            _ => None,
+        });
+        if let Some(yield_ty) = yield_ty {
+            let sink_idx = u32::try_from(func.params.len().checked_sub(1).expect(
+                "receive-gen-fn shell must carry at least the synthetic trailing sink param",
+            ))
+            .expect("stream-producer handler param count exceeds u32::MAX");
+            builder.stream_producer_pump = Some(StreamProducerPumpCtx {
+                sink: Place::Local(sink_idx),
+                yield_ty,
+            });
+        }
+    }
     builder.lower_params(func);
     builder.funcupdate_base_proven =
         compute_funcupdate_base_provenance(func, funcupdate_fn_returns_fresh);
@@ -9011,6 +9132,21 @@ struct OwnedLocalEntry {
     disposition: Disposition,
 }
 
+/// Pump context for a `receive gen fn` handler shell, set on `Builder`
+/// only when `lower_function` derives `func.is_generator &&
+/// call_conv == FunctionCallConv::ActorHandler` (see `Builder::stream_producer_pump`).
+#[derive(Debug, Clone)]
+struct StreamProducerPumpCtx {
+    /// The trailing pointer-word sink parameter's local slot — always the
+    /// LAST param local (`Place::Local(func.params.len() - 1)`), because
+    /// `lower_actor_receive_handlers` appends the synthetic sink param after
+    /// the handler's real params before calling `lower_function`.
+    sink: Place,
+    /// The generator's yield element type (the handler's declared `-> T`),
+    /// read off the `HirExprKind::GenBlock` tail's own `yield_ty` field.
+    yield_ty: ResolvedTy,
+}
+
 #[derive(Debug, Default)]
 struct Builder {
     /// Checker-authority stream for the *current* basic block. Drained
@@ -9187,6 +9323,22 @@ struct Builder {
     /// pass cannot double-free; the inline `Instr::Drop` null-stores the slot as
     /// defence in depth (`raii-null-after-move`).
     scope_vec_iter_bindings: Vec<(ScopeId, hew_hir::BindingId, ResolvedTy)>,
+    /// `Stream<T>` / `Receiver<T>` for-await cursor bindings tagged with the
+    /// block scope they were declared in, so a per-scope-exit close
+    /// (`hew_stream_close` / `hew_channel_receiver_close`) fires when that scope
+    /// closes. The `Generator`/`VecIter` analogue of #1949 for the general
+    /// `for await` consumption path: a `for await v in <stream>` desugars to a
+    /// `__hew_for_iter_*` cursor whose close was otherwise deferred to the
+    /// ENCLOSING FUNCTION's exit-LIFO plan, so `break`/exhaustion left the
+    /// stream open — deadlocking any function that abandons a live stream then
+    /// does more work before returning (the producer stays parked on
+    /// backpressure, its peer never observed as closed). Closing at block-scope
+    /// exit wakes the parked producer promptly. Mirrors
+    /// `scope_generator_bindings`: entries are dispositioned `ScopeReleased`
+    /// once the inline close is emitted so the function-exit LIFO cannot fire a
+    /// second close, and the inline `Instr::Drop` null-stores the slot
+    /// (`raii-null-after-move`; the runtime close symbols also null-guard).
+    scope_stream_bindings: Vec<(ScopeId, hew_hir::BindingId, ResolvedTy)>,
     /// Active per-iteration generator-yielded heap value bindings, recorded
     /// while lowering a `for v in gen()` (or `match g.next()`) consuming body so
     /// a `break`/`continue` inside that body frees the current iteration's
@@ -9678,6 +9830,19 @@ struct Builder {
     /// S3b will extend this context with the cross-yield live-set
     /// accumulator once liveness analysis lands.
     in_gen_body: bool,
+    /// Set on the SHELL builder of a `receive gen fn` handler (a `HirFn`
+    /// with `is_generator: true` lowered under `FunctionCallConv::ActorHandler`
+    /// — derived in `lower_function`, never threaded as a separate parameter).
+    /// When present, the `HirExprKind::GenBlock` dispatch arm in `lower_value`
+    /// reshapes the shell into a stream-producer PUMP instead of returning the
+    /// freshly-constructed generator handle: `gen_place` is driven with
+    /// `Instr::GeneratorNext` in a loop, each yielded value is forwarded via
+    /// `Terminator::Suspend`/`SuspendKind::StreamSend { sink, value }`, and a
+    /// `None` result closes `sink` and falls off the end (Unit return). `None`
+    /// for every other function, including a standalone `gen fn`/`gen {}`
+    /// shell (`Default` call conv), which still returns the generator handle
+    /// to its caller unchanged.
+    stream_producer_pump: Option<StreamProducerPumpCtx>,
     /// Per-scope deferred bodies collected during statement lowering.
     /// Key: the `ScopeId` of the HIR scope that owns the defer.
     /// Value: deferred body expressions in registration order (FIFO).
@@ -10806,6 +10971,92 @@ impl Builder {
                 field_offset: crate::model::FieldOffset(0),
                 ty: vec_ty,
                 drop_fn: crate::model::DropFnSpec::Release("hew_vec_free"),
+            });
+        }
+    }
+
+    /// Close every `Stream<T>` / `Receiver<T>` for-await cursor declared in
+    /// `scope_id` when that scope closes — the `Generator`/`VecIter` analogue of
+    /// #1949 for the general `for await` consumption path. A `for await v in
+    /// <stream> { ...; break; }` (or natural exhaustion) followed by more code
+    /// in the same function otherwise leaves the stream open until the ENCLOSING
+    /// FUNCTION returns; the producer stays parked on backpressure and its peer
+    /// is never observed closed, so the function deadlocks on any subsequent
+    /// blocking work. Closing at block-scope exit (where the `break`/`None`
+    /// loop-exit edges both land, inside the desugar block) wakes the parked
+    /// producer promptly.
+    ///
+    /// Mirrors [`Self::emit_scope_generator_drops`]: removes the binding from
+    /// `scope_stream_bindings`, dispositions it `ScopeReleased` so the
+    /// function-exit LIFO cannot fire a second close, and the inline
+    /// `Instr::Drop` (`RuntimeSymbol` close path) null-stores the slot after the
+    /// close (`raii-null-after-move`; `hew_stream_close` /
+    /// `hew_channel_receiver_close` also null-guard, so a moved-out or
+    /// already-closed slot is a no-op). The `Runtime(StreamClose | ReceiverClose)`
+    /// spec matches the exit-plan close exactly.
+    fn emit_scope_stream_drops(&mut self, scope_id: ScopeId) {
+        let mut to_drop: Vec<(hew_hir::BindingId, ResolvedTy)> = Vec::new();
+        self.scope_stream_bindings.retain(|(s, binding, ty)| {
+            if *s == scope_id {
+                to_drop.push((*binding, ty.clone()));
+                false
+            } else {
+                true
+            }
+        });
+        for (binding, ty) in to_drop.into_iter().rev() {
+            let Some(place) = self.binding_locals.get(&binding).copied() else {
+                continue;
+            };
+            let Some(descriptor) = stream_handle_drop_descriptor(&ty) else {
+                continue;
+            };
+            self.set_owned_local_disposition(binding, Disposition::ScopeReleased);
+            self.push_instr(Instr::Drop {
+                place,
+                ty,
+                drop_fn: Some(crate::model::DropFnSpec::Runtime(descriptor)),
+            });
+        }
+    }
+
+    /// Close a `Stream<T>` / `Receiver<T>` for-await cursor opened INSIDE a loop
+    /// body on the `break`/`continue` edge — the analogue of
+    /// [`Self::emit_generator_drops_for_break_continue`] for the stream handle.
+    /// A stream abandoned per-iteration must close on that edge, because the
+    /// block-scope close on the fall-through path is never reached on
+    /// break/continue.
+    ///
+    /// CLONE discipline (mirrors the generator handle release): entries are NOT
+    /// removed from `scope_stream_bindings` — the mutually-exclusive
+    /// fall-through path still closes via the block-scope drain, and the inline
+    /// close's null-after-close makes a structurally-reachable second close a
+    /// no-op (`raii-null-after-move`; the runtime symbols also null-guard).
+    fn emit_stream_drops_for_break_continue(&mut self, loop_scope_depth: usize) {
+        let window: HashSet<ScopeId> = self.active_scopes[loop_scope_depth..]
+            .iter()
+            .copied()
+            .collect();
+        let to_drop: Vec<(Place, ResolvedTy)> = self
+            .scope_stream_bindings
+            .iter()
+            .rev()
+            .filter(|(s, _, _)| window.contains(s))
+            .filter_map(|(_, binding, ty)| {
+                self.binding_locals
+                    .get(binding)
+                    .copied()
+                    .map(|place| (place, ty.clone()))
+            })
+            .collect();
+        for (place, ty) in to_drop {
+            let Some(descriptor) = stream_handle_drop_descriptor(&ty) else {
+                continue;
+            };
+            self.push_instr(Instr::Drop {
+                place,
+                ty,
+                drop_fn: Some(crate::model::DropFnSpec::Runtime(descriptor)),
             });
         }
     }
@@ -13053,6 +13304,28 @@ impl Builder {
                             ));
                         }
                     }
+                    // 3b-1 — tag the `for await` desugar's synthetic
+                    // `Stream<T>` / `Receiver<T>` CURSOR with its declaring scope
+                    // so a per-scope-exit `hew_stream_close` /
+                    // `hew_channel_receiver_close` fires when the scope closes,
+                    // closing the stream on `break` / exhaustion instead of
+                    // deferring to function exit (the deadlock this fixes — see
+                    // `scope_stream_bindings`). Gated to the cursor binding: a
+                    // user `let s = <stream>` that is returned or consumed
+                    // elsewhere must keep its move-checked function-exit close,
+                    // or the unconditional inline close would free a moved-out
+                    // handle (see `FOR_ITER_CURSOR_NAME_PREFIX`).
+                    if ty_is_stream_handle(&binding_ty)
+                        && binding.name.starts_with(FOR_ITER_CURSOR_NAME_PREFIX)
+                    {
+                        if let Some(scope) = self.active_scopes.last().copied() {
+                            self.scope_stream_bindings.push((
+                                scope,
+                                binding.id,
+                                binding_ty.clone(),
+                            ));
+                        }
+                    }
                     // #1949 — tag a sole-owner `for x in …` cursor (`VecIter<T>`)
                     // with its declaring scope so a per-scope-exit
                     // `__hew_record_drop_inplace_VecIter$$T` frees its `vec`
@@ -14615,6 +14888,13 @@ impl Builder {
                 // iteration instead of leaking one per iteration (the generator
                 // analogue above).
                 self.emit_scope_vec_iter_drops(block.scope);
+                // 3b-1 — close any `Stream<T>` / `Receiver<T>` for-await cursor
+                // declared in this block's scope before it closes. `break` and
+                // the synthesized `None`-arm exit both land in the post-loop
+                // merge INSIDE the desugar block, so this fires the stream close
+                // before the enclosing function continues — waking a parked
+                // producer and preventing the deadlock.
+                self.emit_scope_stream_drops(block.scope);
                 self.active_scopes.pop();
                 result
             }
@@ -15546,6 +15826,11 @@ impl Builder {
                 reply_ty,
                 deadline_ns,
             } => self.lower_actor_ask(receiver, method_id, args, reply_ty, *deadline_ns, expr),
+            HirExprKind::ActorGenStream {
+                receiver,
+                method,
+                args,
+            } => self.lower_actor_gen_stream(receiver, method, args, expr),
             HirExprKind::ConnAwaitRead {
                 conn,
                 to_string,
@@ -16718,6 +17003,9 @@ impl Builder {
                 // Release in-loop generators on the break edge so the
                 // break-iteration's coro frame + heap companion are not leaked.
                 self.emit_generator_drops_for_break_continue(frame.scope_depth);
+                // 3b-1 — close in-loop for-await stream cursors on this edge
+                // (the block-scope close on the fall-through path is skipped).
+                self.emit_stream_drops_for_break_continue(frame.scope_depth);
                 self.finish_current_block(Terminator::Goto {
                     target: frame.exit_target,
                 });
@@ -16772,6 +17060,9 @@ impl Builder {
                 // Release in-loop generators on the continue edge so the
                 // skipped iteration's coro frame + heap companion are not leaked.
                 self.emit_generator_drops_for_break_continue(frame.scope_depth);
+                // 3b-1 — close in-loop for-await stream cursors on this edge
+                // (the block-scope close on the fall-through path is skipped).
+                self.emit_stream_drops_for_break_continue(frame.scope_depth);
                 // Register THIS block as a loop back-edge so `enumerate_exits`
                 // populates its `Goto` `DropPlan` with the scope-filtered
                 // releases for body-scope heap-owning bindings (a live
@@ -16838,7 +17129,57 @@ impl Builder {
                 yield_ty,
                 return_ty,
                 captures,
-            } => Some(self.lower_gen_block(expr, body, yield_ty, return_ty, captures)),
+            } => {
+                let gen_place = self.lower_gen_block(expr, body, yield_ty, return_ty, captures);
+                // `receive gen fn` shell reshape: when this GenBlock is
+                // the tail of a stream-producer handler shell, the freshly
+                // constructed generator handle is consumed HERE by the pump —
+                // driven to completion and forwarded element-by-element into the
+                // sink — rather than returned to a caller. `lower_gen_block`
+                // itself is UNCHANGED (env capture / MakeGenerator emission stay
+                // identical to a standalone generator); only what happens to its
+                // result differs. Evaluates to `None` (unit), matching `Yield`'s
+                // own unit-in-body convention just below — `function_body`'s
+                // existing `if let Some(src) = value_place { Move... }` already
+                // skips the return-slot move for a `None` tail value.
+                if let Some(pump) = self.stream_producer_pump.clone() {
+                    // Register the generator companion `gen_place` with the
+                    // drop-elaboration authority so `hew_gen_coro_destroy` fires
+                    // on EVERY pump exit (Return / Panic / Cancel) instead of
+                    // leaking its coro frame + heap companion. THIS branch (pump
+                    // context) consumes the handle in place — nothing else owns
+                    // it — so this is the sole release authority.
+                    //
+                    // Scoped to the pump branch ONLY: in the standalone `else`
+                    // branch `gen_place` is the expression value, moved OUT to
+                    // the caller's `let g = <genblock>` binding, which already
+                    // owns and drops it. Registering there — or inside the
+                    // shared `lower_gen_block` — would elaborate a second drop
+                    // over a moved-out handle: the #2384 double-free class. It
+                    // stays here, and `lower_gen_block` registers nothing.
+                    let companion = SENTINEL_RECV_GEN_COMPANION_BINDING;
+                    let companion_name = "__hew_recv_gen_companion".to_string();
+                    let companion_ty = self.subst_ty(&expr.ty);
+                    self.statements.push(MirStatement::Bind {
+                        binding: companion,
+                        name: companion_name.clone(),
+                        site: expr.site,
+                        ty: companion_ty.clone(),
+                    });
+                    // Wire `binding_locals` BEFORE `register_owned_local`:
+                    // `register_owned_local` reads the slot to classify
+                    // ownership, and drop elaboration resolves the drop place
+                    // from `binding_locals` at exit. A missing slot silently
+                    // defaults to `Place::Local(0)` — dropping the WRONG local.
+                    self.binding_locals.insert(companion, gen_place);
+                    self.record_binding_scope(companion);
+                    self.register_owned_local(companion, companion_name, companion_ty);
+                    self.build_stream_producer_pump(gen_place, &pump);
+                    None
+                } else {
+                    Some(gen_place)
+                }
+            }
             HirExprKind::Yield { value, yield_ty: _ } => {
                 self.lower_yield_expr(expr, value.as_deref())
             }
@@ -19634,6 +19975,20 @@ impl Builder {
                         ));
                     }
                 }
+                // NB: unlike generators, `Stream<T>` / `Receiver<T>` handles are
+                // NOT registered for a per-scope-exit close when bound via match
+                // destructure. The deadlock fixed here is caused by the
+                // `for await` desugar's synthetic `__hew_for_iter_*` CURSOR
+                // (always a `Let` binding) staying open; a plain source binding
+                // (`let (a, s) = …`) that is later consumed into that cursor
+                // must NOT get its own scope-exit close, or it double-closes the
+                // handle the cursor owns (the source binding's slot is not
+                // null-stored on the consume in every destructure shape). The
+                // `Let`-path registration + the function-exit LIFO (which
+                // respects the consume) cover every real case; there is no valid
+                // shape where a for-await cursor is bound via match destructure.
+                // Mirrors the vec-iter cursor registration, which is likewise
+                // `Let`-path-only.
             }
             let dest = self.alloc_local(binding_ty);
             // Pair the binder with the scrutinee's consume mark: register the
@@ -21633,6 +21988,7 @@ impl Builder {
         // directly in this loop body before the back-edge, the cursor analogue of
         // the generator release above (see `emit_scope_vec_iter_drops`).
         self.emit_scope_vec_iter_drops(body.scope);
+        self.emit_scope_stream_drops(body.scope);
         // Record this block as a loop-body back-edge so `enumerate_exits`
         // populates its `Goto` `DropPlan` with per-iteration releases for
         // heap-owning bindings declared in `body.scope`. Without this, an
@@ -21870,6 +22226,7 @@ impl Builder {
         // directly in this loop body before the back-edge, the cursor analogue of
         // the generator release above (see `emit_scope_vec_iter_drops`).
         self.emit_scope_vec_iter_drops(body.scope);
+        self.emit_scope_stream_drops(body.scope);
         // Record this block as a loop-body back-edge so `enumerate_exits`
         // populates its `Goto` `DropPlan` with per-iteration releases for
         // heap-owning bindings declared in `body.scope` (including the
@@ -22488,6 +22845,7 @@ impl Builder {
         // directly in this loop body before the back-edge, the cursor analogue of
         // the generator release above (see `emit_scope_vec_iter_drops`).
         self.emit_scope_vec_iter_drops(body.scope);
+        self.emit_scope_stream_drops(body.scope);
         // Record body→inc as the per-iteration back-edge for body-scope
         // bindings. body.scope closes here (active_scopes.pop next), so any
         // heap-owning let-binding declared inside the body must be released
@@ -22611,6 +22969,7 @@ impl Builder {
         // directly in this loop body before the back-edge, the cursor analogue of
         // the generator release above (see `emit_scope_vec_iter_drops`).
         self.emit_scope_vec_iter_drops(body.scope);
+        self.emit_scope_stream_drops(body.scope);
         // Record this block as a loop-body back-edge so `enumerate_exits`
         // populates its `Goto` `DropPlan` with per-iteration releases for
         // heap-owning bindings declared in `body.scope`. `loop { ... }` has
@@ -28194,6 +28553,171 @@ impl Builder {
         None
     }
 
+    /// Lower a `receive gen fn` call (`e.ticks()`, `t.stream(3)`) — decision 4
+    /// for receive-gen-fn. Constructs a per-call bounded channel, then
+    /// tell-sends a "start" message (the call's args plus the sink half) to
+    /// the actor's stream-producer pump; the expression value is the stream
+    /// half. No `await` here — the checker's ask-without-await guard already
+    /// exempts generator methods.
+    ///
+    /// `ActorHandlerLayout`'s producer row (`lower_actor_handler_layouts`)
+    /// carries `param_tys` = the handler's own params PLUS one trailing
+    /// sink — the single pack/unpack authority shared with the dispatch
+    /// trampoline's generic per-handler arg-unpack loop. Packing here mirrors
+    /// `lower_actor_send`'s convention exactly: a single total field rides
+    /// bare (no pack); two or more use `pack_actor_payload_from_places`.
+    fn lower_actor_gen_stream(
+        &mut self,
+        receiver: &HirExpr,
+        method: &str,
+        args: &[hew_hir::HirExpr],
+        expr: &HirExpr,
+    ) -> Option<Place> {
+        let site = expr.site;
+        let info = self.actor_method_info(&receiver.ty, method, site)?;
+        let Some((sink_ty, real_param_tys)) = info
+            .param_tys
+            .split_last()
+            .map(|(sink, rest)| (sink.clone(), rest.to_vec()))
+        else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!("actor stream-producer `{method}` has no sink param"),
+                    site,
+                },
+                note: "the producer row must carry at least the synthetic trailing sink \
+                       (lower_actor_handler_layouts)"
+                    .to_string(),
+            });
+            return None;
+        };
+        if real_param_tys.len() != args.len() {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!("actor stream-producer arity mismatch for `{method}`"),
+                    site,
+                },
+                note: format!(
+                    "handler expects {} argument(s), call supplied {}",
+                    real_param_tys.len(),
+                    args.len()
+                ),
+            });
+            return None;
+        }
+
+        let actor = self.lower_value(receiver)?;
+        let mut lowered: Vec<(Place, ResolvedTy)> = Vec::with_capacity(args.len() + 1);
+        for arg in args {
+            let place = self.lower_value(arg)?;
+            let ty = self.subst_ty(&arg.ty);
+            lowered.push((place, ty));
+        }
+
+        let stream_ty = self.subst_ty(&expr.ty);
+        let (sink, stream) = self.build_receive_gen_channel(&sink_ty, stream_ty);
+
+        lowered.push((sink, sink_ty));
+        let value = if let [(place, _)] = &lowered[..] {
+            *place
+        } else {
+            let (field_places, field_tys): (Vec<Place>, Vec<ResolvedTy>) =
+                lowered.into_iter().unzip();
+            self.pack_actor_payload_from_places(field_places, field_tys)
+        };
+
+        let next = self.alloc_block();
+        self.finish_current_block(Terminator::Send {
+            actor,
+            msg_type: info.msg_type,
+            value,
+            next,
+            // Args crossing into a stream-producer start message use the same
+            // fail-closed default as the zero/multi-arg `ActorSend` cases;
+            // per-arg alias classification for stream calls is a follow-on.
+            alias_mode: crate::model::SendAliasMode::Copy,
+        });
+        self.start_block(next);
+        Some(stream)
+    }
+
+    /// Construct the per-call bounded channel for a `receive gen fn` dispatch
+    /// and extract both halves, returning `(sink, stream)`.
+    ///
+    /// The pair box (`hew_stream_channel`) is a transient two-pointer carrier
+    /// whose lifetime is exactly this sequence: `hew_stream_pair_sink` and
+    /// `hew_stream_pair_stream` each null-store their field on extraction
+    /// (ownership transfer), so once both halves are out the box owns neither
+    /// half. `hew_stream_pair_free` then releases ONLY the empty carrier —
+    /// never the sink or stream — and is null-guarded, so a fail-closed null
+    /// `pair` is a no-op rather than a fault. Skipping the free leaks the
+    /// carrier box once per call.
+    ///
+    /// The capacity is a laziness/throughput tunable (delivery is eager
+    /// producer drive with bounded-channel backpressure; a small buffer keeps
+    /// it pull-equivalent).
+    fn build_receive_gen_channel(
+        &mut self,
+        sink_ty: &ResolvedTy,
+        stream_ty: ResolvedTy,
+    ) -> (Place, Place) {
+        let capacity = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::ConstI64 {
+            dest: capacity,
+            value: RECEIVE_GEN_STREAM_CAPACITY,
+        });
+        let opaque_ptr_ty = ResolvedTy::Pointer {
+            is_mutable: true,
+            pointee: Box::new(ResolvedTy::Unit),
+        };
+        let pair = self.alloc_local(opaque_ptr_ty);
+        let after_channel = self.alloc_block();
+        self.finish_current_block(Terminator::Call {
+            callee: "hew_stream_channel".to_string(),
+            builtin: None,
+            args: vec![capacity],
+            dest: Some(pair),
+            next: after_channel,
+        });
+        self.start_block(after_channel);
+
+        let sink = self.alloc_local(sink_ty.clone());
+        let after_sink = self.alloc_block();
+        self.finish_current_block(Terminator::Call {
+            callee: "hew_stream_pair_sink".to_string(),
+            builtin: None,
+            args: vec![pair],
+            dest: Some(sink),
+            next: after_sink,
+        });
+        self.start_block(after_sink);
+
+        let stream = self.alloc_local(stream_ty);
+        let after_stream = self.alloc_block();
+        self.finish_current_block(Terminator::Call {
+            callee: "hew_stream_pair_stream".to_string(),
+            builtin: None,
+            args: vec![pair],
+            dest: Some(stream),
+            next: after_stream,
+        });
+        self.start_block(after_stream);
+
+        // Free the now-empty carrier (see the doc comment above): both halves
+        // are extracted, so this releases only the two-pointer box.
+        let after_free = self.alloc_block();
+        self.finish_current_block(Terminator::Call {
+            callee: "hew_stream_pair_free".to_string(),
+            builtin: None,
+            args: vec![pair],
+            dest: None,
+            next: after_free,
+        });
+        self.start_block(after_free);
+
+        (sink, stream)
+    }
+
     /// Lower a sealed `select{}` expression to MIR.
     ///
     /// ## Shape produced
@@ -31193,12 +31717,38 @@ impl Builder {
                 let offset =
                     FieldOffset(u32::try_from(idx).expect("gen capture count exceeds u32::MAX"));
                 // The captured binding's MIR slot in the ENCLOSING frame is the
-                // authority for both the value source and the field type.
-                let slot = self.binding_locals.get(&capture.binding).copied();
-                let capture_ty = slot
-                    .and_then(base_local)
-                    .and_then(|local| self.locals.get(local as usize))
-                    .cloned();
+                // authority for both the value source and the field type. A
+                // `Local` capture (a `gen fn`'s own params, a `gen {}`
+                // block's outer locals, or a `receive gen fn` handler param)
+                // already has a slot in `binding_locals`. An `ActorStateField`
+                // capture has none — actor state fields resolve by NAME
+                // through `current_actor_state_fields`, not by binding id —
+                // so its value is snapshotted into a fresh shell local via
+                // `ActorStateFieldLoad` first (state is snapshot-isolated: a
+                // point-in-time copy taken now, in the enclosing actor-handler frame where state
+                // is addressable, never a live reference); the resulting slot
+                // then feeds `RecordInit` exactly like a `Local` capture's.
+                let (slot, capture_ty) = match capture.source {
+                    hew_hir::HirGenCaptureSource::Local => {
+                        let slot = self.binding_locals.get(&capture.binding).copied();
+                        let ty = slot
+                            .and_then(base_local)
+                            .and_then(|local| self.locals.get(local as usize))
+                            .cloned();
+                        (slot, ty)
+                    }
+                    hew_hir::HirGenCaptureSource::ActorStateField => {
+                        match self.current_actor_state_fields.get(&capture.name).cloned() {
+                            Some((field_offset, ty)) => {
+                                let dest = self.alloc_local(ty.clone());
+                                self.instructions
+                                    .push(Instr::ActorStateFieldLoad { field_offset, dest });
+                                (Some(dest), Some(ty))
+                            }
+                            None => (None, None),
+                        }
+                    }
+                };
                 match (slot, capture_ty) {
                     (Some(src), Some(ty)) if self.gen_env_capture_admissible(&ty) => {
                         init_fields.push((offset, src));
@@ -31552,6 +32102,222 @@ impl Builder {
         });
         self.start_block(next);
         gen_place
+    }
+
+    /// Reshape a `receive gen fn` handler shell into a stream-producer PUMP
+    /// (decision 3). Called immediately after
+    /// `lower_gen_block` constructs `gen_place` (the freshly-made generator
+    /// handle) for a shell whose `Builder::stream_producer_pump` is `Some`.
+    ///
+    /// Emits, in the current (post-`MakeGenerator`) block:
+    /// ```text
+    /// loop_head:
+    ///   opt = GeneratorNext(gen_place)          ; Option<Yield>
+    ///   branch tag(opt) == 0 (Some) ? send : close
+    /// send:
+    ///   value = opt.0                            ; MachineVariant payload
+    ///   suspend StreamSend { sink, value } -> after_send
+    /// after_send:
+    ///   goto loop_head
+    /// close:
+    ///   call hew_sink_close(sink) -> close_next
+    /// close_next:
+    ///   <cursor left open — `lower_function`'s `finalize_blocks(Terminator::Return)`
+    ///    seals it as the implicit unit return>
+    /// ```
+    ///
+    /// The `Option<Yield>` tag convention (`Some` = 0, `None` = 1) mirrors
+    /// `Instr::GeneratorNext`'s own documented codegen contract; the tag-test +
+    /// payload-extract shape mirrors the general enum-match lowering's
+    /// `arm_is_generator_some` arm (`lower_match_enum_tag`) — both read a
+    /// `GeneratorNext` dest via `Place::EnumTag`/`Place::MachineVariant { local,
+    /// variant_idx: 0, field_idx: 0 }`, the same substrate an ordinary `for v in
+    /// gen()` loop already exercises.
+    ///
+    /// The pump's fault-close and cancellation wiring (decisions 6+7): a
+    /// PROLOGUE registers the pump's sink with its own actor
+    /// (`hew_actor_gen_sink_register`) so a terminal teardown reaching this
+    /// actor while the pump is live can find and fault-close it; each loop
+    /// iteration checks the consumer peer (`hew_sink_peer_closed`) BEFORE
+    /// resuming the generator, breaking WITHOUT resuming further once the
+    /// peer has closed (cancellation — an infinite generator plus a consumer
+    /// `break` must not livelock the actor); the shared close path (generator
+    /// exhausted OR peer closed) deregisters + frees the sink via
+    /// `hew_actor_gen_sink_complete` (replacing the shell's earlier bare
+    /// `hew_sink_close`).
+    ///
+    /// Emits the peer-closed check (decision 6): calls `hew_sink_peer_closed`,
+    /// compares its C-ABI `i32` result against zero, and branches on it.
+    /// Returns `(resume_bb, close_bb)` — the caller starts `resume_bb` to
+    /// drive the generator, and starts (or shares) `close_bb` for the
+    /// registered-complete close. Factored out of `build_stream_producer_pump`
+    /// to keep that function under the `too_many_lines` threshold.
+    fn emit_pump_peer_closed_check(&mut self, sink: Place) -> (u32, u32) {
+        use hew_types::runtime_call::RuntimeCallFamily;
+
+        let peer_closed = self.alloc_local(ResolvedTy::I32);
+        let after_peer_check = self.alloc_block();
+        self.finish_current_block(Terminator::Call {
+            callee: "hew_sink_peer_closed".to_string(),
+            builtin: Some(RuntimeCallFamily::SinkPeerClosed),
+            args: vec![sink],
+            dest: Some(peer_closed),
+            next: after_peer_check,
+        });
+        self.start_block(after_peer_check);
+
+        let zero_i32 = self.alloc_local(ResolvedTy::I32);
+        self.push_instr(Instr::ConstI64 {
+            dest: zero_i32,
+            value: 0,
+        });
+        let is_peer_closed = self.alloc_local(ResolvedTy::Bool);
+        self.push_instr(Instr::IntCmp {
+            pred: crate::model::CmpPred::NotEq,
+            lhs: peer_closed,
+            rhs: zero_i32,
+            dest: is_peer_closed,
+        });
+
+        let resume_bb = self.alloc_block();
+        let close_bb = self.alloc_block();
+        self.finish_current_block(Terminator::Branch {
+            cond: is_peer_closed,
+            then_target: close_bb,
+            else_target: resume_bb,
+        });
+        (resume_bb, close_bb)
+    }
+
+    fn build_stream_producer_pump(&mut self, gen_place: Place, pump: &StreamProducerPumpCtx) {
+        use hew_types::runtime_call::RuntimeCallFamily;
+
+        // Prologue: register this pump's own sink with its own actor.
+        let actor_self = self.emit_actor_self_handle();
+        let after_register = self.alloc_block();
+        self.finish_current_block(Terminator::Call {
+            callee: "hew_actor_gen_sink_register".to_string(),
+            builtin: Some(RuntimeCallFamily::ActorGenSinkRegister),
+            args: vec![actor_self, pump.sink],
+            dest: None,
+            next: after_register,
+        });
+        self.start_block(after_register);
+
+        let loop_head = self.alloc_block();
+        self.finish_current_block(Terminator::Goto { target: loop_head });
+        self.start_block(loop_head);
+
+        // Peer-closed check (decision 6): before every resume, not just the
+        // first. Branches to `close_bb` without resuming when the consumer
+        // has closed, else falls through into the caller's `resume_bb`.
+        let (resume_bb, close_bb) = self.emit_pump_peer_closed_check(pump.sink);
+
+        self.start_block(resume_bb);
+        let option_ty = ResolvedTy::Named {
+            name: "Option".to_string(),
+            args: vec![pump.yield_ty.clone()],
+            builtin: None,
+            is_opaque: false,
+        };
+        let opt_dest = self.alloc_local(option_ty);
+        self.push_instr(Instr::GeneratorNext {
+            dest: opt_dest,
+            ctx: gen_place,
+            yield_ty: pump.yield_ty.clone(),
+        });
+        let Place::Local(opt_local) = opt_dest else {
+            unreachable!("Builder::alloc_local always returns Place::Local")
+        };
+
+        let tag_local = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::Move {
+            dest: tag_local,
+            src: Place::EnumTag(opt_local),
+        });
+        let some_tag = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::ConstI64 {
+            dest: some_tag,
+            value: 0,
+        });
+        let is_some = self.alloc_local(ResolvedTy::Bool);
+        self.push_instr(Instr::IntCmp {
+            pred: crate::model::CmpPred::Eq,
+            lhs: tag_local,
+            rhs: some_tag,
+            dest: is_some,
+        });
+
+        let send_bb = self.alloc_block();
+        self.finish_current_block(Terminator::Branch {
+            cond: is_some,
+            then_target: send_bb,
+            else_target: close_bb,
+        });
+
+        self.start_block(send_bb);
+        let value_local = self.alloc_local(pump.yield_ty.clone());
+        self.push_instr(Instr::Move {
+            dest: value_local,
+            src: Place::MachineVariant {
+                local: opt_local,
+                variant_idx: 0,
+                field_idx: 0,
+            },
+        });
+        let after_send = self.alloc_block();
+        self.record_suspend_kind(SuspendKind::StreamSend {
+            sink: pump.sink,
+            value: value_local,
+        });
+        self.finish_current_block(Terminator::Suspend {
+            resume: after_send,
+            cleanup: after_send,
+            is_final: false,
+        });
+        self.start_block(after_send);
+        // The stream send BORROWS the yielded value: `hew_stream_await_send`
+        // and its layout sibling both copy the content out of the slot and
+        // document the argument as borrowed, so the pump stays the sole owner
+        // of the original and must release it exactly once per yield. Emit that
+        // release here, on the resume edge, before the `Goto` loops back to
+        // overwrite `value_local` on the next iteration. This edge is reached
+        // ONLY when the send resumes (delivered/ready); the abandon-while-parked
+        // path routes to the coro cleanup epilogue instead (it cancels + detaches
+        // the slot's borrowed copy), so the value is never double-released, and an
+        // abandoned in-flight value leaks — a tracked teardown gap, not a defect
+        // here. `SuspendKind::StreamSend`'s value is escape-poisoned
+        // (`terminator_escape_places`), so no scope-exit drop competes with this
+        // one — it is the sole dropper. The release symbol comes from the same
+        // authority the consumer-side yield-binding drop uses
+        // (`generator_yield_drop_symbol`), so it stays congruent with the codegen
+        // inline-drop validator. `string`/`bytes` release here; records/enums and
+        // BitCopy scalars carry no wired inline release (`NoDropPath`) and keep
+        // leaking their producer copy for now — tracked, never a wrong-ABI free.
+        if let ReleaseSymbolVerdict::Wired(symbol) =
+            self.generator_yield_drop_symbol(&pump.yield_ty)
+        {
+            self.push_instr(Instr::Drop {
+                place: value_local,
+                ty: pump.yield_ty.clone(),
+                drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
+            });
+        }
+        self.finish_current_block(Terminator::Goto { target: loop_head });
+
+        // Shared close path: reached with the generator exhausted (`None`)
+        // OR the consumer peer already closed. Either way the sink is done;
+        // deregister + free it exactly once.
+        self.start_block(close_bb);
+        let close_next = self.alloc_block();
+        self.finish_current_block(Terminator::Call {
+            callee: "hew_actor_gen_sink_complete".to_string(),
+            builtin: Some(RuntimeCallFamily::ActorGenSinkComplete),
+            args: vec![actor_self, pump.sink],
+            dest: None,
+            next: close_next,
+        });
+        self.start_block(close_next);
     }
 
     /// Lower `HirExprKind::Yield { value, yield_ty }` inside a gen-block body.
@@ -42726,6 +43492,39 @@ fn ty_is_generator_handle(ty: &ResolvedTy) -> bool {
             ..
         }
     )
+}
+
+/// The runtime close descriptor for a `Stream<T>` / `Receiver<T>` for-await
+/// cursor: `StreamClose` (→ `hew_stream_close`) or `ReceiverClose`
+/// (→ `hew_channel_receiver_close`). `None` for any other type. Selecting the
+/// typed [`RuntimeDropDescriptor`](hew_types::runtime_call::RuntimeDropDescriptor)
+/// (rather than a `Release` string) matches the `rt(StreamClose)` the
+/// function-exit drop plan already emits for these cursors, so the inline
+/// scope-close and the exit-plan close codegen identically.
+fn stream_handle_drop_descriptor(
+    ty: &ResolvedTy,
+) -> Option<hew_types::runtime_call::RuntimeDropDescriptor> {
+    use hew_types::runtime_call::RuntimeDropDescriptor;
+    let ResolvedTy::Named {
+        builtin: Some(builtin),
+        ..
+    } = ty
+    else {
+        return None;
+    };
+    match builtin {
+        hew_types::BuiltinType::Stream => Some(RuntimeDropDescriptor::StreamClose),
+        hew_types::BuiltinType::Receiver => Some(RuntimeDropDescriptor::ReceiverClose),
+        _ => None,
+    }
+}
+
+/// Whether `ty` is a `Stream<T>` / `Receiver<T>` for-await cursor handle — the
+/// registration gate for `scope_stream_bindings`, mirroring
+/// [`ty_is_generator_handle`]. Single source of truth with
+/// [`stream_handle_drop_descriptor`].
+fn ty_is_stream_handle(ty: &ResolvedTy) -> bool {
+    stream_handle_drop_descriptor(ty).is_some()
 }
 
 /// True when a `for x in …` cursor `let __hew_for_iter = <value>` makes the

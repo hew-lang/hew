@@ -1,0 +1,21 @@
+// A `receive gen fn` producer that crashes mid-stream must fault-close
+// the stream — never a silent, clean EOF. The gen body yields one value, then
+// traps on a runtime div-by-zero; the consumer, having already received the
+// first value, observes the fault on its next resume rather than a clean
+// `None`.
+actor Emitter {
+    receive gen fn ticks() -> i64 {
+        yield 1;
+        let zero: i64 = 0;
+        let bad = 1 / zero;
+        yield bad;
+    }
+}
+
+fn main() {
+    let e = spawn Emitter;
+    for await v in e.ticks() {
+        println(f"{v}");
+    }
+    println("unreached-eof");
+}

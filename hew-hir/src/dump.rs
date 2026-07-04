@@ -556,6 +556,17 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 dump_expr(out, arg, indent + 4);
             }
         }
+        HirExprKind::ActorGenStream {
+            receiver,
+            method,
+            args,
+        } => {
+            writeln!(out, "{pad}  actor-gen-stream {method}").expect("write to string");
+            dump_expr(out, receiver, indent + 4);
+            for arg in args {
+                dump_expr(out, arg, indent + 4);
+            }
+        }
         HirExprKind::RemoteActorAsk {
             receiver,
             msg,

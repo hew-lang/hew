@@ -4310,8 +4310,10 @@ pub(crate) fn emit_suspending_stream_send_terminator<'ctx>(
         .ok_or_else(|| CodegenError::FailClosed("hew_actor_self returned void".into()))?
         .into_pointer_value();
     let sink_ptr = load_duplex_handle(fn_ctx, term.sink, "suspending_stream_send sink")?;
-    // The bytes value is passed BY POINTER (the triple alloca address), exactly
-    // like the blocking `hew_sink_write_bytes` consumer.
+    // The value is passed BY POINTER (the triple alloca address for
+    // bytes/string, or the plain slot address for anything else), exactly
+    // like the blocking `hew_sink_write_bytes` / `hew_stream_send_layout`
+    // consumers.
     let (value_ptr, _value_ty) = place_pointer(fn_ctx, term.value)?;
 
     let slot_new = intern_runtime_decl(
@@ -4329,17 +4331,55 @@ pub(crate) fn emit_suspending_stream_send_terminator<'ctx>(
         .ok_or_else(|| CodegenError::FailClosed("hew_read_slot_new returned void".into()))?
         .into_pointer_value();
 
-    let rc = fn_ctx.call_runtime_int(
-        "hew_stream_await_send",
-        &[
-            sink_ptr.into(),
-            self_actor.into(),
-            slot.into(),
-            value_ptr.into(),
-        ],
-        "suspending_stream_send_register",
-        "hew_stream_await_send call",
-    )?;
+    // Source-level `await sink.send(bytes)` — a genuine 16-byte
+    // `BytesTriple { ptr, offset: u32, len: u32 }` slot — is the ONE
+    // producer of the native `hew_stream_await_send`, whose `data` param is
+    // dereferenced as exactly that triple. It stays on the native path.
+    //
+    // Everything else the `receive gen fn` pump forwards
+    // (`SuspendKind::StreamSend` minted directly by
+    // `build_stream_producer_pump`, hew-mir/src/lower.rs — never a
+    // source-level `await sink.send`) rides the layout-witness sibling
+    // `hew_stream_await_send_layout`, which reads the value through its
+    // type's layout witness. `string` MUST take this path: a `string` local
+    // is a single 8-byte `char*` slot, not a triple; routing it through the
+    // native path reads a `BytesTriple` header out of the 8-byte slot (word
+    // one is the adjacent coro-frame field, parsed as offset/len) → a wild
+    // read that yields empty content or SIGSEGVs. `i64`/record/enum yields
+    // are misread the same way. Only `bytes` is triple-shaped, so only
+    // `bytes` is correct on the native path.
+    let value_resolved_ty = place_resolved_ty(fn_ctx, term.value)?.clone();
+    let rc = if matches!(value_resolved_ty, ResolvedTy::Bytes) {
+        fn_ctx.call_runtime_int(
+            "hew_stream_await_send",
+            &[
+                sink_ptr.into(),
+                self_actor.into(),
+                slot.into(),
+                value_ptr.into(),
+            ],
+            "suspending_stream_send_register",
+            "hew_stream_await_send call",
+        )?
+    } else {
+        let witness = crate::layout::channel_elem_layout_witness_ptr(
+            fn_ctx,
+            &value_resolved_ty,
+            "suspending_stream_send_layout",
+        )?;
+        fn_ctx.call_runtime_int(
+            "hew_stream_await_send_layout",
+            &[
+                sink_ptr.into(),
+                self_actor.into(),
+                slot.into(),
+                value_ptr.into(),
+                witness.into(),
+            ],
+            "suspending_stream_send_layout_register",
+            "hew_stream_await_send_layout call",
+        )?
+    };
 
     let parent = fn_ctx
         .builder

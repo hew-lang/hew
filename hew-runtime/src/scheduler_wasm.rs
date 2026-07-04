@@ -135,6 +135,12 @@ pub struct HewActor {
     // decremented after the by-ID operation completes.  The free path waits for
     // this counter to reach 0 before reclaiming the allocation.
     pub send_pin_count: AtomicU32,
+    // ── Receive-gen stream-producer sink registry (appended; matches native
+    // exactly) ── `receive gen fn` is native-only today (the WASM
+    // scheduler never drives a stream-producer pump), so this field is
+    // never read/written here — it exists purely to preserve the layout
+    // parity this module asserts.
+    pub gen_sink: AtomicPtr<c_void>,
 }
 
 // SAFETY: Single-threaded on WASM; on native (tests), the struct is only
@@ -198,6 +204,7 @@ const _: () = {
     assert!(offset_of!(W, runtime_id) == offset_of!(N, runtime_id));
     assert!(offset_of!(W, runtime) == offset_of!(N, runtime));
     assert!(offset_of!(W, send_pin_count) == offset_of!(N, send_pin_count));
+    assert!(offset_of!(W, gen_sink) == offset_of!(N, gen_sink));
 };
 
 // ── HewMsgNode layout (strict prefix of native mailbox.rs) ──────────────
@@ -2202,6 +2209,7 @@ mod tests {
             runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
             runtime: ptr::null(),
             send_pin_count: std::sync::atomic::AtomicU32::new(0),
+            gen_sink: AtomicPtr::new(ptr::null_mut()),
         }
     }
 
@@ -5194,6 +5202,7 @@ mod tests {
             runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
             runtime: ptr::null(),
             send_pin_count: std::sync::atomic::AtomicU32::new(0),
+            gen_sink: AtomicPtr::new(ptr::null_mut()),
         }));
 
         // ── 3. Enqueue one message and run dispatch ───────────────────────────

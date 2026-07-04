@@ -508,6 +508,7 @@ fn walk_expr(
         }
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::ActorGenStream { receiver, args, .. }
         | HirExprKind::ResolvedImplCall { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
         | HirExprKind::CallTraitMethodStatic { receiver, args, .. }

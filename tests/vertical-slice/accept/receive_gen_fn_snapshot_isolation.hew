@@ -1,0 +1,50 @@
+// A `receive gen fn` stream's read of actor state is a point-in-time
+// SNAPSHOT taken when the stream starts, not a live view. Draining the first
+// value of a stream started against `base=100`, then mutating `base` to 500
+// via an awaited ask (so the mutation is strictly ordered after the first
+// stream's snapshot), then draining the rest of that same stream must still
+// see the original snapshot. A second, freshly-started stream sees the new
+// value.
+actor Ticker {
+    var base: i64;
+    init(b: i64) {
+        base = b;
+    }
+    receive gen fn stream(n: i64) -> i64 {
+        var i = 0;
+        while i < n {
+            yield base + i;
+            i = i + 1;
+        }
+    }
+    receive fn set_base(b: i64) -> i64 {
+        base = b;
+        base
+    }
+}
+
+fn main() {
+    let t = spawn Ticker(b: 100);
+    let s1 = t.stream(3);
+
+    let head = await s1.recv();
+    match head {
+        Some(v) => println(f"{v}"),
+        None => println("unexpected-close"),
+    }
+
+    let updated = await t.set_base(500);
+    match updated {
+        Ok(_v) => {}
+        Err(_e) => println("set_base failed"),
+    }
+
+    for await v in s1 {
+        println(f"{v}");
+    }
+
+    let s2 = t.stream(3);
+    for await v in s2 {
+        println(f"{v}");
+    }
+}

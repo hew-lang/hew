@@ -1277,7 +1277,25 @@ impl Checker {
 
     fn record_actor_method_dispatch(&mut self, span: &Span, method_id: String, reply_ty: Ty) {
         let resolved_reply = self.subst.resolve(&reply_ty);
-        let dispatch = if matches!(resolved_reply, Ty::Unit) {
+        let dispatch = if self.receive_generator_methods.contains(&method_id) {
+            // `receive_generator_methods` is checker authority for gen-ness —
+            // HIR/MIR consume this discriminator directly rather than
+            // re-deriving stream-producer-ness from `is_generator` or from
+            // `reply_ty`'s shape (`type-info-survival`). `register_receive_fn`
+            // (registration.rs) always wraps a generator method's `fn_sigs`
+            // return type in `Ty::stream(declared_return_type)`, so every
+            // `record_actor_method_dispatch` call site for a gen method passes
+            // a `Stream<T>` here; unwrap to the element type `T`.
+            let elem_ty = match reply_ty.as_stream() {
+                Some(elem) => elem.clone(),
+                None => unreachable!(
+                    "receive_generator_methods `{method_id}` recorded with a non-Stream \
+                     reply type `{reply_ty:?}` — registration.rs always wraps a generator \
+                     method's fn_sigs return_type in Ty::stream(..)"
+                ),
+            };
+            ActorMethodKind::StreamProducer(method_id, elem_ty)
+        } else if matches!(resolved_reply, Ty::Unit) {
             ActorMethodKind::Fire(method_id)
         } else {
             // Ask-shaped: the reply value crosses the actor boundary back to the

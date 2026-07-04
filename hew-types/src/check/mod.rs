@@ -478,6 +478,12 @@ impl Checker {
                         method_id,
                         self.subst.resolve(&reply_ty).materialize_literal_defaults(),
                     ),
+                    ActorMethodKind::StreamProducer(method_id, elem_ty) => {
+                        ActorMethodKind::StreamProducer(
+                            method_id,
+                            self.subst.resolve(&elem_ty).materialize_literal_defaults(),
+                        )
+                    }
                 };
                 (k, resolved_kind)
             })

@@ -1723,6 +1723,82 @@ pub unsafe extern "C" fn hew_sink_close(sink: *mut HewSink) {
     }
 }
 
+/// Whether the sink's peer (the consumer / `Stream<T>` half) has closed or
+/// detached. Read by a `receive gen fn` pump before every resume (decision
+/// 6): once the peer is gone, the pump breaks its loop WITHOUT
+/// resuming the generator further, so an infinite generator with a consumer
+/// `break` cannot livelock the actor.
+///
+/// Returns 1 if the peer has closed, 0 otherwise — including a null sink or
+/// a non-channel sink (a `receive gen fn` pump only ever registers a
+/// channel-backed sink; a "still connected" default is the fail-safe choice
+/// for an unrecognised backing since it never falsely aborts a live pump).
+///
+/// # Safety
+///
+/// `sink` must be null or a valid `HewSink` pointer.
+#[no_mangle]
+pub unsafe extern "C" fn hew_sink_peer_closed(sink: *mut HewSink) -> i32 {
+    if sink.is_null() {
+        return 0;
+    }
+    // SAFETY: sink is valid per caller contract.
+    let core_raw = unsafe { (*sink).channel_core_ptr() };
+    if core_raw.is_null() {
+        return 0;
+    }
+    // SAFETY: core_raw borrows the live `Arc<ChannelCore>` owned by the sink
+    // backing (alive for the duration of this call).
+    let core = unsafe { &*core_raw.cast::<crate::channel_core::ChannelCore>() };
+    i32::from(core.is_stream_closed())
+}
+
+/// Fault-close a receive-gen producer's abandoned sink: mark the
+/// shared `ChannelCore` permanently faulted, wake any parked consumer so it
+/// observes the fault immediately instead of hanging, then free the sink
+/// allocation. Called only by the runtime's own actor-teardown paths
+/// (`hew_actor_trap`'s crash handling, `hew_actor_free_inner`'s
+/// parked-activation reclaim) against a sink `hew_actor_gen_sink_register`
+/// recorded — never reachable from Hew source. A no-op on a null sink.
+///
+/// The pump's own generated body never reaches its `hew_actor_gen_sink_complete`
+/// call on this path (the activation crashed or was torn down first), so this
+/// function is the sink's ONLY release: it takes the same consuming,
+/// free-the-allocation contract `hew_sink_close` has, just with the fault
+/// stamped on the shared core FIRST (before the sink's `Drop` clears the
+/// core borrow) so a consumer racing the teardown still observes the fault
+/// rather than a bare clean close.
+///
+/// Does NOT touch the generator companion (heap env + coro handle) living as
+/// a local inside the pump's own coroutine frame — that is released via the
+/// pump's own coro `cleanup` outline when the frame is destroyed (normal
+/// scope-exit drop, or `coro_exec::destroy_parked` for a mid-suspend
+/// teardown). This function's sole job is the SINK, so the two release paths
+/// never overlap.
+///
+/// # Safety
+///
+/// `sink` must be null or a live `HewSink` pointer not yet freed — the exact
+/// pointer `hew_actor_gen_sink_register` recorded. After this call `sink` is
+/// dangling (mirrors `hew_sink_close`'s contract).
+pub(crate) unsafe fn fault_close_registered_sink(sink: *mut HewSink, faulted_actor_id: u64) {
+    if sink.is_null() {
+        return;
+    }
+    // SAFETY: sink is valid per caller contract.
+    let core_raw = unsafe { (*sink).channel_core_ptr() };
+    if !core_raw.is_null() {
+        // SAFETY: core_raw borrows the live `Arc<ChannelCore>` owned by the
+        // sink backing; stamp the fault BEFORE `hew_sink_close` below runs
+        // `HewSink::close()`, which nulls this borrow.
+        let core = unsafe { &*core_raw.cast::<crate::channel_core::ChannelCore>() };
+        core.fault_close(faulted_actor_id);
+    }
+    // SAFETY: sink is the live, not-yet-freed pointer per the fn contract;
+    // this is the sink's single release on the abandoned-pump path.
+    unsafe { hew_sink_close(sink) };
+}
+
 /// Pipe all items from a stream into a sink, then close both.
 ///
 /// Reads items from `stream` until EOF and writes each to `sink`.
@@ -2391,6 +2467,81 @@ pub unsafe extern "C" fn hew_stream_await_send(
     let core = unsafe { &*core_raw.cast::<crate::channel_core::ChannelCore>() };
     // SAFETY: see above.
     unsafe { core.await_send(actor, slot, item) }
+}
+
+/// Layout-generic sibling of [`hew_stream_await_send`]: registers a
+/// suspending producer for a `receive gen fn` pump's per-yield forward
+/// (`SuspendKind::StreamSend`) for ANY witness-describable element type, not
+/// just `bytes`/`string`. Combines [`hew_stream_send_layout`]'s envelope
+/// encoding with `hew_stream_await_send`'s suspend/park semantics.
+///
+/// Returns [`crate::channel_core::STREAM_AWAIT_READY`] when the write
+/// completed immediately (the ring had space, the consumer is gone, this is a
+/// non-channel sink, or a `Plain`/`String`/`Bytes` envelope was written to
+/// any sink kind), or [`crate::channel_core::STREAM_AWAIT_SUSPEND`] after
+/// parking the producer (the ring was full; the encoded envelope is owned by
+/// the runtime across the suspend).
+///
+/// # Safety
+///
+/// `sink` is a live sink handle; `actor` is the sending actor; `slot` is a
+/// live read slot; `data`/`layout` follow [`crate::channel_common::encode_elem_envelope`]'s
+/// contract (`data` points to one live element of the witness's type;
+/// `layout` is a valid witness for the call's duration).
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_await_send_layout(
+    sink: *mut HewSink,
+    actor: *mut crate::actor::HewActor,
+    slot: *mut crate::read_slot::HewReadSlot,
+    data: *const c_void,
+    layout: *const crate::vec::HewVecElemLayout,
+) -> i32 {
+    if sink.is_null() {
+        return crate::channel_core::STREAM_AWAIT_READY;
+    }
+    // SAFETY: layout validity is the caller's contract; the helper aborts
+    // fail-closed on a malformed witness.
+    let layout = unsafe {
+        crate::channel_common::elem_layout_witness(layout, "hew_stream_await_send_layout")
+    };
+    // SAFETY: sink is valid per caller contract.
+    let core_raw = unsafe { (*sink).channel_core_ptr() };
+    if core_raw.is_null() {
+        // Non-channel sink: no in-memory queue to own a layout-managed
+        // element's release — fail closed exactly like the blocking
+        // `hew_stream_send_layout` sibling. Plain/String/Bytes envelopes own
+        // no heap, so any sink kind accepts them via the same immediate
+        // `write_item` the blocking path uses.
+        if layout.ownership_kind == crate::vec::HewTypeOwnershipKind::LayoutManaged {
+            crate::channel_common::abort_elem_witness(
+                "hew_stream_await_send_layout",
+                "layout-managed elements require an in-memory channel sink",
+            );
+        }
+        // SAFETY: data points to one live element per caller contract.
+        let env = unsafe {
+            crate::channel_common::encode_elem_envelope(
+                data,
+                layout,
+                "hew_stream_await_send_layout",
+            )
+        };
+        // SAFETY: sink is valid per caller contract.
+        unsafe { (*sink).write_item(&env) };
+        return crate::channel_core::STREAM_AWAIT_READY;
+    }
+    // SAFETY: core_raw borrows the live `Arc<ChannelCore>` owned by the sink
+    // backing (alive for the duration of this call).
+    let core = unsafe { &*core_raw.cast::<crate::channel_core::ChannelCore>() };
+    if layout.ownership_kind == crate::vec::HewTypeOwnershipKind::LayoutManaged {
+        core.stamp_elem_layout(layout);
+    }
+    // SAFETY: data points to one live element per caller contract.
+    let env = unsafe {
+        crate::channel_common::encode_elem_envelope(data, layout, "hew_stream_await_send_layout")
+    };
+    // SAFETY: actor / slot validity is the caller's contract.
+    unsafe { core.await_send(actor, slot, env) }
 }
 
 /// Detach an abandoned suspending producer (the codegen abandon edge). Releases

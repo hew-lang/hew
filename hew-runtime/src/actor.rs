@@ -1136,6 +1136,26 @@ pub struct HewActor {
     /// `runtime`), so the only codegen-mirrored offsets — `id` at 8 and
     /// `state` at 16 — are unaffected (verified by `abi_offset_parity`).
     pub send_pin_count: AtomicU32,
+
+    /// The `receive gen fn` stream-producer pump's own `Sink<T>*` while its
+    /// activation is alive. Registered by
+    /// [`hew_actor_gen_sink_register`] in the pump's prologue, cleared by
+    /// [`hew_actor_gen_sink_complete`] on a clean (generator-exhausted) exit.
+    /// A terminal actor teardown that reaches this actor while the slot is
+    /// still non-null — a crash mid-pump (`hew_actor_trap`), or a stop/free
+    /// while the pump is parked on backpressure (`hew_actor_free_inner`'s
+    /// parked-activation reclaim) — fault-closes the registered sink instead
+    /// of leaving the consumer to hang on a silent EOF.
+    ///
+    /// At most one gen-sink is live per actor at a time: the actor model
+    /// runs one pump to completion or park before a second `receive gen fn`
+    /// call can start a new activation on the same actor (no concurrent
+    /// pump interleaving — out of scope per the receive-gen-fn plan), so a
+    /// single slot, not a registry, is the correct shape.
+    ///
+    /// **ABI note**: appended at the very end of `HewActor`, after
+    /// `send_pin_count`, so no previously-mirrored offset moves.
+    pub gen_sink: AtomicPtr<c_void>,
 }
 
 // SAFETY: `HewActor` is designed for concurrent access across worker threads.
@@ -2330,6 +2350,7 @@ fn build_spawned_actor(
         #[cfg(target_arch = "wasm32")]
         runtime: ptr::null(),
         send_pin_count: AtomicU32::new(0),
+        gen_sink: AtomicPtr::new(ptr::null_mut()),
     })
 }
 
@@ -3452,6 +3473,18 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor, suppress_state_drop: bool) 
         // race-free against a resume (which would have refused the destroy).
         if destroyed.is_ok() {
             clear_suspended_cancel_token(a);
+            // Risk 1: `destroy_parked` above just ran the pump frame's
+            // `coro.destroy` cleanup outline, which releases the generator
+            // companion (heap env + coro handle) living as a local INSIDE
+            // that frame via its normal scope-exit drop
+            // (`hew_gen_coro_destroy`) — exactly once, and NOT touched here.
+            // This call's sole job is the separate SINK: if this parked
+            // activation was a `receive gen fn` pump, fault-close its
+            // still-registered sink so the consumer awaiting the stream
+            // observes the fault instead of hanging on a stream whose
+            // producer will never resume. A no-op if nothing is registered
+            // (this was not a gen-stream pump).
+            fault_close_registered_gen_sink(a);
             let _ = a.actor_state.compare_exchange(
                 HewActorState::Suspended as i32,
                 HewActorState::Stopped as i32,
@@ -4929,6 +4962,94 @@ pub(crate) unsafe fn hew_reply_data_size(_ptr: *mut c_void) -> usize {
     LAST_REPLY_SIZE.get()
 }
 
+// ── Receive-gen stream-producer sink registry ─────────────────────────────
+
+/// Register the `receive gen fn` pump's own producer sink with its actor
+/// (decision 7). Called once in the pump's PROLOGUE, before its first
+/// `GeneratorNext`, so a terminal teardown reaching this actor while the
+/// pump is still live (crashed, or parked on backpressure) can find and
+/// fault-close the sink instead of leaving the consumer to hang.
+///
+/// # Safety
+///
+/// `actor` must be null or a live `HewActor` pointer (the pump's own
+/// dispatching actor, `hew_actor_self()`). `sink` must be a live
+/// channel-backed `HewSink` pointer (the producer's `Sink<T>` half); it is
+/// NOT consumed here — the pump's own scope-exit path still owns freeing it
+/// (via [`hew_actor_gen_sink_complete`] on a clean exit, or the fault-close
+/// teardown walk on an abandoned one).
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_gen_sink_register(
+    actor: *mut HewActor,
+    sink: *mut crate::stream::HewSink,
+) {
+    if actor.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees actor is valid.
+    unsafe { (*actor).gen_sink.store(sink.cast(), Ordering::Release) };
+}
+
+/// Clean close + deregister: the pump's `None` (generator-exhausted) exit
+/// (decision 7). Replaces the bare `hew_sink_close` call the pump used
+/// earlier — deregisters first so a terminal teardown racing this
+/// exit cannot ALSO fault-close a sink this call is about to free, then
+/// frees the sink exactly as `hew_sink_close` did.
+///
+/// # Safety
+///
+/// `actor` must be null or a live `HewActor` pointer (the pump's own
+/// actor). `sink` must be the same live pointer
+/// [`hew_actor_gen_sink_register`] recorded; ownership of `sink` transfers
+/// to this call exactly like `hew_sink_close` — do not use `sink` after.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_gen_sink_complete(
+    actor: *mut HewActor,
+    sink: *mut crate::stream::HewSink,
+) {
+    if !actor.is_null() {
+        // Deregister only if the slot still holds THIS sink (defensive;
+        // the single-slot invariant means it always does on the real path).
+        // SAFETY: caller guarantees actor is valid.
+        let _ = unsafe {
+            (*actor).gen_sink.compare_exchange(
+                sink.cast(),
+                ptr::null_mut(),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+        };
+    }
+    // SAFETY: sink is the live, not-yet-freed pointer per the fn contract;
+    // this is the sink's single release on the clean-exit path.
+    unsafe { crate::stream::hew_sink_close(sink) };
+}
+
+/// Fault-close this actor's still-registered gen-sink, if any (decision
+/// 7). Called from BOTH terminal finalize paths — [`hew_actor_trap`] (the
+/// crash path) and `hew_actor_free_inner`'s parked-activation reclaim (the
+/// stop/teardown-with-a-live-parked-pump path) — so a consumer awaiting the
+/// stream observes the fault on every terminal cause
+/// (`death-signal-fires-on-every-terminal-cause`), never a silent hang.
+///
+/// Idempotent: swaps the slot to null before touching the sink, so a second
+/// call (or a race between the two callers) sees an already-null slot and is
+/// a no-op — the sink is fault-closed exactly once.
+#[cfg(not(target_arch = "wasm32"))]
+fn fault_close_registered_gen_sink(a: &HewActor) {
+    let raw = a.gen_sink.swap(ptr::null_mut(), Ordering::AcqRel);
+    if raw.is_null() {
+        return;
+    }
+    // SAFETY: `raw` was registered by `hew_actor_gen_sink_register` as a live
+    // `HewSink` pointer and has not been consumed — the swap-to-null above is
+    // the single point that can observe it non-null, so no other caller can
+    // race this release.
+    unsafe { crate::stream::fault_close_registered_sink(raw.cast(), a.id) };
+}
+
 // ── Trap / Error ────────────────────────────────────────────────────────
 
 /// Trap (panic) an actor: store an error code, close the mailbox, and
@@ -4989,6 +5110,14 @@ pub unsafe extern "C" fn hew_actor_trap(actor: *mut HewActor, error_code: i32) {
             break;
         }
     }
+
+    // This actor just became terminal — the crash/trap path. Any
+    // `receive gen fn` pump this actor was running (or had parked) will
+    // never produce another value; fault-close its still-registered sink so
+    // a consumer awaiting the stream observes the fault rather than hanging.
+    // A no-op if nothing is registered (no pump ever ran, or it already
+    // deregistered via a clean exit before this trap).
+    fault_close_registered_gen_sink(a);
 
     // Close mailbox to reject new messages and wake any blocked senders. Safe
     // after the terminal CAS: sends are already rejected by the terminal state.
@@ -6387,6 +6516,7 @@ mod tests {
                 runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
                 runtime: ptr::null(),
                 send_pin_count: AtomicU32::new(0),
+                gen_sink: AtomicPtr::new(ptr::null_mut()),
             }));
             (actor, mailbox)
         }
@@ -6431,6 +6561,7 @@ mod tests {
             runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
             runtime: ptr::null(),
             send_pin_count: AtomicU32::new(0),
+            gen_sink: AtomicPtr::new(ptr::null_mut()),
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
         unsafe { live_actors::track_actor(actor) };
@@ -10449,6 +10580,7 @@ mod tests {
             runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
             runtime: ptr::null(),
             send_pin_count: AtomicU32::new(0),
+            gen_sink: AtomicPtr::new(ptr::null_mut()),
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
         unsafe { live_actors::track_actor(actor) };

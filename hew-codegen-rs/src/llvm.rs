@@ -1175,6 +1175,9 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::SendHalfSend
         | F::SendHalfTrySend
         | F::SinkClose
+        | F::SinkPeerClosed
+        | F::ActorGenSinkComplete
+        | F::ActorGenSinkRegister
         | F::SinkWrite(_)
         | F::SinkTryWrite(_)
         | F::StreamClose
@@ -2189,6 +2192,22 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // or STREAM_AWAIT_SUSPEND (0).
         "hew_stream_await_send" => i32_ty.fn_type(
             &[ptr_ty.into(), ptr_ty.into(), ptr_ty.into(), ptr_ty.into()],
+            false,
+        ),
+        // Layout-generic sibling of `hew_stream_await_send` (receive-gen-fn
+        // pump forward, ANY witness-describable element — not just
+        // bytes/string): `hew_stream_await_send_layout(sink, actor, slot,
+        // data: *const c_void, layout: *const HewVecElemLayout) -> i32`
+        // (`hew-runtime/src/stream.rs`). Same STREAM_AWAIT_READY/SUSPEND
+        // return convention as `hew_stream_await_send`.
+        "hew_stream_await_send_layout" => i32_ty.fn_type(
+            &[
+                ptr_ty.into(),
+                ptr_ty.into(),
+                ptr_ty.into(),
+                ptr_ty.into(),
+                ptr_ty.into(),
+            ],
             false,
         ),
         // hew_sink_detach_await(sink: *mut HewSink, slot: *mut HewReadSlot) ->
@@ -4181,6 +4200,125 @@ pub(crate) fn build_state_name_table<'ctx>(
     Ok(table_global)
 }
 
+/// Predeclare the runtime symbols the `receive gen fn` stream-producer pump
+/// and its call-site lowering emit as bare `Terminator::Call`s
+/// (`hew-mir/src/lower.rs`, `build_stream_producer_pump` +
+/// `lower_actor_gen_stream`): `hew_stream_channel`, `hew_stream_pair_sink`,
+/// `hew_stream_pair_stream`, `hew_stream_pair_free`, `hew_sink_close`,
+/// `hew_sink_peer_closed`, `hew_actor_gen_sink_register`,
+/// `hew_actor_gen_sink_complete`.
+///
+/// These are EXISTING `hew-runtime/src/stream.rs` / `hew-runtime/src/actor.rs`
+/// exports, already classified in `scripts/jit-symbol-classification.toml`'s
+/// `stable` tier, but reached through `Terminator::Call` for the first time
+/// here — and none of them have a `fn_symbols` entry through any EXISTING
+/// path:
+///   * The channel-construction trio (plus `hew_stream_pair_free`, which
+///     releases the empty carrier once both halves are extracted) has no
+///     stdlib-catalog entry at all (no user-facing Hew syntax calls
+///     `hew_stream_channel(..)` directly).
+///   * `hew_sink_close` DOES back real user syntax (`Sink::close`,
+///     `sink.close()`) and a checker-side `RuntimeCallFamily::SinkClose` /
+///     `RuntimeDropDescriptor::SinkClose` already exist for it — but both are
+///     "pre-staged" (`is_pre_staged_family`): no MIR producer had used the
+///     `RuntimeCallFamily` yet, so no `Terminator::Call` codegen intercept or
+///     `fn_symbols` entry was ever wired for it. The pump is the first
+///     producer.
+///   * `hew_sink_peer_closed` / `hew_actor_gen_sink_register` /
+///     `hew_actor_gen_sink_complete` (new for the receive-gen-fn pump) are
+///     brand-new runtime exports with no user-facing Hew syntax at all —
+///     the pump is their ONLY caller.
+///
+/// All eight declarations here are hand-written against the runtime's real
+/// C-ABI shapes (every handle param/return is an opaque `ptr` at the LLVM
+/// level, except the plain `i64` capacity, the `i32` peer-closed/fault
+/// witness, and the `void` close/register/complete returns):
+///
+///   * `hew_stream_channel(capacity: i64) -> *mut HewStreamPair`
+///   * `hew_stream_pair_sink(pair: *mut HewStreamPair) -> *mut HewSink`
+///   * `hew_stream_pair_stream(pair: *mut HewStreamPair) -> *mut HewStream`
+///   * `hew_stream_pair_free(pair: *mut HewStreamPair) -> void`
+///   * `hew_sink_close(sink: *mut HewSink) -> void`
+///   * `hew_sink_peer_closed(sink: *mut HewSink) -> i32`
+///   * `hew_actor_gen_sink_register(actor: *mut HewActor, sink: *mut HewSink) -> void`
+///   * `hew_actor_gen_sink_complete(actor: *mut HewActor, sink: *mut HewSink) -> void`
+fn predeclare_stream_producer_runtime_symbols<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    fn_symbols: &mut FnSymbolMap<'ctx>,
+) {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.i64_type();
+    let i32_ty = ctx.i32_type();
+    let unary_ptr_fn_ty = ptr_ty.fn_type(&[ptr_ty.into()], false);
+    let binary_ptr_void_fn_ty = ctx
+        .void_type()
+        .fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
+    for (name, fn_ty, return_ty, returns_unit) in [
+        (
+            "hew_stream_channel",
+            ptr_ty.fn_type(&[i64_ty.into()], false),
+            BasicTypeEnum::from(ptr_ty),
+            false,
+        ),
+        (
+            "hew_stream_pair_sink",
+            unary_ptr_fn_ty,
+            ptr_ty.into(),
+            false,
+        ),
+        (
+            "hew_stream_pair_stream",
+            unary_ptr_fn_ty,
+            ptr_ty.into(),
+            false,
+        ),
+        (
+            // Frees the empty pair carrier once both halves are extracted
+            // (`lower_actor_gen_stream`). `ptr -> void`; null-guarded runtime
+            // side, so a fail-closed null argument is a no-op.
+            "hew_stream_pair_free",
+            ctx.void_type().fn_type(&[ptr_ty.into()], false),
+            ctx.i8_type().into(),
+            true,
+        ),
+        (
+            "hew_sink_close",
+            ctx.void_type().fn_type(&[ptr_ty.into()], false),
+            ctx.i8_type().into(),
+            true,
+        ),
+        (
+            "hew_sink_peer_closed",
+            i32_ty.fn_type(&[ptr_ty.into()], false),
+            BasicTypeEnum::from(i32_ty),
+            false,
+        ),
+        (
+            "hew_actor_gen_sink_register",
+            binary_ptr_void_fn_ty,
+            ctx.i8_type().into(),
+            true,
+        ),
+        (
+            "hew_actor_gen_sink_complete",
+            binary_ptr_void_fn_ty,
+            ctx.i8_type().into(),
+            true,
+        ),
+    ] {
+        let value = llvm_mod.add_function(name, fn_ty, Some(Linkage::External));
+        fn_symbols.insert(
+            name.to_string(),
+            FnSymbol::Real {
+                value,
+                return_ty,
+                returns_unit,
+            },
+        );
+    }
+}
+
 fn const_global_symbol(c: &MirConst) -> String {
     format!(
         "__hew_const__{}__{}",
@@ -4435,6 +4573,32 @@ fn resolved_ty_contains_actor_handle(ty: &ResolvedTy) -> bool {
         ResolvedTy::Tuple(elems) => elems.iter().any(resolved_ty_contains_actor_handle),
         ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
             resolved_ty_contains_actor_handle(inner)
+        }
+        _ => false,
+    }
+}
+
+/// True when `ty` is — or transitively carries — a `Sink`/`Stream` builtin: a
+/// `receive gen fn` producer row's trailing sink param (`Sink<T>`, per
+/// `lower_actor_handler_layouts`'s stream-producer row shape). Same process-local,
+/// no-cross-node-wire-layout reasoning as the channel/actor-handle siblings
+/// above: a `Sink`/`Stream` lowers to a bare runtime pointer with no
+/// `Serializable` impl, so seeding a codec for it would fail the WHOLE
+/// compile for a purely local program. Checked at the codec-seeder call site
+/// alongside the other two so a single-param stream-producer handler (no
+/// real args — just the sink) skips codec generation exactly like a
+/// single-param channel-handle handler does.
+fn resolved_ty_contains_stream_handle(ty: &ResolvedTy) -> bool {
+    match ty {
+        ResolvedTy::Named { args, builtin, .. } => {
+            matches!(
+                builtin,
+                Some(hew_types::BuiltinType::Sink | hew_types::BuiltinType::Stream)
+            ) || args.iter().any(resolved_ty_contains_stream_handle)
+        }
+        ResolvedTy::Tuple(elems) => elems.iter().any(resolved_ty_contains_stream_handle),
+        ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
+            resolved_ty_contains_stream_handle(inner)
         }
         _ => false,
     }
@@ -38594,6 +38758,7 @@ fn build_module_for_target<'ctx>(
     }
     let mut fn_symbols: FnSymbolMap<'ctx> = HashMap::new();
     predeclare_stdlib_catalog(ctx, &llvm_mod, &mut fn_symbols, &record_layouts)?;
+    predeclare_stream_producer_runtime_symbols(ctx, &llvm_mod, &mut fn_symbols);
     predeclare_extern_decls(
         ctx,
         &llvm_mod,
@@ -43548,6 +43713,8 @@ fn emit_actor_codec_module_init<'ctx>(
                 || resolved_ty_contains_channel_handle(&h.return_ty)
                 || resolved_ty_contains_actor_handle(msg_ty)
                 || resolved_ty_contains_actor_handle(&h.return_ty)
+                || resolved_ty_contains_stream_handle(msg_ty)
+                || resolved_ty_contains_stream_handle(&h.return_ty)
             {
                 continue;
             }
@@ -52407,6 +52574,133 @@ mod tests {
             .unwrap_or_else(|e| panic!("pre-split coroutine module failed verify: {e}"));
     }
 
+    /// Build a coroutine `IrPipeline` whose bb0 carries a `SuspendKind::StreamSend`
+    /// forwarding a `string`-typed value over a duplex-handle sink — the exact
+    /// shape `build_stream_producer_pump` mints for a `receive gen fn -> string`.
+    /// Local 0 is the sink (a `ptr` slot, the Duplex handle); Local 1 is the
+    /// yielded `string` value.
+    fn pipeline_with_string_stream_send_pump() -> IrPipeline {
+        let ptr_ty = ResolvedTy::Pointer {
+            is_mutable: true,
+            pointee: Box::new(ResolvedTy::Unit),
+        };
+        let probe = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
+            name: "__hew_stream_send_string_pump".to_string(),
+            return_ty: ptr_ty.clone(),
+            call_conv: FunctionCallConv::Default,
+            params: vec![],
+            locals: vec![ptr_ty, ResolvedTy::String],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
+            blocks: vec![
+                BasicBlock {
+                    id: 0,
+                    statements: Vec::new(),
+                    instructions: vec![],
+                    // The suspending stream-send: the value (Local 1) is a
+                    // `string`, which MUST route through the layout-witness
+                    // sibling, NOT the native `BytesTriple`-shaped path.
+                    terminator: Terminator::Suspend {
+                        resume: 1,
+                        cleanup: 2,
+                        is_final: false,
+                    },
+                },
+                BasicBlock {
+                    id: 1,
+                    statements: Vec::new(),
+                    instructions: vec![],
+                    terminator: Terminator::Suspend {
+                        resume: 2,
+                        cleanup: 2,
+                        is_final: true,
+                    },
+                },
+                BasicBlock {
+                    id: 2,
+                    statements: Vec::new(),
+                    instructions: vec![],
+                    terminator: Terminator::Return,
+                },
+            ],
+            decisions: Vec::new(),
+            intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::from([(
+                0,
+                SuspendKind::StreamSend {
+                    sink: Place::Local(0),
+                    value: Place::Local(1),
+                },
+            )]),
+            lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::BTreeMap::new(),
+        };
+        IrPipeline {
+            thir: Vec::new(),
+            raw_mir: vec![probe],
+            checked_mir: Vec::new(),
+            elaborated_mir: Vec::new(),
+            diagnostics: Vec::new(),
+            wire_layouts: std::sync::Arc::default(),
+            opaque_handle_names: Vec::new(),
+            record_layouts: Vec::new(),
+            actor_layouts: Vec::new(),
+            supervisor_layouts: Vec::new(),
+            machine_layouts: Vec::new(),
+            enum_layouts: Vec::new(),
+            regex_literals: Vec::new(),
+            user_consts: Vec::new(),
+            extern_decls: vec![],
+            dyn_vtable_registry: vec![],
+            hashmap_lowering_facts: vec![],
+            hashset_lowering_facts: vec![],
+            actor_send_aliasing: std::collections::HashMap::new(),
+            polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
+            lint_warnings: vec![],
+            resource_record_close: vec![],
+            resource_opaque_close: vec![],
+        }
+    }
+
+    /// A `string`-typed `SuspendKind::StreamSend` (the receive-gen-fn pump's
+    /// yield forwarding) lowers through `hew_stream_await_send_layout`, NOT the
+    /// native `BytesTriple`-shaped `hew_stream_await_send`. The native path
+    /// dereferences its `data` argument as a 16-byte triple; a `string` local is
+    /// a single 8-byte `char*` slot, so routing it natively reads the adjacent
+    /// coro-frame field as offset/len — a wild read (empty content, or SIGSEGV
+    /// under a guard allocator). This pins the value-type dispatch in
+    /// `emit_suspending_stream_send_terminator`.
+    #[test]
+    fn string_stream_send_pump_uses_layout_witness_send_not_native() {
+        let ctx = Context::create();
+        let pipeline = pipeline_with_string_stream_send_pump();
+        let module = build_module(&ctx, &pipeline, "string_stream_send_pump_test")
+            .expect("string stream-send pump module must build");
+        let ir = module.print_to_string().to_string();
+        assert!(
+            ir.contains("@hew_stream_await_send_layout("),
+            "string-yield StreamSend must route through the layout-witness \
+             sibling `hew_stream_await_send_layout`:\n{ir}"
+        );
+        // The native symbol name is a prefix of the layout one, so match the
+        // open paren to exclude `_layout` — the native path must NOT be emitted
+        // for a `string` value.
+        assert!(
+            !ir.contains("@hew_stream_await_send("),
+            "string-yield StreamSend must NOT emit the native \
+             `BytesTriple`-shaped `hew_stream_await_send` (type confusion):\n{ir}"
+        );
+        module
+            .verify()
+            .unwrap_or_else(|e| panic!("string stream-send pump module failed verify: {e}"));
+    }
+
     /// Running the coro pass pipeline (`coro-early,coro-split,coro-cleanup`)
     /// splits the `presplitcoroutine` into its ramp + outlines and the module
     /// stays verifiable — proving the emitted intrinsics are well-formed enough
@@ -52997,6 +53291,7 @@ mod tests {
             return_ty: ResolvedTy::Unit,
             requires_state_guard: true,
             every_ms: None,
+            is_stream_producer: false,
         }
     }
 
@@ -53013,6 +53308,7 @@ mod tests {
             return_ty: ResolvedTy::I64,
             requires_state_guard: true,
             every_ms: None,
+            is_stream_producer: false,
         }
     }
 
@@ -53825,6 +54121,7 @@ fn main() {
             return_ty: ResolvedTy::Unit,
             requires_state_guard: false,
             every_ms: None,
+            is_stream_producer: false,
         };
         // The MIR function for the handler uses ActorHandler call-conv.  Because
         // the function name contains `__recv__`, `declare_function` appends a

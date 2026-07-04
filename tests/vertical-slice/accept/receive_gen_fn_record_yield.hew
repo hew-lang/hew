@@ -1,0 +1,20 @@
+// Yield-type generalization: a BitCopy `record` yield crosses the pump's
+// layout-witness send path (Plain witness) with all fields intact.
+record Point {
+    x: i64,
+    y: i64,
+}
+
+actor Shaper {
+    receive gen fn points() -> Point {
+        yield Point { x: 1, y: 2 };
+        yield Point { x: 3, y: 4 };
+    }
+}
+
+fn main() {
+    let s = spawn Shaper;
+    for await p in s.points() {
+        println(f"{p.x},{p.y}");
+    }
+}

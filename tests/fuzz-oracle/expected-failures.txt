@@ -21,7 +21,7 @@
 # map_literal_empty_annotated.hew, array_repeat_int_sum.hew, and
 # array_repeat_runtime_count.hew are intentionally absent: they must pass.
 #
-# Total: 24 known-failing entries (24 intentional-trap/abort fixtures).
+# Total: 26 known-failing entries (26 intentional-trap/abort fixtures).
 #
 # Intentional aborts/traps: fixtures in tests/vertical-slice/accept/ that are
 # designed to trap or abort at runtime as their correctness proof.  Listed here
@@ -54,3 +54,5 @@ wire_cbor_enum_oob_tag_traps.hew  # intentional trap: decoding an out-of-range e
 wire_cbor_narrow_int_over_range_traps.hew  # intentional trap: decoding a CBOR integer outside a fixed-width field's range (i8 from 300) through the wire body codec fails closed rather than truncating → DecodeFailure trap (SIGILL x86_64 / SIGTRAP aarch64)
 wire_cbor_enum_arity_mismatch_traps.hew  # intentional trap: decoding an enum payload whose arity exceeds the target variant (Pair(i64) from {1:[10,20]}) through the wire body codec fails closed rather than dropping the surplus → DecodeFailure trap (SIGILL x86_64 / SIGTRAP aarch64)
 int_negate_runtime_min_traps.hew  # intentional trap: negating a runtime i32::MIN value (-n for non-literal n; literal -<digits> folds at compile time) → IntegerOverflow signal (SIGILL x86_64 / SIGTRAP aarch64)
+receive_gen_fn_fault_trap.hew  # intentional abort: a receive-gen producer that traps mid-stream (div-by-zero after its first yield) fault-closes the stream so the consumer observes the fault → SIGABRT (signal 6)
+receive_gen_fn_teardown_fault.hew  # intentional abort: a receive-gen producer torn down (actor stopped) while its stream is live and parked fault-closes the stream so the consumer observes the fault → SIGABRT (signal 6)

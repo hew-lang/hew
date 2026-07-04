@@ -1,0 +1,59 @@
+// A `receive gen fn` producer that is torn down (its actor stopped)
+// while its stream is live and undrained must fault-close the stream — the
+// consumer observes the fault on the next resume, not a hang and not a
+// silent EOF.
+//
+// One `recv()` up front guarantees the pump has left its initial idle state
+// (an infinite generator never returns to idle on its own), so the
+// subsequent `supervisor_stop` is guaranteed to observe the child actor as
+// still running its pump rather than racing an unstarted one. `supervisor_stop`
+// blocks until the child actor is fully torn down; since the generator never
+// completes on its own, that can only happen once it has filled its
+// backpressure buffer and parked — which makes the buffered values at
+// teardown an exact, deterministic count (capacity 8, minus the one value
+// already drained above).
+actor Ticker {
+    receive gen fn stream() -> i64 {
+        var i: i64 = 0;
+        loop {
+            yield i;
+            i = i + 1;
+        }
+    }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child ticker: Ticker;
+}
+
+fn main() {
+    let sup = spawn App;
+    let t = sup.ticker;
+    let s = t.stream();
+
+    let first = await s.recv();
+    match first {
+        Some(v) => println(f"{v}"),
+        None => println("unexpected-close"),
+    }
+
+    supervisor_stop(sup);
+
+    var i = 0;
+    while i < 8 {
+        match await s.recv() {
+            Some(v) => println(f"{v}"),
+            None => println("unexpected-eof"),
+        }
+        i = i + 1;
+    }
+
+    let overflow = await s.recv();
+    match overflow {
+        Some(v) => println(f"overflow={v}"),
+        None => println("unexpected-eof-after-fault"),
+    }
+}

@@ -1319,6 +1319,19 @@ pub enum HirExprKind {
         /// side-table); non-literal durations fail closed at CHECK time.
         deadline_ns: Option<i64>,
     },
+    /// `receive gen fn` dispatch, selected from the checker's
+    /// `actor_method_dispatch` side table (`ActorMethodKind::StreamProducer`).
+    /// The expression type is `Stream<T>`, `T` the checker-resolved stream
+    /// element type. MIR lowers this to per-call channel construction (a
+    /// bounded pipe) plus a tell-shaped "start" message carrying `args` and
+    /// the sink half to the actor's stream-producer pump; the expression
+    /// value is the stream half. No `await` at the call site — the checker's
+    /// ask-without-await guard already exempts generator methods.
+    ActorGenStream {
+        receiver: Box<HirExpr>,
+        method: String,
+        args: Vec<HirExpr>,
+    },
     /// Cross-node request/reply dispatch on `RemotePid<T>::ask(msg, timeout_ms)`.
     ///
     /// The expression type is the full `Result<T::Reply, AskError>`; `reply_ty`
@@ -2540,6 +2553,24 @@ pub struct HirGenCapture {
     /// field. The MIR slot type is the authority; this is the HIR view
     /// recorded for verification and dump parity.
     pub ty: ResolvedTy,
+    /// Where this capture's value lives in the enclosing frame. MIR consumes
+    /// this checker/HIR-recorded discriminator to pick the snapshot source
+    /// (a plain local read vs an `ActorStateFieldLoad`) instead of
+    /// re-deriving gen-ness from the binding's name or type.
+    pub source: HirGenCaptureSource,
+}
+
+/// Source of an `HirGenCapture`'s value in the enclosing frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HirGenCaptureSource {
+    /// An ordinary local binding: a `gen fn`'s formal parameter, a `gen { }`
+    /// block's captured outer local, or a `receive gen fn` handler parameter.
+    Local,
+    /// An actor state field read inside a `receive gen fn` handler body. MIR
+    /// snapshots this at generator-construction time (a point-in-time copy,
+    /// not a live reference — the snapshot is taken once, at stream start,
+    /// and never re-reads the actor's live state).
+    ActorStateField,
 }
 
 /// Capture-strength selector for an `HirLambdaCapture`. Mirrors

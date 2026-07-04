@@ -1,0 +1,65 @@
+// An actor's `receive gen fn` handler must feel identical to a standalone
+// `gen fn` at the consumer surface. Both bodies below compute the same
+// sequence (base + i for i in 0..n); one runs as an actor stream drained via
+// `for await`, the other as a plain generator drained via `for`. Rendering
+// both into comma-joined strings and comparing them is the "feels
+// identical" proof.
+actor Ticker {
+    var base: i64;
+    init(b: i64) {
+        base = b;
+    }
+    receive gen fn stream(n: i64) -> i64 {
+        var i = 0;
+        while i < n {
+            yield base + i;
+            i = i + 1;
+        }
+    }
+}
+
+gen fn stream_twin(base: i64, n: i64) -> i64 {
+    var i = 0;
+    while i < n {
+        yield base + i;
+        i = i + 1;
+    }
+}
+
+fn render_actor_seq(t: LocalPid<Ticker>, n: i64) -> string {
+    var out: string = "";
+    var first = true;
+    for await v in t.stream(n) {
+        if first {
+            first = false;
+        } else {
+            out = out + ",";
+        }
+        out = out + f"{v}";
+    }
+    out
+}
+
+fn render_gen_seq(base: i64, n: i64) -> string {
+    var out: string = "";
+    var first = true;
+    for v in stream_twin(base, n) {
+        if first {
+            first = false;
+        } else {
+            out = out + ",";
+        }
+        out = out + f"{v}";
+    }
+    out
+}
+
+fn main() {
+    let t = spawn Ticker(b: 100);
+    let actor_seq = render_actor_seq(t, 3);
+    let gen_seq = render_gen_seq(100, 3);
+    println(actor_seq);
+    println(gen_seq);
+    assert_eq(actor_seq, gen_seq);
+    assert_eq(actor_seq, "100,101,102");
+}

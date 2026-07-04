@@ -238,17 +238,22 @@ fn non_generator_receive_handler_propagates_guard_to_layout() {
     }
 }
 
-/// Generator receive handlers (`receive gen fn`) are stream producers, not
-/// request/reply message handlers, so they must NOT appear in
-/// `actor_layouts.handlers` (the message-dispatch layout). Their MIR *body*
-/// now lowers (through the `GenBlock` state-machine path), but the
-/// guard-propagation loop in `lower_actor_handler_layouts` still skips them:
-/// the consumer-side stream-dispatch bridge that would route a message to a
-/// generator handler is a separate, not-yet-built piece.
+/// Generator receive handlers (`receive gen fn`) ARE message-dispatch
+/// handlers now — the third handler kind beside tell (`Fire`) and ask
+/// (`Ask`): a per-call stream-producer PUMP started by a tell-shaped "start"
+/// message. `lower_actor_handler_layouts` pushes a producer row for them
+/// (`is_stream_producer: true`) instead of skipping them, with `param_tys`
+/// covering the handler's own params PLUS one trailing pointer-word sink and
+/// `return_ty` reflecting the pump's actual `Unit` MIR return type.
 #[test]
-fn generator_handler_is_absent_from_actor_handler_layout() {
+fn generator_handler_appears_in_actor_handler_layout_as_stream_producer() {
     let mut ids = ids();
-    // One normal handler + one generator handler.
+    // One normal handler + one generator handler. `minimal_actor` builds the
+    // protocol descriptor over ALL `receive_handlers` unconditionally — a
+    // `receive gen fn` gets a msg_id from the same pass as any other receive
+    // fn (mirrors the checker's `build_actor_protocol_descriptors`) — so the
+    // producer row's `msg_type` reads through the same `msg_id_for` lookup as
+    // an ordinary handler.
     let normal = receive_fn(
         &mut ids,
         "inc",
@@ -263,34 +268,7 @@ fn generator_handler_is_absent_from_actor_handler_layout() {
         true, // is_generator
         vec![],
     );
-    // Protocol descriptor only for the normal handler — generator is excluded
-    // from the protocol (no msg_type).
-    let specs = vec![ActorHandlerSpec {
-        name: "inc".to_string(),
-        param_tys: vec![],
-        return_ty: ResolvedTy::Unit,
-        symbol: "Counter__inc".to_string(),
-    }];
-    let descriptor = ActorProtocolDescriptor::from_handlers("Counter".to_string(), &specs)
-        .expect("non-colliding handler list");
-    let actor = HirActorDecl {
-        id: ids.item(),
-        node: ids.node(),
-        name: "Counter".to_string(),
-        defining_module: None,
-        state_fields: vec![],
-        init: None,
-        receive_handlers: vec![normal, generator],
-        methods: vec![],
-        lifecycle_hooks: vec![],
-        max_heap_bytes: None,
-        is_isolated: false,
-        mailbox_capacity: None,
-        overflow_policy: None,
-        cycle_capable: false,
-        protocol_descriptor: Some(descriptor),
-        span: 0..0,
-    };
+    let actor = minimal_actor(&mut ids, "Counter", vec![normal, generator]);
 
     let pipeline = lower_hir_module(&empty_module(vec![HirItem::Actor(actor)]));
 
@@ -308,17 +286,54 @@ fn generator_handler_is_absent_from_actor_handler_layout() {
         pipeline.diagnostics
     );
 
-    // The message-dispatch layout must contain only the non-generator handler,
-    // with the guard fact set — the generator handler stays out of the layout.
+    // The message-dispatch layout must contain BOTH handlers now.
     let layout = &pipeline.actor_layouts[0];
     assert_eq!(
         layout.handlers.len(),
-        1,
-        "generator handler must not appear in the handler layout"
+        2,
+        "both the tell handler and the stream-producer handler must appear in the layout"
     );
-    assert_eq!(layout.handlers[0].name, "inc");
+    let inc = layout
+        .handlers
+        .iter()
+        .find(|h| h.name == "inc")
+        .expect("`inc` handler row present");
     assert!(
-        layout.handlers[0].requires_state_guard,
+        !inc.is_stream_producer,
+        "an ordinary tell handler must not be marked is_stream_producer"
+    );
+    assert!(
+        inc.requires_state_guard,
         "the non-generator handler must still carry requires_state_guard=true"
+    );
+
+    let ticks = layout
+        .handlers
+        .iter()
+        .find(|h| h.name == "ticks")
+        .expect("`ticks` generator handler row present");
+    assert!(
+        ticks.is_stream_producer,
+        "a `receive gen fn` handler must be marked is_stream_producer"
+    );
+    assert_eq!(
+        ticks.param_tys.len(),
+        1,
+        "the producer row's param_tys must carry exactly the trailing sink \
+         (this fixture's generator declares no real params)"
+    );
+    assert_eq!(
+        ticks.return_ty,
+        ResolvedTy::Unit,
+        "the producer row's return_ty reflects the pump's actual MIR return type, \
+         not the stream element type"
+    );
+    assert!(
+        ticks.requires_state_guard,
+        "the generator handler must still carry its checker-recorded state-guard fact"
+    );
+    assert_eq!(
+        ticks.every_ms, None,
+        "a generator handler cannot be periodic"
     );
 }

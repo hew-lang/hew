@@ -43,10 +43,10 @@ use crate::monomorph::{
 use crate::node::{
     HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn, HirActorStateGuard, HirBinding,
     HirBlock, HirCaptureKind, HirClosureCapture, HirExpr, HirExprKind, HirField, HirFn,
-    HirGenCapture, HirItem, HirJoin, HirJoinBranch, HirLambdaCapture, HirLifecycleHook,
-    HirLifecycleHookKind, HirLiteral, HirMachineDecl, HirMachineEvent, HirMachineState,
-    HirMachineTransition, HirMatchArm, HirMatchArmBinding, HirMatchArmPredicate, HirModule,
-    HirPayloadPredicate, HirPayloadVariantPredicate, HirRecordDecl, HirRegexLiteral,
+    HirGenCapture, HirGenCaptureSource, HirItem, HirJoin, HirJoinBranch, HirLambdaCapture,
+    HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMachineDecl, HirMachineEvent,
+    HirMachineState, HirMachineTransition, HirMatchArm, HirMatchArmBinding, HirMatchArmPredicate,
+    HirModule, HirPayloadPredicate, HirPayloadVariantPredicate, HirRecordDecl, HirRegexLiteral,
     HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirShutdownDirective, HirStmt,
     HirStmtKind, HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl,
     HirVarSelfMethodTarget, HirVariant, HirVariantKind,
@@ -4265,6 +4265,7 @@ fn collect_call_sites_in_expr(
         }
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::ActorGenStream { receiver, args, .. }
         | HirExprKind::ResolvedImplCall { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. } => {
             collect_call_sites_in_expr(receiver, out, trait_out);
@@ -7498,6 +7499,11 @@ impl LowerCtx {
                 args,
                 ..
             }
+            | HirExprKind::ActorGenStream {
+                receiver: target,
+                args,
+                ..
+            }
             | HirExprKind::CallDynMethod {
                 receiver: target,
                 args,
@@ -10571,15 +10577,23 @@ impl LowerCtx {
         let saved_scope_depth = self.scope_depth;
         self.scope_depth = 0;
         self.push_scope();
+        let mut state_field_bindings: HashSet<BindingId> = HashSet::new();
         for field in state_fields {
-            self.bind(
+            let binding = self.bind(
                 field.name.clone(),
                 field.ty.clone(),
                 true,
                 field.span.clone(),
             );
+            state_field_bindings.insert(binding.id);
         }
         let params = params.iter().map(|p| self.bind_param(p)).collect();
+
+        // Snapshot the enclosing scope (state fields + params, just bound
+        // above) BEFORE lowering the body, mirroring `lower_generator_fn_body`
+        // — only enclosing-frame bindings are capture candidates, never a
+        // body-local `let`/`var`.
+        let outer_bindings = self.visible_outer_bindings();
 
         self.generator_yield_tys.push(yield_ty.clone());
         let gen_body = self.with_current_return_type(gen_return_ty.clone(), |ctx| {
@@ -10589,6 +10603,20 @@ impl LowerCtx {
 
         self.pop_scope();
         self.scope_depth = saved_scope_depth;
+
+        // Handler params and read state fields are both free variables of the
+        // gen body from the synthesised `__hew_gen_body_*` builder's point of
+        // view; `collect_gen_captures` finds both through the same walk. Tag
+        // state-field captures so MIR (`lower_gen_block`) knows to snapshot
+        // them via `ActorStateFieldLoad` rather than a plain local read —
+        // the checker/HIR-recorded discriminator MIR must consume instead of
+        // re-deriving gen-ness from the binding's name (`type-info-survival`).
+        let mut captures = Self::collect_gen_captures(&gen_body, &outer_bindings);
+        for capture in &mut captures {
+            if state_field_bindings.contains(&capture.binding) {
+                capture.source = HirGenCaptureSource::ActorStateField;
+            }
+        }
 
         let generator_ty = ResolvedTy::Named {
             name: "Generator".to_string(),
@@ -10606,18 +10634,7 @@ impl LowerCtx {
                 body: gen_body,
                 yield_ty,
                 return_ty: gen_return_ty,
-                // DROP-TODO(receive-gen-captures): the actor receive-gen handler
-                // form needs BOTH its formal params AND its actor state fields
-                // threaded into the gen body. Params would ride the same env
-                // channel `gen fn`/`gen {}` now use, but state fields resolve by
-                // name through `current_actor_state_fields` (an `ActorStateFieldLoad`
-                // path the synthesised gen-body builder does not yet inherit), so a
-                // naive capture of a state field would mis-route. Left empty here:
-                // a parameterized/stateful `receive gen fn` body still fail-closes
-                // on the free-var read exactly as before (no regression) until the
-                // state-field propagation lands. Tracked alongside the gen
-                // params/captures lane.
-                captures: Vec::new(),
+                captures,
             },
             span: span.clone(),
         };
@@ -14955,7 +14972,12 @@ impl LowerCtx {
                         );
                         ResolvedTy::from_ty(&reply_ty).unwrap_or(ResolvedTy::Unit)
                     }
-                    Some(ActorMethodKind::Fire(_)) | None => ResolvedTy::Unit,
+                    // A `receive gen fn` dispatch never reaches a `select`
+                    // ActorAsk arm — `for await` is its only consumer surface
+                    // — but fold it into the same Unit fallback as `Fire`/
+                    // `None` rather than panicking on a table mismatch.
+                    Some(ActorMethodKind::Fire(_) | ActorMethodKind::StreamProducer(_, _))
+                    | None => ResolvedTy::Unit,
                 }
             }
             HirSelectArmKind::ChannelRecv { receiver } => {
@@ -15385,6 +15407,7 @@ impl LowerCtx {
                         binding,
                         name,
                         ty: ty.clone(),
+                        source: HirGenCaptureSource::Local,
                     })
             })
             .collect()
@@ -20297,6 +20320,43 @@ impl LowerCtx {
                         )
                     }
                 },
+                ActorMethodKind::StreamProducer(method_id, elem_ty) => {
+                    match ResolvedTy::from_ty(&elem_ty) {
+                        Ok(elem_ty) => {
+                            let stream_ty = ResolvedTy::named_builtin(
+                                "Stream",
+                                hew_types::BuiltinType::Stream,
+                                vec![elem_ty],
+                            );
+                            (
+                                HirExprKind::ActorGenStream {
+                                    receiver: Box::new(lowered_receiver),
+                                    method: method_id,
+                                    args: lowered_args,
+                                },
+                                stream_ty,
+                            )
+                        }
+                        Err(err) => {
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::CheckerBoundaryViolation {
+                                    name: format!("actor method `.{method}`"),
+                                    reason: err.to_string(),
+                                },
+                                span.clone(),
+                                "checker-authoritative actor_method_dispatch stream element \
+                                 type failed boundary conversion",
+                            ));
+                            (
+                                HirExprKind::Unsupported(format!(
+                                    "actor method `.{method}` has poisoned dispatch stream \
+                                     element type"
+                                )),
+                                ResolvedTy::Unit,
+                            )
+                        }
+                    }
+                }
             };
         }
         if matches!(
@@ -24056,6 +24116,7 @@ fn collect_captures_walk(
         }
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::ActorGenStream { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
         | HirExprKind::ResolvedImplCall { receiver, args, .. }
         | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
@@ -24375,6 +24436,7 @@ fn collect_general_closure_captures_walk(
         }
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::ActorGenStream { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
         | HirExprKind::ResolvedImplCall { receiver, args, .. }
         | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
@@ -25152,6 +25214,7 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
         // Additional expression forms whose sub-expressions can contain emits.
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::ActorGenStream { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
         | HirExprKind::ResolvedImplCall { receiver, args, .. }
         | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
@@ -27547,7 +27610,8 @@ fn scan_expr_for_call_shape(
             }
         }
         HirExprKind::ActorSend { receiver, args, .. }
-        | HirExprKind::ActorAsk { receiver, args, .. } => {
+        | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::ActorGenStream { receiver, args, .. } => {
             scan_expr_for_call_shape(receiver, callable, diagnostics);
             for a in args {
                 scan_expr_for_call_shape(a, callable, diagnostics);

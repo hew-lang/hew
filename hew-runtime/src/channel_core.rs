@@ -69,6 +69,18 @@ struct Inner {
     sink_closed: bool,
     /// The consumer cancelled (`stream.close()` / stream drop).
     stream_closed: bool,
+    /// Terminal FAULT: the producer (a `receive gen fn` pump) crashed
+    /// or was torn down while still registered, instead of reaching a clean
+    /// `sink_closed` EOF. Orthogonal to `sink_closed` — set only by
+    /// [`ChannelCore::fault_close`], never by a normal close edge. Once
+    /// every already-queued item drains, every further consumer read must
+    /// observe the fault rather than a silent EOF (`pop` / `blocking_recv`
+    /// panic; `await_next` reports ready so the bind edge reaches that
+    /// panic instead of parking forever).
+    sink_fault: bool,
+    /// The id of the actor whose registered sink faulted, recorded once at
+    /// the first [`ChannelCore::fault_close`] call, for the panic message.
+    fault_actor_id: Option<u64>,
     /// At most one parked consumer (a `Stream<T>` has a single owner).
     consumer: Option<Waiter>,
     /// Parked producers blocked on a full ring, woken FIFO as space frees.
@@ -117,6 +129,8 @@ impl ChannelCore {
                 capacity: capacity.max(1),
                 sink_closed: false,
                 stream_closed: false,
+                sink_fault: false,
+                fault_actor_id: None,
                 consumer: None,
                 producers: VecDeque::new(),
                 elem_layout: None,
@@ -221,7 +235,11 @@ impl ChannelCore {
     /// slot the caller created and holds the creator ref to.
     pub unsafe fn await_next(&self, actor: *mut HewActor, slot: *mut HewReadSlot) -> i32 {
         let mut inner = self.locked();
-        if !inner.queue.is_empty() || inner.sink_closed {
+        if !inner.queue.is_empty() || inner.sink_closed || inner.sink_fault {
+            // A faulted-and-empty pipe is READY, never a park — the
+            // bind edge's `pop`/`blocking_recv` observes the fault there and
+            // panics fail-closed instead of leaving the consumer parked
+            // forever on a producer that will never resume.
             return STREAM_AWAIT_READY;
         }
         // Park: the core takes an in-flight ref so a producer deposit / close
@@ -251,9 +269,15 @@ impl ChannelCore {
     pub fn pop(&self) -> Option<Vec<u8>> {
         let producer_wake;
         let item;
+        let fault_actor_id;
         {
             let mut inner = self.locked();
             item = inner.queue.pop_front();
+            fault_actor_id = if item.is_none() {
+                inner.sink_fault.then_some(inner.fault_actor_id).flatten()
+            } else {
+                None
+            };
             producer_wake = if item.is_some() {
                 Self::drain_one_producer(&mut inner)
             } else {
@@ -268,6 +292,9 @@ impl ChannelCore {
         if item.is_some() {
             self.cv.notify_all();
         }
+        if let Some(actor_id) = fault_actor_id {
+            Self::panic_faulted(actor_id);
+        }
         item
     }
 
@@ -277,11 +304,17 @@ impl ChannelCore {
     pub fn blocking_recv(&self) -> Option<Vec<u8>> {
         let producer_wake;
         let item;
+        let mut fault_actor_id: Option<u64> = None;
         {
             let mut inner = self.locked();
             loop {
                 if let Some(v) = inner.queue.pop_front() {
                     item = Some(v);
+                    break;
+                }
+                if inner.sink_fault {
+                    fault_actor_id = inner.fault_actor_id;
+                    item = None;
                     break;
                 }
                 if inner.sink_closed {
@@ -305,6 +338,9 @@ impl ChannelCore {
         }
         if item.is_some() {
             self.cv.notify_all();
+        }
+        if let Some(actor_id) = fault_actor_id {
+            Self::panic_faulted(actor_id);
         }
         item
     }
@@ -518,6 +554,17 @@ impl ChannelCore {
         }
     }
 
+    /// Whether the consumer has closed/detached (`stream.close()` / stream
+    /// drop). Read by `hew_sink_peer_closed` so a `receive gen fn` pump can
+    /// check its peer before every resume and break the loop without
+    /// resuming further once the consumer is gone (cancellation,
+    /// decision 6) — an infinite generator plus a consumer `break` must not
+    /// livelock the actor.
+    #[must_use]
+    pub fn is_stream_closed(&self) -> bool {
+        self.locked().stream_closed
+    }
+
     // ── Close edges ──────────────────────────────────────────────────────────
 
     /// The producer closed (EOF). Wakes a parked consumer so its `await_next`
@@ -564,6 +611,44 @@ impl ChannelCore {
             Self::drop_envelope(layout.as_ref(), env);
         }
         self.cv.notify_all();
+    }
+
+    /// Mark this pipe permanently FAULTED: the registered producer (a
+    /// `receive gen fn` pump) crashed or was torn down instead of reaching a
+    /// clean EOF. Distinct from [`Self::close_sink`] — set only by the
+    /// runtime's actor-teardown paths, never by a normal producer close.
+    /// Wakes a parked consumer so it observes the fault immediately rather
+    /// than hanging until some other event arrives. Idempotent: a second
+    /// call (e.g. both the crash path and a later free path reach an
+    /// already-faulted core) leaves the FIRST recorded `actor_id`.
+    ///
+    /// Does not touch `sink_closed`/`stream_closed` or the queue — items
+    /// already queued before the fault still drain normally; the fault
+    /// applies only once the queue empties (see `pop`/`blocking_recv`).
+    pub fn fault_close(&self, actor_id: u64) {
+        let consumer_wake;
+        {
+            let mut inner = self.locked();
+            if !inner.sink_fault {
+                inner.sink_fault = true;
+                inner.fault_actor_id = Some(actor_id);
+            }
+            consumer_wake = inner.consumer.take();
+        }
+        if let Some(w) = consumer_wake {
+            // SAFETY: removed under the lock; we own its in-flight ref.
+            unsafe { Self::wake(w) };
+        }
+        self.cv.notify_all();
+    }
+
+    /// Fail closed on an empty-and-faulted read: never a silent EOF.
+    /// Named so the panic message identifies the faulted producer actor.
+    fn panic_faulted(actor_id: u64) -> ! {
+        panic!(
+            "receive-gen stream: producer actor {actor_id} crashed or was torn down; \
+             stream faulted — no more values will ever arrive"
+        );
     }
 
     /// Pop one parked producer (if any) and re-enqueue its item, returning the

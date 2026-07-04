@@ -949,6 +949,9 @@ fn generator_handler_call_lowers_to_stream_dispatch() {
         "hew_stream_channel",
         "hew_stream_pair_sink",
         "hew_stream_pair_stream",
+        // The carrier box is freed at the call site once both halves are
+        // extracted — otherwise the empty `HewStreamPair` box leaks per call.
+        "hew_stream_pair_free",
     ] {
         assert!(
             callees.contains(&expected),

@@ -28402,9 +28402,53 @@ impl Builder {
             lowered.push((place, ty));
         }
 
-        // Per-call bounded channel. The capacity is a laziness/throughput
-        // tunable (A239 chose eager producer drive with bounded-channel
-        // backpressure; a small buffer keeps it pull-equivalent).
+        let stream_ty = self.subst_ty(&expr.ty);
+        let (sink, stream) = self.build_receive_gen_channel(&sink_ty, stream_ty);
+
+        lowered.push((sink, sink_ty));
+        let value = if let [(place, _)] = &lowered[..] {
+            *place
+        } else {
+            let (field_places, field_tys): (Vec<Place>, Vec<ResolvedTy>) =
+                lowered.into_iter().unzip();
+            self.pack_actor_payload_from_places(field_places, field_tys)
+        };
+
+        let next = self.alloc_block();
+        self.finish_current_block(Terminator::Send {
+            actor,
+            msg_type: info.msg_type,
+            value,
+            next,
+            // Args crossing into a stream-producer start message use the same
+            // fail-closed default as the zero/multi-arg `ActorSend` cases;
+            // per-arg alias classification for stream calls is a follow-on.
+            alias_mode: crate::model::SendAliasMode::Copy,
+        });
+        self.start_block(next);
+        Some(stream)
+    }
+
+    /// Construct the per-call bounded channel for a `receive gen fn` dispatch
+    /// and extract both halves, returning `(sink, stream)`.
+    ///
+    /// The pair box (`hew_stream_channel`) is a transient two-pointer carrier
+    /// whose lifetime is exactly this sequence: `hew_stream_pair_sink` and
+    /// `hew_stream_pair_stream` each null-store their field on extraction
+    /// (ownership transfer), so once both halves are out the box owns neither
+    /// half. `hew_stream_pair_free` then releases ONLY the empty carrier —
+    /// never the sink or stream — and is null-guarded, so a fail-closed null
+    /// `pair` is a no-op rather than a fault. Skipping the free leaks the
+    /// carrier box once per call.
+    ///
+    /// The capacity is a laziness/throughput tunable (A239 chose eager producer
+    /// drive with bounded-channel backpressure; a small buffer keeps it
+    /// pull-equivalent).
+    fn build_receive_gen_channel(
+        &mut self,
+        sink_ty: &ResolvedTy,
+        stream_ty: ResolvedTy,
+    ) -> (Place, Place) {
         let capacity = self.alloc_local(ResolvedTy::I64);
         self.push_instr(Instr::ConstI64 {
             dest: capacity,
@@ -28436,7 +28480,7 @@ impl Builder {
         });
         self.start_block(after_sink);
 
-        let stream = self.alloc_local(self.subst_ty(&expr.ty));
+        let stream = self.alloc_local(stream_ty);
         let after_stream = self.alloc_block();
         self.finish_current_block(Terminator::Call {
             callee: "hew_stream_pair_stream".to_string(),
@@ -28447,28 +28491,19 @@ impl Builder {
         });
         self.start_block(after_stream);
 
-        lowered.push((sink, sink_ty));
-        let value = if let [(place, _)] = &lowered[..] {
-            *place
-        } else {
-            let (field_places, field_tys): (Vec<Place>, Vec<ResolvedTy>) =
-                lowered.into_iter().unzip();
-            self.pack_actor_payload_from_places(field_places, field_tys)
-        };
-
-        let next = self.alloc_block();
-        self.finish_current_block(Terminator::Send {
-            actor,
-            msg_type: info.msg_type,
-            value,
-            next,
-            // Args crossing into a stream-producer start message use the same
-            // fail-closed default as the zero/multi-arg `ActorSend` cases;
-            // per-arg alias classification for stream calls is a follow-on.
-            alias_mode: crate::model::SendAliasMode::Copy,
+        // Free the now-empty carrier (see the doc comment above): both halves
+        // are extracted, so this releases only the two-pointer box.
+        let after_free = self.alloc_block();
+        self.finish_current_block(Terminator::Call {
+            callee: "hew_stream_pair_free".to_string(),
+            builtin: None,
+            args: vec![pair],
+            dest: None,
+            next: after_free,
         });
-        self.start_block(next);
-        Some(stream)
+        self.start_block(after_free);
+
+        (sink, stream)
     }
 
     /// Lower a sealed `select{}` expression to MIR.

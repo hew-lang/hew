@@ -4204,16 +4204,19 @@ pub(crate) fn build_state_name_table<'ctx>(
 /// and its call-site lowering emit as bare `Terminator::Call`s
 /// (`hew-mir/src/lower.rs`, `build_stream_producer_pump` +
 /// `lower_actor_gen_stream`): `hew_stream_channel`, `hew_stream_pair_sink`,
-/// `hew_stream_pair_stream`, `hew_sink_close`, `hew_sink_peer_closed`,
-/// `hew_actor_gen_sink_register`, `hew_actor_gen_sink_complete`.
+/// `hew_stream_pair_stream`, `hew_stream_pair_free`, `hew_sink_close`,
+/// `hew_sink_peer_closed`, `hew_actor_gen_sink_register`,
+/// `hew_actor_gen_sink_complete`.
 ///
 /// These are EXISTING `hew-runtime/src/stream.rs` / `hew-runtime/src/actor.rs`
 /// exports, already classified in `scripts/jit-symbol-classification.toml`'s
 /// `stable` tier, but reached through `Terminator::Call` for the first time
 /// here — and none of them have a `fn_symbols` entry through any EXISTING
 /// path:
-///   * The channel-construction trio has no stdlib-catalog entry at all (no
-///     user-facing Hew syntax calls `hew_stream_channel(..)` directly).
+///   * The channel-construction trio (plus `hew_stream_pair_free`, which
+///     releases the empty carrier once both halves are extracted) has no
+///     stdlib-catalog entry at all (no user-facing Hew syntax calls
+///     `hew_stream_channel(..)` directly).
 ///   * `hew_sink_close` DOES back real user syntax (`Sink::close`,
 ///     `sink.close()`) and a checker-side `RuntimeCallFamily::SinkClose` /
 ///     `RuntimeDropDescriptor::SinkClose` already exist for it — but both are
@@ -4226,7 +4229,7 @@ pub(crate) fn build_state_name_table<'ctx>(
 ///     exports with no user-facing Hew syntax at all — the pump is their
 ///     ONLY caller.
 ///
-/// All seven declarations here are hand-written against the runtime's real
+/// All eight declarations here are hand-written against the runtime's real
 /// C-ABI shapes (every handle param/return is an opaque `ptr` at the LLVM
 /// level, except the plain `i64` capacity, the `i32` peer-closed/fault
 /// witness, and the `void` close/register/complete returns):
@@ -4234,6 +4237,7 @@ pub(crate) fn build_state_name_table<'ctx>(
 ///   * `hew_stream_channel(capacity: i64) -> *mut HewStreamPair`
 ///   * `hew_stream_pair_sink(pair: *mut HewStreamPair) -> *mut HewSink`
 ///   * `hew_stream_pair_stream(pair: *mut HewStreamPair) -> *mut HewStream`
+///   * `hew_stream_pair_free(pair: *mut HewStreamPair) -> void`
 ///   * `hew_sink_close(sink: *mut HewSink) -> void`
 ///   * `hew_sink_peer_closed(sink: *mut HewSink) -> i32`
 ///   * `hew_actor_gen_sink_register(actor: *mut HewActor, sink: *mut HewSink) -> void`
@@ -4268,6 +4272,15 @@ fn predeclare_stream_producer_runtime_symbols<'ctx>(
             unary_ptr_fn_ty,
             ptr_ty.into(),
             false,
+        ),
+        (
+            // Frees the empty pair carrier once both halves are extracted
+            // (`lower_actor_gen_stream`). `ptr -> void`; null-guarded runtime
+            // side, so a fail-closed null argument is a no-op.
+            "hew_stream_pair_free",
+            ctx.void_type().fn_type(&[ptr_ty.into()], false),
+            ctx.i8_type().into(),
+            true,
         ),
         (
             "hew_sink_close",

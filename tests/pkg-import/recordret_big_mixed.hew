@@ -1,0 +1,9 @@
+// §0 probe: 24-byte record return (Indirect/sret) from (i32, i64) params.
+// Pins the caller's argument-index shift past the hidden sret pointer: `hi`
+// (> 2^32) must reach the callee un-truncated and `lo`/`hi` must not swap.
+import hew::recordret;
+
+fn main() {
+    let b = recordret.big_mixed(7, 5000000000);
+    println(f"a={b.a} b={b.b} c={b.c}");
+}

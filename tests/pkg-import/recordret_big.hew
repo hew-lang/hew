@@ -1,0 +1,9 @@
+// §0 probe: a user extern "C" fn returning a 24-byte record (Indirect/sret).
+// The #2399 headline: today the caller never sets the indirect-result pointer,
+// so the callee's first store faults. Post-fix, the three sentinel fields print.
+import hew::recordret;
+
+fn main() {
+    let b = recordret.big();
+    println(f"a={b.a} b={b.b} c={b.c}");
+}

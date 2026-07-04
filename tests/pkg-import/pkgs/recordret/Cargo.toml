@@ -1,0 +1,21 @@
+# Standalone crate: the [workspace] table detaches it from the repository
+# workspace so `hew`'s [native] auto-link can build it in isolation, exactly
+# like an out-of-tree ecosystem package. No dependencies — the sentinel records
+# are pure value construction so the build works offline.
+[package]
+name = "hew-recordret-fixture"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Native FFI backing for the hew::recordret §0 falsification package"
+
+[lib]
+name = "hew_hew_recordret"
+crate-type = ["staticlib"]
+
+# The staticlib must embed panic = "abort" so the final link against libhew.a
+# does not carry a second unwinder personality.
+[profile.release]
+panic = "abort"
+
+[workspace]

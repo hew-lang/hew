@@ -1,0 +1,8 @@
+// §0 probe: 16-byte record {i32,i64} — RegisterPair, one field per eightbyte
+// (the CronNextResult shape). Characterizes the per-eightbyte register return.
+import hew::recordret;
+
+fn main() {
+    let m = recordret.mid();
+    println(f"s={m.s} t={m.t}");
+}

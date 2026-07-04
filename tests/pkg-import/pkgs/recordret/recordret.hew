@@ -1,0 +1,98 @@
+//! §0 falsification package for #2399: user `extern "C"` functions returning
+//! `#[repr(C)]` records by value, one per aggregate-return ABI class. Each
+//! `pub fn` wraps a native extern that returns a record with distinct non-zero
+//! sentinel fields; an importing fixture calls the wrapper and prints every
+//! field, so a mis-classified return (the sret gap) shows up field-by-field.
+
+/// 24-byte, Indirect (sret) on every target — the headline class.
+pub type Big {
+    a: i64;
+    b: i64;
+    c: i64;
+}
+
+/// Same 24-byte Indirect shape, produced from `(i32, i64)` params so the
+/// caller's sret param-index shift is exercised: `a = hi`, `b = lo`,
+/// `c = hi + lo`.
+pub type BigMixed {
+    a: i64;
+    b: i64;
+    c: i64;
+}
+
+/// 16-byte RegisterPair with a packed second eightbyte (`{i64,i32,i32}`).
+pub type Packed {
+    p: i64;
+    x: i32;
+    y: i32;
+}
+
+/// 16-byte RegisterPair, one field per eightbyte.
+pub type Mid {
+    s: i32;
+    t: i64;
+}
+
+/// 8-byte Direct multi-field aggregate.
+pub type Small {
+    a: i32;
+    b: i32;
+}
+
+/// 8-byte Direct single-field aggregate — the control that must stay green.
+pub type One {
+    h: i64;
+}
+
+/// Indirect (sret) return — segfaults today (x8/indirect-result unset).
+pub fn big() -> Big {
+    unsafe {
+        hew_recordret_big()
+    }
+}
+
+/// Indirect (sret) return with `(i32, i64)` params — pins the caller's
+/// argument-index shift past the hidden sret pointer.
+pub fn big_mixed(lo: i32, hi: i64) -> BigMixed {
+    unsafe {
+        hew_recordret_big_mixed(lo, hi)
+    }
+}
+
+/// 16-byte RegisterPair with a packed second eightbyte.
+pub fn packed() -> Packed {
+    unsafe {
+        hew_recordret_packed()
+    }
+}
+
+/// 16-byte RegisterPair, per-eightbyte fields.
+pub fn mid() -> Mid {
+    unsafe {
+        hew_recordret_mid()
+    }
+}
+
+/// 8-byte Direct multi-field.
+pub fn small() -> Small {
+    unsafe {
+        hew_recordret_small()
+    }
+}
+
+/// 8-byte Direct single-field — the control.
+pub fn one() -> One {
+    unsafe {
+        hew_recordret_one()
+    }
+}
+
+// ── FFI bindings (implementation detail) ──────────────────────────────
+extern "C" {
+    fn hew_recordret_big() -> Big;
+    fn hew_recordret_big_mixed(lo: i32, hi: i64) -> BigMixed;
+    fn hew_recordret_packed() -> Packed;
+    fn hew_recordret_mid() -> Mid;
+    fn hew_recordret_small() -> Small;
+    fn hew_recordret_one() -> One;
+}

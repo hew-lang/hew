@@ -52574,6 +52574,133 @@ mod tests {
             .unwrap_or_else(|e| panic!("pre-split coroutine module failed verify: {e}"));
     }
 
+    /// Build a coroutine `IrPipeline` whose bb0 carries a `SuspendKind::StreamSend`
+    /// forwarding a `string`-typed value over a duplex-handle sink — the exact
+    /// shape `build_stream_producer_pump` mints for a `receive gen fn -> string`.
+    /// Local 0 is the sink (a `ptr` slot, the Duplex handle); Local 1 is the
+    /// yielded `string` value.
+    fn pipeline_with_string_stream_send_pump() -> IrPipeline {
+        let ptr_ty = ResolvedTy::Pointer {
+            is_mutable: true,
+            pointee: Box::new(ResolvedTy::Unit),
+        };
+        let probe = RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
+            name: "__hew_stream_send_string_pump".to_string(),
+            return_ty: ptr_ty.clone(),
+            call_conv: FunctionCallConv::Default,
+            params: vec![],
+            locals: vec![ptr_ty, ResolvedTy::String],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
+            blocks: vec![
+                BasicBlock {
+                    id: 0,
+                    statements: Vec::new(),
+                    instructions: vec![],
+                    // The suspending stream-send: the value (Local 1) is a
+                    // `string`, which MUST route through the layout-witness
+                    // sibling, NOT the native `BytesTriple`-shaped path.
+                    terminator: Terminator::Suspend {
+                        resume: 1,
+                        cleanup: 2,
+                        is_final: false,
+                    },
+                },
+                BasicBlock {
+                    id: 1,
+                    statements: Vec::new(),
+                    instructions: vec![],
+                    terminator: Terminator::Suspend {
+                        resume: 2,
+                        cleanup: 2,
+                        is_final: true,
+                    },
+                },
+                BasicBlock {
+                    id: 2,
+                    statements: Vec::new(),
+                    instructions: vec![],
+                    terminator: Terminator::Return,
+                },
+            ],
+            decisions: Vec::new(),
+            intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::from([(
+                0,
+                SuspendKind::StreamSend {
+                    sink: Place::Local(0),
+                    value: Place::Local(1),
+                },
+            )]),
+            lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::BTreeMap::new(),
+        };
+        IrPipeline {
+            thir: Vec::new(),
+            raw_mir: vec![probe],
+            checked_mir: Vec::new(),
+            elaborated_mir: Vec::new(),
+            diagnostics: Vec::new(),
+            wire_layouts: std::sync::Arc::default(),
+            opaque_handle_names: Vec::new(),
+            record_layouts: Vec::new(),
+            actor_layouts: Vec::new(),
+            supervisor_layouts: Vec::new(),
+            machine_layouts: Vec::new(),
+            enum_layouts: Vec::new(),
+            regex_literals: Vec::new(),
+            user_consts: Vec::new(),
+            extern_decls: vec![],
+            dyn_vtable_registry: vec![],
+            hashmap_lowering_facts: vec![],
+            hashset_lowering_facts: vec![],
+            actor_send_aliasing: std::collections::HashMap::new(),
+            polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
+            lint_warnings: vec![],
+            resource_record_close: vec![],
+            resource_opaque_close: vec![],
+        }
+    }
+
+    /// A `string`-typed `SuspendKind::StreamSend` (the receive-gen-fn pump's
+    /// yield forwarding) lowers through `hew_stream_await_send_layout`, NOT the
+    /// native `BytesTriple`-shaped `hew_stream_await_send`. The native path
+    /// dereferences its `data` argument as a 16-byte triple; a `string` local is
+    /// a single 8-byte `char*` slot, so routing it natively reads the adjacent
+    /// coro-frame field as offset/len — a wild read (empty content, or SIGSEGV
+    /// under a guard allocator). This pins the value-type dispatch in
+    /// `emit_suspending_stream_send_terminator`.
+    #[test]
+    fn string_stream_send_pump_uses_layout_witness_send_not_native() {
+        let ctx = Context::create();
+        let pipeline = pipeline_with_string_stream_send_pump();
+        let module = build_module(&ctx, &pipeline, "string_stream_send_pump_test")
+            .expect("string stream-send pump module must build");
+        let ir = module.print_to_string().to_string();
+        assert!(
+            ir.contains("@hew_stream_await_send_layout("),
+            "string-yield StreamSend must route through the layout-witness \
+             sibling `hew_stream_await_send_layout`:\n{ir}"
+        );
+        // The native symbol name is a prefix of the layout one, so match the
+        // open paren to exclude `_layout` — the native path must NOT be emitted
+        // for a `string` value.
+        assert!(
+            !ir.contains("@hew_stream_await_send("),
+            "string-yield StreamSend must NOT emit the native \
+             `BytesTriple`-shaped `hew_stream_await_send` (type confusion):\n{ir}"
+        );
+        module
+            .verify()
+            .unwrap_or_else(|e| panic!("string stream-send pump module failed verify: {e}"));
+    }
+
     /// Running the coro pass pipeline (`coro-early,coro-split,coro-cleanup`)
     /// splits the `presplitcoroutine` into its ramp + outlines and the module
     /// stays verifiable — proving the emitted intrinsics are well-formed enough

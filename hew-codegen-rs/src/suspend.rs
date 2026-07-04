@@ -4331,17 +4331,25 @@ pub(crate) fn emit_suspending_stream_send_terminator<'ctx>(
         .ok_or_else(|| CodegenError::FailClosed("hew_read_slot_new returned void".into()))?
         .into_pointer_value();
 
-    // `await sink.send(x)` over a bytes/string sink (the ONLY shape this
-    // suspending path served before the receive-gen-fn pump) rides the
-    // native `BytesTriple`-shaped `hew_stream_await_send`, unchanged. A
-    // `receive gen fn` pump forwarding a non-bytes/string yielded value
+    // Source-level `await sink.send(bytes)` — a genuine 16-byte
+    // `BytesTriple { ptr, offset: u32, len: u32 }` slot — is the ONE
+    // producer of the native `hew_stream_await_send`, whose `data` param is
+    // dereferenced as exactly that triple. It stays on the native path.
+    //
+    // Everything else the `receive gen fn` pump forwards
     // (`SuspendKind::StreamSend` minted directly by
-    // `build_stream_producer_pump`, hew-mir/src/lower.rs — never through a
-    // source-level `await sink.send`) needs the layout-generic sibling: the
-    // native path would read a `BytesTriple` header out of e.g. an `i64`
-    // slot and crash.
+    // `build_stream_producer_pump`, hew-mir/src/lower.rs — never a
+    // source-level `await sink.send`) rides the layout-witness sibling
+    // `hew_stream_await_send_layout`, which reads the value through its
+    // type's layout witness. `string` MUST take this path: a `string` local
+    // is a single 8-byte `char*` slot, not a triple; routing it through the
+    // native path reads a `BytesTriple` header out of the 8-byte slot (word
+    // one is the adjacent coro-frame field, parsed as offset/len) → a wild
+    // read that yields empty content or SIGSEGVs. `i64`/record/enum yields
+    // are misread the same way. Only `bytes` is triple-shaped, so only
+    // `bytes` is correct on the native path.
     let value_resolved_ty = place_resolved_ty(fn_ctx, term.value)?.clone();
-    let rc = if matches!(value_resolved_ty, ResolvedTy::String | ResolvedTy::Bytes) {
+    let rc = if matches!(value_resolved_ty, ResolvedTy::Bytes) {
         fn_ctx.call_runtime_int(
             "hew_stream_await_send",
             &[

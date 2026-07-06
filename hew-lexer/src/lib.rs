@@ -742,6 +742,9 @@ impl Token<'_> {
                 | Token::Star
                 | Token::Slash
                 | Token::Percent
+                | Token::AmpPlus
+                | Token::AmpMinus
+                | Token::AmpStar
                 | Token::Equal
                 | Token::Bang
                 | Token::Less
@@ -789,10 +792,12 @@ impl Token<'_> {
                 | Token::Receive
                 | Token::Actor
                 | Token::Enum
+                | Token::Record
                 | Token::Trait
                 | Token::Supervisor
                 | Token::Type
                 | Token::Machine
+                | Token::State
         )
     }
 
@@ -804,6 +809,7 @@ impl Token<'_> {
             self,
             Token::Actor
                 | Token::Enum
+                | Token::Record
                 | Token::Trait
                 | Token::Supervisor
                 | Token::Type
@@ -1275,6 +1281,13 @@ mod tests {
     }
 
     #[test]
+    fn is_operator_covers_wrapping_arithmetic() {
+        assert!(Token::AmpPlus.is_operator());
+        assert!(Token::AmpMinus.is_operator());
+        assert!(Token::AmpStar.is_operator());
+    }
+
+    #[test]
     fn is_decl_keyword_covers_named_declarations() {
         // Every keyword that introduces a named binding must return true.
         assert!(Token::Let.is_decl_keyword());
@@ -1283,11 +1296,14 @@ mod tests {
         assert!(Token::Fn.is_decl_keyword());
         assert!(Token::Actor.is_decl_keyword());
         assert!(Token::Enum.is_decl_keyword());
+        assert!(Token::Record.is_decl_keyword());
         assert!(Token::Trait.is_decl_keyword());
         assert!(Token::Supervisor.is_decl_keyword());
         assert!(Token::Type.is_decl_keyword());
         // `machine` introduces a named state-machine type — must be included.
         assert!(Token::Machine.is_decl_keyword());
+        // `state` introduces a named state declaration inside a machine body.
+        assert!(Token::State.is_decl_keyword());
         // A non-decl keyword must return false.
         assert!(!Token::If.is_decl_keyword());
         assert!(!Token::Return.is_decl_keyword());
@@ -1298,6 +1314,7 @@ mod tests {
         // Every keyword that introduces a named type must return true.
         assert!(Token::Actor.is_type_decl_keyword());
         assert!(Token::Enum.is_type_decl_keyword());
+        assert!(Token::Record.is_type_decl_keyword());
         assert!(Token::Trait.is_type_decl_keyword());
         assert!(Token::Supervisor.is_type_decl_keyword());
         assert!(Token::Type.is_type_decl_keyword());

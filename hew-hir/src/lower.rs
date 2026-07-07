@@ -10456,13 +10456,33 @@ impl LowerCtx {
             ..
         } = &ty
         {
-            if builtin.is_none() && args.is_empty() && self.actor_type_names.contains(name) {
-                return ResolvedTy::Named {
-                    name: BuiltinType::LocalPid.canonical_name().to_string(),
-                    args: vec![ty],
-                    builtin: Some(BuiltinType::LocalPid),
-                    is_opaque: false,
+            if builtin.is_none() && args.is_empty() {
+                let actor_name = if self.actor_type_names.contains(name) {
+                    Some(name.clone())
+                } else {
+                    let mut matches = self
+                        .actor_type_names
+                        .iter()
+                        .filter(|candidate| {
+                            candidate
+                                .rsplit_once('.')
+                                .is_some_and(|(_, short)| short == name)
+                        })
+                        .cloned();
+                    match (matches.next(), matches.next()) {
+                        (Some(unique), None) => Some(unique),
+                        _ => None,
+                    }
                 };
+
+                if let Some(actor_name) = actor_name {
+                    return ResolvedTy::Named {
+                        name: BuiltinType::LocalPid.canonical_name().to_string(),
+                        args: vec![ResolvedTy::named_user(actor_name, Vec::new())],
+                        builtin: Some(BuiltinType::LocalPid),
+                        is_opaque: false,
+                    };
+                }
             }
         }
         ty

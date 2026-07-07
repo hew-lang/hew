@@ -5225,6 +5225,61 @@ fn run_package_module_actor_spawns_and_calls() {
     );
 }
 
+/// Regression for named-import actor identity in actor-state annotations: inside
+/// an imported actor body, `let inner: Inner;` is an actor reference and must
+/// lower to `LocalPid<conn.Inner>`, just like the local-module shorthand. Before
+/// the fix, HIR left it as bare `Inner`, so MIR's state-clone classifier tried
+/// to resolve it as a nested user record and failed with
+/// `ActorStateCloneClassificationFailed` before codegen.
+#[test]
+fn run_imported_actor_state_bare_actor_field_canonicalizes_to_localpid() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let pkg_dir = dir.path().join("hew").join("conn");
+    std::fs::create_dir_all(&pkg_dir).unwrap();
+    std::fs::write(
+        pkg_dir.join("conn.hew"),
+        "pub actor Inner {\n\
+         \x20   receive fn ping() -> i64 { 41 }\n\
+         }\n\
+         \n\
+         pub actor Outer {\n\
+         \x20   let inner: Inner;\n\
+         \x20   receive fn go() -> i64 {\n\
+         \x20       match await inner.ping() {\n\
+         \x20           Ok(v) => v + 1,\n\
+         \x20           Err(_) => -1,\n\
+         \x20       }\n\
+         \x20   }\n\
+         }\n",
+    )
+    .unwrap();
+    let main = dir.path().join("main.hew");
+    std::fs::write(
+        &main,
+        "import hew::conn::{Inner, Outer};\n\
+         fn main() {\n\
+         \x20   let i = spawn Inner();\n\
+         \x20   let o = spawn Outer(inner: i);\n\
+         \x20   match await o.go() {\n\
+         \x20       Ok(v) => println(f\"v={v}\"),\n\
+         \x20       Err(_) => println(\"err\"),\n\
+         \x20   }\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&main, dir.path());
+    assert!(
+        output.status.success(),
+        "named-import actor field should canonicalize to a LocalPid; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "v=42\n");
+}
+
 /// Fail-closed guard for Blocker 2: a *non-pub* actor in an imported package is
 /// not exported, so `spawn secret.Hidden()` must fail rather than silently
 /// resolve. The fix deliberately lowers `HirItem::Actor` only for `pub` imported

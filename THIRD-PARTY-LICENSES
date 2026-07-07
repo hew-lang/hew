@@ -5963,7 +5963,7 @@ Apache License 2.0
   * criterion 0.8.2 — https://github.com/criterion-rs/criterion.rs
   * critical-section 1.2.0 — https://github.com/rust-embedded/critical-section
   * crossbeam-deque 0.8.6 — https://github.com/crossbeam-rs/crossbeam
-  * crossbeam-epoch 0.9.18 — https://github.com/crossbeam-rs/crossbeam
+  * crossbeam-epoch 0.9.20 — https://github.com/crossbeam-rs/crossbeam
   * crossbeam-utils 0.8.21 — https://github.com/crossbeam-rs/crossbeam
   * curve25519-dalek-derive 0.1.1 — https://github.com/dalek-cryptography/curve25519-dalek
   * displaydoc 0.2.5 — https://github.com/yaahc/displaydoc

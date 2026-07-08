@@ -1,0 +1,31 @@
+// Owned-composite yield generalization, enum twin: a payload-carrying enum
+// whose active variant owns heap (`Text(string)`) crosses the pump's
+// layout-witness send path with discriminant and payload intact; the pump
+// frees its producer copy per yield through the tag-dispatched enum in-place
+// drop thunk. The consumer destructures each payload in a `match` — an
+// ownership transfer out of the frame binding, so the moved-out arm binding
+// owns the payload from there (the frame binding's body-end release is
+// correctly suppressed; releasing the destructured arm binding per iteration
+// is the match-arm consume-side discipline, tracked separately).
+enum Note {
+    Text(string);
+    Number(i64);
+}
+
+actor Maker {
+    receive gen fn notes() -> Note {
+        yield Note::Text("alpha");
+        yield Note::Number(4);
+        yield Note::Text("beta");
+    }
+}
+
+fn main() {
+    let m = spawn Maker;
+    for await n in m.notes() {
+        match n {
+            Note::Text(s) => println(f"text {s}"),
+            Note::Number(v) => println(f"number {v}"),
+        }
+    }
+}

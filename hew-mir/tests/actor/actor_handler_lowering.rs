@@ -988,6 +988,208 @@ fn generator_pump_releases_string_yield_value_but_not_i64() {
     );
 }
 
+/// Run the full source pipeline (parse → check → HIR → MIR) so record/enum
+/// registration (field orders, tagged-union layouts) matches what real
+/// programs get — the composite-yield release verdict consults those
+/// registries (`elem_is_owned_abi_releasable`).
+fn source_pipeline(source: &str) -> hew_mir::IrPipeline {
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    let output = hew_hir::lower_program(
+        &parsed.program,
+        &tc_output,
+        &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    lower_hir_module(&output.module)
+}
+
+/// The first inline `Instr::Drop` in the raw handler body whose `drop_fn` is
+/// the composite `InPlace` route — the pump's (or consuming body's) per-yield
+/// composite value release.
+fn body_inline_inplace_drop(func: &hew_mir::RawMirFunction) -> Option<hew_mir::InPlaceReleaseKind> {
+    func.blocks
+        .iter()
+        .flat_map(|b| &b.instructions)
+        .find_map(|i| match i {
+            Instr::Drop {
+                drop_fn: Some(hew_mir::DropFnSpec::InPlace(kind)),
+                ..
+            } => Some(*kind),
+            _ => None,
+        })
+}
+
+/// The composite in-place drop kinds carried on the elaborated function's
+/// `ExitPath::Suspend` plans — the abandon-edge (destroy-while-parked) twin of
+/// the pump's resume-edge inline release.
+fn suspend_plan_inplace_drop_kinds(
+    pipeline: &hew_mir::IrPipeline,
+    func_name: &str,
+) -> Vec<hew_mir::DropKind> {
+    let elab = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == func_name)
+        .unwrap_or_else(|| panic!("elaborated function `{func_name}` must exist"));
+    elab.drop_plans
+        .iter()
+        .filter(|(exit, _)| matches!(exit, hew_mir::ExitPath::Suspend { .. }))
+        .flat_map(|(_, plan)| plan.drops.iter())
+        .filter(|drop| {
+            matches!(
+                drop.kind,
+                hew_mir::DropKind::RecordInPlace | hew_mir::DropKind::EnumInPlace
+            )
+        })
+        .map(|drop| drop.kind)
+        .collect()
+}
+
+/// An owned-record yield carries the inline `InPlace(Record)` release on the
+/// pump's resume edge AND the `RecordInPlace` plan drop on the stream-send
+/// suspend's abandon edge (mutually exclusive edges — exactly-once), and the
+/// consuming `for await` body releases its own decode copy at body end
+/// through the same route.
+#[test]
+fn generator_pump_releases_record_yield_value_in_place() {
+    let record_pipeline = source_pipeline(
+        "record Item {\n\
+         \x20   name: string,\n\
+         \x20   value: i64,\n\
+         }\n\
+         actor Maker {\n\
+         \x20   receive gen fn items() -> Item {\n\
+         \x20       yield Item { name: \"named\", value: 7 };\n\
+         \x20   }\n\
+         }\n\
+         fn main() {\n\
+         \x20   let m = spawn Maker;\n\
+         \x20   for await it in m.items() {\n\
+         \x20       println(f\"{it.value}\");\n\
+         \x20   }\n\
+         }\n",
+    );
+    let record_pump = record_pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "Maker__recv__items")
+        .expect("record generator handler must lower");
+    assert_eq!(
+        body_inline_inplace_drop(record_pump),
+        Some(hew_mir::InPlaceReleaseKind::Record),
+        "an owned-record yield pump must release its producer copy through the \
+         record in-place thunk on the resume edge"
+    );
+    assert_eq!(
+        suspend_plan_inplace_drop_kinds(&record_pipeline, "Maker__recv__items"),
+        vec![hew_mir::DropKind::RecordInPlace],
+        "the in-flight record yield value must carry exactly one RecordInPlace \
+         drop on the stream-send suspend's abandon plan"
+    );
+    let record_main = record_pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "main")
+        .expect("main must lower");
+    assert_eq!(
+        body_inline_inplace_drop(record_main),
+        Some(hew_mir::InPlaceReleaseKind::Record),
+        "the for-await consuming body must release its fresh decode copy of the \
+         record frame at body end through the record in-place thunk"
+    );
+}
+
+/// The enum twin of the record-yield release: `InPlace(Enum)` on the resume
+/// edge, `EnumInPlace` on the abandon plan.
+#[test]
+fn generator_pump_releases_enum_yield_value_in_place() {
+    let enum_pipeline = source_pipeline(
+        "enum Note {\n\
+         \x20   Text(string);\n\
+         \x20   Number(i64);\n\
+         }\n\
+         actor Maker {\n\
+         \x20   receive gen fn notes() -> Note {\n\
+         \x20       yield Note::Text(\"alpha\");\n\
+         \x20   }\n\
+         }\n\
+         fn main() {\n\
+         \x20   let m = spawn Maker;\n\
+         \x20   for await n in m.notes() {\n\
+         \x20   }\n\
+         }\n",
+    );
+    let enum_pump = enum_pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "Maker__recv__notes")
+        .expect("enum generator handler must lower");
+    assert_eq!(
+        body_inline_inplace_drop(enum_pump),
+        Some(hew_mir::InPlaceReleaseKind::Enum),
+        "an owned-enum yield pump must release its producer copy through the \
+         enum in-place thunk on the resume edge"
+    );
+    assert_eq!(
+        suspend_plan_inplace_drop_kinds(&enum_pipeline, "Maker__recv__notes"),
+        vec![hew_mir::DropKind::EnumInPlace],
+        "the in-flight enum yield value must carry exactly one EnumInPlace drop \
+         on the stream-send suspend's abandon plan"
+    );
+}
+
+/// Admission boundary (`elem_is_owned_abi_releasable`): a `BitCopy` record
+/// owns no heap — no inline release of any kind, exactly the pre-change
+/// posture.
+#[test]
+fn generator_pump_skips_bitcopy_record_yield_release() {
+    let bitcopy_pipeline = source_pipeline(
+        "record Point {\n\
+         \x20   x: i64,\n\
+         \x20   y: i64,\n\
+         }\n\
+         actor Shaper {\n\
+         \x20   receive gen fn points() -> Point {\n\
+         \x20       yield Point { x: 1, y: 2 };\n\
+         \x20   }\n\
+         }\n\
+         fn main() {\n\
+         \x20   let s = spawn Shaper;\n\
+         \x20   for await p in s.points() {\n\
+         \x20       println(f\"{p.x}\");\n\
+         \x20   }\n\
+         }\n",
+    );
+    let bitcopy_pump = bitcopy_pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "Shaper__recv__points")
+        .expect("BitCopy record generator handler must lower");
+    assert_eq!(
+        body_inline_inplace_drop(bitcopy_pump),
+        None,
+        "a BitCopy record yield owns no heap — the pump must not emit a \
+         composite in-place release for it"
+    );
+    assert_eq!(
+        pump_body_inline_release_drop(bitcopy_pump),
+        None,
+        "a BitCopy record yield must not acquire a cow-heap release either"
+    );
+    assert!(
+        suspend_plan_inplace_drop_kinds(&bitcopy_pipeline, "Shaper__recv__points").is_empty(),
+        "a BitCopy record yield must not add abandon-edge plan drops"
+    );
+}
+
 /// A `receive gen fn` body that reads an actor state field (`count`, an
 /// `HirGenCaptureSource::ActorStateField` capture per `lower_actor_generator_body`)
 /// must snapshot it in the ENCLOSING shell frame — where actor state is

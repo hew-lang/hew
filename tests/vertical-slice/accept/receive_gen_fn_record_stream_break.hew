@@ -1,0 +1,41 @@
+// Cancelling an owned-record stream mid-drain: `for await ... break` on an
+// infinite record generator must unwedge the pump via the peer-closed check
+// (the i64 cancellation proof) AND release the breaking iteration's record on
+// the break edge — the break jumps past the body-end release, so the
+// break-edge drop is the only thing standing between cancellation and a
+// per-cancel leak of the frame's owned field. The actor stays healthy and
+// answers a later ask normally.
+record Item {
+    name: string,
+    value: i64,
+}
+
+actor Maker {
+    receive gen fn items() -> Item {
+        var i: i64 = 0;
+        loop {
+            yield Item { name: f"it-{i}", value: i };
+            i = i + 1;
+        }
+    }
+    receive fn ping() -> i64 {
+        99
+    }
+}
+
+fn main() {
+    let m = spawn Maker;
+    var total: i64 = 0;
+    for await it in m.items() {
+        total = total + it.value;
+        if it.value >= 2 {
+            break;
+        }
+    }
+    println(f"total={total}");
+    let r = await m.ping();
+    match r {
+        Ok(v) => println(f"ping={v}"),
+        Err(_) => println("ping failed"),
+    }
+}

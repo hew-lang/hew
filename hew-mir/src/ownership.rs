@@ -438,6 +438,17 @@ impl VecElementRelease {
 pub enum ReleaseSymbolVerdict {
     /// A wired, ABI-correct release symbol for the whole value at this site.
     Wired(&'static str),
+    /// A wired, ABI-correct in-place composite release: the whole value is a
+    /// registered heap-owning record/enum whose release is the synthesised
+    /// `__hew_record_drop_inplace_<R>` / `__hew_enum_drop_inplace_<E>` thunk
+    /// (resolved by codegen from the drop's carried type — no C-ABI symbol
+    /// travels in MIR). Emitting sites carry it as
+    /// [`DropFnSpec::InPlace`](crate::model::DropFnSpec::InPlace) on an inline
+    /// `Instr::Drop`, or as `DropKind::RecordInPlace` / `DropKind::EnumInPlace`
+    /// on a plan `ElabDrop`. Only the yield/recv release seam
+    /// (`generator_yield_drop_symbol`) returns this verdict; the field picker
+    /// keeps its `NoDropPath` posture for owned-aggregate fields.
+    WiredInPlace(InPlaceReleaseKind),
     /// No inline release is selected here: the shape owns no heap this picker
     /// releases, has no validated consumer-drop path (the HashMap/HashSet
     /// yield posture — leak-as-before, never a double-free risk), or is
@@ -449,6 +460,20 @@ pub enum ReleaseSymbolVerdict {
     /// wrong ABI. The consulting site must refuse the construct at compile
     /// time — never emit a symbol, never fall through silently.
     Unwired(FailClosedReason),
+}
+
+/// Which synthesised in-place drop thunk family releases a
+/// [`ReleaseSymbolVerdict::WiredInPlace`] composite. The registry identity
+/// (record layout vs tagged-union enum layout) selects the thunk getter on
+/// the codegen side (`__hew_record_drop_inplace_<R>` vs
+/// `__hew_enum_drop_inplace_<E>`); the concrete type travels on the drop
+/// itself (`Instr::Drop::ty` / `ElabDrop::ty`), never here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InPlaceReleaseKind {
+    /// A registered heap-owning user (or builtin-aggregate) record.
+    Record,
+    /// A registered heap-owning enum (tagged-union composite).
+    Enum,
 }
 
 // ──────────────────────────────── provenance ─────────────────────────────

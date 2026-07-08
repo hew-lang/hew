@@ -169,7 +169,7 @@ fn fstring_scalar_interp_statement_position_leak_slope_below_tolerance() {
 /// Slope oracle (gen-body): a standalone `gen fn` yielding `f"item-{i}"`
 /// releases the conversion temp every iteration — flat leak slope. Pre-fix
 /// this leaked 1 node/iteration, reproducing with zero receive-gen/actor
-/// surface (string-yield plan E4 control).
+/// surface (the string-yield control shape).
 #[test]
 fn fstring_scalar_interp_gen_yield_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("fstring_scalar_gen", fstring_gen_yield_interp_loop_source);

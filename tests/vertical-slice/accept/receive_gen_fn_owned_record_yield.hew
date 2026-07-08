@@ -1,0 +1,26 @@
+// Owned-composite yield generalization: a record yield whose field owns heap
+// (`name: string`) crosses the pump's layout-witness send path
+// (LayoutManaged: envelope deep-clone in, ownership move out) with every
+// field intact, and BOTH per-yield copies are released — the pump frees its
+// producer copy on the send's resume edge through the record in-place drop
+// thunk, and the consuming `for await` body frees its fresh decode copy at
+// body end through the same thunk. Exact output pins the field values; the
+// per-yield leak slope is pinned by the composite-yield leak oracle.
+record Item {
+    name: string,
+    value: i64,
+}
+
+actor Maker {
+    receive gen fn items() -> Item {
+        yield Item { name: "named", value: 7 };
+        yield Item { name: "other", value: 9 };
+    }
+}
+
+fn main() {
+    let m = spawn Maker;
+    for await it in m.items() {
+        println(f"{it.name},{it.value}");
+    }
+}

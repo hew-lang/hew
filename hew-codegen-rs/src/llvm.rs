@@ -1008,7 +1008,13 @@ fn wasm_excluded_drop_symbol(spec: &hew_mir::DropFnSpec) -> Option<String> {
             | D::LambdaActorHandleClose
             | D::CancellationTokenRelease => None,
         },
-        hew_mir::DropFnSpec::Release(_) | hew_mir::DropFnSpec::UserClose(_) => None,
+        // `Release` symbols come from the closed cow-heap set (none
+        // duplex-backed), `InPlace` resolves to a synthesised per-type thunk
+        // (pure generated IR), and `UserClose` bodies are pure Hew code — all
+        // three compile on wasm32.
+        hew_mir::DropFnSpec::Release(_)
+        | hew_mir::DropFnSpec::InPlace(_)
+        | hew_mir::DropFnSpec::UserClose(_) => None,
     }
 }
 
@@ -9685,8 +9691,8 @@ fn struct_abi_size(ty: StructType<'_>, target_data: Option<&TargetData>) -> u64 
 
 /// Synthesise per-actor `__hew_state_clone_<Actor>` / `__hew_state_drop_<Actor>`
 /// AND per-record `__hew_record_{clone_inplace,drop_inplace}_<Record>`
-/// bodies for every classified actor in `actor_layouts` plus the Lane-A
-/// direct-string user-record slice. Called from
+/// bodies for every classified actor in `actor_layouts` plus the
+/// let-bound direct-string user-record set. Called from
 /// `build_module_for_target` BEFORE supervisor bootstrap emission so the
 /// `get_function`-or-declare-extern lookup at Stage 2's spawn/supervisor
 /// sites resolves to a real `define` rather than the linker-failure
@@ -11926,6 +11932,92 @@ fn collect_closure_capture_drop_seeds(
     (record_seeds, enum_seeds)
 }
 
+/// Collect the record/enum layout keys of every inline composite yield-value
+/// release (`Instr::Drop { drop_fn: Some(DropFnSpec::InPlace(_)) }`) in raw
+/// MIR so the `__hew_{record,enum}_drop_inplace_<key>` body is synthesised
+/// before the drop call resolves it. Returns `(record_seeds, enum_seeds)`.
+///
+/// Belt-and-suspenders: every composite that flows through the pump /
+/// for-await seam is ALSO referenced by its stream layout witness
+/// (`owned_elem_layout_descriptor_ptr`) or generator out-slot drop thunk,
+/// whose emission seeds the same bodies — but that coupling is structural,
+/// not enforced. Seeding the drop sites directly keeps the inline release
+/// resolvable even for a shape whose witness emission is skipped or
+/// reordered, at the cost of one raw-MIR walk. Resolution mirrors
+/// `collect_record_inplace_drop_seeds` / `collect_enum_inplace_drop_seeds`
+/// (full name, short name, and mangled generic forms against the registered
+/// layouts) so seed and consumer resolve the same key.
+fn collect_inline_inplace_drop_seeds(
+    raw_mir: &[RawMirFunction],
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> (Vec<String>, Vec<String>) {
+    let mut record_seeds: Vec<String> = Vec::new();
+    let mut enum_seeds: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<(bool, String)> = std::collections::HashSet::new();
+    for func in raw_mir {
+        for block in &func.blocks {
+            for instr in &block.instructions {
+                let Instr::Drop {
+                    ty,
+                    drop_fn: Some(hew_mir::DropFnSpec::InPlace(kind)),
+                    ..
+                } = instr
+                else {
+                    continue;
+                };
+                let ResolvedTy::Named { name, args, .. } = ty else {
+                    continue;
+                };
+                let short = short_name(name);
+                let (is_enum, key) = match kind {
+                    hew_mir::InPlaceReleaseKind::Record => {
+                        let key = if args.is_empty() {
+                            record_layouts
+                                .iter()
+                                .find(|rl| rl.name == *name || short_name(&rl.name) == short)
+                                .map(|rl| rl.name.clone())
+                        } else {
+                            let full_mangled = mangle_with_shortened_args(name, args);
+                            let short_mangled = mangle_with_shortened_args(short, args);
+                            record_layouts
+                                .iter()
+                                .find(|rl| rl.name == full_mangled || rl.name == short_mangled)
+                                .map(|rl| rl.name.clone())
+                        };
+                        (false, key)
+                    }
+                    hew_mir::InPlaceReleaseKind::Enum => {
+                        let key = if args.is_empty() {
+                            enum_layouts
+                                .iter()
+                                .find(|el| el.name == *name || short_name(&el.name) == short)
+                                .map(|el| el.name.clone())
+                        } else {
+                            let mangled = mangle_with_shortened_args(short, args);
+                            enum_layouts
+                                .iter()
+                                .find(|el| el.name == mangled || el.name == *name)
+                                .map(|el| el.name.clone())
+                        };
+                        (true, key)
+                    }
+                };
+                if let Some(key) = key {
+                    if seen.insert((is_enum, key.clone())) {
+                        if is_enum {
+                            enum_seeds.push(key);
+                        } else {
+                            record_seeds.push(key);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    (record_seeds, enum_seeds)
+}
+
 /// D2 / W3.031 — collect the record/enum layout keys of every type that
 /// appears as a `dyn Trait` CONCRETE so its
 /// `__hew_{record,enum}_drop_inplace_<key>` body is synthesised before
@@ -12218,7 +12310,7 @@ fn collect_vec_owned_element_seeds(
                 // witness's thunk pointers dangle at llvm-verify for any
                 // heap-payload enum element reachable only through a
                 // channel (string-bearing records were masked by the
-                // Lane-A direct-string record seed). Carrier names may be
+                // direct-string record seed). Carrier names may be
                 // module-qualified (`channel.Receiver`) — compare short.
                 if name == "Vec" || matches!(short_name(name), "Sender" | "Receiver" | "Stream") {
                     if let Some(elem) = args.first() {
@@ -12279,7 +12371,7 @@ fn collect_vec_owned_element_seeds(
 }
 
 /// Compute the transitive set of user records AND user enums reachable
-/// through any classified actor's state fields, plus monomorphic Lane-A
+/// through any classified actor's state fields, plus monomorphic
 /// direct-string records (and, recursively, through nested record fields and
 /// enum payload fields for the actor-state route). Records and enums can
 /// reference one another (e.g. a record field of enum type, or an enum payload
@@ -26116,6 +26208,14 @@ fn resolve_drop_fn<'ctx>(
              the MIR producer mixed the two domains. Refusing to emit \
              (LESSONS: boundary-fail-closed, lifecycle-symmetry)."
         ))),
+        hew_mir::DropFnSpec::InPlace(kind) => Err(CodegenError::FailClosed(format!(
+            "drop_fn=InPlace({kind:?}) reached the close-ritual dispatch; \
+             composite in-place releases are consumed by the inline drop \
+             dispatcher's record/enum thunk arm (`lower_inline_drop`), never \
+             by the runtime/user close split — the MIR producer mixed the two \
+             domains. Refusing to emit \
+             (LESSONS: boundary-fail-closed, lifecycle-symmetry)."
+        ))),
     }
 }
 
@@ -26242,6 +26342,32 @@ fn lower_inline_drop(
              not a known copy-on-write release symbol; refusing to route a heap-owning \
              value through the generic drop dispatcher (LESSONS: boundary-fail-closed)",
         )));
+    }
+    // Composite in-place release (the per-yield record/enum producer/consumer
+    // copy). The helper is derived from `ty` by the SAME resolution the
+    // function-scope `DropKind::RecordInPlace` / `EnumInPlace` plan arms use,
+    // so type↔helper congruence holds by construction — there is no symbol to
+    // cross-check. After the thunk call, typed-zero the slot: unlike a
+    // scope-exit plan drop (slot dead afterwards), an inline yield-value drop's
+    // slot stays live (the pump loop / consuming body reuses it), and the
+    // in-place thunk does not null its fields — the zero-store makes a
+    // structurally-reachable second drop a no-op against the null-tolerant
+    // leaf releases (`raii-null-after-move`, mirroring `lower_drop_user_fn`'s
+    // typed-zero discipline).
+    if let hew_mir::DropFnSpec::InPlace(kind) = drop_fn {
+        match kind {
+            hew_mir::InPlaceReleaseKind::Record => {
+                emit_record_inplace_drop_call(fn_ctx, place, ty)?
+            }
+            hew_mir::InPlaceReleaseKind::Enum => emit_enum_inplace_drop_call(fn_ctx, place, ty)?,
+        }
+        let slot_llvm_ty = resolve_ty(fn_ctx.ctx, ty, fn_ctx.record_layouts)?;
+        let (slot, _) = place_pointer(fn_ctx, place)?;
+        fn_ctx
+            .builder
+            .build_store(slot, slot_llvm_ty.const_zero())
+            .llvm_ctx("inline in-place drop zero-store")?;
+        return Ok(());
     }
     lower_drop(fn_ctx, place, drop_fn)
 }
@@ -27205,6 +27331,83 @@ fn record_inplace_drop_name(ty: &ResolvedTy) -> CodegenResult<String> {
     }
 }
 
+/// Emit the call to `__hew_record_drop_inplace_<R>` for the record at
+/// `place`, resolving the helper name from `ty` (`record_inplace_drop_name`).
+/// The single emission body behind BOTH composite record-drop channels: the
+/// function-scope `DropKind::RecordInPlace` plan arm and the inline
+/// `DropFnSpec::InPlace(Record)` yield-value release — one resolution, one
+/// signature contract, so the two channels cannot drift. Fails closed on a
+/// missing/bodyless helper (the synthesis seeds must cover every dropped
+/// record) and on a non-`void(ptr)` signature.
+fn emit_record_inplace_drop_call(
+    fn_ctx: &FnCtx<'_, '_>,
+    place: Place,
+    ty: &ResolvedTy,
+) -> CodegenResult<()> {
+    let record_name = record_inplace_drop_name(ty)?;
+    let sym = format!("__hew_record_drop_inplace_{record_name}");
+    let helper = fn_ctx.llvm_mod.get_function(&sym).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "record in-place drop @ {place:?} for `{record_name}` has no \
+             synthesized {sym} helper; the drop-synthesis seeds must cover every \
+             dropped record before body lowering"
+        ))
+    })?;
+    if helper.count_basic_blocks() == 0 {
+        return Err(CodegenError::FailClosed(format!(
+            "record in-place drop @ {place:?} for `{record_name}` resolved \
+             {sym}, but it has no body; refusing to emit a dangling helper call"
+        )));
+    }
+    let params = helper.get_type().get_param_types();
+    if params.len() != 1
+        || !matches!(params[0], BasicMetadataTypeEnum::PointerType(_))
+        || helper.get_type().get_return_type().is_some()
+    {
+        return Err(CodegenError::FailClosed(format!(
+            "record in-place drop helper {sym} has malformed signature: expected \
+             void(ptr), got {} params and return {:?}",
+            params.len(),
+            helper.get_type().get_return_type(),
+        )));
+    }
+    let (slot, _) = place_pointer(fn_ctx, place)?;
+    fn_ctx
+        .builder
+        .build_call(helper, &[slot.into()], "record_inplace_drop")
+        .llvm_ctx("record inplace drop call")?;
+    Ok(())
+}
+
+/// Emit the call to `__hew_enum_drop_inplace_<E>` for the enum composite at
+/// `place`, resolving the layout key from `ty`. The single emission body
+/// behind BOTH composite enum-drop channels (the `DropKind::EnumInPlace` plan
+/// arm and the inline `DropFnSpec::InPlace(Enum)` yield-value release). Fails
+/// closed on a bodyless helper — the synthesis seeds must cover every dropped
+/// enum before body lowering.
+fn emit_enum_inplace_drop_call(
+    fn_ctx: &FnCtx<'_, '_>,
+    place: Place,
+    ty: &ResolvedTy,
+) -> CodegenResult<()> {
+    let enum_name = crate::layout::enum_layout_key_for_ty(fn_ctx, ty)?;
+    let helper = get_or_declare_enum_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &enum_name);
+    if helper.count_basic_blocks() == 0 {
+        return Err(CodegenError::FailClosed(format!(
+            "enum in-place drop @ {place:?} for enum `{enum_name}` resolved \
+             `__hew_enum_drop_inplace_{enum_name}`, but it has no body; the \
+             drop-synthesis pass must seed every in-place-dropped enum \
+             before body lowering (LESSONS: boundary-fail-closed)."
+        )));
+    }
+    let (slot, _) = place_pointer(fn_ctx, place)?;
+    fn_ctx
+        .builder
+        .build_call(helper, &[slot.into()], "enum_inplace_drop")
+        .llvm_ctx("enum inplace drop call")?;
+    Ok(())
+}
+
 /// True when `ty` is a non-owning actor-pid leaf (`LocalPid` / `RemotePid`):
 /// an `ActorPid`-family builtin handle whose `close_method()` is `None`.
 ///
@@ -27302,41 +27505,7 @@ fn emit_one_elab_drop_unguarded(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> Code
                     df = drop.drop_fn,
                 )));
             }
-            let record_name = record_inplace_drop_name(&drop.ty)?;
-            let sym = format!("__hew_record_drop_inplace_{record_name}");
-            let helper = fn_ctx.llvm_mod.get_function(&sym).ok_or_else(|| {
-                CodegenError::FailClosed(format!(
-                    "RecordInPlace ElabDrop @ {place:?} for `{record_name}` has no \
-                     synthesized {sym} helper; owned-string-record codegen must pre-seed direct \
-                     string records before body lowering",
-                    place = drop.place,
-                ))
-            })?;
-            if helper.count_basic_blocks() == 0 {
-                return Err(CodegenError::FailClosed(format!(
-                    "RecordInPlace ElabDrop @ {place:?} for `{record_name}` resolved \
-                     {sym}, but it has no body; refusing to emit a dangling helper call",
-                    place = drop.place,
-                )));
-            }
-            let params = helper.get_type().get_param_types();
-            if params.len() != 1
-                || !matches!(params[0], BasicMetadataTypeEnum::PointerType(_))
-                || helper.get_type().get_return_type().is_some()
-            {
-                return Err(CodegenError::FailClosed(format!(
-                    "RecordInPlace helper {sym} has malformed signature: expected \
-                     void(ptr), got {} params and return {:?}",
-                    params.len(),
-                    helper.get_type().get_return_type(),
-                )));
-            }
-            let (slot, _) = place_pointer(fn_ctx, drop.place)?;
-            fn_ctx
-                .builder
-                .build_call(helper, &[slot.into()], "record_inplace_drop")
-                .llvm_ctx("record inplace drop call")?;
-            Ok(())
+            emit_record_inplace_drop_call(fn_ctx, drop.place, &drop.ty)
         }
         // W5.020 — heap-owning enum composite (`Result<T, string>` /
         // `Option<string>` / user enum with an owned-payload variant) carried
@@ -27363,26 +27532,7 @@ fn emit_one_elab_drop_unguarded(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> Code
                     df = drop.drop_fn,
                 )));
             }
-            let enum_name = crate::layout::enum_layout_key_for_ty(fn_ctx, &drop.ty)?;
-            // The helper body is synthesised by `emit_state_clone_drop_synthesis`
-            // (seeded with every `EnumInPlace`-dropped enum). A declaration with
-            // no body would link-fail; refuse to emit a dangling call.
-            let helper = get_or_declare_enum_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &enum_name);
-            if helper.count_basic_blocks() == 0 {
-                return Err(CodegenError::FailClosed(format!(
-                    "EnumInPlace ElabDrop @ {place:?} for enum `{enum_name}` resolved \
-                     `__hew_enum_drop_inplace_{enum_name}`, but it has no body; the \
-                     drop-synthesis pass must seed every EnumInPlace-dropped enum \
-                     before body lowering (LESSONS: boundary-fail-closed).",
-                    place = drop.place,
-                )));
-            }
-            let (slot, _) = place_pointer(fn_ctx, drop.place)?;
-            fn_ctx
-                .builder
-                .build_call(helper, &[slot.into()], "enum_inplace_drop")
-                .llvm_ctx("enum inplace drop call")?;
-            Ok(())
+            emit_enum_inplace_drop_call(fn_ctx, drop.place, &drop.ty)
         }
         // W5.021 — heap-owning tuple by value (the tuple-of-owned-handles drop
         // spine) carried across a function/handler return boundary or held as a
@@ -39674,6 +39824,27 @@ fn build_module_for_target<'ctx>(
     // clone/drop thunk PAIR is synthesised together (the enum twin of the
     // record clone-site seed loop directly above).
     for seed in collect_enum_clone_inplace_seeds(&pipeline.raw_mir, &pipeline.enum_layouts) {
+        if !enum_inplace_drop_seeds.contains(&seed) {
+            enum_inplace_drop_seeds.push(seed);
+        }
+    }
+    // Inline composite yield-value releases (`DropFnSpec::InPlace` on a raw
+    // `Instr::Drop` — the pump's per-yield producer copy and the for-await
+    // Some-arm consumer copy): seed both channels so the
+    // `__hew_{record,enum}_drop_inplace_<key>` bodies exist before the drop
+    // calls resolve them.
+    let (inline_inplace_record_seeds, inline_inplace_enum_seeds) =
+        collect_inline_inplace_drop_seeds(
+            &pipeline.raw_mir,
+            &pipeline.record_layouts,
+            &synthesis_enum_layouts,
+        );
+    for seed in inline_inplace_record_seeds {
+        if !vec_owned_record_seeds.contains(&seed) {
+            vec_owned_record_seeds.push(seed);
+        }
+    }
+    for seed in inline_inplace_enum_seeds {
         if !enum_inplace_drop_seeds.contains(&seed) {
             enum_inplace_drop_seeds.push(seed);
         }

@@ -128,8 +128,9 @@ fn vec_string_for_in_emits_retained_getter_with_iteration_drop() {
     // `println(count)` (a direct scalar print) rather than an f-string: the
     // fixture's subject is the for-in retained-getter drop, and an
     // interpolated `f"count={count}"` tail would add its OWN
-    // `hew_string_drop`s (the fresh-`string`-temp release lane, W5.011 P3 /
-    // Lane E) into `string_drops` below, conflating two unrelated things
+    // `hew_string_drop`s (the fresh-`string`-temp release seam, W5.011 P3 /
+    // the f-string interpolation temp fix) into `string_drops` below,
+    // conflating two unrelated things
     // this test is not about.
     let pl = pipeline_with_tc(
         r#"fn main() {

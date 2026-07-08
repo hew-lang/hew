@@ -10,6 +10,8 @@ mod bytes_literal_lowering;
 mod cstring_container_domain_canary;
 #[path = "lowering_expr/elaborate.rs"]
 mod elaborate;
+#[path = "lowering_expr/forawait_loopvar_release.rs"]
+mod forawait_loopvar_release;
 #[path = "lowering_expr/gen_block_mir_lowering.rs"]
 mod gen_block_mir_lowering;
 #[path = "lowering_expr/generic_record_layout_test.rs"]

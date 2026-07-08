@@ -11350,12 +11350,21 @@ impl Builder {
     /// escape scan; the inline drop's null-after-free makes a structurally-
     /// reachable second free a no-op (`raii-null-after-move`; the runtime
     /// also null-guards).
-    fn emit_generator_yield_value_drops_for_break_continue(&mut self, loop_scope_depth: usize) {
+    ///
+    /// EXIT-EDGE FAMILY (`cleanup-all-exits`): `break` and `continue` pass
+    /// their loop frame's `scope_depth` (free only the entries inside the loop
+    /// being left); an early `return` passes `min_scope_depth = 0` because a
+    /// return leaves EVERY enclosing consuming body — each active entry is the
+    /// current iteration's live value and must be freed on that edge. The same
+    /// per-entry escape scan protects all three edges: `return v` has already
+    /// moved the value into `Place::ReturnSlot`, so the scan sees the Move and
+    /// refuses the drop (the caller owns the release).
+    fn emit_generator_yield_value_drops_for_exit_edge(&mut self, min_scope_depth: usize) {
         let to_drop: Vec<(Place, ResolvedTy, crate::model::DropFnSpec, u32, usize)> = self
             .active_generator_yield_values
             .iter()
             .rev()
-            .filter(|(depth, _, _, _, _, _)| *depth >= loop_scope_depth)
+            .filter(|(depth, _, _, _, _, _)| *depth >= min_scope_depth)
             .map(|(_, place, ty, drop_fn, start_block_id, start_instr_len)| {
                 (
                     *place,
@@ -13607,6 +13616,15 @@ impl Builder {
                 // point — mutable vars have their final value; moved bindings
                 // are flagged by the move-checker.
                 self.emit_defers_for_return();
+                // Free every active consuming-body yielded value on the
+                // return edge (`cleanup-all-exits`): a `return` inside a
+                // `for await v in stream` / `for x in gen()` body exits the
+                // loop past the body-end drop, so the current iteration's
+                // received value must be released here. After defers (a defer
+                // may still read the value), before sealing. `return v` is
+                // protected by the per-entry escape scan — the ReturnSlot
+                // Move above marks the value caller-owned.
+                self.emit_generator_yield_value_drops_for_exit_edge(0);
                 // Seal the current basic block with Terminator::Return so
                 // codegen actually emits an early return at this program
                 // point. Codegen consumes the block terminator (not the
@@ -13623,6 +13641,9 @@ impl Builder {
             HirStmtKind::Return(None) => {
                 // Emit defers before the unit return.
                 self.emit_defers_for_return();
+                // Release the current iteration's yielded value(s) on this
+                // return edge — same discipline as Return(Some) above.
+                self.emit_generator_yield_value_drops_for_exit_edge(0);
                 self.statements.push(MirStatement::Return {
                     site: None,
                     ty: ResolvedTy::Unit,
@@ -17175,7 +17196,7 @@ impl Builder {
                 // edge (the body-end drop is past the break — would leak it).
                 // Value before handle: the yielded buffer is inner heap, the
                 // handle owns the coro frame + heap companion (LIFO inner-first).
-                self.emit_generator_yield_value_drops_for_break_continue(frame.scope_depth);
+                self.emit_generator_yield_value_drops_for_exit_edge(frame.scope_depth);
                 // Release in-loop generators on the break edge so the
                 // break-iteration's coro frame + heap companion are not leaked.
                 self.emit_generator_drops_for_break_continue(frame.scope_depth);
@@ -17220,6 +17241,11 @@ impl Builder {
                     });
                 }
                 self.emit_defers_for_return();
+                // Release the current iteration's yielded value(s) on this
+                // return edge — same discipline as the statement-position
+                // return (`cleanup-all-exits`; the per-entry escape scan
+                // keeps a `return v` caller-owned).
+                self.emit_generator_yield_value_drops_for_exit_edge(0);
                 self.finish_current_block(Terminator::Return);
                 let dead = self.alloc_block();
                 self.start_dead_block(dead);
@@ -17232,7 +17258,7 @@ impl Builder {
                 // Free the continued iteration's yielded heap value(s) on the
                 // continue edge (the body-end drop is past the continue — would
                 // leak it). Value before handle (LIFO inner-first).
-                self.emit_generator_yield_value_drops_for_break_continue(frame.scope_depth);
+                self.emit_generator_yield_value_drops_for_exit_edge(frame.scope_depth);
                 // Release in-loop generators on the continue edge so the
                 // skipped iteration's coro frame + heap companion are not leaked.
                 self.emit_generator_drops_for_break_continue(frame.scope_depth);
@@ -19152,6 +19178,15 @@ impl Builder {
                   ceiling without changing the function's structural \
                   responsibility (single yield-block walk)"
     )]
+    #[allow(
+        clippy::match_same_arms,
+        reason = "`Trap` (diverging abort — no continuation to leak into) and \
+                  `Return` (non-carrying function exit — the ReturnSlot Move \
+                  is the escape, caught by the instruction scan) are both \
+                  drop-safe for DIFFERENT reasons; folding them would let a \
+                  future body-exiting terminator inherit the wrong \
+                  justification"
+    )]
     fn generator_yield_block_paths_drop_safe(
         &self,
         block_id: u32,
@@ -19284,11 +19319,24 @@ impl Builder {
                         )
                     }
                     Terminator::Trap { .. } => true,
+                    // A `Return`-terminated path exits the function WITHOUT
+                    // carrying the binding: `return v` moves the value through
+                    // an `Instr::Move` into `Place::ReturnSlot`, and that Move
+                    // is already classified as an escape by the instruction
+                    // scan above. The return edge releases the current
+                    // iteration's value itself (the return lowering fires the
+                    // active yield-value ledger before sealing the block), and
+                    // that edge is CFG-mutually-exclusive with the body-end /
+                    // break-edge drops — so a non-carrying `Return` path is
+                    // drop-safe. Answering false here poisoned the WHOLE
+                    // binding: one early-return path suppressed the body-end
+                    // drop and leaked every iteration's received value
+                    // (#2412's early-return shape, one node per yield).
+                    Terminator::Return => true,
                     // `Suspend` never appears in a generator body (gen bodies
                     // use `Yield`); a body-end drop across it is conservatively
                     // unsound here, like the other body-exiting terminators.
-                    Terminator::Return
-                    | Terminator::Yield { .. }
+                    Terminator::Yield { .. }
                     | Terminator::Send { .. }
                     | Terminator::Ask { .. }
                     | Terminator::RemoteAsk { .. }

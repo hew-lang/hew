@@ -1128,6 +1128,11 @@ run_accept_expect_status "actor_counter_init" 42
 # send(10) + send(32) = 42; get() returns 42.
 run_accept_expect_status "actor_receive_fn_named_send" 42
 
+# Regression for #2402: init() params narrower than i64 (i32/i16/u8) must
+# survive the spawn thunk without an LLVM verifier width mismatch.
+# 100 + 20 + 3 = 123.
+run_accept_expect_status "actor_init_narrow_param" 123
+
 # Accept: a value-returning `receive fn send(...) -> T` invoked via
 # `await ref.send(...)` is a first-class *ask* — the awaited form consumes the
 # reply, so the HIR fire-and-forget gate must not block it. Doubler.send(21)

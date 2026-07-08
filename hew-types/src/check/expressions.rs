@@ -6725,8 +6725,28 @@ impl Checker {
     fn check_spawn_constructor_args(&mut self, actor_name: &str, args: &[(String, Spanned<Expr>)]) {
         let actor_fields: Option<HashMap<String, Ty>> =
             self.lookup_type_def(actor_name).map(|td| td.fields);
+        // An actor with an explicit `init(...)` names its spawn args after
+        // the INIT PARAMETERS, not the state fields they assign into (the
+        // two names may differ, and even when they match, the init
+        // parameter's declared width is the checker-authoritative one — the
+        // init body may narrow/widen before storing into the field). Look up
+        // `actor_init_params` first so a param like `init(start: i32)` gets
+        // `check_against(..., i32)` here; only actors with no explicit init
+        // (whose spawn args map directly onto bare field names) fall back to
+        // the field-type lookup. Without this, an unmatched `field_name`
+        // silently synthesizes the arg (defaulting an untyped int literal to
+        // `i64`), which then mismatches the init thunk's declared i32
+        // parameter and trips the LLVM verifier at the spawn call site
+        // (#2402).
+        let init_params = self.actor_init_params.get(actor_name).cloned();
         for (field_name, (arg, as_)) in args {
-            let declared = actor_fields.as_ref().and_then(|f| f.get(field_name));
+            let declared_init_param = init_params
+                .as_ref()
+                .and_then(|params| params.iter().find(|p| &p.name == field_name))
+                .map(|p| p.ty.clone());
+            let declared = declared_init_param
+                .as_ref()
+                .or_else(|| actor_fields.as_ref().and_then(|f| f.get(field_name)));
             let ty_raw = match declared {
                 Some(declared_ty) => {
                     let is_bare_actor = if let Ty::Named {

@@ -1,0 +1,29 @@
+// Regression for #2402: an actor `init(...)` parameter narrower than the
+// word-width `i64` used to fail LLVM verification at the spawn call site —
+// the spawn thunk packed every scalar init arg as `i64` while `init`'s own
+// declared signature kept the narrower width, so the two sides of the spawn
+// boundary disagreed and the verifier rejected the call. Covers i32, i16 and
+// u8 init params (the widths most likely to be reached for a port number, a
+// small count, or a flag) and asserts the EXACT stored value survives
+// through a receive fn read, not just that the module compiles.
+actor NarrowInit {
+    var n32: i32;
+    var n16: i16;
+    var n8: u8;
+    init(a: i32, b: i16, c: u8) {
+        n32 = a;
+        n16 = b;
+        n8 = c;
+    }
+    receive fn sum() -> i64 {
+        n32 as i64 + n16 as i64 + n8 as i64
+    }
+}
+
+fn main() -> i64 {
+    let handle = spawn NarrowInit(a: 100, b: 20, c: 3);
+    match await handle.sum() {
+        Ok(v) => v,
+        Err(_e) => -1,
+    }
+}

@@ -106,6 +106,7 @@ fn skip_vec_record(i64) -> i64 [conv=default]
     stmt: agg_alias BindingId(9) v site=SiteId(30) ty=Vec<string>
     stmt: bind BindingId(10) t site=SiteId(28) ty=TaggedVec
     stmt: use BindingId(10) t site=SiteId(32) ty=TaggedVec intent=Read
+    drop _5 ty=string fn=release(hew_string_drop)
     _6 = record_init TaggedVec { .0=_0, .1=_2 }
     _7 = move _6
     goto bb5

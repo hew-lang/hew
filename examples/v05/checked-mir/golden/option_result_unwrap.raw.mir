@@ -576,15 +576,18 @@ fn main() -> i64 [conv=default]
     _160 = call string_concat(_158, _159) -> bb80
   bb80:
     stmt: use BindingId(28) err site=SiteId(108) ty=bool intent=Read
+    drop _158 ty=string fn=release(hew_string_drop)
     _161 = call to_string_bool(_157) -> bb81
   bb81:
     _162 = call string_concat(_160, _161) -> bb82
   bb82:
+    drop _161 ty=string fn=release(hew_string_drop)
     call println_str(_162) -> bb83
   bb83:
     stmt: eval site=SiteId(102) ty=()
     stmt: use BindingId(6) cv site=SiteId(120) ty=i32 intent=Read
     stmt: use BindingId(13) gv site=SiteId(122) ty=i32 intent=Read
+    drop _162 ty=string fn=release(hew_string_drop)
     _163 = cast _36 i32 -> i64
     _164 = cast _73 i32 -> i64
     _165 ovf=_166 = add.checked.s _163 _164

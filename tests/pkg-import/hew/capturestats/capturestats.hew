@@ -1,0 +1,24 @@
+//! Fixture package for closures capturing IMPORTED records (#2419): one
+//! Vec-bearing shape (real drop glue) and one all-scalar shape. The importing
+//! fixtures capture these records in closures; the closure-capture drop-thunk
+//! seed must key the imported record identically at the seed and env
+//! free-thunk sites.
+
+pub type Summary {
+    counts: Vec<i64>;
+}
+
+pub type Flat {
+    n: i64;
+}
+
+pub fn summary_new(a: i64, b: i64) -> Summary {
+    let counts: Vec<i64> = Vec::new();
+    counts.push(a);
+    counts.push(b);
+    Summary { counts: counts }
+}
+
+pub fn flat_new(n: i64) -> Flat {
+    Flat { n: n }
+}

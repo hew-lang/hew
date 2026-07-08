@@ -304,6 +304,14 @@ fixtures=(
   recordret_packed
   recordret_big
   recordret_big_mixed
+  # #2419: closures capturing IMPORTED records (hew::capturestats). The env
+  # free thunk dispatches a record capture through
+  # `__hew_record_drop_inplace_<key>`; the closure-capture seed pass must
+  # resolve the imported record to the same key or the helper is
+  # declared-but-undefined and LLVM verify rejects the module. One Vec-bearing
+  # shape (real drop glue) and one all-scalar shape (no glue, still keyed).
+  closure_capture_imported_record
+  closure_capture_imported_flat_record
 )
 
 for fixture in "${fixtures[@]}"; do

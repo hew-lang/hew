@@ -1,0 +1,18 @@
+// #2419 control: a closure capturing an IMPORTED all-scalar record (no drop
+// glue required, yet still classified `UserRecord` at the env free-thunk
+// site). The caller binding is a byte-copy alias and stays readable after
+// the capture.
+import hew::capturestats;
+
+fn apply(f: fn(i64) -> i64, x: i64) -> i64 {
+    f(x)
+}
+
+fn main() {
+    let r = capturestats.flat_new(5);
+    let f = |x: i64| -> i64 {
+        r.n + x
+    };
+    println(apply(f, 1));
+    println(r.n);
+}

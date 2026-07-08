@@ -11804,6 +11804,128 @@ fn collect_enum_clone_inplace_seeds(
     seeds
 }
 
+/// #2419 — collect the record/enum layout keys of every value CAPTURED by an
+/// escaping (heap-boxed) closure so its `__hew_{record,enum}_drop_inplace_<key>`
+/// body is synthesised before the env free thunk that CALLS it is emitted.
+///
+/// WHY: `MakeClosure { env_mode: HeapBox }` plants a per-closure env free thunk
+/// (`get_or_emit_closure_env_free_thunk`) that drops each owned captured field
+/// through `emit_field_drop_step`; a record/enum capture dispatches to
+/// `get_or_declare_{record,enum}_drop_inplace`, which only DECLARES the helper
+/// (internal linkage). The body is emitted by `emit_state_clone_drop_synthesis`
+/// for seeded keys only — and a closure capture reaches no other seed channel:
+/// the capture MOVES into the env (suppressing the caller binding's
+/// `{Record,Enum}InPlace` drop-plan seed), and an all-BitCopy record never earns
+/// a drop plan at all yet still classifies as `UserRecord` at the thunk site.
+/// Without this seed the helper is declared-but-undefined and LLVM verify
+/// rejects the module ("Global is external, but doesn't have external or weak
+/// linkage").
+///
+/// Classifies each captured field via `classify_state_field_with_enum_layouts`
+/// over the SAME layout slices the thunk site (`closure_env_capture_drop_kinds`)
+/// consults, so the seeded key and the requested key cannot drift (the
+/// dyn-concrete seed pass discipline). Kinds are walked recursively through
+/// `Tuple`/`Array` so a record captured inside a tuple is also seeded; nested
+/// record/enum FIELDS of a seeded record are drained by
+/// `collect_reachable_clone_targets` itself. Only `HeapBox` closures are
+/// considered: a stack-env capture stays owned by the caller binding and never
+/// reaches the free-thunk drop, and seeding it could newly reject programs
+/// whose captures the classifier cannot map. Classification failures stay
+/// silent here — `closure_env_capture_drop_kinds` is the fail-closed authority
+/// for unclassifiable captures. Returns `(record_seeds, enum_seeds)`.
+fn collect_closure_capture_drop_seeds(
+    raw_mir: &[RawMirFunction],
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> (Vec<String>, Vec<String>) {
+    let mut record_seeds: Vec<String> = Vec::new();
+    let mut enum_seeds: Vec<String> = Vec::new();
+    let mut rec_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut enum_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    fn add_kind_seeds(
+        kind: &StateFieldCloneKind,
+        rec_seen: &mut std::collections::HashSet<String>,
+        enum_seen: &mut std::collections::HashSet<String>,
+        record_seeds: &mut Vec<String>,
+        enum_seeds: &mut Vec<String>,
+    ) {
+        match kind {
+            StateFieldCloneKind::UserRecord { name } => {
+                if rec_seen.insert(name.clone()) {
+                    record_seeds.push(name.clone());
+                }
+            }
+            StateFieldCloneKind::Enum { name } => {
+                if enum_seen.insert(name.clone()) {
+                    enum_seeds.push(name.clone());
+                }
+            }
+            StateFieldCloneKind::Tuple { elems } => {
+                for elem in elems {
+                    add_kind_seeds(elem, rec_seen, enum_seen, record_seeds, enum_seeds);
+                }
+            }
+            StateFieldCloneKind::Array { elem, .. } => {
+                add_kind_seeds(elem, rec_seen, enum_seen, record_seeds, enum_seeds);
+            }
+            // String/Bytes/Vec/HashMap/HashSet/IoHandle/Opaque/ClosurePair/
+            // Resource/BitCopy drop through runtime helpers or planted thunks,
+            // not a per-type synthesised drop body. Vec/HashMap owned-element
+            // record keys are seeded by `collect_vec_owned_element_seeds`
+            // (the captured collection was a local, so its type is walked).
+            _ => {}
+        }
+    }
+
+    for func in raw_mir {
+        for block in &func.blocks {
+            for instr in &block.instructions {
+                let Instr::MakeClosure {
+                    env,
+                    env_mode: hew_mir::ClosureEnvMode::HeapBox,
+                    ..
+                } = instr
+                else {
+                    continue;
+                };
+                let Place::Local(local) = env else {
+                    continue;
+                };
+                let Some(env_ty) = func.locals.get(*local as usize) else {
+                    continue;
+                };
+                let ResolvedTy::Named { name: env_name, .. } = env_ty else {
+                    continue;
+                };
+                let Some(env_layout) = record_layouts.iter().find(|rl| rl.name == *env_name) else {
+                    continue;
+                };
+                for field_ty in &env_layout.field_tys {
+                    let mut visited: std::collections::HashSet<String> =
+                        std::collections::HashSet::new();
+                    let Ok(kind) = hew_mir::classify_state_field_with_enum_layouts(
+                        field_ty,
+                        record_layouts,
+                        enum_layouts,
+                        &mut visited,
+                    ) else {
+                        continue;
+                    };
+                    add_kind_seeds(
+                        &kind,
+                        &mut rec_seen,
+                        &mut enum_seen,
+                        &mut record_seeds,
+                        &mut enum_seeds,
+                    );
+                }
+            }
+        }
+    }
+    (record_seeds, enum_seeds)
+}
+
 /// D2 / W3.031 — collect the record/enum layout keys of every type that
 /// appears as a `dyn Trait` CONCRETE so its
 /// `__hew_{record,enum}_drop_inplace_<key>` body is synthesised before
@@ -39570,6 +39692,32 @@ fn build_module_for_target<'ctx>(
     {
         if !vec_owned_record_seeds.contains(&seed) {
             vec_owned_record_seeds.push(seed);
+        }
+    }
+    // #2419 — closure captures: seed every record/enum captured by an escaping
+    // (heap-boxed) closure so the env free thunk's per-field drop
+    // (`get_or_emit_closure_env_free_thunk` → `emit_field_drop_step`) resolves
+    // a synthesised body rather than a bodyless internal declaration (LLVM
+    // verify reject). The capture MOVES into the env, so the caller binding's
+    // `{Record,Enum}InPlace` drop-plan seed never fires for it; an all-BitCopy
+    // record never earns a drop plan at all yet still classifies `UserRecord`
+    // at the thunk site. `pipeline.enum_layouts` (not the synthesis view) is
+    // the slice the thunk-site classifier consults, so the same slice is used
+    // here for key agreement.
+    let (closure_capture_record_seeds, closure_capture_enum_seeds) =
+        collect_closure_capture_drop_seeds(
+            &pipeline.raw_mir,
+            &pipeline.record_layouts,
+            &pipeline.enum_layouts,
+        );
+    for seed in closure_capture_record_seeds {
+        if !vec_owned_record_seeds.contains(&seed) {
+            vec_owned_record_seeds.push(seed);
+        }
+    }
+    for seed in closure_capture_enum_seeds {
+        if !enum_inplace_drop_seeds.contains(&seed) {
+            enum_inplace_drop_seeds.push(seed);
         }
     }
     emit_state_clone_drop_synthesis(

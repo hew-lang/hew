@@ -218,6 +218,127 @@ fn bitcopy_capture_has_no_owned_release_in_free_thunk() {
 }
 
 // ---------------------------------------------------------------------------
+// Record capture (#2419): a captured record dispatches through
+// `__hew_record_drop_inplace_<R>`, which is declared at INTERNAL linkage by
+// the free thunk's `emit_field_drop_step`. Its body is synthesised only for
+// seeded keys — and a closure capture reaches no other seed channel (the
+// capture MOVES into the env, suppressing the caller binding's
+// `RecordInPlace` drop-plan seed). Before the closure-capture seed pass, the
+// helper was declared-but-undefined and LLVM verify rejected the module
+// ("Global is external, but doesn't have external or weak linkage").
+// These tests pin BOTH halves: the thunk body EXISTS (a `define`, not a bare
+// declaration) and the free thunk CALLS it.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn captured_scalar_record_drop_thunk_defined_and_called() {
+    // All-BitCopy record: never earns a `RecordInPlace` drop plan (nothing to
+    // drop) yet still classifies as `UserRecord` at the free-thunk site — the
+    // minimal #2419 shape.
+    let ll = emit_ll(
+        "type Pair {\n\
+        \x20   a: i64;\n\
+        \x20   b: i64;\n\
+        }\n\
+        fn make() -> fn() -> i64 {\n\
+        \x20   let p = Pair { a: 1, b: 2 };\n\
+        \x20   || p.a\n\
+        }\n\
+        fn main() -> i64 { let f = make(); f() }\n",
+        "scalar_record_capture",
+    );
+    assert!(
+        ll.contains("define internal void @__hew_record_drop_inplace_Pair("),
+        "`__hew_record_drop_inplace_Pair` must be DEFINED (closure-capture seed \
+         pass), not a bodyless internal declaration that LLVM verify rejects. \
+         Emitted IR:\n{ll}"
+    );
+    let thunk = function_body(&ll, FREE_THUNK);
+    assert!(
+        !thunk.is_empty(),
+        "no env free thunk `{FREE_THUNK}` emitted for the record-capturing \
+         closure. Emitted IR:\n{ll}"
+    );
+    assert!(
+        thunk.contains("call void @__hew_record_drop_inplace_Pair("),
+        "the env free thunk must dispatch the captured record through its \
+         in-place drop helper. Thunk body:\n{thunk}"
+    );
+}
+
+#[test]
+fn captured_vec_bearing_record_drop_thunk_releases_heap() {
+    // Heap-owning record built from a LOCAL binding and moved into the env:
+    // the binding's own `RecordInPlace` drop is suppressed by the move, so
+    // only the closure-capture seed reaches it. The synthesised body must
+    // release the record's owned Vec — a bodyless or empty thunk would leak
+    // the captured heap exactly as #2419's Vec-bearing repro did.
+    let ll = emit_ll(
+        "type Holder {\n\
+        \x20   counts: Vec<i64>;\n\
+        }\n\
+        fn make() -> fn() -> i64 {\n\
+        \x20   var counts: Vec<i64> = Vec::new();\n\
+        \x20   counts.push(4);\n\
+        \x20   let h = Holder { counts: counts };\n\
+        \x20   || h.counts.len()\n\
+        }\n\
+        fn main() -> i64 { let f = make(); f() }\n",
+        "vec_record_capture",
+    );
+    assert!(
+        ll.contains("define internal void @__hew_record_drop_inplace_Holder("),
+        "`__hew_record_drop_inplace_Holder` must be DEFINED for the captured \
+         Vec-bearing record. Emitted IR:\n{ll}"
+    );
+    let record_thunk = function_body(&ll, "__hew_record_drop_inplace_Holder");
+    assert!(
+        record_thunk.contains("hew_vec_free"),
+        "the captured record's drop body must release its owned `Vec` via a \
+         `hew_vec_free*` call — an empty body would leak the captured heap. \
+         Body:\n{record_thunk}"
+    );
+    let thunk = function_body(&ll, FREE_THUNK);
+    assert!(
+        thunk.contains("call void @__hew_record_drop_inplace_Holder("),
+        "the env free thunk must dispatch the captured record through its \
+         in-place drop helper. Thunk body:\n{thunk}"
+    );
+}
+
+#[test]
+fn captured_enum_drop_thunk_defined_and_called() {
+    // The enum twin of the record gap: a captured enum dispatches through
+    // `__hew_enum_drop_inplace_<E>` and needs the same seed channel.
+    let ll = emit_ll(
+        "enum Tag {\n\
+        \x20   Named(string);\n\
+        \x20   Anon;\n\
+        }\n\
+        fn make() -> fn() -> i64 {\n\
+        \x20   let t = Tag::Named(\"hi\");\n\
+        \x20   || match t {\n\
+        \x20       Tag::Named(_) => 1,\n\
+        \x20       Tag::Anon => 0,\n\
+        \x20   }\n\
+        }\n\
+        fn main() -> i64 { let f = make(); f() }\n",
+        "enum_capture",
+    );
+    assert!(
+        ll.contains("define internal void @__hew_enum_drop_inplace_Tag("),
+        "`__hew_enum_drop_inplace_Tag` must be DEFINED for the captured enum \
+         (closure-capture seed pass, enum channel). Emitted IR:\n{ll}"
+    );
+    let thunk = function_body(&ll, FREE_THUNK);
+    assert!(
+        thunk.contains("call void @__hew_enum_drop_inplace_Tag("),
+        "the env free thunk must dispatch the captured enum through its \
+         in-place drop helper. Thunk body:\n{thunk}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Type-parameterised owned capture (#6): a closure inside `fn make<T>(x: T)`
 // captures the generic-`T` value by move and escapes (returned as `fn() -> T`).
 // After monomorphisation the env field `T` is concrete, so the OWNED (`string`)

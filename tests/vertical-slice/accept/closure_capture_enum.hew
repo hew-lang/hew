@@ -1,0 +1,23 @@
+// A closure capturing an enum with an owned (string) payload: the enum twin
+// of the record-capture gap. Previously failed LLVM verify with a bodyless
+// `__hew_enum_drop_inplace_Tag` declaration — the closure-capture seed pass
+// must feed the enum channel of drop-thunk synthesis too.
+enum Tag {
+    Named(string);
+    Anon;
+}
+
+fn apply(f: fn(i64) -> i64, x: i64) -> i64 {
+    f(x)
+}
+
+fn main() {
+    let t = Tag::Named("hi");
+    let f = |x: i64| -> i64 {
+        match t {
+            Tag::Named(_) => 1 + x,
+            Tag::Anon => x,
+        }
+    };
+    println(apply(f, 1));
+}

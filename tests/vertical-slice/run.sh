@@ -2116,6 +2116,23 @@ run_accept_expect_status "closure_pid_alias_parent" 42
 # closure stays callable. Exit 42 = make_adder(7) dispatched on 35 via h.action.
 run_accept_expect_status "closure_param_field_store" 42
 
+# Accept + run (#2419): a closure capturing an all-scalar record. Previously
+# failed LLVM verify with a bodyless `__hew_record_drop_inplace_Pair`
+# declaration — a closure capture reached no drop-thunk synthesis seed. The
+# caller binding is a byte-copy alias and stays live after the capture
+# (third line reads `p.b` post-capture).
+run_accept_expect_stdout "closure_capture_record_scalar"
+
+# Accept + run (#2419): a RETURNED closure capturing a heap-owning record
+# (Vec field) — the record moves into the heap-boxed env, escapes the
+# defining scope, and the env free thunk is its sole teardown owner. The
+# closure stays callable across calls.
+run_accept_expect_stdout "closure_capture_record_owned"
+
+# Accept + run (#2419): the enum twin — a closure capturing a string-payload
+# enum previously left `__hew_enum_drop_inplace_Tag` declared-but-undefined.
+run_accept_expect_stdout "closure_capture_enum"
+
 # Reject: using a forwarded fn-typed parameter AFTER it has been stored into a
 # record field is use-after-consume — the store is the parameter's single
 # consumption (the record is the sole env owner), so a later read is rejected

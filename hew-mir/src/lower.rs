@@ -9980,6 +9980,19 @@ struct Builder {
     /// with `prepass_reassigned_bindings` + `owned_locals` membership to decide
     /// which bindings get an `overwrite_guard_flags` entry.
     prepass_consumed_bindings: HashSet<BindingId>,
+    /// #2418 per-function pre-pass scratch: `BindingId`s with a
+    /// `intent=Consume` use in any position OTHER than a direct `let`-rebind
+    /// initializer (`let y = xs;`) — a by-value call argument, an
+    /// aggregate-literal field (`Holder { items: xs }`), a `return xs`, an
+    /// assignment RHS, a match scrutinee, and every nested-expression read.
+    /// A binding in this set never gets a `collection_drop_flags` entry:
+    /// those consume shapes are owning-sink ESCAPES to the allow-set provers,
+    /// and keeping the source registered (flagged) would leave it a candidate
+    /// whose escape taints its whole whole-value alias group — excluding a
+    /// destination the unflagged (retract-at-consume) path admits. Fail
+    /// closed to the legacy retraction instead: behaviour byte-identical to
+    /// the pre-flag compiler for every non-rebind consume shape.
+    prepass_nonrebind_consumed: HashSet<BindingId>,
     /// #2301 per-function pre-pass scratch: `BindingId`s that are the target of an
     /// `Assign` (`r = <rhs>`) anywhere in the body.
     prepass_reassigned_bindings: HashSet<BindingId>,
@@ -12867,6 +12880,24 @@ impl Builder {
                         {
                             self.closure_pair_laundered_bindings.insert(binding.id);
                         }
+                        // #2418 — a DIRECT consume-rebind initializer
+                        // (`let y = xs;`) is the one consume shape the
+                        // collection drop-flag covers; record the consume
+                        // WITHOUT the non-rebind mark the general walk would
+                        // apply, replicating the walk's other effects on a
+                        // childless `BindingRef` (the type-key harvest).
+                        if let HirExprKind::BindingRef {
+                            resolved: ResolvedRef::Binding(id),
+                            ..
+                        } = &v.kind
+                        {
+                            if v.intent == IntentKind::Consume {
+                                self.prepass_consumed_bindings.insert(*id);
+                                let vty = self.subst_ty(&v.ty);
+                                self.harvest_vec_owned_element_key(&vty);
+                                continue;
+                            }
+                        }
                         self.collect_vec_owned_element_keys_from_expr(v);
                     }
                 }
@@ -12905,18 +12936,18 @@ impl Builder {
         }
     }
 
-    /// Harvest owned-Vec element keys from an expression's type and recurse into
-    /// the structural child expressions that may carry a `Vec<owned>` value.
-    /// Every visited expr contributes its own `.ty` (so a `Vec<Header>`
-    /// `BindingRef`/`Call`/`StructInit` receiver is caught); the recursion
-    /// reaches nested blocks (if/match/scope/loop bodies) where an owned-Vec
-    /// could be constructed or used.
-    fn collect_vec_owned_element_keys_from_expr(&mut self, expr: &HirExpr) {
-        // #2301 -- during this single pre-pass traversal, also harvest genuine
-        // move-out consumes (`intent=Consume` on a `BindingRef`). A binding that
-        // is BOTH consumed here and reassigned (see the `Assign` arm in
-        // `collect_vec_owned_element_keys_from_block`) gets a path-sensitive
-        // overwrite-release drop-flag at its `let`.
+    /// #2301 -- record a genuine move-out consume (`intent=Consume` on a
+    /// `BindingRef`) seen by the pre-pass walk. A binding that is BOTH
+    /// consumed and reassigned (see the `Assign` arm in
+    /// `collect_vec_owned_element_keys_from_block`) gets a path-sensitive
+    /// overwrite-release drop-flag at its `let`.
+    ///
+    /// #2418 -- every consume reached through the general expression walk is
+    /// a NON-REBIND shape (the direct `let y = xs;` initializer is
+    /// intercepted in the block walker and never recurses here), so it also
+    /// disqualifies the binding from the collection drop-flag (see
+    /// `prepass_nonrebind_consumed`).
+    fn prepass_note_nonrebind_consume(&mut self, expr: &HirExpr) {
         if expr.intent == IntentKind::Consume {
             if let HirExprKind::BindingRef {
                 resolved: ResolvedRef::Binding(id),
@@ -12924,8 +12955,19 @@ impl Builder {
             } = &expr.kind
             {
                 self.prepass_consumed_bindings.insert(*id);
+                self.prepass_nonrebind_consumed.insert(*id);
             }
         }
+    }
+
+    /// Harvest owned-Vec element keys from an expression's type and recurse into
+    /// the structural child expressions that may carry a `Vec<owned>` value.
+    /// Every visited expr contributes its own `.ty` (so a `Vec<Header>`
+    /// `BindingRef`/`Call`/`StructInit` receiver is caught); the recursion
+    /// reaches nested blocks (if/match/scope/loop bodies) where an owned-Vec
+    /// could be constructed or used.
+    fn collect_vec_owned_element_keys_from_expr(&mut self, expr: &HirExpr) {
+        self.prepass_note_nonrebind_consume(expr);
         let ty = self.subst_ty(&expr.ty);
         self.harvest_vec_owned_element_key(&ty);
         match &expr.kind {
@@ -33193,11 +33235,12 @@ impl Builder {
 
     /// #2418 -- allocate a zero-init path-sensitive scope-exit drop-flag for an
     /// owned collection local (owned-element `Vec`, plain `Vec`,
-    /// `HashMap`/`HashSet` handle) the pre-pass saw consumed somewhere in the
-    /// body. The flag keeps the binding on the scope-exit set at its consume
-    /// sites (see `collection_drop_flags`), so a conditional move (`if take {
-    /// let ys = xs; }`) releases the value exactly once: the runtime gate
-    /// skips the moved path, the not-moved path fires the release.
+    /// `HashMap`/`HashSet` handle) whose pre-pass consumes are ALL direct
+    /// `let`-rebind moves (`let ys = xs;`). The flag keeps the binding on the
+    /// scope-exit set at its consume sites (see `collection_drop_flags`), so
+    /// a conditional move (`if take { let ys = xs; }`) releases the value
+    /// exactly once: the runtime gate skips the moved path, the not-moved
+    /// path fires the release.
     ///
     /// Restricted to the collection classes whose releases are null-tolerant
     /// runtime frees and whose allow-set provers ride the
@@ -33211,6 +33254,16 @@ impl Builder {
     /// including loop back-edges (a per-iteration `let` re-zeros it).
     fn maybe_alloc_collection_drop_flag(&mut self, binding: &HirBinding, ty: &ResolvedTy) {
         if !self.prepass_consumed_bindings.contains(&binding.id) {
+            return;
+        }
+        // #2418 — any consume in a non-rebind position (call argument,
+        // aggregate-literal field, return, assignment RHS, nested read)
+        // disqualifies the flag: those shapes are owning-sink escapes to the
+        // allow-set provers, and a flagged (still-registered) source would
+        // taint its whole-value alias group where the legacy retraction lets
+        // the destination stand alone. Fail closed to the retraction —
+        // byte-identical to the pre-flag compiler for those shapes.
+        if self.prepass_nonrebind_consumed.contains(&binding.id) {
             return;
         }
         if binding.mutable && self.prepass_reassigned_bindings.contains(&binding.id) {
@@ -34379,12 +34432,19 @@ fn elaborate(
     // the prover did not clear is never double-freed
     // (`drop-allowset-from-value-flow`, `boundary-fail-closed`,
     // `raii-null-after-move`, `cleanup-all-exits`).
-    let mut owned_vec_drop_allowed = derive_local_collection_drop_allowed(
-        &checked.blocks,
-        &builder.suspend_kinds,
+    let mut owned_vec_drop_allowed = admit_with_flagged_fallback(
         &owned_locals_snapshot,
-        &builder.binding_locals,
+        &builder.collection_drop_flags,
         |ty| builder.binding_ty_is_owned_element_vec(ty),
+        |view| {
+            derive_local_collection_drop_allowed(
+                &checked.blocks,
+                &builder.suspend_kinds,
+                view,
+                &builder.binding_locals,
+                |ty| builder.binding_ty_is_owned_element_vec(ty),
+            )
+        },
     );
     // #2418 — a binding carrying a path-sensitive collection drop-flag is
     // exempt from the consume-exit removal: its scope-exit release is gated on
@@ -34452,12 +34512,19 @@ fn elaborate(
     // moved out by a by-value consume. Both directions only ever over-EXCLUDE
     // (leak), never re-admit — a handle the prover did not clear is never
     // double-freed (`boundary-fail-closed`, `cleanup-all-exits`).
-    let mut local_collection_drop_allowed = derive_local_collection_drop_allowed(
-        &checked.blocks,
-        &builder.suspend_kinds,
+    let mut local_collection_drop_allowed = admit_with_flagged_fallback(
         &owned_locals_snapshot,
-        &builder.binding_locals,
+        &builder.collection_drop_flags,
         ty_is_local_collection_handle,
+        |view| {
+            derive_local_collection_drop_allowed(
+                &checked.blocks,
+                &builder.suspend_kinds,
+                view,
+                &builder.binding_locals,
+                ty_is_local_collection_handle,
+            )
+        },
     );
     // #2418 — flagged bindings are exempt from the consume-exit removal (the
     // runtime `flag == 0` gate discriminates the moved path); see the
@@ -34544,12 +34611,19 @@ fn elaborate(
     // under the same no-retain-on-share invariant the collection handles
     // document above. An excluded handle leaks (as before this fix), never
     // double-frees (`boundary-fail-closed`, `cleanup-all-exits`).
-    let mut plain_vec_drop_allowed = derive_local_collection_drop_allowed(
-        &checked.blocks,
-        &builder.suspend_kinds,
+    let mut plain_vec_drop_allowed = admit_with_flagged_fallback(
         &owned_locals_snapshot,
-        &builder.binding_locals,
+        &builder.collection_drop_flags,
         |ty| builder.binding_ty_is_plain_vec(ty),
+        |view| {
+            derive_local_collection_drop_allowed(
+                &checked.blocks,
+                &builder.suspend_kinds,
+                view,
+                &builder.binding_locals,
+                |ty| builder.binding_ty_is_plain_vec(ty),
+            )
+        },
     );
     // #2418 — flagged bindings are exempt from the consume-exit removal (the
     // runtime `flag == 0` gate discriminates the moved path); see the
@@ -43212,24 +43286,172 @@ fn dedup_whole_value_handoff(
     }
     for bindings in component_admitted.values() {
         // #2418 — a flag-guarded binding (a conditional move's source) shares
-        // its component with the move's DESTINATION by construction, and the
-        // pair is exactly-once provable at runtime: the destination releases
-        // on the arm where the move executed (its own scope-close edge), the
-        // guarded source releases at scope exit only where the flag is still
-        // 0 (the not-moved path). So a component holding at most ONE
-        // unguarded member alongside guarded ones keeps every member.
-        // Components with two or more UNGUARDED members retain the fail-closed
-        // collapse — sole ownership across a dataflow-invisible fan-out is
-        // unprovable — and the collapse removes the guarded members with them
-        // (a guarded drop over an ambiguous share could still double-free on
-        // the not-moved path; leak instead, as before).
-        let unguarded = bindings.iter().filter(|b| !guarded.contains_key(b)).count();
-        if unguarded > 1 {
-            for binding in bindings {
-                allowed.remove(binding);
+        // its component with the move's DESTINATION(s) by construction, and
+        // the group is exactly-once provable at runtime when the destinations
+        // are on mutually-exclusive control-flow paths: each destination
+        // releases on the arm where its move executed (its own scope-close
+        // edge), the guarded source releases at scope exit only where the
+        // flag is still 0 (the not-moved path). The move-checker already
+        // rejects co-executable consume sites of one binding
+        // (`UseAfterConsume` — straight-line re-consume and loop re-consume
+        // without `break` both fail), so exclusive per-branch destinations
+        // (`if a { let y = xs; } else if b { let z = xs; }`) are the only
+        // accepted multi-destination shape — but the exclusivity is proven
+        // HERE, in the CFG (no path executes two of the destinations' bind
+        // sites), not assumed from the checker: a synthetic Move that never
+        // went through the checker gets no benefit of the doubt.
+        //
+        // So: a component containing a guarded member keeps every member iff
+        // every UNGUARDED member's bind sites are pairwise non-co-executable
+        // (`unguarded_bind_sites_pairwise_exclusive`). A genuinely-parallel
+        // fan-out — two unguarded destinations reachable on ONE path — still
+        // takes the fail-closed collapse, guarded members included (a guarded
+        // drop over an ambiguous share could double-free on the not-moved
+        // path; leak instead, as before). Guardless components keep the
+        // original >1-member collapse: sole ownership across a
+        // dataflow-invisible fan-out is unprovable.
+        let unguarded: Vec<BindingId> = bindings
+            .iter()
+            .filter(|b| !guarded.contains_key(b))
+            .copied()
+            .collect();
+        if unguarded.len() <= 1 {
+            continue;
+        }
+        let has_guarded = bindings.len() > unguarded.len();
+        if has_guarded
+            && unguarded_bind_sites_pairwise_exclusive(blocks, binding_locals, &unguarded)
+        {
+            continue;
+        }
+        for binding in bindings {
+            allowed.remove(binding);
+        }
+    }
+}
+
+/// #2418 — base-parity fallback for a flag-guarded binding the escape scan
+/// cannot admit. A flagged binding stays REGISTERED at its consume sites
+/// (that is the fix), which also keeps it a CANDIDATE in the collection
+/// escape scans — so an owning-sink read of it anywhere (an aggregate-literal
+/// ingress on one branch, a by-value call, a return) excludes not just the
+/// binding but its whole whole-value alias group, via the scan's
+/// root-resolution. The legacy retract-at-consume compiler never presented
+/// the binding as a candidate at all, so the move DESTINATION stood alone
+/// with its own root and kept its release. Reproduce exactly that outcome:
+/// re-derive the allow-set with every excluded flagged binding removed from
+/// the candidate view, to a fixpoint (each round strictly shrinks the view,
+/// and removing a candidate only removes escape notes, so admissions grow
+/// monotonically). The excluded binding itself ends unregistered — the same
+/// leak-not-double-free posture the legacy path had for that shape.
+fn admit_with_flagged_fallback<C, F>(
+    owned_locals_snapshot: &[(BindingId, String, ResolvedTy)],
+    collection_drop_flags: &HashMap<BindingId, Place>,
+    class_filter: C,
+    derive: F,
+) -> HashSet<BindingId>
+where
+    C: Fn(&ResolvedTy) -> bool,
+    F: Fn(&[(BindingId, String, ResolvedTy)]) -> HashSet<BindingId>,
+{
+    let mut view: Vec<(BindingId, String, ResolvedTy)> = owned_locals_snapshot.to_vec();
+    let mut allowed = derive(&view);
+    loop {
+        let excluded_flagged: HashSet<BindingId> = view
+            .iter()
+            .filter(|(binding, _, ty)| {
+                class_filter(ty)
+                    && collection_drop_flags.contains_key(binding)
+                    && !allowed.contains(binding)
+            })
+            .map(|(binding, _, _)| *binding)
+            .collect();
+        if excluded_flagged.is_empty() {
+            return allowed;
+        }
+        view.retain(|(binding, _, _)| !excluded_flagged.contains(binding));
+        allowed = derive(&view);
+    }
+}
+
+/// #2418 — CFG-grounded exclusivity test for the fan-out collapse in
+/// [`dedup_whole_value_handoff`]: true iff the whole-value `Move` bind sites
+/// of every binding in `unguarded` are pairwise non-co-executable, i.e. no
+/// runtime path can execute two of them. Two sites co-execute when they share
+/// a basic block, when one site's block reaches the other's, or when a site's
+/// block sits on a cycle (it could re-execute); each case is tested directly
+/// on the CFG via [`BasicBlock::successors`] reachability, so the answer is a
+/// structural fact about this function's blocks — not an inference from the
+/// move-checker's acceptance.
+///
+/// Fail-closed: a binding with no locatable bind site, an unresolvable Place,
+/// or any co-executable pair returns `false` (the caller strips the whole
+/// component — leak, never a double-free). Over-approximation direction: the
+/// reachability walk follows EVERY successor edge (`successors()` is an
+/// exhaustive match over `Terminator`), so exclusivity can only be
+/// under-reported, never over-reported.
+fn unguarded_bind_sites_pairwise_exclusive(
+    blocks: &[BasicBlock],
+    binding_locals: &HashMap<BindingId, Place>,
+    unguarded: &[BindingId],
+) -> bool {
+    let mut dest_locals: HashSet<u32> = HashSet::new();
+    for binding in unguarded {
+        let Some(local) = binding_locals.get(binding).and_then(|p| base_local(*p)) else {
+            return false;
+        };
+        dest_locals.insert(local);
+    }
+    // Every block holding a whole-value Move into one of the destinations.
+    // Two sites (same or different destinations) in one block are trivially
+    // co-executable, so a second site in a block fails immediately.
+    let mut site_blocks: Vec<u32> = Vec::new();
+    let mut located_dest_locals: HashSet<u32> = HashSet::new();
+    for block in blocks {
+        let mut block_has_site = false;
+        for instr in &block.instructions {
+            if let Instr::Move { dest, src } = instr {
+                if let (Some(dl), Some(sl)) = (base_local(*dest), base_local(*src)) {
+                    if dl != sl && dest_locals.contains(&dl) {
+                        if block_has_site {
+                            return false;
+                        }
+                        block_has_site = true;
+                        located_dest_locals.insert(dl);
+                    }
+                }
+            }
+        }
+        if block_has_site {
+            site_blocks.push(block.id);
+        }
+    }
+    // A destination the scan could not locate a bind site for cannot be
+    // proven exclusive of anything — fail closed.
+    if located_dest_locals.len() != dest_locals.len() {
+        return false;
+    }
+    // Forward reachability from each site block. A site reaching ANY site
+    // block — another's, or its own around a cycle — is co-executable.
+    let successors: HashMap<u32, Vec<u32>> =
+        blocks.iter().map(|b| (b.id, b.successors())).collect();
+    let site_set: HashSet<u32> = site_blocks.iter().copied().collect();
+    for &start in &site_blocks {
+        let mut frontier: Vec<u32> = successors.get(&start).cloned().unwrap_or_default();
+        let mut visited: HashSet<u32> = HashSet::new();
+        while let Some(cur) = frontier.pop() {
+            if !visited.insert(cur) {
+                continue;
+            }
+            if site_set.contains(&cur) {
+                return false;
+            }
+            if let Some(succs) = successors.get(&cur) {
+                frontier.extend(succs.iter().copied());
             }
         }
     }
+    true
 }
 
 /// True when `name` is an `indirect enum` registered in `enum_layouts` — the
@@ -46879,6 +47101,181 @@ mod slice3_narrowing_proptests {
             "a Consumed (moved-to-out-slot) yield value must be excluded from the \
              yield abandon plan; got {:?}",
             plans[0].1.drops,
+        );
+    }
+}
+
+// ============================================================================
+// #2418 fan-out exclusivity boundary — direct-CFG tests against
+// `dedup_whole_value_handoff`'s guarded-component collapse. Hand-constructed
+// blocks are required because the co-executable (parallel) fan-out shapes are
+// checker-rejected in source (`UseAfterConsume` on the second consume), so
+// only a synthetic Move stream can reach the boundary — which is exactly why
+// the exclusivity proof lives in the CFG walk and not in the checker's
+// acceptance.
+// ============================================================================
+
+#[cfg(test)]
+mod dedup_fanout_exclusivity_tests {
+    use super::*;
+
+    /// `BindingId(0) -> Local(10)` (the guarded source), `BindingId(1) ->
+    /// Local(11)` and `BindingId(2) -> Local(12)` (the move destinations).
+    fn locals() -> HashMap<BindingId, Place> {
+        [
+            (BindingId(0), Place::Local(10)),
+            (BindingId(1), Place::Local(11)),
+            (BindingId(2), Place::Local(12)),
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    fn all_allowed() -> HashSet<BindingId> {
+        [BindingId(0), BindingId(1), BindingId(2)]
+            .into_iter()
+            .collect()
+    }
+
+    fn guarded_source() -> HashMap<BindingId, Place> {
+        [(BindingId(0), Place::Local(90))].into_iter().collect()
+    }
+
+    fn mv(src: u32, dest: u32) -> Instr {
+        Instr::Move {
+            dest: Place::Local(dest),
+            src: Place::Local(src),
+        }
+    }
+
+    fn block(id: u32, instructions: Vec<Instr>, terminator: Terminator) -> BasicBlock {
+        BasicBlock {
+            id,
+            statements: vec![],
+            instructions,
+            terminator,
+        }
+    }
+
+    /// Exclusive per-branch destinations of one guarded source (`if a
+    /// { let y = xs; } else { let z = xs; }`): the destinations' bind sites
+    /// sit on mutually-exclusive branch arms, so the whole component keeps
+    /// its releases — the #2418 two-destination shape.
+    #[test]
+    fn exclusive_branch_destinations_of_guarded_source_are_kept() {
+        let blocks = vec![
+            block(
+                0,
+                vec![],
+                Terminator::Branch {
+                    cond: Place::Local(0),
+                    then_target: 1,
+                    else_target: 2,
+                },
+            ),
+            block(1, vec![mv(10, 11)], Terminator::Goto { target: 3 }),
+            block(2, vec![mv(10, 12)], Terminator::Goto { target: 3 }),
+            block(3, vec![], Terminator::Return),
+        ];
+        let mut allowed = all_allowed();
+        dedup_whole_value_handoff(&blocks, &locals(), &mut allowed, &guarded_source());
+        assert_eq!(
+            allowed,
+            all_allowed(),
+            "mutually-exclusive branch destinations of a guarded source must \
+             keep every member's release"
+        );
+    }
+
+    /// Genuinely-parallel fan-out (both destinations on ONE path): the
+    /// fail-closed collapse strips the whole component, guarded source
+    /// included — sole ownership across a co-executable fan is unprovable.
+    /// This shape is checker-rejected in source; a synthetic Move stream
+    /// gets no benefit of the doubt.
+    #[test]
+    fn parallel_fanout_from_guarded_source_still_strips_component() {
+        let blocks = vec![
+            block(0, vec![mv(10, 11)], Terminator::Goto { target: 1 }),
+            block(1, vec![mv(10, 12)], Terminator::Goto { target: 2 }),
+            block(2, vec![], Terminator::Return),
+        ];
+        let mut allowed = all_allowed();
+        dedup_whole_value_handoff(&blocks, &locals(), &mut allowed, &guarded_source());
+        assert!(
+            allowed.is_empty(),
+            "co-executable (sequential) fan-out must strip the whole \
+             component, guarded source included; kept {allowed:?}"
+        );
+    }
+
+    /// Two bind sites in one block are trivially co-executable — strip.
+    #[test]
+    fn same_block_fanout_from_guarded_source_strips_component() {
+        let blocks = vec![block(0, vec![mv(10, 11), mv(10, 12)], Terminator::Return)];
+        let mut allowed = all_allowed();
+        dedup_whole_value_handoff(&blocks, &locals(), &mut allowed, &guarded_source());
+        assert!(
+            allowed.is_empty(),
+            "same-block fan-out must strip the whole component; kept {allowed:?}"
+        );
+    }
+
+    /// A bind site on a cycle can re-execute — co-executable with itself, so
+    /// the pair (loop site, post-loop site) strips even though neither
+    /// branch dominates the other.
+    #[test]
+    fn loop_bind_site_fanout_strips_component() {
+        let blocks = vec![
+            block(0, vec![], Terminator::Goto { target: 1 }),
+            block(1, vec![mv(10, 11)], Terminator::Goto { target: 2 }),
+            block(
+                2,
+                vec![],
+                Terminator::Branch {
+                    cond: Place::Local(0),
+                    then_target: 1,
+                    else_target: 3,
+                },
+            ),
+            block(3, vec![mv(10, 12)], Terminator::Return),
+        ];
+        let mut allowed = all_allowed();
+        dedup_whole_value_handoff(&blocks, &locals(), &mut allowed, &guarded_source());
+        assert!(
+            allowed.is_empty(),
+            "a bind site inside a loop is reachable from itself and from the \
+             post-loop site; the component must strip; kept {allowed:?}"
+        );
+    }
+
+    /// Without a guarded member the original >1-member collapse holds even
+    /// for exclusive destinations — the exclusivity exemption is earned by
+    /// the guard flag, never by shape alone.
+    #[test]
+    fn guardless_component_keeps_original_collapse() {
+        let blocks = vec![
+            block(
+                0,
+                vec![],
+                Terminator::Branch {
+                    cond: Place::Local(0),
+                    then_target: 1,
+                    else_target: 2,
+                },
+            ),
+            block(1, vec![mv(10, 11)], Terminator::Goto { target: 3 }),
+            block(2, vec![mv(10, 12)], Terminator::Goto { target: 3 }),
+            block(3, vec![], Terminator::Return),
+        ];
+        let mut allowed = all_allowed();
+        dedup_whole_value_handoff(&blocks, &locals(), &mut allowed, &HashMap::new());
+        // The chain strip removes the source (its handle reaches admitted
+        // destinations); the fan-out collapse then strips the ambiguous
+        // sibling pair.
+        assert!(
+            allowed.is_empty(),
+            "a guardless multi-destination component keeps the fail-closed \
+             collapse; kept {allowed:?}"
         );
     }
 }

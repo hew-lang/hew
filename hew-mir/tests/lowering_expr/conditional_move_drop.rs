@@ -258,6 +258,187 @@ fn conditional_move_hashmap_gets_guarded_return_drop() {
 }
 
 // ---------------------------------------------------------------------------
+// Two exclusive destinations of one guarded source.
+// ---------------------------------------------------------------------------
+
+const DOUBLE_DESTINATION: &str = r"
+    fn make_vec() -> Vec<i64> {
+        let v: Vec<i64> = Vec::new();
+        v.push(40);
+        v.push(2);
+        return v;
+    }
+
+    fn probe(a: bool, b: bool) {
+        let xs = make_vec();
+        if a {
+            let y = xs;
+        } else if b {
+            let z = xs;
+        }
+    }
+
+    fn main() {
+        probe(false, false);
+    }
+    ";
+
+/// `if a { let y = xs; } else if b { let z = xs; }` — the source keeps
+/// exactly one GUARDED Return-exit release; the two destinations keep one
+/// unguarded release each on their own (mutually-exclusive) arm edges. The
+/// fan-out collapse must not conflate exclusive branch destinations with a
+/// parallel fan-out.
+#[test]
+fn exclusive_double_destination_keeps_all_three_releases() {
+    let pipeline = pipeline_with_tc(DOUBLE_DESTINATION);
+    let ret = return_drops(&pipeline, "probe");
+    let ret_frees = frees(&ret, "hew_vec_free");
+    assert_eq!(
+        ret_frees.len(),
+        1,
+        "the double-destination source must keep exactly one Return-exit \
+         release; got {ret:?}"
+    );
+    assert!(
+        ret_frees[0].guard.is_some(),
+        "the double-destination source's Return-exit release must be \
+         guarded; got {ret_frees:?}"
+    );
+    let gotos = goto_drops(&pipeline, "probe");
+    let goto_frees = frees(&gotos, "hew_vec_free");
+    assert_eq!(
+        goto_frees.len(),
+        2,
+        "each exclusive destination keeps one release on its own arm's \
+         scope-close edge; got {gotos:?}"
+    );
+    assert!(
+        goto_frees.iter().all(|d| d.guard.is_none()),
+        "destination releases need no guard — each edge exists only on the \
+         path where its move executed; got {goto_frees:?}"
+    );
+}
+
+/// Rebinds on BOTH arms of an if/else: every runtime path moves the source,
+/// so its guarded drop is statically excluded at each arm's Return, and each
+/// destination releases exactly once on its own path.
+#[test]
+fn both_arm_destinations_each_release_once() {
+    let pipeline = pipeline_with_tc(
+        r"
+        fn make_vec() -> Vec<i64> {
+            let v: Vec<i64> = Vec::new();
+            v.push(40);
+            v.push(2);
+            return v;
+        }
+
+        fn probe(c: bool) -> i64 {
+            let xs = make_vec();
+            if c {
+                let a = xs;
+                return a.len();
+            } else {
+                let b = xs;
+                return b.len() + 10;
+            }
+        }
+
+        fn main() {
+            let _r = probe(false);
+        }
+        ",
+    );
+    let drops = all_exit_drops(&pipeline, "probe");
+    let all_frees = frees(&drops, "hew_vec_free");
+    // One binding's release may appear on several exit PLANS (its own arm's
+    // return plus the cancel/trap cleanups) — exactly-once is per runtime
+    // path, so count distinct released PLACES.
+    let unguarded_places: std::collections::HashSet<_> = all_frees
+        .iter()
+        .filter(|d| d.guard.is_none())
+        .map(|d| d.place)
+        .collect();
+    assert_eq!(
+        unguarded_places.len(),
+        2,
+        "each arm's destination must keep its own unguarded release; got {drops:?}"
+    );
+    assert!(
+        all_frees.iter().all(|d| d.guard.is_none()),
+        "no guarded release survives — the source is consumed on every \
+         path, so its drop is statically excluded per-exit; got {drops:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Mixed rebind + aggregate-ingress arms — base-parity fallback.
+// ---------------------------------------------------------------------------
+
+/// A rebind on one arm and a record-literal ingress on the other: the
+/// aggregate ingress is an owning-sink escape, so the source falls back to
+/// the legacy posture (excluded — its flag never engages a release), while
+/// the rebind destination keeps its own release exactly as the
+/// retract-at-consume compiler admitted it. Pins the base-parity fallback:
+/// a flagged binding the escape scan cannot admit must not drag its move
+/// destination down with it.
+#[test]
+fn mixed_rebind_and_record_ingress_keeps_destination_release() {
+    let pipeline = pipeline_with_tc(
+        r"
+        fn make_vec() -> Vec<i64> {
+            let v: Vec<i64> = Vec::new();
+            v.push(40);
+            v.push(2);
+            return v;
+        }
+
+        record Holder {
+            items: Vec<i64>,
+        }
+
+        fn probe(a: bool, b: bool) -> i64 {
+            let xs = make_vec();
+            var out: i64 = 0;
+            if a {
+                let y = xs;
+                out = y.len();
+            } else if b {
+                let h = Holder { items: xs };
+                out = h.items.len() + 100;
+            } else {
+                out = 999;
+            }
+            out
+        }
+
+        fn main() {
+            let _r = probe(false, false);
+        }
+        ",
+    );
+    let drops = all_exit_drops(&pipeline, "probe");
+    let vec_frees = frees(&drops, "hew_vec_free");
+    // One binding's release may appear on several exit PLANS (arm goto plus
+    // cancel cleanups) — count distinct released PLACES. Exactly one place
+    // (the rebind destination) earns a bare-vec release; the escaped source
+    // is excluded on every exit (its handle is the record's on the ingress
+    // arm and leaks fail-closed on the others).
+    let free_places: std::collections::HashSet<_> = vec_frees.iter().map(|d| d.place).collect();
+    assert_eq!(
+        free_places.len(),
+        1,
+        "only the rebind destination keeps a bare-vec release (the escaped \
+         source is excluded, fail-closed); got {drops:?}"
+    );
+    assert!(
+        vec_frees.iter().all(|d| d.guard.is_none()),
+        "the destination's release is unguarded and the excluded source \
+         contributes no guarded release; got {vec_frees:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Escape — fail-closed exclusions unchanged (negative controls).
 // ---------------------------------------------------------------------------
 

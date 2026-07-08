@@ -175,6 +175,49 @@ fn vec_conditional_taken_source(frames: usize) -> String {
     )
 }
 
+/// Two destinations on mutually-exclusive branches (`if a { let y = xs; }
+/// else if b { let z = xs; }`), NEITHER taken per call: the fan-out collapse
+/// must not conflate exclusive branch destinations with a parallel fan-out
+/// and strip the guarded source's release — the shape that leaked on every
+/// path before the CFG-exclusivity rule. (A genuinely-parallel fan-out —
+/// both destinations on ONE path — cannot be written in source: the
+/// move-checker rejects the second consume with `UseAfterConsume`. Its
+/// fail-closed strip is pinned at the seam by the
+/// `dedup_fanout_exclusivity_tests` unit tests in `hew-mir`.)
+fn vec_double_destination_not_taken_source(frames: usize) -> String {
+    format!(
+        "fn make_vec() -> Vec<i64> {{\n\
+         \x20   let v: Vec<i64> = Vec::new();\n\
+         \x20   v.push(40);\n\
+         \x20   v.push(2);\n\
+         \x20   return v;\n\
+         }}\n\
+         \n\
+         fn probe(a: bool, b: bool) -> i64 {{\n\
+         \x20   let xs = make_vec();\n\
+         \x20   var out: i64 = 1;\n\
+         \x20   if a {{\n\
+         \x20       let y = xs;\n\
+         \x20       out = y.len();\n\
+         \x20   }} else if b {{\n\
+         \x20       let z = xs;\n\
+         \x20       out = z.len() + 100;\n\
+         \x20   }}\n\
+         \x20   out\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       total = total + probe(false, false);\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n"
+    )
+}
+
 // ── exactly-once pin — every shape, both branches, poisoned allocator ─────
 
 /// Every fixed shape in one binary: repro both branches, nested joins,
@@ -264,6 +307,51 @@ fn strs_move(take: bool) -> i64 {\n\
 \x20   out\n\
 }\n\
 \n\
+record Crate {\n\
+\x20   items: Vec<i64>,\n\
+}\n\
+\n\
+fn double_dest(a: bool, b: bool) -> i64 {\n\
+\x20   let xs = make_vec();\n\
+\x20   var out: i64 = 0;\n\
+\x20   if a {\n\
+\x20       let y = xs;\n\
+\x20       out = y.len();\n\
+\x20   } else if b {\n\
+\x20       let z = xs;\n\
+\x20       out = z.len() + 100;\n\
+\x20   } else {\n\
+\x20       out = 999;\n\
+\x20   }\n\
+\x20   out\n\
+}\n\
+\n\
+fn both_arms(c: bool) -> i64 {\n\
+\x20   let xs = make_vec();\n\
+\x20   if c {\n\
+\x20       let a = xs;\n\
+\x20       return a.len();\n\
+\x20   } else {\n\
+\x20       let b = xs;\n\
+\x20       return b.len() + 10;\n\
+\x20   }\n\
+}\n\
+\n\
+fn mixed_ingress(a: bool, b: bool) -> i64 {\n\
+\x20   let xs = make_vec();\n\
+\x20   var out: i64 = 0;\n\
+\x20   if a {\n\
+\x20       let y = xs;\n\
+\x20       out = y.len();\n\
+\x20   } else if b {\n\
+\x20       let h = Crate { items: xs };\n\
+\x20       out = h.items.len() + 100;\n\
+\x20   } else {\n\
+\x20       out = 999;\n\
+\x20   }\n\
+\x20   out\n\
+}\n\
+\n\
 fn main() {\n\
 \x20   print(cond_move(false));\n\
 \x20   print(cond_move(true));\n\
@@ -278,13 +366,22 @@ fn main() {\n\
 \x20   print(map_move(true));\n\
 \x20   print(strs_move(false));\n\
 \x20   print(strs_move(true));\n\
+\x20   print(double_dest(true, false));\n\
+\x20   print(double_dest(false, true));\n\
+\x20   print(double_dest(false, false));\n\
+\x20   print(both_arms(true));\n\
+\x20   print(both_arms(false));\n\
+\x20   print(mixed_ingress(true, false));\n\
+\x20   print(mixed_ingress(false, true));\n\
+\x20   print(mixed_ingress(false, false));\n\
 \x20   print(\"OK\");\n\
 }\n";
 
 /// The concatenated `print` output of [`EXACTLY_ONCE_PIN_SOURCE`]:
 /// `cond_move` 0,2 · `nested` 0,1,3 · `loop_move` 4,4 · `array_chain` 1,3 ·
-/// `map_move` 2,1 · `strs_move` 3,2 · OK.
-const EXACTLY_ONCE_PIN_EXPECTED: &str = "0201344132132OK";
+/// `map_move` 2,1 · `strs_move` 3,2 · `double_dest` 2,102,999 ·
+/// `both_arms` 2,12 · `mixed_ingress` 2,102,999 · OK.
+const EXACTLY_ONCE_PIN_EXPECTED: &str = "020134413213221029992122102999OK";
 
 // ── oracles ───────────────────────────────────────────────────────────────
 
@@ -322,6 +419,18 @@ fn hashmap_conditional_move_not_taken_no_per_call_leak_slope() {
 #[test]
 fn vec_conditional_move_taken_no_per_call_leak_slope() {
     assert_frame_slope_below_tolerance("vec_conditional_taken", vec_conditional_taken_source);
+}
+
+/// Two exclusive destinations, neither taken per call: the guarded source's
+/// scope-exit release must survive the fan-out collapse (the CFG-exclusivity
+/// rule). The pre-rule behaviour stripped the whole component and leaked 2
+/// nodes/call on every path.
+#[test]
+fn vec_double_destination_not_taken_no_per_call_leak_slope() {
+    assert_frame_slope_below_tolerance(
+        "vec_double_destination_not_taken",
+        vec_double_destination_not_taken_source,
+    );
 }
 
 /// Exactly-once pin: every shape (both branches) runs to completion under

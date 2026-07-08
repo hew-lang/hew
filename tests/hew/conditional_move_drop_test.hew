@@ -179,3 +179,86 @@ fn test_vec_string_conditional_move_not_taken() {
     }
     testing.assert_eq(out, 0);
 }
+
+// Two destinations on mutually-exclusive branches, one drop-flag: each path
+// must release exactly once (a double-free aborts before the assertion; the
+// leak direction is pinned by the oracle's slope and the MIR plan tests).
+fn double_dest(a: bool, b: bool) -> i64 {
+    let xs = make_vec();
+    var out: i64 = 0;
+    if a {
+        let y = xs;
+        out = y.len();
+    } else if b {
+        let z = xs;
+        out = z.len() + 100;
+    } else {
+        out = 999;
+    }
+    out
+}
+
+#[test]
+fn test_double_destination_first_branch() {
+    testing.assert_eq(double_dest(true, false), 2);
+}
+
+#[test]
+fn test_double_destination_second_branch() {
+    testing.assert_eq(double_dest(false, true), 102);
+}
+
+#[test]
+fn test_double_destination_neither_branch() {
+    testing.assert_eq(double_dest(false, false), 999);
+}
+
+// Rebinds on both arms: every path moves the source; each arm's destination
+// releases exactly once on its own path and the guarded source drop skips.
+fn both_arms(c: bool) -> i64 {
+    let xs = make_vec();
+    if c {
+        let a = xs;
+        return a.len();
+    } else {
+        let b = xs;
+        return b.len() + 10;
+    }
+}
+
+#[test]
+fn test_both_arm_moves_release_once_each() {
+    testing.assert_eq(both_arms(true), 2);
+    testing.assert_eq(both_arms(false), 12);
+}
+
+// Mixed rebind + record-literal ingress on exclusive branches: the ingress
+// arm's record owns and releases the handle; the rebind arm's destination
+// keeps its release; the source falls back to the fail-closed legacy posture
+// on the neither path (bounded leak, never a wrong free). Values must stay
+// exact on every path.
+record Crate {
+    items: Vec<i64>,
+}
+
+fn mixed_ingress(a: bool, b: bool) -> i64 {
+    let xs = make_vec();
+    var out: i64 = 0;
+    if a {
+        let y = xs;
+        out = y.len();
+    } else if b {
+        let h = Crate { items: xs };
+        out = h.items.len() + 100;
+    } else {
+        out = 999;
+    }
+    out
+}
+
+#[test]
+fn test_mixed_ingress_all_paths_exact() {
+    testing.assert_eq(mixed_ingress(true, false), 2);
+    testing.assert_eq(mixed_ingress(false, true), 102);
+    testing.assert_eq(mixed_ingress(false, false), 999);
+}

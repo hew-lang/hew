@@ -30927,6 +30927,19 @@ impl Builder {
             builder.binding_locals.insert(param.id, place);
         }
 
+        // #2301 -- run the same owned-Vec-key / consumed-and-reassigned-binding
+        // pre-pass on the closure body that `function_body` runs for a
+        // top-level function. `lower_closure_shim` builds a brand-new child
+        // `Builder` and lowers `body` directly via `lower_value` below; without
+        // this call, `prepass_consumed_bindings`/`prepass_reassigned_bindings`
+        // stay empty for every closure-local binding, so
+        // `maybe_alloc_overwrite_guard_flag` never fires inside a closure body
+        // and a `var` consumed on one control-flow arm and overwritten on a
+        // sibling arm silently leaks its prior value (no guard flag, no
+        // release before the overwrite) instead of getting the path-sensitive
+        // release a byte-identical top-level function body would.
+        builder.collect_vec_owned_element_keys_from_expr(body);
+
         if let Some(src) = builder.lower_value(body) {
             builder.instructions.push(Instr::Move {
                 dest: Place::ReturnSlot,
@@ -31558,6 +31571,16 @@ impl Builder {
         // Lower the lambda body. The body is a single HirExpr (an arrow
         // body or block); reuse `lower_value` so all expression shapes —
         // BlockExpr, Call, BinaryOp, etc. — go through the standard path.
+        //
+        // #2301 -- same pre-pass gap as `lower_closure_shim`/`lower_gen_block`:
+        // this lambda-actor body lowers via its own fresh `body_builder`
+        // (built via `child_builder_tables`, which does not carry
+        // `prepass_consumed_bindings`/`prepass_reassigned_bindings` either), so
+        // without this call a `var` local to the lambda body that is consumed
+        // on one control-flow arm and overwritten on a sibling arm silently
+        // leaks its prior value instead of getting the path-sensitive release
+        // a byte-identical top-level function body would.
+        body_builder.collect_vec_owned_element_keys_from_expr(body);
         let tail_place = body_builder.lower_value(body);
 
         // Shape-driven return slot wiring:
@@ -32254,6 +32277,16 @@ impl Builder {
                 );
             }
         }
+
+        // #2301 -- same pre-pass gap as `lower_closure_shim`: this gen body
+        // lowers via its own fresh `body_builder` (built by field list above,
+        // not `child_builder_tables`), so without this call
+        // `prepass_consumed_bindings`/`prepass_reassigned_bindings` stay empty
+        // for every binding local to the `gen fn`/`gen {}` body and a `var`
+        // consumed on one control-flow arm and overwritten on a sibling arm
+        // silently leaks its prior value instead of getting the path-sensitive
+        // release a byte-identical top-level function body would.
+        body_builder.collect_vec_owned_element_keys_from_block(body);
 
         // Lower all statements in the gen-block body. Yields inside the body
         // call `lower_yield_expr` which emits `Terminator::Yield` and advances

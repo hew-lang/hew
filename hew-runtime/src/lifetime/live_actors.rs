@@ -444,10 +444,47 @@ pub(crate) fn drain_all_for_cleanup() -> HashMap<u64, ActorPtr> {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn push_deferred_teardown_thread(handle: std::thread::JoinHandle<()>) {
-    rt_current()
+    // Opportunistic reap: after pushing the new handle, pull out and join any
+    // handles for threads that have already finished. `JoinHandle::is_finished`
+    // is a non-blocking poll (just checks whether the thread's `Thread` has been
+    // marked dead), and `.join()` on an already-finished handle returns
+    // immediately without blocking the caller — so this cannot stall a hot
+    // actor-free/supervisor-stop path waiting on some *other* still-running
+    // deferred-teardown thread.
+    //
+    // Without this, a long-lived runtime with repeated actor self-terminate/free
+    // accumulates one `JoinHandle` per deferred free forever: the only other
+    // drain (`drain_deferred_teardown_threads`) runs solely at runtime shutdown,
+    // so completed background-free threads would otherwise sit joinable (and
+    // their OS thread-handle resources retained) for the runtime's entire
+    // lifetime. This does not touch the shutdown join-before-free barrier:
+    // `drain_deferred_teardown_threads` still takes and joins every remaining
+    // (by definition, still-running-or-just-finished) handle before any global
+    // actor sweep.
+    let finished = rt_current()
         .live_actors
         .deferred_teardown_threads
-        .access(|threads| threads.push(handle));
+        .access(|threads| {
+            threads.push(handle);
+            // Swap-remove every already-finished handle (order doesn't matter for
+            // this Vec — it's just a teardown bag, not a queue). Iterate indices
+            // in reverse so each `swap_remove` doesn't invalidate not-yet-visited
+            // earlier indices.
+            let mut finished = Vec::new();
+            for i in (0..threads.len()).rev() {
+                if threads[i].is_finished() {
+                    finished.push(threads.swap_remove(i));
+                }
+            }
+            finished
+        });
+    for handle in finished {
+        // Ordering: only handles that reported `is_finished() == true`
+        // under the lock above reach here, so this join is non-blocking.
+        if handle.join().is_err() {
+            eprintln!("hew: warning: deferred teardown thread panicked");
+        }
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -471,6 +508,16 @@ pub(crate) fn drain_deferred_teardown_threads() {
     }
 }
 
+/// Test-only observability hook: current pending deferred-teardown handle
+/// count, without joining or otherwise disturbing any of them.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn deferred_teardown_thread_count() -> usize {
+    rt_current()
+        .live_actors
+        .deferred_teardown_threads
+        .access(|threads| threads.len())
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
@@ -491,5 +538,76 @@ mod tests {
         assert!(!is_actor_live_with_id(42, actor));
         assert!(drain_all_for_cleanup().is_empty());
         drain_deferred_teardown_threads();
+    }
+
+    /// `push_deferred_teardown_thread` must opportunistically reap handles for
+    /// threads that have already finished, rather than only growing the vector
+    /// forever until runtime shutdown.
+    #[test]
+    fn push_deferred_teardown_thread_reaps_already_finished_handles() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+
+        let _rt = crate::scheduler::NoWorkerSchedulerForTest::install();
+
+        // Push three threads that return immediately. By the time each
+        // subsequent push happens, the prior ones have almost certainly
+        // already finished — but to make the assertion deterministic rather
+        // than timing-dependent, explicitly wait for each one to report
+        // `is_finished()` before pushing the next, so the *next* push's
+        // opportunistic reap is guaranteed to see it as finished.
+        for _ in 0..3 {
+            let handle = std::thread::spawn(|| {});
+            while !handle.is_finished() {
+                std::thread::yield_now();
+            }
+            push_deferred_teardown_thread(handle);
+        }
+
+        // A fourth push (still-finished) must reap all three prior finished
+        // handles as well as itself once it too becomes finished, leaving none
+        // behind. Wait for it the same way, then push a fifth, gated-open
+        // thread that must NOT be reaped while it is still running.
+        let handle = std::thread::spawn(|| {});
+        while !handle.is_finished() {
+            std::thread::yield_now();
+        }
+        push_deferred_teardown_thread(handle);
+        assert_eq!(
+            deferred_teardown_thread_count(),
+            0,
+            "all four already-finished handles must have been reaped by the \
+             time the fourth was pushed, since each prior push waited for \
+             is_finished() before proceeding"
+        );
+
+        let release = Arc::new(AtomicBool::new(false));
+        let release2 = Arc::clone(&release);
+        push_deferred_teardown_thread(std::thread::spawn(move || {
+            while !release2.load(Ordering::Acquire) {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        }));
+
+        // Push one more already-finished handle. The reap inside THIS push
+        // must not touch the still-running gated thread pushed just above.
+        let handle = std::thread::spawn(|| {});
+        while !handle.is_finished() {
+            std::thread::yield_now();
+        }
+        push_deferred_teardown_thread(handle);
+        assert_eq!(
+            deferred_teardown_thread_count(),
+            1,
+            "the still-running gated thread must be retained, not reaped, \
+             while genuinely still running"
+        );
+
+        // Release the gate and confirm the shutdown-path full drain still
+        // joins it correctly (the opportunistic reap must not have broken the
+        // existing join-before-free barrier).
+        release.store(true, Ordering::Release);
+        drain_deferred_teardown_threads();
+        assert_eq!(deferred_teardown_thread_count(), 0);
     }
 }

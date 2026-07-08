@@ -244,7 +244,7 @@
         {
           "comment": "Control flow",
           "name": "keyword.control.hew",
-          "match": "\\b(after|await_restart|await|break|continue|cooperate|defer|else|for|from|if|in|join|loop|match|return|scope|select|while|yield)\\b"
+          "match": "\\b(after|await_restart|await|break|continue|defer|else|for|from|if|in|join|loop|match|return|scope|select|while|yield)\\b"
         },
         {
           "comment": "Declarations",
@@ -294,7 +294,7 @@
         {
           "comment": "Removed/rejected keywords — parser explicitly rejects these with migration diagnostics. Highlight as invalid so users know these are not valid v0.5 syntax.",
           "name": "invalid.removed.hew",
-          "match": "\\b(catch|foreign|race|try)\\b"
+          "match": "\\b(catch|cooperate|foreign|race|try)\\b"
         },
         {
           "comment": "Reserved keywords (not yet used in the language)",
@@ -631,8 +631,8 @@
           "match": "\\.\\.=|\\.\\.(?!\\.)"
         },
         {
-          "comment": "Regex match operators",
-          "name": "keyword.operator.regex.hew",
+          "comment": "Removed regex match operators — parser rejects with E_REGEX_OP_REMOVED",
+          "name": "invalid.removed.hew",
           "match": "=~|!~"
         },
         {
@@ -641,14 +641,19 @@
           "match": "&&|\\|\\|"
         },
         {
-          "comment": "Comparison operators",
-          "name": "keyword.operator.comparison.hew",
-          "match": "==|!=|<=|>=|<|>"
-        },
-        {
           "comment": "Bitwise shift compound assignment",
           "name": "keyword.operator.assignment.compound.hew",
           "match": "<<=|>>="
+        },
+        {
+          "comment": "Bitwise shift operators",
+          "name": "keyword.operator.bitwise.shift.hew",
+          "match": "<<|>>"
+        },
+        {
+          "comment": "Comparison operators",
+          "name": "keyword.operator.comparison.hew",
+          "match": "==|!=|<=|>=|<|>"
         },
         {
           "comment": "Bitwise compound assignment",
@@ -666,14 +671,19 @@
           "match": "="
         },
         {
-          "comment": "Bitwise shift operators",
-          "name": "keyword.operator.bitwise.shift.hew",
-          "match": "<<|>>"
+          "comment": "Bitwise XOR operator",
+          "name": "keyword.operator.bitwise.xor.hew",
+          "match": "\\^"
         },
         {
           "comment": "Bitwise NOT operator",
           "name": "keyword.operator.bitwise.not.hew",
           "match": "~"
+        },
+        {
+          "comment": "Wrapping arithmetic operators: &+ &- &* (two's-complement overflow semantics, maximal-munch — only when no whitespace separates & from the following +/-/*)",
+          "name": "keyword.operator.wrapping.hew",
+          "match": "&[+\\-*]"
         },
         {
           "comment": "Arithmetic operators",

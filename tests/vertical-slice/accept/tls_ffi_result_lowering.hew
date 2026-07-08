@@ -18,12 +18,12 @@ fn try_write_probe() -> i64 {
     }
 }
 
-// Dead by design until the Rust-side `HewTlsReadResult` migration lands
-// (#2392): its 24-byte record return is declared sret now, but the legacy
-// Rust callee writes a larger legacy struct through the pointer, so calling
-// it would overflow the 24-byte slot. The rebase onto that migration turns
-// this probe on from main.
-fn _read_probe() -> i64 {
+// Exercises the record-returning `hew_tls_read_result` extern AT RUNTIME:
+// the 24-byte `TlsReadFfiResult { bytes, i32 }` return carries a BytesTriple
+// field through the classified sret path, and the Rust side constructs it
+// even for the failed-connect stream — a real call through the indirect
+// return, not dead code.
+fn read_probe() -> i64 {
     let stream = tls.connect("127.0.0.1", 1);
     match tls.read(stream, 16) {
         Ok(data) => data.len(),
@@ -39,4 +39,6 @@ fn main() {
     println(f"write={n}");
     let w = try_write_probe();
     println(f"try_write={w}");
+    let r = read_probe();
+    println(f"read={r}");
 }

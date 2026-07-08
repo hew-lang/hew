@@ -34,7 +34,9 @@ fn classify_token(token: &Token<'_>) -> Option<u32> {
         Token::StringLit(_)
         | Token::RawString(_)
         | Token::InterpolatedString(_)
-        | Token::RegexLiteral(_) => Some(token_types::STRING),
+        | Token::RegexLiteral(_)
+        | Token::CharLit(_)
+        | Token::ByteStringLit(_) => Some(token_types::STRING),
 
         // Identifiers
         Token::Identifier(_) | Token::Label(_) => Some(token_types::VARIABLE),
@@ -287,6 +289,28 @@ mod tests {
     }
 
     #[test]
+    fn record_declaration_name_is_type_and_declaration() {
+        let source = "record Point { x: i32, y: i32 }";
+        let point = build_semantic_tokens(source)
+            .into_iter()
+            .find(|t| &source[t.start..t.start + t.length] == "Point")
+            .expect("Point should produce a token");
+        assert_eq!(point.token_type, token_types::TYPE);
+        assert_ne!(point.modifiers & token_modifiers::DECLARATION, 0);
+    }
+
+    #[test]
+    fn machine_state_name_gets_declaration_modifier() {
+        let source = "machine Traffic { state Red {} }";
+        let red = build_semantic_tokens(source)
+            .into_iter()
+            .find(|t| &source[t.start..t.start + t.length] == "Red")
+            .expect("Red should produce a token");
+        assert_eq!(red.token_type, token_types::VARIABLE);
+        assert_ne!(red.modifiers & token_modifiers::DECLARATION, 0);
+    }
+
+    #[test]
     fn param_type_annotation_classified_as_type() {
         let tokens = build_semantic_tokens("fn f(x: i32) {}");
         // `i32` at byte offset 8 should be TYPE, not VARIABLE
@@ -422,6 +446,40 @@ mod tests {
             token_types::VARIABLE,
             "plain variable should stay VARIABLE"
         );
+    }
+
+    #[test]
+    fn char_and_byte_string_literals_are_classified_as_strings() {
+        let source = "let c = 'a'; let bytes = b\"hi\";";
+        let tokens = build_semantic_tokens(source);
+        for literal in ["'a'", "b\"hi\""] {
+            let token = tokens
+                .iter()
+                .find(|t| &source[t.start..t.start + t.length] == literal)
+                .unwrap_or_else(|| panic!("{literal} should produce a token"));
+            assert_eq!(
+                token.token_type,
+                token_types::STRING,
+                "{literal} should be classified as STRING"
+            );
+        }
+    }
+
+    #[test]
+    fn wrapping_arithmetic_operators_are_classified_as_operators() {
+        let source = "let x = a &+ b; let y = a &- b; let z = a &* b;";
+        let tokens = build_semantic_tokens(source);
+        for op in ["&+", "&-", "&*"] {
+            let token = tokens
+                .iter()
+                .find(|t| &source[t.start..t.start + t.length] == op)
+                .unwrap_or_else(|| panic!("{op} should produce a token"));
+            assert_eq!(
+                token.token_type,
+                token_types::OPERATOR,
+                "{op} should be classified as OPERATOR"
+            );
+        }
     }
 
     #[test]

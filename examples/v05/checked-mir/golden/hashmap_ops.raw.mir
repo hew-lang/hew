@@ -148,27 +148,33 @@ fn main() -> () [conv=default]
   bb19:
     _32 = call string_concat(_30, _31) -> bb20
   bb20:
+    drop _31 ty=string fn=release(hew_string_drop)
     _33 = string_lit " removed="
     _34 = call string_concat(_32, _33) -> bb21
   bb21:
     stmt: use BindingId(3) removed site=SiteId(36) ty=bool intent=Read
+    drop _32 ty=string fn=release(hew_string_drop)
     _35 = call to_string_bool(_29) -> bb22
   bb22:
     _36 = call string_concat(_34, _35) -> bb23
   bb23:
+    drop _35 ty=string fn=release(hew_string_drop)
     _37 = string_lit " len="
     _38 = call string_concat(_36, _37) -> bb24
   bb24:
     stmt: use BindingId(0) m site=SiteId(41) ty=HashMap<string, i64> intent=Read
+    drop _36 ty=string fn=release(hew_string_drop)
     _39 = call hew_hashmap_len_layout(_1) [builtin=HashMapLenLayout] -> bb25
   bb25:
     _40 = call to_string_i64(_39) -> bb26
   bb26:
     _41 = call string_concat(_38, _40) -> bb27
   bb27:
+    drop _40 ty=string fn=release(hew_string_drop)
     call println_str(_41) -> bb28
   bb28:
     stmt: eval site=SiteId(29) ty=()
+    drop _41 ty=string fn=release(hew_string_drop)
     _42 = call HashMap::new() [builtin=HashMapNew] -> bb29
   bb29:
     stmt: bind BindingId(4) flags site=SiteId(55) ty=HashMap<string, bool>

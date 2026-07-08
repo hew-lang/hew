@@ -13,9 +13,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 
-use hew_cabi::cabi::{alloc_cstring, cstr_to_str, malloc_bytes, str_to_malloc};
-use hew_cabi::vec::HewVec;
-use hew_runtime::bytes::BytesTriple;
+use hew_cabi::cabi::{alloc_cstring, cstr_to_str, str_to_malloc};
+use hew_runtime::bytes::{hew_bytes_from_static, BytesTriple};
 use rustls::pki_types::ServerName;
 use rustls::RootCertStore;
 
@@ -133,7 +132,7 @@ pub struct HewTlsWriteResult {
 #[repr(C)]
 #[derive(Debug)]
 pub struct HewTlsReadResult {
-    data: HewVec,
+    data: BytesTriple,
     status: c_int,
 }
 
@@ -183,47 +182,18 @@ fn get_tls_last_error() -> String {
     LAST_TLS_ERROR.with(|error| error.borrow().as_ref().cloned().unwrap_or_else(String::new))
 }
 
-fn empty_hew_vec() -> HewVec {
-    // SAFETY: `layout`/`elem_layout` are null so neither inline storage is read;
-    // zeroed bytes are a valid (unused) initialiser for the storage fields.
-    let layout_storage = unsafe { core::mem::zeroed() };
-    // SAFETY: see above — `elem_layout` is null, so the storage is never read.
-    let elem_layout_storage = unsafe { core::mem::zeroed() };
-    HewVec {
-        data: std::ptr::null_mut(),
+/// An empty, non-owning `BytesTriple` — the TLS read EOF/error sentinel.
+///
+/// Mirrors `hew_tcp_read`'s empty-triple convention (`transport.rs`): a null
+/// `ptr` with `len == 0` is a no-op for `hew_bytes_drop`, so returning this on
+/// EOF/error leaks nothing, and the record's drop of the unconsumed `data`
+/// field is a no-op.
+fn empty_bytes_triple() -> BytesTriple {
+    BytesTriple {
+        ptr: std::ptr::null_mut(),
+        offset: 0,
         len: 0,
-        cap: 0,
-        elem_size: 1,
-        elem_kind: hew_cabi::vec::ElemKind::Plain,
-        layout: std::ptr::null(),
-        layout_storage,
-        elem_layout: std::ptr::null(),
-        elem_layout_storage,
     }
-}
-
-fn build_hew_vec(bytes: &[u8]) -> Option<HewVec> {
-    let len = bytes.len();
-    let ptr = malloc_bytes(bytes);
-    if ptr.is_null() {
-        return None;
-    }
-    // SAFETY: `layout`/`elem_layout` are null so neither inline storage is read;
-    // zeroed bytes are a valid (unused) initialiser for the storage fields.
-    let layout_storage = unsafe { core::mem::zeroed() };
-    // SAFETY: see above — `elem_layout` is null, so the storage is never read.
-    let elem_layout_storage = unsafe { core::mem::zeroed() };
-    Some(HewVec {
-        data: ptr,
-        len,
-        cap: len.max(1),
-        elem_size: 1,
-        elem_kind: hew_cabi::vec::ElemKind::Plain,
-        layout: std::ptr::null(),
-        layout_storage,
-        elem_layout: std::ptr::null(),
-        elem_layout_storage,
-    })
 }
 
 fn classify_tls_error(op: &str, err: &io::Error) -> (c_int, String) {
@@ -248,7 +218,7 @@ fn write_out_status(out_status: *mut c_int, status: c_int) -> bool {
 }
 
 fn read_tls_vec<R: Read>(reader: &mut R, size: c_int) -> HewTlsReadResult {
-    let empty = empty_hew_vec();
+    let empty = empty_bytes_triple();
     let buf_size = if size == 0 {
         0
     } else {
@@ -274,18 +244,23 @@ fn read_tls_vec<R: Read>(reader: &mut R, size: c_int) -> HewTlsReadResult {
             }
         }
         Ok(n) => {
-            if let Some(data) = build_hew_vec(&buf[..n]) {
-                clear_tls_last_error();
-                HewTlsReadResult {
-                    data,
-                    status: TLS_STATUS_SUCCESS,
-                }
-            } else {
-                set_tls_last_error("hew_tls_read: allocation failed");
-                HewTlsReadResult {
-                    data: empty,
-                    status: TLS_STATUS_IO_ERROR,
-                }
+            clear_tls_last_error();
+            // Bound the copy by a real subslice: an out-of-contract `n` from a
+            // misbehaving reader panics here instead of reaching the unsafe copy.
+            let chunk = &buf[..n];
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "reads are bounded by READ_BUFFER_SIZE, which fits u32"
+            )]
+            let len = chunk.len() as u32;
+            // SAFETY: `chunk` is a live subslice valid for `chunk.len()` bytes;
+            // `hew_bytes_from_static` copies them into a fresh, refcount-1 bytes
+            // allocation the caller owns (mirrors `hew_tcp_read`'s construction,
+            // transport.rs).
+            let data = unsafe { hew_bytes_from_static(chunk.as_ptr(), len) };
+            HewTlsReadResult {
+                data,
+                status: TLS_STATUS_SUCCESS,
             }
         }
         Err(err) => {
@@ -431,8 +406,10 @@ pub unsafe extern "C" fn hew_tls_write(
 
 /// Read up to `size` bytes from the TLS stream.
 ///
-/// Returns a `HewVec` containing the bytes read. `out_status` receives
-/// `0` for success or orderly EOF, `1` for retryable would-block/timeout
+/// Returns an owning, refcount-1 `BytesTriple` containing the bytes read, or
+/// an empty/null triple on EOF or error — the Hew drop spine releases the
+/// buffer via `hew_bytes_drop`, which is a no-op on a null triple. `out_status`
+/// receives `0` for success or orderly EOF, `1` for retryable would-block/timeout
 /// conditions, `2` for TLS alert/protocol failures, and `3` for I/O failures.
 ///
 /// After `hew_tls_attach` this function should not be called — the reader
@@ -448,14 +425,14 @@ pub unsafe extern "C" fn hew_tls_read(
     stream: *mut HewTlsStream,
     size: c_int,
     out_status: *mut c_int,
-) -> HewVec {
+) -> BytesTriple {
     if !write_out_status(out_status, TLS_STATUS_IO_ERROR) {
         set_tls_last_error("hew_tls_read: invalid status buffer");
-        return empty_hew_vec();
+        return empty_bytes_triple();
     }
     if stream.is_null() {
         set_tls_last_error("hew_tls_read: invalid stream");
-        return empty_hew_vec();
+        return empty_bytes_triple();
     }
     // SAFETY: `stream` is a valid HewTlsStream pointer per caller contract.
     let s = unsafe { &*stream };
@@ -467,7 +444,7 @@ pub unsafe extern "C" fn hew_tls_read(
     let Some(stream_ref) = guard.as_mut() else {
         set_tls_last_error("hew_tls_read: stream is closed");
         let _ = write_out_status(out_status, TLS_STATUS_IO_ERROR);
-        return empty_hew_vec();
+        return empty_bytes_triple();
     };
     let result = read_tls_vec(stream_ref, size);
     let _ = write_out_status(out_status, result.status);
@@ -1028,20 +1005,26 @@ mod tests {
         message
     }
 
-    fn vec_bytes(vec: &HewVec) -> Vec<u8> {
-        if vec.len == 0 || vec.data.is_null() {
+    fn vec_bytes(triple: &BytesTriple) -> Vec<u8> {
+        if triple.len == 0 || triple.ptr.is_null() {
             return Vec::new();
         }
-        // SAFETY: non-empty `HewVec` values produced by this module store `len`
-        // readable bytes at `data`.
-        unsafe { std::slice::from_raw_parts(vec.data.cast::<u8>(), vec.len) }.to_vec()
+        // SAFETY: non-empty `BytesTriple` values produced by this module store
+        // `len` readable bytes starting at `ptr + offset`.
+        unsafe {
+            std::slice::from_raw_parts(triple.ptr.add(triple.offset as usize), triple.len as usize)
+        }
+        .to_vec()
     }
 
-    fn free_vec(vec: &HewVec) {
-        if !vec.data.is_null() {
-            // SAFETY: test vectors are allocated with `libc::malloc` in `build_hew_vec`.
-            unsafe { libc::free(vec.data.cast::<c_void>()) }; // CSTRING-FREE: libc-bytes (test build_hew_vec data = malloc_bytes)
-        }
+    fn free_vec(triple: &BytesTriple) {
+        // SAFETY: non-null triples produced by this module are refcount-1
+        // `hew_bytes_from_static` allocations (header-bearing, per
+        // `bytes.rs::alloc_buf`). `hew_bytes_drop` is the correct release —
+        // freeing `triple.ptr` with `libc::free` would free the wrong base
+        // (the allocation header precedes `ptr`) and corrupt the allocator.
+        // `hew_bytes_drop` is a no-op on a null pointer.
+        unsafe { hew_runtime::bytes::hew_bytes_drop(triple.ptr) };
     }
 
     fn timed_out_tcp_reader(client_timeout: Duration) -> (TcpStream, thread::JoinHandle<()>) {
@@ -1086,8 +1069,9 @@ mod tests {
     fn read_null_stream_returns_empty() {
         let mut status = -1;
         // SAFETY: passing null stream is the test.
-        let vec = unsafe { hew_tls_read(std::ptr::null_mut(), 1024, &raw mut status) };
-        assert_eq!(vec.len, 0);
+        let triple = unsafe { hew_tls_read(std::ptr::null_mut(), 1024, &raw mut status) };
+        assert_eq!(triple.len, 0);
+        assert!(triple.ptr.is_null());
         assert_eq!(status, TLS_STATUS_IO_ERROR);
     }
 
@@ -1216,6 +1200,32 @@ mod tests {
         assert_eq!(vec_bytes(&result.data), b"hello");
         assert!(last_error_string().is_empty());
         free_vec(&result.data);
+    }
+
+    /// Teeth for #2392: the read producer must return an owning `BytesTriple`
+    /// with the exact length and content read — not a garbage/uninitialised
+    /// slot (an `> 0` length check alone would pass on that). Also confirms
+    /// the EOF path returns a null triple, matching the ownership contract
+    /// `hew_bytes_drop` relies on.
+    #[test]
+    fn read_tls_vec_owns_and_returns_exact_bytes() {
+        clear_tls_last_error();
+        let mut reader = MockReader::bytes(b"hello");
+
+        let result = read_tls_vec(&mut reader, 32);
+
+        assert_eq!(result.status, TLS_STATUS_SUCCESS);
+        assert!(!result.data.ptr.is_null());
+        assert_eq!(result.data.offset, 0);
+        assert_eq!(result.data.len, 5);
+        assert_eq!(vec_bytes(&result.data), b"hello");
+        free_vec(&result.data);
+
+        let mut eof_reader = MockReader::eof();
+        let eof_result = read_tls_vec(&mut eof_reader, 32);
+        assert_eq!(eof_result.status, TLS_STATUS_SUCCESS);
+        assert!(eof_result.data.ptr.is_null());
+        assert_eq!(eof_result.data.len, 0);
     }
 
     #[test]
@@ -1360,7 +1370,7 @@ mod tests {
         // SAFETY: null stream is the test.
         let result = unsafe { hew_tls_read_result(std::ptr::null_mut(), 1024) };
         assert_eq!(result.data.len, 0);
-        assert!(result.data.data.is_null());
+        assert!(result.data.ptr.is_null());
         assert_eq!(result.status, TLS_STATUS_IO_ERROR);
     }
 

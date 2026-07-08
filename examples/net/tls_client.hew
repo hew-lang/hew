@@ -1,6 +1,5 @@
-//! Status: partial (compiles + `hew check` clean and runs to completion; the
-//!         encrypted round-trip is gated on a runtime data-plane ABI fix —
-//!         see the NOTE below).
+//! Status: complete — connects, sends a GET request, and reads the response
+//!         status line over a real TLS round-trip.
 //! Description: TLS client — connect over TLS with system-root verification, then GET a page.
 //!
 //! This is the idiomatic `std::net::tls` client shape using the FREE-FUNCTION
@@ -10,15 +9,6 @@
 //! `string.to_bytes()` surface and decode a response with `bytes.to_string()`.
 //! The short write is detected with a fail-closed guard so the program
 //! terminates cleanly instead of blocking on a read that will never arrive.
-//!
-//! NOTE (known gap, v0.5): the TLS data-plane FFI bridge
-//! (`hew_tls_write_result` / `hew_tls_read_result`) is wired to the legacy
-//! `(ptr, len)` / `HewVec` byte ABI, whereas Hew's `bytes` is a `BytesTriple`.
-//! As a result `tls.write` currently transmits 0 of the request bytes (the
-//! length is dropped at the boundary), so this program reports the short write
-//! and stops before reading. The code below is the correct CALLER shape and
-//! type-checks cleanly; the full round trip works once the runtime bridge
-//! adopts the `BytesTriple` ABI (tracked for the under-the-hood TLS workstream).
 
 import std::net::tls;
 

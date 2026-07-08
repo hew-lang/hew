@@ -444,8 +444,8 @@ pub(crate) fn drain_all_for_cleanup() -> HashMap<u64, ActorPtr> {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn push_deferred_teardown_thread(handle: std::thread::JoinHandle<()>) {
-    // Opportunistic reap: pull out and join any handles for threads that have
-    // already finished before growing the vector further. `JoinHandle::is_finished`
+    // Opportunistic reap: after pushing the new handle, pull out and join any
+    // handles for threads that have already finished. `JoinHandle::is_finished`
     // is a non-blocking poll (just checks whether the thread's `Thread` has been
     // marked dead), and `.join()` on an already-finished handle returns
     // immediately without blocking the caller — so this cannot stall a hot
@@ -479,7 +479,7 @@ pub(crate) fn push_deferred_teardown_thread(handle: std::thread::JoinHandle<()>)
             finished
         });
     for handle in finished {
-        // SAFETY/ordering: only handles that reported `is_finished() == true`
+        // Ordering: only handles that reported `is_finished() == true`
         // under the lock above reach here, so this join is non-blocking.
         if handle.join().is_err() {
             eprintln!("hew: warning: deferred teardown thread panicked");
@@ -542,9 +542,7 @@ mod tests {
 
     /// `push_deferred_teardown_thread` must opportunistically reap handles for
     /// threads that have already finished, rather than only growing the vector
-    /// forever until runtime shutdown (LRN: `inbox-of-unresolved`
-    /// `2026-07-06-hew-pr-1084`, PR #1084 follow-up — unbounded background
-    /// teardown-thread accumulation in a long-lived runtime).
+    /// forever until runtime shutdown.
     #[test]
     fn push_deferred_teardown_thread_reaps_already_finished_handles() {
         use std::sync::atomic::AtomicBool;
@@ -567,9 +565,9 @@ mod tests {
         }
 
         // A fourth push (still-finished) must reap all three prior finished
-        // handles, leaving only itself once it too becomes finished. Wait for
-        // it the same way, then push a fifth, gated-open thread that must NOT
-        // be reaped while it is still running.
+        // handles as well as itself once it too becomes finished, leaving none
+        // behind. Wait for it the same way, then push a fifth, gated-open
+        // thread that must NOT be reaped while it is still running.
         let handle = std::thread::spawn(|| {});
         while !handle.is_finished() {
             std::thread::yield_now();

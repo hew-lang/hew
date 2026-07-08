@@ -814,7 +814,17 @@ fn hew_lib_candidates(
         exe_dir.join("../lib").join(name),
         exe_dir.join("../lib/hew").join(name), // /usr/lib/hew/
         exe_dir.join("../lib64/hew").join(name), // /usr/lib64/hew/
-        // Cargo target-dir outputs for cross-target dev/test builds.
+        // Cargo target-dir outputs for cross-target dev/test builds. The
+        // `release-lib` profile dir (the shipped, non-LTO archive build —
+        // see `[profile.release-lib]` in the workspace Cargo.toml) is probed
+        // BEFORE the plain `release` dir: a stale fat-LTO `target/release`
+        // archive from a workspace binary build must not shadow a linkable
+        // `release-lib` one when both exist.
+        exe_dir
+            .join("../../target")
+            .join(triple)
+            .join("release-lib")
+            .join(name),
         exe_dir
             .join("../../target")
             .join(triple)
@@ -825,7 +835,10 @@ fn hew_lib_candidates(
             .join(triple)
             .join("debug")
             .join(name),
-        // Same dir as the binary (target/debug/ or target/release/) for host-target dev builds.
+        // Same dir as the binary (target/debug/ or target/release/) for
+        // host-target dev builds, preferring the release-lib sibling dir.
+        exe_dir.join("../release-lib").join(name),
+        exe_dir.join("../../target/release-lib").join(name),
         exe_dir.join(name),
         exe_dir.join("../../target/release").join(name),
         exe_dir.join("../../target/debug").join(name),
@@ -928,6 +941,7 @@ pub(crate) fn diagnose_linker_errors(stderr: &str) -> Vec<String> {
     let mut seen: std::collections::BTreeSet<(&'static str, &'static str)> =
         std::collections::BTreeSet::new();
     let mut dup_hew: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut dup_rust_internal = false;
     let mut dup_generic = false;
 
     for line in stderr.lines() {
@@ -941,6 +955,8 @@ pub(crate) fn diagnose_linker_errors(stderr: &str) -> Vec<String> {
             let norm = sym.strip_prefix('_').unwrap_or(sym);
             if norm.starts_with("hew_") {
                 dup_hew.insert(norm.to_string());
+            } else if is_rust_toolchain_internal_symbol(norm) {
+                dup_rust_internal = true;
             } else {
                 dup_generic = true;
             }
@@ -971,6 +987,16 @@ pub(crate) fn diagnose_linker_errors(stderr: &str) -> Vec<String> {
              Build the package as a `staticlib` with `panic = \"abort\"`, then link it with \
              --link-lib; do not re-export or bundle the runtime."
         ));
+    } else if dup_rust_internal {
+        hints.push(
+            "hint: duplicate Rust-internal symbol(s) (libstd / personality) during link. \
+             A library passed via --link-lib embeds a Rust standard library that does not \
+             byte-match the one inside libhew.a — the usual cause is a package built with \
+             a DIFFERENT Rust toolchain than libhew.a.\n      \
+             Rebuild the package with the Hew toolchain's pinned rustc (as a `staticlib` \
+             with `panic = \"abort\"`) and retry."
+                .to_string(),
+        );
     } else if dup_generic {
         hints.push(
             "hint: duplicate symbol(s) during link: two linked inputs define the same symbol. \
@@ -981,6 +1007,28 @@ pub(crate) fn diagnose_linker_errors(stderr: &str) -> Vec<String> {
     }
 
     hints
+}
+
+/// Classify a duplicate NON-`hew_*` symbol as belonging to the Rust toolchain
+/// itself (prebuilt libstd members, the panic personality, allocator shims).
+/// Such duplicates mean two linked inputs carry libstd copies that did not
+/// dedupe — the byte-identical-libstd contract (same pinned rustc, see
+/// `native_link.rs` module docs) is broken, almost always by a `--link-lib`
+/// archive built with a different rustc than `libhew.a`. lld demangles in its
+/// error lines, so both mangled (`_ZN3std…`) and demangled (`std::…`) shapes
+/// appear depending on linker and platform.
+fn is_rust_toolchain_internal_symbol(symbol: &str) -> bool {
+    symbol == "rust_eh_personality"
+        || symbol.starts_with("__rust")
+        || symbol.starts_with("std::")
+        || symbol.starts_with("core::")
+        || symbol.starts_with("alloc::")
+        || symbol.starts_with("_ZN3std")
+        || symbol.starts_with("_ZN4core")
+        || symbol.starts_with("_ZN5alloc")
+        || symbol.starts_with("ZN3std")
+        || symbol.starts_with("ZN4core")
+        || symbol.starts_with("ZN5alloc")
 }
 
 /// Extract a `hew_`-prefixed symbol name from a linker error line, or `None`
@@ -1520,6 +1568,46 @@ mod tests {
     }
 
     #[test]
+    fn diagnose_duplicate_rust_internal_symbol_names_toolchain_mismatch() {
+        // Captured shape from linking a fat-LTO libhew.a against a package
+        // archive whose verbatim libstd member could not dedupe: ld64.lld
+        // demangles, so both raw and demangled std symbols appear.
+        let stderr = "\
+            ld64.lld: error: duplicate symbol: rust_eh_personality\n\
+            >>> defined in /toolchain/libhew.a(hew-140483c00b278068.hew.deadbeef-cgu.0.rcgu.o)\n\
+            >>> defined in /pkg/libhew_hew_queue_mqtt.a(std-9cc64aabf2d9c512.std.cafe-cgu.0.rcgu.o)\n\
+            ld64.lld: error: duplicate symbol: std::panicking::EMPTY_PANIC::h0123456789abcdef\n";
+        let hints = diagnose_linker_errors(stderr);
+        assert_eq!(hints.len(), 1);
+        assert!(hints[0].contains("DIFFERENT Rust toolchain"));
+        assert!(hints[0].contains("pinned rustc"));
+        // The toolchain-mismatch hint, NOT the mis-shaped-package recipe.
+        assert!(!hints[0].contains("hew-cabi"));
+    }
+
+    #[test]
+    fn diagnose_duplicate_rust_internal_symbol_gnu_ld_mangled() {
+        // GNU ld does not demangle: the libstd internals arrive as `_ZN3std…`.
+        let stderr = "b.o: multiple definition of \
+             `_ZN3std9panicking11EMPTY_PANIC17h0123456789abcdefE'; a.o: first defined here\n";
+        let hints = diagnose_linker_errors(stderr);
+        assert_eq!(hints.len(), 1);
+        assert!(hints[0].contains("DIFFERENT Rust toolchain"));
+    }
+
+    #[test]
+    fn diagnose_duplicate_hew_takes_precedence_over_rust_internal() {
+        // A mis-shaped package that bundles the runtime usually collides on
+        // BOTH hew_* and libstd symbols; the actionable recipe is the hew one.
+        let stderr = "\
+            ld64.lld: error: duplicate symbol: hew_stream_last_error\n\
+            ld64.lld: error: duplicate symbol: rust_eh_personality\n";
+        let hints = diagnose_linker_errors(stderr);
+        assert_eq!(hints.len(), 1);
+        assert!(hints[0].contains("duplicate Hew runtime symbol"));
+    }
+
+    #[test]
     fn diagnose_duplicate_folds_multiple_hew_symbols_into_one_hint() {
         // lld prints one error per duplicate plus ">>> defined in" provenance
         // lines, which must be ignored. Two hew dups fold into one recipe hint.
@@ -1857,6 +1945,38 @@ mod tests {
         .map(std::path::PathBuf::from)
         .collect();
         assert_eq!(&candidates[..expected.len()], expected.as_slice());
+    }
+
+    #[test]
+    fn hew_lib_candidates_prefer_release_lib_over_stale_release() {
+        // The shipped archive builds under `[profile.release-lib]` (non-LTO).
+        // A plain `cargo build --release` still leaves a fat-LTO archive in
+        // `target/release/`, which cannot dedupe against external staticlibs —
+        // when both exist, the linkable release-lib one must win.
+        let exe_dir = std::path::Path::new("/repo/target/debug");
+        let candidates = hew_lib_candidates(exe_dir, "libhew.a", "aarch64-apple-darwin");
+        let position = |suffix: &str| {
+            candidates
+                .iter()
+                .position(|path| path.display().to_string().ends_with(suffix))
+                .unwrap_or_else(|| panic!("candidate ending `{suffix}` missing: {candidates:?}"))
+        };
+
+        // Host-fallback block: release-lib before same-dir and target/release.
+        assert!(
+            position("../../target/release-lib/libhew.a") < position("/repo/target/debug/libhew.a")
+        );
+        assert!(
+            position("../../target/release-lib/libhew.a")
+                < position("../../target/release/libhew.a")
+        );
+        assert!(position("../release-lib/libhew.a") < position("/repo/target/debug/libhew.a"));
+
+        // Cross-target block: <triple>/release-lib before <triple>/release.
+        assert!(
+            position("aarch64-apple-darwin/release-lib/libhew.a")
+                < position("aarch64-apple-darwin/release/libhew.a")
+        );
     }
 
     #[test]

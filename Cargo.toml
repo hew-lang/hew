@@ -88,3 +88,15 @@ lto = true
 codegen-units = 1
 strip = true
 panic = "abort"
+
+# Profile for the SHIPPED `libhew.a` (and other consumer-facing staticlibs).
+# Fat LTO folds prebuilt libstd into the archive's merged codegen unit, which
+# breaks the byte-identical-libstd dedupe contract with external Rust
+# staticlibs (`--link-lib` packages): their verbatim `std-*` member then
+# collides on `rust_eh_personality` / std-internal exports. Building the
+# archive without LTO keeps the prebuilt libstd members verbatim, so a package
+# built with the same pinned rustc dedupes naturally at link time (see
+# hew-cli/src/native_link.rs module docs). Binaries keep the LTO'd `release`.
+[profile.release-lib]
+inherits = "release"
+lto = "off"

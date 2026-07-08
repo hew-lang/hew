@@ -23379,6 +23379,12 @@ fn layout_hashmap_fn_type<'ctx>(
         }
         // `bool hew_hashmap_remove_layout(map, key_ptr)`
         "hew_hashmap_remove_layout" => Ok(i1_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false)),
+        // `bool hew_hashmap_remove_take_layout(map, key_ptr, out_ptr)` — the
+        // move-out remove backing `HashMap::remove(k) -> Option<V>` (drop-K,
+        // move-V into `out`); same shape as `get_clone_layout`.
+        "hew_hashmap_remove_take_layout" => {
+            Ok(i1_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false))
+        }
         // `i64 hew_hashmap_len_layout(map)`
         "hew_hashmap_len_layout" => Ok(i64_ty.fn_type(&[ptr_ty.into()], false)),
         // `*mut HewVec hew_hashmap_keys_layout(map)`
@@ -25364,6 +25370,135 @@ fn lower_hashmap_get_layout_call(
         .builder
         .build_unconditional_branch(next_bb)
         .llvm_ctx("hew_hashmap_get_layout some br")?;
+    Ok(())
+}
+
+/// Lower `HashMap::remove(k) -> Option<V>` (A233). The removing twin of
+/// [`lower_hashmap_get_layout_call`]: structurally identical Option
+/// construction, but it calls `hew_hashmap_remove_take_layout`, which MOVES the
+/// stored value into the `Some` payload (no clone — the map keeps no copy) and
+/// drops the key. On a miss the runtime returns `false` without writing the
+/// payload, and we build `None`; on a hit the moved-out value is the caller's
+/// sole owner (drop-safe: no leaked key, no double-freed value).
+fn lower_hashmap_remove_take_call(
+    fn_ctx: &FnCtx<'_, '_>,
+    args: &[Place],
+    dest: Option<&Place>,
+    next: u32,
+) -> CodegenResult<()> {
+    if args.len() != 2 {
+        return Err(CodegenError::FailClosed(format!(
+            "hew_hashmap_remove_take_layout expects 2 source-level args (handle, key), got {}",
+            args.len()
+        )));
+    }
+    let dest_place = dest.ok_or_else(|| {
+        CodegenError::FailClosed(
+            "hew_hashmap_remove_take_layout returns Option<V>; call must supply a dest".into(),
+        )
+    })?;
+
+    let map_ty = place_resolved_ty(fn_ctx, args[0])?.clone();
+    let val_resolved = match map_ty {
+        ResolvedTy::Named {
+            name,
+            args: ty_args,
+            ..
+        } if name == "HashMap" && ty_args.len() == 2 => ty_args[1].clone(),
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "hew_hashmap_remove_take_layout arg0 must be HashMap<K,V>, got {other:?}"
+            )));
+        }
+    };
+    let dest_ty = place_resolved_ty(fn_ctx, *dest_place)?.clone();
+    match &dest_ty {
+        ResolvedTy::Named {
+            name,
+            args: ty_args,
+            ..
+        } if name == "Option" && ty_args.len() == 1 && ty_args[0] == val_resolved => {}
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "hew_hashmap_remove_take_layout dest must be Option<{val_resolved:?}>, \
+                 got {other:?}"
+            )));
+        }
+    }
+
+    let val_llvm_ty = resolve_ty(fn_ctx.ctx, &val_resolved, fn_ctx.record_layouts)?;
+    let map_ptr = load_duplex_handle(fn_ctx, args[0], "hew_hashmap_remove_take_layout arg0")?;
+    let (key_ptr, _key_ty) = place_pointer(fn_ctx, args[1])?;
+
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| {
+            CodegenError::FailClosed("hew_hashmap_remove_take_layout has no parent fn".into())
+        })?;
+    let none_bb = fn_ctx.ctx.append_basic_block(parent, "hashmap_remove_none");
+    let some_bb = fn_ctx.ctx.append_basic_block(parent, "hashmap_remove_some");
+    let next_bb = *fn_ctx
+        .blocks
+        .get(&next)
+        .ok_or_else(|| CodegenError::FailClosed(format!("Call next bb{next} missing")))?;
+    // The removed `V` is MOVED into the Some payload slot: compute its address,
+    // then let the runtime byte-copy the stored value into it (drop-K, move-V).
+    let dest_local = composite_dest_local(*dest_place, "hew_hashmap_remove_take_layout")?;
+    let (payload_ptr, payload_ty) = place_pointer(
+        fn_ctx,
+        Place::MachineVariant {
+            local: dest_local,
+            variant_idx: 0,
+            field_idx: 0,
+        },
+    )?;
+    if payload_ty != val_llvm_ty {
+        return Err(CodegenError::FailClosed(format!(
+            "hew_hashmap_remove_take_layout Option::Some payload type {payload_ty:?} \
+             does not match HashMap value type {val_llvm_ty:?}"
+        )));
+    }
+    let fv = get_or_declare_layout_hashmap_runtime(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        "hew_hashmap_remove_take_layout",
+    )?;
+    let is_some = fn_ctx
+        .builder
+        .build_call(
+            fv,
+            &[map_ptr.into(), key_ptr.into(), payload_ptr.into()],
+            "hew_hashmap_remove_take_layout_call",
+        )
+        .llvm_ctx("hew_hashmap_remove_take_layout call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| {
+            CodegenError::FailClosed("hew_hashmap_remove_take_layout returned void".into())
+        })?
+        .into_int_value();
+    fn_ctx
+        .builder
+        .build_conditional_branch(is_some, some_bb, none_bb)
+        .llvm_ctx("hew_hashmap_remove_take_layout condbr")?;
+
+    // None = variant 1 for Hew's builtin `Option<T>` layout.
+    fn_ctx.builder.position_at_end(none_bb);
+    emit_enum_variant_literal(fn_ctx, *dest_place, 1, &[])?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx("hew_hashmap_remove_take_layout none br")?;
+
+    // Some = variant 0. The runtime already MOVED the value into the payload.
+    fn_ctx.builder.position_at_end(some_bb);
+    emit_enum_variant_literal(fn_ctx, *dest_place, 0, &[])?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx("hew_hashmap_remove_take_layout some br")?;
     Ok(())
 }
 
@@ -32269,6 +32404,10 @@ fn lower_terminator<'ctx>(
             }
             if is_hashmap_layout_get_symbol(callee) {
                 lower_hashmap_get_layout_call(fn_ctx, args, dest.as_ref(), *next)?;
+                return Ok(());
+            }
+            if callee == "hew_hashmap_remove_take_layout" {
+                lower_hashmap_remove_take_call(fn_ctx, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
             if callee == "hew_vec_get_clone" {

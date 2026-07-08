@@ -60,6 +60,8 @@ extern "C" {
     fn hew_hashmap_get_layout(m: *const c_void, key: *const c_void) -> *const c_void;
     fn hew_hashmap_contains_key_layout(m: *const c_void, key: *const c_void) -> bool;
     fn hew_hashmap_remove_layout(m: *mut c_void, key: *const c_void) -> bool;
+    fn hew_hashmap_remove_take_layout(m: *mut c_void, key: *const c_void, out: *mut c_void)
+        -> bool;
     fn hew_hashmap_len_layout(m: *const c_void) -> i64;
     fn hew_hashmap_keys_layout(m: *const c_void) -> *mut c_void;
     fn hew_hashmap_values_layout(m: *const c_void) -> *mut c_void;
@@ -97,6 +99,10 @@ fn known_linked_kernel_symbols() -> HashMap<&'static str, *const ()> {
     m.insert(
         "hew_hashmap_remove_layout",
         hew_hashmap_remove_layout as *const (),
+    );
+    m.insert(
+        "hew_hashmap_remove_take_layout",
+        hew_hashmap_remove_take_layout as *const (),
     );
     m.insert(
         "hew_hashmap_len_layout",

@@ -13,7 +13,7 @@ fn main() {
     v.push(3);
     println(v.len());
     let x = v.get(0);
-    println(x);
+    println(x.unwrap_or(-1));
     let last = v.pop();
     println(last);
 
@@ -26,7 +26,7 @@ fn main() {
         Some(val) => println(val),
         None => println(-1),
     }
-    let had = m.remove("b");
+    let had = m.remove("b").is_some();
     println(had);
 
     // HashSet runtime family

@@ -31,7 +31,7 @@ fn main() {
     m.insert(Point { x: 1, y: 2 }, 10);
     let _v = m.get(Point { x: 1, y: 2 }); // Option<i64>
     let _has = m.contains_key(Point { x: 1, y: 2 }); // bool
-    let _ok = m.remove(Point { x: 1, y: 2 }); // bool
+    let _ok = m.remove(Point { x: 1, y: 2 }); // Option<i64>
     let _n = m.len(); // i64
 
     // ── HashSet<Point> surface ──────────────────────────────────────

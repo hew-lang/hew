@@ -1614,6 +1614,16 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::Bool,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
+    // `HashMap::remove(k) -> Option<V>` (A233): the move-out remove. Mirrors
+    // `get_layout` — the checker projects `Option<V>`; codegen builds the
+    // Some/None from the runtime's bool + out-param (drop-K, move-V).
+    direct(
+        "hew_hashmap_remove_take_layout",
+        BuiltinClass::ClassA,
+        HASHMAP_ANY,
+        BuiltinTy::Unit,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
     direct(
         "hew_hashmap_len_layout",
         BuiltinClass::ClassA,

@@ -1390,6 +1390,106 @@ pub unsafe extern "C" fn hew_hashmap_remove_layout(
     true
 }
 
+/// Remove a key, MOVING its value out into `out`. Returns `true` and writes
+/// exactly `val_layout.size` bytes into `out` when a matching entry is found;
+/// returns `false` (leaving `out` untouched) otherwise. This is the
+/// `Option<V>`-producing twin of [`hew_hashmap_remove_layout`]: the KEY is
+/// dropped via `key_drop` (the map owned it and it is being removed), but the
+/// VALUE is MOVED — byte-copied into `out` with NO `val_drop` — so ownership
+/// transfers to the caller's `Some` payload.
+///
+/// # Ownership invariant (the crux)
+///
+/// After the move there is exactly ONE owner of V: the caller's `out` slot.
+/// The tombstoned entry is never read or dropped again (the slot is dead and
+/// `len` shrank), so the value is neither leaked (the caller owns and will
+/// drop it) nor double-freed (the map does NOT run `val_drop`). The KEY, by
+/// contrast, is dropped here because the map owned it and the caller never
+/// receives it. Getting this wrong is a leaked key or a double-freed value.
+/// Mirrors `hew_hashmap_get_clone_layout`'s out-param discipline but MOVES the
+/// value instead of cloning it (the map keeps no copy).
+///
+/// # Safety
+///
+/// `m` must be a valid `HewLayoutHashMap`. `key` must point to a valid key
+/// blob. When the map's value size is non-zero, `out` must point to writable
+/// storage for exactly `val_layout.size` bytes at `val_layout.align`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashmap_remove_take_layout(
+    m: *mut HewLayoutHashMap,
+    key: *const c_void,
+    out: *mut c_void,
+) -> bool {
+    // SAFETY: shared fail-closed gate; no value pointer participates in lookup.
+    unsafe { validate_op_inputs(m.cast_const(), key, None) };
+    // SAFETY: m non-null per gate.
+    let map = unsafe { &mut *m };
+    if map.val_layout.size > 0 && out.is_null() {
+        crate::set_last_error("hew_hashmap_remove_take_layout: out is null for non-zero value");
+        std::process::abort();
+    }
+    if map.cap == 0 || map.len == 0 {
+        return false;
+    }
+    // Snapshot the drop thunks + scalar layout fields BEFORE taking the mutable
+    // handle to the entries (avoids aliasing the descriptor read against the
+    // slot pointer arithmetic below). NOTE: the VALUE drop thunk is deliberately
+    // NOT snapshotted — the value is moved out, never dropped here.
+    let (hash_fn_opt, eq_fn_opt, key_drop_fn_opt, val_size) = (
+        map.key_layout.hash_fn,
+        map.key_layout.eq_fn,
+        map.key_layout.drop_fn,
+        map.val_layout.size,
+    );
+    let (Some(hash_fn), Some(eq_fn)) = (hash_fn_opt, eq_fn_opt) else {
+        crate::set_last_error(
+            "hew_hashmap_remove_take_layout: hash_fn/eq_fn None (constructor guard violated)",
+        );
+        std::process::abort();
+    };
+    // SAFETY: layout fields valid.
+    let (idx, found) = unsafe {
+        layout_probe(
+            map.entries,
+            map.cap,
+            map.stride,
+            map.key_offset,
+            key,
+            hash_fn,
+            eq_fn,
+        )
+    };
+    if !found {
+        return false;
+    }
+    // Drop the KEY (the map owned it), then MOVE the VALUE out (transfer to the
+    // caller — NO val_drop), then tombstone + shrink. The drop+move+tombstone
+    // sequence is sync C with no `.await` between (kernel invariant).
+    //
+    // SAFETY: idx < cap; offsets in-bounds; slot is OCCUPIED.
+    let slot_key_ptr = unsafe { slot_key(map.entries, idx, map.stride, map.key_offset) };
+    if let Some(key_drop) = key_drop_fn_opt {
+        // SAFETY: slot K is an owned blob registered to the K drop thunk.
+        key_drop(slot_key_ptr.cast::<c_void>());
+    }
+    if val_size > 0 {
+        // SAFETY: idx < cap; val_offset valid.
+        let slot_val_ptr = unsafe { slot_val(map.entries, idx, map.stride, map.val_offset) };
+        // MOVE-OUT: byte-copy the value into `out`, transferring possession to
+        // the caller. NO `val_drop` runs — the caller is now the sole owner.
+        // `out` was validated for this value layout above.
+        // SAFETY: slot_val_ptr points at the occupied slot value; `out` has
+        // room for `val_size` bytes.
+        unsafe { core::ptr::copy_nonoverlapping(slot_val_ptr, out.cast::<u8>(), val_size) };
+    }
+    // SAFETY: idx < cap.
+    let state_ptr = unsafe { slot_state(map.entries, idx, map.stride) };
+    // SAFETY: state byte in-bounds.
+    unsafe { *state_ptr = TOMBSTONE };
+    map.len -= 1;
+    true
+}
+
 /// Number of occupied entries.
 ///
 /// # Safety

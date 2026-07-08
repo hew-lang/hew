@@ -1,0 +1,108 @@
+//! Tests for `HashMap<K, V>::remove(k) -> Option<V>` (A233) — the removing
+//! twin of `get`. A present key yields `Some(v)` with the value MOVED out and
+//! the entry gone; an absent key yields `None` with the map untouched. Each
+//! case asserts the exact moved-out value AND the post-removal map state, so a
+//! garbage move-out or a phantom removal is caught.
+
+import std::testing;
+
+// ── present key: Some(exact value), entry gone ─────────────────────────────
+#[test]
+fn test_remove_present_returns_some_value_and_shrinks() {
+    let m: HashMap<string, i64> = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    m.insert("c", 3);
+    let removed = m.remove("b");
+    testing.assert_true(removed.is_some());
+    testing.assert_eq(removed.unwrap_or(-1), 2);
+    testing.assert_eq(m.len(), 2);
+    // The removed entry is gone; survivors are intact.
+    testing.assert_true(m.get("b").is_none());
+    testing.assert_eq(m.get("a").unwrap_or(-1), 1);
+    testing.assert_eq(m.get("c").unwrap_or(-1), 3);
+}
+
+// ── absent key: None, map untouched ─────────────────────────────────────────
+#[test]
+fn test_remove_absent_returns_none_and_len_unchanged() {
+    let m: HashMap<string, i64> = HashMap::new();
+    m.insert("a", 1);
+    let removed = m.remove("zzz");
+    testing.assert_true(removed.is_none());
+    testing.assert_eq(m.len(), 1);
+    testing.assert_eq(m.get("a").unwrap_or(-1), 1);
+}
+
+#[test]
+fn test_remove_from_empty_map_returns_none() {
+    let m: HashMap<string, i64> = HashMap::new();
+    testing.assert_true(m.remove("anything").is_none());
+    testing.assert_eq(m.len(), 0);
+}
+
+// ── remove twice: second remove of the same key is None ─────────────────────
+#[test]
+fn test_remove_twice_second_is_none() {
+    let m: HashMap<string, i64> = HashMap::new();
+    m.insert("k", 42);
+    testing.assert_eq(m.remove("k").unwrap_or(-1), 42);
+    testing.assert_true(m.remove("k").is_none());
+    testing.assert_eq(m.len(), 0);
+}
+
+// ── owned V (string): the moved-out value is the caller's, exact bytes ──────
+#[test]
+fn test_remove_string_value_moves_out_exact() {
+    let m: HashMap<string, string> = HashMap::new();
+    m.insert("greeting", "hello-world");
+    m.insert("farewell", "goodbye-now");
+    let v = match m.remove("greeting") {
+        Some(s) => s,
+        None => "MISSING",
+    };
+    testing.assert_true(v == "hello-world");
+    testing.assert_eq(m.len(), 1);
+    testing.assert_true(m.get("greeting").is_none());
+    // The surviving entry is untouched.
+    let w = match m.get("farewell") {
+        Some(s) => s,
+        None => "MISSING",
+    };
+    testing.assert_true(w == "goodbye-now");
+}
+
+// ── i64 keys ────────────────────────────────────────────────────────────────
+#[test]
+fn test_remove_i64_key() {
+    let m: HashMap<i64, string> = HashMap::new();
+    m.insert(7, "seven");
+    let v = match m.remove(7) {
+        Some(s) => s,
+        None => "MISSING",
+    };
+    testing.assert_true(v == "seven");
+    testing.assert_true(m.remove(7).is_none());
+}
+
+// ── discarded result: the moved-out owned V must still be released ──────────
+#[test]
+fn test_remove_discarded_result_still_removes() {
+    let m: HashMap<string, string> = HashMap::new();
+    m.insert("k", "value-to-discard");
+    m.remove("k");
+    testing.assert_eq(m.len(), 0);
+    testing.assert_true(m.get("k").is_none());
+}
+
+// ── HashSet.remove regression pin: stays bool (A233) ────────────────────────
+#[test]
+fn test_hashset_remove_still_returns_bool() {
+    let s: HashSet<i64> = HashSet::new();
+    s.insert(5);
+    // A `bool` result flows directly into a conditional — this line fails to
+    // compile if HashSet.remove ever changes shape.
+    testing.assert_true(s.remove(5));
+    testing.assert_true(s.remove(5) == false);
+    testing.assert_eq(s.len(), 0);
+}

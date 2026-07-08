@@ -197,7 +197,8 @@ fn hashmap_kernel_symbol_matrix_named_record_k_by_accepted_v_classes() {
         (
             "remove",
             "remove(Point { x: 1, y: 2 })",
-            "hew_hashmap_remove_layout",
+            // `remove(k) -> Option<V>` (A233): the move-out kernel.
+            "hew_hashmap_remove_take_layout",
             2,
         ),
         ("len", "len()", "hew_hashmap_len_layout", 1),
@@ -331,7 +332,7 @@ fn main() {
         ("hew_hashmap_insert_layout", 3),
         ("hew_hashmap_get_layout", 2),
         ("hew_hashmap_contains_key_layout", 2),
-        ("hew_hashmap_remove_layout", 2),
+        ("hew_hashmap_remove_take_layout", 2),
         ("hew_hashmap_len_layout", 1),
         ("hew_hashset_insert_layout", 2),
         ("hew_hashset_contains_layout", 2),

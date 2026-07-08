@@ -11,7 +11,7 @@ fn has_key<K: Hash + Eq, V>(m: HashMap<K, V>, k: K) -> bool {
 }
 
 fn drop_key<K: Hash + Eq, V>(m: HashMap<K, V>, k: K) -> bool {
-    m.remove(k)
+    m.remove(k).is_some()
 }
 
 fn read_or<K: Hash + Eq, V>(m: HashMap<K, V>, k: K, fallback: V) -> V {

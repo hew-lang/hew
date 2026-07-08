@@ -5727,8 +5727,8 @@ pub enum DropKind {
     ///
     /// This is deliberately narrower than [`DropKind::AggregateRecursive`]:
     /// named user records may also be `@resource` or otherwise unsupported on
-    /// the value-class surface, so the MIR producer emits this kind only for the
-    /// Lane-A let-bound record-construction slice.
+    /// the value-class surface, so the MIR producer emits this kind only for
+    /// the let-bound direct-string record-construction set.
     RecordInPlace,
     /// W5.011 — function-scope recursive drop of a heap-owning aggregate
     /// `CowValue` local whose payload transitively contains heap-owning

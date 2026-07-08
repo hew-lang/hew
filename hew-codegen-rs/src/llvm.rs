@@ -9691,8 +9691,8 @@ fn struct_abi_size(ty: StructType<'_>, target_data: Option<&TargetData>) -> u64 
 
 /// Synthesise per-actor `__hew_state_clone_<Actor>` / `__hew_state_drop_<Actor>`
 /// AND per-record `__hew_record_{clone_inplace,drop_inplace}_<Record>`
-/// bodies for every classified actor in `actor_layouts` plus the Lane-A
-/// direct-string user-record slice. Called from
+/// bodies for every classified actor in `actor_layouts` plus the
+/// let-bound direct-string user-record set. Called from
 /// `build_module_for_target` BEFORE supervisor bootstrap emission so the
 /// `get_function`-or-declare-extern lookup at Stage 2's spawn/supervisor
 /// sites resolves to a real `define` rather than the linker-failure
@@ -12310,7 +12310,7 @@ fn collect_vec_owned_element_seeds(
                 // witness's thunk pointers dangle at llvm-verify for any
                 // heap-payload enum element reachable only through a
                 // channel (string-bearing records were masked by the
-                // Lane-A direct-string record seed). Carrier names may be
+                // direct-string record seed). Carrier names may be
                 // module-qualified (`channel.Receiver`) — compare short.
                 if name == "Vec" || matches!(short_name(name), "Sender" | "Receiver" | "Stream") {
                     if let Some(elem) = args.first() {
@@ -12371,7 +12371,7 @@ fn collect_vec_owned_element_seeds(
 }
 
 /// Compute the transitive set of user records AND user enums reachable
-/// through any classified actor's state fields, plus monomorphic Lane-A
+/// through any classified actor's state fields, plus monomorphic
 /// direct-string records (and, recursively, through nested record fields and
 /// enum payload fields for the actor-state route). Records and enums can
 /// reference one another (e.g. a record field of enum type, or an enum payload

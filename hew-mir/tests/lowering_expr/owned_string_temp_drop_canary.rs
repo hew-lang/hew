@@ -414,8 +414,8 @@ fn index_bound_oob_trap_drops_nothing() {
 }
 
 // ---------------------------------------------------------------------------
-// f-string interpolation temp release (Lane E, rc1 drop-safety completion
-// program). `f"item-{i}"` over a non-string value desugars
+// f-string interpolation temp release (the rc1 drop-safety completion
+// pass). `f"item-{i}"` over a non-string value desugars
 // (`hew-hir/src/lower.rs::lower_interpolated_string`) to a chain of
 // `stdlib_catalog` presentation-name calls: `to_string_i64(i)` (a fresh
 // conversion temp) then `string_concat(lit, temp)` (the join). Both reach MIR

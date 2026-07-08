@@ -46377,7 +46377,7 @@ mod slice3_narrowing_proptests {
         }
     }
 
-    // ── #2395 lane A: suspend / yield abandon-edge drop plans ────────────────
+    // ── #2395: suspend / yield abandon-edge drop plans ────────────────────────
     // enumerate_exits must populate the ExitPath::Suspend / ExitPath::Yield plan
     // with the exit's live owned-local drops (fired by codegen on the
     // destroy-while-parked abandon edge), and exclude a moved-out (Consumed)

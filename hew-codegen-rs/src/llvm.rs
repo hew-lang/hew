@@ -12650,28 +12650,38 @@ fn emit_enum_clone_inplace_body<'ctx>(
             layout.variant_struct_tys.len()
         )));
     }
-    // Fail closed: if any variant carries an OpaqueHandle field, emit a
-    // trap body rather than a shallow-copy clone. Silently treating an
-    // OpaqueHandle as BitCopy (pointer bit-copy via the outer memcpy) would
+    // Fail closed: if any variant carries an OpaqueHandle field — or an
+    // IoHandle field (Connection / Stream / Sink / Generator /
+    // CancellationToken, none of which has a dup runtime symbol) — emit a
+    // trap body rather than a shallow-copy clone. Silently treating such a
+    // handle as BitCopy (pointer bit-copy via the outer memcpy) would
     // produce two owners of the same resource — a double-free on drop.
     //
-    // The enum DROP path is safe: dropping an opaque handle is a no-op/leak
-    // (user must call `.free()` explicitly), so only the clone direction is
-    // unsafe.
+    // The enum DROP path is safe for both families: dropping an opaque
+    // handle is a no-op/leak (user must call `.free()` explicitly), and the
+    // IoHandle kinds route to their wired close symbols (`hew_stream_close`
+    // et al) — only the clone direction is unsafe.
     //
     // A trap body is emitted rather than a compile-time CodegenError because
     // the enum clone helper is synthesised for ALL enums reachable from
-    // actor state or from enum-drop seeds; an opaque-containing enum may be
-    // seeded only for its DROP helper (function-local `Result<json.Value, _>`)
-    // and the clone body would never be called in that path. Emitting a trap
-    // body keeps the symbol defined (linker satisfied) while ensuring that
-    // IF the path ever becomes reachable (upstream gates relaxed), it traps
-    // rather than silently aliasing the handle pointer. Consistent with the
+    // actor state or from enum-drop seeds; a handle-carrying enum may be
+    // seeded only for its DROP helper (function-local `Result<json.Value, _>`,
+    // or the #2429 from-call `match stream.from_file(p) { … }` scrutinee
+    // whose `Result<Stream, E>` earns a scope-exit EnumInPlace drop) and the
+    // clone body would never be called in that path. Emitting a trap body
+    // keeps the symbol defined (linker satisfied) while ensuring that IF the
+    // path ever becomes reachable (upstream gates relaxed), it traps rather
+    // than silently aliasing the handle pointer. Consistent with the
     // direct-opaque-in-actor-state guard (codegen-front `OpaqueHandle has no
-    // dup runtime helper` FailClosed diagnostic at actor spawn).
+    // dup runtime helper` FailClosed diagnostic at actor spawn) and with
+    // `clone_helper_for_kind`'s fail-closed IoHandle arms.
     let has_nested_opaque = variant_kinds.iter().any(|fks| {
-        fks.iter()
-            .any(|k| matches!(k, StateFieldCloneKind::OpaqueHandle { .. }))
+        fks.iter().any(|k| {
+            matches!(
+                k,
+                StateFieldCloneKind::OpaqueHandle { .. } | StateFieldCloneKind::IoHandle { .. }
+            )
+        })
     });
     if has_nested_opaque {
         // Emit a single trap-on-entry body so the symbol is defined but any

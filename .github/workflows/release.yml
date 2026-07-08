@@ -356,9 +356,14 @@ jobs:
       - name: Package archive (Windows)
         if: startsWith(matrix.target, 'windows')
         run: |
+          # Fail closed: without Stop, Copy-Item against a missing source is a
+          # non-terminating error and the step can go green while shipping a
+          # broken archive.
+          $ErrorActionPreference = 'Stop'
+
           $Version = $env:RELEASE_TAG.TrimStart("v")
           $ArchiveName = "hew-v${Version}-${{ matrix.target }}"
-          $ReleaseDir = "target/${{ matrix.rust_target }}/release"
+          $ReleaseLibDir = "target/${{ matrix.rust_target }}/release-lib"
 
           New-Item -ItemType Directory -Path "${ArchiveName}/bin", "${ArchiveName}/lib", "${ArchiveName}/std", "${ArchiveName}/completions" -Force | Out-Null
 
@@ -366,7 +371,18 @@ jobs:
           Copy-Item "target/${{ matrix.rust_target }}/release/adze.exe"         "${ArchiveName}/bin/"
           Copy-Item "target/${{ matrix.rust_target }}/release/hew-lsp.exe"            "${ArchiveName}/bin/"
           Copy-Item "target/${{ matrix.rust_target }}/release/hew-observe.exe"        "${ArchiveName}/bin/"
-          Copy-Item "${ReleaseDir}/hew.lib"                                      "${ArchiveName}/lib/"
+
+          # Combined runtime + stdlib library (non-LTO release-lib profile).
+          # Fail-closed shape check: the shipped archive must carry verbatim
+          # prebuilt libstd members (std-*.o); a fat-LTO archive cannot link
+          # external Rust staticlibs and must never ship. llvm-ar comes from
+          # the C:\llvm-22\bin PATH entry configured above (BSD ar / MSVC lib
+          # do not resolve the COFF long-name table carrying the member names).
+          $StdMembers = & llvm-ar t "${ReleaseLibDir}/hew.lib" | Select-String -Pattern '^std-'
+          if (-not $StdMembers) {
+            throw "${ReleaseLibDir}/hew.lib has no verbatim libstd members (std-*.o) — built with LTO; refusing to package"
+          }
+          Copy-Item "${ReleaseLibDir}/hew.lib"                                   "${ArchiveName}/lib/"
 
           # Standard library sources (all .hew files, including subdirectories)
           Copy-Item "std" "${ArchiveName}/std" -Recurse

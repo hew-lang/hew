@@ -531,6 +531,19 @@ Assert-NativeSuccess 'cargo build release binaries'
 cargo build -p hew-lib --profile release-lib
 Assert-NativeSuccess 'cargo build hew-lib'
 
+if (-not (Test-Path '.\\target\\release-lib\\hew.lib')) {
+    throw 'target/release-lib/hew.lib missing after cargo build --profile release-lib'
+}
+# Fail-closed shape check: the shipped archive must carry verbatim libstd
+# members (std-*.o); a fat-LTO archive cannot link external Rust staticlibs.
+# llvm-ar comes from the LLVM_PREFIX\\bin PATH entry above (BSD ar / MSVC lib
+# do not resolve the COFF long-name table carrying the member names).
+\$StdMembers = & llvm-ar t '.\\target\\release-lib\\hew.lib' | Select-String -Pattern '^std-'
+Assert-NativeSuccess 'llvm-ar t hew.lib'
+if (-not \$StdMembers) {
+    throw 'target/release-lib/hew.lib has no verbatim libstd members (std-*.o) — built with LTO; refusing to validate'
+}
+
 & .\\target\\release\\hew.exe --version
 Assert-NativeSuccess 'hew.exe --version'
 

@@ -2360,6 +2360,25 @@ impl HewCluster {
             .map(|m| m.incarnation)
     }
 
+    /// The raw `last_seen_ms` timestamp the membership table currently records
+    /// for `node_id`, or `None` if the node is unknown. Unlike the coarse
+    /// `MEMBER_*` state (which only flips SUSPECT->ALIVE and is otherwise
+    /// unchanged while already ALIVE), this value is refreshed on every
+    /// PING-ACK round-trip, so polling for a *new* value distinct from a
+    /// previously-observed one detects a fresh round-trip even when state
+    /// stays steady-state ALIVE across multiple observation periods. Used by
+    /// the driven-SWIM false-DEAD regression test to confirm each simulated
+    /// period actually waits for its own round-trip rather than re-observing
+    /// stale ALIVE state left over from an earlier period.
+    #[cfg(test)]
+    pub(crate) fn member_last_seen_ms(&self, node_id: u16) -> Option<u64> {
+        let members = self.members.lock_or_recover();
+        members
+            .iter()
+            .find(|m| m.node_id == node_id)
+            .map(|m| m.last_seen_ms)
+    }
+
     /// The membership state recorded for `node_id` (a `MEMBER_*` constant), or
     /// `-1` if the node is unknown. Used by the rejoin test-introspection probe.
     pub(crate) fn member_state(&self, node_id: u16) -> i32 {

@@ -10199,6 +10199,29 @@ mod tests {
         // SAFETY: both nodes are valid here.
         unsafe { wait_for_handshake(node_a.as_ptr(), node_b.as_ptr()) };
 
+        // Baseline last_seen_ms readings from immediately after the handshake,
+        // before any simulated period has been advanced. Each period below
+        // must observe last_seen_ms strictly *newer* than the value recorded
+        // at the end of the previous period. Polling the coarse MEMBER_ALIVE
+        // state alone is not sufficient here: update_last_seen only flips
+        // SUSPECT -> ALIVE and otherwise leaves an already-ALIVE state
+        // unchanged, so once both peers reach ALIVE on period 0, a state-only
+        // poll is trivially already satisfied at the very first check of every
+        // subsequent period -- it would break immediately without ever
+        // observing that period's own PING-ACK round-trip actually landed.
+        // last_seen_ms is refreshed on every round-trip regardless of state,
+        // so requiring a fresh value each period genuinely confirms each tick
+        // re-synchronized rather than re-observing stale state from an earlier
+        // period.
+        // SAFETY: node_a's cluster is live (node still running).
+        let mut prev_a_view_of_b = unsafe { &*(*node_a.as_ptr()).cluster }
+            .member_last_seen_ms(NODE_B)
+            .unwrap_or(0);
+        // SAFETY: node_b's cluster is live (node still running).
+        let mut prev_b_view_of_a = unsafe { &*(*node_b.as_ptr()).cluster }
+            .member_last_seen_ms(NODE_A)
+            .unwrap_or(0);
+
         // Step sim time forward one protocol period at a time. After each
         // advance the driver fires a tick (its next_period_ms has been crossed)
         // and sends a PING; the peer's ACK lets the connection-reader refresh
@@ -10216,44 +10239,59 @@ mod tests {
             // frozen during this real wait, so no new staleness accrues; a
             // landing ACK revives a transient SUSPECT straight back to ALIVE
             // (cluster::update_last_seen), and the SUSPECT -> DEAD step cannot
-            // fire without another sim advance. We proceed as soon as both views
-            // are ALIVE — waiting for the actual round-trip instead of betting a
-            // fixed sleep against loopback/VM latency, so a loaded CI host can't
-            // stale last_seen into a false DEAD. The "never DEAD" invariant is
+            // fire without another sim advance. We proceed only once both
+            // peers report a last_seen_ms strictly newer than the value
+            // recorded at the end of the previous period — confirming this
+            // period's own round-trip actually landed, not just that state is
+            // still ALIVE from an earlier one. The "never DEAD" invariant is
             // still enforced strictly on every poll.
             let alive_deadline =
                 std::time::Instant::now() + Duration::from_millis(SWIM_ALIVE_DEADLINE_MS);
-            loop {
+            let (a_view_of_b, b_view_of_a) = loop {
                 // SAFETY: A's cluster is live (node still running).
-                let a_view_of_b =
+                let a_state =
                     unsafe { hew_cluster_member_state((*node_a.as_ptr()).cluster, NODE_B) };
                 // SAFETY: B's cluster is live (node still running).
-                let b_view_of_a =
+                let b_state =
                     unsafe { hew_cluster_member_state((*node_b.as_ptr()).cluster, NODE_A) };
                 assert_ne!(
-                    a_view_of_b,
+                    a_state,
                     crate::cluster::MEMBER_DEAD,
                     "A must not declare a still-alive B as DEAD after period \
-                     (state={a_view_of_b})"
+                     (state={a_state})"
                 );
                 assert_ne!(
-                    b_view_of_a,
+                    b_state,
                     crate::cluster::MEMBER_DEAD,
                     "B must not declare a still-alive A as DEAD after period \
-                     (state={b_view_of_a})"
+                     (state={b_state})"
                 );
-                if a_view_of_b == crate::cluster::MEMBER_ALIVE
-                    && b_view_of_a == crate::cluster::MEMBER_ALIVE
+                // SAFETY: A's cluster is live (node still running).
+                let a_last_seen = unsafe { &*(*node_a.as_ptr()).cluster }
+                    .member_last_seen_ms(NODE_B)
+                    .unwrap_or(0);
+                // SAFETY: B's cluster is live (node still running).
+                let b_last_seen = unsafe { &*(*node_b.as_ptr()).cluster }
+                    .member_last_seen_ms(NODE_A)
+                    .unwrap_or(0);
+                if a_state == crate::cluster::MEMBER_ALIVE
+                    && b_state == crate::cluster::MEMBER_ALIVE
+                    && a_last_seen > prev_a_view_of_b
+                    && b_last_seen > prev_b_view_of_a
                 {
-                    break;
+                    break (a_last_seen, b_last_seen);
                 }
                 assert!(
                     std::time::Instant::now() < alive_deadline,
                     "PING-ACK round-trip did not refresh last_seen within the \
-                     deadline (a_view_of_b={a_view_of_b}, b_view_of_a={b_view_of_a})"
+                     deadline (a_state={a_state}, b_state={b_state}, \
+                     a_last_seen={a_last_seen}, prev_a_view_of_b={prev_a_view_of_b}, \
+                     b_last_seen={b_last_seen}, prev_b_view_of_a={prev_b_view_of_a})"
                 );
                 thread::sleep(Duration::from_millis(SWIM_ALIVE_POLL_MS));
-            }
+            };
+            prev_a_view_of_b = a_view_of_b;
+            prev_b_view_of_a = b_view_of_a;
         }
 
         // SAFETY: nodes were allocated in this test and remain valid.

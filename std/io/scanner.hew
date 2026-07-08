@@ -337,13 +337,13 @@ fn scan_line(sc: Scanner) -> Scanner {
         return Scanner { source: sc.source, pos: pos, current: "", valid: false, done: true, mode: sc.mode };
     }
     let rest = sc.source.slice(pos, slen);
-    let idx = rest.find("\n");
-    if idx < 0 {
+    let found = rest.find("\n");
+    if found.is_none() {
         // No newline: remainder is the final token.
         let line = sc.source.slice(pos, slen);
         Scanner { source: sc.source, pos: slen, current: line, valid: true, done: false, mode: sc.mode }
     } else {
-        let nl_pos = pos + idx;
+        let nl_pos = pos + found.unwrap_or(0);
         // Strip \r before \n for \r\n line endings.
         let line_end = if nl_pos > pos && sc.source.slice(nl_pos - 1, nl_pos) == "\r" {
             nl_pos - 1

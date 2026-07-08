@@ -11,7 +11,7 @@
 //!
 //! fn main() {
 //!     let s = string.from_int(42);        // "42"
-//!     let n = string.to_int("42");        // 42
+//!     let n = string.to_int("42");        // Some(42)
 //!     let f = string.to_float("3.14");    // 3.14
 //!     let nl = string.from_char(10);      // "\n"
 //!     let stars = string.repeat("*", 3);  // "***"
@@ -57,26 +57,28 @@ pub fn from_char(code: i64) -> string {
     }
 }
 
-/// Parse a string as an integer. Returns 0 if parsing fails.
+/// Parse a string as an integer. Returns `None` if parsing fails.
 ///
 /// Unlike C's `atoi`, this function does **not** stop at the first non-digit
 /// character — any non-digit anywhere in the string (after an optional leading
-/// `+`/`-`) causes the whole parse to fail and return `0`.
-/// For example, `"42abc"` returns `0`, not `42`.
+/// `+`/`-`) causes the whole parse to fail and return `None`.
+/// For example, `"42abc"` returns `None`, not `Some(42)`.
 ///
-/// Invalid or out-of-range input returns `0`.
+/// A real zero parses as `Some(0)` — absence is `None`, never a sentinel.
+/// Use `try_to_int` when the failure reason matters.
 ///
 /// # Examples
 ///
 /// ```
-/// let n = string.to_int("42");     // 42
-/// let m = string.to_int("42abc");  // 0 — partial numbers return 0
-/// let z = string.to_int("");       // 0 — empty string returns 0
+/// let n = string.to_int("42");     // Some(42)
+/// let z = string.to_int("0");      // Some(0)
+/// let m = string.to_int("42abc");  // None — partial numbers do not parse
+/// let e = string.to_int("");       // None
 /// ```
-pub fn to_int(s: string) -> i64 {
+pub fn to_int(s: string) -> Option<i64> {
     match try_to_int(s) {
-        Ok(value) => value,
-        Err(_) => 0,
+        Ok(value) => Some(value),
+        Err(_) => None,
     }
 }
 
@@ -469,10 +471,10 @@ pub fn count(haystack: string, needle: string) -> i64 {
     let hlen = haystack.len();
     while pos <= hlen - nlen {
         let rest = haystack.slice(pos, hlen);
-        let idx = rest.find(needle);
-        if idx < 0 {
-            return n;
-        }
+        let idx = match rest.find(needle) {
+            Some(i) => i,
+            None => return n,
+        };
         n = n + 1;
         pos = pos + idx + nlen;
     }
@@ -526,8 +528,13 @@ pub fn contains(s: string, sub: string) -> bool {
 pub fn is_ascii(s: string) -> bool {
     let len = s.len();
     for i in 0 .. len {
-        let ch = s.char_at(i);
-        if ch > 127 {
+        // In-bounds loop: char_at(i) is always Some; treat the unreachable
+        // None defensively as non-ASCII rather than unwrapping.
+        let ch = match s.char_at(i) {
+            Some(c) => c,
+            None => return false,
+        };
+        if (ch as i64) > 127 {
             return false;
         }
     }
@@ -588,10 +595,11 @@ pub fn lines(s: string) -> Vec<string> {
     var start = 0;
     while start < slen {
         let rest = s.slice(start, slen);
-        let idx = rest.find("\n");
-        if idx < 0 {
+        let found = rest.find("\n");
+        if found.is_none() {
             break;
         }
+        let idx = found.unwrap_or(0);
         var end = start + idx;
         if end > start && s.slice(end - 1, end) == "\r" {
             end = end - 1;
@@ -694,9 +702,11 @@ impl string {
     fn lines(s: string) -> Vec<string> {
         Vec::new()
     }
+    /// Return `Some` of the byte index of the first occurrence of `needle`,
+    /// or `None` when `needle` does not occur.
     #[extern_symbol(hew_string_find)]
-    fn find(s: string, needle: string) -> i64 {
-        0
+    fn find(s: string, needle: string) -> Option<i64> {
+        None
     }
     #[extern_symbol(hew_string_slice)]
     fn slice(s: string, start: i64, end: i64) -> string {
@@ -706,9 +716,12 @@ impl string {
     fn repeat(s: string, n: i64) -> string {
         ""
     }
+    /// Return `Some` of the byte at byte-offset `idx` (as a `char`), or
+    /// `None` when the offset is out of bounds. This is the byte-indexed
+    /// sibling of the codepoint-indexed `get` accessor.
     #[extern_symbol(hew_string_char_at)]
-    fn char_at(s: string, idx: i64) -> i64 {
-        0
+    fn char_at(s: string, idx: i64) -> Option<char> {
+        None
     }
     /// Return the `char` at codepoint-index `index`, or `None` when the index
     /// is out of bounds. This is the non-trapping `Index::get` accessor,
@@ -729,11 +742,12 @@ impl string {
     fn char_count_utf8(s: string) -> i64 {
         0
     }
-    /// Return the Unicode codepoint at codepoint-index `i`, or -1 if out of
-    /// bounds. The index is a rune (codepoint) offset, not a byte offset.
+    /// Return `Some` of the Unicode codepoint at codepoint-index `i`, or
+    /// `None` if out of bounds. The index is a rune (codepoint) offset, not a
+    /// byte offset.
     #[extern_symbol(hew_string_char_at_utf8)]
-    fn codepoint_at_utf8(s: string, i: i64) -> i64 {
-        -1
+    fn codepoint_at_utf8(s: string, i: i64) -> Option<i64> {
+        None
     }
     /// Return the UTF-8 byte encoding of this string as an owned `bytes` value.
     ///

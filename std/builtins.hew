@@ -917,11 +917,6 @@ pub fn string_trim(s: string) -> string {
     ""
 }
 
-/// Parse a string as an integer. Returns 0 on failure.
-pub fn string_to_int(s: string) -> i64 {
-    0
-}
-
 // ---------------------------------------------------------------------------
 // Program control
 // ---------------------------------------------------------------------------

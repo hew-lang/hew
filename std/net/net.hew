@@ -602,13 +602,18 @@ pub fn connect_timeout(addr: string, timeout_sec: i64, timeout_usec: i64) -> Con
     // borrowed-derived substring.
     var host = "127.0.0.1";
     var port: i64 = 0;
-    if colon >= 0 {
-        if colon != 0 {
-            host = addr.slice(0, colon);
+    match colon {
+        Some(i) => {
+            if i != 0 {
+                host = addr.slice(0, i);
+            }
+            // A malformed port (non-numeric / empty after the colon) keeps
+            // the previous behaviour: port 0.
+            port = string.to_int(addr.slice(i + 1, addr.len())).unwrap_or(0);
         }
-        port = string.to_int(addr.slice(colon + 1, addr.len()));
-    } else {
-        host = addr;
+        None => {
+            host = addr;
+        }
     }
     let millis_per_second: i64 = 1000;
     let micros_per_millisecond: i64 = 1000;

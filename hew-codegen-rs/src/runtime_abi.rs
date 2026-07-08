@@ -3536,6 +3536,11 @@ pub(crate) fn lower_call_runtime_abi(
         // intercepts to build `Option<char>` inline; it is never emitted as an
         // `Instr::CallRuntimeAbi`, so it has no MIR-ABI lowering arm here and
         // fails closed if it ever reaches this dispatch, like `BytesGet`.
+        // The sentinel-wrapping inspectors (`find`/`char_at`/`codepoint_at_utf8`)
+        // ride the same intercepted `Terminator::Call` path (D46).
+        | F::StringCharAt
+        | F::StringCharAtUtf8
+        | F::StringFind
         | F::StringGet
         | F::TcpAttachLocal
         | F::TaskCompleteThreaded

@@ -430,6 +430,17 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     "hew_send_half_send",
     "hew_send_half_try_send",
     // --- String char-count/concat/codepoint index/slice substrate ------------
+    // `hew_string_char_at(s, i) -> i32` (`hew-runtime/src/string.rs`).
+    //   Byte at byte-offset i, `-1` OOB. Surfaces as
+    //   `string.char_at(i) -> Option<char>`: codegen intercepts the
+    //   `Terminator::Call` callee, calls the runtime, and wraps the `-1`
+    //   sentinel as `None` / a non-negative byte as `Some(char)`.
+    "hew_string_char_at",
+    // `hew_string_char_at_utf8(s, i) -> i32` (`hew-runtime/src/string.rs`).
+    //   Codepoint at codepoint-offset i, `-1` OOB/invalid. Surfaces as
+    //   `string.codepoint_at_utf8(i) -> Option<i64>` via the same
+    //   codegen-intercepted sentinel wrap.
+    "hew_string_char_at_utf8",
     // `hew_string_char_count(s) -> i32` (`hew-runtime/src/string.rs`).
     //   Counts UTF-8 codepoints. Emitted for open-end string ranges `s[a..]` /
     //   `s[..]`; MIR widens the i32 result to i64 before passing it to
@@ -439,6 +450,11 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     //   Fresh owned concatenation result. Emitted for `string + string`;
     //   drop-safety follows the existing `String` value-class discipline.
     "hew_string_concat",
+    // `hew_string_find(s, needle) -> i32` (`hew-runtime/src/string.rs`).
+    //   Byte index of the first occurrence, `-1` miss. Surfaces as
+    //   `string.find(needle) -> Option<i64>` via the codegen-intercepted
+    //   sentinel wrap (`-1` -> `None`, `n >= 0` -> `Some(n)`).
+    "hew_string_find",
     // `hew_string_get` is the non-trapping `string.get(index) -> Option<char>`
     //   accessor (de-aliased from the trapping `s[i]` `hew_string_index`). It
     //   carries no runtime export: codegen intercepts the `Terminator::Call`

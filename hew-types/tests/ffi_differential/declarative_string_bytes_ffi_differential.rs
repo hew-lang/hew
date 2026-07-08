@@ -36,10 +36,10 @@ fn string_methods_resolve_through_std_string_extern_symbols() {
             let _: string = s.replace("l", "x");
             let _: Vec<string> = s.split("l");
             let _: Vec<string> = s.lines();
-            let _: i64 = s.find("e");
+            let _: Option<i64> = s.find("e");
             let _: string = s.slice(0, 1);
             let _: string = s.repeat(2);
-            let _: i64 = s.char_at(0);
+            let _: Option<char> = s.char_at(0);
             let _: Option<char> = s.get(0);
             let _: Vec<char> = s.chars();
             let _: bytes = s.to_bytes();

@@ -152,18 +152,18 @@ fn strip_trailing_slash(p: string) -> string {
 }
 
 fn last_slash_pos(s: string) -> i64 {
-    let first = s.find("/");
-    if first < 0 {
-        return -1;
-    }
+    let first = match s.find("/") {
+        Some(i) => i,
+        None => return -1,
+    };
     var last = first;
     var search_from = first + 1;
     while search_from < s.len() {
         let rest = s.slice(search_from, s.len());
-        let next = rest.find("/");
-        if next < 0 {
-            return last;
-        }
+        let next = match rest.find("/") {
+            Some(i) => i,
+            None => return last,
+        };
         last = search_from + next;
         search_from = last + 1;
     }

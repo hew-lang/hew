@@ -26247,6 +26247,12 @@ impl Builder {
             "hew_bytes_append" => self.lower_bytes_append(hir_args, site, context),
             "hew_bytes_get" => self.lower_bytes_get_option(hir_args, site, context, result_ty),
             "hew_string_get" => self.lower_string_get_option(hir_args, site, context, result_ty),
+            // Sentinel-wrapping string inspectors: the runtime returns `-1`
+            // for miss/OOB; codegen intercepts the callee and materialises
+            // `None` / `Some(...)` (D46 sentinel -> Option sweep).
+            "hew_string_find" | "hew_string_char_at" | "hew_string_char_at_utf8" => {
+                self.lower_string_sentinel_option(symbol, hir_args, site, context, result_ty)
+            }
             "hew_string_char_count" => self.lower_string_char_count(hir_args, site, context),
             // Cross-node monitor extern surface, both `(...) -> i64`:
             //  - `hew_node_monitor(target_pid)` reached as a direct `extern "C"`
@@ -26707,6 +26713,74 @@ impl Builder {
             callee: "hew_string_get".to_string(),
             builtin: None,
             args: vec![s, idx],
+            dest: Some(result),
+            next,
+        });
+        self.start_block(next);
+        let _ = context;
+        Some(result)
+    }
+
+    /// Lower a sentinel-wrapping string inspector (`string.find(needle)`,
+    /// `string.char_at(i)`, `string.codepoint_at_utf8(i)`) to a single
+    /// `Terminator::Call` to the codegen-intercepted runtime symbol.
+    ///
+    /// Mirrors the `string.get` shape: the checker records the `Option<...>`
+    /// result type (`Option<i64>` for find/codepoint, `Option<char>` for
+    /// `char_at`); codegen calls the real runtime entry (which keeps its `-1`
+    /// miss/OOB sentinel at the C ABI) and materialises `Some(value)` /
+    /// `None` from the sign of the result (D46 sentinel -> Option sweep).
+    ///
+    /// The receiver and needle are BORROWED (string-inspector contract); the
+    /// `Some` payload is a scalar (Copy), so drop-safety is trivial.
+    fn lower_string_sentinel_option(
+        &mut self,
+        symbol: &str,
+        hir_args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+        context: RuntimeCallContext,
+        result_ty: Option<&ResolvedTy>,
+    ) -> Option<Place> {
+        if hir_args.len() != 2 {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!("runtime call `{symbol}` arity"),
+                    site,
+                },
+                note: format!(
+                    "`{symbol}` expects 2 arguments (receiver, needle/index), got {}",
+                    hir_args.len()
+                ),
+            });
+            return None;
+        }
+        // The checker types the call as `Option<...>`; size the dest enum slot
+        // with that exact type so codegen resolves the registered Option layout
+        // (`checker-authority`: consume the recorded type, never re-infer it).
+        let Some(opt_ty) = result_ty else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!("runtime call `{symbol}` result type"),
+                    site,
+                },
+                note: format!(
+                    "`{symbol}` needs the checker-recorded `Option<...>` result \
+                     type to size its dest slot"
+                ),
+            });
+            return None;
+        };
+        let s = self.lower_value(&hir_args[0])?;
+        let arg = self.lower_value(&hir_args[1])?;
+        // Always materialise the Option; the sentinel-branch CFG lives in
+        // codegen. A discarded result is a dead local the optimiser elides,
+        // but the Call terminator still needs a dest + a `next` block.
+        let result = self.alloc_local(opt_ty.clone());
+        let next = self.alloc_block();
+        self.finish_current_block(Terminator::Call {
+            callee: symbol.to_string(),
+            builtin: None,
+            args: vec![s, arg],
             dest: Some(result),
             next,
         });

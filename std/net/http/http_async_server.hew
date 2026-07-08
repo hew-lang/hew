@@ -146,10 +146,10 @@ impl AsyncRequestMethods for AsyncRequest {
 /// stops reading as soon as the request is fully buffered (rather than waiting
 /// for the peer to close).
 pub fn request_complete(raw: string) -> bool {
-    let sep = raw.find("\r\n\r\n");
-    if sep < 0 {
-        return false;
-    }
+    let sep = match raw.find("\r\n\r\n") {
+        Some(i) => i,
+        None => return false,
+    };
     let head = raw.slice(0, sep);
     let body_start = sep + 4;
     let have_body = raw.len() - body_start;
@@ -167,11 +167,11 @@ pub fn over_limit(raw: string) -> bool {
     if raw.len() > MAX_REQUEST_BYTES {
         return true;
     }
-    let sep = raw.find("\r\n\r\n");
-    if sep < 0 {
+    let sep = match raw.find("\r\n\r\n") {
+        Some(i) => i,
         // No header terminator yet: bound the head we are willing to buffer.
-        return raw.len() > MAX_HEADER_BYTES;
-    }
+        None => return raw.len() > MAX_HEADER_BYTES,
+    };
     let head = raw.slice(0, sep);
     if head.len() > MAX_HEADER_BYTES {
         return true;
@@ -189,15 +189,13 @@ pub fn over_limit(raw: string) -> bool {
 /// any size bound (F2/F3); the acceptor replies with that status and closes.
 pub fn parse_request(raw: string) -> AsyncRequest {
     let sep = raw.find("\r\n\r\n");
-    let head = if sep < 0 {
-        raw
-    } else {
-        raw.slice(0, sep)
+    let head = match sep {
+        Some(i) => raw.slice(0, i),
+        None => raw,
     };
-    let body = if sep < 0 {
-        ""
-    } else {
-        raw.slice(sep + 4, raw.len())
+    let body = match sep {
+        Some(i) => raw.slice(i + 4, raw.len()),
+        None => "",
     };
     let head_lines = string.split(head, "\r\n");
     let request_line = if head_lines.len() > 0 {
@@ -216,7 +214,7 @@ pub fn parse_request(raw: string) -> AsyncRequest {
 /// else the HTTP status to reply with. `413` on any size bound (F2); `400` on an
 /// unframed/malformed request line, an unsupported `Transfer-Encoding`, or a
 /// duplicate/conflicting/non-numeric `Content-Length` (F3).
-fn request_reject_status(raw: string, sep: i64, head: string, header_section: string, body: string) -> i64 {
+fn request_reject_status(raw: string, sep: Option<i64>, head: string, header_section: string, body: string) -> i64 {
     // F2 — size bounds (fail closed with 413).
     if raw.len() > MAX_REQUEST_BYTES {
         return 413;
@@ -228,7 +226,7 @@ fn request_reject_status(raw: string, sep: i64, head: string, header_section: st
         return 413;
     }
     // F3 — the request must be fully framed (header terminator present).
-    if sep < 0 {
+    if sep.is_none() {
         return 400;
     }
     // F3 — request line: method SP target SP HTTP/1.1.
@@ -332,11 +330,9 @@ fn token_at(line: string, index: i64) -> string {
 /// The header lines of a head block (everything after the request/status line),
 /// re-joined with CRLF for header lookups + Content-Length framing.
 fn header_section_after_request_line(head: string) -> string {
-    let first = head.find("\r\n");
-    if first < 0 {
-        ""
-    } else {
-        head.slice(first + 2, head.len())
+    match head.find("\r\n") {
+        Some(first) => head.slice(first + 2, head.len()),
+        None => "",
     }
 }
 
@@ -372,12 +368,16 @@ fn find_header(header_section: string, name: string) -> string {
     var found = "";
     for i in 0 .. n {
         let line = lines[i];
-        let colon = line.find(":");
-        if colon > 0 {
-            let key = string.trim(line.slice(0, colon)).to_lower();
-            if key == target {
-                found = string.trim(line.slice(colon + 1, line.len()));
+        // A colon at index 0 is an empty header name — skip it, exactly as
+        // the old `colon > 0` guard did.
+        match line.find(":") {
+            Some(colon) if colon > 0 => {
+                let key = string.trim(line.slice(0, colon)).to_lower();
+                if key == target {
+                    found = string.trim(line.slice(colon + 1, line.len()));
+                }
             }
+            _ => {}
         }
     }
     found
@@ -395,12 +395,14 @@ fn header_count(header_section: string, name: string) -> i64 {
     var count: i64 = 0;
     for i in 0 .. n {
         let line = lines[i];
-        let colon = line.find(":");
-        if colon > 0 {
-            let key = string.trim(line.slice(0, colon)).to_lower();
-            if key == target {
-                count = count + 1;
+        match line.find(":") {
+            Some(colon) if colon > 0 => {
+                let key = string.trim(line.slice(0, colon)).to_lower();
+                if key == target {
+                    count = count + 1;
+                }
             }
+            _ => {}
         }
     }
     count
@@ -419,8 +421,12 @@ fn headers_have_colons(header_section: string) -> bool {
     for i in 0 .. n {
         let line = lines[i];
         if !string.is_empty(line) {
-            if line.find(":") <= 0 {
-                return false;
+            // Both a MISSING colon and a colon at index 0 (empty header name)
+            // are malformed — the old `<= 0` guard covered both; a blind
+            // `is_some()` here would wrongly accept `:value`.
+            match line.find(":") {
+                Some(colon) if colon > 0 => {}
+                _ => return false,
             }
         }
     }
@@ -429,11 +435,9 @@ fn headers_have_colons(header_section: string) -> bool {
 
 /// The first CRLF-terminated line of a head block (the request line).
 fn first_line(head: string) -> string {
-    let nl = head.find("\r\n");
-    if nl < 0 {
-        head
-    } else {
-        head.slice(0, nl)
+    match head.find("\r\n") {
+        Some(nl) => head.slice(0, nl),
+        None => head,
     }
 }
 
@@ -471,7 +475,12 @@ fn is_alpha_token(s: string) -> bool {
         return false;
     }
     for i in 0 .. n {
-        let b = s.char_at(i);
+        // In-bounds loop: char_at(i) is always Some; the unreachable None
+        // fails CLOSED (not a valid method token).
+        let b = match s.char_at(i) {
+            Some(c) => c as i64,
+            None => return false,
+        };
         let upper = b >= 65 && b <= 90;
         let lower = b >= 97 && b <= 122;
         if !upper && !lower {
@@ -488,7 +497,12 @@ fn is_alpha_token(s: string) -> bool {
 fn has_control_char(s: string) -> bool {
     let n = s.len();
     for i in 0 .. n {
-        let b = s.char_at(i);
+        // In-bounds loop: char_at(i) is always Some; the unreachable None
+        // fails CLOSED (treat as a control character -> reject).
+        let b = match s.char_at(i) {
+            Some(c) => c as i64,
+            None => return true,
+        };
         if b < 32 || b == 127 {
             return true;
         }

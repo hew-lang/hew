@@ -922,14 +922,18 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_string_lines",
         },
     ),
-    overload(
-        "find_str",
-        "find",
+    // `string.find(needle) -> Option<i64>` — sentinel->Option (D46). The row
+    // registers the symbol; checker authority (the `impl string` source sig)
+    // drives the `Option<i64>` result. Codegen intercepts the callee, calls
+    // the unchanged runtime `hew_string_find` (i32, `-1` miss), and wraps the
+    // sentinel as `None` / a hit as `Some(index)`. (`I64` below is the element
+    // class, not the wrapped return — there is no `BuiltinTy::Option`.)
+    direct(
+        "hew_string_find",
+        BuiltinClass::ClassA,
         STRING_STRING,
         BuiltinTy::I64,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_string_find",
-        },
+        BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     overload(
         "slice_str",
@@ -949,14 +953,16 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_string_repeat",
         },
     ),
-    overload(
-        "char_at_str",
-        "char_at",
+    // `string.char_at(i) -> Option<char>` — sentinel->Option (D46), the
+    // byte-indexed sibling of the codepoint-indexed `string.get`. Codegen
+    // intercepts the callee, calls the unchanged runtime `hew_string_char_at`
+    // (i32 byte, `-1` OOB), and wraps the sentinel as `None`.
+    direct(
+        "hew_string_char_at",
+        BuiltinClass::ClassA,
         STRING_I64,
-        BuiltinTy::I64,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_string_char_at",
-        },
+        BuiltinTy::Char,
+        BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     overload(
         "chars_str",
@@ -978,14 +984,16 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_string_char_count",
         },
     ),
-    overload(
-        "codepoint_at_utf8_str",
-        "codepoint_at_utf8",
+    // `string.codepoint_at_utf8(i) -> Option<i64>` — sentinel->Option (D46).
+    // Codegen intercepts the callee, calls the unchanged runtime
+    // `hew_string_char_at_utf8` (i32 codepoint, `-1` OOB/invalid), and wraps
+    // the sentinel as `None`.
+    direct(
+        "hew_string_char_at_utf8",
+        BuiltinClass::ClassA,
         STRING_I64,
         BuiltinTy::I64,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_string_char_at_utf8",
-        },
+        BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     // Class A: declarative bytes receiver bridge. Keep every symbol named by
     // `std/io.hew`'s `impl bytes` extern declarations in the HIR catalog so

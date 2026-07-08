@@ -49,6 +49,12 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     "hew_sink_try_write_bytes",
     "hew_sink_try_write_string",
     "hew_hashmap_new_with_layout",
+    // `hew_hashmap_remove_layout` (bool remove, drops both K and V) is no
+    // longer produced by any Hew surface: `HashMap.remove(k)` lowers to the
+    // Option-producing `hew_hashmap_remove_take_layout` (A233). The bool
+    // kernel remains a runtime export for HashSet internals and hew-cabi
+    // callers, which never appear in a MIR dump.
+    "hew_hashmap_remove_layout",
     "hew_hashset_new_with_layout",
     // -- Codegen-internal emission: injected by codegen passes (drop
     //    elaboration backends, deadline timers, closure-env mutexes,

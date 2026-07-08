@@ -38,7 +38,7 @@ fn main() {
     println("=== Conversions ===");
     let num_str = string.from_int(42);
     println(num_str); // 42
-    let num = string.to_int("123");
+    let num = string.to_int("123").unwrap_or(0);
     println(num); // 123
     println("=== Trim/Replace ===");
     let trimmed = "  hello  ".trim();

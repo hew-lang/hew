@@ -86,16 +86,24 @@ fn test_from_char_formats_single_character_strings() {
 
 #[test]
 fn test_to_int_parses_signed_decimal_strings() {
-    testing.assert_eq(string.to_int("12345"), 12345);
-    testing.assert_eq(string.to_int("-19"), -19);
-    testing.assert_eq(string.to_int("+8"), 8);
+    testing.assert_eq(string.to_int("12345").unwrap_or(-1), 12345);
+    testing.assert_eq(string.to_int("-19").unwrap_or(0), -19);
+    testing.assert_eq(string.to_int("+8").unwrap_or(-1), 8);
 }
 
 #[test]
-fn test_to_int_returns_zero_for_invalid_and_partial_inputs() {
-    testing.assert_eq(string.to_int(""), 0);
-    testing.assert_eq(string.to_int("+"), 0);
-    testing.assert_eq(string.to_int("42abc"), 0);
+fn test_to_int_parses_real_zero_as_some() {
+    // `Some(0)` proves a genuine zero is distinguishable from a failed parse.
+    let z = string.to_int("0");
+    testing.assert_true(z.is_some());
+    testing.assert_eq(z.unwrap_or(-1), 0);
+}
+
+#[test]
+fn test_to_int_returns_none_for_invalid_and_partial_inputs() {
+    testing.assert_true(string.to_int("").is_none());
+    testing.assert_true(string.to_int("+").is_none());
+    testing.assert_true(string.to_int("42abc").is_none());
 }
 
 #[test]

@@ -1,0 +1,34 @@
+// MIR-corpus fixture: sentinel->Option string inspectors (D46).
+//
+// Pins the codegen-intercepted `Terminator::Call` producers for
+// `hew_string_find` (`find -> Option<i64>`), `hew_string_char_at`
+// (`char_at -> Option<char>`), and `hew_string_char_at_utf8`
+// (`codepoint_at_utf8 -> Option<i64>`): each carries an Option dest the
+// intercept fills from the runtime's `-1` sentinel.
+fn main() {
+    let s = "hello world";
+    match s.find("world") {
+        Some(i) => println(i),
+        None => println(-1),
+    }
+    match s.find("absent") {
+        Some(i) => println(i),
+        None => println(-1),
+    }
+    match s.char_at(0) {
+        Some(c) => println(c as i64),
+        None => println(-1),
+    }
+    match s.char_at(99) {
+        Some(c) => println(c as i64),
+        None => println(-1),
+    }
+    match s.codepoint_at_utf8(1) {
+        Some(cp) => println(cp),
+        None => println(-1),
+    }
+    match s.codepoint_at_utf8(99) {
+        Some(cp) => println(cp),
+        None => println(-1),
+    }
+}

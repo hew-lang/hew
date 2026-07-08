@@ -1,0 +1,71 @@
+//! Tests for the D46 sentinel->Option sweep on string inspectors:
+//! `find -> Option<i64>`, `char_at -> Option<char>`,
+//! `codepoint_at_utf8 -> Option<i64>`. Hits assert the exact index/value;
+//! misses assert `None`; the index-0 hit pins that `Some(0)` is distinct
+//! from `None` (the old `-1` sentinel's footgun neighbourhood).
+
+import std::testing;
+
+// ── find ────────────────────────────────────────────────────────────────────
+#[test]
+fn test_find_hit_returns_exact_byte_index() {
+    testing.assert_eq("hello world".find("world").unwrap_or(-1), 6);
+    testing.assert_eq("abcabc".find("bc").unwrap_or(-1), 1);
+}
+
+#[test]
+fn test_find_at_index_zero_is_some_zero_not_none() {
+    // The canonical mistranslation trap: a hit at index 0 must be
+    // distinguishable from a miss.
+    let r = ":x".find(":");
+    testing.assert_true(r.is_some());
+    testing.assert_eq(r.unwrap_or(-1), 0);
+}
+
+#[test]
+fn test_find_miss_returns_none() {
+    testing.assert_true("hello".find("zzz").is_none());
+    testing.assert_true("".find("a").is_none());
+}
+
+#[test]
+fn test_find_empty_needle_is_some_zero() {
+    // strstr semantics: the empty needle matches at offset 0.
+    testing.assert_eq("abc".find("").unwrap_or(-1), 0);
+}
+
+// ── char_at (byte-indexed) ──────────────────────────────────────────────────
+#[test]
+fn test_char_at_in_range_returns_exact_byte() {
+    let c = "abc".char_at(1);
+    testing.assert_true(c.is_some());
+    testing.assert_true(c.unwrap_or('?') == 'b');
+}
+
+#[test]
+fn test_char_at_index_zero_is_some() {
+    testing.assert_true("abc".char_at(0).unwrap_or('?') == 'a');
+}
+
+#[test]
+fn test_char_at_out_of_bounds_returns_none_not_trap() {
+    testing.assert_true("abc".char_at(3).is_none());
+    testing.assert_true("abc".char_at(99).is_none());
+    testing.assert_true("abc".char_at(-1).is_none());
+    testing.assert_true("".char_at(0).is_none());
+}
+
+// ── codepoint_at_utf8 (codepoint-indexed) ───────────────────────────────────
+#[test]
+fn test_codepoint_at_utf8_in_range_returns_exact_codepoint() {
+    // "a" = U+0061; "é" = U+00E9 (2 bytes in UTF-8, one codepoint).
+    testing.assert_eq("aé".codepoint_at_utf8(0).unwrap_or(-1), 97);
+    testing.assert_eq("aé".codepoint_at_utf8(1).unwrap_or(-1), 233);
+}
+
+#[test]
+fn test_codepoint_at_utf8_out_of_bounds_returns_none() {
+    testing.assert_true("ab".codepoint_at_utf8(2).is_none());
+    testing.assert_true("ab".codepoint_at_utf8(-1).is_none());
+    testing.assert_true("".codepoint_at_utf8(0).is_none());
+}

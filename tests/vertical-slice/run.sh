@@ -4085,6 +4085,20 @@ if grep -q 'has no binding' "${reject_output}"; then
   exit 1
 fi
 
+# Reject (PR #2003): a record let-destructuring pattern that names a different
+# product type than the RHS (`let Other { x } = Point { .. }`) must emit exactly
+# one spanned error naming both types, even when the two records share a field
+# shape. Guards against silently lowering the projection as the RHS type and
+# never enforcing the written constructor.
+expect_check_fail_error_count \
+    "${ROOT}/tests/vertical-slice/reject/let_destructure_wrong_record_name.hew" \
+    1 \
+    "let_destructure_wrong_record_name"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/let_destructure_wrong_record_name.hew" \
+    "Other" \
+    "let_destructure_wrong_record_name_message"
+
 # Reject: a `let … else` whose else block does not diverge. The non-diverging
 # else (`{ 0 }`) trips the new E_LET_ELSE_DOES_NOT_DIVERGE diagnostic.
 expect_check_fail_error_count \

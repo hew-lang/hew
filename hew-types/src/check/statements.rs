@@ -708,6 +708,36 @@ impl Checker {
                                                 TypeDefKind::Record | TypeDefKind::Struct
                                             ) =>
                                         {
+                                            // The pattern's written constructor name must
+                                            // resolve to the SAME product type as the RHS.
+                                            // `let Other { x } = Point { .. }` must NOT be
+                                            // admitted as an irrefutable destructure just
+                                            // because `Other` and `Point` share a field
+                                            // shape — the written `Other` constructor would
+                                            // otherwise never be enforced (see PR #2003).
+                                            let pat_td = self.lookup_type_def(pat_name);
+                                            let matches_rhs = pat_td
+                                                .as_ref()
+                                                .is_some_and(|pt| pt.name == td.name);
+                                            if !matches_rhs {
+                                                // Report a mismatch and still return `None`
+                                                // (no *additional* refutable-let error): the
+                                                // reported error already fails compilation, and
+                                                // bind_pattern runs below for error recovery.
+                                                self.report_error(
+                                                    TypeErrorKind::Mismatch {
+                                                        expected: pat_name.clone(),
+                                                        actual: td.name.clone(),
+                                                    },
+                                                    &pattern.1,
+                                                    format!(
+                                                        "let-destructuring pattern names \
+                                                         type `{pat_name}`, but the value \
+                                                         has type `{}`",
+                                                        td.name
+                                                    ),
+                                                );
+                                            }
                                             None
                                         } // irrefutable product type
                                         Some(_) => Some("enum variant"),

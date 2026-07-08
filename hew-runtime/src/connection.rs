@@ -1038,15 +1038,15 @@ fn handle_control_frame(
             return;
         }
         CTRL_MONITOR_REQ => {
-            handle_monitor_req_frame(control);
+            handle_monitor_req_frame(mgr, conn_id, control);
             return;
         }
         CTRL_DEMONITOR => {
-            handle_demonitor_frame(control);
+            handle_demonitor_frame(mgr, conn_id, control);
             return;
         }
         CTRL_MONITOR_DOWN => {
-            handle_monitor_down_frame(control);
+            handle_monitor_down_frame(mgr, conn_id, control);
             return;
         }
         CTRL_LINK_REQ => {
@@ -1107,13 +1107,30 @@ fn handle_control_frame(
     }
 }
 
+fn authenticated_peer_node_id(mgr: *mut HewConnMgr, conn_id: c_int, context: &str) -> Option<u16> {
+    if mgr.is_null() {
+        set_last_error(format!("connection reader {context}: missing manager"));
+        return None;
+    }
+    // SAFETY: reader_loop owns a live manager pointer for this connection.
+    let mgr_ref = unsafe { &*mgr };
+    let authenticated = peer_node_id_for_conn(mgr_ref, conn_id);
+    if authenticated == 0 {
+        set_last_error(format!(
+            "connection reader {context}: missing authenticated peer for conn {conn_id}"
+        ));
+        return None;
+    }
+    Some(authenticated)
+}
+
 /// Handle an inbound `CTRL_MONITOR_REQ`: a remote node is monitoring
 /// one of our local actors. Record a target-side remote-watcher entry so the
 /// terminal sweep can fan out a `CTRL_MONITOR_DOWN` when that actor dies.
 ///
 /// Fail-closed: a malformed / oversized payload is dropped with `set_last_error`
 /// and never registers a watcher — no fabricated state from untrusted bytes.
-fn handle_monitor_req_frame(control: &ControlFrame) {
+fn handle_monitor_req_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &ControlFrame) {
     let payload = match decode_monitor_req_payload(&control.payload) {
         Ok(payload) => payload,
         Err(err) => {
@@ -1123,6 +1140,16 @@ fn handle_monitor_req_frame(control: &ControlFrame) {
             return;
         }
     };
+    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, "monitor req") else {
+        return;
+    };
+    if payload.watcher_node_id != authenticated {
+        set_last_error(format!(
+            "connection reader monitor req watcher_node_id {} does not match authenticated peer {authenticated}",
+            payload.watcher_node_id
+        ));
+        return;
+    }
     let Some(rt) = crate::runtime::rt_current_opt() else {
         set_last_error("connection reader monitor req: no runtime installed");
         return;
@@ -1137,7 +1164,7 @@ fn handle_monitor_req_frame(control: &ControlFrame) {
 /// Handle an inbound `CTRL_DEMONITOR`: a remote node retracted its
 /// monitor of one of our local actors. Remove the target-side remote-watcher
 /// entry. Idempotent / fail-closed on malformed input.
-fn handle_demonitor_frame(control: &ControlFrame) {
+fn handle_demonitor_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &ControlFrame) {
     let payload = match decode_monitor_req_payload(&control.payload) {
         Ok(payload) => payload,
         Err(err) => {
@@ -1147,6 +1174,16 @@ fn handle_demonitor_frame(control: &ControlFrame) {
             return;
         }
     };
+    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, "demonitor") else {
+        return;
+    };
+    if payload.watcher_node_id != authenticated {
+        set_last_error(format!(
+            "connection reader demonitor watcher_node_id {} does not match authenticated peer {authenticated}",
+            payload.watcher_node_id
+        ));
+        return;
+    }
     let Some(rt) = crate::runtime::rt_current_opt() else {
         return;
     };
@@ -1165,7 +1202,7 @@ fn handle_demonitor_frame(control: &ControlFrame) {
 /// connection-drop / SWIM-DEAD fan-out's reach (the slot is no longer
 /// `Pending`), which is the exactly-once disambiguation: a definitive DOWN beats
 /// a later partition signal for the same registration.
-fn handle_monitor_down_frame(control: &ControlFrame) {
+fn handle_monitor_down_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &ControlFrame) {
     let payload = match decode_monitor_down_payload(&control.payload) {
         Ok(payload) => payload,
         Err(err) => {
@@ -1175,12 +1212,15 @@ fn handle_monitor_down_frame(control: &ControlFrame) {
             return;
         }
     };
+    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, "monitor down") else {
+        return;
+    };
     let Some(rt) = crate::runtime::rt_current_opt() else {
         set_last_error("connection reader monitor down: no runtime installed");
         return;
     };
     rt.dist_monitors
-        .deliver_to_ref(payload.ref_id, payload.reason);
+        .deliver_to_ref(payload.ref_id, authenticated, payload.reason);
 }
 
 /// Handle an inbound `CTRL_LINK_REQ`: a remote node is linking one of our local

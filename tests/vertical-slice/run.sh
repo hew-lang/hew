@@ -784,6 +784,13 @@ run_accept_expect_status "defer_lifo" 1
 run_accept_expect_status "defer_block_scope" 7
 # defer: early-return unwind, nested scopes, no double-run on tail
 run_accept_expect_status "defer_early_return" 42
+# hew-lang/hew#2426: a `defer exit()`/`defer panic()` in front of an explicit
+# `return` (no trailing tail expression) must not re-drain the function-tail
+# defers onto the already-dead post-return cursor (which aborted codegen with
+# `Call next bb<N> missing`). exit form overrides with status 42; panic form
+# runs the deferred panic and exits 101 with its message.
+run_accept_expect_status "defer_exit_before_explicit_return" 42
+run_accept_expect_panic "defer_panic_before_explicit_return" "cleanup"
 run_accept_expect_status "defer_nested_early_return" 10
 run_accept_expect_status "defer_no_double_run" 5
 # defer: tail-return value secured before scope-exit defers mutate referenced var

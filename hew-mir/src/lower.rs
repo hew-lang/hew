@@ -13304,9 +13304,37 @@ impl Builder {
                 ty: self.subst_ty(&tail.ty),
             });
         } else {
-            // No tail expression — implicit unit return. Still emit defers
-            // for the function body scope.
-            self.emit_pending_defers(func.body.scope);
+            // No tail expression. The normal case is an implicit unit return
+            // falling off the end of the statement list with a still-live
+            // cursor — that path still needs `func.body.scope`'s defers
+            // drained here, since nothing else will.
+            //
+            // But when the LAST statement was itself a diverging exit
+            // (`return`, or any other statement-form divergence that calls
+            // `start_dead_block` on its way out), the cursor is already
+            // `cursor_unreachable` at this point, and that statement's own
+            // handling already ran `emit_defers_for_return()` for every
+            // enclosing scope including this one (see e.g. `Return(Some)`).
+            // `emit_defers_for_return` deliberately CLONES rather than
+            // drains `pending_defers` (a `return` inside a branch must not
+            // consume defers a sibling branch still needs), so the entry is
+            // still present here. Calling `emit_pending_defers` again would
+            // re-lower the exact same deferred body a second time onto the
+            // already-dead trailing cursor -- for a defer that itself calls
+            // a `Never`-typed function (`panic()`/`exit()`), that second
+            // lowering opens its own dead continuation block via
+            // `start_dead_block`, which is never sealed (nothing follows the
+            // function's real exit) and gets silently dropped by
+            // `finalize_blocks`' empty-dead-cursor cleanup -- while the
+            // duplicate `Call` terminator that seeded it still points at the
+            // now-missing block id, aborting codegen with
+            // `E_CODEGEN_FRONT_FAIL_CLOSED: Call next bb<N> missing`
+            // (hew-lang/hew#2426, `defer exit(42); return 0;`). Skip the
+            // redundant re-drain in that case; the live-cursor drain already
+            // covers every other implicit-unit-return shape.
+            if !self.cursor_unreachable {
+                self.emit_pending_defers(func.body.scope);
+            }
         }
         self.active_scopes.pop();
     }

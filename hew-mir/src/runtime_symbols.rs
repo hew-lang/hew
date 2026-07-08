@@ -1020,6 +1020,22 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
         // string result. `hew-runtime/src/string.rs` either allocates a new
         // refcounted buffer at rc=1 or bumps an existing string's refcount; the
         // caller owns exactly one balancing `hew_string_drop`.
+        //
+        // `string_concat` (no `hew_` prefix) is the `stdlib_catalog` presentation
+        // name f-string interpolation lowering calls through (`build_catalog_call`,
+        // `hew-hir/src/lower.rs::lower_interpolated_string`) — it reaches MIR as
+        // a `Terminator::Call { callee: "string_concat", .. }`, never rewritten to
+        // the `hew_string_concat` c-symbol before this lookup (that rewrite is a
+        // codegen-time `BuiltinLinkage::RuntimeFfiShim` concern, per
+        // `hew-hir/src/stdlib_catalog.rs`). Every sibling catalog presentation
+        // name reachable as a literal MIR callee (`to_string_i64`, `println_str`,
+        // …) is already dual-listed against its c-symbol below; `string_concat`
+        // was the one missing entry, so both the concat call's own fresh-owned
+        // result AND the `to_string_*` temp feeding it as a borrowed argument
+        // fell through to `FAIL_CLOSED` (`Untracked` / `Escaping`) and leaked —
+        // `collect_nested_fresh_string_temp_drops` never admitted either. The
+        // runtime behaviour is byte-identical to `hew_string_concat` (the shim
+        // calls it directly), so the contract must be too.
         "hew_string_clone"
         | "hew_string_concat"
         | "hew_string_repeat"
@@ -1028,9 +1044,8 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
         | "hew_string_slice_codepoints"
         | "hew_string_to_lowercase"
         | "hew_string_to_uppercase"
-        | "hew_string_trim" => {
-            CalleeOwnershipContract::new(Escapes, BorrowingUse, FreshOwnedString)
-        }
+        | "hew_string_trim"
+        | "string_concat" => CalleeOwnershipContract::new(Escapes, BorrowingUse, FreshOwnedString),
 
         // String inspectors and container producers borrow their string input
         // without handing back a tracked string result. Scalar/bytes/Vec

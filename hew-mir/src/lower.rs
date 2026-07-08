@@ -31962,7 +31962,29 @@ impl Builder {
         // Seal the last block with `Terminator::Return`. For a gen body
         // this represents the generator completing (returns `return_ty` which
         // S5 maps to `None` on the Iterator impl side).
-        let raw_blocks = body_builder.finalize_blocks(Terminator::Return);
+        let mut blocks = body_builder.finalize_blocks(Terminator::Return);
+
+        // W5.011 P3 — release nested fresh-`string` temporaries (f-string
+        // interpolation's `to_string_*`/`string_concat` chain, `(a + b).len()`,
+        // `s.to_uppercase().len()`, discarded `a + b;`) that `derive_cow_fresh_
+        // borrowed_owner` (binding-scoped) cannot see. `lower_function`'s
+        // ordinary-fn path runs this splice unconditionally right after
+        // `finalize_blocks` (see its own call site); this gen-body ramp builds
+        // its `RawMirFunction` through its own hand-rolled pipeline below
+        // instead of going through `lower_function`, so it needs the identical
+        // call — omitting it left every fresh-string temp inside a generator
+        // body (most visibly an f-string per `yield`) leaking unconditionally,
+        // independent of the `string_concat` catalog-name contract fix, since
+        // this pass never ran on gen-body blocks at all. Must run BEFORE
+        // `check_function`/`elaborate` below so the dataflow observes each
+        // inline drop as a read of its temp and codegen emits the release.
+        apply_nested_fresh_string_temp_drops(
+            &mut blocks,
+            &body_builder.suspend_kinds,
+            &body_builder.locals,
+            &body_builder.binding_locals,
+            &mut body_builder.instr_spans,
+        );
 
         // Cross-suspend state is owned by LLVM's CoroSplit. The generator body
         // lowers to an `llvm.coro.*` switched-resume coroutine; CoroSplit
@@ -31972,7 +31994,6 @@ impl Builder {
         // state-record synthesis pass: the prior `gen_state::synthesise` machinery
         // (the spike-era stand-in for the never-landed hand-rolled state machine)
         // is subsumed by the coro frame and removed (RC14).
-        let blocks = raw_blocks;
         let body_locals_with_state = body_builder.locals.clone();
 
         // Build the THIR/raw/checked/elaborated triple for the body function.

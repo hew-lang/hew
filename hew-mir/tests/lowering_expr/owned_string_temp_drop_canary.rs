@@ -412,3 +412,64 @@ fn index_bound_oob_trap_drops_nothing() {
          not be dropped on the trap edge (else a clean trap degrades to SIGSEGV)",
     );
 }
+
+// ---------------------------------------------------------------------------
+// f-string interpolation temp release (Lane E, rc1 drop-safety completion
+// program). `f"item-{i}"` over a non-string value desugars
+// (`hew-hir/src/lower.rs::lower_interpolated_string`) to a chain of
+// `stdlib_catalog` presentation-name calls: `to_string_i64(i)` (a fresh
+// conversion temp) then `string_concat(lit, temp)` (the join). Both reach MIR
+// as `Terminator::Call` to the CATALOG name, not the `hew_*` c-symbol; unlike
+// its `to_string_i64`/`println_str` siblings, `string_concat` had no
+// `callee_ownership_contract` row (only `hew_string_concat` did), so it fell
+// through to `FAIL_CLOSED` and neither the conversion temp (unrecognised
+// borrowing use) nor the concat's own result (unrecognised fresh producer)
+// was ever admitted by this file's NESTED/DISCARD substrate — both leaked.
+// ---------------------------------------------------------------------------
+
+/// NESTED statement position: `println(f"item-{i}")` — neither temp is bound
+/// to a `let`, so both are the substrate's NESTED shape. Exactly one inline
+/// drop each: the conversion temp (borrowed by the concat) and the concat
+/// result (borrowed by `println_str`, a covered print sink).
+#[test]
+fn canary6_fstring_interpolation_statement_position_releases_both_temps() {
+    let pl = pipeline_with_tc("fn f6(i: i64) {\n    println(f\"item-{i}\");\n}\n");
+    assert_no_nyi(&pl);
+    assert_eq!(
+        inline_string_drops(&pl, "f6"),
+        2,
+        "f-string interpolation of a non-string value must release both the \
+         Display::fmt conversion temp (hew_i64_to_string) and the \
+         hew_string_concat join result -- one inline drop each"
+    );
+    assert_eq!(return_exit_string_drops(&pl, "f6"), 0);
+}
+
+/// Gen-body shape: a standalone `gen fn` yields `f"item-{i}"` per iteration.
+/// The concat result is published through the yield-transport (a MOVE,
+/// correctly excluded from this substrate), so only the conversion temp is at
+/// risk here -- but `lower_gen_block` builds the coroutine ramp's
+/// `RawMirFunction` through its own hand-rolled pipeline instead of
+/// `lower_function`, so it never called `apply_nested_fresh_string_temp_drops`
+/// at all (a SEPARATE gap from the catalog-name contract row above; every
+/// ordinary function gets the splice for free via `lower_function`'s shared
+/// post-`finalize_blocks` step). The gen-body ramp is emitted as its own MIR
+/// function named `__hew_gen_body_<owner>_<id>`.
+#[test]
+fn canary7_fstring_interpolation_gen_yield_releases_conversion_temp() {
+    let pl = pipeline_with_tc(
+        "gen fn g7(n: i64) -> string {\n    var i: i64 = 0;\n    while i < n {\n        yield f\"item-{i}\";\n        i = i + 1;\n    }\n}\n",
+    );
+    assert_no_nyi(&pl);
+    assert_eq!(
+        inline_string_drops(&pl, "__hew_gen_body_g7_0"),
+        1,
+        "the hew_i64_to_string conversion temp feeding the yielded f-string \
+         must release exactly once inside the generator body ramp"
+    );
+    assert_eq!(
+        return_exit_string_drops(&pl, "__hew_gen_body_g7_0"),
+        0,
+        "the conversion temp is a NESTED (unbound) shape, not a scope-exit-drop binding"
+    );
+}

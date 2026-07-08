@@ -6,7 +6,6 @@
 // Output teeth: every payload is read back before its release (a
 // use-after-free garbles the totals; a double-free aborts), Ok and Err arms
 // are both taken, and break/continue exercise the loop-exit edges.
-
 type Row {
     name: string;
     id: i64;
@@ -37,8 +36,12 @@ fn bytes_loop() -> i64 {
     var i = 0;
     while i < 5 {
         match ok_bytes(i) {
-            Ok(b) => { total = total + b.len(); }
-            Err(e) => { total = total - e.len(); }
+            Ok(b) => {
+                total = total + b.len();
+            },
+            Err(e) => {
+                total = total - e.len();
+            },
         }
         i = i + 1;
     }
@@ -51,8 +54,12 @@ fn mixed_arms_loop() -> i64 {
     var i = 0;
     while i < 6 {
         match mixed(i) {
-            Ok(s) => { oks = oks + s.len(); }
-            Err(e) => { errs = errs + e.len(); }
+            Ok(s) => {
+                oks = oks + s.len();
+            },
+            Err(e) => {
+                errs = errs + e.len();
+            },
         }
         i = i + 1;
     }
@@ -64,8 +71,10 @@ fn composite_loop() -> i64 {
     var i = 0;
     while i < 4 {
         match ok_row(i) {
-            Ok(r) => { total = total + r.id; }
-            Err(e) => {}
+            Ok(r) => {
+                total = total + r.id;
+            },
+            Err(e) => {},
         }
         i = i + 1;
     }
@@ -79,11 +88,15 @@ fn break_continue_loop() -> i64 {
         i = i + 1;
         match ok_bytes(i) {
             Ok(b) => {
-                if b.len() == 7 && i == 3 { continue; }
-                if i >= 6 { break; }
+                if b.len() == 7 && i == 3 {
+                    continue;
+                }
+                if i >= 6 {
+                    break;
+                }
                 seen = seen + 1;
-            }
-            Err(e) => {}
+            },
+            Err(e) => {},
         }
     }
     seen

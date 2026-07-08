@@ -1,0 +1,141 @@
+//! Regression pins for #2420: reassigning a `var` record with a Vec field
+//! from a value that aliases the old one (`var s = mk(); s = grow(s)`).
+//!
+//! A by-value heap param is a borrow, and a non-string owned field load is a
+//! raw pointer copy — so `grow`'s returned record aliases the caller's old
+//! Vec. The #53 overwrite release at the reassignment then freed that Vec
+//! under the incoming owner: use-after-free on the next push, double free at
+//! the next release, or a silently wrong len. The release is now gated on the
+//! RHS being alias-free of the reassigned binding; these pins assert exact
+//! values (not just lengths) so an allocator-interleaving corruption cannot
+//! read as green.
+
+import std::testing;
+
+type S {
+    n: i64;
+    v: Vec<i64>;
+}
+
+type Pair {
+    n: i64;
+    a: Vec<i64>;
+    b: Vec<i64>;
+}
+
+fn mk() -> S {
+    S { n: 0, v: Vec::new() }
+}
+
+fn grow(s: S) -> S {
+    s.v.push(s.n);
+    S { n: s.n + 1, v: s.v }
+}
+
+fn mk_pair() -> Pair {
+    Pair { n: 0, a: Vec::new(), b: Vec::new() }
+}
+
+fn grow_pair(p: Pair) -> Pair {
+    p.a.push(p.n);
+    p.b.push(p.n * 10);
+    Pair { n: p.n + 1, a: p.a, b: p.b }
+}
+
+fn refresh(s: S) -> S {
+    mk()
+}
+
+// The issue #2420 repro: two reassignments through an alias-carrying callee.
+#[test]
+fn test_var_reassign_through_aliasing_fn_is_exact() {
+    var s = mk();
+    s = grow(s);
+    s = grow(s);
+    testing.assert_eq(s.n, 2);
+    testing.assert_eq(s.v.len(), 2);
+    testing.assert_eq(s.v[0], 0);
+    testing.assert_eq(s.v[1], 1);
+}
+
+// The accumulator idiom under repeated reassignment: every element must be
+// present and exact after 12 round trips.
+#[test]
+fn test_loop_reassignment_accumulates_exact_elements() {
+    var s = mk();
+    for i in 0..12 {
+        s = grow(s);
+    }
+    testing.assert_eq(s.n, 12);
+    testing.assert_eq(s.v.len(), 12);
+    testing.assert_eq(s.v[0], 0);
+    testing.assert_eq(s.v[6], 6);
+    testing.assert_eq(s.v[11], 11);
+}
+
+// Two owned Vec fields moved through the same call: both must survive the
+// reassignment release independently.
+#[test]
+fn test_two_vec_record_reassignment_is_exact() {
+    var p = mk_pair();
+    p = grow_pair(p);
+    p = grow_pair(p);
+    p = grow_pair(p);
+    testing.assert_eq(p.n, 3);
+    testing.assert_eq(p.a.len(), 3);
+    testing.assert_eq(p.b.len(), 3);
+    testing.assert_eq(p.a[0], 0);
+    testing.assert_eq(p.a[2], 2);
+    testing.assert_eq(p.b[0], 0);
+    testing.assert_eq(p.b[2], 20);
+}
+
+// A callee whose return is a proven-fresh record keeps the overwrite release:
+// the old value is freed exactly once and the fresh value is independent.
+#[test]
+fn test_reassignment_from_fresh_returning_fn_resets() {
+    var s = mk();
+    s = grow(s);
+    s = refresh(s);
+    testing.assert_eq(s.n, 0);
+    testing.assert_eq(s.v.len(), 0);
+    s = grow(s);
+    testing.assert_eq(s.n, 1);
+    testing.assert_eq(s.v.len(), 1);
+    testing.assert_eq(s.v[0], 0);
+}
+
+// Conditional reassignment: the maybe-reassigned join must be exact on both
+// the taken and the not-taken path.
+#[test]
+fn test_conditional_reassignment_join_is_exact() {
+    var taken = mk();
+    var skipped = mk();
+    let hot = true;
+    let cold = false;
+    if hot {
+        taken = grow(taken);
+    }
+    if cold {
+        skipped = grow(skipped);
+    }
+    testing.assert_eq(taken.n, 1);
+    testing.assert_eq(taken.v.len(), 1);
+    testing.assert_eq(taken.v[0], 0);
+    testing.assert_eq(skipped.n, 0);
+    testing.assert_eq(skipped.v.len(), 0);
+}
+
+// The caller-side literal form of the same alias: the RHS embeds a projection
+// of the reassigned binding directly. Crashed deterministically before the
+// release gate.
+#[test]
+fn test_literal_rhs_embedding_own_projection_is_exact() {
+    var s = S { n: 0, v: Vec::new() };
+    s.v.push(7);
+    s = S { n: s.n + 1, v: s.v };
+    s = S { n: s.n + 1, v: s.v };
+    testing.assert_eq(s.n, 2);
+    testing.assert_eq(s.v.len(), 1);
+    testing.assert_eq(s.v[0], 7);
+}

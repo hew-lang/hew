@@ -91,6 +91,11 @@ COMMON_GIT_DIR := $(shell git rev-parse --git-common-dir 2>/dev/null)
 # Cargo profile directory names
 DEBUG_DIR  := target/debug
 RELEASE_DIR := target/release
+# The SHIPPED libhew.a builds under the non-LTO `release-lib` cargo profile:
+# a fat-LTO archive cannot dedupe its folded libstd against external Rust
+# staticlibs (`--link-lib` packages), so packaging must never ship the
+# `target/release` archive. See `[profile.release-lib]` in Cargo.toml.
+RELEASE_LIB_DIR := target/release-lib
 WASM_DEBUG_DIR  := target/wasm32-wasip1/debug
 WASM_RELEASE_DIR := target/wasm32-wasip1/release
 
@@ -479,7 +484,7 @@ assemble: | hew adze runtime stdlib wasm-runtime
 RELEASE_PREP = @:
 RELEASE_ENV =
 ifeq ($(shell uname -s),Darwin)
-  RELEASE_PREP = cargo clean --profile release
+  RELEASE_PREP = cargo clean --profile release && cargo clean --profile release-lib
   RELEASE_ENV = MACOSX_DEPLOYMENT_TARGET=13.0
 endif
 
@@ -488,7 +493,7 @@ release:
 	$(RELEASE_ENV) cargo build -p hew-cli --release
 	$(RELEASE_ENV) cargo build -p adze-cli --release
 	$(RELEASE_ENV) cargo build -p hew-observe --release
-	$(RELEASE_ENV) cargo build -p hew-lib --release
+	$(RELEASE_ENV) cargo build -p hew-lib --profile release-lib
 	$(RELEASE_ENV) cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
 	$(RELEASE_ENV) cargo build -p hew-std --target wasm32-wasip1 --release
 	$(MAKE) assemble-release
@@ -511,14 +516,26 @@ publish-docs: target/release/hew ## Build stdlib docs; print wrangler deploy com
 	@echo "Docs generated at target/doc/."
 	@echo "Deploy with: wrangler pages deploy target/doc/ --project-name hew-docs"
 
+# Fail-closed shape check for a shipped libhew.a: the archive must carry
+# verbatim prebuilt libstd members (std-*.o). A fat-LTO build folds libstd
+# into the merged codegen unit — such an archive links Hew programs fine but
+# breaks every external Rust staticlib (--link-lib package), so it must be
+# rejected at packaging time, never shipped. Single logical line so it can be
+# spliced into shell for-loops inside recipes.
+define check_libhew_shape
+ar t $(1) | grep -q '^std-' || { echo "Error: $(1) has no verbatim libstd members (std-*.o) — it was built with LTO and cannot link external Rust staticlibs. Build the shipped archive with: cargo build -p hew-lib --profile release-lib"; exit 1; }
+endef
+
 # Assemble build/ with release symlinks.
 assemble-release:
 	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib $(BUILD_DIR)/std
 	@ln -sfn ../../$(RELEASE_DIR)/hew              $(BUILD_DIR)/bin/hew
 	@ln -sfn ../../$(RELEASE_DIR)/adze             $(BUILD_DIR)/bin/adze
 	@ln -sfn ../../$(RELEASE_DIR)/hew-observe      $(BUILD_DIR)/bin/hew-observe
-	@# Combined Hew library (runtime + all stdlib packages)
-	@ln -sfn ../../$(RELEASE_DIR)/libhew.a         $(BUILD_DIR)/lib/libhew.a
+	@# Combined Hew library (runtime + all stdlib packages), from the non-LTO
+	@# release-lib profile — never the fat-LTO target/release archive.
+	@$(call check_libhew_shape,$(RELEASE_LIB_DIR)/libhew.a)
+	@ln -sfn ../../$(RELEASE_LIB_DIR)/libhew.a     $(BUILD_DIR)/lib/libhew.a
 	@for lib in libhew_runtime.a libhew_std.a; do \
 		if [ -f $(WASM_RELEASE_DIR)/$$lib ]; then \
 			mkdir -p $(BUILD_DIR)/lib/wasm32-wasip1; \
@@ -530,13 +547,14 @@ assemble-release:
 	@for triple in $(NATIVE_LIB_TRIPLES); do \
 		[ -n "$$triple" ] || continue; \
 		lib_path=""; \
-		if [ -f target/$$triple/release/libhew.a ]; then \
-			lib_path="target/$$triple/release/libhew.a"; \
-		elif [ "$$triple" = "$(HOST_TRIPLE)" ] && [ -f $(RELEASE_DIR)/libhew.a ]; then \
-			lib_path="$(RELEASE_DIR)/libhew.a"; \
+		if [ -f target/$$triple/release-lib/libhew.a ]; then \
+			lib_path="target/$$triple/release-lib/libhew.a"; \
+		elif [ "$$triple" = "$(HOST_TRIPLE)" ] && [ -f $(RELEASE_LIB_DIR)/libhew.a ]; then \
+			lib_path="$(RELEASE_LIB_DIR)/libhew.a"; \
 		else \
 			continue; \
 		fi; \
+		$(call check_libhew_shape,$$lib_path); \
 		mkdir -p $(BUILD_DIR)/lib/$$triple; \
 		ln -sfn ../../../$$lib_path $(BUILD_DIR)/lib/$$triple/libhew.a; \
 	done
@@ -1217,7 +1235,8 @@ install: install-check
 	install -m 755 $(RELEASE_DIR)/hew                $(DESTDIR)$(PREFIX)/bin/hew
 	install -m 755 $(RELEASE_DIR)/adze               $(DESTDIR)$(PREFIX)/bin/adze
 	install -m 755 $(RELEASE_DIR)/hew-observe        $(DESTDIR)$(PREFIX)/bin/hew-observe
-	install -m 644 $(RELEASE_DIR)/libhew.a           $(DESTDIR)$(PREFIX)/lib/libhew.a
+	@$(call check_libhew_shape,$(RELEASE_LIB_DIR)/libhew.a)
+	install -m 644 $(RELEASE_LIB_DIR)/libhew.a       $(DESTDIR)$(PREFIX)/lib/libhew.a
 	@for lib in libhew_runtime.a libhew_std.a; do \
 		if [ -f $(WASM_RELEASE_DIR)/$$lib ]; then \
 			install -d $(DESTDIR)$(PREFIX)/lib/wasm32-wasip1; \
@@ -1230,13 +1249,14 @@ install: install-check
 	@for triple in $(NATIVE_LIB_TRIPLES); do \
 		[ -n "$$triple" ] || continue; \
 		lib_path=""; \
-		if [ -f target/$$triple/release/libhew.a ]; then \
-			lib_path="target/$$triple/release/libhew.a"; \
-		elif [ "$$triple" = "$(HOST_TRIPLE)" ] && [ -f $(RELEASE_DIR)/libhew.a ]; then \
-			lib_path="$(RELEASE_DIR)/libhew.a"; \
+		if [ -f target/$$triple/release-lib/libhew.a ]; then \
+			lib_path="target/$$triple/release-lib/libhew.a"; \
+		elif [ "$$triple" = "$(HOST_TRIPLE)" ] && [ -f $(RELEASE_LIB_DIR)/libhew.a ]; then \
+			lib_path="$(RELEASE_LIB_DIR)/libhew.a"; \
 		else \
 			continue; \
 		fi; \
+		$(call check_libhew_shape,$$lib_path); \
 		install -d $(DESTDIR)$(PREFIX)/lib/$$triple; \
 		install -m 644 $$lib_path $(DESTDIR)$(PREFIX)/lib/$$triple/libhew.a; \
 	done
@@ -1258,7 +1278,7 @@ install-check:
 		|| { echo "Error: release adze not built. Run 'make release' first."; exit 1; }
 	@test -f $(RELEASE_DIR)/hew-observe \
 		|| { echo "Error: release hew-observe not built. Run 'make release' first."; exit 1; }
-	@test -f $(RELEASE_DIR)/libhew.a \
+	@test -f $(RELEASE_LIB_DIR)/libhew.a \
 		|| { echo "Error: libhew.a not built. Run 'make release' first."; exit 1; }
 	@test -f $(WASM_RELEASE_DIR)/libhew_runtime.a \
 		|| { echo "Error: wasm runtime not built. Run 'make release' first."; exit 1; }

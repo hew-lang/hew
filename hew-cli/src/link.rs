@@ -235,28 +235,17 @@ pub fn link_executable(
         cmd.arg("-fsanitize=address");
     }
 
+    // `libhew.a` is the SINGLE provider of runtime + stdlib symbols on the
+    // native link line — `hew-lib` depends on both `hew-runtime` and `hew-std`,
+    // so direct extern declarations naming `hew_datetime_*` and similar
+    // stable-stdlib symbols resolve from it. A second stdlib archive
+    // (`libhew_std.a`) used to be probed in best-effort here; it embeds its own
+    // full copy of hew-runtime (cargo staticlib packaging bundles transitive
+    // rlib deps), so whenever an FFI consumer archive pulled members from both,
+    // the link died on duplicate `hew_*` symbols. Consumer archives must
+    // reference runtime/stdlib symbols as *undefined* (see the re-list comment
+    // below and `diagnose_linker_errors`' dup hint).
     cmd.arg(object_path).arg(&hew_lib);
-
-    // ── Stdlib staticlib the user may reference via `extern "rt"` ────
-    // Pull in the consolidated stdlib archive (libhew_std.a) so direct extern
-    // declarations naming `hew_datetime_*` and similar stable-stdlib symbols
-    // resolve at link time. A missing archive is ignored (best-effort) so users
-    // who never reach for stdlib FFI from a source build that skipped the stdlib
-    // crate still link plain programs.
-    if let Ok(exe) = std::env::current_exe() {
-        let exe_dir = exe.parent().expect("exe should have a parent directory");
-        let triple = target.normalized_triple();
-        for archive in NATIVE_STDLIB_ARCHIVES {
-            let path = if target.can_run_on_host() {
-                find_optional_hew_lib(exe_dir, archive, triple)
-            } else {
-                find_optional_target_hew_lib(exe_dir, archive, triple)
-            };
-            if let Some(path) = path {
-                cmd.arg(path);
-            }
-        }
-    }
 
     cmd.arg("-o").arg(&safe_output);
 
@@ -329,12 +318,15 @@ pub fn link_executable(
 
     // ── Re-list the runtime archive after the consumer archives ───────
     // libhew.a appears once above (resolving the program object's *direct*
-    // runtime references) and again here, after the stdlib/native-package
-    // archives. Native packages and stdlib staticlibs reference runtime symbols
-    // (`hew_vec_*`, `hew_stream_*`, …) as *undefined* and resolve them against
-    // libhew.a at the final link rather than bundling their own copy — bundling
-    // is the duplicate-symbol failure this change fixes. A single-pass archive
-    // linker (GNU ld / ld.lld on ELF) only pulls an archive member to satisfy an
+    // runtime references) and again here, after the native-package/--link-lib
+    // archives. It is the ONLY runtime/stdlib archive permitted on the native
+    // link line: native packages and `--link-lib` staticlibs reference runtime
+    // symbols (`hew_vec_*`, `hew_stream_*`, …) as *undefined* and resolve them
+    // against libhew.a at the final link rather than bundling their own copy —
+    // bundling (or listing a second runtime-carrying archive such as
+    // libhew_std.a) is exactly the duplicate-symbol failure `diagnose_linker_
+    // errors`' dup hint describes. A single-pass archive linker (GNU ld /
+    // ld.lld on ELF) only pulls an archive member to satisfy an
     // already-pending undefined symbol, so a consumer archive listed *after* the
     // first libhew.a needs libhew.a repeated here for its backward references to
     // resolve; the system libraries above are shared objects and stay globally
@@ -650,12 +642,6 @@ fn link_wasm(object_path: &str, output_path: &str, target: &str) -> Result<(), S
 const WASM_OPTIONAL_LINK_ARCHIVES: [&str; 1] = ["libhew_std.a"];
 const WASM_RUNTIME_ARCHIVE: &str = "libhew_runtime.a";
 
-/// Sibling stdlib staticlib the native linker pulls in (best-effort) so
-/// `extern "rt"` declarations naming `stable-stdlib` symbols resolve.
-/// Keep in sync with the `stable-stdlib` block in
-/// `scripts/jit-symbol-classification.toml`.
-const NATIVE_STDLIB_ARCHIVES: &[&str] = &["libhew_std.a"];
-
 fn find_wasm_link_libs(target: &str) -> Result<Vec<String>, String> {
     let exe = std::env::current_exe().map_err(|e| format!("cannot find self: {e}"))?;
     let exe_dir = exe.parent().expect("exe should have a parent directory");
@@ -670,42 +656,6 @@ fn find_wasm_link_libs(target: &str) -> Result<Vec<String>, String> {
     libs.push(find_required_wasm_runtime_lib(exe_dir, rust_target)?);
 
     Ok(libs)
-}
-
-fn find_optional_hew_lib(exe_dir: &std::path::Path, name: &str, triple: &str) -> Option<String> {
-    for candidate in hew_lib_candidates(exe_dir, name, triple) {
-        if candidate.exists() {
-            return Some(
-                candidate
-                    .canonicalize()
-                    .unwrap_or(candidate)
-                    .display()
-                    .to_string(),
-            );
-        }
-    }
-
-    None
-}
-
-fn find_optional_target_hew_lib(
-    exe_dir: &std::path::Path,
-    name: &str,
-    triple: &str,
-) -> Option<String> {
-    for candidate in hew_target_lib_candidates(exe_dir, name, triple) {
-        if candidate.exists() {
-            return Some(
-                candidate
-                    .canonicalize()
-                    .unwrap_or(candidate)
-                    .display()
-                    .to_string(),
-            );
-        }
-    }
-
-    None
 }
 
 fn wasm_runtime_target(target: &str) -> &str {
@@ -864,7 +814,17 @@ fn hew_lib_candidates(
         exe_dir.join("../lib").join(name),
         exe_dir.join("../lib/hew").join(name), // /usr/lib/hew/
         exe_dir.join("../lib64/hew").join(name), // /usr/lib64/hew/
-        // Cargo target-dir outputs for cross-target dev/test builds.
+        // Cargo target-dir outputs for cross-target dev/test builds. The
+        // `release-lib` profile dir (the shipped, non-LTO archive build —
+        // see `[profile.release-lib]` in the workspace Cargo.toml) is probed
+        // BEFORE the plain `release` dir: a stale fat-LTO `target/release`
+        // archive from a workspace binary build must not shadow a linkable
+        // `release-lib` one when both exist.
+        exe_dir
+            .join("../../target")
+            .join(triple)
+            .join("release-lib")
+            .join(name),
         exe_dir
             .join("../../target")
             .join(triple)
@@ -875,7 +835,10 @@ fn hew_lib_candidates(
             .join(triple)
             .join("debug")
             .join(name),
-        // Same dir as the binary (target/debug/ or target/release/) for host-target dev builds.
+        // Same dir as the binary (target/debug/ or target/release/) for
+        // host-target dev builds, preferring the release-lib sibling dir.
+        exe_dir.join("../release-lib").join(name),
+        exe_dir.join("../../target/release-lib").join(name),
         exe_dir.join(name),
         exe_dir.join("../../target/release").join(name),
         exe_dir.join("../../target/debug").join(name),
@@ -885,30 +848,6 @@ fn hew_lib_candidates(
             .join(name),
         exe_dir.join("../../target/wasm32-wasip1/debug").join(name),
         exe_dir.join("../../hew-runtime/target/release").join(name),
-    ]
-}
-
-fn hew_target_lib_candidates(
-    exe_dir: &std::path::Path,
-    name: &str,
-    triple: &str,
-) -> Vec<std::path::PathBuf> {
-    vec![
-        // Installed target-aware layouts.
-        exe_dir.join("../lib").join(triple).join(name),
-        exe_dir.join("../lib/hew").join(triple).join(name), // /usr/lib/hew/<triple>/
-        exe_dir.join("../lib64/hew").join(triple).join(name), // /usr/lib64/hew/<triple>/
-        // Cargo target-dir outputs for cross-target dev/test builds.
-        exe_dir
-            .join("../../target")
-            .join(triple)
-            .join("release")
-            .join(name),
-        exe_dir
-            .join("../../target")
-            .join(triple)
-            .join("debug")
-            .join(name),
     ]
 }
 
@@ -1002,6 +941,7 @@ pub(crate) fn diagnose_linker_errors(stderr: &str) -> Vec<String> {
     let mut seen: std::collections::BTreeSet<(&'static str, &'static str)> =
         std::collections::BTreeSet::new();
     let mut dup_hew: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut dup_rust_internal = false;
     let mut dup_generic = false;
 
     for line in stderr.lines() {
@@ -1015,6 +955,8 @@ pub(crate) fn diagnose_linker_errors(stderr: &str) -> Vec<String> {
             let norm = sym.strip_prefix('_').unwrap_or(sym);
             if norm.starts_with("hew_") {
                 dup_hew.insert(norm.to_string());
+            } else if is_rust_toolchain_internal_symbol(norm) {
+                dup_rust_internal = true;
             } else {
                 dup_generic = true;
             }
@@ -1045,6 +987,16 @@ pub(crate) fn diagnose_linker_errors(stderr: &str) -> Vec<String> {
              Build the package as a `staticlib` with `panic = \"abort\"`, then link it with \
              --link-lib; do not re-export or bundle the runtime."
         ));
+    } else if dup_rust_internal {
+        hints.push(
+            "hint: duplicate Rust-internal symbol(s) (libstd / personality) during link. \
+             A library passed via --link-lib embeds a Rust standard library that does not \
+             byte-match the one inside libhew.a — the usual cause is a package built with \
+             a DIFFERENT Rust toolchain than libhew.a.\n      \
+             Rebuild the package with the Hew toolchain's pinned rustc (as a `staticlib` \
+             with `panic = \"abort\"`) and retry."
+                .to_string(),
+        );
     } else if dup_generic {
         hints.push(
             "hint: duplicate symbol(s) during link: two linked inputs define the same symbol. \
@@ -1055,6 +1007,28 @@ pub(crate) fn diagnose_linker_errors(stderr: &str) -> Vec<String> {
     }
 
     hints
+}
+
+/// Classify a duplicate NON-`hew_*` symbol as belonging to the Rust toolchain
+/// itself (prebuilt libstd members, the panic personality, allocator shims).
+/// Such duplicates mean two linked inputs carry libstd copies that did not
+/// dedupe — the byte-identical-libstd contract (same pinned rustc, see
+/// `native_link.rs` module docs) is broken, almost always by a `--link-lib`
+/// archive built with a different rustc than `libhew.a`. lld demangles in its
+/// error lines, so both mangled (`_ZN3std…`) and demangled (`std::…`) shapes
+/// appear depending on linker and platform.
+fn is_rust_toolchain_internal_symbol(symbol: &str) -> bool {
+    symbol == "rust_eh_personality"
+        || symbol.starts_with("__rust")
+        || symbol.starts_with("std::")
+        || symbol.starts_with("core::")
+        || symbol.starts_with("alloc::")
+        || symbol.starts_with("_ZN3std")
+        || symbol.starts_with("_ZN4core")
+        || symbol.starts_with("_ZN5alloc")
+        || symbol.starts_with("ZN3std")
+        || symbol.starts_with("ZN4core")
+        || symbol.starts_with("ZN5alloc")
 }
 
 /// Extract a `hew_`-prefixed symbol name from a linker error line, or `None`
@@ -1594,6 +1568,46 @@ mod tests {
     }
 
     #[test]
+    fn diagnose_duplicate_rust_internal_symbol_names_toolchain_mismatch() {
+        // Captured shape from linking a fat-LTO libhew.a against a package
+        // archive whose verbatim libstd member could not dedupe: ld64.lld
+        // demangles, so both raw and demangled std symbols appear.
+        let stderr = "\
+            ld64.lld: error: duplicate symbol: rust_eh_personality\n\
+            >>> defined in /toolchain/libhew.a(hew-140483c00b278068.hew.deadbeef-cgu.0.rcgu.o)\n\
+            >>> defined in /pkg/libhew_hew_queue_mqtt.a(std-9cc64aabf2d9c512.std.cafe-cgu.0.rcgu.o)\n\
+            ld64.lld: error: duplicate symbol: std::panicking::EMPTY_PANIC::h0123456789abcdef\n";
+        let hints = diagnose_linker_errors(stderr);
+        assert_eq!(hints.len(), 1);
+        assert!(hints[0].contains("DIFFERENT Rust toolchain"));
+        assert!(hints[0].contains("pinned rustc"));
+        // The toolchain-mismatch hint, NOT the mis-shaped-package recipe.
+        assert!(!hints[0].contains("hew-cabi"));
+    }
+
+    #[test]
+    fn diagnose_duplicate_rust_internal_symbol_gnu_ld_mangled() {
+        // GNU ld does not demangle: the libstd internals arrive as `_ZN3std…`.
+        let stderr = "b.o: multiple definition of \
+             `_ZN3std9panicking11EMPTY_PANIC17h0123456789abcdefE'; a.o: first defined here\n";
+        let hints = diagnose_linker_errors(stderr);
+        assert_eq!(hints.len(), 1);
+        assert!(hints[0].contains("DIFFERENT Rust toolchain"));
+    }
+
+    #[test]
+    fn diagnose_duplicate_hew_takes_precedence_over_rust_internal() {
+        // A mis-shaped package that bundles the runtime usually collides on
+        // BOTH hew_* and libstd symbols; the actionable recipe is the hew one.
+        let stderr = "\
+            ld64.lld: error: duplicate symbol: hew_stream_last_error\n\
+            ld64.lld: error: duplicate symbol: rust_eh_personality\n";
+        let hints = diagnose_linker_errors(stderr);
+        assert_eq!(hints.len(), 1);
+        assert!(hints[0].contains("duplicate Hew runtime symbol"));
+    }
+
+    #[test]
     fn diagnose_duplicate_folds_multiple_hew_symbols_into_one_hint() {
         // lld prints one error per duplicate plus ">>> defined in" provenance
         // lines, which must be ignored. Two hew dups fold into one recipe hint.
@@ -1934,6 +1948,51 @@ mod tests {
     }
 
     #[test]
+    fn hew_lib_candidates_prefer_release_lib_over_stale_release() {
+        // The shipped archive builds under `[profile.release-lib]` (non-LTO).
+        // A plain `cargo build --release` still leaves a fat-LTO archive in
+        // `target/release/`, which cannot dedupe against external staticlibs —
+        // when both exist, the linkable release-lib one must win. The ordering
+        // must hold for both platform archive names; matching is component-wise
+        // (`Path::ends_with`) so `Path::join`'s host separator cannot skew it.
+        for (name, triple) in [
+            ("libhew.a", "aarch64-apple-darwin"),
+            ("hew.lib", "x86_64-pc-windows-msvc"),
+        ] {
+            let exe_dir = std::path::Path::new("/repo/target/debug");
+            let candidates = hew_lib_candidates(exe_dir, name, triple);
+            let position = |suffix: String| {
+                candidates
+                    .iter()
+                    .position(|path| path.ends_with(&suffix))
+                    .unwrap_or_else(|| {
+                        panic!("candidate ending `{suffix}` missing: {candidates:?}")
+                    })
+            };
+
+            // Host-fallback block: release-lib before same-dir and target/release.
+            assert!(
+                position(format!("../../target/release-lib/{name}"))
+                    < position(format!("/repo/target/debug/{name}"))
+            );
+            assert!(
+                position(format!("../../target/release-lib/{name}"))
+                    < position(format!("../../target/release/{name}"))
+            );
+            assert!(
+                position(format!("../release-lib/{name}"))
+                    < position(format!("/repo/target/debug/{name}"))
+            );
+
+            // Cross-target block: <triple>/release-lib before <triple>/release.
+            assert!(
+                position(format!("{triple}/release-lib/{name}"))
+                    < position(format!("{triple}/release/{name}"))
+            );
+        }
+    }
+
+    #[test]
     fn hew_lib_candidates_probe_cargo_target_triple_dirs_before_host_fallbacks() {
         let exe_dir = std::path::Path::new("/repo/target/debug");
         let candidates = hew_lib_candidates(exe_dir, "hew.lib", "x86_64-pc-windows-msvc");
@@ -1958,27 +2017,6 @@ mod tests {
             .expect("same-dir host fallback candidate");
         assert!(cross_release_index < host_same_dir_index);
         assert!(cross_debug_index < host_same_dir_index);
-    }
-
-    #[test]
-    fn hew_target_lib_candidates_exclude_host_fallbacks() {
-        let exe_dir = std::path::Path::new("/repo/target/debug");
-        let candidates =
-            hew_target_lib_candidates(exe_dir, "libhew_std.a", "aarch64-unknown-linux-gnu");
-
-        assert!(
-            !candidates.contains(&std::path::PathBuf::from("/repo/target/debug/libhew_std.a")),
-            "cross-target stdlib lookup must not accept a host archive"
-        );
-        assert!(
-            !candidates.contains(&std::path::PathBuf::from(
-                "/repo/target/debug/../../target/debug/libhew_std.a"
-            )),
-            "cross-target stdlib lookup must not accept a host target-dir archive"
-        );
-        assert!(candidates.contains(&std::path::PathBuf::from(
-            "/repo/target/debug/../../target/aarch64-unknown-linux-gnu/debug/libhew_std.a"
-        )));
     }
 
     #[test]

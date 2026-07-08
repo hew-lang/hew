@@ -107,6 +107,22 @@ banner() {
     echo -e "\n${CYAN}═══ $1 ═══${RESET}"
 }
 
+# Fail-closed shape check for a shipped libhew.a: it must carry verbatim
+# prebuilt libstd members (std-*.o). A fat-LTO archive folds libstd into the
+# merged codegen unit and cannot link external Rust staticlibs (--link-lib
+# packages) — reject it at packaging, never ship it. Remote validation blocks
+# inline the same `ar t | grep -q '^std-'` check (this function does not exist
+# on the remote hosts).
+check_libhew_shape() {
+    local archive="$1"
+    if ! ar t "$archive" | grep -q '^std-'; then
+        echo "FATAL: ${archive} has no verbatim libstd members (std-*.o) — built with LTO;"
+        echo "       it cannot link external Rust staticlibs. Build it with:"
+        echo "       cargo build -p hew-lib --profile release-lib"
+        return 1
+    fi
+}
+
 # ── Determine which platforms to validate ────────────────────────────────────
 
 if [[ $# -eq 0 ]]; then
@@ -166,16 +182,19 @@ validate_linux() {
     if (
         set -e
         echo "==> Step 1: Static-link release build"
-        # This is the exact build that the release CI does
+        # This is the exact build that the release CI does. libhew.a ships
+        # from the non-LTO release-lib profile (external Rust staticlibs
+        # cannot dedupe libstd against a fat-LTO archive).
         run_with_timeout "${LOCAL_BUILD_TIMEOUT}" cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release 2>&1
-        run_with_timeout "${LOCAL_BUILD_TIMEOUT}" cargo build -p hew-lib --release 2>&1
+        run_with_timeout "${LOCAL_BUILD_TIMEOUT}" cargo build -p hew-lib --profile release-lib 2>&1
 
         echo "==> Step 2: Verify binaries exist and run"
         target/release/hew --version
         target/release/adze --version
         target/release/hew-lsp --version
         target/release/hew-observe --version
-        test -f target/release/libhew.a
+        test -f target/release-lib/libhew.a
+        check_libhew_shape target/release-lib/libhew.a
 
         echo "==> Step 3: Smoke test — compile and run a Hew program"
         local smoke_file_base
@@ -222,8 +241,9 @@ validate_linux() {
 
         cp target/release/hew target/release/adze target/release/hew-lsp target/release/hew-observe "${package_root}/bin/"
         chmod +x "${package_root}/bin/"*
-        cp target/release/libhew.a "${package_root}/lib/"
-        cp target/release/libhew.a "${package_root}/lib/x86_64-unknown-linux-gnu/"
+        check_libhew_shape target/release-lib/libhew.a
+        cp target/release-lib/libhew.a "${package_root}/lib/"
+        cp target/release-lib/libhew.a "${package_root}/lib/x86_64-unknown-linux-gnu/"
         cp -r std/. "${package_root}/std/"
 
         tar czf "${package_tarball}" -C "${archive_root}" "${archive_name}"
@@ -280,12 +300,13 @@ validate_macos() {
             export LLVM_PREFIX=\"\$(brew --prefix llvm@22 2>/dev/null || echo /opt/homebrew/opt/llvm)\"
 
             cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
-            cargo build -p hew-lib --release
+            cargo build -p hew-lib --profile release-lib
 
             target/release/hew --version
             target/release/adze --version
             target/release/hew-lsp --version
             target/release/hew-observe --version
+            ar t target/release-lib/libhew.a | grep -q '^std-'
 
             echo \"==> Smoke test: hew run (guards against process-exit SIGABRT — issue #1606)\"
             make stdlib
@@ -358,7 +379,7 @@ validate_linux_aarch64() {
             export CXX=clang++-22
 
             cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
-            cargo build -p hew-lib --release
+            cargo build -p hew-lib --profile release-lib
             rustup target add wasm32-wasip1
             cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
 
@@ -366,7 +387,8 @@ validate_linux_aarch64() {
             target/release/adze --version
             target/release/hew-lsp --version
             target/release/hew-observe --version
-            test -f target/release/libhew.a
+            test -f target/release-lib/libhew.a
+            ar t target/release-lib/libhew.a | grep -q '^std-'
 
             printf '%s\n' \"fn main() { println(\\\"Hello from Hew release test\\\") }\" > _smoke.hew
             target/release/hew _smoke.hew -o _smoke_bin
@@ -433,12 +455,13 @@ validate_freebsd() {
             export CXX=clang++
 
             cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
-            cargo build -p hew-lib --release
+            cargo build -p hew-lib --profile release-lib
 
             target/release/hew --version
             target/release/adze --version
             target/release/hew-lsp --version
             target/release/hew-observe --version
+            ar t target/release-lib/libhew.a | grep -q '^std-'
 
             echo \"FreeBSD build succeeded\"
         '"
@@ -505,8 +528,21 @@ if (-not (Test-Path '${WINDOWS_LLVM_CONFIG}')) {
 cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
 Assert-NativeSuccess 'cargo build release binaries'
 
-cargo build -p hew-lib --release
+cargo build -p hew-lib --profile release-lib
 Assert-NativeSuccess 'cargo build hew-lib'
+
+if (-not (Test-Path '.\\target\\release-lib\\hew.lib')) {
+    throw 'target/release-lib/hew.lib missing after cargo build --profile release-lib'
+}
+# Fail-closed shape check: the shipped archive must carry verbatim libstd
+# members (std-*.o); a fat-LTO archive cannot link external Rust staticlibs.
+# llvm-ar comes from the LLVM_PREFIX\\bin PATH entry above (BSD ar / MSVC lib
+# do not resolve the COFF long-name table carrying the member names).
+\$StdMembers = & llvm-ar t '.\\target\\release-lib\\hew.lib' | Select-String -Pattern '^std-'
+Assert-NativeSuccess 'llvm-ar t hew.lib'
+if (-not \$StdMembers) {
+    throw 'target/release-lib/hew.lib has no verbatim libstd members (std-*.o) — built with LTO; refusing to validate'
+}
 
 & .\\target\\release\\hew.exe --version
 Assert-NativeSuccess 'hew.exe --version'

@@ -66,7 +66,7 @@ use support::{describe_output, hew_binary, repo_root, require_codegen};
 // ── fixtures ────────────────────────────────────────────────────────────────
 
 /// Shared prelude: a `#[resource] #[opaque]` handle backed by the runtime deque
-/// (real global heap, links via `libhew_std.a` with no custom C shim) and a plain
+/// (real global heap, links via `libhew.a` with no custom C shim) and a plain
 /// record that owns one. `close(self)` frees the deque and prints `closed`.
 const PRELUDE: &str = "\
 #[resource]\n\

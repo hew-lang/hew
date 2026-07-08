@@ -9948,6 +9948,32 @@ struct Builder {
     /// record/string locals are released through the `elaborate` allow-set
     /// prover (`CowValue` arm), not `owned_locals` / this flag.
     overwrite_guard_flags: HashMap<BindingId, Place>,
+    /// #2418: runtime drop-flags for an owned collection local (owned-element
+    /// `Vec`, plain `Vec`, `HashMap`/`HashSet` handle) that the pre-pass saw
+    /// genuinely consumed (`intent=Consume`, a move-out such as `let ys = xs`)
+    /// somewhere in the body. The legacy path-insensitive `mark_binding_moved`
+    /// retraction at the consume site removed the binding from the scope-exit
+    /// set entirely, so a binding moved out on only SOME control-flow paths
+    /// (`MaybeConsumed` at the converging join) leaked on the not-moved path —
+    /// the whole-value `Move` lowering does NOT null the source slot, so the
+    /// moved path cannot be discriminated statically at a shared exit.
+    ///
+    /// A flagged binding is KEPT in `owned_locals` at its consume sites
+    /// (mirroring the #1933 `resource_drop_flags` discipline): the flag is an
+    /// `i64` local zero-initialised at the binding's `let` (dominating every
+    /// consume, including loop back-edges) and set to 1 at each consume-use.
+    /// `build_lifo_drops` attaches it as the [`ElabDrop::guard`], so codegen
+    /// gates the release on `flag == 0` — exactly once on a `MaybeConsumed`
+    /// join: skipped where the value moved to a new owner, fired where it is
+    /// still owned. The per-exit `drops_for_exit` dataflow filter still
+    /// excludes exits where the binding is `Consumed` on every reaching path.
+    ///
+    /// Mutually exclusive with `overwrite_guard_flags` (a mutable binding both
+    /// consumed and reassigned keeps the #2301 overwrite path and today's
+    /// scope-exit retraction — fail-closed, no flag interplay). Bindings
+    /// outside the collection classes keep the legacy retraction (leak on the
+    /// not-moved path, never double-free).
+    collection_drop_flags: HashMap<BindingId, Place>,
     /// #2301 per-function pre-pass scratch: `BindingId`s used with
     /// `intent=Consume` anywhere in the body. Populated by
     /// `collect_vec_owned_element_keys_from_expr` before lowering; intersected
@@ -13466,6 +13492,11 @@ impl Builder {
                 // other binding class (see `resource_needs_drop_flag`).
                 self.maybe_alloc_resource_drop_flag(binding.id, &binding_ty);
                 self.maybe_alloc_overwrite_guard_flag(binding);
+                // #2418 — allocate the path-sensitive scope-exit drop-flag for
+                // an owned collection local the pre-pass saw consumed, so a
+                // conditional move keeps its (flag-gated) scope-exit release
+                // on the not-moved path instead of retracting it entirely.
+                self.maybe_alloc_collection_drop_flag(binding, &binding_ty);
             }
             HirStmtKind::Let(_, None) => {}
             HirStmtKind::Expr(expr) => {
@@ -14296,6 +14327,21 @@ impl Builder {
                         // other consumed owned class keeps the legacy
                         // path-insensitive `owned_locals` removal.
                         if let Some(flag) = self.resource_drop_flags.get(id).copied() {
+                            self.instructions.push(Instr::ConstI64 {
+                                dest: flag,
+                                value: 1,
+                            });
+                        } else if let Some(flag) = self.collection_drop_flags.get(id).copied() {
+                            // #2418 — an owned collection local with a
+                            // path-sensitive drop-flag is KEPT in
+                            // `owned_locals` so a conditional move drops the
+                            // value exactly once: mark the flag consumed
+                            // (set 1) so codegen's `flag == 0` gate skips the
+                            // now-moved-out release on this path, while the
+                            // not-moved path keeps `flag == 0` and releases at
+                            // scope exit. The dataflow's own `Use{Consume}`
+                            // transition still drives the move-checker and the
+                            // per-exit `BindingState` narrowing.
                             self.instructions.push(Instr::ConstI64 {
                                 dest: flag,
                                 value: 1,
@@ -33145,6 +33191,55 @@ impl Builder {
         self.overwrite_guard_flags.insert(binding.id, flag);
     }
 
+    /// #2418 -- allocate a zero-init path-sensitive scope-exit drop-flag for an
+    /// owned collection local (owned-element `Vec`, plain `Vec`,
+    /// `HashMap`/`HashSet` handle) the pre-pass saw consumed somewhere in the
+    /// body. The flag keeps the binding on the scope-exit set at its consume
+    /// sites (see `collection_drop_flags`), so a conditional move (`if take {
+    /// let ys = xs; }`) releases the value exactly once: the runtime gate
+    /// skips the moved path, the not-moved path fires the release.
+    ///
+    /// Restricted to the collection classes whose releases are null-tolerant
+    /// runtime frees and whose allow-set provers ride the
+    /// `derive_local_collection_drop_allowed` escape scan; every other owned
+    /// class keeps the legacy path-insensitive retraction (fail-closed: leak
+    /// on the not-moved path, never a double-free). A mutable binding that is
+    /// also reassigned takes the #2301 `overwrite_guard_flags` path instead —
+    /// the two flag families never share a binding, so the overwrite reset
+    /// discipline cannot re-arm a scope-exit drop this flag suppressed.
+    /// Zero-init at the `let` so the flag dominates every consume site,
+    /// including loop back-edges (a per-iteration `let` re-zeros it).
+    fn maybe_alloc_collection_drop_flag(&mut self, binding: &HirBinding, ty: &ResolvedTy) {
+        if !self.prepass_consumed_bindings.contains(&binding.id) {
+            return;
+        }
+        if binding.mutable && self.prepass_reassigned_bindings.contains(&binding.id) {
+            return;
+        }
+        if !(self.binding_ty_is_owned_element_vec(ty)
+            || self.binding_ty_is_plain_vec(ty)
+            || ty_is_local_collection_handle(ty))
+        {
+            return;
+        }
+        if !self
+            .owned_locals
+            .iter()
+            .any(|entry| entry.binding == binding.id && entry.disposition == Disposition::ScopeExit)
+        {
+            return;
+        }
+        if self.collection_drop_flags.contains_key(&binding.id) {
+            return;
+        }
+        let flag = self.alloc_local(ResolvedTy::I64);
+        self.instructions.push(Instr::ConstI64 {
+            dest: flag,
+            value: 0,
+        });
+        self.collection_drop_flags.insert(binding.id, flag);
+    }
+
     /// #2301 -- emit `if flag == 0 { <release old value of `dest`> }` as a CFG
     /// diamond, then leave the cursor at the continuation block so the caller's
     /// `Move` (store of the fresh value) and the `flag = 0` reset land there.
@@ -34291,12 +34386,19 @@ fn elaborate(
         &builder.binding_locals,
         |ty| builder.binding_ty_is_owned_element_vec(ty),
     );
+    // #2418 — a binding carrying a path-sensitive collection drop-flag is
+    // exempt from the consume-exit removal: its scope-exit release is gated on
+    // `flag == 0` at runtime (skipped on the moved path, fired on the
+    // not-moved path), and the per-exit `drops_for_exit` state filter still
+    // excludes exits reached only through the consume. Unflagged bindings keep
+    // the removal (fail-closed).
     for states in dataflow_result.exit_states.values() {
         for (binding, state) in states {
             if matches!(
                 state,
                 dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
-            ) {
+            ) && !builder.collection_drop_flags.contains_key(binding)
+            {
                 owned_vec_drop_allowed.remove(binding);
             }
         }
@@ -34334,6 +34436,7 @@ fn elaborate(
         &checked.blocks,
         &builder.binding_locals,
         &mut owned_vec_drop_allowed,
+        &builder.collection_drop_flags,
     );
 
     // Local `HashMap` / `HashSet` handle scope-exit drop allow-set. A local
@@ -34356,12 +34459,16 @@ fn elaborate(
         &builder.binding_locals,
         ty_is_local_collection_handle,
     );
+    // #2418 — flagged bindings are exempt from the consume-exit removal (the
+    // runtime `flag == 0` gate discriminates the moved path); see the
+    // owned-Vec loop above.
     for states in dataflow_result.exit_states.values() {
         for (binding, state) in states {
             if matches!(
                 state,
                 dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
-            ) {
+            ) && !builder.collection_drop_flags.contains_key(binding)
+            {
                 local_collection_drop_allowed.remove(binding);
             }
         }
@@ -34444,12 +34551,16 @@ fn elaborate(
         &builder.binding_locals,
         |ty| builder.binding_ty_is_plain_vec(ty),
     );
+    // #2418 — flagged bindings are exempt from the consume-exit removal (the
+    // runtime `flag == 0` gate discriminates the moved path); see the
+    // owned-Vec loop above.
     for states in dataflow_result.exit_states.values() {
         for (binding, state) in states {
             if matches!(
                 state,
                 dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
-            ) {
+            ) && !builder.collection_drop_flags.contains_key(binding)
+            {
                 plain_vec_drop_allowed.remove(binding);
             }
         }
@@ -34462,11 +34573,13 @@ fn elaborate(
         &checked.blocks,
         &builder.binding_locals,
         &mut closure_vec_drop_allowed,
+        &builder.collection_drop_flags,
     );
     dedup_whole_value_handoff(
         &checked.blocks,
         &builder.binding_locals,
         &mut plain_vec_drop_allowed,
+        &builder.collection_drop_flags,
     );
 
     // Value-class capstone — owned-aggregate-record scope-exit drop allow-set.
@@ -34618,6 +34731,7 @@ fn elaborate(
         &plain_vec_drop_allowed,
         &indirect_enum_drop_allowed,
         &builder.resource_drop_flags,
+        &builder.collection_drop_flags,
     );
     let (elab_blocks, mut drop_plans) = enumerate_exits(
         &checked.blocks,
@@ -42996,6 +43110,7 @@ fn dedup_whole_value_handoff(
     blocks: &[BasicBlock],
     binding_locals: &HashMap<BindingId, Place>,
     allowed: &mut HashSet<BindingId>,
+    guarded: &HashMap<BindingId, Place>,
 ) {
     let admitted_locals: HashMap<u32, BindingId> = allowed
         .iter()
@@ -43039,7 +43154,15 @@ fn dedup_whole_value_handoff(
                 }
             }
         }
-        if handed_off {
+        if handed_off && !guarded.contains_key(start_binding) {
+            // #2418 — a source binding carrying a path-sensitive drop-flag is
+            // NOT stripped: its hand-off is a dataflow-visible consume (the
+            // flag is set 1 exactly where the move executes), so its
+            // scope-exit release already fires only on paths where the handle
+            // was never handed off. Stripping it would re-open the
+            // conditional-move leak the flag exists to close. Unguarded
+            // sources (the dataflow-invisible synthetic chains) keep the
+            // strip: the downstream owner fires the single release.
             allowed.remove(start_binding);
         }
     }
@@ -43088,7 +43211,20 @@ fn dedup_whole_value_handoff(
         component_admitted.entry(root).or_default().push(binding);
     }
     for bindings in component_admitted.values() {
-        if bindings.len() > 1 {
+        // #2418 — a flag-guarded binding (a conditional move's source) shares
+        // its component with the move's DESTINATION by construction, and the
+        // pair is exactly-once provable at runtime: the destination releases
+        // on the arm where the move executed (its own scope-close edge), the
+        // guarded source releases at scope exit only where the flag is still
+        // 0 (the not-moved path). So a component holding at most ONE
+        // unguarded member alongside guarded ones keeps every member.
+        // Components with two or more UNGUARDED members retain the fail-closed
+        // collapse — sole ownership across a dataflow-invisible fan-out is
+        // unprovable — and the collapse removes the guarded members with them
+        // (a guarded drop over an ambiguous share could still double-free on
+        // the not-moved path; leak instead, as before).
+        let unguarded = bindings.iter().filter(|b| !guarded.contains_key(b)).count();
+        if unguarded > 1 {
             for binding in bindings {
                 allowed.remove(binding);
             }
@@ -43352,6 +43488,7 @@ fn build_lifo_drops(
     plain_vec_drop_allowed: &HashSet<BindingId>,
     indirect_enum_drop_allowed: &HashSet<BindingId>,
     resource_drop_flags: &HashMap<BindingId, Place>,
+    collection_drop_flags: &HashMap<BindingId, Place>,
 ) -> Vec<ElabDrop> {
     let mut drops = Vec::new();
     for (binding, _name, ty) in owned_locals.iter().rev() {
@@ -43427,7 +43564,13 @@ fn build_lifo_drops(
                 kind: DropKind::CowHeap {
                     release: crate::ownership::CowHeapRelease::VecOwnedElement,
                 },
-                guard: None,
+                // #2418 — a conditionally-moved handle carries its
+                // path-sensitive drop-flag so the release fires exactly once:
+                // skipped where the flag reads 1 (moved out on this path),
+                // fired where it reads 0 (still owned). `None` for every
+                // unflagged binding (the common case) — byte-identical to the
+                // pre-#2418 drop.
+                guard: collection_drop_flags.get(binding).copied(),
             });
             continue;
         }
@@ -43464,7 +43607,9 @@ fn build_lifo_drops(
                 kind: DropKind::CowHeap {
                     release: crate::ownership::CowHeapRelease::VecPlain,
                 },
-                guard: None,
+                // #2418 — path-sensitive exactly-once gate for a
+                // conditionally-moved handle; see the owned-Vec arm above.
+                guard: collection_drop_flags.get(binding).copied(),
             });
             continue;
         }
@@ -43502,7 +43647,9 @@ fn build_lifo_drops(
                 ty: ty.clone(),
                 drop_fn: None,
                 kind: drop_kind_for(place, ty, None),
-                guard: None,
+                // #2418 — path-sensitive exactly-once gate for a
+                // conditionally-moved handle; see the owned-Vec arm above.
+                guard: collection_drop_flags.get(binding).copied(),
             });
             continue;
         }

@@ -3003,7 +3003,7 @@ pub fn lower_program_with_mono_cap(
                         ),
                     ));
                 }
-                items.push(HirItem::Actor(ctx.lower_actor(actor, span.clone())));
+                items.push(HirItem::Actor(ctx.lower_actor(actor, span.clone(), None)));
             }
             Item::Record(decl) => {
                 items.push(HirItem::Record(ctx.lower_record_decl(decl, span.clone())));
@@ -9042,7 +9042,7 @@ impl LowerCtx {
         rewrites: &HashMap<String, String>,
     ) -> HirActorDecl {
         let previous_rewrites = self.imported_fn_rewrites.replace(rewrites.clone());
-        let mut lowered = self.lower_actor(decl, span);
+        let mut lowered = self.lower_actor(decl, span, Some(module_short));
         lowered.defining_module = Some(module_short.to_string());
         // `lower_actor` attached checker side-tables under the bare name
         // (the root-actor identity). A module actor's checker identity is
@@ -10448,7 +10448,29 @@ impl LowerCtx {
     /// returned unchanged. Bare actor names nested inside containers/records are
     /// intentionally NOT rewritten here — that exotic shape stays fail-closed at
     /// the MIR classifier rather than being silently reinterpreted.
-    fn canonicalize_actor_ref_field_ty(&self, ty: ResolvedTy) -> ResolvedTy {
+    ///
+    /// `decl_module` is the defining module (short form, matching
+    /// `HirActorDecl::defining_module`/`qualified_name()`) of the actor decl
+    /// whose fields are being lowered — `None` for a root actor, `Some(module)`
+    /// for an actor lowered via `lower_imported_actor`. A bare field name is
+    /// canonicalised only when it EITHER exact-matches an entry in
+    /// `actor_type_names` already (a root actor referencing another root actor,
+    /// or a field annotation the checker already qualified) OR
+    /// `{decl_module}.{name}` matches (a package actor referencing a sibling
+    /// actor declared in the SAME module). Both checks resolve against what
+    /// the checker actually registered — never a global short-name scan across
+    /// every module in the program. A bare name that collides with a LOCAL
+    /// non-actor type (a record/enum shadowing an imported actor's short name)
+    /// never reaches this point as a false match: `resolve_named_type_ref`
+    /// already resolved it to the local type before `lower_type` returns, and
+    /// neither lookup here can accidentally re-target a different module's
+    /// actor, because `{decl_module}.{name}` is scoped to the module actually
+    /// being lowered (LESSONS: `per-module-type-identity`).
+    fn canonicalize_actor_ref_field_ty(
+        &self,
+        ty: ResolvedTy,
+        decl_module: Option<&str>,
+    ) -> ResolvedTy {
         if let ResolvedTy::Named {
             name,
             args,
@@ -10459,20 +10481,15 @@ impl LowerCtx {
             if builtin.is_none() && args.is_empty() {
                 let actor_name = if self.actor_type_names.contains(name) {
                     Some(name.clone())
+                } else if !name.contains('.') {
+                    decl_module.and_then(|module| {
+                        let qualified = format!("{module}.{name}");
+                        self.actor_type_names
+                            .contains(&qualified)
+                            .then_some(qualified)
+                    })
                 } else {
-                    let mut matches = self
-                        .actor_type_names
-                        .iter()
-                        .filter(|candidate| {
-                            candidate
-                                .rsplit_once('.')
-                                .is_some_and(|(_, short)| short == name)
-                        })
-                        .cloned();
-                    match (matches.next(), matches.next()) {
-                        (Some(unique), None) => Some(unique),
-                        _ => None,
-                    }
+                    None
                 };
 
                 if let Some(actor_name) = actor_name {
@@ -10490,7 +10507,17 @@ impl LowerCtx {
 
     /// Lower an `actor` declaration into `HirActorDecl`, including executable
     /// bodies for init blocks, receive handlers, methods, and lifecycle hooks.
-    fn lower_actor(&mut self, decl: &ActorDecl, span: Span) -> HirActorDecl {
+    ///
+    /// `decl_module` is `None` for a root actor and `Some(module_short)` for
+    /// an actor lowered via [`lower_imported_actor`](Self::lower_imported_actor);
+    /// it scopes `canonicalize_actor_ref_field_ty`'s bare-name resolution to
+    /// the module the actor is actually declared in.
+    fn lower_actor(
+        &mut self,
+        decl: &ActorDecl,
+        span: Span,
+        decl_module: Option<&str>,
+    ) -> HirActorDecl {
         let state_fields: Vec<HirField> = decl
             .fields
             .iter()
@@ -10498,7 +10525,7 @@ impl LowerCtx {
                 let lowered_ty = self.lower_type(&f.ty);
                 HirField {
                     name: f.name.clone(),
-                    ty: self.canonicalize_actor_ref_field_ty(lowered_ty),
+                    ty: self.canonicalize_actor_ref_field_ty(lowered_ty, decl_module),
                     default: f
                         .default
                         .as_ref()
@@ -30505,6 +30532,141 @@ mod tests {
              the private AppErr::NotFound in machine_ctor_registry: {:#?}",
             lowered.diagnostics
         );
+    }
+
+    /// Builds a tiny module `{mod_name}` declaring `pub actor Conn { receive
+    /// fn ping() -> i64 { <ping_result> } }` plus a sibling `pub actor
+    /// {holder_name} { let conn: Conn; ... }` whose state field references
+    /// `Conn` by bare name — the shape `canonicalize_actor_ref_field_ty`
+    /// scopes to the declaring module. The `get` handler deliberately does
+    /// NOT `await`/`match` on `conn`: that ask-reply inference path is
+    /// unrelated to this fix and, independent of
+    /// `canonicalize_actor_ref_field_ty`, does not yet resolve correctly
+    /// across two modules that both declare an actor with the same
+    /// receive-fn name in this raw multi-module harness (a separate,
+    /// pre-existing checker-layer gap). This isolates exactly what
+    /// `canonicalize_actor_ref_field_ty` decides: the lowered type of the
+    /// `conn` state field itself.
+    fn conn_holder_module(
+        mod_name: &str,
+        holder_name: &str,
+        ping_result: i64,
+    ) -> hew_parser::module::Module {
+        let source = format!(
+            "pub actor Conn {{ receive fn ping() -> i64 {{ {ping_result} }} }}\n\
+             pub actor {holder_name} {{ let conn: Conn; receive fn get() -> i64 {{ 0 }} }}\n"
+        );
+        let parsed = hew_parser::parse(&source);
+        assert!(
+            parsed.errors.is_empty(),
+            "module `{mod_name}` parse errors: {:?}",
+            parsed.errors
+        );
+        hew_parser::module::Module {
+            id: hew_parser::module::ModuleId::new(vec![mod_name.to_string()]),
+            items: parsed.program.items,
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        }
+    }
+
+    /// The lowered `conn` state field type of the named actor, or panics.
+    fn holder_conn_field_ty(lowered: &LowerOutput, holder_name: &str) -> ResolvedTy {
+        let Some(HirItem::Actor(actor)) = lowered
+            .module
+            .items
+            .iter()
+            .find(|item| matches!(item, HirItem::Actor(a) if a.name == holder_name))
+        else {
+            panic!("expected lowered {holder_name} actor");
+        };
+        actor
+            .state_fields
+            .iter()
+            .find(|f| f.name == "conn")
+            .expect("conn field")
+            .ty
+            .clone()
+    }
+
+    /// The canonical `LocalPid<{qualified_actor_name}>` shape that
+    /// `canonicalize_actor_ref_field_ty` produces for a resolved actor field.
+    fn localpid_of(qualified_actor_name: &str) -> ResolvedTy {
+        ResolvedTy::Named {
+            name: BuiltinType::LocalPid.canonical_name().to_string(),
+            args: vec![ResolvedTy::named_user(
+                qualified_actor_name.to_string(),
+                Vec::new(),
+            )],
+            builtin: Some(BuiltinType::LocalPid),
+            is_opaque: false,
+        }
+    }
+
+    /// Regression for the ambiguous-short-name case: two DIFFERENT modules
+    /// each declare their own `pub actor Conn` and each has a sibling actor
+    /// with a state field that references `Conn` by bare name. Before the
+    /// fix, `canonicalize_actor_ref_field_ty`'s global short-name sweep over
+    /// `actor_type_names` found two candidates for bare `Conn` and
+    /// canonicalized NEITHER, leaving both fields fail-closed at MIR.
+    /// Scoping resolution to `{decl_module}.{name}` means each module's bare
+    /// `Conn` resolves to that SAME module's `Conn` — independently, with no
+    /// cross-module ambiguity, because the lookup never leaves the module
+    /// being lowered.
+    ///
+    /// This exercises HIR lowering directly, bypassing `hew build`/`hew
+    /// run`'s parsed-`import`-statement visibility gate — a separate,
+    /// pre-existing checker-layer limitation unrelated to this fix: a plain
+    /// `import pkg;` does not publish `pkg`'s types unqualified, and that
+    /// gate's "not in scope" diagnostic fires on any caller of a module
+    /// whose actor has a same-module bare-actor-typed field, regardless of
+    /// whether the caller ever names the colliding type.
+    #[test]
+    fn same_short_name_actors_in_different_modules_canonicalize_independently() {
+        use hew_parser::module::{ModuleGraph, ModuleId};
+
+        let modules = [
+            conn_holder_module("a", "HolderA", 1),
+            conn_holder_module("b", "HolderB", 2),
+        ];
+        let module_ids: Vec<ModuleId> = modules.iter().map(|m| m.id.clone()).collect();
+        let root_id = ModuleId::root();
+        let mut mg = ModuleGraph::new(root_id.clone());
+        for module in modules {
+            mg.add_module(module).unwrap();
+        }
+        mg.topo_order = module_ids.into_iter().chain([root_id]).collect();
+        let program = Program {
+            module_graph: Some(mg),
+            items: vec![],
+            module_doc: None,
+        };
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let tco = checker.check_program(&program);
+        assert!(
+            tco.errors.is_empty(),
+            "type errors (should be none): {:?}",
+            tco.errors
+        );
+
+        let lowered = lower_program(&program, &tco, &ResolutionCtx, TargetArch::host());
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "HIR diagnostics must be empty: {:#?}",
+            lowered.diagnostics
+        );
+
+        for (mod_name, holder_name) in [("a", "HolderA"), ("b", "HolderB")] {
+            assert_eq!(
+                holder_conn_field_ty(&lowered, holder_name),
+                localpid_of(&format!("{mod_name}.Conn")),
+                "module {mod_name}'s bare `Conn` field must canonicalize to \
+                 {mod_name}.Conn, never the OTHER module's same-named actor \
+                 or an unresolved bare name"
+            );
+        }
     }
 }
 

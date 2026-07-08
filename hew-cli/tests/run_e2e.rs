@@ -5280,6 +5280,65 @@ fn run_imported_actor_state_bare_actor_field_canonicalizes_to_localpid() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "v=42\n");
 }
 
+/// Regression for the local-shadow scoping defect: a LOCAL non-actor type
+/// whose bare name collides with an UNRELATED imported actor's short name
+/// must keep its local identity. `canonicalize_actor_ref_field_ty` used to
+/// canonicalize any bare field name that uniquely matched an actor's short
+/// name ANYWHERE in the program (a global sweep over `actor_type_names`),
+/// which silently hijacked this local record field into `LocalPid<m.Inner>`
+/// and rejected the program with `E_NOT_YET_IMPLEMENTED: field access on
+/// unregistered record type LocalPid$$Inner`. The fix scopes bare-name
+/// resolution to `{decl_module}.{name}` (the actor decl's own module), so a
+/// root-declared `Holder` referencing a root-declared `type Inner` never
+/// consults `m`'s actor at all — local definitions win, per LESSONS
+/// `per-module-type-identity`.
+#[test]
+fn run_local_record_shadows_imported_actor_short_name() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let pkg_dir = dir.path().join("hew").join("m");
+    std::fs::create_dir_all(&pkg_dir).unwrap();
+    std::fs::write(
+        pkg_dir.join("m.hew"),
+        "pub actor Inner {\n\
+         \x20   receive fn ping() -> i64 { 99 }\n\
+         }\n",
+    )
+    .unwrap();
+    let main = dir.path().join("main.hew");
+    std::fs::write(
+        &main,
+        "import hew::m;\n\
+         \n\
+         type Inner { x: i64 }\n\
+         \n\
+         actor Holder {\n\
+         \x20   let inner: Inner;\n\
+         \x20   receive fn get() -> i64 { inner.x }\n\
+         }\n\
+         \n\
+         fn main() {\n\
+         \x20   let h = spawn Holder(inner: Inner { x: 7 });\n\
+         \x20   match await h.get() {\n\
+         \x20       Ok(v) => println(f\"v={v}\"),\n\
+         \x20       Err(_) => println(\"err\"),\n\
+         \x20   }\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&main, dir.path());
+    assert!(
+        output.status.success(),
+        "a local record shadowing an unrelated imported actor's short name \
+         must compile and run as the local record; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "v=7\n");
+}
+
 /// Fail-closed guard for Blocker 2: a *non-pub* actor in an imported package is
 /// not exported, so `spawn secret.Hidden()` must fail rather than silently
 /// resolve. The fix deliberately lowers `HirItem::Actor` only for `pub` imported

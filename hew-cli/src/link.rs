@@ -1952,31 +1952,44 @@ mod tests {
         // The shipped archive builds under `[profile.release-lib]` (non-LTO).
         // A plain `cargo build --release` still leaves a fat-LTO archive in
         // `target/release/`, which cannot dedupe against external staticlibs —
-        // when both exist, the linkable release-lib one must win.
-        let exe_dir = std::path::Path::new("/repo/target/debug");
-        let candidates = hew_lib_candidates(exe_dir, "libhew.a", "aarch64-apple-darwin");
-        let position = |suffix: &str| {
-            candidates
-                .iter()
-                .position(|path| path.display().to_string().ends_with(suffix))
-                .unwrap_or_else(|| panic!("candidate ending `{suffix}` missing: {candidates:?}"))
-        };
+        // when both exist, the linkable release-lib one must win. The ordering
+        // must hold for both platform archive names; matching is component-wise
+        // (`Path::ends_with`) so `Path::join`'s host separator cannot skew it.
+        for (name, triple) in [
+            ("libhew.a", "aarch64-apple-darwin"),
+            ("hew.lib", "x86_64-pc-windows-msvc"),
+        ] {
+            let exe_dir = std::path::Path::new("/repo/target/debug");
+            let candidates = hew_lib_candidates(exe_dir, name, triple);
+            let position = |suffix: String| {
+                candidates
+                    .iter()
+                    .position(|path| path.ends_with(&suffix))
+                    .unwrap_or_else(|| {
+                        panic!("candidate ending `{suffix}` missing: {candidates:?}")
+                    })
+            };
 
-        // Host-fallback block: release-lib before same-dir and target/release.
-        assert!(
-            position("../../target/release-lib/libhew.a") < position("/repo/target/debug/libhew.a")
-        );
-        assert!(
-            position("../../target/release-lib/libhew.a")
-                < position("../../target/release/libhew.a")
-        );
-        assert!(position("../release-lib/libhew.a") < position("/repo/target/debug/libhew.a"));
+            // Host-fallback block: release-lib before same-dir and target/release.
+            assert!(
+                position(format!("../../target/release-lib/{name}"))
+                    < position(format!("/repo/target/debug/{name}"))
+            );
+            assert!(
+                position(format!("../../target/release-lib/{name}"))
+                    < position(format!("../../target/release/{name}"))
+            );
+            assert!(
+                position(format!("../release-lib/{name}"))
+                    < position(format!("/repo/target/debug/{name}"))
+            );
 
-        // Cross-target block: <triple>/release-lib before <triple>/release.
-        assert!(
-            position("aarch64-apple-darwin/release-lib/libhew.a")
-                < position("aarch64-apple-darwin/release/libhew.a")
-        );
+            // Cross-target block: <triple>/release-lib before <triple>/release.
+            assert!(
+                position(format!("{triple}/release-lib/{name}"))
+                    < position(format!("{triple}/release/{name}"))
+            );
+        }
     }
 
     #[test]

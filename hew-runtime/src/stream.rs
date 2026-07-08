@@ -429,7 +429,18 @@ impl StreamBacking for LinesStream {
             // found) is bypassed entirely and an arbitrarily large line can
             // be returned whole, defeating the point of the cap.
             if let Some(pos) = self.buf.iter().position(|&b| b == b'\n') {
-                if pos < MAX_LINE_BUFFER_SIZE {
+                // `pos` is the index of the delimiter itself, not the
+                // content length: for a CRLF-terminated line, the '\r' just
+                // before it is a delimiter byte, not content. When pos ==
+                // MAX_LINE_BUFFER_SIZE and that preceding byte is '\r', the
+                // actual content (everything before the '\r') still fits
+                // within the cap, so this must still take the fast path —
+                // otherwise the '\r' gets misclassified as content and
+                // leaked into the returned line by the size-limit drain
+                // below.
+                if pos < MAX_LINE_BUFFER_SIZE
+                    || (pos == MAX_LINE_BUFFER_SIZE && self.buf[pos - 1] == b'\r')
+                {
                     let mut line: Vec<u8> = self.buf.drain(..=pos).collect();
                     // Strip the trailing newline delimiter (and \r for CRLF).
                     if line.last() == Some(&b'\n') {
@@ -3728,6 +3739,30 @@ mod tests {
             assert_eq!(items.len(), 2);
             assert_eq!(items[0].len(), MAX_LINE_BUFFER_SIZE);
             assert_eq!(items[1], b"tail");
+            hew_stream_close(lines);
+        }
+    }
+
+    #[test]
+    fn lines_crlf_content_at_cap_minus_one_not_corrupted() {
+        // Regression: a single chunk (item_size=0) whose content is exactly
+        // MAX_LINE_BUFFER_SIZE - 1 bytes, terminated by "\r\n". The '\n' sits
+        // at index MAX_LINE_BUFFER_SIZE (the '\r' just before it is index
+        // MAX_LINE_BUFFER_SIZE - 1), so `pos == MAX_LINE_BUFFER_SIZE`. The
+        // boundary check must recognize the preceding '\r' as a delimiter
+        // byte (not content) and still take the fast/newline path, yielding
+        // exactly one line of content length MAX_LINE_BUFFER_SIZE - 1 whose
+        // last byte is 'Z' — not a cap-sized line with a leaked '\r' (0x0D).
+        let mut data = vec![b'Z'; MAX_LINE_BUFFER_SIZE - 1];
+        data.extend_from_slice(b"\r\n");
+        // SAFETY: all FFI calls use valid pointers.
+        unsafe {
+            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            let lines = hew_stream_lines(raw);
+            let items = drain_stream(lines);
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].len(), MAX_LINE_BUFFER_SIZE - 1);
+            assert_eq!(items[0].last(), Some(&b'Z'));
             hew_stream_close(lines);
         }
     }

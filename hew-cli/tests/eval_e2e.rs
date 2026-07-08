@@ -45,8 +45,8 @@ fn run_eval_with_piped_stdin_and_pty_stdout(args: &[&str], input: &str) -> Outpu
             &raw mut master,
             &raw mut slave,
             std::ptr::null_mut(),
-            std::ptr::null(),
-            std::ptr::null(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
         )
     };
     assert_eq!(rc, 0, "openpty failed: {}", std::io::Error::last_os_error());

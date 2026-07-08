@@ -234,6 +234,137 @@ fn hew_build(
     run_bounded_command(cmd, "hew build --link-lib")
 }
 
+/// `hew run --link-lib <archive>` must thread the archive into the native link
+/// step exactly like `hew build --link-lib` does. Before the fix,
+/// `compile_temp_artifact` passed a literal `&[]` to `compile_build_binary`,
+/// silently dropping the flag — the link then failed with an undefined
+/// `hew_fixture_value` reference.
+#[test]
+fn run_link_lib_links_and_executes() {
+    require_codegen();
+    let dir = tempdir();
+
+    let Some(lib) = build_staticlib(
+        dir.path(),
+        "run_ffi",
+        r#"#[no_mangle]
+pub extern "C" fn hew_fixture_value() -> i32 { 42 }
+"#,
+    ) else {
+        return;
+    };
+
+    let prog = write_program(
+        dir.path(),
+        "run_prog",
+        r#"extern "C" { fn hew_fixture_value() -> i32; }
+fn main() {
+    let v: i32 = unsafe { hew_fixture_value() };
+    println(f"{v}");
+}
+"#,
+    );
+
+    let mut cmd = Command::new(hew_binary());
+    cmd.arg("run")
+        .arg("--link-lib")
+        .arg(&lib)
+        .arg(&prog)
+        .current_dir(dir.path());
+    let out = run_bounded_command(cmd, "hew run --link-lib");
+    assert!(
+        out.status.success(),
+        "`hew run --link-lib` must link the archive and execute:\n{}",
+        describe_output(&out),
+    );
+    // Exact value: `len() > 0`-style assertions pass on garbage.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        stdout.trim(),
+        "42",
+        "expected the extern's exact value on stdout:\n{}",
+        describe_output(&out),
+    );
+}
+
+/// `hew run --target wasm32-wasi --link-lib …` must be rejected loudly (exit 2)
+/// BEFORE any compilation — a native archive cannot be linked into a wasm
+/// module, and silently dropping the flag is fail-open. The archive path
+/// deliberately does not exist: the guard must fire before anything touches it.
+#[test]
+fn run_wasi_link_lib_rejected() {
+    let dir = tempdir();
+    let prog = write_program(
+        dir.path(),
+        "wasi_prog",
+        "fn main() {\n    println(\"unreachable\");\n}\n",
+    );
+
+    let mut cmd = Command::new(hew_binary());
+    cmd.arg("run")
+        .arg("--target")
+        .arg("wasm32-wasi")
+        .arg("--link-lib")
+        .arg("libdoes_not_exist.a")
+        .arg(&prog)
+        .current_dir(dir.path());
+    let out = run_bounded_command(cmd, "hew run --target wasm32-wasi --link-lib");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "wasi run with --link-lib must exit 2 (usage error):\n{}",
+        describe_output(&out),
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--link-lib is not supported for WASI targets"),
+        "expected the loud WASI rejection message:\n{}",
+        describe_output(&out),
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "the program must not run:\n{}",
+        describe_output(&out),
+    );
+}
+
+/// `hew build --target wasm32-unknown-unknown --link-lib …` must be rejected
+/// loudly (exit 2) — the wasm branch of the build path used to silently ignore
+/// the archives.
+#[test]
+fn build_wasm_link_lib_rejected() {
+    let dir = tempdir();
+    let prog = write_program(
+        dir.path(),
+        "wasm_prog",
+        "fn main() {\n    println(\"unreachable\");\n}\n",
+    );
+
+    let mut cmd = Command::new(hew_binary());
+    cmd.arg("build")
+        .arg("--target")
+        .arg("wasm32-unknown-unknown")
+        .arg("--link-lib")
+        .arg("libdoes_not_exist.a")
+        .arg(&prog)
+        .arg("-o")
+        .arg(dir.path().join("wasm_out"))
+        .current_dir(dir.path());
+    let out = run_bounded_command(cmd, "hew build --target wasm32-unknown-unknown --link-lib");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "wasm build with --link-lib must exit 2 (usage error):\n{}",
+        describe_output(&out),
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--link-lib is not supported for wasm targets"),
+        "expected the loud wasm rejection message:\n{}",
+        describe_output(&out),
+    );
+}
+
 /// A minimal `extern "C"` function resolves and runs when its staticlib is
 /// supplied via `--link-lib`. (`mvp_add(2, 3) == 5`.)
 #[test]

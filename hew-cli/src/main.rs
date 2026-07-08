@@ -955,6 +955,18 @@ fn cmd_build(a: &args::BuildArgs) {
         eprintln!("Error: {e}");
         std::process::exit(2);
     });
+
+    // `--link-lib` names a NATIVE archive; a wasm module cannot link one. The
+    // wasm branch of `compile_build_binary` has no use for the archives, so
+    // reject loudly here instead of silently dropping the flag (fail-open).
+    if target.is_wasm() && !a.link_libs.is_empty() {
+        eprintln!(
+            "Error: --link-lib is not supported for wasm targets \
+             (native archives cannot be linked into a wasm module)"
+        );
+        std::process::exit(2);
+    }
+
     let options = a.to_compile_options();
 
     // The clap `value_parser` already constrains `--opt-level` to {"0","2"}, so
@@ -1126,19 +1138,33 @@ fn compile_temp_debug_artifact(
     input: &str,
     options: &compile::CompileOptions,
     target: &target::ExecutionTarget,
+    extra_libs: &[String],
 ) -> Result<CompiledTempExecutable, ()> {
     // `hew debug` launches a native debugger on the artifact, so it must carry
     // DWARF debug info — emit it even though the shared `hew run` path does not.
-    compile_temp_artifact(input, create_debug_temp_artifact(target), options, true)
+    compile_temp_artifact(
+        input,
+        create_debug_temp_artifact(target),
+        options,
+        true,
+        extra_libs,
+    )
 }
 
 fn compile_temp_run_artifact(
     input: &str,
     options: &compile::CompileOptions,
     target: &target::ExecutionTarget,
+    extra_libs: &[String],
 ) -> Result<CompiledTempExecutable, ()> {
     // `hew run` is the fast-exec path; no debug info.
-    compile_temp_artifact(input, create_run_temp_artifact(target), options, false)
+    compile_temp_artifact(
+        input,
+        create_run_temp_artifact(target),
+        options,
+        false,
+        extra_libs,
+    )
 }
 
 /// Compile a `.hew` source file to a temporary `.wasm` module for WASI execution.
@@ -1231,10 +1257,12 @@ fn compile_temp_artifact(
     artifact: CompiledTempExecutable,
     options: &compile::CompileOptions,
     debug: bool,
+    extra_libs: &[String],
 ) -> Result<CompiledTempExecutable, ()> {
     // Route through the same path as `hew build` so `hew run` honours
-    // `--pkg-path` (resolving `hew::<pkg>` imports) and auto-links the native
-    // (FFI) staticlibs declared by imported packages.
+    // `--pkg-path` (resolving `hew::<pkg>` imports), auto-links the native
+    // (FFI) staticlibs declared by imported packages, and threads explicit
+    // `--link-lib` archives into the final link.
     let target = match target::TargetSpec::from_requested(options.target.as_deref()) {
         Ok(target) => target,
         Err(e) => {
@@ -1251,7 +1279,7 @@ fn compile_temp_artifact(
         // `hew run` is debug-default O0; the `HEW_OPT_LEVEL` env floor lifts the
         // whole corpus to O2 for the differential-exec parity gate.
         hew_codegen_rs::OptLevel::O0,
-        &[],
+        extra_libs,
         options,
     )
     .is_ok()
@@ -1308,6 +1336,18 @@ fn cmd_run(a: &args::RunArgs) {
     let input = a.input.display().to_string();
     let options = a.to_compile_options();
     let target = resolve_run_target(options.target.as_deref());
+
+    // `--link-lib` names a NATIVE archive; a wasm module cannot link one.
+    // Reject loudly before any compilation — silently dropping the flag would
+    // produce a module missing the user's symbols (fail-open).
+    if target.is_wasi() && !a.link_libs.is_empty() {
+        eprintln!(
+            "Error: --link-lib is not supported for WASI targets \
+             (native archives cannot be linked into a wasm module)"
+        );
+        std::process::exit(2);
+    }
+
     let timeout = a.timeout.as_deref().map(|raw| {
         crate::util::parse_timeout(raw).unwrap_or_else(|e| {
             eprintln!("Error: {e}");
@@ -1379,7 +1419,7 @@ fn cmd_run_native(
     target: &target::ExecutionTarget,
     timeout: Option<std::time::Duration>,
 ) -> ! {
-    let artifact = compile_temp_run_artifact(input, options, target)
+    let artifact = compile_temp_run_artifact(input, options, target, &a.link_libs)
         .unwrap_or_else(|()| std::process::exit(1));
 
     let mut command = std::process::Command::new(artifact.path());
@@ -1518,7 +1558,7 @@ fn cmd_debug(a: &args::DebugArgs) {
     let input = a.input.display().to_string();
     let options = a.to_compile_options();
     let target = resolve_debug_target(options.target.as_deref());
-    let artifact = compile_temp_debug_artifact(&input, &options, &target)
+    let artifact = compile_temp_debug_artifact(&input, &options, &target, &a.link_libs)
         .unwrap_or_else(|()| std::process::exit(1));
     let (debugger, debugger_args) =
         match resolve_debugger_invocation(artifact.path(), &a.program_args) {

@@ -1681,12 +1681,46 @@ pub(crate) struct ConstGlobal<'ctx> {
     pub(crate) ty: BasicTypeEnum<'ctx>,
 }
 
+/// How a user `extern "C"` function's `#[repr(C)]` RECORD return crosses the
+/// C-ABI boundary, decided by [`crate::abi_class::classify_aggregate`] at
+/// declaration time and consumed at the `Terminator::Call` edge so the
+/// declaration and the call agree on one decision (LESSONS
+/// `aggregate-abi-by-classifier-not-per-symbol`). Absent (`None` on
+/// [`FnSymbol::Real`]) for every non-record return — scalars, pointers, opaque
+/// handles, `bytes` (the `_raw`/`[2 x i64]` path), and `Unit` keep their
+/// existing lowering untouched.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ExternRecordRet<'ctx> {
+    /// The record is returned indirectly: the declared function is
+    /// `void @f(ptr sret(pointee) noalias, params…)`. The caller allocates the
+    /// result slot, passes its address as the FIRST argument, and issues no
+    /// post-call store (the callee writes through the pointer). Used for
+    /// every over-16-byte record (all targets) and every non-{1,2,4,8}-byte
+    /// record on Windows x64 MSVC.
+    Sret { pointee: StructType<'ctx> },
+    /// The record is returned by value in a register carrier: the declared
+    /// function returns an `[N x i64]` (RegisterPair) or an `iN` (Direct
+    /// multi-field coerced-int), which LLVM returns in the same register(s) the
+    /// C ABI uses for a `#[repr(C)]` INTEGER-class aggregate of this size. The
+    /// caller stores the returned carrier value directly into the destination
+    /// record slot — the carrier's byte width equals the record's ABI size, so
+    /// the raw store reconstructs the record (identical to
+    /// `store_classified_bytes_return`'s register-pair arm). `pointee` is the
+    /// record's LLVM struct type, checked against the caller's dest slot.
+    Carrier { pointee: StructType<'ctx> },
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum FnSymbol<'ctx> {
     Real {
         value: FunctionValue<'ctx>,
         return_ty: BasicTypeEnum<'ctx>,
         returns_unit: bool,
+        /// `Some` only for a user `extern "C"` function returning a `#[repr(C)]`
+        /// record whose C-ABI return crossing needs a carrier or sret. The
+        /// `Terminator::Call` `FnSymbol::Real` arm dispatches on this BEFORE the
+        /// generic by-value path; `None` for every other symbol.
+        extern_record_ret: Option<ExternRecordRet<'ctx>>,
     },
     PrintIntercept {
         runtime_symbol: &'static str,
@@ -1720,7 +1754,25 @@ impl<'ctx> FnSymbol<'ctx> {
                 value,
                 return_ty,
                 returns_unit,
-            } => Ok((value, return_ty, returns_unit)),
+                extern_record_ret,
+            } => {
+                if extern_record_ret.is_some() {
+                    // Every `.real()` consumer (spawn thunks, MakeClosure, drop
+                    // dispatch, wasm main export, dyn-trait thunks, lower_function)
+                    // emits a DIRECT by-value call/return. A record-return extern
+                    // needs the sret/carrier call edge in `Terminator::Call`; a
+                    // by-value call would miscompile it. None of those consumers can
+                    // legitimately receive a record-return extern today, so reject
+                    // loudly rather than silently emit a wrong-ABI call.
+                    return Err(CodegenError::FailClosed(format!(
+                        "{context} expected `{callee}` to be a by-value-callable function, but \
+                         it is a user extern returning a `#[repr(C)]` record through a \
+                         carrier/sret ABI; only Terminator::Call handles that call edge \
+                         (LESSONS: aggregate-abi-by-classifier-not-per-symbol)"
+                    )));
+                }
+                Ok((value, return_ty, returns_unit))
+            }
             Self::PrintIntercept { .. } => Err(CodegenError::FailClosed(format!(
                 "{context} expected `{callee}` to be a callable LLVM function, \
                  but it is a stdlib print intercept"
@@ -3637,6 +3689,7 @@ fn declare_catalog_ffi<'ctx>(
             value,
             return_ty,
             returns_unit: matches!(entry.return_ty, BuiltinTy::Unit | BuiltinTy::Never),
+            extern_record_ret: None,
         });
     }
     let bytes_by_pointer = crate::runtime_abi::is_bytes_by_pointer_consumer(symbol);
@@ -3696,6 +3749,7 @@ fn declare_catalog_ffi<'ctx>(
         value,
         return_ty: return_ty.unwrap_or_else(|| ctx.i8_type().into()),
         returns_unit: return_ty.is_none(),
+        extern_record_ret: None,
     })
 }
 
@@ -3792,6 +3846,315 @@ fn predeclare_stdlib_catalog<'ctx>(
     Ok(())
 }
 
+/// Returns `true` if `struct_ty` has any floating-point or SIMD-vector leaf
+/// field (recursively, through nested structs and arrays). A `bytes` field is
+/// `{ptr, i32, i32}` — integer/pointer only, so it is NOT a float leaf.
+///
+/// Such aggregates fall into the SysV SSE / AAPCS64 HFA return classes that the
+/// size-only [`crate::abi_class::classify_aggregate`] does not model; the extern
+/// record-return path fails closed on them rather than misrouting a
+/// float-bearing aggregate as an INTEGER-class register pair (which AAPCS64
+/// would return in `d`-registers, not memory / GP registers).
+fn struct_has_float_or_vector_leaf(struct_ty: StructType<'_>) -> bool {
+    struct_ty
+        .get_field_types()
+        .into_iter()
+        .any(basic_ty_has_float_or_vector_leaf)
+}
+
+fn basic_ty_has_float_or_vector_leaf(ty: BasicTypeEnum<'_>) -> bool {
+    match ty {
+        BasicTypeEnum::FloatType(_)
+        | BasicTypeEnum::VectorType(_)
+        | BasicTypeEnum::ScalableVectorType(_) => true,
+        BasicTypeEnum::StructType(s) => struct_has_float_or_vector_leaf(s),
+        BasicTypeEnum::ArrayType(a) => basic_ty_has_float_or_vector_leaf(a.get_element_type()),
+        BasicTypeEnum::IntType(_) | BasicTypeEnum::PointerType(_) => false,
+    }
+}
+
+/// Classify how a user `extern "C"` function's `#[repr(C)]` RECORD return
+/// (`struct_ty`) crosses the C-ABI boundary and DECLARE the LLVM function with
+/// the matching carrier/sret shape. Returns `Some((fn_value, abi))` when the
+/// return needs a carrier or sret, or `None` when the record is a Direct
+/// single-field aggregate whose bare struct return is already correct (the
+/// caller then falls through to the generic declaration).
+///
+/// This is the generic-user-extern consumer of the ABI classifier that #2399
+/// was missing: previously only three hardcoded runtime symbols were classified,
+/// and every user extern record return was declared with a bare
+/// `fn_type_for_return` — no size check, no attribute — silently miscompiling
+/// any record whose C-ABI return crossing differs from LLVM's bare aggregate
+/// lowering.
+///
+/// `param_tys` are the function's declared non-return parameters (already
+/// lowered); the sret arm prepends the hidden result pointer, the carrier arms
+/// leave them unchanged.
+///
+/// # Errors
+///
+/// Fails closed for a float/SIMD-bearing record (SSE/HFA classes unmodelled), a
+/// wasm32 record return (no runtime probe proves that ABI), an unmodelled
+/// target (propagated from the classifier), or a RegisterPair record with a
+/// sub-eightbyte tail whose carrier store would overflow the destination slot.
+fn classify_extern_record_return<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    target_data: &TargetData,
+    name: &str,
+    struct_ty: StructType<'ctx>,
+    param_tys: &[BasicMetadataTypeEnum<'ctx>],
+) -> CodegenResult<Option<(FunctionValue<'ctx>, ExternRecordRet<'ctx>)>> {
+    use crate::abi_class::AbiClass;
+
+    // Fail-closed pre-check: SysV SSE / AAPCS64 HFA classes are not modelled.
+    if struct_has_float_or_vector_leaf(struct_ty) {
+        return Err(CodegenError::FailClosed(format!(
+            "extern `{name}` returns a `#[repr(C)]` record containing a float/SIMD field; \
+             the SysV SSE / AAPCS64 HFA aggregate-return classes are not modelled. Return \
+             the record through an out-pointer parameter, or split the float fields out. \
+             (LESSONS: boundary-fail-closed)"
+        )));
+    }
+
+    let triple = llvm_mod.get_triple();
+    let triple_str = triple.as_str().to_string_lossy();
+
+    // Fail-closed pre-check: wasm32. `classify_aggregate`'s wasm32 arm is
+    // size-only and would misclassify a multi-field <=8-byte aggregate; no
+    // compiled-binary probe exercises the wasm32 extern-record-return ABI, so
+    // fail closed rather than emit an unproven lowering.
+    if triple_str.starts_with("wasm32") {
+        return Err(CodegenError::FailClosed(format!(
+            "extern `{name}` returns a `#[repr(C)]` record on wasm32; the wasm32 extern \
+             record-return ABI is not modelled. Return the record through an out-pointer \
+             parameter. (LESSONS: boundary-fail-closed)"
+        )));
+    }
+
+    let class = crate::abi_class::classify_aggregate(struct_ty, target_data, &triple_str)?;
+    match class {
+        AbiClass::Indirect => {
+            // void @name(ptr sret(struct) noalias, params...). The caller
+            // allocates the result slot and passes its address as arg 0.
+            let ptr_ty = ctx.ptr_type(AddressSpace::default());
+            let mut sret_params: Vec<BasicMetadataTypeEnum<'ctx>> =
+                Vec::with_capacity(param_tys.len() + 1);
+            sret_params.push(ptr_ty.into());
+            sret_params.extend_from_slice(param_tys);
+            let fn_ty = ctx.void_type().fn_type(&sret_params, false);
+            let value = llvm_mod
+                .get_function(name)
+                .unwrap_or_else(|| llvm_mod.add_function(name, fn_ty, Some(Linkage::External)));
+            crate::abi_class::apply_return_attrs(ctx, value, class, struct_ty.into(), 0)?;
+            Ok(Some((value, ExternRecordRet::Sret { pointee: struct_ty })))
+        }
+        AbiClass::RegisterPair => {
+            // [N x i64] @name(params...): LLVM returns the carrier in the same
+            // N-register pair the Rust #[repr(C)] INTEGER-class aggregate uses.
+            // The raw carrier store at the call site is byte-exact only when the
+            // carrier's width equals the record's ABI size — i.e. a whole number
+            // of eightbytes. A sub-eightbyte tail (9-15 B) would overflow the
+            // destination slot, so fail closed.
+            let size = target_data.get_abi_size(&struct_ty);
+            let eightbytes = size.div_ceil(8);
+            if eightbytes * 8 != size {
+                return Err(CodegenError::FailClosed(format!(
+                    "extern `{name}` returns a {size}-byte record classified RegisterPair \
+                     with a sub-eightbyte tail; the register-pair carrier store is byte-exact \
+                     only for whole-eightbyte sizes. Pad the record to a multiple of 8 bytes \
+                     or return it through an out-pointer. (LESSONS: boundary-fail-closed)"
+                )));
+            }
+            let n = u32::try_from(eightbytes).map_err(|_| {
+                CodegenError::FailClosed(format!(
+                    "extern `{name}` record size {size} overflows the eightbyte carrier count"
+                ))
+            })?;
+            let carrier = ctx.i64_type().array_type(n);
+            let fn_ty = carrier.fn_type(param_tys, false);
+            let value = llvm_mod
+                .get_function(name)
+                .unwrap_or_else(|| llvm_mod.add_function(name, fn_ty, Some(Linkage::External)));
+            Ok(Some((
+                value,
+                ExternRecordRet::Carrier { pointee: struct_ty },
+            )))
+        }
+        AbiClass::Direct => {
+            if struct_ty.count_fields() <= 1 {
+                // Single-field aggregate: the field occupies the whole return, so
+                // the bare struct return matches the C ABI. Natural — fall through.
+                return Ok(None);
+            }
+            // Direct multi-field: the C ABI coerces the <=8-byte aggregate into
+            // ONE INTEGER register while a bare struct return splits the fields.
+            // Declare an iN carrier (N = size*8) so LLVM returns it in one
+            // register. Direct sizes are exactly 1|2|4|8, so the carrier width
+            // equals the record's ABI size and the raw store is byte-exact;
+            // any other size reaching a Direct multi-field class is a
+            // classifier-contract violation — fail closed.
+            let size = target_data.get_abi_size(&struct_ty);
+            let carrier = match size {
+                1 => ctx.i8_type(),
+                2 => ctx.i16_type(),
+                4 => ctx.i32_type(),
+                8 => ctx.i64_type(),
+                other => {
+                    return Err(CodegenError::FailClosed(format!(
+                        "extern `{name}` returns a {other}-byte record classified Direct \
+                         multi-field; the coerced-int carrier is defined only for sizes \
+                         1/2/4/8. (LESSONS: boundary-fail-closed)"
+                    )));
+                }
+            };
+            let fn_ty = carrier.fn_type(param_tys, false);
+            let value = llvm_mod
+                .get_function(name)
+                .unwrap_or_else(|| llvm_mod.add_function(name, fn_ty, Some(Linkage::External)));
+            Ok(Some((
+                value,
+                ExternRecordRet::Carrier { pointee: struct_ty },
+            )))
+        }
+        AbiClass::CoercedInt { .. } => {
+            // `classify_aggregate` never produces CoercedInt today; the Direct
+            // multi-field arm above handles the coerced-int case directly. If a
+            // future classifier arm returns CoercedInt it needs its own carrier
+            // wiring here rather than a silent emit.
+            Err(CodegenError::FailClosed(format!(
+                "extern `{name}` classified CoercedInt; the extern record-return path does \
+                 not wire that classifier arm. (LESSONS: boundary-fail-closed)"
+            )))
+        }
+    }
+}
+
+/// Emit the `Terminator::Call` edge for a user extern whose `#[repr(C)]`
+/// record return was classified by [`classify_extern_record_return`]. The
+/// declaration and this call edge share the one [`ExternRecordRet`] decision so
+/// they cannot disagree (LESSONS `codegen-call-matches-callee-arity`).
+///
+/// - [`ExternRecordRet::Sret`]: the caller's destination slot IS the result
+///   slot — its address is PREPENDED as argument 0 (sret is the first
+///   parameter; the callee writes the record through it, so there is no
+///   post-call store). Because of the hidden leading parameter, every declared
+///   parameter type sits at `idx + 1` relative to the Hew argument list — the
+///   int-width reconciliation must read the shifted index or every width
+///   reconciliation silently misaligns (LESSONS `ffi-abi-width-mirror`; the
+///   `recordret_big_mixed` probe pins this).
+/// - [`ExternRecordRet::Carrier`]: the call returns an `[N x i64]` / `iN`
+///   carrier whose byte width equals the record's ABI size (checked at
+///   declaration); store the carrier value raw into the destination slot — the
+///   byte layouts match, reconstructing the record (the documented
+///   `store_classified_bytes_return` register-pair mechanism).
+fn emit_extern_record_return_call<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    callee: &str,
+    value: FunctionValue<'ctx>,
+    record_ret_abi: ExternRecordRet<'ctx>,
+    args: &[Place],
+    dest: Option<&Place>,
+) -> CodegenResult<()> {
+    let (is_sret, pointee) = match record_ret_abi {
+        ExternRecordRet::Sret { pointee } => (true, pointee),
+        ExternRecordRet::Carrier { pointee } => (false, pointee),
+    };
+    // The record return is an owned aggregate: `hew-mir` always assigns a
+    // tracked dest for owned/aggregate returns, so a missing dest is a
+    // producer regression — fail closed rather than silently discarding
+    // (mirrors the generic arm's aggregate-discard guard).
+    let dest_place = dest.ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "Call to record-returning extern `{callee}` must carry a Terminator::Call dest \
+             (the {} return needs a destination slot)",
+            if is_sret { "sret" } else { "carrier" }
+        ))
+    })?;
+    let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+    if dest_ty != BasicTypeEnum::StructType(pointee) {
+        return Err(CodegenError::FailClosed(format!(
+            "Call dest type {dest_ty:?} does not match extern `{callee}`'s classified record \
+             return {pointee:?} (LESSONS: codegen-call-matches-callee-arity)"
+        )));
+    }
+    let declared_param_tys = value.get_type().get_param_types();
+    // The sret pointer occupies declared param 0, shifting every Hew argument's
+    // declared type one slot to the right.
+    let param_index_shift = usize::from(is_sret);
+    let mut arg_vals: Vec<inkwell::values::BasicMetadataValueEnum> =
+        Vec::with_capacity(args.len() + param_index_shift);
+    if is_sret {
+        arg_vals.push(metadata_value_from_basic(dest_ptr.into()));
+    }
+    for (idx, arg) in args.iter().enumerate() {
+        let (arg_ptr, arg_ty) = place_pointer(fn_ctx, *arg)?;
+        // By-pointer bytes consumer (e.g. `hew_tls_write_result`'s
+        // `data: bytes`): the callee declares this parameter as `ptr` while the
+        // Hew argument is a `bytes` value (a `{ptr, i32, i32}` alloca). Pass
+        // the alloca ADDRESS so the runtime reads the triple through the
+        // pointer — the same branch as the generic arm, read at the SHIFTED
+        // declared index. See `is_bytes_by_pointer_consumer`.
+        if matches!(
+            declared_param_tys.get(idx + param_index_shift),
+            Some(BasicMetadataTypeEnum::PointerType(_))
+        ) && matches!(arg_ty, BasicTypeEnum::StructType(_))
+            && matches!(place_resolved_ty(fn_ctx, *arg)?, ResolvedTy::Bytes)
+        {
+            arg_vals.push(metadata_value_from_basic(arg_ptr.into()));
+            continue;
+        }
+        let loaded = fn_ctx
+            .builder
+            .build_load(arg_ty, arg_ptr, "call_arg")
+            .llvm_ctx("record-return call arg load")?;
+        // Reconcile each loaded argument against the callee's *declared* LLVM
+        // parameter type at the SHIFTED index — same rule as the generic arm
+        // (a Hew i64 local feeding a declared i32 param must narrow, signed
+        // for signed operands).
+        let reconciled = match declared_param_tys.get(idx + param_index_shift) {
+            Some(BasicMetadataTypeEnum::IntType(param_int)) => {
+                let arg_resolved_ty = place_resolved_ty(fn_ctx, *arg)?;
+                reconcile_int_width(
+                    fn_ctx,
+                    loaded,
+                    (*param_int).into(),
+                    !is_unsigned_integer_ty(arg_resolved_ty),
+                    "argument",
+                )?
+            }
+            _ => loaded,
+        };
+        arg_vals.push(metadata_value_from_basic(reconciled));
+    }
+    let call_site = fn_ctx
+        .builder
+        .build_call(value, &arg_vals, "call_result")
+        .llvm_ctx("record-return extern call")?;
+    if is_sret {
+        // The callee wrote the record through the sret pointer — no store.
+        // The sret(pointee)+noalias attributes live on the DECLARATION;
+        // LLVM's `CallBase::paramHasAttr` falls back to the callee declaration
+        // for direct calls (the shipped `store_classified_bytes_return` Sret
+        // arm relies on the same mechanism — mirror it, no call-site plumbing).
+        let _ = call_site;
+        return Ok(());
+    }
+    // Carrier: store the returned [N x i64] / iN raw into the dest record slot.
+    // Byte width equals the record's ABI size (enforced at declaration), so the
+    // raw store is the exact documented reconstruction.
+    let carrier_val = call_site.try_as_basic_value().basic().ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "record-returning extern `{callee}` returned void unexpectedly (carrier class)"
+        ))
+    })?;
+    fn_ctx
+        .builder
+        .build_store(dest_ptr, carrier_val)
+        .llvm_ctx("record-return carrier store")?;
+    Ok(())
+}
+
 /// Predeclare every user-authored `extern "<abi>" { fn ...; }` symbol as an
 /// LLVM external function so `Terminator::Call` lookups by name resolve
 /// transparently. The symbol is satisfied at link time — by `hew-runtime`
@@ -3808,6 +4171,7 @@ fn predeclare_extern_decls<'ctx>(
     fn_symbols: &mut FnSymbolMap<'ctx>,
     extern_decls: &[hew_mir::model::ExternDecl],
     record_layouts: &RecordLayoutMap<'ctx>,
+    target_data: &TargetData,
 ) -> CodegenResult<()> {
     for decl in extern_decls {
         if fn_symbols.contains_key(&decl.name) {
@@ -3829,6 +4193,7 @@ fn predeclare_extern_decls<'ctx>(
                     value,
                     return_ty,
                     returns_unit: matches!(decl.return_ty, ResolvedTy::Unit),
+                    extern_record_ret: None,
                 },
             );
             continue;
@@ -3906,6 +4271,46 @@ fn predeclare_extern_decls<'ctx>(
                 record_layouts,
             )?));
         }
+        // ── extern record-return C-ABI classification (#2399) ─────────────────
+        //
+        // A user extern returning a `#[repr(C)]` record (an LLVM StructType —
+        // EXCLUDING `bytes`, handled by the `_raw`/`[2 x i64]` path below, and
+        // `Unit`) routes its return through the ABI classifier. LLVM's bare
+        // aggregate-return ABI diverges from the C ABI whenever the aggregate
+        // exceeds the direct-return threshold (>16 B → indirect/sret) OR
+        // multiple fields share an eightbyte (the C ABI packs them into one
+        // INTEGER register while a bare struct return splits them). Opaque
+        // handles (`type X {}` → `ptr`), `Vec`/`Stream`/`Sink` returns, and
+        // scalar returns are not StructTypes and fall through untouched.
+        if !matches!(decl.return_ty, ResolvedTy::Bytes | ResolvedTy::Unit) {
+            if let BasicTypeEnum::StructType(struct_ty) =
+                resolve_ty(ctx, &decl.return_ty, record_layouts)?
+            {
+                if let Some((value, extern_record_ret)) = classify_extern_record_return(
+                    ctx,
+                    llvm_mod,
+                    target_data,
+                    &decl.name,
+                    struct_ty,
+                    &param_tys,
+                )? {
+                    fn_symbols.insert(
+                        decl.name.clone(),
+                        FnSymbol::Real {
+                            value,
+                            return_ty: struct_ty.into(),
+                            returns_unit: false,
+                            extern_record_ret: Some(extern_record_ret),
+                        },
+                    );
+                    continue;
+                }
+                // `None` → Direct single-field record: the field occupies the
+                // whole return, no eightbyte-packing divergence, so the bare
+                // struct return is already C-ABI-correct. Fall through to the
+                // generic declaration below (unchanged).
+            }
+        }
         // A `bytes`-returning Rust extern returns a `#[repr(C)] BytesTriple`
         // (16 bytes, two eightbytes) in the AAPCS/SysV register pair (x0:x1 /
         // rax:rdx). LLVM's `{ptr, i32, i32}` return type, by contrast, is
@@ -3949,6 +4354,7 @@ fn predeclare_extern_decls<'ctx>(
                 value,
                 return_ty: return_ty.unwrap_or_else(|| ctx.i8_type().into()),
                 returns_unit: return_ty.is_none(),
+                extern_record_ret: None,
             },
         );
     }
@@ -4314,6 +4720,7 @@ fn predeclare_stream_producer_runtime_symbols<'ctx>(
                 value,
                 return_ty,
                 returns_unit,
+                extern_record_ret: None,
             },
         );
     }
@@ -31531,6 +31938,7 @@ fn lower_terminator<'ctx>(
                     value,
                     return_ty,
                     returns_unit,
+                    extern_record_ret,
                 } => {
                     let machine_step_queue = if is_machine_step_symbol(callee) {
                         let queue = fn_ctx.ctx.ptr_type(AddressSpace::default()).const_null();
@@ -31539,154 +31947,172 @@ fn lower_terminator<'ctx>(
                     } else {
                         None
                     };
-                    // ── Bytes-triple `_raw` path ─────────────────────────────────────────
-                    // [2 x i64] return_ty sentinel means stored value is {callee}_raw:
-                    // void(params..., out_ptr). Detect early to append dest_ptr and skip store.
-                    let bytes_raw_dest_ptr = if return_ty.is_array_type() {
-                        if let Some(dest_place) = dest.as_ref() {
-                            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
-                            if matches!(dest_ty, BasicTypeEnum::StructType(_))
-                                && matches!(
-                                    place_resolved_ty(fn_ctx, *dest_place)?,
-                                    ResolvedTy::Bytes
-                                )
-                            {
-                                Some(dest_ptr)
+                    if let Some(record_ret_abi) = extern_record_ret {
+                        // User extern returning a `#[repr(C)]` record: dispatch to
+                        // the sret/carrier call edge decided at declaration time.
+                        // A record-return extern is never a machine-step symbol, so
+                        // `machine_step_queue` is `None` here.
+                        emit_extern_record_return_call(
+                            fn_ctx,
+                            callee,
+                            value,
+                            record_ret_abi,
+                            args,
+                            dest.as_ref(),
+                        )?;
+                    } else {
+                        // ── Bytes-triple `_raw` path ─────────────────────────────────────────
+                        // [2 x i64] return_ty sentinel means stored value is {callee}_raw:
+                        // void(params..., out_ptr). Detect early to append dest_ptr and skip store.
+                        let bytes_raw_dest_ptr = if return_ty.is_array_type() {
+                            if let Some(dest_place) = dest.as_ref() {
+                                let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+                                if matches!(dest_ty, BasicTypeEnum::StructType(_))
+                                    && matches!(
+                                        place_resolved_ty(fn_ctx, *dest_place)?,
+                                        ResolvedTy::Bytes
+                                    )
+                                {
+                                    Some(dest_ptr)
+                                } else {
+                                    None
+                                }
                             } else {
                                 None
                             }
                         } else {
                             None
-                        }
-                    } else {
-                        None
-                    };
-                    // Reconcile each loaded argument against the callee's
-                    // *declared* LLVM parameter type. The Hew place may hold a
-                    // wider integer (e.g. an i64 local or the i64 result of a
-                    // dropped `as i32` cast after inlining) than the runtime
-                    // C function declares (e.g. `hew_char_to_string(i32)` /
-                    // `hew_string_char_at(.., i32)`). Without this, codegen
-                    // hands an i64 to an i32 param and LLVM verification
-                    // rejects the module. Signed narrow/widen keeps negative
-                    // values correct for signed operands; unsigned operands
-                    // must zero-extend at this boundary.
-                    // NOTE: for _raw, declared_param_tys has trailing ptr; loop
-                    // uses args.len() indices so it never misclassifies it.
-                    let declared_param_tys = value.get_type().get_param_types();
-                    let mut arg_vals: Vec<inkwell::values::BasicMetadataValueEnum> =
-                        Vec::with_capacity(args.len() + usize::from(bytes_raw_dest_ptr.is_some()));
-                    for (idx, arg) in args.iter().enumerate() {
-                        let (arg_ptr, arg_ty) = place_pointer(fn_ctx, *arg)?;
-                        // By-pointer bytes consumer: the callee declares this
-                        // parameter as `ptr` while the Hew argument is a `bytes`
-                        // value (a `{ptr, i32, i32}` alloca). Pass the alloca
-                        // ADDRESS so the runtime reads the triple through the
-                        // pointer — sidesteps the non-first by-value small-struct
-                        // ABI coercion gap. See `is_bytes_by_pointer_consumer`.
-                        if matches!(
-                            declared_param_tys.get(idx),
-                            Some(BasicMetadataTypeEnum::PointerType(_))
-                        ) && matches!(arg_ty, BasicTypeEnum::StructType(_))
-                            && matches!(place_resolved_ty(fn_ctx, *arg)?, ResolvedTy::Bytes)
-                        {
-                            arg_vals.push(metadata_value_from_basic(arg_ptr.into()));
-                            continue;
-                        }
-                        let loaded = fn_ctx
-                            .builder
-                            .build_load(arg_ty, arg_ptr, "call_arg")
-                            .llvm_ctx("call arg load")?;
-                        let reconciled = match declared_param_tys.get(idx) {
-                            Some(BasicMetadataTypeEnum::IntType(param_int)) => {
-                                let arg_resolved_ty = place_resolved_ty(fn_ctx, *arg)?;
-                                reconcile_int_width(
-                                    fn_ctx,
-                                    loaded,
-                                    (*param_int).into(),
-                                    !is_unsigned_integer_ty(arg_resolved_ty),
-                                    "argument",
-                                )?
-                            }
-                            _ => loaded,
                         };
-                        arg_vals.push(metadata_value_from_basic(reconciled));
-                    }
-                    // Bytes-triple _raw: append dest_ptr as final out-param.
-                    if let Some(dest_ptr) = bytes_raw_dest_ptr {
-                        arg_vals.push(metadata_value_from_basic(dest_ptr.into()));
-                    }
-                    let call_site = fn_ctx
-                        .builder
-                        .build_call(value, &arg_vals, "call_result")
-                        .llvm_ctx("build_call")?;
-                    if bytes_raw_dest_ptr.is_some() {
-                        // `_raw` wrote directly to dest_ptr; no further store needed.
-                    } else if let Some(dest_place) = dest {
-                        if returns_unit {
-                            return Err(CodegenError::FailClosed(format!(
+                        // Reconcile each loaded argument against the callee's
+                        // *declared* LLVM parameter type. The Hew place may hold a
+                        // wider integer (e.g. an i64 local or the i64 result of a
+                        // dropped `as i32` cast after inlining) than the runtime
+                        // C function declares (e.g. `hew_char_to_string(i32)` /
+                        // `hew_string_char_at(.., i32)`). Without this, codegen
+                        // hands an i64 to an i32 param and LLVM verification
+                        // rejects the module. Signed narrow/widen keeps negative
+                        // values correct for signed operands; unsigned operands
+                        // must zero-extend at this boundary.
+                        // NOTE: for _raw, declared_param_tys has trailing ptr; loop
+                        // uses args.len() indices so it never misclassifies it.
+                        let declared_param_tys = value.get_type().get_param_types();
+                        let mut arg_vals: Vec<inkwell::values::BasicMetadataValueEnum> =
+                            Vec::with_capacity(
+                                args.len() + usize::from(bytes_raw_dest_ptr.is_some()),
+                            );
+                        for (idx, arg) in args.iter().enumerate() {
+                            let (arg_ptr, arg_ty) = place_pointer(fn_ctx, *arg)?;
+                            // By-pointer bytes consumer: the callee declares this
+                            // parameter as `ptr` while the Hew argument is a `bytes`
+                            // value (a `{ptr, i32, i32}` alloca). Pass the alloca
+                            // ADDRESS so the runtime reads the triple through the
+                            // pointer — sidesteps the non-first by-value small-struct
+                            // ABI coercion gap. See `is_bytes_by_pointer_consumer`.
+                            if matches!(
+                                declared_param_tys.get(idx),
+                                Some(BasicMetadataTypeEnum::PointerType(_))
+                            ) && matches!(arg_ty, BasicTypeEnum::StructType(_))
+                                && matches!(place_resolved_ty(fn_ctx, *arg)?, ResolvedTy::Bytes)
+                            {
+                                arg_vals.push(metadata_value_from_basic(arg_ptr.into()));
+                                continue;
+                            }
+                            let loaded = fn_ctx
+                                .builder
+                                .build_load(arg_ty, arg_ptr, "call_arg")
+                                .llvm_ctx("call arg load")?;
+                            let reconciled = match declared_param_tys.get(idx) {
+                                Some(BasicMetadataTypeEnum::IntType(param_int)) => {
+                                    let arg_resolved_ty = place_resolved_ty(fn_ctx, *arg)?;
+                                    reconcile_int_width(
+                                        fn_ctx,
+                                        loaded,
+                                        (*param_int).into(),
+                                        !is_unsigned_integer_ty(arg_resolved_ty),
+                                        "argument",
+                                    )?
+                                }
+                                _ => loaded,
+                            };
+                            arg_vals.push(metadata_value_from_basic(reconciled));
+                        }
+                        // Bytes-triple _raw: append dest_ptr as final out-param.
+                        if let Some(dest_ptr) = bytes_raw_dest_ptr {
+                            arg_vals.push(metadata_value_from_basic(dest_ptr.into()));
+                        }
+                        let call_site = fn_ctx
+                            .builder
+                            .build_call(value, &arg_vals, "call_result")
+                            .llvm_ctx("build_call")?;
+                        if bytes_raw_dest_ptr.is_some() {
+                            // `_raw` wrote directly to dest_ptr; no further store needed.
+                        } else if let Some(dest_place) = dest {
+                            if returns_unit {
+                                return Err(CodegenError::FailClosed(format!(
                                 "Call to unit-returning fn `{callee}` must not carry a Terminator::Call dest"
                             )));
-                        }
-                        let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
-                        let ret_val = call_site.try_as_basic_value().basic().ok_or_else(|| {
-                            CodegenError::FailClosed(
+                            }
+                            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+                            let ret_val =
+                                call_site.try_as_basic_value().basic().ok_or_else(|| {
+                                    CodegenError::FailClosed(
                                 "Call to void-returning fn is not usable with Terminator::Call dest"
                                     .into(),
                             )
-                        })?;
-                        // Reconcile C-ABI return width against Hew dest width.
-                        let stored = if dest_ty == return_ty {
-                            // Reconcile the runtime C-ABI return width against the
-                            // Hew dest width. A runtime function declared `-> i32`
-                            // (e.g. `hew_string_find`, returning the `-1`
-                            // not-found sentinel) must
-                            // sign-extend its result up to the Hew-facing i64 dest,
-                            // so `-1` stays `-1` rather than `4294967295`. Equal
-                            // widths and matching types pass through; genuinely
-                            // incompatible shapes (int vs struct) still fail closed.
-                            ret_val
-                        } else if dest_ty.is_int_type() && return_ty.is_int_type() {
-                            reconcile_int_width(fn_ctx, ret_val, dest_ty, true, "return")?
-                        } else {
-                            return Err(CodegenError::FailClosed(format!(
-                                "Call dest type {dest_ty:?} does not match callee return {:?}",
-                                return_ty
-                            )));
-                        };
-                        fn_ctx
-                            .builder
-                            .build_store(dest_ptr, stored)
-                            .llvm_ctx("call store")?;
-                    } else if !returns_unit {
-                        // `dest == None` with `!returns_unit`: the call site is
-                        // in statement position and the return value is
-                        // intentionally discarded (e.g. `conn.close()`,
-                        // `ln.close()` → `hew_tcp_close: i32`).
-                        //
-                        // Allow the discard ONLY for scalar (integer/float)
-                        // return types. These are BitCopy/status values with no
-                        // owned heap; silently dropping the i32 is correct.
-                        //
-                        // For pointer or aggregate (struct) returns — which are
-                        // potentially owned/heap — fail closed. The cross-crate
-                        // invariant is that `hew-mir` always assigns a tracked
-                        // `dest = Some` for owned/heap returns, so this arm
-                        // should never be reached for those types today. This
-                        // guard is the codegen-side backstop: if a future
-                        // `hew-mir` regression routes an owned/pointer/aggregate
-                        // return into `dest = None`, we fail loudly rather than
-                        // silently leaking.
-                        match return_ty {
-                            BasicTypeEnum::IntType(_) | BasicTypeEnum::FloatType(_) => {
-                                // Scalar status discard — intentional, safe.
-                            }
-                            _ => {
+                                })?;
+                            // Reconcile C-ABI return width against Hew dest width.
+                            let stored = if dest_ty == return_ty {
+                                // Reconcile the runtime C-ABI return width against the
+                                // Hew dest width. A runtime function declared `-> i32`
+                                // (e.g. `hew_string_find`, returning the `-1`
+                                // not-found sentinel) must
+                                // sign-extend its result up to the Hew-facing i64 dest,
+                                // so `-1` stays `-1` rather than `4294967295`. Equal
+                                // widths and matching types pass through; genuinely
+                                // incompatible shapes (int vs struct) still fail closed.
+                                ret_val
+                            } else if dest_ty.is_int_type() && return_ty.is_int_type() {
+                                reconcile_int_width(fn_ctx, ret_val, dest_ty, true, "return")?
+                            } else {
                                 return Err(CodegenError::FailClosed(format!(
-                                    "Call to value-returning fn `{callee}` must carry a \
+                                    "Call dest type {dest_ty:?} does not match callee return {:?}",
+                                    return_ty
+                                )));
+                            };
+                            fn_ctx
+                                .builder
+                                .build_store(dest_ptr, stored)
+                                .llvm_ctx("call store")?;
+                        } else if !returns_unit {
+                            // `dest == None` with `!returns_unit`: the call site is
+                            // in statement position and the return value is
+                            // intentionally discarded (e.g. `conn.close()`,
+                            // `ln.close()` → `hew_tcp_close: i32`).
+                            //
+                            // Allow the discard ONLY for scalar (integer/float)
+                            // return types. These are BitCopy/status values with no
+                            // owned heap; silently dropping the i32 is correct.
+                            //
+                            // For pointer or aggregate (struct) returns — which are
+                            // potentially owned/heap — fail closed. The cross-crate
+                            // invariant is that `hew-mir` always assigns a tracked
+                            // `dest = Some` for owned/heap returns, so this arm
+                            // should never be reached for those types today. This
+                            // guard is the codegen-side backstop: if a future
+                            // `hew-mir` regression routes an owned/pointer/aggregate
+                            // return into `dest = None`, we fail loudly rather than
+                            // silently leaking.
+                            match return_ty {
+                                BasicTypeEnum::IntType(_) | BasicTypeEnum::FloatType(_) => {
+                                    // Scalar status discard — intentional, safe.
+                                }
+                                _ => {
+                                    return Err(CodegenError::FailClosed(format!(
+                                        "Call to value-returning fn `{callee}` must carry a \
                                      Terminator::Call dest (return type {return_ty:?} is a \
                                      pointer or aggregate; only scalar discards are allowed)"
-                                )));
+                                    )));
+                                }
                             }
                         }
                     }
@@ -36108,6 +36534,7 @@ fn declare_function<'ctx>(
         value: llvm_fn,
         return_ty: return_ty_llvm,
         returns_unit: matches!(func.return_ty, ResolvedTy::Unit),
+        extern_record_ret: None,
     })
 }
 
@@ -38765,6 +39192,7 @@ fn build_module_for_target<'ctx>(
         &mut fn_symbols,
         &pipeline.extern_decls,
         &record_layouts,
+        &target_data,
     )?;
     // #2391 fail-closed guard: two raw-MIR functions sharing one name (e.g. two
     // imported modules each defining a DISTINCT type with the same bare name and
@@ -47404,6 +47832,7 @@ mod tests {
                 value,
                 return_ty: conn_ty.into(), // sentinel; unused by drop dispatch
                 returns_unit: true,
+                extern_record_ret: None,
             },
         );
         match resolve_drop_fn(
@@ -47442,6 +47871,7 @@ mod tests {
                 value,
                 return_ty: i64_ty.into(),
                 returns_unit: false,
+                extern_record_ret: None,
             },
         );
         let err = resolve_drop_fn(
@@ -55591,6 +56021,277 @@ fn main() {
         assert_eq!(OptLevel::from_cli_str("3"), None);
         assert_eq!(OptLevel::from_cli_str(""), None);
         assert_eq!(OptLevel::from_cli_str("O2"), None);
+    }
+
+    // ── extern record-return classification (#2399) ─────────────────────────
+
+    /// Build a `TargetData` for an arbitrary triple (cross targets work because
+    /// `initialise_llvm_targets` registers every backend). Mirrors
+    /// `abi_class::tests::target_data_for`.
+    fn record_ret_target_data(triple: &str) -> TargetData {
+        initialise_llvm_targets();
+        let tt = inkwell::targets::TargetTriple::create(triple);
+        let target =
+            Target::from_triple(&tt).unwrap_or_else(|e| panic!("from_triple({triple}): {e:?}"));
+        let machine = target
+            .create_target_machine(
+                &tt,
+                "generic",
+                "",
+                inkwell::OptimizationLevel::Default,
+                inkwell::targets::RelocMode::PIC,
+                inkwell::targets::CodeModel::Default,
+            )
+            .unwrap_or_else(|| panic!("create_target_machine({triple}) returned None"));
+        machine.get_target_data()
+    }
+
+    /// Classify against a module whose triple is set to `triple` — the exact
+    /// entry `predeclare_extern_decls` uses.
+    fn classify_on<'ctx>(
+        ctx: &'ctx Context,
+        triple: &str,
+        name: &str,
+        struct_ty: StructType<'ctx>,
+    ) -> (
+        LlvmModule<'ctx>,
+        CodegenResult<Option<(FunctionValue<'ctx>, ExternRecordRet<'ctx>)>>,
+    ) {
+        let llvm_mod = ctx.create_module("record_ret_test");
+        llvm_mod.set_triple(&inkwell::targets::TargetTriple::create(triple));
+        let td = record_ret_target_data(triple);
+        let result = classify_extern_record_return(ctx, &llvm_mod, &td, name, struct_ty, &[]);
+        (llvm_mod, result)
+    }
+
+    const RECORD_RET_SYSV: &str = "x86_64-unknown-linux-gnu";
+    const RECORD_RET_MSVC: &str = "x86_64-pc-windows-msvc";
+
+    /// A float leaf anywhere in the record (top level or nested) must fail
+    /// closed: the SysV SSE / AAPCS64 HFA return classes are unmodelled and a
+    /// size-only classification would misroute the value registers.
+    #[test]
+    fn extern_record_return_float_leaf_fails_closed() {
+        let ctx = Context::create();
+        let f64t = ctx.f64_type();
+        let i64t = ctx.i64_type();
+        let flat = ctx.struct_type(&[f64t.into(), i64t.into()], false);
+        let (_m, res) = classify_on(&ctx, RECORD_RET_SYSV, "float_flat", flat);
+        match res {
+            Err(CodegenError::FailClosed(msg)) => {
+                assert!(msg.contains("float"), "msg: {msg}");
+            }
+            other => panic!("float-bearing record must fail closed, got {other:?}"),
+        }
+        // Nested: the leaf walk must recurse through inner structs and arrays.
+        let inner = ctx.struct_type(&[f64t.into()], false);
+        let nested = ctx.struct_type(&[i64t.into(), inner.into()], false);
+        let (_m2, res2) = classify_on(&ctx, RECORD_RET_SYSV, "float_nested", nested);
+        assert!(
+            matches!(res2, Err(CodegenError::FailClosed(_))),
+            "nested float leaf must fail closed"
+        );
+        let arr = f64t.array_type(2);
+        let arr_struct = ctx.struct_type(&[arr.into()], false);
+        let (_m3, res3) = classify_on(&ctx, RECORD_RET_SYSV, "float_array", arr_struct);
+        assert!(
+            matches!(res3, Err(CodegenError::FailClosed(_))),
+            "float array leaf must fail closed"
+        );
+    }
+
+    /// A bytes-shaped `{ptr,i32,i32}` field is integer/pointer-only — the float
+    /// walk must NOT reject it (the #2392 TlsReadFfiResult shape depends on it).
+    #[test]
+    fn extern_record_return_bytes_like_field_is_not_float() {
+        let ctx = Context::create();
+        let ptr = ctx.ptr_type(AddressSpace::default());
+        let i32t = ctx.i32_type();
+        let bytes_like = ctx.struct_type(&[ptr.into(), i32t.into(), i32t.into()], false);
+        let record = ctx.struct_type(&[bytes_like.into(), i32t.into()], false);
+        assert!(
+            !struct_has_float_or_vector_leaf(record),
+            "{{bytes, i32}} record has no float leaf"
+        );
+        // 24 bytes on 64-bit → classifies Indirect (Sret), not fail-closed.
+        let (_m, res) = classify_on(&ctx, RECORD_RET_SYSV, "tls_read_shape", record);
+        match res {
+            Ok(Some((_, ExternRecordRet::Sret { .. }))) => {}
+            other => panic!("24-byte bytes-bearing record must classify Sret, got {other:?}"),
+        }
+    }
+
+    /// A single-field record's bare struct return already matches the C ABI —
+    /// classification returns `None` (Natural; the ecosystem-handle control).
+    #[test]
+    fn extern_record_return_single_field_stays_natural() {
+        let ctx = Context::create();
+        let i64t = ctx.i64_type();
+        let one = ctx.struct_type(&[i64t.into()], false);
+        let (_m, res) = classify_on(&ctx, RECORD_RET_SYSV, "handle_one", one);
+        assert!(
+            matches!(res, Ok(None)),
+            "single-field Direct record must stay Natural"
+        );
+    }
+
+    /// An 8-byte multi-field record gets the coerced-int carrier: the declared
+    /// function returns `i64` (one register — the C ABI packing), not the bare
+    /// two-register struct split. The `recordret_small` red probe's fix.
+    #[test]
+    fn extern_record_return_small_multi_field_gets_int_carrier() {
+        let ctx = Context::create();
+        let i32t = ctx.i32_type();
+        let small = ctx.struct_type(&[i32t.into(), i32t.into()], false);
+        let (_m, res) = classify_on(&ctx, RECORD_RET_SYSV, "small_pair", small);
+        match res {
+            Ok(Some((fv, ExternRecordRet::Carrier { pointee }))) => {
+                assert_eq!(pointee, small);
+                let ret = fv.get_type().get_return_type().expect("carrier return");
+                assert_eq!(ret, BasicTypeEnum::IntType(ctx.i64_type()), "i64 carrier");
+            }
+            other => panic!("8-byte multi-field must get an int carrier, got {other:?}"),
+        }
+    }
+
+    /// A 16-byte two-eightbyte record gets the `[2 x i64]` register-pair
+    /// carrier on SysV — including the packed-second-eightbyte shape the
+    /// `recordret_packed` probe proved red as a bare struct return.
+    #[test]
+    fn extern_record_return_16b_gets_register_pair_carrier() {
+        let ctx = Context::create();
+        let i64t = ctx.i64_type();
+        let i32t = ctx.i32_type();
+        let packed = ctx.struct_type(&[i64t.into(), i32t.into(), i32t.into()], false);
+        let (_m, res) = classify_on(&ctx, RECORD_RET_SYSV, "packed_16", packed);
+        match res {
+            Ok(Some((fv, ExternRecordRet::Carrier { pointee }))) => {
+                assert_eq!(pointee, packed);
+                let ret = fv.get_type().get_return_type().expect("carrier return");
+                assert_eq!(
+                    ret,
+                    BasicTypeEnum::ArrayType(ctx.i64_type().array_type(2)),
+                    "[2 x i64] carrier"
+                );
+            }
+            other => panic!("16-byte record must get [2 x i64] carrier, got {other:?}"),
+        }
+    }
+
+    /// An over-16-byte record is declared `void(ptr, …)` with `sret`+`noalias`
+    /// on param 0 — the #2399 headline fix. NEGATIVE: the declared function
+    /// must NOT return the bare struct.
+    #[test]
+    fn extern_record_return_over_16b_gets_sret() {
+        let ctx = Context::create();
+        let i64t = ctx.i64_type();
+        let big = ctx.struct_type(&[i64t.into(), i64t.into(), i64t.into()], false);
+        let (llvm_mod, res) = classify_on(&ctx, RECORD_RET_SYSV, "big_24", big);
+        match res {
+            Ok(Some((fv, ExternRecordRet::Sret { pointee }))) => {
+                assert_eq!(pointee, big);
+                assert!(
+                    fv.get_type().get_return_type().is_none(),
+                    "sret extern must be declared void"
+                );
+                assert_eq!(
+                    fv.count_params(),
+                    1,
+                    "hidden sret pointer must be the only declared param here"
+                );
+                let ir = llvm_mod.print_to_string().to_string();
+                assert!(
+                    ir.contains("sret("),
+                    "declaration must carry sret(...):\n{ir}"
+                );
+                assert!(
+                    ir.contains("noalias"),
+                    "declaration must carry noalias:\n{ir}"
+                );
+            }
+            other => panic!("24-byte record must classify Sret, got {other:?}"),
+        }
+    }
+
+    /// MSVC divergence: a 16-byte record is Indirect (sret) on Windows x64
+    /// MSVC where SysV uses a register pair. Host green is non-evidence for
+    /// this arm — the classification itself is pinned here.
+    #[test]
+    fn extern_record_return_16b_is_sret_on_msvc() {
+        let ctx = Context::create();
+        let i64t = ctx.i64_type();
+        let i32t = ctx.i32_type();
+        let mid = ctx.struct_type(&[i32t.into(), i64t.into()], false);
+        let (_m, res) = classify_on(&ctx, RECORD_RET_MSVC, "mid_msvc", mid);
+        assert!(
+            matches!(res, Ok(Some((_, ExternRecordRet::Sret { .. })))),
+            "16-byte record must be Sret on windows-msvc"
+        );
+    }
+
+    /// wasm32 record returns fail closed: no runtime probe proves that ABI,
+    /// and the size-only wasm32 arm would misclassify multi-field ≤8-byte
+    /// aggregates.
+    #[test]
+    fn extern_record_return_wasm32_fails_closed() {
+        let ctx = Context::create();
+        let i32t = ctx.i32_type();
+        let small = ctx.struct_type(&[i32t.into(), i32t.into()], false);
+        let (_m, res) = classify_on(&ctx, "wasm32-unknown-unknown", "wasm_rec", small);
+        match res {
+            Err(CodegenError::FailClosed(msg)) => {
+                assert!(msg.contains("wasm32"), "msg: {msg}");
+            }
+            other => panic!("wasm32 record return must fail closed, got {other:?}"),
+        }
+    }
+
+    /// A RegisterPair record whose ABI size is not a whole number of eightbytes
+    /// (12-byte `{i32,i32,i32}`) fails closed: the 16-byte carrier store would
+    /// write past the destination slot.
+    #[test]
+    fn extern_record_return_sub_eightbyte_tail_fails_closed() {
+        let ctx = Context::create();
+        let i32t = ctx.i32_type();
+        let twelve = ctx.struct_type(&[i32t.into(), i32t.into(), i32t.into()], false);
+        let td = record_ret_target_data(RECORD_RET_SYSV);
+        assert_eq!(td.get_abi_size(&twelve), 12, "precondition: 12-byte record");
+        let (_m, res) = classify_on(&ctx, RECORD_RET_SYSV, "twelve_bytes", twelve);
+        match res {
+            Err(CodegenError::FailClosed(msg)) => {
+                assert!(msg.contains("sub-eightbyte"), "msg: {msg}");
+            }
+            other => panic!("12-byte RegisterPair must fail closed, got {other:?}"),
+        }
+    }
+
+    /// `.real()` must reject a record-return extern: every `.real()` consumer
+    /// (spawn thunks, closures, drop dispatch) emits a direct by-value call
+    /// that would miscompile the sret/carrier ABI.
+    #[test]
+    fn fn_symbol_real_accessor_rejects_record_return_extern() {
+        let ctx = Context::create();
+        let m = ctx.create_module("real_reject_test");
+        let i64t = ctx.i64_type();
+        let big = ctx.struct_type(&[i64t.into(), i64t.into(), i64t.into()], false);
+        let ptr = ctx.ptr_type(AddressSpace::default());
+        let fn_ty = ctx.void_type().fn_type(&[ptr.into()], false);
+        let value = m.add_function("sret_extern", fn_ty, None);
+        let sym = FnSymbol::Real {
+            value,
+            return_ty: big.into(),
+            returns_unit: false,
+            extern_record_ret: Some(ExternRecordRet::Sret { pointee: big }),
+        };
+        let err = sym
+            .real("sret_extern", "test consumer")
+            .expect_err(".real() must reject a record-return extern");
+        match err {
+            CodegenError::FailClosed(msg) => {
+                assert!(msg.contains("Terminator::Call"), "msg: {msg}");
+            }
+            other => panic!("expected FailClosed, got {other:?}"),
+        }
     }
 }
 

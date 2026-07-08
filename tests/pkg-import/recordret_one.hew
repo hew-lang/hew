@@ -1,0 +1,9 @@
+// §0 control: 8-byte record {i64} — Direct single-field (the ecosystem-handle
+// shape). Correct today and must stay correct: this probe is GREEN pre-fix and
+// pins that the fix does not disturb the under-threshold single-field class.
+import hew::recordret;
+
+fn main() {
+    let o = recordret.one();
+    println(f"h={o.h}");
+}

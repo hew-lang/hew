@@ -1,0 +1,9 @@
+// §0 probe: 8-byte record {i32,i32} — Direct multi-field (the TlsWriteFfiResult
+// shape). The C ABI packs both i32s into one register; a bare LLVM {i32,i32}
+// return may split them. Characterizes whether the split matters.
+import hew::recordret;
+
+fn main() {
+    let s = recordret.small();
+    println(f"a={s.a} b={s.b}");
+}

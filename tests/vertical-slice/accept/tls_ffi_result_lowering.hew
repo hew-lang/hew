@@ -4,14 +4,25 @@ extern "C" {
     fn hew_bytes_from_str(s: string) -> bytes;
 }
 
-fn _try_write_probe() -> i64 {
+// Exercises the record-returning `hew_tls_write_result` extern AT RUNTIME:
+// the connect fails fast offline (port 1 refused) and the Rust side still
+// constructs the `TlsWriteFfiResult { i32, i32 }` return, so the classified
+// coerced-int carrier is proven on a real call, not dead code.
+fn try_write_probe() -> i64 {
     let stream = tls.connect("127.0.0.1", 1);
-    match tls.try_write(stream, unsafe { hew_bytes_from_str("ping") }) {
+    match tls.try_write(stream, unsafe {
+        hew_bytes_from_str("ping")
+    }) {
         Ok(n) => n,
         Err(_) => -2,
     }
 }
 
+// Dead by design until the Rust-side `HewTlsReadResult` migration lands
+// (#2392): its 24-byte record return is declared sret now, but the legacy
+// Rust callee writes a larger legacy struct through the pointer, so calling
+// it would overflow the 24-byte slot. The rebase onto that migration turns
+// this probe on from main.
 fn _read_probe() -> i64 {
     let stream = tls.connect("127.0.0.1", 1);
     match tls.read(stream, 16) {
@@ -22,6 +33,10 @@ fn _read_probe() -> i64 {
 
 fn main() {
     let stream = tls.connect("127.0.0.1", 1);
-    let n = tls.write(stream, unsafe { hew_bytes_from_str("ping") });
+    let n = tls.write(stream, unsafe {
+        hew_bytes_from_str("ping")
+    });
     println(f"write={n}");
+    let w = try_write_probe();
+    println(f"try_write={w}");
 }

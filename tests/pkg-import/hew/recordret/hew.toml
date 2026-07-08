@@ -1,0 +1,11 @@
+[package]
+name = "hew::recordret"
+version = "0.1.0"
+description = "In-tree §0 falsification package: user extern \"C\" fns returning #[repr(C)] records across every aggregate-return ABI class"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"
+
+[native]
+crate = "."
+lib = "hew_hew_recordret"
+kind = "staticlib"

@@ -287,6 +287,23 @@ fixtures=(
   # (`container-abi-ctor-op-agreement`). Reading `b.payload[0]` back proves the
   # element survived the call end-to-end.
   generic_freefn_owned_element
+  # Extern record-return ABI oracle (hew::recordret): user extern "C" fns
+  # returning #[repr(C)] records by value, one fixture per aggregate-return
+  # class, every field a distinct non-zero sentinel. Pins that the classified
+  # declaration + call edge reconstruct each record exactly:
+  #   one   —  8 B {i64}          Direct single-field (natural, the control)
+  #   small —  8 B {i32,i32}      Direct multi-field  (i64 coerced-int carrier)
+  #   mid   — 16 B {i32,i64}      RegisterPair        ([2 x i64] carrier)
+  #   packed— 16 B {i64,i32,i32}  RegisterPair packed ([2 x i64] carrier)
+  #   big   — 24 B {i64,i64,i64}  Indirect            (sret; the #2399 headline)
+  #   big_mixed — 24 B from (i32,i64) params: pins the hidden-sret-pointer
+  #     argument-index shift (hi > 2^32 must not truncate, lo/hi must not swap).
+  recordret_one
+  recordret_small
+  recordret_mid
+  recordret_packed
+  recordret_big
+  recordret_big_mixed
 )
 
 for fixture in "${fixtures[@]}"; do

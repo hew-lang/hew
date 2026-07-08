@@ -1108,6 +1108,61 @@ mod tests {
     }
 
     #[test]
+    fn read_bytes_failure_message_survives_a_standalone_errno_read() {
+        // Regression (std/fs.hew try_read_bytes leak, hew-lang/hew#1728-class):
+        // hew_stream_last_errno() and hew_stream_last_error() are independent
+        // thread-local reads (see stream_error.rs's own doc comment) — reading
+        // one does not clear the other. try_read_bytes in std/fs.hew reads only
+        // hew_stream_last_errno() on its failure path; if it does not also
+        // drain hew_stream_last_error(), a stale `hew_file_read_bytes: ...`
+        // message from this failed read stays parked in the thread-local and
+        // can leak into a later, unrelated hew_last_error() /
+        // hew_stream_last_error() read (e.g. a subsequent fs.read() panic
+        // message). This test pins the FFI-layer precondition for that fix:
+        // after hew_file_read_bytes fails and only the errno is consumed, the
+        // message must still be present and draining it must yield the
+        // *current* failure's own text, not an empty/stale value.
+        use hew_cabi::sink::{hew_stream_last_errno, hew_stream_last_error};
+
+        let dir = test_dir("bytes_errno_only_read_leak");
+        let ghost_path = dir.join("does_not_exist.bin");
+        let ghost = cpath(&ghost_path);
+
+        // SAFETY: ghost is a valid NUL-terminated C string.
+        let triple = unsafe { hew_file_read_bytes(ghost.as_ptr()) };
+        assert_eq!(triple.len, 0);
+        assert!(triple.ptr.is_null());
+
+        // Mirror try_read_bytes's exact failure-path call: read errno alone
+        // first, the way the .hew wrapper does before deciding to return Err.
+        let errno = hew_stream_last_errno();
+        assert_ne!(errno, 0, "expected a non-zero errno from the missing file");
+
+        // The message must still be there for a caller that goes on to drain
+        // it (the fix), and it must be this call's own message, not empty.
+        // SAFETY: hew_stream_last_error() returns a fresh, valid C string or
+        // null; we only read it and then free it via the documented path.
+        unsafe {
+            let msg_ptr = hew_stream_last_error();
+            assert!(
+                !msg_ptr.is_null(),
+                "hew_stream_last_error() must still return the message after a \
+                 standalone hew_stream_last_errno() read — they are documented \
+                 as independent reads, so try_read_bytes's fix must explicitly \
+                 drain this instead of assuming the errno read already did"
+            );
+            let message = CStr::from_ptr(msg_ptr).to_str().unwrap_or("").to_owned();
+            crate::string::hew_string_drop(msg_ptr);
+            assert!(
+                message.contains("hew_file_read_bytes"),
+                "expected the current failed read's own message, got {message:?}"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn read_bytes_invalid_utf8_path_returns_empty_triple() {
         let bad = invalid_utf8_cstring();
         // SAFETY: bad is a valid NUL-terminated C string (non-UTF-8 is handled).

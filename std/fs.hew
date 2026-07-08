@@ -357,6 +357,11 @@ pub fn try_read_bytes(file_path: string) -> Result<bytes, IoError> {
         let data = hew_file_read_bytes(file_path);
         let errno = hew_stream_last_errno();
         if errno != 0 {
+            // Drain the thread-local error message on the failure path,
+            // mirroring `try_read` above, so a stale
+            // `hew_file_read_bytes: ...` message can't leak into a later,
+            // unrelated `hew_last_error()` / `hew_stream_last_error()` read.
+            let _ = hew_stream_last_error();
             Err(io_error_from_errno(errno as i64))
         } else {
             // `data` is the sole owner of the freshly-read buffer and is not

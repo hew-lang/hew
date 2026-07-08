@@ -28,6 +28,8 @@ mod loop_break_continue;
 mod machine_dispatch_fixtures;
 #[path = "lowering_expr/machine_mir.rs"]
 mod machine_mir;
+#[path = "lowering_expr/match_call_scrutinee_drop.rs"]
+mod match_call_scrutinee_drop;
 #[path = "lowering_expr/match_literal_string.rs"]
 mod match_literal_string;
 #[path = "lowering_expr/match_project.rs"]

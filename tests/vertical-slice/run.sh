@@ -706,6 +706,11 @@ run_accept_expect_status_and_stdout "for_range_rev_step_by" 0
 # counter-width families that can sit exactly at the underflow boundary.
 run_accept_expect_status_and_stdout "for_range_rev_empty_unsigned_zero" 0
 run_accept_expect_status_and_stdout "for_range_rev_empty_signed_min" 0
+# #1948 follow-up: the `a > b` subclass of the same empty-range boundary,
+# which the original fix's `raw_start == raw_end` gate did not cover (fixed
+# by testing general emptiness `raw_start >= raw_end` instead).
+run_accept_expect_status_and_stdout "for_range_rev_empty_unsigned_gt" 0
+run_accept_expect_status_and_stdout "for_range_rev_empty_signed_gt" 0
 
 # platform-int-arith (W60.040): isize/usize as first-class integers. Each
 # fixture asserts exact values via assert_eq/assert and exits 0 on success

@@ -23016,36 +23016,48 @@ impl Builder {
                 // `a..b` reversed starts at `b - 1` (checked; trap on
                 // underflow so `a..MIN` fails closed rather than wrapping).
                 //
-                // #1948 — an EMPTY exclusive descending range (`raw_start ==
-                // raw_end`, e.g. `(0u32..0).rev()` or `(i32::MIN..i32::MIN).rev()`)
+                // #1948 — an EMPTY exclusive descending range (`raw_start >=
+                // raw_end`, e.g. `(0u32..0).rev()`, `(i32::MIN..i32::MIN).rev()`,
+                // or the a>b shapes `(5u32..0).rev()` / `(0i32..i32::MIN).rev()`)
                 // must still yield zero iterations rather than trap. The `b - 1`
                 // decrement below is only meaningful once a real high element
                 // exists to start from; for an empty range there is no such
-                // element, and `raw_end` itself sits exactly one past the
-                // representable range for a `u₀`-ending / `iₘᵢₙ`-ending bound, so
-                // `raw_end - 1` unconditionally underflows/overflows the counter
-                // width in exactly this case — independent of whether the loop
-                // itself has any iterations to run.
+                // element, and when `raw_end` sits at the counter type's
+                // representable minimum, `raw_end - 1` unconditionally
+                // underflows/overflows the counter width in exactly this case —
+                // independent of whether the loop itself has any iterations to
+                // run.
                 //
-                // Gate the decrement on emptiness first: if `raw_start ==
-                // raw_end` the range is empty, so skip the header/body cycle
-                // entirely (`Goto exit_bb` directly) without ever computing
-                // `b - 1` — this is NOT the same as routing `counter` to a
-                // value the header would independently reject, because the
-                // header tests `counter >= bound` (`bound == raw_start`) and
-                // any candidate `counter` equal to `raw_start` trivially
-                // SATISFIES that predicate (entering the loop once), while any
-                // value strictly less than `raw_start` needs its own
-                // underflow-safe construction — there is no single
-                // representable sentinel that solves this for every width, so
-                // bypassing the header outright is the correct fix, not an
-                // easier substitute for one. A non-empty range takes the
-                // existing decrement-with-trap path unchanged, still routed
-                // through `pre_header_bb` → `header_bb` as before.
+                // Gate the decrement on emptiness first: an exclusive range is
+                // empty iff `raw_start >= raw_end`, not merely `raw_start ==
+                // raw_end` (equality only catches the boundary case; `a > b`
+                // is just as empty and can land on the same underflowing `b -
+                // 1`). Skip the header/body cycle entirely (`Goto exit_bb`
+                // directly) without ever computing `b - 1` — this is NOT the
+                // same as routing `counter` to a value the header would
+                // independently reject, because the header tests `counter >=
+                // bound` (`bound == raw_start`) and any candidate `counter`
+                // equal to `raw_start` trivially SATISFIES that predicate
+                // (entering the loop once), while any value strictly less than
+                // `raw_start` needs its own underflow-safe construction —
+                // there is no single representable sentinel that solves this
+                // for every width, so bypassing the header outright is the
+                // correct fix, not an easier substitute for one. A non-empty
+                // range takes the existing decrement-with-trap path unchanged,
+                // still routed through `pre_header_bb` → `header_bb` as before.
                 let is_empty = self.alloc_local(ResolvedTy::Bool);
+                // Same signedness-keyed predicate selection as the header
+                // comparison below (`header_pred`): an unsigned counter needs
+                // `UnsignedGreaterEq` so a high-bit-set bound still compares
+                // correctly, mirroring why the header itself doesn't use a
+                // single signed/unsigned-agnostic predicate.
+                let empty_pred = match counter_signedness {
+                    IntSignedness::Signed => CmpPred::SignedGreaterEq,
+                    IntSignedness::Unsigned => CmpPred::UnsignedGreaterEq,
+                };
                 self.push_instr(Instr::IntCmp {
                     dest: is_empty,
-                    pred: CmpPred::Eq,
+                    pred: empty_pred,
                     lhs: raw_start,
                     rhs: raw_end,
                 });

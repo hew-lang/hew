@@ -1,0 +1,15 @@
+// #1948 follow-up: an EMPTY exclusive descending range where `a > b` and `b`
+// sits at the unsigned minimum (`(5u32..0).rev()`) must yield zero
+// iterations, not trap. The original #1948 fix only gated the `b - 1`
+// pre-header decrement on `raw_start == raw_end`, which misses this `a > b`
+// subclass — `raw_start != raw_end` here, so the buggy gate fell through to
+// the unconditional `raw_end - 1 = 0 - 1` decrement and underflowed the same
+// way the `a == b` boundary case did before #1948.
+fn main() {
+    let lo: u32 = 5;
+    let hi: u32 = 0;
+    for i in (lo .. hi).rev() {
+        println(i);
+    }
+    println(999);
+}

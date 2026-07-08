@@ -13896,6 +13896,23 @@ impl Builder {
                 ..
             } => {
                 if let Some(dest) = self.binding_locals.get(binding).copied() {
+                    // #2420 -- the overwrite release below is sound ONLY when
+                    // the incoming value cannot alias the outgoing value's
+                    // heap. An RHS that reads the reassigned binding (`s =
+                    // grow(s)`, `s = S { n: s.n + 1, v: s.v }`) can hand back
+                    // an UN-RETAINED alias of the old value's owned fields:
+                    // by-value heap params are BORROWS and a non-`string`
+                    // owned field load is a raw pointer copy, so releasing the
+                    // old value here frees storage the incoming value still
+                    // references -- use-after-free on the next field use and a
+                    // double-free at the next release. When the RHS may alias,
+                    // skip the release on BOTH the static and the flag-gated
+                    // paths: fail-open (leak) is this seam's documented
+                    // posture, matching the scope-exit exclusion
+                    // (`derive_owned_record_drop_allowed`) for the identical
+                    // aliasing channel. WHEN-OBSOLETE: the COW retain-on-share
+                    // spine (every share retained => release always sound).
+                    let rhs_may_alias_old = self.reassign_rhs_may_alias_binding(value, *binding);
                     // #53 / #2301: release the prior heap-owning value before
                     // the slot is overwritten.
                     if let Some(flag) = self.overwrite_guard_flags.get(binding).copied() {
@@ -13908,7 +13925,9 @@ impl Builder {
                         // `flag = 1` to hand the value to its new owner. Reset to
                         // 0 after the store so the fresh value is released on the
                         // next overwrite.
-                        self.emit_flag_gated_overwrite_release(dest, &target.ty, flag);
+                        if !rhs_may_alias_old {
+                            self.emit_flag_gated_overwrite_release(dest, &target.ty, flag);
+                        }
                         self.push_instr(Instr::Move { dest, src });
                         self.push_instr(Instr::ConstI64 {
                             dest: flag,
@@ -13921,9 +13940,12 @@ impl Builder {
                         // consumed it (dispositioned off the scope-exit set by
                         // `mark_binding_moved`, so absent from the live view),
                         // so this is skipped and never double-frees.
-                        if self.owned_locals.iter().any(|entry| {
-                            &entry.binding == binding && entry.disposition == Disposition::ScopeExit
-                        }) {
+                        if !rhs_may_alias_old
+                            && self.owned_locals.iter().any(|entry| {
+                                &entry.binding == binding
+                                    && entry.disposition == Disposition::ScopeExit
+                            })
+                        {
                             self.emit_local_overwrite_release(dest, &target.ty);
                         }
                         self.push_instr(Instr::Move { dest, src });
@@ -19451,6 +19473,172 @@ impl Builder {
                 }
             })
             .collect()
+    }
+
+    /// #2420 -- may the value of `expr`, used as the RHS of `binding = expr`,
+    /// embed an UN-RETAINED alias of `binding`'s old owned heap?
+    ///
+    /// The overwrite release (`emit_local_overwrite_release`) frees the old
+    /// value's owned fields in place before the store. That is sound only when
+    /// the incoming value cannot reference the same heap. Two shapes break it,
+    /// both rooted in the RHS reading the reassigned binding:
+    ///
+    /// - `s = grow(s)` -- a by-value heap param is a BORROW (LESSONS
+    ///   `by-value-heap-params-are-borrows`), and the callee's non-`string`
+    ///   owned field load (`S { v: s.v }`) is a raw pointer copy with no
+    ///   retain, so the returned value aliases the caller's old heap;
+    /// - `s = S { n: s.n + 1, v: s.v }` -- the caller-side literal embeds the
+    ///   projection directly.
+    ///
+    /// Fail-closed allowlist mirroring `return_value_may_alias_borrow`, with
+    /// the leaf parameterised to "a read of `binding`" instead of "any
+    /// parameter": wrappers recurse all reachable values, constructions
+    /// recurse operands, a call may alias iff its callee is not
+    /// summary-proven fresh (`funcupdate_fn_returns_fresh`) AND some argument
+    /// may alias, projections recurse their object chain, and every unmodelled
+    /// form answers `true`. Two deliberate refinements:
+    ///
+    /// - TYPE CUT: a value whose type has no un-retained owned leaf
+    ///   (`ty_has_unretained_owned_leaf`) can never alias the released
+    ///   storage -- `s.n + 1` (`BitCopy`) and string-only records (every
+    ///   `string` aggregate load is retained `+1`) keep today's exact
+    ///   release/free balance.
+    /// - A bare read of a DIFFERENT binding answers `false` (release fires,
+    ///   preserving the `s = s2` rebind free). An intra-function alias built
+    ///   through another local (`let t = S { v: s.v }; s = t`) is a
+    ///   PRE-EXISTING hole of the projection-alias machinery, not widened
+    ///   here; closing it needs binding-level alias provenance.
+    ///   WHEN-OBSOLETE: the COW retain-on-share spine retires this predicate
+    ///   entirely (every share retained => the release is always sound).
+    fn reassign_rhs_may_alias_binding(&self, expr: &HirExpr, binding: BindingId) -> bool {
+        // A value that cannot carry an un-retained owned leaf cannot alias the
+        // storage the overwrite release frees.
+        if !self.ty_has_unretained_owned_leaf(&expr.ty) {
+            return false;
+        }
+        match &expr.kind {
+            // Value-passthrough wrappers: aliasing iff ANY reachable value
+            // aliases. A missing tail/else cannot produce the owned value in
+            // the first place, but stay fail-closed to mirror the summary walk.
+            HirExprKind::Block(block) => block
+                .tail
+                .as_deref()
+                .is_none_or(|t| self.reassign_rhs_may_alias_binding(t, binding)),
+            HirExprKind::If {
+                then_expr,
+                else_expr,
+                ..
+            } => {
+                self.reassign_rhs_may_alias_binding(then_expr, binding)
+                    || else_expr
+                        .as_deref()
+                        .is_none_or(|e| self.reassign_rhs_may_alias_binding(e, binding))
+            }
+            HirExprKind::Match { arms, .. } => {
+                arms.is_empty()
+                    || arms
+                        .iter()
+                        .any(|arm| self.reassign_rhs_may_alias_binding(&arm.body, binding))
+            }
+            HirExprKind::Return { value } => value
+                .as_deref()
+                .is_none_or(|v| self.reassign_rhs_may_alias_binding(v, binding)),
+            // Fresh leaves: a `.clone()` is a deep copy; a `Vec<T>` element
+            // load / slice is an independent element (push-clone + refcount);
+            // a literal owns nothing borrowed.
+            HirExprKind::RecordCloneCall { .. }
+            | HirExprKind::Index { .. }
+            | HirExprKind::Slice { .. }
+            | HirExprKind::Literal(_) => false,
+            // Constructions alias iff an operand does.
+            HirExprKind::StructInit { fields, base, .. } => {
+                fields
+                    .iter()
+                    .any(|(_, v)| self.reassign_rhs_may_alias_binding(v, binding))
+                    || base
+                        .as_deref()
+                        .is_some_and(|b| self.reassign_rhs_may_alias_binding(b, binding))
+            }
+            HirExprKind::TupleLiteral { elements } => elements
+                .iter()
+                .any(|e| self.reassign_rhs_may_alias_binding(e, binding)),
+            HirExprKind::MachineVariantCtor { payload, .. } => {
+                payload.as_ref().is_some_and(|fields| {
+                    fields
+                        .iter()
+                        .any(|(_, v)| self.reassign_rhs_may_alias_binding(v, binding))
+                })
+            }
+            // A call's result may alias `binding` iff the callee is not
+            // statically resolvable (closure / fn-pointer -- a hidden capture
+            // can smuggle the binding), or it is not summary-proven to return
+            // a fresh owner AND some argument itself may alias (the callee can
+            // forward that argument's heap into its return).
+            HirExprKind::Call { callee, args } => {
+                !callee_is_resolved_item(callee)
+                    || (!callee_returns_fresh_owner(callee, &self.funcupdate_fn_returns_fresh)
+                        && args
+                            .iter()
+                            .any(|a| self.reassign_rhs_may_alias_binding(a, binding)))
+            }
+            // A projection aliases iff its object chain reaches the binding.
+            HirExprKind::FieldAccess { object, .. } => {
+                self.reassign_rhs_may_alias_binding(object, binding)
+            }
+            HirExprKind::TupleIndex { tuple, .. } => {
+                self.reassign_rhs_may_alias_binding(tuple, binding)
+            }
+            // THE leaf: a read of the reassigned binding itself. A different
+            // binding or an Item/Const ref is not the old value (see the doc
+            // note on the pre-existing local-launder hole).
+            HirExprKind::BindingRef { resolved, .. } => {
+                matches!(resolved, ResolvedRef::Binding(id) if *id == binding)
+            }
+            // Method calls (can return borrowed `self`), derefs, operators
+            // over owned values, and every future form: fail closed.
+            _ => true,
+        }
+    }
+
+    /// True when `ty` transitively contains an owned heap leaf that aggregate
+    /// loads share WITHOUT a retain -- the alias channel the overwrite release
+    /// must respect (#2420).
+    ///
+    /// `string` is NOT such a leaf: every `string` aggregate field/element
+    /// load is retained `+1` in codegen (`retain_string_field_load`), so a
+    /// shared string never dangles when the old owner is released. `BitCopy`
+    /// types own no heap. Everything else that owns heap -- Vec / `HashMap` /
+    /// `HashSet` / Generator / bytes, enums with owned payloads, and any
+    /// unmodelled owner -- is a raw-shared leaf; user records and tuples
+    /// recurse their fields (value-recursive records are impossible by
+    /// construction, so the recursion terminates).
+    fn ty_has_unretained_owned_leaf(&self, ty: &ResolvedTy) -> bool {
+        let ty = self.subst_ty(ty);
+        if !crate::model::ty_owns_heap_mir(&ty, &self.record_field_orders, &self.enum_layouts) {
+            return false;
+        }
+        match &ty {
+            ResolvedTy::String => false,
+            ResolvedTy::Tuple(items) => items
+                .iter()
+                .any(|item| self.ty_has_unretained_owned_leaf(item)),
+            _ => {
+                if let Some(key) = user_record_layout_key(&ty) {
+                    if let Some(field_order) = self.lookup_record_field_order(&key) {
+                        // Clone the field types out so the `&self` borrow is
+                        // released before the recursive calls.
+                        let field_tys: Vec<ResolvedTy> =
+                            field_order.iter().map(|(_, fty)| fty.clone()).collect();
+                        return field_tys
+                            .iter()
+                            .any(|fty| self.ty_has_unretained_owned_leaf(fty));
+                    }
+                }
+                // Vec / HashMap / HashSet / Generator / bytes, owned-payload
+                // enums, unregistered records, opaque owners: fail closed.
+                true
+            }
+        }
     }
 
     /// Release the heap-owning OLD value of a `var`-local slot before a

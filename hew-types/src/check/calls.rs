@@ -615,6 +615,24 @@ impl Checker {
         if !self.wasm_target {
             return;
         }
+        // These diagnostics exist to fail closed on the *stdlib primitives*
+        // (`sleep`, `link`, `random_bytes`, `Node::*`, ...) that have no
+        // wasm32 implementation. They must not fire for an ordinary user
+        // function that merely happens to share one of these bare names —
+        // `fn_sigs` cannot distinguish the two (a user declaration silently
+        // overwrites the builtin's `register_builtin_fn` entry at the same
+        // key), but `fn_def_spans` is populated only from real source-level
+        // `Item::Function` declarations (see `collect_function_item`) and
+        // never from builtin registration, so its presence for this exact
+        // resolved name is a reliable "the user defined this symbol" signal.
+        // Mirror the module-qualified-first resolution `check_call` itself
+        // uses below so a module-scoped shadow (`mod.sleep`) is caught too.
+        let resolved_name = scoped_module_item_name(self.current_module.as_deref(), func_name)
+            .filter(|qualified| self.fn_def_spans.contains_key(qualified))
+            .unwrap_or_else(|| func_name.to_string());
+        if self.fn_def_spans.contains_key(&resolved_name) {
+            return;
+        }
         match func_name {
             "link" | "unlink" | "monitor" | "demonitor" | "link_remote" => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::LinkMonitor);

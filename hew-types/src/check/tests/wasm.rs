@@ -125,6 +125,45 @@ mod wasm_rejects {
         );
     }
 
+    /// Regression for PR #920: `reject_if_wasm_incompatible_call` matched on
+    /// the *raw* callee identifier before any resolution, so an ordinary
+    /// user function bare-named `sleep`/`sleep_until` (nothing to do with
+    /// the stdlib timer primitive) was flagged with the same WASM
+    /// `PlatformLimitation` warning as the real builtin, purely by name.
+    /// A user-defined `sleep`/`sleep_until` must compile on WASM with no
+    /// diagnostic at all — it shadows the builtin entirely, and the
+    /// unrelated body/signature proves this isn't the timer primitive.
+    #[test]
+    fn wasm_user_defined_sleep_does_not_warn() {
+        let output = check_wasm("fn sleep(x: i64) -> i64 { x + 1 } fn main() { sleep(41); }");
+        assert!(
+            !has_platform_limitation_warning(&output),
+            "a user-defined `sleep` function must not trigger the Timer PlatformLimitation warning; got warnings: {:?}",
+            output.warnings
+        );
+        assert!(
+            !has_platform_limitation_error(&output),
+            "a user-defined `sleep` function must not trigger any PlatformLimitation error; got errors: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn wasm_user_defined_sleep_until_does_not_warn() {
+        let output =
+            check_wasm("fn sleep_until(x: i64) -> i64 { x } fn main() { sleep_until(1); }");
+        assert!(
+            !has_platform_limitation_warning(&output),
+            "a user-defined `sleep_until` function must not trigger the Timer PlatformLimitation warning; got warnings: {:?}",
+            output.warnings
+        );
+        assert!(
+            !has_platform_limitation_error(&output),
+            "a user-defined `sleep_until` function must not trigger any PlatformLimitation error; got errors: {:?}",
+            output.errors
+        );
+    }
+
     /// `sleep_ms` was removed in the `sleep(duration)` migration. Calling it
     /// must produce an undefined-function error, not silently compile.
     #[test]
@@ -690,6 +729,28 @@ mod wasm_rejects {
         );
     }
 
+    /// Regression for PR #920: the bare-identifier `"random_bytes"` arm in
+    /// `reject_if_wasm_incompatible_call` fired on raw name alone, so an
+    /// ordinary user function bare-named `random_bytes` (nothing to do with
+    /// `std::crypto.random_bytes`) hard-failed a WASM build with the
+    /// crypto-entropy diagnostic pointed at the user's own call — not just a
+    /// spurious warning, a genuine compile break for an unrelated function.
+    #[test]
+    fn wasm_user_defined_random_bytes_does_not_reject() {
+        let output =
+            check_wasm("fn random_bytes(n: i64) -> i64 { n * 2 } fn main() { random_bytes(21); }");
+        assert!(
+            !has_platform_limitation_error(&output),
+            "a user-defined `random_bytes` function must not trigger the CryptoRandom PlatformLimitation error; got errors: {:?}",
+            output.errors
+        );
+        assert!(
+            !has_platform_limitation_warning(&output),
+            "a user-defined `random_bytes` function must not trigger any PlatformLimitation warning either; got warnings: {:?}",
+            output.warnings
+        );
+    }
+
     // ── Issue #2135: value-position (first-class fn reference) wasm rejects ──
 
     #[test]
@@ -1147,6 +1208,40 @@ fn main() {
         assert!(
             platform_error_contains(&output, "Link/monitor"),
             "error message should mention Link/monitor feature; got: {:?}",
+            output.errors
+        );
+    }
+
+    /// Regression for PR #920: the `"link" | "unlink" | "monitor" | "demonitor"
+    /// | "link_remote"` bare-name arm in `reject_if_wasm_incompatible_call`
+    /// fired on raw name alone, so an ordinary user function bare-named
+    /// `link`/`monitor` (unrelated signature, no actor handle involved) hard-
+    /// failed a WASM build with the `LinkMonitor` diagnostic pointed at the
+    /// user's own call.
+    #[test]
+    fn wasm_user_defined_link_and_monitor_do_not_reject() {
+        let output = check_wasm(
+            "fn link(a: i64, b: i64) -> i64 { a + b } \
+             fn monitor(x: i64) -> i64 { x } \
+             fn main() { link(1, 2); monitor(3); }",
+        );
+        assert!(
+            !has_platform_limitation_error(&output),
+            "user-defined `link`/`monitor` functions must not trigger the LinkMonitor PlatformLimitation error; got errors: {:?}",
+            output.errors
+        );
+    }
+
+    /// Regression for PR #920: same bare-name-match defect for the
+    /// `"supervisor_child" | "supervisor_stop"` `SupervisionTrees` arm.
+    #[test]
+    fn wasm_user_defined_supervisor_child_does_not_reject() {
+        let output = check_wasm(
+            "fn supervisor_child(n: i64) -> i64 { n } fn main() { supervisor_child(0); }",
+        );
+        assert!(
+            !has_platform_limitation_error(&output),
+            "a user-defined `supervisor_child` function must not trigger the SupervisionTrees PlatformLimitation error; got errors: {:?}",
             output.errors
         );
     }

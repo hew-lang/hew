@@ -2566,6 +2566,17 @@ run_accept_expect_stdout "receive_gen_fn_string_yield"
 run_accept_expect_stdout "receive_gen_fn_record_yield"
 run_accept_expect_stdout "receive_gen_fn_enum_yield"
 
+# Owned-composite yields (heap-owning record/enum): the pump releases its
+# producer copy per yield through the record/enum in-place drop thunks, the
+# `for await` consumer releases its decode copy at body end, and a mid-drain
+# `break` releases the breaking iteration's record on the break edge while
+# the peer-closed check unwedges the pump. Field values and discriminants
+# stay intact end to end; the per-yield leak slope is pinned by the
+# composite-yield leak oracle in hew-cli.
+run_accept_expect_stdout "receive_gen_fn_owned_record_yield"
+run_accept_expect_stdout "receive_gen_fn_owned_enum_yield"
+run_accept_expect_stdout "receive_gen_fn_record_stream_break"
+
 # Fault (producer crash): the gen body yields once, then traps on a
 # runtime div-by-zero. The consumer, having already received the first value,
 # must observe the fault on its next resume — never a clean, silent EOF. The

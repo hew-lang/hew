@@ -1,0 +1,59 @@
+// #2301 -- closure-body coverage. `function_body` runs the owned-Vec-key /
+// consumed-and-reassigned-binding pre-pass (`collect_vec_owned_element_keys_
+// from_block`) that seeds `prepass_consumed_bindings`/`prepass_reassigned_
+// bindings`, which `maybe_alloc_overwrite_guard_flag` consults to allocate a
+// runtime-gated release for a `var` consumed on one control-flow arm and
+// reassigned on a sibling arm. `lower_closure_shim` builds a brand-new child
+// `Builder` and lowers the closure body directly via `lower_value` — before
+// the #2301 fix this pre-pass never ran on a closure body, so the identical
+// consume/reassign pattern silently skipped the release when wrapped in a
+// closure (confirmed via `--dump-mir raw`: the top-level function emits an
+// `i64` guard-flag local plus a gated `drop` before the reassignment; the
+// closure invoke shim emitted neither, leaking the prior string).
+//
+// Exercises the ELSE (non-consuming, reassigning) arm so the fix's guard-flag
+// release path actually executes at runtime, not just at MIR-construction
+// time; a double-free here would abort instead of exiting 0.
+fn control(take_consume_arm: bool) -> i64 {
+    var s: string = "aaaaaaaaaa";
+    if take_consume_arm {
+        let moved: string = s;
+        return moved.len();
+    }
+    s = "bbbbbbbbbb";
+    s.len()
+}
+
+fn via_closure(take_consume_arm: bool) -> i64 {
+    let f = |flag: bool| -> i64 {
+        var s: string = "aaaaaaaaaa";
+        if flag {
+            let moved: string = s;
+            return moved.len();
+        }
+        s = "bbbbbbbbbb";
+        s.len()
+    };
+    f(take_consume_arm)
+}
+
+fn main() -> i64 {
+    // Both arms, both call shapes, so the guard-flag machinery's TRUE branch
+    // (consume, no release-on-reassign) and FALSE branch (no consume,
+    // release-then-reassign) both execute for both the top-level control
+    // function and the closure — any accidental double-free would abort
+    // before reaching the final return.
+    if control(true) != 10 {
+        return 1;
+    }
+    if control(false) != 10 {
+        return 2;
+    }
+    if via_closure(true) != 10 {
+        return 3;
+    }
+    if via_closure(false) != 10 {
+        return 4;
+    }
+    0
+}

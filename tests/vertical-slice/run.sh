@@ -2468,6 +2468,30 @@ run_accept_expect_stdout "gen_block_capture_outer"
 # PersistentShare and poisoned sibling scalar params via all_materialisable=false.
 run_accept_expect_stdout "gen_fn_fn_typed_param"
 
+# #2301 -- child-body pre-pass coverage. `function_body` runs a pre-pass
+# (`collect_vec_owned_element_keys_from_block`) that seeds
+# `prepass_consumed_bindings`/`prepass_reassigned_bindings`, consulted by
+# `maybe_alloc_overwrite_guard_flag` to allocate a runtime-gated release for a
+# `var` consumed on one control-flow arm and reassigned on a sibling arm.
+# `lower_closure_shim` and `lower_gen_block` each build their own fresh child
+# `Builder` and lower the body directly, bypassing the pre-pass entirely
+# before the fix -- so the identical consume/reassign pattern silently
+# skipped the release inside a closure or `gen fn` body (confirmed via
+# `--dump-mir raw`: the top-level `control` function emits an `i64` guard-flag
+# local plus a gated `drop` before the reassignment; the closure invoke shim /
+# generator body emitted neither, leaking the prior string). Both fixtures
+# exit 0 either way -- the leak is silent, not a crash -- so the MIR dump grep
+# for the now-present guard-flag/drop shape is the load-bearing assertion,
+# not just the exit-code check.
+"${HEW}" compile --dump-mir raw "${ROOT}/tests/vertical-slice/accept/closure_consume_reassign_overwrite_release.hew" >"${accept_output}" 2>&1
+grep -q 'drop _2 ty=string fn=release(hew_string_drop)' "${accept_output}"
+grep -q 'drop _3 ty=string fn=release(hew_string_drop)' "${accept_output}"
+run_accept_expect_status "closure_consume_reassign_overwrite_release" 0
+
+"${HEW}" compile --dump-mir raw "${ROOT}/tests/vertical-slice/accept/gen_fn_consume_reassign_overwrite_release.hew" >"${accept_output}" 2>&1
+grep -q 'drop _3 ty=string fn=release(hew_string_drop)' "${accept_output}"
+run_accept_expect_status "gen_fn_consume_reassign_overwrite_release" 0
+
 # Reject: a generator that captures a closure-with-env must still fail closed
 # after the fn-typed-param gate was widened. A closure literal capturing an
 # outer binding carries a heap-boxed env; flat-copying it across the thread

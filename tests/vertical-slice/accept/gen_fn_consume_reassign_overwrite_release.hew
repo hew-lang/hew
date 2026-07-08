@@ -1,0 +1,47 @@
+// #2301 -- gen-fn-body coverage (the `lower_gen_block` sibling of
+// `lower_closure_shim`'s gap fixed alongside it). `lower_gen_block` builds its
+// own fresh `body_builder` via an explicit field list ending in
+// `..Builder::default()` and lowers `body.statements`/`body.tail` directly —
+// before the #2301 fix, this body builder's `prepass_consumed_bindings`/
+// `prepass_reassigned_bindings` stayed permanently empty (never seeded by
+// `collect_vec_owned_element_keys_from_block`), so a `var` local to a `gen fn`
+// body that is consumed on one control-flow arm and reassigned on a sibling
+// arm silently skipped the path-sensitive release, exactly like the closure
+// case in `closure_consume_reassign_overwrite_release.hew`.
+//
+// Two separate generator invocations (not two iterations of one loop) so each
+// exercises exactly one arm of the `if` — avoids the pre-existing, unrelated
+// checker limitation where a loop body's guard-flag reset does not yet
+// support a consume on one iteration followed by a second `let`-consume of
+// the same binding on a later iteration.
+gen fn emit_len(take_consume_arm: bool) -> i64 {
+    var s: string = "aaaaaaaaaa";
+    if take_consume_arm {
+        let moved: string = s;
+        yield moved.len();
+    } else {
+        s = "bbbbbbbbbb";
+        yield s.len();
+    }
+}
+
+fn main() -> i64 {
+    var got_consume: i64 = -1;
+    for v in emit_len(true) {
+        got_consume = v;
+    }
+    var got_reassign: i64 = -1;
+    for v in emit_len(false) {
+        got_reassign = v;
+    }
+    // Both arms yield a 10-byte ASCII string's length; a double-free on the
+    // reassigning arm (the arm the #2301 gap under-releases) would abort
+    // before either `for` loop completes, not just produce a wrong number.
+    if got_consume != 10 {
+        return 1;
+    }
+    if got_reassign != 10 {
+        return 2;
+    }
+    0
+}

@@ -31,8 +31,8 @@ fn main() {
                 let text = data.to_string();
                 let crlf = "\r\n";
                 let status_line = match text.find(crlf) {
-                    cut if cut >= 0 => text.slice(0, cut),
-                    _ => text,
+                    Some(cut) => text.slice(0, cut),
+                    None => text,
                 };
                 println(f"response: {status_line}");
             },

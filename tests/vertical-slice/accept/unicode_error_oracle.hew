@@ -17,7 +17,7 @@ fn main() {
         Ok(n) => println(f"unexpected-rune-len-high={n}"),
         Err(e) => println(e),
     }
-    let missing = unicode.codepoint_at("hi", 2);
+    let missing = unicode.codepoint_at("hi", 2).unwrap_or(-1);
     let invalid_len = unicode.rune_len(-1);
     println(f"sentinels={missing},{invalid_len}");
 }

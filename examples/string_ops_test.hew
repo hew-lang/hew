@@ -10,8 +10,8 @@ fn main() {
     let s = "hello world";
     let len = s.len();
     println(len); // 11
-    let ch = s.char_at(0);
-    println(ch); // 104 (ASCII 'h')
+    let ch = s.char_at(0).unwrap_or('?');
+    println(to_string(ch)); // h
     let eq = s == "hello world";
     println(eq); // true
     let cat = "foo" + "bar";
@@ -22,9 +22,9 @@ fn main() {
     let sub2 = s.slice(6, 11);
     println(sub2); // world
     println("=== Find ===");
-    let idx = s.find("world");
+    let idx = s.find("world").unwrap_or(-1);
     println(idx); // 6
-    let not_found = s.find("xyz");
+    let not_found = s.find("xyz").unwrap_or(-1);
     println(not_found); // -1
     println("=== Starts/Ends/Contains ===");
     let sw = s.starts_with("hello");
@@ -46,8 +46,8 @@ fn main() {
     let replaced = "aabbcc".replace("bb", "XX");
     println(replaced); // aaXXcc
     println("=== Char ===");
-    let code = "ABC".char_at(0);
-    println(code); // 65 (ASCII 'A')
-    let is_a = code == 65;
+    let code = "ABC".char_at(0).unwrap_or('?');
+    println(to_string(code)); // A
+    let is_a = code == 'A';
     println(is_a);
 } // true

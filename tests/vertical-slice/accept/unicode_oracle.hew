@@ -6,16 +6,15 @@ fn main() {
     println(f"space_tab={unicode.is_space(9)} space_nbsp={unicode.is_space(160)} space_A={unicode.is_space(65)}");
     println(f"letter_A={unicode.is_letter(65)} letter_cjk={unicode.is_letter(26085)} letter_digit={unicode.is_letter(49)}");
     println(f"letter_latin_ext_add={unicode.is_letter(0x1E17)} lower_latin_ext_add={unicode.is_lower(0x1E17)} upper_latin_ext_add={unicode.to_upper(0x1E17)}");
-    println(f"letter_thai={unicode.is_letter(0x0E01)} letter_armenian={unicode.is_letter(0x0531)} letter_cjk_ext_b={unicode.is_letter(0x20000)}");
+    println(f"letter_thai={unicode.is_letter(0xE01)} letter_armenian={unicode.is_letter(0x531)} letter_cjk_ext_b={unicode.is_letter(0x20000)}");
     println(f"punct_bang={unicode.is_punct(33)} punct_ideo={unicode.is_punct(12290)} punct_A={unicode.is_punct(65)}");
     println(f"title_a={unicode.to_title(97)} title_eacute={unicode.to_title(233)} title_digit={unicode.to_title(49)}");
     println(f"rune_len={unicode.rune_len(65)},{unicode.rune_len(233)},{unicode.rune_len(26085)},{unicode.rune_len(128578)}");
-
     let text = "Aé日🙂";
     let rs = unicode.runes(text);
     println(f"rune_count={unicode.rune_count(text)} runes_len={rs.len()}");
     println(f"runes={rs[0]},{rs[1]},{rs[2]},{rs[3]}");
-    println(f"codepoint_at={unicode.codepoint_at(text, 0)},{unicode.codepoint_at(text, 1)},{unicode.codepoint_at(text, 2)},{unicode.codepoint_at(text, 3)}");
+    println(f"codepoint_at={unicode.codepoint_at(text, 0).unwrap_or(-1)},{unicode.codepoint_at(text, 1).unwrap_or(-1)},{unicode.codepoint_at(text, 2).unwrap_or(-1)},{unicode.codepoint_at(text, 3).unwrap_or(-1)}");
     let empty_text = "";
     let empty = unicode.runes(empty_text);
     println(f"empty_rune_count={unicode.rune_count(empty_text)} empty_runes_len={empty.len()}");

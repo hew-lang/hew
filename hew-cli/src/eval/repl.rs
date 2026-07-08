@@ -1600,9 +1600,9 @@ fn run_wasm_eval_compiled(
 
 /// Run the interactive REPL with a custom execution timeout.
 ///
-/// The startup banner and help line are printed only when stdout is an
-/// interactive terminal and `quiet` is `false`; piped/redirected stdout or
-/// an explicit `quiet` suppresses them.
+/// The startup banner and help line are printed only when both stdin and stdout
+/// are interactive terminals and `quiet` is `false`; piped/redirected stdin or
+/// stdout, or an explicit `quiet`, suppresses them.
 ///
 /// # Errors
 ///
@@ -1619,7 +1619,7 @@ pub fn run_interactive(
     let mut session = ReplSession::with_timeout_and_target(timeout, target);
     session.set_jit_mode(jit);
 
-    if !quiet && std::io::stdout().is_terminal() {
+    if !quiet && std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
         println!("Hew REPL v{}", env!("CARGO_PKG_VERSION"));
         println!("Type :help for commands, :items to list definitions, :quit to exit.\n");
     }

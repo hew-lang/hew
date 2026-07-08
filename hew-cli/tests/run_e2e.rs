@@ -1879,6 +1879,62 @@ fn run_match_record_wildcard_owned_aggregate_field_drops_once() {
     assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
 }
 
+/// Fail-closed boundary (#2391 sibling class): two imported modules each
+/// define a DISTINCT type named `Server` with an `impl ServerMethods for
+/// Server`, so both lower `Server::accept` / `Server::close` under the same
+/// unqualified raw-MIR symbol. The #2391 HIR dedup only covers ONE shared file
+/// re-imported under two overlapping package modules; two genuinely different
+/// bodies cannot share the symbol namespace until impl symbols become
+/// module-qualified (#2400). Codegen must reject this with a STRUCTURED
+/// duplicate-symbol diagnostic — not the opaque LLVM verifier dump ("Global is
+/// external, but doesn't have external or weak linkage!"), and not a silent
+/// linkonce merge of the two distinct bodies.
+#[test]
+fn check_dual_module_same_type_name_impl_fails_closed() {
+    require_codegen();
+
+    let source =
+        repo_root().join("tests/vertical-slice/reject/dual_module_same_type_name_impl.hew");
+    let output = Command::new(hew_binary())
+        .arg("check")
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew check");
+
+    assert!(
+        !output.status.success(),
+        "expected check to fail; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // Pin on the symbol-independent phrasing (which of `Server::accept` /
+    // `Server::close` collides first is declaration-order dependent), plus the
+    // duplicate-symbol lead and the follow-up issue reference, so the guard
+    // stays diagnosable and cannot silently regress to the LLVM dump.
+    assert!(
+        combined.contains("duplicate function symbol"),
+        "expected duplicate-symbol diagnostic; got: {combined}"
+    );
+    assert!(
+        combined.contains("distinct same-named types cannot yet share one compilation unit"),
+        "expected the actionable distinct-same-named-types cause; got: {combined}"
+    );
+    assert!(
+        combined.contains("#2400"),
+        "expected the follow-up issue reference; got: {combined}"
+    );
+    assert!(
+        !combined.contains("doesn't have external or weak linkage"),
+        "must not degrade to the raw LLVM verifier dump; got: {combined}"
+    );
+}
+
 /// Fail-closed boundary: match-destructure wildcard on a CLOSURE-typed
 /// field. Neither discharge path can place it — no leaf release symbol
 /// (`project_field_inline_drop_symbol` returns `None`) and the in-place

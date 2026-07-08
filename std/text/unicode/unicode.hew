@@ -368,7 +368,7 @@ pub fn runes(s: string) -> Vec<i64> {
         // unreachable None is skipped rather than pushed as a sentinel.
         match s.codepoint_at_utf8(i) {
             Some(cp) => result.push(cp),
-            None => {}
+            None => {},
         }
     }
     result

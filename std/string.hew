@@ -534,7 +534,7 @@ pub fn is_ascii(s: string) -> bool {
             Some(c) => c,
             None => return false,
         };
-        if (ch as i64) > 127 {
+        if ch as i64 > 127 {
             return false;
         }
     }

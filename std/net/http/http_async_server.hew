@@ -376,8 +376,8 @@ fn find_header(header_section: string, name: string) -> string {
                 if key == target {
                     found = string.trim(line.slice(colon + 1, line.len()));
                 }
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
     found
@@ -401,8 +401,8 @@ fn header_count(header_section: string, name: string) -> i64 {
                 if key == target {
                     count = count + 1;
                 }
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
     count
@@ -425,7 +425,7 @@ fn headers_have_colons(header_section: string) -> bool {
             // are malformed — the old `<= 0` guard covered both; a blind
             // `is_some()` here would wrongly accept `:value`.
             match line.find(":") {
-                Some(colon) if colon > 0 => {}
+                Some(colon) if colon > 0 => {},
                 _ => return false,
             }
         }

@@ -184,10 +184,7 @@ pub fn split_address(url_str: string) -> (string, string) {
     let after_scheme = strip_scheme(url_str);
     // The authority runs up to the first '/' (the path), '?' (query), or end.
     let (authority, path) = match after_scheme.find("/") {
-        Some(slash) => (
-            after_scheme.slice(0, slash),
-            after_scheme.slice(slash, after_scheme.len()),
-        ),
+        Some(slash) => (after_scheme.slice(0, slash), after_scheme.slice(slash, after_scheme.len())),
         None => (after_scheme, "/"),
     };
     let addr = authority_with_port(authority, scheme);
@@ -376,8 +373,8 @@ fn find_response_header(header_section: string, name: string) -> string {
                 if key == target {
                     found = string.trim(line.slice(colon + 1, line.len()));
                 }
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
     found

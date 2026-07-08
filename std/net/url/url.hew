@@ -309,8 +309,8 @@ fn encode_query_impl(params: string) -> string {
                 let key = line.slice(0, eq);
                 let value = line.slice(eq + 1, line.len());
                 encoded.push(encode(key) + "=" + encode(value));
-            }
-            None => {}
+            },
+            None => {},
         }
     }
     string.join(encoded, "&")

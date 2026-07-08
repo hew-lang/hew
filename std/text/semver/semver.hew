@@ -108,8 +108,8 @@ pub fn try_parse(s: string) -> Result<Version, string> {
         Some(plus_idx) => {
             main_part = s.slice(0, plus_idx);
             build = s.slice(plus_idx + 1, s.len());
-        }
-        None => {}
+        },
+        None => {},
     }
     // Split off pre-release (-...)
     // Clone main_part so it remains available for further searches.
@@ -119,8 +119,8 @@ pub fn try_parse(s: string) -> Result<Version, string> {
         Some(dash_idx) => {
             version_part = main_part.slice(0, dash_idx);
             pre = main_part.slice(dash_idx + 1, main_part.len());
-        }
-        None => {}
+        },
+        None => {},
     }
     // Split major.minor.patch
     let first_dot = match version_part.find(".") {
@@ -240,16 +240,20 @@ fn compare_pre(a: string, b: string) -> i64 {
         let a_dot = a.slice(a_pos, a_len).find(".");
         var a_end = a_len;
         match a_dot {
-            Some(i) => { a_end = a_pos + i; }
-            None => {}
+            Some(i) => {
+                a_end = a_pos + i;
+            },
+            None => {},
         }
         let a_id = a.slice(a_pos, a_end);
         // Extract next identifier from b
         let b_dot = b.slice(b_pos, b_len).find(".");
         var b_end = b_len;
         match b_dot {
-            Some(i) => { b_end = b_pos + i; }
-            None => {}
+            Some(i) => {
+                b_end = b_pos + i;
+            },
+            None => {},
         }
         let b_id = b.slice(b_pos, b_end);
         let cmp = compare_pre_id(a_id, b_id);
@@ -319,8 +323,10 @@ fn matches_req(v: Version, req: string) -> bool {
         let comma = rest.find(",");
         var end = rlen;
         match comma {
-            Some(i) => { end = pos + i; }
-            None => {}
+            Some(i) => {
+                end = pos + i;
+            },
+            None => {},
         }
         let part = req.slice(pos, end).trim();
         if part.len() > 0 {

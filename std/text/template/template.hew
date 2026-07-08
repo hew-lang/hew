@@ -224,7 +224,7 @@ fn consume_if_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, range_elem: st
             Some(i) => i,
             None => {
                 return Err(TemplateError::UnclosedBlock("template: unclosed `{{if}}` — missing `{{end}}`"));
-            }
+            },
         };
         let tag_start = pos + open + 2;
         let after_open = tmpl.slice(tag_start, tlen);
@@ -232,7 +232,7 @@ fn consume_if_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, range_elem: st
             Some(i) => i,
             None => {
                 return Err(TemplateError::UnclosedDirective("template: unclosed `{{` inside `{{if}}` body"));
-            }
+            },
         };
         let tag = tmpl.slice(tag_start, tag_start + close).trim();
         let next_pos = tag_start + close + 2;
@@ -305,7 +305,7 @@ fn consume_range_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, key: string
             Some(i) => i,
             None => {
                 return Err(TemplateError::UnclosedBlock("template: unclosed `{{range}}` — missing `{{end}}`"));
-            }
+            },
         };
         let tag_start = pos + open + 2;
         let after_open = tmpl.slice(tag_start, tlen);
@@ -313,7 +313,7 @@ fn consume_range_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, key: string
             Some(i) => i,
             None => {
                 return Err(TemplateError::UnclosedDirective("template: unclosed `{{` inside `{{range}}` body"));
-            }
+            },
         };
         let tag = tmpl.slice(tag_start, tag_start + close).trim();
         let next_pos = tag_start + close + 2;
@@ -369,7 +369,7 @@ fn render_segment(tmpl: string, ctx: Ctx, range_elem: string, in_range: bool) ->
             None => {
                 out = out + rest;
                 return Ok(out);
-            }
+            },
         };
         // Append literal text before `{{`.
         out = out + tmpl.slice(pos, pos + open);
@@ -379,7 +379,7 @@ fn render_segment(tmpl: string, ctx: Ctx, range_elem: string, in_range: bool) ->
             Some(i) => i,
             None => {
                 return Err(TemplateError::UnclosedDirective("template: unclosed `{{` directive"));
-            }
+            },
         };
         let tag = tmpl.slice(tag_start, tag_start + close).trim();
         pos = tag_start + close + 2;
@@ -450,7 +450,7 @@ fn validate(tmpl: string) -> Result<i64, TemplateError> {
                     return Err(unclosed_block_error(top));
                 }
                 return Ok(0);
-            }
+            },
         };
         let tag_start = pos + open + 2;
         let after_open = tmpl.slice(tag_start, tlen);
@@ -458,7 +458,7 @@ fn validate(tmpl: string) -> Result<i64, TemplateError> {
             Some(i) => i,
             None => {
                 return Err(TemplateError::UnclosedDirective("template: unclosed `{{` directive"));
-            }
+            },
         };
         let tag = tmpl.slice(tag_start, tag_start + close).trim();
         pos = tag_start + close + 2;

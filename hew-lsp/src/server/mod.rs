@@ -4303,6 +4303,79 @@ machine Traffic {
     }
 
     #[test]
+    fn goto_definition_handler_named_import_usage_jumps_to_imported_file_not_import_line() {
+        // Regression test for the bug this helper-level test above cannot catch:
+        // `cross_file_goto_named_import_resolves_to_open_document` calls
+        // `find_cross_file_definition` directly, bypassing the actual
+        // `goto_definition` LSP handler entirely. The handler used to return
+        // any `Resolution::def_location()` immediately -- and
+        // `Resolution::ImportedItem::def_location()` used to point at the
+        // *import statement*, not the real definition -- so this path was
+        // never exercised end-to-end and the regression shipped silently.
+        //
+        // Cursor sits on a *usage* of `Counter` inside `main()`, not on the
+        // import line, so this only passes if `goto_definition` actually
+        // chases the import across files instead of stopping at the import
+        // span.
+        let main_source =
+            "import counter::{ Counter };\nfn main() -> Counter { Counter { value: 1 } }";
+        let counter_source = "type Counter { value: i32 }";
+
+        let main_uri = make_test_uri("/project/main.hew");
+        let counter_uri = make_test_uri("/project/counter.hew");
+
+        // Build a real `HewLanguageServer` via `tower_lsp::LspService::new`,
+        // the same construction path production code uses (`main.rs`). This
+        // is the harness-free route the original bug report noted was
+        // missing: `Client` has no public constructor of its own, but
+        // `LspService::new(init)` hands a real one to `init` and `.inner()`
+        // gives back the constructed server for direct, non-async calls into
+        // the handler.
+        let (service, _socket) = tower_lsp::LspService::new(|client| {
+            HewLanguageServer::new_with_options(client, Vec::new())
+        });
+        let server = service.inner();
+        server
+            .documents
+            .insert(main_uri.clone(), make_doc(main_source));
+        server
+            .documents
+            .insert(counter_uri.clone(), make_doc(counter_source));
+
+        // Cursor on the *usage* `Counter` in the return type, not the import.
+        let usage_offset = main_source.rfind("-> Counter").unwrap() + "-> ".len();
+        let doc = server.documents.get(&main_uri).unwrap();
+        let position =
+            offset_range_to_lsp(main_source, &doc.line_offsets, usage_offset, usage_offset).start;
+        drop(doc);
+
+        let params = GotoDefinitionParams {
+            text_document_position_params: tower_lsp::lsp_types::TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: main_uri.clone(),
+                },
+                position,
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        };
+
+        let response = handlers::navigation::goto_definition(server, &params)
+            .expect("goto_definition should resolve the imported Counter usage");
+        let GotoDefinitionResponse::Scalar(location) = response else {
+            panic!("expected a scalar goto-definition response, got {response:?}");
+        };
+
+        assert_eq!(
+            location.uri, counter_uri,
+            "goto-definition on a named-import usage must jump to the imported \
+             file's real definition, not stay on the import statement in the \
+             importing file (got uri={}, range={:?})",
+            location.uri, location.range
+        );
+    }
+
+    #[test]
     fn cross_file_goto_aliased_import_resolves_by_alias() {
         // `import counter::{ Counter as Cnt }` — cursor on `Cnt` in usage.
         let main_source = "import counter::{ Counter as Cnt };\nfn main() {}";

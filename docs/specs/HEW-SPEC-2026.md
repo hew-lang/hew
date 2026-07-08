@@ -2352,7 +2352,7 @@ Available `HashMap` methods:
 | `HashMap::new()`          | `HashMap<K,V>`  | Create empty map                 |
 | `m.get(key)`              | `Option<V>`     | Look up a key                    |
 | `m.insert(key, value)`    | `()`            | Insert or overwrite              |
-| `m.remove(key)`           | `bool`          | Remove a key; true if present    |
+| `m.remove(key)`           | `Option<V>`     | Remove a key; `Some(value)` if present, else `None` |
 | `m.contains_key(key)`     | `bool`          | Test membership                  |
 | `m.len()`                 | `i64`           | Number of entries                |
 | `m.is_empty()`            | `bool`          | True if no entries               |

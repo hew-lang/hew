@@ -234,6 +234,207 @@ fn hew_build(
     run_bounded_command(cmd, "hew build --link-lib")
 }
 
+/// Resolve a tool on the CURRENT PATH (before any shadowing), mirroring the
+/// `which` probe `select_native_compiler` performs. Returns the absolute path.
+fn resolve_tool(name: &str) -> Option<PathBuf> {
+    let out = Command::new("which").arg(name).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if path.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(path))
+    }
+}
+
+/// The native link line must carry `libhew.a` as the ONLY runtime/stdlib
+/// archive: the `--link-lib` fixture appears exactly once and NO
+/// `libhew_std.a` token appears — even when a stray dev-build
+/// `target/{debug,release}/libhew_std.a` exists. Before the fix,
+/// `link_executable` probed for that archive best-effort and dev layouts
+/// carried a second full runtime copy on the line; an FFI consumer archive
+/// then died on duplicate `hew_*` symbols against the fat-LTO release
+/// `libhew.a`. The compiler argv is captured with a PATH shim that logs one
+/// argument per line, then execs the real driver.
+#[test]
+fn link_line_carries_single_runtime_archive() {
+    require_codegen();
+    let dir = tempdir();
+
+    // Shadow whichever driver the host resolves (`select_native_compiler`
+    // prefers clang, falls back to cc). Resolve the REAL path before
+    // prepending the shim dir to PATH.
+    let Some((tool_name, real_tool)) = ["clang", "cc"]
+        .iter()
+        .find_map(|name| resolve_tool(name).map(|path| (*name, path)))
+    else {
+        eprintln!("SKIP: neither clang nor cc is resolvable on this host");
+        return;
+    };
+
+    let shim_dir = dir.path().join("shim-bin");
+    std::fs::create_dir_all(&shim_dir).expect("create shim dir");
+    let argv_log = dir.path().join("argv.log");
+    let shim_path = shim_dir.join(tool_name);
+    std::fs::write(
+        &shim_path,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" >> {}\nexec {} \"$@\"\n",
+            argv_log.display(),
+            real_tool.display(),
+        ),
+    )
+    .expect("write shim script");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&shim_path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod shim script");
+    }
+
+    let Some(lib) = build_staticlib(
+        dir.path(),
+        "argv_ffi",
+        r#"#[no_mangle]
+pub extern "C" fn argv_fixture_value() -> i64 { 7 }
+"#,
+    ) else {
+        return;
+    };
+
+    let prog = write_program(
+        dir.path(),
+        "argv_prog",
+        r#"extern "C" { fn argv_fixture_value() -> i64; }
+fn main() {
+    let v: i64 = unsafe { argv_fixture_value() };
+    println(f"{v}");
+}
+"#,
+    );
+    let out_bin = dir.path().join("argv_out");
+
+    let orig_path = std::env::var("PATH").unwrap_or_default();
+    let mut cmd = Command::new(hew_binary());
+    cmd.arg("build")
+        .arg("--link-lib")
+        .arg(&lib)
+        .arg(&prog)
+        .arg("-o")
+        .arg(&out_bin)
+        .env("PATH", format!("{}:{orig_path}", shim_dir.display()))
+        .current_dir(dir.path());
+    let out = run_bounded_command(cmd, "hew build --link-lib (argv shim)");
+    assert!(
+        out.status.success(),
+        "shimmed link must succeed:\n{}",
+        describe_output(&out),
+    );
+
+    let log = std::fs::read_to_string(&argv_log).expect("shim must have captured a linker argv");
+    let tokens: Vec<&str> = log.lines().collect();
+    let fixture_count = tokens
+        .iter()
+        .filter(|token| token.ends_with("libargv_ffi.a"))
+        .count();
+    assert_eq!(
+        fixture_count, 1,
+        "the --link-lib archive must appear exactly once on the link line:\n{log}",
+    );
+    assert!(
+        !tokens.iter().any(|token| token.contains("libhew_std.a")),
+        "libhew.a is the single runtime/stdlib archive — libhew_std.a must \
+         never be on the native link line:\n{log}",
+    );
+    assert!(
+        tokens.iter().any(|token| token.ends_with("libhew.a")),
+        "the runtime archive libhew.a must be on the link line:\n{log}",
+    );
+}
+
+/// In-repo miniature of the mqtt/nats ecosystem shape: a hew-cabi-dependent
+/// package archive plus a program that BOTH spawns an actor (pulling the
+/// actor-runtime members) and calls the package's extern (pulling the package
+/// member whose `hew_*` refs are undefined imports). Pre-fix, dev layouts
+/// carried TWO runtime-defining archives on the line, and this exact pull
+/// pattern is what turned the redundancy into a duplicate-symbol hard error.
+#[test]
+fn actor_spawn_with_cabi_staticlib_links_and_runs() {
+    require_codegen();
+    let dir = tempdir();
+
+    let Some(lib) = build_cabi_wrapper_staticlib(
+        dir.path(),
+        "actorcabi",
+        r#"//! Fixture package: hew-cabi-dependent, exercised alongside an actor spawn.
+use hew_cabi::sink::set_last_error;
+
+#[no_mangle]
+pub extern "C" fn actorcabi_probe() -> i64 {
+    set_last_error("actorcabi: probe".to_string());
+    11
+}
+"#,
+    ) else {
+        return;
+    };
+    assert_archive_symbol_is_undefined(&lib, "hew_stream_set_last_error");
+
+    let prog = write_program(
+        dir.path(),
+        "actorcabi_prog",
+        r#"extern "C" { fn actorcabi_probe() -> i64; }
+
+actor Adder {
+    var total: i64 = 0;
+    receive fn add(n: i64) -> i64 {
+        total = total + n;
+        total
+    }
+}
+
+fn main() {
+    let ffi: i64 = unsafe { actorcabi_probe() };
+    let adder = spawn Adder();
+    match await adder.add(ffi) {
+        Ok(v) => println(f"total={v}"),
+        Err(_) => println("err"),
+    }
+}
+"#,
+    );
+    let out_bin = dir.path().join("actorcabi_out");
+
+    let link = hew_build(Some(&lib), &prog, &out_bin, dir.path());
+    assert!(
+        link.status.success(),
+        "an actor-spawning program with a hew-cabi package must link cleanly:\n{}",
+        describe_output(&link),
+    );
+    let link_stderr = String::from_utf8_lossy(&link.stderr);
+    assert!(
+        !link_stderr.contains("duplicate"),
+        "unexpected duplicate-symbol error linking actor + hew-cabi package:\n{link_stderr}",
+    );
+
+    let mut run = Command::new(&out_bin);
+    run.current_dir(dir.path());
+    let run = run_bounded_command(run, "run actorcabi_out");
+    assert!(
+        run.status.success(),
+        "linked binary must run:\n{}",
+        describe_output(&run)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout).trim(),
+        "total=11",
+        "expected the actor to echo the extern's exact value:\n{}",
+        describe_output(&run),
+    );
+}
+
 /// `hew run --link-lib <archive>` must thread the archive into the native link
 /// step exactly like `hew build --link-lib` does. Before the fix,
 /// `compile_temp_artifact` passed a literal `&[]` to `compile_build_binary`,

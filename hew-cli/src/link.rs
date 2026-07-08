@@ -235,28 +235,17 @@ pub fn link_executable(
         cmd.arg("-fsanitize=address");
     }
 
+    // `libhew.a` is the SINGLE provider of runtime + stdlib symbols on the
+    // native link line — `hew-lib` depends on both `hew-runtime` and `hew-std`,
+    // so direct extern declarations naming `hew_datetime_*` and similar
+    // stable-stdlib symbols resolve from it. A second stdlib archive
+    // (`libhew_std.a`) used to be probed in best-effort here; it embeds its own
+    // full copy of hew-runtime (cargo staticlib packaging bundles transitive
+    // rlib deps), so whenever an FFI consumer archive pulled members from both,
+    // the link died on duplicate `hew_*` symbols. Consumer archives must
+    // reference runtime/stdlib symbols as *undefined* (see the re-list comment
+    // below and `diagnose_linker_errors`' dup hint).
     cmd.arg(object_path).arg(&hew_lib);
-
-    // ── Stdlib staticlib the user may reference via `extern "rt"` ────
-    // Pull in the consolidated stdlib archive (libhew_std.a) so direct extern
-    // declarations naming `hew_datetime_*` and similar stable-stdlib symbols
-    // resolve at link time. A missing archive is ignored (best-effort) so users
-    // who never reach for stdlib FFI from a source build that skipped the stdlib
-    // crate still link plain programs.
-    if let Ok(exe) = std::env::current_exe() {
-        let exe_dir = exe.parent().expect("exe should have a parent directory");
-        let triple = target.normalized_triple();
-        for archive in NATIVE_STDLIB_ARCHIVES {
-            let path = if target.can_run_on_host() {
-                find_optional_hew_lib(exe_dir, archive, triple)
-            } else {
-                find_optional_target_hew_lib(exe_dir, archive, triple)
-            };
-            if let Some(path) = path {
-                cmd.arg(path);
-            }
-        }
-    }
 
     cmd.arg("-o").arg(&safe_output);
 
@@ -329,12 +318,15 @@ pub fn link_executable(
 
     // ── Re-list the runtime archive after the consumer archives ───────
     // libhew.a appears once above (resolving the program object's *direct*
-    // runtime references) and again here, after the stdlib/native-package
-    // archives. Native packages and stdlib staticlibs reference runtime symbols
-    // (`hew_vec_*`, `hew_stream_*`, …) as *undefined* and resolve them against
-    // libhew.a at the final link rather than bundling their own copy — bundling
-    // is the duplicate-symbol failure this change fixes. A single-pass archive
-    // linker (GNU ld / ld.lld on ELF) only pulls an archive member to satisfy an
+    // runtime references) and again here, after the native-package/--link-lib
+    // archives. It is the ONLY runtime/stdlib archive permitted on the native
+    // link line: native packages and `--link-lib` staticlibs reference runtime
+    // symbols (`hew_vec_*`, `hew_stream_*`, …) as *undefined* and resolve them
+    // against libhew.a at the final link rather than bundling their own copy —
+    // bundling (or listing a second runtime-carrying archive such as
+    // libhew_std.a) is exactly the duplicate-symbol failure `diagnose_linker_
+    // errors`' dup hint describes. A single-pass archive linker (GNU ld /
+    // ld.lld on ELF) only pulls an archive member to satisfy an
     // already-pending undefined symbol, so a consumer archive listed *after* the
     // first libhew.a needs libhew.a repeated here for its backward references to
     // resolve; the system libraries above are shared objects and stay globally
@@ -650,12 +642,6 @@ fn link_wasm(object_path: &str, output_path: &str, target: &str) -> Result<(), S
 const WASM_OPTIONAL_LINK_ARCHIVES: [&str; 1] = ["libhew_std.a"];
 const WASM_RUNTIME_ARCHIVE: &str = "libhew_runtime.a";
 
-/// Sibling stdlib staticlib the native linker pulls in (best-effort) so
-/// `extern "rt"` declarations naming `stable-stdlib` symbols resolve.
-/// Keep in sync with the `stable-stdlib` block in
-/// `scripts/jit-symbol-classification.toml`.
-const NATIVE_STDLIB_ARCHIVES: &[&str] = &["libhew_std.a"];
-
 fn find_wasm_link_libs(target: &str) -> Result<Vec<String>, String> {
     let exe = std::env::current_exe().map_err(|e| format!("cannot find self: {e}"))?;
     let exe_dir = exe.parent().expect("exe should have a parent directory");
@@ -670,42 +656,6 @@ fn find_wasm_link_libs(target: &str) -> Result<Vec<String>, String> {
     libs.push(find_required_wasm_runtime_lib(exe_dir, rust_target)?);
 
     Ok(libs)
-}
-
-fn find_optional_hew_lib(exe_dir: &std::path::Path, name: &str, triple: &str) -> Option<String> {
-    for candidate in hew_lib_candidates(exe_dir, name, triple) {
-        if candidate.exists() {
-            return Some(
-                candidate
-                    .canonicalize()
-                    .unwrap_or(candidate)
-                    .display()
-                    .to_string(),
-            );
-        }
-    }
-
-    None
-}
-
-fn find_optional_target_hew_lib(
-    exe_dir: &std::path::Path,
-    name: &str,
-    triple: &str,
-) -> Option<String> {
-    for candidate in hew_target_lib_candidates(exe_dir, name, triple) {
-        if candidate.exists() {
-            return Some(
-                candidate
-                    .canonicalize()
-                    .unwrap_or(candidate)
-                    .display()
-                    .to_string(),
-            );
-        }
-    }
-
-    None
 }
 
 fn wasm_runtime_target(target: &str) -> &str {
@@ -885,30 +835,6 @@ fn hew_lib_candidates(
             .join(name),
         exe_dir.join("../../target/wasm32-wasip1/debug").join(name),
         exe_dir.join("../../hew-runtime/target/release").join(name),
-    ]
-}
-
-fn hew_target_lib_candidates(
-    exe_dir: &std::path::Path,
-    name: &str,
-    triple: &str,
-) -> Vec<std::path::PathBuf> {
-    vec![
-        // Installed target-aware layouts.
-        exe_dir.join("../lib").join(triple).join(name),
-        exe_dir.join("../lib/hew").join(triple).join(name), // /usr/lib/hew/<triple>/
-        exe_dir.join("../lib64/hew").join(triple).join(name), // /usr/lib64/hew/<triple>/
-        // Cargo target-dir outputs for cross-target dev/test builds.
-        exe_dir
-            .join("../../target")
-            .join(triple)
-            .join("release")
-            .join(name),
-        exe_dir
-            .join("../../target")
-            .join(triple)
-            .join("debug")
-            .join(name),
     ]
 }
 
@@ -1958,27 +1884,6 @@ mod tests {
             .expect("same-dir host fallback candidate");
         assert!(cross_release_index < host_same_dir_index);
         assert!(cross_debug_index < host_same_dir_index);
-    }
-
-    #[test]
-    fn hew_target_lib_candidates_exclude_host_fallbacks() {
-        let exe_dir = std::path::Path::new("/repo/target/debug");
-        let candidates =
-            hew_target_lib_candidates(exe_dir, "libhew_std.a", "aarch64-unknown-linux-gnu");
-
-        assert!(
-            !candidates.contains(&std::path::PathBuf::from("/repo/target/debug/libhew_std.a")),
-            "cross-target stdlib lookup must not accept a host archive"
-        );
-        assert!(
-            !candidates.contains(&std::path::PathBuf::from(
-                "/repo/target/debug/../../target/debug/libhew_std.a"
-            )),
-            "cross-target stdlib lookup must not accept a host target-dir archive"
-        );
-        assert!(candidates.contains(&std::path::PathBuf::from(
-            "/repo/target/debug/../../target/aarch64-unknown-linux-gnu/debug/libhew_std.a"
-        )));
     }
 
     #[test]

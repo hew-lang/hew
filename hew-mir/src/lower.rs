@@ -9295,6 +9295,17 @@ struct Builder {
     /// carrier/Terminator field) so the carriers collapse onto one
     /// `Terminator::Suspend` while the emitted IR stays byte-identical.
     suspend_kinds: HashMap<u32, SuspendKind>,
+    /// #2395 decision 2 — abandon-edge drops for a suspend's escape-poisoned
+    /// value that the generic `drops_for_exit` `BindingState` filter cannot see.
+    /// Today the sole member is the `SuspendKind::StreamSend` in-flight yield
+    /// value: it is escape-poisoned (so no scope-exit drop competes on the
+    /// resume path) and its resume-edge release is the pump's inline `after_send`
+    /// `Instr::Drop`. Keyed by the id of the block carrying the
+    /// `Terminator::Suspend` (the SAME key `suspend_kinds` uses). Appended to the
+    /// matching `ExitPath::Suspend` plan AFTER `enumerate_exits`, so the value is
+    /// freed exactly once on the destroy-while-parked edge — mutually exclusive
+    /// with the resume-edge drop (abandon XOR resume).
+    suspend_abandon_extra_drops: HashMap<u32, Vec<ElabDrop>>,
     owned_locals: Vec<OwnedLocalEntry>,
     /// Generator/`AsyncGenerator` owned bindings tagged with the HIR scope they
     /// were declared in, recorded so a per-scope-exit `hew_gen_coro_destroy`
@@ -32210,6 +32221,42 @@ impl Builder {
         (resume_bb, close_bb)
     }
 
+    /// #2395 decision 2 — record the abandon-edge drop for a `StreamSend`
+    /// in-flight yield value. The value is escape-poisoned (so the generic
+    /// `drops_for_exit` filter misses it) and its resume-edge release (the
+    /// pump's `after_send` inline `Instr::Drop`) never fires on
+    /// destroy-while-parked. Stash a congruent `CowHeap` drop keyed by
+    /// `suspend_block` (the block carrying the `Terminator::Suspend`); the
+    /// post-`enumerate_exits` pass appends it to that suspend's plan so codegen
+    /// fires it on the case-1 destroy edge only. Exactly-once holds: the abandon
+    /// and resume edges are mutually exclusive and this drop lives only on the
+    /// abandon plan. The release protocol is the SAME `generator_yield_drop_symbol`
+    /// verdict the resume drop uses, routed through the canonical
+    /// `CowHeapRelease::from_symbol` inverse (no picker drift); the resulting kind
+    /// passes `validate_drop_plan` (string/bytes via the Place-driven dispatcher,
+    /// `Vec*` via its dedicated owned/plain arms). A symbol outside the wired set
+    /// (`from_symbol` → `None`) skips the drop — leak-not-wrong-free.
+    fn record_stream_send_abandon_drop(
+        &mut self,
+        suspend_block: u32,
+        value: Place,
+        yield_ty: &ResolvedTy,
+        symbol: &'static str,
+    ) {
+        if let Some(release) = crate::ownership::CowHeapRelease::from_symbol(symbol) {
+            self.suspend_abandon_extra_drops
+                .entry(suspend_block)
+                .or_default()
+                .push(ElabDrop {
+                    place: value,
+                    ty: yield_ty.clone(),
+                    drop_fn: None,
+                    kind: DropKind::CowHeap { release },
+                    guard: None,
+                });
+        }
+    }
+
     fn build_stream_producer_pump(&mut self, gen_place: Place, pump: &StreamProducerPumpCtx) {
         use hew_types::runtime_call::RuntimeCallFamily;
 
@@ -32318,11 +32365,15 @@ impl Builder {
         if let ReleaseSymbolVerdict::Wired(symbol) =
             self.generator_yield_drop_symbol(&pump.yield_ty)
         {
+            // Resume-edge release (delivered/ready): the pump is the sole owner
+            // of its copy and frees it here before the loop overwrites the slot.
             self.push_instr(Instr::Drop {
                 place: value_local,
                 ty: pump.yield_ty.clone(),
                 drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
             });
+            // Abandon-edge release for the SAME in-flight value (#2395 dec. 2).
+            self.record_stream_send_abandon_drop(send_bb, value_local, &pump.yield_ty, symbol);
         }
         self.finish_current_block(Terminator::Goto { target: loop_head });
 
@@ -34167,7 +34218,7 @@ fn elaborate(
         &indirect_enum_drop_allowed,
         &builder.resource_drop_flags,
     );
-    let (elab_blocks, drop_plans) = enumerate_exits(
+    let (elab_blocks, mut drop_plans) = enumerate_exits(
         &checked.blocks,
         &lifo_drops,
         &dataflow_result.exit_states,
@@ -34182,6 +34233,21 @@ fn elaborate(
         &builder.loop_back_edge_blocks,
         &builder.locals,
     );
+
+    // #2395 decision 2 — append each suspend's escape-poisoned abandon-edge drops
+    // (today: the `SuspendKind::StreamSend` in-flight value) to its
+    // `ExitPath::Suspend` plan. `drops_for_exit`'s `BindingState` filter cannot
+    // see an escape-poisoned value, so it is stashed at the pump lowering site
+    // (keyed by the suspend block id) and folded in here. Appended AFTER the
+    // generic drops so it releases in the same LIFO order codegen walks; codegen
+    // fires the whole plan on the case-1 destroy edge only.
+    for (exit, plan) in &mut drop_plans {
+        if let ExitPath::Suspend { block, .. } = exit {
+            if let Some(extra) = builder.suspend_abandon_extra_drops.get(block) {
+                plan.drops.extend(extra.iter().cloned());
+            }
+        }
+    }
 
     ElaboratedMirFunction {
         name: checked.name.clone(),
@@ -44079,12 +44145,27 @@ fn enumerate_exits(
                     },
                 )
             }
+            // Generator-body `yield`. The abandon (destroy-while-parked-at-yield)
+            // edge must drop the frame-owned locals live across this yield, or a
+            // generator destroyed before exhaustion (a `for await` consumer that
+            // stops early, a supervisor tearing the producer down) leaks them.
+            // The plan is the SAME `drops_for_exit` `BindingState`-filtered set the
+            // `Return`/`Cancel` exits use, so a moved-out local is excluded (no
+            // double-free). The just-yielded `value` is published to the companion
+            // `out` slot as a MOVE, so its binding is `Consumed` at this exit and
+            // the filter drops it here — its sole owner is `hew_gen_coro_destroy`'s
+            // `out_drop_thunk`. Codegen fires this plan ONLY on the yield's case-1
+            // destroy edge (never on resume): `emit_elab_drops` interposed before
+            // the `br coro.cleanup`, with the block-loop's normal-flow emission
+            // suppressed for suspend carriers.
             Terminator::Yield { value: _, next } => (
                 ExitPath::Yield {
                     block: block_id,
                     next: *next,
                 },
-                DropPlan::default(),
+                DropPlan {
+                    drops: drops_for_exit(block_id),
+                },
             ),
             // Generator construction is a synchronous call into the runtime
             // (the coro companion alloc + the gen-body ramp call) with a single
@@ -44216,23 +44297,30 @@ fn enumerate_exits(
                 },
                 DropPlan::default(),
             ),
-            // Stackless suspend (R326/R327). The suspend point preserves all
-            // live state in the coro frame across the suspend, so it fires NO
-            // scope-exit drops here — the frame's owned values are dropped
-            // exactly once by the `cleanup` outline on `coro.destroy` (the
-            // single-teardown owner, the `cleanup` edge), never at the suspend
-            // site. Function-wide DropPlan is intentionally empty, mirroring
-            // `ExitPath::Yield`/`Goto`.
+            // Stackless suspend (R326/R327). When the parked continuation is
+            // DESTROYED without resuming (a supervisor stopping a parked actor,
+            // teardown, `hew_cont_destroy`'s abandon edge), the coro frame is
+            // freed but its frame-owned Hew heap values would leak (#2395) — the
+            // never-implemented "cleanup outline". This plan carries the exit's
+            // owned-local drops so codegen fires them on the case-1 (destroy)
+            // edge, BEFORE the frame free, and ONLY there (never on resume: the
+            // block-loop's normal-flow `emit_elab_drops` is suppressed for
+            // suspend carriers, and the resume edge continues the still-owned
+            // body). The drop set is the SAME `drops_for_exit` `BindingState`
+            // filter the `Return`/`Cancel` exits use, so a local moved out across
+            // the suspend is `Consumed` and excluded — no double-free. The
+            // StreamSend in-flight value (escape-poisoned, so the generic filter
+            // misses it) is appended kind-specifically after `enumerate_exits`
+            // returns (see the `suspend_abandon_extra_drops` post-pass).
             Terminator::Suspend {
                 resume, cleanup, ..
             }
-            // `SuspendingScopeDeadline` has the same suspend drop posture: the
-            // frame-owned values are dropped exactly once by the `cleanup`
-            // outline; the scoped children's drops are owned by the scope-join /
-            // scope-cancel codegen, not the function-wide DropPlan. The
-            // `timeout_body_block` deadline edge is a regular in-CFG successor
-            // already covered by the successors walker; the drop plan keys off the
-            // resume/cleanup coro edges exactly like the other suspend carriers.
+            // `SuspendingScopeDeadline` shares the abandon-edge drop posture: the
+            // frame-owned owned LOCALS are released by this plan; the scoped
+            // children's drops + deadline cancel stay codegen-owned in the abandon
+            // closure. The `timeout_body_block` deadline edge is a regular in-CFG
+            // successor already covered by the successors walker; the plan keys
+            // off the resume/cleanup coro edges exactly like the other carriers.
             | Terminator::SuspendingScopeDeadline {
                 resume, cleanup, ..
             }
@@ -44242,10 +44330,10 @@ fn enumerate_exits(
             // per-arm LOSER cleanup (win path) runs at the codegen resume-edge
             // dispatch site exactly as `Terminator::Select`'s does; the abandon
             // edge deregisters EVERY observer + cancels the timer + frees the
-            // arbiter (the single-teardown owner). The function-wide DropPlan is
-            // intentionally empty — both the select-loser cleanup and the
-            // suspend-frame teardown are codegen-owned, never a function-exit
-            // LIFO drop.
+            // arbiter (the single-teardown owner) in the codegen abandon closure.
+            // This plan adds ONLY the ordinary owned-local drops on top — the
+            // `drops_for_exit` set (registered owned locals) cannot include those
+            // select structures by construction.
             | Terminator::SuspendingSelect {
                 resume, cleanup, ..
             } => (
@@ -44254,7 +44342,9 @@ fn enumerate_exits(
                     resume: *resume,
                     cleanup: *cleanup,
                 },
-                DropPlan::default(),
+                DropPlan {
+                    drops: drops_for_exit(block_id),
+                },
             ),
         };
         plans.push(plan);
@@ -46108,6 +46198,140 @@ mod slice3_narrowing_proptests {
                 prop_assert!(i < n, "drop for binding {} but only {} defined", i, n);
             }
         }
+    }
+
+    // ── #2395 lane A: suspend / yield abandon-edge drop plans ────────────────
+    // enumerate_exits must populate the ExitPath::Suspend / ExitPath::Yield plan
+    // with the exit's live owned-local drops (fired by codegen on the
+    // destroy-while-parked abandon edge), and exclude a moved-out (Consumed)
+    // binding so a value moved across the suspend is never double-freed.
+
+    fn single_suspend_block(id: u32) -> BasicBlock {
+        BasicBlock {
+            id,
+            statements: vec![],
+            instructions: vec![],
+            // resume/cleanup alias to a resume target as the collapsed carriers do;
+            // the plan keys off the suspend terminator's own block id.
+            terminator: Terminator::Suspend {
+                resume: id + 1,
+                cleanup: id + 1,
+                is_final: false,
+            },
+        }
+    }
+
+    fn single_yield_block(id: u32) -> BasicBlock {
+        BasicBlock {
+            id,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Yield {
+                value: Place::Local(99),
+                next: id + 1,
+            },
+        }
+    }
+
+    #[test]
+    fn suspend_exit_plan_carries_live_owned_local_drop() {
+        let blocks = vec![single_suspend_block(0)];
+        let lifo = build_lifo(1);
+        let exit_states = build_exit_states(1, &[]);
+        let binding_locals = build_binding_locals(1);
+        let (_, plans) = enumerate_exits(
+            &blocks,
+            &lifo,
+            &exit_states,
+            &HashMap::new(),
+            &binding_locals,
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &[],
+        );
+        let (exit, plan) = &plans[0];
+        assert!(matches!(exit, ExitPath::Suspend { block: 0, .. }));
+        assert_eq!(
+            plan.drops.iter().map(|d| d.place).collect::<Vec<_>>(),
+            vec![Place::DuplexHandle(0)],
+            "the live owned local must be dropped on the suspend abandon edge",
+        );
+    }
+
+    #[test]
+    fn suspend_exit_plan_excludes_moved_out_local() {
+        let blocks = vec![single_suspend_block(0)];
+        let lifo = build_lifo(1);
+        // BindingId(0) is Consumed (moved out across the suspend).
+        let exit_states = build_exit_states(1, &[0]);
+        let binding_locals = build_binding_locals(1);
+        let (_, plans) = enumerate_exits(
+            &blocks,
+            &lifo,
+            &exit_states,
+            &HashMap::new(),
+            &binding_locals,
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &[],
+        );
+        let (_, plan) = &plans[0];
+        assert!(
+            plan.drops.is_empty(),
+            "a moved-out (Consumed) local must NOT be dropped on the abandon edge \
+             (double-free wall); got {:?}",
+            plan.drops,
+        );
+    }
+
+    #[test]
+    fn yield_exit_plan_carries_live_drop_and_excludes_consumed() {
+        // Live binding: dropped on the yield abandon (destroy-while-parked-at-yield) edge.
+        let blocks = vec![single_yield_block(0)];
+        let lifo = build_lifo(1);
+        let live = build_exit_states(1, &[]);
+        let binding_locals = build_binding_locals(1);
+        let (_, plans) = enumerate_exits(
+            &blocks,
+            &lifo,
+            &live,
+            &HashMap::new(),
+            &binding_locals,
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &[],
+        );
+        let (exit, plan) = &plans[0];
+        assert!(matches!(exit, ExitPath::Yield { block: 0, .. }));
+        assert_eq!(
+            plan.drops.iter().map(|d| d.place).collect::<Vec<_>>(),
+            vec![Place::DuplexHandle(0)],
+        );
+
+        // The just-yielded value is a MOVE into the companion out-slot, so its
+        // binding is Consumed at the yield exit and is excluded — its sole owner
+        // is hew_gen_coro_destroy's out_drop_thunk (no second dropper).
+        let consumed = build_exit_states(1, &[0]);
+        let (_, plans) = enumerate_exits(
+            &blocks,
+            &lifo,
+            &consumed,
+            &HashMap::new(),
+            &binding_locals,
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &[],
+        );
+        assert!(
+            plans[0].1.drops.is_empty(),
+            "a Consumed (moved-to-out-slot) yield value must be excluded from the \
+             yield abandon plan; got {:?}",
+            plans[0].1.drops,
+        );
     }
 }
 

@@ -394,6 +394,37 @@ fn root_actor_layout_carries_no_defining_module() {
     assert_eq!(pipeline.actor_layouts[0].defining_module, None);
 }
 
+/// An actor with `receive fn` handlers but no protocol descriptor must be
+/// refused at layout lowering. The alternative — emitting the `i32::MAX`
+/// unknown-message sentinel for every handler — is a duplicate-switch-case
+/// LLVM verify reject at two-plus handlers and a silent wire-discriminant
+/// corruption at exactly one, so lowering fails closed instead.
+#[test]
+fn missing_protocol_descriptor_with_handlers_fails_closed() {
+    let mut ids = IdGen::default();
+    let bump_body = block(&mut ids, vec![], None, ResolvedTy::Unit);
+    let mut counter = actor(
+        &mut ids,
+        "Counter",
+        vec![receive("bump", false, vec![], ResolvedTy::Unit, bump_body)],
+    );
+    counter.protocol_descriptor = None;
+
+    let pipeline = lower_hir_module(&empty_module(vec![HirItem::Actor(counter)]));
+
+    assert!(
+        pipeline.diagnostics.iter().any(|d| matches!(
+            &d.kind,
+            MirDiagnosticKind::ActorProtocolDescriptorMissing {
+                actor,
+                handler_count,
+            } if actor == "Counter" && *handler_count == 1
+        )),
+        "descriptor-less actor with handlers must fail closed: {:?}",
+        pipeline.diagnostics
+    );
+}
+
 #[test]
 fn supervisor_child_layout_mirrors_cycle_capable_actor_metadata() {
     let mut ids = IdGen::default();

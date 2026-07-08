@@ -10682,6 +10682,39 @@ impl LowerCtx {
 
         let (methods, lifecycle_hooks) = self.partition_actor_methods(&decl.methods, &state_fields);
 
+        // Checker side-tables key a module actor under its module-short
+        // identity (`"{module_leaf}.{Actor}"`, matching the checker's
+        // `current_module_short()` fn_sigs prefix); only genuine root actors
+        // are keyed bare. A FILE-imported actor lowers through this root path
+        // — `flatten_file_import_items` (hew-compile) splices it into
+        // `program.items` AFTER type-checking, so its HIR identity stays
+        // root/bare — but the checker validated it as a module-graph item and
+        // published its protocol descriptor under the module-short key. The
+        // third pass sets `current_module_name` to the originating module's
+        // dotted path for spliced items (root items lower with it unset), so
+        // resolve the descriptor and the cycle-capability flag under the
+        // module-short key first and fall back to the bare root key. Without
+        // the module-scoped lookup every spliced multi-handler actor lost its
+        // descriptor and MIR collapsed all message-kind discriminants to the
+        // i32::MAX sentinel — LLVM rejected the dispatch switch with
+        // "Duplicate integer as switch case". Package-module actors overwrite
+        // both fields in `lower_imported_actor` with the same qualified keys,
+        // so this lookup is identity-preserving for them.
+        let module_scoped_key = self
+            .current_module_name
+            .as_deref()
+            .and_then(|module| module.rsplit('.').next())
+            .map(|leaf| format!("{leaf}.{}", decl.name));
+        let protocol_descriptor = module_scoped_key
+            .as_deref()
+            .and_then(|key| self.actor_protocol_descriptors.get(key))
+            .or_else(|| self.actor_protocol_descriptors.get(&decl.name))
+            .cloned();
+        let cycle_capable = module_scoped_key
+            .as_deref()
+            .is_some_and(|key| self.cycle_capable_actors.contains(key))
+            || self.cycle_capable_actors.contains(&decl.name);
+
         HirActorDecl {
             id: self.ids.item(),
             node: self.ids.node(),
@@ -10699,8 +10732,8 @@ impl LowerCtx {
             is_isolated: decl.is_isolated,
             mailbox_capacity: decl.mailbox_capacity,
             overflow_policy: decl.overflow_policy.clone(),
-            cycle_capable: self.cycle_capable_actors.contains(&decl.name),
-            protocol_descriptor: self.actor_protocol_descriptors.get(&decl.name).cloned(),
+            cycle_capable,
+            protocol_descriptor,
             span,
         }
     }

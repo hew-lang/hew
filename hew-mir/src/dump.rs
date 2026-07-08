@@ -1526,6 +1526,10 @@ fn render_diag_kind(kind: &MirDiagnosticKind) -> String {
         MirDiagnosticKind::MailboxOverflowCoalesceNotYetImplemented { actor, key_field } => {
             format!("MailboxOverflowCoalesceNotYetImplemented {actor} key_field={key_field}")
         }
+        MirDiagnosticKind::ActorProtocolDescriptorMissing {
+            actor,
+            handler_count,
+        } => format!("ActorProtocolDescriptorMissing {actor} handler_count={handler_count}"),
         MirDiagnosticKind::UnresolvedStaticDispatchSubstitution {
             receiver_type_param,
             declaring_trait,

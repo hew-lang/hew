@@ -140,6 +140,7 @@ pub(crate) fn mir_diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'stat
         | hew_mir::MirDiagnosticKind::StaticDispatchMonomorphisationMissing { .. }
         | hew_mir::MirDiagnosticKind::TraitObjectStorageUndetermined { .. }
         | hew_mir::MirDiagnosticKind::CallTraitMethodSignatureUnresolved { .. }
+        | hew_mir::MirDiagnosticKind::ActorProtocolDescriptorMissing { .. }
         | hew_mir::MirDiagnosticKind::ClosureCapturesDuplexHandle { .. } => "E_MIR",
     }
 }
@@ -564,6 +565,9 @@ fn mir_kind_name(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
         hew_mir::MirDiagnosticKind::MailboxOverflowCoalesceNotYetImplemented { .. } => {
             "MailboxOverflowCoalesceNotYetImplemented"
         }
+        hew_mir::MirDiagnosticKind::ActorProtocolDescriptorMissing { .. } => {
+            "ActorProtocolDescriptorMissing"
+        }
         hew_mir::MirDiagnosticKind::UnresolvedStaticDispatchSubstitution { .. } => {
             "UnresolvedStaticDispatchSubstitution"
         }
@@ -644,6 +648,7 @@ fn mir_primary_site(kind: &hew_mir::MirDiagnosticKind) -> Option<hew_hir::SiteId
         | hew_mir::MirDiagnosticKind::ActorHandlerSymbolCollision { .. }
         | hew_mir::MirDiagnosticKind::ActorStateCloneClassificationFailed { .. }
         | hew_mir::MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported { .. }
+        | hew_mir::MirDiagnosticKind::ActorProtocolDescriptorMissing { .. }
         | hew_mir::MirDiagnosticKind::MailboxOverflowCoalesceNotYetImplemented { .. } => None,
     }
 }
@@ -740,6 +745,14 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
             "actor `{actor}` declares `overflow coalesce({key_field})`, which is not yet \
              implemented — the coalesce key-function ABI slice does not exist in codegen; \
              use `drop_new`, `drop_old`, `block`, or `fail` instead"
+        ),
+        hew_mir::MirDiagnosticKind::ActorProtocolDescriptorMissing {
+            actor,
+            handler_count,
+        } => format!(
+            "actor `{actor}` declares {handler_count} `receive fn` handler(s) but no \
+             protocol descriptor was attached during lowering, so message-kind \
+             discriminants cannot be assigned"
         ),
         hew_mir::MirDiagnosticKind::UnresolvedStaticDispatchSubstitution {
             receiver_type_param,
@@ -889,6 +902,7 @@ fn mir_context_notes(diagnostic: &hew_mir::MirDiagnostic) -> Vec<String> {
         | hew_mir::MirDiagnosticKind::UnknownActorStateField { .. }
         | hew_mir::MirDiagnosticKind::ActorHandlerSymbolCollision { .. }
         | hew_mir::MirDiagnosticKind::TraitObjectStorageUndetermined { .. }
+        | hew_mir::MirDiagnosticKind::ActorProtocolDescriptorMissing { .. }
         | hew_mir::MirDiagnosticKind::CallTraitMethodSignatureUnresolved { .. } => {}
         hew_mir::MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported {
             handle_ty, ..

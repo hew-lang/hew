@@ -6121,6 +6121,19 @@ pub enum MirDiagnosticKind {
     /// this fence closes — so lowering fails closed here with an honest NYI
     /// diagnostic instead of a silent remap to another policy.
     MailboxOverflowCoalesceNotYetImplemented { actor: String, key_field: String },
+    /// An actor reached MIR layout lowering with `receive fn` handlers but no
+    /// protocol descriptor, so no handler can be assigned its real
+    /// message-kind discriminant. Emitting the `i32::MAX` sentinel instead
+    /// collapses every handler onto one tag: with two or more handlers LLVM
+    /// rejects the dispatch switch ("Duplicate integer as switch case"), and
+    /// with exactly one the program compiles but carries a wrong wire
+    /// discriminant — silent protocol corruption. Fail closed here; the
+    /// sentinel rows exist only to keep the MIR shape well-formed behind this
+    /// hard error. Reachable when a lowering path fails to attach the
+    /// checker's descriptor (the checker's own `ActorProtocolCollision`
+    /// reject empties the descriptor too, but that path already carries its
+    /// user-facing diagnostic).
+    ActorProtocolDescriptorMissing { actor: String, handler_count: usize },
     /// W3.022 V10: A `CallTraitMethodStatic` reached MIR with no concrete
     /// substitution for its `receiver_type_param`. After Stage 3 (impl-level
     /// type params flow into `HirFn::type_params`), unspecialised generic

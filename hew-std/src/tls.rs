@@ -317,14 +317,22 @@ fn write_tls_bytes<W: Write>(writer: &mut W, buf: &[u8]) -> HewTlsWriteResult {
 pub unsafe extern "C" fn hew_tls_connect(host: *const c_char, port: c_int) -> *mut HewTlsStream {
     // SAFETY: `host` is a valid NUL-terminated C string per caller contract.
     let Some(host_str) = (unsafe { cstr_to_str(host) }) else {
+        set_tls_last_error("hew_tls_connect: invalid host string");
         return std::ptr::null_mut();
     };
     let Ok(port_u16) = u16::try_from(port) else {
+        set_tls_last_error(format!("hew_tls_connect: invalid port {port}"));
         return std::ptr::null_mut();
     };
     match connect_tls(host_str, port_u16) {
-        Ok(stream) => Box::into_raw(Box::new(stream)),
-        Err(_) => std::ptr::null_mut(),
+        Ok(stream) => {
+            clear_tls_last_error();
+            Box::into_raw(Box::new(stream))
+        }
+        Err(err) => {
+            set_tls_last_error(format!("hew_tls_connect: {err}"));
+            std::ptr::null_mut()
+        }
     }
 }
 
@@ -859,6 +867,7 @@ mod tests {
     use std::cell::Cell;
     use std::collections::HashMap;
     use std::ffi::CStr;
+    use std::ffi::CString;
     use std::io::ErrorKind;
     use std::net::TcpListener;
     use std::os::raw::c_void;
@@ -1043,9 +1052,35 @@ mod tests {
 
     #[test]
     fn connect_null_host_returns_null() {
+        clear_tls_last_error();
         // SAFETY: passing null is the test.
         let ptr = unsafe { hew_tls_connect(std::ptr::null(), 443) };
         assert!(ptr.is_null());
+        assert_eq!(last_error_string(), "hew_tls_connect: invalid host string");
+    }
+
+    #[test]
+    fn connect_refused_sets_last_error() {
+        clear_tls_last_error();
+        // Port 0 is never listening; the OS refuses the connect() attempt
+        // (or DNS resolution itself fails for a bogus host), either way
+        // exercising the `connect_tls(...) => Err(_)` failure path without
+        // needing a live network fixture.
+        let host = CString::new("127.0.0.1").unwrap();
+        // SAFETY: `host` is a valid NUL-terminated C string.
+        let ptr = unsafe { hew_tls_connect(host.as_ptr(), 0) };
+        assert!(ptr.is_null());
+        assert!(
+            last_error_string().starts_with("hew_tls_connect: "),
+            "expected a hew_tls_connect-prefixed message, got {:?}",
+            last_error_string()
+        );
+        assert!(
+            !last_error_string().ends_with("invalid host string")
+                && !last_error_string().contains("invalid port"),
+            "expected the connect_tls Err(_) path, got {:?}",
+            last_error_string()
+        );
     }
 
     #[test]
@@ -1277,18 +1312,26 @@ mod tests {
 
     #[test]
     fn connect_empty_host_returns_null() {
+        clear_tls_last_error();
         let host = std::ffi::CString::new("").unwrap();
         // SAFETY: passing valid but empty C string.
         let ptr = unsafe { hew_tls_connect(host.as_ptr(), 443) };
         assert!(ptr.is_null());
+        // An empty host is valid UTF-8 (passes `cstr_to_str`), so this hits
+        // the `connect_tls(...) => Err(_)` path (invalid DNS name) rather
+        // than the null/invalid-C-string path exercised by
+        // `connect_null_host_returns_null`.
+        assert_eq!(last_error_string(), "hew_tls_connect: invalid dns name");
     }
 
     #[test]
     fn connect_negative_port_returns_null() {
+        clear_tls_last_error();
         let host = std::ffi::CString::new("example.com").unwrap();
         // SAFETY: passing valid host with invalid port.
         let ptr = unsafe { hew_tls_connect(host.as_ptr(), -1) };
         assert!(ptr.is_null());
+        assert_eq!(last_error_string(), "hew_tls_connect: invalid port -1");
     }
 
     #[test]

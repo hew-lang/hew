@@ -8,6 +8,17 @@ import std::stream;
 
 import std::testing;
 
+// hew_stream_last_error / hew_stream_last_errno are the single shared
+// thread-local error channel declared once in hew-runtime (see
+// hew-runtime/src/stream_error.rs); std/fs.hew declares this exact same
+// extern block internally to read them. Declaring it here too lets this
+// test observe the channel directly, the same way an unrelated caller
+// elsewhere in the program would.
+extern "C" {
+    fn hew_stream_last_error() -> string;
+    fn hew_stream_last_errno() -> i32;
+}
+
 fn cleanup_file(file_path: string) {
     if fs.exists(file_path) {
         fs.delete(file_path);
@@ -38,6 +49,48 @@ fn test_try_read_bytes_missing_returns_not_found() {
             _ => panic("expected IoError::NotFound"),
         },
     }
+}
+
+#[test]
+fn test_try_read_bytes_failure_drains_stale_error_message() {
+    // Regression pin: try_read_bytes must drain hew_stream_last_error() on
+    // its failure path, not just hew_stream_last_errno(). The two are
+    // documented as independent thread-local reads (hew-runtime's
+    // stream_error.rs) — reading errno alone does not clear the message.
+    // Without the drain, a failed try_read_bytes leaves the
+    // `hew_file_read_bytes: ...` message parked in the shared thread-local,
+    // where it can leak into a later, unrelated hew_stream_last_error() read.
+    let file_path = "tests/hew/_fs_stream_drain_missing.bin";
+    cleanup_file(file_path);
+    match fs.try_read_bytes(file_path) {
+        Ok(_) => panic("expected missing file error"),
+        Err(err) => match err {
+            IoError::NotFound(_) => {},
+            _ => panic("expected IoError::NotFound"),
+        },
+    }
+    // The failure path above must have already drained the message: a
+    // direct read of the shared channel right after must come back empty.
+    // Before the fix, this returns the stale `hew_file_read_bytes: ...`
+    // text instead, because try_read_bytes only ever consumed the errno
+    // side of the channel and left the message behind.
+    // (compared by length, not `== ""`: a drained/never-set channel comes
+    // back as a null C string, which converts to a length-0 `string` that
+    // is not `==` to the `""` literal — see hew_stream_last_error's None
+    // branch in hew-runtime/src/stream_error.rs.)
+    let leaked = unsafe {
+        hew_stream_last_error()
+    };
+    testing.assert_eq(leaked.len(), 0);
+
+    // The errno side is independently drained too (already covered by the
+    // io_error_from_errno mapping above succeeding), so a second read
+    // here must also report "no error" — proving the whole channel, not
+    // just one half of it, comes back clean after the failed call.
+    let errno_after = unsafe {
+        hew_stream_last_errno()
+    };
+    testing.assert_eq(errno_after as i64, 0);
 }
 
 #[test]

@@ -245,15 +245,19 @@ fn read_tls_vec<R: Read>(reader: &mut R, size: c_int) -> HewTlsReadResult {
         }
         Ok(n) => {
             clear_tls_last_error();
+            // Bound the copy by a real subslice: an out-of-contract `n` from a
+            // misbehaving reader panics here instead of reaching the unsafe copy.
+            let chunk = &buf[..n];
             #[expect(
                 clippy::cast_possible_truncation,
                 reason = "reads are bounded by READ_BUFFER_SIZE, which fits u32"
             )]
-            let len = n as u32;
-            // SAFETY: `buf[..n]` is valid for `n` bytes; `hew_bytes_from_static`
-            // copies them into a fresh, refcount-1 bytes allocation the caller
-            // owns (mirrors `hew_tcp_read`'s construction, transport.rs).
-            let data = unsafe { hew_bytes_from_static(buf.as_ptr(), len) };
+            let len = chunk.len() as u32;
+            // SAFETY: `chunk` is a live subslice valid for `chunk.len()` bytes;
+            // `hew_bytes_from_static` copies them into a fresh, refcount-1 bytes
+            // allocation the caller owns (mirrors `hew_tcp_read`'s construction,
+            // transport.rs).
+            let data = unsafe { hew_bytes_from_static(chunk.as_ptr(), len) };
             HewTlsReadResult {
                 data,
                 status: TLS_STATUS_SUCCESS,

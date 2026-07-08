@@ -1368,14 +1368,23 @@ mod tests {
 
     // WHY: hand-maintained editor grammars silently drift from the real
     // keyword/attribute surface — nothing failed CI when PR #2370 removed
-    // `struct` or when `#[resource]`/`#[linear]`/`#[opaque]` shipped without
-    // a downstream grammar update. This guards the sublime grammar (the most
-    // structured of the 3 hand-maintained files) as a representative canary.
+    // `struct`. This guards the sublime grammar (the most structured of the
+    // 3 hand-maintained files) as a representative canary.
     // WHEN: extend to editors/emacs and editors/nano if they grow their own
     // structured (machine-parseable) format; today they are free-form regex
     // lists not worth round-tripping through serde_json.
     // WHAT: every hand-maintained grammar file should agree with
-    // ALL_KEYWORDS and the parser's known type-decl attribute set.
+    // ALL_KEYWORDS, and type-decl attributes (`#[resource]`, `#[linear]`,
+    // `#[opaque]`, `#[wire]`, ...) must be recognised generically via the
+    // `#[...]` attribute region rather than hard-coded into
+    // `variable.language.contextual.hew`. `resource`/`linear`/`opaque`/`wire`
+    // are KNOWN_TYPE_ATTRS-only (hew-parser/src/parser/items.rs) — they are
+    // never valid outside an attribute, so listing them as bare contextual
+    // identifiers over-matches ordinary code (e.g. `let resource = f();`)
+    // instead of only the attribute position. The attribute-region check
+    // below is what actually prevents silent drift here: any current or
+    // future KNOWN_TYPE_ATTRS word is covered by the region existing at all,
+    // with no per-word list to fall out of sync.
     #[test]
     fn sublime_grammar_keywords_match_lexer_surface() {
         let json_str = include_str!(concat!(
@@ -1406,13 +1415,43 @@ mod tests {
             .expect("variable.language.contextual.hew pattern should exist")["match"]
             .as_str()
             .expect("match should be a string");
-        for attr in ["resource", "linear", "opaque"] {
+        // Extract the exact alternation words (e.g. `\b(a|b|c)\b` -> ["a", "b", "c"])
+        // rather than substring-matching, so `wire` doesn't false-positive against
+        // the unrelated, still-valid `wired_to` contextual identifier.
+        let contextual_words: Vec<&str> = contextual_match
+            .trim_start_matches("\\b(")
+            .trim_end_matches(")\\b")
+            .split('|')
+            .collect();
+        for attr in ["resource", "linear", "opaque", "wire"] {
             assert!(
-                contextual_match.contains(attr),
-                "sublime grammar's variable.language.contextual.hew is missing the \
-                 recognised type-decl attribute `{attr}` (see hew-parser KNOWN_TYPE_ATTRS)"
+                !contextual_words.contains(&attr),
+                "sublime grammar's variable.language.contextual.hew should not list the \
+                 attribute-only word `{attr}` (see hew-parser KNOWN_TYPE_ATTRS) — it is only \
+                 valid inside `#[...]`, which the generic attribute region already covers; \
+                 listing it here over-matches ordinary identifiers"
             );
         }
+
+        let attribute_region = data["repository"]["attributes"]
+            .as_object()
+            .expect("an `attributes` repository entry should exist");
+        assert_eq!(
+            attribute_region["begin"], "#\\[",
+            "the attribute region should begin at `#[`"
+        );
+        let inner_patterns = attribute_region["patterns"]
+            .as_array()
+            .expect("attribute region should have inner patterns");
+        assert!(
+            inner_patterns.iter().any(|p| {
+                p["name"] == "entity.name.function.attribute.hew"
+                    && p["match"].as_str().is_some_and(|m| !m.is_empty())
+            }),
+            "the attribute region should generically capture any identifier as \
+             entity.name.function.attribute.hew, which is what actually keeps \
+             KNOWN_TYPE_ATTRS words highlighted without a per-word list"
+        );
     }
 
     #[test]

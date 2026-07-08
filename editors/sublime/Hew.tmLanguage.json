@@ -295,11 +295,6 @@
           "comment": "Removed/rejected keywords — parser explicitly rejects these with migration diagnostics. Highlight as invalid so users know these are not valid v0.5 syntax.",
           "name": "invalid.removed.hew",
           "match": "\\b(catch|cooperate|foreign|race|try)\\b"
-        },
-        {
-          "comment": "Reserved keywords (not yet used in the language)",
-          "name": "keyword.reserved.hew",
-          "match": "\\b(catch|cooperate|foreign|race|try)\\b"
         }
       ]
     },
@@ -326,7 +321,7 @@
         {
           "comment": "Primitive types",
           "name": "storage.type.primitive.hew",
-          "match": "\\b(bool|bytes|char|duration|never|string|void)\\b"
+          "match": "\\b(bool|bytes|char|duration|instant|never|string|void)\\b"
         },
         {
           "comment": "Generic / collection types",
@@ -767,7 +762,7 @@
         {
           "comment": "Contextual identifiers (special meaning in specific contexts)",
           "name": "variable.language.contextual.hew",
-          "match": "\\b(block|coalesce|drop_new|drop_old|emits|events|export|fail|fallback|infinity|initial|intensity|json|linear|mailbox|opaque|overflow|reenter|repeated|resource|shutdown|wire|wired_to|within|yaml)\\b"
+          "match": "\\b(block|coalesce|drop_new|drop_old|emits|events|export|fail|fallback|infinity|initial|intensity|json|mailbox|overflow|reenter|repeated|shutdown|wired_to|within|yaml)\\b"
         },
         {
           "comment": "Identifier (catch-all for variables, parameters, fields)",

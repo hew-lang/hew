@@ -72,7 +72,7 @@ ConstDecl      = "const" Ident ":" Type "=" Expr ";" ;
 TypeDecl       = "type" Ident TypeParams? WhereClause? TypeBody
                | "indirect"? "enum" Ident TypeParams? WhereClause? TypeBody ;
 (* #[wire] type syntax — canonical wire type declaration *)
-WireStructDecl = "type" Ident "{" { WireStructFieldDecl | ReservedDecl ";" } "}" ;
+WireStructDecl = "type" Ident "{" { WireStructFieldDecl | ReservedDecl } "}" ;
 WireStructFieldDecl = Ident ":" Type ( "@" IntLit )? WireAttr* ( "," | ";" ) ;
 
 TypeParams     = "<" TypeParam { "," TypeParam } ">" ;
@@ -93,9 +93,8 @@ WireAttr       = "optional" | "deprecated" | "repeated"
                | ("default" "(" Expr ")")  (* not yet implemented *)
                | ("since" IntLit)          (* field version: since 2 *)
                | "json" "(" StringLit ")"   (* per-field JSON key override *)
-               | "yaml" "(" StringLit ")"   (* per-field YAML key override *)
-               | ReservedDecl ;
-ReservedDecl   = "reserved" "(" IntLit { "," IntLit } ")" ;
+               | "yaml" "(" StringLit ")"   ; (* per-field YAML key override *)
+ReservedDecl   = "reserved" "@" IntLit { "," "@" IntLit } ";" ;
 
 VariantDecl    = Ident ( "(" TypeList ")" | "{" { StructFieldDecl } "}" )? ";" ;
 TypeList       = Type { "," Type } ;
@@ -130,7 +129,7 @@ ReceiveFnDecl  = Attribute* "receive" "fn" Ident TypeParams? "(" Params? ")" Ret
 ReceiveGenFnDecl = Attribute* "receive" "gen" "fn" Ident TypeParams? "(" Params? ")" "->" Type WhereClause? Block ;
 
 (* Supervisors *)
-SupervisorDecl = "supervisor" Ident "{"
+SupervisorDecl = "supervisor" Ident ( "(" Params? ")" )? "{"
                  { SupervisorField | ChildSpec }
                "}" ;
 SupervisorField = "strategy" ":" SupervisorStrategy

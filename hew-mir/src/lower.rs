@@ -1795,6 +1795,30 @@ pub fn lower_hir_module_with_facts(
                 ),
             });
         }
+        // Fail closed when receive handlers exist but no protocol descriptor
+        // was attached: `lower_actor_handler_layouts` would fall back to the
+        // `i32::MAX` sentinel for EVERY handler — a duplicate-switch-case
+        // LLVM verify reject at two-plus handlers, and silent wire-protocol
+        // corruption (wrong discriminant, in-process-only dispatch) at
+        // exactly one. A known handler must never ride the sentinel; the
+        // sentinel rows below exist only to keep the MIR shape well-formed
+        // behind this hard error.
+        if !actor.receive_handlers.is_empty() && actor.protocol_descriptor.is_none() {
+            diagnostics.push(crate::model::MirDiagnostic {
+                kind: crate::model::MirDiagnosticKind::ActorProtocolDescriptorMissing {
+                    actor: actor.qualified_name(),
+                    handler_count: actor.receive_handlers.len(),
+                },
+                note: format!(
+                    "actor `{}` declares {} `receive fn` handler(s) but carries no \
+                     protocol descriptor; message-kind discriminants cannot be \
+                     assigned, so lowering refuses instead of emitting the \
+                     unknown-message sentinel for known handlers",
+                    actor.qualified_name(),
+                    actor.receive_handlers.len()
+                ),
+            });
+        }
         actor_layouts.push(crate::model::ActorLayout {
             // The registry key is the actor's qualified identity: dotted
             // `module.Name` for module actors, bare for root actors. It
@@ -5445,12 +5469,13 @@ fn lower_supervisor_bootstrap(
 ///
 /// Fail-closed: an actor that carries `receive_handlers` but no descriptor
 /// (the checker emitted an `ActorProtocolCollision` and refused to publish
-/// the protocol, or an upstream bug) falls back to `i32::MAX`. The
-/// upstream collision diagnostic is the user-facing error; the sentinel
-/// here exists only to keep the MIR shape well-formed for the few internal
-/// callers (e.g. `lower_program_smoke`) that exercise lowering on
-/// descriptor-less inputs. Production builds never observe it because the
-/// checker rejects collision-bearing programs before MIR runs.
+/// the protocol, a lowering path failed to attach the checker's descriptor,
+/// or an upstream bug) falls back to `i32::MAX` here — but the layout pass
+/// pairs that fallback with a hard `ActorProtocolDescriptorMissing`
+/// diagnostic (see the guard before the `ActorLayout` push in
+/// `lower_hir_module`), so no compiled program ever dispatches on the
+/// sentinel. The sentinel rows exist only to keep the MIR shape well-formed
+/// behind that hard error.
 fn lower_actor_handler_layouts(actor: &HirActorDecl) -> Vec<ActorHandlerLayout> {
     let descriptor = actor.protocol_descriptor.as_ref();
     let mut layouts = Vec::with_capacity(actor.receive_handlers.len());

@@ -1,0 +1,25 @@
+// Multi-handler actor consumed via a file import. Guards imported-actor
+// message-kind discriminant assignment: every receive handler must carry its
+// own hash-derived discriminant when the actor lowers from a spliced
+// file-import module, and dispatch must route each message to its handler.
+pub actor Register {
+    var total: i64 = 0;
+
+    receive fn add(n: i64) -> i64 {
+        total = total + n;
+        total
+    }
+
+    receive fn scale(n: i64) -> i64 {
+        total = total * n;
+        total
+    }
+
+    receive fn reset() {
+        total = 0;
+    }
+
+    receive fn read() -> i64 {
+        total
+    }
+}

@@ -3951,6 +3951,18 @@ grep -q 'guarded record/tuple match destructure' "${reject_output}"
 # or weak linkage!".
 run_check_run_expect_stdout file_import_trait_impl
 
+# Regression: a file-imported multi-handler actor keeps a DISTINCT message-kind
+# discriminant per receive handler. The spliced file-import lowering path
+# previously missed the checker's protocol descriptor (keyed by module-short
+# identity, looked up bare), collapsing every handler to the i32::MAX
+# unknown-message sentinel — LLVM verification failed with "Duplicate integer
+# as switch case" at two-plus handlers, and a single handler compiled with a
+# corrupt wire discriminant. The fixture round-trips every handler (two asks,
+# one fire-and-forget, one ask observing its effect) with exact values, so it
+# also guards send-side/dispatch-side tag agreement (a mismatch is silent
+# message loss, not a compile failure).
+run_check_run_expect_stdout imported_actor_msg_discriminants
+
 # `.clone()` on a Copy type (i64, bool): emits a StyleSuggestion warning but
 # compiles and runs correctly — the value is duplicated as-if by plain copy.
 run_accept_expect_stdout copy_clone_warn

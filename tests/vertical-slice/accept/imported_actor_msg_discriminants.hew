@@ -1,0 +1,25 @@
+// Regression: an actor with multiple receive handlers, imported via a file
+// import, collapsed every handler's message-kind discriminant to the i32::MAX
+// unknown-message sentinel — LLVM verify rejected the module with
+// "Duplicate integer as switch case". Each handler must keep its distinct
+// discriminant AND dispatch correctly: a tag mismatch between the send side
+// and the dispatch side is silent message loss, worse than the verify failure,
+// so every handler is exercised with an exact-value round trip.
+import "imported_actor_msg_discriminants_lib.hew";
+
+fn main() {
+    let reg = spawn Register(total: 0);
+    match await reg.add(5) {
+        Ok(v) => println(f"add={v}"),
+        Err(_) => println("add failed"),
+    }
+    match await reg.scale(4) {
+        Ok(v) => println(f"scale={v}"),
+        Err(_) => println("scale failed"),
+    }
+    reg.reset();
+    match await reg.read() {
+        Ok(v) => println(f"read={v}"),
+        Err(_) => println("read failed"),
+    }
+}

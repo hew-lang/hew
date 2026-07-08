@@ -100,6 +100,77 @@ fn main() {
 }
 "#;
 
+/// A collection move-out result bound across the suspend: `v.remove(1)` moves
+/// the owned string OUT of the vec (the kernel runs no drop — the binding is
+/// the sole owner) while the vec keeps its two remaining elements. On destroy
+/// while parked the abandon plan must drop the binding exactly once AND the
+/// vec's walk must not re-touch the moved-out slot: dropping `removed` twice —
+/// or having the vec's free re-drop it — frees the same buffer twice.
+const REMOVED_ELEMENT_ACROSS_SUSPEND: &str = r#"
+actor Sleeper {
+    receive fn work() {
+        let v: Vec<string> = Vec::new();
+        v.push("element-alpha-longish-to-force-a-heap-allocation");
+        v.push("element-beta-longish-to-force-a-heap-allocation");
+        v.push("element-gamma-longish-to-force-a-heap-allocation");
+        let removed = v.remove(1);
+        sleep(10s);
+        println(f"{removed.len()} {v.len()}");
+    }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child sleeper: Sleeper;
+}
+
+fn main() {
+    let sup = spawn App;
+    let s = sup.sleeper;
+    s.work();
+    sleep(200ms);
+    supervisor_stop(sup);
+}
+"#;
+
+/// The `HashMap` sibling: `m.remove(k)` drops the stored key in the kernel and
+/// moves the value out as the `Some` payload; the bound value and the map (one
+/// surviving pair) are both live across the park. On destroy the abandon plan
+/// drops the binding and the map exactly once each — the tombstoned slot must
+/// never be re-dropped by the map's free walk.
+const TAKEN_VALUE_ACROSS_SUSPEND: &str = r#"
+actor Sleeper {
+    receive fn work() {
+        let m: HashMap<string, string> = HashMap::new();
+        m.insert("key-alpha-long-enough-to-heap-allocate", "val-alpha-long-enough-to-heap-allocate");
+        m.insert("key-beta-long-enough-to-heap-allocate", "val-beta-long-enough-to-heap-allocate");
+        let taken = match m.remove("key-beta-long-enough-to-heap-allocate") {
+            Some(s) => s,
+            None => "MISS",
+        };
+        sleep(10s);
+        println(f"{taken.len()} {m.len()}");
+    }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child sleeper: Sleeper;
+}
+
+fn main() {
+    let sup = spawn App;
+    let s = sup.sleeper;
+    s.work();
+    sleep(200ms);
+    supervisor_stop(sup);
+}
+"#;
+
 /// The #2395 regression pin: an owned local live across a suspend, destroyed
 /// while parked, leaks zero nodes. Skips gracefully when `leaks(1)` is
 /// unavailable (non-macOS or `leaks` off PATH).
@@ -155,6 +226,75 @@ fn moved_out_across_suspend_no_double_free() {
                 leaks, 0,
                 "moved-out-across-suspend leaked {leaks} node(s): the surviving \
                  owner (ys) was not freed on the abandon edge.",
+            );
+        }
+    }
+}
+
+/// A bound `Vec.remove(i)` move-out result live across the park is dropped
+/// exactly once on the abandon edge: no double-free of the moved-out string
+/// under the poisoned allocator, zero leaks (binding + remaining elements +
+/// buffer all freed).
+#[test]
+fn removed_element_across_suspend_dropped_exactly_once() {
+    let shape = "removed_element_across_suspend";
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("removed-elem-suspend-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(REMOVED_ELEMENT_ACROSS_SUSPEND, dir.path(), shape);
+
+    let output = run_under_malloc_scribble(&bin);
+    assert!(
+        output.status.success(),
+        "removed-element-across-suspend aborted under the poisoned allocator — \
+         the moved-out Vec.remove result was dropped on the abandon edge more \
+         than once (binding drop + a stale vec-slot drop):\n{}",
+        describe_output(&output)
+    );
+
+    if leaks_supported(shape) {
+        if let Some(leaks) = measure_leaks(&bin) {
+            assert_eq!(
+                leaks, 0,
+                "removed-element-across-suspend leaked {leaks} node(s): the bound \
+                 move-out result (or the vec's remaining elements) was not freed \
+                 on the coroutine abandon edge.",
+            );
+        }
+    }
+}
+
+/// A bound `HashMap.remove(k)` `Some` payload live across the park is dropped
+/// exactly once on the abandon edge; the map's tombstoned slot is never
+/// re-dropped and its surviving pair frees exactly once.
+#[test]
+fn hashmap_taken_value_across_suspend_dropped_exactly_once() {
+    let shape = "hashmap_taken_value_across_suspend";
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("taken-value-suspend-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(TAKEN_VALUE_ACROSS_SUSPEND, dir.path(), shape);
+
+    let output = run_under_malloc_scribble(&bin);
+    assert!(
+        output.status.success(),
+        "hashmap-taken-value-across-suspend aborted under the poisoned allocator \
+         — the moved-out remove value was re-dropped on the abandon edge (a \
+         tombstoned-slot re-drop or a doubled binding drop):\n{}",
+        describe_output(&output)
+    );
+
+    if leaks_supported(shape) {
+        if let Some(leaks) = measure_leaks(&bin) {
+            assert_eq!(
+                leaks, 0,
+                "hashmap-taken-value-across-suspend leaked {leaks} node(s): the \
+                 bound Some payload, the dropped key, or the map's surviving pair \
+                 was not freed exactly once across remove + abandon.",
             );
         }
     }

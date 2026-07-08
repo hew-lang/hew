@@ -36865,6 +36865,44 @@ fn place_refs_local(place: Place, local: u32) -> bool {
     base_local(place) == Some(local)
 }
 
+/// True when every reference to `local` inside `args` is a borrow `contract`
+/// proves — a borrowing string-argument position (`hew_string_concat`,
+/// `print`/`println`, …), or the collection/Vec/bytes receiver slot
+/// (`args[0]`; a reference anywhere in the by-value tail `args[1..]` still
+/// counts as unproven). `true` when `local` does not appear in `args` at all.
+///
+/// Shared by the `Terminator::Call` arm of
+/// [`generator_yield_terminator_escapes`] and the `Instr::CallRuntimeAbi` arm
+/// of [`generator_yield_instr_escapes`] — the SAME closed, positive-
+/// membership ownership-contract table
+/// `binder_read_is_borrow_safe_{instr,terminator}` consults, never a
+/// structural "any call is a borrow" rule. A callee outside the list —
+/// including a directly-resolved user Hew function — is unproven: it may
+/// forward the argument back out as its own return value (an
+/// identity/pass-through helper: validators, `.trim()`-style wrappers,
+/// decorators), which would let the generator/recv-yield exit-edge ledger
+/// (`return`/`break`/`continue`) free the buffer the call just handed to its
+/// caller — a silent use-after-free (GitHub issue #2412: `return
+/// wrap(v)`). Fail-closed: unproven is NOT borrow-safe, never re-admitted
+/// (LESSONS `boundary-fail-closed`). WHEN OBSOLETE: the COW retain-on-share
+/// spine (A240) replaces this leak-on-uncertainty posture with an exact
+/// retain, and every `Call` argument can be admitted unconditionally.
+fn call_args_borrow_safe(
+    contract: crate::runtime_symbols::CalleeOwnershipContract,
+    args: &[Place],
+    local: u32,
+) -> bool {
+    let refs = |p: &Place| place_refs_local(*p, local);
+    if !args.iter().any(refs) {
+        return true;
+    }
+    let receiver_borrow_safe = (contract.borrows_vec_receiver()
+        || contract.borrows_collection_receiver()
+        || contract.borrows_bytes_receiver())
+        && !args.iter().skip(1).any(refs);
+    contract.borrows_string_call_args() || receiver_borrow_safe
+}
+
 /// True when an instruction transfers ownership of `local` out of its slot
 /// (so a body-end drop of the binding would be unsound). A fresh, solely-owned
 /// generator-yielded value escapes only via:
@@ -36931,12 +36969,29 @@ fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
         } => state.is_some_and(&refs) || init_args.iter().any(|p| refs(*p)),
         Instr::SpawnTaskDirect { task, .. } => refs(*task),
         Instr::SpawnTaskClosure { task, env, .. } => refs(*task) || refs(*env),
-        // Borrowing reads — a getter / runtime-ABI / arithmetic operand does
-        // not retain the yielded value. These do NOT escape it.
-        Instr::CallRuntimeAbi(_)
-        | Instr::CallClosure { .. }
-        | Instr::CallTraitMethod { .. }
-        | Instr::EnterContext
+        // A `CallRuntimeAbi` argument is a borrow only when its callee symbol
+        // is on the closed ownership-contract list [`call_args_borrow_safe`]
+        // consults — see its doc comment. Any callee outside that list is
+        // unproven and counts as an escape (fail-closed).
+        Instr::CallRuntimeAbi(call) => !call_args_borrow_safe(
+            crate::runtime_symbols::callee_ownership_contract(call.symbol()),
+            call.args(),
+            local,
+        ),
+        // A closure or trait-method call is dynamic dispatch — no
+        // compile-time symbol to consult an ownership contract for. Any
+        // reference to `local` (the callee/receiver pair itself, or an
+        // argument) is unproven and counts as an escape (fail-closed; same
+        // rationale as the `CallRuntimeAbi` arm above).
+        Instr::CallClosure { callee, args, .. } => {
+            refs(*callee) || args.iter().any(|p| refs(*p))
+        }
+        Instr::CallTraitMethod {
+            fat_pointer, args, ..
+        } => refs(*fat_pointer) || args.iter().any(|p| refs(*p)),
+        // Borrowing reads — a context/cancellation query or an arithmetic
+        // operand does not retain the yielded value. These do NOT escape it.
+        Instr::EnterContext
         | Instr::ExitContext
         | Instr::CheckCancellation
         | Instr::ContextField { .. }
@@ -37008,8 +37063,8 @@ fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
 /// True when a terminator transfers ownership of `local` out of the body: a
 /// return moves it to the caller, a re-yield hands it back to a consumer, an
 /// actor send/ask/select transfers it into the message. A `Call` argument is a
-/// borrow (the callee does not retain a fresh yielded value), so a `Call`
-/// terminator does not escape it.
+/// borrow ONLY when the callee is on the closed ownership-contract borrow
+/// list — see [`generator_yield_terminator_escapes`]'s `Terminator::Call` arm.
 #[allow(
     clippy::match_same_arms,
     reason = "exhaustive match over every Terminator variant; the non-escaping \
@@ -37058,9 +37113,18 @@ fn generator_yield_terminator_escapes(
     local: u32,
 ) -> bool {
     match term {
-        // A `Call`'s args are borrows (same posture as `Instr::Call*`).
-        Terminator::Call { .. }
-        | Terminator::Goto { .. }
+        // A `Call`'s args are a borrow only when the callee is on the closed
+        // ownership-contract list [`call_args_borrow_safe`] consults — see
+        // its doc comment. A callee outside that list — including a
+        // directly-resolved user Hew function — is unproven and counts as an
+        // escape (fail-closed): it may forward the argument back out as its
+        // own return value (GitHub issue #2412: `return wrap(v)`).
+        Terminator::Call { callee, args, .. } => !call_args_borrow_safe(
+            crate::runtime_symbols::callee_ownership_contract(callee),
+            args,
+            local,
+        ),
+        Terminator::Goto { .. }
         | Terminator::Branch { .. }
         | Terminator::Trap { .. }
         | Terminator::MakeGenerator { .. } => false,

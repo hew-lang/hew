@@ -1140,3 +1140,112 @@ fn gen_stream_returned_loop_var_no_uaf() {
         &["before", "escaped", "after"],
     );
 }
+
+// ── Identity-callee forwarding: `wrap(v)` on the return / break edges ──────
+//
+// The generator/recv-yield exit-edge ledger's escape scan
+// (`generator_yield_terminator_escapes`) used to classify EVERY
+// `Terminator::Call` argument as a non-escaping borrow (a structural "any
+// call is a borrow" rule). That is wrong when the callee forwards its
+// argument back out as its own return value: `wrap` below is an identity
+// pass-through (a validator / `.trim()`-style wrapper / decorator shape),
+// so `v` and `wrap(v)`'s result alias the SAME underlying buffer. The
+// escape scan said "no escape", so the exit-edge ledger still fired a
+// `Drop` on `v`'s place AFTER `wrap` had already threaded that buffer into
+// its own return slot — a silent use-after-free: the caller reads the
+// freed-and-poisoned buffer as an empty string instead of the real value
+// (GitHub issue #2412). The fix makes the scan consult the SAME closed
+// ownership-contract list the body-end scan's `CallRuntimeAbi` arm uses
+// (`call_args_borrow_safe` in `hew-mir/src/lower.rs`); a
+// directly-resolved Hew function like `wrap`, which is not on that list,
+// now counts as an escape and the exit-edge drop is retracted.
+//
+// The identical corruption reproduces via `break` (`carry = wrap(v);
+// break;`) because both edges share the same ledger emitter
+// (`emit_generator_yield_value_drops_for_exit_edge`) and the same escape
+// scan — a pre-existing defect on `break`/`continue`, which wired the
+// ledger before the `return` edge existed.
+
+/// `fn wrap(v: string) -> string { return v; }` — an identity pass-through
+/// callee. `return wrap(v)` forwards the loop variable through the call;
+/// neither the body-end release nor the return-edge release may fire on
+/// `v` (the call's result IS `v`'s buffer, now owned by the caller through
+/// `wrap`'s own return). Pre-fix: the exit-edge ledger dropped `v` after
+/// `wrap` returned, freeing the buffer the caller is about to read —
+/// `println(s)` printed an empty string instead of `escaped` under the
+/// scribble triple.
+fn gen_stream_return_forwarded_via_call_source() -> String {
+    "actor Maker {\n\
+     \x20   receive gen fn items() -> string {\n\
+     \x20       yield \"escaped\";\n\
+     \x20       yield \"rest\";\n\
+     \x20   }\n\
+     }\n\
+     fn wrap(v: string) -> string {\n\
+     \x20   return v;\n\
+     }\n\
+     fn first(m: LocalPid<Maker>) -> string {\n\
+     \x20   for await v in m.items() {\n\
+     \x20       return wrap(v);\n\
+     \x20   }\n\
+     \x20   \"none\"\n\
+     }\n\
+     fn main() {\n\
+     \x20   println(\"before\");\n\
+     \x20   let m = spawn Maker;\n\
+     \x20   let s = first(m);\n\
+     \x20   println(s);\n\
+     \x20   println(\"after\");\n\
+     }\n"
+    .to_string()
+}
+
+/// `break`-analog of the identity-forwarding shape: `carry = wrap(v);
+/// break;`. Same ledger emitter, same escape scan, same identity callee —
+/// proves the fix closes both exit edges, not just `return`.
+fn gen_stream_break_forwarded_via_call_source() -> String {
+    "actor Maker {\n\
+     \x20   receive gen fn items() -> string {\n\
+     \x20       yield \"escaped\";\n\
+     \x20       yield \"rest\";\n\
+     \x20   }\n\
+     }\n\
+     fn wrap(v: string) -> string {\n\
+     \x20   return v;\n\
+     }\n\
+     fn main() {\n\
+     \x20   println(\"before\");\n\
+     \x20   let m = spawn Maker;\n\
+     \x20   var carry = \"init\";\n\
+     \x20   for await v in m.items() {\n\
+     \x20       carry = wrap(v);\n\
+     \x20       break;\n\
+     \x20   }\n\
+     \x20   println(carry);\n\
+     \x20   println(\"after\");\n\
+     }\n"
+    .to_string()
+}
+
+/// Identity-callee forwarding on the RETURN edge must not free the buffer
+/// the caller is about to read. `GuardMalloc` ×3 in the flake gate.
+#[test]
+fn gen_stream_return_forwarded_via_call_no_uaf() {
+    assert_payload_escape_prints(
+        "gen_stream_return_forwarded_via_call",
+        &gen_stream_return_forwarded_via_call_source(),
+        &["before", "escaped", "after"],
+    );
+}
+
+/// Identity-callee forwarding on the BREAK edge — same ledger emitter and
+/// escape scan as the return edge, so the fix must close both. `GuardMalloc`
+/// ×3 in the flake gate.
+#[test]
+fn gen_stream_break_forwarded_via_call_no_uaf() {
+    assert_payload_escape_prints(
+        "gen_stream_break_forwarded_via_call",
+        &gen_stream_break_forwarded_via_call_source(),
+        &["before", "escaped", "after"],
+    );
+}

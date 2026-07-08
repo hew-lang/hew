@@ -1,0 +1,24 @@
+// A RETURNED closure capturing a heap-owning record (Vec field): the record
+// moves into the heap-boxed env and escapes the defining scope, so the env
+// free thunk is the record's sole teardown owner. Previously the thunk's
+// per-field drop declared `__hew_record_drop_inplace_Holder` with no
+// synthesised body and LLVM verify rejected the module. The closure stays
+// callable across calls; the captured Vec is released exactly once at the
+// pair's drop (leak-oracle-pinned in closure_capture_owned_leak_oracle.rs).
+type Holder {
+    counts: Vec<i64>;
+}
+
+fn make() -> fn() -> i64 {
+    let counts: Vec<i64> = Vec::new();
+    counts.push(4);
+    counts.push(7);
+    let h = Holder { counts: counts };
+    || h.counts.len()
+}
+
+fn main() {
+    let f = make();
+    println(f());
+    println(f());
+}

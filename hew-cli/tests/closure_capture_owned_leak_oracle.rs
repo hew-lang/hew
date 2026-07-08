@@ -1,7 +1,7 @@
 //! Per-iteration leak / double-free oracle for the closure-env KEYSTONE: an
 //! escaping (heap-boxed) closure that captures an OWNED value (`string`,
-//! `Vec`) must free that captured value EXACTLY once when the closure is
-//! dropped.
+//! `Vec`, a heap-owning record, an owned-payload enum) must free that
+//! captured value EXACTLY once when the closure is dropped.
 //!
 //! ## What this proves
 //!
@@ -119,6 +119,75 @@ fn captures_vec_loop_source(frames: usize) -> String {
     )
 }
 
+/// Escaping closure captures a heap-owning RECORD (`Holder { counts: Vec<i64> }`)
+/// built from a local binding and moved into the env (#2419). The record
+/// capture dispatches through the synthesised `__hew_record_drop_inplace_Holder`
+/// (seeded by the closure-capture drop-seed pass); the free thunk must run it
+/// exactly once per iteration so the record's owned Vec is released — a missing
+/// body was an LLVM verify reject, an empty one is a positive slope here.
+fn captures_record_loop_source(frames: usize) -> String {
+    let expected_total = frames * 2 + frames * frames.saturating_sub(1) / 2;
+    format!(
+        "type Holder {{\n\
+         \x20   counts: Vec<i64>;\n\
+         }}\n\
+         fn make_holder(n: i64) -> fn() -> i64 {{\n\
+         \x20   let counts: Vec<i64> = Vec::new();\n\
+         \x20   counts.push(10);\n\
+         \x20   counts.push(20);\n\
+         \x20   let h = Holder {{ counts: counts }};\n\
+         \x20   || h.counts.len() + n\n\
+         }}\n\
+         fn run_loop(frames: i64) -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   for i in 0..frames {{\n\
+         \x20       let f = make_holder(i);\n\
+         \x20       total = total + f();\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   let total = run_loop({frames});\n\
+         \x20   if total != {expected_total} {{ return 93; }}\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
+/// Escaping closure captures an ENUM whose active variant owns a runtime-built
+/// `string` payload — the enum twin of the record capture (#2419). The free
+/// thunk dispatches `__hew_enum_drop_inplace_Tag`, whose tag-aware body must
+/// release the payload string exactly once per iteration.
+fn captures_enum_loop_source(frames: usize) -> String {
+    let expected_total = frames + frames * frames.saturating_sub(1) / 2;
+    format!(
+        "enum Tag {{\n\
+         \x20   Named(string);\n\
+         \x20   Anon;\n\
+         }}\n\
+         fn make_tagger(n: i64) -> fn() -> i64 {{\n\
+         \x20   let t = Tag::Named(\"row-payload-seed\".to_upper());\n\
+         \x20   || match t {{\n\
+         \x20       Tag::Named(_) => 1 + n,\n\
+         \x20       Tag::Anon => n,\n\
+         \x20   }}\n\
+         }}\n\
+         fn run_loop(frames: i64) -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   for i in 0..frames {{\n\
+         \x20       let f = make_tagger(i);\n\
+         \x20       total = total + f();\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   let total = run_loop({frames});\n\
+         \x20   if total != {expected_total} {{ return 94; }}\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
 // -- correctness pins --------------------------------------------------------
 
 /// Run `source` to native, execute under the poisoned-allocator triple, and
@@ -164,6 +233,22 @@ fn return_closure_captures_vec_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("captures_vec", captures_vec_loop_source);
 }
 
+/// Slope oracle (record, #2419): a returned closure capturing a heap-owning
+/// record frees the record's owned Vec every iteration through the synthesised
+/// `__hew_record_drop_inplace_Holder` — flat leak slope.
+#[test]
+fn return_closure_captures_record_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance("captures_record", captures_record_loop_source);
+}
+
+/// Slope oracle (enum, #2419 twin): a returned closure capturing an enum with
+/// an owned string payload frees the payload every iteration through the
+/// synthesised `__hew_enum_drop_inplace_Tag` — flat leak slope.
+#[test]
+fn return_closure_captures_enum_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance("captures_enum", captures_enum_loop_source);
+}
+
 /// No-double-free pin (string): the escaping capture frees the owned `string`
 /// EXACTLY once across 200 iterations. A second owner aborts under the poisoned
 /// allocator. Runs on any unix host.
@@ -177,4 +262,21 @@ fn return_closure_captures_string_freed_exactly_once_under_malloc_scribble() {
 #[test]
 fn return_closure_captures_vec_freed_exactly_once_under_malloc_scribble() {
     assert_no_double_free("captures_vec_df", &captures_vec_loop_source(200));
+}
+
+/// No-double-free pin (record, #2419): the escaping record capture frees the
+/// record's owned Vec EXACTLY once across 200 iterations — the caller binding's
+/// drop is suppressed (the env is the sole owner), so a second release aborts
+/// under the poisoned allocator. Runs on any unix host.
+#[test]
+fn return_closure_captures_record_freed_exactly_once_under_malloc_scribble() {
+    assert_no_double_free("captures_record_df", &captures_record_loop_source(200));
+}
+
+/// No-double-free pin (enum, #2419 twin): the escaping enum capture frees the
+/// owned string payload EXACTLY once across 200 iterations. Runs on any unix
+/// host.
+#[test]
+fn return_closure_captures_enum_freed_exactly_once_under_malloc_scribble() {
+    assert_no_double_free("captures_enum_df", &captures_enum_loop_source(200));
 }

@@ -1,0 +1,19 @@
+// #2419: a closure capturing an IMPORTED Vec-bearing record (real drop glue).
+// Previously failed LLVM verify with a bodyless
+// `__hew_record_drop_inplace_Summary` declaration — the closure-capture seed
+// pass must resolve the imported record to the same layout key the env
+// free-thunk site requests.
+import hew::capturestats;
+
+fn apply(f: fn(i64) -> i64, x: i64) -> i64 {
+    f(x)
+}
+
+fn main() {
+    let s = capturestats.summary_new(4, 7);
+    let f = |x: i64| -> i64 {
+        s.counts.len() + x
+    };
+    println(apply(f, 1));
+    println(apply(f, 40));
+}

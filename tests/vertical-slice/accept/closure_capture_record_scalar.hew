@@ -1,0 +1,25 @@
+// A closure capturing an all-scalar record. This shape previously failed LLVM
+// verify ("Global is external, but doesn't have external or weak linkage")
+// with a bodyless `__hew_record_drop_inplace_Pair` declaration: a closure
+// capture reaches no drop-thunk synthesis seed on its own — the capture moves
+// into the env, and an all-scalar record never earns a `RecordInPlace` drop
+// plan yet still classifies `UserRecord` at the env free-thunk site. The
+// caller binding is a byte-copy alias and stays live after the capture.
+type Pair {
+    a: i64;
+    b: i64;
+}
+
+fn apply(f: fn(i64) -> i64, x: i64) -> i64 {
+    f(x)
+}
+
+fn main() {
+    let p = Pair { a: 1, b: 2 };
+    let f = |x: i64| -> i64 {
+        p.a + x
+    };
+    println(apply(f, 1));
+    println(apply(f, 40));
+    println(p.b);
+}

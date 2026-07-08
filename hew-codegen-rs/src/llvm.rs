@@ -3894,8 +3894,8 @@ fn basic_ty_has_float_or_vector_leaf(ty: BasicTypeEnum<'_>) -> bool {
 /// # Errors
 ///
 /// Fails closed for a float/SIMD-bearing record (SSE/HFA classes unmodelled), a
-/// wasm32 record return (no probe vehicle in this lane), an unmodelled target
-/// (propagated from the classifier), or a RegisterPair record with a
+/// wasm32 record return (no runtime probe proves that ABI), an unmodelled
+/// target (propagated from the classifier), or a RegisterPair record with a
 /// sub-eightbyte tail whose carrier store would overflow the destination slot.
 fn classify_extern_record_return<'ctx>(
     ctx: &'ctx Context,
@@ -3921,13 +3921,14 @@ fn classify_extern_record_return<'ctx>(
     let triple_str = triple.as_str().to_string_lossy();
 
     // Fail-closed pre-check: wasm32. `classify_aggregate`'s wasm32 arm is
-    // size-only and would misclassify a multi-field <=8-byte aggregate; there is
-    // no wasm32 extern-record-return probe vehicle in this lane, so fail closed
-    // rather than emit an unproven ABI.
+    // size-only and would misclassify a multi-field <=8-byte aggregate; no
+    // compiled-binary probe exercises the wasm32 extern-record-return ABI, so
+    // fail closed rather than emit an unproven lowering.
     if triple_str.starts_with("wasm32") {
         return Err(CodegenError::FailClosed(format!(
             "extern `{name}` returns a `#[repr(C)]` record on wasm32; the wasm32 extern \
-             record-return ABI is not modelled in this lane. (LESSONS: boundary-fail-closed)"
+             record-return ABI is not modelled. Return the record through an out-pointer \
+             parameter. (LESSONS: boundary-fail-closed)"
         )));
     }
 
@@ -56228,9 +56229,9 @@ fn main() {
         );
     }
 
-    /// wasm32 record returns fail closed: no probe vehicle proves that ABI in
-    /// this lane, and the size-only wasm32 arm would misclassify multi-field
-    /// ≤8-byte aggregates.
+    /// wasm32 record returns fail closed: no runtime probe proves that ABI,
+    /// and the size-only wasm32 arm would misclassify multi-field ≤8-byte
+    /// aggregates.
     #[test]
     fn extern_record_return_wasm32_fails_closed() {
         let ctx = Context::create();

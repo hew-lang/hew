@@ -3382,14 +3382,21 @@ pub(crate) fn handle_inbound_unlink(payload: &crate::envelope::LinkReqPayload) {
 /// This is THE divergence from monitor's `deliver_to_ref` (which arms a recv
 /// slot). A monitor DOWN lands in a slot the program polls; a `CrashLinked` link
 /// DOWN crashes the linked actor through its mailbox. The EXIT is fired exactly
-/// once and ONLY for a link entry THIS node registered, so a forged frame cannot
-/// crash an actor we never linked.
-pub(crate) fn handle_inbound_link_down(ref_id: u64, reason: i32) {
+/// once and ONLY for a link entry THIS node registered AND ONLY when
+/// `authenticated_peer` (the handshake-verified sender of the frame, resolved by
+/// the connection layer) matches that entry's own linked-to node — so neither a
+/// forged `ref_id` this node never linked NOR a genuinely-connected but
+/// unrelated peer that merely guessed/learned a pending link `ref_id` can crash
+/// an actor we linked to a DIFFERENT, still-alive peer.
+pub(crate) fn handle_inbound_link_down(ref_id: u64, authenticated_peer: u16, reason: i32) {
     let Some(rt) = crate::runtime::rt_current_opt() else {
         set_last_error("handle_inbound_link_down: no runtime installed");
         return;
     };
-    if let Some(down) = rt.dist_monitors.deliver_link_down_to_ref(ref_id, reason) {
+    if let Some(down) =
+        rt.dist_monitors
+            .deliver_link_down_to_ref(ref_id, authenticated_peer, reason)
+    {
         let _ = crate::link::deliver_cross_node_link_exit(
             down.local_actor_id,
             down.remote_target_serial,

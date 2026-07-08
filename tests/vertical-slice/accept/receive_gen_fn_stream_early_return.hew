@@ -1,0 +1,32 @@
+// Early `return` out of a `for await` drain: the consuming body's
+// per-iteration release survives a return-carrying path (iterations before
+// the hit release at body end), the returning iteration's received string is
+// released on the return edge itself, and the caller-facing result is
+// computed from the received values — proving no release fires early. The
+// per-yield leak slope for this shape is pinned by the recv-loop leak oracle
+// in hew-cli.
+actor Namer {
+    receive gen fn names() -> string {
+        yield "ab";
+        yield "cdef";
+        yield "gamma";
+        yield "never-sent";
+    }
+}
+
+fn find_len(n: LocalPid<Namer>, want: i64) -> i64 {
+    var seen: i64 = 0;
+    for await v in n.names() {
+        seen = seen + 1;
+        if v.len() >= want {
+            return seen;
+        }
+    }
+    0 - 1
+}
+
+fn main() {
+    let n = spawn Namer;
+    let at = find_len(n, 5);
+    println(f"found at {at}");
+}

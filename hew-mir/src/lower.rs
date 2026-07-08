@@ -22917,6 +22917,26 @@ impl Builder {
         // bound (the `start` of the range) the counter must stay `>=`.
         let bound = self.alloc_local(counter_ty.clone());
 
+        // Loop structure blocks, allocated up front (before the
+        // start/bound setup below) so the descending-exclusive emptiness
+        // gate (#1948) can jump straight to `exit_bb`, bypassing the header
+        // entirely for a statically-known-empty range without needing the
+        // header's `counter >= bound` comparison to independently discover
+        // the same fact from a synthesized counter value. `alloc_block` only
+        // allocates a numeric id (no emission side effect — every block
+        // below is forward-referenced by id well before `start_block` is
+        // called on it, matching the existing header/body/inc/exit pattern
+        // already used throughout this function), so hoisting the four ids
+        // here changes nothing about where each block is actually emitted.
+        // `inc_bb` is a dedicated advance block: the body falls through to it
+        // AND `continue` jumps to it, so the counter advance happens on
+        // every path that re-enters the header. Threading `continue` straight
+        // to the header would skip the advance and spin forever (Risk 1).
+        let header_bb = self.alloc_block();
+        let body_bb = self.alloc_block();
+        let inc_bb = self.alloc_block();
+        let exit_bb = self.alloc_block();
+
         // Lower the stride into a local once; both directions reuse it. The
         // step expression is user source (the `step_by(n)` argument), so its
         // setup Move carries the for-loop statement span — gdb steps onto the
@@ -22995,6 +23015,49 @@ impl Builder {
             } else {
                 // `a..b` reversed starts at `b - 1` (checked; trap on
                 // underflow so `a..MIN` fails closed rather than wrapping).
+                //
+                // #1948 — an EMPTY exclusive descending range (`raw_start ==
+                // raw_end`, e.g. `(0u32..0).rev()` or `(i32::MIN..i32::MIN).rev()`)
+                // must still yield zero iterations rather than trap. The `b - 1`
+                // decrement below is only meaningful once a real high element
+                // exists to start from; for an empty range there is no such
+                // element, and `raw_end` itself sits exactly one past the
+                // representable range for a `u₀`-ending / `iₘᵢₙ`-ending bound, so
+                // `raw_end - 1` unconditionally underflows/overflows the counter
+                // width in exactly this case — independent of whether the loop
+                // itself has any iterations to run.
+                //
+                // Gate the decrement on emptiness first: if `raw_start ==
+                // raw_end` the range is empty, so skip the header/body cycle
+                // entirely (`Goto exit_bb` directly) without ever computing
+                // `b - 1` — this is NOT the same as routing `counter` to a
+                // value the header would independently reject, because the
+                // header tests `counter >= bound` (`bound == raw_start`) and
+                // any candidate `counter` equal to `raw_start` trivially
+                // SATISFIES that predicate (entering the loop once), while any
+                // value strictly less than `raw_start` needs its own
+                // underflow-safe construction — there is no single
+                // representable sentinel that solves this for every width, so
+                // bypassing the header outright is the correct fix, not an
+                // easier substitute for one. A non-empty range takes the
+                // existing decrement-with-trap path unchanged, still routed
+                // through `pre_header_bb` → `header_bb` as before.
+                let is_empty = self.alloc_local(ResolvedTy::Bool);
+                self.push_instr(Instr::IntCmp {
+                    dest: is_empty,
+                    pred: CmpPred::Eq,
+                    lhs: raw_start,
+                    rhs: raw_end,
+                });
+                let nonempty_bb = self.alloc_block();
+                let pre_header_bb = self.alloc_block();
+                self.finish_current_block(Terminator::Branch {
+                    cond: is_empty,
+                    then_target: exit_bb,
+                    else_target: nonempty_bb,
+                });
+
+                self.start_block(nonempty_bb);
                 let one = self.alloc_local(counter_ty.clone());
                 self.push_instr(Instr::ConstI64 {
                     dest: one,
@@ -23010,7 +23073,6 @@ impl Builder {
                     overflow_flag,
                 });
                 let trap_bb = self.alloc_block();
-                let pre_header_bb = self.alloc_block();
                 self.finish_current_block(Terminator::Branch {
                     cond: overflow_flag,
                     then_target: trap_bb,
@@ -23020,6 +23082,7 @@ impl Builder {
                 self.finish_current_block(Terminator::Trap {
                     kind: TrapKind::IntegerOverflow,
                 });
+
                 self.start_block(pre_header_bb);
             }
         } else {
@@ -23070,16 +23133,6 @@ impl Builder {
                 });
             }
         }
-
-        // Allocate loop structure blocks. `inc_bb` is a dedicated advance
-        // block: the body falls through to it AND `continue` jumps to it, so
-        // the counter advance happens on every path that re-enters the header.
-        // Threading `continue` straight to the header would skip the advance
-        // and spin forever (Risk 1).
-        let header_bb = self.alloc_block();
-        let body_bb = self.alloc_block();
-        let inc_bb = self.alloc_block();
-        let exit_bb = self.alloc_block();
 
         // Jump from entry (or post-bound-adjust-overflow-check) to the header.
         self.finish_current_block(Terminator::Goto { target: header_bb });

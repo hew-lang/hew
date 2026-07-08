@@ -699,6 +699,13 @@ run_accept_expect_stdout "array_literal_string_for_each"
 run_accept_expect_status "iter_manual_next_42" 42
 run_accept_expect_status "gen_next_stack_bounded" 0
 run_accept_expect_status "for_range_regression" 21
+run_accept_expect_status_and_stdout "for_range_rev" 0
+run_accept_expect_status_and_stdout "for_range_rev_step_by" 0
+# #1948 regression: an empty exclusive descending range must yield zero
+# iterations, not trap on the pre-header `raw_end - 1` decrement. Covers both
+# counter-width families that can sit exactly at the underflow boundary.
+run_accept_expect_status_and_stdout "for_range_rev_empty_unsigned_zero" 0
+run_accept_expect_status_and_stdout "for_range_rev_empty_signed_min" 0
 
 # platform-int-arith (W60.040): isize/usize as first-class integers. Each
 # fixture asserts exact values via assert_eq/assert and exits 0 on success

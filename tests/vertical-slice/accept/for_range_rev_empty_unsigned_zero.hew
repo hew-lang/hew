@@ -1,0 +1,14 @@
+// #1948 regression: an EMPTY exclusive descending range ending at the
+// unsigned minimum (`(0u32..0).rev()`) must yield zero iterations, not trap.
+// Before the fix, the pre-header `raw_end - 1` decrement computed `0 - 1`
+// unconditionally (before the loop header ever checked for emptiness),
+// underflowing the checked subtract and trapping IntegerOverflow instead of
+// running zero iterations.
+fn main() {
+    let lo: u32 = 0;
+    let hi: u32 = 0;
+    for i in (lo .. hi).rev() {
+        println(i);
+    }
+    println(999);
+}

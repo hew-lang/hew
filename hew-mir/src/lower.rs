@@ -26159,7 +26159,29 @@ impl Builder {
             dest,
             next,
         });
-        self.start_block(next);
+        // A `Never`-typed direct call (the runtime `panic()`/`exit()` shims,
+        // and any other callee whose checker-resolved return type is
+        // `ResolvedTy::Never`) never falls through to `next` at runtime — the
+        // call terminator is a real divergence, exactly like an explicit
+        // `return`. `start_block` always opens a normally-reachable cursor
+        // (see its own doc comment), so a plain `start_block(next)` here
+        // would silently mark the continuation reachable even though no
+        // predecessor can ever reach it. That falsifies every downstream
+        // `!self.cursor_unreachable` join-reachability check (If/match arm
+        // lowering) for an all-panic/exit diverging arm: the join gets
+        // wrongly admitted as reachable, and MIR's mixed-divergence recovery
+        // then tries to move the substituted `Unit` (i8) result local into a
+        // non-scalar (ptr/struct) return slot — a `Move type mismatch`
+        // codegen-front fail-closed abort (hew-lang/hew#1913). Use
+        // `start_dead_block` instead, mirroring the early-return path's own
+        // dead-end convention, so the continuation is correctly flagged
+        // unreachable and every existing join-reachability gate works for
+        // `panic()`/`exit()` the same way it already does for `return`.
+        if matches!(ret_ty, ResolvedTy::Never) {
+            self.start_dead_block(next);
+        } else {
+            self.start_block(next);
+        }
 
         dest
     }

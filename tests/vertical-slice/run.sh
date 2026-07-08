@@ -3119,6 +3119,16 @@ expect_check_fail_contains \
 run_accept_expect_panic "option_unwrap_none_aborts" "called 'unwrap()' on a 'None' value"
 run_accept_expect_panic "result_unwrap_err_aborts" "called 'unwrap()' on an 'Err' value"
 
+# hew-lang/hew#1913: an all-`panic()` tail-match/if-else arm set with a
+# non-scalar (struct) return type must compile and run, not abort at codegen
+# with "Move type mismatch: src=i8 dest=struct". `lower_direct_call` must flag
+# its continuation block unreachable for a `Never`-typed callee (panic/exit)
+# so the join-reachability check downstream treats an all-diverging arm set
+# the same way it already treats an all-`return` arm set. Both forms panic
+# with message "one" and exit 101 (hew_panic's clean-exit contract).
+run_accept_expect_panic "match_all_panic_arms_nonscalar_return" "one"
+run_accept_expect_panic "if_else_all_panic_arms_nonscalar_return" "one"
+
 # WASM parity (W4.042): the bare-`None` builtin Option<i64> path must also lower
 # under wasm32-unknown-unknown. The fix is pure checker-boundary type recording
 # (hew-types) with no native-only codegen change, so behavioural parity is

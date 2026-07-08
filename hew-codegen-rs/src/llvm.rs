@@ -1843,27 +1843,48 @@ fn math_builtin_intrinsic(callee: &str) -> Option<MathBuiltinIntrinsic> {
 ///
 /// `intern_runtime_decl` declares runtime FFI symbols whose parameters are
 /// `usize`/`size_t` in the Rust runtime (`hew_actor_spawn(state_size: usize)`,
-/// `hew_actor_send_by_id(size: usize)`, …). `size_t` is 64-bit on the native
-/// targets (x86_64/aarch64) but 32-bit on wasm32. The IR is rebuilt per target
-/// by `build_module_for_target`, which sets the module triple before any body
-/// fill triggers an FFI declaration, so the module triple is the authority for
-/// the pointer/`size_t` width at declaration time.
+/// `hew_actor_send_by_id(size: usize)`, …). `size_t` is 64-bit on 64-bit
+/// native targets (x86_64/aarch64) but 32-bit on any 32-bit target: wasm32
+/// and the 32-bit x86 family (`i386`/`i586`/`i686`, e.g.
+/// `i686-unknown-linux-gnu`, `i686-pc-windows-msvc`). The IR is rebuilt per
+/// target by `build_module_for_target`, which sets the module triple before
+/// any body fill triggers an FFI declaration, so the module triple is the
+/// authority for the pointer/`size_t` width at declaration time.
 ///
 /// Declaring these params at the wrong width produces a `wasm-ld` signature
 /// mismatch against the wasm32 runtime archive (codegen `i64` vs runtime
 /// `i32`), and the resulting `signature_mismatch:hew_actor_spawn` stub traps
-/// `unreachable` at runtime. This helper returns the target-correct width so
-/// the codegen declaration matches the runtime's real C ABI.
+/// `unreachable` at runtime. On i386/i686 the equivalent mismatch is a
+/// `size_t` argument-width mismatch against the real 32-bit C ABI rather than
+/// a linker-level trap, but the failure class is the same: a declared i64
+/// parameter for a runtime function whose real C signature takes a 32-bit
+/// `size_t`. This helper returns the target-correct width so the codegen
+/// declaration matches the runtime's real C ABI on every 32-bit target, not
+/// only wasm32 (PR #1939 added the `reconcile_int_width_signed` calls needed
+/// once this returns the correct width for i386/i686, but left this helper's
+/// own triple check wasm32-only, so the reconcile was a same-width no-op on
+/// 32-bit x86 and the declaration itself stayed at the wrong width there).
 pub(crate) fn runtime_size_ty<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
 ) -> inkwell::types::IntType<'ctx> {
     let triple = llvm_mod.get_triple();
-    if triple.as_str().to_string_lossy().starts_with("wasm32") {
+    let triple = triple.as_str().to_string_lossy();
+    if triple.starts_with("wasm32") || is_32bit_x86_triple(&triple) {
         ctx.i32_type()
     } else {
         ctx.i64_type()
     }
+}
+
+/// True for the 32-bit x86 (`i386`/`i486`/`i586`/`i686`) triple family, e.g.
+/// `i686-unknown-linux-gnu` or `i686-pc-windows-msvc`. Matches `rustc --print
+/// target-list`'s real 32-bit x86 arch components (`i386`, `i586`, `i686`;
+/// `i486` is included for completeness even though no current Rust target
+/// uses it). Does not match `x86_64`/`amd64` (64-bit) or any other arch.
+fn is_32bit_x86_triple(triple: &str) -> bool {
+    let arch = triple.split('-').next().unwrap_or(triple);
+    matches!(arch, "i386" | "i486" | "i586" | "i686")
 }
 
 /// Intern a runtime-ABI function declaration for `symbol` in `llvm_mod`.
@@ -44626,6 +44647,62 @@ fn link_wasm_module(obj: &Path, out: &Path) -> CodegenResult<()> {
 mod tests {
     use super::*;
     use hew_mir::{BasicBlock, DecisionFact, IrPipeline};
+
+    #[test]
+    fn runtime_size_ty_is_i32_on_wasm32() {
+        let ctx = Context::create();
+        let llvm_mod = ctx.create_module("runtime_size_ty_wasm32");
+        llvm_mod.set_triple(&TargetTriple::create("wasm32-unknown-unknown"));
+        assert_eq!(runtime_size_ty(&ctx, &llvm_mod), ctx.i32_type());
+    }
+
+    #[test]
+    fn runtime_size_ty_is_i32_on_32bit_x86() {
+        // PR #1939 fixed the wasm32 case (`reconcile_int_width_signed` at the
+        // join-terminator and suspending-ask call sites) but this helper's own
+        // triple check stayed wasm32-only, so on i386/i686 the reconcile was a
+        // same-width i64-vs-i64 no-op and the FFI declaration itself stayed at
+        // the wrong (i64) width against the real 32-bit C ABI. Guard every
+        // real Rust 32-bit x86 triple prefix (`rustc --print target-list`:
+        // i386-apple-ios, i586-unknown-*, i686-*) so this can't silently regress
+        // to wasm32-only again.
+        let ctx = Context::create();
+        for triple in [
+            "i686-unknown-linux-gnu",
+            "i686-pc-windows-msvc",
+            "i686-pc-windows-gnu",
+            "i686-apple-darwin",
+            "i586-unknown-linux-gnu",
+            "i386-apple-ios",
+        ] {
+            let llvm_mod = ctx.create_module("runtime_size_ty_32bit_x86");
+            llvm_mod.set_triple(&TargetTriple::create(triple));
+            assert_eq!(
+                runtime_size_ty(&ctx, &llvm_mod),
+                ctx.i32_type(),
+                "runtime_size_ty should be i32 on 32-bit x86 triple {triple}"
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_size_ty_is_i64_on_64bit_native_targets() {
+        let ctx = Context::create();
+        for triple in [
+            "x86_64-unknown-linux-gnu",
+            "x86_64-pc-windows-msvc",
+            "aarch64-apple-darwin",
+            "aarch64-unknown-linux-gnu",
+        ] {
+            let llvm_mod = ctx.create_module("runtime_size_ty_64bit");
+            llvm_mod.set_triple(&TargetTriple::create(triple));
+            assert_eq!(
+                runtime_size_ty(&ctx, &llvm_mod),
+                ctx.i64_type(),
+                "runtime_size_ty should be i64 on 64-bit triple {triple}"
+            );
+        }
+    }
 
     #[test]
     fn uint_to_string_runtime_arg_width_is_u32() {

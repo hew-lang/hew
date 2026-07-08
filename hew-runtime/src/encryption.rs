@@ -1197,9 +1197,33 @@ mod tests {
     const TEST_PRIVATE_KEY: [u8; KEY_LEN] = [7u8; KEY_LEN];
 
     /// Find a free TCP port by briefly binding to `127.0.0.1:0`.
+    ///
+    /// The returned port can still be claimed before the transport binds it, so
+    /// tests should call [`listen_on_free_port`] instead of assuming one probe is
+    /// race-free on busy CI runners.
     fn free_port() -> u16 {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.local_addr().unwrap().port()
+    }
+
+    /// Bind `transport` to a probed local port, retrying the small port-freeing
+    /// race between `free_port()` and the transport's actual listen call.
+    fn listen_on_free_port(transport: *mut HewTransport) -> u16 {
+        // SAFETY: callers pass transports created by hew_transport_*_new.
+        let ops = unsafe { &*(*transport).ops };
+        let listen_fn = ops.listen.unwrap();
+
+        for _ in 0..16 {
+            let port = free_port();
+            let addr = CString::new(format!("127.0.0.1:{port}")).unwrap();
+            // SAFETY: transport impl and addr are valid.
+            let rc = unsafe { listen_fn((*transport).r#impl, addr.as_ptr()) };
+            if rc >= 0 {
+                return port;
+            }
+        }
+
+        panic!("listen failed after retrying free local ports");
     }
 
     /// Destroy a [`HewTransport`] by calling its vtable `destroy` op and
@@ -1850,9 +1874,6 @@ mod tests {
 
     /// Create a connected encrypted client/server pair on a free port.
     fn setup_encrypted_pair() -> EncryptedPair {
-        let port = free_port();
-        let addr = CString::new(format!("127.0.0.1:{port}")).unwrap();
-
         // --- Server transport ---
         // SAFETY: hew_transport_tcp_new has no preconditions.
         let server_inner = unsafe { hew_transport_tcp_new() };
@@ -1860,13 +1881,7 @@ mod tests {
         let server =
             unsafe { hew_transport_encrypted_new(server_inner, TEST_PRIVATE_KEY.as_ptr()) };
 
-        // Listen.
-        // SAFETY: server is valid.
-        let server_ops = unsafe { &*(*server).ops };
-        let listen_fn = server_ops.listen.unwrap();
-        // SAFETY: server impl and addr are valid.
-        let rc = unsafe { listen_fn((*server).r#impl, addr.as_ptr()) };
-        assert!(rc >= 0, "listen failed on port {port}");
+        let port = listen_on_free_port(server);
 
         let server_usize = ptr_to_usize(server);
         let (tx, rx) = mpsc::channel();
@@ -2140,8 +2155,6 @@ mod tests {
 
     #[test]
     fn roundtrip_with_preset_keys() {
-        let port = free_port();
-
         // Generate distinct keypairs for server and client.
         let builder = Builder::new(NOISE_PATTERN.parse().unwrap());
         let server_kp = builder.generate_keypair().unwrap();
@@ -2155,12 +2168,9 @@ mod tests {
         let server =
             unsafe { hew_transport_encrypted_new(server_inner, server_kp.private.as_ptr()) };
 
-        let addr = CString::new(format!("127.0.0.1:{port}")).unwrap();
+        let port = listen_on_free_port(server);
         // SAFETY: server is valid.
         let s_ops = unsafe { &*(*server).ops };
-        // SAFETY: server impl and addr are valid.
-        let rc = unsafe { s_ops.listen.unwrap()((*server).r#impl, addr.as_ptr()) };
-        assert!(rc >= 0);
 
         let server_usize = ptr_to_usize(server);
         let (tx, rx) = mpsc::channel();

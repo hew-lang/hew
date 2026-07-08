@@ -250,7 +250,10 @@ jobs:
         run: cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release --target ${{ matrix.rust_target }}
 
       - name: Build libhew.a (runtime + stdlib)
-        run: cargo build -p hew-lib --release --target ${{ matrix.rust_target }}
+        # The shipped archive builds under the non-LTO release-lib profile:
+        # external Rust staticlibs (--link-lib packages) cannot dedupe their
+        # verbatim libstd members against a fat-LTO archive.
+        run: cargo build -p hew-lib --profile release-lib --target ${{ matrix.rust_target }}
 
       - name: Smoke test hew-lsp and hew-observe (Unix)
         if: "!startsWith(matrix.target, 'windows')"
@@ -280,6 +283,7 @@ jobs:
           VERSION="${RELEASE_TAG#v}"
           ARCHIVE_NAME="hew-v${VERSION}-${{ matrix.target }}"
           RELEASE_DIR="target/${{ matrix.rust_target }}/release"
+          RELEASE_LIB_DIR="target/${{ matrix.rust_target }}/release-lib"
 
           mkdir -p "${ARCHIVE_NAME}/bin" "${ARCHIVE_NAME}/lib" \
                    "${ARCHIVE_NAME}/std" "${ARCHIVE_NAME}/completions"
@@ -291,13 +295,20 @@ jobs:
           cp "target/${{ matrix.rust_target }}/release/hew-observe"      "${ARCHIVE_NAME}/bin/"
           chmod +x "${ARCHIVE_NAME}/bin/"*
 
-          # Combined runtime + stdlib library (flat path — universal fallback)
-          cp "${RELEASE_DIR}/libhew.a" "${ARCHIVE_NAME}/lib/"
+          # Combined runtime + stdlib library (flat path — universal fallback),
+          # from the non-LTO release-lib profile. Fail-closed shape check: the
+          # shipped archive must carry verbatim libstd members (std-*.o) or
+          # external Rust staticlibs cannot link against it.
+          ar t "${RELEASE_LIB_DIR}/libhew.a" | grep -q '^std-' || {
+            echo "::error::${RELEASE_LIB_DIR}/libhew.a has no verbatim libstd members — built with LTO; refusing to package"
+            exit 1
+          }
+          cp "${RELEASE_LIB_DIR}/libhew.a" "${ARCHIVE_NAME}/lib/"
 
           # Target-specific lib subtree so find_hew_lib() prefers lib/<triple>/
           # on installed native targets before falling back to the flat path.
           mkdir -p "${ARCHIVE_NAME}/lib/${{ matrix.rust_target }}"
-          cp "${RELEASE_DIR}/libhew.a" "${ARCHIVE_NAME}/lib/${{ matrix.rust_target }}/"
+          cp "${RELEASE_LIB_DIR}/libhew.a" "${ARCHIVE_NAME}/lib/${{ matrix.rust_target }}/"
 
           # Standard library sources (all .hew files, including subdirectories)
           cp -r std/. "${ARCHIVE_NAME}/std/"
@@ -639,7 +650,9 @@ jobs:
         run: cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release --target ${{ matrix.rust_target }}
 
       - name: Build libhew.a (runtime + stdlib)
-        run: cargo build -p hew-lib --release --target ${{ matrix.rust_target }}
+        # Non-LTO release-lib profile: the shipped archive must keep verbatim
+        # libstd members so external Rust staticlibs (--link-lib) can dedupe.
+        run: cargo build -p hew-lib --profile release-lib --target ${{ matrix.rust_target }}
 
       - name: Install cargo-about
         run: cargo install cargo-about --locked --features cli --version 0.9.0
@@ -654,7 +667,7 @@ jobs:
           "target/${{ matrix.rust_target }}/release/adze" --version
           "target/${{ matrix.rust_target }}/release/hew-lsp" --version
           "target/${{ matrix.rust_target }}/release/hew-observe" --version
-          test -f "target/${{ matrix.rust_target }}/release/libhew.a"
+          test -f "target/${{ matrix.rust_target }}/release-lib/libhew.a"
 
           if ldd "target/${{ matrix.rust_target }}/release/hew" | grep -Eqi 'llvm|mlir'; then
             echo "::error::Linux release binary dynamically links LLVM-family libraries"
@@ -666,6 +679,7 @@ jobs:
           VERSION="${RELEASE_TAG#v}"
           ARCHIVE_NAME="hew-v${VERSION}-${{ matrix.target }}"
           RELEASE_DIR="target/${{ matrix.rust_target }}/release"
+          RELEASE_LIB_DIR="target/${{ matrix.rust_target }}/release-lib"
 
           mkdir -p "${ARCHIVE_NAME}/bin" "${ARCHIVE_NAME}/lib" \
                    "${ARCHIVE_NAME}/std" "${ARCHIVE_NAME}/completions"
@@ -676,9 +690,15 @@ jobs:
           cp "${RELEASE_DIR}/hew-observe" "${ARCHIVE_NAME}/bin/"
           chmod +x "${ARCHIVE_NAME}/bin/"*
 
-          cp "${RELEASE_DIR}/libhew.a" "${ARCHIVE_NAME}/lib/"
+          # Fail-closed shape check: the shipped archive must carry verbatim
+          # libstd members (std-*.o); a fat-LTO archive is refused.
+          ar t "${RELEASE_LIB_DIR}/libhew.a" | grep -q '^std-' || {
+            echo "::error::${RELEASE_LIB_DIR}/libhew.a has no verbatim libstd members — built with LTO; refusing to package"
+            exit 1
+          }
+          cp "${RELEASE_LIB_DIR}/libhew.a" "${ARCHIVE_NAME}/lib/"
           mkdir -p "${ARCHIVE_NAME}/lib/${{ matrix.rust_target }}"
-          cp "${RELEASE_DIR}/libhew.a" "${ARCHIVE_NAME}/lib/${{ matrix.rust_target }}/"
+          cp "${RELEASE_LIB_DIR}/libhew.a" "${ARCHIVE_NAME}/lib/${{ matrix.rust_target }}/"
 
           cp -r std/. "${ARCHIVE_NAME}/std/"
 
@@ -782,7 +802,7 @@ jobs:
 
             # ── Rust builds (release) ──────────────────────────────────────
             cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
-            cargo build -p hew-lib --release
+            cargo build -p hew-lib --profile release-lib
 
             # ── Third-party license attribution ────────────────────────────
             cargo install cargo-about --locked --features cli --version 0.9.0
@@ -801,8 +821,13 @@ jobs:
             cp target/release/hew-observe   "${ARCHIVE_NAME}/bin/"
             chmod +x "${ARCHIVE_NAME}/bin/"*
 
-            # Combined runtime + stdlib library
-            cp target/release/libhew.a "${ARCHIVE_NAME}/lib/"
+            # Combined runtime + stdlib library (non-LTO release-lib profile).
+            # Fail-closed shape check: verbatim libstd members must be present.
+            ar t target/release-lib/libhew.a | grep -q '^std-' || {
+              echo "ERROR: target/release-lib/libhew.a has no verbatim libstd members — built with LTO; refusing to package"
+              exit 1
+            }
+            cp target/release-lib/libhew.a "${ARCHIVE_NAME}/lib/"
 
             # Standard library sources (all .hew files, including subdirectories)
             cp -r std/. "${ARCHIVE_NAME}/std/"
@@ -903,7 +928,7 @@ jobs:
 
             # ── Rust builds (release) ──────────────────────────────────────
             cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
-            cargo build -p hew-lib --release
+            cargo build -p hew-lib --profile release-lib
 
             # ── Third-party license attribution ────────────────────────────
             cargo install cargo-about --locked --features cli --version 0.9.0
@@ -922,8 +947,13 @@ jobs:
             cp target/release/hew-observe   "${ARCHIVE_NAME}/bin/"
             chmod +x "${ARCHIVE_NAME}/bin/"*
 
-            # Combined runtime + stdlib library
-            cp target/release/libhew.a "${ARCHIVE_NAME}/lib/"
+            # Combined runtime + stdlib library (non-LTO release-lib profile).
+            # Fail-closed shape check: verbatim libstd members must be present.
+            ar t target/release-lib/libhew.a | grep -q '^std-' || {
+              echo "ERROR: target/release-lib/libhew.a has no verbatim libstd members — built with LTO; refusing to package"
+              exit 1
+            }
+            cp target/release-lib/libhew.a "${ARCHIVE_NAME}/lib/"
 
             # Standard library sources (all .hew files, including subdirectories)
             cp -r std/. "${ARCHIVE_NAME}/std/"

@@ -6,6 +6,9 @@ use std::process::{Command, Output, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
+use std::{fs::File, io::ErrorKind, os::fd::FromRawFd, thread};
+
 use support::{hew_binary, repo_root, require_codegen, strip_ansi};
 
 fn run_eval_with_stdin_in_dir(args: &[&str], input: &str, cwd: &Path) -> Output {
@@ -28,6 +31,80 @@ fn run_eval_with_stdin_in_dir(args: &[&str], input: &str, cwd: &Path) -> Output 
 
 fn run_eval_with_stdin(args: &[&str], input: &str) -> Output {
     run_eval_with_stdin_in_dir(args, input, repo_root())
+}
+
+#[cfg(unix)]
+fn run_eval_with_piped_stdin_and_pty_stdout(args: &[&str], input: &str) -> Output {
+    let mut master = -1;
+    let mut slave = -1;
+    // SAFETY: `openpty` initializes the two out-parameters on success. The
+    // optional name/termios/winsize pointers are null because the test only
+    // needs a default pseudo-terminal pair.
+    let rc = unsafe {
+        libc::openpty(
+            &raw mut master,
+            &raw mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    };
+    assert_eq!(rc, 0, "openpty failed: {}", std::io::Error::last_os_error());
+
+    // SAFETY: `openpty` returned owned file descriptors above. Each descriptor
+    // is wrapped exactly once so it is closed by the owning `File`/`Stdio`.
+    let master_file = unsafe { File::from_raw_fd(master) };
+    // SAFETY: see the `master_file` safety note; this wraps the slave fd once.
+    let slave_file = unsafe { File::from_raw_fd(slave) };
+
+    let reader = thread::spawn(move || {
+        let mut file = master_file;
+        let mut stdout = Vec::new();
+        let mut buf = [0; 4096];
+        loop {
+            match file.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => stdout.extend_from_slice(&buf[..n]),
+                // Linux returns EIO when the slave side of a pty closes; treat
+                // it as EOF so the test stays portable across pty semantics.
+                Err(error) if error.kind() == ErrorKind::UnexpectedEof => break,
+                Err(error) if error.raw_os_error() == Some(libc::EIO) => break,
+                Err(error) => panic!("failed to read pty stdout: {error}"),
+            }
+        }
+        stdout
+    });
+
+    let mut child = Command::new(hew_binary())
+        .args(args)
+        .current_dir(repo_root())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(slave_file))
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    {
+        let mut stdin = child.stdin.take().expect("stdin should be piped");
+        stdin.write_all(input.as_bytes()).unwrap();
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("hew eval did not exit after receiving piped REPL input");
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    let mut output = child.wait_with_output().unwrap();
+    output.stdout = reader.join().expect("pty stdout reader should not panic");
+    output
 }
 
 fn assert_no_monomorphic_overload_error(stderr: &str) {
@@ -628,6 +705,29 @@ fn statement_replay_repl_does_not_repeat_one_shot_statement() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout.matches("once\n").count(), 1, "stdout: {stdout}");
     assert!(stdout.contains("2\n"), "stdout: {stdout}");
+}
+
+#[cfg(unix)]
+#[test]
+fn repl_suppresses_startup_banner_when_only_stdout_is_a_terminal() {
+    let output = run_eval_with_piped_stdin_and_pty_stdout(&["eval"], ":quit\n");
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("Hew REPL v"),
+        "piped stdin must suppress the startup banner even when stdout is a terminal; stdout: {stdout}"
+    );
+    assert!(
+        !stdout.contains("Type :help for commands"),
+        "piped stdin must suppress the startup help even when stdout is a terminal; stdout: {stdout}"
+    );
 }
 
 #[test]

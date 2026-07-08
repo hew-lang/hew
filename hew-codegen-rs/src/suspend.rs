@@ -270,6 +270,22 @@ where
 
     fn_ctx.builder.position_at_end(abandon_cleanup_bb);
     emit_abandon_cleanup()?;
+    // #2395 — the abandon (destroy-while-parked) edge. After the per-kind
+    // bookkeeping cleanup (slot cancel/free, observer deregister, deadline
+    // cancel) and BEFORE joining the frame-free `coro.cleanup` epilogue, drop
+    // the frame-owned Hew heap values live across this suspend. This is the
+    // never-implemented "cleanup outline": the MIR elaborator populated this
+    // block's `ExitPath::Suspend` plan with the `drops_for_exit`
+    // `BindingState`-filtered owned locals (a moved-out local is `Consumed` and
+    // excluded — no double-free), and the block loop suppressed its normal-flow
+    // emission so these fire ONLY here on the case-1 edge, never on resume. The
+    // block id is threaded via `FnCtx::suspend_abandon_block` (set by
+    // `lower_terminator`) so this one helper covers all 13 collapsed emitters.
+    crate::llvm::emit_elab_drops(
+        fn_ctx,
+        fn_ctx.suspend_abandon_block.get(),
+        fn_ctx.drop_plans,
+    )?;
     fn_ctx
         .builder
         .build_unconditional_branch(coro.cleanup_block)

@@ -1665,6 +1665,23 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// runtime ABI param slots), and returns `i32 0`. `None` for every
     /// other call convention.
     pub(crate) lambda_actor_shape: Option<hew_mir::LambdaActorShape>,
+    /// The elaborated drop plans for this function, keyed by exit block via
+    /// `ExitPath`. Carried on `FnCtx` so `emit_suspend_point` (the single
+    /// suspend-ramp helper shared by all 13 collapsed-suspension emitters) can
+    /// emit the abandon-edge drop plan for the parked coroutine's destroy edge
+    /// (#2395) without threading the slice through every emitter signature. The
+    /// borrow is the same per-function `elaborated_mir.drop_plans` slice the
+    /// block loop consults; `&[]` for hand-built test pipelines.
+    pub(crate) drop_plans: &'a [(ExitPath, hew_mir::DropPlan)],
+    /// The MIR block id of the suspend terminator currently being lowered.
+    /// `lower_terminator` sets this before dispatching, so `emit_suspend_point`
+    /// (reached deep inside a per-kind emitter, without the block id in scope)
+    /// can look up THIS suspend's abandon-edge drop plan (#2395). Interior
+    /// mutability mirrors the `RefCell<runtime_decls>` pattern; it is written
+    /// then read synchronously within one `lower_terminator` call, never across
+    /// a re-entrant one, so a plain `Cell` is sufficient. Initial `0` is
+    /// overwritten before any suspend emitter runs.
+    pub(crate) suspend_abandon_block: std::cell::Cell<u32>,
 }
 
 /// Module-level symbol table populated by the declaration pass. Keyed by
@@ -26783,7 +26800,7 @@ fn emit_borrow_gated_string_clone<'ctx>(
 /// Called immediately before `lower_terminator` for every block so
 /// every exit path receives its drops regardless of CFG shape.
 /// LESSONS: cleanup-all-exits (P0), lifecycle-symmetry (P0).
-fn emit_elab_drops(
+pub(crate) fn emit_elab_drops(
     fn_ctx: &FnCtx<'_, '_>,
     block_id: u32,
     drop_plans: &[(ExitPath, hew_mir::DropPlan)],
@@ -31298,6 +31315,21 @@ fn dispatch_collapsed_suspend<'ctx>(
     }
 }
 
+/// A terminator that parks the coroutine on an `llvm.coro.suspend`: its
+/// frame-owned local drops belong on the case-1 (destroy-while-parked) abandon
+/// edge, NOT in the normal block flow (they would drop values before the park).
+/// The block loop suppresses its normal-flow `emit_elab_drops` for these; the
+/// abandon-edge emission is in `emit_suspend_point` / the `Yield` arm (#2395).
+fn terminator_is_suspend_carrier(term: &Terminator) -> bool {
+    matches!(
+        term,
+        Terminator::Suspend { .. }
+            | Terminator::SuspendingScopeDeadline { .. }
+            | Terminator::SuspendingSelect { .. }
+            | Terminator::Yield { .. }
+    )
+}
+
 fn lower_terminator<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     fn_symbols: &FnSymbolMap<'ctx>,
@@ -31306,6 +31338,13 @@ fn lower_terminator<'ctx>(
     await_deadlines: &std::collections::HashMap<u32, i64>,
     suspend_kinds: &std::collections::HashMap<u32, SuspendKind>,
 ) -> CodegenResult<()> {
+    // Record the block whose suspend terminator is being lowered so the
+    // per-kind emitters' shared `emit_suspend_point` helper can look up THIS
+    // suspend's abandon-edge drop plan (#2395) without the block id threaded
+    // through all 13 emitter signatures. Harmless for non-suspend terminators
+    // (only suspend carriers reach `emit_suspend_point`); written then read
+    // synchronously within this call.
+    fn_ctx.suspend_abandon_block.set(block_id);
     match term {
         Terminator::Return => {
             // Implicit actor-drain floor: emit `hew_shutdown_initiate(0)` then
@@ -32298,32 +32337,49 @@ fn lower_terminator<'ctx>(
                 .build_store(out_ptr, yielded)
                 .llvm_ctx("gen yield value publish")?;
             // Suspend (non-final). The resume edge is the MIR `next` block; the
-            // destroy edge routes to the shared single-teardown cleanup epilogue.
+            // destroy edge routes through an interposed abandon block (#2395)
+            // that drops the frame-owned locals live across this yield BEFORE
+            // joining the single-teardown `coro.cleanup` epilogue.
             let resume_bb = *fn_ctx
                 .blocks
                 .get(next)
                 .ok_or_else(|| CodegenError::FailClosed(format!("Yield next bb{next} missing")))?;
+            let parent = fn_ctx
+                .builder
+                .get_insert_block()
+                .and_then(|bb| bb.get_parent())
+                .ok_or_else(|| CodegenError::Llvm("yield block has no parent function".into()))?;
+            // #2395 — interpose the yield abandon (destroy-while-parked-at-yield)
+            // block. A generator destroyed before exhaustion (a `for await`
+            // consumer that stops early, a supervisor tearing the producer down)
+            // parks HERE; its frame-owned locals must be dropped on this case-1
+            // edge. The just-yielded value is a MOVE into `*out` so its binding
+            // is `Consumed` and excluded from this plan — `hew_gen_coro_destroy`'s
+            // `out_drop_thunk` is its sole owner (no double-free). These fire ONLY
+            // on the abandon edge (the block loop suppressed the normal-flow
+            // emission for `Yield`); the resume edge continues the still-owned body.
+            let yield_abandon_bb = fn_ctx.ctx.append_basic_block(parent, "gen_yield_abandon");
             let cc = crate::coro::CoroContext {
                 ctx: fn_ctx.ctx,
                 llvm_mod: fn_ctx.llvm_mod,
                 builder: &fn_ctx.builder,
-                function: fn_ctx
-                    .builder
-                    .get_insert_block()
-                    .and_then(|bb| bb.get_parent())
-                    .ok_or_else(|| {
-                        CodegenError::Llvm("yield block has no parent function".into())
-                    })?,
+                function: parent,
                 handle: coro.handle,
                 id_token: coro.id_token,
             };
             cc.emit_suspend(
                 resume_bb,
-                coro.cleanup_block,
+                yield_abandon_bb,
                 coro.suspend_return_block,
                 false,
                 "gen_yield",
             )?;
+            fn_ctx.builder.position_at_end(yield_abandon_bb);
+            emit_elab_drops(fn_ctx, block_id, fn_ctx.drop_plans)?;
+            fn_ctx
+                .builder
+                .build_unconditional_branch(coro.cleanup_block)
+                .llvm_ctx("gen yield abandon -> shared cleanup br")?;
         }
         Terminator::MakeGenerator {
             dest,
@@ -38462,6 +38518,13 @@ fn lower_function<'ctx>(
         })
         .unwrap_or_default();
 
+    // Extract drop_plans from the matched elaborated function, or an empty
+    // ('static) slice when no elaborated function is available (hand-built test
+    // pipelines that inline Instr::Drop instead of using drop_plans). Threaded
+    // onto `FnCtx` so the block loop AND `emit_suspend_point` (the shared
+    // suspend-ramp helper) read the same per-function plan set.
+    let drop_plans: &[(ExitPath, hew_mir::DropPlan)] =
+        elab.map(|e| e.drop_plans.as_slice()).unwrap_or(&[]);
     let fn_ctx = FnCtx {
         ctx,
         llvm_mod,
@@ -38500,6 +38563,8 @@ fn lower_function<'ctx>(
             FunctionCallConv::LambdaActorBody(shape) => Some(shape),
             _ => None,
         },
+        drop_plans,
+        suspend_abandon_block: std::cell::Cell::new(0),
     };
 
     // Fail-closed boundary: reject composite returns whose heap-owning payload
@@ -38563,13 +38628,6 @@ fn lower_function<'ctx>(
         )));
     }
 
-    // Extract drop_plans from the matched elaborated function, or use an
-    // empty slice when no elaborated function is available (hand-built test
-    // pipelines that inline Instr::Drop instead of using drop_plans).
-    let empty_plans: Vec<(ExitPath, hew_mir::DropPlan)> = Vec::new();
-    let drop_plans: &[(ExitPath, hew_mir::DropPlan)] = elab
-        .map(|e| e.drop_plans.as_slice())
-        .unwrap_or(empty_plans.as_slice());
     let cooperate_sites: &[CooperateSite] =
         checked.map(|c| c.cooperate_sites.as_slice()).unwrap_or(&[]);
     if let Some(site) = cooperate_sites
@@ -38719,7 +38777,18 @@ fn lower_function<'ctx>(
         // Emit LIFO drops from the elaborated drop plan BEFORE the
         // terminator so the alloca null-stores precede the ret/br.
         // LESSONS: cleanup-all-exits (P0), lifecycle-symmetry (P0).
-        emit_elab_drops(&fn_ctx, block.id, drop_plans)?;
+        //
+        // EXCEPT for a suspend carrier (`Suspend`/`SuspendingScopeDeadline`/
+        // `SuspendingSelect`/`Yield`): its `ExitPath::Suspend`/`Yield` plan holds
+        // the frame-owned locals live across the park, which must fire ONLY on
+        // the case-1 (destroy-while-parked) abandon edge — NOT here in the
+        // normal flow, where they would drop the values BEFORE the suspend and
+        // leave the resumed body reading freed memory (#2395). The abandon-edge
+        // emission lives in `emit_suspend_point` (all 13 collapsed emitters) and
+        // in the `Terminator::Yield` arm's interposed abandon block.
+        if !terminator_is_suspend_carrier(&block.terminator) {
+            emit_elab_drops(&fn_ctx, block.id, drop_plans)?;
+        }
         // Stage 2 (gdb `-g`): a call / branch / return lowers to a TERMINATOR,
         // not an `Instr`, so a call-statement (`println(r)`) would otherwise
         // inherit the previous instruction's line. The terminator span is keyed
@@ -49073,6 +49142,10 @@ mod tests {
             coro: None,
             // Test harness never exercises the lambda-actor body path.
             lambda_actor_shape: None,
+            // Composite-helper unit tests inline `Instr::Drop`; no elaborated
+            // drop plans and no suspend carrier to key an abandon plan off.
+            drop_plans: &[],
+            suspend_abandon_block: std::cell::Cell::new(0),
         }
     }
 

@@ -280,11 +280,21 @@ pub unsafe extern "C" fn hew_cont_poll(handle: *mut c_void, out_value: *mut c_vo
 
 /// Destroy a completed (or abandoned) continuation — `llvm.coro.destroy(handle)`.
 ///
-/// Runs the single `cleanup` outline: drops any frame-owned Hew heap values
-/// still live, then frees the frame via `coro.free` → [`hew_cont_frame_free`].
+/// Resumes the coroutine at its `coro.suspend` cleanup edge (case 1), running
+/// the coroutine's OWN cleanup funclet before the frame is freed. Codegen emits
+/// that funclet, so the drops live in the compiled coroutine, not in this
+/// runtime shim. For a continuation abandoned WHILE SUSPENDED the funclet runs,
+/// in order: (a) the suspend kind's per-park bookkeeping (slot cancel/free,
+/// observer deregister, deadline cancel), then (b) the drop of every frame-owned
+/// Hew heap value live across the park — the suspend exit's elaborated drop plan
+/// (#2395, the previously-unimplemented "cleanup outline") — and finally the
+/// shared `coro.cleanup` frees the frame via `coro.free` →
+/// [`hew_cont_frame_free`]. A continuation destroyed AFTER completing already
+/// ran its return-path drops; its value-free final suspend frees the frame only.
 /// This is the SOLE teardown owner; it must be called exactly once per
 /// continuation, by the handle's owner, after observing [`ResumePoll::Ready`]
-/// (or to abandon a still-suspended continuation, e.g. scope cancellation).
+/// (or to abandon a still-suspended continuation, e.g. scope cancellation /
+/// supervisor stop).
 ///
 /// # Safety
 ///
@@ -313,9 +323,12 @@ pub unsafe extern "C" fn hew_cont_destroy(handle: *mut c_void) {
 /// This is the SOLE teardown owner of a generator value, called exactly once at
 /// the generator's scope-exit drop (or early drop while suspended). It:
 ///   1. reads the coro handle at offset 0 and [`hew_cont_destroy`]s it — the
-///      coro `cleanup` outline drops every value the body still owns in its
-///      frame (a value suspended mid-iteration, a cross-yield-live owned local),
+///      coro `cleanup` funclet (codegen's yield abandon edge, #2395) drops every
+///      value the body still owns in its frame (a cross-yield-live owned local),
 ///      then frees the coro frame. Exactly the single-owner destroy discipline.
+///      The just-yielded value in `out` is NOT among them (it is a MOVE into
+///      `out`, `Consumed` at the yield, so excluded from that plan); it is
+///      dropped by step 3 below, keeping the companion its sole owner.
 ///   2. reads the heap env at offset `ptr_width` and frees it via
 ///      [`hew_cont_frame_free`] (null for a capture-free generator → no-op). The
 ///      env holds only plain-copyable captures (`gen_env_capture_admissible`

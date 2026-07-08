@@ -125,6 +125,12 @@ fn string_element_vec_accessors_are_allowlisted_but_guarded() {
 /// `hew_string_drop` after the body uses `word`.
 #[test]
 fn vec_string_for_in_emits_retained_getter_with_iteration_drop() {
+    // `println(count)` (a direct scalar print) rather than an f-string: the
+    // fixture's subject is the for-in retained-getter drop, and an
+    // interpolated `f"count={count}"` tail would add its OWN
+    // `hew_string_drop`s (the fresh-`string`-temp release lane, W5.011 P3 /
+    // Lane E) into `string_drops` below, conflating two unrelated things
+    // this test is not about.
     let pl = pipeline_with_tc(
         r#"fn main() {
             let words: Vec<string> = Vec::new();
@@ -135,7 +141,7 @@ fn vec_string_for_in_emits_retained_getter_with_iteration_drop() {
                 println(word);
                 count = count + 1;
             }
-            println(f"count={count}");
+            println(count);
         }"#,
     );
 

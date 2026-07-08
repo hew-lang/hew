@@ -89,26 +89,32 @@ fn main() -> () [conv=default]
   bb8:
     _18 = call string_concat(_16, _17) -> bb9
   bb9:
+    drop _17 ty=string fn=release(hew_string_drop)
     _19 = string_lit " has1="
     _20 = call string_concat(_18, _19) -> bb10
   bb10:
     stmt: use BindingId(2) has1 site=SiteId(26) ty=bool intent=Read
+    drop _18 ty=string fn=release(hew_string_drop)
     _21 = call to_string_bool(_12) -> bb11
   bb11:
     _22 = call string_concat(_20, _21) -> bb12
   bb12:
+    drop _21 ty=string fn=release(hew_string_drop)
     _23 = string_lit " removed="
     _24 = call string_concat(_22, _23) -> bb13
   bb13:
     stmt: use BindingId(3) removed site=SiteId(30) ty=bool intent=Read
+    drop _22 ty=string fn=release(hew_string_drop)
     _25 = call to_string_bool(_15) -> bb14
   bb14:
     _26 = call string_concat(_24, _25) -> bb15
   bb15:
+    drop _25 ty=string fn=release(hew_string_drop)
     call println_str(_26) -> bb16
   bb16:
     stmt: eval site=SiteId(19) ty=()
     stmt: use BindingId(0) s site=SiteId(45) ty=HashSet<i64> intent=Read
+    drop _26 ty=string fn=release(hew_string_drop)
     _27 = call hew_hashset_is_empty_layout(_1) [builtin=HashSetIsEmptyLayout] -> bb17
   bb17:
     stmt: bind BindingId(4) empty site=SiteId(44) ty=bool
@@ -145,17 +151,21 @@ fn main() -> () [conv=default]
   bb24:
     _41 = call string_concat(_38, _40) -> bb25
   bb25:
+    drop _40 ty=string fn=release(hew_string_drop)
     _42 = string_lit " hasc="
     _43 = call string_concat(_41, _42) -> bb26
   bb26:
     stmt: use BindingId(6) hasc site=SiteId(68) ty=bool intent=Read
+    drop _41 ty=string fn=release(hew_string_drop)
     _44 = call to_string_bool(_37) -> bb27
   bb27:
     _45 = call string_concat(_43, _44) -> bb28
   bb28:
+    drop _44 ty=string fn=release(hew_string_drop)
     call println_str(_45) -> bb29
   bb29:
     stmt: eval site=SiteId(60) ty=()
+    drop _45 ty=string fn=release(hew_string_drop)
     return
 
 fn i8::fmt(i8) -> string [conv=default]

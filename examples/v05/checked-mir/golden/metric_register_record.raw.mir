@@ -192,6 +192,7 @@ fn metrics$counter(string) -> Counter [conv=default]
     _10 = string_lit "`"
     _11 = call string_concat(_9, _10) -> bb6
   bb6:
+    drop _9 ty=string fn=release(hew_string_drop)
     call panic(_11) -> bb7
   bb7:
     stmt: eval site=SiteId(80) ty=!
@@ -295,6 +296,7 @@ fn metrics$gauge(string) -> Gauge [conv=default]
     _10 = string_lit "`"
     _11 = call string_concat(_9, _10) -> bb6
   bb6:
+    drop _9 ty=string fn=release(hew_string_drop)
     call panic(_11) -> bb7
   bb7:
     stmt: eval site=SiteId(119) ty=!
@@ -398,6 +400,7 @@ fn metrics$histogram(string) -> Histogram [conv=default]
     _10 = string_lit "`"
     _11 = call string_concat(_9, _10) -> bb6
   bb6:
+    drop _9 ty=string fn=release(hew_string_drop)
     call panic(_11) -> bb7
   bb7:
     stmt: eval site=SiteId(158) ty=!

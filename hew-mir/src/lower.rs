@@ -18847,7 +18847,10 @@ impl Builder {
     /// and the layout witness cannot drift on which composites carry live
     /// ownership through the queue (`dedup-semantic-boundary`). The
     /// record-vs-enum split re-reads the same registries that authority
-    /// consulted (a name resolves to exactly one of them).
+    /// consulted (a name resolves to exactly one of them); a generic
+    /// instantiation probes the short-name-mangled key (the registration
+    /// form), with the short-name comparison covering module-qualified
+    /// monomorphic names.
     fn owned_composite_release_kind(
         &self,
         ty: &ResolvedTy,
@@ -18861,7 +18864,7 @@ impl Builder {
         let key = if args.is_empty() {
             name.clone()
         } else {
-            mangle_layout_key(name, args)
+            mangle_layout_key(short_name(name), args)
         };
         let is_enum = self
             .enum_layouts

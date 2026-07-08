@@ -67,8 +67,11 @@ fn main() {\n\
 \x20   let m: HashMap<string, Name> = HashMap::new();\n\
 \x20   m.insert(\"k\", Name { label: \"owned-ok\" });\n\
 \x20   let got: Name = m[\"k\"];\n\
-\x20   let _ = m.remove(\"k\");\n\
-\x20   print(got.label);\n\
+\x20   let removed = m.remove(\"k\");\n\
+\x20   match removed {\n\
+\x20   \x20   Some(_) => print(got.label),\n\
+\x20   \x20   None => print(\"removed=none\"),\n\
+\x20   }\n\
 }\n";
 
 /// Expected exact output for `INDEX_GET_SINGLE_ROUNDTRIP_SOURCE`. Any aliasing
@@ -92,8 +95,11 @@ fn index_roundtrip_loop_source(frames: usize) -> String {
          \x20   let m: HashMap<string, Name> = HashMap::new();\n\
          \x20   m.insert(\"k\", Name {{ label: \"owned-ok\".to_upper() }});\n\
          \x20   let got: Name = m[\"k\"];\n\
-         \x20   let _ = m.remove(\"k\");\n\
-         \x20   got.label.len()\n\
+         \x20   let removed = m.remove(\"k\");\n\
+         \x20   match removed {{\n\
+         \x20   \x20   Some(_) => got.label.len(),\n\
+         \x20   \x20   None => 0,\n\
+         \x20   }}\n\
          }}\n\
          \n\
          fn run_loop(frames: i64) -> i64 {{\n\

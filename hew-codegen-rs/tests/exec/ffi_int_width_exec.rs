@@ -186,8 +186,9 @@ fn lines_has_no_phantom_empty_and_keeps_last() {
 }
 
 /// Boundary case for the sentinel itself: a not-found `find` must round-trip the
-/// `i32` `-1` as the signed `i64` `-1`, never the zero-extended `4294967295`.
-/// `find` for a present needle stays a correct non-negative index.
+/// `i32` `-1` sentinel as `None` (not the zero-extended `4294967295` reinterpreted
+/// as a bogus non-negative index). `find` for a present needle stays a correct
+/// `Some` non-negative index.
 #[test]
 fn find_not_found_round_trips_negative_one() {
     let repo = repo_root();
@@ -201,24 +202,33 @@ fn find_not_found_round_trips_negative_one() {
             let s = "hello";
             let found = s.find("ell");
             let missing = s.find("zzz");
-            print(f"found={found};missing={missing};");
-            if missing < 0 {
-                print("guard_fires");
-            } else {
-                print("guard_broken");
+            match found {
+                Some(i) => print(f"found={i};"),
+                None => print("found=None;"),
+            }
+            match missing {
+                Some(i) => {
+                    print(f"missing={i};");
+                    print("guard_broken");
+                }
+                None => {
+                    print("missing=None;");
+                    print("guard_fires");
+                }
             }
         }
         "#,
     );
 
     assert_eq!(
-        stdout, "found=1;missing=-1;guard_fires",
-        "find sentinel did not round-trip as signed -1: {stdout:?}"
+        stdout, "found=1;missing=None;guard_fires",
+        "find sentinel did not round-trip as `None`: {stdout:?}"
     );
 }
 
-/// New UTF-8 codepoint helpers must also preserve the signed -1 sentinel across
-/// the i32 C-ABI return → Hew-facing i64 boundary.
+/// New UTF-8 codepoint helpers must also preserve the OOB signal across the
+/// i32 C-ABI return → Hew-facing `Option<i64>` boundary: the runtime's `-1`
+/// sentinel lifts to `None`, never a bogus zero-extended non-negative index.
 #[test]
 fn unicode_codepoint_at_oob_round_trips_negative_one() {
     let repo = repo_root();
@@ -232,18 +242,22 @@ fn unicode_codepoint_at_oob_round_trips_negative_one() {
             let s = "café";
             let n = unicode.rune_count(s);
             let oob = unicode.codepoint_at(s, n);
-            print(f"oob={oob};");
-            if oob < 0 {
-                print("guard_fires");
-            } else {
-                print("guard_broken");
+            match oob {
+                Some(cp) => {
+                    print(f"oob={cp};");
+                    print("guard_broken");
+                }
+                None => {
+                    print("oob=None;");
+                    print("guard_fires");
+                }
             }
         }
         "#,
     );
 
     assert_eq!(
-        stdout, "oob=-1;guard_fires",
-        "unicode.codepoint_at OOB sentinel did not round-trip as signed -1: {stdout:?}",
+        stdout, "oob=None;guard_fires",
+        "unicode.codepoint_at OOB sentinel did not round-trip as `None`: {stdout:?}",
     );
 }

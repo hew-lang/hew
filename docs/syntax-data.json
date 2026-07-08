@@ -297,7 +297,8 @@
       "bytes",
       "void",
       "never",
-      "duration"
+      "duration",
+      "instant"
     ],
     "collections": [
       "HashMap",

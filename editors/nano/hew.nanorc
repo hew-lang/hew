@@ -65,7 +65,7 @@ color green "\<(try|catch|race|foreign|cooperate)\>"
 
 # Types — primitives
 color brightblue "\<(i8|i16|i32|i64|u8|u16|u32|u64|isize|usize|f32|f64)\>"
-color brightblue "\<(bool|char|string|bytes|void|never|duration)\>"
+color brightblue "\<(bool|char|string|bytes|void|never|duration|instant)\>"
 
 # Types — generic / collection / concurrency
 color brightblue "\<(HashMap|HashSet|Vec|Option|Result|Ok|Err|Some|Box|Arc|Rc|Weak|Range)\>"

@@ -82,8 +82,8 @@
 (defconst hew-builtin-types
   '("i8" "i16" "i32" "i64" "u8" "u16" "u32" "u64"
     "f32" "f64" "isize" "usize"
-    "bool" "char" "string" "bytes" "void"
-    "Result" "Option" "Vec" "HashMap" "HashSet"
+    "bool" "char" "string" "bytes" "void" "never" "duration" "instant"
+    "Result" "Option" "Ok" "Err" "Some" "Vec" "HashMap" "HashSet" "Range"
     "Box" "Arc" "Rc" "Weak"
     "LocalPid" "RemotePid" "LambdaPid" "Task" "Scope"
     "Generator" "AsyncGenerator" "Stream" "Sink"
@@ -99,8 +99,9 @@
 
 (defconst hew-constants
   '("true" "false" "None"
-    "one_for_one" "one_for_all" "rest_for_one"
+    "one_for_one" "one_for_all" "rest_for_one" "simple_one_for_one" "pool"
     "permanent" "transient" "temporary"
+    "brutal_kill"
     "block" "drop_new" "drop_old" "fail" "coalesce" "fallback")
   "Hew built-in constants.")
 

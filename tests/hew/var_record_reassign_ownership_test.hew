@@ -139,3 +139,155 @@ fn test_literal_rhs_embedding_own_projection_is_exact() {
     testing.assert_eq(s.v.len(), 1);
     testing.assert_eq(s.v[0], 7);
 }
+
+// ── Actor state channel ─────────────────────────────────────────────────
+//
+// The actor analogue of the same reassignment shape is defended at codegen
+// level, not by the MIR release gate: a record-typed state re-store runs the
+// synthesised collect-neutralise-drop helper
+// (`__hew_record_overwrite_release_<R>`) — old heap leaves that reappear
+// anywhere in the incoming value are nulled before the drop spine, so
+// aliased leaves flow through and replaced leaves free exactly once; a bare
+// collection field rides a pointer-inequality guard. These pins hold that
+// substrate in place: a regression to a blind drop (or a dropped guard)
+// corrupts the accumulator and fails the exact-element asserts below.
+
+type W {
+    a: Vec<i64>;
+    b: Vec<i64>;
+}
+
+fn swap_w(w: W) -> W {
+    W { a: w.b, b: w.a }
+}
+
+fn grow_vec(v: Vec<i64>, x: i64) -> Vec<i64> {
+    v.push(x);
+    v
+}
+
+actor RecAcc {
+    var state: S = S { n: 0, v: Vec::new() };
+
+    receive fn bump() {
+        state = grow(state);
+    }
+
+    receive fn reset() {
+        state = mk();
+    }
+
+    receive fn report() -> i64 {
+        state.n * 1000 + state.v.len()
+    }
+
+    receive fn at(i: i64) -> i64 {
+        state.v[i]
+    }
+}
+
+actor VecAcc {
+    var v: Vec<i64> = Vec::new();
+
+    receive fn bump(x: i64) {
+        v = grow_vec(v, x);
+    }
+
+    receive fn checksum() -> i64 {
+        var sum: i64 = 0;
+        for x in v {
+            sum = sum + x;
+        }
+        sum * 100 + v.len()
+    }
+}
+
+actor Swapper {
+    var w: W = W { a: Vec::new(), b: Vec::new() };
+
+    receive fn seed() {
+        w.a.push(1);
+        w.b.push(2);
+    }
+
+    receive fn flip() {
+        w = swap_w(w);
+    }
+
+    receive fn probe() -> i64 {
+        w.a[0] * 10 + w.b[0]
+    }
+}
+
+// Record state reassigned through the alias-carrying callee, 12 messages:
+// every element must survive every neutralise round-trip exactly.
+#[test]
+fn test_actor_record_state_reassign_accumulates_exact() {
+    let a = spawn RecAcc();
+    for i in 0..12 {
+        a.bump();
+    }
+    match await a.report() {
+        Ok(x) => testing.assert_eq(x, 12012),
+        Err(_) => testing.assert_true(false),
+    }
+    match await a.at(0) {
+        Ok(x) => testing.assert_eq(x, 0),
+        Err(_) => testing.assert_true(false),
+    }
+    match await a.at(11) {
+        Ok(x) => testing.assert_eq(x, 11),
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+// The fresh-callee control: a re-store from a fresh value must RELEASE the
+// old state (the runtime neutralise finds no aliases) and the fresh value
+// must grow independently afterwards.
+#[test]
+fn test_actor_record_state_fresh_reset_is_exact() {
+    let a = spawn RecAcc();
+    for i in 0..5 {
+        a.bump();
+    }
+    a.reset();
+    a.bump();
+    match await a.report() {
+        Ok(x) => testing.assert_eq(x, 1001),
+        Err(_) => testing.assert_true(false),
+    }
+    match await a.at(0) {
+        Ok(x) => testing.assert_eq(x, 0),
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+// Bare Vec state field reassigned through a callee handing the borrowed
+// handle back: the pointer-inequality guard must not free the flowing handle.
+#[test]
+fn test_actor_vec_state_reassign_accumulates_exact() {
+    let b = spawn VecAcc();
+    for i in 0..12 {
+        b.bump(i);
+    }
+    match await b.checksum() {
+        Ok(x) => testing.assert_eq(x, 6612),
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+// In-record cross-field swap through a callee: the neutralise step compares
+// old leaves against ALL collected new slots (not same-position), so a swap
+// must flow both Vecs intact through repeated re-stores.
+#[test]
+fn test_actor_record_state_field_swap_is_exact() {
+    let s = spawn Swapper();
+    s.seed();
+    s.flip();
+    s.flip();
+    s.flip();
+    match await s.probe() {
+        Ok(x) => testing.assert_eq(x, 21),
+        Err(_) => testing.assert_true(false),
+    }
+}

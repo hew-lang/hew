@@ -93,7 +93,18 @@ pub enum Resolution {
 }
 
 impl Resolution {
-    /// Return the definition URI + span, if the variant carries one.
+    /// Return the definition URI + span, if the variant carries a location
+    /// this resolver can vouch for as the actual definition site.
+    ///
+    /// `ImportedItem` deliberately returns `None` here even though it carries
+    /// an `import_span`: that span points at the *import statement* in the
+    /// importing file, not the imported item's real definition, which may
+    /// live in a different file this resolver never sees (it only has the
+    /// current file's source/parse result). Returning it as a `def_location`
+    /// would make callers treat the import site as the definition and skip
+    /// their own cross-file resolution fallback. Callers that want the
+    /// import span itself (e.g. to chase the import across files) should
+    /// match on `Self::ImportedItem` directly instead of using this method.
     #[must_use]
     pub fn def_location(&self) -> Option<(&str, OffsetSpan)> {
         match self {
@@ -104,12 +115,7 @@ impl Resolution {
             | Self::Field { uri, def_span, .. }
             | Self::TypeDef { uri, def_span, .. }
             | Self::Variant { uri, def_span, .. } => Some((uri.as_str(), *def_span)),
-            Self::ImportedItem {
-                importer_uri,
-                import_span,
-                ..
-            } => Some((importer_uri.as_str(), *import_span)),
-            Self::ModuleQualified { .. } | Self::Unknown { .. } => None,
+            Self::ImportedItem { .. } | Self::ModuleQualified { .. } | Self::Unknown { .. } => None,
         }
     }
 }

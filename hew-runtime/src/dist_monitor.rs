@@ -248,10 +248,15 @@ impl DistMonitorState {
 
     /// Arm the terminal slot for a single watcher registration with `reason`.
     ///
+    /// The `remote_node_id` must match the node this monitor registration was
+    /// originally opened against. This binds `CTRL_MONITOR_DOWN` delivery to the
+    /// handshake-authenticated peer that sent the frame instead of trusting the
+    /// ref id alone.
+    ///
     /// Only transitions `Pending → Delivered`; a no-op if the slot is already
     /// `Delivered` or `Consumed` (exactly-once). Wakes any blocked `recv_down`.
     /// Returns true if this call armed the slot.
-    pub(crate) fn deliver_to_ref(&self, ref_id: u64, reason: i32) -> bool {
+    pub(crate) fn deliver_to_ref(&self, ref_id: u64, remote_node_id: u16, reason: i32) -> bool {
         let armed = {
             let mut watchers = self.watchers.lock().unwrap_or_else(PoisonError::into_inner);
             match watchers.get_mut(&ref_id) {
@@ -260,6 +265,7 @@ impl DistMonitorState {
                 // must never arm a link entry's slot (it has no recv consumer).
                 Some(entry)
                     if entry.slot == TerminalSlot::Pending
+                        && entry.remote_node_id == remote_node_id
                         && matches!(entry.action, WatcherAction::Observe) =>
                 {
                     entry.slot = TerminalSlot::Delivered(reason);
@@ -592,10 +598,10 @@ mod tests {
         assert_ne!(ref_id, 0);
 
         // Arm with the clean-exit reason (HewActorState::Stopped == 6).
-        assert!(state.deliver_to_ref(ref_id, 6), "first arm must succeed");
+        assert!(state.deliver_to_ref(ref_id, 7, 6), "first arm must succeed");
         // A second arm is a no-op (exactly-once arming).
         assert!(
-            !state.deliver_to_ref(ref_id, 5),
+            !state.deliver_to_ref(ref_id, 7, 5),
             "second arm must be a no-op"
         );
 
@@ -609,6 +615,28 @@ mod tests {
     }
 
     #[test]
+    fn monitor_down_from_wrong_authenticated_peer_is_rejected() {
+        let state = DistMonitorState::new();
+        let ref_id = state.register_watcher(7, 99);
+
+        assert!(
+            !state.deliver_to_ref(ref_id, 9, 5),
+            "DOWN from a different authenticated peer must not arm the monitor"
+        );
+        assert_eq!(
+            state.recv_down(ref_id, Duration::from_millis(20)),
+            MONITOR_REASON_TIMEOUT,
+            "forged DOWN must leave the slot pending"
+        );
+
+        assert!(
+            state.deliver_to_ref(ref_id, 7, 6),
+            "the owning authenticated peer can still deliver"
+        );
+        assert_eq!(state.recv_down(ref_id, Duration::from_millis(50)), 6);
+    }
+
+    #[test]
     fn deliver_to_node_arms_only_pending_slots() {
         let state = DistMonitorState::new();
         let a = state.register_watcher(7, 1);
@@ -616,7 +644,7 @@ mod tests {
         let other = state.register_watcher(9, 3);
 
         // A clean-exit DOWN already armed `a` before the connection dropped.
-        assert!(state.deliver_to_ref(a, 6));
+        assert!(state.deliver_to_ref(a, 7, 6));
 
         // Connection drop to node 7 fans out MonitorLost: it must arm only `b`
         // (still pending), not `a` (already delivered) and not `other` (node 9).
@@ -642,7 +670,7 @@ mod tests {
         // drop fan-out must NOT re-arm the slot (no second DOWN).
         let state = DistMonitorState::new();
         let ref_id = state.register_watcher(7, 1);
-        assert!(state.deliver_to_ref(ref_id, 6));
+        assert!(state.deliver_to_ref(ref_id, 7, 6));
         assert_eq!(state.recv_down(ref_id, Duration::from_millis(50)), 6);
 
         // Node drops afterwards: slot is Consumed, so no re-arm.
@@ -672,7 +700,7 @@ mod tests {
             MONITOR_REASON_TIMEOUT
         );
         // Now arm and recv: the still-Pending slot delivers.
-        assert!(state.deliver_to_ref(ref_id, 5));
+        assert!(state.deliver_to_ref(ref_id, 7, 5));
         assert_eq!(state.recv_down(ref_id, Duration::from_millis(50)), 5);
     }
 
@@ -821,12 +849,12 @@ mod tests {
         );
         // A link DOWN must not arm the monitor's recv slot.
         assert!(
-            !state.deliver_to_ref(link_ref, 5),
+            !state.deliver_to_ref(link_ref, 7, 5),
             "monitor delivery must not arm a link entry"
         );
 
         // Each fires only through its own path.
-        assert!(state.deliver_to_ref(monitor_ref, 6), "monitor arms");
+        assert!(state.deliver_to_ref(monitor_ref, 7, 6), "monitor arms");
         assert!(
             state.deliver_link_down_to_ref(link_ref, 5).is_some(),
             "link fires"
@@ -888,7 +916,7 @@ mod tests {
 
         // Give the recv thread time to park on the condvar, then arm.
         std::thread::sleep(Duration::from_millis(50));
-        assert!(state.deliver_to_ref(ref_id, 6));
+        assert!(state.deliver_to_ref(ref_id, 7, 6));
 
         let reason = handle.join().expect("recv thread panicked");
         assert_eq!(reason, 6, "blocked recv must wake with the armed reason");

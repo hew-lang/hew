@@ -1722,6 +1722,7 @@ fn render_drop_fn_spec(spec: &DropFnSpec) -> String {
     match spec {
         DropFnSpec::Runtime(d) => format!("rt({d:?})"),
         DropFnSpec::Release(sym) => format!("release({sym})"),
+        DropFnSpec::InPlace(kind) => format!("in_place({kind:?})"),
         DropFnSpec::UserClose(sym) => format!("user_close({sym})"),
     }
 }

@@ -5535,7 +5535,7 @@ pub enum ExitPath {
 
 /// Typed drop-ritual selector carried by [`Instr::Drop`] and [`ElabDrop`].
 ///
-/// The drop world has exactly three identity domains, and each gets its
+/// The drop world has exactly four identity domains, and each gets its
 /// own arm so no consumer ever re-parses a string to recover which one
 /// it is holding (`checker-authority` / `type-info-survival`):
 ///
@@ -5552,6 +5552,16 @@ pub enum ExitPath {
 ///   `drop_kind_for`'s cow tables) and congruence-checked against the
 ///   value's type in codegen before any call is emitted — the string is
 ///   a C-ABI name consumed at the declare edge, never a dispatch key.
+/// - [`DropFnSpec::InPlace`] — a whole-value in-place composite release
+///   for a registered heap-owning record/enum, routed to the synthesised
+///   `__hew_record_drop_inplace_<R>` / `__hew_enum_drop_inplace_<E>`
+///   thunk. No symbol travels in MIR: codegen derives the helper from
+///   the drop's carried type (the same resolution the
+///   `DropKind::RecordInPlace` / `DropKind::EnumInPlace` plan arms use),
+///   so type↔helper congruence holds by construction. Emitted only by
+///   the yield/recv release seam (`generator_yield_drop_symbol`'s
+///   `WiredInPlace` verdict) for the per-yield producer/consumer copies
+///   of a composite stream element.
 /// - [`DropFnSpec::UserClose`] — a user `#[resource]` `close` method,
 ///   addressed by its generated `<Type>::<method>` symbol. Open set by
 ///   nature (the generated-object symbol IS the linker-edge name);
@@ -5566,6 +5576,9 @@ pub enum DropFnSpec {
     /// Cow-heap / fresh-value release C symbol (closed MIR-side
     /// selection; codegen validates type↔symbol congruence).
     Release(&'static str),
+    /// In-place composite release through the synthesised record/enum
+    /// drop thunk (helper derived from the drop's `ty` at codegen).
+    InPlace(crate::ownership::InPlaceReleaseKind),
     /// User `#[resource]` close method (`<Type>::<method>` generated
     /// symbol — the open-set linker-edge arm).
     UserClose(String),

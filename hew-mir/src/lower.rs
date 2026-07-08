@@ -9396,11 +9396,12 @@ struct Builder {
     /// consuming body finishes lowering.
     /// Per-iteration generator-yielded heap value bindings active during a
     /// consuming body's lowering. Each entry is `(active_scopes_len, Place,
-    /// ResolvedTy, drop_symbol, start_block_id, start_instr_len)`:
+    /// ResolvedTy, drop_fn, start_block_id, start_instr_len)`:
     /// - `active_scopes_len`: depth marker used by break/continue at the
     ///   matching loop scope to know which entries lie inside the breaking
     ///   loop;
-    /// - `Place`/`ResolvedTy`/`drop_symbol`: what to drop and how;
+    /// - `Place`/`ResolvedTy`/`drop_fn`: what to drop and how (a cow-heap
+    ///   `Release` symbol, or the composite `InPlace` thunk route);
     /// - `start_block_id`/`start_instr_len`: the binding's site, used by
     ///   `generator_yield_binding_drop_safe` to scan the body for an
     ///   ownership-transferring escape (a `Move` of the binding's slot into
@@ -9414,7 +9415,14 @@ struct Builder {
     ///   loop. (`scope_generator_bindings` for the generator HANDLE has no
     ///   such case because handles do not get re-bound to another local
     ///   mid-body — only their content is consumed via `next`.)
-    active_generator_yield_values: Vec<(usize, Place, ResolvedTy, &'static str, u32, usize)>,
+    active_generator_yield_values: Vec<(
+        usize,
+        Place,
+        ResolvedTy,
+        crate::model::DropFnSpec,
+        u32,
+        usize,
+    )>,
     /// Map from each MIR-bound HIR `BindingId` to the HIR `ScopeId` it was
     /// declared in. Populated at every `MirStatement::Bind` push site (let
     /// statements, match-arm payload bindings, function parameters, for-range
@@ -11239,22 +11247,22 @@ impl Builder {
     /// reachable second free a no-op (`raii-null-after-move`; the runtime
     /// also null-guards).
     fn emit_generator_yield_value_drops_for_break_continue(&mut self, loop_scope_depth: usize) {
-        let to_drop: Vec<(Place, ResolvedTy, &'static str, u32, usize)> = self
+        let to_drop: Vec<(Place, ResolvedTy, crate::model::DropFnSpec, u32, usize)> = self
             .active_generator_yield_values
             .iter()
             .rev()
             .filter(|(depth, _, _, _, _, _)| *depth >= loop_scope_depth)
-            .map(|(_, place, ty, symbol, start_block_id, start_instr_len)| {
+            .map(|(_, place, ty, drop_fn, start_block_id, start_instr_len)| {
                 (
                     *place,
                     ty.clone(),
-                    *symbol,
+                    drop_fn.clone(),
                     *start_block_id,
                     *start_instr_len,
                 )
             })
             .collect();
-        for (place, ty, symbol, start_block_id, start_instr_len) in to_drop {
+        for (place, ty, drop_fn, start_block_id, start_instr_len) in to_drop {
             let Some(local) = base_local(place) else {
                 continue;
             };
@@ -11269,7 +11277,7 @@ impl Builder {
             self.push_instr(Instr::Drop {
                 place,
                 ty,
-                drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
+                drop_fn: Some(drop_fn),
             });
         }
     }
@@ -15303,7 +15311,13 @@ impl Builder {
                         // emittable release.
                         match self.project_field_inline_drop_symbol(&subst_fty) {
                             ReleaseSymbolVerdict::Wired(_) => {}
-                            ReleaseSymbolVerdict::NoDropPath => {
+                            // `WiredInPlace` is the yield/recv picker's composite
+                            // verdict; the FIELD picker never returns it, and this
+                            // pre-flight's override-drop below emits only
+                            // symbol-carrying releases. Keep the owned-aggregate
+                            // fail-closed posture for both.
+                            ReleaseSymbolVerdict::WiredInPlace(_)
+                            | ReleaseSymbolVerdict::NoDropPath => {
                                 // Owned-aggregate field (record / tuple / enum): in-place
                                 // drop kinds are function-scope only and cannot be emitted
                                 // as inline `Instr::Drop` here.  Fail closed.
@@ -18732,10 +18746,17 @@ impl Builder {
     /// [`ReleaseSymbolVerdict::Wired`] carries the C-ABI symbol the
     /// consumer-body drop emits, restricted to the proven leak shapes — a
     /// heap-owning `string`, `bytes`, and any builtin `Vec<T>` whose element
-    /// release is wired. [`ReleaseSymbolVerdict::NoDropPath`] covers shapes
-    /// with no validated consumer-drop path (HashMap/HashSet yields — they
-    /// leak as before rather than risk a double-free, matching the
-    /// conservative posture of the function-scope `CoW` drop allow-set).
+    /// release is wired. [`ReleaseSymbolVerdict::WiredInPlace`] covers a
+    /// registered heap-owning record/enum composite (the `LayoutManaged`
+    /// stream-element shapes): the release is the synthesised
+    /// `__hew_record_drop_inplace_<R>` / `__hew_enum_drop_inplace_<E>` thunk,
+    /// admitted by the same `elem_is_owned_abi_releasable` authority the
+    /// layout-witness (send-side deep clone) mirrors, so the drop is wired
+    /// exactly where the witness already clones. A `BitCopy` record/enum owns
+    /// no heap and never earns it. [`ReleaseSymbolVerdict::NoDropPath`]
+    /// covers shapes with no validated consumer-drop path (HashMap/HashSet
+    /// yields — they leak as before rather than risk a double-free, matching
+    /// the conservative posture of the function-scope `CoW` drop allow-set).
     /// [`ReleaseSymbolVerdict::Unwired`] is the fail-closed refusal: the
     /// value owns heap the buffer-only free cannot reach (a `Vec` of `bytes`
     /// or of an indirect-enum element), so the consulting site must reject
@@ -18800,8 +18821,57 @@ impl Builder {
                         self.vec_release_symbol_verdict(elem)
                     })
             }
+            // A registered heap-owning record/enum composite: release through
+            // the synthesised in-place drop thunk. `owned_composite_release_kind`
+            // (→ `elem_is_owned_abi_releasable`) is the SAME admission the
+            // stream layout witness mirrors for its LayoutManaged deep-clone
+            // (`owned_elem_thunk_key`), so this verdict Wires the release
+            // exactly where the witness already clones — a shape it refuses
+            // (BitCopy composite, indirect enum, closure-bearing, resource /
+            // opaque leaves) keeps its existing NoDropPath / rejected posture.
+            composite @ ResolvedTy::Named { .. } => {
+                match self.owned_composite_release_kind(composite) {
+                    Some(kind) => ReleaseSymbolVerdict::WiredInPlace(kind),
+                    None => ReleaseSymbolVerdict::NoDropPath,
+                }
+            }
             _ => ReleaseSymbolVerdict::NoDropPath,
         }
+    }
+
+    /// The in-place thunk family (record vs enum) releasing an owned composite
+    /// yield/recv payload, or `None` when the type is not an owned-ABI
+    /// releasable composite. Admission is exactly
+    /// [`Builder::elem_is_owned_abi_releasable`] — the documented MIR mirror
+    /// of codegen's `owned_elem_thunk_key` witness authority — so the picker
+    /// and the layout witness cannot drift on which composites carry live
+    /// ownership through the queue (`dedup-semantic-boundary`). The
+    /// record-vs-enum split re-reads the same registries that authority
+    /// consulted (a name resolves to exactly one of them).
+    fn owned_composite_release_kind(
+        &self,
+        ty: &ResolvedTy,
+    ) -> Option<crate::ownership::InPlaceReleaseKind> {
+        if !self.elem_is_owned_abi_releasable(ty) {
+            return None;
+        }
+        let ResolvedTy::Named { name, args, .. } = ty else {
+            return None;
+        };
+        let key = if args.is_empty() {
+            name.clone()
+        } else {
+            mangle_layout_key(name, args)
+        };
+        let is_enum = self
+            .enum_layouts
+            .iter()
+            .any(|el| el.name == key || short_name(&el.name) == short_name(name));
+        Some(if is_enum {
+            crate::ownership::InPlaceReleaseKind::Enum
+        } else {
+            crate::ownership::InPlaceReleaseKind::Record
+        })
     }
 
     /// The shared `Vec<E>` arm of both release-symbol pickers: map the
@@ -18880,12 +18950,14 @@ impl Builder {
         body_start_instr_len: usize,
         site: hew_hir::SiteId,
     ) {
-        // Only a Wired verdict reaches this emitter: the binding-registration
-        // gate schedules a body-end drop for Wired shapes alone (Unwired is a
-        // fail-closed compile diagnostic there; NoDropPath is never
-        // scheduled).
-        let ReleaseSymbolVerdict::Wired(symbol) = self.generator_yield_drop_symbol(ty) else {
-            return;
+        // Only a Wired / WiredInPlace verdict reaches this emitter: the
+        // binding-registration gate schedules a body-end drop for those shapes
+        // alone (Unwired is a fail-closed compile diagnostic there; NoDropPath
+        // is never scheduled).
+        let drop_fn = match self.generator_yield_drop_symbol(ty) {
+            ReleaseSymbolVerdict::Wired(symbol) => crate::model::DropFnSpec::Release(symbol),
+            ReleaseSymbolVerdict::WiredInPlace(kind) => crate::model::DropFnSpec::InPlace(kind),
+            ReleaseSymbolVerdict::NoDropPath | ReleaseSymbolVerdict::Unwired(_) => return,
         };
         let Some(local) = base_local(place) else {
             self.diagnostics.push(MirDiagnostic {
@@ -18895,7 +18967,8 @@ impl Builder {
                 },
                 note: format!(
                     "generator-yielded binding {binding:?} must lower to a Place::Local-backed \
-                     owner so the yielded heap value can be balanced with {symbol}; got {place:?}"
+                     owner so the yielded heap value can be balanced with {drop_fn:?}; got \
+                     {place:?}"
                 ),
             });
             return;
@@ -18905,7 +18978,7 @@ impl Builder {
             self.push_instr(Instr::Drop {
                 place,
                 ty: ty.clone(),
-                drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
+                drop_fn: Some(drop_fn),
             });
         }
         // else: the value escapes the consuming body — leak-not-double-free.
@@ -21572,10 +21645,11 @@ impl Builder {
                     // `owned_locals`, and a retracted binding is gone from it
                     // by then).
                     match self.generator_yield_drop_symbol(&binding_ty) {
-                        ReleaseSymbolVerdict::Wired(_) => {
+                        ReleaseSymbolVerdict::Wired(_) | ReleaseSymbolVerdict::WiredInPlace(_) => {
                             // The yielded/received payload owns heap (a
-                            // `string`, a `Vec`, a `Bytes`) with a wired
-                            // release. Schedule a body-end release and take it
+                            // `string`, a `Vec`, a `Bytes`, or a heap-owning
+                            // record/enum composite) with a wired release.
+                            // Schedule a body-end release and take it
                             // back out of `owned_locals` so the function-scope
                             // drop pass cannot also fire (double-free guard).
                             // The body-shape drop-safety scan in
@@ -21714,13 +21788,22 @@ impl Builder {
             // lowers (the fall-through path uses the body-end drop instead).
             let active_yield_mark = self.active_generator_yield_values.len();
             for (_binding, place, ty, _site) in &generator_yield_drop_bindings {
-                if let ReleaseSymbolVerdict::Wired(symbol) = self.generator_yield_drop_symbol(ty) {
+                let drop_fn = match self.generator_yield_drop_symbol(ty) {
+                    ReleaseSymbolVerdict::Wired(symbol) => {
+                        Some(crate::model::DropFnSpec::Release(symbol))
+                    }
+                    ReleaseSymbolVerdict::WiredInPlace(kind) => {
+                        Some(crate::model::DropFnSpec::InPlace(kind))
+                    }
+                    ReleaseSymbolVerdict::NoDropPath | ReleaseSymbolVerdict::Unwired(_) => None,
+                };
+                if let Some(drop_fn) = drop_fn {
                     let depth = self.active_scopes.len();
                     self.active_generator_yield_values.push((
                         depth,
                         *place,
                         ty.clone(),
-                        symbol,
+                        drop_fn,
                         body_start_block_id,
                         body_start_instr_len,
                     ));
@@ -21743,7 +21826,7 @@ impl Builder {
                         depth,
                         *place,
                         ty.clone(),
-                        "hew_string_drop",
+                        crate::model::DropFnSpec::Release("hew_string_drop"),
                         body_start_block_id,
                         body_start_instr_len,
                     ));
@@ -28469,7 +28552,12 @@ impl Builder {
                 });
                 None
             }
-            ReleaseSymbolVerdict::NoDropPath => Some(()),
+            // `WiredInPlace` is the yield/recv picker's composite verdict;
+            // `project_field_inline_drop_symbol` never returns it (owned
+            // aggregates stay `NoDropPath` here — the F-04 SHIM above). Kept
+            // as an explicit arm so admitting composites at THIS seam is a
+            // deliberate decision, not an accidental fall-through.
+            ReleaseSymbolVerdict::WiredInPlace(_) | ReleaseSymbolVerdict::NoDropPath => Some(()),
         }
     }
 
@@ -32282,6 +32370,100 @@ impl Builder {
         }
     }
 
+    /// Composite twin of [`Builder::record_stream_send_abandon_drop`]: stash
+    /// the in-flight record/enum yield value's abandon-edge release as the
+    /// same `DropKind::RecordInPlace` / `DropKind::EnumInPlace` plan drop the
+    /// function-scope spine uses (`drop_fn = None`; the helper resolves from
+    /// `ElabDrop::ty`). Exactly-once holds identically: the abandon and
+    /// resume edges are mutually exclusive, and this drop lives only on the
+    /// abandon plan. `validate_drop_plan` accepts the dedicated kinds on a
+    /// `Place::Local` composite, so the congruence gate is unchanged.
+    fn record_stream_send_abandon_composite_drop(
+        &mut self,
+        suspend_block: u32,
+        value: Place,
+        yield_ty: &ResolvedTy,
+        kind: crate::ownership::InPlaceReleaseKind,
+    ) {
+        let drop_kind = match kind {
+            crate::ownership::InPlaceReleaseKind::Record => DropKind::RecordInPlace,
+            crate::ownership::InPlaceReleaseKind::Enum => DropKind::EnumInPlace,
+        };
+        self.suspend_abandon_extra_drops
+            .entry(suspend_block)
+            .or_default()
+            .push(ElabDrop {
+                place: value,
+                ty: yield_ty.clone(),
+                drop_fn: None,
+                kind: drop_kind,
+                guard: None,
+            });
+    }
+
+    /// Release the pump's per-yield value copy on the stream-send RESUME edge
+    /// (and register its abandon-edge twin on the suspend plan).
+    ///
+    /// The stream send BORROWS the yielded value: `hew_stream_await_send`
+    /// and its layout sibling both copy the content out of the slot and
+    /// document the argument as borrowed, so the pump stays the sole owner
+    /// of the original and must release it exactly once per yield. Emit that
+    /// release on the resume edge, before the `Goto` loops back to
+    /// overwrite `value_local` on the next iteration. That edge is reached
+    /// ONLY when the send resumes (delivered/ready); the abandon-while-parked
+    /// path fires the suspend plan's twin drop on the destroy edge instead —
+    /// the two edges are mutually exclusive, so the value is never
+    /// double-released. `SuspendKind::StreamSend`'s value is escape-poisoned
+    /// (`terminator_escape_places`), so no scope-exit drop competes with this
+    /// one — it is the sole dropper. The release protocol comes from the same
+    /// authority the consumer-side yield-binding drop uses
+    /// (`generator_yield_drop_symbol`), so it stays congruent with the codegen
+    /// inline-drop validator. `string`/`bytes`/`Vec` release through their
+    /// wired symbol; a heap-owning record/enum composite releases through its
+    /// synthesised in-place thunk (`DropFnSpec::InPlace`) — the send deep-
+    /// cloned the envelope's copy (`encode_elem_envelope` `LayoutManaged`), so
+    /// the pump's copy is released without reaching the consumer's. `BitCopy`
+    /// scalars carry no inline release (`NoDropPath`); an `Unwired` element
+    /// is rejected upstream and never reaches the pump.
+    fn emit_pump_yield_value_release(
+        &mut self,
+        send_bb: u32,
+        value_local: Place,
+        yield_ty: &ResolvedTy,
+    ) {
+        match self.generator_yield_drop_symbol(yield_ty) {
+            ReleaseSymbolVerdict::Wired(symbol) => {
+                // Resume-edge release (delivered/ready): the pump is the sole
+                // owner of its copy and frees it here before the loop
+                // overwrites the slot.
+                self.push_instr(Instr::Drop {
+                    place: value_local,
+                    ty: yield_ty.clone(),
+                    drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
+                });
+                // Abandon-edge release for the SAME in-flight value.
+                self.record_stream_send_abandon_drop(send_bb, value_local, yield_ty, symbol);
+            }
+            ReleaseSymbolVerdict::WiredInPlace(kind) => {
+                // Composite twin of the Wired arm: same resume-edge inline
+                // release, routed through the in-place thunk instead of a
+                // C-ABI symbol.
+                self.push_instr(Instr::Drop {
+                    place: value_local,
+                    ty: yield_ty.clone(),
+                    drop_fn: Some(crate::model::DropFnSpec::InPlace(kind)),
+                });
+                self.record_stream_send_abandon_composite_drop(
+                    send_bb,
+                    value_local,
+                    yield_ty,
+                    kind,
+                );
+            }
+            ReleaseSymbolVerdict::NoDropPath | ReleaseSymbolVerdict::Unwired(_) => {}
+        }
+    }
+
     fn build_stream_producer_pump(&mut self, gen_place: Place, pump: &StreamProducerPumpCtx) {
         use hew_types::runtime_call::RuntimeCallFamily;
 
@@ -32369,37 +32551,7 @@ impl Builder {
             is_final: false,
         });
         self.start_block(after_send);
-        // The stream send BORROWS the yielded value: `hew_stream_await_send`
-        // and its layout sibling both copy the content out of the slot and
-        // document the argument as borrowed, so the pump stays the sole owner
-        // of the original and must release it exactly once per yield. Emit that
-        // release here, on the resume edge, before the `Goto` loops back to
-        // overwrite `value_local` on the next iteration. This edge is reached
-        // ONLY when the send resumes (delivered/ready); the abandon-while-parked
-        // path routes to the coro cleanup epilogue instead (it cancels + detaches
-        // the slot's borrowed copy), so the value is never double-released, and an
-        // abandoned in-flight value leaks — a tracked teardown gap, not a defect
-        // here. `SuspendKind::StreamSend`'s value is escape-poisoned
-        // (`terminator_escape_places`), so no scope-exit drop competes with this
-        // one — it is the sole dropper. The release symbol comes from the same
-        // authority the consumer-side yield-binding drop uses
-        // (`generator_yield_drop_symbol`), so it stays congruent with the codegen
-        // inline-drop validator. `string`/`bytes` release here; records/enums and
-        // BitCopy scalars carry no wired inline release (`NoDropPath`) and keep
-        // leaking their producer copy for now — tracked, never a wrong-ABI free.
-        if let ReleaseSymbolVerdict::Wired(symbol) =
-            self.generator_yield_drop_symbol(&pump.yield_ty)
-        {
-            // Resume-edge release (delivered/ready): the pump is the sole owner
-            // of its copy and frees it here before the loop overwrites the slot.
-            self.push_instr(Instr::Drop {
-                place: value_local,
-                ty: pump.yield_ty.clone(),
-                drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
-            });
-            // Abandon-edge release for the SAME in-flight value (#2395 dec. 2).
-            self.record_stream_send_abandon_drop(send_bb, value_local, &pump.yield_ty, symbol);
-        }
+        self.emit_pump_yield_value_release(send_bb, value_local, &pump.yield_ty);
         self.finish_current_block(Terminator::Goto { target: loop_head });
 
         // Shared close path: reached with the generator exhausted (`None`)

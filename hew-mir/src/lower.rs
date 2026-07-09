@@ -36612,6 +36612,12 @@ fn local_is_byte_copy_aggregate(
     }
 }
 
+#[derive(Debug, Default)]
+struct MatchBoundHopAliasFacts {
+    owner_of: HashMap<u32, u32>,
+    chain: Vec<(u32, u32, u32)>,
+}
+
 /// #2384 — forward closure of the interior-alias binders through MATCH-BOUND
 /// hops. [`close_alias_binders_forward`] follows only whole-value `Move`s, so
 /// a chain hop bound via `match` (`let leaf = match mid { Mid { leaf, x: _ }
@@ -36635,44 +36641,80 @@ fn local_is_byte_copy_aggregate(
 /// it would newly exclude owners in today-clean non-escaping shapes (turning
 /// an exactly-once composite into a whole-tree leak); the escape arms widen
 /// exclusion only when the binder actually leaves the function.
-fn descend_match_bound_hop_aliases(
+fn descend_match_bound_hop_alias_facts(
     blocks: &[BasicBlock],
     seeds: &HashMap<u32, u32>,
+    seed_chain: &[(u32, u32, u32)],
     dest_is_byte_copy_aggregate: &dyn Fn(u32) -> bool,
-) -> HashMap<u32, u32> {
+) -> MatchBoundHopAliasFacts {
     let mut owner_of: HashMap<u32, u32> = seeds.clone();
+    let mut parent_of: HashMap<u32, (u32, u32)> = seed_chain
+        .iter()
+        .copied()
+        .map(|(alias, parent, field)| (alias, (parent, field)))
+        .collect();
+    let mut chain = Vec::new();
     loop {
         let mut changed = false;
         for block in blocks {
             for instr in &block.instructions {
-                let (base, dest) = match instr {
-                    Instr::Move { dest, src } => (*src, *dest),
-                    Instr::RecordFieldLoad { record, dest, .. } => {
+                let (base, dest, field) = match instr {
+                    Instr::Move { dest, src } => (*src, *dest, None),
+                    Instr::RecordFieldLoad {
+                        record,
+                        field_offset,
+                        dest,
+                    } => {
                         let Some(dl) = base_local(*dest) else {
                             continue;
                         };
                         if !dest_is_byte_copy_aggregate(dl) {
                             continue;
                         }
-                        (*record, *dest)
+                        (*record, *dest, Some(field_offset.0))
                     }
-                    Instr::TupleFieldLoad { tuple, dest, .. } => {
+                    Instr::TupleFieldLoad {
+                        tuple,
+                        field_index,
+                        dest,
+                    } => {
                         let Some(dl) = base_local(*dest) else {
                             continue;
                         };
                         if !dest_is_byte_copy_aggregate(dl) {
                             continue;
                         }
-                        (*tuple, *dest)
+                        (*tuple, *dest, Some(*field_index))
                     }
                     _ => continue,
                 };
                 if let (Some(sl), Some(dl)) = (base_local(base), base_local(dest)) {
                     if let Some(&owner) = owner_of.get(&sl) {
-                        if let std::collections::hash_map::Entry::Vacant(slot) = owner_of.entry(dl)
-                        {
-                            slot.insert(owner);
-                            changed = true;
+                        let owner_matches = match owner_of.entry(dl) {
+                            std::collections::hash_map::Entry::Vacant(slot) => {
+                                slot.insert(owner);
+                                changed = true;
+                                true
+                            }
+                            std::collections::hash_map::Entry::Occupied(slot) => {
+                                *slot.get() == owner
+                            }
+                        };
+                        if !owner_matches {
+                            continue;
+                        }
+                        let parent = match field {
+                            Some(field) => Some((sl, field)),
+                            None => parent_of.get(&sl).copied(),
+                        };
+                        if let Some((parent, field)) = parent {
+                            if let std::collections::hash_map::Entry::Vacant(slot) =
+                                parent_of.entry(dl)
+                            {
+                                slot.insert((parent, field));
+                                chain.push((dl, parent, field));
+                                changed = true;
+                            }
                         }
                     }
                 }
@@ -36682,7 +36724,51 @@ fn descend_match_bound_hop_aliases(
             break;
         }
     }
-    owner_of
+    MatchBoundHopAliasFacts { owner_of, chain }
+}
+
+fn descend_match_bound_hop_aliases(
+    blocks: &[BasicBlock],
+    seeds: &HashMap<u32, u32>,
+    dest_is_byte_copy_aggregate: &dyn Fn(u32) -> bool,
+) -> HashMap<u32, u32> {
+    descend_match_bound_hop_alias_facts(blocks, seeds, &[], dest_is_byte_copy_aggregate).owner_of
+}
+
+fn descend_match_bound_hop_alias_chain(
+    blocks: &[BasicBlock],
+    seeds: &HashMap<u32, u32>,
+    seed_chain: &[(u32, u32, u32)],
+    dest_is_byte_copy_aggregate: &dyn Fn(u32) -> bool,
+) -> Vec<(u32, u32, u32)> {
+    descend_match_bound_hop_alias_facts(blocks, seeds, seed_chain, dest_is_byte_copy_aggregate)
+        .chain
+}
+
+fn alias_projection_chain_owner_seeds(
+    alias_chain: &[(u32, u32, u32)],
+    candidate_roots: &HashSet<u32>,
+) -> HashMap<u32, u32> {
+    let parent_of: HashMap<u32, u32> = alias_chain
+        .iter()
+        .copied()
+        .map(|(alias, parent, _)| (alias, parent))
+        .collect();
+    let mut seeds = HashMap::new();
+    for &(alias, _, _) in alias_chain {
+        let mut cursor = alias;
+        for _ in 0..=parent_of.len() {
+            let Some(&parent) = parent_of.get(&cursor) else {
+                break;
+            };
+            if candidate_roots.contains(&parent) {
+                seeds.insert(alias, parent);
+                break;
+            }
+            cursor = parent;
+        }
+    }
+    seeds
 }
 
 fn collect_record_field_binders(
@@ -39308,9 +39394,25 @@ fn apply_escaped_record_sibling_field_drops(
     // alias member, so a ≥2-hop escape (`let mid = o.mid; let leaf = mid.leaf;
     // return leaf`) is invisible to it — yet the composite-drop provers DO
     // exclude the owner for it (via `close_alias_binders_forward`). Walk the
-    // recorded alias chain — record AND tuple roots (#2383) — and discharge the
-    // non-escaped siblings at every level so the widened exclusion never
-    // outruns its compensation.
+    // recorded alias chain — record AND tuple roots (#2383) — plus the #2387
+    // match-bound byte-copy hop chain, and discharge the non-escaped siblings at
+    // every level so the widened exclusion never outruns its compensation.
+    let candidate_roots: HashSet<u32> = root_record_ty
+        .keys()
+        .chain(root_tuple_ty.keys())
+        .copied()
+        .collect();
+    let match_hop_alias_seeds = alias_projection_chain_owner_seeds(alias_chain, &candidate_roots);
+    let dest_is_byte_copy_aggregate = |local: u32| -> bool {
+        local_is_byte_copy_aggregate(local, local_tys, record_field_orders, enum_layouts)
+    };
+    let mut discharge_alias_chain = alias_chain.to_vec();
+    discharge_alias_chain.extend(descend_match_bound_hop_alias_chain(
+        blocks,
+        &match_hop_alias_seeds,
+        alias_chain,
+        &dest_is_byte_copy_aggregate,
+    ));
     insertions.extend(compute_escaped_chain_sibling_drops(
         blocks,
         suspend_kinds,
@@ -39318,7 +39420,7 @@ fn apply_escaped_record_sibling_field_drops(
         &root_tuple_ty,
         &alias_of,
         &tuple_alias_of,
-        alias_chain,
+        &discharge_alias_chain,
         local_tys,
         owned_field_list,
         owned_tuple_field_list,
@@ -49838,8 +49940,24 @@ mod escaped_sibling_field_discharge {
         ResolvedTy::named_user("Rec", vec![])
     }
 
+    fn outer_ty() -> ResolvedTy {
+        ResolvedTy::named_user("Outer", vec![])
+    }
+
+    fn mid_ty() -> ResolvedTy {
+        ResolvedTy::named_user("Mid", vec![])
+    }
+
+    fn leaf_ty() -> ResolvedTy {
+        ResolvedTy::named_user("Leaf", vec![])
+    }
+
     fn is_rec(ty: &ResolvedTy) -> bool {
         matches!(ty, ResolvedTy::Named { name, .. } if name == "Rec")
+    }
+
+    fn is_chain_rec(ty: &ResolvedTy) -> bool {
+        matches!(ty, ResolvedTy::Named { name, .. } if matches!(name.as_str(), "Outer" | "Mid" | "Leaf"))
     }
 
     /// `Rec { inner: string, tag: string }` — field 0 escapes in the test
@@ -49849,6 +49967,18 @@ mod escaped_sibling_field_discharge {
             vec![(0, ResolvedTy::String), (1, ResolvedTy::String)]
         } else {
             Vec::new()
+        }
+    }
+
+    fn chain_owned_fields(ty: &ResolvedTy) -> Vec<(u32, ResolvedTy)> {
+        let ResolvedTy::Named { name, .. } = ty else {
+            return Vec::new();
+        };
+        match name.as_str() {
+            "Outer" => vec![(0, mid_ty()), (1, ResolvedTy::String)],
+            "Mid" => vec![(0, leaf_ty()), (1, ResolvedTy::String)],
+            "Leaf" => vec![(0, ResolvedTy::String), (1, ResolvedTy::String)],
+            _ => Vec::new(),
         }
     }
 
@@ -49878,6 +50008,27 @@ mod escaped_sibling_field_discharge {
                 ("tag".to_string(), ResolvedTy::String),
             ],
         );
+        orders.insert(
+            "Leaf".to_string(),
+            vec![
+                ("s".to_string(), ResolvedTy::String),
+                ("t".to_string(), ResolvedTy::String),
+            ],
+        );
+        orders.insert(
+            "Mid".to_string(),
+            vec![
+                ("leaf".to_string(), leaf_ty()),
+                ("x".to_string(), ResolvedTy::String),
+            ],
+        );
+        orders.insert(
+            "Outer".to_string(),
+            vec![
+                ("mid".to_string(), mid_ty()),
+                ("c".to_string(), ResolvedTy::String),
+            ],
+        );
         orders
     }
 
@@ -49896,6 +50047,26 @@ mod escaped_sibling_field_discharge {
         binding_locals: &HashMap<BindingId, Place>,
         local_tys: &[ResolvedTy],
     ) {
+        apply_with(
+            blocks,
+            owned,
+            binding_locals,
+            local_tys,
+            &[],
+            &is_rec,
+            &owned_fields,
+        );
+    }
+
+    fn apply_with(
+        blocks: &mut [BasicBlock],
+        owned: &[(BindingId, String, ResolvedTy)],
+        binding_locals: &HashMap<BindingId, Place>,
+        local_tys: &[ResolvedTy],
+        alias_chain: &[(u32, u32, u32)],
+        is_owned_record: &dyn Fn(&ResolvedTy) -> bool,
+        owned_field_list: &dyn Fn(&ResolvedTy) -> Vec<(u32, ResolvedTy)>,
+    ) {
         let mut instr_spans = BTreeMap::new();
         apply_escaped_record_sibling_field_drops(
             blocks,
@@ -49905,12 +50076,55 @@ mod escaped_sibling_field_discharge {
             local_tys,
             &field_orders(),
             &[],
-            &[],
-            &is_rec,
-            &owned_fields,
+            alias_chain,
+            is_owned_record,
+            owned_field_list,
             &owned_tuple_fields,
             &dischargeable,
             &mut instr_spans,
+        );
+    }
+
+    fn match_hop_record_blocks(terminator: Terminator) -> Vec<BasicBlock> {
+        vec![block(
+            0,
+            vec![
+                Instr::Move {
+                    dest: Place::Local(2),
+                    src: Place::Local(1),
+                },
+                Instr::RecordFieldLoad {
+                    record: Place::Local(2),
+                    field_offset: FieldOffset(0),
+                    dest: Place::Local(3),
+                },
+                Instr::Move {
+                    dest: Place::Local(4),
+                    src: Place::Local(3),
+                },
+                Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src: Place::Local(4),
+                },
+            ],
+            terminator,
+        )]
+    }
+
+    fn apply_match_hop(blocks: &mut [BasicBlock], local_tys: &[ResolvedTy]) {
+        let root = BindingId(1);
+        let owned = vec![(root, "o".to_string(), outer_ty())];
+        let binding_locals: HashMap<BindingId, Place> =
+            [(root, Place::Local(0))].into_iter().collect();
+        let alias_chain = vec![(1, 0, 0)];
+        apply_with(
+            blocks,
+            &owned,
+            &binding_locals,
+            local_tys,
+            &alias_chain,
+            &is_chain_rec,
+            &chain_owned_fields,
         );
     }
 
@@ -50287,6 +50501,225 @@ mod escaped_sibling_field_discharge {
             }],
             "the string sibling is discharged; the uncovered Vec sibling \
              keeps its leak (fail-closed partial discharge)"
+        );
+    }
+
+    /// #2387: an intermediate chain hop bound through `match` preserves the
+    /// immediate parent relation (`leaf -> match-scrutinee-mid -> outer`) so
+    /// the escaped-chain compensator releases only the non-escaped siblings at
+    /// both levels.
+    #[test]
+    fn match_bound_hop_chain_discharges_record_siblings() {
+        let local_tys = vec![outer_ty(), mid_ty(), mid_ty(), leaf_ty(), leaf_ty()];
+        let mut blocks = match_hop_record_blocks(Terminator::Return);
+
+        apply_match_hop(&mut blocks, &local_tys);
+        let ops: Vec<_> = blocks[0]
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instr::FieldDropInPlace { .. }))
+            .collect();
+        assert_eq!(
+            ops,
+            vec![
+                &Instr::FieldDropInPlace {
+                    base: Place::Local(2),
+                    field: crate::model::FieldAddr::Record(FieldOffset(1)),
+                    ty: ResolvedTy::String,
+                },
+                &Instr::FieldDropInPlace {
+                    base: Place::Local(0),
+                    field: crate::model::FieldAddr::Record(FieldOffset(1)),
+                    ty: ResolvedTy::String,
+                },
+            ],
+            "the match-bound escape must discharge mid.x through the scrutinee \
+             alias and outer.c through the root, never the escaped leaf"
+        );
+    }
+
+    /// Non-escaping match-bound destructures keep the leak-safety posture:
+    /// sibling discharges are only compensation for a proven owning escape.
+    #[test]
+    fn non_escaping_match_bound_hop_emits_no_sibling_discharge() {
+        let local_tys = vec![
+            outer_ty(),
+            mid_ty(),
+            mid_ty(),
+            leaf_ty(),
+            ResolvedTy::String,
+        ];
+        let mut blocks = vec![block(
+            0,
+            vec![
+                Instr::Move {
+                    dest: Place::Local(2),
+                    src: Place::Local(1),
+                },
+                Instr::RecordFieldLoad {
+                    record: Place::Local(2),
+                    field_offset: FieldOffset(0),
+                    dest: Place::Local(3),
+                },
+                Instr::RecordFieldLoad {
+                    record: Place::Local(3),
+                    field_offset: FieldOffset(0),
+                    dest: Place::Local(4),
+                },
+            ],
+            Terminator::Return,
+        )];
+
+        apply_match_hop(&mut blocks, &local_tys);
+        assert!(
+            !blocks[0]
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instr::FieldDropInPlace { .. })),
+            "a match-bound hop that never escapes must not add sibling drops; \
+             got {:?}",
+            blocks[0].instructions
+        );
+    }
+
+    /// A read of any chain node after the escape refuses the discharge: freeing
+    /// a sibling before that read would be a use-after-free through the alias.
+    #[test]
+    fn match_bound_hop_post_escape_read_refuses_discharge() {
+        let local_tys = vec![
+            outer_ty(),
+            mid_ty(),
+            mid_ty(),
+            leaf_ty(),
+            leaf_ty(),
+            ResolvedTy::String,
+        ];
+        let mut blocks = match_hop_record_blocks(Terminator::Return);
+        blocks[0].instructions.push(Instr::RecordFieldLoad {
+            record: Place::Local(2),
+            field_offset: FieldOffset(1),
+            dest: Place::Local(5),
+        });
+
+        apply_match_hop(&mut blocks, &local_tys);
+        assert!(
+            !blocks[0]
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instr::FieldDropInPlace { .. })),
+            "a chain-node read after the escape must keep the fail-closed leak; \
+             got {:?}",
+            blocks[0].instructions
+        );
+    }
+
+    /// Retained string fields are not byte-copy aggregate aliases. Returning a
+    /// string loaded through the match-bound path must not be attributed as an
+    /// escaped aggregate chain.
+    #[test]
+    fn match_bound_retained_string_load_is_not_attributed() {
+        let local_tys = vec![
+            outer_ty(),
+            mid_ty(),
+            mid_ty(),
+            ResolvedTy::String,
+            ResolvedTy::String,
+        ];
+        let mut blocks = vec![block(
+            0,
+            vec![
+                Instr::Move {
+                    dest: Place::Local(2),
+                    src: Place::Local(1),
+                },
+                Instr::RecordFieldLoad {
+                    record: Place::Local(2),
+                    field_offset: FieldOffset(1),
+                    dest: Place::Local(3),
+                },
+                Instr::Move {
+                    dest: Place::Local(4),
+                    src: Place::Local(3),
+                },
+                Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src: Place::Local(4),
+                },
+            ],
+            Terminator::Return,
+        )];
+
+        apply_match_hop(&mut blocks, &local_tys);
+        assert!(
+            !blocks[0]
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instr::FieldDropInPlace { .. })),
+            "a retained string field load is a fresh owner, not a byte-copy \
+             aggregate alias; got {:?}",
+            blocks[0].instructions
+        );
+    }
+
+    /// Handle-transfer fields are also not byte-copy aggregate aliases. The
+    /// helper must keep `local_is_byte_copy_aggregate` as the gate and leave the
+    /// pre-existing fail-closed posture unchanged.
+    #[test]
+    fn match_bound_handle_transfer_load_is_not_attributed() {
+        let vec_ty = ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::String]);
+        let local_tys = vec![outer_ty(), mid_ty(), mid_ty(), vec_ty.clone(), vec_ty];
+        let mut blocks = vec![block(
+            0,
+            vec![
+                Instr::Move {
+                    dest: Place::Local(2),
+                    src: Place::Local(1),
+                },
+                Instr::RecordFieldLoad {
+                    record: Place::Local(2),
+                    field_offset: FieldOffset(0),
+                    dest: Place::Local(3),
+                },
+                Instr::Move {
+                    dest: Place::Local(4),
+                    src: Place::Local(3),
+                },
+                Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src: Place::Local(4),
+                },
+            ],
+            Terminator::Return,
+        )];
+
+        apply_match_hop(&mut blocks, &local_tys);
+        assert!(
+            !blocks[0]
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instr::FieldDropInPlace { .. })),
+            "a transferred handle field must not be treated as a match-hop \
+             byte-copy aggregate alias; got {:?}",
+            blocks[0].instructions
+        );
+    }
+
+    /// The self-reachable-block bail-out remains load-bearing for match-hop
+    /// chains: inline-composite sibling drops are not idempotent in loops.
+    #[test]
+    fn match_bound_hop_escape_in_cycle_refuses_discharge() {
+        let local_tys = vec![outer_ty(), mid_ty(), mid_ty(), leaf_ty(), leaf_ty()];
+        let mut blocks = match_hop_record_blocks(Terminator::Goto { target: 0 });
+
+        apply_match_hop(&mut blocks, &local_tys);
+        assert!(
+            !blocks[0]
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instr::FieldDropInPlace { .. })),
+            "a match-hop escape whose block is self-reachable must refuse the \
+             discharge; got {:?}",
+            blocks[0].instructions
         );
     }
 }

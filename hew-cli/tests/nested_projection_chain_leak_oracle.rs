@@ -501,8 +501,8 @@ fn escaped_return_tuple_source(frames: usize) -> String {
 /// the owner's subtree (the destructure load copies the inline aggregate with
 /// no retain), so the owner's composite must NOT free the subtree the caller
 /// now holds — a re-walk here is the #2384 double-free (`free_cstring` header
-/// sentinel abort). Fail-closed posture: the owner is excluded and its
-/// non-escaped siblings leak; the pin is no double-free, not a flat slope.
+/// sentinel abort). The compensator must still release the non-escaped siblings
+/// along the match-bound chain (`mid.x`, `o.c`) exactly once.
 fn match_intermediate_return_leaf_source(frames: usize) -> String {
     format!(
         "type Leaf {{\n\
@@ -667,6 +667,27 @@ fn escaped_return_tuple_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("chain_escaped_tuple", escaped_return_tuple_source);
 }
 
+/// #2387 match-hop return holds a FLAT slope: the owner composite is excluded
+/// so the returned `Leaf` is not re-freed, while the sibling compensator follows
+/// the match-bound immediate-parent chain and releases `mid.x` plus `o.c`.
+#[test]
+fn match_intermediate_return_leaf_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance(
+        "chain_match_hop_return",
+        match_intermediate_return_leaf_source,
+    );
+}
+
+/// Tuple twin of the match-hop return: the shared chain helper must compensate
+/// non-escaped tuple siblings while preserving the returned pair.
+#[test]
+fn match_intermediate_return_tuple_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance(
+        "chain_match_hop_return_tuple",
+        match_intermediate_return_tuple_source,
+    );
+}
+
 // ── scribble (double-free / use-after-free) pins ────────────────────────
 
 fn assert_scribble_clean(name: &str, source: &str) {
@@ -772,7 +793,7 @@ fn match_intermediate_return_tuple_no_double_free_under_malloc_scribble() {
 
 // ── MIR emission pins ────────────────────────────────────────────────────
 
-fn elab_dump(source: &str, prefix: &str) -> String {
+fn mir_dump(source: &str, prefix: &str, stage: &str) -> String {
     require_codegen();
     let dir = tempfile::Builder::new()
         .prefix(prefix)
@@ -782,17 +803,25 @@ fn elab_dump(source: &str, prefix: &str) -> String {
     std::fs::write(&hew_src, source).expect("write hew source");
 
     let output = Command::new(hew_binary())
-        .args(["compile", "--dump-mir", "elab"])
+        .args(["compile", "--dump-mir", stage])
         .arg(&hew_src)
         .current_dir(repo_root())
         .output()
-        .expect("invoke hew compile --dump-mir elab");
+        .unwrap_or_else(|error| panic!("invoke hew compile --dump-mir {stage}: {error}"));
     assert!(
         output.status.success(),
-        "elaborated-MIR dump must succeed:\n{}",
+        "{stage} MIR dump must succeed:\n{}",
         describe_output(&output)
     );
     String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+fn checked_dump(source: &str, prefix: &str) -> String {
+    mir_dump(source, prefix, "checked")
+}
+
+fn elab_dump(source: &str, prefix: &str) -> String {
+    mir_dump(source, prefix, "elab")
 }
 
 /// The distinct MIR locals dropped via `record_in_place` in a dump section —
@@ -872,5 +901,62 @@ fn owner_consumed_control_emits_no_alias_or_owner_drop() {
         0,
         "the alias emits no drop and the consumed owner is freed by the \
          callee, so the caller emits no composite drop;\n{run_cycle}"
+    );
+}
+
+/// #2387 match-hop return: the owner composite stays excluded (no
+/// `record_in_place` re-walk of the returned leaf), while checked MIR contains
+/// exactly the two sibling discharges for `mid.x` and `o.c`.
+#[test]
+fn match_intermediate_return_leaf_emits_only_sibling_field_drops() {
+    let source = match_intermediate_return_leaf_source(4);
+    let checked = checked_dump(&source, "chain-match-hop-return-checked-");
+    let checked_deep = checked
+        .split("fn ")
+        .find(|section| section.starts_with("deep"))
+        .expect("deep section present in checked dump");
+    let drops: Vec<_> = checked_deep
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("drop_field_in_place "))
+        .collect();
+    assert_eq!(
+        drops.len(),
+        2,
+        "the match-hop return must emit exactly two sibling drops — one for \
+         mid.x and one for o.c; got {drops:?}\n{checked_deep}"
+    );
+    assert!(
+        drops
+            .iter()
+            .all(|line| line.ends_with(".field[1] ty=string")),
+        "both sibling drops should release field 1 string siblings (mid.x and \
+         o.c), never the escaped field 0 leaf; got {drops:?}\n{checked_deep}"
+    );
+    let bases: std::collections::BTreeSet<_> = drops
+        .iter()
+        .filter_map(|line| line.split_once(".field[1] ty=string").map(|(base, _)| base))
+        .collect();
+    assert_eq!(
+        bases.len(),
+        2,
+        "the two sibling drops must address distinct chain levels (mid and \
+         outer), not repeat one field slot; got {drops:?}\n{checked_deep}"
+    );
+
+    let elab = elab_dump(&source, "chain-match-hop-return-elab-");
+    let elab_deep = elab
+        .split("fn ")
+        .find(|section| section.starts_with("deep"))
+        .expect("deep section present in elab dump");
+    assert_eq!(
+        elab_deep.matches("kind=record_in_place").count(),
+        0,
+        "the returned match-bound leaf keeps the owner composite excluded; a \
+         record_in_place drop here would re-walk the escaped subtree:\n{elab_deep}"
+    );
+    assert_eq!(
+        elab_deep.matches("kind=tuple_in_place").count(),
+        0,
+        "the record repro must not acquire an unrelated tuple composite drop:\n{elab_deep}"
     );
 }

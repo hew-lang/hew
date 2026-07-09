@@ -92,10 +92,10 @@ pub struct MonomorphizedFn {
 /// `[a-zA-Z0-9_]`, so `$` cannot collide with any user-written Hew
 /// identifier. LLVM IR permits `$` in global symbol names.
 ///
-/// Type args are rendered via [`mangle_resolved_ty`], which uses `_`
-/// internally for nested args (e.g. `Vec_i64`) — the major/minor
-/// separator distinction (`$$` vs `$`) keeps top-level args
-/// unambiguously parseable.
+/// Type args are rendered via [`mangle_resolved_ty`]. Compound fragments use
+/// `$`-letter tokens (for example, `Vec$li64$g`) so their structure remains
+/// unambiguous while the top-level `$$` and `$` separators keep their existing
+/// meanings.
 #[must_use]
 pub fn mangle(origin_name: &str, type_args: &[ResolvedTy]) -> String {
     // Thin wrapper over the parametric `mangle_instantiation` helper.
@@ -226,12 +226,14 @@ pub fn shorten_named_arg_qualifiers(ty: ResolvedTy) -> ResolvedTy {
 
 /// Render a single `ResolvedTy` as a mangled fragment.
 ///
-/// Uses `_` as the nested separator so a top-level `$`-separated mangle
-/// can recover individual args by splitting on `$` alone. Returns names
-/// that are stable across runs (no hash, no monotonic counter). The
-/// rendering is structural and injective over the `ResolvedTy` variants
-/// (distinct types render to distinct fragments), so it is also the
-/// canonical key source for codegen-synthesised per-type thunks.
+/// Compound structure is encoded with `$`-letter tokens: `$l`/`$g` delimit
+/// named type arguments, `$x`/`$g` delimit structural compounds, `$c`
+/// separates list items, `$r` marks function returns, `$a` marks trait-object
+/// associated bindings, and `$m` replaces name qualifiers. Every token starts
+/// with `$`, which Hew identifiers cannot contain, so the rendering is
+/// structural and injective over the supported `ResolvedTy` identity
+/// dimensions. It is stable across runs (no hash or monotonic counter) and is
+/// the canonical key source for codegen-synthesised per-type thunks.
 #[must_use]
 pub fn mangle_resolved_ty(ty: &ResolvedTy) -> String {
     match ty {
@@ -255,82 +257,91 @@ pub fn mangle_resolved_ty(ty: &ResolvedTy) -> String {
         ResolvedTy::Duration => "duration".to_string(),
         ResolvedTy::Unit => "unit".to_string(),
         ResolvedTy::Never => "never".to_string(),
-        ResolvedTy::Tuple(items) => {
-            let mut out = String::from("tuple_");
-            for (i, item) in items.iter().enumerate() {
-                if i > 0 {
-                    out.push('_');
-                }
-                out.push_str(&mangle_resolved_ty(item));
-            }
-            out
-        }
-        ResolvedTy::Array(elem, n) => format!("array_{}_{}", mangle_resolved_ty(elem), n),
-        ResolvedTy::Slice(elem) => format!("slice_{}", mangle_resolved_ty(elem)),
-        ResolvedTy::Named { name, args, .. } => {
-            // Replace any `::` from module-qualified names with `_` to keep
-            // the symbol LLVM-clean.
-            let mut out = name.replace("::", "_");
-            for arg in args {
-                out.push('_');
-                out.push_str(&mangle_resolved_ty(arg));
-            }
-            out
-        }
-        ResolvedTy::Function { params, ret } => {
-            let mut out = String::from("fn_");
-            for p in params {
-                out.push_str(&mangle_resolved_ty(p));
-                out.push('_');
-            }
-            out.push_str("ret_");
-            out.push_str(&mangle_resolved_ty(ret));
-            out
-        }
-        ResolvedTy::Closure { params, ret, .. } => {
-            // Captures are not part of the call-type identity.
-            let mut out = String::from("closure_");
-            for p in params {
-                out.push_str(&mangle_resolved_ty(p));
-                out.push('_');
-            }
-            out.push_str("ret_");
-            out.push_str(&mangle_resolved_ty(ret));
-            out
-        }
+        ResolvedTy::Tuple(items) => mangle_compound("tuple", items),
+        ResolvedTy::Array(elem, n) => format!("array$x{}$c{n}$g", mangle_resolved_ty(elem)),
+        ResolvedTy::Slice(elem) => format!("slice$x{}$g", mangle_resolved_ty(elem)),
+        ResolvedTy::Named { name, args, .. } => mangle_named(name, args),
+        ResolvedTy::Function { params, ret } => mangle_function_like("fn", params, ret),
+        // Captures are not part of the call-type identity.
+        ResolvedTy::Closure { params, ret, .. } => mangle_function_like("closure", params, ret),
         ResolvedTy::Pointer {
             is_mutable,
             pointee,
         } => {
             if *is_mutable {
-                format!("ptrmut_{}", mangle_resolved_ty(pointee))
+                format!("ptrmut$x{}$g", mangle_resolved_ty(pointee))
             } else {
-                format!("ptr_{}", mangle_resolved_ty(pointee))
+                format!("ptr$x{}$g", mangle_resolved_ty(pointee))
             }
         }
-        ResolvedTy::Borrow { pointee } => {
-            format!("borrow_{}", mangle_resolved_ty(pointee))
-        }
-        ResolvedTy::TraitObject { traits } => {
-            let mut out = String::from("dyn_");
-            for (i, b) in traits.iter().enumerate() {
-                if i > 0 {
-                    out.push('_');
-                }
-                out.push_str(&b.trait_name.replace("::", "_"));
-                for a in &b.args {
-                    out.push('_');
-                    out.push_str(&mangle_resolved_ty(a));
-                }
-            }
-            out
-        }
-        ResolvedTy::Task(inner) => format!("task_{}", mangle_resolved_ty(inner)),
+        ResolvedTy::Borrow { pointee } => format!("borrow$x{}$g", mangle_resolved_ty(pointee)),
+        ResolvedTy::TraitObject { traits } => mangle_trait_object(traits),
+        ResolvedTy::Task(inner) => format!("task$x{}$g", mangle_resolved_ty(inner)),
         // A concrete monomorphisation never carries an abstract parameter in
         // its type-arg list, so this is not reached for a real instantiation.
         // It is mangled deterministically (and LLVM-clean) for totality.
-        ResolvedTy::TypeParam { name } => format!("typeparam_{}", name.replace("::", "_")),
+        ResolvedTy::TypeParam { name } => format!("typeparam$x{name}$g"),
     }
+}
+
+fn mangle_compound(head: &str, items: &[ResolvedTy]) -> String {
+    let mut out = format!("{head}$x");
+    append_type_list(&mut out, items);
+    out.push_str("$g");
+    out
+}
+
+fn mangle_named(name: &str, args: &[ResolvedTy]) -> String {
+    let mut out = mangle_qualified_name(name);
+    if !args.is_empty() {
+        out.push_str("$l");
+        append_type_list(&mut out, args);
+        out.push_str("$g");
+    }
+    out
+}
+
+fn mangle_function_like(head: &str, params: &[ResolvedTy], ret: &ResolvedTy) -> String {
+    let mut out = format!("{head}$x");
+    append_type_list(&mut out, params);
+    out.push_str("$r");
+    out.push_str(&mangle_resolved_ty(ret));
+    out.push_str("$g");
+    out
+}
+
+fn mangle_trait_object(traits: &[hew_types::ResolvedTraitBound]) -> String {
+    let mut out = String::from("dyn$x");
+    for (i, bound) in traits.iter().enumerate() {
+        if i > 0 {
+            out.push_str("$c");
+        }
+        out.push_str(&mangle_named(&bound.trait_name, &bound.args));
+        let mut assoc_bindings = bound.assoc_bindings.iter().collect::<Vec<_>>();
+        assoc_bindings.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+        for (name, ty) in assoc_bindings {
+            out.push_str("$a");
+            out.push_str(name);
+            out.push_str("$l");
+            out.push_str(&mangle_resolved_ty(ty));
+            out.push_str("$g");
+        }
+    }
+    out.push_str("$g");
+    out
+}
+
+fn append_type_list(out: &mut String, types: &[ResolvedTy]) {
+    for (i, ty) in types.iter().enumerate() {
+        if i > 0 {
+            out.push_str("$c");
+        }
+        out.push_str(&mangle_resolved_ty(ty));
+    }
+}
+
+fn mangle_qualified_name(name: &str) -> String {
+    name.replace("::", "$m").replace('.', "$m")
 }
 
 /// Insertion-ordered registry used during HIR lowering.
@@ -935,9 +946,9 @@ mod tests {
     }
 
     #[test]
-    fn mangle_module_qualified_strips_colons() {
+    fn mangle_module_qualified_encodes_colons() {
         let ty = ResolvedTy::named_user("widgets::Label", vec![]);
-        assert_eq!(mangle("describe", &[ty]), "describe$$widgets_Label");
+        assert_eq!(mangle("describe", &[ty]), "describe$$widgets$mLabel");
     }
 
     #[test]
@@ -1295,7 +1306,7 @@ mod tests {
         // byte form every codegen lookup probes.
         assert_eq!(
             mangle("Result", &[shortened]),
-            "Result$$Result_Vec_Foo_tuple_slice_Conn_array_Buf_4",
+            "Result$$Result$lVec$lFoo$g$ctuple$xslice$xConn$g$carray$xBuf$c4$g$g$g",
         );
     }
 
@@ -1332,7 +1343,7 @@ mod tests {
         );
         let entries = reg.into_vec();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].mangled_name, "Option$$Vec_Foo");
+        assert_eq!(entries[0].mangled_name, "Option$$Vec$lFoo$g");
     }
 
     #[test]

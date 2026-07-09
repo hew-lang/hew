@@ -299,8 +299,8 @@ fn generic_in_generic_box_vec_int_produces_one_entry_for_box_only() {
     // replaced by `Vec<i64>`.
     assert_eq!(layouts[0].fields, vec![("value".to_string(), expected_arg)]);
 
-    // Mangling round-trips the nested arg: `Box$$Vec_i64`.
-    assert_eq!(layouts[0].mangled_name, "Box$$Vec_i64");
+    // Mangling round-trips the nested arg: `Box$$Vec$li64$g`.
+    assert_eq!(layouts[0].mangled_name, "Box$$Vec$li64$g");
 }
 
 /// (e) Plan test E: diverging polymorphic instantiation fires

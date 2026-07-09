@@ -36926,10 +36926,15 @@ fn emit_cancel_trap_or_return(fn_ctx: &FnCtx<'_, '_>) -> CodegenResult<()> {
                 .llvm_ctx("cancel return")?;
         }
         BasicTypeEnum::StructType(_) | BasicTypeEnum::ArrayType(_) => {
-            let ret_val = fn_ctx
-                .builder
-                .build_load(fn_ctx.return_ty, fn_ctx.return_slot, "cancel_composite_ret")
-                .llvm_ctx("cancel composite ret load")?;
+            // A TaskEntry adapter's entry-block cooperate check (bb0) can take
+            // this exit before the function body ever stores into
+            // `return_slot` (#2437): the alloca at the shared prologue
+            // (`llvm.rs`'s function-entry emission) is never zero-initialized,
+            // so loading it here read genuinely uninitialized stack memory —
+            // published downstream as a non-null task result. Mirror the
+            // three sibling arms above: synthesize a well-defined zero
+            // directly instead of reading `return_slot` at all.
+            let ret_val = fn_ctx.return_ty.const_zero();
             fn_ctx
                 .builder
                 .build_return(Some(&ret_val))

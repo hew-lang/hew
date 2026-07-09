@@ -8414,6 +8414,21 @@ impl LowerCtx {
             ResolvedTy::Duration => {
                 self.dispatch_display_to_named_impl("duration", &method_name, value, span)
             }
+            ResolvedTy::Named {
+                builtin: Some(BuiltinType::Instant),
+                ..
+            } => {
+                // A typed `instant` (`let t: instant`, parameter-typed, etc.)
+                // reaches HIR as `Named { builtin: Some(Instant) }` because
+                // annotation-lowering preserves the named form. It canonicalises
+                // to i64 and renders as raw nanoseconds via the i64 catalog
+                // overload, mirroring the checker's own `Named{Instant}` -> i64
+                // satisfaction path. Handled before the general `Named` arm,
+                // which would otherwise route to a non-existent `instant::fmt`
+                // impl symbol and fail closed.
+                let builtin = scalar_display_builtin(&ResolvedTy::I64);
+                self.build_catalog_call(builtin, vec![value], span)
+            }
             ResolvedTy::Named { name, .. } => {
                 // An abstract type parameter `T: Display` (the checker lowers
                 // `T` to a bare `Named`) defers to per-monomorphisation static
@@ -8523,6 +8538,7 @@ impl LowerCtx {
             && args.first().is_some_and(|arg| {
                 self.abstract_type_param_name(&arg.ty).is_some()
                     || matches!(arg.ty, ResolvedTy::Duration)
+                    || is_named_instant(&arg.ty)
             });
         if !is_display_surface || !single_dispatchable || self.lang_items.display_method().is_none()
         {
@@ -28806,6 +28822,22 @@ fn scan_expr_for_vec_index_gate(
 /// Map a scalar `ResolvedTy` to its `to_string_*` catalog builtin for Display
 /// dispatch. Only the scalar arm of `lower_display_dispatch` reaches here; any
 /// non-scalar type is a caller bug (the dispatch match never routes it here).
+/// Whether `ty` is a typed `instant` (`Named { builtin: Some(Instant) }`).
+///
+/// Annotation-lowering preserves the named form for `instant` (unlike the
+/// expression-level `from_ty`, which canonicalises to i64), so any
+/// annotation/parameter-typed instant carries this shape rather than a bare
+/// `ResolvedTy::I64`.
+fn is_named_instant(ty: &ResolvedTy) -> bool {
+    matches!(
+        ty,
+        ResolvedTy::Named {
+            builtin: Some(BuiltinType::Instant),
+            ..
+        }
+    )
+}
+
 fn scalar_display_builtin(ty: &ResolvedTy) -> &'static str {
     match ty {
         ResolvedTy::I8 | ResolvedTy::I16 | ResolvedTy::I32 => "to_string_i32",

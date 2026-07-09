@@ -683,27 +683,44 @@ impl Checker {
     /// `op_desc` should be a short human-readable label such as
     /// `"Receiver::recv"` or `"net.Connection::read"`.
     pub(super) fn warn_if_blocking_in_receive_fn(&mut self, op_desc: &str, span: &Span) {
+        self.warn_if_blocking_in_receive_fn_with_fix(op_desc, span, None);
+    }
+
+    /// Same warning as [`Self::warn_if_blocking_in_receive_fn`], with an
+    /// optional caller-supplied `(remedy clause, suggestion)` pair in place
+    /// of the generic "send it as a message" text. `warn_if_blocking_handle_method`
+    /// uses this to point `accept`/`read` at their already-shipping `await`
+    /// forms instead of the generic redesign-your-actor advice — those two
+    /// ops have a direct, drop-in suspending replacement; most other
+    /// blocking calls (e.g. `Receiver::recv`) do not.
+    fn warn_if_blocking_in_receive_fn_with_fix(
+        &mut self,
+        op_desc: &str,
+        span: &Span,
+        fix: Option<(&str, String)>,
+    ) {
         if !self.in_receive_fn {
             return;
         }
+        let (remedy_clause, suggestion) = fix.unwrap_or((
+            "consider passing the value in via a message instead",
+            "send the blocking work to a dedicated actor or async task and \
+             deliver the result as a message"
+                .to_string(),
+        ));
         self.warnings.push(TypeError {
             severity: crate::error::Severity::Warning,
             kind: TypeErrorKind::BlockingCallInReceiveFn,
             span: span.clone(),
             message: format!(
                 "blocking call `{op_desc}` inside an actor receive function \
-                 can stall the scheduler thread and cause deadlocks; \
-                 consider passing the value in via a message instead"
+                 can stall the scheduler thread and cause deadlocks; {remedy_clause}"
             ),
             notes: vec![(
                 span.clone(),
                 "actor receive functions run synchronously on scheduler worker threads".to_string(),
             )],
-            suggestions: vec![
-                "send the blocking work to a dedicated actor or async task and \
-                 deliver the result as a message"
-                    .to_string(),
-            ],
+            suggestions: vec![suggestion],
             source_module: self.current_module.clone(),
         });
     }
@@ -718,7 +735,20 @@ impl Checker {
             (type_name, method),
             ("http.Server" | "net.Listener", "accept") | ("net.Connection", "read")
         ) {
-            self.warn_if_blocking_in_receive_fn(&format!("{type_name}::{method}"), span);
+            let suggestion = "use the suspending form instead: `await` the call (e.g. \
+                 `await listener.accept()` or `await conn.read()`) — it parks the \
+                 actor on the reactor instead of blocking the worker thread, and \
+                 stays teardown-safe on process shutdown; see \
+                 examples/net/http_await_service.hew"
+                .to_string();
+            self.warn_if_blocking_in_receive_fn_with_fix(
+                &format!("{type_name}::{method}"),
+                span,
+                Some((
+                    "use the suspending `await` form instead of the blocking call",
+                    suggestion,
+                )),
+            );
         }
     }
 

@@ -48,7 +48,20 @@ use crate::ownership::ValueOwnership;
 use crate::ownership::ValueProvenance;
 use crate::ownership::VecElementRelease;
 
-type TaskEntryAdapterSymbols = Rc<RefCell<HashSet<String>>>;
+/// Maps each original (unsanitized) callee symbol to the adapter symbol
+/// generated for it. `mir_sanitize_symbol` maps every non-alphanumeric byte to
+/// `'_'`, which is lossy and non-injective (e.g. a generic monomorphization
+/// mangled as `worker$$i64` and an unrelated concrete function literally named
+/// `worker__i64` both sanitize to the same `worker__i64` name). Naively
+/// generating `__hew_task_entry_<sanitized>` per callee and deduping on either
+/// the sanitized name (wrong: two distinct callees silently share one
+/// adapter, so the second callee's task body never runs) or the plain
+/// sanitized name with dedup keyed on the original symbol instead (wrong: two
+/// distinct adapters would still collide on the same generated function
+/// name) both break. Keying this map by the original callee symbol and
+/// disambiguating with a numeric suffix on collision keeps every adapter
+/// symbol both stable-per-callee and unique-per-distinct-callee.
+type TaskEntryAdapterSymbols = Rc<RefCell<HashMap<String, String>>>;
 
 const HEW_CTX_OFFSET_ACTOR_ID: usize = 8;
 const HEW_CTX_OFFSET_PARENT_SUPERVISOR: usize = 16;
@@ -24699,15 +24712,44 @@ impl Builder {
         )
     }
 
+    /// Resolve (and, on first use, allocate) the task-entry adapter symbol
+    /// for `callee_symbol`. Stable across repeated calls with the same
+    /// `callee_symbol` (returns the previously allocated adapter symbol
+    /// without regenerating the adapter body). If the naive sanitized name
+    /// is already owned by a *different* original callee symbol, appends a
+    /// numeric disambiguation suffix so every distinct callee still gets its
+    /// own, uniquely named adapter.
     fn ensure_task_entry_adapter(&mut self, callee_symbol: &str, result_ty: &ResolvedTy) -> String {
-        let adapter_symbol = Self::task_entry_adapter_symbol(callee_symbol);
-        if !self
-            .task_entry_adapter_symbols
-            .borrow_mut()
-            .insert(adapter_symbol.clone())
-        {
-            return adapter_symbol;
+        if let Some(existing) = self.task_entry_adapter_symbols.borrow().get(callee_symbol) {
+            return existing.clone();
         }
+        let base_symbol = Self::task_entry_adapter_symbol(callee_symbol);
+        let already_used = self
+            .task_entry_adapter_symbols
+            .borrow()
+            .values()
+            .any(|used| used == &base_symbol);
+        let adapter_symbol = if already_used {
+            let mut candidate;
+            let mut suffix = 2usize;
+            loop {
+                candidate = format!("{base_symbol}__dup{suffix}");
+                let taken = self
+                    .task_entry_adapter_symbols
+                    .borrow()
+                    .values()
+                    .any(|used| used == &candidate);
+                if !taken {
+                    break candidate;
+                }
+                suffix += 1;
+            }
+        } else {
+            base_symbol
+        };
+        self.task_entry_adapter_symbols
+            .borrow_mut()
+            .insert(callee_symbol.to_string(), adapter_symbol.clone());
         let lowered = self.synthesize_task_entry_adapter(callee_symbol, &adapter_symbol, result_ty);
         self.generated_functions.push(lowered);
         adapter_symbol

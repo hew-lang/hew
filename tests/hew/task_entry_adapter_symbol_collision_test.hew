@@ -1,0 +1,76 @@
+//! Task-spawn adapter-symbol collision: `ensure_task_entry_adapter` must
+//! generate a distinct adapter for every distinct callee symbol, even when
+//! two unrelated callee symbols sanitize to the same lossy adapter name.
+//!
+//! `mir_sanitize_symbol` maps every non-alphanumeric byte in a callee symbol
+//! to `'_'`. That mapping is not injective: a generic monomorphization
+//! mangled as `worker$$i64` and an unrelated, literally-named concrete
+//! function `worker__i64` both sanitize to `worker__i64`, so a naive
+//! "generate `__hew_task_entry_<sanitized>` once per sanitized name" scheme
+//! would silently share one adapter between the two callees — every spawn of
+//! the *second* callee would actually run the *first* callee's body.
+//!
+//! VALUE ASSERTIONS pin the exact combined result (1 + 2 == 3) so a
+//! mis-routed spawn is caught by a wrong sum, not just a missing exit code.
+//! Both spawn orders are exercised because the adapter that gets the plain
+//! (non-suffixed) name depends on lowering order, not spawn order — the test
+//! must hold regardless of which callee is encountered first.
+
+import std::testing;
+
+// Generic free fn. Its `i64` monomorphization mangles to `worker$$i64`,
+// which `mir_sanitize_symbol` normalizes to `worker__i64` — the exact same
+// normalized form as the concrete function below.
+fn worker<T>() -> i64 {
+    return 1;
+}
+
+// Unrelated concrete function whose literal name collides with the
+// sanitized form of `worker`'s `i64` monomorphization.
+fn worker__i64() -> i64 {
+    return 2;
+}
+
+actor CollisionRunner {
+    receive fn run_original_order() -> i64 {
+        var total: i64 = 0;
+        scope {
+            fork a = worker::<i64>();
+            fork b = worker__i64();
+            let ra = await a;
+            let rb = await b;
+            total = ra + rb;
+        };
+        return total;
+    }
+
+    receive fn run_reversed_order() -> i64 {
+        var total: i64 = 0;
+        scope {
+            fork b = worker__i64();
+            fork a = worker::<i64>();
+            let rb = await b;
+            let ra = await a;
+            total = ra + rb;
+        };
+        return total;
+    }
+}
+
+#[test]
+fn test_task_entry_adapter_no_collision_original_order() {
+    let r = spawn CollisionRunner();
+    match await r.run_original_order() {
+        Ok(n) => testing.assert_eq(n, 3),
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn test_task_entry_adapter_no_collision_reversed_order() {
+    let r = spawn CollisionRunner();
+    match await r.run_reversed_order() {
+        Ok(n) => testing.assert_eq(n, 3),
+        Err(_) => testing.assert_true(false),
+    }
+}

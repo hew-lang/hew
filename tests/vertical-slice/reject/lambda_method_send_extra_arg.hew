@@ -1,0 +1,9 @@
+// Reject: LambdaPid::send accepts exactly one message argument. Extra
+// arguments were previously type-checked for recovery and then silently
+// dropped by MIR lowering, so this must fail at check time instead.
+fn main() {
+    let printer = actor |x: i64| {
+        println(x);
+    };
+    printer.send(42, 99);
+}

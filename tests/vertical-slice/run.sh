@@ -2082,6 +2082,23 @@ run_accept_expect_status_and_stdout "lambda_send_result_ok" 7
 # the message was delivered before the release.
 run_accept_expect_stdout "lambda_close"
 
+# Reject: LambdaPid::send accepts exactly one message argument. MIR lowers only
+# the receiver plus the first message arg, so surplus args must not be silently
+# accepted and dropped.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/lambda_method_send_extra_arg.hew" >"${reject_output}" 2>&1; then
+  echo "expected lambda-method-send-extra-arg fixture to fail" >&2
+  exit 1
+fi
+grep -q 'LambdaPid::send expects one argument' "${reject_output}"
+
+# Reject: LambdaPid::close accepts no arguments. MIR lowers only the receiver,
+# so surplus args must not be silently accepted and dropped.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/lambda_close_extra_arg.hew" >"${reject_output}" 2>&1; then
+  echo "expected lambda-close-extra-arg fixture to fail" >&2
+  exit 1
+fi
+grep -q 'LambdaPid::close expects no arguments' "${reject_output}"
+
 # Reject: ask-shaped actor body return type mismatch (E_LAMBDA_RETURN_TYPE_MISMATCH).
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/lambda_return_mismatch.hew" >"${reject_output}" 2>&1; then
   echo "expected lambda-return-mismatch fixture to fail" >&2

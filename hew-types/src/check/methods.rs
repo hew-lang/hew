@@ -3241,21 +3241,28 @@ impl Checker {
 
         match method {
             "send" => {
-                // Check the argument against M (the message type).
+                if args.len() != 1 {
+                    self.report_error(
+                        TypeErrorKind::ArityMismatch,
+                        span,
+                        format!(
+                            "LambdaPid::send expects one argument (the message), but {} were supplied",
+                            args.len()
+                        ),
+                    );
+                }
+                // Check the argument against M (the message type) when present so
+                // the caller still gets the most specific message-type diagnostic
+                // alongside any arity error.
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
                     let ty = self.check_against(expr, sp, &m_ty);
                     // Enforce Send bound: the message crosses the actor boundary.
                     let resolved = self.subst.resolve(&ty);
                     self.enforce_actor_boundary_send(expr, sp, span, &resolved);
-                } else {
-                    self.report_error(
-                        TypeErrorKind::ArityMismatch,
-                        span,
-                        "LambdaPid::send expects one argument (the message)".to_string(),
-                    );
                 }
-                // Synthesize extra args for recovery diagnostics.
+                // Synthesize extra args for recovery diagnostics, but do not accept
+                // them: MIR only lowers the receiver plus the first message arg.
                 for arg in args.iter().skip(1) {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp);
@@ -3275,7 +3282,19 @@ impl Checker {
                 }
             }
             "close" => {
-                // No arguments expected.
+                // No arguments expected. Synthesize any supplied args for
+                // recovery diagnostics, but do not accept them: MIR lowers only
+                // the receiver for LambdaPid::close.
+                if !args.is_empty() {
+                    self.report_error(
+                        TypeErrorKind::ArityMismatch,
+                        span,
+                        format!(
+                            "LambdaPid::close expects no arguments, but {} were supplied",
+                            args.len()
+                        ),
+                    );
+                }
                 for arg in args {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp);

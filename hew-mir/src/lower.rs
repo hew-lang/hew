@@ -30,12 +30,13 @@ use hew_types::{
 
 use crate::dataflow;
 use crate::model::{
-    ActorHandlerLayout, ActorLayout, BasicBlock, BlockKind, CheckedMirFunction, CmpPred,
-    DecisionFact, DropKind, DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath,
-    FieldOffset, FloatWidth, Instr, IntArithOp, IntSignedness, IrPipeline, JoinBranch,
-    LambdaCapture, MirCheck, MirConst, MirConstValue, MirDiagnostic, MirDiagnosticKind,
-    MirStatement, Place, PointerWidth, RawMirFunction, SelectArm, SelectArmKind, SourceOrigin,
-    Strategy, SuspendKind, Terminator, ThirFunction, TraitObjectStorage, TrapKind,
+    ActorHandlerLayout, ActorLayout, BasicBlock, BlockKind, CheckedMirFunction,
+    ClosureEnvAllocation, ClosureEnvFieldInit, ClosureEnvFieldOwnership, CmpPred, DecisionFact,
+    DropKind, DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, FieldOffset,
+    FloatWidth, Instr, IntArithOp, IntSignedness, IrPipeline, JoinBranch, LambdaCapture, MirCheck,
+    MirConst, MirConstValue, MirDiagnostic, MirDiagnosticKind, MirStatement, Place, PointerWidth,
+    RawMirFunction, SelectArm, SelectArmKind, SourceOrigin, Strategy, SuspendKind, Terminator,
+    ThirFunction, TraitObjectStorage, TrapKind,
 };
 use crate::ownership::FailClosedReason;
 use crate::ownership::LayoutClass;
@@ -25427,8 +25428,14 @@ impl Builder {
             });
             return None;
         }
-        let (fn_symbol, env_ty, env_place, _suspends) =
-            self.materialize_closure_env(callee, params, ret_ty, body, captures)?;
+        let (fn_symbol, env_ty, env_place, _suspends) = self.materialize_closure_env(
+            callee,
+            params,
+            ret_ty,
+            body,
+            captures,
+            crate::closure_env::AllocationStrategy::ScopeOwned,
+        )?;
         let task_place = self.alloc_local(task_ty.clone());
         self.push_runtime_call("hew_task_new", vec![], Some(task_place));
         self.push_runtime_call("hew_task_scope_spawn", vec![scope_place, task_place], None);
@@ -31004,13 +31011,6 @@ impl Builder {
         captures: &[hew_hir::HirClosureCapture],
         escape_kind: hew_types::ClosureEscapeKind,
     ) -> Option<Place> {
-        let (shim_name, _env_ty, env_place, suspends) =
-            self.materialize_closure_env(expr, params, ret_ty, body, captures)?;
-        // Record the body-suspends verdict so the enclosing `Let` handler can
-        // attribute it to the bound binding (the suspendable-callee
-        // discriminator the closure-call site reads).
-        self.pending_closure_literal_suspends = Some(suspends);
-
         // Build the foundation-API layout (plan §15.1). Stored on the
         // builder so downstream consumers (generator codegen, auto-lock
         // injection) can query `lock_slot_for()` / `has_suspend_in_body()`
@@ -31049,6 +31049,13 @@ impl Builder {
         // preserves the pre-promotion behaviour rather than fabricating an
         // unowned heap box.
         let strategy = layout.allocation_strategy();
+        let (shim_name, _env_ty, env_place, suspends) =
+            self.materialize_closure_env(expr, params, ret_ty, body, captures, strategy)?;
+        // Record the body-suspends verdict so the enclosing `Let` handler can
+        // attribute it to the bound binding (the suspendable-callee
+        // discriminator the closure-call site reads).
+        self.pending_closure_literal_suspends = Some(suspends);
+
         let env_mode = match strategy {
             crate::closure_env::AllocationStrategy::Heap => {
                 if captures.is_empty() {
@@ -31079,6 +31086,42 @@ impl Builder {
         Some(closure_place)
     }
 
+    fn closure_env_capture_ownership(
+        &self,
+        strategy: crate::closure_env::AllocationStrategy,
+        ty: &ResolvedTy,
+    ) -> ClosureEnvFieldOwnership {
+        match strategy {
+            crate::closure_env::AllocationStrategy::Stack
+            | crate::closure_env::AllocationStrategy::ScopeOwned => {
+                ClosureEnvFieldOwnership::BorrowsOnly
+            }
+            crate::closure_env::AllocationStrategy::Heap => {
+                let ty = self.subst_ty(ty);
+                if ValueClass::of_ty(&ty, &self.type_classes) == ValueClass::BitCopy {
+                    ClosureEnvFieldOwnership::BorrowsOnly
+                } else {
+                    ClosureEnvFieldOwnership::OwnsMoved
+                }
+            }
+        }
+    }
+
+    fn closure_env_allocation_manifest(
+        strategy: crate::closure_env::AllocationStrategy,
+    ) -> ClosureEnvAllocation {
+        match strategy {
+            crate::closure_env::AllocationStrategy::Stack => ClosureEnvAllocation::Stack,
+            crate::closure_env::AllocationStrategy::Heap => ClosureEnvAllocation::Heap,
+            crate::closure_env::AllocationStrategy::ScopeOwned => ClosureEnvAllocation::ScopeOwned,
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "closure env materialization keeps env layout registration, \
+                  ownership manifest construction, and shim generation aligned"
+    )]
     fn materialize_closure_env(
         &mut self,
         expr: &HirExpr,
@@ -31086,6 +31129,7 @@ impl Builder {
         ret_ty: &ResolvedTy,
         body: &HirExpr,
         captures: &[hew_hir::HirClosureCapture],
+        strategy: crate::closure_env::AllocationStrategy,
     ) -> Option<(String, ResolvedTy, Place, bool)> {
         let closure_id = self.next_closure_id;
         self.next_closure_id = self
@@ -31138,6 +31182,7 @@ impl Builder {
 
         let mut field_pairs = Vec::with_capacity(captures.len());
         let mut failed = false;
+        let allocation = Self::closure_env_allocation_manifest(strategy);
         for (idx, capture) in captures.iter().enumerate() {
             let offset =
                 FieldOffset(u32::try_from(idx).expect("closure capture count exceeds u32::MAX"));
@@ -31167,8 +31212,10 @@ impl Builder {
                 continue;
             }
 
-            let src = if let Some(place) = self.binding_locals.get(&capture.binding).copied() {
-                place
+            let (src, source_binding) = if let Some(place) =
+                self.binding_locals.get(&capture.binding).copied()
+            {
+                (place, Some(capture.binding))
             } else if let Some(source) = self.capture_env_sources.get(&capture.binding).cloned() {
                 let temp = self.alloc_local(source.ty.clone());
                 self.push_instr(Instr::ClosureEnvFieldLoad {
@@ -31177,7 +31224,7 @@ impl Builder {
                     field_offset: source.field_offset,
                     dest: temp,
                 });
-                temp
+                (temp, None)
             } else {
                 self.diagnostics.push(MirDiagnostic {
                     kind: MirDiagnosticKind::CannotMaterializeClosureCapture {
@@ -31193,14 +31240,35 @@ impl Builder {
                 failed = true;
                 continue;
             };
-            field_pairs.push((offset, src));
+            let field_ty = self.subst_ty(&capture.ty);
+            let ownership = self.closure_env_capture_ownership(strategy, &field_ty);
+            if ownership == ClosureEnvFieldOwnership::OwnsMoved {
+                if let Some(binding) = source_binding {
+                    self.statements.push(MirStatement::Use {
+                        binding,
+                        name: capture.name.clone(),
+                        site: expr.site,
+                        ty: field_ty.clone(),
+                        intent: IntentKind::Consume,
+                    });
+                }
+            }
+            field_pairs.push(ClosureEnvFieldInit {
+                field_offset: offset,
+                src,
+                source_binding,
+                capture_mode: capture.mode,
+                allocation,
+                ownership,
+                source_is_parameter: self.funcupdate_param_ids.contains(&capture.binding),
+            });
         }
         if failed {
             return None;
         }
 
         let env_place = self.alloc_local(env_ty.clone());
-        self.push_instr(Instr::RecordInit {
+        self.push_instr(Instr::ClosureEnvInit {
             ty: env_ty.clone(),
             fields: field_pairs,
             dest: env_place,
@@ -31354,7 +31422,14 @@ impl Builder {
             ty: ret_ty.clone(),
         });
 
-        let blocks = builder.finalize_blocks(Terminator::Return);
+        let mut blocks = builder.finalize_blocks(Terminator::Return);
+        apply_nested_fresh_string_temp_drops(
+            &mut blocks,
+            &builder.suspend_kinds,
+            &builder.locals,
+            &builder.binding_locals,
+            &mut builder.instr_spans,
+        );
         let thir_statements: Vec<MirStatement> = blocks
             .iter()
             .flat_map(|b| b.statements.iter().cloned())
@@ -36154,6 +36229,11 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
             places.push(*dest);
             places
         }
+        Instr::ClosureEnvInit { fields, dest, .. } => {
+            let mut places: Vec<Place> = fields.iter().map(|field| field.src).collect();
+            places.push(*dest);
+            places
+        }
         Instr::RecordFieldLoad { record, dest, .. } => vec![*record, *dest],
         Instr::RecordFieldDrop { record, .. } => vec![*record],
         // FieldDropInPlace surfaces only its base aggregate: an interior
@@ -36939,6 +37019,14 @@ pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
         // Aggregate construction: every field/element value is shared into
         // the new aggregate; the dest is a write.
         Instr::RecordInit { fields, .. } => fields.iter().map(|(_, p)| *p).collect(),
+        // Closure env construction carries an ownership manifest. Stack-env
+        // fields are borrow-only and must not suppress source drops; heap fields
+        // that own a moved capture are the source-transfer reads.
+        Instr::ClosureEnvInit { fields, .. } => fields
+            .iter()
+            .filter(|field| field.ownership == ClosureEnvFieldOwnership::OwnsMoved)
+            .map(|field| field.src)
+            .collect(),
         Instr::TupleConstruct { elements, .. } => elements.clone(),
         // Field loads: the aggregate is the source; the dest is a write
         // (and, for the interior-aliasing loads, a projection seed — see
@@ -37298,6 +37386,10 @@ fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
             drop_fn: Some(_), ..
         } => false,
         Instr::RecordInit { fields, .. } => fields.iter().any(|(_, p)| refs(*p)),
+        Instr::ClosureEnvInit { fields, .. } => fields
+            .iter()
+            .filter(|field| field.ownership == ClosureEnvFieldOwnership::OwnsMoved)
+            .any(|field| refs(field.src)),
         Instr::TupleConstruct { elements, .. } => elements.iter().any(|p| refs(*p)),
         Instr::RecordFieldStore { src, .. } => refs(*src),
         Instr::ActorStateFieldStore { src, .. } => refs(*src),
@@ -37643,6 +37735,7 @@ fn projection_alias_dest(instr: &Instr) -> Option<Place> {
         | Instr::BytesLit { .. }
         | Instr::ConstGlobalLoad { .. }
         | Instr::RecordInit { .. }
+        | Instr::ClosureEnvInit { .. }
         | Instr::RecordFieldStore { .. }
         | Instr::TupleConstruct { .. }
         | Instr::FloatLit { .. }
@@ -37962,17 +38055,19 @@ fn fresh_string_producer_term_dest(term: &Terminator) -> Option<Place> {
     }
 }
 
-/// The dest of a `string`-typed record/tuple field load — a fresh `+1` owner
-/// once codegen retains it (`retain_string_field_load`, hew-codegen-rs).
+/// The dest of a `string`-typed record/tuple/closure-env field load — a fresh
+/// `+1` owner once codegen retains it (`retain_string_field_load`,
+/// hew-codegen-rs).
 ///
-/// A `string` loaded from a record field (`RecordFieldLoad`) or tuple element
-/// (`TupleFieldLoad`) is emitted by codegen with a `hew_string_clone` retain, so
-/// the loaded local is an independent `+1` owner — the identical ownership shape
-/// as the `Vec<string>` getter `hew_vec_get_str` (`xs.get(i)`), which is already
-/// admitted as a fresh producer. This classifier moves the string field-load
-/// dest from the "projection alias, never drop" class into the "fresh `+1`, drop
-/// once when sole owner" class so `derive_cow_fresh_borrowed_owner` admits it for
-/// exactly one balancing scope-exit `hew_string_drop`.
+/// A `string` loaded from a record field (`RecordFieldLoad`), tuple element
+/// (`TupleFieldLoad`), or closure capture (`ClosureEnvFieldLoad`) is emitted by
+/// codegen with a `hew_string_clone` retain, so the loaded local is an
+/// independent `+1` owner — the identical ownership shape as the `Vec<string>`
+/// getter `hew_vec_get_str` (`xs.get(i)`), which is already admitted as a fresh
+/// producer. This classifier moves the string field-load dest from the
+/// "projection alias, never drop" class into the "fresh `+1`, drop once when
+/// sole owner" class so `derive_cow_fresh_borrowed_owner` admits it for exactly
+/// one balancing scope-exit `hew_string_drop`.
 ///
 /// The two sides are coupled and MUST move together: codegen retains ONLY
 /// string-typed `*FieldLoad` dests (detected by the dest's `ResolvedTy`), so this
@@ -37984,7 +38079,9 @@ fn fresh_string_producer_term_dest(term: &Terminator) -> Option<Place> {
 /// same precise string distinguisher codegen uses.
 fn string_field_load_producer_dest(instr: &Instr, locals: &[ResolvedTy]) -> Option<Place> {
     let dest = match instr {
-        Instr::RecordFieldLoad { dest, .. } | Instr::TupleFieldLoad { dest, .. } => *dest,
+        Instr::RecordFieldLoad { dest, .. }
+        | Instr::TupleFieldLoad { dest, .. }
+        | Instr::ClosureEnvFieldLoad { dest, .. } => *dest,
         _ => return None,
     };
     let local = base_local(dest)?;
@@ -38918,6 +39015,23 @@ fn apply_escaped_record_sibling_field_drops(
                         site!(Some(root), Some(idx));
                     }
                 }
+                Instr::ClosureEnvInit { fields, dest, .. } => {
+                    for field in fields
+                        .iter()
+                        .filter(|field| field.ownership == ClosureEnvFieldOwnership::OwnsMoved)
+                    {
+                        if let Some(l) = base_local(field.src) {
+                            if let Some(&root) = alias_of.get(&l) {
+                                poison!(root);
+                            } else if field_binders.contains(&l) {
+                                escape!(l, idx);
+                            }
+                        }
+                    }
+                    if let Some(&root) = base_local(*dest).and_then(|dl| alias_of.get(&dl)) {
+                        site!(Some(root), Some(idx));
+                    }
+                }
                 Instr::RecordCloneInplace { src, dest, .. } => {
                     if let Some(l) = base_local(*src) {
                         if let Some(&root) = alias_of.get(&l) {
@@ -39313,6 +39427,18 @@ fn compute_escaped_chain_sibling_drops(
                 Instr::RecordInit { fields, .. } => {
                     for (_, place) in fields {
                         if let Some(l) = base_local(*place) {
+                            if let Some(&escapee) = carrier_of.get(&l) {
+                                escapes.push((escapee, block.id, idx));
+                            }
+                        }
+                    }
+                }
+                Instr::ClosureEnvInit { fields, .. } => {
+                    for field in fields
+                        .iter()
+                        .filter(|field| field.ownership == ClosureEnvFieldOwnership::OwnsMoved)
+                    {
+                        if let Some(l) = base_local(field.src) {
                             if let Some(&escapee) = carrier_of.get(&l) {
                                 escapes.push((escapee, block.id, idx));
                             }
@@ -41592,6 +41718,16 @@ fn derive_returned_aggregate_member_bindings(
                             changed |= add_member(field, &mut flows_to_return);
                         }
                     }
+                    Instr::ClosureEnvInit { fields, dest, .. }
+                        if base_local(*dest).is_some_and(|dl| flows_to_return.contains(&dl)) =>
+                    {
+                        for field in fields
+                            .iter()
+                            .filter(|field| field.ownership == ClosureEnvFieldOwnership::OwnsMoved)
+                        {
+                            changed |= add_member(&field.src, &mut flows_to_return);
+                        }
+                    }
                     // Enum / machine variant payload store whose carrier
                     // aggregate reaches the return: the stored source is an
                     // owned member handed to the caller through that variant.
@@ -41770,6 +41906,22 @@ fn derive_consumed_local_aggregate_member_bindings(
                         if let Some(fl) = base_local(*field) {
                             if place_is_owned_handoff_member(*field) && local_is_heap_owning(fl) {
                                 agg_field_source.insert((dl, offset.0), fl);
+                            }
+                        }
+                    }
+                }
+                Instr::ClosureEnvInit { fields, dest, .. } => {
+                    let Some(dl) = base_local(*dest) else {
+                        continue;
+                    };
+                    for field in fields
+                        .iter()
+                        .filter(|field| field.ownership == ClosureEnvFieldOwnership::OwnsMoved)
+                    {
+                        if let Some(fl) = base_local(field.src) {
+                            if place_is_owned_handoff_member(field.src) && local_is_heap_owning(fl)
+                            {
+                                agg_field_source.insert((dl, field.field_offset.0), fl);
                             }
                         }
                     }
@@ -42066,6 +42218,23 @@ fn detect_unproven_aggregate_handle_double_free(
                             let mut acc: HashSet<u32> = HashSet::new();
                             for (_offset, field) in fields {
                                 if let Some(fl) = base_local(*field) {
+                                    if let Some(o) = carries.get(&fl) {
+                                        for &x in o {
+                                            acc.insert(x);
+                                        }
+                                    }
+                                }
+                            }
+                            changed |= merge(&acc, carries.entry(dl).or_default());
+                        }
+                    }
+                    Instr::ClosureEnvInit { fields, dest, .. } => {
+                        if let Some(dl) = base_local(*dest) {
+                            let mut acc: HashSet<u32> = HashSet::new();
+                            for field in fields.iter().filter(|field| {
+                                field.ownership == ClosureEnvFieldOwnership::OwnsMoved
+                            }) {
+                                if let Some(fl) = base_local(field.src) {
                                     if let Some(o) = carries.get(&fl) {
                                         for &x in o {
                                             acc.insert(x);
@@ -42489,6 +42658,11 @@ fn instr_escape_places(instr: &Instr) -> Vec<Place> {
         Instr::RecordFieldStore { src, .. } | Instr::ActorStateFieldStore { src, .. } => {
             vec![*src]
         }
+        Instr::ClosureEnvInit { fields, .. } => fields
+            .iter()
+            .filter(|field| field.ownership == ClosureEnvFieldOwnership::OwnsMoved)
+            .map(|field| field.src)
+            .collect(),
         // Captured / spawned / erased: the handle moves into a context whose
         // drop this function cannot see.
         Instr::MakeClosure { env, .. } => vec![*env],

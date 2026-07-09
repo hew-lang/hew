@@ -4450,6 +4450,18 @@ pub enum Instr {
         /// Destination place that receives the constructed record value.
         dest: Place,
     },
+    /// Construct a closure environment record with an explicit per-field
+    /// ownership manifest. Codegen lowers this identically to `RecordInit`; MIR
+    /// drop/alias analysis reads the manifest to distinguish stack-env borrows
+    /// from heap-env ownership transfers.
+    ClosureEnvInit {
+        /// Resolved synthetic env-record type.
+        ty: ResolvedTy,
+        /// Field sources plus capture ownership facts in env field order.
+        fields: Vec<ClosureEnvFieldInit>,
+        /// Destination place that receives the materialised env record.
+        dest: Place,
+    },
     /// Store a single field of a record value by its declaration-order
     /// offset. The aggregate `record` stays `Live` after the store (only
     /// one field's bytes are written; ownership of the aggregate does not
@@ -5903,6 +5915,39 @@ pub enum ClosureEnvMode {
     HeapBox,
     /// Null env pointer (named-fn shims, capture-free escaping closures).
     Null,
+}
+
+/// Storage strategy recorded on a closure-env field at materialisation time.
+/// Mirrors `closure_env::AllocationStrategy` without coupling the serialisable
+/// MIR model to that helper module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClosureEnvAllocation {
+    Stack,
+    Heap,
+    ScopeOwned,
+}
+
+/// Ownership verdict for one captured field in a closure env.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClosureEnvFieldOwnership {
+    /// The env field is a borrow/alias; the source binding keeps its drop.
+    BorrowsOnly,
+    /// The env field takes over the source binding's existing owner.
+    OwnsMoved,
+    /// Reserved for the future retain/deep-clone capture path.
+    OwnsClonedOrRetained,
+}
+
+/// One field of a [`Instr::ClosureEnvInit`] ownership manifest.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClosureEnvFieldInit {
+    pub field_offset: FieldOffset,
+    pub src: Place,
+    pub source_binding: Option<BindingId>,
+    pub capture_mode: hew_types::ClosureCaptureMode,
+    pub allocation: ClosureEnvAllocation,
+    pub ownership: ClosureEnvFieldOwnership,
+    pub source_is_parameter: bool,
 }
 
 /// Direction selector for `DropKind::DuplexHalfClose`. Mirrors the

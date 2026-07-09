@@ -241,11 +241,13 @@ fn decode_query_impl(params: string) -> Vec<(string, string)> {
     let entries = string.split(params, "&");
     for i in 0 .. entries.len() {
         let entry = entries[i];
-        let eq = entry.find("=");
-        if eq >= 0 {
-            let key = entry.slice(0, eq);
-            let value = entry.slice(eq + 1, entry.len());
-            decoded.push((decode_form_component(key), decode_form_component(value)));
+        match entry.find("=") {
+            Some(eq) => {
+                let key = entry.slice(0, eq);
+                let value = entry.slice(eq + 1, entry.len());
+                decoded.push((decode_form_component(key), decode_form_component(value)));
+            },
+            None => {},
         }
     }
     decoded

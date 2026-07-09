@@ -4269,9 +4269,24 @@ pub enum Instr {
         /// Place holding the value to store into the field.
         src: Place,
     },
+    /// Load one field out of the current actor's state record.
+    ///
+    /// `mode` is the P0 #2432 own/borrow discriminator, set by
+    /// `classify_actor_state_load_modes` (`hew-mir/src/lower.rs`) once the
+    /// function body's blocks are finalised: `Owned` when `dest` escapes as a
+    /// whole value (a `let t = self.field;` rebind later consumed by an
+    /// `ActorStateFieldStore`, a return, an aggregate/spawn operand, or any
+    /// other unrecognised use — the fail-closed default), `Borrowed` when
+    /// EVERY use of `dest` is a proven interior projection (`.field`/`.N`) or
+    /// a read-only method-receiver borrow. Codegen
+    /// (`lower_actor_state_field_load`, `hew-codegen-rs/src/llvm.rs`) retains
+    /// the loaded value ONLY on the `Owned` arm; `Borrowed` emits the bare
+    /// load/store byte-copy alias, unchanged from pre-#2432 codegen. See
+    /// `ActorStateLoadMode`'s own doc for the full rationale.
     ActorStateFieldLoad {
         field_offset: FieldOffset,
         dest: Place,
+        mode: ActorStateLoadMode,
     },
     ActorStateFieldStore {
         field_offset: FieldOffset,
@@ -5112,6 +5127,48 @@ impl WitnessOperand {
 /// rather than silently truncate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FieldOffset(pub u32);
+
+/// P0 #2432 — own/borrow discriminator for [`Instr::ActorStateFieldLoad`].
+///
+/// `ActorStateFieldLoad` is the single lowering for two structurally
+/// different access shapes: a whole-value read that escapes as an
+/// independent value (`let t = self.field; other = t;`, the temp-bridged
+/// swap idiom) and a materialize-then-project/borrow read that only
+/// extracts an interior leaf or passes the value as a read-only method
+/// receiver (`self.record.field`, `self.items.len()`). An unconditional
+/// retain-on-load is correct for the first shape and a per-frame leak for
+/// the second (the whole parent clone is never consumed once the leaf/
+/// receiver-borrow satisfies every use). `mode` records which shape a
+/// specific load site is, computed once per function by
+/// `classify_actor_state_load_modes` (`hew-mir/src/lower.rs`) over the
+/// finalised blocks, after every splice pass that can add or move
+/// instructions has already run.
+///
+/// `Owned` is the fail-closed default: every load starts `Owned` at
+/// construction (the 3 `lower_value`/gen-capture call sites in
+/// `hew-mir/src/lower.rs`), and the classifier only ever DEMOTES a load to
+/// `Borrowed` when it can prove every use is a borrow-consumer and the dest
+/// never escapes as a whole value. A misclassification can only ever run
+/// AGAINST the demotion (leaving `Owned` on a load that could have been
+/// `Borrowed`, which costs one avoidable deep-clone-then-drop leak-safe
+/// waste), never FOR it (there is no path that flips `Borrowed` back
+/// without the classifier's positive proof) — so a bug here can leak, but
+/// cannot reopen the original UAF.
+///
+/// WHEN OBSOLETE: under the COW retain-on-share SPINE (A240/M-COW), the
+/// `Owned` arm's deep clone becomes a cheap refcount bump and `Borrowed`
+/// becomes the true zero-cost borrow the spine wants — the discriminator
+/// itself stays; only what codegen does for each arm gets cheaper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ActorStateLoadMode {
+    /// `dest` escapes as an independent whole value (or the classifier could
+    /// not prove otherwise). Codegen retains on load, per `StateFieldCloneKind`.
+    Owned,
+    /// Every use of `dest` is a proven interior projection or a read-only
+    /// receiver borrow, and `dest` never escapes as a whole value. Codegen
+    /// emits the bare load/store byte-copy alias — no retain, no clone.
+    Borrowed,
+}
 
 /// Field-address selector for [`Instr::FieldDropInPlace`]: one op covers both
 /// record parents (addressed by declared-field offset) and tuple parents

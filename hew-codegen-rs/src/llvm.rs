@@ -18357,7 +18357,15 @@ fn lower_instruction(
             lower_record_field_store(fn_ctx, *record, *field_offset, *src)?;
             let _ = ctx;
         }
-        Instr::ActorStateFieldLoad { field_offset, dest } => {
+        Instr::ActorStateFieldLoad {
+            field_offset,
+            dest,
+            mode: _,
+        } => {
+            // P0 #2432 Slice A — `mode` threaded through in Slice C, which
+            // gates the retain-on-load block on `mode == Owned`. Ignored here
+            // so the discriminator lands as a non-breaking, behaviour-
+            // unchanged compile step.
             lower_actor_state_field_load(fn_ctx, *field_offset, *dest)?;
             let _ = ctx;
         }

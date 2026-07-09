@@ -30,12 +30,12 @@
 use std::fmt::Write as _;
 
 use crate::model::{
-    BasicBlock, CheckedMirFunction, ClosureEnvAllocation, ClosureEnvFieldOwnership, ClosureEnvMode,
-    CmpPred, Direction, DropFnSpec, DropKind, DropPlan, ElabDrop, ElaboratedMirFunction, ExitPath,
-    FloatWidth, FunctionCallConv, Instr, IntArithOp, IntSignedness, IrPipeline, JoinBranch,
-    LambdaEnvFieldDrop, MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement, Place,
-    RawMirFunction, SelectArm, SelectArmKind, SpawnEnvFieldOwnership, SuspendKind, Terminator,
-    TrapKind,
+    ActorStateLoadMode, BasicBlock, CheckedMirFunction, ClosureEnvAllocation,
+    ClosureEnvFieldOwnership, ClosureEnvMode, CmpPred, Direction, DropFnSpec, DropKind, DropPlan,
+    ElabDrop, ElaboratedMirFunction, ExitPath, FloatWidth, FunctionCallConv, Instr, IntArithOp,
+    IntSignedness, IrPipeline, JoinBranch, LambdaEnvFieldDrop, MirCheck, MirDiagnostic,
+    MirDiagnosticKind, MirStatement, Place, RawMirFunction, SelectArm, SelectArmKind,
+    SpawnEnvFieldOwnership, SuspendKind, Terminator, TrapKind,
 };
 
 /// Which stage of the pipeline to render.
@@ -849,11 +849,16 @@ fn render_instr(instr: &Instr) -> String {
             render_place(src),
             env_ty.user_facing()
         ),
-        Instr::ActorStateFieldLoad { field_offset, dest } => {
+        Instr::ActorStateFieldLoad {
+            field_offset,
+            dest,
+            mode,
+        } => {
             format!(
-                "{} = actor_state_load field[{}]",
+                "{} = actor_state_load field[{}]{}",
                 render_place(dest),
-                field_offset.0
+                field_offset.0,
+                render_actor_state_load_mode_suffix(*mode)
             )
         }
         Instr::ActorStateFieldStore { field_offset, src } => {
@@ -1791,6 +1796,19 @@ fn render_env_mode(mode: ClosureEnvMode) -> &'static str {
         ClosureEnvMode::Stack => "stack",
         ClosureEnvMode::HeapBox => "heap_box",
         ClosureEnvMode::Null => "null",
+    }
+}
+
+/// P0 #2432 — render `ActorStateLoadMode` as a trailing dump suffix so
+/// `--dump-mir raw` shows the own/borrow classification directly (the
+/// Slice-0-style verification: a swap-idiom load shows no suffix, a
+/// projection/receiver-borrow load shows `[borrow]`). `Owned` renders
+/// nothing — the pre-#2432 dump text is unchanged for the (fail-closed
+/// default, still-retaining) common case.
+fn render_actor_state_load_mode_suffix(mode: ActorStateLoadMode) -> &'static str {
+    match mode {
+        ActorStateLoadMode::Owned => "",
+        ActorStateLoadMode::Borrowed => " [borrow]",
     }
 }
 

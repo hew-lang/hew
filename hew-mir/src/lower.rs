@@ -30,7 +30,7 @@ use hew_types::{
 
 use crate::dataflow;
 use crate::model::{
-    ActorHandlerLayout, ActorLayout, BasicBlock, BlockKind, CheckedMirFunction,
+    ActorHandlerLayout, ActorLayout, ActorStateLoadMode, BasicBlock, BlockKind, CheckedMirFunction,
     ClosureEnvAllocation, ClosureEnvFieldInit, ClosureEnvFieldOwnership, CmpPred, DecisionFact,
     DropKind, DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, FieldOffset,
     FloatWidth, Instr, IntArithOp, IntSignedness, IrPipeline, JoinBranch, LambdaCapture, MirCheck,
@@ -14566,8 +14566,15 @@ impl Builder {
                         self.current_actor_state_fields.get(name).cloned()
                     {
                         let dest = self.alloc_local(ty);
-                        self.instructions
-                            .push(Instr::ActorStateFieldLoad { field_offset, dest });
+                        // P0 #2432 — fail-closed default; `classify_actor_state_load_modes`
+                        // (called once per function over the finalised blocks in
+                        // `lower_function`) demotes to `Borrowed` only when it proves
+                        // every use of `dest` is a borrow-consumer.
+                        self.instructions.push(Instr::ActorStateFieldLoad {
+                            field_offset,
+                            dest,
+                            mode: ActorStateLoadMode::Owned,
+                        });
                         return Some(dest);
                     }
                 }
@@ -16003,8 +16010,12 @@ impl Builder {
                         self.current_actor_state_fields.get(field).cloned()
                     {
                         let dest = self.alloc_local(ty);
-                        self.instructions
-                            .push(Instr::ActorStateFieldLoad { field_offset, dest });
+                        // P0 #2432 — fail-closed default; see the BindingRef arm above.
+                        self.instructions.push(Instr::ActorStateFieldLoad {
+                            field_offset,
+                            dest,
+                            mode: ActorStateLoadMode::Owned,
+                        });
                         return Some(dest);
                     }
                 }
@@ -32999,8 +33010,16 @@ impl Builder {
                         match self.current_actor_state_fields.get(&capture.name).cloned() {
                             Some((field_offset, ty)) => {
                                 let dest = self.alloc_local(ty.clone());
-                                self.instructions
-                                    .push(Instr::ActorStateFieldLoad { field_offset, dest });
+                                // P0 #2432 — fail-closed default; this snapshot is a
+                                // RecordInit field a moment later (whole-value escape into
+                                // the gen-body's captured env), so the classifier keeps it
+                                // `Owned` regardless — recorded explicitly for consistency
+                                // with the other two construct sites.
+                                self.instructions.push(Instr::ActorStateFieldLoad {
+                                    field_offset,
+                                    dest,
+                                    mode: ActorStateLoadMode::Owned,
+                                });
                                 (Some(dest), Some(ty))
                             }
                             None => (None, None),

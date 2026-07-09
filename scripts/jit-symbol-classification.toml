@@ -1106,6 +1106,13 @@ internal = [
   "hew_simtime_set_ms",
   "hew_stream_set_last_error",
   "hew_stream_set_last_error_with_errno",
+  # Test-introspection probe: arms a one-shot pause on the calling thread's
+  # current task scope's next spawned task, so the forced-cancellation
+  # fixture (#2437) can prove a task observes cancellation before any of its
+  # generated code runs. Gated behind cfg(test) or the forced-cancel-test
+  # Cargo feature — absent from a default build. Not user-callable; not
+  # JIT-reachable.
+  "hew_test_pause_next_task_spawn_until_scope_cancel",
   "hew_trace_clear",
   "hew_trace_drain",
   "hew_trace_reset",

@@ -2,7 +2,7 @@
 //
 // Pins `hew_hashmap_new_with_layout`, `hew_hashmap_insert_layout`,
 // `hew_hashmap_get_layout`, `hew_hashmap_contains_key_layout`,
-// `hew_hashmap_remove_layout`, `hew_hashmap_len_layout`, and the
+// `hew_hashmap_remove_take_layout`, `hew_hashmap_len_layout`, and the
 // scope-exit `hew_hashmap_free_layout` drop.
 fn main() {
     let m: HashMap<string, i64> = HashMap::new();
@@ -13,7 +13,7 @@ fn main() {
         None => println(-1),
     }
     let has = m.contains_key("bob");
-    let removed = m.remove("bob");
+    let removed = m.remove("bob").is_some();
     println(f"has={has} removed={removed} len={m.len()}");
     let flags: HashMap<string, bool> = HashMap::new();
     flags.insert("debug", true);

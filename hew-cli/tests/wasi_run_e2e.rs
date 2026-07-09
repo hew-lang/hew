@@ -263,9 +263,15 @@ fn main() {
     let has = m.contains_key(Point { x: 3, y: 4 });
     println(f"contains={has}");
     let rm = m.remove(Point { x: 1, y: 2 });
-    println(f"remove={rm}");
+    match rm {
+        Some(v) => println(f"remove={v}"),
+        None => println("remove=None"),
+    }
     let rm_again = m.remove(Point { x: 1, y: 2 });
-    println(f"remove_again={rm_again}");
+    match rm_again {
+        Some(v) => println(f"remove_again={v}"),
+        None => println("remove_again=None"),
+    }
     let n2 = m.len();
     println(f"len_after_remove={n2}");
 
@@ -290,8 +296,8 @@ const HASHMAP_HASHSET_LAYOUT_EXPECTED: &str = "len=2\n\
      get_present=10\n\
      get_absent=None\n\
      contains=true\n\
-     remove=true\n\
-     remove_again=false\n\
+     remove=10\n\
+     remove_again=None\n\
      len_after_remove=1\n\
      set_len=2\n\
      set_contains=true\n\
@@ -390,7 +396,10 @@ const HASHMAP_HASHSET_OWNERSHIP_SOURCE: &str = r#"fn main() {
 
     // Remove releases beta's key+value buffers.
     let removed = m.remove("beta");
-    println(f"removed={removed}");
+    match removed {
+        Some(val) => println(f"removed={val}"),
+        None => println("removed=None"),
+    }
     let b = m.get("beta");
     match b {
         Some(val) => println(f"beta_after={val}"),
@@ -417,7 +426,7 @@ const HASHMAP_HASHSET_OWNERSHIP_SOURCE: &str = r#"fn main() {
 
 const HASHMAP_HASHSET_OWNERSHIP_EXPECTED: &str = "alpha=third\n\
      beta=second\n\
-     removed=true\n\
+     removed=second\n\
      beta_after=None\n\
      map_len=1\n\
      set_remove=true\n\

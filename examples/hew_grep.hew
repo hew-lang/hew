@@ -23,13 +23,13 @@ fn search_file(filename: string, pattern: string, nl: string) -> i32 {
     var linenum = 1;
     while pos <= total_len {
         let rest = content.slice(pos, total_len);
-        let nl_offset = rest.find(nl);
+        let nl_offset = rest.find(nl).unwrap_or(-1);
         var line_end = total_len;
         if nl_offset >= 0 {
             line_end = pos + nl_offset;
         }
         let line = content.slice(pos, line_end);
-        let found = line.find(pattern);
+        let found = line.find(pattern).unwrap_or(-1);
         if found >= 0 {
             let num_str = string.from_int(linenum);
             println(f"{filename}:{num_str}: {line}");

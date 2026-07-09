@@ -32,6 +32,9 @@ fn owned_vec_runtime_symbol(method: &str) -> Option<&'static str> {
         "get" => Some("hew_vec_get_owned"),
         "set" => Some("hew_vec_set_owned"),
         "pop" => Some("hew_vec_pop_owned"),
+        // `remove(i)` moves the owned element OUT (no clone, no drop) and
+        // shifts the tail — the index-based twin of `pop`.
+        "remove" => Some("hew_vec_remove_at_owned"),
         "contains" => Some("hew_vec_contains_owned"),
         "clone" => Some("hew_vec_clone_owned"),
         _ => None,
@@ -192,7 +195,12 @@ fn collection_method_desc(kind: CollectionKind, method: &str) -> Option<Collecti
             // has an explicit `get` arm that records the `Index` primitive-trait
             // dispatch and the `hew_hashmap_get_layout` resolved call; the bare
             // `m[k]` read is the trapping `Index::at` (`-> V`).
-            "remove" => desc(Some(1), &[Key], Bool),
+            //
+            // `remove` is likewise intentionally ABSENT: it projects
+            // `Option<V>` (A233), so `check_hashmap_method` has an explicit
+            // `remove` arm — mirroring `get` — that records the
+            // `hew_hashmap_remove_take_layout` move-out call (drop the key,
+            // MOVE the value out into the `Some` payload).
             "contains_key" => desc(Some(1), &[Key], Bool),
             "keys" => desc(Some(0), &[], VecOfKey),
             "values" => desc(Some(0), &[], VecOfVal),
@@ -221,7 +229,9 @@ fn collection_method_desc(kind: CollectionKind, method: &str) -> Option<Collecti
             // falls through to `try_dispatch_primitive_trait_method`, which
             // projects `Option<T>` and records the `hew_vec_get_clone`
             // intrinsic via the `index_get` lang-item seam.
-            "remove" => desc(Some(1), &[I64], Unit),
+            // `remove(i)` moves element `i` OUT and returns it (`-> T`),
+            // mirroring `pop`; it traps on an out-of-bounds index like `v[i]`.
+            "remove" => desc(Some(1), &[I64], RetElem),
             "is_empty" => desc(None, &[], Bool),
             "clear" => desc(Some(0), &[], Unit),
             "clone" => desc(Some(0), &[], SelfTy),
@@ -3866,8 +3876,10 @@ impl Checker {
             // `vec_element_op_symbol`). Scoped to the element-typed ops with a
             // runtime-backed generic path; every other method/element keeps
             // failing closed by dropping the entry.
-            if matches!(method, "push" | "get" | "set" | "pop" | "contains")
-                && self.is_vec_element_abstract_type_param(&elem_ty)
+            if matches!(
+                method,
+                "push" | "get" | "set" | "pop" | "remove" | "contains"
+            ) && self.is_vec_element_abstract_type_param(&elem_ty)
             {
                 return;
             }
@@ -4347,6 +4359,27 @@ impl Checker {
             self.record_resolved_hashmap_call("get", &key_ty, &val_ty, span);
             return Ty::option(val_ty);
         }
+        // `HashMap::remove(k) -> Option<V>` (A233): the removing twin of `get`.
+        // Handled here (not in the descriptor table) for the same reason as
+        // `get` — the `Option<V>` projection plus resolved-call recording is a
+        // code hook. Records the `Map::remove` resolved call, which resolves to
+        // the `hew_hashmap_remove_take_layout` move-out kernel (drop the key,
+        // MOVE the value out into the `Some` payload; drop-safe — the map keeps
+        // no copy, so exactly one owner of V). `remove(absent)` yields `None`.
+        if method == "remove" {
+            self.check_arity(args, 1, "`HashMap::remove`", span);
+            if let Some(arg) = args.first() {
+                let (expr, sp) = arg.expr();
+                self.check_against(expr, sp, &key_ty);
+            }
+            // Enforce `K: Hash + Eq` and reject unsafe key/value element types —
+            // the same admission `get` runs (fire-and-return on rejection).
+            if !self.validate_hashmap_owned_element_types(&key_ty, &val_ty, span) {
+                return Ty::Error;
+            }
+            self.record_resolved_hashmap_call("remove", &key_ty, &val_ty, span);
+            return Ty::option(val_ty);
+        }
         // `into_iter` resolves to a `HashMapIter<K, V>` cursor so the pipeline
         // form (`iter::map(m.into_iter(), ..)`) matches `Vec::into_iter` — the
         // map twin of the `check_vec_method` `into_iter` arm. The cursor is
@@ -4633,12 +4666,12 @@ impl Checker {
             // ownership has a synthesizable clone/drop thunk path (and which is
             // RcFree, so the runtime can drop it deterministically) routes
             // through the `hew_vec_*_owned` ABI instead of failing closed. The
-            // owned routing only covers the methods the owned runtime ops
-            // implement (`hew_vec_{push,get,set,pop,clone}_owned`); `remove`
-            // on owned elements remains fail-closed until its owned op lands.
+            // owned routing covers the methods the owned runtime ops implement
+            // (`hew_vec_{push,get,set,pop,remove,clone}_owned`); `remove(i)`
+            // moves the owned element OUT to the caller (no clone, no drop).
             if matches!(
                 method,
-                "push" | "get" | "set" | "pop" | "contains" | "clone"
+                "push" | "get" | "set" | "pop" | "remove" | "contains" | "clone"
             ) && self.vec_owned_element_admissible(elem_ty)
             {
                 if let Some(owned) = owned_vec_runtime_symbol(method) {
@@ -8579,7 +8612,12 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
             (
                 "remove".to_string(),
                 MethodTarget {
-                    symbol_name: "hew_hashmap_remove_layout".to_string(),
+                    // `remove(k) -> Option<V>` moves the value out (A233); the
+                    // kernel drops the key and MOVES the value into the `Some`
+                    // payload (the bool-returning `hew_hashmap_remove_layout`
+                    // that drops BOTH K and V remains for HashSet / callers that
+                    // discard the value).
+                    symbol_name: "hew_hashmap_remove_take_layout".to_string(),
                     family: MethodTargetFamily::HashMap(HashMapMethod::Remove),
                     abi: RuntimeAbi::ByRefMut,
                     call_hint: CallAbiHint::RuntimeShim,

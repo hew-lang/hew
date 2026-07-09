@@ -16,8 +16,8 @@ fn churn() -> i64 {
     // Overwrite an existing key: the new value replaces the old; the slot key is
     // reused (not re-cloned), the caller's probe key is the caller's to drop.
     m.insert(Person { name: "user", age: 10 }, 999);
-    // Remove drops the slot key exactly once.
-    if !m.remove(Person { name: "user", age: 20 }) { return 40; }
+    // Remove drops the slot key exactly once and moves the value out.
+    if m.remove(Person { name: "user", age: 20 }).is_none() { return 40; }
     if m.len() != 63 { return 41; }
     if match m.get(Person { name: "user", age: 10 }) { Some(v) => v, None => -1 } != 999 {
         return 42;

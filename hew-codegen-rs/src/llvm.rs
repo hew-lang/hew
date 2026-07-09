@@ -1190,8 +1190,11 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::StreamNextLayout
         | F::StreamSendLayout
         | F::StreamTryNextLayout
+        | F::StringCharAt
+        | F::StringCharAtUtf8
         | F::StringCharCount
         | F::StringConcat
+        | F::StringFind
         | F::StringGet
         | F::StringIndex
         | F::StringSliceCodepoints
@@ -21715,7 +21718,11 @@ fn lower_tuple_field_load(
 fn is_bool_vec_runtime_symbol(symbol: &str) -> bool {
     matches!(
         symbol,
-        "hew_vec_push_bool" | "hew_vec_get_bool" | "hew_vec_set_bool" | "hew_vec_pop_bool"
+        "hew_vec_push_bool"
+            | "hew_vec_get_bool"
+            | "hew_vec_set_bool"
+            | "hew_vec_pop_bool"
+            | "hew_vec_remove_at_bool"
     )
 }
 
@@ -22149,6 +22156,7 @@ fn is_owned_vec_runtime_symbol(symbol: &str) -> bool {
             | "hew_vec_get_owned"
             | "hew_vec_set_owned"
             | "hew_vec_pop_owned"
+            | "hew_vec_remove_at_owned"
             | "hew_vec_clone_owned"
             | "hew_vec_contains_owned"
             | "hew_vec_slice_range_owned"
@@ -22179,6 +22187,10 @@ fn owned_vec_fn_type<'ctx>(
             .fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false)),
         // i32 hew_vec_pop_owned(ptr vec, ptr out)
         "hew_vec_pop_owned" => Ok(i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false)),
+        // i32 hew_vec_remove_at_owned(ptr vec, i64 index, ptr out)
+        "hew_vec_remove_at_owned" => {
+            Ok(i32_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false))
+        }
         // ptr hew_vec_clone_owned(ptr vec)
         "hew_vec_clone_owned" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
         // i32 hew_vec_contains_owned(ptr vec, ptr data, ptr eq_fn)
@@ -22231,6 +22243,7 @@ fn lower_owned_vec_direct_call(
         | "hew_vec_contains_owned" => 2,
         "hew_vec_set_owned" => 3,
         "hew_vec_slice_range_owned" => 3,
+        "hew_vec_remove_at_owned" => 2,
         "hew_vec_pop_owned" | "hew_vec_clone_owned" => 1,
         _ => {
             return Err(CodegenError::FailClosed(format!(
@@ -22344,6 +22357,33 @@ fn lower_owned_vec_direct_call(
                     "hew_vec_pop_owned_call",
                 )
                 .llvm_ctx("hew_vec_pop_owned call")?;
+        }
+        "hew_vec_remove_at_owned" => {
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_vec_remove_at_owned moves an element out; producer must supply a dest"
+                        .into(),
+                )
+            })?;
+            let index = load_int_arg(
+                fn_ctx,
+                args[1],
+                fn_ctx.ctx.i64_type(),
+                "hew_vec_remove_at_owned_arg1",
+            )?;
+            // remove moves the element at `index` into the dest local (no clone,
+            // no drop) — possession transfers to the caller. The runtime writes
+            // the raw element bytes into `out`, shifts the tail, and traps on an
+            // out-of-bounds index (so codegen needs no empty/OOB branch).
+            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+            fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[vec_ptr.into(), index.into(), dest_ptr.into()],
+                    "hew_vec_remove_at_owned_call",
+                )
+                .llvm_ctx("hew_vec_remove_at_owned call")?;
         }
         "hew_vec_clone_owned" => {
             let dest_place = dest.ok_or_else(|| {
@@ -23342,6 +23382,12 @@ fn layout_hashmap_fn_type<'ctx>(
         }
         // `bool hew_hashmap_remove_layout(map, key_ptr)`
         "hew_hashmap_remove_layout" => Ok(i1_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false)),
+        // `bool hew_hashmap_remove_take_layout(map, key_ptr, out_ptr)` — the
+        // move-out remove backing `HashMap::remove(k) -> Option<V>` (drop-K,
+        // move-V into `out`); same shape as `get_clone_layout`.
+        "hew_hashmap_remove_take_layout" => {
+            Ok(i1_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false))
+        }
         // `i64 hew_hashmap_len_layout(map)`
         "hew_hashmap_len_layout" => Ok(i64_ty.fn_type(&[ptr_ty.into()], false)),
         // `*mut HewVec hew_hashmap_keys_layout(map)`
@@ -23523,6 +23569,8 @@ fn bool_vec_fn_type<'ctx>(
             .void_type()
             .fn_type(&[ptr_ty.into(), i64_ty.into(), i1_ty.into()], false)),
         "hew_vec_pop_bool" => Ok(i1_ty.fn_type(&[ptr_ty.into()], false)),
+        // `remove_at_bool(vec, index) -> i1` — index-based move-out twin of get.
+        "hew_vec_remove_at_bool" => Ok(i1_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false)),
         _ => Err(CodegenError::FailClosed(format!(
             "not a bool Vec runtime symbol: {symbol}"
         ))),
@@ -23753,7 +23801,7 @@ fn lower_bool_vec_direct_call(
     next: u32,
 ) -> CodegenResult<()> {
     let expected_arity = match callee {
-        "hew_vec_push_bool" | "hew_vec_get_bool" => 2,
+        "hew_vec_push_bool" | "hew_vec_get_bool" | "hew_vec_remove_at_bool" => 2,
         "hew_vec_set_bool" => 3,
         "hew_vec_pop_bool" => 1,
         _ => {
@@ -23812,6 +23860,22 @@ fn lower_bool_vec_direct_call(
             .builder
             .build_call(fv, &[vec_ptr.into()], "hew_vec_pop_bool_call")
             .llvm_ctx("hew_vec_pop_bool call")?,
+        "hew_vec_remove_at_bool" => {
+            let index = load_int_arg(
+                fn_ctx,
+                args[1],
+                fn_ctx.ctx.i64_type(),
+                "hew_vec_remove_at_bool_arg1",
+            )?;
+            fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[vec_ptr.into(), index.into()],
+                    "hew_vec_remove_at_bool_call",
+                )
+                .llvm_ctx("hew_vec_remove_at_bool call")?
+        }
         _ => unreachable!("matched above"),
     };
 
@@ -23822,7 +23886,7 @@ fn lower_bool_vec_direct_call(
             )));
         }
         ("hew_vec_push_bool" | "hew_vec_set_bool", None) => {}
-        ("hew_vec_get_bool" | "hew_vec_pop_bool", Some(dest_place)) => {
+        ("hew_vec_get_bool" | "hew_vec_pop_bool" | "hew_vec_remove_at_bool", Some(dest_place)) => {
             let ret_val = call_site
                 .try_as_basic_value()
                 .basic()
@@ -23835,7 +23899,7 @@ fn lower_bool_vec_direct_call(
                 .build_store(dest_ptr, store_val)
                 .llvm_ctx_with(|| format!("{callee} store"))?;
         }
-        ("hew_vec_get_bool" | "hew_vec_pop_bool", None) => {
+        ("hew_vec_get_bool" | "hew_vec_pop_bool" | "hew_vec_remove_at_bool", None) => {
             return Err(CodegenError::FailClosed(format!(
                 "{callee} returns bool; producer must supply a dest"
             )));
@@ -24415,50 +24479,38 @@ pub(crate) fn lower_layout_vec_direct_call(
                 .llvm_ctx("contains_thunk store")?;
         }
         "hew_vec_remove_at_layout" => {
-            // W3.003: index-based remove for BitCopy layout-backed Vec elements.
-            // Source-level: `vec.remove(index)` → void; no dest expected.
-            // Runtime ABI: `void hew_vec_remove_at_layout(ptr vec, i64 index, ptr layout)`.
-            // The hidden `layout` ptr is synthesized here from the Vec element type.
-            if let Some(d) = dest {
-                return Err(CodegenError::FailClosed(format!(
-                    "hew_vec_remove_at_layout returns unit; producer must not supply dest={d:?}"
-                )));
-            }
+            // `Vec<T>::remove(index) -> T` for BitCopy layout-backed elements —
+            // the index-based move-out twin of `pop_layout`. Source-level:
+            // `vec.remove(i)` → the removed element in `dest`. Runtime ABI:
+            // `i32 hew_vec_remove_at_layout(ptr vec, i64 index, ptr out, ptr layout)`.
+            // The hidden `out` (the dest slot) and `layout` ptr are synthesized
+            // here; the runtime moves the element bytes into `out`, shifts the
+            // tail (no clone, no drop — possession transfers), and traps
+            // internally on an out-of-bounds index (so codegen needs no branch).
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_vec_remove_at_layout moves an element out; producer must supply a dest"
+                        .into(),
+                )
+            })?;
             let index = load_int_arg(
                 fn_ctx,
                 args[1],
                 fn_ctx.ctx.i64_type(),
                 "hew_vec_remove_at_layout_arg1",
             )?;
-            // Derive the LLVM element type from the Vec<T> resolved type so
-            // we can synthesize the layout descriptor without a value operand.
-            let vec_resolved_ty = place_resolved_ty(fn_ctx, args[0])?.clone();
-            let elem_hew_ty = match &vec_resolved_ty {
-                ResolvedTy::Named {
-                    name,
-                    args: vec_args,
-                    ..
-                } if name == "Vec" && vec_args.len() == 1 => vec_args[0].clone(),
-                other => {
-                    return Err(CodegenError::FailClosed(format!(
-                        "hew_vec_remove_at_layout: arg0 must be Vec<T>, got {other:?}"
-                    )));
-                }
-            };
-            let layout_elem_ty = layout_vec_element_needs_descriptor(fn_ctx, &elem_hew_ty)?
-                .ok_or_else(|| {
-                    CodegenError::FailClosed(format!(
-                        "hew_vec_remove_at_layout: element type {elem_hew_ty:?} \
-                         is not a layout-descriptor-backed record/tuple"
-                    ))
-                })?;
-            let layout_ptr =
-                crate::layout::layout_descriptor_ptr(fn_ctx, layout_elem_ty, "remove")?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+            let layout_ptr = crate::layout::layout_descriptor_ptr(fn_ctx, dest_ty, "remove")?;
             fn_ctx
                 .builder
                 .build_call(
                     fv,
-                    &[vec_ptr.into(), index.into(), layout_ptr.into()],
+                    &[
+                        vec_ptr.into(),
+                        index.into(),
+                        dest_ptr.into(),
+                        layout_ptr.into(),
+                    ],
                     "hew_vec_remove_at_layout_call",
                 )
                 .llvm_ctx("hew_vec_remove_at_layout call")?;
@@ -25324,6 +25376,135 @@ fn lower_hashmap_get_layout_call(
     Ok(())
 }
 
+/// Lower `HashMap::remove(k) -> Option<V>` (A233). The removing twin of
+/// [`lower_hashmap_get_layout_call`]: structurally identical Option
+/// construction, but it calls `hew_hashmap_remove_take_layout`, which MOVES the
+/// stored value into the `Some` payload (no clone — the map keeps no copy) and
+/// drops the key. On a miss the runtime returns `false` without writing the
+/// payload, and we build `None`; on a hit the moved-out value is the caller's
+/// sole owner (drop-safe: no leaked key, no double-freed value).
+fn lower_hashmap_remove_take_call(
+    fn_ctx: &FnCtx<'_, '_>,
+    args: &[Place],
+    dest: Option<&Place>,
+    next: u32,
+) -> CodegenResult<()> {
+    if args.len() != 2 {
+        return Err(CodegenError::FailClosed(format!(
+            "hew_hashmap_remove_take_layout expects 2 source-level args (handle, key), got {}",
+            args.len()
+        )));
+    }
+    let dest_place = dest.ok_or_else(|| {
+        CodegenError::FailClosed(
+            "hew_hashmap_remove_take_layout returns Option<V>; call must supply a dest".into(),
+        )
+    })?;
+
+    let map_ty = place_resolved_ty(fn_ctx, args[0])?.clone();
+    let val_resolved = match map_ty {
+        ResolvedTy::Named {
+            name,
+            args: ty_args,
+            ..
+        } if name == "HashMap" && ty_args.len() == 2 => ty_args[1].clone(),
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "hew_hashmap_remove_take_layout arg0 must be HashMap<K,V>, got {other:?}"
+            )));
+        }
+    };
+    let dest_ty = place_resolved_ty(fn_ctx, *dest_place)?.clone();
+    match &dest_ty {
+        ResolvedTy::Named {
+            name,
+            args: ty_args,
+            ..
+        } if name == "Option" && ty_args.len() == 1 && ty_args[0] == val_resolved => {}
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "hew_hashmap_remove_take_layout dest must be Option<{val_resolved:?}>, \
+                 got {other:?}"
+            )));
+        }
+    }
+
+    let val_llvm_ty = resolve_ty(fn_ctx.ctx, &val_resolved, fn_ctx.record_layouts)?;
+    let map_ptr = load_duplex_handle(fn_ctx, args[0], "hew_hashmap_remove_take_layout arg0")?;
+    let (key_ptr, _key_ty) = place_pointer(fn_ctx, args[1])?;
+
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| {
+            CodegenError::FailClosed("hew_hashmap_remove_take_layout has no parent fn".into())
+        })?;
+    let none_bb = fn_ctx.ctx.append_basic_block(parent, "hashmap_remove_none");
+    let some_bb = fn_ctx.ctx.append_basic_block(parent, "hashmap_remove_some");
+    let next_bb = *fn_ctx
+        .blocks
+        .get(&next)
+        .ok_or_else(|| CodegenError::FailClosed(format!("Call next bb{next} missing")))?;
+    // The removed `V` is MOVED into the Some payload slot: compute its address,
+    // then let the runtime byte-copy the stored value into it (drop-K, move-V).
+    let dest_local = composite_dest_local(*dest_place, "hew_hashmap_remove_take_layout")?;
+    let (payload_ptr, payload_ty) = place_pointer(
+        fn_ctx,
+        Place::MachineVariant {
+            local: dest_local,
+            variant_idx: 0,
+            field_idx: 0,
+        },
+    )?;
+    if payload_ty != val_llvm_ty {
+        return Err(CodegenError::FailClosed(format!(
+            "hew_hashmap_remove_take_layout Option::Some payload type {payload_ty:?} \
+             does not match HashMap value type {val_llvm_ty:?}"
+        )));
+    }
+    let fv = get_or_declare_layout_hashmap_runtime(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        "hew_hashmap_remove_take_layout",
+    )?;
+    let is_some = fn_ctx
+        .builder
+        .build_call(
+            fv,
+            &[map_ptr.into(), key_ptr.into(), payload_ptr.into()],
+            "hew_hashmap_remove_take_layout_call",
+        )
+        .llvm_ctx("hew_hashmap_remove_take_layout call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| {
+            CodegenError::FailClosed("hew_hashmap_remove_take_layout returned void".into())
+        })?
+        .into_int_value();
+    fn_ctx
+        .builder
+        .build_conditional_branch(is_some, some_bb, none_bb)
+        .llvm_ctx("hew_hashmap_remove_take_layout condbr")?;
+
+    // None = variant 1 for Hew's builtin `Option<T>` layout.
+    fn_ctx.builder.position_at_end(none_bb);
+    emit_enum_variant_literal(fn_ctx, *dest_place, 1, &[])?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx("hew_hashmap_remove_take_layout none br")?;
+
+    // Some = variant 0. The runtime already MOVED the value into the payload.
+    fn_ctx.builder.position_at_end(some_bb);
+    emit_enum_variant_literal(fn_ctx, *dest_place, 0, &[])?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx("hew_hashmap_remove_take_layout some br")?;
+    Ok(())
+}
+
 /// Lower the trapping `m[k]` (`HashMap` `Index::at`) read. The map twin of
 /// `lower_vec_get_clone_call`, and structurally `lower_hashmap_get_layout_call`
 /// with the `None` branch replaced by an `IndexOutOfBounds` trap and the dest
@@ -25898,6 +26079,187 @@ fn lower_string_get_option_call(
         .builder
         .build_unconditional_branch(next_bb)
         .llvm_ctx("hew_string_get none br")?;
+    Ok(())
+}
+
+/// Lower the sentinel-wrapping string inspectors (D46 sentinel -> Option
+/// sweep): `string.find(needle) -> Option<i64>`, `string.char_at(i) ->
+/// Option<char>`, `string.codepoint_at_utf8(i) -> Option<i64>`.
+///
+/// Each calls its UNCHANGED runtime entry (which keeps the `-1` miss/OOB
+/// sentinel at the C ABI) and materialises the Option from the sign of the
+/// i32 result: `>= 0` -> `Some(value)` (variant 0, payload stored into the
+/// `Option::Some` slot), `-1` -> `None` (variant 1, payload untouched). The
+/// `-1` sentinel therefore never escapes into Hew-visible values.
+///
+/// Runtime ABIs (verified against `hew-runtime/src/string.rs`):
+/// - `hew_string_find(ptr, ptr) -> i32` (byte index of first occurrence)
+/// - `hew_string_char_at(ptr, i32) -> i32` (byte at byte-offset)
+/// - `hew_string_char_at_utf8(ptr, i32) -> i32` (codepoint at codepoint-offset)
+fn lower_string_sentinel_option_call(
+    fn_ctx: &FnCtx<'_, '_>,
+    callee: &str,
+    args: &[Place],
+    dest: Option<&Place>,
+    next: u32,
+) -> CodegenResult<()> {
+    if args.len() != 2 {
+        return Err(CodegenError::FailClosed(format!(
+            "{callee} expects 2 source-level args (receiver, needle/index), got {}",
+            args.len()
+        )));
+    }
+    let dest_place = dest.ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "{callee} returns an Option; call must supply a dest"
+        ))
+    })?;
+    if !matches!(place_resolved_ty(fn_ctx, args[0])?, ResolvedTy::String) {
+        return Err(CodegenError::FailClosed(format!(
+            "{callee} arg0 must be a `string` receiver; got {:?}",
+            place_resolved_ty(fn_ctx, args[0])?
+        )));
+    }
+    // The checker-projected payload type per symbol: `char` for the byte
+    // accessor, `i64` for the index/codepoint inspectors.
+    let expected_payload = match callee {
+        "hew_string_char_at" => ResolvedTy::Char,
+        "hew_string_find" | "hew_string_char_at_utf8" => ResolvedTy::I64,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "lower_string_sentinel_option_call called with unknown symbol `{other}`"
+            )));
+        }
+    };
+    let dest_ty = place_resolved_ty(fn_ctx, *dest_place)?.clone();
+    match &dest_ty {
+        ResolvedTy::Named {
+            name,
+            args: ty_args,
+            ..
+        } if name == "Option" && ty_args.len() == 1 && ty_args[0] == expected_payload => {}
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "{callee} dest must be Option<{expected_payload:?}>, got {other:?}"
+            )));
+        }
+    }
+
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    let i32_ty = fn_ctx.ctx.i32_type();
+    let i64_ty = fn_ctx.ctx.i64_type();
+
+    // A `string` value is a single heap `*const c_char` handle.
+    let s_ptr = load_duplex_handle(fn_ctx, args[0], &format!("{callee} arg0"))?;
+
+    // Declare the runtime entry with its REAL C ABI and marshal arg1
+    // accordingly: `find` takes a second string handle; the two indexed
+    // inspectors take an i32 index (truncated from the Hew-facing i64 — the
+    // same width bridge the retired FFI-shim path applied).
+    let (fn_ty, call_args): (
+        inkwell::types::FunctionType<'_>,
+        Vec<inkwell::values::BasicMetadataValueEnum<'_>>,
+    ) = if callee == "hew_string_find" {
+        let needle_ptr = load_duplex_handle(fn_ctx, args[1], &format!("{callee} arg1"))?;
+        (
+            i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+            vec![s_ptr.into(), needle_ptr.into()],
+        )
+    } else {
+        let index = load_int_arg(fn_ctx, args[1], i64_ty, &format!("{callee}_arg1"))?;
+        let index_i32 = fn_ctx
+            .builder
+            .build_int_truncate_or_bit_cast(index, i32_ty, "string_sentinel_idx_i32")
+            .llvm_ctx_with(|| format!("{callee} index trunc"))?;
+        (
+            i32_ty.fn_type(&[ptr_ty.into(), i32_ty.into()], false),
+            vec![s_ptr.into(), index_i32.into()],
+        )
+    };
+    let fv = match fn_ctx.llvm_mod.get_function(callee) {
+        Some(f) => f,
+        None => fn_ctx
+            .llvm_mod
+            .add_function(callee, fn_ty, Some(Linkage::External)),
+    };
+    let raw = fn_ctx
+        .builder
+        .build_call(fv, &call_args, &format!("{callee}_call"))
+        .llvm_ctx_with(|| format!("{callee} call"))?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed(format!("{callee} returned void")))?
+        .into_int_value();
+
+    // `>= 0` is a hit; the runtime's only negative return is the `-1` sentinel.
+    let is_some = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::SGE,
+            raw,
+            i32_ty.const_zero(),
+            "string_sentinel_is_some",
+        )
+        .llvm_ctx_with(|| format!("{callee} sentinel cmp"))?;
+
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| CodegenError::FailClosed(format!("{callee} has no parent fn")))?;
+    let some_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "string_sentinel_some");
+    let none_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "string_sentinel_none");
+    let next_bb = *fn_ctx
+        .blocks
+        .get(&next)
+        .ok_or_else(|| CodegenError::FailClosed(format!("Call next bb{next} missing")))?;
+    fn_ctx
+        .builder
+        .build_conditional_branch(is_some, some_bb, none_bb)
+        .llvm_ctx_with(|| format!("{callee} condbr"))?;
+
+    // Some = variant 0: widen the non-negative i32 into the payload slot
+    // (sign- and zero-extension agree on non-negative values).
+    fn_ctx.builder.position_at_end(some_bb);
+    let dest_local = composite_dest_local(*dest_place, callee)?;
+    let (payload_ptr, payload_ty) = place_pointer(
+        fn_ctx,
+        Place::MachineVariant {
+            local: dest_local,
+            variant_idx: 0,
+            field_idx: 0,
+        },
+    )?;
+    let BasicTypeEnum::IntType(payload_int_ty) = payload_ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "{callee} Option::Some payload must be integer-shaped; got {payload_ty:?}"
+        )));
+    };
+    let store_val = fn_ctx
+        .builder
+        .build_int_z_extend_or_bit_cast(raw, payload_int_ty, "string_sentinel_payload")
+        .llvm_ctx_with(|| format!("{callee} payload cast"))?;
+    fn_ctx
+        .builder
+        .build_store(payload_ptr, store_val)
+        .llvm_ctx_with(|| format!("{callee} payload store"))?;
+    emit_enum_variant_literal(fn_ctx, *dest_place, 0, &[])?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx_with(|| format!("{callee} some br"))?;
+
+    // None = variant 1 for Hew's builtin `Option<T>` layout.
+    fn_ctx.builder.position_at_end(none_bb);
+    emit_enum_variant_literal(fn_ctx, *dest_place, 1, &[])?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx_with(|| format!("{callee} none br"))?;
     Ok(())
 }
 
@@ -32228,6 +32590,10 @@ fn lower_terminator<'ctx>(
                 lower_hashmap_get_layout_call(fn_ctx, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
+            if callee == "hew_hashmap_remove_take_layout" {
+                lower_hashmap_remove_take_call(fn_ctx, args, dest.as_ref(), *next)?;
+                return Ok(());
+            }
             if callee == "hew_vec_get_clone" {
                 lower_vec_get_clone_call(fn_ctx, args, dest.as_ref(), *next)?;
                 return Ok(());
@@ -32238,6 +32604,13 @@ fn lower_terminator<'ctx>(
             }
             if callee == "hew_string_get" {
                 lower_string_get_option_call(fn_ctx, args, dest.as_ref(), *next)?;
+                return Ok(());
+            }
+            if matches!(
+                callee.as_str(),
+                "hew_string_find" | "hew_string_char_at" | "hew_string_char_at_utf8"
+            ) {
+                lower_string_sentinel_option_call(fn_ctx, callee, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
             if callee == "hew_hashmap_get_clone_layout" {

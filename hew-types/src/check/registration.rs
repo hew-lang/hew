@@ -817,7 +817,6 @@ impl Checker {
         self.register_builtin_fn("println_char", vec![Ty::Char], Ty::Unit);
 
         // String utilities
-        self.register_builtin_fn("string_char_at", vec![Ty::String, Ty::I64], Ty::Char);
         self.register_builtin_fn("string_equals", vec![Ty::String, Ty::String], Ty::Bool);
         self.register_builtin_fn("string_from_int", vec![Ty::I64], Ty::String);
         self.register_builtin_fn("string_contains", vec![Ty::String, Ty::String], Ty::Bool);
@@ -838,7 +837,6 @@ impl Checker {
             Ty::String,
         );
         self.register_builtin_fn("string_trim", vec![Ty::String], Ty::String);
-        self.register_builtin_fn("string_to_int", vec![Ty::String], Ty::I64);
         self.register_builtin_fn(
             "string_replace",
             vec![Ty::String, Ty::String, Ty::String],

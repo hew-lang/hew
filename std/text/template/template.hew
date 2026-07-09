@@ -220,16 +220,20 @@ fn consume_if_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, range_elem: st
     var end_pos = -1; // byte offset right after the `{{end}}` that closes this if
     while pos < tlen {
         let rest = tmpl.slice(pos, tlen);
-        let open = rest.find("{{");
-        if open < 0 {
-            return Err(TemplateError::UnclosedBlock("template: unclosed `{{if}}` — missing `{{end}}`"));
-        }
+        let open = match rest.find("{{") {
+            Some(i) => i,
+            None => {
+                return Err(TemplateError::UnclosedBlock("template: unclosed `{{if}}` — missing `{{end}}`"));
+            },
+        };
         let tag_start = pos + open + 2;
         let after_open = tmpl.slice(tag_start, tlen);
-        let close = after_open.find("}}");
-        if close < 0 {
-            return Err(TemplateError::UnclosedDirective("template: unclosed `{{` inside `{{if}}` body"));
-        }
+        let close = match after_open.find("}}") {
+            Some(i) => i,
+            None => {
+                return Err(TemplateError::UnclosedDirective("template: unclosed `{{` inside `{{if}}` body"));
+            },
+        };
         let tag = tmpl.slice(tag_start, tag_start + close).trim();
         let next_pos = tag_start + close + 2;
         if tag_is_if(tag) || tag_is_range(tag) {
@@ -297,16 +301,20 @@ fn consume_range_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, key: string
     var end_pos = -1;
     while pos < tlen {
         let rest = tmpl.slice(pos, tlen);
-        let open = rest.find("{{");
-        if open < 0 {
-            return Err(TemplateError::UnclosedBlock("template: unclosed `{{range}}` — missing `{{end}}`"));
-        }
+        let open = match rest.find("{{") {
+            Some(i) => i,
+            None => {
+                return Err(TemplateError::UnclosedBlock("template: unclosed `{{range}}` — missing `{{end}}`"));
+            },
+        };
         let tag_start = pos + open + 2;
         let after_open = tmpl.slice(tag_start, tlen);
-        let close = after_open.find("}}");
-        if close < 0 {
-            return Err(TemplateError::UnclosedDirective("template: unclosed `{{` inside `{{range}}` body"));
-        }
+        let close = match after_open.find("}}") {
+            Some(i) => i,
+            None => {
+                return Err(TemplateError::UnclosedDirective("template: unclosed `{{` inside `{{range}}` body"));
+            },
+        };
         let tag = tmpl.slice(tag_start, tag_start + close).trim();
         let next_pos = tag_start + close + 2;
         if tag_is_if(tag) || tag_is_range(tag) {
@@ -356,19 +364,23 @@ fn render_segment(tmpl: string, ctx: Ctx, range_elem: string, in_range: bool) ->
     let tlen = tmpl.len();
     while pos < tlen {
         let rest = tmpl.slice(pos, tlen);
-        let open = rest.find("{{");
-        if open < 0 {
-            out = out + rest;
-            return Ok(out);
-        }
+        let open = match rest.find("{{") {
+            Some(i) => i,
+            None => {
+                out = out + rest;
+                return Ok(out);
+            },
+        };
         // Append literal text before `{{`.
         out = out + tmpl.slice(pos, pos + open);
         let tag_start = pos + open + 2;
         let after_open = tmpl.slice(tag_start, tlen);
-        let close = after_open.find("}}");
-        if close < 0 {
-            return Err(TemplateError::UnclosedDirective("template: unclosed `{{` directive"));
-        }
+        let close = match after_open.find("}}") {
+            Some(i) => i,
+            None => {
+                return Err(TemplateError::UnclosedDirective("template: unclosed `{{` directive"));
+            },
+        };
         let tag = tmpl.slice(tag_start, tag_start + close).trim();
         pos = tag_start + close + 2;
         if tag == "." {
@@ -430,20 +442,24 @@ fn validate(tmpl: string) -> Result<i64, TemplateError> {
     let tlen = tmpl.len();
     while pos < tlen {
         let rest = tmpl.slice(pos, tlen);
-        let open = rest.find("{{");
-        if open < 0 {
-            if stack.len() > 0 {
-                let top = stack[stack.len() - 1];
-                return Err(unclosed_block_error(top));
-            }
-            return Ok(0);
-        }
+        let open = match rest.find("{{") {
+            Some(i) => i,
+            None => {
+                if stack.len() > 0 {
+                    let top = stack[stack.len() - 1];
+                    return Err(unclosed_block_error(top));
+                }
+                return Ok(0);
+            },
+        };
         let tag_start = pos + open + 2;
         let after_open = tmpl.slice(tag_start, tlen);
-        let close = after_open.find("}}");
-        if close < 0 {
-            return Err(TemplateError::UnclosedDirective("template: unclosed `{{` directive"));
-        }
+        let close = match after_open.find("}}") {
+            Some(i) => i,
+            None => {
+                return Err(TemplateError::UnclosedDirective("template: unclosed `{{` directive"));
+            },
+        };
         let tag = tmpl.slice(tag_start, tag_start + close).trim();
         pos = tag_start + close + 2;
         if tag == "." {

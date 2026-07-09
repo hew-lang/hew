@@ -18,7 +18,7 @@
 //!
 //! fn main() {
 //!     // Char classification
-//!     let cp = unicode.codepoint_at("café", 3);   // 'é' = 233
+//!     let cp = unicode.codepoint_at("café", 3);   // Some(233) ('é')
 //!     println(unicode.is_lower(cp));              // true
 //!     println(unicode.is_upper(cp));              // false
 //!     println(unicode.to_upper(cp));              // 201 ('É')
@@ -257,19 +257,20 @@ pub fn to_title(cp: i64) -> i64 {
     to_upper(cp)
 }
 
-/// Return the Unicode codepoint at codepoint-index `i` in string `s`.
+/// Return `Some` of the Unicode codepoint at codepoint-index `i` in string
+/// `s`, or `None` if `i` is out of bounds.
 ///
-/// The index is a rune (codepoint) offset, not a byte offset. Returns -1 if
-/// `i` is out of bounds. O(n) in the number of codepoints up to `i`.
+/// The index is a rune (codepoint) offset, not a byte offset. O(n) in the
+/// number of codepoints up to `i`.
 ///
 /// # Examples
 ///
 /// ```
-/// unicode.codepoint_at("café", 3)  // 233 ('é', U+00E9)
-/// unicode.codepoint_at("ABC", 1)   // 66  ('B')
-/// unicode.codepoint_at("hi", 5)    // -1  (out of bounds)
+/// unicode.codepoint_at("café", 3)  // Some(233) ('é', U+00E9)
+/// unicode.codepoint_at("ABC", 1)   // Some(66)  ('B')
+/// unicode.codepoint_at("hi", 5)    // None      (out of bounds)
 /// ```
-pub fn codepoint_at(s: string, i: i64) -> i64 {
+pub fn codepoint_at(s: string, i: i64) -> Option<i64> {
     s.codepoint_at_utf8(i)
 }
 
@@ -282,10 +283,9 @@ pub fn codepoint_at(s: string, i: i64) -> i64 {
 /// unicode.try_codepoint_at("hi", 2)    // Err(...)
 /// ```
 pub fn try_codepoint_at(s: string, i: i64) -> Result<i64, string> {
-    let cp = codepoint_at(s, i);
-    match cp {
-        x if x < 0 => Err("unicode.try_codepoint_at: index out of bounds"),
-        _ => Ok(cp),
+    match codepoint_at(s, i) {
+        Some(cp) => Ok(cp),
+        None => Err("unicode.try_codepoint_at: index out of bounds"),
     }
 }
 
@@ -364,7 +364,12 @@ pub fn runes(s: string) -> Vec<i64> {
     let n = s.char_count_utf8();
     let result: Vec<i64> = Vec::new();
     for i in 0 .. n {
-        result.push(s.codepoint_at_utf8(i));
+        // In-bounds loop over the codepoint count: always Some. The
+        // unreachable None is skipped rather than pushed as a sentinel.
+        match s.codepoint_at_utf8(i) {
+            Some(cp) => result.push(cp),
+            None => {},
+        }
     }
     result
 }

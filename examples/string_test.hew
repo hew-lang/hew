@@ -9,8 +9,8 @@ fn main() {
     println(len);
 
     // Test char_at
-    let ch = hello.char_at(0);
-    println(ch);
+    let ch = hello.char_at(0).unwrap_or('?');
+    println(to_string(ch));
 
     // Test string equality
     let eq = hello == hello;

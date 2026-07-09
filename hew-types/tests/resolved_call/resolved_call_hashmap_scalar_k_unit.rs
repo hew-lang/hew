@@ -99,7 +99,9 @@ const EXPECTED_METHODS: &[ExpectedMethod] = &[
     },
     ExpectedMethod {
         name: "remove",
-        symbol: "hew_hashmap_remove_layout",
+        // `remove(k) -> Option<V>` (A233): the move-out kernel — drop the key,
+        // move the value into the `Some` payload.
+        symbol: "hew_hashmap_remove_take_layout",
         abi: RuntimeAbi::ByRefMut,
     },
     ExpectedMethod {

@@ -481,7 +481,6 @@ mod tests {
             // String utilities
             "string_concat",
             "string_length",
-            "string_char_at",
             "string_equals",
             "string_from_int",
             "string_contains",
@@ -490,7 +489,6 @@ mod tests {
             "substring",
             "string_slice",
             "string_trim",
-            "string_to_int",
             "string_replace",
             "string_to_upper",
             "string_to_lower",
@@ -525,6 +523,16 @@ mod tests {
             "hew_stream_next_layout",
             "hew_stream_try_next_layout",
         ];
+
+        // Note: `string_to_int` and `string_char_at` were deleted as dead
+        // free-function builtin registrations by the collection reshape
+        // (`char_at`/`to_int` now live only as dispatch-only Vec/String
+        // methods returning Option, never registered in `fn_sigs`), so they
+        // are intentionally absent from `newly_added` above. Likewise the
+        // `hew_vec_remove_at_*` family introduced by that same reshape is
+        // VecMethod-dispatch-only (like `hew_stream_send_layout`) and never
+        // enters `builtin_function_names`, so it does not belong in this
+        // list either.
 
         for name in newly_added {
             let err = plan_rename(source, &pr, offset, name).unwrap_err();

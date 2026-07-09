@@ -955,10 +955,12 @@ fn vec_layout_clone_synthesizes_descriptor_and_returns_new_vec() {
 }
 
 #[test]
-fn vec_layout_remove_synthesizes_descriptor_and_index() {
-    // W3.003: codegen lowers `hew_vec_remove_at_layout(vec, index)` by
-    // deriving the hidden `HewTypeLayout*` from the Vec<Point> element type
-    // and emitting a void call with (ptr vec, i64 index, ptr layout).
+fn vec_layout_remove_synthesizes_descriptor_index_and_out_slot() {
+    // `Vec<Point>::remove(index) -> Point` — the index-based move-out twin of
+    // `pop_layout`. Codegen supplies the dest local as the `out` slot, derives
+    // the hidden `HewTypeLayout*` from the Point element type, and emits an i32
+    // call `(ptr vec, i64 index, ptr out, ptr layout)`. The removed element is
+    // moved into `out` (no clone, no drop); the runtime traps on OOB.
     let vec_ty = ResolvedTy::Named {
         name: "Vec".to_string(),
         args: vec![point_ty()],
@@ -978,18 +980,22 @@ fn vec_layout_remove_synthesizes_descriptor_and_index() {
                 "hew_vec_remove_at_layout",
             ),
             args: vec![Place::Local(0), Place::Local(1)],
-            dest: None,
+            dest: Some(Place::Local(2)),
             next: 1,
         },
     };
     let ll = emit_ll(
-        base_pipeline(block, vec![vec_ty, ResolvedTy::I64], ResolvedTy::Unit),
+        base_pipeline(
+            block,
+            vec![vec_ty, ResolvedTy::I64, point_ty()],
+            ResolvedTy::Unit,
+        ),
         "remove",
     );
 
-    // Runtime extern declaration: void (ptr, i64, ptr).
+    // Runtime extern declaration: i32 (ptr vec, i64 index, ptr out, ptr layout).
     assert!(
-        ll.contains("declare void @hew_vec_remove_at_layout(ptr, i64, ptr)"),
+        ll.contains("declare i32 @hew_vec_remove_at_layout(ptr, i64, ptr, ptr)"),
         "missing hew_vec_remove_at_layout runtime decl in:\n{ll}"
     );
     // Layout descriptor global synthesized with size=16, align=8 (two i64 fields).
@@ -997,28 +1003,9 @@ fn vec_layout_remove_synthesizes_descriptor_and_index() {
         ll.contains("@__hew_layout_remove_16_8_plain"),
         "missing layout descriptor global in:\n{ll}"
     );
-    // Call site emitted.
+    // Call site emitted with the out-param move-out ABI.
     assert!(
-        ll.contains("call void @hew_vec_remove_at_layout"),
+        ll.contains("call i32 @hew_vec_remove_at_layout"),
         "missing hew_vec_remove_at_layout call in:\n{ll}"
-    );
-    // Remove is void — the call site must not capture a return value.
-    // A non-void regression would look like `%foo = call i... @hew_vec_remove_at_layout`
-    // (i.e. `= call` with any type token before the callee name).  We detect that
-    // pattern directly so a future ABI change cannot silently slip past.
-    let has_typed_result = ll.lines().any(|line| {
-        // Match `= call <type> @hew_vec_remove_at_layout` — the `= call` prefix
-        // with any token between `call` and the callee name indicates a result is
-        // being captured.
-        if let Some(after_call) = line.split("= call ").nth(1) {
-            after_call.contains("@hew_vec_remove_at_layout")
-        } else {
-            false
-        }
-    });
-    assert!(
-        !has_typed_result,
-        "remove must emit `call void @hew_vec_remove_at_layout`, \
-         not a typed result-capturing call: \n{ll}"
     );
 }

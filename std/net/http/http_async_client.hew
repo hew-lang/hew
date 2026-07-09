@@ -183,16 +183,9 @@ pub fn split_address(url_str: string) -> (string, string) {
     let scheme = scheme_of(url_str);
     let after_scheme = strip_scheme(url_str);
     // The authority runs up to the first '/' (the path), '?' (query), or end.
-    let slash = after_scheme.find("/");
-    let authority = if slash < 0 {
-        after_scheme
-    } else {
-        after_scheme.slice(0, slash)
-    };
-    let path = if slash < 0 {
-        "/"
-    } else {
-        after_scheme.slice(slash, after_scheme.len())
+    let (authority, path) = match after_scheme.find("/") {
+        Some(slash) => (after_scheme.slice(0, slash), after_scheme.slice(slash, after_scheme.len())),
+        None => (after_scheme, "/"),
     };
     let addr = authority_with_port(authority, scheme);
     (addr, path)
@@ -201,17 +194,13 @@ pub fn split_address(url_str: string) -> (string, string) {
 /// Return the host component of `url_str` for the `Host:` header (no port).
 pub fn host_of(url_str: string) -> string {
     let after_scheme = strip_scheme(url_str);
-    let slash = after_scheme.find("/");
-    let authority = if slash < 0 {
-        after_scheme
-    } else {
-        after_scheme.slice(0, slash)
+    let authority = match after_scheme.find("/") {
+        Some(slash) => after_scheme.slice(0, slash),
+        None => after_scheme,
     };
-    let colon = authority.find(":");
-    if colon < 0 {
-        authority
-    } else {
-        authority.slice(0, colon)
+    match authority.find(":") {
+        Some(colon) => authority.slice(0, colon),
+        None => authority,
     }
 }
 
@@ -226,32 +215,26 @@ pub fn default_port(scheme: string) -> i64 {
 
 /// The scheme of a URL (`http` / `https`), or `"http"` when none is present.
 fn scheme_of(url_str: string) -> string {
-    let mark = url_str.find("://");
-    if mark < 0 {
-        "http"
-    } else {
-        url_str.slice(0, mark).to_lower()
+    match url_str.find("://") {
+        Some(mark) => url_str.slice(0, mark).to_lower(),
+        None => "http",
     }
 }
 
 /// Strip a `scheme://` prefix, leaving `authority[/path]`.
 fn strip_scheme(url_str: string) -> string {
-    let mark = url_str.find("://");
-    if mark < 0 {
-        url_str
-    } else {
-        url_str.slice(mark + 3, url_str.len())
+    match url_str.find("://") {
+        Some(mark) => url_str.slice(mark + 3, url_str.len()),
+        None => url_str,
     }
 }
 
 /// Ensure an authority carries an explicit port, appending the scheme default
 /// when absent (so `net.connect` always receives `host:port`).
 fn authority_with_port(authority: string, scheme: string) -> string {
-    let colon = authority.find(":");
-    if colon < 0 {
-        f"{authority}:{default_port(scheme)}"
-    } else {
-        authority
+    match authority.find(":") {
+        Some(_) => authority,
+        None => f"{authority}:{default_port(scheme)}",
     }
 }
 
@@ -266,10 +249,10 @@ pub fn response_over_limit(raw: string) -> bool {
     if raw.len() > CLIENT_MAX_RESPONSE_BYTES {
         return true;
     }
-    let sep = raw.find("\r\n\r\n");
-    if sep < 0 {
-        return raw.len() > CLIENT_MAX_HEADER_BYTES;
-    }
+    let sep = match raw.find("\r\n\r\n") {
+        Some(i) => i,
+        None => return raw.len() > CLIENT_MAX_HEADER_BYTES,
+    };
     let head = raw.slice(0, sep);
     if head.len() > CLIENT_MAX_HEADER_BYTES {
         return true;
@@ -291,11 +274,11 @@ pub fn parse_response(raw: string) -> AsyncResponse {
     if response_over_limit(raw) {
         return AsyncResponse { code: -1, body_text: "", header_section: "" };
     }
-    let sep = raw.find("\r\n\r\n");
-    if sep < 0 {
+    let sep = match raw.find("\r\n\r\n") {
+        Some(i) => i,
         // SF2 — no header terminator: the response is not fully framed.
-        return AsyncResponse { code: -1, body_text: "", header_section: "" };
-    }
+        None => return AsyncResponse { code: -1, body_text: "", header_section: "" },
+    };
     let head = raw.slice(0, sep);
     let body = raw.slice(sep + 4, raw.len());
     let head_lines = string.split(head, "\r\n");
@@ -334,7 +317,10 @@ fn parse_status_code(status_line: string) -> i64 {
     if code_str.len() != 3 {
         return -1;
     }
-    let code = string.to_int(code_str);
+    // Guarded by is_numeric + len == 3 above: the parse cannot fail; a
+    // defensive None maps to the transport-failure convention (-1) via the
+    // range gate below.
+    let code = string.to_int(code_str).unwrap_or(-1);
     if code < 100 || code > 599 {
         return -1;
     }
@@ -351,18 +337,20 @@ fn is_http_version(version: string) -> bool {
     if !string.starts_with(version, "HTTP/1.") {
         return false;
     }
-    let minor = version.char_at(7);
+    // len == 8 was checked above, so char_at(7) is always Some.
+    let minor = match version.char_at(7) {
+        Some(c) => c as i64,
+        None => return false,
+    };
     minor >= 48 && minor <= 57
 }
 
 /// The header lines of an HTTP head block (everything after the status line),
 /// re-joined with CRLF for [`find_response_header`].
 fn header_section_of(head: string) -> string {
-    let first = head.find("\r\n");
-    if first < 0 {
-        ""
-    } else {
-        head.slice(first + 2, head.len())
+    match head.find("\r\n") {
+        Some(first) => head.slice(first + 2, head.len()),
+        None => "",
     }
 }
 
@@ -377,12 +365,16 @@ fn find_response_header(header_section: string, name: string) -> string {
     var found = "";
     for i in 0 .. n {
         let line = lines[i];
-        let colon = line.find(":");
-        if colon > 0 {
-            let key = string.trim(line.slice(0, colon)).to_lower();
-            if key == target {
-                found = string.trim(line.slice(colon + 1, line.len()));
-            }
+        // A colon at index 0 is an empty header name — skip it, exactly as
+        // the old `colon > 0` guard did.
+        match line.find(":") {
+            Some(colon) if colon > 0 => {
+                let key = string.trim(line.slice(0, colon)).to_lower();
+                if key == target {
+                    found = string.trim(line.slice(colon + 1, line.len()));
+                }
+            },
+            _ => {},
         }
     }
     found
@@ -417,7 +409,12 @@ fn declared_content_length(header_section: string) -> i64 {
 fn contains_control_char(s: string) -> bool {
     let n = s.len();
     for i in 0 .. n {
-        let b = s.char_at(i);
+        // In-bounds loop: char_at(i) is always Some; the unreachable None
+        // fails CLOSED (treat as a control character -> reject).
+        let b = match s.char_at(i) {
+            Some(c) => c as i64,
+            None => return true,
+        };
         if b < 32 || b == 127 {
             return true;
         }

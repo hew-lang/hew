@@ -1983,47 +1983,18 @@ vec_remove_primitive!(
 );
 vec_remove_primitive!(hew_vec_remove_ptr, *mut c_void);
 
-/// Remove the element at `index`, shifting subsequent elements left.
-///
-/// Aborts if `index >= len`.
-///
-/// # Panics
-///
-/// Panics if `index` is out of bounds (`index >= len`).
-///
-/// # Safety
-///
-/// `v` must be a valid pointer to a `HewVec`. The element size is taken
-/// from the vec's `elem_size` field.
-#[no_mangle]
-pub unsafe extern "C" fn hew_vec_remove_at(v: *mut HewVec, index: i64) {
-    cabi_guard!(v.is_null());
-    let idx = index as usize;
-    // SAFETY: Caller guarantees `v` is a valid HewVec pointer. We bounds-check
-    // `idx` before computing offsets and copying.
-    unsafe {
-        abort_if_layout_aware(v);
-        let len = (*v).len;
-        if idx >= len {
-            abort_oob("Vec.remove()", idx, len);
-        }
-        let elem_size = (*v).elem_size;
-        let src = (*v).data.add((idx + 1) * elem_size);
-        let dst = (*v).data.add(idx * elem_size);
-        let count = (len - idx - 1) * elem_size;
-        if count > 0 {
-            core::ptr::copy(src, dst, count);
-        }
-        (*v).len -= 1;
-    }
-}
-
-/// Remove the `BitCopy` layout-descriptor element at `index`, shifting
-/// subsequent elements left by one position.
+/// Remove the `BitCopy` layout-descriptor element at `index`, moving it into
+/// `out` and shifting subsequent elements left by one position.
 ///
 /// This is an index-based remove for layout-backed `Vec<T>` where `T` is a
 /// Copy record or tuple type with `HewTypeOwnershipKind::Plain`. It does NOT
 /// implement remove-by-value/equality.
+///
+/// The removed element is byte-copied into `out` (move-out): possession of the
+/// element transfers to the caller, so NO drop runs on it. The tail is then
+/// shifted left over the vacated slot with a raw `memmove` — the remaining
+/// elements slide down unchanged, each still owned by exactly one live slot,
+/// so there is no double-free. Returns 1 on success.
 ///
 /// Aborts if `index >= len`. Aborts if `elem_size` is zero (would produce
 /// zero-stride pointer arithmetic). Validates the layout descriptor against
@@ -2033,6 +2004,7 @@ pub unsafe extern "C" fn hew_vec_remove_at(v: *mut HewVec, index: i64) {
 ///
 /// - `v` must be a valid layout-aware `HewVec` pointer created with a
 ///   matching plain ownership layout.
+/// - `out` must point to at least `layout.size` writable bytes.
 /// - `layout` must point to a `HewTypeLayout` whose `size`, `align`, and
 ///   `ownership_kind` match those stored in the vec.
 ///
@@ -2045,9 +2017,10 @@ pub unsafe extern "C" fn hew_vec_remove_at(v: *mut HewVec, index: i64) {
 pub unsafe extern "C" fn hew_vec_remove_at_layout(
     v: *mut HewVec,
     index: i64,
+    out: *mut core::ffi::c_void,
     layout: *const HewTypeLayout,
-) {
-    cabi_guard!(v.is_null() || layout.is_null());
+) -> i32 {
+    cabi_guard!(v.is_null() || out.is_null() || layout.is_null(), 0);
     // SAFETY: guards reject null pointers; helper validates BitCopy layout semantics.
     unsafe {
         validate_bitcopy_layout_operation(v, layout);
@@ -2064,6 +2037,10 @@ pub unsafe extern "C" fn hew_vec_remove_at_layout(
         if elem_size == 0 {
             abort_layout_aware_operation();
         }
+        // Move the removed element OUT into `out` before the shift. No drop —
+        // possession transfers to the caller.
+        let removed = (*v).data.add(idx * elem_size);
+        core::ptr::copy_nonoverlapping(removed, out.cast::<u8>(), elem_size);
         let src = (*v).data.add((idx + 1) * elem_size);
         let dst = (*v).data.add(idx * elem_size);
         let count = (len - idx - 1) * elem_size;
@@ -2072,6 +2049,155 @@ pub unsafe extern "C" fn hew_vec_remove_at_layout(
             core::ptr::copy(src, dst, count);
         }
         (*v).len -= 1;
+        1
+    }
+}
+
+// ── remove-at move-out family (index-based; mirrors the `pop` family) ────────
+//
+// `Vec<T>.remove(i) -> T` moves element `i` OUT of the vec (transferring
+// ownership to the caller) and shifts the tail left over the vacated slot.
+// The move-out semantics mirror `pop` exactly — the sole difference is the
+// element index and the tail shift. NO element drop runs: the returned value
+// is the sole owner (scalars are trivially Copy; str/ptr move the pointer;
+// owned/layout memcpy the blob into the caller's `out`). The tail shift is a
+// raw `memmove` — the remaining owned elements slide down unchanged, each
+// still owned by exactly one live slot, so no double-free.
+//
+// Aborts with an `IndexOutOfBounds` trap if `index >= len` (matches the
+// trapping accessor contract `v[i]`).
+
+macro_rules! vec_remove_at_primitive {
+    ($(#[$meta:meta])* $name:ident, $ty:ty) => {
+        $(#[$meta])*
+        /// Remove and return the primitive element at `index`, shifting the
+        /// tail left by one position. Aborts if `index >= len`.
+        ///
+        /// # Safety
+        ///
+        /// Non-null `v` must be a valid `HewVec` pointer whose element storage
+        /// matches this symbol's type.
+        #[no_mangle]
+        pub unsafe extern "C" fn $name(v: *mut HewVec, index: i64) -> $ty {
+            // SAFETY: caller guarantees `v` is a valid HewVec for `$ty`.
+            unsafe {
+                abort_if_layout_aware(v);
+                let len = (*v).len;
+                let idx = index as usize;
+                if idx >= len {
+                    abort_oob("Vec.remove()", idx, len);
+                }
+                let data = (*v).data.cast::<$ty>();
+                let removed = data.add(idx).read();
+                // Shift the tail left over the vacated slot (element-typed
+                // count). memmove semantics: source and destination overlap.
+                core::ptr::copy(data.add(idx + 1), data.add(idx), len - idx - 1);
+                (*v).len -= 1;
+                removed
+            }
+        }
+    };
+}
+
+vec_remove_at_primitive!(hew_vec_remove_at_bool, bool);
+vec_remove_at_primitive!(hew_vec_remove_at_i8, i8);
+vec_remove_at_primitive!(hew_vec_remove_at_u8, u8);
+vec_remove_at_primitive!(hew_vec_remove_at_i16, i16);
+vec_remove_at_primitive!(hew_vec_remove_at_u16, u16);
+vec_remove_at_primitive!(hew_vec_remove_at_i32, i32);
+vec_remove_at_primitive!(hew_vec_remove_at_i64, i64);
+vec_remove_at_primitive!(hew_vec_remove_at_f32, f32);
+vec_remove_at_primitive!(hew_vec_remove_at_f64, f64);
+
+/// Remove and return the string pointer at `index`, shifting the tail left.
+/// The caller now owns the returned pointer (moved, not cloned). Aborts if
+/// `index >= len`.
+///
+/// # Safety
+///
+/// `v` must be a valid string `HewVec` pointer.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_remove_at_str(v: *mut HewVec, index: i64) -> *const c_char {
+    // SAFETY: caller guarantees `v` is valid.
+    unsafe {
+        abort_if_layout_aware(v);
+        let len = (*v).len;
+        let idx = index as usize;
+        if idx >= len {
+            abort_oob("Vec.remove()", idx, len);
+        }
+        let data = (*v).data.cast::<*const c_char>();
+        let removed = data.add(idx).read();
+        core::ptr::copy(data.add(idx + 1), data.add(idx), len - idx - 1);
+        (*v).len -= 1;
+        removed
+    }
+}
+
+/// Remove and return the pointer element at `index`, shifting the tail left.
+/// The caller now owns the returned pointer (moved, not cloned). Aborts if
+/// `index >= len`.
+///
+/// # Safety
+///
+/// Non-null `v` must be a valid pointer-element `HewVec` pointer.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_remove_at_ptr(v: *mut HewVec, index: i64) -> *mut c_void {
+    cabi_guard!(v.is_null(), ptr::null_mut());
+    // SAFETY: caller guarantees `v` is valid.
+    unsafe {
+        abort_if_layout_aware(v);
+        let len = (*v).len;
+        let idx = index as usize;
+        if idx >= len {
+            abort_oob("Vec.remove()", idx, len);
+        }
+        let data = (*v).data.cast::<*mut c_void>();
+        let removed = data.add(idx).read();
+        core::ptr::copy(data.add(idx + 1), data.add(idx), len - idx - 1);
+        (*v).len -= 1;
+        removed
+    }
+}
+
+/// Remove the owned element at `index`, moving it into `out` and shifting the
+/// tail left. Ownership of the removed element transfers to the caller, so NO
+/// drop runs. The tail shift is a raw `memmove` — remaining owned elements
+/// slide down unchanged, each still owned by exactly one live slot, so there
+/// is no double-free. Aborts if `index >= len`. Returns 1 on success.
+///
+/// # Safety
+///
+/// `v` must be an owned-element `HewVec`. `out` must point to at least
+/// `descriptor.size` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_remove_at_owned(
+    v: *mut HewVec,
+    index: i64,
+    out: *mut core::ffi::c_void,
+) -> i32 {
+    cabi_guard!(v.is_null() || out.is_null(), 0);
+    // SAFETY: guards reject null pointers; descriptor presence is validated.
+    unsafe {
+        let layout = owned_descriptor(v);
+        let elem_size = layout.size;
+        let len = (*v).len;
+        let idx = index as usize;
+        if idx >= len {
+            abort_oob("Vec.remove()", idx, len);
+        }
+        // Move the removed element OUT into `out` before the shift. No drop —
+        // possession transfers to the caller.
+        let removed = (*v).data.add(idx * elem_size);
+        core::ptr::copy_nonoverlapping(removed, out.cast::<u8>(), elem_size);
+        let src = (*v).data.add((idx + 1) * elem_size);
+        let dst = (*v).data.add(idx * elem_size);
+        let count = (len - idx - 1) * elem_size;
+        if count > 0 {
+            core::ptr::copy(src, dst, count);
+        }
+        (*v).len -= 1;
+        1
     }
 }
 
@@ -3678,7 +3804,7 @@ mod tests {
         unsafe {
             let v = hew_vec_new();
             hew_vec_push_i32(v, 7);
-            hew_vec_remove_at(v, 1);
+            hew_vec_remove_at_i32(v, 1);
         }
     }
 
@@ -4116,7 +4242,11 @@ mod tests {
             push_point(v, 3, 4, &layout);
             push_point(v, 5, 6, &layout);
 
-            hew_vec_remove_at_layout(v, 1, &raw const layout);
+            let mut out: (i64, i64) = (0, 0);
+            let status = hew_vec_remove_at_layout(v, 1, (&raw mut out).cast(), &raw const layout);
+            assert_eq!(status, 1, "remove should report success");
+            // The removed element is MOVED into `out` (Point { x: 3, y: 4 }).
+            assert_eq!(out, (3, 4), "moved-out element must be the removed Point");
 
             assert_eq!(hew_vec_len(v), 2, "len should be 2 after removing middle");
             assert_eq!(get_point(v, 0, &layout), (1, 2), "first element unchanged");
@@ -4140,7 +4270,10 @@ mod tests {
             push_point(v, 30, 40, &layout);
             push_point(v, 50, 60, &layout);
 
-            hew_vec_remove_at_layout(v, 0, &raw const layout);
+            let mut out: (i64, i64) = (0, 0);
+            let status = hew_vec_remove_at_layout(v, 0, (&raw mut out).cast(), &raw const layout);
+            assert_eq!(status, 1, "remove should report success");
+            assert_eq!(out, (10, 20), "moved-out element must be the removed Point");
 
             assert_eq!(hew_vec_len(v), 2, "len should be 2 after removing first");
             assert_eq!(
@@ -4167,7 +4300,10 @@ mod tests {
             push_point(v, 7, 8, &layout);
             push_point(v, 9, 10, &layout);
 
-            hew_vec_remove_at_layout(v, 1, &raw const layout);
+            let mut out: (i64, i64) = (0, 0);
+            let status = hew_vec_remove_at_layout(v, 1, (&raw mut out).cast(), &raw const layout);
+            assert_eq!(status, 1, "remove should report success");
+            assert_eq!(out, (9, 10), "moved-out element must be the removed Point");
 
             assert_eq!(hew_vec_len(v), 1, "len should be 1 after removing last");
             assert_eq!(get_point(v, 0, &layout), (7, 8), "first element unchanged");
@@ -4184,7 +4320,10 @@ mod tests {
             let v = hew_vec_new_with_layout(&raw const layout);
             push_point(v, 42, 99, &layout);
 
-            hew_vec_remove_at_layout(v, 0, &raw const layout);
+            let mut out: (i64, i64) = (0, 0);
+            let status = hew_vec_remove_at_layout(v, 0, (&raw mut out).cast(), &raw const layout);
+            assert_eq!(status, 1, "remove should report success");
+            assert_eq!(out, (42, 99), "moved-out element must be the removed Point");
 
             assert_eq!(
                 hew_vec_len(v),
@@ -4233,8 +4372,9 @@ mod tests {
         unsafe {
             let v = hew_vec_new_with_layout(&raw const layout);
             push_point(v, 1, 2, &layout);
+            let mut out: (i64, i64) = (0, 0);
             // index 1 is out of bounds for a single-element vec
-            hew_vec_remove_at_layout(v, 1, &raw const layout);
+            hew_vec_remove_at_layout(v, 1, (&raw mut out).cast(), &raw const layout);
         }
     }
 
@@ -4283,7 +4423,8 @@ mod tests {
         // SAFETY: FFI calls use a valid layout pointer; the abort is expected.
         unsafe {
             let v = hew_vec_new_with_layout(&raw const layout);
-            hew_vec_remove_at_layout(v, 0, &raw const layout);
+            let mut out: (i64, i64) = (0, 0);
+            hew_vec_remove_at_layout(v, 0, (&raw mut out).cast(), &raw const layout);
         }
     }
 

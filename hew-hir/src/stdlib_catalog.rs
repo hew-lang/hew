@@ -922,14 +922,18 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_string_lines",
         },
     ),
-    overload(
-        "find_str",
-        "find",
+    // `string.find(needle) -> Option<i64>` — sentinel->Option (D46). The row
+    // registers the symbol; checker authority (the `impl string` source sig)
+    // drives the `Option<i64>` result. Codegen intercepts the callee, calls
+    // the unchanged runtime `hew_string_find` (i32, `-1` miss), and wraps the
+    // sentinel as `None` / a hit as `Some(index)`. (`I64` below is the element
+    // class, not the wrapped return — there is no `BuiltinTy::Option`.)
+    direct(
+        "hew_string_find",
+        BuiltinClass::ClassA,
         STRING_STRING,
         BuiltinTy::I64,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_string_find",
-        },
+        BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     overload(
         "slice_str",
@@ -949,14 +953,16 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_string_repeat",
         },
     ),
-    overload(
-        "char_at_str",
-        "char_at",
+    // `string.char_at(i) -> Option<char>` — sentinel->Option (D46), the
+    // byte-indexed sibling of the codepoint-indexed `string.get`. Codegen
+    // intercepts the callee, calls the unchanged runtime `hew_string_char_at`
+    // (i32 byte, `-1` OOB), and wraps the sentinel as `None`.
+    direct(
+        "hew_string_char_at",
+        BuiltinClass::ClassA,
         STRING_I64,
-        BuiltinTy::I64,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_string_char_at",
-        },
+        BuiltinTy::Char,
+        BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     overload(
         "chars_str",
@@ -978,14 +984,16 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_string_char_count",
         },
     ),
-    overload(
-        "codepoint_at_utf8_str",
-        "codepoint_at_utf8",
+    // `string.codepoint_at_utf8(i) -> Option<i64>` — sentinel->Option (D46).
+    // Codegen intercepts the callee, calls the unchanged runtime
+    // `hew_string_char_at_utf8` (i32 codepoint, `-1` OOB/invalid), and wraps
+    // the sentinel as `None`.
+    direct(
+        "hew_string_char_at_utf8",
+        BuiltinClass::ClassA,
         STRING_I64,
         BuiltinTy::I64,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_string_char_at_utf8",
-        },
+        BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     // Class A: declarative bytes receiver bridge. Keep every symbol named by
     // `std/io.hew`'s `impl bytes` extern declarations in the HIR catalog so
@@ -1538,15 +1546,19 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::Bool,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
-    // W3.003: `Vec<T>::remove(index: i64)` for BitCopy layout-backed elements.
-    // Routes through `hew_vec_remove_at_layout`; the hidden `HewTypeLayout*`
-    // operand is synthesized by codegen from the Vec element type.
-    // Arity: receiver Vec + explicit index = 2 source-level parameters.
+    // `Vec<T>::remove(index) -> T` for BitCopy layout-backed elements. Routes
+    // through `hew_vec_remove_at_layout`, which moves the removed element into
+    // a codegen-supplied out slot (mirroring `pop_layout`) and shifts the tail;
+    // the hidden `out` and `HewTypeLayout*` operands are synthesized by codegen
+    // from the Vec element type. Arity: receiver Vec + explicit index = 2
+    // source-level parameters. The return is the removed element, materialised
+    // by the codegen dispatch (`CalleeNameDispatchOnly`) exactly like
+    // `pop_layout`.
     direct(
         "hew_vec_remove_at_layout",
         BuiltinClass::ClassA,
         VEC_ANY_I64,
-        BuiltinTy::Unit,
+        BuiltinTy::VecAny,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     // W3.003: `Vec<T>::clone()` for BitCopy layout-backed elements.
@@ -1608,6 +1620,16 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinClass::ClassA,
         HASHMAP_ANY,
         BuiltinTy::Bool,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    // `HashMap::remove(k) -> Option<V>` (A233): the move-out remove. Mirrors
+    // `get_layout` — the checker projects `Option<V>`; codegen builds the
+    // Some/None from the runtime's bool + out-param (drop-K, move-V).
+    direct(
+        "hew_hashmap_remove_take_layout",
+        BuiltinClass::ClassA,
+        HASHMAP_ANY,
+        BuiltinTy::Unit,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     direct(
@@ -1984,13 +2006,109 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_vec_append",
         },
     ),
+    // `Vec<T>::remove(index) -> T` — index-based move-out mirroring `pop`, one
+    // symbol per element class. Params are receiver Vec + explicit index
+    // (`VEC_ANY_I64`); the return is the removed element `T` (transferred to
+    // the caller — no clone, no drop). The bool arm rides a named codegen
+    // dispatch (i1 marshalling) like `pop_bool`; the scalar/str/ptr arms flow
+    // through the generic FFI-shim path typed by their `BuiltinTy` return.
     direct(
-        "hew_vec_remove_at",
+        "hew_vec_remove_at_bool",
         BuiltinClass::ClassA,
         VEC_ANY_I64,
-        BuiltinTy::Unit,
+        BuiltinTy::Bool,
         BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_vec_remove_at",
+            symbol: "hew_vec_remove_at_bool",
+        },
+    ),
+    direct(
+        "hew_vec_remove_at_i8",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::I8,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_remove_at_i8",
+        },
+    ),
+    direct(
+        "hew_vec_remove_at_u8",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::U8,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_remove_at_u8",
+        },
+    ),
+    direct(
+        "hew_vec_remove_at_i16",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::I16,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_remove_at_i16",
+        },
+    ),
+    direct(
+        "hew_vec_remove_at_u16",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::U16,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_remove_at_u16",
+        },
+    ),
+    direct(
+        "hew_vec_remove_at_i32",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::I32,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_remove_at_i32",
+        },
+    ),
+    direct(
+        "hew_vec_remove_at_i64",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::I64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_remove_at_i64",
+        },
+    ),
+    direct(
+        "hew_vec_remove_at_f32",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::F32,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_remove_at_f32",
+        },
+    ),
+    direct(
+        "hew_vec_remove_at_f64",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::F64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_remove_at_f64",
+        },
+    ),
+    direct(
+        "hew_vec_remove_at_str",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::String,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_remove_at_str",
+        },
+    ),
+    direct(
+        "hew_vec_remove_at_ptr",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::Pointer,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_remove_at_ptr",
         },
     ),
     direct(

@@ -1,0 +1,113 @@
+//! Tests for `Vec<T>::remove(i) -> T` — the index-based move-out that mirrors
+//! `pop`. Each case asserts BOTH the returned element (exact value) and the
+//! post-removal vector state (length + surviving elements at exact indices),
+//! so a garbage move-out or a bad tail shift is caught, not just "non-empty".
+
+import std::testing;
+
+type Point { x: i64, y: i64 }
+
+// ── scalar (i64) ────────────────────────────────────────────────────────────
+#[test]
+fn test_remove_middle_returns_element_and_shifts() {
+    let v: Vec<i64> = Vec::new();
+    v.push(10);
+    v.push(20);
+    v.push(30);
+    let removed = v.remove(1);
+    testing.assert_eq(removed, 20);
+    // Post-vec is {10, 30}.
+    testing.assert_eq(v.len(), 2);
+    testing.assert_eq(v[0], 10);
+    testing.assert_eq(v[1], 30);
+}
+
+#[test]
+fn test_remove_first_shifts_tail_down() {
+    let v: Vec<i64> = Vec::new();
+    v.push(1);
+    v.push(2);
+    v.push(3);
+    testing.assert_eq(v.remove(0), 1);
+    testing.assert_eq(v.len(), 2);
+    testing.assert_eq(v[0], 2);
+    testing.assert_eq(v[1], 3);
+}
+
+#[test]
+fn test_remove_last_leaves_prefix() {
+    let v: Vec<i64> = Vec::new();
+    v.push(7);
+    v.push(8);
+    v.push(9);
+    testing.assert_eq(v.remove(2), 9);
+    testing.assert_eq(v.len(), 2);
+    testing.assert_eq(v[0], 7);
+    testing.assert_eq(v[1], 8);
+}
+
+#[test]
+fn test_remove_single_element_empties_vec() {
+    let v: Vec<i64> = Vec::new();
+    v.push(42);
+    testing.assert_eq(v.remove(0), 42);
+    testing.assert_eq(v.len(), 0);
+    testing.assert_true(v.is_empty());
+}
+
+// ── bool (named codegen dispatch) ───────────────────────────────────────────
+#[test]
+fn test_remove_bool_element() {
+    let v: Vec<bool> = Vec::new();
+    v.push(true);
+    v.push(false);
+    v.push(true);
+    testing.assert_true(v.remove(1) == false);
+    testing.assert_eq(v.len(), 2);
+    testing.assert_true(v[0] == true);
+    testing.assert_true(v[1] == true);
+}
+
+// ── string (owned move-out; the leak/double-free crux) ──────────────────────
+#[test]
+fn test_remove_string_returns_owned_and_survivors_intact() {
+    let v: Vec<string> = Vec::new();
+    v.push("alpha");
+    v.push("beta");
+    v.push("gamma");
+    let removed = v.remove(1);
+    testing.assert_true(removed == "beta");
+    // The removed element is the sole owner now; survivors slid down intact.
+    testing.assert_eq(v.len(), 2);
+    testing.assert_true(v[0] == "alpha");
+    testing.assert_true(v[1] == "gamma");
+}
+
+#[test]
+fn test_remove_string_first_then_last() {
+    let v: Vec<string> = Vec::new();
+    v.push("one");
+    v.push("two");
+    v.push("three");
+    testing.assert_true(v.remove(0) == "one");
+    testing.assert_eq(v.len(), 2);
+    testing.assert_true(v.remove(1) == "three");
+    testing.assert_eq(v.len(), 1);
+    testing.assert_true(v[0] == "two");
+}
+
+// ── BitCopy record (layout move-out) ────────────────────────────────────────
+#[test]
+fn test_remove_bitcopy_record_element() {
+    let v: Vec<Point> = Vec::new();
+    v.push(Point { x: 1, y: 2 });
+    v.push(Point { x: 3, y: 4 });
+    v.push(Point { x: 5, y: 6 });
+    let p = v.remove(1);
+    testing.assert_eq(p.x, 3);
+    testing.assert_eq(p.y, 4);
+    testing.assert_eq(v.len(), 2);
+    testing.assert_eq(v[0].x, 1);
+    testing.assert_eq(v[1].x, 5);
+    testing.assert_eq(v[1].y, 6);
+}

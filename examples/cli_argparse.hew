@@ -67,10 +67,10 @@ fn main() {
         if arg.starts_with("--") {
             // Long option: check for "=" to distinguish flag from key=value
             let eq_pos = arg.find("=");
-            if eq_pos >= 0 {
+            if let Some(pos) = eq_pos {
                 // Key-value option: --key=value
-                let key = arg.slice(2, eq_pos);
-                let val = arg.slice(eq_pos + 1, arg.len());
+                let key = arg.slice(2, pos);
+                let val = arg.slice(pos + 1, arg.len());
                 opt_keys.push(key);
                 opt_vals.push(val);
             } else {

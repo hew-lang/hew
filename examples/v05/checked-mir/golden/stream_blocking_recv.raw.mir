@@ -661,134 +661,160 @@ fn fs$strip_trailing_slash(string) -> string [conv=default]
 fn fs$last_slash_pos(string) -> i64 [conv=default]
   locals:
     _0: string
-    _1: string
-    _2: i64
-    _3: i64
-    _4: ()
+    _1: i64
+    _2: string
+    _3: Option<i64>
+    _4: i64
     _5: i64
     _6: bool
     _7: i64
-    _8: i64
+    _8: bool
     _9: i64
     _10: i64
-    _11: bool
+    _11: i64
     _12: i64
     _13: i64
-    _14: bool
-    _15: i64
-    _16: string
-    _17: string
-    _18: string
+    _14: i64
+    _15: bool
+    _16: i64
+    _17: i64
+    _18: bool
     _19: i64
-    _20: i64
-    _21: ()
+    _20: string
+    _21: string
     _22: i64
-    _23: bool
-    _24: i64
-    _25: bool
+    _23: string
+    _24: Option<i64>
+    _25: i64
     _26: i64
-    _27: i64
-    _28: bool
+    _27: bool
+    _28: i64
+    _29: bool
+    _30: i64
+    _31: i64
+    _32: i64
+    _33: bool
+    _34: i64
+    _35: i64
+    _36: bool
   bb0:
-    stmt: use BindingId(20) s site=SiteId(216) ty=string intent=Read
-    _1 = string_lit "/"
-    _2 = call hew_string_find(_0, _1) -> bb1
+    stmt: use BindingId(20) s site=SiteId(217) ty=string intent=Read
+    _2 = string_lit "/"
+    _3 = call hew_string_find(_0, _2) -> bb1
   bb1:
-    stmt: bind BindingId(21) first site=SiteId(215) ty=i64
-    stmt: use BindingId(21) first site=SiteId(220) ty=i64 intent=Read
-    _3 = move _2
+    _4 = move etag3
     _5 = const.i64 0
-    _6 = icmp.slt _3 _5
-    branch _6 ? bb2 : bb3
+    _6 = icmp.eq _4 _5
+    branch _6 ? bb3 : bb6
   bb2:
-    stmt: return site=Some(SiteId(222)) ty=i64
-    _7 = const.i64 -1
-    ret = move _7
-    return
+    stmt: bind BindingId(22) first site=SiteId(215) ty=i64
+    stmt: use BindingId(22) first site=SiteId(223) ty=i64 intent=Consume
+    stmt: bind BindingId(23) last site=SiteId(223) ty=i64
+    stmt: use BindingId(22) first site=SiteId(225) ty=i64 intent=Read
+    _11 = move _1
+    _12 = move _11
+    _13 = const.i64 1
+    _14 ovf=_15 = add.checked.s _11 _13
+    branch _15 ? bb8 : bb9
   bb3:
-    goto bb4
+    stmt: bind BindingId(21) i site=SiteId(220) ty=i64
+    stmt: use BindingId(21) i site=SiteId(220) ty=i64 intent=Read
+    _9 = move mvar3.0.0
+    _1 = move _9
+    goto bb2
   bb4:
-    stmt: eval site=SiteId(224) ty=()
-    stmt: use BindingId(21) first site=SiteId(225) ty=i64 intent=Consume
-    stmt: bind BindingId(22) last site=SiteId(225) ty=i64
-    stmt: use BindingId(21) first site=SiteId(227) ty=i64 intent=Read
-    _8 = move _3
-    _9 = const.i64 1
-    _10 ovf=_11 = add.checked.s _3 _9
-    branch _11 ? bb6 : bb7
+    stmt: return site=Some(SiteId(222)) ty=i64
+    _10 = const.i64 -1
+    ret = move _10
+    return
   bb5:
-    goto bb4
+    trap(ExhaustivenessFallthrough)
   bb6:
-    trap(IntegerOverflow)
+    _7 = const.i64 1
+    _8 = icmp.eq _4 _7
+    branch _8 ? bb4 : bb5
   bb7:
-    stmt: bind BindingId(23) search_from site=SiteId(226) ty=i64
-    _12 = move _10
-    goto bb8
+    goto bb2
   bb8:
-    stmt: use BindingId(23) search_from site=SiteId(230) ty=i64 intent=Read
-    stmt: use BindingId(20) s site=SiteId(232) ty=string intent=Read
-    _13 = call hew_string_length(_0) -> bb11
+    trap(IntegerOverflow)
   bb9:
-    stmt: use BindingId(20) s site=SiteId(235) ty=string intent=Read
-    stmt: use BindingId(23) search_from site=SiteId(236) ty=i64 intent=Read
-    stmt: use BindingId(20) s site=SiteId(238) ty=string intent=Read
-    _15 = call hew_string_length(_0) -> bb12
+    stmt: bind BindingId(24) search_from site=SiteId(224) ty=i64
+    _16 = move _14
+    goto bb10
   bb10:
-    stmt: eval site=SiteId(259) ty=()
-    stmt: use BindingId(22) last site=SiteId(260) ty=i64 intent=Read
-    stmt: return site=Some(SiteId(260)) ty=i64
-    ret = move _8
-    return
+    stmt: use BindingId(24) search_from site=SiteId(228) ty=i64 intent=Read
+    stmt: use BindingId(20) s site=SiteId(230) ty=string intent=Read
+    _17 = call hew_string_length(_0) -> bb13
   bb11:
-    _14 = icmp.slt _12 _13
-    branch _14 ? bb9 : bb10
+    stmt: use BindingId(20) s site=SiteId(233) ty=string intent=Read
+    stmt: use BindingId(24) search_from site=SiteId(234) ty=i64 intent=Read
+    stmt: use BindingId(20) s site=SiteId(236) ty=string intent=Read
+    _19 = call hew_string_length(_0) -> bb14
   bb12:
-    _16 = call hew_string_slice(_0, _12, _15) -> bb13
-  bb13:
-    stmt: bind BindingId(24) rest site=SiteId(234) ty=string
-    stmt: use BindingId(24) rest site=SiteId(242) ty=string intent=Read
-    _17 = move _16
-    _18 = string_lit "/"
-    _19 = call hew_string_find(_17, _18) -> bb14
-  bb14:
-    stmt: bind BindingId(25) next site=SiteId(241) ty=i64
-    stmt: use BindingId(25) next site=SiteId(246) ty=i64 intent=Read
-    _20 = move _19
-    _22 = const.i64 0
-    _23 = icmp.slt _20 _22
-    branch _23 ? bb15 : bb16
-  bb15:
-    stmt: use BindingId(22) last site=SiteId(248) ty=i64 intent=Consume
-    stmt: return site=Some(SiteId(248)) ty=i64
-    ret = move _8
+    stmt: eval site=SiteId(255) ty=()
+    stmt: use BindingId(23) last site=SiteId(256) ty=i64 intent=Read
+    stmt: return site=Some(SiteId(256)) ty=i64
+    ret = move _12
     return
+  bb13:
+    _18 = icmp.slt _16 _17
+    branch _18 ? bb11 : bb12
+  bb14:
+    _20 = call hew_string_slice(_0, _16, _19) -> bb15
+  bb15:
+    stmt: bind BindingId(25) rest site=SiteId(232) ty=string
+    stmt: use BindingId(25) rest site=SiteId(241) ty=string intent=Read
+    _21 = move _20
+    _23 = string_lit "/"
+    _24 = call hew_string_find(_21, _23) -> bb16
   bb16:
-    goto bb17
+    _25 = move etag24
+    _26 = const.i64 0
+    _27 = icmp.eq _25 _26
+    branch _27 ? bb18 : bb21
   bb17:
-    stmt: eval site=SiteId(250) ty=()
-    stmt: use BindingId(23) search_from site=SiteId(253) ty=i64 intent=Read
-    stmt: use BindingId(25) next site=SiteId(254) ty=i64 intent=Read
-    _24 ovf=_25 = add.checked.s _12 _20
-    branch _25 ? bb19 : bb20
+    stmt: bind BindingId(27) next site=SiteId(239) ty=i64
+    stmt: use BindingId(24) search_from site=SiteId(249) ty=i64 intent=Read
+    stmt: use BindingId(27) next site=SiteId(250) ty=i64 intent=Read
+    _31 = move _22
+    _32 ovf=_33 = add.checked.s _16 _31
+    branch _33 ? bb23 : bb24
   bb18:
+    stmt: bind BindingId(26) i site=SiteId(244) ty=i64
+    stmt: use BindingId(26) i site=SiteId(244) ty=i64 intent=Read
+    _30 = move mvar24.0.0
+    _22 = move _30
     goto bb17
   bb19:
-    trap(IntegerOverflow)
+    stmt: use BindingId(23) last site=SiteId(246) ty=i64 intent=Consume
+    stmt: return site=Some(SiteId(246)) ty=i64
+    ret = move _12
+    return
   bb20:
-    stmt: bind BindingId(22) last site=SiteId(251) ty=i64
-    stmt: eval site=SiteId(252) ty=()
-    stmt: use BindingId(22) last site=SiteId(257) ty=i64 intent=Read
-    _8 = move _24
-    _26 = const.i64 1
-    _27 ovf=_28 = add.checked.s _8 _26
-    branch _28 ? bb21 : bb22
+    trap(ExhaustivenessFallthrough)
   bb21:
-    trap(IntegerOverflow)
+    _28 = const.i64 1
+    _29 = icmp.eq _25 _28
+    branch _29 ? bb19 : bb20
   bb22:
-    stmt: bind BindingId(23) search_from site=SiteId(255) ty=i64
-    stmt: eval site=SiteId(256) ty=()
-    _12 = move _27
-    goto bb8
+    goto bb17
+  bb23:
+    trap(IntegerOverflow)
+  bb24:
+    stmt: bind BindingId(23) last site=SiteId(247) ty=i64
+    stmt: eval site=SiteId(248) ty=()
+    stmt: use BindingId(23) last site=SiteId(253) ty=i64 intent=Read
+    _12 = move _32
+    _34 = const.i64 1
+    _35 ovf=_36 = add.checked.s _12 _34
+    branch _36 ? bb25 : bb26
+  bb25:
+    trap(IntegerOverflow)
+  bb26:
+    stmt: bind BindingId(24) search_from site=SiteId(251) ty=i64
+    stmt: eval site=SiteId(252) ty=()
+    _16 = move _35
+    goto bb10
 
 fn fs$write_error(string) -> IoError [conv=default]
   locals:
@@ -804,7 +830,7 @@ fn fs$write_error(string) -> IoError [conv=default]
     _9: i64
     _10: IoError
   bb0:
-    stmt: use BindingId(26) target site=SiteId(263) ty=string intent=Read
+    stmt: use BindingId(28) target site=SiteId(259) ty=string intent=Read
     _2 = call fs$missing_parent(_0) -> bb1
   bb1:
     branch _2 ? bb2 : bb3
@@ -825,7 +851,7 @@ fn fs$write_error(string) -> IoError [conv=default]
     _1 = move _10
     goto bb4
   bb4:
-    stmt: return site=Some(SiteId(261)) ty=IoError
+    stmt: return site=Some(SiteId(257)) ty=IoError
     ret = move _1
     return
 
@@ -843,7 +869,7 @@ fn fs$missing_path_error(string) -> IoError [conv=default]
     _9: i64
     _10: IoError
   bb0:
-    stmt: use BindingId(27) target site=SiteId(273) ty=string intent=Read
+    stmt: use BindingId(29) target site=SiteId(269) ty=string intent=Read
     _2 = call fs$exists(_0) -> bb1
   bb1:
     branch _2 ? bb2 : bb3
@@ -864,7 +890,7 @@ fn fs$missing_path_error(string) -> IoError [conv=default]
     _1 = move _10
     goto bb4
   bb4:
-    stmt: return site=Some(SiteId(271)) ty=IoError
+    stmt: return site=Some(SiteId(267)) ty=IoError
     ret = move _1
     return
 
@@ -888,7 +914,7 @@ fn fs$mkdir_error(string) -> IoError [conv=default]
     _15: i64
     _16: IoError
   bb0:
-    stmt: use BindingId(28) target site=SiteId(283) ty=string intent=Read
+    stmt: use BindingId(30) target site=SiteId(279) ty=string intent=Read
     _2 = call fs$exists(_0) -> bb1
   bb1:
     branch _2 ? bb2 : bb3
@@ -901,10 +927,10 @@ fn fs$mkdir_error(string) -> IoError [conv=default]
     _1 = move _6
     goto bb4
   bb3:
-    stmt: use BindingId(28) target site=SiteId(290) ty=string intent=Read
+    stmt: use BindingId(30) target site=SiteId(286) ty=string intent=Read
     _8 = call fs$missing_parent(_0) -> bb5
   bb4:
-    stmt: return site=Some(SiteId(281)) ty=IoError
+    stmt: return site=Some(SiteId(277)) ty=IoError
     ret = move _1
     return
   bb5:
@@ -951,7 +977,7 @@ fn fs$move_copy_error(string, string) -> IoError [conv=default]
     _17: i64
     _18: IoError
   bb0:
-    stmt: use BindingId(29) source site=SiteId(301) ty=string intent=Read
+    stmt: use BindingId(31) source site=SiteId(297) ty=string intent=Read
     _3 = call fs$exists(_0) -> bb1
   bb1:
     _4 = not _3
@@ -965,10 +991,10 @@ fn fs$move_copy_error(string, string) -> IoError [conv=default]
     _2 = move _8
     goto bb4
   bb3:
-    stmt: use BindingId(30) target site=SiteId(308) ty=string intent=Read
+    stmt: use BindingId(32) target site=SiteId(304) ty=string intent=Read
     _10 = call fs$missing_parent(_1) -> bb5
   bb4:
-    stmt: return site=Some(SiteId(298)) ty=IoError
+    stmt: return site=Some(SiteId(294)) ty=IoError
     ret = move _2
     return
   bb5:
@@ -1029,15 +1055,15 @@ fn fs$read(string) -> string [conv=default]
     _31: !
     _32: string
   bb0:
-    stmt: use BindingId(31) path site=SiteId(318) ty=string intent=Read
+    stmt: use BindingId(33) path site=SiteId(314) ty=string intent=Read
     _1 = call hew_file_read(_0) -> bb1
   bb1:
-    stmt: bind BindingId(32) contents site=SiteId(317) ty=string
+    stmt: bind BindingId(34) contents site=SiteId(313) ty=string
     _2 = move _1
     _3 = call hew_stream_last_errno() -> bb2
   bb2:
-    stmt: bind BindingId(33) errno site=SiteId(320) ty=i32
-    stmt: use BindingId(33) errno site=SiteId(323) ty=i32 intent=Read
+    stmt: bind BindingId(35) errno site=SiteId(316) ty=i32
+    stmt: use BindingId(35) errno site=SiteId(319) ty=i32 intent=Read
     _4 = move _3
     _6 = const.i64 0
     _7 = icmp.ne _4 _6
@@ -1047,15 +1073,15 @@ fn fs$read(string) -> string [conv=default]
   bb4:
     goto bb5
   bb5:
-    stmt: eval site=SiteId(375) ty=()
-    stmt: use BindingId(32) contents site=SiteId(376) ty=string intent=Read
-    stmt: return site=Some(SiteId(316)) ty=string
+    stmt: eval site=SiteId(371) ty=()
+    stmt: use BindingId(34) contents site=SiteId(372) ty=string intent=Read
+    stmt: return site=Some(SiteId(312)) ty=string
     _32 = move _2
     ret = move _32
     return
   bb6:
-    stmt: bind BindingId(34) detail site=SiteId(325) ty=string
-    stmt: use BindingId(34) detail site=SiteId(330) ty=string intent=Read
+    stmt: bind BindingId(36) detail site=SiteId(321) ty=string
+    stmt: use BindingId(36) detail site=SiteId(326) ty=string intent=Read
     _9 = move _8
     _11 = call hew_string_length(_9) -> bb7
   bb7:
@@ -1063,11 +1089,11 @@ fn fs$read(string) -> string [conv=default]
     _13 = icmp.eq _11 _12
     branch _13 ? bb8 : bb9
   bb8:
-    stmt: use BindingId(31) path site=SiteId(337) ty=string intent=Read
+    stmt: use BindingId(33) path site=SiteId(333) ty=string intent=Read
     _14 = string_lit "fs.read failed for `"
     _15 = call string::fmt(_0) -> bb11
   bb9:
-    stmt: use BindingId(31) path site=SiteId(360) ty=string intent=Read
+    stmt: use BindingId(33) path site=SiteId(356) ty=string intent=Read
     _24 = string_lit "fs.read failed for `"
     _25 = call string::fmt(_0) -> bb19
   bb10:
@@ -1080,7 +1106,7 @@ fn fs$read(string) -> string [conv=default]
     _17 = string_lit "`: "
     _18 = call string_concat(_16, _17) -> bb13
   bb13:
-    stmt: use BindingId(33) errno site=SiteId(344) ty=i32 intent=Read
+    stmt: use BindingId(35) errno site=SiteId(340) ty=i32 intent=Read
     drop _16 ty=string fn=release(hew_string_drop)
     _19 = cast _4 i32 -> i64
     _20 = call fs$io_error_from_errno(_19) -> bb14
@@ -1093,7 +1119,7 @@ fn fs$read(string) -> string [conv=default]
   bb17:
     call panic(_23) -> bb18
   bb18:
-    stmt: eval site=SiteId(334) ty=!
+    stmt: eval site=SiteId(330) ty=!
     goto bb10
   bb19:
     _26 = call string_concat(_24, _25) -> bb20
@@ -1101,7 +1127,7 @@ fn fs$read(string) -> string [conv=default]
     _27 = string_lit "`: "
     _28 = call string_concat(_26, _27) -> bb21
   bb21:
-    stmt: use BindingId(34) detail site=SiteId(364) ty=string intent=Read
+    stmt: use BindingId(36) detail site=SiteId(360) ty=string intent=Read
     drop _26 ty=string fn=release(hew_string_drop)
     _29 = call string::fmt(_9) -> bb22
   bb22:
@@ -1109,7 +1135,7 @@ fn fs$read(string) -> string [conv=default]
   bb23:
     call panic(_30) -> bb24
   bb24:
-    stmt: eval site=SiteId(357) ty=!
+    stmt: eval site=SiteId(353) ty=!
     goto bb10
 
 fn fs$try_read(string) -> Result<string, IoError> [conv=default]
@@ -1133,24 +1159,24 @@ fn fs$try_read(string) -> Result<string, IoError> [conv=default]
     _16: Result<string, IoError>
     _17: Result<string, IoError>
   bb0:
-    stmt: use BindingId(35) file_path site=SiteId(379) ty=string intent=Read
+    stmt: use BindingId(37) file_path site=SiteId(375) ty=string intent=Read
     _1 = call hew_stream_from_file_read(_0) -> bb1
   bb1:
-    stmt: bind BindingId(36) file site=SiteId(378) ty=FileReadStream
-    stmt: use BindingId(36) file site=SiteId(383) ty=FileReadStream intent=Read
+    stmt: bind BindingId(38) file site=SiteId(374) ty=FileReadStream
+    stmt: use BindingId(38) file site=SiteId(379) ty=FileReadStream intent=Read
     _2 = move _1
     _4 = call hew_stream_is_valid(_2) -> bb2
   bb2:
     branch _4 ? bb3 : bb4
   bb3:
-    stmt: use BindingId(36) file site=SiteId(388) ty=FileReadStream intent=Read
+    stmt: use BindingId(38) file site=SiteId(384) ty=FileReadStream intent=Read
     _6 = const.i64 0
     mtag5 = move _6
     _7 = call hew_stream_collect_string(_2) -> bb6
   bb4:
     _9 = call hew_stream_last_errno() -> bb7
   bb5:
-    stmt: return site=Some(SiteId(377)) ty=Result<string, IoError>
+    stmt: return site=Some(SiteId(373)) ty=Result<string, IoError>
     _17 = move _3
     ret = move _17
     return
@@ -1160,12 +1186,12 @@ fn fs$try_read(string) -> Result<string, IoError> [conv=default]
     _3 = move _8
     goto bb5
   bb7:
-    stmt: bind BindingId(37) errno site=SiteId(391) ty=i32
+    stmt: bind BindingId(39) errno site=SiteId(387) ty=i32
     _10 = move _9
     _11 = call hew_stream_last_error() -> bb8
   bb8:
-    stmt: eval site=SiteId(393) ty=string
-    stmt: use BindingId(37) errno site=SiteId(398) ty=i32 intent=Read
+    stmt: eval site=SiteId(389) ty=string
+    stmt: use BindingId(39) errno site=SiteId(394) ty=i32 intent=Read
     _13 = const.i64 1
     mtag12 = move _13
     _14 = cast _10 i32 -> i64
@@ -1184,11 +1210,11 @@ fn fs$write(string, string) -> i64 [conv=default]
     _3: i64
     _4: i64
   bb0:
-    stmt: use BindingId(38) path site=SiteId(403) ty=string intent=Read
-    stmt: use BindingId(39) content site=SiteId(404) ty=string intent=Read
+    stmt: use BindingId(40) path site=SiteId(399) ty=string intent=Read
+    stmt: use BindingId(41) content site=SiteId(400) ty=string intent=Read
     _2 = call hew_file_write(_0, _1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(400)) ty=i64
+    stmt: return site=Some(SiteId(396)) ty=i64
     _3 = cast _2 i32 -> i64
     _4 = move _3
     ret = move _4
@@ -1210,14 +1236,14 @@ fn fs$try_write(string, string) -> Result<i64, IoError> [conv=default]
     _11: i64
     _12: IoError
   bb0:
-    stmt: use BindingId(40) file_path site=SiteId(409) ty=string intent=Read
-    stmt: use BindingId(41) content site=SiteId(410) ty=string intent=Read
+    stmt: use BindingId(42) file_path site=SiteId(405) ty=string intent=Read
+    stmt: use BindingId(43) content site=SiteId(406) ty=string intent=Read
     _3 = call hew_file_write(_0, _1) -> bb1
   bb1:
     _4 = move _3
     goto bb3
   bb2:
-    stmt: return site=Some(SiteId(406)) ty=Result<i64, IoError>
+    stmt: return site=Some(SiteId(402)) ty=Result<i64, IoError>
     ret = move _2
     return
   bb3:
@@ -1225,7 +1251,7 @@ fn fs$try_write(string, string) -> Result<i64, IoError> [conv=default]
     _6 = icmp.eq _4 _5
     branch _6 ? bb6 : bb4
   bb4:
-    stmt: use BindingId(40) file_path site=SiteId(416) ty=string intent=Read
+    stmt: use BindingId(42) file_path site=SiteId(412) ty=string intent=Read
     _11 = const.i64 1
     mtag10 = move _11
     _12 = call fs$write_error(_0) -> bb7
@@ -1251,11 +1277,11 @@ fn fs$append(string, string) -> i64 [conv=default]
     _3: i64
     _4: i64
   bb0:
-    stmt: use BindingId(42) path site=SiteId(421) ty=string intent=Read
-    stmt: use BindingId(43) content site=SiteId(422) ty=string intent=Read
+    stmt: use BindingId(44) path site=SiteId(417) ty=string intent=Read
+    stmt: use BindingId(45) content site=SiteId(418) ty=string intent=Read
     _2 = call hew_file_append(_0, _1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(418)) ty=i64
+    stmt: return site=Some(SiteId(414)) ty=i64
     _3 = cast _2 i32 -> i64
     _4 = move _3
     ret = move _4
@@ -1277,14 +1303,14 @@ fn fs$try_append(string, string) -> Result<i64, IoError> [conv=default]
     _11: i64
     _12: IoError
   bb0:
-    stmt: use BindingId(44) file_path site=SiteId(427) ty=string intent=Read
-    stmt: use BindingId(45) content site=SiteId(428) ty=string intent=Read
+    stmt: use BindingId(46) file_path site=SiteId(423) ty=string intent=Read
+    stmt: use BindingId(47) content site=SiteId(424) ty=string intent=Read
     _3 = call hew_file_append(_0, _1) -> bb1
   bb1:
     _4 = move _3
     goto bb3
   bb2:
-    stmt: return site=Some(SiteId(424)) ty=Result<i64, IoError>
+    stmt: return site=Some(SiteId(420)) ty=Result<i64, IoError>
     ret = move _2
     return
   bb3:
@@ -1292,7 +1318,7 @@ fn fs$try_append(string, string) -> Result<i64, IoError> [conv=default]
     _6 = icmp.eq _4 _5
     branch _6 ? bb6 : bb4
   bb4:
-    stmt: use BindingId(44) file_path site=SiteId(434) ty=string intent=Read
+    stmt: use BindingId(46) file_path site=SiteId(430) ty=string intent=Read
     _11 = const.i64 1
     mtag10 = move _11
     _12 = call fs$write_error(_0) -> bb7
@@ -1316,10 +1342,10 @@ fn fs$exists(string) -> bool [conv=default]
     _1: bool
     _2: bool
   bb0:
-    stmt: use BindingId(46) path site=SiteId(438) ty=string intent=Read
+    stmt: use BindingId(48) path site=SiteId(434) ty=string intent=Read
     _1 = call hew_file_exists(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(436)) ty=bool
+    stmt: return site=Some(SiteId(432)) ty=bool
     _2 = move _1
     ret = move _2
     return
@@ -1331,10 +1357,10 @@ fn fs$delete(string) -> i64 [conv=default]
     _2: i64
     _3: i64
   bb0:
-    stmt: use BindingId(47) path site=SiteId(443) ty=string intent=Read
+    stmt: use BindingId(49) path site=SiteId(439) ty=string intent=Read
     _1 = call hew_file_delete(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(440)) ty=i64
+    stmt: return site=Some(SiteId(436)) ty=i64
     _2 = cast _1 i32 -> i64
     _3 = move _2
     ret = move _3
@@ -1355,13 +1381,13 @@ fn fs$try_delete(string) -> Result<i64, IoError> [conv=default]
     _10: i64
     _11: IoError
   bb0:
-    stmt: use BindingId(48) file_path site=SiteId(448) ty=string intent=Read
+    stmt: use BindingId(50) file_path site=SiteId(444) ty=string intent=Read
     _2 = call hew_file_delete(_0) -> bb1
   bb1:
     _3 = move _2
     goto bb3
   bb2:
-    stmt: return site=Some(SiteId(445)) ty=Result<i64, IoError>
+    stmt: return site=Some(SiteId(441)) ty=Result<i64, IoError>
     ret = move _1
     return
   bb3:
@@ -1369,7 +1395,7 @@ fn fs$try_delete(string) -> Result<i64, IoError> [conv=default]
     _5 = icmp.eq _3 _4
     branch _5 ? bb6 : bb4
   bb4:
-    stmt: use BindingId(48) file_path site=SiteId(454) ty=string intent=Read
+    stmt: use BindingId(50) file_path site=SiteId(450) ty=string intent=Read
     _10 = const.i64 1
     mtag9 = move _10
     _11 = call fs$missing_path_error(_0) -> bb7
@@ -1393,10 +1419,10 @@ fn fs$size(string) -> i64 [conv=default]
     _1: i64
     _2: i64
   bb0:
-    stmt: use BindingId(49) path site=SiteId(458) ty=string intent=Read
+    stmt: use BindingId(51) path site=SiteId(454) ty=string intent=Read
     _1 = call hew_file_size(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(456)) ty=i64
+    stmt: return site=Some(SiteId(452)) ty=i64
     _2 = move _1
     ret = move _2
     return
@@ -1407,10 +1433,10 @@ fn fs$read_bytes(string) -> bytes [conv=default]
     _1: bytes
     _2: bytes
   bb0:
-    stmt: use BindingId(50) path site=SiteId(462) ty=string intent=Read
+    stmt: use BindingId(52) path site=SiteId(458) ty=string intent=Read
     _1 = call hew_file_read_bytes(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(460)) ty=bytes
+    stmt: return site=Some(SiteId(456)) ty=bytes
     _2 = move _1
     ret = move _2
     return
@@ -1436,15 +1462,15 @@ fn fs$try_read_bytes(string) -> Result<bytes, IoError> [conv=default]
     _16: Result<bytes, IoError>
     _17: Result<bytes, IoError>
   bb0:
-    stmt: use BindingId(51) file_path site=SiteId(466) ty=string intent=Read
+    stmt: use BindingId(53) file_path site=SiteId(462) ty=string intent=Read
     _1 = call hew_file_read_bytes(_0) -> bb1
   bb1:
-    stmt: bind BindingId(52) data site=SiteId(465) ty=bytes
+    stmt: bind BindingId(54) data site=SiteId(461) ty=bytes
     _2 = move _1
     _3 = call hew_stream_last_errno() -> bb2
   bb2:
-    stmt: bind BindingId(53) errno site=SiteId(468) ty=i32
-    stmt: use BindingId(53) errno site=SiteId(472) ty=i32 intent=Read
+    stmt: bind BindingId(55) errno site=SiteId(464) ty=i32
+    stmt: use BindingId(55) errno site=SiteId(468) ty=i32 intent=Read
     _4 = move _3
     _6 = const.i64 0
     _7 = icmp.ne _4 _6
@@ -1452,8 +1478,8 @@ fn fs$try_read_bytes(string) -> Result<bytes, IoError> [conv=default]
   bb3:
     _8 = call hew_stream_last_error() -> bb6
   bb4:
-    stmt: use BindingId(52) data site=SiteId(484) ty=bytes intent=Read
-    stmt: agg_alias BindingId(52) data site=SiteId(484) ty=bytes
+    stmt: use BindingId(54) data site=SiteId(480) ty=bytes intent=Read
+    stmt: agg_alias BindingId(54) data site=SiteId(480) ty=bytes
     _15 = const.i64 0
     mtag14 = move _15
     mvar14.0.0 = move _2
@@ -1461,13 +1487,13 @@ fn fs$try_read_bytes(string) -> Result<bytes, IoError> [conv=default]
     _5 = move _16
     goto bb5
   bb5:
-    stmt: return site=Some(SiteId(464)) ty=Result<bytes, IoError>
+    stmt: return site=Some(SiteId(460)) ty=Result<bytes, IoError>
     _17 = move _5
     ret = move _17
     return
   bb6:
-    stmt: eval site=SiteId(475) ty=string
-    stmt: use BindingId(53) errno site=SiteId(480) ty=i32 intent=Read
+    stmt: eval site=SiteId(471) ty=string
+    stmt: use BindingId(55) errno site=SiteId(476) ty=i32 intent=Read
     _10 = const.i64 1
     mtag9 = move _10
     _11 = cast _4 i32 -> i64
@@ -1486,11 +1512,11 @@ fn fs$write_bytes(string, bytes) -> i64 [conv=default]
     _3: i64
     _4: i64
   bb0:
-    stmt: use BindingId(54) path site=SiteId(488) ty=string intent=Read
-    stmt: use BindingId(55) data site=SiteId(489) ty=bytes intent=Read
+    stmt: use BindingId(56) path site=SiteId(484) ty=string intent=Read
+    stmt: use BindingId(57) data site=SiteId(485) ty=bytes intent=Read
     _2 = call hew_file_write_bytes(_0, _1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(485)) ty=i64
+    stmt: return site=Some(SiteId(481)) ty=i64
     _3 = cast _2 i32 -> i64
     _4 = move _3
     ret = move _4
@@ -1512,14 +1538,14 @@ fn fs$try_write_bytes(string, bytes) -> Result<i64, IoError> [conv=default]
     _11: i64
     _12: IoError
   bb0:
-    stmt: use BindingId(56) file_path site=SiteId(494) ty=string intent=Read
-    stmt: use BindingId(57) data site=SiteId(495) ty=bytes intent=Read
+    stmt: use BindingId(58) file_path site=SiteId(490) ty=string intent=Read
+    stmt: use BindingId(59) data site=SiteId(491) ty=bytes intent=Read
     _3 = call hew_file_write_bytes(_0, _1) -> bb1
   bb1:
     _4 = move _3
     goto bb3
   bb2:
-    stmt: return site=Some(SiteId(491)) ty=Result<i64, IoError>
+    stmt: return site=Some(SiteId(487)) ty=Result<i64, IoError>
     ret = move _2
     return
   bb3:
@@ -1527,7 +1553,7 @@ fn fs$try_write_bytes(string, bytes) -> Result<i64, IoError> [conv=default]
     _6 = icmp.eq _4 _5
     branch _6 ? bb6 : bb4
   bb4:
-    stmt: use BindingId(56) file_path site=SiteId(501) ty=string intent=Read
+    stmt: use BindingId(58) file_path site=SiteId(497) ty=string intent=Read
     _11 = const.i64 1
     mtag10 = move _11
     _12 = call fs$write_error(_0) -> bb7
@@ -1552,10 +1578,10 @@ fn fs$mkdir(string) -> i64 [conv=default]
     _2: i64
     _3: i64
   bb0:
-    stmt: use BindingId(58) path site=SiteId(506) ty=string intent=Read
+    stmt: use BindingId(60) path site=SiteId(502) ty=string intent=Read
     _1 = call hew_fs_mkdir(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(503)) ty=i64
+    stmt: return site=Some(SiteId(499)) ty=i64
     _2 = cast _1 i32 -> i64
     _3 = move _2
     ret = move _3
@@ -1576,13 +1602,13 @@ fn fs$try_mkdir(string) -> Result<i64, IoError> [conv=default]
     _10: i64
     _11: IoError
   bb0:
-    stmt: use BindingId(59) dir_path site=SiteId(511) ty=string intent=Read
+    stmt: use BindingId(61) dir_path site=SiteId(507) ty=string intent=Read
     _2 = call hew_fs_mkdir(_0) -> bb1
   bb1:
     _3 = move _2
     goto bb3
   bb2:
-    stmt: return site=Some(SiteId(508)) ty=Result<i64, IoError>
+    stmt: return site=Some(SiteId(504)) ty=Result<i64, IoError>
     ret = move _1
     return
   bb3:
@@ -1590,7 +1616,7 @@ fn fs$try_mkdir(string) -> Result<i64, IoError> [conv=default]
     _5 = icmp.eq _3 _4
     branch _5 ? bb6 : bb4
   bb4:
-    stmt: use BindingId(59) dir_path site=SiteId(517) ty=string intent=Read
+    stmt: use BindingId(61) dir_path site=SiteId(513) ty=string intent=Read
     _10 = const.i64 1
     mtag9 = move _10
     _11 = call fs$mkdir_error(_0) -> bb7
@@ -1615,10 +1641,10 @@ fn fs$mkdir_all(string) -> i64 [conv=default]
     _2: i64
     _3: i64
   bb0:
-    stmt: use BindingId(60) path site=SiteId(522) ty=string intent=Read
+    stmt: use BindingId(62) path site=SiteId(518) ty=string intent=Read
     _1 = call hew_fs_mkdir_all(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(519)) ty=i64
+    stmt: return site=Some(SiteId(515)) ty=i64
     _2 = cast _1 i32 -> i64
     _3 = move _2
     ret = move _3
@@ -1651,13 +1677,13 @@ fn fs$try_mkdir_all(string) -> Result<i64, IoError> [conv=default]
     _22: Result<i64, IoError>
     _23: Result<i64, IoError>
   bb0:
-    stmt: use BindingId(61) dir_path site=SiteId(527) ty=string intent=Read
+    stmt: use BindingId(63) dir_path site=SiteId(523) ty=string intent=Read
     _2 = call hew_fs_mkdir_all(_0) -> bb1
   bb1:
     _3 = move _2
     goto bb3
   bb2:
-    stmt: return site=Some(SiteId(524)) ty=Result<i64, IoError>
+    stmt: return site=Some(SiteId(520)) ty=Result<i64, IoError>
     ret = move _1
     return
   bb3:
@@ -1665,7 +1691,7 @@ fn fs$try_mkdir_all(string) -> Result<i64, IoError> [conv=default]
     _5 = icmp.eq _3 _4
     branch _5 ? bb6 : bb4
   bb4:
-    stmt: use BindingId(61) dir_path site=SiteId(534) ty=string intent=Read
+    stmt: use BindingId(63) dir_path site=SiteId(530) ty=string intent=Read
     _10 = call fs$exists(_0) -> bb7
   bb5:
     trap(ExhaustivenessFallthrough)
@@ -1711,10 +1737,10 @@ fn fs$list_dir(string) -> Vec<string> [conv=default]
     _1: Vec<string>
     _2: Vec<string>
   bb0:
-    stmt: use BindingId(62) path site=SiteId(546) ty=string intent=Read
+    stmt: use BindingId(64) path site=SiteId(542) ty=string intent=Read
     _1 = call hew_fs_list_dir(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(544)) ty=Vec<string>
+    stmt: return site=Some(SiteId(540)) ty=Vec<string>
     _2 = move _1
     ret = move _2
     return
@@ -1743,13 +1769,13 @@ fn fs$try_list_dir(string) -> Result<Vec<string>, IoError> [conv=default]
     _19: Vec<string>
     _20: Vec<string>
   bb0:
-    stmt: use BindingId(63) dir_path site=SiteId(550) ty=string intent=Read
+    stmt: use BindingId(65) dir_path site=SiteId(546) ty=string intent=Read
     _2 = call fs$exists(_0) -> bb1
   bb1:
     _3 = not _2
     branch _3 ? bb2 : bb3
   bb2:
-    stmt: return site=Some(SiteId(552)) ty=Result<Vec<string>, IoError>
+    stmt: return site=Some(SiteId(548)) ty=Result<Vec<string>, IoError>
     _5 = const.i64 1
     mtag4 = move _5
     _7 = const.i64 0
@@ -1762,8 +1788,8 @@ fn fs$try_list_dir(string) -> Result<Vec<string>, IoError> [conv=default]
   bb3:
     goto bb4
   bb4:
-    stmt: eval site=SiteId(556) ty=()
-    stmt: use BindingId(63) dir_path site=SiteId(559) ty=string intent=Read
+    stmt: eval site=SiteId(552) ty=()
+    stmt: use BindingId(65) dir_path site=SiteId(555) ty=string intent=Read
     _10 = call fs$is_dir(_0) -> bb6
   bb5:
     goto bb4
@@ -1771,7 +1797,7 @@ fn fs$try_list_dir(string) -> Result<Vec<string>, IoError> [conv=default]
     _11 = not _10
     branch _11 ? bb7 : bb8
   bb7:
-    stmt: return site=Some(SiteId(561)) ty=Result<Vec<string>, IoError>
+    stmt: return site=Some(SiteId(557)) ty=Result<Vec<string>, IoError>
     _13 = const.i64 1
     mtag12 = move _13
     _15 = const.i64 5
@@ -1784,15 +1810,15 @@ fn fs$try_list_dir(string) -> Result<Vec<string>, IoError> [conv=default]
   bb8:
     goto bb9
   bb9:
-    stmt: eval site=SiteId(565) ty=()
-    stmt: use BindingId(63) dir_path site=SiteId(569) ty=string intent=Read
+    stmt: eval site=SiteId(561) ty=()
+    stmt: use BindingId(65) dir_path site=SiteId(565) ty=string intent=Read
     _18 = const.i64 0
     mtag17 = move _18
     _19 = call hew_fs_list_dir(_0) -> bb11
   bb10:
     goto bb9
   bb11:
-    stmt: return site=Some(SiteId(566)) ty=Result<Vec<string>, IoError>
+    stmt: return site=Some(SiteId(562)) ty=Result<Vec<string>, IoError>
     _20 = move _19
     mvar17.0.0 = move _20
     ret = move _17
@@ -1806,11 +1832,11 @@ fn fs$rename(string, string) -> i64 [conv=default]
     _3: i64
     _4: i64
   bb0:
-    stmt: use BindingId(64) from site=SiteId(574) ty=string intent=Read
-    stmt: use BindingId(65) to site=SiteId(575) ty=string intent=Read
+    stmt: use BindingId(66) from site=SiteId(570) ty=string intent=Read
+    stmt: use BindingId(67) to site=SiteId(571) ty=string intent=Read
     _2 = call hew_fs_rename(_0, _1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(571)) ty=i64
+    stmt: return site=Some(SiteId(567)) ty=i64
     _3 = cast _2 i32 -> i64
     _4 = move _3
     ret = move _4
@@ -1832,14 +1858,14 @@ fn fs$try_rename(string, string) -> Result<i64, IoError> [conv=default]
     _11: i64
     _12: IoError
   bb0:
-    stmt: use BindingId(66) from site=SiteId(580) ty=string intent=Read
-    stmt: use BindingId(67) to site=SiteId(581) ty=string intent=Read
+    stmt: use BindingId(68) from site=SiteId(576) ty=string intent=Read
+    stmt: use BindingId(69) to site=SiteId(577) ty=string intent=Read
     _3 = call hew_fs_rename(_0, _1) -> bb1
   bb1:
     _4 = move _3
     goto bb3
   bb2:
-    stmt: return site=Some(SiteId(577)) ty=Result<i64, IoError>
+    stmt: return site=Some(SiteId(573)) ty=Result<i64, IoError>
     ret = move _2
     return
   bb3:
@@ -1847,8 +1873,8 @@ fn fs$try_rename(string, string) -> Result<i64, IoError> [conv=default]
     _6 = icmp.eq _4 _5
     branch _6 ? bb6 : bb4
   bb4:
-    stmt: use BindingId(66) from site=SiteId(587) ty=string intent=Read
-    stmt: use BindingId(67) to site=SiteId(588) ty=string intent=Read
+    stmt: use BindingId(68) from site=SiteId(583) ty=string intent=Read
+    stmt: use BindingId(69) to site=SiteId(584) ty=string intent=Read
     _11 = const.i64 1
     mtag10 = move _11
     _12 = call fs$move_copy_error(_0, _1) -> bb7
@@ -1874,11 +1900,11 @@ fn fs$copy(string, string) -> i64 [conv=default]
     _3: i64
     _4: i64
   bb0:
-    stmt: use BindingId(68) from site=SiteId(593) ty=string intent=Read
-    stmt: use BindingId(69) to site=SiteId(594) ty=string intent=Read
+    stmt: use BindingId(70) from site=SiteId(589) ty=string intent=Read
+    stmt: use BindingId(71) to site=SiteId(590) ty=string intent=Read
     _2 = call hew_fs_copy(_0, _1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(590)) ty=i64
+    stmt: return site=Some(SiteId(586)) ty=i64
     _3 = cast _2 i32 -> i64
     _4 = move _3
     ret = move _4
@@ -1900,14 +1926,14 @@ fn fs$try_copy(string, string) -> Result<i64, IoError> [conv=default]
     _11: i64
     _12: IoError
   bb0:
-    stmt: use BindingId(70) from site=SiteId(599) ty=string intent=Read
-    stmt: use BindingId(71) to site=SiteId(600) ty=string intent=Read
+    stmt: use BindingId(72) from site=SiteId(595) ty=string intent=Read
+    stmt: use BindingId(73) to site=SiteId(596) ty=string intent=Read
     _3 = call hew_fs_copy(_0, _1) -> bb1
   bb1:
     _4 = move _3
     goto bb3
   bb2:
-    stmt: return site=Some(SiteId(596)) ty=Result<i64, IoError>
+    stmt: return site=Some(SiteId(592)) ty=Result<i64, IoError>
     ret = move _2
     return
   bb3:
@@ -1915,8 +1941,8 @@ fn fs$try_copy(string, string) -> Result<i64, IoError> [conv=default]
     _6 = icmp.eq _4 _5
     branch _6 ? bb6 : bb4
   bb4:
-    stmt: use BindingId(70) from site=SiteId(606) ty=string intent=Read
-    stmt: use BindingId(71) to site=SiteId(607) ty=string intent=Read
+    stmt: use BindingId(72) from site=SiteId(602) ty=string intent=Read
+    stmt: use BindingId(73) to site=SiteId(603) ty=string intent=Read
     _11 = const.i64 1
     mtag10 = move _11
     _12 = call fs$move_copy_error(_0, _1) -> bb7
@@ -1940,10 +1966,10 @@ fn fs$is_dir(string) -> bool [conv=default]
     _1: bool
     _2: bool
   bb0:
-    stmt: use BindingId(72) path site=SiteId(611) ty=string intent=Read
+    stmt: use BindingId(74) path site=SiteId(607) ty=string intent=Read
     _1 = call hew_fs_is_dir(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(609)) ty=bool
+    stmt: return site=Some(SiteId(605)) ty=bool
     _2 = move _1
     ret = move _2
     return
@@ -1961,31 +1987,31 @@ fn stream$pipe(i64) -> (Sink<string>, Stream<string>) [conv=default]
     _8: (Sink<string>, Stream<string>)
     _9: (Sink<string>, Stream<string>)
   bb0:
-    stmt: use BindingId(73) capacity site=SiteId(616) ty=i64 intent=Read
+    stmt: use BindingId(75) capacity site=SiteId(612) ty=i64 intent=Read
     _1 = cast _0 i64 -> i64
     _2 = call hew_stream_channel(_1) -> bb1
   bb1:
-    stmt: bind BindingId(74) pair site=SiteId(614) ty=StreamPair
-    stmt: use BindingId(74) pair site=SiteId(619) ty=StreamPair intent=Read
+    stmt: bind BindingId(76) pair site=SiteId(610) ty=StreamPair
+    stmt: use BindingId(76) pair site=SiteId(615) ty=StreamPair intent=Read
     _3 = move _2
     _4 = call hew_stream_pair_sink(_3) -> bb2
   bb2:
-    stmt: bind BindingId(75) sink site=SiteId(618) ty=Sink<string>
-    stmt: use BindingId(74) pair site=SiteId(622) ty=StreamPair intent=Read
+    stmt: bind BindingId(77) sink site=SiteId(614) ty=Sink<string>
+    stmt: use BindingId(76) pair site=SiteId(618) ty=StreamPair intent=Read
     _5 = move _4
     _6 = call hew_stream_pair_stream(_3) -> bb3
   bb3:
-    stmt: bind BindingId(76) input site=SiteId(621) ty=Stream<string>
-    stmt: use BindingId(74) pair site=SiteId(625) ty=StreamPair intent=Read
+    stmt: bind BindingId(78) input site=SiteId(617) ty=Stream<string>
+    stmt: use BindingId(76) pair site=SiteId(621) ty=StreamPair intent=Read
     _7 = move _6
     call hew_stream_pair_free(_3) -> bb4
   bb4:
-    stmt: eval site=SiteId(624) ty=()
-    stmt: use BindingId(75) sink site=SiteId(628) ty=Sink<string> intent=Read
-    stmt: use BindingId(76) input site=SiteId(629) ty=Stream<string> intent=Read
-    stmt: agg_alias BindingId(75) sink site=SiteId(628) ty=Sink<string>
-    stmt: agg_alias BindingId(76) input site=SiteId(629) ty=Stream<string>
-    stmt: return site=Some(SiteId(613)) ty=(Sink<string>, Stream<string>)
+    stmt: eval site=SiteId(620) ty=()
+    stmt: use BindingId(77) sink site=SiteId(624) ty=Sink<string> intent=Read
+    stmt: use BindingId(78) input site=SiteId(625) ty=Stream<string> intent=Read
+    stmt: agg_alias BindingId(77) sink site=SiteId(624) ty=Sink<string>
+    stmt: agg_alias BindingId(78) input site=SiteId(625) ty=Stream<string>
+    stmt: return site=Some(SiteId(609)) ty=(Sink<string>, Stream<string>)
     _8 = tuple (_5, _7)
     _9 = move _8
     ret = move _9
@@ -2004,31 +2030,31 @@ fn stream$bytes_pipe(i64) -> (Sink<bytes>, Stream<bytes>) [conv=default]
     _8: (Sink<bytes>, Stream<bytes>)
     _9: (Sink<bytes>, Stream<bytes>)
   bb0:
-    stmt: use BindingId(77) capacity site=SiteId(633) ty=i64 intent=Read
+    stmt: use BindingId(79) capacity site=SiteId(629) ty=i64 intent=Read
     _1 = cast _0 i64 -> i64
     _2 = call hew_stream_channel(_1) -> bb1
   bb1:
-    stmt: bind BindingId(78) pair site=SiteId(631) ty=StreamPair
-    stmt: use BindingId(78) pair site=SiteId(636) ty=StreamPair intent=Read
+    stmt: bind BindingId(80) pair site=SiteId(627) ty=StreamPair
+    stmt: use BindingId(80) pair site=SiteId(632) ty=StreamPair intent=Read
     _3 = move _2
     _4 = call hew_stream_pair_sink_bytes(_3) -> bb2
   bb2:
-    stmt: bind BindingId(79) sink site=SiteId(635) ty=Sink<bytes>
-    stmt: use BindingId(78) pair site=SiteId(639) ty=StreamPair intent=Read
+    stmt: bind BindingId(81) sink site=SiteId(631) ty=Sink<bytes>
+    stmt: use BindingId(80) pair site=SiteId(635) ty=StreamPair intent=Read
     _5 = move _4
     _6 = call hew_stream_pair_stream_bytes(_3) -> bb3
   bb3:
-    stmt: bind BindingId(80) input site=SiteId(638) ty=Stream<bytes>
-    stmt: use BindingId(78) pair site=SiteId(642) ty=StreamPair intent=Read
+    stmt: bind BindingId(82) input site=SiteId(634) ty=Stream<bytes>
+    stmt: use BindingId(80) pair site=SiteId(638) ty=StreamPair intent=Read
     _7 = move _6
     call hew_stream_pair_free(_3) -> bb4
   bb4:
-    stmt: eval site=SiteId(641) ty=()
-    stmt: use BindingId(79) sink site=SiteId(645) ty=Sink<bytes> intent=Read
-    stmt: use BindingId(80) input site=SiteId(646) ty=Stream<bytes> intent=Read
-    stmt: agg_alias BindingId(79) sink site=SiteId(645) ty=Sink<bytes>
-    stmt: agg_alias BindingId(80) input site=SiteId(646) ty=Stream<bytes>
-    stmt: return site=Some(SiteId(630)) ty=(Sink<bytes>, Stream<bytes>)
+    stmt: eval site=SiteId(637) ty=()
+    stmt: use BindingId(81) sink site=SiteId(641) ty=Sink<bytes> intent=Read
+    stmt: use BindingId(82) input site=SiteId(642) ty=Stream<bytes> intent=Read
+    stmt: agg_alias BindingId(81) sink site=SiteId(641) ty=Sink<bytes>
+    stmt: agg_alias BindingId(82) input site=SiteId(642) ty=Stream<bytes>
+    stmt: return site=Some(SiteId(626)) ty=(Sink<bytes>, Stream<bytes>)
     _8 = tuple (_5, _7)
     _9 = move _8
     ret = move _9
@@ -2050,18 +2076,18 @@ fn stream$from_file(string) -> Result<Stream<string>, string> [conv=default]
     _11: Result<Stream<string>, string>
     _12: Result<Stream<string>, string>
   bb0:
-    stmt: use BindingId(81) path site=SiteId(649) ty=string intent=Read
+    stmt: use BindingId(83) path site=SiteId(645) ty=string intent=Read
     _1 = call hew_stream_from_file_read(_0) -> bb1
   bb1:
-    stmt: bind BindingId(82) s site=SiteId(648) ty=Stream<string>
-    stmt: use BindingId(82) s site=SiteId(653) ty=Stream<string> intent=Read
+    stmt: bind BindingId(84) s site=SiteId(644) ty=Stream<string>
+    stmt: use BindingId(84) s site=SiteId(649) ty=Stream<string> intent=Read
     _2 = move _1
     _4 = call hew_stream_is_valid(_2) -> bb2
   bb2:
     branch _4 ? bb3 : bb4
   bb3:
-    stmt: use BindingId(82) s site=SiteId(657) ty=Stream<string> intent=Read
-    stmt: agg_alias BindingId(82) s site=SiteId(657) ty=Stream<string>
+    stmt: use BindingId(84) s site=SiteId(653) ty=Stream<string> intent=Read
+    stmt: agg_alias BindingId(84) s site=SiteId(653) ty=Stream<string>
     _6 = const.i64 0
     mtag5 = move _6
     mvar5.0.0 = move _2
@@ -2073,7 +2099,7 @@ fn stream$from_file(string) -> Result<Stream<string>, string> [conv=default]
     mtag8 = move _9
     _10 = call hew_stream_last_error() -> bb6
   bb5:
-    stmt: return site=Some(SiteId(647)) ty=Result<Stream<string>, string>
+    stmt: return site=Some(SiteId(643)) ty=Result<Stream<string>, string>
     _12 = move _3
     ret = move _12
     return
@@ -2103,18 +2129,18 @@ fn stream$try_from_file(string) -> Result<Stream<string>, fs.IoError> [conv=defa
     _15: Result<Stream<string>, fs.IoError>
     _16: Result<Stream<string>, fs.IoError>
   bb0:
-    stmt: use BindingId(83) path site=SiteId(664) ty=string intent=Read
+    stmt: use BindingId(85) path site=SiteId(660) ty=string intent=Read
     _1 = call hew_stream_from_file_read(_0) -> bb1
   bb1:
-    stmt: bind BindingId(84) s site=SiteId(663) ty=Stream<string>
-    stmt: use BindingId(84) s site=SiteId(668) ty=Stream<string> intent=Read
+    stmt: bind BindingId(86) s site=SiteId(659) ty=Stream<string>
+    stmt: use BindingId(86) s site=SiteId(664) ty=Stream<string> intent=Read
     _2 = move _1
     _4 = call hew_stream_is_valid(_2) -> bb2
   bb2:
     branch _4 ? bb3 : bb4
   bb3:
-    stmt: use BindingId(84) s site=SiteId(672) ty=Stream<string> intent=Read
-    stmt: agg_alias BindingId(84) s site=SiteId(672) ty=Stream<string>
+    stmt: use BindingId(86) s site=SiteId(668) ty=Stream<string> intent=Read
+    stmt: agg_alias BindingId(86) s site=SiteId(668) ty=Stream<string>
     _6 = const.i64 0
     mtag5 = move _6
     mvar5.0.0 = move _2
@@ -2124,17 +2150,17 @@ fn stream$try_from_file(string) -> Result<Stream<string>, fs.IoError> [conv=defa
   bb4:
     _8 = call hew_stream_last_errno() -> bb6
   bb5:
-    stmt: return site=Some(SiteId(662)) ty=Result<Stream<string>, fs.IoError>
+    stmt: return site=Some(SiteId(658)) ty=Result<Stream<string>, fs.IoError>
     _16 = move _3
     ret = move _16
     return
   bb6:
-    stmt: bind BindingId(85) errno site=SiteId(674) ty=i32
+    stmt: bind BindingId(87) errno site=SiteId(670) ty=i32
     _9 = move _8
     _10 = call hew_stream_last_error() -> bb7
   bb7:
-    stmt: eval site=SiteId(676) ty=string
-    stmt: use BindingId(85) errno site=SiteId(681) ty=i32 intent=Read
+    stmt: eval site=SiteId(672) ty=string
+    stmt: use BindingId(87) errno site=SiteId(677) ty=i32 intent=Read
     _12 = const.i64 1
     mtag11 = move _12
     _13 = cast _9 i32 -> i64
@@ -2161,18 +2187,18 @@ fn stream$to_file(string) -> Result<Sink<string>, string> [conv=default]
     _11: Result<Sink<string>, string>
     _12: Result<Sink<string>, string>
   bb0:
-    stmt: use BindingId(86) path site=SiteId(685) ty=string intent=Read
+    stmt: use BindingId(88) path site=SiteId(681) ty=string intent=Read
     _1 = call hew_stream_from_file_write(_0) -> bb1
   bb1:
-    stmt: bind BindingId(87) s site=SiteId(684) ty=Sink<string>
-    stmt: use BindingId(87) s site=SiteId(689) ty=Sink<string> intent=Read
+    stmt: bind BindingId(89) s site=SiteId(680) ty=Sink<string>
+    stmt: use BindingId(89) s site=SiteId(685) ty=Sink<string> intent=Read
     _2 = move _1
     _4 = call hew_sink_is_valid(_2) -> bb2
   bb2:
     branch _4 ? bb3 : bb4
   bb3:
-    stmt: use BindingId(87) s site=SiteId(693) ty=Sink<string> intent=Read
-    stmt: agg_alias BindingId(87) s site=SiteId(693) ty=Sink<string>
+    stmt: use BindingId(89) s site=SiteId(689) ty=Sink<string> intent=Read
+    stmt: agg_alias BindingId(89) s site=SiteId(689) ty=Sink<string>
     _6 = const.i64 0
     mtag5 = move _6
     mvar5.0.0 = move _2
@@ -2184,7 +2210,7 @@ fn stream$to_file(string) -> Result<Sink<string>, string> [conv=default]
     mtag8 = move _9
     _10 = call hew_stream_last_error() -> bb6
   bb5:
-    stmt: return site=Some(SiteId(683)) ty=Result<Sink<string>, string>
+    stmt: return site=Some(SiteId(679)) ty=Result<Sink<string>, string>
     _12 = move _3
     ret = move _12
     return
@@ -2214,18 +2240,18 @@ fn stream$try_to_file(string) -> Result<Sink<string>, fs.IoError> [conv=default]
     _15: Result<Sink<string>, fs.IoError>
     _16: Result<Sink<string>, fs.IoError>
   bb0:
-    stmt: use BindingId(88) path site=SiteId(700) ty=string intent=Read
+    stmt: use BindingId(90) path site=SiteId(696) ty=string intent=Read
     _1 = call hew_stream_from_file_write(_0) -> bb1
   bb1:
-    stmt: bind BindingId(89) s site=SiteId(699) ty=Sink<string>
-    stmt: use BindingId(89) s site=SiteId(704) ty=Sink<string> intent=Read
+    stmt: bind BindingId(91) s site=SiteId(695) ty=Sink<string>
+    stmt: use BindingId(91) s site=SiteId(700) ty=Sink<string> intent=Read
     _2 = move _1
     _4 = call hew_sink_is_valid(_2) -> bb2
   bb2:
     branch _4 ? bb3 : bb4
   bb3:
-    stmt: use BindingId(89) s site=SiteId(708) ty=Sink<string> intent=Read
-    stmt: agg_alias BindingId(89) s site=SiteId(708) ty=Sink<string>
+    stmt: use BindingId(91) s site=SiteId(704) ty=Sink<string> intent=Read
+    stmt: agg_alias BindingId(91) s site=SiteId(704) ty=Sink<string>
     _6 = const.i64 0
     mtag5 = move _6
     mvar5.0.0 = move _2
@@ -2235,17 +2261,17 @@ fn stream$try_to_file(string) -> Result<Sink<string>, fs.IoError> [conv=default]
   bb4:
     _8 = call hew_stream_last_errno() -> bb6
   bb5:
-    stmt: return site=Some(SiteId(698)) ty=Result<Sink<string>, fs.IoError>
+    stmt: return site=Some(SiteId(694)) ty=Result<Sink<string>, fs.IoError>
     _16 = move _3
     ret = move _16
     return
   bb6:
-    stmt: bind BindingId(90) errno site=SiteId(710) ty=i32
+    stmt: bind BindingId(92) errno site=SiteId(706) ty=i32
     _9 = move _8
     _10 = call hew_stream_last_error() -> bb7
   bb7:
-    stmt: eval site=SiteId(712) ty=string
-    stmt: use BindingId(90) errno site=SiteId(717) ty=i32 intent=Read
+    stmt: eval site=SiteId(708) ty=string
+    stmt: use BindingId(92) errno site=SiteId(713) ty=i32 intent=Read
     _12 = const.i64 1
     mtag11 = move _12
     _13 = cast _9 i32 -> i64
@@ -2261,11 +2287,11 @@ fn stream$forward(Stream<string>, Sink<string>) -> () [conv=default]
     _0: Stream<string>
     _1: Sink<string>
   bb0:
-    stmt: use BindingId(91) source site=SiteId(721) ty=Stream<string> intent=Read
-    stmt: use BindingId(92) dest site=SiteId(722) ty=Sink<string> intent=Read
+    stmt: use BindingId(93) source site=SiteId(717) ty=Stream<string> intent=Read
+    stmt: use BindingId(94) dest site=SiteId(718) ty=Sink<string> intent=Read
     call hew_stream_pipe(_0, _1) -> bb1
   bb1:
-    stmt: eval site=SiteId(719) ty=()
+    stmt: eval site=SiteId(715) ty=()
     return
 
 fn i8::fmt(i8) -> string [conv=default]
@@ -2274,11 +2300,11 @@ fn i8::fmt(i8) -> string [conv=default]
     _1: i32
     _2: string
   bb0:
-    stmt: use BindingId(101) val site=SiteId(794) ty=i8 intent=Read
+    stmt: use BindingId(103) val site=SiteId(790) ty=i8 intent=Read
     _1 = cast _0 i8 -> i32
     _2 = call to_string_i32(_1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(792)) ty=string
+    stmt: return site=Some(SiteId(788)) ty=string
     ret = move _2
     return
 
@@ -2288,11 +2314,11 @@ fn i16::fmt(i16) -> string [conv=default]
     _1: i32
     _2: string
   bb0:
-    stmt: use BindingId(102) val site=SiteId(798) ty=i16 intent=Read
+    stmt: use BindingId(104) val site=SiteId(794) ty=i16 intent=Read
     _1 = cast _0 i16 -> i32
     _2 = call to_string_i32(_1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(796)) ty=string
+    stmt: return site=Some(SiteId(792)) ty=string
     ret = move _2
     return
 
@@ -2301,10 +2327,10 @@ fn i32::fmt(i32) -> string [conv=default]
     _0: i32
     _1: string
   bb0:
-    stmt: use BindingId(103) val site=SiteId(801) ty=i32 intent=Read
+    stmt: use BindingId(105) val site=SiteId(797) ty=i32 intent=Read
     _1 = call to_string_i32(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(800)) ty=string
+    stmt: return site=Some(SiteId(796)) ty=string
     ret = move _1
     return
 
@@ -2313,10 +2339,10 @@ fn i64::fmt(i64) -> string [conv=default]
     _0: i64
     _1: string
   bb0:
-    stmt: use BindingId(104) val site=SiteId(804) ty=i64 intent=Read
+    stmt: use BindingId(106) val site=SiteId(800) ty=i64 intent=Read
     _1 = call to_string_i64(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(803)) ty=string
+    stmt: return site=Some(SiteId(799)) ty=string
     ret = move _1
     return
 
@@ -2325,10 +2351,10 @@ fn u8::fmt(u8) -> string [conv=default]
     _0: u8
     _1: string
   bb0:
-    stmt: use BindingId(105) val site=SiteId(807) ty=u8 intent=Read
+    stmt: use BindingId(107) val site=SiteId(803) ty=u8 intent=Read
     _1 = call to_string_u8(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(806)) ty=string
+    stmt: return site=Some(SiteId(802)) ty=string
     ret = move _1
     return
 
@@ -2337,10 +2363,10 @@ fn u16::fmt(u16) -> string [conv=default]
     _0: u16
     _1: string
   bb0:
-    stmt: use BindingId(106) val site=SiteId(810) ty=u16 intent=Read
+    stmt: use BindingId(108) val site=SiteId(806) ty=u16 intent=Read
     _1 = call to_string_u16(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(809)) ty=string
+    stmt: return site=Some(SiteId(805)) ty=string
     ret = move _1
     return
 
@@ -2349,10 +2375,10 @@ fn u32::fmt(u32) -> string [conv=default]
     _0: u32
     _1: string
   bb0:
-    stmt: use BindingId(107) val site=SiteId(813) ty=u32 intent=Read
+    stmt: use BindingId(109) val site=SiteId(809) ty=u32 intent=Read
     _1 = call to_string_u32(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(812)) ty=string
+    stmt: return site=Some(SiteId(808)) ty=string
     ret = move _1
     return
 
@@ -2361,10 +2387,10 @@ fn u64::fmt(u64) -> string [conv=default]
     _0: u64
     _1: string
   bb0:
-    stmt: use BindingId(108) val site=SiteId(816) ty=u64 intent=Read
+    stmt: use BindingId(110) val site=SiteId(812) ty=u64 intent=Read
     _1 = call to_string_u64(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(815)) ty=string
+    stmt: return site=Some(SiteId(811)) ty=string
     ret = move _1
     return
 
@@ -2374,11 +2400,11 @@ fn isize::fmt(isize) -> string [conv=default]
     _1: i64
     _2: string
   bb0:
-    stmt: use BindingId(109) val site=SiteId(820) ty=isize intent=Read
+    stmt: use BindingId(111) val site=SiteId(816) ty=isize intent=Read
     _1 = cast _0 isize -> i64
     _2 = call to_string_i64(_1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(818)) ty=string
+    stmt: return site=Some(SiteId(814)) ty=string
     ret = move _2
     return
 
@@ -2388,11 +2414,11 @@ fn usize::fmt(usize) -> string [conv=default]
     _1: u64
     _2: string
   bb0:
-    stmt: use BindingId(110) val site=SiteId(824) ty=usize intent=Read
+    stmt: use BindingId(112) val site=SiteId(820) ty=usize intent=Read
     _1 = cast _0 usize -> u64
     _2 = call to_string_u64(_1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(822)) ty=string
+    stmt: return site=Some(SiteId(818)) ty=string
     ret = move _2
     return
 
@@ -2401,10 +2427,10 @@ fn bool::fmt(bool) -> string [conv=default]
     _0: bool
     _1: string
   bb0:
-    stmt: use BindingId(111) val site=SiteId(827) ty=bool intent=Read
+    stmt: use BindingId(113) val site=SiteId(823) ty=bool intent=Read
     _1 = call to_string_bool(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(826)) ty=string
+    stmt: return site=Some(SiteId(822)) ty=string
     ret = move _1
     return
 
@@ -2413,10 +2439,10 @@ fn char::fmt(char) -> string [conv=default]
     _0: char
     _1: string
   bb0:
-    stmt: use BindingId(112) val site=SiteId(830) ty=char intent=Read
+    stmt: use BindingId(114) val site=SiteId(826) ty=char intent=Read
     _1 = call to_string_char(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(829)) ty=string
+    stmt: return site=Some(SiteId(825)) ty=string
     ret = move _1
     return
 
@@ -2425,10 +2451,10 @@ fn f64::fmt(f64) -> string [conv=default]
     _0: f64
     _1: string
   bb0:
-    stmt: use BindingId(113) val site=SiteId(833) ty=f64 intent=Read
+    stmt: use BindingId(115) val site=SiteId(829) ty=f64 intent=Read
     _1 = call to_string_f64(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(832)) ty=string
+    stmt: return site=Some(SiteId(828)) ty=string
     ret = move _1
     return
 
@@ -2438,11 +2464,11 @@ fn f32::fmt(f32) -> string [conv=default]
     _1: f64
     _2: string
   bb0:
-    stmt: use BindingId(114) val site=SiteId(837) ty=f32 intent=Read
+    stmt: use BindingId(116) val site=SiteId(833) ty=f32 intent=Read
     _1 = cast _0 f32 -> f64
     _2 = call to_string_f64(_1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(835)) ty=string
+    stmt: return site=Some(SiteId(831)) ty=string
     ret = move _2
     return
 
@@ -2450,8 +2476,8 @@ fn string::fmt(string) -> string [conv=default]
   locals:
     _0: string
   bb0:
-    stmt: use BindingId(115) val site=SiteId(839) ty=string intent=Read
-    stmt: return site=Some(SiteId(839)) ty=string
+    stmt: use BindingId(117) val site=SiteId(835) ty=string intent=Read
+    stmt: return site=Some(SiteId(835)) ty=string
     ret = move _0
     return
 
@@ -2462,14 +2488,14 @@ fn duration::from_nanos(i64) -> duration [conv=default]
     _2: duration
     _3: bool
   bb0:
-    stmt: use BindingId(116) n site=SiteId(841) ty=i64 intent=Read
+    stmt: use BindingId(118) n site=SiteId(837) ty=i64 intent=Read
     _1 = const.duration 1ns
     _2 ovf=_3 = mul.checked.s _0 _1
     branch _3 ? bb1 : bb2
   bb1:
     trap(IntegerOverflow)
   bb2:
-    stmt: return site=Some(SiteId(840)) ty=duration
+    stmt: return site=Some(SiteId(836)) ty=duration
     ret = move _2
     return
 
@@ -2480,14 +2506,14 @@ fn duration::from_micros(i64) -> duration [conv=default]
     _2: duration
     _3: bool
   bb0:
-    stmt: use BindingId(117) n site=SiteId(844) ty=i64 intent=Read
+    stmt: use BindingId(119) n site=SiteId(840) ty=i64 intent=Read
     _1 = const.duration 1000ns
     _2 ovf=_3 = mul.checked.s _0 _1
     branch _3 ? bb1 : bb2
   bb1:
     trap(IntegerOverflow)
   bb2:
-    stmt: return site=Some(SiteId(843)) ty=duration
+    stmt: return site=Some(SiteId(839)) ty=duration
     ret = move _2
     return
 
@@ -2498,14 +2524,14 @@ fn duration::from_millis(i64) -> duration [conv=default]
     _2: duration
     _3: bool
   bb0:
-    stmt: use BindingId(118) n site=SiteId(847) ty=i64 intent=Read
+    stmt: use BindingId(120) n site=SiteId(843) ty=i64 intent=Read
     _1 = const.duration 1000000ns
     _2 ovf=_3 = mul.checked.s _0 _1
     branch _3 ? bb1 : bb2
   bb1:
     trap(IntegerOverflow)
   bb2:
-    stmt: return site=Some(SiteId(846)) ty=duration
+    stmt: return site=Some(SiteId(842)) ty=duration
     ret = move _2
     return
 
@@ -2516,14 +2542,14 @@ fn duration::from_secs(i64) -> duration [conv=default]
     _2: duration
     _3: bool
   bb0:
-    stmt: use BindingId(119) n site=SiteId(850) ty=i64 intent=Read
+    stmt: use BindingId(121) n site=SiteId(846) ty=i64 intent=Read
     _1 = const.duration 1000000000ns
     _2 ovf=_3 = mul.checked.s _0 _1
     branch _3 ? bb1 : bb2
   bb1:
     trap(IntegerOverflow)
   bb2:
-    stmt: return site=Some(SiteId(849)) ty=duration
+    stmt: return site=Some(SiteId(845)) ty=duration
     ret = move _2
     return
 
@@ -2535,11 +2561,11 @@ fn duration::fmt(duration) -> string [conv=default]
     _3: string
     _4: string
   bb0:
-    stmt: use BindingId(120) val site=SiteId(855) ty=duration intent=Read
+    stmt: use BindingId(122) val site=SiteId(851) ty=duration intent=Read
     _1 = call_rt hew_duration_nanos(_0)
     _2 = call to_string_i64(_1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(852)) ty=string
+    stmt: return site=Some(SiteId(848)) ty=string
     _3 = string_lit "ns"
     _4 = call_rt hew_string_concat(_2, _3)
     ret = move _4

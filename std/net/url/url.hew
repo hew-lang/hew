@@ -304,11 +304,13 @@ fn encode_query_impl(params: string) -> string {
     let lines = string.lines(params);
     for i in 0 .. lines.len() {
         let line = lines[i];
-        let eq = line.find("=");
-        if eq >= 0 {
-            let key = line.slice(0, eq);
-            let value = line.slice(eq + 1, line.len());
-            encoded.push(encode(key) + "=" + encode(value));
+        match line.find("=") {
+            Some(eq) => {
+                let key = line.slice(0, eq);
+                let value = line.slice(eq + 1, line.len());
+                encoded.push(encode(key) + "=" + encode(value));
+            },
+            None => {},
         }
     }
     string.join(encoded, "&")

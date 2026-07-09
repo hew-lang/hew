@@ -190,18 +190,18 @@ pub fn is_video(mime_type: string) -> bool {
 
 /// Extract the file extension from a path, returning the substring after the last dot.
 fn extract_extension(path: string) -> string {
-    let dot_pos = path.find(".");
-    if dot_pos < 0 {
-        return "";
-    }
+    let dot_pos = match path.find(".") {
+        Some(i) => i,
+        None => return "",
+    };
     // Find the LAST dot by scanning forward
     var last_dot = dot_pos;
     var search_from = dot_pos + 1;
     while search_from < path.len() {
-        let next = path.slice(search_from, path.len()).find(".");
-        if next < 0 {
-            return path.slice(last_dot + 1, path.len());
-        }
+        let next = match path.slice(search_from, path.len()).find(".") {
+            Some(i) => i,
+            None => return path.slice(last_dot + 1, path.len()),
+        };
         last_dot = search_from + next;
         search_from = last_dot + 1;
     }

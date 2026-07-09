@@ -466,8 +466,11 @@ pub enum RuntimeCallFamily {
     StreamTryNextLayout,
 
     // --- String runtime helpers --------------------------------------------
+    StringCharAt,
+    StringCharAtUtf8,
     StringCharCount,
     StringConcat,
+    StringFind,
     StringGet,
     StringIndex,
     StringSliceCodepoints,
@@ -718,8 +721,11 @@ impl RuntimeCallFamily {
             Self::StreamSendLayout => "hew_stream_send_layout",
             Self::StreamTryNextLayout => "hew_stream_try_next_layout",
             // String
+            Self::StringCharAt => "hew_string_char_at",
+            Self::StringCharAtUtf8 => "hew_string_char_at_utf8",
             Self::StringCharCount => "hew_string_char_count",
             Self::StringConcat => "hew_string_concat",
+            Self::StringFind => "hew_string_find",
             Self::StringGet => "hew_string_get",
             Self::StringIndex => "hew_string_index",
             Self::StringSliceCodepoints => "hew_string_slice_codepoints",
@@ -973,8 +979,11 @@ impl RuntimeCallFamily {
             "hew_stream_send_layout" => Self::StreamSendLayout,
             "hew_stream_try_next_layout" => Self::StreamTryNextLayout,
             // String
+            "hew_string_char_at" => Self::StringCharAt,
+            "hew_string_char_at_utf8" => Self::StringCharAtUtf8,
             "hew_string_char_count" => Self::StringCharCount,
             "hew_string_concat" => Self::StringConcat,
+            "hew_string_find" => Self::StringFind,
             "hew_string_get" => Self::StringGet,
             "hew_string_index" => Self::StringIndex,
             "hew_string_slice_codepoints" => Self::StringSliceCodepoints,
@@ -1233,8 +1242,11 @@ impl RuntimeCallFamily {
             | F::SelectFirst
             | F::SendHalfSend
             | F::SendHalfTrySend
+            | F::StringCharAt
+            | F::StringCharAtUtf8
             | F::StringCharCount
             | F::StringConcat
+            | F::StringFind
             | F::StringGet
             | F::StringIndex
             | F::StringSliceCodepoints

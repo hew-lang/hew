@@ -430,6 +430,17 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     "hew_send_half_send",
     "hew_send_half_try_send",
     // --- String char-count/concat/codepoint index/slice substrate ------------
+    // `hew_string_char_at(s, i) -> i32` (`hew-runtime/src/string.rs`).
+    //   Byte at byte-offset i, `-1` OOB. Surfaces as
+    //   `string.char_at(i) -> Option<char>`: codegen intercepts the
+    //   `Terminator::Call` callee, calls the runtime, and wraps the `-1`
+    //   sentinel as `None` / a non-negative byte as `Some(char)`.
+    "hew_string_char_at",
+    // `hew_string_char_at_utf8(s, i) -> i32` (`hew-runtime/src/string.rs`).
+    //   Codepoint at codepoint-offset i, `-1` OOB/invalid. Surfaces as
+    //   `string.codepoint_at_utf8(i) -> Option<i64>` via the same
+    //   codegen-intercepted sentinel wrap.
+    "hew_string_char_at_utf8",
     // `hew_string_char_count(s) -> i32` (`hew-runtime/src/string.rs`).
     //   Counts UTF-8 codepoints. Emitted for open-end string ranges `s[a..]` /
     //   `s[..]`; MIR widens the i32 result to i64 before passing it to
@@ -439,6 +450,11 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     //   Fresh owned concatenation result. Emitted for `string + string`;
     //   drop-safety follows the existing `String` value-class discipline.
     "hew_string_concat",
+    // `hew_string_find(s, needle) -> i32` (`hew-runtime/src/string.rs`).
+    //   Byte index of the first occurrence, `-1` miss. Surfaces as
+    //   `string.find(needle) -> Option<i64>` via the codegen-intercepted
+    //   sentinel wrap (`-1` -> `None`, `n >= 0` -> `Some(n)`).
+    "hew_string_find",
     // `hew_string_get` is the non-trapping `string.get(index) -> Option<char>`
     //   accessor (de-aliased from the trapping `s[i]` `hew_string_index`). It
     //   carries no runtime export: codegen intercepts the `Terminator::Call`
@@ -883,6 +899,7 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
         | "hew_hashmap_keys_layout"
         | "hew_hashmap_len_layout"
         | "hew_hashmap_remove_layout"
+        | "hew_hashmap_remove_take_layout"
         | "hew_hashmap_values_layout"
         | "hew_hashset_clear_layout"
         | "hew_hashset_clone_layout"
@@ -915,15 +932,23 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
             Untracked,
         ),
 
-        // Vec string getters retain the string element and hand the caller a +1
-        // owned string.
-        "hew_vec_get_str" => CalleeOwnershipContract::new(
-            BorrowsReceiver {
-                scans: ReceiverScanSet::VEC,
-            },
-            Escaping,
-            FreshOwnedString,
-        ),
+        // Vec string element handoffs — the getter (`get`, clone-out) and the
+        // move-out ops (`pop`/`remove`) all hand the caller a +1 owned string
+        // that must be balanced with exactly one `hew_string_drop`. The getter
+        // retains a clone (the vec keeps its copy); the move-out ops transfer
+        // the sole owner (the element leaves the vec via pop's length decrement
+        // or remove's tail shift, so there is no double owner). Both shapes
+        // share the identical ownership contract — the caller owes one drop.
+        // (Scalar/ptr `pop`/`remove` classes stay `Untracked`: no heap to drop.)
+        "hew_vec_get_str" | "hew_vec_pop_str" | "hew_vec_remove_at_str" => {
+            CalleeOwnershipContract::new(
+                BorrowsReceiver {
+                    scans: ReceiverScanSet::VEC,
+                },
+                Escaping,
+                FreshOwnedString,
+            )
+        }
 
         // Vec owned-element getters return aliases into the receiver storage.
         "hew_vec_get_owned" | "hew_vec_get_ptr" => CalleeOwnershipContract::new(
@@ -972,7 +997,6 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
         | "hew_vec_pop_layout"
         | "hew_vec_pop_owned"
         | "hew_vec_pop_ptr"
-        | "hew_vec_pop_str"
         | "hew_vec_pop_u16"
         | "hew_vec_pop_u8"
         | "hew_vec_push_bool"
@@ -987,8 +1011,18 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
         | "hew_vec_push_ptr"
         | "hew_vec_push_u16"
         | "hew_vec_push_u8"
-        | "hew_vec_remove_at"
+        | "hew_vec_remove_at_bool"
+        | "hew_vec_remove_at_f32"
+        | "hew_vec_remove_at_f64"
+        | "hew_vec_remove_at_i16"
+        | "hew_vec_remove_at_i32"
+        | "hew_vec_remove_at_i64"
+        | "hew_vec_remove_at_i8"
         | "hew_vec_remove_at_layout"
+        | "hew_vec_remove_at_owned"
+        | "hew_vec_remove_at_ptr"
+        | "hew_vec_remove_at_u16"
+        | "hew_vec_remove_at_u8"
         | "hew_vec_set_bool"
         | "hew_vec_set_f32"
         | "hew_vec_set_f64"
@@ -1131,6 +1165,7 @@ mod tests {
         "hew_hashmap_keys_layout",
         "hew_hashmap_len_layout",
         "hew_hashmap_remove_layout",
+        "hew_hashmap_remove_take_layout",
         "hew_hashmap_values_layout",
         "hew_hashset_clear_layout",
         "hew_hashset_clone_layout",
@@ -1229,8 +1264,19 @@ mod tests {
         "hew_vec_push_str",
         "hew_vec_push_u16",
         "hew_vec_push_u8",
-        "hew_vec_remove_at",
+        "hew_vec_remove_at_bool",
+        "hew_vec_remove_at_f32",
+        "hew_vec_remove_at_f64",
+        "hew_vec_remove_at_i16",
+        "hew_vec_remove_at_i32",
+        "hew_vec_remove_at_i64",
+        "hew_vec_remove_at_i8",
         "hew_vec_remove_at_layout",
+        "hew_vec_remove_at_owned",
+        "hew_vec_remove_at_ptr",
+        "hew_vec_remove_at_str",
+        "hew_vec_remove_at_u16",
+        "hew_vec_remove_at_u8",
         "hew_vec_set_bool",
         "hew_vec_set_f32",
         "hew_vec_set_f64",
@@ -1319,7 +1365,7 @@ mod tests {
     #[test]
     fn callee_ownership_contract_symbols_are_unique_positive_rows() {
         let unique = CONTRACT_SYMBOLS.iter().copied().collect::<BTreeSet<_>>();
-        assert_eq!(CONTRACT_SYMBOLS.len(), 158);
+        assert_eq!(CONTRACT_SYMBOLS.len(), 170);
         assert_eq!(
             unique.len(),
             CONTRACT_SYMBOLS.len(),

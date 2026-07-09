@@ -218,11 +218,6 @@ tests/corpus/v05-value-model/18_record_update_syntax.hew
 # deferred-nyi: actor_scope is forward syntax that has not landed yet
 tests/corpus/v05-value-model/19_actor_scope.hew
 
-# ── tests/ll-oracle/ ─────────────────────────────────────────────────────────
-
-# deferred-nyi: LL oracle corpus file uses NYI runtime ABI features
-tests/ll-oracle/corpus/r4_runtime_abi.hew
-
 # ── tests/pkg-import/ ────────────────────────────────────────────────────────
 #
 # All files in tests/pkg-import/ (non-reject) fail standalone `hew check`

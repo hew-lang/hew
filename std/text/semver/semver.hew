@@ -104,36 +104,51 @@ pub fn try_parse(s: string) -> Result<Version, string> {
     // Clone s so it remains available for error messages and further searches.
     var main_part = clone s;
     var build = "";
-    let plus_idx = s.find("+");
-    if plus_idx >= 0 {
-        main_part = s.slice(0, plus_idx);
-        build = s.slice(plus_idx + 1, s.len());
+    match s.find("+") {
+        Some(plus_idx) => {
+            main_part = s.slice(0, plus_idx);
+            build = s.slice(plus_idx + 1, s.len());
+        },
+        None => {},
     }
     // Split off pre-release (-...)
     // Clone main_part so it remains available for further searches.
     var version_part = clone main_part;
     var pre = "";
-    let dash_idx = main_part.find("-");
-    if dash_idx >= 0 {
-        version_part = main_part.slice(0, dash_idx);
-        pre = main_part.slice(dash_idx + 1, main_part.len());
+    match main_part.find("-") {
+        Some(dash_idx) => {
+            version_part = main_part.slice(0, dash_idx);
+            pre = main_part.slice(dash_idx + 1, main_part.len());
+        },
+        None => {},
     }
     // Split major.minor.patch
-    let first_dot = version_part.find(".");
-    if first_dot < 0 {
-        return Err(f"semver: invalid version string: {s}");
-    }
+    let first_dot = match version_part.find(".") {
+        Some(i) => i,
+        None => return Err(f"semver: invalid version string: {s}"),
+    };
     let major_str = version_part.slice(0, first_dot);
     let rest = version_part.slice(first_dot + 1, version_part.len());
-    let second_dot = rest.find(".");
-    if second_dot < 0 {
-        return Err(f"semver: invalid version string: {s}");
-    }
+    let second_dot = match rest.find(".") {
+        Some(i) => i,
+        None => return Err(f"semver: invalid version string: {s}"),
+    };
     let minor_str = rest.slice(0, second_dot);
     let patch_str = rest.slice(second_dot + 1, rest.len());
-    let major = string.to_int(major_str);
-    let minor = string.to_int(minor_str);
-    let patch = string.to_int(patch_str);
+    // Non-numeric components are a parse FAILURE (previously they silently
+    // parsed as 0 through the old to_int sentinel).
+    let major = match string.to_int(major_str) {
+        Some(n) => n,
+        None => return Err(f"semver: invalid version string: {s}"),
+    };
+    let minor = match string.to_int(minor_str) {
+        Some(n) => n,
+        None => return Err(f"semver: invalid version string: {s}"),
+    };
+    let patch = match string.to_int(patch_str) {
+        Some(n) => n,
+        None => return Err(f"semver: invalid version string: {s}"),
+    };
     Ok(Version { pre_release: pre, build_meta: build, maj: major, min: minor, pat: patch })
 }
 
@@ -224,15 +239,21 @@ fn compare_pre(a: string, b: string) -> i64 {
         // Extract next identifier from a
         let a_dot = a.slice(a_pos, a_len).find(".");
         var a_end = a_len;
-        if a_dot >= 0 {
-            a_end = a_pos + a_dot;
+        match a_dot {
+            Some(i) => {
+                a_end = a_pos + i;
+            },
+            None => {},
         }
         let a_id = a.slice(a_pos, a_end);
         // Extract next identifier from b
         let b_dot = b.slice(b_pos, b_len).find(".");
         var b_end = b_len;
-        if b_dot >= 0 {
-            b_end = b_pos + b_dot;
+        match b_dot {
+            Some(i) => {
+                b_end = b_pos + i;
+            },
+            None => {},
         }
         let b_id = b.slice(b_pos, b_end);
         let cmp = compare_pre_id(a_id, b_id);
@@ -257,8 +278,9 @@ fn compare_pre_id(a: string, b: string) -> i64 {
     let a_num = string.is_numeric(a);
     let b_num = string.is_numeric(b);
     if a_num && b_num {
-        let an = string.to_int(a);
-        let bn = string.to_int(b);
+        // Guarded by is_numeric above: the parse cannot fail here.
+        let an = string.to_int(a).unwrap_or(0);
+        let bn = string.to_int(b).unwrap_or(0);
         if an < bn {
             return -1;
         }
@@ -300,8 +322,11 @@ fn matches_req(v: Version, req: string) -> bool {
         let rest = req.slice(pos, rlen);
         let comma = rest.find(",");
         var end = rlen;
-        if comma >= 0 {
-            end = pos + comma;
+        match comma {
+            Some(i) => {
+                end = pos + i;
+            },
+            None => {},
         }
         let part = req.slice(pos, end).trim();
         if part.len() > 0 {
@@ -309,7 +334,7 @@ fn matches_req(v: Version, req: string) -> bool {
                 return false;
             }
         }
-        if comma < 0 {
+        if comma.is_none() {
             break;
         }
         pos = end + 1;

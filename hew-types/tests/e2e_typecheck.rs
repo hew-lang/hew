@@ -184,31 +184,35 @@ fn one(a: string) -> [i64; 2] {
 }
 
 #[test]
-fn hashmap_remove_typechecks_as_bool() {
+fn hashmap_remove_typechecks_as_option() {
     assert_inline_typechecks_cleanly(
         r#"
 fn main() {
     let m: HashMap<string, i64> = HashMap::new();
     m.insert("a", 1);
-    let removed: bool = m.remove("a");
-    let missing: bool = m.remove("a");
-    if removed && !missing {
-        println("ok");
+    let removed: Option<i64> = m.remove("a");
+    let missing: Option<i64> = m.remove("a");
+    match removed {
+        Some(_) => match missing {
+            Some(_) => {}
+            None => println("ok"),
+        },
+        None => {}
     }
 }
 "#,
-        "HashMap.remove should typecheck as bool",
+        "HashMap.remove should typecheck as Option<V>",
     );
 }
 
 #[test]
-fn hashmap_remove_no_longer_typechecks_as_option() {
+fn hashmap_remove_no_longer_typechecks_as_bool() {
     let output = typecheck_inline(
         r#"
 fn main() {
     let m: HashMap<string, i64> = HashMap::new();
     m.insert("a", 1);
-    let removed: Option<i64> = m.remove("a");
+    let removed: bool = m.remove("a");
 }
 "#,
     );
@@ -216,9 +220,9 @@ fn main() {
         output.errors.iter().any(|e| matches!(
             &e.kind,
             TypeErrorKind::Mismatch { expected, actual }
-                if expected == "Option<i64>" && actual == "bool"
+                if expected == "bool" && actual == "Option<i64>"
         )),
-        "expected HashMap.remove Option<i64>/bool mismatch, got: {:#?}",
+        "expected HashMap.remove bool/Option<i64> mismatch, got: {:#?}",
         output.errors
     );
 }
@@ -2212,9 +2216,14 @@ fn wasm_process_execution_surface_rejected_before_codegen() {
 fn builtin_string_to_int_typechecks_as_int() {
     let output = typecheck_inline(
         r#"
+        import std::string;
+
         fn parse() -> i64 {
-            let value: i64 = string_to_int("9223372036854775807");
-            value
+            let value: Option<i64> = string.to_int("9223372036854775807");
+            match value {
+                Some(n) => n,
+                None => 0,
+            }
         }
         "#,
     );

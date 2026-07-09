@@ -646,12 +646,15 @@ fn main() {
     m.insert("alice", 1);
     m.insert("bob", 2);
     let has_alice = m.contains_key("alice");   // true
-    let removed = m.remove("bob");             // true if present
-    println(f"has={has_alice} removed={removed} len={m.len()}");
+    let removed = match m.remove("bob") {
+        Some(v) => f"removed bob={v}",
+        None => "bob not present",
+    };
+    println(f"has={has_alice} {removed} len={m.len()}");
 }
 ```
 
-`.contains_key(k)` and `.remove(k)` both return `bool`. Bind a method result to a `let` before interpolating — nested double-quotes break the f-string parser. Test emptiness with `m.len() == 0`, or remove every entry at once with `m.clear()`.
+`.contains_key(k)` returns `bool`; `.remove(k)` returns `Option<V>` — the removed value if the key was present, or `None`. Consume it with `match`. Bind a method result to a `let` before interpolating — nested double-quotes break the f-string parser. Test emptiness with `m.len() == 0`, or remove every entry at once with `m.clear()`.
 
 ### Supported HashMap value types
 
@@ -2077,18 +2080,22 @@ fn main() {
 
 `.starts_with`/`.ends_with` return `bool`. `.slice(a, b)` is half-open `[a, b)`; use `s.slice(start, s.len())` to slice to the end. No negative-index support.
 
-### .find / .index_of with -1 sentinel
+### .find returns Option<i64>
 
 ```hew
 fn main() {
-    let idx = "hello world".find("world");
-    println(f"find={idx}");    // 6
-    let miss = "hello".find("xyz");
-    if miss < 0 { println("not found"); }
+    match "hello world".find("world") {
+        Some(idx) => println(f"find={idx}"),   // 6
+        None => println("not found"),
+    }
+    match "hello".find("xyz") {
+        Some(idx) => println(f"find={idx}"),
+        None => println("not found"),
+    }
 }
 ```
 
-`.find`/`.index_of` return `i64`, with `-1` as the not-found sentinel. Bind to a `let`, then guard with `< 0`.
+`.find(needle)` returns `Option<i64>` — `Some(byte_index)` of the first occurrence, or `None` when the needle does not occur. Consume it with `match`, or use `.unwrap_or(-1)` when a sentinel is convenient.
 
 ### .len() and .contains()
 
@@ -2109,7 +2116,10 @@ fn main() {
 import std::string;
 fn main() {
     println(string.from_int(42));            // 42
-    let n = string.to_int("42");
+    let n = match string.to_int("42") {
+        Some(v) => v,
+        None => 0,
+    };
     println(f"n={n}");                        // 42
     println(string.pad_left("7", 3, "0"));   // 007
     println(string.join(["a", "b", "c"], ", "));  // a, b, c
@@ -2118,7 +2128,7 @@ fn main() {
 }
 ```
 
-Import `std::string` and call via the module name. `from_int`/`to_int`/`to_float` for conversions; `join(Vec<string>, sep)` for assembly; `pad_left`/`pad_right` for fixed width. `to_int`/`to_float` return `0`/`0.0` on parse failure — use `string.try_to_int`/`try_to_float` for a `Result` when you need to distinguish failure.
+Import `std::string` and call via the module name. `from_int`/`to_float` for conversions; `to_int` returns `Option<i64>` (`None` on parse failure) — consume it with `match` or `.unwrap_or(default)`; `join(Vec<string>, sep)` for assembly; `pad_left`/`pad_right` for fixed width. Use `string.try_to_int`/`try_to_float` for a `Result` when you need the failure reason.
 
 ### Concatenation, char round-trip, escapes
 
@@ -2127,15 +2137,17 @@ import std::string;
 fn main() {
     let g = "Hello" + ", " + "world";
     println(g);
-    let code = "Z".char_at(0);
-    println(string.from_char(code));   // Z
+    match "Z".char_at(0) {
+        Some(ch) => println(string.from_char(ch as i64)),   // Z
+        None => println("out of bounds"),
+    }
     var acc = "";
     for i in 0 .. 3 { acc = acc + "x"; }
     println(acc);                       // xxx
 }
 ```
 
-Build strings with `+`. `char_at` gives the code point (`i64`); `string.from_char` renders it back. To take the codepoint of a `char` value directly — for instance one read with `s[i]` — cast it: `s[i] as i64`. Strings are immutable — concatenation produces new strings.
+Build strings with `+`. `char_at` returns `Option<char>` — `Some` of the byte at that offset, or `None` when out of bounds; consume it with `match`. Cast a `char` to its codepoint with `as i64`, then `string.from_char` renders it back. Strings are immutable — concatenation produces new strings.
 
 ## Traits and stdlib
 
@@ -2279,13 +2291,13 @@ Use `?` to short-circuit Err and propagate it; the enclosing fn must return a Re
 import std::string;
 fn main() {
     println(string.from_int(42));            // 42
-    println(string.to_int("100"));           // 100
+    println(string.to_int("100").unwrap_or(0));  // 100
     println(string.repeat("*", 3));          // ***
     println(string.pad_left("7", 3, "0"));   // 007
 }
 ```
 
-Import `std::string` and call via the module name. Most case/slice/trim/find operations are builtin methods on `string` itself; `std::string` is for conversions and padding.
+Import `std::string` and call via the module name. Most case/slice/trim/find operations are builtin methods on `string` itself; `std::string` is for conversions and padding. `to_int` returns `Option<i64>` — use `.unwrap_or(default)` or `match` to handle a parse failure.
 
 ### std::math helpers
 

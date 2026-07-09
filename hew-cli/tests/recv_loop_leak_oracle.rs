@@ -974,3 +974,278 @@ fn carry_fallthrough_payload_escape_no_uaf() {
         &["before", "escaped", "after"],
     );
 }
+
+// ── Actor-generator stream: loop-var release across the early-return edge ──
+//
+// `for await v in m.items()` over a `receive gen fn` stream. The consuming
+// body releases its received value on EVERY path out of the body: the
+// fall-through body-end drop, the break/continue edge drops, and the early-
+// `return` edge. Pre-fix, a `return` on any body path was treated as an
+// ownership escape of the loop variable by the body walk, which suppressed
+// the body-end release for the WHOLE binding — every received string leaked
+// one `alloc_cstring_data` node per yield (trunk measurement on the 50-frame
+// probe: 38 leaked nodes, all rooted in `hew_stream_next_layout`'s decode
+// copy), not just the returning iteration's.
+//
+// The `return v` shape (the loop variable itself moved to the caller) is the
+// exactly-once wall: the ReturnSlot move is a real escape, so BOTH the
+// body-end release and the return-edge release must stay suppressed — the
+// scribble pin below catches an over-emitted release as a poisoned read.
+
+/// Full drain of a `receive gen fn` string stream — the headline shape of
+/// the consumer-side loop-var discipline (one received string per yield,
+/// released at body end each iteration). Slope 0 pins it.
+fn gen_stream_string_drain_source(frames: usize) -> String {
+    format!(
+        "actor Maker {{\n\
+         \x20   receive gen fn items() -> string {{\n\
+         \x20       for i in 0..{frames} {{\n\
+         \x20           yield f\"item-{{i}}\";\n\
+         \x20       }}\n\
+         \x20   }}\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var seen: i64 = 0;\n\
+         \x20   let m = spawn Maker;\n\
+         \x20   for await v in m.items() {{\n\
+         \x20       if v.len() < 6 {{ return 91; }}\n\
+         \x20       seen = seen + 1;\n\
+         \x20   }}\n\
+         \x20   if seen != {frames} {{ return 92; }}\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
+/// Mid-drain early `return`: the iterations before the hit release at body
+/// end, the returning iteration releases on the return edge. Pre-fix this
+/// leaked EVERY iteration's received string (the return path poisoned the
+/// body walk), slope 1.0/frame.
+fn gen_stream_string_early_return_source(frames: usize) -> String {
+    let stop_at = frames / 2 + 1;
+    format!(
+        "actor Maker {{\n\
+         \x20   receive gen fn items() -> string {{\n\
+         \x20       for i in 0..{frames} {{\n\
+         \x20           yield f\"item-{{i}}\";\n\
+         \x20       }}\n\
+         \x20   }}\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var seen: i64 = 0;\n\
+         \x20   let m = spawn Maker;\n\
+         \x20   for await v in m.items() {{\n\
+         \x20       if v.len() < 6 {{ return 91; }}\n\
+         \x20       seen = seen + 1;\n\
+         \x20       if seen >= {stop_at} {{\n\
+         \x20           return 0;\n\
+         \x20       }}\n\
+         \x20   }}\n\
+         \x20   92\n\
+         }}\n"
+    )
+}
+
+/// Bytes variant of the early-return shape: the received `bytes` triple
+/// releases through `hew_bytes_drop` on the same edges as the string case.
+fn gen_stream_bytes_early_return_source(frames: usize) -> String {
+    let stop_at = frames / 2 + 1;
+    format!(
+        "actor Maker {{\n\
+         \x20   receive gen fn frames() -> bytes {{\n\
+         \x20       for i in 0..{frames} {{\n\
+         \x20           yield \"frame-data\".to_bytes();\n\
+         \x20       }}\n\
+         \x20   }}\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var seen: i64 = 0;\n\
+         \x20   let m = spawn Maker;\n\
+         \x20   for await b in m.frames() {{\n\
+         \x20       if b.len() != 10 {{ return 91; }}\n\
+         \x20       seen = seen + 1;\n\
+         \x20       if seen >= {stop_at} {{\n\
+         \x20           return 0;\n\
+         \x20       }}\n\
+         \x20   }}\n\
+         \x20   92\n\
+         }}\n"
+    )
+}
+
+/// `return v` — the loop variable moves to the caller, who reads it after
+/// the stream loop is gone. Neither the body-end release nor the return-edge
+/// release may fire (over-emitting frees the caller's string; under the
+/// scribble triple the post-return `println` reads poison or trips a guard
+/// page).
+fn gen_stream_return_carry_source() -> String {
+    "actor Maker {\n\
+     \x20   receive gen fn items() -> string {\n\
+     \x20       yield \"escaped\";\n\
+     \x20       yield \"rest\";\n\
+     \x20   }\n\
+     }\n\
+     fn first(m: LocalPid<Maker>) -> string {\n\
+     \x20   for await v in m.items() {\n\
+     \x20       return v;\n\
+     \x20   }\n\
+     \x20   \"none\"\n\
+     }\n\
+     fn main() {\n\
+     \x20   println(\"before\");\n\
+     \x20   let m = spawn Maker;\n\
+     \x20   let s = first(m);\n\
+     \x20   println(s);\n\
+     \x20   println(\"after\");\n\
+     }\n"
+    .to_string()
+}
+
+/// Full-drain slope oracle for the actor-generator string stream (the
+/// consumer decode copy is released at body end, one per yield).
+#[test]
+fn gen_stream_string_drain_no_per_frame_leak_slope() {
+    assert_per_frame_slope_below_tolerance(
+        "gen_stream_string_drain",
+        gen_stream_string_drain_source,
+    );
+}
+
+/// Early-return slope oracle: a `return`-carrying body path must not
+/// suppress the per-iteration release (pre-fix slope 1.0 leak/frame).
+#[test]
+fn gen_stream_string_early_return_no_per_frame_leak_slope() {
+    assert_per_frame_slope_below_tolerance(
+        "gen_stream_string_early_return",
+        gen_stream_string_early_return_source,
+    );
+}
+
+/// Bytes variant of the early-return slope oracle.
+#[test]
+fn gen_stream_bytes_early_return_no_per_frame_leak_slope() {
+    assert_per_frame_slope_below_tolerance(
+        "gen_stream_bytes_early_return",
+        gen_stream_bytes_early_return_source,
+    );
+}
+
+/// Exactly-once wall for the return edge: a loop variable RETURNED to the
+/// caller is caller-owned; the return-edge release must stay suppressed.
+#[test]
+fn gen_stream_returned_loop_var_no_uaf() {
+    assert_payload_escape_prints(
+        "gen_stream_return_carry",
+        &gen_stream_return_carry_source(),
+        &["before", "escaped", "after"],
+    );
+}
+
+// ── Identity-callee forwarding: `wrap(v)` on the return / break edges ──────
+//
+// The generator/recv-yield exit-edge ledger's escape scan
+// (`generator_yield_terminator_escapes`) used to classify EVERY
+// `Terminator::Call` argument as a non-escaping borrow (a structural "any
+// call is a borrow" rule). That is wrong when the callee forwards its
+// argument back out as its own return value: `wrap` below is an identity
+// pass-through (a validator / `.trim()`-style wrapper / decorator shape),
+// so `v` and `wrap(v)`'s result alias the SAME underlying buffer. The
+// escape scan said "no escape", so the exit-edge ledger still fired a
+// `Drop` on `v`'s place AFTER `wrap` had already threaded that buffer into
+// its own return slot — a silent use-after-free: the caller reads the
+// freed-and-poisoned buffer as an empty string instead of the real value
+// (GitHub issue #2412). The fix makes the scan consult the SAME closed
+// ownership-contract list the body-end scan's `CallRuntimeAbi` arm uses
+// (`call_args_borrow_safe` in `hew-mir/src/lower.rs`); a
+// directly-resolved Hew function like `wrap`, which is not on that list,
+// now counts as an escape and the exit-edge drop is retracted.
+//
+// The identical corruption reproduces via `break` (`carry = wrap(v);
+// break;`) because both edges share the same ledger emitter
+// (`emit_generator_yield_value_drops_for_exit_edge`) and the same escape
+// scan — a pre-existing defect on `break`/`continue`, which wired the
+// ledger before the `return` edge existed.
+
+/// `fn wrap(v: string) -> string { return v; }` — an identity pass-through
+/// callee. `return wrap(v)` forwards the loop variable through the call;
+/// neither the body-end release nor the return-edge release may fire on
+/// `v` (the call's result IS `v`'s buffer, now owned by the caller through
+/// `wrap`'s own return). Pre-fix: the exit-edge ledger dropped `v` after
+/// `wrap` returned, freeing the buffer the caller is about to read —
+/// `println(s)` printed an empty string instead of `escaped` under the
+/// scribble triple.
+fn gen_stream_return_forwarded_via_call_source() -> String {
+    "actor Maker {\n\
+     \x20   receive gen fn items() -> string {\n\
+     \x20       yield \"escaped\";\n\
+     \x20       yield \"rest\";\n\
+     \x20   }\n\
+     }\n\
+     fn wrap(v: string) -> string {\n\
+     \x20   return v;\n\
+     }\n\
+     fn first(m: LocalPid<Maker>) -> string {\n\
+     \x20   for await v in m.items() {\n\
+     \x20       return wrap(v);\n\
+     \x20   }\n\
+     \x20   \"none\"\n\
+     }\n\
+     fn main() {\n\
+     \x20   println(\"before\");\n\
+     \x20   let m = spawn Maker;\n\
+     \x20   let s = first(m);\n\
+     \x20   println(s);\n\
+     \x20   println(\"after\");\n\
+     }\n"
+    .to_string()
+}
+
+/// `break`-analog of the identity-forwarding shape: `carry = wrap(v);
+/// break;`. Same ledger emitter, same escape scan, same identity callee —
+/// proves the fix closes both exit edges, not just `return`.
+fn gen_stream_break_forwarded_via_call_source() -> String {
+    "actor Maker {\n\
+     \x20   receive gen fn items() -> string {\n\
+     \x20       yield \"escaped\";\n\
+     \x20       yield \"rest\";\n\
+     \x20   }\n\
+     }\n\
+     fn wrap(v: string) -> string {\n\
+     \x20   return v;\n\
+     }\n\
+     fn main() {\n\
+     \x20   println(\"before\");\n\
+     \x20   let m = spawn Maker;\n\
+     \x20   var carry = \"init\";\n\
+     \x20   for await v in m.items() {\n\
+     \x20       carry = wrap(v);\n\
+     \x20       break;\n\
+     \x20   }\n\
+     \x20   println(carry);\n\
+     \x20   println(\"after\");\n\
+     }\n"
+    .to_string()
+}
+
+/// Identity-callee forwarding on the RETURN edge must not free the buffer
+/// the caller is about to read. `GuardMalloc` ×3 in the flake gate.
+#[test]
+fn gen_stream_return_forwarded_via_call_no_uaf() {
+    assert_payload_escape_prints(
+        "gen_stream_return_forwarded_via_call",
+        &gen_stream_return_forwarded_via_call_source(),
+        &["before", "escaped", "after"],
+    );
+}
+
+/// Identity-callee forwarding on the BREAK edge — same ledger emitter and
+/// escape scan as the return edge, so the fix must close both. `GuardMalloc`
+/// ×3 in the flake gate.
+#[test]
+fn gen_stream_break_forwarded_via_call_no_uaf() {
+    assert_payload_escape_prints(
+        "gen_stream_break_forwarded_via_call",
+        &gen_stream_break_forwarded_via_call_source(),
+        &["before", "escaped", "after"],
+    );
+}

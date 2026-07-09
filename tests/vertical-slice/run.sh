@@ -2621,6 +2621,12 @@ run_accept_expect_stdout "receive_gen_fn_owned_record_yield"
 run_accept_expect_stdout "receive_gen_fn_owned_enum_yield"
 run_accept_expect_stdout "receive_gen_fn_record_stream_break"
 
+# Early `return` out of a `for await` drain: the body-end release survives a
+# return-carrying path, the returning iteration's received string is released
+# on the return edge, and the returned result proves the received values were
+# intact when read. Leak slope pinned by the recv-loop leak oracle in hew-cli.
+run_accept_expect_stdout "receive_gen_fn_stream_early_return"
+
 # Fault (producer crash): the gen body yields once, then traps on a
 # runtime div-by-zero. The consumer, having already received the first value,
 # must observe the fault on its next resume — never a clean, silent EOF. The

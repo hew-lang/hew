@@ -11402,12 +11402,21 @@ impl Builder {
     /// escape scan; the inline drop's null-after-free makes a structurally-
     /// reachable second free a no-op (`raii-null-after-move`; the runtime
     /// also null-guards).
-    fn emit_generator_yield_value_drops_for_break_continue(&mut self, loop_scope_depth: usize) {
+    ///
+    /// EXIT-EDGE FAMILY (`cleanup-all-exits`): `break` and `continue` pass
+    /// their loop frame's `scope_depth` (free only the entries inside the loop
+    /// being left); an early `return` passes `min_scope_depth = 0` because a
+    /// return leaves EVERY enclosing consuming body — each active entry is the
+    /// current iteration's live value and must be freed on that edge. The same
+    /// per-entry escape scan protects all three edges: `return v` has already
+    /// moved the value into `Place::ReturnSlot`, so the scan sees the Move and
+    /// refuses the drop (the caller owns the release).
+    fn emit_generator_yield_value_drops_for_exit_edge(&mut self, min_scope_depth: usize) {
         let to_drop: Vec<(Place, ResolvedTy, crate::model::DropFnSpec, u32, usize)> = self
             .active_generator_yield_values
             .iter()
             .rev()
-            .filter(|(depth, _, _, _, _, _)| *depth >= loop_scope_depth)
+            .filter(|(depth, _, _, _, _, _)| *depth >= min_scope_depth)
             .map(|(_, place, ty, drop_fn, start_block_id, start_instr_len)| {
                 (
                     *place,
@@ -13695,6 +13704,15 @@ impl Builder {
                 // point — mutable vars have their final value; moved bindings
                 // are flagged by the move-checker.
                 self.emit_defers_for_return();
+                // Free every active consuming-body yielded value on the
+                // return edge (`cleanup-all-exits`): a `return` inside a
+                // `for await v in stream` / `for x in gen()` body exits the
+                // loop past the body-end drop, so the current iteration's
+                // received value must be released here. After defers (a defer
+                // may still read the value), before sealing. `return v` is
+                // protected by the per-entry escape scan — the ReturnSlot
+                // Move above marks the value caller-owned.
+                self.emit_generator_yield_value_drops_for_exit_edge(0);
                 // Seal the current basic block with Terminator::Return so
                 // codegen actually emits an early return at this program
                 // point. Codegen consumes the block terminator (not the
@@ -13711,6 +13729,9 @@ impl Builder {
             HirStmtKind::Return(None) => {
                 // Emit defers before the unit return.
                 self.emit_defers_for_return();
+                // Release the current iteration's yielded value(s) on this
+                // return edge — same discipline as Return(Some) above.
+                self.emit_generator_yield_value_drops_for_exit_edge(0);
                 self.statements.push(MirStatement::Return {
                     site: None,
                     ty: ResolvedTy::Unit,
@@ -17278,7 +17299,7 @@ impl Builder {
                 // edge (the body-end drop is past the break — would leak it).
                 // Value before handle: the yielded buffer is inner heap, the
                 // handle owns the coro frame + heap companion (LIFO inner-first).
-                self.emit_generator_yield_value_drops_for_break_continue(frame.scope_depth);
+                self.emit_generator_yield_value_drops_for_exit_edge(frame.scope_depth);
                 // Release in-loop generators on the break edge so the
                 // break-iteration's coro frame + heap companion are not leaked.
                 self.emit_generator_drops_for_break_continue(frame.scope_depth);
@@ -17323,6 +17344,11 @@ impl Builder {
                     });
                 }
                 self.emit_defers_for_return();
+                // Release the current iteration's yielded value(s) on this
+                // return edge — same discipline as the statement-position
+                // return (`cleanup-all-exits`; the per-entry escape scan
+                // keeps a `return v` caller-owned).
+                self.emit_generator_yield_value_drops_for_exit_edge(0);
                 self.finish_current_block(Terminator::Return);
                 let dead = self.alloc_block();
                 self.start_dead_block(dead);
@@ -17335,7 +17361,7 @@ impl Builder {
                 // Free the continued iteration's yielded heap value(s) on the
                 // continue edge (the body-end drop is past the continue — would
                 // leak it). Value before handle (LIFO inner-first).
-                self.emit_generator_yield_value_drops_for_break_continue(frame.scope_depth);
+                self.emit_generator_yield_value_drops_for_exit_edge(frame.scope_depth);
                 // Release in-loop generators on the continue edge so the
                 // skipped iteration's coro frame + heap companion are not leaked.
                 self.emit_generator_drops_for_break_continue(frame.scope_depth);
@@ -19255,6 +19281,15 @@ impl Builder {
                   ceiling without changing the function's structural \
                   responsibility (single yield-block walk)"
     )]
+    #[allow(
+        clippy::match_same_arms,
+        reason = "`Trap` (diverging abort — no continuation to leak into) and \
+                  `Return` (non-carrying function exit — the ReturnSlot Move \
+                  is the escape, caught by the instruction scan) are both \
+                  drop-safe for DIFFERENT reasons; folding them would let a \
+                  future body-exiting terminator inherit the wrong \
+                  justification"
+    )]
     fn generator_yield_block_paths_drop_safe(
         &self,
         block_id: u32,
@@ -19387,11 +19422,24 @@ impl Builder {
                         )
                     }
                     Terminator::Trap { .. } => true,
+                    // A `Return`-terminated path exits the function WITHOUT
+                    // carrying the binding: `return v` moves the value through
+                    // an `Instr::Move` into `Place::ReturnSlot`, and that Move
+                    // is already classified as an escape by the instruction
+                    // scan above. The return edge releases the current
+                    // iteration's value itself (the return lowering fires the
+                    // active yield-value ledger before sealing the block), and
+                    // that edge is CFG-mutually-exclusive with the body-end /
+                    // break-edge drops — so a non-carrying `Return` path is
+                    // drop-safe. Answering false here poisoned the WHOLE
+                    // binding: one early-return path suppressed the body-end
+                    // drop and leaked every iteration's received value
+                    // (#2412's early-return shape, one node per yield).
+                    Terminator::Return => true,
                     // `Suspend` never appears in a generator body (gen bodies
                     // use `Yield`); a body-end drop across it is conservatively
                     // unsound here, like the other body-exiting terminators.
-                    Terminator::Return
-                    | Terminator::Yield { .. }
+                    Terminator::Yield { .. }
                     | Terminator::Send { .. }
                     | Terminator::Ask { .. }
                     | Terminator::RemoteAsk { .. }
@@ -37159,6 +37207,44 @@ fn place_refs_local(place: Place, local: u32) -> bool {
     base_local(place) == Some(local)
 }
 
+/// True when every reference to `local` inside `args` is a borrow `contract`
+/// proves — a borrowing string-argument position (`hew_string_concat`,
+/// `print`/`println`, …), or the collection/Vec/bytes receiver slot
+/// (`args[0]`; a reference anywhere in the by-value tail `args[1..]` still
+/// counts as unproven). `true` when `local` does not appear in `args` at all.
+///
+/// Shared by the `Terminator::Call` arm of
+/// [`generator_yield_terminator_escapes`] and the `Instr::CallRuntimeAbi` arm
+/// of [`generator_yield_instr_escapes`] — the SAME closed, positive-
+/// membership ownership-contract table
+/// `binder_read_is_borrow_safe_{instr,terminator}` consults, never a
+/// structural "any call is a borrow" rule. A callee outside the list —
+/// including a directly-resolved user Hew function — is unproven: it may
+/// forward the argument back out as its own return value (an
+/// identity/pass-through helper: validators, `.trim()`-style wrappers,
+/// decorators), which would let the generator/recv-yield exit-edge ledger
+/// (`return`/`break`/`continue`) free the buffer the call just handed to its
+/// caller — a silent use-after-free (GitHub issue #2412: `return
+/// wrap(v)`). Fail-closed: unproven is NOT borrow-safe, never re-admitted
+/// (LESSONS `boundary-fail-closed`). WHEN OBSOLETE: the COW retain-on-share
+/// spine (A240) replaces this leak-on-uncertainty posture with an exact
+/// retain, and every `Call` argument can be admitted unconditionally.
+fn call_args_borrow_safe(
+    contract: crate::runtime_symbols::CalleeOwnershipContract,
+    args: &[Place],
+    local: u32,
+) -> bool {
+    let refs = |p: &Place| place_refs_local(*p, local);
+    if !args.iter().any(refs) {
+        return true;
+    }
+    let receiver_borrow_safe = (contract.borrows_vec_receiver()
+        || contract.borrows_collection_receiver()
+        || contract.borrows_bytes_receiver())
+        && !args.iter().skip(1).any(refs);
+    contract.borrows_string_call_args() || receiver_borrow_safe
+}
+
 /// True when an instruction transfers ownership of `local` out of its slot
 /// (so a body-end drop of the binding would be unsound). A fresh, solely-owned
 /// generator-yielded value escapes only via:
@@ -37225,12 +37311,29 @@ fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
         } => state.is_some_and(&refs) || init_args.iter().any(|p| refs(*p)),
         Instr::SpawnTaskDirect { task, .. } => refs(*task),
         Instr::SpawnTaskClosure { task, env, .. } => refs(*task) || refs(*env),
-        // Borrowing reads — a getter / runtime-ABI / arithmetic operand does
-        // not retain the yielded value. These do NOT escape it.
-        Instr::CallRuntimeAbi(_)
-        | Instr::CallClosure { .. }
-        | Instr::CallTraitMethod { .. }
-        | Instr::EnterContext
+        // A `CallRuntimeAbi` argument is a borrow only when its callee symbol
+        // is on the closed ownership-contract list [`call_args_borrow_safe`]
+        // consults — see its doc comment. Any callee outside that list is
+        // unproven and counts as an escape (fail-closed).
+        Instr::CallRuntimeAbi(call) => !call_args_borrow_safe(
+            crate::runtime_symbols::callee_ownership_contract(call.symbol()),
+            call.args(),
+            local,
+        ),
+        // A closure or trait-method call is dynamic dispatch — no
+        // compile-time symbol to consult an ownership contract for. Any
+        // reference to `local` (the callee/receiver pair itself, or an
+        // argument) is unproven and counts as an escape (fail-closed; same
+        // rationale as the `CallRuntimeAbi` arm above).
+        Instr::CallClosure { callee, args, .. } => {
+            refs(*callee) || args.iter().any(|p| refs(*p))
+        }
+        Instr::CallTraitMethod {
+            fat_pointer, args, ..
+        } => refs(*fat_pointer) || args.iter().any(|p| refs(*p)),
+        // Borrowing reads — a context/cancellation query or an arithmetic
+        // operand does not retain the yielded value. These do NOT escape it.
+        Instr::EnterContext
         | Instr::ExitContext
         | Instr::CheckCancellation
         | Instr::ContextField { .. }
@@ -37302,8 +37405,8 @@ fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
 /// True when a terminator transfers ownership of `local` out of the body: a
 /// return moves it to the caller, a re-yield hands it back to a consumer, an
 /// actor send/ask/select transfers it into the message. A `Call` argument is a
-/// borrow (the callee does not retain a fresh yielded value), so a `Call`
-/// terminator does not escape it.
+/// borrow ONLY when the callee is on the closed ownership-contract borrow
+/// list — see [`generator_yield_terminator_escapes`]'s `Terminator::Call` arm.
 #[allow(
     clippy::match_same_arms,
     reason = "exhaustive match over every Terminator variant; the non-escaping \
@@ -37352,9 +37455,18 @@ fn generator_yield_terminator_escapes(
     local: u32,
 ) -> bool {
     match term {
-        // A `Call`'s args are borrows (same posture as `Instr::Call*`).
-        Terminator::Call { .. }
-        | Terminator::Goto { .. }
+        // A `Call`'s args are a borrow only when the callee is on the closed
+        // ownership-contract list [`call_args_borrow_safe`] consults — see
+        // its doc comment. A callee outside that list — including a
+        // directly-resolved user Hew function — is unproven and counts as an
+        // escape (fail-closed): it may forward the argument back out as its
+        // own return value (GitHub issue #2412: `return wrap(v)`).
+        Terminator::Call { callee, args, .. } => !call_args_borrow_safe(
+            crate::runtime_symbols::callee_ownership_contract(callee),
+            args,
+            local,
+        ),
+        Terminator::Goto { .. }
         | Terminator::Branch { .. }
         | Terminator::Trap { .. }
         | Terminator::MakeGenerator { .. } => false,

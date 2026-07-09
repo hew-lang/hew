@@ -657,17 +657,12 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
                 std::process::exit(1);
             }
         }
-        #[cfg(unix)]
-        {
-            if let Err(e) = replace_local_package_link(&link, &target) {
-                eprintln!("adze install: cannot create symlink for {name}: {e}");
+        match replace_local_package_materialization(&link, &target) {
+            Ok(materialization) => println!("  {} {name}@{version}", materialization.verb()),
+            Err(e) => {
+                eprintln!("adze install: cannot materialize project package for {name}: {e}");
                 std::process::exit(1);
             }
-            println!("  linked {name}@{version}");
-        }
-        #[cfg(not(unix))]
-        {
-            eprintln!("adze install: symlinks not supported on this platform; skipping {name}");
         }
     }
 
@@ -1360,10 +1355,12 @@ fn cmd_remove(package: &str) {
 
     match manifest::remove_dependency(&manifest_path, package) {
         Ok(true) => {
-            // Remove local symlink if it exists.
+            // Remove local project package materialization if it exists.
             let link = local_link_path(&project_packages_path(&cwd), package);
-            if link.is_symlink() || link.exists() {
-                let _ = std::fs::remove_file(&link);
+            if std::fs::symlink_metadata(&link).is_ok() {
+                if let Err(e) = remove_path_for_replacement(&link) {
+                    eprintln!("warning: could not remove {}: {e}", link.display());
+                }
             }
             println!("Removed {package} from hew.toml");
         }
@@ -1953,6 +1950,41 @@ fn local_link_path(base: &Path, package_name: &str) -> PathBuf {
         .fold(base.to_path_buf(), |path, segment| path.join(segment))
 }
 
+#[derive(Debug, Clone, Copy)]
+enum LocalPackageMaterialization {
+    #[cfg(unix)]
+    Linked,
+    #[cfg(not(unix))]
+    Copied,
+}
+
+impl LocalPackageMaterialization {
+    fn verb(self) -> &'static str {
+        match self {
+            #[cfg(unix)]
+            Self::Linked => "linked",
+            #[cfg(not(unix))]
+            Self::Copied => "copied",
+        }
+    }
+}
+
+fn replace_local_package_materialization(
+    link: &Path,
+    target: &Path,
+) -> std::io::Result<LocalPackageMaterialization> {
+    #[cfg(unix)]
+    {
+        replace_local_package_link(link, target)?;
+        Ok(LocalPackageMaterialization::Linked)
+    }
+    #[cfg(not(unix))]
+    {
+        replace_local_package_copy(link, target)?;
+        Ok(LocalPackageMaterialization::Copied)
+    }
+}
+
 #[cfg(unix)]
 fn replace_local_package_link(link: &Path, target: &Path) -> std::io::Result<()> {
     if let Ok(existing) = std::fs::read_link(link) {
@@ -1967,6 +1999,74 @@ fn replace_local_package_link(link: &Path, target: &Path) -> std::io::Result<()>
     }
 
     crate::atomic_fs::replace_symlink_atomic(link, target)
+}
+
+#[cfg_attr(
+    unix,
+    allow(
+        dead_code,
+        reason = "portable install fallback is selected on non-Unix and unit-tested on Unix"
+    )
+)]
+fn replace_local_package_copy(link: &Path, target: &Path) -> std::io::Result<()> {
+    if !target.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("{} is not an installed package directory", target.display()),
+        ));
+    }
+    let parent = link.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{} has no parent directory", link.display()),
+        )
+    })?;
+    std::fs::create_dir_all(parent)?;
+
+    let file_name = link.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{} has no final path component", link.display()),
+        )
+    })?;
+    let temp = link.with_file_name(format!(
+        ".{}.tmp-{}",
+        file_name.to_string_lossy(),
+        std::process::id()
+    ));
+    if std::fs::symlink_metadata(&temp).is_ok() {
+        remove_path_for_replacement(&temp)?;
+    }
+
+    if let Err(err) = copy_dir(target, &temp) {
+        let _ = remove_path_for_replacement(&temp);
+        return Err(err);
+    }
+    if std::fs::symlink_metadata(link).is_ok() {
+        remove_path_for_replacement(link)?;
+    }
+    std::fs::rename(temp, link)
+}
+
+#[cfg_attr(
+    unix,
+    allow(
+        dead_code,
+        reason = "portable install fallback is selected on non-Unix and unit-tested on Unix"
+    )
+)]
+fn remove_path_for_replacement(path: &Path) -> std::io::Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || metadata.is_file() {
+        std::fs::remove_file(path)
+    } else if metadata.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        Err(std::io::Error::other(format!(
+            "{} is neither a file nor a directory",
+            path.display()
+        )))
+    }
 }
 
 /// Find the latest (highest semver) version of `package_name` in the registry.
@@ -2115,6 +2215,30 @@ mod tests {
         assert!(!dst.path().join(".git").exists());
         assert!(!dst.path().join("target").exists());
         assert!(dst.path().join("hew.toml").exists());
+    }
+
+    #[test]
+    fn replace_local_package_copy_replaces_existing_tree() {
+        let src = tempfile::tempdir().unwrap();
+        std::fs::write(
+            src.path().join("hew.toml"),
+            "[package]\nname=\"x\"\nversion=\"0.2.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(src.path().join("x.hew"), "pub fn answer() -> i64 { 2 }").unwrap();
+
+        let project = tempfile::tempdir().unwrap();
+        let link = project.path().join(".adze").join("packages").join("x");
+        std::fs::create_dir_all(&link).unwrap();
+        std::fs::write(link.join("stale.hew"), "old").unwrap();
+
+        replace_local_package_copy(&link, src.path()).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(link.join("x.hew")).unwrap(),
+            "pub fn answer() -> i64 { 2 }"
+        );
+        assert!(!link.join("stale.hew").exists());
     }
 
     #[test]

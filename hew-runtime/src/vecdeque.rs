@@ -4,12 +4,42 @@
 //! `#[no_mangle] extern "C"` functions so compiled Hew code can create
 //! and manipulate deques through the `std::deque` module.
 
+use crate::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS;
+use crate::trap_code::runtime_bounds_trap;
 use std::collections::VecDeque;
 
 /// Opaque handle to a `VecDeque<i64>`.
 #[derive(Debug)]
 pub struct HewDeque {
     inner: VecDeque<i64>,
+}
+
+/// Write a message to stderr.
+///
+/// # Safety
+///
+/// `msg` must be valid for reads for its full length.
+unsafe fn write_stderr(msg: &[u8]) {
+    // SAFETY: msg.as_ptr() is valid for msg.len() bytes, and fd 2 is stderr.
+    unsafe {
+        #[cfg(not(target_os = "windows"))]
+        libc::write(2, msg.as_ptr().cast(), msg.len());
+        #[cfg(target_os = "windows")]
+        libc::write(2, msg.as_ptr().cast(), msg.len() as core::ffi::c_uint);
+    }
+}
+
+/// Emit a deque empty-pop diagnostic and route through the trap seam.
+///
+/// # Safety
+///
+/// Call only from a fail-closed deque empty-pop path.
+unsafe fn deque_bounds_trap(message: &str) -> ! {
+    // SAFETY: writing the diagnostic and trapping is the terminal failure path.
+    unsafe {
+        write_stderr(message.as_bytes());
+        runtime_bounds_trap(HEW_TRAP_INDEX_OUT_OF_BOUNDS);
+    }
 }
 
 // ── Constructor ─────────────────────────────────────────────────────────
@@ -58,7 +88,11 @@ pub unsafe extern "C" fn hew_deque_push_back(dq: *mut HewDeque, value: i64) {
 
 // ── Pop ─────────────────────────────────────────────────────────────────
 
-/// Remove and return the front element.  Returns 0 if the deque is empty.
+/// Remove and return the front element.
+///
+/// Traps via [`deque_bounds_trap`] when the deque is empty (spec
+/// `pop_front() -> i64`: no `Option`, so the empty case fails closed like
+/// `Vec.pop()`/`bytes.pop()`).
 ///
 /// # Safety
 ///
@@ -69,10 +103,18 @@ pub unsafe extern "C" fn hew_deque_pop_front(dq: *mut HewDeque) -> i64 {
         return 0;
     }
     // SAFETY: Caller guarantees `dq` is valid.
-    unsafe { &mut *dq }.inner.pop_front().unwrap_or(0)
+    match unsafe { &mut *dq }.inner.pop_front() {
+        Some(value) => value,
+        // SAFETY: this is the terminal empty-pop path.
+        None => unsafe { deque_bounds_trap("PANIC: Deque.pop_front() on an empty deque\n") },
+    }
 }
 
-/// Remove and return the back element.  Returns 0 if the deque is empty.
+/// Remove and return the back element.
+///
+/// Traps via [`deque_bounds_trap`] when the deque is empty (spec
+/// `pop_back() -> i64`: no `Option`, so the empty case fails closed like
+/// `Vec.pop()`/`bytes.pop()`).
 ///
 /// # Safety
 ///
@@ -83,7 +125,11 @@ pub unsafe extern "C" fn hew_deque_pop_back(dq: *mut HewDeque) -> i64 {
         return 0;
     }
     // SAFETY: Caller guarantees `dq` is valid.
-    unsafe { &mut *dq }.inner.pop_back().unwrap_or(0)
+    match unsafe { &mut *dq }.inner.pop_back() {
+        Some(value) => value,
+        // SAFETY: this is the terminal empty-pop path.
+        None => unsafe { deque_bounds_trap("PANIC: Deque.pop_back() on an empty deque\n") },
+    }
 }
 
 // ── Query ───────────────────────────────────────────────────────────────
@@ -202,14 +248,89 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    fn run_deque_death_helper(helper: &str) -> std::process::Output {
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "--nocapture", helper])
+            .env("RUST_TEST_THREADS", "1")
+            .env("HEW_DEATH_TEST", helper)
+            .output()
+            .unwrap()
+    }
+
     #[test]
-    fn pop_empty_returns_zero() {
-        let dq = hew_deque_new();
-        // SAFETY: `dq` was just created above.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg_attr(
+        miri,
+        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+    )]
+    fn test_deque_pop_front_empty_traps_main_context() {
+        let output = run_deque_death_helper("vecdeque::tests::_helper_deque_pop_front_empty");
+        assert!(
+            !output.status.success(),
+            "empty Deque.pop_front() must terminate without actor context"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("PANIC: Deque.pop_front() on an empty deque"),
+            "empty Deque.pop_front() must report the operation; got: {stderr}"
+        );
+        assert!(
+            stderr.contains("hew: trap in main context: IndexOutOfBounds"),
+            "empty Deque.pop_front() must route through the trap code; got: {stderr}"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn _helper_deque_pop_front_empty() {
+        if std::env::var("HEW_DEATH_TEST").map_or(true, |value| {
+            value != "vecdeque::tests::_helper_deque_pop_front_empty"
+        }) {
+            return;
+        }
+        // SAFETY: FFI calls use a valid deque; the pop is intentionally empty.
         unsafe {
-            assert_eq!(hew_deque_pop_front(dq), 0);
-            assert_eq!(hew_deque_pop_back(dq), 0);
-            hew_deque_free(dq);
+            let dq = hew_deque_new();
+            let _ = hew_deque_pop_front(dq);
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg_attr(
+        miri,
+        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+    )]
+    fn test_deque_pop_back_empty_traps_main_context() {
+        let output = run_deque_death_helper("vecdeque::tests::_helper_deque_pop_back_empty");
+        assert!(
+            !output.status.success(),
+            "empty Deque.pop_back() must terminate without actor context"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("PANIC: Deque.pop_back() on an empty deque"),
+            "empty Deque.pop_back() must report the operation; got: {stderr}"
+        );
+        assert!(
+            stderr.contains("hew: trap in main context: IndexOutOfBounds"),
+            "empty Deque.pop_back() must route through the trap code; got: {stderr}"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn _helper_deque_pop_back_empty() {
+        if std::env::var("HEW_DEATH_TEST").map_or(true, |value| {
+            value != "vecdeque::tests::_helper_deque_pop_back_empty"
+        }) {
+            return;
+        }
+        // SAFETY: FFI calls use a valid deque; the pop is intentionally empty.
+        unsafe {
+            let dq = hew_deque_new();
+            let _ = hew_deque_pop_back(dq);
         }
     }
 

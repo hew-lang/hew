@@ -130,6 +130,29 @@ const SENTINEL_EXIT_KIND_TAG_BINDING: BindingId = BindingId(u32::MAX - 3);
 /// dedicated value keeps the pump self-contained and future-proof).
 const SENTINEL_RECV_GEN_COMPANION_BINDING: BindingId = BindingId(u32::MAX - 4);
 
+/// Base of the per-function synthetic binding-id range for FROM-CALL match
+/// scrutinee temps (#2429). `match f() { Ok(b) => …, Err(e) => {} }` consumes
+/// the callee's `Result`/`Option` return through an anonymous MIR temp; with
+/// no `BindingId` the temp is invisible to `build_lifo_drops` /
+/// `enumerate_exits`, so the arm-destructured payload was released on NO edge
+/// — one leaked payload per iteration of a `while … { match f() { … } }`
+/// read loop. Minting a synthetic owned binding over the temp routes it
+/// through the PROVEN let-bound discipline (enum-composite sole-owner prover,
+/// back-edge body-scope filter, return/cancel plans).
+///
+/// The range DESCENDS from here (`base`, `base - 1`, …), one id per from-call
+/// scrutinee in the function, so it can never collide with the fixed
+/// sentinels above (`u32::MAX ..= u32::MAX - 4`). Collision with real HIR
+/// binding ids would need a function with ~4.29 billion bindings — outside
+/// any representable source. If HIR ever exposes a per-function binding-id
+/// ceiling, mint above it instead and retire this reserved range.
+const SYNTHETIC_MATCH_SCRUTINEE_BINDING_BASE: u32 = u32::MAX - 64;
+
+/// Diagnostic name for synthetic from-call match-scrutinee bindings. Never
+/// user-visible (no `-g` variable DIE is minted for it); shows up only in MIR
+/// dumps and drop-plan diagnostics.
+const SYNTHETIC_MATCH_SCRUTINEE_NAME: &str = "__hew_match_scrutinee";
+
 /// Prefix of the synthetic for-iteration cursor binding minted by the HIR
 /// for-loop desugar (`hew-hir/src/lower.rs`, `lower_for_iter_desugar`:
 /// `format!("__hew_for_iter_{}", …)`). The scope-exit `Stream`/`Receiver` close
@@ -9240,6 +9263,12 @@ struct Builder {
     /// initialiser. Cluster 1 reads the slot directly; later clusters add
     /// drop-cleanup and rebinding semantics.
     binding_locals: HashMap<BindingId, Place>,
+    /// Count of synthetic from-call match-scrutinee bindings minted so far in
+    /// this function (#2429). The next mint is
+    /// `BindingId(SYNTHETIC_MATCH_SCRUTINEE_BINDING_BASE - count)` — a
+    /// descending per-function range that stays clear of both the fixed
+    /// `u32::MAX ..= u32::MAX - 4` sentinels and real HIR binding ids.
+    synthetic_match_scrutinee_bindings: u32,
     /// Per-function destructive-funcupdate base provenance. Maps a `BindingId`
     /// to whether `{ ..<binding>, f: new }` over it is a PROVEN unique owner of
     /// its heap fields — i.e. consuming it leaves no live alias, so the
@@ -10218,6 +10247,81 @@ impl Builder {
             provenance: Some(provenance),
             disposition: Disposition::AliasOf,
         });
+    }
+
+    /// #2429 — give a FROM-CALL enum-composite match scrutinee an owner.
+    ///
+    /// `match f() { Ok(b) => …, Err(e) => {} }` consumes the callee's
+    /// by-value `Result`/`Option` return through an anonymous MIR temp. With
+    /// no `BindingId`, the temp is invisible to `build_lifo_drops` /
+    /// `enumerate_exits`, so the arm-destructured payload was released on NO
+    /// edge — not the loop back-edge, not the return plan — and every
+    /// iteration of a `while … { match f() { … } }` read loop leaked one
+    /// payload allocation. Minting a synthetic owned binding over the temp
+    /// routes it through the PROVEN let-bound discipline end to end: the
+    /// fail-closed enum-composite sole-owner prover decides admission, the
+    /// back-edge body-scope filter releases per iteration, the return/cancel
+    /// plans cover the straight-line case, and the scope-close goto pass
+    /// covers break/continue edges.
+    ///
+    /// Registration alone never emits a drop: an escaping payload keeps
+    /// today's leak-not-double-free posture because
+    /// `derive_enum_composite_drop_allowed` still excludes the composite.
+    fn register_from_call_scrutinee_owner(&mut self, scrutinee: &HirExpr, scrutinee_local: u32) {
+        // Only the direct-call rvalue shape. A `BindingRef` scrutinee already
+        // owns its slot through its own `let`/param registration — a second
+        // owner over the same local would double-free — and every non-call
+        // rvalue keeps its pre-fix posture (fail-closed).
+        let HirExprKind::Call { callee, .. } = &scrutinee.kind else {
+            return;
+        };
+        // Recv-next / vec-string-iter-next scrutinees already carry their own
+        // per-iteration release discipline (`Disposition::BodyEndReleased` on
+        // the Some-arm payload binder); their codegen-materialised `Option`
+        // shell owns no heap beyond that payload. Registering a second owner
+        // here would double-release the payload. (A generator `.next()`
+        // scrutinee is `HirExprKind::GeneratorNext`, not `Call`, so the shape
+        // gate above already excludes it.)
+        if Self::is_recv_next_scrutinee(scrutinee)
+            || self.is_vec_string_iter_next_scrutinee(scrutinee)
+        {
+            return;
+        }
+        // Runtime-symbol / builtin producers have per-symbol ownership
+        // contracts — an interior getter may hand back a BORROW of storage
+        // the receiver still owns, and freeing that here would be the #2384
+        // double-free class. Only a Hew callee's by-value return is
+        // unconditionally caller-owned (the callee side retracts its drop of
+        // every member handed out through the return —
+        // `derive_returned_aggregate_member_bindings`), so this caller holds
+        // the single release obligation.
+        if let HirExprKind::BindingRef { name, resolved } = &callee.kind {
+            if matches!(resolved, ResolvedRef::Builtin(_))
+                || crate::runtime_symbols::is_known_runtime_symbol(name)
+            {
+                return;
+            }
+        }
+        // Exactly the value class the `EnumInPlace` scope-exit machinery
+        // owns; anything else keeps its pre-fix posture.
+        let ty = self.subst_ty(&scrutinee.ty);
+        if !ty_is_heap_owning_enum_composite(&ty, &self.record_field_orders, &self.enum_layouts) {
+            return;
+        }
+        let binding = BindingId(
+            SYNTHETIC_MATCH_SCRUTINEE_BINDING_BASE - self.synthetic_match_scrutinee_bindings,
+        );
+        self.synthetic_match_scrutinee_bindings += 1;
+        self.statements.push(MirStatement::Bind {
+            binding,
+            name: SYNTHETIC_MATCH_SCRUTINEE_NAME.to_string(),
+            site: scrutinee.site,
+            ty: ty.clone(),
+        });
+        self.binding_locals
+            .insert(binding, Place::Local(scrutinee_local));
+        self.record_binding_scope(binding);
+        self.register_owned_local(binding, SYNTHETIC_MATCH_SCRUTINEE_NAME.to_string(), ty);
     }
 
     /// Provenance of a `let`-bound field projection that is a byte-copy interior
@@ -21550,6 +21654,15 @@ impl Builder {
                 return None;
             }
         };
+
+        // A from-call enum-composite scrutinee (`match f() { … }`) gets a
+        // synthetic owned binding over its temp so the arm-destructured
+        // payload is released on every exit edge — most importantly the loop
+        // back-edge, where each iteration previously leaked one payload
+        // (#2429). No-op for binding-ref scrutinees, runtime-symbol
+        // producers, and the recv/iter-next shapes that carry their own
+        // release discipline.
+        self.register_from_call_scrutinee_owner(scrutinee, scrutinee_local);
 
         // Load the tag into a fresh i64 local. `Place::EnumTag(local)`
         // is the substrate primitive; codegen GEPs to outer-struct
@@ -39330,7 +39443,18 @@ fn derive_enum_composite_drop_allowed(
                         {
                             note_alias_escape(l, &mut excluded_roots);
                         }
-                        if payload_binders.contains_key(&l) && !place_is_tag_read(p) {
+                        // A payload binder read as the BORROWED receiver of a
+                        // collection/bytes runtime op (`b.len()` lowers
+                        // `hew_bytes_len` as `Instr::CallRuntimeAbi` with the
+                        // binder as arg[0]) is a transient interior borrow the
+                        // composite survives — the same arg[0] exemption the
+                        // record/tuple provers already apply through
+                        // `binder_read_is_borrow_safe_instr` (#2429). Every
+                        // other read stays a fail-closed owning escape.
+                        if payload_binders.contains_key(&l)
+                            && !place_is_tag_read(p)
+                            && !binder_read_is_borrow_safe_instr(instr, l)
+                        {
                             note_payload_escape(
                                 &payload_binders,
                                 l,
@@ -39364,9 +39488,16 @@ fn derive_enum_composite_drop_allowed(
                         note_alias_escape(l, &mut excluded_roots);
                     }
                 }
+                // `binder_read_is_borrow_safe_terminator` subsumes the string
+                // borrow/print exemption and extends it to the collection- and
+                // bytes-receiver-borrow contracts, so a `Result<bytes, _>`
+                // payload binder read by `hew_bytes_to_string(b)` (a
+                // `Terminator::Call` receiver borrow) no longer excludes its
+                // composite (#2429). Anything not provably borrow-safe stays a
+                // fail-closed payload escape.
                 if payload_binders.contains_key(&l)
                     && !place_is_tag_read(p)
-                    && !retained_string_terminator_drop_safe(
+                    && !binder_read_is_borrow_safe_terminator(
                         &block.terminator,
                         suspend_kinds.get(&block.id),
                         l,
@@ -44178,17 +44309,29 @@ fn binder_read_is_borrow_safe_terminator(
     if retained_string_terminator_drop_safe(term, suspend_kind, binder) {
         return true;
     }
-    // A collection-borrow call borrows arg[0] in place; only a read in the
-    // by-value tail (arg[1..]) genuinely escapes. `binder` is borrow-safe iff it
-    // never appears past arg[0].
+    // A collection-borrow or bytes-receiver-borrow call borrows arg[0] in
+    // place; only a read in the by-value tail (arg[1..]) genuinely escapes.
+    // `binder` is borrow-safe iff it never appears past arg[0]. The bytes
+    // contract is the SAME authority `derive_local_bytes_drop_allowed`
+    // applies to a bytes LOCAL — a `bytes` enum-payload / field binder read
+    // by `b.len()` / `b.is_empty()` (`hew_bytes_len` et al) is a transient
+    // receiver borrow, not an ownership escape of the owning composite
+    // (#2429: classifying it as an escape excluded every
+    // `Result<bytes, _>` composite from its `EnumInPlace` drop and leaked
+    // the payload on every loop iteration).
     if let Terminator::Call { callee, args, .. } = term {
-        if crate::runtime_symbols::callee_ownership_contract(callee)
-            .borrows_collection_binder_receiver()
-        {
+        let contract = crate::runtime_symbols::callee_ownership_contract(callee);
+        if contract.borrows_collection_binder_receiver() || contract.borrows_bytes_receiver() {
             return !args
                 .iter()
                 .skip(1)
                 .any(|arg| place_refs_local(*arg, binder));
+        }
+        // `hew_bytes_append` borrows the receiver AND the unpacked source
+        // triple — every operand is a read-only borrow, so a binder read
+        // anywhere in the argument list stays owned by its composite.
+        if contract.borrows_all_bytes_args() {
+            return true;
         }
     }
     false
@@ -44201,14 +44344,18 @@ fn binder_read_is_borrow_safe_terminator(
 /// `false` unless the only references to `binder` are the borrowed receiver.
 fn binder_read_is_borrow_safe_instr(instr: &Instr, binder: u32) -> bool {
     if let Instr::CallRuntimeAbi(call) = instr {
-        if crate::runtime_symbols::callee_ownership_contract(call.symbol())
-            .borrows_collection_binder_receiver()
-        {
+        let contract = crate::runtime_symbols::callee_ownership_contract(call.symbol());
+        if contract.borrows_collection_binder_receiver() || contract.borrows_bytes_receiver() {
             return !call
                 .args()
                 .iter()
                 .skip(1)
                 .any(|arg| place_refs_local(*arg, binder));
+        }
+        // Bytes append: receiver and unpacked source triple are all borrows
+        // (mirrors the terminator arm and the bytes-LOCAL scan's exemption).
+        if contract.borrows_all_bytes_args() {
+            return true;
         }
     }
     false

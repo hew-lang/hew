@@ -1548,6 +1548,7 @@ run_accept_expect_stdout "owned_nested_tuple_return_drop"
 run_accept_expect_stdout "owned_nested_tuple_clone"
 run_accept_expect_stdout "owned_nested_tuple_bytes"
 run_accept_expect_stdout "owned_nested_tuple_record"
+run_accept_expect_stdout "enum_payload_call_loop_release"
 run_accept_expect_stdout "match_float_literal_arm"
 # match result type is inferred from the non-diverging arm; a return-only arm
 # (typed Unit by lower_block) must not set the match result type.

@@ -69,17 +69,17 @@ fn Echo__recv__run -> ()
     branch[bb17: bb19/bb22] ->
       (none)
     goto[bb18->bb14] ->
-      (none)
+      drop _26 ty=Option<bytes> kind=enum_in_place
     cancel[bb18] ->
-      (none)
+      drop _26 ty=Option<bytes> kind=enum_in_place
     call[bb19 hew_bytes_to_string -> bb23] ->
       (none)
     goto[bb20->bb18] ->
       (none)
     cancel[bb20] ->
-      (none)
+      drop _26 ty=Option<bytes> kind=enum_in_place
     panic[bb21] ->
-      (none)
+      drop _26 ty=Option<bytes> kind=enum_in_place
     branch[bb22: bb20/bb21] ->
       (none)
     call[bb23 println_str -> bb24] ->
@@ -87,7 +87,7 @@ fn Echo__recv__run -> ()
     goto[bb24->bb18] ->
       (none)
     cancel[bb24] ->
-      (none)
+      drop _26 ty=Option<bytes> kind=enum_in_place
     return[bb25] ->
       (none)
 

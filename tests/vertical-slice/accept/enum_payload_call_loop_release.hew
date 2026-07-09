@@ -1,0 +1,110 @@
+// A match-arm-destructured payload from a called function is released
+// exactly once per iteration across loop back-edges (#2429). The scrutinee
+// is the CALL RESULT itself (no `let`), the shape every read-style API loop
+// takes: `while … { match f() { Ok(b) => …, Err(e) => … } }`.
+//
+// Output teeth: every payload is read back before its release (a
+// use-after-free garbles the totals; a double-free aborts), Ok and Err arms
+// are both taken, and break/continue exercise the loop-exit edges.
+type Row {
+    name: string;
+    id: i64;
+}
+
+fn ok_bytes(n: i64) -> Result<bytes, string> {
+    if n >= 0 {
+        Ok("payload".to_bytes())
+    } else {
+        Err("negative".to_upper())
+    }
+}
+
+fn mixed(n: i64) -> Result<string, string> {
+    if n % 2 == 0 {
+        Ok("even-payload".to_upper())
+    } else {
+        Err("odd-payload".to_upper())
+    }
+}
+
+fn ok_row(n: i64) -> Result<Row, string> {
+    Ok(Row { name: "row-payload".to_upper(), id: n })
+}
+
+fn bytes_loop() -> i64 {
+    var total = 0;
+    var i = 0;
+    while i < 5 {
+        match ok_bytes(i) {
+            Ok(b) => {
+                total = total + b.len();
+            },
+            Err(e) => {
+                total = total - e.len();
+            },
+        }
+        i = i + 1;
+    }
+    total
+}
+
+fn mixed_arms_loop() -> i64 {
+    var oks = 0;
+    var errs = 0;
+    var i = 0;
+    while i < 6 {
+        match mixed(i) {
+            Ok(s) => {
+                oks = oks + s.len();
+            },
+            Err(e) => {
+                errs = errs + e.len();
+            },
+        }
+        i = i + 1;
+    }
+    oks * 1000 + errs
+}
+
+fn composite_loop() -> i64 {
+    var total = 0;
+    var i = 0;
+    while i < 4 {
+        match ok_row(i) {
+            Ok(r) => {
+                total = total + r.id;
+            },
+            Err(e) => {},
+        }
+        i = i + 1;
+    }
+    total
+}
+
+fn break_continue_loop() -> i64 {
+    var seen = 0;
+    var i = 0;
+    while i < 10 {
+        i = i + 1;
+        match ok_bytes(i) {
+            Ok(b) => {
+                if b.len() == 7 && i == 3 {
+                    continue;
+                }
+                if i >= 6 {
+                    break;
+                }
+                seen = seen + 1;
+            },
+            Err(e) => {},
+        }
+    }
+    seen
+}
+
+fn main() {
+    println(f"bytes={bytes_loop()}");
+    println(f"mixed={mixed_arms_loop()}");
+    println(f"composite={composite_loop()}");
+    println(f"breakcont={break_continue_loop()}");
+}

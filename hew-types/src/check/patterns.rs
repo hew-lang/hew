@@ -121,10 +121,8 @@ fn unsupported_payload_subpattern_label(pattern: &Pattern) -> Option<&'static st
 /// Classify subpatterns that are not yet safe for plain record/tuple project
 /// patterns.
 ///
-/// Enum payload patterns can carry literal predicates today; plain
-/// record/tuple destructures cannot, so accepting `Point { x: 0, y }` or
-/// `(0, y)` would silently widen the arm to an irrefutable project. Keep those
-/// shapes fail-closed until project predicates grow nested comparisons.
+/// Literal predicates are supported for plain record/tuple projects. Nested
+/// aggregate and constructor subpatterns remain fail-closed.
 fn unsupported_project_subpattern_label(pattern: &Pattern) -> Option<&'static str> {
     match pattern {
         // Qualified identifier — always a constructor path in project position.
@@ -133,9 +131,8 @@ fn unsupported_project_subpattern_label(pattern: &Pattern) -> Option<&'static st
         // `None` here is the safe default for call sites that skip that guard.
         Pattern::Identifier(name) if name.contains("::") => Some("nested constructor"),
         // Wildcard and bare identifiers: allowed or deferred to call site.
-        Pattern::Wildcard | Pattern::Identifier(_) => None,
+        Pattern::Wildcard | Pattern::Identifier(_) | Pattern::Literal(_) => None,
         Pattern::Tuple(pats) if pats.is_empty() => None,
-        Pattern::Literal(lit) => Some(literal_pattern_label(lit)),
         Pattern::Constructor { .. } => Some("nested constructor"),
         Pattern::Struct { .. } | Pattern::RecordShorthand { .. } => Some("record destructure"),
         Pattern::Tuple(_) => Some("tuple destructure"),
@@ -316,6 +313,7 @@ impl Checker {
                 if name.contains("::") {
                     return false;
                 }
+
                 // Unqualified: irrefutable iff it does NOT resolve as a variant.
                 let resolved = self.project_assoc_types(&self.subst.resolve(payload_ty));
                 let short = name.rsplit("::").next().unwrap_or(name);
@@ -336,6 +334,59 @@ impl Checker {
                         .all(|((sub, _), elem_ty)| self.is_payload_irrefutable_for_ty(sub, elem_ty))
             }
             _ => false,
+        }
+    }
+
+    /// True when a plain record/tuple project pattern covers every value of
+    /// `project_ty`. Literal element predicates are refutable; bindings,
+    /// wildcards, unit, and recursively irrefutable tuple elements are not.
+    pub(super) fn is_project_irrefutable_for_ty(&self, pattern: &Pattern, project_ty: &Ty) -> bool {
+        match pattern {
+            Pattern::Wildcard => true,
+            Pattern::Identifier(name) => {
+                if name.contains("::") {
+                    return false;
+                }
+                let resolved = self.project_assoc_types(&self.subst.resolve(project_ty));
+                self.resolve_variant_match(name, &resolved, name).is_none()
+            }
+            Pattern::Tuple(pats) => {
+                let resolved = self.project_assoc_types(&self.subst.resolve(project_ty));
+                let Ty::Tuple(elem_tys) = &resolved else {
+                    return false;
+                };
+                pats.len() == elem_tys.len()
+                    && pats
+                        .iter()
+                        .zip(elem_tys)
+                        .all(|((sub, _), ty)| self.is_project_irrefutable_for_ty(sub, ty))
+            }
+            Pattern::Struct { fields, .. } => {
+                let resolved = self.project_assoc_types(&self.subst.resolve(project_ty));
+                let Some(type_name) = resolved.type_name() else {
+                    return false;
+                };
+                let Some(td) = self.lookup_type_def(type_name) else {
+                    return false;
+                };
+                if !td.variants.is_empty() || fields.len() != td.fields.len() {
+                    return false;
+                }
+                fields.iter().all(|field| {
+                    let Some(field_ty) = td.fields.get(&field.name) else {
+                        return false;
+                    };
+                    field
+                        .pattern
+                        .as_ref()
+                        .is_none_or(|(sub, _)| self.is_project_irrefutable_for_ty(sub, field_ty))
+                })
+            }
+            Pattern::Literal(_)
+            | Pattern::Constructor { .. }
+            | Pattern::RecordShorthand { .. }
+            | Pattern::Or(_, _)
+            | Pattern::Regex { .. } => false,
         }
     }
 
@@ -1460,10 +1511,9 @@ impl Checker {
                                             pf.name
                                         ),
                                         pattern_span,
-                                        "v0.5 record match destructure supports field bindings (`x`), \
-                                         explicit binding aliases (`x: y`), and wildcards (`x: _`); \
-                                         nested/literal field predicates are reserved for a future \
-                                         match-destructure stage"
+                                        "record match destructure supports field bindings (`x`), \
+                                         explicit binding aliases (`x: y`), wildcards (`x: _`), \
+                                         and literal field predicates; nested field patterns remain unsupported"
                                             .to_string(),
                                     );
                                     return;
@@ -1480,10 +1530,9 @@ impl Checker {
                                         pf.name
                                     ),
                                     pattern_span,
-                                    "v0.5 record match destructure supports field bindings (`x`), \
-                                     explicit binding aliases (`x: y`), and wildcards (`x: _`); \
-                                     nested/literal field predicates are reserved for a future \
-                                     match-destructure stage"
+                                    "record match destructure supports field bindings (`x`), \
+                                     explicit binding aliases (`x: y`), wildcards (`x: _`), \
+                                     and literal field predicates; nested field patterns remain unsupported"
                                         .to_string(),
                                 );
                                 return;
@@ -1593,9 +1642,8 @@ impl Checker {
                                 "tuple subpattern `nested constructor` in match destructure is not yet supported"
                                     .to_string(),
                                 pattern_span,
-                                "v0.5 tuple match destructure supports element bindings (`x`), \
-                                 wildcards (`_`), and unit subpatterns (`()`); nested/literal \
-                                 element predicates are reserved for a future match-destructure stage"
+                                "tuple match destructure supports element bindings (`x`), wildcards (`_`), \
+                                 unit subpatterns (`()`), and literal element predicates; nested patterns remain unsupported"
                                     .to_string(),
                             );
                             return;
@@ -1611,9 +1659,8 @@ impl Checker {
                                 "tuple subpattern `{label}` in match destructure is not yet supported"
                             ),
                             pattern_span,
-                            "v0.5 tuple match destructure supports element bindings (`x`), \
-                             wildcards (`_`), and unit subpatterns (`()`); nested/literal \
-                             element predicates are reserved for a future match-destructure stage"
+                            "tuple match destructure supports element bindings (`x`), wildcards (`_`), \
+                             unit subpatterns (`()`), and literal element predicates; nested patterns remain unsupported"
                                 .to_string(),
                         );
                         return;

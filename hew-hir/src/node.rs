@@ -2370,13 +2370,11 @@ pub enum HirMatchArmPredicate {
     },
 }
 
-/// Literal predicate applied to a constructor payload slot after the outer
-/// enum tag matches.
+/// Literal predicate applied to an aggregate slot after its enclosing
+/// constructor tag or record/tuple project shape matches.
 ///
-/// Stage 1 records these predicates in HIR so the parser/checker/HIR boundary
-/// no longer rejects `Some(0)` or `Pair(x, 42)`. MIR lowering remains
-/// fail-closed until the follow-on match-destructure stages wire the actual
-/// payload comparisons.
+/// HIR records these predicates so MIR can emit the actual field comparison
+/// before materialising bindings or evaluating the arm body.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirPayloadPredicate {
     /// 0-based payload slot within the matched variant.
@@ -2441,10 +2439,10 @@ pub struct HirPayloadVariantPredicate {
 pub struct HirMatchArm {
     /// The matching predicate for this arm.
     pub predicate: HirMatchArmPredicate,
-    /// Payload bindings introduced by this arm's constructor pattern.
+    /// Payload or projected-field bindings introduced by this arm's pattern.
     pub bindings: Vec<HirMatchArmBinding>,
-    /// Literal checks for constructor payload fields, evaluated after the
-    /// outer tag check and before the arm body.
+    /// Literal checks for constructor payload or record/tuple project fields,
+    /// evaluated before bindings and the arm body.
     pub payload_predicates: Vec<HirPayloadPredicate>,
     /// Nested constructor checks for constructor payload fields, evaluated
     /// after `payload_predicates` and before bindings/guard/body.

@@ -20407,6 +20407,9 @@ impl Builder {
         arms: &[hew_hir::HirMatchArm],
         result_ty: &ResolvedTy,
     ) -> Option<Place> {
+        if arms.iter().any(|arm| !arm.payload_predicates.is_empty()) {
+            return self.lower_match_project_predicate_chain(scrutinee, arms, result_ty);
+        }
         let selected = arms.iter().find(|arm| {
             matches!(
                 arm.predicate,
@@ -20997,6 +21000,251 @@ impl Builder {
         // unreachable (see `lower_match_enum_tag` for the rationale — #1907).
         let join_reachable = !self.cursor_unreachable;
         self.finish_current_block(Terminator::Goto { target: join_bb });
+        self.start_block(join_bb);
+        if !join_reachable {
+            self.cursor_unreachable = true;
+        }
+        Some(result_place)
+    }
+
+    /// Lower record/tuple match arms carrying literal element predicates as an
+    /// ordered chain. Predicate checks happen before any field binding, so a
+    /// mismatch can safely fall through without partially moving the scrutinee.
+    ///
+    /// The first slice is intentionally limited to `BitCopy` aggregate
+    /// scrutinees. Owned aggregate projects use the path-sensitive extraction
+    /// and skipped-field drop protocol in `lower_match_project`; duplicating
+    /// those moves across runtime-selected arms needs a separate ownership
+    /// proof and remains fail-closed here.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "ordered project-predicate CFG keeps field comparisons, bindings, and fallthrough topology together"
+    )]
+    fn lower_match_project_predicate_chain(
+        &mut self,
+        scrutinee: &HirExpr,
+        arms: &[hew_hir::HirMatchArm],
+        result_ty: &ResolvedTy,
+    ) -> Option<Place> {
+        if !self.project_match_scrutinee_is_bitcopy(&scrutinee.ty) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "literal predicates on owned record/tuple match destructure"
+                        .to_string(),
+                    site: scrutinee.site,
+                },
+                note: "runtime-selected project arms over an owned aggregate require \
+                       path-sensitive partial-move and skipped-field drop elaboration; \
+                       refusing to duplicate ownership across fallthrough edges"
+                    .to_string(),
+            });
+            return None;
+        }
+        if let Some(guard) = arms.iter().find_map(|arm| arm.guard.as_ref()) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "guarded record/tuple match destructure".to_string(),
+                    site: guard.site,
+                },
+                note: "record/tuple project guards remain fail-closed; use literal \
+                       element predicates for dispatch and move additional conditions \
+                       into the selected arm body"
+                    .to_string(),
+            });
+            return None;
+        }
+
+        let result_place = self.alloc_local(result_ty.clone());
+        let scrutinee_place = self.lower_value(scrutinee)?;
+        let scrutinee_local = match scrutinee_place {
+            Place::Local(local) => local,
+            other => {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "project predicate match scrutinee place shape".to_string(),
+                        site: scrutinee.site,
+                    },
+                    note: format!(
+                        "record/tuple literal-predicate match requires a local scrutinee; got {other:?}"
+                    ),
+                });
+                return None;
+            }
+        };
+
+        let join_bb = self.alloc_block();
+        let arm_bbs: Vec<u32> = (0..arms.len()).map(|_| self.alloc_block()).collect();
+        let trap_bb = self.alloc_block();
+        let first_bb = arm_bbs.first().copied().unwrap_or(trap_bb);
+        self.finish_current_block(Terminator::Goto { target: first_bb });
+        let mut join_reachable = false;
+
+        for (arm_idx, arm) in arms.iter().enumerate() {
+            self.start_block(arm_bbs[arm_idx]);
+            let fallthrough_bb = arm_bbs.get(arm_idx + 1).copied().unwrap_or(trap_bb);
+
+            match &arm.predicate {
+                hew_hir::HirMatchArmPredicate::RecordProject { .. }
+                | hew_hir::HirMatchArmPredicate::TupleProject { .. } => {
+                    for predicate in &arm.payload_predicates {
+                        let field = self.alloc_local(predicate.ty.clone());
+                        match &arm.predicate {
+                            hew_hir::HirMatchArmPredicate::RecordProject { .. } => {
+                                self.push_instr(Instr::RecordFieldLoad {
+                                    record: Place::Local(scrutinee_local),
+                                    field_offset: FieldOffset(predicate.field_idx),
+                                    dest: field,
+                                });
+                            }
+                            hew_hir::HirMatchArmPredicate::TupleProject { arity } => {
+                                if predicate.field_idx >= *arity {
+                                    self.diagnostics.push(MirDiagnostic {
+                                        kind: MirDiagnosticKind::NotYetImplemented {
+                                            construct:
+                                                "tuple project predicate index out of range"
+                                                    .to_string(),
+                                            site: arm.body.site,
+                                        },
+                                        note: format!(
+                                            "literal predicate projects field {} from arity {} tuple",
+                                            predicate.field_idx, arity
+                                        ),
+                                    });
+                                    return None;
+                                }
+                                self.push_instr(Instr::TupleFieldLoad {
+                                    tuple: Place::Local(scrutinee_local),
+                                    field_index: predicate.field_idx,
+                                    dest: field,
+                                });
+                            }
+                            _ => unreachable!("project arm classification changed during lowering"),
+                        }
+                        let expected = self.lower_match_literal_constant(
+                            &predicate.literal,
+                            &predicate.ty,
+                            arm.body.site,
+                        )?;
+                        let cond = self.alloc_local(ResolvedTy::Bool);
+                        if let Some(width) = float_width(&predicate.ty) {
+                            self.push_instr(Instr::FloatCmp {
+                                pred: CmpPred::Eq,
+                                lhs: field,
+                                rhs: expected,
+                                dest: cond,
+                                width,
+                            });
+                        } else {
+                            self.push_instr(Instr::IntCmp {
+                                pred: CmpPred::Eq,
+                                lhs: field,
+                                rhs: expected,
+                                dest: cond,
+                            });
+                        }
+                        let pass_bb = self.alloc_block();
+                        self.finish_current_block(Terminator::Branch {
+                            cond,
+                            then_target: pass_bb,
+                            else_target: fallthrough_bb,
+                        });
+                        self.start_block(pass_bb);
+                    }
+                }
+                hew_hir::HirMatchArmPredicate::Wildcard
+                | hew_hir::HirMatchArmPredicate::Binding { .. } => {}
+                hew_hir::HirMatchArmPredicate::EnumVariant { .. }
+                | hew_hir::HirMatchArmPredicate::Literal { .. }
+                | hew_hir::HirMatchArmPredicate::Regex { .. } => {
+                    panic!("checker invariant violated: refutable non-project arm in project match")
+                }
+            }
+
+            let mut overwritten_bindings = Vec::with_capacity(arm.bindings.len());
+            for binding in &arm.bindings {
+                let binding_ty = self.subst_ty(&binding.ty);
+                self.statements.push(MirStatement::Bind {
+                    binding: binding.binding,
+                    name: binding.name.clone(),
+                    site: arm.body.site,
+                    ty: binding_ty.clone(),
+                });
+                self.record_binding_scope(binding.binding);
+                let dest = self.alloc_local(binding_ty);
+                match &arm.predicate {
+                    hew_hir::HirMatchArmPredicate::RecordProject { .. } => {
+                        self.push_instr(Instr::RecordFieldLoad {
+                            record: Place::Local(scrutinee_local),
+                            field_offset: FieldOffset(binding.field_idx),
+                            dest,
+                        });
+                    }
+                    hew_hir::HirMatchArmPredicate::TupleProject { arity } => {
+                        if binding.field_idx >= *arity {
+                            self.diagnostics.push(MirDiagnostic {
+                                kind: MirDiagnosticKind::NotYetImplemented {
+                                    construct: "tuple project binding index out of range"
+                                        .to_string(),
+                                    site: arm.body.site,
+                                },
+                                note: format!(
+                                    "binding `{}` projects field {} from arity {} tuple",
+                                    binding.name, binding.field_idx, arity
+                                ),
+                            });
+                            return None;
+                        }
+                        self.push_instr(Instr::TupleFieldLoad {
+                            tuple: Place::Local(scrutinee_local),
+                            field_index: binding.field_idx,
+                            dest,
+                        });
+                    }
+                    _ => {
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct: "wildcard/binding project arm carrying field bindings"
+                                    .to_string(),
+                                site: arm.body.site,
+                            },
+                            note: "only record/tuple project arms may carry project bindings"
+                                .to_string(),
+                        });
+                        return None;
+                    }
+                }
+                let previous = self.binding_locals.insert(binding.binding, dest);
+                overwritten_bindings.push((binding.binding, previous));
+            }
+
+            if matches!(arm.predicate, hew_hir::HirMatchArmPredicate::Binding { .. }) {
+                self.emit_match_arm_binding(arm, Place::Local(scrutinee_local), None);
+            }
+
+            let value = self.lower_value(&arm.body);
+            for (binding, previous) in overwritten_bindings.into_iter().rev() {
+                if let Some(previous) = previous {
+                    self.binding_locals.insert(binding, previous);
+                } else {
+                    self.binding_locals.remove(&binding);
+                }
+            }
+            if let Some(src) = value {
+                self.push_instr(Instr::Move {
+                    dest: result_place,
+                    src,
+                });
+            }
+            if !self.cursor_unreachable {
+                join_reachable = true;
+            }
+            self.finish_current_block(Terminator::Goto { target: join_bb });
+        }
+
+        self.start_block(trap_bb);
+        self.finish_current_block(Terminator::Trap {
+            kind: TrapKind::ExhaustivenessFallthrough,
+        });
         self.start_block(join_bb);
         if !join_reachable {
             self.cursor_unreachable = true;

@@ -294,6 +294,137 @@ fn main() -> i64 {
 }
 ";
 
+/// Temp-bridged two-field swap (#2432): `let t = x; x = y; y = t;` reads
+/// `x` through a THIRD binding (`t`) before either field is overwritten —
+/// two separate `ActorStateFieldLoad`s and two separate
+/// `ActorStateFieldStore`s, unlike `RECORD_SWAP_SOURCE`'s single
+/// self-referential store (`pair = Pair { a: pair.b, b: pair.a }`). The
+/// second store's per-store alias guard has no visibility into `t`, a
+/// still-live binding outside its own `(old, new)` pair: pre-fix,
+/// `ActorStateFieldLoad` never retains, so `t` bit-aliases the field-`x`
+/// buffer, the first store frees it out from under `t`, and the second
+/// store either double-frees (Vec/record) or corrupts the string header —
+/// deterministic SIGABRT / corrupted-header abort under the
+/// poisoned-allocator triple. After an odd swap count `x` holds the
+/// ORIGINAL `y` and vice versa — pinned by exact swapped value, not just
+/// a clean exit code.
+const VEC_SWAP_SOURCE: &str = "\
+actor TwoVecs {
+    var x: Vec<i64>;
+    var y: Vec<i64>;
+
+    receive fn flip() {
+        let t = x;
+        x = y;
+        y = t;
+    }
+
+    receive fn sum_x() -> i64 {
+        var s: i64 = 0;
+        for v in x { s = s + v; }
+        s
+    }
+}
+
+fn main() -> i64 {
+    let xs: Vec<i64> = Vec::new();
+    xs.push(1); xs.push(2); xs.push(3);
+    let ys: Vec<i64> = Vec::new();
+    ys.push(10); ys.push(20); ys.push(30); ys.push(40);
+    let a = spawn TwoVecs(x: xs, y: ys);
+    var i: i64 = 0;
+    while i < 25 {
+        a.flip();
+        i = i + 1;
+    }
+    sleep(1000ms);
+    match await a.sum_x() {
+        Ok(v) => v,
+        Err(_) => -1,
+    }
+}
+";
+
+/// Temp-bridged two-field swap — string kind. Both leaves are
+/// HEAP-allocated at spawn (`.to_upper()`), so a wrongful free or a
+/// corrupted refcount header (the string-specific crash signature)
+/// actually manifests. After an odd swap count `x` holds the ORIGINAL
+/// `y` (`"RIGHT-SIDE"`, len 10).
+const STRING_SWAP_SOURCE: &str = "\
+actor TwoStrings {
+    var x: string;
+    var y: string;
+
+    receive fn flip() {
+        let t = x;
+        x = y;
+        y = t;
+    }
+
+    receive fn len_x() -> i64 {
+        x.len()
+    }
+}
+
+fn main() -> i64 {
+    let a = spawn TwoStrings(x: \"left\".to_upper(), y: \"right-side\".to_upper());
+    var i: i64 = 0;
+    while i < 25 {
+        a.flip();
+        i = i + 1;
+    }
+    sleep(1000ms);
+    match await a.len_x() {
+        Ok(v) => v,
+        Err(_) => -1,
+    }
+}
+";
+
+/// Temp-bridged two-field swap — record kind (`Box { v: Vec<i64> }`), the
+/// nested-aggregate analogue of `VEC_SWAP_SOURCE`. After an odd swap count
+/// `x` holds the ORIGINAL `y` (sum 100).
+const RECORD_TEMP_SWAP_SOURCE: &str = "\
+type Box {
+    v: Vec<i64>,
+}
+
+actor TwoBoxes {
+    var x: Box;
+    var y: Box;
+
+    receive fn flip() {
+        let t = x;
+        x = y;
+        y = t;
+    }
+
+    receive fn sum_x() -> i64 {
+        var s: i64 = 0;
+        for v in x.v { s = s + v; }
+        s
+    }
+}
+
+fn main() -> i64 {
+    let xv: Vec<i64> = Vec::new();
+    xv.push(1); xv.push(2); xv.push(3);
+    let yv: Vec<i64> = Vec::new();
+    yv.push(10); yv.push(20); yv.push(30); yv.push(40);
+    let a = spawn TwoBoxes(x: Box { v: xv }, y: Box { v: yv });
+    var i: i64 = 0;
+    while i < 25 {
+        a.flip();
+        i = i + 1;
+    }
+    sleep(1000ms);
+    match await a.sum_x() {
+        Ok(v) => v,
+        Err(_) => -1,
+    }
+}
+";
+
 // ── plumbing (same shape as bytes_drop_leak_oracle) ───────────────────────
 
 /// Compile `source` to a native binary via `hew compile --emit-dir` and
@@ -525,4 +656,26 @@ fn record_functional_update_keeps_aliased_label_alive() {
         &record_functional_update_source(HIGH_FRAMES),
         i32::try_from(HIGH_FRAMES).expect("frame count fits in i32"),
     );
+}
+
+/// UAF pin — #2432 temp-bridged swap, Vec kind: `let t = x; x = y; y = t;`
+/// reads `x` through a third binding the per-store alias guard cannot see.
+/// After 25 (odd) flips `x` holds the ORIGINAL `y` ([10,20,30,40], sum 100).
+#[test]
+fn vec_temp_bridged_swap_keeps_third_alias_alive() {
+    assert_scribbled_run_exit("vec_temp_swap", VEC_SWAP_SOURCE, 100);
+}
+
+/// UAF pin — #2432 temp-bridged swap, string kind. After 25 (odd) flips
+/// `x` holds the ORIGINAL `y` (`"RIGHT-SIDE"`, len 10).
+#[test]
+fn string_temp_bridged_swap_keeps_third_alias_alive() {
+    assert_scribbled_run_exit("string_temp_swap", STRING_SWAP_SOURCE, 10);
+}
+
+/// UAF pin — #2432 temp-bridged swap, record kind (nested `Vec<i64>`
+/// field). After 25 (odd) flips `x` holds the ORIGINAL `y` (sum 100).
+#[test]
+fn record_temp_bridged_swap_keeps_third_alias_alive() {
+    assert_scribbled_run_exit("record_temp_swap", RECORD_TEMP_SWAP_SOURCE, 100);
 }

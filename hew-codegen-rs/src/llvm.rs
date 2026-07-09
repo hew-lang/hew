@@ -68,9 +68,9 @@ use hew_hir::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage, BuiltinTy, Pri
 use hew_hir::{mangle, mangle_dotted_name, HirRestartPolicy, HirSupervisorStrategy, ItemId};
 use hew_mir::{
     instr_source_places, terminator_source_places, validate_context_markers, ActorLayout,
-    CheckedMirFunction, ChildInitArg, CmpPred, CooperateKind, CooperateSite, DynVtableInstance,
-    ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath, FieldOffset, FloatWidth,
-    FunctionCallConv, Instr, IntArithOp, IntSignedness, IoHandleKind, IrPipeline,
+    ActorStateLoadMode, CheckedMirFunction, ChildInitArg, CmpPred, CooperateKind, CooperateSite,
+    DynVtableInstance, ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath, FieldOffset,
+    FloatWidth, FunctionCallConv, Instr, IntArithOp, IntSignedness, IoHandleKind, IrPipeline,
     LambdaEnvFieldDrop, MachineVariantLayout, MirConst, MirConstValue, MirScope, Place, PoolCount,
     RawMirFunction, RecordLayout, RegexLiteral, StateFieldCloneKind, SupervisorChildLayout,
     SupervisorLayout, SuspendKind, Terminator, TrapKind,
@@ -18360,13 +18360,9 @@ fn lower_instruction(
         Instr::ActorStateFieldLoad {
             field_offset,
             dest,
-            mode: _,
+            mode,
         } => {
-            // P0 #2432 Slice A — `mode` threaded through in Slice C, which
-            // gates the retain-on-load block on `mode == Owned`. Ignored here
-            // so the discriminator lands as a non-breaking, behaviour-
-            // unchanged compile step.
-            lower_actor_state_field_load(fn_ctx, *field_offset, *dest)?;
+            lower_actor_state_field_load(fn_ctx, *field_offset, *dest, *mode)?;
             let _ = ctx;
         }
         Instr::ActorStateFieldStore { field_offset, src } => {
@@ -19654,6 +19650,7 @@ fn lower_actor_state_field_load(
     fn_ctx: &FnCtx<'_, '_>,
     field_offset: FieldOffset,
     dest: Place,
+    mode: ActorStateLoadMode,
 ) -> CodegenResult<()> {
     let state_ty = fn_ctx.actor_state_ty.ok_or_else(|| {
         CodegenError::FailClosed("ActorStateFieldLoad has no registered actor state type".into())
@@ -19687,216 +19684,248 @@ fn lower_actor_state_field_load(
         .build_load(field_ty, field_ptr, &format!("actor_state_field_{idx}"))
         .llvm_ctx("ActorStateFieldLoad load")?;
 
-    // P0 #2432 — retain-on-load, per `StateFieldCloneKind`. Pre-fix this was a
-    // bare load/store: the loaded value bit-aliased the field's owned heap at
-    // refcount unchanged, so a third live binding (`let t = x;`) held the same
-    // pointer the field's own overwrite-release guard
-    // (`emit_state_field_old_value_release`, below) later freed out from under
-    // it — deterministic UAF/double-free on the temp-bridged swap idiom
-    // (`let t = x; x = y; y = t;`), confirmed for Vec (SIGABRT in
-    // `hew_vec_free_managed`), record (same), and string (corrupted-header
-    // abort in `free_cstring`).
+    // P0 #2432 — retain-on-load, per `StateFieldCloneKind`, GATED on the
+    // MIR-side own/borrow classification (`ActorStateLoadMode`,
+    // `classify_actor_state_load_modes` in hew-mir/src/lower.rs). Pre-#2432
+    // this was an unconditional bare load/store: the loaded value bit-
+    // aliased the field's owned heap at refcount unchanged, so a third live
+    // binding (`let t = x;`) held the same pointer the field's own
+    // overwrite-release guard (`emit_state_field_old_value_release`, below)
+    // later freed out from under it — deterministic UAF/double-free on the
+    // temp-bridged swap idiom (`let t = x; x = y; y = t;`), confirmed for
+    // Vec (SIGABRT in `hew_vec_free_managed`), record (same), and string
+    // (corrupted-header abort in `free_cstring`).
     //
-    // MIR admission (Slice 0 finding, no MIR change needed for this shape):
-    // `t`'s scope-exit drop is — and stays — suppressed by the projection-
-    // alias taint (`projection_alias_dest` in hew-mir/src/lower.rs seeds
-    // every `ActorStateFieldLoad` dest; unlike `RecordFieldLoad` /
-    // `TupleFieldLoad` / `ClosureEnvFieldLoad`'s string case, no admission
-    // authority — `string_field_load_producer_dest` or the Vec/record
-    // sole-owner provers — ever un-taints an `ActorStateFieldLoad` dest). A
-    // load-side-only retain is therefore correct exactly when the retained
-    // value is always store-consumed by exactly one later
-    // `ActorStateFieldStore`, never independently scope-exit-dropped —
-    // confirmed via `--dump-mir raw`/`--dump-mir elab` on all three repro
-    // kinds: the load dest flows through one `Move` into the `let`-bound
-    // temp, which is read with `intent=Consume` by exactly one subsequent
-    // `actor_state_store`, and `flip()`'s `drop_plans` is `(none)` both before
-    // and after this retain (MIR generation does not depend on codegen). A
-    // future non-store-consuming use of an `ActorStateFieldLoad` dest
-    // (rebound to a plain local and never re-stored into actor state) would
-    // silently leak the retained clone rather than double-free — the same
-    // leak-over-UAF default this file already accepts for every other
-    // non-string interior load (`retain_string_field_load`'s doc comment,
-    // `compute_projection_alias_taint`'s doc comment) until the
+    // An earlier revision of this fix retained UNCONDITIONALLY for every
+    // load, which fixed the swap but regressed a per-frame receive handler
+    // that only PROJECTS a heap-owning field (`cur.label`, `items.len()`)
+    // into a per-frame leak: the whole-parent clone is never consumed once
+    // the projection/receiver-borrow satisfies every use, so it leaked on
+    // every call (`record_state_overwrite_no_per_frame_leak_slope`, 4 leaks
+    // at 3 frames scaling to 98 at 50). `ActorStateFieldLoad` is the single
+    // lowering for both access shapes — a whole-value read that escapes
+    // (the swap) and a materialize-then-project/borrow read (a field
+    // projection or a read-only method receiver) — and only the first shape
+    // needs a retain; the second must stay a bare byte-copy alias or the
+    // clone is never freed.
+    //
+    // `mode` is the MIR-side discriminator between the two shapes, computed
+    // once per function over the finalised blocks. The retain dispatch
+    // below runs ONLY on `Owned`; `Borrowed` falls straight through to the
+    // bare load/store at the bottom of this function — byte-identical to
+    // pre-#2432 codegen — which is correct because the classifier only ever
+    // demotes to `Borrowed` when it proves every use of `dest` is an
+    // interior projection or a read-only receiver borrow, never a
+    // whole-value escape.
+    //
+    // MIR admission is unchanged by `mode`: `dest`'s scope-exit drop is —
+    // and stays — suppressed by the projection-alias taint
+    // (`projection_alias_dest` in hew-mir/src/lower.rs seeds every
+    // `ActorStateFieldLoad` dest regardless of `mode`; unlike
+    // `RecordFieldLoad` / `TupleFieldLoad` / `ClosureEnvFieldLoad`'s string
+    // case, no admission authority — `string_field_load_producer_dest` or
+    // the Vec/record sole-owner provers — ever un-taints an
+    // `ActorStateFieldLoad` dest). On the `Owned` arm the retained `+1` is
+    // therefore always consumed by the one whole-value escape the
+    // classifier proved exists (a later `ActorStateFieldStore`, a return,
+    // or an aggregate/spawn/by-value-call operand), never independently
+    // scope-exit-dropped — confirmed via `--dump-mir raw`/`--dump-mir elab`
+    // on all three swap repro kinds: the load dest flows through one `Move`
+    // into the `let`-bound temp, which is read with `intent=Consume` by
+    // exactly one subsequent `actor_state_store`. A future whole-value
+    // escape shape the classifier's positive borrow-consumer categories do
+    // not recognise fails closed to `Owned` (never demoted to `Borrowed`)
+    // and, in the worst case of a use this file's own retain dispatch also
+    // fails to consume, leaks the retained clone rather than double-frees —
+    // the same leak-over-UAF default this file already accepts for every
+    // other non-string interior load (`retain_string_field_load`'s doc
+    // comment, `compute_projection_alias_taint`'s doc comment) until the
     // retain-on-share spine lands.
-    if let Some(kinds) = fn_ctx.actor_state_field_kinds {
-        let kind = kinds.get(idx as usize).ok_or_else(|| {
-            CodegenError::FailClosed(format!(
-                "ActorStateFieldLoad field offset {idx} has no StateFieldCloneKind \
-                 entry ({} kinds registered); the actor layout and the state struct \
-                 have drifted (LESSONS: boundary-fail-closed)",
-                kinds.len()
-            ))
-        })?;
-        match kind {
-            StateFieldCloneKind::String => {
-                let retained = retain_string_field_load(
-                    fn_ctx,
-                    dest,
-                    field_val,
-                    &format!("actor_state_field_{idx}"),
-                )?;
-                fn_ctx
-                    .builder
-                    .build_store(dest_ptr, retained)
-                    .llvm_ctx("ActorStateFieldLoad store")?;
-                return Ok(());
-            }
-            StateFieldCloneKind::Bytes => {
-                // Refcount-bump in place on the data pointer (triple field 0).
-                // `len`/`cap` and the pointer VALUE are unchanged — only the
-                // referenced buffer's refcount moves from N to N+1, so the
-                // already-loaded `field_val` (the full triple) is still
-                // correct to store verbatim.
-                let data_ptr = fn_ctx
-                    .builder
-                    .build_extract_value(
-                        field_val.into_struct_value(),
-                        0,
-                        &format!("actor_state_field_{idx}_bytes_data"),
-                    )
-                    .llvm_ctx_with(|| format!("ActorStateFieldLoad bytes data extract f{idx}"))?
-                    .into_pointer_value();
-                let clone_fn = get_or_declare_clone_helper(
-                    fn_ctx.ctx,
-                    fn_ctx.llvm_mod,
-                    &CloneHelper::RefcountBump {
-                        name: "hew_bytes_clone_ref",
-                    },
-                );
-                fn_ctx
-                    .builder
-                    .build_call(
-                        clone_fn,
-                        &[data_ptr.into()],
-                        &format!("actor_state_field_{idx}_bytes_retain"),
-                    )
-                    .llvm_ctx_with(|| {
-                        format!("hew_bytes_clone_ref retain for actor state field {idx} load")
-                    })?;
-                fn_ctx
-                    .builder
-                    .build_store(dest_ptr, field_val)
-                    .llvm_ctx("ActorStateFieldLoad store")?;
-                return Ok(());
-            }
-            StateFieldCloneKind::Vec { .. }
-            | StateFieldCloneKind::HashMap { .. }
-            | StateFieldCloneKind::HashSet { .. } => {
-                // Single-pointer handle. The clone symbol derives from the
-                // layout witness — the SAME descriptor the overwrite-release
-                // store path and `state_drop` use — so this retain and the
-                // eventual release can never select mismatched runtime
-                // symbols (lifecycle-symmetry, W4.045 UAF class).
-                let witness = crate::layout::collection_layout_witness(kind)?.ok_or_else(|| {
-                    CodegenError::FailClosed(format!(
-                        "ActorStateFieldLoad field {idx}: collection kind {kind:?} \
+    if matches!(mode, ActorStateLoadMode::Owned) {
+        if let Some(kinds) = fn_ctx.actor_state_field_kinds {
+            let kind = kinds.get(idx as usize).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "ActorStateFieldLoad field offset {idx} has no StateFieldCloneKind \
+                     entry ({} kinds registered); the actor layout and the state struct \
+                     have drifted (LESSONS: boundary-fail-closed)",
+                    kinds.len()
+                ))
+            })?;
+            match kind {
+                StateFieldCloneKind::String => {
+                    let retained = retain_string_field_load(
+                        fn_ctx,
+                        dest,
+                        field_val,
+                        &format!("actor_state_field_{idx}"),
+                    )?;
+                    fn_ctx
+                        .builder
+                        .build_store(dest_ptr, retained)
+                        .llvm_ctx("ActorStateFieldLoad store")?;
+                    return Ok(());
+                }
+                StateFieldCloneKind::Bytes => {
+                    // Refcount-bump in place on the data pointer (triple field 0).
+                    // `len`/`cap` and the pointer VALUE are unchanged — only the
+                    // referenced buffer's refcount moves from N to N+1, so the
+                    // already-loaded `field_val` (the full triple) is still
+                    // correct to store verbatim.
+                    let data_ptr = fn_ctx
+                        .builder
+                        .build_extract_value(
+                            field_val.into_struct_value(),
+                            0,
+                            &format!("actor_state_field_{idx}_bytes_data"),
+                        )
+                        .llvm_ctx_with(|| format!("ActorStateFieldLoad bytes data extract f{idx}"))?
+                        .into_pointer_value();
+                    let clone_fn = get_or_declare_clone_helper(
+                        fn_ctx.ctx,
+                        fn_ctx.llvm_mod,
+                        &CloneHelper::RefcountBump {
+                            name: "hew_bytes_clone_ref",
+                        },
+                    );
+                    fn_ctx
+                        .builder
+                        .build_call(
+                            clone_fn,
+                            &[data_ptr.into()],
+                            &format!("actor_state_field_{idx}_bytes_retain"),
+                        )
+                        .llvm_ctx_with(|| {
+                            format!("hew_bytes_clone_ref retain for actor state field {idx} load")
+                        })?;
+                    fn_ctx
+                        .builder
+                        .build_store(dest_ptr, field_val)
+                        .llvm_ctx("ActorStateFieldLoad store")?;
+                    return Ok(());
+                }
+                StateFieldCloneKind::Vec { .. }
+                | StateFieldCloneKind::HashMap { .. }
+                | StateFieldCloneKind::HashSet { .. } => {
+                    // Single-pointer handle. The clone symbol derives from the
+                    // layout witness — the SAME descriptor the overwrite-release
+                    // store path and `state_drop` use — so this retain and the
+                    // eventual release can never select mismatched runtime
+                    // symbols (lifecycle-symmetry, W4.045 UAF class).
+                    let witness =
+                        crate::layout::collection_layout_witness(kind)?.ok_or_else(|| {
+                            CodegenError::FailClosed(format!(
+                                "ActorStateFieldLoad field {idx}: collection kind {kind:?} \
                          has no layout witness; `collection_layout_witness` and the \
                          kind classifier have drifted"
-                    ))
-                })?;
-                if !matches!(field_ty, BasicTypeEnum::PointerType(_)) {
-                    return Err(CodegenError::FailClosed(format!(
-                        "ActorStateFieldLoad field {idx}: collection kind {kind:?} \
+                            ))
+                        })?;
+                    if !matches!(field_ty, BasicTypeEnum::PointerType(_)) {
+                        return Err(CodegenError::FailClosed(format!(
+                            "ActorStateFieldLoad field {idx}: collection kind {kind:?} \
                          requires a pointer-typed handle slot, got {field_ty:?}; the \
                          state layout and the kind classifier have drifted"
-                    )));
-                }
-                let old_handle = field_val.into_pointer_value();
-                let clone_fn = get_or_declare_clone_helper(
-                    fn_ctx.ctx,
-                    fn_ctx.llvm_mod,
-                    &CloneHelper::Allocating {
-                        name: witness.clone_sym,
-                    },
-                );
-                let cloned = fn_ctx
-                    .builder
-                    .build_call(
-                        clone_fn,
-                        &[old_handle.into()],
-                        &format!("actor_state_field_{idx}_coll_retain"),
-                    )
-                    .llvm_ctx_with(|| {
-                        format!(
-                            "{} retain for actor state field {idx} load",
-                            witness.clone_sym
+                        )));
+                    }
+                    let old_handle = field_val.into_pointer_value();
+                    let clone_fn = get_or_declare_clone_helper(
+                        fn_ctx.ctx,
+                        fn_ctx.llvm_mod,
+                        &CloneHelper::Allocating {
+                            name: witness.clone_sym,
+                        },
+                    );
+                    let cloned = fn_ctx
+                        .builder
+                        .build_call(
+                            clone_fn,
+                            &[old_handle.into()],
+                            &format!("actor_state_field_{idx}_coll_retain"),
                         )
-                    })?
-                    .try_as_basic_value()
-                    .basic()
-                    .ok_or_else(|| {
-                        CodegenError::FailClosed(format!(
-                            "{} returned void retaining actor state field {idx} load",
-                            witness.clone_sym
-                        ))
-                    })?;
-                fn_ctx
-                    .builder
-                    .build_store(dest_ptr, cloned)
-                    .llvm_ctx("ActorStateFieldLoad store")?;
-                return Ok(());
+                        .llvm_ctx_with(|| {
+                            format!(
+                                "{} retain for actor state field {idx} load",
+                                witness.clone_sym
+                            )
+                        })?
+                        .try_as_basic_value()
+                        .basic()
+                        .ok_or_else(|| {
+                            CodegenError::FailClosed(format!(
+                                "{} returned void retaining actor state field {idx} load",
+                                witness.clone_sym
+                            ))
+                        })?;
+                    fn_ctx
+                        .builder
+                        .build_store(dest_ptr, cloned)
+                        .llvm_ctx("ActorStateFieldLoad store")?;
+                    return Ok(());
+                }
+                StateFieldCloneKind::UserRecord { name } => {
+                    fn_ctx
+                        .builder
+                        .build_store(dest_ptr, field_val)
+                        .llvm_ctx("ActorStateFieldLoad store")?;
+                    let clone_fn =
+                        get_or_declare_record_clone_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, name);
+                    emit_actor_state_field_clone_inplace_trap(
+                        fn_ctx,
+                        clone_fn,
+                        field_ptr,
+                        dest_ptr,
+                        &format!("actor_state_field_{idx}_record"),
+                    )?;
+                    return Ok(());
+                }
+                StateFieldCloneKind::Enum { name } => {
+                    fn_ctx
+                        .builder
+                        .build_store(dest_ptr, field_val)
+                        .llvm_ctx("ActorStateFieldLoad store")?;
+                    let clone_fn =
+                        get_or_declare_enum_clone_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, name);
+                    emit_actor_state_field_clone_inplace_trap(
+                        fn_ctx,
+                        clone_fn,
+                        field_ptr,
+                        dest_ptr,
+                        &format!("actor_state_field_{idx}_enum"),
+                    )?;
+                    return Ok(());
+                }
+                // No retain attempted — matches `lower_actor_state_field_store`'s
+                // own no-release grouping (bare pass-through, byte-identical to
+                // pre-fix behaviour) for every reason it already documents there:
+                //   - `BitCopy` / `OpaqueHandle`: no owned heap to retain.
+                //   - `IoHandle`: no dup runtime helper (`clone_helper_for_kind`
+                //     fails closed for every `IoHandleKind`); retaining would
+                //     require deciding a close-on-alias policy this fix does not
+                //     make.
+                //   - `ClosurePair`: closure-valued actor state is rejected at
+                //     check time, so this arm is unreachable in practice; grouped
+                //     for the same defensive reason the store side groups it.
+                //   - `Resource`: affine handle, no dup helper — cloning is
+                //     structurally refused everywhere else in this file
+                //     (`clone_helper_for_kind`); a load-side alias here is
+                //     unchanged pre/post this fix.
+                //   - `Tuple` / `Array`: `lower_actor_state_field_store` already
+                //     fails closed on any STORE to a field of this kind, so the
+                //     two-store swap idiom this fix closes can never be
+                //     constructed for them — no retain-on-load is needed to close
+                //     a gap that has no reachable write side.
+                StateFieldCloneKind::BitCopy { .. }
+                | StateFieldCloneKind::IoHandle { .. }
+                | StateFieldCloneKind::ClosurePair
+                | StateFieldCloneKind::Resource { .. }
+                | StateFieldCloneKind::OpaqueHandle { .. }
+                | StateFieldCloneKind::Tuple { .. }
+                | StateFieldCloneKind::Array { .. } => {}
             }
-            StateFieldCloneKind::UserRecord { name } => {
-                fn_ctx
-                    .builder
-                    .build_store(dest_ptr, field_val)
-                    .llvm_ctx("ActorStateFieldLoad store")?;
-                let clone_fn =
-                    get_or_declare_record_clone_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, name);
-                emit_actor_state_field_clone_inplace_trap(
-                    fn_ctx,
-                    clone_fn,
-                    field_ptr,
-                    dest_ptr,
-                    &format!("actor_state_field_{idx}_record"),
-                )?;
-                return Ok(());
-            }
-            StateFieldCloneKind::Enum { name } => {
-                fn_ctx
-                    .builder
-                    .build_store(dest_ptr, field_val)
-                    .llvm_ctx("ActorStateFieldLoad store")?;
-                let clone_fn = get_or_declare_enum_clone_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, name);
-                emit_actor_state_field_clone_inplace_trap(
-                    fn_ctx,
-                    clone_fn,
-                    field_ptr,
-                    dest_ptr,
-                    &format!("actor_state_field_{idx}_enum"),
-                )?;
-                return Ok(());
-            }
-            // No retain attempted — matches `lower_actor_state_field_store`'s
-            // own no-release grouping (bare pass-through, byte-identical to
-            // pre-fix behaviour) for every reason it already documents there:
-            //   - `BitCopy` / `OpaqueHandle`: no owned heap to retain.
-            //   - `IoHandle`: no dup runtime helper (`clone_helper_for_kind`
-            //     fails closed for every `IoHandleKind`); retaining would
-            //     require deciding a close-on-alias policy this fix does not
-            //     make.
-            //   - `ClosurePair`: closure-valued actor state is rejected at
-            //     check time, so this arm is unreachable in practice; grouped
-            //     for the same defensive reason the store side groups it.
-            //   - `Resource`: affine handle, no dup helper — cloning is
-            //     structurally refused everywhere else in this file
-            //     (`clone_helper_for_kind`); a load-side alias here is
-            //     unchanged pre/post this fix.
-            //   - `Tuple` / `Array`: `lower_actor_state_field_store` already
-            //     fails closed on any STORE to a field of this kind, so the
-            //     two-store swap idiom this fix closes can never be
-            //     constructed for them — no retain-on-load is needed to close
-            //     a gap that has no reachable write side.
-            StateFieldCloneKind::BitCopy { .. }
-            | StateFieldCloneKind::IoHandle { .. }
-            | StateFieldCloneKind::ClosurePair
-            | StateFieldCloneKind::Resource { .. }
-            | StateFieldCloneKind::OpaqueHandle { .. }
-            | StateFieldCloneKind::Tuple { .. }
-            | StateFieldCloneKind::Array { .. } => {}
         }
     }
+    // `Borrowed` loads (and any `Owned` load whose `StateFieldCloneKind`
+    // fell through the no-retain arm above) fall through to the bare
+    // load/store — byte-identical to pre-#2432 codegen.
     fn_ctx
         .builder
         .build_store(dest_ptr, field_val)

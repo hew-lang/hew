@@ -1,0 +1,21 @@
+// #2394: a user-written block wrapped AROUND an array literal source
+// (`for x in { [<array literal>] } { ... }`) must exit clean, matching the
+// bare literal source's #2356 fix.
+//
+// The array literal desugars to a synthetic `Block` whose tail is a
+// `BindingRef` to a named temp (`__hew_array_N`) that keeps its own
+// scope-exit drop. Wrapping the literal in one more user block nests a
+// SECOND `Block` layer around that shape: the outer block's own tail is the
+// inner array-literal desugar block, not yet a bare `BindingRef`. Peeling
+// only one `Block` layer left the inner block intact as the `VecIter`
+// source, so MIR's CowShare place-source match still failed to recognise
+// it, the cursor was wrongly treated as the sole owner, and its scope-exit
+// release double-freed the temp's buffer alongside the temp's own drop —
+// an invalid free the compiled native binary aborts on (SIGABRT via glibc
+// `free(): invalid pointer`). Asserted against the BUILT NATIVE binary so
+// the double free cannot hide behind `hew run`'s masking.
+fn main() {
+    for x in { [99, 6, 100] } {
+        println(x);
+    }
+}

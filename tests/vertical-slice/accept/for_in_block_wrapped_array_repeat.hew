@@ -1,0 +1,12 @@
+// #2394 sibling shape: a block-wrapped array-REPEAT literal
+// (`for x in { [<expr>; N] } { ... }`) shares the same synthetic-`Block`
+// desugar as the plain array-literal case, so it hits the identical
+// double-free hole once wrapped in a user block. See
+// for_in_block_wrapped_array_literal.hew for the full mechanism. Asserted
+// against the BUILT NATIVE binary so the double free cannot hide behind
+// `hew run`'s masking.
+fn main() {
+    for x in { [7; 3] } {
+        println(x);
+    }
+}

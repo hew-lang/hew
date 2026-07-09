@@ -1,0 +1,14 @@
+type Tagged {
+    tag: i64,
+    name: string,
+}
+
+fn main() -> i64 {
+    let value = Tagged { tag: 0, name: "owned" + " value" };
+    let result = match value {
+        Tagged { tag: 0, name: _ } => 1,
+        Tagged { tag: _, name: _ } => 2,
+    };
+    println(result);
+    0
+}

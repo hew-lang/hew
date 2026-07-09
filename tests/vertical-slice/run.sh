@@ -1597,6 +1597,18 @@ run_accept_expect_stdout "for_tuple_destructure"
 run_accept_expect_stdout "match_nested_ctor_tuple"
 run_accept_expect_stdout "match_tuple_literal_predicate"
 run_accept_expect_stdout "match_record_literal_predicate"
+
+# Reject: runtime-selected project arms over an owned aggregate need the
+# path-sensitive partial-move/drop protocol before literal predicates can be
+# admitted without duplicating ownership across fallthrough edges.
+if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/match_owned_record_literal_predicate.hew" >"${reject_output}" 2>&1; then
+  echo "expected owned-record literal-predicate fixture to fail" >&2
+  exit 1
+fi
+grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
+grep -qF 'literal predicates on owned record/tuple match destructure' "${reject_output}"
+grep -qF 'path-sensitive partial-move and skipped-field drop elaboration' "${reject_output}"
+
 run_accept_expect_stdout "owned_nested_tuple_return_drop"
 run_accept_expect_stdout "owned_nested_tuple_clone"
 run_accept_expect_stdout "owned_nested_tuple_bytes"

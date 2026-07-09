@@ -1,0 +1,34 @@
+// #2437 Validation candidate #2: happy-path non-regression for the
+// TaskEntry adapter's composite-return cancel-exit fix
+// (emit_cancel_trap_or_return, hew-codegen-rs/src/llvm.rs). The fix only
+// touches the cancel_exit arm; a normal, non-cancelled `fork`+`await` over a
+// composite return type must be byte-identical to pre-fix behaviour.
+record Point {
+    x: i64,
+    y: i64
+}
+
+fn compute() -> Point {
+    return Point { x: 11, y: 22 };
+}
+
+actor Driver {
+    receive fn run_value() -> Point {
+        var out: Point = Point { x: 0, y: 0 };
+        scope {
+            fork t = compute();
+            let v = await t;
+            out = v;
+        };
+        return out;
+    }
+}
+
+fn main() {
+    let d = spawn Driver;
+    let r = await d.run_value();
+    match r {
+        Ok(p) => println(f"x={p.x} y={p.y}"),
+        Err(_) => println("failed"),
+    }
+}

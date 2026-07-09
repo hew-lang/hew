@@ -47,12 +47,14 @@ actor Driver {
     receive fn run_value() -> Point {
         var out: Point = Point { x: 0, y: 0 };
         scope {
-            unsafe { hew_test_pause_next_task_spawn_until_scope_cancel() };
+            unsafe {
+                hew_test_pause_next_task_spawn_until_scope_cancel()
+            };
             fork t = compute();
-            after(1000000) {}
+            after(1000000) {};
             let v = await t;
             out = v;
-        }
+        };
         return out;
     }
 }

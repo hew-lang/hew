@@ -791,6 +791,20 @@ run_accept_expect_status "defer_early_return" 42
 # runs the deferred panic and exits 101 with its message.
 run_accept_expect_status "defer_exit_before_explicit_return" 42
 run_accept_expect_panic "defer_panic_before_explicit_return" "cleanup"
+# hew-lang/hew#2425: the live-cursor twins of the #2426 fixtures above --
+# `defer exit()`/`defer panic()` whose function tail is an ORDINARY live
+# cursor (a trailing statement, or nothing at all), not an explicit
+# `return`. The #2426 fix's `!self.cursor_unreachable` guard only covers the
+# already-dead-cursor case; these three run the function-tail defer drain on
+# a genuinely live cursor, which is the normal path and was never guarded --
+# the bug is in `finalize_blocks` silently dropping the resulting empty dead
+# call-continuation even though the already-sealed `Call` terminator still
+# names its block id (`Call next bb<N> missing`). exit form overrides with
+# status 42 (with and without a trailing statement); panic form runs the
+# deferred panic and exits 101 with its message.
+run_accept_expect_status "defer_exit_live_cursor_trailing_stmt" 42
+run_accept_expect_status "defer_exit_live_cursor_bare_body" 42
+run_accept_expect_panic "defer_panic_live_cursor_trailing_stmt" "cleanup"
 run_accept_expect_status "defer_nested_early_return" 10
 run_accept_expect_status "defer_no_double_run" 5
 # defer: tail-return value secured before scope-exit defers mutate referenced var

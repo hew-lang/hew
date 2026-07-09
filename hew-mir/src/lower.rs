@@ -9260,6 +9260,24 @@ struct Builder {
     /// it is observed to be empty, so the dead-end does not appear as
     /// an additional `Return` exit in `drop_plans`.
     cursor_unreachable: bool,
+    /// Set alongside `cursor_unreachable` ONLY when the current dead cursor
+    /// was opened as the `next` of an already-sealed `Terminator::Call`
+    /// (a `Never`-typed callee's continuation) rather than from an
+    /// explicit `return`'s own seal. `finalize_blocks`'s empty-dead-cursor
+    /// drop is safe for the `return` case because nothing else references
+    /// that block's id (`Terminator::Return` has no successor field), but
+    /// a `Terminator::Call { next, .. }` DOES reference this id — dropping
+    /// an empty block here would leave the already-committed `Call`
+    /// pointing at a missing block (hew-lang/hew#2425:
+    /// `E_CODEGEN_FRONT_FAIL_CLOSED: Call next bb<N> missing`, hit whenever
+    /// the function-tail defer drain or a plain live-cursor fall-through
+    /// reached a `defer exit(..)`/`defer panic(..)` and nothing else wrote
+    /// into the resulting dead continuation before finalisation). When
+    /// this flag is set, `finalize_blocks` seals the empty block with
+    /// `Terminator::Trap { kind: UnreachableCallContinuation }` instead of
+    /// dropping it, so the id stays valid. Cleared by `start_block` and by
+    /// every `finalize_blocks` call, same as `cursor_unreachable`.
+    dead_cursor_is_call_continuation: bool,
     /// Type-indexed local registers. `locals[i]` is the `ResolvedTy` of
     /// `Place::Local(i as u32)`.
     locals: Vec<ResolvedTy>,
@@ -11818,6 +11836,7 @@ impl Builder {
         // The early-return path that needs a dead block calls
         // `start_dead_block` instead to flag the dead-end.
         self.cursor_unreachable = false;
+        self.dead_cursor_is_call_continuation = false;
     }
 
     /// Open a fresh continuation block whose only predecessor would be
@@ -11850,8 +11869,26 @@ impl Builder {
         // it), keep the block — the content is unreachable at runtime
         // but the block must exist for the producer-side invariants
         // that drained into it to remain self-consistent.
-        let drop_empty_dead_cursor =
-            self.cursor_unreachable && self.statements.is_empty() && self.instructions.is_empty();
+        //
+        // This drop is safe ONLY when nothing outside this dead cursor
+        // references its block id — true for the `return`-seeded case
+        // (`Terminator::Return` has no successor field to dangle). A dead
+        // cursor seeded as a `Terminator::Call { next, .. }` continuation
+        // (`dead_cursor_is_call_continuation`, hew-lang/hew#2425) is
+        // different: that `Call` is already sealed into `blocks` and its
+        // `next` field names this exact id, so dropping an empty block
+        // here would leave it dangling. Seal it instead with a
+        // compiler-proven-unreachable trap so the id stays valid — the
+        // block still can never execute at runtime (a `Never`-typed
+        // callee always diverges), it just can't be silently erased.
+        let drop_empty_dead_cursor = self.cursor_unreachable
+            && !self.dead_cursor_is_call_continuation
+            && self.statements.is_empty()
+            && self.instructions.is_empty();
+        let seal_call_continuation_trap = self.cursor_unreachable
+            && self.dead_cursor_is_call_continuation
+            && self.statements.is_empty()
+            && self.instructions.is_empty();
         if drop_empty_dead_cursor {
             // Clear the buffers defensively — they should already be
             // empty per the `drop_empty_dead_cursor` predicate above,
@@ -11859,6 +11896,16 @@ impl Builder {
             // callers from observing stale `take`-leftover state.
             self.statements.clear();
             self.instructions.clear();
+        } else if seal_call_continuation_trap {
+            self.record_terminator_span();
+            blocks.push(BasicBlock {
+                id: self.current_block_id,
+                statements: std::mem::take(&mut self.statements),
+                instructions: std::mem::take(&mut self.instructions),
+                terminator: Terminator::Trap {
+                    kind: TrapKind::UnreachableCallContinuation,
+                },
+            });
         } else {
             self.record_terminator_span();
             let last = BasicBlock {
@@ -11870,6 +11917,7 @@ impl Builder {
             blocks.push(last);
         }
         self.cursor_unreachable = false;
+        self.dead_cursor_is_call_continuation = false;
         // Sort by id so consumers can index by position when they want
         // RPO-ish iteration. Construction order is already monotone
         // because `alloc_block` is monotone, so this is a no-op in
@@ -26207,6 +26255,13 @@ impl Builder {
         // `panic()`/`exit()` the same way it already does for `return`.
         if matches!(ret_ty, ResolvedTy::Never) {
             self.start_dead_block(next);
+            // Unlike the `return`-seeded dead block this convention mirrors,
+            // THIS dead block's id is already referenced by the `Call`
+            // terminator just sealed above (`next`). Flag it so
+            // `finalize_blocks` seals rather than drops it if it ends up
+            // empty at true function end (hew-lang/hew#2425) — see that
+            // field's doc comment for the full mechanism.
+            self.dead_cursor_is_call_continuation = true;
         } else {
             self.start_block(next);
         }

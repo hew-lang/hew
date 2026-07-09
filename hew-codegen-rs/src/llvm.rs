@@ -32935,14 +32935,19 @@ fn lower_terminator<'ctx>(
                 .llvm_ctx("call br")?;
         }
         Terminator::Trap { kind } => {
-            if matches!(*kind, TrapKind::MachineDispatchUnreachable) {
-                // Machine step dispatch is HIR-exhaustive. The residual
-                // fallthrough block is therefore impossible in well-typed
-                // programs and must not surface as a user-visible trap code.
+            if matches!(
+                *kind,
+                TrapKind::MachineDispatchUnreachable | TrapKind::UnreachableCallContinuation
+            ) {
+                // Machine step dispatch is HIR-exhaustive, and a
+                // `Never`-typed call's continuation is compiler-proven dead
+                // (the call always diverges) — neither is a runtime check,
+                // so neither should surface as a user-visible trap exit
+                // code. Both lower to a bare LLVM `unreachable`.
                 fn_ctx
                     .builder
                     .build_unreachable()
-                    .llvm_ctx("machine dispatch unreachable")?;
+                    .llvm_ctx("compiler-proven unreachable")?;
                 return Ok(());
             }
             // The exit-code constants here are single-sourced from the runtime
@@ -32961,6 +32966,9 @@ fn lower_terminator<'ctx>(
                     HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE as u64
                 }
                 TrapKind::ExhaustivenessFallthrough => HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH as u64,
+                TrapKind::UnreachableCallContinuation => {
+                    unreachable!("handled by the build_unreachable() branch above")
+                }
             };
             emit_trap_with_code(fn_ctx, code, "trap")?;
         }

@@ -1,0 +1,33 @@
+// hew-lang/hew#2425 regression: a `defer exit(...)` whose function tail is a
+// LIVE cursor (an ordinary trailing statement after the defer, not an
+// explicit diverging `return`) must not leave the deferred call's
+// continuation block dangling.
+//
+// Root cause that was fixed (the gap the PR's first two revisions both
+// missed): `lower_function`'s no-tail-expression branch only guarded the
+// redundant defer re-drain when `cursor_unreachable` was ALREADY true — true
+// only when the last statement was itself a diverging `return`. Here the
+// cursor is live (an ordinary `println` follows the `defer`), so the guard
+// never applies and `emit_pending_defers` correctly runs once, draining the
+// deferred `exit(42)` through `lower_direct_call`. Because `exit` is
+// `Never`-typed, that call's continuation opens via `start_dead_block`
+// (hew-lang/hew#1913's fix) — but nothing lexically follows the drained
+// defer, so the continuation stays empty. `finalize_blocks`' generic
+// empty-dead-cursor drop (designed for the unrelated `return`-seeded case,
+// where nothing else references the dropped block's id) doesn't distinguish
+// that from a `Terminator::Call { next, .. }`-seeded dead cursor whose `next`
+// field DOES name this exact id — dropping it left the already-sealed `Call`
+// pointing at a missing block:
+// `E_CODEGEN_FRONT_FAIL_CLOSED: Call next bb2 missing`.
+//
+// The fix tracks which dead cursors are Call-continuations and seals them
+// with a compiler-proven-unreachable trap instead of dropping them when
+// empty, so the `Call`'s `next` id always stays valid.
+//
+// Observable contract: compiles, prints "x", and the process exits 42 (the
+// deferred exit overrides the implicit unit return) — never the codegen-front
+// abort.
+fn main() {
+    defer exit(42);
+    println("x");
+}

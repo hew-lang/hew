@@ -1,0 +1,10 @@
+// `Deque.pop_back()` on an empty deque fails closed through the runtime
+// bounds trap. In main context there is no actor recovery frame, so the
+// runtime trap helper aborts the process and run.sh pins exit 134.
+import std::deque;
+
+fn main() -> i64 {
+    let dq = deque.new();
+    let x = dq.pop_back();
+    x
+}

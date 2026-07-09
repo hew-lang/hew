@@ -391,8 +391,8 @@ fn on_crash_kill_return_terminates_child_overriding_restart_policy() {
     hew_deterministic_reset();
 }
 
-/// G-S-A: a handler returning `CrashAction::Escalate` (tag 1) on a ROOT
-/// supervisor must not dereference a null parent pointer.
+/// A handler returning `CrashAction::Escalate` (tag 1) on a root supervisor
+/// must not dereference a null parent pointer.
 ///
 /// `TestSupervisor::new` constructs a root supervisor: `hew_supervisor_new`
 /// sets `parent: ptr::null_mut()`. Before the fix, `apply_restart`'s

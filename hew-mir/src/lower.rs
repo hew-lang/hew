@@ -4290,10 +4290,23 @@ fn synthesize_machine_step_fn(
         }
         for t in &wildcard_transitions {
             if let Some(ev_idx) = md.events.iter().position(|ev| ev.name == t.event_name) {
-                // Skip if the same event was already matched by a specific arm
-                // in this state — HIR's duplicate-transition guard already
-                // forbids that, but we belt-and-brace here for determinism.
-                if !arms.iter().any(|(idx, _, _)| *idx == ev_idx) {
+                // Skip the wildcard only when an UNGUARDED specific arm for
+                // the same event already exists in this state — HIR's
+                // duplicate-transition guard forbids two unconditional arms
+                // for one (state, event) cell, so an unguarded specific arm
+                // is unconditionally reachable and the wildcard could never
+                // fire anyway. A *guarded* specific arm is conditional: on a
+                // false guard at runtime, dispatch must still fall through to
+                // the wildcard rather than the trap, so a same-event wildcard
+                // is appended as this event's final arm whenever every
+                // specific arm seen so far for it carries a guard (see #2390:
+                // filtering on "any arm" here made the wildcard permanently
+                // unreachable behind so much as one guarded sibling, and a
+                // false guard fell all the way to ExhaustivenessFallthrough).
+                let unguarded_specific_arm_exists = arms.iter().any(|(idx, arm_t, is_wildcard)| {
+                    *idx == ev_idx && !*is_wildcard && arm_t.guard.is_none()
+                });
+                if !unguarded_specific_arm_exists {
                     arms.push((ev_idx, t, true));
                 }
             }

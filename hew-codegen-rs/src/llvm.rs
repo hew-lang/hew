@@ -18320,6 +18320,14 @@ fn lower_instruction(
             lower_record_init(fn_ctx, ty, fields, *dest)?;
             let _ = ctx;
         }
+        Instr::ClosureEnvInit { ty, fields, dest } => {
+            let field_pairs = fields
+                .iter()
+                .map(|field| (field.field_offset, field.src))
+                .collect::<Vec<_>>();
+            lower_record_init(fn_ctx, ty, &field_pairs, *dest)?;
+            let _ = ctx;
+        }
         Instr::RecordFieldLoad {
             record,
             field_offset,
@@ -21475,6 +21483,7 @@ fn lower_closure_env_field_load(
         .builder
         .build_load(field_ty, field_ptr, "closure_capture_load")
         .llvm_ctx("ClosureEnvFieldLoad field load")?;
+    let value = retain_string_field_load(fn_ctx, dest, value, &format!("closure_env_{idx}"))?;
     fn_ctx
         .builder
         .build_store(dest_ptr, value)

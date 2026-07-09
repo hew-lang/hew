@@ -50,10 +50,12 @@
 
 mod support;
 
+use std::process::Command;
+
 use support::leak_slope::{
     assert_frame_slope_below_tolerance, compile_to_native, run_under_malloc_scribble,
 };
-use support::{describe_output, require_codegen};
+use support::{describe_output, hew_binary, repo_root, require_codegen};
 
 // -- fixtures ----------------------------------------------------------------
 
@@ -188,6 +190,197 @@ fn captures_enum_loop_source(frames: usize) -> String {
     )
 }
 
+fn stack_env_record_field_loop_source(frames: usize) -> String {
+    let left_len = "left-payload".len();
+    let right_len = "right-payload".len();
+    let expected_total = frames * (left_len + right_len) + frames * frames.saturating_sub(1) / 2;
+    format!(
+        "type Holder {{\n\
+         \x20   left: string;\n\
+         \x20   right: string;\n\
+         }}\n\
+         fn run_loop(frames: i64) -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   for i in 0..frames {{\n\
+         \x20       let h = Holder {{\n\
+         \x20           left: \"left-payload\".to_upper(),\n\
+         \x20           right: \"right-payload\".to_upper(),\n\
+         \x20       }};\n\
+         \x20       let f = || h.left.len() + h.right.len() + i;\n\
+         \x20       total = total + f();\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   let total = run_loop({frames});\n\
+         \x20   if total != {expected_total} {{ return 95; }}\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
+fn parameter_record_one_field_loop_source(frames: usize) -> String {
+    let left_len = "left-payload".len();
+    let expected_total = frames * left_len + frames * frames.saturating_sub(1) / 2;
+    format!(
+        "type Holder {{\n\
+         \x20   left: string;\n\
+         \x20   right: string;\n\
+         }}\n\
+         fn make_reader(h: Holder, n: i64) -> fn() -> i64 {{\n\
+         \x20   || h.left.len() + n\n\
+         }}\n\
+         fn run_loop(frames: i64) -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   for i in 0..frames {{\n\
+         \x20       let h = Holder {{\n\
+         \x20           left: \"left-payload\".to_upper(),\n\
+         \x20           right: \"right-payload\".to_upper(),\n\
+         \x20       }};\n\
+         \x20       let f = make_reader(h, i);\n\
+         \x20       total = total + f();\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   let total = run_loop({frames});\n\
+         \x20   if total != {expected_total} {{ return 96; }}\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
+fn parameter_record_both_fields_loop_source(frames: usize) -> String {
+    let left_len = "left-payload".len();
+    let right_len = "right-payload".len();
+    let expected_total = frames * (left_len + right_len) + frames * frames.saturating_sub(1) / 2;
+    format!(
+        "type Holder {{\n\
+         \x20   left: string;\n\
+         \x20   right: string;\n\
+         }}\n\
+         fn make_reader(h: Holder, n: i64) -> fn() -> i64 {{\n\
+         \x20   || h.left.len() + h.right.len() + n\n\
+         }}\n\
+         fn run_loop(frames: i64) -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   for i in 0..frames {{\n\
+         \x20       let h = Holder {{\n\
+         \x20           left: \"left-payload\".to_upper(),\n\
+         \x20           right: \"right-payload\".to_upper(),\n\
+         \x20       }};\n\
+         \x20       let f = make_reader(h, i);\n\
+         \x20       total = total + f();\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   let total = run_loop({frames});\n\
+         \x20   if total != {expected_total} {{ return 97; }}\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
+fn string_parameter_capture_loop_source(frames: usize) -> String {
+    let label_len = "row-payload-seed".len();
+    let expected_total = frames * label_len + frames * frames.saturating_sub(1) / 2;
+    format!(
+        "fn make_reader(label: string, n: i64) -> fn() -> i64 {{\n\
+         \x20   || label.len() + n\n\
+         }}\n\
+         fn run_loop(frames: i64) -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   for i in 0..frames {{\n\
+         \x20       let label = \"row-payload-seed\".to_upper();\n\
+         \x20       let f = make_reader(label, i);\n\
+         \x20       total = total + f();\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   let total = run_loop({frames});\n\
+         \x20   if total != {expected_total} {{ return 98; }}\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
+fn nested_closure_parameter_control_loop_source(frames: usize) -> String {
+    let expected_total = frames * frames.saturating_sub(1);
+    format!(
+        "fn make_base(n: i64) -> fn() -> i64 {{\n\
+         \x20   || n\n\
+         }}\n\
+         fn wrap(f: fn() -> i64, n: i64) -> fn() -> i64 {{\n\
+         \x20   || f() + n\n\
+         }}\n\
+         fn run_loop(frames: i64) -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   for i in 0..frames {{\n\
+         \x20       let inner = make_base(i);\n\
+         \x20       let outer = wrap(inner, i);\n\
+         \x20       total = total + outer();\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   let total = run_loop({frames});\n\
+         \x20   if total != {expected_total} {{ return 99; }}\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
+fn shared_source_two_closures_source() -> String {
+    "type PairFns {\n\
+     \x20   a: fn() -> i64;\n\
+     \x20   b: fn() -> i64;\n\
+     }\n\
+     fn make_pair(n: i64) -> PairFns {\n\
+     \x20   let label: string = \"row-payload-seed\".to_upper();\n\
+     \x20   let a = || label.len() + n;\n\
+     \x20   let b = || label.len() + n;\n\
+     \x20   PairFns { a: a, b: b }\n\
+     }\n\
+     fn main() -> i64 {\n\
+     \x20   let p = make_pair(1);\n\
+     \x20   p.a() + p.b()\n\
+     }\n"
+    .to_string()
+}
+
+fn shared_source_closure_plus_original_store_source() -> String {
+    "type ClosureAndLabel {\n\
+     \x20   f: fn() -> i64;\n\
+     \x20   label: string;\n\
+     }\n\
+     fn make_pair(n: i64) -> ClosureAndLabel {\n\
+     \x20   let label: string = \"row-payload-seed\".to_upper();\n\
+     \x20   let f = || label.len() + n;\n\
+     \x20   ClosureAndLabel { f: f, label: label }\n\
+     }\n\
+     fn main() -> i64 {\n\
+     \x20   let p = make_pair(1);\n\
+     \x20   p.f() + p.label.len()\n\
+     }\n"
+    .to_string()
+}
+
+fn shared_source_read_after_capture_source() -> String {
+    "fn make_reader(n: i64) -> fn() -> i64 {\n\
+     \x20   let label: string = \"row-payload-seed\".to_upper();\n\
+     \x20   let f = || label.len() + n;\n\
+     \x20   let after = label.len();\n\
+     \x20   || f() + after\n\
+     }\n\
+     fn main() -> i64 {\n\
+     \x20   let f = make_reader(1);\n\
+     \x20   f()\n\
+     }\n"
+    .to_string()
+}
+
 // -- correctness pins --------------------------------------------------------
 
 /// Run `source` to native, execute under the poisoned-allocator triple, and
@@ -212,6 +405,43 @@ fn assert_no_double_free(shape_name: &str, source: &str) {
          the aliased-local scan); a non-zero exit is a scribbled-read miscompute or the fixture's \
          own total check;\n{}",
         describe_output(&output)
+    );
+}
+
+fn assert_compile_fails(shape_name: &str, source: &str, expected: &str) {
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix(&format!("closure-capture-fail-closed-{shape_name}-"))
+        .tempdir()
+        .expect("tempdir");
+    let hew_src = dir.path().join(format!("{shape_name}.hew"));
+    std::fs::write(&hew_src, source).expect("write hew source");
+
+    let output = Command::new(hew_binary())
+        .args([
+            "compile",
+            "--emit-dir",
+            dir.path().to_str().expect("emit-dir utf-8"),
+            hew_src.to_str().expect("hew src utf-8"),
+        ])
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew compile");
+
+    assert!(
+        !output.status.success(),
+        "{shape_name}: expected fail-closed compile rejection, but compile succeeded:\n{}",
+        describe_output(&output)
+    );
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains(expected),
+        "{shape_name}: compile failed but did not mention `{expected}`:\n{combined}"
     );
 }
 
@@ -249,6 +479,57 @@ fn return_closure_captures_enum_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("captures_enum", captures_enum_loop_source);
 }
 
+/// Stack-env oracle (#2433 shape 1): a direct-call-only closure borrows its
+/// stack env; the source record remains the sole owner and must drop once per
+/// loop iteration.
+#[test]
+fn stack_env_capture_record_field_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance(
+        "stack_env_record_field",
+        stack_env_record_field_loop_source,
+    );
+}
+
+/// Parameter aggregate oracle (#2433 shape 3): env-loaded record string fields
+/// in the closure invoke shim are retained temporaries and need balancing drops.
+#[test]
+fn parameter_record_capture_one_field_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance(
+        "parameter_record_one_field",
+        parameter_record_one_field_loop_source,
+    );
+}
+
+/// Parameter aggregate oracle with two owned field reads: catches one-drop-per-
+/// field gaps in the closure invoke shim.
+#[test]
+fn parameter_record_capture_both_fields_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance(
+        "parameter_record_both_fields",
+        parameter_record_both_fields_loop_source,
+    );
+}
+
+/// Narrowed-scope control: direct string parameter capture already had a flat
+/// slope; keep it compiling and leak-free.
+#[test]
+fn string_parameter_capture_control_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance(
+        "string_parameter_capture_control",
+        string_parameter_capture_loop_source,
+    );
+}
+
+/// Narrowed-scope control: nested closure-parameter capture remains in scope for
+/// closure-pair ownership and must not be rejected by aggregate capture guards.
+#[test]
+fn nested_closure_parameter_control_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance(
+        "nested_closure_parameter_control",
+        nested_closure_parameter_control_loop_source,
+    );
+}
+
 /// No-double-free pin (string): the escaping capture frees the owned `string`
 /// EXACTLY once across 200 iterations. A second owner aborts under the poisoned
 /// allocator. Runs on any unix host.
@@ -279,4 +560,50 @@ fn return_closure_captures_record_freed_exactly_once_under_malloc_scribble() {
 #[test]
 fn return_closure_captures_enum_freed_exactly_once_under_malloc_scribble() {
     assert_no_double_free("captures_enum_df", &captures_enum_loop_source(200));
+}
+
+#[test]
+fn stack_env_capture_record_field_freed_exactly_once_under_malloc_scribble() {
+    assert_no_double_free(
+        "stack_env_record_field_df",
+        &stack_env_record_field_loop_source(200),
+    );
+}
+
+#[test]
+fn parameter_record_capture_both_fields_freed_exactly_once_under_malloc_scribble() {
+    assert_no_double_free(
+        "parameter_record_both_fields_df",
+        &parameter_record_both_fields_loop_source(200),
+    );
+}
+
+/// Shared-source oracle (#2433 shape 2): two escaping closures must not both
+/// own the same heap handle. Until a clone/retain path exists, this fails closed
+/// at compile time instead of reaching the poisoned allocator double-free.
+#[test]
+fn shared_source_two_escaping_closures_fail_closed() {
+    assert_compile_fails(
+        "shared_source_two_closures",
+        &shared_source_two_closures_source(),
+        "UseAfterConsume",
+    );
+}
+
+#[test]
+fn shared_source_closure_plus_original_store_fail_closed() {
+    assert_compile_fails(
+        "shared_source_original_store",
+        &shared_source_closure_plus_original_store_source(),
+        "UseAfterConsume",
+    );
+}
+
+#[test]
+fn shared_source_read_after_capture_fail_closed() {
+    assert_compile_fails(
+        "shared_source_read_after_capture",
+        &shared_source_read_after_capture_source(),
+        "UseAfterConsume",
+    );
 }

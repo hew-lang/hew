@@ -30,11 +30,11 @@
 use std::fmt::Write as _;
 
 use crate::model::{
-    BasicBlock, CheckedMirFunction, ClosureEnvMode, CmpPred, Direction, DropFnSpec, DropKind,
-    DropPlan, ElabDrop, ElaboratedMirFunction, ExitPath, FloatWidth, FunctionCallConv, Instr,
-    IntArithOp, IntSignedness, IrPipeline, JoinBranch, LambdaEnvFieldDrop, MirCheck, MirDiagnostic,
-    MirDiagnosticKind, MirStatement, Place, RawMirFunction, SelectArm, SelectArmKind, SuspendKind,
-    Terminator, TrapKind,
+    BasicBlock, CheckedMirFunction, ClosureEnvAllocation, ClosureEnvFieldOwnership, ClosureEnvMode,
+    CmpPred, Direction, DropFnSpec, DropKind, DropPlan, ElabDrop, ElaboratedMirFunction, ExitPath,
+    FloatWidth, FunctionCallConv, Instr, IntArithOp, IntSignedness, IrPipeline, JoinBranch,
+    LambdaEnvFieldDrop, MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement, Place,
+    RawMirFunction, SelectArm, SelectArmKind, SuspendKind, Terminator, TrapKind,
 };
 
 /// Which stage of the pipeline to render.
@@ -800,6 +800,30 @@ fn render_instr(instr: &Instr) -> String {
             render_place(env),
             render_env_mode(*env_mode)
         ),
+        Instr::ClosureEnvInit { ty, fields, dest } => {
+            let fields = fields
+                .iter()
+                .map(|field| {
+                    format!(
+                        ".{}={} mode={:?} alloc={} own={} src_binding={:?} param={}",
+                        field.field_offset.0,
+                        render_place(&field.src),
+                        field.capture_mode,
+                        render_closure_env_allocation(field.allocation),
+                        render_closure_env_ownership(field.ownership),
+                        field.source_binding,
+                        field.source_is_parameter
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "{} = closure_env_init {} {{ {} }}",
+                render_place(dest),
+                ty.user_facing(),
+                fields
+            )
+        }
         Instr::ClosureEnvFieldLoad {
             env,
             env_ty,
@@ -1756,6 +1780,22 @@ fn render_env_mode(mode: ClosureEnvMode) -> &'static str {
         ClosureEnvMode::Stack => "stack",
         ClosureEnvMode::HeapBox => "heap_box",
         ClosureEnvMode::Null => "null",
+    }
+}
+
+fn render_closure_env_allocation(allocation: ClosureEnvAllocation) -> &'static str {
+    match allocation {
+        ClosureEnvAllocation::Stack => "stack",
+        ClosureEnvAllocation::Heap => "heap",
+        ClosureEnvAllocation::ScopeOwned => "scope_owned",
+    }
+}
+
+fn render_closure_env_ownership(ownership: ClosureEnvFieldOwnership) -> &'static str {
+    match ownership {
+        ClosureEnvFieldOwnership::BorrowsOnly => "borrow",
+        ClosureEnvFieldOwnership::OwnsMoved => "own_moved",
+        ClosureEnvFieldOwnership::OwnsClonedOrRetained => "own_cloned_or_retained",
     }
 }
 

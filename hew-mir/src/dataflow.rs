@@ -601,6 +601,10 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
             let reads = fields.iter().map(|(_, place)| *place).collect();
             (reads, vec![*dest])
         }
+        Instr::ClosureEnvInit { fields, dest, .. } => {
+            let reads = fields.iter().map(|field| field.src).collect();
+            (reads, vec![*dest])
+        }
         Instr::RecordFieldLoad { record, dest, .. } => (vec![*record], vec![*dest]),
         Instr::RecordFieldDrop { record, .. } => {
             // RecordFieldDrop GEPs into `record` (the functional-update BASE

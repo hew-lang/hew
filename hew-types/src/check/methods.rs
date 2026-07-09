@@ -3881,6 +3881,37 @@ impl Checker {
             return;
         }
 
+        // `clone` (unlike `push`/`get`/`set`/`pop`/`remove`/`contains`) has no
+        // dedicated per-element-token entry in `resolve_vec_method` — its
+        // match arm falls back to the plain scalar/BitCopy symbol
+        // (`hew_vec_clone`) whenever `vec_element_runtime_suffix` returns
+        // anything other than `Some("layout")`, INCLUDING `None` (a bare
+        // declared type parameter, e.g. `T` in `fn f<T>(v: Vec<T>)` —
+        // `type_defs.get(name)` has no entry for a type param). So
+        // `resolve_vec_runtime_symbol("clone", abstract_T, ..)` below always
+        // returns `Some("hew_vec_clone")` for an abstract element: the
+        // `let Some(..) = .. else` placeholder-preserving branch never even
+        // fires for `clone`, unlike the element-typed ops it mirrors.
+        //
+        // The `Vec<T>::iter()` desugar hits exactly this gap: it pre-records
+        // a synthetic `recv.clone()` snapshot while `T` is still abstract
+        // (see the `"iter"` arm above), so `hew check` silently bakes in the
+        // legacy `hew_vec_clone` symbol. `hew_vec_clone` aborts at runtime on
+        // a layout-aware/owned Vec (its own doc comment: "Legacy
+        // `hew_vec_clone` aborts on a layout-backed Vec"), so instantiating
+        // the generic at an owned element type (e.g. a managed record) passes
+        // `hew check` clean and then panics at runtime — a real, live,
+        // checker-approved-code-crashes defect, not just a diagnostic gap.
+        //
+        // Fail this resolution closed here (treat it exactly like `push`/
+        // `get`/etc.'s abstract case) so the `_FAMILY` placeholder survives
+        // to MIR, which now re-resolves `clone` per-monomorphisation through
+        // the same `is_owned_vec_element` / `vec_generic_element_abi`
+        // authority the other element-typed ops already use.
+        if method == "clone" && self.is_vec_element_abstract_type_param(&elem_ty) {
+            return;
+        }
+
         let Some(symbol_name) = self.resolve_vec_runtime_symbol(method, &elem_ty, span) else {
             // Polymorphic element re-resolution (#1929 Stage 1). When the
             // element is a declared type parameter the concrete `hew_vec_*`

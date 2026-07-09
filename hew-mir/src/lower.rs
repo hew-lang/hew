@@ -12877,6 +12877,7 @@ impl Builder {
                 | hew_types::VecMethod::Pop
                 | hew_types::VecMethod::Remove
                 | hew_types::VecMethod::Contains
+                | hew_types::VecMethod::Clone
         ) {
             return None;
         }
@@ -12889,6 +12890,33 @@ impl Builder {
             return None;
         };
         let elem = args.first()?;
+        // `Clone` has its own arm: unlike push/get/set/pop/remove/contains it
+        // has no entry at all in `vec_element_op_symbol`'s shared
+        // `(method, token)` table (that table only covers the ops whose
+        // owned/non-owned symbol pair the concrete path resolves through it;
+        // `resolve_vec_method`'s own `"clone"` arm never consults it either —
+        // see `hew-types/src/stdlib.rs`). Route it directly: an owned element
+        // clones deep via `hew_vec_clone_owned` (arity matches the call site's
+        // receiver-only `arg_places`, same as `push`/`get`/etc.); a BitCopy
+        // scalar/string/pointer element clones via the legacy element-agnostic
+        // `hew_vec_clone` (also receiver-only arity) — this is the concrete
+        // path's own `_ => Some("hew_vec_clone")` default for every non-Copy,
+        // non-owned, non-layout element. A concrete (non-abstract) BitCopy
+        // *value-record*/tuple element under a type param resolves to the
+        // `Layout` token here, but its clone needs `hew_vec_clone_layout`,
+        // which is NOT receiver-only (it also takes a layout-descriptor
+        // pointer the `_FAMILY` call site never lowers as an operand) — fail
+        // closed on that token rather than emit an arity-mismatched call.
+        if vec_method == hew_types::VecMethod::Clone {
+            if self.is_owned_vec_element(elem) {
+                return Some("hew_vec_clone_owned".to_string());
+            }
+            let elem_ty = elem.to_ty();
+            return match self.vec_generic_element_abi.get(&elem_ty).copied() {
+                Some(hew_types::stdlib::VecElementToken::Layout) => None,
+                _ => Some("hew_vec_clone".to_string()),
+            };
+        }
         // #1929 Stage 2: an owned (non-`Copy`) element resolves to the owned
         // descriptor family — the same symbol the concrete owned path picks
         // (`Builder` get-symbol routing `_ if owned_elem => "hew_vec_get_owned"`
@@ -12909,7 +12937,8 @@ impl Builder {
                 other => unreachable!(
                     "resolve_polymorphic_vec_element_symbol reached the owned arm \
                      for non-element Vec method {other:?}; the `matches!` guard \
-                     above admits only push/get/set/pop/remove/contains"
+                     above admits only push/get/set/pop/remove/contains (Clone \
+                     returns earlier above)"
                 ),
             };
             Some(owned_symbol.to_string())

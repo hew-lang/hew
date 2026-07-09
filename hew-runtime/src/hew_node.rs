@@ -3294,7 +3294,17 @@ pub(crate) fn fan_out_remote_monitor_down(target_serial: u64, reason: i32) {
 /// Fail-closed: a no-runtime / no-current-node / no-route state no-ops without
 /// panicking; the EXIT is only ever synthesized later for an entry THIS node
 /// registered, so a forged frame cannot crash an actor this node never linked.
-pub(crate) fn handle_inbound_link_req(payload: &crate::envelope::LinkReqPayload) {
+pub(crate) fn handle_inbound_link_req(
+    payload: &crate::envelope::LinkReqPayload,
+    authenticated_peer: u16,
+) {
+    if payload.linker_node_id != authenticated_peer {
+        set_last_error(format!(
+            "handle_inbound_link_req: linker_node_id {} does not match authenticated peer {authenticated_peer}",
+            payload.linker_node_id
+        ));
+        return;
+    }
     let Some(rt) = crate::runtime::rt_current_opt() else {
         set_last_error("handle_inbound_link_req: no runtime installed");
         return;
@@ -3303,7 +3313,7 @@ pub(crate) fn handle_inbound_link_req(payload: &crate::envelope::LinkReqPayload)
     // watcher on the linker node. The terminal sweep fans CTRL_LINK_DOWN to it.
     rt.dist_monitors.register_remote_link_watcher(
         payload.target_serial,
-        payload.linker_node_id,
+        authenticated_peer,
         payload.ref_id,
     );
 
@@ -3317,7 +3327,7 @@ pub(crate) fn handle_inbound_link_req(payload: &crate::envelope::LinkReqPayload)
     let local_node = rt.node.local_node_id();
     let our_target_id = crate::pid::hew_pid_make(local_node, payload.target_serial);
     let reverse_ref = rt.dist_monitors.register_link_watcher(
-        payload.linker_node_id,
+        authenticated_peer,
         payload.linker_serial,
         our_target_id,
         payload.policy_tag,
@@ -3345,7 +3355,7 @@ pub(crate) fn handle_inbound_link_req(payload: &crate::envelope::LinkReqPayload)
         }
     };
     // Route the reverse REQ back to the linker node by a pid on that node.
-    let linker_pid = crate::pid::hew_pid_make(payload.linker_node_id, payload.linker_serial);
+    let linker_pid = crate::pid::hew_pid_make(authenticated_peer, payload.linker_serial);
     with_current_node_read(|guard| {
         if *guard == 0 {
             return;
@@ -3363,13 +3373,23 @@ pub(crate) fn handle_inbound_link_req(payload: &crate::envelope::LinkReqPayload)
 /// Handle an inbound `CTRL_UNLINK`: a remote node retracted a prior
 /// link of one of our local actors. Remove the target-side remote LINK watcher.
 /// Idempotent / fail-closed on a missing entry.
-pub(crate) fn handle_inbound_unlink(payload: &crate::envelope::LinkReqPayload) {
+pub(crate) fn handle_inbound_unlink(
+    payload: &crate::envelope::LinkReqPayload,
+    authenticated_peer: u16,
+) {
+    if payload.linker_node_id != authenticated_peer {
+        set_last_error(format!(
+            "handle_inbound_unlink: linker_node_id {} does not match authenticated peer {authenticated_peer}",
+            payload.linker_node_id
+        ));
+        return;
+    }
     let Some(rt) = crate::runtime::rt_current_opt() else {
         return;
     };
     rt.dist_monitors.remove_remote_watcher(
         payload.target_serial,
-        payload.linker_node_id,
+        authenticated_peer,
         payload.ref_id,
     );
 }

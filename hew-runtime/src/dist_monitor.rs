@@ -294,16 +294,9 @@ impl DistMonitorState {
     /// guessed/learned a pending cross-node link `ref_id`) can crash a linked
     /// actor before its real remote peer has died.
     ///
-    /// `authenticated_peer == 0` is rejected explicitly, before it is ever
-    /// compared to `entry.remote_node_id`. A stored `remote_node_id` of 0 is
-    /// reachable today: `handle_link_req_frame` (`connection.rs`) performs NO
-    /// peer authentication on an inbound `CTRL_LINK_REQ` at all, so any
-    /// connected peer can set `linker_node_id` to 0 and reach
-    /// `handle_inbound_link_req` → `register_link_watcher(payload.linker_node_id,
-    /// ...)`, which stores it into THIS table (the watcher side) verbatim. Absent
-    /// this guard, an unauthenticated sender (`authenticated_peer == 0`, e.g.
-    /// `peer_node_id_for_conn`'s documented fallback when no ACTIVE connection
-    /// matches the frame's `conn_id`) would wrongly match such an entry.
+    /// `authenticated_peer == 0` is rejected explicitly before it is compared to
+    /// `entry.remote_node_id`, including when no ACTIVE connection matches the
+    /// frame's `conn_id`.
     pub(crate) fn deliver_link_down_to_ref(
         &self,
         ref_id: u64,
@@ -890,19 +883,11 @@ mod tests {
     /// An unauthenticated sender (`authenticated_peer == 0`, e.g.
     /// `peer_node_id_for_conn`'s documented fallback when no ACTIVE connection
     /// matches the frame's `conn_id`) must never be admitted by an equality
-    /// coincidence against a `WatcherEntry.remote_node_id` of 0. A stored `0` is
-    /// reachable today: `handle_link_req_frame` performs no peer authentication
-    /// on an inbound `CTRL_LINK_REQ`, so any connected peer can set
-    /// `linker_node_id` to 0 and land a zero-id entry via
-    /// `handle_inbound_link_req` → `register_link_watcher`. Without an explicit
-    /// `authenticated_peer == 0` reject, `entry.remote_node_id ==
-    /// authenticated_peer` becomes `0 == 0` and wrongly admits the forged
-    /// delivery.
+    /// coincidence against a `WatcherEntry.remote_node_id` of 0.
     #[test]
     fn link_down_with_zero_authenticated_peer_is_rejected_against_zero_remote_node_id() {
         let state = DistMonitorState::new();
-        // Simulates a WatcherEntry reachable via the unpatched CTRL_LINK_REQ
-        // path: remote_node_id == 0.
+        // Exercise the delivery guard against a zero-id watcher entry.
         let ref_id = state.register_link_watcher(0, 99, 777, POLICY_TAG_CRASH_LINKED);
 
         // Simulates the connection-teardown-race fallback: authenticated == 0.

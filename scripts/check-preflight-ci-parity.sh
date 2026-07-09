@@ -32,8 +32,11 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DISPATCHER="$REPO_ROOT/scripts/ci-preflight-dispatcher.sh"
-CI_YML="$REPO_ROOT/.github/workflows/ci.yml"
+# DISPATCHER / CI_YML default to the in-repo paths but may be overridden via the
+# environment so the self-test (scripts/preflight-parity-selftest.sh) can point
+# this checker at controlled stub fixtures.
+DISPATCHER="${PREFLIGHT_PARITY_DISPATCHER:-$REPO_ROOT/scripts/ci-preflight-dispatcher.sh}"
+CI_YML="${PREFLIGHT_PARITY_CI_YML:-$REPO_ROOT/.github/workflows/ci.yml}"
 VERBOSE=0
 [[ "${1:-}" == "--verbose" ]] && VERBOSE=1
 
@@ -144,7 +147,7 @@ fail=0
 for (( j=0; j<CI_CHECKS_COUNT; j++ )); do
     label="${CI_CHECKS_LABEL[$j]}"
     pattern="${CI_CHECKS_PATTERN[$j]}"
-    if printf '%s\n' "$FALLBACK_CMDS" | grep -qF "$pattern"; then
+    if printf "%s\n" "$FALLBACK_CMDS" | grep -qxF "$pattern"; then
         if (( VERBOSE == 1 )); then
             echo "  ok  [$label]: '$pattern' found"
         fi
@@ -181,7 +184,7 @@ subset_fail=0
 for step_cmd in "${CI_BUILD_AND_TEST_STEPS[@]}"; do
     matched=0
     for (( k=0; k<CI_CHECKS_COUNT; k++ )); do
-        if [[ "${CI_CHECKS_PATTERN[$k]}" == *"$step_cmd"* ]] || [[ "$step_cmd" == *"${CI_CHECKS_PATTERN[$k]}"* ]]; then
+        if [[ "${CI_CHECKS_PATTERN[$k]}" == "$step_cmd" ]]; then
             matched=1
             break
         fi
@@ -235,7 +238,7 @@ _assert_lane_includes() {
     local cmds
     cmds=$(printf '%s\n' "$dry_out" | awk '/^Commands:/{found=1; next} found && /^  - /{cmd=substr($0,5); sub(/  \(budget:[^)]*\)$/, "", cmd); print cmd} found && /^(Dry run:|Commands: none)/{found=0}')
 
-    if printf '%s\n' "$cmds" | grep -qF "$required_gate"; then
+    if printf '%s\n' "$cmds" | grep -qxF "$required_gate"; then
         if (( VERBOSE == 1 )); then
             echo "  ok  [$description]: '$required_gate' present"
         fi

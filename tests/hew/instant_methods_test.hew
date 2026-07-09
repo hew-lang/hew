@@ -67,3 +67,39 @@ fn test_instant_result_interops_with_duration_methods() {
     testing.assert_true(!span.is_zero());
     testing.assert_true(span.abs().nanos() == span.nanos());
 }
+
+// ── Display of a TYPED instant renders raw nanos (regression for #2277) ───────
+//
+// A typed `instant` binding (`let t: instant`, `fn f(t: instant)`) reaches HIR
+// as `Named{Instant}` rather than a bare `i64`, so the i64 Display catalog
+// overload never matched it directly. Before the fix, `println`/`to_string`/
+// f-string interpolation of such a value failed HIR with
+// `UnresolvedBuiltinOverload` + `UnresolvedSymbol` even though the checker
+// admitted it (the inline `println(instant::now())` shape, whose arg is already
+// i64, worked — masking the annotated/param-typed gap). The fix routes
+// `Named{Instant}` through the i64 Display path in `lower_display_dispatch`,
+// mirroring the checker's own `Named{Instant} -> i64` satisfaction.
+//
+// The clock is monotonic so the exact number is not fixed; these assert the
+// load-bearing invariant that all three Display surfaces render the SAME
+// non-empty string for one typed instant, and agree with a param-typed helper.
+
+fn render_typed_instant(t: instant) -> string {
+    return to_string(t);
+}
+
+#[test]
+fn test_typed_instant_to_string_is_consistent_across_surfaces() {
+    let a: instant = instant::now();
+    let alias: instant = a;
+    let s1: string = to_string(a);
+    // A `let`-aliased typed instant renders identically.
+    testing.assert_eq_str(to_string(alias), s1);
+    // A param-typed instant (the utility-function shape the defect broke)
+    // renders identically.
+    testing.assert_eq_str(render_typed_instant(a), s1);
+    // f-string interpolation shares the same Display dispatch spine.
+    testing.assert_eq_str(f"{a}", s1);
+    // A garbage/empty-string regression fails here.
+    testing.assert_true(!s1.is_empty());
+}

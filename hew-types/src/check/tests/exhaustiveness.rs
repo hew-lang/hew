@@ -208,6 +208,80 @@ fn typecheck_bool_true_false_match_remains_exhaustive() {
     );
 }
 
+#[test]
+fn tuple_literal_project_needs_irrefutable_followup() {
+    let (errors, warnings) = parse_and_check(
+        r"
+fn classify(t: (i64, i64)) -> i64 {
+    match t {
+        (0, y) => y,
+        (x, y) => x + y,
+    }
+}",
+    );
+    assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    assert!(
+        warnings
+            .iter()
+            .all(|warning| !matches!(warning.kind, TypeErrorKind::NonExhaustiveMatch)),
+        "the irrefutable second tuple row must make the match exhaustive: {warnings:?}"
+    );
+
+    let (errors, warnings) = parse_and_check(
+        r"
+fn classify(t: (i64, i64)) -> i64 {
+    match t {
+        (0, y) => y,
+    }
+}",
+    );
+    assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| matches!(warning.kind, TypeErrorKind::NonExhaustiveMatch)),
+        "a literal-only tuple row must remain refutable: {warnings:?}"
+    );
+}
+
+#[test]
+fn record_literal_project_needs_irrefutable_followup() {
+    let (errors, warnings) = parse_and_check(
+        r"
+type Point { x: i64, y: i64 }
+fn classify(p: Point) -> i64 {
+    match p {
+        Point { x: 0, y } => y,
+        Point { x, y } => x + y,
+    }
+}",
+    );
+    assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    assert!(
+        warnings
+            .iter()
+            .all(|warning| !matches!(warning.kind, TypeErrorKind::NonExhaustiveMatch)),
+        "the irrefutable second record row must make the match exhaustive: {warnings:?}"
+    );
+
+    let (errors, warnings) = parse_and_check(
+        r"
+type Point { x: i64, y: i64 }
+fn classify(p: Point) -> i64 {
+    match p {
+        Point { x: 0, y } => y,
+    }
+}",
+    );
+    assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| matches!(warning.kind, TypeErrorKind::NonExhaustiveMatch)),
+        "a literal-only record row must remain refutable: {warnings:?}"
+    );
+}
+
 /// String matches are over an open domain; literal arms need a catch-all.
 #[test]
 fn typecheck_string_literal_missing_catchall_is_error() {

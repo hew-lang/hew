@@ -85,7 +85,15 @@ fn flatten_or_pattern(pattern: &Spanned<Pattern>) -> Vec<Spanned<Pattern>> {
     }
 }
 
-fn collect_match_payload_predicates(ctx: &LowerCtx, pattern: &Pattern) -> Vec<HirPayloadPredicate> {
+#[expect(
+    clippy::too_many_lines,
+    reason = "one exhaustive AST-pattern classifier keeps literal field indexing and type lookup aligned"
+)]
+fn collect_match_payload_predicates(
+    ctx: &LowerCtx,
+    pattern: &Pattern,
+    scrutinee_ty: &ResolvedTy,
+) -> Result<Vec<HirPayloadPredicate>, String> {
     match pattern {
         Pattern::Constructor { name, patterns } => {
             let field_tys = ctx
@@ -95,7 +103,7 @@ fn collect_match_payload_predicates(ctx: &LowerCtx, pattern: &Pattern) -> Vec<Hi
                     HirVariantKind::Unit | HirVariantKind::Struct(_) => Vec::new(),
                 })
                 .unwrap_or_default();
-            patterns
+            Ok(patterns
                 .iter()
                 .enumerate()
                 .filter_map(|(field_idx, (sub_pat, _))| {
@@ -116,17 +124,49 @@ fn collect_match_payload_predicates(ctx: &LowerCtx, pattern: &Pattern) -> Vec<Hi
                         ty,
                     })
                 })
-                .collect()
+                .collect())
         }
         Pattern::Struct { name, fields } => {
-            let field_decls = ctx
-                .lookup_variant_ctor(name)
-                .map(|(_, _, kind)| match kind {
+            let field_decls = if let Some((_, _, kind)) = ctx.lookup_variant_ctor(name) {
+                match kind {
                     HirVariantKind::Struct(field_decls) => field_decls.clone(),
                     HirVariantKind::Unit | HirVariantKind::Tuple(_) => Vec::new(),
-                })
-                .unwrap_or_default();
-            fields
+                }
+            } else {
+                let ResolvedTy::Named {
+                    name: type_name,
+                    args,
+                    ..
+                } = scrutinee_ty
+                else {
+                    return Err(format!(
+                        "record literal predicates require a named record scrutinee, got {scrutinee_ty:?}"
+                    ));
+                };
+                let entry = ctx
+                    .record_registry
+                    .get(type_name)
+                    .or_else(|| {
+                        type_name
+                            .rsplit('.')
+                            .next()
+                            .and_then(|n| ctx.record_registry.get(n))
+                    })
+                    .ok_or_else(|| {
+                        format!("record layout `{type_name}` is unavailable for literal predicates")
+                    })?;
+                entry
+                    .fields
+                    .iter()
+                    .map(|(field_name, field_ty)| {
+                        (
+                            field_name.clone(),
+                            substitute_type_params(field_ty, &entry.type_params, args),
+                        )
+                    })
+                    .collect()
+            };
+            Ok(fields
                 .iter()
                 .filter_map(|field| {
                     let (sub_pat, _) = field.pattern.as_ref()?;
@@ -147,15 +187,45 @@ fn collect_match_payload_predicates(ctx: &LowerCtx, pattern: &Pattern) -> Vec<Hi
                         ty: ty.clone(),
                     })
                 })
-                .collect()
+                .collect())
+        }
+        Pattern::Tuple(patterns) => {
+            let ResolvedTy::Tuple(field_tys) = scrutinee_ty else {
+                return Err(format!(
+                    "tuple literal predicates require a tuple scrutinee, got {scrutinee_ty:?}"
+                ));
+            };
+            if patterns.len() != field_tys.len() {
+                return Err(format!(
+                    "tuple literal predicate arity {} disagrees with scrutinee arity {}",
+                    patterns.len(),
+                    field_tys.len()
+                ));
+            }
+            Ok(patterns
+                .iter()
+                .zip(field_tys)
+                .enumerate()
+                .filter_map(|(field_idx, ((sub_pat, _), ty))| {
+                    let Pattern::Literal(lit) = sub_pat else {
+                        return None;
+                    };
+                    let field_idx = u32::try_from(field_idx).ok()?;
+                    let (literal, _) = literal_to_hir(lit);
+                    Some(HirPayloadPredicate {
+                        field_idx,
+                        literal,
+                        ty: ty.clone(),
+                    })
+                })
+                .collect())
         }
         Pattern::Wildcard
         | Pattern::Identifier(_)
         | Pattern::Literal(_)
-        | Pattern::Tuple(_)
         | Pattern::Or(_, _)
         | Pattern::Regex { .. }
-        | Pattern::RecordShorthand { .. } => Vec::new(),
+        | Pattern::RecordShorthand { .. } => Ok(Vec::new()),
     }
 }
 
@@ -23409,7 +23479,20 @@ impl LowerCtx {
                 continue;
             }
 
-            let payload_predicates = collect_match_payload_predicates(self, &arm.pattern.0);
+            let payload_predicates =
+                match collect_match_payload_predicates(self, &arm.pattern.0, &scrutinee_hir.ty) {
+                    Ok(predicates) => predicates,
+                    Err(reason) => {
+                        let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                        self.unsupported(
+                            pattern_span.clone(),
+                            reason,
+                            "match-project-literal-predicates",
+                        );
+                        rejected = true;
+                        continue;
+                    }
+                };
             let has_payload_aggregate_subpatterns =
                 constructor_payload_aggregate_subpatterns(&arm.pattern.0);
 

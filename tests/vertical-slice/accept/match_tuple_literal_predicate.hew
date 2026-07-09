@@ -1,0 +1,12 @@
+fn classify(t: (i64, i64)) -> i64 {
+    match t {
+        (0, y) => 100 + y,
+        (x, y) => x + y,
+    }
+}
+
+fn main() -> i64 {
+    println(classify((0, 7)));
+    println(classify((3, 4)));
+    0
+}

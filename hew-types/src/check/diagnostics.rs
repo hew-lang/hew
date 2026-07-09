@@ -424,7 +424,18 @@ impl Checker {
             }
             Ty::Named { name, .. } => {
                 if let Some(td) = self.lookup_type_def(name) {
-                    if !td.variants.is_empty() {
+                    if td.variants.is_empty() {
+                        let leaves = Self::unguarded_leaf_patterns(arms);
+                        if leaves.iter().any(|pattern| {
+                            self.is_project_irrefutable_for_ty(pattern, scrutinee_ty)
+                        }) {
+                            return;
+                        }
+                        self.warn_non_exhaustive(
+                            span,
+                            "consider adding an irrefutable record pattern or wildcard `_` arm",
+                        );
+                    } else {
                         let leaves = Self::unguarded_leaf_patterns(arms);
                         // A plain lowercase binding (or an identifier that is
                         // not a variant of this enum) is a catch-all arm.
@@ -505,7 +516,8 @@ impl Checker {
                             has_binding_identifier = true;
                         }
                         Pattern::Tuple(pats) if pats.len() == items.len() => {
-                            has_full_tuple_project = true;
+                            has_full_tuple_project =
+                                self.is_project_irrefutable_for_ty(pattern, scrutinee_ty);
                         }
                         _ => {}
                     });

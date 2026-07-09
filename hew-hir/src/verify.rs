@@ -736,6 +736,13 @@ impl Verifier {
                         | HirMatchArmPredicate::EnumVariant { .. }
                         | HirMatchArmPredicate::Regex { .. } => {}
                     }
+                    for predicate in &arm.payload_predicates {
+                        self.match_literal_predicate(
+                            &predicate.literal,
+                            &predicate.ty,
+                            arm.span.clone(),
+                        );
+                    }
                     for binding in &arm.bindings {
                         self.binding(binding.binding, arm.span.clone());
                     }

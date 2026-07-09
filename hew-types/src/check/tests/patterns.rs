@@ -344,7 +344,7 @@ fn foo(p: Point) -> i64 {
     }
 
     #[test]
-    fn tuple_match_literal_subpattern_fails_closed() {
+    fn tuple_match_literal_subpattern_is_supported() {
         let output = check_source(
             r"
 fn foo(pair: (i64, i64)) -> i64 {
@@ -355,17 +355,14 @@ fn foo(pair: (i64, i64)) -> i64 {
 }",
         );
         assert!(
-            output.errors.iter().any(|error| {
-                error.kind == TypeErrorKind::InvalidOperation
-                    && error.message.contains("tuple subpattern `integer literal`")
-            }),
-            "expected tuple literal-subpattern diagnostic, got: {:#?}",
+            output.errors.is_empty(),
+            "tuple literal subpattern must be accepted, got: {:#?}",
             output.errors
         );
     }
 
     #[test]
-    fn record_match_literal_subpattern_fails_closed() {
+    fn record_match_literal_subpattern_is_supported() {
         let output = check_source(
             r"
 type Point {
@@ -381,11 +378,8 @@ fn foo(p: Point) -> i64 {
 }",
         );
         assert!(
-            output.errors.iter().any(|error| {
-                error.kind == TypeErrorKind::InvalidOperation
-                    && error.message.contains("field subpattern `integer literal`")
-            }),
-            "expected record literal-subpattern diagnostic, got: {:#?}",
+            output.errors.is_empty(),
+            "record literal subpattern must be accepted, got: {:#?}",
             output.errors
         );
     }
@@ -562,6 +556,31 @@ fn foo(opt: Option<i64>) -> i64 {
         assert!(
             some_arm.payload_variant_patterns.is_empty(),
             "uppercase binder MAX must not be recorded as a nested constructor"
+        );
+    }
+
+    #[test]
+    fn plain_project_literal_subpatterns_are_admitted() {
+        let output = check_source(
+            r"
+type Point { x: i64, y: i64 }
+fn tuple_case(t: (i64, i64)) -> i64 {
+    match t {
+        (0, y) => y,
+        (x, y) => x + y,
+    }
+}
+fn record_case(p: Point) -> i64 {
+    match p {
+        Point { x: 0, y } => y,
+        Point { x, y } => x + y,
+    }
+}",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "literal tuple/record project predicates must type-check: {:#?}",
+            output.errors
         );
     }
 

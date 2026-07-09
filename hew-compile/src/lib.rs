@@ -200,6 +200,13 @@ pub struct ImportResolutionContext<'a> {
 }
 
 #[derive(Debug)]
+struct LockedPackageCheck {
+    package_dir: PathBuf,
+    name: String,
+    version: String,
+}
+
+#[derive(Debug)]
 pub struct TypeCheckResult {
     pub tco: Option<hew_types::check::TypeCheckOutput>,
     pub module_registry: hew_types::module_registry::ModuleRegistry,
@@ -1088,6 +1095,11 @@ fn resolve_file_imports_internal(
                     .collect::<PathBuf>()
                     .join(format!("{last}.hew"));
                 let mut candidates = Vec::new();
+                let mut locked_project_candidates = Vec::new();
+                let locked_version = ctx
+                    .locked_versions
+                    .and_then(|locked| locked.iter().find(|(name, _)| name == &module_str))
+                    .map(|(_, version)| version.as_str());
 
                 if is_local && !rest_path.is_empty() {
                     let local_last = *rest_path.last().expect("non-empty local path");
@@ -1107,12 +1119,8 @@ fn resolve_file_imports_internal(
                     candidates.push(cwd.join(&rel_path));
                 }
 
-                if let Some(version) = ctx
-                    .locked_versions
-                    .and_then(|locked| locked.iter().find(|(name, _)| name == &module_str))
-                    .map(|(_, version)| version.as_str())
-                {
-                    let module_dir = decl.path.iter().collect::<PathBuf>();
+                let module_dir = decl.path.iter().collect::<PathBuf>();
+                if let Some(version) = locked_version {
                     let entry_file =
                         format!("{}.hew", decl.path.last().expect("path is non-empty"));
                     let versioned_rel = module_dir.join(version).join(entry_file);
@@ -1123,7 +1131,19 @@ fn resolve_file_imports_internal(
                 }
 
                 candidates.push(ctx.project_dir.join(".adze/packages").join(&rel_path));
-                candidates.push(ctx.project_dir.join(".adze/packages").join(&dir_path));
+                let project_package_dir = ctx.project_dir.join(".adze/packages").join(&module_dir);
+                let project_package_entry = ctx.project_dir.join(".adze/packages").join(&dir_path);
+                if let Some(version) = locked_version {
+                    locked_project_candidates.push((
+                        project_package_entry.clone(),
+                        LockedPackageCheck {
+                            package_dir: project_package_dir,
+                            name: module_str.clone(),
+                            version: version.to_string(),
+                        },
+                    ));
+                }
+                candidates.push(project_package_entry);
 
                 if let Some(pkg) = ctx.extra_pkg_path {
                     candidates.push(pkg.join(&dir_path));
@@ -1166,10 +1186,18 @@ fn resolve_file_imports_internal(
                 // Collect ALL candidates that resolve, then deduplicate by canonical path.
                 // If two or more distinct canonical paths resolve, the import is ambiguous —
                 // fail-closed rather than silently picking the first match.
-                let mut resolved: Vec<std::path::PathBuf> = candidates
-                    .iter()
-                    .filter_map(|candidate| candidate.canonicalize().ok())
-                    .collect();
+                let mut resolved = Vec::new();
+                for candidate in &candidates {
+                    if let Ok(canonical) = candidate.canonicalize() {
+                        if let Some((_, check)) = locked_project_candidates
+                            .iter()
+                            .find(|(locked_candidate, _)| locked_candidate == candidate)
+                        {
+                            verify_locked_project_package(check)?;
+                        }
+                        resolved.push(canonical);
+                    }
+                }
                 resolved.sort();
                 resolved.dedup();
 
@@ -1608,6 +1636,8 @@ fn default_edition() -> String {
 #[derive(Debug, Deserialize)]
 struct PackageSection {
     name: String,
+    #[serde(default)]
+    version: Option<String>,
     #[serde(default = "default_edition")]
     edition: String,
 }
@@ -1701,6 +1731,37 @@ fn load_manifest(dir: &Path) -> Result<Option<TomlManifest>, FrontendFailure> {
         }
     }
     Ok(manifest)
+}
+
+fn verify_locked_project_package(check: &LockedPackageCheck) -> Result<(), FrontendFailure> {
+    let Some(manifest) = load_manifest(&check.package_dir)? else {
+        return Err(FrontendFailure::message_only(format!(
+            "Error: locked package `{}` resolved through `{}` is missing hew.toml\n  hint: run `adze install` to refresh .adze/packages",
+            check.name,
+            check.package_dir.display()
+        )));
+    };
+    let Some(package) = manifest.package else {
+        return Err(FrontendFailure::message_only(format!(
+            "Error: locked package `{}` resolved through `{}` has no [package] section\n  hint: run `adze install` to refresh .adze/packages",
+            check.name,
+            check.package_dir.display()
+        )));
+    };
+    if package.name != check.name || package.version.as_deref() != Some(check.version.as_str()) {
+        let found = package.version.as_deref().map_or_else(
+            || format!("{}@<missing-version>", package.name),
+            |version| format!("{}@{version}", package.name),
+        );
+        return Err(FrontendFailure::message_only(format!(
+            "Error: locked package `{}` resolved through `{}` does not match adze.lock (expected {}@{}, found {found})\n  hint: run `adze install` to refresh .adze/packages",
+            check.name,
+            check.package_dir.display(),
+            check.name,
+            check.version
+        )));
+    }
+    Ok(())
 }
 
 fn load_manifest_metadata(

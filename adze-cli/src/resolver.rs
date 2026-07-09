@@ -16,6 +16,7 @@ use std::fmt;
 
 use crate::index::IndexEntry;
 use crate::manifest::{self, DepSpec, HewManifest};
+use crate::package_name;
 use crate::registry::Registry;
 
 /// A dependency that could not be resolved locally.
@@ -50,6 +51,11 @@ pub enum ResolveError {
         /// The underlying parse error.
         source: semver::Error,
     },
+    /// The package name is not safe to resolve as a registry package.
+    InvalidPackageName {
+        /// The invalid package name.
+        package: String,
+    },
     /// No installed version matches the requirement.
     NoMatchingVersion {
         /// The package that was requested.
@@ -83,6 +89,9 @@ impl fmt::Display for ResolveError {
         match self {
             Self::InvalidVersionReq { input, source } => {
                 write!(f, "invalid version requirement `{input}`: {source}")
+            }
+            Self::InvalidPackageName { package } => {
+                f.write_str(&package_name::invalid_message(package))
             }
             Self::NoMatchingVersion {
                 package,
@@ -128,6 +137,7 @@ impl std::error::Error for ResolveError {
             Self::InvalidVersionReq { source, .. } => Some(source),
             Self::ManifestRead { source, .. } => Some(source),
             Self::NoMatchingVersion { .. }
+            | Self::InvalidPackageName { .. }
             | Self::CircularDependency { .. }
             | Self::UnresolvableDeps { .. } => None,
         }
@@ -311,6 +321,8 @@ impl<'a> ResolverPass<'a> {
         request: DepRequest,
         path: &[String],
     ) -> Result<VisitControl, ResolveError> {
+        validate_package_name(&request.name)?;
+
         if let Some(index) = path.iter().position(|node| node == &request.name) {
             let mut cycle = path[index..].to_vec();
             cycle.push(request.name.clone());
@@ -612,12 +624,24 @@ pub fn resolve_version(
     requirement: &str,
     registry: &Registry,
 ) -> Result<String, ResolveError> {
+    validate_package_name(package_name)?;
+
     let requirements = vec![requirement.to_string()];
     select_highest_matching_version(package_name, &requirements, &available_versions(registry))?
         .ok_or_else(|| ResolveError::NoMatchingVersion {
             package: package_name.to_string(),
             requirement: requirement.to_string(),
         })
+}
+
+fn validate_package_name(package: &str) -> Result<(), ResolveError> {
+    if package_name::is_valid(package) {
+        Ok(())
+    } else {
+        Err(ResolveError::InvalidPackageName {
+            package: package.to_string(),
+        })
+    }
 }
 
 /// Resolved version from a remote index query.
@@ -1011,6 +1035,17 @@ mod tests {
     }
 
     #[test]
+    fn resolve_version_rejects_traversal_package_name() {
+        let (_dir, reg) = test_registry();
+
+        let err = resolve_version("evil::../../../tmp/pwned", "1.0.0", &reg).unwrap_err();
+        assert!(matches!(err, ResolveError::InvalidPackageName { .. }));
+        assert!(err
+            .to_string()
+            .contains("invalid package name `evil::../../../tmp/pwned`"));
+    }
+
+    #[test]
     fn resolve_two_part_exact() {
         let (_dir, reg) = test_registry();
         install_fake(&reg, "mypkg", "1.0.0");
@@ -1170,6 +1205,37 @@ mod tests {
         assert_eq!(resolved["app::beta"].version, "1.0.0");
         assert_eq!(resolved["shared::leaf"].version, "1.4.0");
         assert!(resolved["shared::leaf"].direct_requirement.is_none());
+    }
+
+    #[test]
+    fn resolve_all_rejects_traversal_transitive_dependency_name() {
+        let (_dir, reg) = test_registry();
+        install_fake_package(
+            &reg,
+            "acme::innocent",
+            "1.0.0",
+            &[FakeDep {
+                name: "evil::../../../tmp/pwned",
+                version: "1.0.0",
+                optional: false,
+                features: &[],
+                default_features: true,
+            }],
+            &[],
+        );
+
+        let manifest = test_manifest(BTreeMap::from([(
+            "acme::innocent".to_string(),
+            manifest::DepSpec::Version("1.0.0".to_string()),
+        )]));
+
+        let err = resolve_all(&manifest, &reg).unwrap_err();
+        match err {
+            ResolveError::InvalidPackageName { package } => {
+                assert_eq!(package, "evil::../../../tmp/pwned");
+            }
+            other => panic!("expected InvalidPackageName, got: {other}"),
+        }
     }
 
     #[test]

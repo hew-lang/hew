@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
 
+use crate::package_name::{
+    invalid_message as invalid_package_name_message, is_valid as is_valid_package_name,
+};
 use crate::{
     checksum, client, config, credentials, index, lockfile, manifest, native, package_fs, registry,
     resolver, signing, tarball,
@@ -491,6 +494,11 @@ fn ensure_gitignore_entry(dir: &Path, entry: &str) {
 }
 
 fn cmd_add(pkg: &str, version: &str, registry_name: Option<&str>) {
+    if !is_valid_package_name(pkg) {
+        eprintln!("adze add: {}", invalid_package_name_message(pkg));
+        std::process::exit(1);
+    }
+
     // Validate the named registry exists (if specified) early.
     if registry_name.is_some() {
         let _ = make_client(registry_name);
@@ -553,6 +561,13 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
         }
         // Verify checksums of locked packages.
         for entry in &lf.packages {
+            if !is_valid_package_name(&entry.name) {
+                eprintln!(
+                    "adze install: {}",
+                    invalid_package_name_message(&entry.name)
+                );
+                std::process::exit(1);
+            }
             if let Some(expected) = &entry.checksum {
                 let pkg_dir = registry.package_dir(&entry.name, &entry.version);
                 if pkg_dir.is_dir() {
@@ -621,6 +636,10 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
     let mut lock_packages: Vec<lockfile::LockedPackage> = Vec::new();
 
     for (name, package) in &resolved {
+        if !is_valid_package_name(name) {
+            eprintln!("adze install: {}", invalid_package_name_message(name));
+            std::process::exit(1);
+        }
         let version = &package.version;
         let target = registry.package_dir(name, version);
         if !registry.is_installed(name, version) {
@@ -650,24 +669,25 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
         });
 
         // Build the local symlink path: replace :: with / separators.
-        let link = local_link_path(&local_packages, name);
+        let link = match local_link_path(&local_packages, name) {
+            Ok(link) => link,
+            Err(e) => {
+                eprintln!("adze install: {e}");
+                std::process::exit(1);
+            }
+        };
         if let Some(parent) = link.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
                 eprintln!("adze install: cannot create {}: {e}", parent.display());
                 std::process::exit(1);
             }
         }
-        #[cfg(unix)]
-        {
-            if let Err(e) = replace_local_package_link(&link, &target) {
-                eprintln!("adze install: cannot create symlink for {name}: {e}");
+        match replace_local_package_materialization(&link, &target) {
+            Ok(materialization) => println!("  {} {name}@{version}", materialization.verb()),
+            Err(e) => {
+                eprintln!("adze install: cannot materialize project package for {name}: {e}");
                 std::process::exit(1);
             }
-            println!("  linked {name}@{version}");
-        }
-        #[cfg(not(unix))]
-        {
-            eprintln!("adze install: symlinks not supported on this platform; skipping {name}");
         }
     }
 
@@ -1268,8 +1288,14 @@ fn cmd_tree(registry: &registry::Registry) {
         let child_prefix = if is_last { "    " } else { "│   " };
 
         let ver_req = spec.version_req();
-        let resolved = resolver::resolve_version(name, ver_req, registry)
-            .unwrap_or_else(|_| ver_req.to_string());
+        let resolved = match resolver::resolve_version(name, ver_req, registry) {
+            Ok(resolved) => resolved,
+            Err(resolver::ResolveError::NoMatchingVersion { .. }) => ver_req.to_string(),
+            Err(e) => {
+                eprintln!("adze tree: dependency {name}@{ver_req}: {e}");
+                std::process::exit(1);
+            }
+        };
         println!("{prefix}{name}@{resolved}");
 
         // Check if this dep itself has dependencies.
@@ -1360,10 +1386,19 @@ fn cmd_remove(package: &str) {
 
     match manifest::remove_dependency(&manifest_path, package) {
         Ok(true) => {
-            // Remove local symlink if it exists.
-            let link = local_link_path(&project_packages_path(&cwd), package);
-            if link.is_symlink() || link.exists() {
-                let _ = std::fs::remove_file(&link);
+            // Remove local project package materialization if it exists.
+            let link = match local_link_path(&project_packages_path(&cwd), package) {
+                Ok(link) => link,
+                Err(e) => {
+                    eprintln!("warning: could not remove local materialization for {package}: {e}");
+                    println!("Removed {package} from hew.toml");
+                    return;
+                }
+            };
+            if std::fs::symlink_metadata(&link).is_ok() {
+                if let Err(e) = remove_path_for_replacement(&link) {
+                    eprintln!("warning: could not remove {}: {e}", link.display());
+                }
             }
             println!("Removed {package} from hew.toml");
         }
@@ -1947,10 +1982,49 @@ fn project_packages_path(cwd: &Path) -> PathBuf {
     cwd.join(".adze").join("packages")
 }
 
-fn local_link_path(base: &Path, package_name: &str) -> PathBuf {
-    package_name
+fn local_link_path(base: &Path, package_name: &str) -> Result<PathBuf, String> {
+    if !is_valid_package_name(package_name) {
+        return Err(invalid_package_name_message(package_name));
+    }
+
+    Ok(package_name
         .split("::")
-        .fold(base.to_path_buf(), |path, segment| path.join(segment))
+        .fold(base.to_path_buf(), |path, segment| path.join(segment)))
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LocalPackageMaterialization {
+    #[cfg(unix)]
+    Linked,
+    #[cfg(not(unix))]
+    Copied,
+}
+
+impl LocalPackageMaterialization {
+    fn verb(self) -> &'static str {
+        match self {
+            #[cfg(unix)]
+            Self::Linked => "linked",
+            #[cfg(not(unix))]
+            Self::Copied => "copied",
+        }
+    }
+}
+
+fn replace_local_package_materialization(
+    link: &Path,
+    target: &Path,
+) -> std::io::Result<LocalPackageMaterialization> {
+    #[cfg(unix)]
+    {
+        replace_local_package_link(link, target)?;
+        Ok(LocalPackageMaterialization::Linked)
+    }
+    #[cfg(not(unix))]
+    {
+        replace_local_package_copy(link, target)?;
+        Ok(LocalPackageMaterialization::Copied)
+    }
 }
 
 #[cfg(unix)]
@@ -1969,6 +2043,74 @@ fn replace_local_package_link(link: &Path, target: &Path) -> std::io::Result<()>
     crate::atomic_fs::replace_symlink_atomic(link, target)
 }
 
+#[cfg_attr(
+    unix,
+    allow(
+        dead_code,
+        reason = "portable install fallback is selected on non-Unix and unit-tested on Unix"
+    )
+)]
+fn replace_local_package_copy(link: &Path, target: &Path) -> std::io::Result<()> {
+    if !target.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("{} is not an installed package directory", target.display()),
+        ));
+    }
+    let parent = link.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{} has no parent directory", link.display()),
+        )
+    })?;
+    std::fs::create_dir_all(parent)?;
+
+    let file_name = link.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{} has no final path component", link.display()),
+        )
+    })?;
+    let temp = link.with_file_name(format!(
+        ".{}.tmp-{}",
+        file_name.to_string_lossy(),
+        std::process::id()
+    ));
+    if std::fs::symlink_metadata(&temp).is_ok() {
+        remove_path_for_replacement(&temp)?;
+    }
+
+    if let Err(err) = copy_dir(target, &temp) {
+        let _ = remove_path_for_replacement(&temp);
+        return Err(err);
+    }
+    if std::fs::symlink_metadata(link).is_ok() {
+        remove_path_for_replacement(link)?;
+    }
+    std::fs::rename(temp, link)
+}
+
+#[cfg_attr(
+    unix,
+    allow(
+        dead_code,
+        reason = "portable install fallback is selected on non-Unix and unit-tested on Unix"
+    )
+)]
+fn remove_path_for_replacement(path: &Path) -> std::io::Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || metadata.is_file() {
+        std::fs::remove_file(path)
+    } else if metadata.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        Err(std::io::Error::other(format!(
+            "{} is neither a file nor a directory",
+            path.display()
+        )))
+    }
+}
+
 /// Find the latest (highest semver) version of `package_name` in the registry.
 fn find_latest_version(
     packages: &[registry::InstalledPackage],
@@ -1980,35 +2122,6 @@ fn find_latest_version(
         .filter_map(|p| semver::Version::parse(&p.version).ok())
         .max()
         .map(|v| v.to_string())
-}
-
-/// Validate that a package name contains only lowercase alphanumeric, `_`, and `::` or `/` separators.
-/// Rejects empty names, empty segments, and names longer than 128 characters.
-fn is_valid_package_name(name: &str) -> bool {
-    if name.is_empty() || name.len() > 128 {
-        return false;
-    }
-    // Normalize :: to / then validate segments
-    let normalized = name.replace("::", "/");
-    // After normalizing ::→/, any remaining colons mean a bare single colon
-    if normalized.contains(':') {
-        return false;
-    }
-    if normalized.starts_with('/') || normalized.ends_with('/') {
-        return false;
-    }
-    for segment in normalized.split('/') {
-        if segment.is_empty() {
-            return false;
-        }
-        if !segment
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
-        {
-            return false;
-        }
-    }
-    true
 }
 
 /// Recursively copy `src` to `dst`, skipping `.git`, `target`, and `.adze`.
@@ -2118,6 +2231,30 @@ mod tests {
     }
 
     #[test]
+    fn replace_local_package_copy_replaces_existing_tree() {
+        let src = tempfile::tempdir().unwrap();
+        std::fs::write(
+            src.path().join("hew.toml"),
+            "[package]\nname=\"x\"\nversion=\"0.2.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(src.path().join("x.hew"), "pub fn answer() -> i64 { 2 }").unwrap();
+
+        let project = tempfile::tempdir().unwrap();
+        let link = project.path().join(".adze").join("packages").join("x");
+        std::fs::create_dir_all(&link).unwrap();
+        std::fs::write(link.join("stale.hew"), "old").unwrap();
+
+        replace_local_package_copy(&link, src.path()).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(link.join("x.hew")).unwrap(),
+            "pub fn answer() -> i64 { 2 }"
+        );
+        assert!(!link.join("stale.hew").exists());
+    }
+
+    #[test]
     fn publish_copies_to_registry() {
         let src = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -2186,6 +2323,9 @@ mod tests {
         assert!(!is_valid_package_name("my package"));
         assert!(!is_valid_package_name("my@package"));
         assert!(!is_valid_package_name("my:package")); // single colon
+        assert!(!is_valid_package_name("my/package"));
+        assert!(!is_valid_package_name("evil::../../../tmp/pwned"));
+        assert!(!is_valid_package_name("evil::/tmp/pwned"));
     }
 
     #[test]

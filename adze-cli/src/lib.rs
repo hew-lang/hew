@@ -22,4 +22,5 @@ mod atomic_fs;
 mod checksum;
 mod lockfile;
 mod package_fs;
+mod package_name;
 mod paths;

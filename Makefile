@@ -49,6 +49,7 @@
 #   make test-cli          — CLI crate tests (narrow)
 #   make test-compiler-pipeline — compiler ladder + CLI pipeline tests (narrow)
 #   make test-vertical-slice — end-to-end Hew compiler oracle
+#   make test-package-install — Adze install -> Hew import consumer proof
 #   make test-runtime-net  — runtime / analysis / lsp / std-net crate tests (narrow)
 #   make test-runtime-unit — hew-runtime tests without heavy QUIC/TLS/profiler stack (~3× faster)
 #   make test-real-timing  — serialized real wall-clock / OS-timing quarantine tests (narrow)
@@ -70,7 +71,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew hew-native adze observe observe-functional-test runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
-.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-runtime-net test-runtime-unit test-real-timing test-lane test-lane-all lane-gates test-fast test-stdlib test-hew test-hew-ratchet test-o2-differential o2-differential-selftest test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo leak-scan hew-fmt-check grammar
+.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-real-timing test-lane test-lane-all lane-gates test-fast test-stdlib test-hew test-hew-ratchet test-o2-differential o2-differential-selftest test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo leak-scan hew-fmt-check grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -572,7 +573,7 @@ test: test-rust
 # by CI (which uses cargo nextest directly). Use `make test-all` when you
 # want the previous behaviour.
 # TODO: Add test-stdlib to `test-all` unconditionally once stdlib files are type-check clean
-test-all: test test-stdlib test-hew test-ux-examples test-surface-examples
+test-all: test test-stdlib test-hew test-ux-examples test-surface-examples test-package-install
 
 # Build the combined runtime+stdlib static lib, the native runtime staticlib,
 # and the WASM runtime before running the full workspace test suite.  Several
@@ -640,6 +641,12 @@ test-vertical-slice: hew runtime stdlib check-libhew-fresh
 # asks, imported-type trait methods, and the [native] auto-link path.
 test-pkg-import: hew runtime stdlib check-libhew-fresh
 	bash tests/pkg-import/run.sh
+
+# Package-manager consumer oracle: publish-like local setup, `hew package
+# install`, lock/materialization assertions, `hew check`, and exact `hew run`
+# stdout under an isolated HOME.
+test-package-install: hew adze runtime stdlib check-libhew-fresh
+	bash tests/package-install/run.sh
 
 # Golden MIR corpus (examples/v05/checked-mir): byte-identical --dump-mir
 # oracle for internal retyping work. `checked-mir-verify` re-dumps every

@@ -737,9 +737,9 @@ impl Checker {
         ) {
             let suggestion = "use the suspending form instead: `await` the call (e.g. \
                  `await listener.accept()` or `await conn.read()`) — it parks the \
-                 actor on the reactor instead of blocking the worker thread, and \
-                 stays teardown-safe on process shutdown; see \
-                 examples/net/http_await_service.hew"
+                 actor on the reactor instead of blocking the worker thread, so \
+                 the scheduler worker stays free and the process can shut down \
+                 promptly; see examples/net/http_await_service.hew"
                 .to_string();
             self.warn_if_blocking_in_receive_fn_with_fix(
                 &format!("{type_name}::{method}"),

@@ -35,6 +35,36 @@ fn test_decode_truncates_at_decoded_nul() {
 }
 
 #[test]
+fn test_decode_query_empty_returns_empty_vec() {
+    let pairs = url.decode_query("");
+    testing.assert_eq(pairs.len(), 0);
+}
+
+#[test]
+fn test_decode_query_decodes_form_pairs_in_order() {
+    let pairs = url.decode_query("name=hello+world&x=a%2Bb&empty=&a=b=c");
+    testing.assert_eq(pairs.len(), 4);
+    testing.assert_eq_str(pairs[0].0, "name");
+    testing.assert_eq_str(pairs[0].1, "hello world");
+    testing.assert_eq_str(pairs[1].0, "x");
+    testing.assert_eq_str(pairs[1].1, "a+b");
+    testing.assert_eq_str(pairs[2].0, "empty");
+    testing.assert_eq_str(pairs[2].1, "");
+    testing.assert_eq_str(pairs[3].0, "a");
+    testing.assert_eq_str(pairs[3].1, "b=c");
+}
+
+#[test]
+fn test_decode_query_skips_entries_without_equals() {
+    let pairs = url.decode_query("skip-me&ok=yes&&also=no");
+    testing.assert_eq(pairs.len(), 2);
+    testing.assert_eq_str(pairs[0].0, "ok");
+    testing.assert_eq_str(pairs[0].1, "yes");
+    testing.assert_eq_str(pairs[1].0, "also");
+    testing.assert_eq_str(pairs[1].1, "no");
+}
+
+#[test]
 fn test_port_returns_none_when_absent() {
     let parsed = url.parse("http://localhost/path");
     let port = parsed.port();

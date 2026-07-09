@@ -18,3 +18,25 @@ fn test_generic_vec_iter_i64() {
     values.push(2);
     testing.assert_eq(generic_iter_count(values), 2);
 }
+
+// Regression: `Vec<T>::iter()` pre-records its internal place-receiver
+// snapshot clone while `T` is still abstract. For an OWNED (non-Copy)
+// element like a managed record, the abstract-time resolution used to fall
+// through to the legacy `hew_vec_clone` symbol (the concrete path's default
+// for anything that isn't a known layout), which aborts at runtime on an
+// owned-constructed Vec ("Vec owned operation requires an element layout
+// descriptor") -- `hew check` passed clean, and the panic only surfaced when
+// the generic was instantiated at an owned element type. The fix
+// re-resolves `clone` per-monomorphisation through the same
+// `is_owned_vec_element` authority `push`/`get`/etc. already use, routing an
+// owned element to `hew_vec_clone_owned` instead.
+type IterOwnedItem { name: string; n: i64; }
+
+#[test]
+fn test_generic_vec_iter_owned_record() {
+    let xs: Vec<IterOwnedItem> = Vec::new();
+    xs.push(IterOwnedItem { name: "alpha", n: 10 });
+    xs.push(IterOwnedItem { name: "beta", n: 20 });
+    xs.push(IterOwnedItem { name: "gamma", n: 30 });
+    testing.assert_eq(generic_iter_count(xs), 3);
+}

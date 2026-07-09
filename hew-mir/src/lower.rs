@@ -32718,6 +32718,29 @@ impl Builder {
                     }
                 }
             }
+            // Env-record synthesis is all-or-nothing (see `all_materialisable`
+            // below): if ANY capture is inadmissible, the whole generator
+            // construction fails closed with a root `NotYetImplemented`, and
+            // NO env record is built at all — not even for the otherwise-
+            // admissible captures collected into `init_fields`/`field_tys`
+            // above. Their would-be `capture_env_sources` entries are
+            // therefore never registered either (that registration loop below
+            // only runs when `env_ty.is_some()`).
+            //
+            // Without this poison-everything step, an admissible capture in
+            // that same abandoned set would be neither in
+            // `poisoned_captures` (only the explicitly-rejected binding was
+            // added above) nor in `capture_env_sources` (no env exists to
+            // source it from) — so its body-side `BindingRef` falls through
+            // to the ordinary unresolved-binding path and cascades a spurious
+            // `InitialisedBeforeUse` + `UnresolvedPlace` on top of the one
+            // actionable root diagnostic. Poison every capture in the
+            // abandoned set so the body stays silent for all of them: the
+            // root rejection above is already the single actionable
+            // diagnostic for the whole construction.
+            if !all_materialisable {
+                poisoned_captures.extend(captures.iter().map(|capture| capture.binding));
+            }
             if all_materialisable {
                 let env_name = format!("__hew_gen_env_{owner}_{gen_id}");
                 let env_resolved_ty = ResolvedTy::Named {

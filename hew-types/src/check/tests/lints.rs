@@ -2285,6 +2285,74 @@ fn test_actor_fn_method_field_shadowing_is_error() {
 }
 
 #[test]
+fn warn_nested_scope_shadowing_of_free_fn_param() {
+    // Regression for PR #240 review finding: a nested local shadowing a
+    // *user-visible parameter* must be downgraded to a warning, the same
+    // treatment given to shadowing a `let`-declared local (see
+    // `warn_nested_scope_shadowing`). Before the fix, function/receive-fn/
+    // init/hook parameters were bound via `env.define` (no source span),
+    // which is indistinguishable from the actor-field synthetic-binding case
+    // that intentionally stays a hard error, so this shadowing was wrongly
+    // rejected.
+    let source = "fn f(x: i64) -> i64 { if true { let x = 2; return x; } return x; }";
+    let (errors, warnings) = parse_and_check(source);
+    assert!(
+        !errors.iter().any(|e| e.kind == TypeErrorKind::Shadowing),
+        "shadowing a free-fn parameter should not be a hard error, got errors: {errors:?}",
+    );
+    assert!(
+        warnings.iter().any(|w| w.kind == TypeErrorKind::Shadowing
+            && w.message.contains("shadows a binding in an outer scope")),
+        "expected outer-scope shadowing warning for parameter `x`, got warnings: {warnings:?}",
+    );
+}
+
+#[test]
+fn warn_nested_scope_shadowing_of_receive_fn_param() {
+    // Same regression as `warn_nested_scope_shadowing_of_free_fn_param`, for
+    // the actor `receive fn` parameter surface the review finding also named
+    // explicitly (hew-types/src/check/items.rs, receive-fn param binding).
+    let source = r#"
+        actor Greeter {
+            receive fn greet(name: string) {
+                if true {
+                    let name = "nested";
+                    println(name);
+                }
+                println(name);
+            }
+        }
+    "#;
+    let (errors, warnings) = parse_and_check(source);
+    assert!(
+        !errors.iter().any(|e| e.kind == TypeErrorKind::Shadowing),
+        "shadowing a receive-fn parameter should not be a hard error, got errors: {errors:?}",
+    );
+    assert!(
+        warnings.iter().any(|w| w.kind == TypeErrorKind::Shadowing
+            && w.message.contains("shadows a binding in an outer scope")),
+        "expected outer-scope shadowing warning for parameter `name`, got warnings: {warnings:?}",
+    );
+}
+
+#[test]
+fn unused_free_fn_param_is_not_warned() {
+    // Parameters keep `def_span: None` (see `define_param_with_span`) even
+    // though they now carry a `shadow_span` for the shadowing fix above, so
+    // they must stay exempt from the `UnusedVariable` scope-exit lint exactly
+    // as before this change — only the shadowing *classification* changed.
+    let source = "fn f(unused: i64) -> i64 { return 5; }";
+    let (errors, warnings) = parse_and_check(source);
+    assert!(
+        !warnings
+            .iter()
+            .any(|w| w.kind == TypeErrorKind::UnusedVariable),
+        "unused parameters must not trigger UnusedVariable, got warnings: {warnings:?}",
+    );
+    assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+}
+
+#[test]
 fn actor_this_field_points_to_bare_state_field() {
     let source = r"
         actor Counter {

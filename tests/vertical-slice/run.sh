@@ -1352,6 +1352,14 @@ run_accept_expect_status "supervisor_static_pool" 24
 # no-op arm (pre-S5) or a stale-PID re-access would trap (exit 133).
 run_accept_expect_status "supervisor_static_pool_restart" 7
 
+# v0.6 static pool OOB-index hardening (#2244): a huge i64 index (2^32 + 1)
+# used to be truncated to i32 before the runtime bounds-check and silently
+# wrap back into range, aliasing an unrelated live member (here, member 1)
+# instead of trapping OOB. The runtime now bounds-checks the real,
+# untruncated index, so this must trap (Vec[i] OOB parity) instead of
+# resolving to any member; exit 0/42 would mean the wraparound regressed.
+run_accept_expect_trap "supervisor_static_pool_huge_index_traps"
+
 # F-04 fungible reference: a supervised-child handle re-resolves to the CURRENT
 # child at each send/ask, so a handle BOUND before a crash and held ACROSS the
 # restart reaches the FRESH child. Binds `let w = sup.w1` before crashing, then

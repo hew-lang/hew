@@ -487,10 +487,13 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     // bit-pattern for multi-segment dotted access (`app.api.auth`).
     "hew_supervisor_nested_get",
     // `hew_supervisor_pool_child_get(sup: *mut HewSupervisor, pool_key: u32,
-    //  index: u32) -> ChildLookupResult` (`hew-runtime/src/supervisor.rs`).
+    //  index: u64) -> ChildLookupResult` (`hew-runtime/src/supervisor.rs`).
     // Resolves static-pool member `index` through its live static slot; same
     // 16-byte by-value result as `hew_supervisor_child_get`. The MIR static-pool
-    // accessor (`sup.pool[i]` / `.get(i)`) emits this. (Sorted: `pool_c` <
+    // accessor (`sup.pool[i]` / `.get(i)`) emits this. `index` is `u64` (wider
+    // than the `u32` supervisor/pool key) so the runtime can bounds-check the
+    // caller's real, untruncated index instead of a narrowed value that could
+    // wrap back in range (hew-lang/hew#2244). (Sorted: `pool_c` <
     // `pool_l` < `restart`.)
     "hew_supervisor_pool_child_get",
     // `hew_supervisor_pool_len(sup: *mut HewSupervisor, pool_key: u32) -> i64`

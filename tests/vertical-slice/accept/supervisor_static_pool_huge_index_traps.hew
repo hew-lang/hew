@@ -1,0 +1,39 @@
+// v0.6 static supervisor pool OOB-index hardening (hew-lang/hew#2244): the
+// pool accessor index used to be truncated to i32/u32 before the runtime
+// bounds-check, so a huge i64 index that wrapped back into [0, member_count)
+// silently aliased a live member instead of trapping OOB — e.g.
+// `sup.workers[4294967296]` (2^32) on a 3-member pool resolved as member 0
+// instead of failing `Vec[i]`-parity bounds checking.
+//
+// This fixture indexes a 3-member pool with 2^32 + 1 (member 1's aliased
+// address under the old truncating bug) and expects a trap: the runtime now
+// bounds-checks the caller's real, untruncated index before any narrowing
+// cast, so any index that cannot itself fit the pool's member-count range is
+// rejected as out-of-bounds regardless of how it would have wrapped.
+actor Worker {
+    var value: i64;
+    receive fn id() -> i64 {
+        value
+    }
+}
+
+supervisor Pool {
+    strategy: simple_one_for_one;
+    intensity: 5 within 60s;
+
+    pool workers: Worker(count: 3, value: 42);
+}
+
+fn main() -> i64 {
+    let sup = spawn Pool;
+    let idx: i64 = 4294967297; // 2^32 + 1 — used to alias member 1.
+    let m = sup.workers[idx];
+    match await m.id() {
+        Ok(v) => {
+            v
+        },
+        Err(_) => {
+            0
+        },
+    }
+}

@@ -176,6 +176,23 @@ write_consumer "${missing_consumer}" "acme::missing" "0.1.0"
 expect_check_failure "${missing_consumer}" "missing package" "run \`adze install\`"
 echo "PASS package-install missing rejection"
 
+traversal_consumer="${TMP}/traversal-consumer"
+mkdir -p "${traversal_consumer}"
+cat >"${traversal_consumer}/hew.toml" <<EOF_MANIFEST
+[package]
+name = "traversal_consumer"
+version = "0.1.0"
+edition = "2026"
+
+[dependencies]
+"evil::../../../tmp/pwned" = "1.0.0"
+EOF_MANIFEST
+expect_install_failure \
+  "${traversal_consumer}" \
+  "traversal package name" \
+  "invalid package name \`evil::../../../tmp/pwned\`"
+echo "PASS package-install traversal dependency rejection"
+
 broken_registry="${HOME}/.adze/packages/acme/broken/0.1.0"
 mkdir -p "${broken_registry}"
 printf 'not valid {{{\n' >"${broken_registry}/hew.toml"

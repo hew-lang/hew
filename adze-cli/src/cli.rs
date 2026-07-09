@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
 
+use crate::package_name::{
+    invalid_message as invalid_package_name_message, is_valid as is_valid_package_name,
+};
 use crate::{
     checksum, client, config, credentials, index, lockfile, manifest, native, package_fs, registry,
     resolver, signing, tarball,
@@ -491,6 +494,11 @@ fn ensure_gitignore_entry(dir: &Path, entry: &str) {
 }
 
 fn cmd_add(pkg: &str, version: &str, registry_name: Option<&str>) {
+    if !is_valid_package_name(pkg) {
+        eprintln!("adze add: {}", invalid_package_name_message(pkg));
+        std::process::exit(1);
+    }
+
     // Validate the named registry exists (if specified) early.
     if registry_name.is_some() {
         let _ = make_client(registry_name);
@@ -553,6 +561,13 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
         }
         // Verify checksums of locked packages.
         for entry in &lf.packages {
+            if !is_valid_package_name(&entry.name) {
+                eprintln!(
+                    "adze install: {}",
+                    invalid_package_name_message(&entry.name)
+                );
+                std::process::exit(1);
+            }
             if let Some(expected) = &entry.checksum {
                 let pkg_dir = registry.package_dir(&entry.name, &entry.version);
                 if pkg_dir.is_dir() {
@@ -621,6 +636,10 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
     let mut lock_packages: Vec<lockfile::LockedPackage> = Vec::new();
 
     for (name, package) in &resolved {
+        if !is_valid_package_name(name) {
+            eprintln!("adze install: {}", invalid_package_name_message(name));
+            std::process::exit(1);
+        }
         let version = &package.version;
         let target = registry.package_dir(name, version);
         if !registry.is_installed(name, version) {
@@ -650,7 +669,13 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
         });
 
         // Build the local symlink path: replace :: with / separators.
-        let link = local_link_path(&local_packages, name);
+        let link = match local_link_path(&local_packages, name) {
+            Ok(link) => link,
+            Err(e) => {
+                eprintln!("adze install: {e}");
+                std::process::exit(1);
+            }
+        };
         if let Some(parent) = link.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
                 eprintln!("adze install: cannot create {}: {e}", parent.display());
@@ -1263,8 +1288,14 @@ fn cmd_tree(registry: &registry::Registry) {
         let child_prefix = if is_last { "    " } else { "│   " };
 
         let ver_req = spec.version_req();
-        let resolved = resolver::resolve_version(name, ver_req, registry)
-            .unwrap_or_else(|_| ver_req.to_string());
+        let resolved = match resolver::resolve_version(name, ver_req, registry) {
+            Ok(resolved) => resolved,
+            Err(resolver::ResolveError::NoMatchingVersion { .. }) => ver_req.to_string(),
+            Err(e) => {
+                eprintln!("adze tree: dependency {name}@{ver_req}: {e}");
+                std::process::exit(1);
+            }
+        };
         println!("{prefix}{name}@{resolved}");
 
         // Check if this dep itself has dependencies.
@@ -1356,7 +1387,14 @@ fn cmd_remove(package: &str) {
     match manifest::remove_dependency(&manifest_path, package) {
         Ok(true) => {
             // Remove local project package materialization if it exists.
-            let link = local_link_path(&project_packages_path(&cwd), package);
+            let link = match local_link_path(&project_packages_path(&cwd), package) {
+                Ok(link) => link,
+                Err(e) => {
+                    eprintln!("warning: could not remove local materialization for {package}: {e}");
+                    println!("Removed {package} from hew.toml");
+                    return;
+                }
+            };
             if std::fs::symlink_metadata(&link).is_ok() {
                 if let Err(e) = remove_path_for_replacement(&link) {
                     eprintln!("warning: could not remove {}: {e}", link.display());
@@ -1944,10 +1982,14 @@ fn project_packages_path(cwd: &Path) -> PathBuf {
     cwd.join(".adze").join("packages")
 }
 
-fn local_link_path(base: &Path, package_name: &str) -> PathBuf {
-    package_name
+fn local_link_path(base: &Path, package_name: &str) -> Result<PathBuf, String> {
+    if !is_valid_package_name(package_name) {
+        return Err(invalid_package_name_message(package_name));
+    }
+
+    Ok(package_name
         .split("::")
-        .fold(base.to_path_buf(), |path, segment| path.join(segment))
+        .fold(base.to_path_buf(), |path, segment| path.join(segment)))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2080,35 +2122,6 @@ fn find_latest_version(
         .filter_map(|p| semver::Version::parse(&p.version).ok())
         .max()
         .map(|v| v.to_string())
-}
-
-/// Validate that a package name contains only lowercase alphanumeric, `_`, and `::` or `/` separators.
-/// Rejects empty names, empty segments, and names longer than 128 characters.
-fn is_valid_package_name(name: &str) -> bool {
-    if name.is_empty() || name.len() > 128 {
-        return false;
-    }
-    // Normalize :: to / then validate segments
-    let normalized = name.replace("::", "/");
-    // After normalizing ::→/, any remaining colons mean a bare single colon
-    if normalized.contains(':') {
-        return false;
-    }
-    if normalized.starts_with('/') || normalized.ends_with('/') {
-        return false;
-    }
-    for segment in normalized.split('/') {
-        if segment.is_empty() {
-            return false;
-        }
-        if !segment
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
-        {
-            return false;
-        }
-    }
-    true
 }
 
 /// Recursively copy `src` to `dst`, skipping `.git`, `target`, and `.adze`.
@@ -2310,6 +2323,9 @@ mod tests {
         assert!(!is_valid_package_name("my package"));
         assert!(!is_valid_package_name("my@package"));
         assert!(!is_valid_package_name("my:package")); // single colon
+        assert!(!is_valid_package_name("my/package"));
+        assert!(!is_valid_package_name("evil::../../../tmp/pwned"));
+        assert!(!is_valid_package_name("evil::/tmp/pwned"));
     }
 
     #[test]

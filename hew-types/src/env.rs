@@ -30,6 +30,18 @@ pub struct Binding {
     pub is_written: bool,
     /// Source span of the definition, for diagnostics. None for synthetic bindings.
     pub def_span: Option<Span>,
+    /// Source span used **only** for outer-scope shadowing classification
+    /// (see `check_shadowing`), independent of `def_span`.
+    ///
+    /// Almost always mirrors `def_span`. The one deliberate exception is
+    /// user-visible function/method/init/hook parameters: they keep
+    /// `def_span: None` (so they stay exempt from the `UnusedVariable` /
+    /// `NeverMutated` scope-exit lints in `pop_scope_with_warnings`, which
+    /// only consider bindings with a `def_span`), while still needing a real
+    /// span here so a nested local that shadows a parameter is classified as
+    /// "shadows a user-visible outer binding" (warning) rather than
+    /// "shadows a synthetic binding" (hard error) — see `define_param_with_span`.
+    pub shadow_span: Option<Span>,
 }
 
 /// A diagnostic about a binding discovered at scope exit.
@@ -112,6 +124,7 @@ impl TypeEnv {
                     read_count: 1, // synthetic bindings are always "used"
                     is_written: false,
                     def_span: None,
+                    shadow_span: None,
                 },
             );
         }
@@ -131,7 +144,38 @@ impl TypeEnv {
                     moved_at: None,
                     read_count: 0,
                     is_written: false,
-                    def_span: Some(span),
+                    def_span: Some(span.clone()),
+                    shadow_span: Some(span),
+                },
+            );
+        }
+    }
+
+    /// Define a user-visible function/method/init/hook **parameter** with a
+    /// source span for outer-scope shadowing classification only.
+    ///
+    /// Deliberately keeps `def_span: None` (like the fully-synthetic
+    /// `define`): parameters are exempt from the `UnusedVariable` /
+    /// `NeverMutated` scope-exit lints, which key off `def_span`, matching
+    /// existing behaviour before and after this constructor's introduction.
+    /// Unlike `define`, `shadow_span` is populated so a nested local that
+    /// shadows the parameter name is downgraded from hard error to warning,
+    /// the same treatment given to shadowing a user-declared local variable.
+    pub fn define_param_with_span(&mut self, name: String, ty: Ty, is_mutable: bool, span: Span) {
+        let id = self.next_binding_id();
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(
+                name,
+                Binding {
+                    id,
+                    ty,
+                    is_mutable,
+                    is_moved: false,
+                    moved_at: None,
+                    read_count: 1, // exempt from unused-variable lint, like `define`
+                    is_written: false,
+                    def_span: None,
+                    shadow_span: Some(span),
                 },
             );
         }
@@ -244,28 +288,28 @@ impl TypeEnv {
 
     /// Check if `name` already exists in the current (innermost) scope.
     ///
-    /// Returns `Some(Some(span))` when the binding has a source span,
-    /// `Some(None)` when found but synthetic, or `None` when the name
+    /// Returns `Some(Some(span))` when the binding has a shadow-classification
+    /// span, `Some(None)` when found but synthetic, or `None` when the name
     /// is not bound in the current scope.
     #[must_use]
     pub fn find_in_current_scope(&self, name: &str) -> Option<Option<Span>> {
         self.scopes
             .last()
             .and_then(|scope| scope.get(name))
-            .map(|b| b.def_span.clone())
+            .map(|b| b.shadow_span.clone())
     }
 
     /// Check if a variable name exists in any outer scope (not the current one).
     ///
-    /// Returns `Some(Some(span))` when the binding has a source span,
-    /// `Some(None)` when found but synthetic (e.g. actor fields), or
+    /// Returns `Some(Some(span))` when the binding has a shadow-classification
+    /// span, `Some(None)` when found but synthetic (e.g. actor fields), or
     /// `None` when the name is not bound in any outer scope.
     #[must_use]
     pub fn find_in_outer_scope(&self, name: &str) -> Option<Option<Span>> {
         // Skip the last (current) scope and check all outer scopes
         for scope in self.scopes.iter().rev().skip(1) {
             if let Some(binding) = scope.get(name) {
-                return Some(binding.def_span.clone());
+                return Some(binding.shadow_span.clone());
             }
         }
         None

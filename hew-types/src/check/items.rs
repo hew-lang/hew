@@ -131,7 +131,12 @@ impl Checker {
                     param.name, sd.name
                 ),
             );
-            self.env.define(param.name.clone(), ty, param.is_mutable);
+            self.env.define_param_with_span(
+                param.name.clone(),
+                ty,
+                param.is_mutable,
+                param.ty.1.clone(),
+            );
         }
 
         // Synthesise the type of every child's init-arg expressions so the
@@ -866,7 +871,8 @@ impl Checker {
             if in_actor {
                 self.check_shadowing(&p.name, &p.ty.1);
             }
-            self.env.define(p.name.clone(), ty, p.is_mutable);
+            self.env
+                .define_param_with_span(p.name.clone(), ty, p.is_mutable, p.ty.1.clone());
         }
 
         // Use the return type from the already-registered fn signature so that
@@ -1327,7 +1333,8 @@ impl Checker {
                 &p.ty,
                 format!("init parameter `{}` of actor `{actor_name}`", p.name),
             );
-            self.env.define(p.name.clone(), ty, p.is_mutable);
+            self.env
+                .define_param_with_span(p.name.clone(), ty, p.is_mutable, p.ty.1.clone());
         }
 
         // Init returns unit — no meaningful return type
@@ -1610,7 +1617,8 @@ impl Checker {
         self.bind_actor_fields(fields);
         if let Some(p) = hook.params.first() {
             let pty = self.resolve_type_expr(&p.ty);
-            self.env.define(p.name.clone(), pty, p.is_mutable);
+            self.env
+                .define_param_with_span(p.name.clone(), pty, p.is_mutable, p.ty.1.clone());
         }
 
         self.current_return_type = Some(return_ty);
@@ -1711,7 +1719,8 @@ impl Checker {
         self.bind_actor_fields(fields);
         if let Some(p) = hook.params.first() {
             let pty = self.resolve_type_expr(&p.ty);
-            self.env.define(p.name.clone(), pty, p.is_mutable);
+            self.env
+                .define_param_with_span(p.name.clone(), pty, p.is_mutable, p.ty.1.clone());
         }
 
         self.current_return_type = Some(Ty::Unit);
@@ -1898,7 +1907,8 @@ impl Checker {
         for p in &rf.params {
             self.check_shadowing(&p.name, &p.ty.1);
             let ty = self.resolve_type_expr(&p.ty);
-            self.env.define(p.name.clone(), ty, p.is_mutable);
+            self.env
+                .define_param_with_span(p.name.clone(), ty, p.is_mutable, p.ty.1.clone());
         }
 
         let declared_ret = if let Some(sig) = self.fn_sigs.get(&qualified_name) {

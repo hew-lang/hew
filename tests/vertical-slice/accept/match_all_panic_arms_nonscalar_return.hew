@@ -1,0 +1,42 @@
+//! An all-`panic()` tail match with a non-scalar (struct) return type must
+//! compile and run — the join after the match is genuinely unreachable, the
+//! same way an all-`return` tail match already is.
+//!
+//! Root cause that was fixed: `lower_direct_call` opened the call
+//! terminator's continuation block via a plain `start_block`, which always
+//! resets `cursor_unreachable = false` regardless of the callee's return
+//! type. For a `Never`-typed direct call (the runtime `panic()`/`exit()`
+//! shims), that continuation can never actually be reached at runtime, but
+//! the flag said otherwise. The match-arm join-reachability check downstream
+//! trusts `cursor_unreachable`, so it wrongly treated the join as live and
+//! tried to move the substituted `Unit` (i8) result local into the
+//! non-scalar `Point` return slot — a codegen-front fail-closed abort
+//! (`Move type mismatch: src=i8 dest=struct`, hew-lang/hew#1913).
+//!
+//! The fix mirrors the early-return convention: `lower_direct_call` now
+//! opens the continuation via `start_dead_block` (not `start_block`) when
+//! the callee's resolved return type is `Never`, so it is correctly flagged
+//! unreachable and every existing join-reachability gate treats a diverging
+//! `panic()`/`exit()` arm the same way it already treats an explicit
+//! `return` arm.
+//!
+//! Observable contract: the program compiles, panics with message "one",
+//! and exits 101 (`hew_panic`'s clean-exit contract) — it must never hit the
+//! codegen-front abort at compile time.
+
+type Point {
+    x: i64,
+    y: i64,
+}
+
+fn pick(tag: i64) -> Point {
+    match tag {
+        1 => panic("one"),
+        _ => panic("other"),
+    }
+}
+
+fn main() {
+    let p = pick(1);
+    println(p.x);
+}

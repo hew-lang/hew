@@ -1,0 +1,21 @@
+// hew-lang/hew#2425 regression: the bare-body twin of
+// `defer_exit_live_cursor_trailing_stmt.hew` — a `defer exit(...)` with
+// NOTHING else in the function body at all (no trailing statement, so the
+// live cursor at the no-tail-expression drain site is the function's own
+// entry block, never touched by any `return`/dead-block machinery before
+// this point).
+//
+// Same root cause and fix as the trailing-statement twin: the function-tail
+// defer drain runs on a live cursor (this function never touches
+// `cursor_unreachable` at all before the drain), correctly drains the single
+// deferred `exit(42)` once, and `lower_direct_call`'s `Never`-typed
+// continuation is left empty with nothing following it. Before the fix,
+// `finalize_blocks` silently dropped that empty dead cursor even though the
+// `Call` terminator sealed just before it still named the id —
+// `E_CODEGEN_FRONT_FAIL_CLOSED: Call next bb1 missing`.
+//
+// Observable contract: compiles and the process exits 42 — never the
+// codegen-front abort.
+fn main() {
+    defer exit(42);
+}

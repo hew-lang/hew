@@ -1692,6 +1692,7 @@ fn render_trap_kind(kind: TrapKind) -> &'static str {
         TrapKind::SupervisorChildUnavailable => "SupervisorChildUnavailable",
         TrapKind::MachineDispatchUnreachable => "MachineDispatchUnreachable",
         TrapKind::ExhaustivenessFallthrough => "ExhaustivenessFallthrough",
+        TrapKind::UnreachableCallContinuation => "UnreachableCallContinuation",
     }
 }
 

@@ -3047,6 +3047,20 @@ pub enum TrapKind {
     /// and absorbs any future producer bug that lets an unreached value
     /// reach the dispatch chain. Producer: match-expression substrate.
     ExhaustivenessFallthrough,
+    /// Continuation block of a `Terminator::Call` whose callee is
+    /// `Never`-typed (the `panic()`/`exit()` runtime shims). This
+    /// continuation can never execute at runtime — a `Never`-typed call
+    /// always diverges — but `Terminator::Call { next, .. }` still
+    /// references the block's id, so it must survive `finalize_blocks`
+    /// with SOME terminator rather than be silently dropped as an empty
+    /// dead cursor (hew-lang/hew#2425: dropping it left the already-sealed
+    /// `Call` pointing at a missing block, `E_CODEGEN_FRONT_FAIL_CLOSED:
+    /// Call next bb<N> missing`). Like `MachineDispatchUnreachable`, this
+    /// lowers to a bare LLVM `unreachable` (no runtime trap call, no
+    /// user-visible exit code) since the compiler itself proves the block
+    /// dead, not a runtime check. Producer: `lower_direct_call`'s
+    /// `finalize_blocks` interaction for a `Never`-typed callee.
+    UnreachableCallContinuation,
 }
 
 #[derive(Debug, Clone, PartialEq)]

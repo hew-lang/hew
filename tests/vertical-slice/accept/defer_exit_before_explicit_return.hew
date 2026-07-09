@@ -1,0 +1,23 @@
+// hew-lang/hew#2426 regression: a `defer exit(...)` in front of an explicit
+// `return` (no trailing tail expression) must compile, run, and let the
+// deferred `exit` override the returned value.
+//
+// Root cause that was fixed: the function-tail defer drain in `lower_function`'s
+// no-tail-expression branch unconditionally re-ran `emit_pending_defers` even
+// when the last statement was an explicit `return` that already sealed a dead
+// cursor and already ran `emit_defers_for_return` (which CLONES rather than
+// drains). That second, spurious lowering re-materialised the deferred
+// `exit(42)` onto the already-dead trailing cursor; because `exit` is
+// `Never`-typed its continuation opens via `start_dead_block`, is never
+// sealed, and gets dropped by `finalize_blocks`' empty-dead-cursor cleanup --
+// while the duplicate `Call` terminator that seeded it still points at the
+// now-missing block id, aborting codegen with
+// `E_CODEGEN_FRONT_FAIL_CLOSED: Call next bb<N> missing`.
+//
+// The fix skips the redundant re-drain when the cursor is already unreachable.
+// Observable contract: compiles, and the process exits 42 (the deferred exit),
+// never the returned 0, and never the codegen-front abort.
+fn main() -> i64 {
+    defer exit(42);
+    return 0;
+}

@@ -1,0 +1,29 @@
+//! The `if`/`else` sibling of `match_all_panic_arms_nonscalar_return.hew`:
+//! both branches call `panic()` and the function's return type is a
+//! non-scalar (struct). Same root cause and fix — `lower_direct_call` must
+//! flag its continuation block unreachable for a `Never`-typed callee so the
+//! if/else join-reachability check (which gates on the identical
+//! `cursor_unreachable` flag) correctly treats this join as dead too, not
+//! just the tail-match form.
+//!
+//! Observable contract: the program compiles, panics with message "one",
+//! and exits 101 — it must never hit the `Move type mismatch` codegen-front
+//! abort at compile time.
+
+type Point {
+    x: i64,
+    y: i64,
+}
+
+fn pick(tag: i64) -> Point {
+    if tag == 1 {
+        panic("one");
+    } else {
+        panic("other");
+    }
+}
+
+fn main() {
+    let p = pick(1);
+    println(p.x);
+}

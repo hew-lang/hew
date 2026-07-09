@@ -1,0 +1,17 @@
+// hew-lang/hew#2425 regression: the `panic()` twin of
+// `defer_exit_live_cursor_trailing_stmt.hew` — a `defer panic(...)` whose
+// function tail is a live cursor (an ordinary trailing statement, not an
+// explicit `return`).
+//
+// Same root cause and fix as the `exit()` twin: `panic()` is the other
+// `Never`-typed runtime shim routed through `lower_direct_call`, so it hits
+// the identical dangling-continuation shape when the function-tail defer
+// drain runs on a live cursor and nothing follows the drained defer.
+//
+// Observable contract: compiles, prints "x", runs the deferred panic at
+// scope exit, prints "cleanup", and exits 101 (`hew_panic`'s clean-exit
+// contract) — never the codegen-front abort.
+fn main() {
+    defer panic("cleanup");
+    println("x");
+}

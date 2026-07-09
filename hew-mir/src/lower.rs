@@ -9260,6 +9260,24 @@ struct Builder {
     /// it is observed to be empty, so the dead-end does not appear as
     /// an additional `Return` exit in `drop_plans`.
     cursor_unreachable: bool,
+    /// Set alongside `cursor_unreachable` ONLY when the current dead cursor
+    /// was opened as the `next` of an already-sealed `Terminator::Call`
+    /// (a `Never`-typed callee's continuation) rather than from an
+    /// explicit `return`'s own seal. `finalize_blocks`'s empty-dead-cursor
+    /// drop is safe for the `return` case because nothing else references
+    /// that block's id (`Terminator::Return` has no successor field), but
+    /// a `Terminator::Call { next, .. }` DOES reference this id — dropping
+    /// an empty block here would leave the already-committed `Call`
+    /// pointing at a missing block (hew-lang/hew#2425:
+    /// `E_CODEGEN_FRONT_FAIL_CLOSED: Call next bb<N> missing`, hit whenever
+    /// the function-tail defer drain or a plain live-cursor fall-through
+    /// reached a `defer exit(..)`/`defer panic(..)` and nothing else wrote
+    /// into the resulting dead continuation before finalisation). When
+    /// this flag is set, `finalize_blocks` seals the empty block with
+    /// `Terminator::Trap { kind: UnreachableCallContinuation }` instead of
+    /// dropping it, so the id stays valid. Cleared by `start_block` and by
+    /// every `finalize_blocks` call, same as `cursor_unreachable`.
+    dead_cursor_is_call_continuation: bool,
     /// Type-indexed local registers. `locals[i]` is the `ResolvedTy` of
     /// `Place::Local(i as u32)`.
     locals: Vec<ResolvedTy>,
@@ -11818,6 +11836,7 @@ impl Builder {
         // The early-return path that needs a dead block calls
         // `start_dead_block` instead to flag the dead-end.
         self.cursor_unreachable = false;
+        self.dead_cursor_is_call_continuation = false;
     }
 
     /// Open a fresh continuation block whose only predecessor would be
@@ -11850,8 +11869,26 @@ impl Builder {
         // it), keep the block — the content is unreachable at runtime
         // but the block must exist for the producer-side invariants
         // that drained into it to remain self-consistent.
-        let drop_empty_dead_cursor =
-            self.cursor_unreachable && self.statements.is_empty() && self.instructions.is_empty();
+        //
+        // This drop is safe ONLY when nothing outside this dead cursor
+        // references its block id — true for the `return`-seeded case
+        // (`Terminator::Return` has no successor field to dangle). A dead
+        // cursor seeded as a `Terminator::Call { next, .. }` continuation
+        // (`dead_cursor_is_call_continuation`, hew-lang/hew#2425) is
+        // different: that `Call` is already sealed into `blocks` and its
+        // `next` field names this exact id, so dropping an empty block
+        // here would leave it dangling. Seal it instead with a
+        // compiler-proven-unreachable trap so the id stays valid — the
+        // block still can never execute at runtime (a `Never`-typed
+        // callee always diverges), it just can't be silently erased.
+        let drop_empty_dead_cursor = self.cursor_unreachable
+            && !self.dead_cursor_is_call_continuation
+            && self.statements.is_empty()
+            && self.instructions.is_empty();
+        let seal_call_continuation_trap = self.cursor_unreachable
+            && self.dead_cursor_is_call_continuation
+            && self.statements.is_empty()
+            && self.instructions.is_empty();
         if drop_empty_dead_cursor {
             // Clear the buffers defensively — they should already be
             // empty per the `drop_empty_dead_cursor` predicate above,
@@ -11859,6 +11896,16 @@ impl Builder {
             // callers from observing stale `take`-leftover state.
             self.statements.clear();
             self.instructions.clear();
+        } else if seal_call_continuation_trap {
+            self.record_terminator_span();
+            blocks.push(BasicBlock {
+                id: self.current_block_id,
+                statements: std::mem::take(&mut self.statements),
+                instructions: std::mem::take(&mut self.instructions),
+                terminator: Terminator::Trap {
+                    kind: TrapKind::UnreachableCallContinuation,
+                },
+            });
         } else {
             self.record_terminator_span();
             let last = BasicBlock {
@@ -11870,6 +11917,7 @@ impl Builder {
             blocks.push(last);
         }
         self.cursor_unreachable = false;
+        self.dead_cursor_is_call_continuation = false;
         // Sort by id so consumers can index by position when they want
         // RPO-ish iteration. Construction order is already monotone
         // because `alloc_block` is monotone, so this is a no-op in
@@ -13304,9 +13352,37 @@ impl Builder {
                 ty: self.subst_ty(&tail.ty),
             });
         } else {
-            // No tail expression — implicit unit return. Still emit defers
-            // for the function body scope.
-            self.emit_pending_defers(func.body.scope);
+            // No tail expression. The normal case is an implicit unit return
+            // falling off the end of the statement list with a still-live
+            // cursor — that path still needs `func.body.scope`'s defers
+            // drained here, since nothing else will.
+            //
+            // But when the LAST statement was itself a diverging exit
+            // (`return`, or any other statement-form divergence that calls
+            // `start_dead_block` on its way out), the cursor is already
+            // `cursor_unreachable` at this point, and that statement's own
+            // handling already ran `emit_defers_for_return()` for every
+            // enclosing scope including this one (see e.g. `Return(Some)`).
+            // `emit_defers_for_return` deliberately CLONES rather than
+            // drains `pending_defers` (a `return` inside a branch must not
+            // consume defers a sibling branch still needs), so the entry is
+            // still present here. Calling `emit_pending_defers` again would
+            // re-lower the exact same deferred body a second time onto the
+            // already-dead trailing cursor -- for a defer that itself calls
+            // a `Never`-typed function (`panic()`/`exit()`), that second
+            // lowering opens its own dead continuation block via
+            // `start_dead_block`, which is never sealed (nothing follows the
+            // function's real exit) and gets silently dropped by
+            // `finalize_blocks`' empty-dead-cursor cleanup -- while the
+            // duplicate `Call` terminator that seeded it still points at the
+            // now-missing block id, aborting codegen with
+            // `E_CODEGEN_FRONT_FAIL_CLOSED: Call next bb<N> missing`
+            // (hew-lang/hew#2426, `defer exit(42); return 0;`). Skip the
+            // redundant re-drain in that case; the live-cursor drain already
+            // covers every other implicit-unit-return shape.
+            if !self.cursor_unreachable {
+                self.emit_pending_defers(func.body.scope);
+            }
         }
         self.active_scopes.pop();
     }
@@ -26159,7 +26235,36 @@ impl Builder {
             dest,
             next,
         });
-        self.start_block(next);
+        // A `Never`-typed direct call (the runtime `panic()`/`exit()` shims,
+        // and any other callee whose checker-resolved return type is
+        // `ResolvedTy::Never`) never falls through to `next` at runtime — the
+        // call terminator is a real divergence, exactly like an explicit
+        // `return`. `start_block` always opens a normally-reachable cursor
+        // (see its own doc comment), so a plain `start_block(next)` here
+        // would silently mark the continuation reachable even though no
+        // predecessor can ever reach it. That falsifies every downstream
+        // `!self.cursor_unreachable` join-reachability check (If/match arm
+        // lowering) for an all-panic/exit diverging arm: the join gets
+        // wrongly admitted as reachable, and MIR's mixed-divergence recovery
+        // then tries to move the substituted `Unit` (i8) result local into a
+        // non-scalar (ptr/struct) return slot — a `Move type mismatch`
+        // codegen-front fail-closed abort (hew-lang/hew#1913). Use
+        // `start_dead_block` instead, mirroring the early-return path's own
+        // dead-end convention, so the continuation is correctly flagged
+        // unreachable and every existing join-reachability gate works for
+        // `panic()`/`exit()` the same way it already does for `return`.
+        if matches!(ret_ty, ResolvedTy::Never) {
+            self.start_dead_block(next);
+            // Unlike the `return`-seeded dead block this convention mirrors,
+            // THIS dead block's id is already referenced by the `Call`
+            // terminator just sealed above (`next`). Flag it so
+            // `finalize_blocks` seals rather than drops it if it ends up
+            // empty at true function end (hew-lang/hew#2425) — see that
+            // field's doc comment for the full mechanism.
+            self.dead_cursor_is_call_continuation = true;
+        } else {
+            self.start_block(next);
+        }
 
         dest
     }

@@ -784,6 +784,27 @@ run_accept_expect_status "defer_lifo" 1
 run_accept_expect_status "defer_block_scope" 7
 # defer: early-return unwind, nested scopes, no double-run on tail
 run_accept_expect_status "defer_early_return" 42
+# hew-lang/hew#2426: a `defer exit()`/`defer panic()` in front of an explicit
+# `return` (no trailing tail expression) must not re-drain the function-tail
+# defers onto the already-dead post-return cursor (which aborted codegen with
+# `Call next bb<N> missing`). exit form overrides with status 42; panic form
+# runs the deferred panic and exits 101 with its message.
+run_accept_expect_status "defer_exit_before_explicit_return" 42
+run_accept_expect_panic "defer_panic_before_explicit_return" "cleanup"
+# hew-lang/hew#2425: the live-cursor twins of the #2426 fixtures above --
+# `defer exit()`/`defer panic()` whose function tail is an ORDINARY live
+# cursor (a trailing statement, or nothing at all), not an explicit
+# `return`. The #2426 fix's `!self.cursor_unreachable` guard only covers the
+# already-dead-cursor case; these three run the function-tail defer drain on
+# a genuinely live cursor, which is the normal path and was never guarded --
+# the bug is in `finalize_blocks` silently dropping the resulting empty dead
+# call-continuation even though the already-sealed `Call` terminator still
+# names its block id (`Call next bb<N> missing`). exit form overrides with
+# status 42 (with and without a trailing statement); panic form runs the
+# deferred panic and exits 101 with its message.
+run_accept_expect_status "defer_exit_live_cursor_trailing_stmt" 42
+run_accept_expect_status "defer_exit_live_cursor_bare_body" 42
+run_accept_expect_panic "defer_panic_live_cursor_trailing_stmt" "cleanup"
 run_accept_expect_status "defer_nested_early_return" 10
 run_accept_expect_status "defer_no_double_run" 5
 # defer: tail-return value secured before scope-exit defers mutate referenced var
@@ -3118,6 +3139,16 @@ expect_check_fail_contains \
   "Option/Result method values are not a callable fallback around the checker intercept"
 run_accept_expect_panic "option_unwrap_none_aborts" "called 'unwrap()' on a 'None' value"
 run_accept_expect_panic "result_unwrap_err_aborts" "called 'unwrap()' on an 'Err' value"
+
+# hew-lang/hew#1913: an all-`panic()` tail-match/if-else arm set with a
+# non-scalar (struct) return type must compile and run, not abort at codegen
+# with "Move type mismatch: src=i8 dest=struct". `lower_direct_call` must flag
+# its continuation block unreachable for a `Never`-typed callee (panic/exit)
+# so the join-reachability check downstream treats an all-diverging arm set
+# the same way it already treats an all-`return` arm set. Both forms panic
+# with message "one" and exit 101 (hew_panic's clean-exit contract).
+run_accept_expect_panic "match_all_panic_arms_nonscalar_return" "one"
+run_accept_expect_panic "if_else_all_panic_arms_nonscalar_return" "one"
 
 # WASM parity (W4.042): the bare-`None` builtin Option<i64> path must also lower
 # under wasm32-unknown-unknown. The fix is pure checker-boundary type recording

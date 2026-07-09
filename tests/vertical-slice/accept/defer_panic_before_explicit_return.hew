@@ -1,0 +1,18 @@
+// hew-lang/hew#2426 regression: a `defer panic(...)` in front of an explicit
+// `return` (no trailing tail expression) must compile, run the deferred
+// `panic` at scope exit, and exit 101 (hew_panic's clean-exit contract) --
+// not abort at codegen with `Call next bb<N> missing`.
+//
+// This is the `panic()` twin of `defer_exit_before_explicit_return.hew`;
+// both `panic()` and `exit()` are `Never`-typed runtime shims routed through
+// `lower_direct_call`, so both surface the same duplicate-defer-drain bug when
+// they sit in a `defer` in front of an explicit `return`. See that fixture and
+// hew-mir/src/lower.rs's no-tail-expression defer-drain guard for the full
+// mechanism.
+//
+// Observable contract: compiles, prints "cleanup" (the deferred panic message),
+// and exits 101 -- never the codegen-front abort.
+fn main() -> i64 {
+    defer panic("cleanup");
+    return 7;
+}

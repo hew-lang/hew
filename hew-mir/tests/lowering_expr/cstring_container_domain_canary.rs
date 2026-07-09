@@ -241,11 +241,11 @@ fn emits_vec_get_str(pl: &IrPipeline) -> bool {
 }
 
 /// A BRANCHED body (`if/else`, both arms reading the binding by-value via string
-/// concat) lowers without an NYI and places exactly ONE `hew_string_drop` — at
-/// the post-body branch-join block reached once per iteration regardless of which
-/// arm ran. Concat is a borrowing read, so the retained element is still owned by
-/// the loop and released at the join. This is the demo `transform_body` shape the
-/// over-conservative single-post-body-drop analysis used to reject.
+/// concat) lowers without an NYI and places the post-body retained-element drop
+/// at the branch-join block reached once per iteration regardless of which arm
+/// ran. The then arm also has the #2434 nested-concat shape
+/// `out + "P:" + line`: the intermediate concat temp is borrowed by the second
+/// concat and now earns its own inline `hew_string_drop`.
 #[test]
 fn vec_string_for_in_branched_body_drops_once_at_join() {
     let pl = pipeline_with_tc(
@@ -269,10 +269,11 @@ fn vec_string_for_in_branched_body_drops_once_at_join() {
     );
     assert_eq!(
         string_drop_count(&pl),
-        3,
+        4,
         "branched body drops the retained `line` once at the branch-join PLUS \
          the prior `out` value on each arm's `out = out + ...` reassignment \
-         (#53 var-overwrite-release): two arms = two overwrite releases + the \
+         (#53 var-overwrite-release) PLUS the then-arm nested-concat \
+         intermediate: two overwrite releases + one nested-temp release + the \
          single post-body element drop",
     );
 }

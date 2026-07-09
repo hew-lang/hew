@@ -1,0 +1,26 @@
+// Nested fresh string-concat temp: `first + " "` produces a fresh
+// `hew_string_concat` result that is immediately borrowed by the second
+// `hew_string_concat` in `... + last`. This has no record wrapper; it pins the
+// real #2434 leak independently of generic-record drop machinery.
+fn emit_full(print_it: bool) -> i64 {
+    let first = "Ada";
+    let last = "Lovelace";
+    let full = first + " " + last;
+    if print_it {
+        println(full);
+    }
+    full.len()
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 100000 {
+        total = total + emit_full(i == 0);
+        i = i + 1;
+    }
+    if total != 1200000 {
+        return 7;
+    }
+    0
+}

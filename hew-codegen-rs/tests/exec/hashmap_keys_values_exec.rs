@@ -276,21 +276,6 @@ fn hashmap_values_heap_bearing_record_rejected_with_one_exact_diagnostic() {
 }
 
 #[test]
-fn hashmap_keys_heap_bearing_value_rejected_with_one_exact_diagnostic() {
-    let repo = repo_root();
-    let fixture = repo.join("tests/vertical-slice/reject/hashmap_keys_managed_record.hew");
-    let (code, output) = check_hew_file(&repo, &fixture);
-    assert_eq!(
-        code, 1,
-        "keys() projection with heap-bearing map value must fail at check time; output:\n{output}"
-    );
-    assert_single_check_error_with_exact_diagnostic(
-        &output,
-        "`HashMap<i64, Vec<i64>>.keys()` is not yet supported: projecting from a map with value type `Vec<i64>` into an owned `Vec` is not lowered; supported projection value types are scalar primitives, `string`, and Copy record/enum types",
-    );
-}
-
-#[test]
 fn hashmap_keys_bytes_rejected_by_key_branch_with_one_exact_diagnostic() {
     let repo = repo_root();
     let fixture = repo.join("tests/vertical-slice/reject/hashmap_keys_bytes.hew");

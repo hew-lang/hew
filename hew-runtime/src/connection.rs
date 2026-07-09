@@ -1247,10 +1247,13 @@ fn handle_link_down_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &Contro
     let mgr_ref = unsafe { &*mgr };
     // Peer-binding defence: resolve the handshake-authenticated identity of the
     // connection this frame arrived on. `authenticated == 0` (no active,
-    // registered connection for `conn_id`) still flows into the ref-id lookup
-    // below and simply cannot match any real link's `remote_node_id` (a valid
-    // node id is always non-zero), so it fails closed the same way an actual
-    // peer mismatch does — no separate early return required.
+    // registered connection for `conn_id`, e.g. mid-teardown) is NOT
+    // guaranteed to fail closed on its own — `handle_link_req_frame` performs
+    // no peer authentication on an inbound `CTRL_LINK_REQ`, so any connected
+    // peer can set `linker_node_id` to 0 and land a `WatcherEntry` with
+    // `remote_node_id == 0`. `deliver_link_down_to_ref` rejects
+    // `authenticated_peer == 0` explicitly, before it is ever compared to a
+    // stored `remote_node_id`.
     let authenticated = peer_node_id_for_conn(mgr_ref, conn_id);
     crate::hew_node::handle_inbound_link_down(payload.ref_id, authenticated, payload.reason);
 }

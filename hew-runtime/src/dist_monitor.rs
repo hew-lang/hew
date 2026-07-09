@@ -277,21 +277,36 @@ impl DistMonitorState {
     /// Fire a cross-node LINK down for a single link registration (`CTRL_LINK_DOWN`
     /// receipt). Transitions the entry `Pending → Consumed` exactly once and
     /// returns the cascade action (the LOCAL linked actor + reason + policy) so the
-    /// caller can synthesize the mailbox EXIT. A no-op (returns `None`) if the
-    /// entry is unknown, already fired, is a monitor (not a link), or
-    /// `authenticated_peer` does not match the entry's own `remote_node_id` — the
-    /// exactly-once + fail-closed + peer-binding guard. The EXIT is fired ONLY for
-    /// an entry THIS node registered AND ONLY when the frame's authenticated
-    /// sender is the same peer this node linked to, so neither a forged `ref_id`
-    /// this node never linked NOR a genuinely-authenticated but UNRELATED peer
-    /// (one that merely guessed/learned a pending cross-node link `ref_id`) can
-    /// crash a linked actor before its real remote peer has died.
+    /// caller can synthesize the mailbox EXIT. A no-op (returns `None`) if
+    /// `authenticated_peer` is 0 (unauthenticated sender), the entry is unknown,
+    /// already fired, is a monitor (not a link), or `authenticated_peer` does not
+    /// match the entry's own `remote_node_id` — the exactly-once + fail-closed +
+    /// peer-binding guard. The EXIT is fired ONLY for an entry THIS node
+    /// registered AND ONLY when the frame's authenticated sender is the same peer
+    /// this node linked to, so neither a forged `ref_id` this node never linked
+    /// NOR a genuinely-authenticated but UNRELATED peer (one that merely
+    /// guessed/learned a pending cross-node link `ref_id`) can crash a linked
+    /// actor before its real remote peer has died.
+    ///
+    /// `authenticated_peer == 0` is rejected explicitly, before it is ever
+    /// compared to `entry.remote_node_id`. A stored `remote_node_id` of 0 is
+    /// reachable today: `handle_link_req_frame` (`connection.rs`) performs NO
+    /// peer authentication on an inbound `CTRL_LINK_REQ` at all, so any
+    /// connected peer can set `linker_node_id` to 0 and reach
+    /// `handle_inbound_link_req` → `register_link_watcher(payload.linker_node_id,
+    /// ...)`, which stores it into THIS table (the watcher side) verbatim. Absent
+    /// this guard, an unauthenticated sender (`authenticated_peer == 0`, e.g.
+    /// `peer_node_id_for_conn`'s documented fallback when no ACTIVE connection
+    /// matches the frame's `conn_id`) would wrongly match such an entry.
     pub(crate) fn deliver_link_down_to_ref(
         &self,
         ref_id: u64,
         authenticated_peer: u16,
         reason: i32,
     ) -> Option<LinkDown> {
+        if authenticated_peer == 0 {
+            return None;
+        }
         let mut watchers = self.watchers.lock().unwrap_or_else(PoisonError::into_inner);
         match watchers.get_mut(&ref_id) {
             Some(entry)
@@ -842,6 +857,35 @@ mod tests {
             .expect("the real linked-to peer must still be able to fire the cascade");
         assert_eq!(down.local_actor_id, 777);
         assert_eq!(down.reason, 4321);
+    }
+
+    /// An unauthenticated sender (`authenticated_peer == 0`, e.g.
+    /// `peer_node_id_for_conn`'s documented fallback when no ACTIVE connection
+    /// matches the frame's `conn_id`) must never be admitted by an equality
+    /// coincidence against a `WatcherEntry.remote_node_id` of 0. A stored `0` is
+    /// reachable today: `handle_link_req_frame` performs no peer authentication
+    /// on an inbound `CTRL_LINK_REQ`, so any connected peer can set
+    /// `linker_node_id` to 0 and land a zero-id entry via
+    /// `handle_inbound_link_req` → `register_link_watcher`. Without an explicit
+    /// `authenticated_peer == 0` reject, `entry.remote_node_id ==
+    /// authenticated_peer` becomes `0 == 0` and wrongly admits the forged
+    /// delivery.
+    #[test]
+    fn link_down_with_zero_authenticated_peer_is_rejected_against_zero_remote_node_id() {
+        let state = DistMonitorState::new();
+        // Simulates a WatcherEntry reachable via the unpatched CTRL_LINK_REQ
+        // path: remote_node_id == 0.
+        let ref_id = state.register_link_watcher(0, 99, 777, POLICY_TAG_CRASH_LINKED);
+
+        // Simulates the connection-teardown-race fallback: authenticated == 0.
+        // Without the explicit `authenticated_peer == 0` guard this would match
+        // `entry.remote_node_id == authenticated_peer` (`0 == 0`) and wrongly
+        // fire the cascade.
+        assert!(
+            state.deliver_link_down_to_ref(ref_id, 0, 4321).is_none(),
+            "an unauthenticated sender must not fire the cascade merely because \
+             the entry's remote_node_id also happens to be 0"
+        );
     }
 
     /// A `CTRL_MONITOR_DOWN`-style `deliver_to_ref` must NOT fire a LINK entry,

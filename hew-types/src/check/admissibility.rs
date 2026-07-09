@@ -1308,7 +1308,14 @@ impl Checker {
             return true;
         }
 
-        if !self.is_supported_hashmap_projection_element_type(&resolved_val) {
+        // `keys()` only needs the key layout — `hew_hashmap_keys_layout`
+        // (hew-runtime/src/hashmap.rs) branches solely on `map.key_layout` and
+        // never reads the value layout at all, so a value type unsupported for
+        // projection (e.g. a managed `Vec<i64>`) must not block `.keys()`; it
+        // only actually blocks `.values()` (and the `into_iter`/`for (k, v) in m`
+        // desugars, which separately call this function again with
+        // `method == "values"` and so still gate the value type there).
+        if method != "keys" && !self.is_supported_hashmap_projection_element_type(&resolved_val) {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,

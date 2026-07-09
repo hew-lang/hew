@@ -506,6 +506,8 @@ run_accept_expect_status "hashmap_for_in_owned" 35
 # match Vec. The map is shared (Capture), staying live after the pipeline.
 # count 3 entries → 3.
 run_accept_expect_status "hashmap_into_iter_count" 3
+
+run_accept_expect_status "hashmap_keys_unsupported_value_type" 1
 # map (k,v)->k+v then fold: keys 6 + values 60 → 66.
 run_accept_expect_status "hashmap_into_iter_map_fold" 66
 # filter values >= 20 then count: 2 of 3 pass → 2.
@@ -2876,16 +2878,6 @@ expect_check_fail_error_count \
   "${ROOT}/tests/vertical-slice/reject/hashmap_values_managed_record.hew" \
   1 \
   "hashmap_values_managed_record"
-
-# shellcheck disable=SC2016  # backtick-containing diagnostic strings; not shell expansion.
-expect_check_fail_contains \
-  "${ROOT}/tests/vertical-slice/reject/hashmap_keys_managed_record.hew" \
-  'HashMap<i64, Vec<i64>>.keys()` is not yet supported: projecting from a map with value type `Vec<i64>` into an owned `Vec` is not lowered' \
-  "hashmap_keys_managed_record"
-expect_check_fail_error_count \
-  "${ROOT}/tests/vertical-slice/reject/hashmap_keys_managed_record.hew" \
-  1 \
-  "hashmap_keys_managed_record"
 
 # shellcheck disable=SC2016  # backtick-containing diagnostic strings; not shell expansion.
 expect_check_fail_contains \

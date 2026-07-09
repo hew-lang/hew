@@ -1,0 +1,20 @@
+// `HashMap<i64, Vec<i64>>.keys()` — the value type (`Vec<i64>`) is not a
+// supported HashMap *projection* value type (managed Vec, not a scalar/
+// string/Copy record), but `.keys()` never materializes values at all:
+// `hew_hashmap_keys_layout` (hew-runtime/src/hashmap.rs) branches solely on
+// `map.key_layout` and copies key blobs. Gating `.keys()` on the value type
+// was a checker false-positive (hew-lang/hew#2009's own finding) — fixed by
+// only gating the value-type check when `method != "keys"` in
+// `validate_hashmap_projection_element_types` (hew-types/src/check/
+// admissibility.rs). `.values()`/`into_iter()`/`for (k, v) in m` over this
+// same map must still correctly reject on the value type — see the sibling
+// `hashmap_values_managed_record.hew` reject fixture, which covers exactly
+// that (unchanged by this fix). One key inserted → keys().len() == 1. Exit 1.
+fn main() -> i64 {
+    let values: HashMap<i64, Vec<i64>> = HashMap::new();
+    let xs: Vec<i64> = Vec::new();
+    xs.push(42);
+    values.insert(1, xs);
+    let projected = values.keys();
+    projected.len()
+}

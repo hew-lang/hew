@@ -1209,9 +1209,9 @@ mod tests {
         // A scalar histogram with three observations: 5 + 42 + 500 = 547.
         let durations = crate::metrics::register_histogram("app.request_duration", &[]);
         assert!(durations >= 0);
-        crate::metrics::histogram_record(durations, 5);
-        crate::metrics::histogram_record(durations, 42);
-        crate::metrics::histogram_record(durations, 500);
+        crate::metrics::histogram_record(durations, 5.0);
+        crate::metrics::histogram_record(durations, 42.0);
+        crate::metrics::histogram_record(durations, 500.0);
 
         let scrape = scrape_text();
 

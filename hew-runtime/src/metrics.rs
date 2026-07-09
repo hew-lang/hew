@@ -651,9 +651,9 @@ pub fn gauge_set(handle: i64, n: i64) {
 
 /// Record one histogram observation. `value` is the observed quantity; the
 /// running observation count rides the base slot, the slot after it accumulates
-/// the running sum, and each bucket slot accumulates the cumulative
-/// `<= upper_bound` count.
-pub fn histogram_record(handle: i64, value: i64) {
+/// the running sum as an `f64` bit pattern, and each bucket slot accumulates the
+/// cumulative `<= upper_bound` count.
+pub fn histogram_record(handle: i64, value: f64) {
     let Ok(base_idx) = usize::try_from(handle) else {
         metrics_state().invalid_ops.fetch_add(1, Ordering::Relaxed);
         return;
@@ -674,10 +674,10 @@ pub fn histogram_record(handle: i64, value: i64) {
             count.fetch_add(1, Ordering::Relaxed);
         }
         if let Some(sum) = reg.slots.get(base_idx + 1) {
-            sum.fetch_add(value, Ordering::Relaxed);
+            atomic_f64_fetch_add(sum, value);
         }
         for (i, bound) in buckets.iter().enumerate() {
-            if value <= *bound {
+            if observation_within_bucket(value, *bound) {
                 if let Some(bucket_slot) = reg.slots.get(base_idx + 2 + i) {
                     bucket_slot.fetch_add(1, Ordering::Relaxed);
                 }
@@ -686,10 +686,41 @@ pub fn histogram_record(handle: i64, value: i64) {
     });
 }
 
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "histogram buckets are registered as i64 upper bounds; comparing the \
+              f64 observation against the same numeric bound preserves the public \
+              bucket contract while allowing fractional sums"
+)]
+fn observation_within_bucket(value: f64, bound: i64) -> bool {
+    value <= (bound as f64)
+}
+
+/// Atomically add to an `f64` stored as raw bits in an `AtomicI64` slot.
+///
+/// Histogram sums are the only slot class that uses this representation; count,
+/// bucket, counter, and gauge slots remain ordinary integer atomics.
+fn atomic_f64_fetch_add(slot: &AtomicI64, delta: f64) {
+    let mut current = slot.load(Ordering::Relaxed);
+    loop {
+        let next = (f64::from_bits(current.cast_unsigned()) + delta)
+            .to_bits()
+            .cast_signed();
+        match slot.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
+fn atomic_f64_load(slot: &AtomicI64) -> f64 {
+    f64::from_bits(slot.load(Ordering::Relaxed).cast_unsigned())
+}
+
 // --- Scrape rendering (consumed by observe.rs in slice 4). ------------------
 
 /// A rendered line: one metric series in Prometheus text form.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RenderedMetric {
     /// Prometheus-rendered name (dots already mapped to underscores).
     pub prometheus_name: String,
@@ -707,7 +738,7 @@ pub struct RenderedMetric {
     /// in `series`). `None` for counters and gauges. Lets the scrape emit a
     /// valid `name_count` / `name_sum` exposition rather than a bare sample
     /// under `# TYPE name histogram`, which Prometheus rejects.
-    pub histogram_sum: Option<i64>,
+    pub histogram_sum: Option<f64>,
 }
 
 /// Snapshot every user metric for the scrape render. Returns metrics in
@@ -747,11 +778,12 @@ pub fn render_snapshot() -> Vec<RenderedMetric> {
                     series.push((split_series_values(canon), value));
                 }
             }
-            // A histogram's sum rides the slot after its count (base_slot + 1).
+            // A histogram's sum rides the slot after its count (base_slot + 1)
+            // as an f64 bit pattern.
             let histogram_sum = (entry.kind == MetricKind::Histogram).then(|| {
                 reg.slots
                     .get(entry.base_slot + 1)
-                    .map_or(0, |s| s.load(Ordering::Relaxed))
+                    .map_or(0.0, |s| atomic_f64_load(s))
             });
             out.push(RenderedMetric {
                 prometheus_name,
@@ -1042,24 +1074,17 @@ pub unsafe extern "C" fn hew_metric_histogram_register_simple(name: *const c_cha
     }
 }
 
-/// Record one histogram observation. `value` is floored to the registered
-/// integer bucket scale.
+/// Record one histogram observation. Fractional observations contribute their
+/// full value to the running `_sum`; integer bucket bounds are compared against
+/// the original floating-point observation.
 #[no_mangle]
 pub extern "C" fn hew_metric_histogram_record(handle: i64, value: f64) {
-    // Bucket bounds are integers; floor the observation to the bucket scale.
     // A non-finite observation is rejected and counted.
     if !value.is_finite() {
         metrics_state().invalid_ops.fetch_add(1, Ordering::Relaxed);
         return;
     }
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "buckets are integer-scaled; flooring the observation to the \
-                  bucket scale is the intended ABI. An out-of-i64-range \
-                  observation saturates, which lands outside every bucket."
-    )]
-    let floored = value.floor() as i64;
-    histogram_record(handle, floored);
+    histogram_record(handle, value);
 }
 
 /// Register (or get) a labelled metric of `kind` (0 = counter, 1 = gauge,
@@ -1464,9 +1489,9 @@ mod tests {
         let _g = guard();
         let h = register_histogram("app.dur", &[10, 100, 1000]);
         assert!(h >= 0);
-        histogram_record(h, 5); // <=10, <=100, <=1000
-        histogram_record(h, 50); // <=100, <=1000
-        histogram_record(h, 5000); // none
+        histogram_record(h, 5.0); // <=10, <=100, <=1000
+        histogram_record(h, 50.0); // <=100, <=1000
+        histogram_record(h, 5000.0); // none
         let snap = render_snapshot();
         let m = snap.iter().find(|m| m.canonical_name == "app.dur").unwrap();
         assert_eq!(m.type_token, "histogram");
@@ -1475,7 +1500,7 @@ mod tests {
         // The sum rides the slot after the count: 5 + 50 + 5000 = 5055.
         assert_eq!(
             m.histogram_sum,
-            Some(5055),
+            Some(5055.0),
             "histogram must track the observation sum"
         );
     }
@@ -1488,8 +1513,8 @@ mod tests {
         // valid `_count` / `_sum` exposition.
         let h = register_histogram("app.scalar", &[]);
         assert!(h >= 0);
-        histogram_record(h, 3);
-        histogram_record(h, 7);
+        histogram_record(h, 3.0);
+        histogram_record(h, 7.0);
         let snap = render_snapshot();
         let m = snap
             .iter()
@@ -1497,7 +1522,23 @@ mod tests {
             .unwrap();
         assert_eq!(m.type_token, "histogram");
         assert_eq!(m.series[0].1, 2, "two observations recorded");
-        assert_eq!(m.histogram_sum, Some(10), "sum is 3 + 7");
+        assert_eq!(m.histogram_sum, Some(10.0), "sum is 3 + 7");
+    }
+
+    #[test]
+    fn scalar_histogram_preserves_fractional_sum() {
+        let _g = guard();
+        let h = register_histogram("app.scalar_fractional", &[]);
+        assert!(h >= 0);
+        hew_metric_histogram_record(h, 0.5);
+        hew_metric_histogram_record(h, 0.25);
+        let snap = render_snapshot();
+        let m = snap
+            .iter()
+            .find(|m| m.canonical_name == "app.scalar_fractional")
+            .unwrap();
+        assert_eq!(m.series[0].1, 2, "two observations recorded");
+        assert_eq!(m.histogram_sum, Some(0.75), "sum keeps fractions");
     }
 
     #[test]

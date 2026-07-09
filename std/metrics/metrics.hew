@@ -152,12 +152,14 @@ impl GaugeMethods for Gauge {
 
 /// Methods on a `Histogram`.
 trait HistogramMethods {
-    /// Record one observation of value `v`.
+    /// Record one observation of value `v`; fractional values are preserved
+    /// in the rendered histogram `_sum` sample.
     fn observe(self, v: f64);
 }
 
 impl HistogramMethods for Histogram {
-    /// Record one observation of value `v`.
+    /// Record one observation of value `v`; fractional values are preserved
+    /// in the rendered histogram `_sum` sample.
     fn observe(h: Histogram, v: f64) {
         unsafe {
             hew_metric_histogram_record(h.id, v)

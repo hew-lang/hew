@@ -1050,11 +1050,11 @@ fn handle_control_frame(
             return;
         }
         CTRL_LINK_REQ => {
-            handle_link_req_frame(control);
+            handle_link_req_frame(mgr, conn_id, control);
             return;
         }
         CTRL_UNLINK => {
-            handle_unlink_frame(control);
+            handle_unlink_frame(mgr, conn_id, control);
             return;
         }
         CTRL_LINK_DOWN => {
@@ -1230,7 +1230,7 @@ fn handle_monitor_down_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &Con
 /// and never registers a link — no fabricated state from untrusted bytes. The
 /// decode bar is HIGHER than monitor because a registered link can later crash a
 /// real actor.
-fn handle_link_req_frame(control: &ControlFrame) {
+fn handle_link_req_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &ControlFrame) {
     let payload = match decode_link_req_payload(&control.payload) {
         Ok(payload) => payload,
         Err(err) => {
@@ -1240,12 +1240,22 @@ fn handle_link_req_frame(control: &ControlFrame) {
             return;
         }
     };
-    crate::hew_node::handle_inbound_link_req(&payload);
+    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, "link req") else {
+        return;
+    };
+    if payload.linker_node_id != authenticated {
+        set_last_error(format!(
+            "connection reader link req linker_node_id {} does not match authenticated peer {authenticated}",
+            payload.linker_node_id
+        ));
+        return;
+    }
+    crate::hew_node::handle_inbound_link_req(&payload, authenticated);
 }
 
 /// Handle an inbound `CTRL_UNLINK`: a remote node retracted a prior
 /// link of one of our local actors. Idempotent / fail-closed on malformed input.
-fn handle_unlink_frame(control: &ControlFrame) {
+fn handle_unlink_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &ControlFrame) {
     let payload = match decode_link_req_payload(&control.payload) {
         Ok(payload) => payload,
         Err(err) => {
@@ -1255,7 +1265,17 @@ fn handle_unlink_frame(control: &ControlFrame) {
             return;
         }
     };
-    crate::hew_node::handle_inbound_unlink(&payload);
+    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, "unlink") else {
+        return;
+    };
+    if payload.linker_node_id != authenticated {
+        set_last_error(format!(
+            "connection reader unlink linker_node_id {} does not match authenticated peer {authenticated}",
+            payload.linker_node_id
+        ));
+        return;
+    }
+    crate::hew_node::handle_inbound_unlink(&payload, authenticated);
 }
 
 /// Handle an inbound `CTRL_LINK_DOWN`: the node owning an actor we LINK
@@ -1285,15 +1305,8 @@ fn handle_link_down_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &Contro
     }
     // SAFETY: reader_loop owns a live manager pointer for this connection.
     let mgr_ref = unsafe { &*mgr };
-    // Peer-binding defence: resolve the handshake-authenticated identity of the
-    // connection this frame arrived on. `authenticated == 0` (no active,
-    // registered connection for `conn_id`, e.g. mid-teardown) is NOT
-    // guaranteed to fail closed on its own — `handle_link_req_frame` performs
-    // no peer authentication on an inbound `CTRL_LINK_REQ`, so any connected
-    // peer can set `linker_node_id` to 0 and land a `WatcherEntry` with
-    // `remote_node_id == 0`. `deliver_link_down_to_ref` rejects
-    // `authenticated_peer == 0` explicitly, before it is ever compared to a
-    // stored `remote_node_id`.
+    // `deliver_link_down_to_ref` rejects `authenticated_peer == 0` explicitly
+    // before comparing it with the stored link peer.
     let authenticated = peer_node_id_for_conn(mgr_ref, conn_id);
     crate::hew_node::handle_inbound_link_down(payload.ref_id, authenticated, payload.reason);
 }
@@ -3069,6 +3082,77 @@ mod tests {
         assert_eq!(stop.load(Ordering::Relaxed), 0);
         stop.store(1, Ordering::Relaxed);
         assert_eq!(actor.reader_stop.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn link_controls_from_wrong_authenticated_peer_are_rejected() {
+        let _guard = crate::runtime_test_guard();
+        let mut peer = ConnectionActor::new(10);
+        peer.peer_node_id = 2;
+        peer.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+        let mgr = HewConnMgr {
+            connections: PoisonSafe::new(vec![peer]),
+            transport: std::ptr::null_mut(),
+            inbound_router: None,
+            routing_table: std::ptr::null_mut(),
+            cluster: std::ptr::null_mut(),
+            reconnect_enabled: AtomicBool::new(false),
+            reconnect_max_retries: AtomicU32::new(RECONNECT_DEFAULT_MAX_RETRIES),
+            reconnect_shutdown: Arc::new(AtomicBool::new(false)),
+            inbound_spawn_closed: Arc::new(AtomicBool::new(false)),
+            inbound_ask_active: Arc::new(AtomicUsize::new(0)),
+            reconnect_workers: PoisonSafe::new(Vec::new()),
+            reader_lifecycle: Arc::new(ReaderLifecycle::default()),
+            next_publication_token: AtomicU64::new(1),
+            local_node_id: 1,
+        };
+        let mgr_ptr = std::ptr::from_ref(&mgr).cast_mut();
+        let payload = crate::envelope::LinkReqPayload {
+            linker_node_id: 9,
+            ref_id: 123,
+            target_serial: 77,
+            linker_serial: 88,
+            policy_tag: 1,
+            reciprocate: 0,
+        };
+
+        let link_req = ControlFrame {
+            version: WIRE_VERSION,
+            ctrl_kind: CTRL_LINK_REQ,
+            payload: crate::envelope::encode_link_req_payload(&payload)
+                .expect("link request payload must encode"),
+        };
+        handle_control_frame(mgr_ptr, 0, 10, &link_req);
+        assert!(
+            crate::runtime::rt_current()
+                .dist_monitors
+                .take_remote_watchers(payload.target_serial)
+                .is_empty(),
+            "a link request claiming another node must not register a watcher"
+        );
+
+        crate::runtime::rt_current()
+            .dist_monitors
+            .register_remote_link_watcher(payload.target_serial, 2, payload.ref_id);
+        let unlink = ControlFrame {
+            version: WIRE_VERSION,
+            ctrl_kind: CTRL_UNLINK,
+            payload: crate::envelope::encode_link_req_payload(&payload)
+                .expect("unlink payload must encode"),
+        };
+        handle_control_frame(mgr_ptr, 0, 10, &unlink);
+
+        let watchers = crate::runtime::rt_current()
+            .dist_monitors
+            .take_remote_watchers(payload.target_serial);
+        assert_eq!(
+            watchers.len(),
+            1,
+            "mismatched unlink must not remove watcher"
+        );
+        assert_eq!(watchers[0].watcher_node_id, 2);
+        assert_eq!(watchers[0].ref_id, payload.ref_id);
+        assert!(watchers[0].is_link);
     }
 
     #[test]

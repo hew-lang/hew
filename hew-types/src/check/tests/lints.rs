@@ -930,6 +930,15 @@ fn warn_unit_binding() {
 }
 
 #[test]
+fn no_warn_underscore_prefixed_unit_binding() {
+    let (_, warnings) = parse_and_check("fn main() { let _already_ignored = println(42); }");
+    assert!(
+        !warnings.iter().any(|w| w.message.contains("unit type")),
+        "underscore-prefixed unit binding should not warn, got: {warnings:?}"
+    );
+}
+
+#[test]
 fn no_warn_non_unit_binding() {
     let (_, warnings) =
         parse_and_check("fn compute() -> i32 { 42 }\nfn main() { let x = compute(); println(x); }");

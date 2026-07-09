@@ -639,7 +639,7 @@ impl Checker {
                     _ => None,
                 };
                 if let Some(name) = plain_identifier {
-                    if val_ty == Ty::Unit && value.is_some() {
+                    if val_ty == Ty::Unit && value.is_some() && !name.starts_with('_') {
                         self.warnings.push(TypeError {
                             severity: crate::error::Severity::Warning,
                             kind: TypeErrorKind::StyleSuggestion,

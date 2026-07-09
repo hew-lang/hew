@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Classify and validate the stable JIT host ABI exported by hew-runtime.
 
-Scans all hew-runtime Rust source files for #[no_mangle] extern "C" fn
-exports and validates each one is classified (stable, codegen-stable, or
-internal) in scripts/jit-symbol-classification.toml.
+Scans all hew-runtime Rust source files for #[no_mangle] extern "C" and
+extern "C-unwind" fn exports and validates each one is classified (stable,
+codegen-stable, or internal) in scripts/jit-symbol-classification.toml.
 
 Three-tier model:
   stable         -- user-visible runtime surface; user `extern "rt"` blocks
@@ -106,7 +106,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _find_no_mangle_macros(sources: list[tuple]) -> set[str]:
-    """Return names of macro_rules! macros whose bodies emit #[no_mangle] extern "C" fn.
+    """Return macro names whose bodies emit no-mangle C or C-unwind functions.
 
     Uses a simple balanced-brace walk so that macros with deeply nested bodies
     (e.g. vec_push_primitive!) are detected correctly even when the function
@@ -131,7 +131,9 @@ def _find_no_mangle_macros(sources: list[tuple]) -> set[str]:
                         body_end = i + 1
                         break
             body = source[brace_start:body_end]
-            if "#[no_mangle]" in body and 'extern "C" fn' in body:
+            if "#[no_mangle]" in body and re.search(
+                r'extern\s+"C(?:-unwind)?"\s+fn', body
+            ):
                 no_mangle_macros.add(macro_name)
     return no_mangle_macros
 
@@ -179,20 +181,21 @@ def extract_runtime_exports() -> set[str]:
 
     Two passes are performed:
 
-    1. Direct scan — finds ``#[no_mangle] pub unsafe extern "C" fn name`` where
-       the name is a literal identifier in the source.
+    1. Direct scan — finds ``#[no_mangle] pub unsafe extern "C" fn name`` and
+       ``#[no_mangle] pub unsafe extern "C-unwind" fn name`` where the name is
+       a literal identifier in the source.
 
     2. Macro-expansion scan — finds ``macro_rules!`` definitions whose bodies
-       contain ``#[no_mangle]`` + ``extern "C" fn``, then collects the first
-       identifier from every invocation of those macros.  This covers patterns
-       like ``vec_push_primitive!(hew_vec_push_i64, i64)`` where the symbol
-       name is the macro's ``$name`` parameter and is invisible to the regex in
-       pass 1.
+       contain ``#[no_mangle]`` plus a C or C-unwind function, then collects
+       the first identifier from every invocation of those macros. This covers
+       patterns like ``vec_push_primitive!(hew_vec_push_i64, i64)`` where the
+       symbol name is the macro's ``$name`` parameter and is invisible to the
+       regex in pass 1.
     """
     fn_pattern = re.compile(
         r"#\[no_mangle\]"
         r"(?:\s*#\[[^\]]*(?:\([^)]*\))?[^\]]*\])*"  # skip interleaved attrs
-        r'\s*(?:pub\s+)?(?:unsafe\s+)?extern\s+"C"\s+fn\s+'
+        r'\s*(?:pub\s+)?(?:unsafe\s+)?extern\s+"C(?:-unwind)?"\s+fn\s+'
         r"(\w+)",
         re.DOTALL,
     )

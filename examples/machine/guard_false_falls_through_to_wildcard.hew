@@ -1,0 +1,46 @@
+// Runnable fixture: a false `when` guard on an explicit arm must fall
+// through to a same-event `_` wildcard arm, not to the trap block.
+//
+// Regression fixture for #2390: `synthesize_machine_step_fn` built each
+// state's event cascade from concrete (state-specific) transitions first,
+// then appended wildcard transitions only when NO arm — guarded or not —
+// already existed for that event. A guarded explicit arm is conditional:
+// its own guard can evaluate false at runtime, and the wildcard is the
+// intended fallback for exactly that case. Filtering the wildcard out
+// whenever "any" same-event arm existed silently made it permanently
+// unreachable behind so much as one guarded sibling, so a false guard fell
+// all the way past the (missing) wildcard arm to
+// `TrapKind::ExhaustivenessFallthrough` instead.
+//
+// `on Try: Closed => Open when self.code == 42` is the only explicit arm
+// for `(Closed, Try)`; `on Try: _ => Bailed` is the same-event wildcard.
+// Starting from `Closed { code: 1 }`, the `== 42` guard is FALSE, so the
+// CORRECT result is the wildcard firing -> `Bailed`.
+//
+// Before the fix this trapped (`hew: trap in main context: Trap`, exit
+// non-zero); after the fix it prints "Bailed" and exits 0.
+//
+// Gate: stdout must match `guard_false_falls_through_to_wildcard.expected`
+// exactly.
+machine Latch {
+    events {
+        Try;
+    }
+
+    state Closed { code: i64; }
+    state Open;
+    state Bailed;
+
+    on Try: Closed => Open when self.code == 42 {
+        Open
+    }
+    on Try: _ => Bailed {
+        Bailed
+    }
+}
+
+fn main() {
+    var m = Closed { code: 1 };
+    m.step(Try);
+    println(m.state_name());
+}

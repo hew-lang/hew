@@ -91,6 +91,18 @@ const FIXTURES: &[MachineFixture] = &[
         has_guard: true,
     },
     MachineFixture {
+        // a false `when` guard on the only explicit arm for an event must
+        // fall through to a same-event `_` wildcard arm, not to the trap
+        // block — a guarded explicit arm is conditional, and filtering the
+        // wildcard out whenever "any" same-event arm existed (guarded or
+        // not) made the wildcard permanently unreachable (#2390).
+        stem: "guard_false_falls_through_to_wildcard",
+        machine: "Latch",
+        states: 3,
+        has_default: false,
+        has_guard: true,
+    },
+    MachineFixture {
         // unit-event `emit` delivered through the deliver-design ABI
         // (`hew_machine_emit_push` → keep-on-step-exit →
         // `hew_machine_emit_take`). Exercises the step-exit-keep wrapper
@@ -493,6 +505,11 @@ fn guard_true_fires_executes_with_expected_stdout() {
 #[test]
 fn guard_default_stays_executes_with_expected_stdout() {
     execute_fixture("guard_default_stays");
+}
+
+#[test]
+fn guard_false_falls_through_to_wildcard_executes_with_expected_stdout() {
+    execute_fixture("guard_false_falls_through_to_wildcard");
 }
 
 #[test]

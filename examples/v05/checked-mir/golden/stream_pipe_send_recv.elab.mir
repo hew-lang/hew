@@ -32,19 +32,21 @@ fn Echo__recv__run -> ()
       (none)
     cancel[bb0] ->
       (none)
-    branch[bb1: bb2/bb3] ->
+    branch[bb1: bb6/bb7] ->
       (none)
-    panic[bb2] ->
+    branch[bb2: bb3/bb5] ->
       (none)
-    goto[bb3->bb4] ->
+    call[bb3 to_string_i64 -> bb8] ->
       (none)
-    branch[bb4: bb5/bb7] ->
+    branch[bb4: bb12/bb2] ->
       (none)
-    call[bb5 to_string_i64 -> bb8] ->
+    call[bb5 hew_sink_close -> bb13] ->
       (none)
-    branch[bb6: bb12/bb4] ->
+    panic[bb6] ->
       (none)
-    call[bb7 hew_sink_close -> bb13] ->
+    goto[bb7->bb2] ->
+      (none)
+    cancel[bb7] ->
       (none)
     call[bb8 string_concat -> bb9] ->
       (none)
@@ -52,7 +54,7 @@ fn Echo__recv__run -> ()
       (none)
     suspend[bb10 resume=bb11 cleanup=bb11] ->
       (none)
-    goto[bb11->bb6] ->
+    goto[bb11->bb4] ->
       (none)
     cancel[bb11] ->
       (none)

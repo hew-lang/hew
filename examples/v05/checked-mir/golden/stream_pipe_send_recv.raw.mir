@@ -55,32 +55,32 @@ fn Echo__recv__run(i64) -> () [conv=actor_handler]
     _11 = move _10
     _12 = const.i64 0
     _13 = icmp.sle _11 _12
-    branch _13 ? bb2 : bb3
+    branch _13 ? bb6 : bb7
   bb2:
-    exit_context
-    trap(DivideByZero)
-  bb3:
-    _14 = const.i64 0
-    _15 = actor_state_load field[0]
-    _8 = move _14
-    _9 = move _15
-    goto bb4
-  bb4:
     _16 = icmp.slt _8 _9
-    branch _16 ? bb5 : bb7
-  bb5:
+    branch _16 ? bb3 : bb5
+  bb3:
     stmt: bind BindingId(6) i site=SiteId(0) ty=i64
     stmt: use BindingId(4) sink site=SiteId(12) ty=Sink<bytes> intent=Read
     stmt: use BindingId(6) i site=SiteId(16) ty=i64 intent=Read
     _17 = string_lit "x"
     _18 = call to_string_i64(_8) -> bb8
-  bb6:
+  bb4:
     _8 ovf=_21 = add.checked.s _8 _11
-    branch _21 ? bb12 : bb4
-  bb7:
+    branch _21 ? bb12 : bb2
+  bb5:
     stmt: eval site=SiteId(23) ty=()
     stmt: use BindingId(4) sink site=SiteId(25) ty=Sink<bytes> intent=Consume
     call hew_sink_close(_5) [builtin=SinkClose] -> bb13
+  bb6:
+    exit_context
+    trap(DivideByZero)
+  bb7:
+    _14 = const.i64 0
+    _15 = actor_state_load field[0]
+    _8 = move _14
+    _9 = move _15
+    goto bb2
   bb8:
     _19 = call string_concat(_17, _18) -> bb9
   bb9:
@@ -91,7 +91,7 @@ fn Echo__recv__run(i64) -> () [conv=actor_handler]
     suspend [stream_send] is_final=false -> resume=bb11 cleanup=bb11
   bb11:
     stmt: eval site=SiteId(11) ty=()
-    goto bb6
+    goto bb4
   bb12:
     exit_context
     trap(IntegerOverflow)

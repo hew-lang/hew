@@ -1,0 +1,13 @@
+// #1948 regression: an EMPTY exclusive descending range ending at the signed
+// minimum (`(i32::MIN..i32::MIN).rev()`) must yield zero iterations, not
+// trap. Same root cause as the unsigned-zero sibling fixture, but on the
+// signed side of the counter-width family: `raw_end - 1` underflows
+// `i32::MIN` the same way `0u32 - 1` underflows `u32`.
+fn main() {
+    let lo: i32 = -2147483648;
+    let hi: i32 = -2147483648;
+    for i in (lo .. hi).rev() {
+        println(i);
+    }
+    println(999);
+}

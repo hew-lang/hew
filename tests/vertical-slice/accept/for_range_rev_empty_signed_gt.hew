@@ -1,0 +1,15 @@
+// #1948 follow-up: an EMPTY exclusive descending range where `a > b` and `b`
+// sits at the signed minimum (`(0i32..i32::MIN).rev()`) must yield zero
+// iterations, not trap. Same root cause as the unsigned-gt sibling fixture,
+// but on the signed side of the counter-width family: `raw_end - 1`
+// underflows `i32::MIN` the same way `0u32 - 1` underflows `u32`, and the
+// original #1948 fix's `raw_start == raw_end` gate does not fire here since
+// `0 != i32::MIN`.
+fn main() {
+    let lo: i32 = 0;
+    let hi: i32 = -2147483648;
+    for i in (lo .. hi).rev() {
+        println(i);
+    }
+    println(999);
+}

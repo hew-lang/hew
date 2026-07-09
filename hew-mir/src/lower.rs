@@ -35,8 +35,8 @@ use crate::model::{
     DropKind, DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, FieldOffset,
     FloatWidth, Instr, IntArithOp, IntSignedness, IrPipeline, JoinBranch, LambdaCapture, MirCheck,
     MirConst, MirConstValue, MirDiagnostic, MirDiagnosticKind, MirStatement, Place, PointerWidth,
-    RawMirFunction, SelectArm, SelectArmKind, SourceOrigin, Strategy, SuspendKind, Terminator,
-    ThirFunction, TraitObjectStorage, TrapKind,
+    RawMirFunction, SelectArm, SelectArmKind, SourceOrigin, SpawnEnvFieldOwnership, Strategy,
+    SuspendKind, Terminator, ThirFunction, TraitObjectStorage, TrapKind,
 };
 use crate::ownership::FailClosedReason;
 use crate::ownership::LayoutClass;
@@ -25615,6 +25615,16 @@ impl Builder {
             fn_symbol: shim_name,
             env: env_place,
             env_ty,
+            env_ownership: arg_tys
+                .iter()
+                .map(|ty| {
+                    if ValueClass::of_ty(ty, &self.type_classes) == ValueClass::BitCopy {
+                        SpawnEnvFieldOwnership::BorrowsOnly
+                    } else {
+                        SpawnEnvFieldOwnership::OwnsMoved
+                    }
+                })
+                .collect(),
         });
         Some(task_place)
     }
@@ -25623,11 +25633,9 @@ impl Builder {
     /// `ClosureInvoke`-ABI function `(ctx, env_ptr)` that loads each arg
     /// back out of the env record and calls the target function with them.
     ///
-    /// The env field loads forward the arg bits to the callee with the same
-    /// ownership posture as a direct call: the shim emits no drops for the
-    /// loaded temps, and the callee treats owned params exactly as it would
-    /// for a direct call (verified by drop-plan parity with the no-fork
-    /// baseline).
+    /// Loading an owned string capture retains it so the environment remains
+    /// valid while the call runs. The shim balances that temporary retain after
+    /// the callee returns; this does not release the moved environment owner.
     #[expect(
         clippy::too_many_lines,
         reason = "shim construction keeps raw/checked/elaborated MIR snapshots aligned, \
@@ -25683,11 +25691,20 @@ impl Builder {
         builder.finish_current_block(Terminator::Call {
             callee: callee_symbol.to_string(),
             builtin: None,
-            args: arg_places,
+            args: arg_places.clone(),
             dest: None,
             next: ret_block_id,
         });
         builder.start_block(ret_block_id);
+        for (place, ty) in arg_places.iter().zip(arg_tys) {
+            if matches!(ty, ResolvedTy::String) {
+                builder.instructions.push(Instr::Drop {
+                    place: *place,
+                    ty: ty.clone(),
+                    drop_fn: Some(crate::model::DropFnSpec::Release("hew_string_drop")),
+                });
+            }
+        }
         let blocks = builder.finalize_blocks(Terminator::Return);
 
         let thir_statements: Vec<MirStatement> = blocks
@@ -25839,6 +25856,7 @@ impl Builder {
             fn_symbol,
             env: env_place,
             env_ty,
+            env_ownership: vec![SpawnEnvFieldOwnership::BorrowsOnly; captures.len()],
         });
         Some(task_place)
     }

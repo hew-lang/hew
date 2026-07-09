@@ -16,7 +16,7 @@ use hew_codegen_rs::{emit_module, EmitOptions};
 use hew_mir::{
     BasicBlock, BlockKind, CheckedMirFunction, DropPlan, ElabBlock, ElaboratedMirFunction,
     ExitPath, FunctionCallConv, Instr, IrPipeline, Place, RawMirFunction, RecordLayout,
-    RuntimeCall, Terminator,
+    RuntimeCall, SpawnEnvFieldOwnership, Terminator,
 };
 use hew_types::ResolvedTy;
 
@@ -367,7 +367,7 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
             Instr::EnterContext,
             Instr::RecordInit {
                 ty: env_ty.clone(),
-                fields: vec![],
+                fields: vec![(hew_mir::FieldOffset(0), Place::Local(2))],
                 dest: Place::Local(1),
             },
             Instr::SpawnTaskClosure {
@@ -375,6 +375,7 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
                 fn_symbol: "__hew_closure_invoke_main_0".to_string(),
                 env: Place::Local(1),
                 env_ty: env_ty.clone(),
+                env_ownership: vec![SpawnEnvFieldOwnership::BorrowsOnly],
             },
             Instr::ExitContext,
         ],
@@ -400,7 +401,11 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
                 return_ty: ResolvedTy::Unit,
                 call_conv: FunctionCallConv::ActorHandler,
                 params: vec![],
-                locals: vec![ResolvedTy::Task(Box::new(ResolvedTy::Unit)), env_ty.clone()],
+                locals: vec![
+                    ResolvedTy::Task(Box::new(ResolvedTy::Unit)),
+                    env_ty.clone(),
+                    ResolvedTy::String,
+                ],
                 local_names: Vec::new(),
                 local_scopes: Vec::new(),
                 local_decl_bytes: Vec::new(),
@@ -461,7 +466,7 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
         opaque_handle_names: vec![],
         record_layouts: vec![RecordLayout {
             name: "__hew_closure_env_main_0".to_string(),
-            field_tys: vec![],
+            field_tys: vec![ResolvedTy::String],
             field_names: vec![],
         }],
         actor_layouts: vec![],
@@ -829,6 +834,15 @@ fn task_abi_emission_spawn_task_closure_threads_execution_context() {
     assert!(
         ir.contains("@hew_task_spawn_thread_with_inherited_context"),
         "spawned closures must use inherited-context spawn helper; got:\n{ir}",
+    );
+    assert!(
+        !ir.contains("__hew_spawn_env_rc_drop_"),
+        "a scope-owned closure env borrows its string capture and must not get an \
+         Rc payload destructor; got:\n{ir}",
+    );
+    assert!(
+        ir.contains("call ptr @hew_rc_new") && ir.contains("ptr null)"),
+        "a borrowed scope-owned closure env must retain the null Rc callback; got:\n{ir}",
     );
     assert!(
         ir.contains("call i8 @__hew_closure_invoke_main_0(ptr %0, ptr %hew_task_get_env_call)"),

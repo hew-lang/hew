@@ -18662,8 +18662,16 @@ fn lower_instruction(
             fn_symbol,
             env,
             env_ty,
+            env_ownership,
         } => {
-            crate::thunks::emit_spawn_task_closure(fn_ctx, *task, fn_symbol, *env, env_ty)?;
+            crate::thunks::emit_spawn_task_closure(
+                fn_ctx,
+                *task,
+                fn_symbol,
+                *env,
+                env_ty,
+                env_ownership,
+            )?;
             let _ = ctx;
         }
         Instr::SpawnActor {
@@ -20984,23 +20992,24 @@ fn lower_make_closure(
 /// is a `CodegenError::FailClosed` (the owned capture would otherwise leak by
 /// omission), and an env whose record type is missing from the registry is a
 /// hard error rather than a silent empty (which would reinstate the leak).
-fn closure_env_capture_drop_kinds(
+pub(crate) fn env_field_drop_kinds(
     fn_ctx: &FnCtx<'_, '_>,
     fn_symbol: &str,
     env: Place,
+    env_role: &str,
 ) -> CodegenResult<Vec<StateFieldCloneKind>> {
     let env_ty = place_resolved_ty(fn_ctx, env)?;
     let ResolvedTy::Named { name: env_name, .. } = env_ty else {
         return Err(CodegenError::FailClosed(format!(
-            "closure env for `{fn_symbol}` has non-Named place type {env_ty:?}; \
-             expected the `__hew_closure_env_*` record"
+            "{env_role} environment for `{fn_symbol}` has non-Named place type {env_ty:?}; \
+             expected a generated record"
         )));
     };
     let Some(field_tys) = fn_ctx.record_field_resolved_tys.get(env_name.as_str()) else {
         return Err(CodegenError::FailClosed(format!(
-            "closure env `{env_name}` for `{fn_symbol}` is not in the codegen record \
-             registry; its captured-field drop manifest cannot be derived and owned \
-             captures would leak (boundary-fail-closed)"
+            "{env_role} environment `{env_name}` for `{fn_symbol}` is not in the codegen \
+             record registry; its owned-field drop manifest cannot be derived and values \
+             would leak (boundary-fail-closed)"
         )));
     };
     // Reconstruct the RecordLayout slice the classifier consumes from the same
@@ -21025,9 +21034,9 @@ fn closure_env_capture_drop_kinds(
         )
         .map_err(|e| {
             CodegenError::FailClosed(format!(
-                "closure env `{env_name}` capture field {idx} (type {field_ty:?}) is not \
-                 drop-classifiable: {e}; an owned capture would leak when the escaping \
-                 closure is dropped (borrow-classifier-completeness-or-leak)"
+                "{env_role} environment `{env_name}` field {idx} (type {field_ty:?}) is not \
+                 drop-classifiable: {e}; an owned field would leak on teardown \
+                 (borrow-classifier-completeness-or-leak)"
             ))
         })?;
         kinds.push(kind);
@@ -21107,7 +21116,7 @@ fn emit_closure_env_heap_box<'ctx>(
             )));
         }
     };
-    let field_kinds = closure_env_capture_drop_kinds(fn_ctx, fn_symbol, env)?;
+    let field_kinds = env_field_drop_kinds(fn_ctx, fn_symbol, env, "closure")?;
     let free_thunk = crate::thunks::get_or_emit_closure_env_free_thunk(
         fn_ctx,
         fn_symbol,

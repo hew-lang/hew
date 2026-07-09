@@ -4331,6 +4331,10 @@ pub enum Instr {
         fn_symbol: String,
         env: Place,
         env_ty: ResolvedTy,
+        /// Per-field ownership contract for the Rc task environment. Fork
+        /// argument fields transferred from the parent are owned by this
+        /// environment; scope-owned closure captures remain borrowed.
+        env_ownership: Vec<SpawnEnvFieldOwnership>,
     },
     /// Run the drop ritual for `place`. Cluster 3 makes this first-class:
     /// `drop_fn = Some(spec)` selects the release ritual through the typed
@@ -5950,6 +5954,19 @@ pub enum ClosureEnvFieldOwnership {
     OwnsMoved,
     /// Reserved for the future retain/deep-clone capture path.
     OwnsClonedOrRetained,
+}
+
+/// Ownership verdict for one [`Instr::SpawnTaskClosure`] environment field.
+///
+/// `SpawnTaskClosure` carries both moved fork-call arguments and borrowed
+/// scope-owned closure captures. The runtime Rc payload destructor must release
+/// only the former.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SpawnEnvFieldOwnership {
+    /// The environment aliases a value that remains owned elsewhere.
+    BorrowsOnly,
+    /// The environment received the source value's existing owner.
+    OwnsMoved,
 }
 
 /// One field of a [`Instr::ClosureEnvInit`] ownership manifest.

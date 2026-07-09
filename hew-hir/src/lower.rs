@@ -19668,19 +19668,29 @@ impl LowerCtx {
                 // alongside the temp's own drop (#2356). Hoist the block's
                 // statements into the prelude and use its tail directly, so a
                 // literal source takes exactly the shape a named binding takes.
+                //
+                // A user-written block wrapped AROUND the literal (`for x in { [1,
+                // 2, 3] }`) nests one more `Block` layer: the outer block's own
+                // tail is the array-literal desugar `Block` above, not yet a bare
+                // `BindingRef`. Peeling only one layer left that inner `Block`
+                // intact as the `VecIter` source, so MIR's place-source match still
+                // failed and the double-free reproduced identically to #2356 for
+                // any block-wrapped literal/repeat source (#2394 follow-up). Peel
+                // every nested `Block` layer — hoisting each one's statements into
+                // the prelude in outer-to-inner (original execution) order — until
+                // the tail is no longer a `Block`, so an arbitrarily block-wrapped
+                // literal source bottoms out at the same bare-`BindingRef` shape a
+                // named binding takes.
                 let elem_ty = args[0].clone();
-                match lowered_iterable.kind {
-                    HirExprKind::Block(block) if block.tail.is_some() => {
-                        let mut tail = *block.tail.expect("checked by guard above");
-                        tail.intent = IntentKind::Capture;
-                        source_prelude.extend(block.statements);
-                        lowered_iterable = tail;
-                    }
-                    kind => {
-                        lowered_iterable.kind = kind;
-                        lowered_iterable.intent = IntentKind::Capture;
-                    }
+                while let HirExprKind::Block(block) = lowered_iterable.kind {
+                    let Some(tail) = block.tail else {
+                        lowered_iterable.kind = HirExprKind::Block(block);
+                        break;
+                    };
+                    source_prelude.extend(block.statements);
+                    lowered_iterable = *tail;
                 }
+                lowered_iterable.intent = IntentKind::Capture;
                 (
                     self.make_vec_iter_init(lowered_iterable, elem_ty.clone(), iterable.1.clone()),
                     Self::resolved_vec_iter_ty(elem_ty.clone()),

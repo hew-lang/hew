@@ -681,6 +681,8 @@ run_accept_expect_status "array_repeat_int_sum" 0
 run_accept_expect_status "array_repeat_runtime_count" 0
 run_accept_expect_status "array_repeat_string_clone" 0
 run_accept_expect_status "array_repeat_record_clone" 0
+run_accept_expect_stdout "for_in_block_wrapped_array_literal"
+run_accept_expect_stdout "for_in_block_wrapped_array_repeat"
 
 # Owned-element array-repeat reject: a record with a Vec field has no clone
 # thunk (container-in-container), so [r; N] must fail closed with a clear

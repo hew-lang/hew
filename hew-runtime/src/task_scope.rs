@@ -2895,6 +2895,7 @@ mod tests {
 
     #[test]
     fn suspending_unit_task_await_cancel_frees_waiter_and_slot_once() {
+        let _guard = crate::runtime_test_guard();
         crate::read_slot::reset_read_slot_final_free_count_for_test();
         reset_task_await_waiter_final_free_count_for_test();
 
@@ -2935,6 +2936,7 @@ mod tests {
 
     #[test]
     fn suspending_unit_task_await_normal_completion_frees_waiter_and_slot_once() {
+        let _guard = crate::runtime_test_guard();
         crate::read_slot::reset_read_slot_final_free_count_for_test();
         reset_task_await_waiter_final_free_count_for_test();
 
@@ -2981,6 +2983,7 @@ mod tests {
         use crate::timer_wheel::{hew_timer_wheel_free, hew_timer_wheel_new, hew_timer_wheel_tick};
         use std::time::Duration;
 
+        let _guard = crate::runtime_test_guard();
         reset_await_cancel_final_free_count_for_test();
         // SAFETY: the registration and wheel are owned by this test; cancellation
         // wins before the wheel fires, mirroring suspending sleep abandon.

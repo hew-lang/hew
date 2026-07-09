@@ -2924,16 +2924,22 @@ pub(crate) fn lower_call_runtime_abi(
                 .builder
                 .build_int_truncate(key_i64, i32_ty, "supervisor_child_get key_i32")
                 .llvm_ctx("supervisor_child_get key truncate")?;
-            // pool_child_get arg2: the member index — i64 in MIR, truncate to i32.
-            let index_i32 = if is_pool {
-                let idx_i64 =
-                    load_int_arg(fn_ctx, args[2], i64_ty, "supervisor_pool_child_get index_i64")?;
-                Some(
-                    fn_ctx
-                        .builder
-                        .build_int_truncate(idx_i64, i32_ty, "supervisor_pool_child_get index_i32")
-                        .llvm_ctx("supervisor_pool_child_get index truncate")?,
-                )
+            // pool_child_get arg2: the member index. Pass the full i64 through
+            // untruncated -- `hew_supervisor_pool_child_get`'s `index` param is
+            // `u64` specifically so the runtime can bounds-check the caller's
+            // real index before any narrowing cast. Truncating to i32 here (as
+            // this code used to) let an index like `2^32` silently wrap back
+            // into `[0, member_count)` and alias an unrelated live member
+            // instead of trapping OOB (hew-lang/hew#2244) -- passing the wide
+            // value through removes the wraparound at its source instead of
+            // moving it further down the pipeline.
+            let index_i64 = if is_pool {
+                Some(load_int_arg(
+                    fn_ctx,
+                    args[2],
+                    i64_ty,
+                    "supervisor_pool_child_get index_i64",
+                )?)
             } else {
                 None
             };
@@ -2968,7 +2974,12 @@ pub(crate) fn lower_call_runtime_abi(
             let triple = fn_ctx.llvm_mod.get_triple();
             let triple_str = triple.as_str().to_string_lossy();
             let param_tys: Vec<inkwell::types::BasicMetadataTypeEnum> = if is_pool {
-                vec![ptr_ty.into(), i32_ty.into(), i32_ty.into()]
+                // Third param is the member index, passed as the full i64 —
+                // not truncated to i32 like the supervisor/pool key — so the
+                // runtime can bounds-check the caller's real index before any
+                // narrowing cast (hew-lang/hew#2244). Must match
+                // `hew_supervisor_pool_child_get`'s `index: u64` ABI param.
+                vec![ptr_ty.into(), i32_ty.into(), i64_ty.into()]
             } else {
                 vec![ptr_ty.into(), i32_ty.into()]
             };
@@ -2982,7 +2993,7 @@ pub(crate) fn lower_call_runtime_abi(
                 &param_tys,
             )?;
             // Argument list for the register-pair (no sret) path.
-            let call_args: Vec<inkwell::values::BasicMetadataValueEnum> = match index_i32 {
+            let call_args: Vec<inkwell::values::BasicMetadataValueEnum> = match index_i64 {
                 Some(idx) => vec![sup_ptr.into(), key_i32.into(), idx.into()],
                 None => vec![sup_ptr.into(), key_i32.into()],
             };
@@ -3047,7 +3058,7 @@ pub(crate) fn lower_call_runtime_abi(
                         "child_result_sret_lt_start",
                     )?;
                     let sret_args: Vec<inkwell::values::BasicMetadataValueEnum> =
-                        match index_i32 {
+                        match index_i64 {
                             Some(idx) => vec![
                                 result_slot.into(),
                                 sup_ptr.into(),

@@ -6107,6 +6107,14 @@ pub unsafe extern "C" fn hew_supervisor_pool_member_remove(
 /// [`hew_supervisor_pool_member_remove`]) may shift other members' indices
 /// because the pool uses `swap_remove`. Do not cache an index across removals.
 ///
+/// `index` is `u64` (not `u32`) specifically so this function can
+/// bounds-check the caller's *original, untruncated* index. A pool's real
+/// member count always fits comfortably in a `u32`, so any `index` that does
+/// not itself fit in `usize`/`u32` range is unconditionally out of bounds and
+/// is rejected as `Dead(UnknownSlot)` before any narrowing cast — matching
+/// `Vec[i]` OOB-parity semantics for arbitrarily large indices instead of
+/// silently wrapping (see hew-lang/hew#2244).
+///
 /// # Safety
 ///
 /// `sup` must be a valid pointer returned by [`hew_supervisor_new`].
@@ -6114,7 +6122,7 @@ pub unsafe extern "C" fn hew_supervisor_pool_member_remove(
 pub unsafe extern "C" fn hew_supervisor_pool_child_get(
     sup: *mut HewSupervisor,
     pool_key: u32,
-    index: u32,
+    index: u64,
 ) -> ChildLookupResult {
     if sup.is_null() {
         return ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown);
@@ -6126,6 +6134,19 @@ pub unsafe extern "C" fn hew_supervisor_pool_child_get(
     if s.cancelled.load(Ordering::Acquire) || s.running.load(Ordering::Acquire) == 0 {
         return ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown);
     }
+
+    // `index` arrives untruncated here (u64). No real pool ever has anywhere
+    // near `usize::MAX` members, so any index that overflows `usize` (only
+    // possible on a 32-bit `usize` target) is unconditionally OOB. On the
+    // universally-supported 64-bit targets this `try_into` is infallible, but
+    // keeping the target-generic checked conversion (rather than a bare `as`)
+    // is what actually closes the truncation-and-wraparound gap this function
+    // exists to prevent (hew-lang/hew#2244) -- an `as usize` here would just
+    // move the same silent-wraparound bug from `i64->u32` (codegen) to
+    // `u64->usize` (here) on a 32-bit target instead of removing it.
+    let Ok(index) = usize::try_from(index) else {
+        return ChildLookupResult::dead(ChildSlotReason::UnknownSlot);
+    };
 
     let i = pool_key as usize;
     if i >= s.pool_slots.len() {
@@ -6149,7 +6170,7 @@ pub unsafe extern "C" fn hew_supervisor_pool_child_get(
     // child resolver verbatim.
     let static_members = &s.pool_specs[i].static_members;
     if !static_members.is_empty() {
-        let Some(&static_idx) = static_members.get(index as usize) else {
+        let Some(&static_idx) = static_members.get(index) else {
             // Index beyond the member count → out of bounds (Vec[i] OOB parity).
             return ChildLookupResult::dead(ChildSlotReason::UnknownSlot);
         };
@@ -6168,7 +6189,7 @@ pub unsafe extern "C" fn hew_supervisor_pool_child_get(
     // Resolve the index within the pool's member list via the public ABI so
     // we stay within the module's encapsulation boundary.
     // SAFETY: pool was created by hew_pool_new and has not been freed.
-    let pid = unsafe { crate::pool::hew_pool_get_at(pool, index as usize) };
+    let pid = unsafe { crate::pool::hew_pool_get_at(pool, index) };
     if pid == 0 {
         // 0 is returned both for out-of-range and for an empty pool;
         // both cases are dead from the caller's perspective.
@@ -6326,6 +6347,57 @@ mod pool_slot_tests {
         assert_eq!(r.tag, 2, "should be Dead");
         assert_eq!(r.reason, ChildSlotReason::UnknownSlot as u8);
         assert!(r.handle.is_null());
+
+        unsafe { hew_supervisor_stop(sup) };
+    }
+
+    /// hew-lang/hew#2244 regression: before this fix, codegen truncated the
+    /// index to i32 before this function ever saw it, so a caller-supplied
+    /// index of `2^32 + k` silently wrapped to `k` and could alias an
+    /// unrelated Live member instead of failing bounds-checking. This test
+    /// exercises the *runtime* half of the fix directly: `index` is now a
+    /// `u64` ABI param specifically so a huge, never-legitimately-in-range
+    /// index is rejected as `Dead(UnknownSlot)` on its own, with no
+    /// dependence on codegen not truncating it upstream (belt-and-suspenders
+    /// with the codegen-side fix in `hew-codegen-rs/src/runtime_abi.rs`).
+    #[test]
+    fn pool_child_get_huge_index_returns_dead_unknown_slot_not_aliased_member() {
+        let _rt = crate::runtime_test_guard();
+        let sup = unsafe { make_sup() };
+        let name = std::ffi::CString::new("workers").unwrap();
+        unsafe { hew_supervisor_pool_add_slot(sup, name.as_ptr(), ROUND_ROBIN, 0) };
+        // Two members: PID 1001 at index 0, PID 2002 at index 1. If a huge
+        // index silently wrapped instead of failing bounds-checking, these
+        // are exactly the (wrong) Live handles it could alias.
+        unsafe { hew_supervisor_pool_member_add(sup, 0, 1001) };
+        unsafe { hew_supervisor_pool_member_add(sup, 0, 2002) };
+        unsafe { mark_running(sup) };
+
+        // 2^32 would wrap to 0 (aliasing PID 1001) under the old i32-truncating
+        // ABI; 2^32 + 1 would wrap to 1 (aliasing PID 2002). Both must be
+        // rejected as out of bounds now, never resolving to either handle.
+        for huge_index in [1u64 << 32, (1u64 << 32) + 1, u64::MAX] {
+            let r = unsafe { hew_supervisor_pool_child_get(sup, 0, huge_index) };
+            assert_eq!(r.tag, 2, "index {huge_index} should be Dead, not Live");
+            assert_eq!(r.reason, ChildSlotReason::UnknownSlot as u8);
+            assert!(r.handle.is_null());
+            assert_ne!(
+                r.handle as u64, 1001,
+                "index {huge_index} must not alias member 0's PID"
+            );
+            assert_ne!(
+                r.handle as u64, 2002,
+                "index {huge_index} must not alias member 1's PID"
+            );
+        }
+
+        // Sanity: the real in-range indices still resolve Live (the fix
+        // widened the ABI/added a bounds check, it did not break ordinary
+        // lookups).
+        let r0 = unsafe { hew_supervisor_pool_child_get(sup, 0, 0) };
+        let r1 = unsafe { hew_supervisor_pool_child_get(sup, 0, 1) };
+        assert!(r0.is_live() && r0.handle as u64 == 1001);
+        assert!(r1.is_live() && r1.handle as u64 == 2002);
 
         unsafe { hew_supervisor_stop(sup) };
     }
@@ -6850,7 +6922,7 @@ mod pool_slot_tests {
 
         // Each member resolves Live to its static slot's actor.
         for idx in 0..3u32 {
-            let r = unsafe { hew_supervisor_pool_child_get(sup, 0, idx) };
+            let r = unsafe { hew_supervisor_pool_child_get(sup, 0, u64::from(idx)) };
             assert!(r.is_live(), "member {idx} should be Live");
             let expected = unsafe { (&(*sup).children)[idx as usize] };
             assert_eq!(

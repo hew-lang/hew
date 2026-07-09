@@ -1,0 +1,42 @@
+// Reject fixture: gen_fn_mixed_capture_cascade — a generator that reads BOTH
+// an inadmissible (`#[opaque]`) parameter AND an otherwise-admissible scalar
+// parameter as free variables of its body.
+//
+// Env-record synthesis for a generator's captures is all-or-nothing: if ANY
+// capture is inadmissible, `lower_gen_block` abandons the whole env record —
+// not only for the rejected capture, but for every other capture that would
+// otherwise have materialised cleanly. Before this fixture's fix, only the
+// explicitly-rejected binding was poisoned; the admissible scalar sibling had
+// neither a poison entry (silencing its body-side read) nor a
+// `capture_env_sources` entry (since no env exists to source it from), so it
+// fell through to the ordinary unresolved-binding path and cascaded a spurious
+// InitialisedBeforeUse + UnresolvedPlace on top of the one actionable root
+// diagnostic for the opaque capture.
+//
+// Harness verb: hew check
+// Error count: exactly 1 — the root NotYetImplemented naming the opaque
+// capture `handle`. The scalar capture `n` must NOT cascade
+// InitialisedBeforeUse/UnresolvedPlace: the whole abandoned capture set
+// (every binding in `captures`, not just the explicitly-rejected one) is
+// poisoned so the body stays silent for all of them.
+
+#[opaque]
+type Dq {}
+
+extern "C" {
+    fn hew_deque_new() -> Dq;
+    fn hew_deque_len(dq: Dq) -> i64;
+    fn hew_deque_free(dq: Dq);
+}
+
+gen fn drain(handle: Dq, n: i64) -> i64 {
+    yield unsafe { hew_deque_len(handle) } + n;
+}
+
+fn main() {
+    let dq = unsafe { hew_deque_new() };
+    for n in drain(dq, 5) {
+        println(n);
+    }
+    unsafe { hew_deque_free(dq) };
+}

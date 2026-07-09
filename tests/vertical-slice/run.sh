@@ -2580,6 +2580,23 @@ expect_check_fail_error_count_no_cascade \
   "gen_fn_capture_owned_value" \
   "InitialisedBeforeUse" "UnresolvedPlace"
 
+# Reject: a generator that reads BOTH an inadmissible (`#[opaque]`) parameter
+# AND an otherwise-admissible scalar parameter as free variables of its body.
+# Env-record synthesis is all-or-nothing: if any capture is inadmissible, the
+# whole env record is abandoned, including for captures that would otherwise
+# have materialised cleanly. Every capture in that abandoned set must be
+# poisoned, not only the explicitly-rejected one, or the admissible sibling
+# cascades a spurious InitialisedBeforeUse + UnresolvedPlace on top of the one
+# actionable root diagnostic.
+#
+# Error count: exactly 1 — the root NotYetImplemented naming the opaque
+# capture `handle`; the scalar capture `n` must not cascade.
+expect_check_fail_error_count_no_cascade \
+  "${ROOT}/tests/vertical-slice/reject/gen_fn_mixed_capture_cascade.hew" \
+  1 \
+  "gen_fn_mixed_capture_cascade" \
+  "InitialisedBeforeUse" "UnresolvedPlace"
+
 # Generator proving-gate (compile + run + stdout-order): the behavioural oracle
 # the generator->coro substrate unification must preserve byte-for-byte.
 # gen_lazy_interleave proves LAZY per-resume side-effect interleaving (effects

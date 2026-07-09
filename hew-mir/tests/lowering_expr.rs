@@ -6,6 +6,8 @@
 mod binop_bitwise_logical;
 #[path = "lowering_expr/bytes_literal_lowering.rs"]
 mod bytes_literal_lowering;
+#[path = "lowering_expr/conditional_move_drop.rs"]
+mod conditional_move_drop;
 #[path = "lowering_expr/cstring_container_domain_canary.rs"]
 mod cstring_container_domain_canary;
 #[path = "lowering_expr/elaborate.rs"]

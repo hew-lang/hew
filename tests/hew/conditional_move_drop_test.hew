@@ -1,0 +1,264 @@
+//! Regression tests for conditionally-moved owned collection locals (#2418).
+//!
+//! An owned collection local moved out on only some control-flow paths
+//! (`MaybeConsumed` at the converging join, no later use) must be released
+//! exactly once: on the not-moved path the scope-exit drop fires (this used
+//! to leak — the consume site retracted the binding from the scope-exit set
+//! path-insensitively); on the moved path the runtime drop-flag skips it
+//! (an unguarded drop would double-free, since the whole-value move does
+//! not null the source slot). A double-free aborts the run, so a test that
+//! reaches its assertion proves the release fired no more than once on the
+//! exercised path; the leak direction is pinned by the MIR drop-plan tests
+//! in `hew-mir/tests/lowering_expr/conditional_move_drop.rs` and by the
+//! `conditional_move_drop_leak_oracle` measurements.
+
+import std::testing;
+
+fn make_vec() -> Vec<i64> {
+    let v: Vec<i64> = Vec::new();
+    v.push(40);
+    v.push(2);
+    return v;
+}
+
+fn make_strs() -> Vec<string> {
+    let v: Vec<string> = Vec::new();
+    v.push("alpha");
+    v.push("beta");
+    return v;
+}
+
+// The issue repro, not-moved path: `xs` is still owned at return and the
+// (flag-gated) scope-exit drop is the sole release.
+#[test]
+fn test_not_moved_path_releases_at_scope_exit() {
+    let take = false;
+    let xs = make_vec();
+    var out: i64 = 0;
+    if take {
+        let ys = xs;
+        out = ys.len();
+    }
+    testing.assert_eq(out, 0);
+}
+
+// The issue repro, moved path: `ys` owns the handle and releases it on the
+// arm's scope-close edge; the guarded scope-exit drop of `xs` must skip
+// (a second free aborts).
+#[test]
+fn test_moved_path_releases_exactly_once() {
+    let take = true;
+    let xs = make_vec();
+    var out: i64 = 0;
+    if take {
+        let ys = xs;
+        out = ys.len();
+    }
+    testing.assert_eq(out, 2);
+}
+
+// Nested conditional — two joins between the consume and the scope exit.
+// Each nesting level's flag state must survive both joins.
+#[test]
+fn test_nested_conditional_move() {
+    var total: i64 = 0;
+    let a = true;
+    let b = false;
+    let xs = make_vec();
+    if a {
+        if b {
+            let ys = xs;
+            total = total + ys.len();
+        }
+        total = total + 1;
+    }
+    testing.assert_eq(total, 1);
+}
+
+// Conditional move inside a loop body with break: at most one consume
+// executes; iterations before it (and a run where the consume never
+// executes) keep the value owned by `xs`.
+#[test]
+fn test_loop_conditional_move_with_break() {
+    let xs = make_vec();
+    var hits: i64 = 0;
+    for i in 0..4 {
+        if i == 2 {
+            let ys = xs;
+            hits = hits + ys.len();
+            break;
+        }
+        hits = hits + 1;
+    }
+    testing.assert_eq(hits, 4);
+}
+
+// Loop where the consume never executes: the loop exits normally and the
+// scope-exit drop is the sole release.
+#[test]
+fn test_loop_conditional_move_never_taken() {
+    let xs = make_vec();
+    var hits: i64 = 0;
+    for i in 0..4 {
+        if i == 9 {
+            let ys = xs;
+            hits = hits + ys.len();
+            break;
+        }
+        hits = hits + 1;
+    }
+    testing.assert_eq(hits, 4);
+}
+
+// Array-literal desugar chained into a conditional move: the synthetic temp
+// hands the handle to `v`, then `v` is conditionally moved to `w`. The
+// hand-off dedup must strip the synthetic temp while keeping the guarded
+// source and its destination.
+#[test]
+fn test_array_literal_chain_conditional_move() {
+    let take = true;
+    let v: Vec<i64> = [7, 8, 9];
+    var out: i64 = 0;
+    if take {
+        let w = v;
+        out = w.len();
+    }
+    testing.assert_eq(out, 3);
+}
+
+// HashMap handle conditionally moved — the collection-handle class rides the
+// same drop-flag machinery.
+#[test]
+fn test_hashmap_conditional_move() {
+    let take = true;
+    let m: HashMap<string, i64> = HashMap::new();
+    m.insert("k", 42);
+    var out: i64 = 0;
+    if take {
+        let n = m;
+        out = n.len();
+    }
+    testing.assert_eq(out, 1);
+}
+
+#[test]
+fn test_hashmap_conditional_move_not_taken() {
+    let take = false;
+    let m: HashMap<string, i64> = HashMap::new();
+    m.insert("k", 42);
+    var out: i64 = 0;
+    if take {
+        let n = m;
+        out = n.len();
+    }
+    testing.assert_eq(out, 0);
+}
+
+// Vec<string>: the plain-vec class with per-element releases behind the
+// single guarded free.
+#[test]
+fn test_vec_string_conditional_move() {
+    let take = true;
+    let xs = make_strs();
+    var out: i64 = 0;
+    if take {
+        let ys = xs;
+        out = ys.len();
+    }
+    testing.assert_eq(out, 2);
+}
+
+#[test]
+fn test_vec_string_conditional_move_not_taken() {
+    let take = false;
+    let xs = make_strs();
+    var out: i64 = 0;
+    if take {
+        let ys = xs;
+        out = ys.len();
+    }
+    testing.assert_eq(out, 0);
+}
+
+// Two destinations on mutually-exclusive branches, one drop-flag: each path
+// must release exactly once (a double-free aborts before the assertion; the
+// leak direction is pinned by the oracle's slope and the MIR plan tests).
+fn double_dest(a: bool, b: bool) -> i64 {
+    let xs = make_vec();
+    var out: i64 = 0;
+    if a {
+        let y = xs;
+        out = y.len();
+    } else if b {
+        let z = xs;
+        out = z.len() + 100;
+    } else {
+        out = 999;
+    }
+    out
+}
+
+#[test]
+fn test_double_destination_first_branch() {
+    testing.assert_eq(double_dest(true, false), 2);
+}
+
+#[test]
+fn test_double_destination_second_branch() {
+    testing.assert_eq(double_dest(false, true), 102);
+}
+
+#[test]
+fn test_double_destination_neither_branch() {
+    testing.assert_eq(double_dest(false, false), 999);
+}
+
+// Rebinds on both arms: every path moves the source; each arm's destination
+// releases exactly once on its own path and the guarded source drop skips.
+fn both_arms(c: bool) -> i64 {
+    let xs = make_vec();
+    if c {
+        let a = xs;
+        return a.len();
+    } else {
+        let b = xs;
+        return b.len() + 10;
+    }
+}
+
+#[test]
+fn test_both_arm_moves_release_once_each() {
+    testing.assert_eq(both_arms(true), 2);
+    testing.assert_eq(both_arms(false), 12);
+}
+
+// Mixed rebind + record-literal ingress on exclusive branches: the ingress
+// arm's record owns and releases the handle; the rebind arm's destination
+// keeps its release; the source falls back to the fail-closed legacy posture
+// on the neither path (bounded leak, never a wrong free). Values must stay
+// exact on every path.
+record Crate {
+    items: Vec<i64>,
+}
+
+fn mixed_ingress(a: bool, b: bool) -> i64 {
+    let xs = make_vec();
+    var out: i64 = 0;
+    if a {
+        let y = xs;
+        out = y.len();
+    } else if b {
+        let h = Crate { items: xs };
+        out = h.items.len() + 100;
+    } else {
+        out = 999;
+    }
+    out
+}
+
+#[test]
+fn test_mixed_ingress_all_paths_exact() {
+    testing.assert_eq(mixed_ingress(true, false), 2);
+    testing.assert_eq(mixed_ingress(false, true), 102);
+    testing.assert_eq(mixed_ingress(false, false), 999);
+}

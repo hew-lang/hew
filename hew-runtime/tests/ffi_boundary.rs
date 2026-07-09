@@ -2989,9 +2989,15 @@ mod sched_metrics_tests {
     };
     use std::ffi::c_void;
     use std::ptr;
+    use std::sync::Mutex;
+
+    // Scheduler metrics are process-global, so reset-dependent assertions must
+    // not overlap with other tests in this module.
+    static METRICS_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn reset_zeroes_all_counters() {
+        let _guard = METRICS_LOCK.lock().unwrap();
         hew_sched_metrics_reset();
 
         assert_eq!(hew_sched_metrics_tasks_spawned(), 0);
@@ -3004,6 +3010,7 @@ mod sched_metrics_tests {
 
     #[test]
     fn mailbox_send_increments_messages_sent() {
+        let _guard = METRICS_LOCK.lock().unwrap();
         hew_sched_metrics_reset();
 
         // SAFETY: no preconditions for creating a new mailbox.
@@ -3026,6 +3033,7 @@ mod sched_metrics_tests {
 
     #[test]
     fn mailbox_recv_increments_messages_received() {
+        let _guard = METRICS_LOCK.lock().unwrap();
         hew_sched_metrics_reset();
 
         // SAFETY: no preconditions for creating a new mailbox.
@@ -3051,12 +3059,14 @@ mod sched_metrics_tests {
 
     #[test]
     fn active_workers_is_zero_without_scheduler() {
+        let _guard = METRICS_LOCK.lock().unwrap();
         hew_sched_metrics_reset();
         assert_eq!(hew_sched_metrics_active_workers(), 0);
     }
 
     #[test]
     fn counters_readable_after_sched_init() {
+        let _guard = METRICS_LOCK.lock().unwrap();
         hew_sched_init();
         hew_sched_metrics_reset();
 

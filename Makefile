@@ -1049,7 +1049,7 @@ miri:
 
 # ── Lint ────────────────────────────────────────────────────────────────────
 
-lint: runtime-poison-safe-lint lint-wasm-todo leak-scan verify-ffi hew-fmt-check
+lint: runtime-poison-safe-lint lint-wasm-todo leak-scan verify-ffi hew-fmt-check preflight-parity-selftest
 	cargo clippy --workspace --tests -- -D warnings
 
 # Scan tracked source for orchestration-token leaks (lane IDs, Q-tags, .tmp/ paths)

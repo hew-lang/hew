@@ -1148,7 +1148,7 @@ fn resolve_file_imports_internal(
                 if let Some(pkg) = ctx.extra_pkg_path {
                     candidates.push(pkg.join(&dir_path));
                     candidates.push(pkg.join(&rel_path));
-                    if decl.path.len() > 1 {
+                    if decl.path.len() > 1 && !is_builtin_module(&module_str) {
                         let rest_dir = decl.path[1..]
                             .iter()
                             .collect::<PathBuf>()
@@ -1163,6 +1163,17 @@ fn resolve_file_imports_internal(
                 }
 
                 if module_str.starts_with("hew::") && decl.path.len() > 1 {
+                    let tail = decl.path[1..].iter().collect::<PathBuf>();
+                    let tail_last = decl.path.last().expect("path is non-empty");
+                    let tail_dir = tail.join(format!("{tail_last}.hew"));
+                    let tail_rel = tail.with_extension("hew");
+                    if let Some(pkg) = ctx.extra_pkg_path {
+                        candidates.push(pkg.join(&tail_dir));
+                        candidates.push(pkg.join(&tail_rel));
+                    }
+                }
+
+                if module_str.starts_with("ecosystem::") && decl.path.len() > 1 {
                     let tail = decl.path[1..].iter().collect::<PathBuf>();
                     let tail_last = decl.path.last().expect("path is non-empty");
                     let tail_dir = tail.join(format!("{tail_last}.hew"));
@@ -2224,6 +2235,227 @@ mod tests {
 
         check_file(&input, &FrontendOptions::default())
             .expect("explicit file import should keep _test.hew semantics");
+    }
+
+    #[test]
+    fn std_import_does_not_fall_back_to_pkg_path_tail() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let pkg_root = dir.path().join("packages");
+        fs::create_dir_all(&pkg_root).expect("create package root");
+        write_source(&pkg_root, "bogus.hew", "pub fn marker() -> i64 { 1 }\n");
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import std::bogus;\n\nfn main() {}\n",
+        );
+
+        let failure = check_file(
+            &input,
+            &FrontendOptions {
+                no_typecheck: true,
+                pkg_path: Some(pkg_root.clone()),
+                ..Default::default()
+            },
+        )
+        .expect_err("std::bogus must not resolve from --pkg-path/bogus.hew");
+
+        assert!(
+            failure.message.contains("module `std::bogus` not found"),
+            "expected std::bogus to fail closed, got: {}",
+            failure.message
+        );
+        let stripped_pkg_candidate = pkg_root.join("bogus.hew").display().to_string();
+        assert!(
+            !failure.message.contains(&stripped_pkg_candidate),
+            "std:: imports must not try stripped --pkg-path tail candidate `{stripped_pkg_candidate}`: {}",
+            failure.message
+        );
+    }
+
+    #[test]
+    fn std_import_prefers_compiler_std_over_pkg_path_tail_collision() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-compile lives under repo root");
+
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let pkg_root = dir.path().join("packages");
+        fs::create_dir_all(&pkg_root).expect("create package root");
+        write_source(&pkg_root, "fs.hew", "pub fn marker() -> i64 { 1 }\n");
+        let input = write_source(dir.path(), "main.hew", "import std::fs;\n\nfn main() {}\n");
+
+        let (_output, state) = check_file_with_state(
+            &input,
+            &FrontendOptions {
+                no_typecheck: true,
+                pkg_path: Some(pkg_root.clone()),
+                project_dir: Some(repo_root.to_path_buf()),
+                ..Default::default()
+            },
+        )
+        .expect("std::fs must resolve from compiler std without package-tail ambiguity");
+
+        let import = state
+            .program
+            .items
+            .iter()
+            .find_map(|item| match &item.0 {
+                Item::Import(import) if import.path == ["std", "fs"] => Some(import),
+                _ => None,
+            })
+            .expect("std::fs import should remain in the program");
+        assert_eq!(
+            import.resolved_source_paths.len(),
+            1,
+            "std::fs should resolve to exactly one source path"
+        );
+        let resolved = &import.resolved_source_paths[0];
+        assert!(
+            resolved.ends_with("std/fs.hew"),
+            "std::fs should resolve to compiler std/fs.hew, got {}",
+            resolved.display()
+        );
+        assert!(
+            !resolved.starts_with(&pkg_root),
+            "std::fs must not resolve from colliding --pkg-path file {}",
+            resolved.display()
+        );
+    }
+
+    #[test]
+    fn non_builtin_import_still_uses_pkg_path_tail_fallback() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let pkg_root = dir.path().join("packages");
+        fs::create_dir_all(&pkg_root).expect("create package root");
+        let package_file = Path::new(&write_source(
+            &pkg_root,
+            "fs.hew",
+            "pub fn marker() -> i64 { 1 }\n",
+        ))
+        .canonicalize()
+        .expect("canonical package file");
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import mypkg::fs;\n\nfn main() {}\n",
+        );
+
+        let (_output, state) = check_file_with_state(
+            &input,
+            &FrontendOptions {
+                no_typecheck: true,
+                pkg_path: Some(pkg_root),
+                ..Default::default()
+            },
+        )
+        .expect("non-builtin package imports should still use stripped tail fallback");
+
+        let import = state
+            .program
+            .items
+            .iter()
+            .find_map(|item| match &item.0 {
+                Item::Import(import) if import.path == ["mypkg", "fs"] => Some(import),
+                _ => None,
+            })
+            .expect("mypkg::fs import should remain in the program");
+        assert_eq!(
+            import.resolved_source_paths,
+            vec![package_file],
+            "mypkg::fs should resolve through --pkg-path/fs.hew"
+        );
+    }
+
+    #[test]
+    fn hew_package_layout_still_uses_explicit_pkg_path_tail_fallback() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let pkg_root = dir.path().join("packages");
+        let sqlite_dir = pkg_root.join("db/sqlite");
+        fs::create_dir_all(&sqlite_dir).expect("create package directory");
+        let package_file = Path::new(&write_source(
+            &sqlite_dir,
+            "sqlite.hew",
+            "pub fn marker() -> i64 { 1 }\n",
+        ))
+        .canonicalize()
+        .expect("canonical package file");
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import hew::db::sqlite;\n\nfn main() {}\n",
+        );
+
+        let (_output, state) = check_file_with_state(
+            &input,
+            &FrontendOptions {
+                no_typecheck: true,
+                pkg_path: Some(pkg_root),
+                ..Default::default()
+            },
+        )
+        .expect("hew:: package-layout import should keep using its explicit fallback");
+
+        let import = state
+            .program
+            .items
+            .iter()
+            .find_map(|item| match &item.0 {
+                Item::Import(import) if import.path == ["hew", "db", "sqlite"] => Some(import),
+                _ => None,
+            })
+            .expect("hew::db::sqlite import should remain in the program");
+        assert_eq!(
+            import.resolved_source_paths,
+            vec![package_file],
+            "hew::db::sqlite should resolve through the explicit hew:: package-layout fallback"
+        );
+    }
+
+    #[test]
+    fn ecosystem_package_layout_still_uses_explicit_pkg_path_tail_fallback() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let pkg_root = dir.path().join("packages");
+        let postgres_dir = pkg_root.join("db/postgres");
+        fs::create_dir_all(&postgres_dir).expect("create package directory");
+        let package_file = Path::new(&write_source(
+            &postgres_dir,
+            "postgres.hew",
+            "pub fn marker() -> i64 { 1 }\n",
+        ))
+        .canonicalize()
+        .expect("canonical package file");
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import ecosystem::db::postgres;\n\nfn main() {}\n",
+        );
+
+        let (_output, state) = check_file_with_state(
+            &input,
+            &FrontendOptions {
+                no_typecheck: true,
+                pkg_path: Some(pkg_root),
+                ..Default::default()
+            },
+        )
+        .expect("ecosystem:: package-layout import should keep using its explicit fallback");
+
+        let import = state
+            .program
+            .items
+            .iter()
+            .find_map(|item| match &item.0 {
+                Item::Import(import) if import.path == ["ecosystem", "db", "postgres"] => {
+                    Some(import)
+                }
+                _ => None,
+            })
+            .expect("ecosystem::db::postgres import should remain in the program");
+        assert_eq!(
+            import.resolved_source_paths,
+            vec![package_file],
+            "ecosystem::db::postgres should resolve through the explicit ecosystem:: package-layout fallback"
+        );
     }
 
     #[test]

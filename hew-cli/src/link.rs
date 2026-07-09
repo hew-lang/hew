@@ -527,16 +527,17 @@ where
     }
 }
 
-/// Probe for the Debian/Ubuntu multiarch tuple for Linux cross-arch linking.
+/// Probe for the Debian/Ubuntu GNU multiarch tuple for Linux cross-arch linking.
 ///
 /// Returns `None` when:
 /// - the target arch is the same as the host arch (no cross paths needed), or
+/// - the target ABI environment is not GNU, or
 /// - the arch has no known Debian multiarch tuple, or
 /// - the multiarch directory does not exist on this host.
 ///
-/// Paths follow the Debian/Ubuntu multiarch convention:
-/// - `/usr/aarch64-linux-gnu` — aarch64 cross-libs on an `x86_64` host
-/// - `/usr/x86_64-linux-gnu` — `x86_64` cross-libs on an aarch64 host
+/// Paths follow the Debian/Ubuntu GNU multiarch convention:
+/// - `/usr/aarch64-linux-gnu` — aarch64 GNU cross-libs on an `x86_64` host
+/// - `/usr/x86_64-linux-gnu` — `x86_64` GNU cross-libs on an aarch64 host
 #[cfg(target_os = "linux")]
 fn linux_cross_multiarch_tuple(target: &TargetSpec) -> Option<&'static str> {
     let arch_tuple = linux_cross_arch_tuple(target)?;
@@ -566,7 +567,7 @@ fn find_linux_cross_gcc_toolchain(target: &TargetSpec) -> Option<&'static str> {
 fn linux_cross_arch_tuple(target: &TargetSpec) -> Option<&'static str> {
     use crate::target::{TargetArch, TargetOs};
 
-    if target.os() != TargetOs::Linux {
+    if target.os() != TargetOs::Linux || target.env() != Some("gnu") {
         return None;
     }
 
@@ -1798,6 +1799,40 @@ mod tests {
         assert!(error.contains("llvm-project/releases/download/llvmorg-22.1.6"));
         assert!(error.contains("PATH"));
         assert!(error.contains("vcvars64.bat"));
+    }
+
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "aarch64", target_arch = "x86_64")
+    ))]
+    #[test]
+    fn linux_cross_arch_tuple_only_advertises_gnu_multiarch() {
+        let gnu_triple = if cfg!(target_arch = "aarch64") {
+            "x86_64-unknown-linux-gnu"
+        } else {
+            "aarch64-unknown-linux-gnu"
+        };
+        let musl_triple = if cfg!(target_arch = "aarch64") {
+            "x86_64-unknown-linux-musl"
+        } else {
+            "aarch64-unknown-linux-musl"
+        };
+        let gnu_target = TargetSpec::from_requested(Some(gnu_triple)).expect("gnu target");
+        let musl_target = TargetSpec::from_requested(Some(musl_triple)).expect("musl target");
+
+        assert_eq!(
+            linux_cross_arch_tuple(&gnu_target),
+            Some(if cfg!(target_arch = "aarch64") {
+                "x86_64-linux-gnu"
+            } else {
+                "aarch64-linux-gnu"
+            })
+        );
+        assert_eq!(
+            linux_cross_arch_tuple(&musl_target),
+            None,
+            "musl targets must not be mapped onto GNU Debian multiarch tuples"
+        );
     }
 
     #[cfg(all(

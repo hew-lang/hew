@@ -325,6 +325,20 @@ impl TargetSpec {
         self.object_format
     }
 
+    /// Returns the target ABI environment component (`gnu`, `musl`, `msvc`, ...)
+    /// when the triple carries one.
+    ///
+    /// Used by Linux cross-link probing in `link.rs` so the production linker
+    /// helper does not silently map a musl target onto GNU Debian multiarch
+    /// directories.
+    #[allow(
+        dead_code,
+        reason = "only called from #[cfg(target_os=\"linux\")] code in link.rs; unused on non-Linux hosts"
+    )]
+    pub fn env(&self) -> Option<&str> {
+        self.env.as_deref()
+    }
+
     pub fn can_link_with_host_tools(&self) -> bool {
         self.is_wasm()
             || self.matches_host_environment()
@@ -365,15 +379,18 @@ impl TargetSpec {
             && self.arch != host.arch
     }
 
-    /// Linux same-OS cross-arch linking is supported by clang/LLD with a
-    /// Debian/Ubuntu multiarch sysroot.  Both arches must share the same
-    /// runtime ABI environment (e.g. both `gnu` or both `musl`) so that the
-    /// pre-built `libhew.a` and runtime ABI contract are compatible.
+    /// Linux same-OS cross-arch linking is supported by clang/LLD with the
+    /// Debian/Ubuntu GNU multiarch toolchain that `link.rs` probes.  Both
+    /// arches must share the GNU runtime ABI environment so that the pre-built
+    /// `libhew.a`, the runtime ABI contract, and the discovered startup objects
+    /// all agree.  Do not advertise musl cross-arch native linking until the
+    /// production linker grows a real musl cross-toolchain probe.
     fn can_cross_link_on_linux_host(&self) -> bool {
         let host = host_platform();
         host.os == TargetOs::Linux
             && self.os == TargetOs::Linux
             && self.env == host.env
+            && self.env.as_deref() == Some("gnu")
             && self.arch != host.arch
     }
 }
@@ -771,10 +788,17 @@ mod tests {
             "x86_64-unknown-linux-gnu"
         };
         let spec = TargetSpec::from_requested(Some(triple)).expect("target");
-        assert!(
-            spec.can_link_with_host_tools(),
-            "{triple} must be linkable from aarch64 Linux host"
-        );
+        if cfg!(target_env = "musl") {
+            assert!(
+                !spec.can_link_with_host_tools(),
+                "{triple} must not be advertised as linkable until musl cross-toolchain probing exists"
+            );
+        } else {
+            assert!(
+                spec.can_link_with_host_tools(),
+                "{triple} must be linkable from aarch64 GNU/Linux host"
+            );
+        }
         assert!(
             !spec.can_run_on_host(),
             "cross-arch binary must not be runnable on host"
@@ -791,10 +815,17 @@ mod tests {
             "aarch64-unknown-linux-gnu"
         };
         let spec = TargetSpec::from_requested(Some(triple)).expect("target");
-        assert!(
-            spec.can_link_with_host_tools(),
-            "{triple} must be linkable from x86_64 Linux host"
-        );
+        if cfg!(target_env = "musl") {
+            assert!(
+                !spec.can_link_with_host_tools(),
+                "{triple} must not be advertised as linkable until musl cross-toolchain probing exists"
+            );
+        } else {
+            assert!(
+                spec.can_link_with_host_tools(),
+                "{triple} must be linkable from x86_64 GNU/Linux host"
+            );
+        }
         assert!(
             !spec.can_run_on_host(),
             "cross-arch binary must not be runnable on host"

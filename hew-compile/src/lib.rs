@@ -1120,7 +1120,8 @@ fn resolve_file_imports_internal(
                 }
 
                 let module_dir = decl.path.iter().collect::<PathBuf>();
-                if let Some(version) = locked_version {
+                let is_std_import = module_str.starts_with("std::");
+                if let Some(version) = locked_version.filter(|_| !is_std_import) {
                     let entry_file =
                         format!("{}.hew", decl.path.last().expect("path is non-empty"));
                     let versioned_rel = module_dir.join(version).join(entry_file);
@@ -1130,22 +1131,26 @@ fn resolve_file_imports_internal(
                     }
                 }
 
-                candidates.push(ctx.project_dir.join(".adze/packages").join(&rel_path));
-                let project_package_dir = ctx.project_dir.join(".adze/packages").join(&module_dir);
-                let project_package_entry = ctx.project_dir.join(".adze/packages").join(&dir_path);
-                if let Some(version) = locked_version {
-                    locked_project_candidates.push((
-                        project_package_entry.clone(),
-                        LockedPackageCheck {
-                            package_dir: project_package_dir,
-                            name: module_str.clone(),
-                            version: version.to_string(),
-                        },
-                    ));
+                if !is_std_import {
+                    candidates.push(ctx.project_dir.join(".adze/packages").join(&rel_path));
+                    let project_package_dir =
+                        ctx.project_dir.join(".adze/packages").join(&module_dir);
+                    let project_package_entry =
+                        ctx.project_dir.join(".adze/packages").join(&dir_path);
+                    if let Some(version) = locked_version {
+                        locked_project_candidates.push((
+                            project_package_entry.clone(),
+                            LockedPackageCheck {
+                                package_dir: project_package_dir,
+                                name: module_str.clone(),
+                                version: version.to_string(),
+                            },
+                        ));
+                    }
+                    candidates.push(project_package_entry);
                 }
-                candidates.push(project_package_entry);
 
-                if let Some(pkg) = ctx.extra_pkg_path {
+                if let Some(pkg) = ctx.extra_pkg_path.filter(|_| !is_std_import) {
                     candidates.push(pkg.join(&dir_path));
                     candidates.push(pkg.join(&rel_path));
                     if decl.path.len() > 1 && !is_builtin_module(&module_str) {
@@ -2268,6 +2273,77 @@ mod tests {
         assert!(
             !failure.message.contains(&stripped_pkg_candidate),
             "std:: imports must not try stripped --pkg-path tail candidate `{stripped_pkg_candidate}`: {}",
+            failure.message
+        );
+    }
+
+    #[test]
+    fn std_import_does_not_resolve_from_pkg_path_std_root() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let pkg_root = dir.path().join("packages");
+        let fake_std_dir = pkg_root.join("std");
+        fs::create_dir_all(&fake_std_dir).expect("create fake std package dir");
+        write_source(&fake_std_dir, "bogus.hew", "pub fn marker() -> i64 { 1 }\n");
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import std::bogus;\n\nfn main() {}\n",
+        );
+
+        let failure = check_file(
+            &input,
+            &FrontendOptions {
+                no_typecheck: true,
+                pkg_path: Some(pkg_root.clone()),
+                ..Default::default()
+            },
+        )
+        .expect_err("std::bogus must not resolve from --pkg-path/std/bogus.hew");
+
+        assert!(
+            failure.message.contains("module `std::bogus` not found"),
+            "expected std::bogus to fail closed, got: {}",
+            failure.message
+        );
+        let fake_std_candidate = fake_std_dir.join("bogus.hew").display().to_string();
+        assert!(
+            !failure.message.contains(&fake_std_candidate),
+            "std:: imports must not try --pkg-path std-root candidate `{fake_std_candidate}`: {}",
+            failure.message
+        );
+    }
+
+    #[test]
+    fn std_import_does_not_resolve_from_adze_package_std_root() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let adze_std_dir = dir.path().join(".adze/packages/std");
+        fs::create_dir_all(&adze_std_dir).expect("create fake .adze std package dir");
+        write_source(&adze_std_dir, "bogus.hew", "pub fn marker() -> i64 { 1 }\n");
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import std::bogus;\n\nfn main() {}\n",
+        );
+
+        let failure = check_file(
+            &input,
+            &FrontendOptions {
+                no_typecheck: true,
+                project_dir: Some(dir.path().to_path_buf()),
+                ..Default::default()
+            },
+        )
+        .expect_err("std::bogus must not resolve from .adze/packages/std/bogus.hew");
+
+        assert!(
+            failure.message.contains("module `std::bogus` not found"),
+            "expected std::bogus to fail closed, got: {}",
+            failure.message
+        );
+        let fake_std_candidate = adze_std_dir.join("bogus.hew").display().to_string();
+        assert!(
+            !failure.message.contains(&fake_std_candidate),
+            "std:: imports must not try .adze std-root candidate `{fake_std_candidate}`: {}",
             failure.message
         );
     }

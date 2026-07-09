@@ -35,7 +35,16 @@ pub fn to_hex(n: i64) -> string {
         return "0";
     }
     if n < 0 {
-        return "-" + to_hex(0 - n);
+        // Iterate on the negative value directly so `i64::MIN` (whose positive
+        // magnitude is unrepresentable) does not overflow via `0 - n`.
+        var result = "";
+        var val = n;
+        while val < 0 {
+            let digit = 0 - val % 16;
+            result = hex_digit(digit) + result;
+            val = val / 16;
+        }
+        return "-" + result;
     }
     var result = "";
     var val = n;
@@ -63,7 +72,16 @@ pub fn to_binary(n: i64) -> string {
         return "0";
     }
     if n < 0 {
-        return "-" + to_binary(0 - n);
+        // Iterate on the negative value directly so `i64::MIN` does not
+        // overflow via `0 - n`.
+        var result = "";
+        var val = n;
+        while val < 0 {
+            let digit = 0 - val % 2;
+            result = f"{digit}" + result;
+            val = val / 2;
+        }
+        return "-" + result;
     }
     var result = "";
     var val = n;
@@ -91,7 +109,16 @@ pub fn to_octal(n: i64) -> string {
         return "0";
     }
     if n < 0 {
-        return "-" + to_octal(0 - n);
+        // Iterate on the negative value directly so `i64::MIN` does not
+        // overflow via `0 - n`.
+        var result = "";
+        var val = n;
+        while val < 0 {
+            let digit = 0 - val % 8;
+            result = f"{digit}" + result;
+            val = val / 8;
+        }
+        return "-" + result;
     }
     var result = "";
     var val = n;

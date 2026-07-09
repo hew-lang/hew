@@ -3788,6 +3788,27 @@ if [[ "${accept_ok_status}" -ne 42 ]]; then
   exit 1
 fi
 
+# Accept (#2446 fast-shutdown floor): a server on the async accept-only path
+# with no pending connection must shut down PROMPTLY when main() completes —
+# the baseline #2446's typed-outcome fix must not regress. A tight 2s timeout
+# (vs the usual 30s) makes this a real promptness assertion, not just an
+# eventual-completion check: a regression that stalls shutdown fails via the
+# timeout kill, not just a wrong exit code.
+compile_accept "await_accept_shutdown_fast_exit"
+fast_exit_bin="${ROOT}/.tmp/compile-out/await_accept_shutdown_fast_exit"
+fast_exit_status=0
+if "${TIMEOUT}" --kill-after=1s 2s env HEW_WORKERS=1 "${fast_exit_bin}" \
+    >"${stdout_output}" 2>"${stderr_output}"; then
+  fast_exit_status=0
+else
+  fast_exit_status=$?
+fi
+if [[ "${fast_exit_status}" -ne 0 ]]; then
+  echo "expected await_accept_shutdown_fast_exit (HEW_WORKERS=1) to exit 0 promptly, got ${fast_exit_status}" >&2
+  cat "${accept_output}" "${stdout_output}" "${stderr_output}" >&2
+  exit 1
+fi
+
 # Accept (NEW-7 — stream-recv-deadline ok): frame arrives before deadline → Ok(Some) → exit 1.
 compile_accept "await_stream_recv_deadline_ok"
 stream_recv_ok_bin="${ROOT}/.tmp/compile-out/await_stream_recv_deadline_ok"

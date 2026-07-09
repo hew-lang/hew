@@ -2474,6 +2474,12 @@ Handle types are opaque — their internal representation is not accessible.
 They can be stored in variables, passed as function arguments, and
 returned from functions.
 
+`net.Listener::accept()` and `net.Connection::read()`'s plain (non-`await`)
+forms block the calling thread; inside an actor receive handler this stalls
+the scheduler worker (`hew check`'s `BlockingCallInReceiveFn` warning) — use
+the `await` form there instead. The plain forms remain the intended shape for
+a `main()`-body call outside any receive handler.
+
 #### 3.10.8 Regular Expressions
 
 > See HEW-FUTURE.md §3 for `std::text::regex` — targeted for v0.6+

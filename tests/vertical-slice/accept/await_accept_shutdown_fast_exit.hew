@@ -1,0 +1,34 @@
+// Fast-shutdown floor for #2446: a server using ONLY the async accept path
+// (no blocking accept anywhere) must shut down PROMPTLY when main()
+// completes with no pending connection. This is the baseline the #2446
+// typed-outcome fix (a sweep over live reactor-suspended actors at shutdown)
+// must not regress — a broken sweep could stall shutdown instead of
+// converging through it quickly.
+//
+// No client ever connects, so Server's own accept never resolves; it is
+// abandoned when drain converges and the process exits via main's own
+// natural completion. run.sh wraps the binary in a tight timeout to assert
+// PROMPTNESS, not just eventual completion — a regression that makes
+// shutdown slow (e.g. stalling on the drain-timeout ceiling) fails this
+// fixture via the timeout kill, not just a wrong exit code.
+//
+// Exit-code contract: main's natural completion -> 0 (the healthy floor);
+// Ok(_conn) -> 2 or Err(_) -> 3 would mean the accept unexpectedly resolved
+// (should not happen — no client ever connects).
+import std::net;
+
+actor Server {
+    receive fn go() {
+        let ln = net.listen("127.0.0.1:0");
+        let code = match await ln.accept() | after 10s {
+            Ok(_conn) => 2,
+            Err(_e) => 3,
+        };
+        exit(code);
+    }
+}
+
+fn main() {
+    let s = spawn Server;
+    s.go();
+}

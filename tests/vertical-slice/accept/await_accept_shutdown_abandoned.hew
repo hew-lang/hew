@@ -1,0 +1,67 @@
+// Regression fixture for #2446 — a reactor-suspended `await ln.accept() |
+// after d` that was ALREADY parked when process shutdown begins currently
+// gets abandoned with no typed outcome at all, instead of resolving to
+// `Err(NetError::Cancelled(_))`.
+//
+// Deterministic barrier (NOT a sleep): `hew_sched_metrics_active_workers()`
+// is an existing runtime metrics C-ABI symbol. `main` waits for it to go
+// 0 -> nonzero (Server's dispatch started) then nonzero -> 0 (Server
+// suspended in `await ln.accept()`, releasing its ActivationMetricsGuard).
+// At that point Server is confirmed parked with the shutdown phase still
+// RUNNING — the exact "main completes while an actor is parked" shape #2446
+// reports, not a race against dispatch latency. Only then does `main`
+// trigger shutdown explicitly.
+//
+// This targets the REAL bug shape: the accept registers BEFORE shutdown
+// starts (confirmed by direct A/B experimentation — a phase-gate-at-entry
+// check does NOT turn this fixture green, since the registration predates
+// any such check; only a sweep that finds and wakes the ALREADY-parked
+// registration can).
+//
+// Exit-code contract: Server observes Ok(_conn) -> 2 (unexpected: nothing
+// ever connects); Err(NetError::Cancelled(_)) -> 42 (the fix's target: a
+// typed shutdown outcome); Err(NetError::TimedOut(_)) -> 41 (the accept's
+// OWN 10s deadline fired — should never happen since drain converges in
+// ~20ms, not 10s); other NetError -> 3; Server's exit() never runs (TODAY,
+// pre-fix: the parked accept is abandoned, observing no outcome at all) ->
+// main's fallback exit(99).
+import std::net;
+
+extern "C" {
+    fn hew_sched_metrics_active_workers() -> i64;
+    fn hew_shutdown_initiate(drain_timeout_ms: i64);
+    fn hew_shutdown_wait() -> i32;
+}
+
+actor Server {
+    receive fn go() {
+        let ln = net.listen("127.0.0.1:0");
+        let code = match await ln.accept() | after 10s {
+            Ok(_conn) => 2,
+            Err(e) => match e {
+                NetError::Cancelled(_c) => 42,
+                NetError::TimedOut(_c) => 41,
+                _ => 3,
+            },
+        };
+        exit(code);
+    }
+}
+
+fn main() {
+    let s = spawn Server;
+    s.go();
+    while unsafe {
+        hew_sched_metrics_active_workers()
+    } == 0 {}
+    while unsafe {
+        hew_sched_metrics_active_workers()
+    } != 0 {}
+    unsafe {
+        hew_shutdown_initiate(0);
+    };
+    unsafe {
+        hew_shutdown_wait();
+    };
+    exit(99);
+}

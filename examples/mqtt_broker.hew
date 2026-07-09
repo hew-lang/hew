@@ -5,7 +5,7 @@
 // Listens on port 1883. Uses bytes type for all TCP I/O.
 //
 // Architecture:
-//   Listener     — accept loop; spawns ClientHandler per connection
+//   Acceptor     — accept loop; spawns ClientHandler per connection
 //   ClientHandler — reads MQTT frames, calls router methods
 //   Router       — tracks clients and subscriptions, fans out publishes
 //
@@ -369,15 +369,18 @@ actor Router {
     }
 }
 
-// Listener — accept loop; spawns a ClientHandler for each new connection.
-actor Listener {
+// Acceptor — accept loop; spawns a ClientHandler for each new connection.
+// Named `Acceptor`, not `Listener`, to avoid colliding with the LLVM
+// struct name codegen assigns the stdlib `net.Listener` opaque handle
+// type (see https://github.com/hew-lang/hew/issues/2509).
+actor Acceptor {
     let router: LocalPid<Router>;
     receive fn start() {
         let lst = net.listen(":1883");
         println("[listener] MQTT broker ready on :1883");
         var next_id: i32 = 1;
         loop {
-            let conn = lst.accept();
+            let conn = await lst.accept();
             let cid = f"client-{next_id}";
             let handler = spawn ClientHandler(conn: conn, client_id: cid.clone(), router: router);
             router.register_client(cid, handler);
@@ -394,7 +397,7 @@ fn main() {
     let empty_sub_ids: Vec<string> = Vec::new();
     let empty_sub_qos: Vec<i32> = Vec::new();
     let router = spawn Router(client_ids: empty_ids, client_actors: empty_actors, sub_topics: empty_sub_topics, sub_client_ids: empty_sub_ids, sub_qos: empty_sub_qos);
-    let listener = spawn Listener(router: router);
+    let listener = spawn Acceptor(router: router);
     listener.start();
     loop {
         sleep(1s);

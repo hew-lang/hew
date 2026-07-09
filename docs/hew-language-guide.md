@@ -1524,6 +1524,38 @@ tearing down. The `sleep_loop_blocks_mailbox` lint warns on the mailbox
 starvation shape where a receive handler loops around `sleep`/`sleep_until`
 without an in-loop exit path.
 
+### Accepting connections and reading in a receive handler: use `await`
+
+`net.Listener::accept()` and `net.Connection::read()` are blocking calls — the
+plain, non-`await` form parks the whole scheduler worker thread until a
+connection or data arrives, which is why `hew check` warns
+(`BlockingCallInReceiveFn`) whenever either appears inside a receive handler.
+Inside a receive handler, use the suspending `await` form instead:
+
+```hew
+import std::net;
+
+actor Server {
+    let addr: string;
+
+    receive fn serve() {
+        let listener = net.listen(addr);
+        loop {
+            let conn = await listener.accept();
+            let data = await conn.read();
+            // ...
+        }
+    }
+}
+```
+
+`await listener.accept()` and `await conn.read()` park the actor on the
+runtime's reactor rather than blocking the worker thread, so other actors keep
+being scheduled while this one waits. A `main()`-body blocking accept (outside
+any receive handler, as in `std/net/net.hew`'s own example) is a different,
+unflagged pattern — the lint only fires inside a receive handler, where the
+scheduler-thread cost applies.
+
 ## State machines
 
 ### Machine declaration: events, states, transitions, step(), state_name()

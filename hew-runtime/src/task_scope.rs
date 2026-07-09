@@ -1456,12 +1456,16 @@ pub unsafe extern "C" fn hew_task_spawn_thread_with_inherited_context(
     t.done_signal = Some(Arc::clone(&signal));
     t.store_state(HewTaskState::Running, Ordering::Relaxed);
 
-    // #2437 proving-gate hook: consume the one-shot pause arm (if any) AFTER
-    // the state flip above (so `hew_task_scope_cancel` sees this task as
-    // Running, not Ready — matching the real race window's preconditions)
-    // and BEFORE spawning, so the new thread checks it on entry.
+    // #2437 proving-gate hook: consume the one-shot pause arm registered for
+    // THIS task's owning scope (if any) AFTER the state flip above (so
+    // `hew_task_scope_cancel` sees this task as Running, not Ready —
+    // matching the real race window's preconditions) and BEFORE spawning, so
+    // the new thread checks it on entry. Scoping the arm/gate to `t.scope`
+    // (plus a generation token) means an unrelated scope's spawn can never
+    // consume this arm, and an unrelated scope's `hew_task_scope_cancel`
+    // can never release it — see `forced_cancel_test_hook`.
     #[cfg(any(test, feature = "forced-cancel-test"))]
-    let paused = forced_cancel_test_hook::consume_pause_arm();
+    let paused_generation = forced_cancel_test_hook::consume_pause_arm(t.scope);
 
     let task_raw = task as usize;
     let fn_raw = task_fn as usize;
@@ -1475,11 +1479,11 @@ pub unsafe extern "C" fn hew_task_spawn_thread_with_inherited_context(
         let fn_ptr: ContextTaskFn = unsafe { std::mem::transmute(fn_raw) };
 
         // #2437 proving-gate hook: block before running ANY generated code
-        // until `hew_task_scope_cancel` has released this pause — see
-        // `forced_cancel_test_hook`.
+        // until `hew_task_scope_cancel(child_scope)` has released THIS
+        // (scope, generation) pause — see `forced_cancel_test_hook`.
         #[cfg(any(test, feature = "forced-cancel-test"))]
-        if paused {
-            forced_cancel_test_hook::wait_for_release();
+        if let Some(generation) = paused_generation {
+            forced_cancel_test_hook::wait_for_release(child_scope_raw, generation);
         }
 
         let mut execution_context = crate::execution_context::HewExecutionContext {
@@ -1812,48 +1816,99 @@ pub unsafe extern "C" fn hew_task_scope_is_done(scope: *mut HewTaskScope) -> i32
 // cancellation signal) exercises the real code path both triggers use.
 //
 // Mechanism: `hew_test_pause_next_task_spawn_until_scope_cancel` arms a
-// one-shot flag; the very next `hew_task_spawn_thread_with_inherited_context`
-// call blocks its newly spawned OS thread on `SPAWN_PAUSE_GATE` before
-// calling the generated task body. `hew_task_scope_cancel` releases the gate
-// as the LAST step of its real cancellation work, so a paused thread can only
-// resume after cancellation has already taken effect — the task's first
-// `hew_actor_cooperate()` call is then guaranteed (not merely likely) to
-// observe `cancel_code == 2`. A bounded wait converts a trigger that never
-// fires into a loud panic instead of a silent hang.
+// one-shot pause keyed by the CALLING THREAD'S current task scope (the same
+// scope `scope { ... }` codegen installs via `hew_task_scope_set_current`
+// before running its body) plus a fresh generation token; only that scope's
+// very next `hew_task_spawn_thread_with_inherited_context` call consumes it
+// and blocks its newly spawned OS thread on a `(scope, generation)` gate
+// before calling the generated task body. `hew_task_scope_cancel(scope)`
+// releases only the gates whose scope address matches `scope`, as the LAST
+// step of its real cancellation work, so a paused thread can only resume
+// after ITS OWN scope's cancellation has already taken effect — the task's
+// first `hew_actor_cooperate()` call is then guaranteed (not merely likely)
+// to observe `cancel_code == 2`.
+//
+// Scoping both the arm and the release to `(scope address, generation)` is
+// load-bearing, not decorative: with a single process-global flag, cancelling
+// ANY unrelated scope (e.g. another test running concurrently in the same
+// `cargo test` process) would open the gate early and let the paused body
+// run before its own scope was actually cancelled. The generation token
+// additionally rules out a scope address recycled by the allocator — the
+// detached-task reaper in `hew_task_scope_destroy` can free a scope's
+// backing memory on a background thread, so a later `hew_task_scope_new`
+// can legally reuse that address.
+//
+// A bounded wait converts a trigger that never fires into a loud panic
+// instead of a silent hang.
 #[cfg(any(test, feature = "forced-cancel-test"))]
 mod forced_cancel_test_hook {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Condvar, Mutex};
     use std::time::Duration;
 
     use crate::util::{CondvarExt, MutexExt};
 
-    /// One-shot arm flag, consumed by the next spawn.
-    pub(super) static ARM_NEXT_SPAWN_PAUSE: AtomicBool = AtomicBool::new(false);
-    /// `true` once released; reset to `false` by the paused thread on wake.
-    pub(super) static GATE_OPEN: Mutex<bool> = Mutex::new(false);
-    pub(super) static GATE_CV: Condvar = Condvar::new();
+    use super::HewTaskScope;
 
-    /// Test-only: arm the one-shot pause for the NEXT
-    /// `hew_task_spawn_thread_with_inherited_context` call.
+    /// Monotonic generation counter. Each arm gets a fresh token so a scope
+    /// address recycled after a prior scope's (possibly asynchronous)
+    /// teardown can never be mistaken for a pause it did not arm.
+    static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+    /// Pauses armed but not yet consumed: `(scope address, generation)`. A
+    /// spawn consumes only the entry whose scope address matches its own
+    /// task's owning scope; an unrelated scope's spawn leaves it untouched.
+    static ARMED: Mutex<Vec<(usize, u64)>> = Mutex::new(Vec::new());
+
+    /// Paused spawns waiting for release: `(scope address, generation,
+    /// open)`. `release_paused_spawn(scope)` opens only entries whose scope
+    /// address matches `scope`; a waiter only wakes on its own generation.
+    static GATES: Mutex<Vec<(usize, u64, bool)>> = Mutex::new(Vec::new());
+    static GATE_CV: Condvar = Condvar::new();
+
+    /// Test-only: arm the one-shot pause for the calling thread's current
+    /// task scope's NEXT `hew_task_spawn_thread_with_inherited_context`
+    /// call. Takes no scope argument so generated `.hew` code (which has no
+    /// Hew-level handle to its own `HewTaskScope*`) can call this from
+    /// inside a `scope { ... }` block; the target scope is read from the
+    /// same thread-context slot `scope { ... }` codegen already installs via
+    /// `hew_task_scope_set_current`, so the arm is still tied to a concrete
+    /// scope identity rather than being process-global.
     #[no_mangle]
     pub extern "C" fn hew_test_pause_next_task_spawn_until_scope_cancel() {
-        ARM_NEXT_SPAWN_PAUSE.store(true, Ordering::SeqCst);
+        let scope = super::current_task_scope();
+        let generation = NEXT_GENERATION.fetch_add(1, Ordering::SeqCst);
+        ARMED.lock_or_recover().push((scope as usize, generation));
     }
 
-    /// Consume the arm flag; `true` means the spawn about to happen must
-    /// pause its new thread until `release_paused_spawn` runs.
-    pub(super) fn consume_pause_arm() -> bool {
-        ARM_NEXT_SPAWN_PAUSE.swap(false, Ordering::SeqCst)
+    /// Consume the arm registered for `child_scope`, if any, and publish its
+    /// paused-spawn gate to `GATES` before returning — this always runs on
+    /// the spawning (parent) thread, strictly before the new worker thread
+    /// is created, so the worker only ever waits on a generation this
+    /// function has already registered.
+    pub(super) fn consume_pause_arm(child_scope: *mut HewTaskScope) -> Option<u64> {
+        let key = child_scope as usize;
+        let mut armed = ARMED.lock_or_recover();
+        let index = armed.iter().position(|&(scope, _)| scope == key)?;
+        let (_, generation) = armed.swap_remove(index);
+        drop(armed);
+        GATES.lock_or_recover().push((key, generation, false));
+        Some(generation)
     }
 
     /// Block the calling (newly spawned task) thread until
-    /// `release_paused_spawn` opens the gate. 10s bound: a trigger that never
-    /// fires is a test-authoring bug, not a hang worth waiting out silently.
-    pub(super) fn wait_for_release() {
-        let mut open = GATE_OPEN.lock_or_recover();
+    /// `release_paused_spawn` opens this exact `(scope, generation)` gate.
+    /// 10s bound: a trigger that never fires is a test-authoring bug, not a
+    /// hang worth waiting out silently.
+    pub(super) fn wait_for_release(scope: usize, generation: u64) {
+        let matches = |entries: &[(usize, u64, bool)]| {
+            entries
+                .iter()
+                .any(|&(s, g, open)| s == scope && g == generation && open)
+        };
+        let mut gates = GATES.lock_or_recover();
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while !*open {
+        while !matches(&gates) {
             let now = std::time::Instant::now();
             assert!(
                 now < deadline,
@@ -1862,18 +1917,32 @@ mod forced_cancel_test_hook {
                  trigger (SuspendingScopeDeadline deadline_won or \
                  hew_task_scope_cancel_after_ns) never fired"
             );
-            let (guard, _timeout) = GATE_CV.wait_timeout_or_recover(open, deadline - now);
-            open = guard;
+            let (guard, _timeout) = GATE_CV.wait_timeout_or_recover(gates, deadline - now);
+            gates = guard;
         }
-        *open = false;
+        // Self-cleanup: remove this (scope, generation) entry so a later
+        // scope reusing the same address never observes a stale open gate.
+        gates.retain(|&(s, g, _)| !(s == scope && g == generation));
     }
 
-    /// Open the gate for a paused spawn, if one is waiting. A no-op (cheap
-    /// mutex lock + notify of zero waiters) when nothing armed the pause.
-    pub(super) fn release_paused_spawn() {
-        let mut open = GATE_OPEN.lock_or_recover();
-        *open = true;
-        GATE_CV.notify_all();
+    /// Open every paused-spawn gate owned by `scope`, if any. A no-op (cheap
+    /// mutex lock + notify of zero waiters) when nothing armed a pause for
+    /// this scope — including when the pause belongs to a different,
+    /// concurrently running scope.
+    pub(super) fn release_paused_spawn(scope: *mut HewTaskScope) {
+        let key = scope as usize;
+        let mut gates = GATES.lock_or_recover();
+        let mut released = false;
+        for entry in gates.iter_mut() {
+            if entry.0 == key {
+                entry.2 = true;
+                released = true;
+            }
+        }
+        drop(gates);
+        if released {
+            GATE_CV.notify_all();
+        }
     }
 }
 
@@ -1910,11 +1979,11 @@ pub unsafe extern "C" fn hew_task_scope_cancel(scope: *mut HewTaskScope) {
         cur = t.next;
     }
 
-    // #2437 proving-gate hook: release any task spawn paused by
-    // `hew_test_pause_next_task_spawn_until_scope_cancel`, AFTER the real
-    // cancellation state above is fully set. See `forced_cancel_test_hook`.
+    // #2437 proving-gate hook: release only THIS scope's paused spawns (if
+    // any), AFTER the real cancellation state above is fully set. An
+    // unrelated scope's pause is untouched — see `forced_cancel_test_hook`.
     #[cfg(any(test, feature = "forced-cancel-test"))]
-    forced_cancel_test_hook::release_paused_spawn();
+    forced_cancel_test_hook::release_paused_spawn(scope);
 }
 
 /// Schedule cancellation of `scope` after `duration_ns` nanoseconds.

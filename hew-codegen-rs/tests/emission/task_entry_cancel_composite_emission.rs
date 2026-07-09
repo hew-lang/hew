@@ -160,11 +160,21 @@ fn task_entry_composite_cancel_exit_never_loads_return_slot() {
         "the cancel_exit block must not contain a load at all on the fixed \
          path;\n--- cancel_exit block ---\n{cancel_exit_block}"
     );
+    // A loose `contains("ret {")` / `contains("ret %")` check is true for ANY
+    // struct-shaped `ret`, including a future nonzero or `undef` composite
+    // return — it doesn't pin the actual value. Isolate the `ret` line
+    // itself and require its trailing constant to be LLVM's canonical
+    // all-zero-aggregate spelling, `zeroinitializer` (what `const_zero()` on
+    // a `StructType`/`ArrayType` emits).
+    let ret_line = cancel_exit_block
+        .lines()
+        .find(|line| line.trim_start().starts_with("ret "))
+        .unwrap_or_else(|| panic!("no `ret` line in cancel_exit block; IR:\n{cancel_exit_block}"));
     assert!(
-        cancel_exit_block.contains("ret {")
-            || cancel_exit_block.contains("ret %")
-            || cancel_exit_block.contains("zeroinitializer"),
-        "the cancel_exit block must return a well-defined composite value \
-         (LLVM's zeroinitializer for a const_zero() struct);\n--- cancel_exit block ---\n{cancel_exit_block}"
+        ret_line.trim_end().ends_with("zeroinitializer"),
+        "the cancel_exit block's `ret` must return LLVM's `zeroinitializer` \
+         constant for the const_zero() composite value, not merely any \
+         struct-shaped `ret` (#2437);\n--- ret line ---\n{ret_line}\n\
+         --- cancel_exit block ---\n{cancel_exit_block}"
     );
 }

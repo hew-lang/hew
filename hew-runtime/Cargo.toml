@@ -47,6 +47,17 @@ sim-transport = []
 # OpenTelemetry OTLP/HTTP trace exporter (no tokio — pure sync HTTP via ureq)
 otel = ["dep:ureq"]
 
+# Deterministic forced-cancellation test hook for #2437's proving gate: pauses
+# a spawned task's OS thread before it runs any generated code, releasing it
+# only after a REAL `hew_task_scope_cancel` call has completed, so the task's
+# own FIRST FunctionEntry cooperate check deterministically observes
+# cancellation instead of racing OS thread scheduling. Test-only — never
+# enabled in `default` or `full`. Auto-enabled under `cfg(test)` for unit
+# tests inside the crate; a compiled `.hew` exec must opt in via
+# `--features forced-cancel-test` (mirrors `sim-transport`). Adds no
+# production dependencies.
+forced-cancel-test = []
+
 [dependencies]
 # CBOR body codec (ciborium, RFC 8949); CDDL schema in schemas/envelope.cddl.
 ciborium = "0.2"

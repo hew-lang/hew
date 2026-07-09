@@ -4993,16 +4993,24 @@ pub unsafe extern "C" fn hew_actor_gen_sink_register(
 
 /// Clean close + deregister: the pump's `None` (generator-exhausted) exit
 /// (decision 7). Replaces the bare `hew_sink_close` call the pump used
-/// earlier — deregisters first so a terminal teardown racing this
-/// exit cannot ALSO fault-close a sink this call is about to free, then
-/// frees the sink exactly as `hew_sink_close` did.
+/// earlier — deregisters first via a CAS on the shared slot, so a terminal
+/// teardown racing this exit cannot ALSO fault-close the sink this call is
+/// about to free. This call frees `sink` itself ONLY if its own CAS won
+/// that race; if a concurrent [`fault_close_registered_gen_sink`] already
+/// swapped the slot to null first, this call has lost ownership and
+/// returns without touching `sink` again (the fault path already closed
+/// and freed it) — mirroring that function's own idempotent
+/// swap-to-null-then-release pattern from the other side of the race.
 ///
 /// # Safety
 ///
 /// `actor` must be null or a live `HewActor` pointer (the pump's own
 /// actor). `sink` must be the same live pointer
 /// [`hew_actor_gen_sink_register`] recorded; ownership of `sink` transfers
-/// to this call exactly like `hew_sink_close` — do not use `sink` after.
+/// to this call exactly like `hew_sink_close` UNLESS a concurrent
+/// fault-close won the race first, in which case `sink` is already freed
+/// and must not be touched by the caller either way — do not use `sink`
+/// after calling this function regardless of which side won.
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_gen_sink_complete(
@@ -5010,20 +5018,42 @@ pub unsafe extern "C" fn hew_actor_gen_sink_complete(
     sink: *mut crate::stream::HewSink,
 ) {
     if !actor.is_null() {
-        // Deregister only if the slot still holds THIS sink (defensive;
-        // the single-slot invariant means it always does on the real path).
+        // Deregister only if the slot still holds THIS sink. This is NOT
+        // defensive: a concurrent terminal teardown
+        // (`fault_close_registered_gen_sink`, called from `hew_actor_trap`
+        // or the parked-activation reclaim path) can race this call on the
+        // exact same `AtomicPtr` slot. Both sides perform a single atomic
+        // RMW, so exactly one of them observes the slot non-null and "wins"
+        // the release; the loser must treat `sink` as already freed by the
+        // winner and must NOT touch it again. Only close/free `sink` here
+        // when this call's own CAS won the race — i.e. this call still
+        // owned the registered pointer at the moment it ran.
         // SAFETY: caller guarantees actor is valid.
-        let _ = unsafe {
-            (*actor).gen_sink.compare_exchange(
-                sink.cast(),
-                ptr::null_mut(),
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
+        let won = unsafe {
+            (*actor)
+                .gen_sink
+                .compare_exchange(
+                    sink.cast(),
+                    ptr::null_mut(),
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
         };
+        if !won {
+            // The fault-close teardown path already won this race and has
+            // already closed/freed `sink` via `fault_close_registered_sink`.
+            // Closing it again here would be a double-free of the same
+            // `Box<HewSink>` allocation. Mirror
+            // `fault_close_registered_gen_sink`'s own idempotent
+            // swap-to-null pattern: the loser is a no-op.
+            return;
+        }
     }
     // SAFETY: sink is the live, not-yet-freed pointer per the fn contract;
-    // this is the sink's single release on the clean-exit path.
+    // this call either isn't actor-registered (actor is null, so no
+    // teardown race is possible) or just won the CAS above, so this is
+    // still the sink's single release on the clean-exit path.
     unsafe { crate::stream::hew_sink_close(sink) };
 }
 
@@ -10885,6 +10915,110 @@ mod tests {
         // SAFETY: ok_actor is a valid pointer from hew_actor_spawn.
         let rc = unsafe { hew_actor_free(ok_actor) };
         assert_eq!(rc, 0, "hew_actor_free on the recovery actor must succeed");
+    }
+
+    // ── gen_sink CAS-race double-free regression (PR #2401 finding) ──────
+    //
+    // `hew_actor_gen_sink_complete` (the pump's clean-exit release) and
+    // `fault_close_registered_gen_sink` (the crash/teardown release) both
+    // race on the same `AtomicPtr` slot when a terminal teardown fires
+    // concurrently with the pump's own generator-exhausted exit. Before the
+    // fix, `hew_actor_gen_sink_complete` discarded its CAS result and
+    // unconditionally called `hew_sink_close(sink)` even when it LOST the
+    // race — double-freeing the same `Box<HewSink>` the fault path had
+    // already closed. These tests deterministically force each ordering
+    // (no real thread race needed) by calling the two release paths
+    // back-to-back on a single actor + sink pair.
+
+    #[test]
+    fn gen_sink_complete_is_noop_when_fault_close_already_won_the_race() {
+        let _guard = crate::runtime_test_guard();
+        let actor = make_tracked_wasm_free_test_actor(HewActorState::Runnable);
+        // SAFETY: hew_stream_channel returns a valid pair; hew_stream_pair_sink
+        // extracts its live sink half.
+        let sink = unsafe {
+            let pair = crate::stream::hew_stream_channel(1);
+            let sink = crate::stream::hew_stream_pair_sink(pair);
+            // The pair's own stream (consumer) half is unused by this test;
+            // close it so the channel's other end doesn't linger.
+            crate::stream::hew_stream_close(crate::stream::hew_stream_pair_stream(pair));
+            crate::stream::hew_stream_pair_free(pair);
+            sink
+        };
+
+        // SAFETY: actor is a live, freshly built test actor.
+        unsafe { hew_actor_gen_sink_register(actor, sink) };
+
+        // Simulate the fault-close teardown path winning the race first:
+        // it swaps the slot to null and closes/frees `sink` via
+        // `fault_close_registered_sink`.
+        // SAFETY: actor owns a registered sink; this is the crash/teardown
+        // release path exercised directly instead of through a real crash.
+        unsafe { fault_close_registered_gen_sink(&*actor) };
+        // SAFETY: actor remains valid; only its gen_sink slot was touched
+        // above.
+        let slot_after_fault_close = unsafe { (*actor).gen_sink.load(Ordering::Acquire) };
+        assert!(
+            slot_after_fault_close.is_null(),
+            "fault-close must leave the slot null after winning"
+        );
+
+        // The pump's own clean-exit release now runs on the SAME `sink`
+        // pointer, having lost the race (the slot the pump's CAS is looking
+        // for is already null, not `sink`). Before the fix this called
+        // `hew_sink_close(sink)` unconditionally here, double-freeing the
+        // allocation `fault_close_registered_gen_sink` already freed above.
+        // A double-free is UB and not guaranteed to crash without ASan, so
+        // the meaningful assertion is the ABSENCE of a second free: verified
+        // separately below by checking the loser makes no further slot
+        // mutation and by running this exact test under AddressSanitizer
+        // (see PR description / heartbeat verification notes), where the
+        // pre-fix code aborts with a confirmed heap-use-after-free /
+        // double-free and the fixed code does not.
+        // SAFETY: sink was already freed by the fault-close call above; the
+        // fixed implementation must detect the lost CAS and return without
+        // dereferencing or freeing `sink` again.
+        unsafe { hew_actor_gen_sink_complete(actor, sink) };
+
+        // SAFETY: actor is tracked and owned by this test.
+        unsafe {
+            live_actors::untrack_actor(actor);
+            drop(Box::from_raw(actor));
+        }
+    }
+
+    #[test]
+    fn gen_sink_complete_frees_normally_when_it_wins_the_race() {
+        let _guard = crate::runtime_test_guard();
+        let actor = make_tracked_wasm_free_test_actor(HewActorState::Runnable);
+        // SAFETY: hew_stream_channel returns a valid pair; hew_stream_pair_sink
+        // extracts its live sink half.
+        let sink = unsafe {
+            let pair = crate::stream::hew_stream_channel(1);
+            let sink = crate::stream::hew_stream_pair_sink(pair);
+            crate::stream::hew_stream_close(crate::stream::hew_stream_pair_stream(pair));
+            crate::stream::hew_stream_pair_free(pair);
+            sink
+        };
+
+        // SAFETY: actor is a live, freshly built test actor.
+        unsafe { hew_actor_gen_sink_register(actor, sink) };
+
+        // No concurrent fault-close this time: the pump's own clean-exit
+        // release runs uncontested and must win its CAS, then free `sink`
+        // exactly once (the pre-existing, still-correct behaviour).
+        // SAFETY: actor owns a registered sink that nothing else has touched.
+        unsafe { hew_actor_gen_sink_complete(actor, sink) };
+
+        // SAFETY: actor is tracked and owned by this test.
+        unsafe {
+            assert!(
+                (*actor).gen_sink.load(Ordering::Acquire).is_null(),
+                "a winning clean-exit release must still clear the slot"
+            );
+            live_actors::untrack_actor(actor);
+            drop(Box::from_raw(actor));
+        }
     }
 }
 

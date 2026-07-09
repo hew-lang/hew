@@ -1,0 +1,20 @@
+// End-to-end fixture: two `re"..."` literals with identical pattern text
+// dedupe to the same `literal_id` / module-init global slot
+// (`alloc_regex_literal` in hew-hir/src/lower.rs). Each binding clones the
+// slot's compiled handle independently on load (`F::RegexHandle` in
+// hew-codegen-rs/src/runtime_abi.rs), so each `Pattern` owns its own handle
+// and can be closed on its own schedule without freeing the other's clone.
+//
+// Before the clone-on-load fix both bindings aliased the SAME shared handle:
+// closing `pat1` would free it out from under `pat2`, turning `pat2.find`
+// into a use-after-free and `pat2.close()` into a double-free.
+import std::text::regex;
+
+fn main() {
+    let pat1 = re"[0-9]+";
+    let pat2 = re"[0-9]+";
+    println(pat1.find("abc123"));
+    pat1.close();
+    println(pat2.find("xyz456"));
+    pat2.close();
+}

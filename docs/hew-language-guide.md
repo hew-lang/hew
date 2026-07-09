@@ -1533,8 +1533,13 @@ connection or data arrives, which is why `hew check` warns
 Inside a receive handler, use the suspending `await` form instead:
 
 ```hew
+import std::net;
+
 actor Server {
-    receive fn serve(listener: net.Listener) {
+    let addr: string;
+
+    receive fn serve() {
+        let listener = net.listen(addr);
         loop {
             let conn = await listener.accept();
             let data = await conn.read();

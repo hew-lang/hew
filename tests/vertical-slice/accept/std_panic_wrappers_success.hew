@@ -7,10 +7,9 @@ import std::time::cron;
 fn main() -> i64 {
     let re = regex.new("[a-z]+");
     if !re.is_match("abc") {
-        re.free();
         return 1;
     }
-    re.free();
+    re.close();
 
     let contents = fs.read("tests/vertical-slice/accept/std_panic_wrappers_success.hew");
     if contents.len() == 0 {

@@ -5,7 +5,7 @@
 //! input string three ways: a single indexed/named capture from the first
 //! match, the flat list of whole matches via `find_all`, and the full row-major
 //! submatch table via `find_all_submatch`. `Option` results are matched, never
-//! unwrapped, and the compiled `Pattern` is released with `free()`.
+//! unwrapped, and the compiled `Pattern` is released early with `close()`.
 
 import std::text::regex;
 
@@ -43,5 +43,5 @@ fn main() {
         };
         println(f"row {i}: {whole} (year={year} day={day})");
     }
-    re.free();
+    re.close();
 }

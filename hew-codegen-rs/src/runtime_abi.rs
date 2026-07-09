@@ -3355,19 +3355,14 @@ pub(crate) fn lower_call_runtime_abi(
                 .llvm_ctx("hew_regex_capture store")?;
         }
 
-        // hew_regex_handle(literal_id: i64) -> *HewRegex
+        // hew_regex_handle(literal_id: i64) -> Pattern
         //
-        // Value-position regex literal (`let pat = re"..."`). Synthetic: there is
-        // no runtime call — the compiled handle is GEP-loaded from
-        // `@hew_regex_handles[literal_id]` (the same load the match/capture arms
-        // perform before THEIR runtime call) and stored straight into the
-        // destination `regex.Pattern` local, which `primitive_to_llvm` materialises
-        // as an opaque `ptr`. The loaded handle is the same `*mut HewRegex` that
-        // `PatternMethods` FFI entries (`hew_regex_is_match`, …) accept, so the
-        // value is immediately usable through the stdlib regex API.
+        // Value-position regex literals load the precompiled source handle and
+        // clone it into the `Pattern.handle` field. Each resource value owns its
+        // clone, so scope-exit close never frees the shared literal table entry.
         //
         // args[0]: literal_id (ConstI64 local; GEP index into @hew_regex_handles)
-        // dest:    regex.Pattern local (opaque ptr; receives the handle pointer)
+        // dest:    regex.Pattern record local (receives the cloned handle field)
         F::RegexHandle => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
@@ -3378,7 +3373,7 @@ pub(crate) fn lower_call_runtime_abi(
             }
             let dest_place = dest.ok_or_else(|| {
                 CodegenError::FailClosed(
-                    "hew_regex_handle: producer must supply a dest place for the handle ptr"
+                    "hew_regex_handle: producer must supply a dest place for Pattern"
                         .into(),
                 )
             })?;
@@ -3412,11 +3407,30 @@ pub(crate) fn lower_call_runtime_abi(
                 .build_load(ptr_ty, slot_ptr, "regex_handle")
                 .llvm_ctx("hew_regex_handle load")?
                 .into_pointer_value();
-            // Store the handle pointer into the regex.Pattern destination local.
-            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
+            let clone_fn = fn_ctx.llvm_mod.get_function("hew_regex_clone").ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_regex_handle: hew_regex_clone declaration not found".into(),
+                )
+            })?;
+            let cloned = fn_ctx
+                .builder
+                .build_call(clone_fn, &[handle.into()], "regex_literal_clone")
+                .llvm_ctx("hew_regex_handle clone")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("hew_regex_handle: clone returned void".into())
+                })?
+                .into_pointer_value();
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest_place)?;
+            let dest_struct_ty = dest_ty.into_struct_type();
+            let handle_ptr = fn_ctx
+                .builder
+                .build_struct_gep(dest_struct_ty, dest_ptr, 0, "regex_pattern_handle_ptr")
+                .llvm_ctx("hew_regex_handle Pattern.handle GEP")?;
             fn_ctx
                 .builder
-                .build_store(dest_ptr, handle)
+                .build_store(handle_ptr, cloned)
                 .llvm_ctx("hew_regex_handle store")?;
         }
 

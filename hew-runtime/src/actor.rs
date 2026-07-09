@@ -8423,33 +8423,31 @@ mod tests {
         // SAFETY: actor is valid and tracked.
         unsafe { hew_actor_send(actor, 1, ptr::null_mut(), 0) };
 
-        // (a) State reaches `Crashed`.  Bounded by 2s — the worker runs
-        // arena_reset + msg-node free + handle_crash_recovery synchronously
-        // and the test fails fast rather than hanging.
+        // (a) State reaches `Crashed` and the crash path has published its
+        // error code.  Bounded by 2s — the worker runs arena_reset + msg-node
+        // free + handle_crash_recovery synchronously and the test fails fast
+        // rather than hanging.
+        //
+        // The terminal-state CAS in `hew_actor_trap` intentionally happens
+        // before mailbox close / teardown / `error_code.store(...)`.  Polling
+        // only `actor_state == Crashed` and then immediately reading
+        // `error_code` leaves a tiny synchronization gap on cold or contended
+        // runners: the state can be visible before the release-store of the
+        // error code.  Wait for both observations together so the assertion
+        // tests the intended invariant instead of racing the implementation's
+        // documented ordering.
         assert!(
             wait_for_condition(std::time::Duration::from_secs(2), || {
                 // SAFETY: actor remains owned by this test while we poll its state.
                 let state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
-                state == HewActorState::Crashed as i32
+                // SAFETY: actor is owned by this test.
+                let err = unsafe { hew_actor_get_error(actor) };
+                state == HewActorState::Crashed as i32 && err != 0
             }),
-            "self-stop-then-crash must publish Crashed; actor must not be stranded in Stopping or Crashing",
+            "self-stop-then-crash must publish Crashed and a non-zero error_code; actor must not be stranded in Stopping/Crashing or race before crash publication completes",
         );
 
-        // (b) Crash notification path executed.  `hew_actor_trap`
-        // (`actor.rs:3716`) stores `error_code` only AFTER winning its
-        // terminal-state CAS, immediately before running
-        // `propagate_exit_to_links` / `notify_monitors_on_death` /
-        // `hew_supervisor_notify_child_event` (lines :3759-:3796).  A
-        // non-zero `error_code` therefore proves the full notification
-        // path ran, not just a bare state write.
-        // SAFETY: actor is owned by this test.
-        let err = unsafe { hew_actor_get_error(actor) };
-        assert_ne!(
-            err, 0,
-            "crash notification path must run; non-zero error_code indicates hew_actor_trap reached the notification block",
-        );
-
-        // (c) `hew_actor_free` completes within its bounded wait
+        // (b) `hew_actor_free` completes within its bounded wait
         // (`actor.rs::hew_actor_free_inner` has a 2s timeout on the
         // quiescence spin).  If `Crashing` had stalled the waiter, this
         // would return -2 instead of 0.

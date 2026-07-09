@@ -1697,10 +1697,11 @@ fn run_user_record_string_field_is_dropped_once() {
 }
 
 /// Generic-instantiation twin of `run_user_record_string_field_is_dropped_once`:
-/// a `Pair<i64, string>` carrying a computed (heap) string is constructed and
-/// dropped on every one of 100k iterations. The generic owned-record drop spine
-/// must free the string field exactly once per iteration — a double-free aborts
-/// (the loop is the exactly-once witness), a missed drop leaks.
+/// a `Pair<i64, string>` carrying a single fresh `string.repeat` result is
+/// constructed and dropped on every one of 100k iterations. The generic
+/// owned-record drop spine must free the string field exactly once per iteration
+/// without depending on nested-concat temp cleanup — a double-free aborts (the
+/// loop is the exactly-once witness), a missed drop leaks.
 #[test]
 fn run_generic_record_string_field_is_dropped_once() {
     require_codegen();
@@ -1716,6 +1717,33 @@ fn run_generic_record_string_field_is_dropped_once() {
     assert!(
         output.status.success(),
         "generic_record_string_field should run cleanly (a double-free would \
+         abort); stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
+/// The #2434 root cause split from the generic-record fixture: `first + " " +
+/// last` creates a fresh concat temp that is immediately borrowed by another
+/// concat, with no record wrapper involved. The nested-temp drop splice must
+/// release that intermediate exactly once.
+#[test]
+fn run_nested_string_concat_temp_is_dropped_once() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/nested_string_concat_temp.hew");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/nested_string_concat_temp.expected"),
+    )
+    .expect("read nested_string_concat_temp.expected");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "nested_string_concat_temp should run cleanly (a double-free would \
          abort); stdout: {}\nstderr: {}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),

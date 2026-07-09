@@ -38269,6 +38269,35 @@ fn is_borrowing_string_cmp_instr(instr: &Instr, t: u32) -> bool {
     )
 }
 
+fn is_hew_string_concat_runtime_call(call: &crate::model::RuntimeCall) -> bool {
+    call.symbol() == "hew_string_concat"
+}
+
+fn is_fresh_string_concat_instr_def(def: NestedDefSite, blocks: &[BasicBlock], t: u32) -> bool {
+    let NestedDefSite::Instr { block, idx } = def else {
+        return false;
+    };
+    let Some(Instr::CallRuntimeAbi(call)) =
+        block_by_id(blocks, block).and_then(|b| b.instructions.get(idx))
+    else {
+        return false;
+    };
+    is_hew_string_concat_runtime_call(call)
+        && call.dest().and_then(base_local) == Some(t)
+        && crate::runtime_symbols::callee_ownership_contract(call.symbol())
+            .produces_fresh_owned_string()
+}
+
+fn is_borrowing_string_concat_instr_use(instr: &Instr, t: u32) -> bool {
+    let Instr::CallRuntimeAbi(call) = instr else {
+        return false;
+    };
+    is_hew_string_concat_runtime_call(call)
+        && call.args().iter().any(|p| place_refs_local(*p, t))
+        && crate::runtime_symbols::callee_ownership_contract(call.symbol())
+            .borrows_string_call_args()
+}
+
 /// W5.011 P3 — `true` when an instruction transfers ownership of a fresh-owned
 /// `string` `local` out of its slot, so a scope-exit drop of `local` would be a
 /// double-free (over-decrement of the shared refcount).
@@ -38536,9 +38565,11 @@ fn block_by_id(blocks: &[BasicBlock], id: u32) -> Option<&BasicBlock> {
 ///    construction, so a buffer is never claimed by both);
 /// 3. it has exactly ONE def, a known fresh producer (no instruction
 ///    re-definition; a producer-terminator temp has no instruction writer);
-/// 4. it has AT MOST ONE source-use, and (if present) that use is a verified
-///    borrowing `Terminator::Call` — any other use (`Move`/store/return/send/
-///    user-call) excludes it (leak, never double-free);
+/// 4. it has AT MOST ONE source-use, and (if present) that use is verified
+///    borrowing-only: a borrowing `Terminator::Call`, a string compare
+///    instruction, or the narrowly-proven nested `hew_string_concat` →
+///    `hew_string_concat` instruction chain. Any other use (`Move`/store/
+///    return/send/user-call) excludes it (leak, never double-free);
 /// 5. the drop site is provably dominated by the def and entered exactly once
 ///    (single-predecessor continuation), in one of these structural shapes:
 ///      * discard, instr def → drop right after the producer instruction (same
@@ -38786,20 +38817,21 @@ fn nested_fresh_string_temp_drop(
             };
             def_dominates.then_some((*next, 0, drop_place, drop_ty))
         }
-        // Single instruction use: admit ONLY a borrowing string compare
-        // (`xs[i] == "hello"`, `xs[i] != s`, and the ordering family) where the
-        // def dominates the use, and drop right after the compare consumed
-        // (read) the temp. String compares lower to `Instr::IntCmp` whose
-        // string operands codegen routes through `hew_string_equals` /
-        // `hew_string_compare` — pure `strcmp` borrows that never free the
-        // operand (see `is_borrowing_string_cmp_instr`). Any other instruction
-        // use stays fail-closed (leak, never double-free): a `Move`/store/
-        // user-call/closure-call may take ownership, and the conservative leak
-        // is the safe side.
+        // Single instruction use: admit ONLY known borrowing instruction uses:
+        // a borrowing string compare (`xs[i] == "hello"`, `xs[i] != s`, and
+        // the ordering family) or the reproduced nested-concat chain where a
+        // fresh `hew_string_concat` instruction result is immediately borrowed
+        // by another `hew_string_concat` instruction (`first + " " + last`).
+        // Any other instruction use stays fail-closed (leak, never
+        // double-free): a `Move`/store/user-call/closure-call/unknown runtime
+        // call may take ownership, and the conservative leak is the safe side.
         (_, Some(NestedUseSite::Instr { block: ub, idx: ui })) => {
             let ub = *ub;
             let use_instr = block_by_id(blocks, ub)?.instructions.get(*ui)?;
-            if !is_borrowing_string_cmp_instr(use_instr, t) {
+            let borrowing_use = is_borrowing_string_cmp_instr(use_instr, t)
+                || (is_fresh_string_concat_instr_def(def, blocks, t)
+                    && is_borrowing_string_concat_instr_use(use_instr, t));
+            if !borrowing_use {
                 return None;
             }
             let def_dominates = match def {
@@ -38872,6 +38904,249 @@ fn apply_nested_fresh_string_temp_drops(
                 u32::try_from(at).unwrap_or(u32::MAX),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod nested_fresh_string_temp_drop_admission {
+    use super::*;
+
+    fn block(id: u32, instructions: Vec<Instr>, terminator: Terminator) -> BasicBlock {
+        BasicBlock {
+            id,
+            statements: vec![],
+            instructions,
+            terminator,
+        }
+    }
+
+    fn ret_block(id: u32) -> BasicBlock {
+        block(id, vec![], Terminator::Return)
+    }
+
+    fn runtime_call(symbol: &str, args: Vec<Place>, dest: Option<Place>) -> Instr {
+        Instr::CallRuntimeAbi(
+            crate::model::RuntimeCall::new(symbol, args, dest)
+                .unwrap_or_else(|_| panic!("{symbol} must be an allowlisted RuntimeCall")),
+        )
+    }
+
+    fn concat(lhs: u32, rhs: u32, dest: u32) -> Instr {
+        runtime_call(
+            "hew_string_concat",
+            vec![Place::Local(lhs), Place::Local(rhs)],
+            Some(Place::Local(dest)),
+        )
+    }
+
+    fn user_record_ty() -> ResolvedTy {
+        ResolvedTy::named_user("Holder", vec![])
+    }
+
+    fn vec_string_ty() -> ResolvedTy {
+        ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::String])
+    }
+
+    fn locals_with(overrides: &[(usize, ResolvedTy)]) -> Vec<ResolvedTy> {
+        let mut locals = vec![ResolvedTy::String; 10];
+        for (idx, ty) in overrides {
+            locals[*idx] = ty.clone();
+        }
+        locals
+    }
+
+    fn collect(
+        blocks: &[BasicBlock],
+        locals: &[ResolvedTy],
+        binding_locals: &HashMap<BindingId, Place>,
+    ) -> Vec<(u32, usize, Place, ResolvedTy)> {
+        collect_nested_fresh_string_temp_drops(blocks, &HashMap::new(), locals, binding_locals)
+    }
+
+    fn nested_concat_blocks() -> Vec<BasicBlock> {
+        vec![block(
+            0,
+            vec![concat(0, 1, 2), concat(2, 3, 4)],
+            Terminator::Return,
+        )]
+    }
+
+    fn second_concat_binding() -> HashMap<BindingId, Place> {
+        [(BindingId(44), Place::Local(4))].into_iter().collect()
+    }
+
+    #[test]
+    fn nested_concat_instr_temp_gets_one_inline_drop_after_borrowing_concat_use() {
+        let blocks = nested_concat_blocks();
+        let drops = collect(&blocks, &locals_with(&[]), &second_concat_binding());
+
+        assert_eq!(
+            drops,
+            vec![(0, 2, Place::Local(2), ResolvedTy::String)],
+            "the first concat temp is a fresh owner used exactly once by the \
+             second borrowing concat; it must be dropped immediately after that \
+             use and only once"
+        );
+    }
+
+    #[test]
+    fn binding_local_concat_result_stays_out_of_nested_temp_collector() {
+        let blocks = nested_concat_blocks();
+        let binding_locals: HashMap<BindingId, Place> = [
+            (BindingId(22), Place::Local(2)),
+            (BindingId(44), Place::Local(4)),
+        ]
+        .into_iter()
+        .collect();
+        let drops = collect(&blocks, &locals_with(&[]), &binding_locals);
+
+        assert!(
+            drops.is_empty(),
+            "a local owned by a let/parameter binding belongs to scope-exit drop \
+             derivation, not the bare-temp collector; got {drops:?}"
+        );
+    }
+
+    #[test]
+    fn concat_temp_moved_into_record_is_not_dropped_by_collector() {
+        let blocks = vec![block(
+            0,
+            vec![
+                concat(0, 1, 2),
+                Instr::RecordInit {
+                    ty: user_record_ty(),
+                    fields: vec![(FieldOffset(0), Place::Local(2))],
+                    dest: Place::Local(5),
+                },
+            ],
+            Terminator::Return,
+        )];
+        let locals = locals_with(&[(5, user_record_ty())]);
+
+        assert!(
+            collect(&blocks, &locals, &HashMap::new()).is_empty(),
+            "record ingress transfers ownership to the aggregate; an inline temp \
+             drop would double-free the field"
+        );
+    }
+
+    #[test]
+    fn concat_temp_moved_into_vec_owned_store_is_not_dropped_by_collector() {
+        let blocks = vec![
+            block(
+                0,
+                vec![concat(0, 1, 2)],
+                Terminator::Call {
+                    callee: "hew_vec_push_owned".to_string(),
+                    builtin: None,
+                    args: vec![Place::Local(5), Place::Local(2)],
+                    dest: None,
+                    next: 1,
+                },
+            ),
+            ret_block(1),
+        ];
+        let locals = locals_with(&[(5, vec_string_ty())]);
+
+        assert!(
+            collect(&blocks, &locals, &HashMap::new()).is_empty(),
+            "Vec owned-element ingress is not the proven borrowing concat chain; \
+             the collector must leave ownership with the container path"
+        );
+    }
+
+    #[test]
+    fn concat_temp_return_move_is_not_dropped_by_collector() {
+        let blocks = vec![block(
+            0,
+            vec![
+                concat(0, 1, 2),
+                Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src: Place::Local(2),
+                },
+            ],
+            Terminator::Return,
+        )];
+
+        assert!(
+            collect(&blocks, &locals_with(&[]), &HashMap::new()).is_empty(),
+            "moving the temp into the return slot transfers ownership to the \
+             caller; no producer-side temp drop is admissible"
+        );
+    }
+
+    #[test]
+    fn concat_temp_sent_to_actor_is_not_dropped_by_collector() {
+        let blocks = vec![
+            block(
+                0,
+                vec![concat(0, 1, 2)],
+                Terminator::Send {
+                    actor: Place::Local(8),
+                    msg_type: 0,
+                    value: Place::Local(2),
+                    next: 1,
+                    alias_mode: crate::model::SendAliasMode::Copy,
+                },
+            ),
+            ret_block(1),
+        ];
+
+        assert!(
+            collect(&blocks, &locals_with(&[]), &HashMap::new()).is_empty(),
+            "actor send is an ownership-transfer edge, not a borrowing concat \
+             instruction use"
+        );
+    }
+
+    #[test]
+    fn concat_temp_passed_to_unknown_user_call_is_not_dropped_by_collector() {
+        let blocks = vec![
+            block(
+                0,
+                vec![concat(0, 1, 2)],
+                Terminator::Call {
+                    callee: "user_takes_string".to_string(),
+                    builtin: None,
+                    args: vec![Place::Local(2)],
+                    dest: None,
+                    next: 1,
+                },
+            ),
+            ret_block(1),
+        ];
+
+        assert!(
+            collect(&blocks, &locals_with(&[]), &HashMap::new()).is_empty(),
+            "unknown/user calls have no borrowing contract, so the collector must \
+             fail closed"
+        );
+    }
+
+    #[test]
+    fn branch_around_concat_producer_does_not_insert_uninitialized_drop() {
+        let blocks = vec![
+            block(
+                0,
+                vec![],
+                Terminator::Branch {
+                    cond: Place::Local(9),
+                    then_target: 1,
+                    else_target: 2,
+                },
+            ),
+            block(1, vec![concat(0, 1, 2)], Terminator::Goto { target: 2 }),
+            block(2, vec![concat(2, 3, 4)], Terminator::Return),
+        ];
+        let mut locals = locals_with(&[(9, ResolvedTy::Bool)]);
+        locals[4] = ResolvedTy::String;
+
+        assert!(
+            collect(&blocks, &locals, &second_concat_binding()).is_empty(),
+            "the use block is reachable from a path that skipped the producer; \
+             inserting a drop there would free an uninitialized temp"
+        );
     }
 }
 

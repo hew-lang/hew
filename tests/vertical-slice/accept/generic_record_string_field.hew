@@ -1,17 +1,17 @@
-// Generic record INSTANTIATION carrying an owned (computed-heap) string field,
-// dropped at scope exit on every loop iteration. The generic-instantiation twin
-// of `user_record_string_field`: each iteration constructs a `Pair<i64, string>`
-// whose `second` field owns a freshly-allocated string, then drops it. A
-// double-free SIGSEGVs and a missed drop leaks; 100k iterations surface either.
+// Generic record INSTANTIATION carrying an owned string field from a single fresh
+// producer (`string.repeat`), dropped at scope exit on every loop iteration. This
+// pins the generic-record drop spine independently from nested string-concat
+// temps: a double-free SIGSEGVs and a missed field drop leaks; 100k iterations
+// surface either without relying on `first + " " + last`.
+import std::string;
+
 type Pair<A, B> {
     first: A;
     second: B;
 }
 
 fn emit_pair(print_it: bool) -> i64 {
-    let first = "Ada";
-    let last = "Lovelace";
-    let full = first + " " + last;
+    let full = string.repeat("field", 1);
     let pair = Pair { first: 1, second: full };
     if print_it {
         println(pair.second);

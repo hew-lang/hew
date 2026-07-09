@@ -43,6 +43,7 @@ fn main() -> i64 [conv=default]
     _10 = call_rt hew_string_concat(_1, _9)
     _11 = string_lit "world"
     _12 = call_rt hew_string_concat(_10, _11)
+    drop _10 ty=string fn=release(hew_string_drop)
     _13 = move _12
     call println_str(_13) -> bb2
   bb2:

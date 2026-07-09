@@ -141,7 +141,31 @@ norm() {
         gsub(pat, canonical, line)
       }
       # Numeric const pool: NAME discriminates identity; collapse pool-id.
-      gsub(/@__hew_const__([A-Za-z0-9_]+)__[0-9]+/, "@__hew_const__\\1__N", line)
+      #
+      # NOTE: the gsub replacement string is a LITERAL in POSIX/gawk/mawk;
+      # it does NOT expand \1 backreferences the way sed/perl do, so a naive
+      # `gsub(/.../, "@__hew_const__\\1__N", line)` here substitutes the
+      # literal text "@__hew_const__\1__N" for every match, erasing the NAME
+      # and making @__hew_const__FOO__1 and @__hew_const__BAR__99 collapse to
+      # the SAME canonical token — a false-negative that hides a numeric
+      # constant identity change. gensub() would expand the backreference,
+      # but it is a gawk-only extension, absent from the default
+      # one-true-awk-derived /usr/bin/awk shipped on macOS, so reconstruct
+      # the substitution manually with the same portable match()/substr()
+      # idiom already used above in this file, preserving the captured
+      # NAME segment verbatim.
+      out = ""
+      rest = line
+      while (match(rest, /@__hew_const__[A-Za-z0-9_]+__[0-9]+/)) {
+        pre  = substr(rest, 1, RSTART - 1)
+        m    = substr(rest, RSTART, RLENGTH)
+        name = m
+        sub(/^@__hew_const__/, "", name)
+        sub(/__[0-9]+$/, "", name)
+        out  = out pre "@__hew_const__" name "__N"
+        rest = substr(rest, RSTART + RLENGTH)
+      }
+      line = out rest
       print line
     }
   ' "$file" "$file"

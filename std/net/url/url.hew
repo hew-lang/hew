@@ -214,6 +214,72 @@ fn decode_impl(s: string) -> string {
     out.to_string()
 }
 
+/// Decode an `application/x-www-form-urlencoded` query string into
+/// `(key, value)` pairs.
+///
+/// Entries are separated by `&`; each entry must contain `=` and entries
+/// without one are skipped, matching `encode_query`'s invalid-line convention.
+/// Percent-escapes are decoded like [`decode`], and `+` decodes to a space.
+///
+/// # Examples
+///
+/// ```
+/// import std::net::url;
+///
+/// let pairs = url.decode_query("name=hello+world&x=a%2Bb");
+/// // [("name", "hello world"), ("x", "a+b")]
+/// ```
+pub fn decode_query(params: string) -> Vec<(string, string)> {
+    decode_query_impl(params)
+}
+
+fn decode_query_impl(params: string) -> Vec<(string, string)> {
+    let decoded: Vec<(string, string)> = Vec::new();
+    if string.is_empty(params) {
+        return decoded;
+    }
+    let entries = string.split(params, "&");
+    for i in 0 .. entries.len() {
+        let entry = entries[i];
+        let eq = entry.find("=");
+        if eq >= 0 {
+            let key = entry.slice(0, eq);
+            let value = entry.slice(eq + 1, entry.len());
+            decoded.push((decode_form_component(key), decode_form_component(value)));
+        }
+    }
+    decoded
+}
+
+fn decode_form_component(s: string) -> string {
+    let data = s.to_bytes();
+    if !valid_percent_utf8(data) {
+        return "";
+    }
+    let out: bytes = bytes::new();
+    var i = 0;
+    while i < data.len() {
+        let b = data[i];
+        if b == 43 {
+            out.push(32 as u8);
+            i = i + 1;
+            continue;
+        }
+        if b == 37 && i + 2 < data.len() {
+            let hi = hex_nibble(data[i + 1]);
+            let lo = hex_nibble(data[i + 2]);
+            if hi >= 0 && lo >= 0 {
+                out.push((hi * 16 + lo) as u8);
+                i = i + 3;
+                continue;
+            }
+        }
+        out.push(b);
+        i = i + 1;
+    }
+    out.to_string()
+}
+
 /// Validate that the percent-encoded bytes in `data` decode to complete,
 /// well-formed UTF-8 sequences. Literal bytes may not interrupt a multi-byte
 /// sequence. Returns `false` on any malformed sequence (decode returns `""`).

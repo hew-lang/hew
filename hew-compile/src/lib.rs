@@ -1153,6 +1153,17 @@ fn resolve_file_imports_internal(
                     }
                 }
 
+                if module_str.starts_with("ecosystem::") && decl.path.len() > 1 {
+                    let tail = decl.path[1..].iter().collect::<PathBuf>();
+                    let tail_last = decl.path.last().expect("path is non-empty");
+                    let tail_dir = tail.join(format!("{tail_last}.hew"));
+                    let tail_rel = tail.with_extension("hew");
+                    if let Some(pkg) = ctx.extra_pkg_path {
+                        candidates.push(pkg.join(&tail_dir));
+                        candidates.push(pkg.join(&tail_rel));
+                    }
+                }
+
                 // Stdlib / global search roots — apply exclusive precedence tiers so that
                 // a file in worktree-A always resolves std from A only, never from the
                 // build binary's worktree or a sibling checkout.
@@ -2336,6 +2347,53 @@ mod tests {
             import.resolved_source_paths,
             vec![package_file],
             "hew::db::sqlite should resolve through the explicit hew:: package-layout fallback"
+        );
+    }
+
+    #[test]
+    fn ecosystem_package_layout_still_uses_explicit_pkg_path_tail_fallback() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let pkg_root = dir.path().join("packages");
+        let postgres_dir = pkg_root.join("db/postgres");
+        fs::create_dir_all(&postgres_dir).expect("create package directory");
+        let package_file = Path::new(&write_source(
+            &postgres_dir,
+            "postgres.hew",
+            "pub fn marker() -> i64 { 1 }\n",
+        ))
+        .canonicalize()
+        .expect("canonical package file");
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import ecosystem::db::postgres;\n\nfn main() {}\n",
+        );
+
+        let (_output, state) = check_file_with_state(
+            &input,
+            &FrontendOptions {
+                no_typecheck: true,
+                pkg_path: Some(pkg_root),
+                ..Default::default()
+            },
+        )
+        .expect("ecosystem:: package-layout import should keep using its explicit fallback");
+
+        let import = state
+            .program
+            .items
+            .iter()
+            .find_map(|item| match &item.0 {
+                Item::Import(import) if import.path == ["ecosystem", "db", "postgres"] => {
+                    Some(import)
+                }
+                _ => None,
+            })
+            .expect("ecosystem::db::postgres import should remain in the program");
+        assert_eq!(
+            import.resolved_source_paths,
+            vec![package_file],
+            "ecosystem::db::postgres should resolve through the explicit ecosystem:: package-layout fallback"
         );
     }
 

@@ -4619,6 +4619,33 @@ mod tests {
         }
     }
 
+    #[cfg(all(test, not(target_arch = "wasm32"), unix))]
+    fn stream_double_register_died_by_abort(status: std::process::ExitStatus) -> bool {
+        use std::os::unix::process::ExitStatusExt as _;
+
+        status.signal() == Some(libc::SIGABRT)
+    }
+
+    #[cfg(all(test, not(target_arch = "wasm32"), not(unix)))]
+    fn stream_double_register_died_by_abort(status: std::process::ExitStatus) -> bool {
+        !status.success() && status.code() != Some(101)
+    }
+
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    fn run_stream_poll_double_register_child(force_panic: bool) -> std::process::Output {
+        let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+        cmd.args([
+            "--exact",
+            "stream::tests::_helper_stream_poll_double_register",
+        ])
+        .env("RUST_TEST_THREADS", "1")
+        .env("HEW_DEATH_TEST", "_helper_stream_poll_double_register");
+        if force_panic {
+            cmd.env("HEW_DEATH_TEST_FORCE_PANIC", "1");
+        }
+        cmd.output().unwrap()
+    }
+
     /// A second call to `hew_stream_poll` with no intervening cancel must
     /// abort the process. Tested via subprocess because `abort()` terminates
     /// the whole process — it cannot be caught in-process.
@@ -4626,18 +4653,23 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     fn stream_poll_double_register_aborts() {
         // Spawn a child that runs the helper below via HEW_DEATH_TEST gate.
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "stream::tests::_helper_stream_poll_double_register",
-            ])
-            .env("RUST_TEST_THREADS", "1")
-            .env("HEW_DEATH_TEST", "_helper_stream_poll_double_register")
-            .output()
-            .unwrap();
+        let output = run_stream_poll_double_register_child(false);
         assert!(
-            !status.status.success(),
-            "second poll on a stream with a live registration must terminate abnormally"
+            stream_double_register_died_by_abort(output.status),
+            "second poll on a stream with a live registration must SIGABRT, \
+             not merely exit non-zero: status={:?}, stderr={} ",
+            output.status,
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stream_poll_double_register_rejects_helper_panic() {
+        let output = run_stream_poll_double_register_child(true);
+        assert!(
+            !stream_double_register_died_by_abort(output.status),
+            "an invariant panic in the helper must not be accepted as the expected abort"
         );
     }
 
@@ -4649,6 +4681,10 @@ mod tests {
         {
             return;
         }
+        assert!(
+            std::env::var_os("HEW_DEATH_TEST_FORCE_PANIC").is_none(),
+            "forced helper panic must not satisfy the death test"
+        );
         // SAFETY: standard test ownership. The second poll must abort.
         unsafe {
             let pair = hew_stream_channel(4);

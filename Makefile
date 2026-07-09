@@ -663,9 +663,10 @@ ll-diff: hew
 ll-golden: hew
 	bash scripts/ll-corpus.sh golden
 
-# Self-test for the ll-byte-identity normaliser: four independently-failable
-# cases that prove string-content changes are caught and pool-id reorderings
-# are transparent.  No compiler build required — exercises the oracle script
+# Self-test for the ll-byte-identity normaliser: six independently-failable
+# cases that prove string-content changes and numeric-const NAME changes are
+# caught, and pool-id reorderings (both string-pool and numeric-const) are
+# transparent.  No compiler build required — exercises the oracle script
 # against synthetic .ll snippets only.
 ll-identity-selftest:
 	bash scripts/ll-identity-selftest.sh

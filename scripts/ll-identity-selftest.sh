@@ -25,6 +25,26 @@
 #     The old normaliser would have passed this accidentally; the new one
 #     proves it via content-based canonicalisation.
 #
+#   Case 5 (numeric-const-name-change-caught):
+#     A function referencing @__hew_const__FOO__1 vs the same shape referencing
+#     @__hew_const__BAR__99 MUST be reported as DIFFERS. gsub replacement
+#     strings are literal in POSIX/gawk/mawk (they do not expand \1
+#     backreferences), so the original
+#     `gsub(/.../, "@__hew_const__\1__N", line)` collapsed both FOO and BAR
+#     references to the literal text "@__hew_const__\1__N", erasing the NAME
+#     and silently hiding a numeric constant identity change. The fix
+#     reconstructs the substitution manually with match()/substr(), the same
+#     portable idiom already used elsewhere in the normaliser, preserving the
+#     captured NAME segment verbatim (gensub() would also expand the
+#     backreference, but it is a gawk-only extension unavailable on the
+#     default macOS /usr/bin/awk).
+#
+#   Case 6 (numeric-const-pool-id-reordering-transparent):
+#     Same numeric constant NAME (FOO) but a different pool-id suffix
+#     (@__hew_const__FOO__1 vs @__hew_const__FOO__7) MUST still be IDENTICAL
+#     — only the NAME discriminates identity, not the run-to-run pool-id
+#     number. Proves Case 5's fix does not over-correct into false positives.
+#
 # Exit codes:
 #   0  all cases pass
 #   1  one or more cases fail (details on stderr)
@@ -122,6 +142,46 @@ define void @test_reg() {
 EOF
 }
 
+# Numeric-const fixture: references @__hew_const__FOO__1.
+write_numeric_const_foo() {
+  cat > "$1" << 'EOF'
+@__hew_const__FOO__1 = private unnamed_addr constant i64 42, align 8
+
+define i64 @test_numeric_const() {
+  %v = load i64, ptr @__hew_const__FOO__1, align 8
+  ret i64 %v
+}
+EOF
+}
+
+# Numeric-const fixture: SAME shape, but references @__hew_const__BAR__99 --
+# a genuinely different named constant (not just a different pool-id
+# suffix on the same name).
+write_numeric_const_bar() {
+  cat > "$1" << 'EOF'
+@__hew_const__BAR__99 = private unnamed_addr constant i64 42, align 8
+
+define i64 @test_numeric_const() {
+  %v = load i64, ptr @__hew_const__BAR__99, align 8
+  ret i64 %v
+}
+EOF
+}
+
+# Numeric-const fixture: SAME name (FOO) as write_numeric_const_foo, but a
+# different pool-id suffix (__7 instead of __1) -- run-to-run
+# HashMap-iteration-order non-determinism for the SAME semantic constant.
+write_numeric_const_foo_reordered() {
+  cat > "$1" << 'EOF'
+@__hew_const__FOO__7 = private unnamed_addr constant i64 42, align 8
+
+define i64 @test_numeric_const() {
+  %v = load i64, ptr @__hew_const__FOO__7, align 8
+  ret i64 %v
+}
+EOF
+}
+
 # ---------------------------------------------------------------------------
 # Each case uses a dedicated pair of directories so failures are independent.
 # ---------------------------------------------------------------------------
@@ -213,5 +273,51 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Case 5: numeric-const-name-change-caught
+# @__hew_const__FOO__1 vs @__hew_const__BAR__99 in the SAME structural
+# position MUST be reported as DIFFERS -- a different named numeric constant
+# is a real semantic change, not pool-id churn.
+# ---------------------------------------------------------------------------
+echo "--- Case 5: numeric-const-name-change-caught ---"
+C5_BASE="$TMPDIR_BASE/c5_base"
+C5_HEAD="$TMPDIR_BASE/c5_head"
+mkdir -p "$C5_BASE" "$C5_HEAD"
+write_numeric_const_foo "$C5_BASE/fixture.ll"
+write_numeric_const_bar "$C5_HEAD/fixture.ll"
+
+rc=0
+bash "$ORACLE" "$C5_BASE" "$C5_HEAD" > /dev/null 2>&1 || rc=$?
+if [[ "$rc" -eq 1 ]]; then
+  pass "numeric-const-name-change-caught"
+elif [[ "$rc" -eq 0 ]]; then
+  fail "numeric-const-name-change-caught" \
+    "oracle exited 0 (IDENTICAL) but the referenced numeric constant's NAME changed (FOO -> BAR) — false negative"
+else
+  fail "numeric-const-name-change-caught" "oracle exited $rc (expected 1)"
+fi
+
+# ---------------------------------------------------------------------------
+# Case 6: numeric-const-pool-id-reordering-transparent
+# @__hew_const__FOO__1 vs @__hew_const__FOO__7 -- SAME name, only the
+# run-to-run pool-id suffix shifted.  MUST be IDENTICAL.
+# ---------------------------------------------------------------------------
+echo "--- Case 6: numeric-const-pool-id-reordering-transparent ---"
+C6_BASE="$TMPDIR_BASE/c6_base"
+C6_HEAD="$TMPDIR_BASE/c6_head"
+mkdir -p "$C6_BASE" "$C6_HEAD"
+write_numeric_const_foo "$C6_BASE/fixture.ll"
+write_numeric_const_foo_reordered "$C6_HEAD/fixture.ll"
+
+rc=0
+bash "$ORACLE" "$C6_BASE" "$C6_HEAD" > /dev/null 2>&1 || rc=$?
+if [[ "$rc" -eq 0 ]]; then
+  pass "numeric-const-pool-id-reordering-transparent"
+else
+  bash "$ORACLE" "$C6_BASE" "$C6_HEAD" 2>&1 || true
+  fail "numeric-const-pool-id-reordering-transparent" \
+    "oracle exited $rc (expected 0) — false positive on numeric-const pool-id reordering"
+fi
+
+# ---------------------------------------------------------------------------
 echo ""
-echo "ll-identity-selftest: all 4 cases PASS"
+echo "ll-identity-selftest: all 6 cases PASS"

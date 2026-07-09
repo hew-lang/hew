@@ -1058,7 +1058,7 @@ fn handle_control_frame(
             return;
         }
         CTRL_LINK_DOWN => {
-            handle_link_down_frame(control);
+            handle_link_down_frame(mgr, conn_id, control);
             return;
         }
         other => {
@@ -1263,9 +1263,13 @@ fn handle_unlink_frame(control: &ControlFrame) {
 /// synthesize a `SYS_MSG_EXIT` into the LOCAL linked actor's mailbox and crash it
 /// (for `CrashLinked`). THE divergence from a monitor DOWN (which arms a recv
 /// slot): a link DOWN crashes the linked actor through its mailbox. Fail-closed
-/// on malformed input; the EXIT fires exactly once and ONLY for a link entry this
-/// node registered, so a forged frame cannot crash an actor we never linked.
-fn handle_link_down_frame(control: &ControlFrame) {
+/// on malformed input; the EXIT fires exactly once and ONLY for a link entry
+/// this node registered AND ONLY when the handshake-authenticated sender of this
+/// connection is the same peer that entry is linked to — otherwise neither a
+/// forged `ref_id` this node never linked NOR a different, genuinely-connected
+/// peer that merely guessed/learned a pending link `ref_id` can crash an actor
+/// linked to another, still-alive peer.
+fn handle_link_down_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &ControlFrame) {
     let payload = match decode_link_down_payload(&control.payload) {
         Ok(payload) => payload,
         Err(err) => {
@@ -1275,7 +1279,23 @@ fn handle_link_down_frame(control: &ControlFrame) {
             return;
         }
     };
-    crate::hew_node::handle_inbound_link_down(payload.ref_id, payload.reason);
+    if mgr.is_null() {
+        set_last_error("connection reader link down frame missing manager");
+        return;
+    }
+    // SAFETY: reader_loop owns a live manager pointer for this connection.
+    let mgr_ref = unsafe { &*mgr };
+    // Peer-binding defence: resolve the handshake-authenticated identity of the
+    // connection this frame arrived on. `authenticated == 0` (no active,
+    // registered connection for `conn_id`, e.g. mid-teardown) is NOT
+    // guaranteed to fail closed on its own — `handle_link_req_frame` performs
+    // no peer authentication on an inbound `CTRL_LINK_REQ`, so any connected
+    // peer can set `linker_node_id` to 0 and land a `WatcherEntry` with
+    // `remote_node_id == 0`. `deliver_link_down_to_ref` rejects
+    // `authenticated_peer == 0` explicitly, before it is ever compared to a
+    // stored `remote_node_id`.
+    let authenticated = peer_node_id_for_conn(mgr_ref, conn_id);
+    crate::hew_node::handle_inbound_link_down(payload.ref_id, authenticated, payload.reason);
 }
 
 fn active_gossip_connection_ids(mgr: &HewConnMgr) -> Vec<c_int> {

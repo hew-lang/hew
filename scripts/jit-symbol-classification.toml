@@ -1429,3 +1429,99 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_vec_free_owned"
 discharge-depth = "deep"
+
+# hew-runtime/src/vec.rs:929-954 allocates an i32 slice.
+[[ownership.contracts]]
+symbol = "hew_vec_slice_range_i32"
+result = "fresh"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:958-983 allocates an i64 slice.
+[[ownership.contracts]]
+symbol = "hew_vec_slice_range_i64"
+result = "fresh"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:987-1012 allocates an f64 slice.
+[[ownership.contracts]]
+symbol = "hew_vec_slice_range_f64"
+result = "fresh"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:1016-1063 allocates a plain byte-stride slice.
+[[ownership.contracts]]
+symbol = "hew_vec_slice_range_bytesize"
+result = "fresh"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:1067-1094 allocates a pointer-element slice.
+[[ownership.contracts]]
+symbol = "hew_vec_slice_range_ptr"
+result = "fresh"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:1098-1130 allocates a string-retaining slice.
+[[ownership.contracts]]
+symbol = "hew_vec_slice_range_str"
+result = "fresh"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "deep"
+
+# hew-runtime/src/vec.rs:1134-1179 allocates a BitCopy layout slice.
+[[ownership.contracts]]
+symbol = "hew_vec_slice_range_layout"
+result = "fresh"
+params = ["borrow", "borrow", "borrow", "borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:1183-1224 allocates a deep-cloned owned slice.
+[[ownership.contracts]]
+symbol = "hew_vec_slice_range_owned"
+result = "fresh"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = "hew_vec_free_owned"
+discharge-depth = "deep"
+
+# hew-runtime/src/vec.rs:1702-1739 allocates a clone, retaining string elements.
+[[ownership.contracts]]
+symbol = "hew_vec_clone"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "deep"
+
+# hew-runtime/src/vec.rs:1743-1779 allocates a BitCopy layout clone.
+[[ownership.contracts]]
+symbol = "hew_vec_clone_layout"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:1783-1815 allocates a witness-managed clone.
+[[ownership.contracts]]
+symbol = "hew_vec_clone_managed"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_vec_free_managed"
+discharge-depth = "deep"
+
+# hew-runtime/src/vec.rs:2964-3009 allocates a deep owned-element clone.
+[[ownership.contracts]]
+symbol = "hew_vec_clone_owned"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_vec_free_owned"
+discharge-depth = "deep"

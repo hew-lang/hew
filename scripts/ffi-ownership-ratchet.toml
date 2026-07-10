@@ -3,4 +3,4 @@
 # This value must match the verifier's computed count. Contract curation must
 # lower it; adding an unclassified symbol without deliberately growing this
 # tracked ratchet fails verification.
-unclassified = 1000
+unclassified = 988

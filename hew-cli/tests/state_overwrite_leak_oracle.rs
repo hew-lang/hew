@@ -512,6 +512,45 @@ fn main() -> i64 {
 }
 ";
 
+/// #2540 — projected-state-field for-loop over-drop, ISOLATED. An actor whose
+/// only handler iterates a projection of a record state field
+/// (`for v in b.v`, `b: Box`, `type Box { v: Vec<i64> }`) must BORROW the
+/// projected leaf: the actor STATE owns it, and `__hew_state_drop_*` frees it
+/// exactly once at teardown. Pre-fix the for-loop cursor emitted a second
+/// scope-exit `hew_vec_free` on `b.v` — a latent over-drop that the supervisor
+/// normal-return cleanup epilogue (which newly drops actor state on `main`
+/// return) turns into a double-free abort. Deliberately distinct from the
+/// temp-bridged-swap shape above: no swap, no re-store, a single state field —
+/// so this pins ONLY the projected-iterable release. A regression in the cursor
+/// ownership derivation (`vec_iter_source_projects_actor_state_field`) bites
+/// here even when the overwrite-release path is correct.
+const PROJECTED_STATE_FIELD_ITER_SOURCE: &str = "\
+type Box {
+    v: Vec<i64>,
+}
+
+actor Summer {
+    var b: Box;
+
+    receive fn total() -> i64 {
+        var s: i64 = 0;
+        for v in b.v { s = s + v; }
+        s
+    }
+}
+
+fn main() -> i64 {
+    let bv: Vec<i64> = Vec::new();
+    bv.push(10); bv.push(20); bv.push(30); bv.push(40);
+    let a = spawn Summer(b: Box { v: bv });
+    sleep(500ms);
+    match await a.total() {
+        Ok(v) => v,
+        Err(_) => -1,
+    }
+}
+";
+
 // ── plumbing (same shape as bytes_drop_leak_oracle) ───────────────────────
 
 /// Compile `source` to a native binary via `hew compile --emit-dir` and
@@ -785,4 +824,21 @@ fn string_temp_bridged_swap_keeps_third_alias_alive() {
 #[test]
 fn record_temp_bridged_swap_keeps_third_alias_alive() {
     assert_scribbled_run_exit("record_temp_swap", RECORD_TEMP_SWAP_SOURCE, 100);
+}
+
+/// UAF pin — #2540 projected-state-field for-loop. An actor handler that
+/// iterates a projection of a record state field (`for v in b.v`) must free the
+/// state-owned buffer EXACTLY ONCE — via the actor state drop, never a second
+/// time through the loop cursor. Pre-fix the cursor's scope-exit release
+/// double-freed the buffer once the supervisor normal-return cleanup epilogue
+/// began dropping actor state on `main` return: a deterministic abort under the
+/// poisoned-allocator triple. Isolates the projected-iterable over-drop from
+/// the temp-bridged-swap alias guard.
+#[test]
+fn projected_state_field_for_loop_frees_state_buffer_once() {
+    assert_scribbled_run_exit(
+        "projected_state_field_iter",
+        PROJECTED_STATE_FIELD_ITER_SOURCE,
+        100,
+    );
 }

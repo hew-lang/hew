@@ -73,19 +73,18 @@ def test_validate_covers_every_runtime_export_exactly_once() -> None:
 
 
 def test_validate_reports_missing_symbol_with_classification_file_path() -> None:
+    runtime_exports = verify_ffi_symbols.extract_runtime_exports()
+    stdlib_exports = verify_ffi_symbols.extract_stdlib_exports()
+    classification = verify_ffi_symbols.load_jit_symbol_classification()
+    phantom = "hew_zzz_test_symbol"
     errors = verify_ffi_symbols.validate_jit_symbol_classification(
-        {"hew_zzz_test_symbol"},
-        set(),
-        {
-            "stable": set(),
-            "stable-stdlib": set(),
-            "codegen-stable": set(),
-            "internal": set(),
-        },
+        runtime_exports | {phantom},
+        stdlib_exports,
+        classification,
     )
     assert errors == [
         "unclassified runtime exports (1): "
-        "hew_zzz_test_symbol "
+        f"{phantom} "
         f"(update {verify_ffi_symbols.JIT_SYMBOL_CLASSIFICATION})"
     ]
 

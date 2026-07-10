@@ -567,6 +567,9 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
             ..
         } => (vec![*lhs, *rhs], vec![*dest, *overflow_flag]),
         Instr::Move { dest, src } => (vec![*src], vec![*dest]),
+        // Refcount metadata only: reads the existing bytes triple and does not
+        // move or overwrite the MIR place.
+        Instr::BytesRetain { value } => (vec![*value], vec![]),
         Instr::CallRuntimeAbi(call) => {
             let reads = call.args().to_vec();
             let writes = call.dest().into_iter().collect();

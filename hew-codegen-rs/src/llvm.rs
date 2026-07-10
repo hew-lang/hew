@@ -17897,6 +17897,10 @@ fn lower_instruction(
             lower_try_width_cast(fn_ctx, *dest, *src, from_ty, to_ty, *kind)?;
             let _ = ctx;
         }
+        Instr::BytesRetain { value } => {
+            retain_bytes_value(fn_ctx, *value, "mir_share")?;
+            let _ = ctx;
+        }
         Instr::Move { dest, src } => {
             // #46: allocate an `indirect enum` node at its construction site
             // (the tag store) rather than in an entry-block prologue. This puts
@@ -19442,14 +19446,10 @@ fn lower_record_field_drop(
 /// `Vec<string>` getter `hew_vec_get_str` (`xs.get(i)`), which is also a retained
 /// interior load admitted past the same taint.
 ///
-/// Scope is `string`-ONLY: a `bytes` / `Vec<T>` / nested-record field currently
-/// LEAKS rather than double-frees (`cow_value_leaf_drop_symbol` returns `None`
-/// for them, so the MIR side never schedules their drop), and retaining them here
-/// without a balancing drop would invert that safe leak into one too — so they
-/// are deliberately passed through un-retained until the retain-on-share spine
-/// lands. Detection is by the dest local's `ResolvedTy` (the precise string
-/// distinguisher), never the raw LLVM pointer type (which a `Vec`/record field
-/// shares).
+/// Scope is `string`-ONLY. Bytes retain-on-share is driven by the explicit
+/// `Instr::BytesRetain` marker instead: bytes borrow-only temps and owning field
+/// loads share the same LLVM struct type, so a type-only check here would leak.
+/// Other non-string aggregate values remain unchanged.
 fn retain_string_field_load<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     dest: Place,
@@ -19482,6 +19482,50 @@ fn retain_string_field_load<'ctx>(
             ))
         })?;
     Ok(retained)
+}
+
+/// Consume the MIR ownership prover's explicit retain marker for one `bytes`
+/// co-owner mint. Codegen never infers this from the LLVM storage type because
+/// borrow-only field-load temporaries have the same three-field representation.
+fn retain_bytes_value(fn_ctx: &FnCtx<'_, '_>, value: Place, label: &str) -> CodegenResult<()> {
+    let (value_ptr, value_ty) = place_pointer(fn_ctx, value)?;
+    let BasicTypeEnum::StructType(bytes_ty) = value_ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "BytesRetain value has non-struct slot type: {value_ty:?}"
+        )));
+    };
+    if bytes_ty.count_fields() != 3 {
+        return Err(CodegenError::FailClosed(format!(
+            "BytesRetain value must be a three-field BytesTriple, got {} fields",
+            bytes_ty.count_fields()
+        )));
+    }
+    let bytes = fn_ctx
+        .builder
+        .build_load(bytes_ty, value_ptr, &format!("{label}_bytes_load"))
+        .llvm_ctx_with(|| format!("BytesRetain load for {label}"))?
+        .into_struct_value();
+    let data_ptr = fn_ctx
+        .builder
+        .build_extract_value(bytes, 0, &format!("{label}_bytes_data"))
+        .llvm_ctx_with(|| format!("BytesRetain data extract for {label}"))?
+        .into_pointer_value();
+    let clone_fn = get_or_declare_clone_helper(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &CloneHelper::RefcountBump {
+            name: "hew_bytes_clone_ref",
+        },
+    );
+    fn_ctx
+        .builder
+        .build_call(
+            clone_fn,
+            &[data_ptr.into()],
+            &format!("{label}_bytes_retain"),
+        )
+        .llvm_ctx_with(|| format!("hew_bytes_clone_ref retain for {label}"))?;
+    Ok(())
 }
 
 /// Lower `Instr::RecordFieldStore { record, field_offset, src }` to a

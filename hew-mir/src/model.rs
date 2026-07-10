@@ -4109,6 +4109,10 @@ pub enum Instr {
     },
     /// `dest = <src>` — load `src`, store into `dest`.
     Move { dest: Place, src: Place },
+    /// Increment the refcount of a `bytes` value before a genuine co-owner is
+    /// minted. This marker is emitted only by the MIR bytes ownership prover;
+    /// codegen must not infer the retain from the LLVM storage type.
+    BytesRetain { value: Place },
     /// Explicit checker-admitted numeric `as` cast.
     ///
     /// `from_ty` and `to_ty` are carried from HIR so codegen can choose the

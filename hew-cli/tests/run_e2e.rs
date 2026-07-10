@@ -1907,59 +1907,61 @@ fn run_match_record_wildcard_owned_aggregate_field_drops_once() {
     assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
 }
 
-/// Fail-closed boundary (#2391 sibling class): two imported modules each
+/// #2400 resource-wrapper collision, now qualified: two imported modules each
 /// define a DISTINCT type named `Server` with an `impl ServerMethods for
-/// Server`, so both lower `Server::accept` / `Server::close` under the same
-/// unqualified raw-MIR symbol. The #2391 HIR dedup only covers ONE shared file
-/// re-imported under two overlapping package modules; two genuinely different
-/// bodies cannot share the symbol namespace until impl symbols become
-/// module-qualified (#2400). Codegen must reject this with a STRUCTURED
-/// duplicate-symbol diagnostic — not the opaque LLVM verifier dump ("Global is
-/// external, but doesn't have external or weak linkage!"), and not a silent
-/// linkonce merge of the two distinct bodies.
+/// Server`. Both are close resources, so both used to lower `Server::close`
+/// under one unqualified raw-MIR symbol and trip the #2400 duplicate-symbol
+/// fail-closed guard — a compiler limitation, since the program itself is
+/// valid Hew.
+///
+/// The free->close migration qualifies colliding imported resource wrappers
+/// into distinct module-qualified symbols, so http and websocket
+/// `Server::close` now coexist and the program compiles to native and runs.
+/// Full LLVM verification passing is the anti-fail-open guard: a silent
+/// linkonce merge or a dropped body would surface as the opaque verifier dump
+/// ("Global is external, but doesn't have external or weak linkage!"). The
+/// compiler's duplicate-symbol guard still fences genuinely-unqualifiable
+/// same-name collisions (so #2400 stays open for the non-resource case).
 #[test]
-fn check_dual_module_same_type_name_impl_fails_closed() {
+fn check_dual_module_same_type_name_impl_resource_qualified_compiles() {
     require_codegen();
 
-    let source =
-        repo_root().join("tests/vertical-slice/reject/dual_module_same_type_name_impl.hew");
+    let source = repo_root()
+        .join("tests/vertical-slice/accept/dual_module_same_type_name_resource_qualified.hew");
+    let dir = support::tempdir();
     let output = Command::new(hew_binary())
-        .arg("check")
+        .args([
+            "compile",
+            "--emit-dir",
+            dir.path().to_str().expect("emit-dir utf-8"),
+        ])
         .arg(&source)
         .current_dir(repo_root())
         .output()
-        .expect("invoke hew check");
+        .expect("invoke hew compile");
 
-    assert!(
-        !output.status.success(),
-        "expected check to fail; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    // Pin on the symbol-independent phrasing (which of `Server::accept` /
-    // `Server::close` collides first is declaration-order dependent), plus the
-    // duplicate-symbol lead and the follow-up issue reference, so the guard
-    // stays diagnosable and cannot silently regress to the LLVM dump.
+    // Native compile runs full codegen + LLVM verification. Success is the
+    // anti-fail-open guard: were the qualification to regress, the two distinct
+    // `Server::close` bodies would collide again and either fail closed on the
+    // duplicate symbol or silently merge into the verifier dump below.
     assert!(
-        combined.contains("duplicate function symbol"),
-        "expected duplicate-symbol diagnostic; got: {combined}"
+        output.status.success(),
+        "dual-module same-name resource wrappers should compile after \
+         qualification; combined output:\n{combined}"
     );
     assert!(
-        combined.contains("distinct same-named types cannot yet share one compilation unit"),
-        "expected the actionable distinct-same-named-types cause; got: {combined}"
-    );
-    assert!(
-        combined.contains("#2400"),
-        "expected the follow-up issue reference; got: {combined}"
+        !combined.contains("duplicate function symbol"),
+        "resource-wrapper qualification regressed — `Server::close` collided \
+         again at codegen-front:\n{combined}"
     );
     assert!(
         !combined.contains("doesn't have external or weak linkage"),
-        "must not degrade to the raw LLVM verifier dump; got: {combined}"
+        "must not degrade to the raw LLVM verifier dump:\n{combined}"
     );
 }
 

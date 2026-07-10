@@ -11,9 +11,4 @@
 #
 # Format: <test_function_name>  # <root_cause>; converging lane: <lane>
 #
-coalesce_int_key_latest_wins  # MIR coalesce NYI gate; converging lane: #2541
-coalesce_owned_payload_superseded_values_drop_once  # MIR coalesce NYI gate; converging lane: #2541
-coalesce_same_key_different_message_types_do_not_merge  # MIR coalesce NYI gate; converging lane: #2541
-coalesce_string_key_latest_wins_and_distinct_keys_survive  # MIR coalesce NYI gate; converging lane: #2541
-
-# Total: 4 unique failing test function names.
+# Total: 0 unique failing test function names.

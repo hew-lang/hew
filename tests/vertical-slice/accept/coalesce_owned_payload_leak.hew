@@ -1,0 +1,52 @@
+// Coalesce owned-payload leak/double-drop oracle (#2541).
+//
+// The worker's first update suspends while the mailbox fills. Repeated
+// same-key strings replace the queued payload in place. Under ASan/leak
+// execution, skipping the generated typed drop leaks each superseded string;
+// invoking it twice trips the allocator. A clean exit therefore proves the
+// superseded owned payloads are released exactly once.
+actor OwnedCoalescer {
+    var processed: i64 = 0;
+    var latest_len: i64 = -1;
+
+    mailbox 1 overflow coalesce(id) fallback drop_new;
+
+    receive fn update(id: i64, payload: string, pause: duration) {
+        sleep(pause);
+        processed = processed + 1;
+        latest_len = payload.len() as i64;
+    }
+
+    receive fn count() -> i64 {
+        processed
+    }
+
+    receive fn length() -> i64 {
+        latest_len
+    }
+}
+
+fn main() -> i64 {
+    let worker = spawn OwnedCoalescer(processed: 0, latest_len: -1);
+    worker.update(0, "active", 150ms);
+    sleep(20ms);
+    worker.update(9, "one", 0ms);
+    worker.update(9, "two-two", 0ms);
+    worker.update(9, "three-three-three", 0ms);
+    worker.update(9, "latest-payload", 0ms);
+    sleep(350ms);
+
+    let count = match await worker.count() {
+        Ok(value) => value,
+        Err(_) => -1,
+    };
+    let length = match await worker.length() {
+        Ok(value) => value,
+        Err(_) => -1,
+    };
+    if count == 2 && length == 14 {
+        0
+    } else {
+        1
+    }
+}

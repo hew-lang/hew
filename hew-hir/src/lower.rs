@@ -8451,12 +8451,37 @@ impl LowerCtx {
             | ResolvedTy::U64
             | ResolvedTy::Isize
             | ResolvedTy::Usize
-            | ResolvedTy::F32
             | ResolvedTy::F64
             | ResolvedTy::Bool
             | ResolvedTy::Char => {
                 let builtin = scalar_display_builtin(&ty);
                 self.build_catalog_call(builtin, vec![value], span)
+            }
+            ResolvedTy::F32 => {
+                // `to_string_f64` (`hew_float_to_string`) is the only float
+                // formatter symbol and takes an `f64`; the value here is a raw
+                // `f32`. The builtin `impl Display for f32` renders through
+                // `to_string(val as f64)`, so this shared shell must apply the
+                // same widening. Without the explicit `f32 -> f64` cast, codegen
+                // emits `hew_float_to_string(float)` against a `double`
+                // signature and the module fails LLVM verification — the exact
+                // failure a direct `to_string(f32)` / `println(f32)` and a
+                // concrete-`f32` f-string (`f"{x}"`) both hit before this arm
+                // was split out.
+                let widened = HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    value_class: ValueClass::of_ty(&ResolvedTy::F64, &self.type_classes),
+                    ty: ResolvedTy::F64,
+                    intent: IntentKind::Read,
+                    kind: HirExprKind::NumericCast {
+                        value: Box::new(value),
+                        from_ty: ResolvedTy::F32,
+                        to_ty: ResolvedTy::F64,
+                    },
+                    span: span.clone(),
+                };
+                self.build_catalog_call("to_string_f64", vec![widened], span)
             }
             // `duration` has a pure-Hew `impl Display for duration` (rendered
             // through `is_builtin_display_impl`), so dispatch to its fmt symbol

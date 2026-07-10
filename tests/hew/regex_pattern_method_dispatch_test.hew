@@ -1,0 +1,120 @@
+//! Compiled proof that regex methods dispatch correctly on a `#[resource]`
+//! `regex.Pattern` wrapper.
+//!
+//! `regex.Pattern` is a fielded `#[resource] Pattern { handle: PatternHandle }`
+//! wrapper, not a fieldless opaque handle. A borrowing method forwards the inner
+//! `.handle` pointer to its extern (`hew_regex_is_match(pat.handle, …)`) and a
+//! handle-returning method (`clone`) rebuilds the wrapper around the extern's
+//! returned handle. Both must dispatch through the real impl body: a bare
+//! handle-method rewrite would pass the whole `%Pattern` struct by value to a
+//! pointer-typed extern (LLVM verify: "Call parameter type does not match")
+//! and could not reconstruct the wrapper for `clone`. These tests compile a
+//! regex method call on a Pattern and assert exact results — the coverage that
+//! was missing when the wrapper migration first landed.
+
+import std::testing;
+import std::text::regex;
+
+// ── Borrowing thin-forward methods (is_match / find / replace / find_all) ──
+
+#[test]
+fn test_is_match_positive_and_negative() {
+    let p = regex.new("[a-z]+[0-9]+");
+    // Positive: a lowercase run followed by digits matches anywhere in input.
+    testing.assert_true(p.is_match("value ab12 tail"));
+    // Negative boundary: digits with no preceding lowercase run do not match.
+    testing.assert_false(p.is_match("1234"));
+    // `matches` is the documented alias — same verdict.
+    testing.assert_true(p.matches("ab12"));
+}
+
+#[test]
+fn test_find_returns_first_match() {
+    let p = regex.new("[0-9]+");
+    testing.assert_eq_str(p.find("abc123def456"), "123");
+    // No match returns an empty result (exact-zero length, not garbage from a
+    // by-value struct read).
+    testing.assert_eq(p.find("no digits here").len(), 0);
+}
+
+#[test]
+fn test_replace_all_occurrences() {
+    let p = regex.new("[0-9]+");
+    testing.assert_eq_str(p.replace("a1b22c333", "N"), "aNbNcN");
+}
+
+#[test]
+fn test_find_all_exact_matches() {
+    let p = regex.new("[0-9]+");
+    let all = p.find_all("a1b22c333");
+    testing.assert_eq(all.len(), 3);
+    testing.assert_eq_str(all[0], "1");
+    testing.assert_eq_str(all[1], "22");
+    testing.assert_eq_str(all[2], "333");
+    // No matches yields an empty vector (exact-zero, not a nonzero smell).
+    testing.assert_eq(p.find_all("none").len(), 0);
+}
+
+// ── Impl-body methods that return capture data (capture / captures) ──
+
+#[test]
+fn test_capture_indexed_groups() {
+    let p = regex.new("([a-z]+)([0-9]+)");
+    match p.capture("ab12", 1) {
+        Some(g) => testing.assert_eq_str(g, "ab"),
+        None => testing.assert_true(false),
+    }
+    match p.capture("ab12", 2) {
+        Some(g) => testing.assert_eq_str(g, "12"),
+        None => testing.assert_true(false),
+    }
+    // Non-matching input yields None, not a fabricated capture.
+    match p.capture("!!!", 1) {
+        Some(_) => testing.assert_true(false),
+        None => testing.assert_true(true),
+    }
+}
+
+#[test]
+fn test_captures_flat_row() {
+    let p = regex.new("([a-z]+)([0-9]+)");
+    let rows = p.captures("ab12");
+    // Group 0 (whole match) plus two capture groups.
+    testing.assert_eq(rows.width(), 3);
+    testing.assert_eq(rows.len(), 1);
+    match rows.whole(0) {
+        Some(w) => testing.assert_eq_str(w, "ab12"),
+        None => testing.assert_true(false),
+    }
+    match rows.group(0, 1) {
+        Some(g) => testing.assert_eq_str(g, "ab"),
+        None => testing.assert_true(false),
+    }
+    match rows.group(0, 2) {
+        Some(g) => testing.assert_eq_str(g, "12"),
+        None => testing.assert_true(false),
+    }
+}
+
+// ── Handle-returning method (clone) rebuilds the wrapper ──
+
+#[test]
+fn test_clone_yields_independent_pattern() {
+    let p = regex.new("[0-9]+");
+    let c = p.clone();
+    // The clone is a fully-formed Pattern, usable through the same API.
+    testing.assert_true(c.is_match("year 2026"));
+    testing.assert_eq_str(c.find("x7y"), "7");
+    // Closing one clone must not disturb the other (independent handles).
+    c.close();
+    testing.assert_true(p.is_match("42"));
+}
+
+// ── Value-position `re"..."` literal producer path ──
+
+#[test]
+fn test_literal_pattern_dispatch() {
+    let lit = re"[a-z]+";
+    testing.assert_true(lit.is_match("hello"));
+    testing.assert_eq_str(lit.find("__abc__"), "abc");
+}

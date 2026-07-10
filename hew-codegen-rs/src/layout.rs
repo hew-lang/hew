@@ -870,8 +870,8 @@ pub(crate) fn collection_layout_witness(
     // Same backstop for the closure-pair class: a closure pair's environment
     // box has a sole owner and no retain, so the managed clone would alias it
     // (double free at the two containers' releases), and closure-pair Vecs are
-    // constructed/released through the dedicated pointer-element +
-    // `hew_vec_free_closure_pairs` path, never the managed witness. The MIR
+    // constructed through pointer-element marshalling with a release-only Vec
+    // descriptor, never the cloneable state witness. The MIR
     // value-class gate (`supports_value_class_drop_spine`) and the actor-state
     // closure guard reject these before codegen; this stays as the fail-close.
     if matches!(
@@ -888,29 +888,12 @@ pub(crate) fn collection_layout_witness(
         )));
     }
     Ok(match kind {
-        StateFieldCloneKind::Vec { elem } if elem.is_heap_collection_handle() => {
-            // #2546 — a nested/heap-element Vec (`Vec<Vec<T>>` / `Vec<HashMap>` /
-            // `Vec<HashSet>`). The outer handle was constructed through the OWNED
-            // descriptor ABI (`hew_vec_new_with_elem_layout` with the per-element
-            // clone/drop thunk `collection_elem_clone_drop_syms` stamped), so its
-            // clone/free MUST run those thunks via the `_owned` pair. The managed
-            // pair below frees only the outer buffer + handle and leaks every
-            // inner handle. Symmetric with the local `Vec<Vec<T>>` release, so the
-            // state clone/drop, the overwrite-release store, and the field-load
-            // retain never select mismatched symbols (`lifecycle-symmetry`).
-            Some(CollectionLayoutWitness {
-                clone_sym: VEC_CLONE_OWNED_SYMBOL,
-                drop_sym: VEC_FREE_OWNED_SYMBOL,
-            })
-        }
         StateFieldCloneKind::Vec { .. } => Some(CollectionLayoutWitness {
-            // Constructor lowering stamps every layout-backed Vec<T> handle with
-            // its `HewTypeLayout` descriptor; the managed pair reads it from the
-            // handle and pairs allocate/free so they cannot drift (W4.045 UAF
-            // class). Layout-absent Vecs (legacy typed constructors) clone/free
-            // by `elem_kind`. LayoutManaged elements fail closed in the runtime.
-            clone_sym: VEC_CLONE_MANAGED_SYMBOL,
-            drop_sym: VEC_FREE_MANAGED_SYMBOL,
+            // The canonical descriptor-driven pair handles plain, string, and
+            // recursively owned element shapes alike, so state clone/drop no
+            // longer branches on context or recursion depth.
+            clone_sym: VEC_CLONE_OWNED_SYMBOL,
+            drop_sym: VEC_FREE_OWNED_SYMBOL,
         }),
         StateFieldCloneKind::HashMap { .. } => Some(CollectionLayoutWitness {
             // Constructor lowering routes every HashMap<K,V> handle through
@@ -1053,7 +1036,7 @@ pub(crate) fn layout_descriptor_ptr<'ctx>(
     // fallback here would be silent wrong-code on wasm32.
     let (size, align) = abi_size_align(elem_ty, Some(fn_ctx.target_data))?;
     let ctx = fn_ctx.ctx;
-    let usize_ty = ctx.ptr_sized_int_type(fn_ctx.target_data, None);
+    let usize_ty = crate::llvm::runtime_size_ty(ctx, fn_ctx.llvm_mod);
     let i8_ty = ctx.i8_type();
     let layout_ty = ctx.struct_type(&[usize_ty.into(), usize_ty.into(), i8_ty.into()], false);
     // Dedup name mirrors the `hashmap_*_layout_descriptor_ptr` authority: a
@@ -1167,7 +1150,7 @@ pub(crate) fn owned_elem_layout_descriptor_ptr<'ctx>(
         }
     };
     let ctx = fn_ctx.ctx;
-    let usize_ty = ctx.ptr_sized_int_type(fn_ctx.target_data, None);
+    let usize_ty = crate::llvm::runtime_size_ty(ctx, fn_ctx.llvm_mod);
     let i8_ty = ctx.i8_type();
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let layout_ty = ctx.struct_type(
@@ -1193,6 +1176,59 @@ pub(crate) fn owned_elem_layout_descriptor_ptr<'ctx>(
     g.set_linkage(Linkage::Private);
     g.set_initializer(&init);
     Ok(g.as_pointer_value())
+}
+
+/// Emit the release-only descriptor for boxed closure-pair Vec elements.
+///
+/// Closure-pair ingress already moves a freshly allocated pair box into each
+/// pointer-sized slot. The runtime drop thunk releases the environment and pair
+/// box; clone remains null because closure environments have no general clone
+/// protocol and actor-state closure containers are rejected upstream.
+pub(crate) fn closure_pair_elem_layout_descriptor_ptr<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+) -> CodegenResult<PointerValue<'ctx>> {
+    const GLOBAL_NAME: &str = "__hew_vec_elem_layout_closure_pair";
+    if let Some(g) = fn_ctx.llvm_mod.get_global(GLOBAL_NAME) {
+        return Ok(g.as_pointer_value());
+    }
+
+    let ctx = fn_ctx.ctx;
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let (size, align) = abi_size_align(ptr_ty.into(), Some(fn_ctx.target_data))?;
+    let size_ty = crate::llvm::runtime_size_ty(ctx, fn_ctx.llvm_mod);
+    let i8_ty = ctx.i8_type();
+    let layout_ty = ctx.struct_type(
+        &[
+            size_ty.into(),
+            size_ty.into(),
+            i8_ty.into(),
+            ptr_ty.into(),
+            ptr_ty.into(),
+        ],
+        false,
+    );
+    let drop_fn = fn_ctx
+        .llvm_mod
+        .get_function("hew_vec_closure_pair_drop_inplace")
+        .unwrap_or_else(|| {
+            fn_ctx.llvm_mod.add_function(
+                "hew_vec_closure_pair_drop_inplace",
+                ctx.void_type().fn_type(&[ptr_ty.into()], false),
+                Some(Linkage::External),
+            )
+        });
+    let init = layout_ty.const_named_struct(&[
+        size_ty.const_int(size, false).into(),
+        size_ty.const_int(u64::from(align), false).into(),
+        i8_ty.const_int(2, false).into(),
+        ptr_ty.const_null().into(),
+        drop_fn.as_global_value().as_pointer_value().into(),
+    ]);
+    let global = fn_ctx.llvm_mod.add_global(layout_ty, None, GLOBAL_NAME);
+    global.set_constant(true);
+    global.set_linkage(Linkage::Private);
+    global.set_initializer(&init);
+    Ok(global.as_pointer_value())
 }
 
 /// Synthesize (or reuse) the constant `HewVecElemLayout` witness static

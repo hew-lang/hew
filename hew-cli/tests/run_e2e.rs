@@ -3488,7 +3488,7 @@ fn vec_of_fn_storage_ops_run() {
 }
 
 /// A vec of capture-carrying closures releases each element's env box and
-/// pair box exactly once at scope exit (`hew_vec_free_closure_pairs`).
+/// pair box exactly once through the descriptor-driven Vec release.
 #[test]
 fn vec_of_fn_capturing_closures_drop_clean() {
     require_codegen();

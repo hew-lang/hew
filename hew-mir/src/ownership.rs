@@ -70,7 +70,7 @@
 //! | owned-locals seed gate (`Builder::binding_seeds_drop_elaboration`) | `hew-mir` · `lower.rs` → `hew-hir` · `value_class.rs` | which locals enter drop elaboration | **LANDED (seed-authority consolidation)** — one named authority answers "does this binding's type oblige drop elaboration?" at every `owned_locals` seed site AND the consume-side removal mirror, so the two sides of the ledger cannot desynchronise (a looser consume side keeps a moved-out binding in `owned_locals` and double-frees at function exit; a tighter one leaks). The verdict remains the value-class seed — record-blind via [`ValueClass`] (an unmarked user record classifies `Unknown`, which seeds); a record-aware seed upgrade reads [`ValueOwnership`] at this one seam when it lands. Pinned by a frozen verdict table over every value class plus a source-inventory scan keeping the authority's body the only seed-fact spelling (`seed_gate_matches_value_class_authority` / `seed_fact_comparison_site_inventory_is_closed` in `lower.rs`). |
 //! | `cow_value_leaf_drop_symbol` | `hew-mir` · `lower.rs` | scalar-leaf release symbol (`string` → `hew_string_drop`, else `None`) | **LANDED (release-bucket consolidation)** — routed through the typed decision; see the partition-totality test below. |
 //! | `binding_ty_is_plain_vec` · `is_plain_vec_element` · `binding_ty_is_owned_element_vec` · `is_owned_vec_element` · `tuple_is_all_bitcopy` | `hew-mir` · `lower.rs` | `Vec<E>` release partition (plain vs owned-element) | **LANDED (release-bucket consolidation)** — release buckets PROJECT from the typed `classify_vec_element_release` decision; their union is total vs the authority leaf set. The Plain bucket's `Named` arm reads the `named_elem_owns_heap` AUTHORITY, not `ValueClass::of_ty == BitCopy` alone: a heap-free DIRECT user enum is never `BitCopy` (value-class finalisation covers records only), so the pre-fix `BitCopy`-only gate classified `Vec<fieldless-enum>` NEITHER plain nor owned and leaked its whole buffer+handle at every scope exit — now closed by the `ty_is_direct_enum_element(e) && !named_elem_owns_heap(e)` disjunct. The unwired `Vec<bytes>` / `Vec<indirect_enum>` elements (`Unsupported(NoReleaseProtocol)`) are REJECTED at compile by `Builder::unsupported_vec_element_diagnostics` rather than silently leaked at scope exit. |
-//! | `generator_yield_drop_symbol` · `project_field_inline_drop_symbol` | `hew-mir` · `lower.rs` | per-yield / per-field `Vec<E>` release-symbol picker | **LANDED (release-bucket consolidation)** — both check the closure-pair bucket (`ty_is_closure_pair_vec` / `ty_is_closure_pair`) BEFORE the owned/plain split, so a yielded or match-destructured `Vec<fn>` / `Vec<closure>` picks `hew_vec_free_closure_pairs` congruent with codegen's `resolved_ty_cow_heap_release` (`dedup-semantic-boundary`) rather than mis-computing `hew_vec_free` and failing the inline-drop release-symbol membership check closed. |
+//! | `generator_yield_drop_symbol` · `project_field_inline_drop_symbol` | `hew-mir` · `lower.rs` | per-yield / per-field `Vec<E>` release-symbol picker | **LANDED (release-bucket consolidation)** — both check the closure-pair bucket before the owned/plain split, and every recursive element shape now resolves to descriptor-driven `hew_vec_free_owned`. |
 //! | `ty_is_closure_pair_vec` · `ty_is_local_collection_handle` | `hew-mir` · `lower.rs` | closure-pair / collection-handle release | **LANDED (release-bucket consolidation)** — both are documented projections of the typed decision. `ty_is_closure_pair_vec` projects [`VecElementRelease::ClosurePair`] for `Builder`-free contexts (pinned by the partition-totality test) and the `Builder`-side release-symbol pickers read `classify_vec_element_release` itself; `ty_is_local_collection_handle` is the single ABI-shape authority for the `HashMap`/`HashSet` bucket, pinned against the [`HeapLeaf`] classification with a release-symbol tripwire (`collection_handle_predicate_projects_from_heap_leaf` in `lower.rs`). |
 //! | `resolved_ty_cow_heap_release` | `hew-codegen-rs` · `llvm.rs` | codegen-side aggregate-walk release picker | **LANDED (type-directed drop consolidation)** — [`DropKind::CowHeap`] now carries a typed [`CowHeapRelease`] fact (not a `&'static str` literal), so codegen resolves the release symbol from the carried fact via [`CowHeapRelease::release_symbol`] with no per-site re-derivation. The three congruence validators that re-derived MIR-carried `drop_fn` symbols are deleted with the literal carrier they guarded; the sole surviving picker is the address-based aggregate walk (`resolved_ty_cow_heap_release` → [`CowHeapRelease`]), for nested fields that carry no MIR fact of their own, and it reads the same [`CowHeapRelease::release_symbol`] authority (`dedup-semantic-boundary`). |
 //!
@@ -235,8 +235,7 @@ pub enum HeapLeaf {
     String,
     /// `bytes` — `hew_bytes_drop` (the three-word `{ptr,len,cap}` triple).
     Bytes,
-    /// `Vec<T>` — `hew_vec_free` (the element refinement to `hew_vec_free_owned`
-    /// / `hew_vec_free_closure_pairs` is carried by the element's own decision).
+    /// `Vec<T>` — descriptor-driven `hew_vec_free` / `hew_vec_free_owned`.
     Vec,
     /// `HashMap<K,V>` — `hew_hashmap_free_layout`.
     HashMap,
@@ -369,8 +368,8 @@ pub enum VecElementRelease {
     /// / tuple / nested collection that owns heap), constructed through the owned
     /// descriptor ABI; the per-element `drop_fn` runs before the buffer free.
     OwnedElement,
-    /// `hew_vec_free_closure_pairs` — the element is a closure pair (`fn` /
-    /// closure); each slot owns a heap pair-box (and its env box).
+    /// Descriptor-driven closure-pair release; each slot owns a heap pair-box
+    /// and its environment box.
     ClosurePair,
     /// No release bucket claims the element, yet `ty_owns_heap(Vec<E>)` is `true`
     /// (the outer `Vec` always owns its backing buffer). The element's release
@@ -405,7 +404,7 @@ impl VecElementRelease {
     }
 
     /// Projection: the closure-pair bucket (`ty_is_closure_pair_vec` /
-    /// `hew_vec_free_closure_pairs`).
+    /// descriptor-driven `hew_vec_free_owned`).
     #[must_use]
     pub fn is_closure_pair(self) -> bool {
         matches!(self, Self::ClosurePair)
@@ -1048,9 +1047,8 @@ impl HeapLeaf {
         Some(match symbol {
             "hew_string_drop" => HeapLeaf::String,
             "hew_bytes_drop" => HeapLeaf::Bytes,
-            // The plain / owned-element / closure-pair Vec releases all share the
-            // `Vec` leaf family; the element refinement is carried separately.
-            "hew_vec_free" | "hew_vec_free_owned" | "hew_vec_free_closure_pairs" => HeapLeaf::Vec,
+            // Plain and descriptor-driven Vec releases share the `Vec` family.
+            "hew_vec_free" | "hew_vec_free_owned" => HeapLeaf::Vec,
             "hew_hashmap_free_layout" => HeapLeaf::HashMap,
             "hew_hashset_free_layout" => HeapLeaf::HashSet,
             "hew_gen_coro_destroy" => HeapLeaf::Generator,
@@ -1164,8 +1162,8 @@ pub enum CowHeapRelease {
     /// collection) — `hew_vec_free_owned` (per-element descriptor `drop_fn`
     /// then buffer free). Refinement [`VecElementRelease::OwnedElement`].
     VecOwnedElement,
-    /// `Vec<fn>` / `Vec<closure>` — `hew_vec_free_closure_pairs` (per-slot env
-    /// thunk + pair-box free). Refinement [`VecElementRelease::ClosurePair`].
+    /// `Vec<fn>` / `Vec<closure>` — `hew_vec_free_owned`, using the stamped
+    /// release-only closure-pair descriptor.
     VecClosurePairs,
     /// `HashMap<K,V>` — `hew_hashmap_free_layout`. [`HeapLeaf::HashMap`].
     HashMap,
@@ -1193,8 +1191,9 @@ impl CowHeapRelease {
             // `HeapLeaf::Vec.release_symbol()`; the owned / closure-pair frees
             // are element-directed and have no bare-leaf symbol.
             CowHeapRelease::VecPlain => HeapLeaf::Vec.release_symbol(),
-            CowHeapRelease::VecOwnedElement => "hew_vec_free_owned",
-            CowHeapRelease::VecClosurePairs => "hew_vec_free_closure_pairs",
+            CowHeapRelease::VecOwnedElement | CowHeapRelease::VecClosurePairs => {
+                "hew_vec_free_owned"
+            }
         }
     }
 
@@ -1229,7 +1228,6 @@ impl CowHeapRelease {
             "hew_bytes_drop" => CowHeapRelease::Bytes,
             "hew_vec_free" => CowHeapRelease::VecPlain,
             "hew_vec_free_owned" => CowHeapRelease::VecOwnedElement,
-            "hew_vec_free_closure_pairs" => CowHeapRelease::VecClosurePairs,
             "hew_hashmap_free_layout" => CowHeapRelease::HashMap,
             "hew_hashset_free_layout" => CowHeapRelease::HashSet,
             "hew_gen_coro_destroy" => CowHeapRelease::Generator,
@@ -1892,7 +1890,6 @@ mod tests {
             CowHeapRelease::Bytes,
             CowHeapRelease::VecPlain,
             CowHeapRelease::VecOwnedElement,
-            CowHeapRelease::VecClosurePairs,
             CowHeapRelease::HashMap,
             CowHeapRelease::HashSet,
             CowHeapRelease::Generator,
@@ -1903,6 +1900,11 @@ mod tests {
                 "release symbol must round-trip through from_symbol",
             );
         }
+        assert_eq!(
+            CowHeapRelease::from_symbol(CowHeapRelease::VecClosurePairs.release_symbol()),
+            Some(CowHeapRelease::VecOwnedElement),
+            "closure-pair Vecs share the canonical descriptor-driven symbol",
+        );
     }
 
     /// `CancellationToken` is a heap leaf but an `@resource` close — never a

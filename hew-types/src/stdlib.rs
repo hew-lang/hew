@@ -125,8 +125,8 @@ pub fn vec_element_runtime_suffix<S: std::hash::BuildHasher>(
             builtin: Some(b), ..
         } if b.lowers_as_pointer_vec_element() => Some("ptr"),
         // A closure-pair `Vec<fn>` / `Vec<closure>` ELEMENT keeps the pointer
-        // ABI: its clone/free is the closure-pairs family (boxing marshalling +
-        // `hew_vec_free_closure_pairs`), a separate lane (#1722 out-of-scope).
+        // ABI: boxing marshalling stores pointer-sized pair boxes and the Vec's
+        // release-only descriptor frees them recursively.
         // Checked before the general collection arm so it is never deep-copied.
         crate::Ty::Named {
             builtin: Some(crate::builtin_type::BuiltinType::Vec),
@@ -159,7 +159,7 @@ pub fn vec_element_runtime_suffix<S: std::hash::BuildHasher>(
         // Function / closure elements ride the pointer convention: each
         // element slot holds a heap-boxed copy of the 16-byte closure pair
         // (the boxing/unboxing marshalling lives in codegen's vec-op
-        // lowering; the scope-exit release is `hew_vec_free_closure_pairs`).
+        // lowering; scope-exit release is descriptor-driven).
         // Same authority as `RuntimeCallingConvention::for_ty`'s
         // Function/Closure → Pointer arm — keep the two in agreement.
         crate::Ty::Function { .. } | crate::Ty::Closure { .. } => Some("ptr"),

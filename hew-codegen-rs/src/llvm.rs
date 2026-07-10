@@ -9369,27 +9369,7 @@ pub(crate) const HASHMAP_CLONE_LAYOUT_SYMBOL: &str = "hew_hashmap_clone_layout";
 pub(crate) const HASHMAP_FREE_LAYOUT_SYMBOL: &str = "hew_hashmap_free_layout";
 pub(crate) const HASHSET_CLONE_LAYOUT_SYMBOL: &str = "hew_hashset_clone_layout";
 pub(crate) const HASHSET_FREE_LAYOUT_SYMBOL: &str = "hew_hashset_free_layout";
-/// Witness-managed Vec clone/free pair (W5.002 F0b). Single-arg, descriptor
-/// read from the handle — the Vec companion of the HashMap/HashSet
-/// `*_clone_layout`/`*_free_layout` family. These supersede the legacy
-/// `hew_vec_clone`/`hew_vec_free` for actor-state Vec fields: the legacy clone
-/// calls `abort_if_layout_aware` and aborts on any layout-backed Vec (e.g.
-/// `Vec<Point>`), whereas the managed pair clones layout-backed `Plain`/
-/// `String` Vecs and fails closed only on `LayoutManaged` elements. The legacy
-/// symbols remain for non-state Vec drops/clones (locals, returns, user
-/// `Vec.clone()`); their retirement is W5.003 scope.
-pub(crate) const VEC_CLONE_MANAGED_SYMBOL: &str = "hew_vec_clone_managed";
-pub(crate) const VEC_FREE_MANAGED_SYMBOL: &str = "hew_vec_free_managed";
-
-/// The owned-descriptor clone/free pair, for a state `Vec<E>` whose element `E`
-/// is itself a heap collection handle (`Vec` / `HashMap` / `HashSet`). Such an
-/// outer handle is constructed through the owned descriptor ABI
-/// (`hew_vec_new_with_elem_layout`), so its clone/free MUST run the per-element
-/// descriptor thunks — the managed pair frees only the outer buffer and leaks
-/// every element (#2546). Symmetric with the local `Vec<Vec<T>>` release and
-/// with the element thunks `collection_elem_clone_drop_syms` selects, so the
-/// state clone/drop, the overwrite-release store, and the field-load retain all
-/// agree per element-class (`lifecycle-symmetry`, W4.045 UAF class).
+/// Canonical descriptor-driven Vec clone/free pair.
 pub(crate) const VEC_CLONE_OWNED_SYMBOL: &str = "hew_vec_clone_owned";
 pub(crate) const VEC_FREE_OWNED_SYMBOL: &str = "hew_vec_free_owned";
 
@@ -19847,7 +19827,7 @@ fn lower_actor_state_field_load(
     // overwrite-release guard (`emit_state_field_old_value_release`, below)
     // later freed out from under it — deterministic UAF/double-free on the
     // temp-bridged swap idiom (`let t = x; x = y; y = t;`), confirmed for
-    // Vec (SIGABRT in `hew_vec_free_managed`), record (same), and string
+    // Vec (SIGABRT in descriptor-driven free), record (same), and string
     // (corrupted-header abort in `free_cstring`).
     //
     // An earlier revision of this fix retained UNCONDITIONALLY for every
@@ -22449,7 +22429,7 @@ fn emit_tuple_kind_drop_inplace_body<'ctx>(
 /// Vec's constructor uses (`resolved_ty_element_owns_heap_for_owned_vec`), so
 /// the clone primitive can never disagree with the inner Vec's actual ABI.
 pub(crate) fn collection_elem_clone_drop_syms(
-    fn_ctx: &FnCtx<'_, '_>,
+    _fn_ctx: &FnCtx<'_, '_>,
     elem_ty: &ResolvedTy,
 ) -> Option<(&'static str, &'static str)> {
     match elem_ty {
@@ -22466,19 +22446,7 @@ pub(crate) fn collection_elem_clone_drop_syms(
             }) {
                 return None;
             }
-            if args
-                .first()
-                .is_some_and(|e| resolved_ty_element_owns_heap_for_owned_vec(fn_ctx, e))
-            {
-                // Inner Vec is itself owned-descriptor — deep clone/free run the
-                // inner per-element descriptor thunks.
-                Some(("hew_vec_clone_owned", "hew_vec_free_owned"))
-            } else {
-                // Inner Vec is managed (string/scalar/BitCopy element): the
-                // managed pair reads the handle descriptor (legacy/BitCopy) and
-                // deep-copies the buffer.
-                Some((VEC_CLONE_MANAGED_SYMBOL, VEC_FREE_MANAGED_SYMBOL))
-            }
+            Some((VEC_CLONE_OWNED_SYMBOL, VEC_FREE_OWNED_SYMBOL))
         }
         ResolvedTy::Named {
             builtin: Some(hew_types::BuiltinType::HashMap),
@@ -24595,6 +24563,8 @@ fn lower_vec_constructor_call(
         BitCopyLayout(BasicTypeEnum<'c>),
         /// `hew_vec_new_with_elem_layout` with a thunk-bearing `HewVecElemLayout`.
         Owned(BasicTypeEnum<'c>),
+        /// Release-only descriptor for boxed closure-pair pointer elements.
+        ClosurePair,
     }
     let ctor = match elem_ty {
         ResolvedTy::Bool => VecCtor::Plain("hew_vec_new_bool"),
@@ -24616,13 +24586,10 @@ fn lower_vec_constructor_call(
         ResolvedTy::F32 => VecCtor::Plain("hew_vec_new_f32"),
         ResolvedTy::F64 => VecCtor::Plain("hew_vec_new_f64"),
         ResolvedTy::String => VecCtor::Plain("hew_vec_new_str"),
-        // Closure-pair elements: each slot holds a heap-boxed pair handle
-        // (the push/get marshalling boxes/unboxes), so the constructor is
-        // the plain pointer-element vec. Scope-exit release routes through
-        // `hew_vec_free_closure_pairs`, never the descriptor ABIs.
-        ResolvedTy::Function { .. } | ResolvedTy::Closure { .. } => {
-            VecCtor::Plain("hew_vec_new_ptr")
-        }
+        // Closure-pair elements use pointer operations for their boxed pair
+        // handles, but carry a release-only descriptor so the canonical Vec
+        // free recursively drops every environment and box.
+        ResolvedTy::Function { .. } | ResolvedTy::Closure { .. } => VecCtor::ClosurePair,
         // Indirect-enum elements are heap-allocated pointer handles: each slot
         // holds an 8-byte pointer, the same convention the checker
         // (`vec_element_runtime_suffix` → `"ptr"`) and the MIR getter
@@ -24670,7 +24637,7 @@ fn lower_vec_constructor_call(
     let runtime_symbol = match ctor {
         VecCtor::Plain(sym) => sym,
         VecCtor::BitCopyLayout(_) => "hew_vec_new_with_layout",
-        VecCtor::Owned(_) => "hew_vec_new_with_elem_layout",
+        VecCtor::Owned(_) | VecCtor::ClosurePair => "hew_vec_new_with_elem_layout",
     };
     let fv = get_or_declare_vec_constructor(fn_ctx.ctx, fn_ctx.llvm_mod, runtime_symbol)?;
     let call = match ctor {
@@ -24696,6 +24663,17 @@ fn lower_vec_constructor_call(
                     "hew_vec_new_with_elem_layout_call",
                 )
                 .llvm_ctx("hew_vec_new_with_elem_layout call")?
+        }
+        VecCtor::ClosurePair => {
+            let layout_ptr = crate::layout::closure_pair_elem_layout_descriptor_ptr(fn_ctx)?;
+            fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[layout_ptr.into()],
+                    "hew_vec_new_with_elem_layout_call",
+                )
+                .llvm_ctx("hew_vec_new_with_elem_layout closure-pair call")?
         }
         VecCtor::Plain(_) => fn_ctx
             .builder
@@ -28962,9 +28940,6 @@ fn is_known_cow_heap_drop_symbol(symbol: &str) -> bool {
             // W5.016: owned-element Vec release (per-element descriptor drop_fn
             // then buffer free).
             | "hew_vec_free_owned"
-            // Closure-pair Vec release (per-element env thunk + pair-box free,
-            // then buffer free).
-            | "hew_vec_free_closure_pairs"
             | HASHMAP_FREE_LAYOUT_SYMBOL
             | HASHSET_FREE_LAYOUT_SYMBOL
             // Generator<Y, R> / AsyncGenerator<Y> value release: destroy the
@@ -33128,8 +33103,7 @@ fn lower_terminator<'ctx>(
             // out of the slot's box; pop transfers ownership (copies the
             // pair out, frees the element box; the popped pair keeps the
             // env, whose free obligation the consumer's `let` admission
-            // tracks). The scope-exit release walk is
-            // `hew_vec_free_closure_pairs`.
+            // tracks). Scope-exit release is descriptor-driven.
             if is_closure_pair_vec_call(fn_ctx, callee, args, dest.as_ref())? {
                 lower_closure_pair_vec_call(fn_ctx, callee, args, dest.as_ref(), *next)?;
                 return Ok(());
@@ -51027,14 +51001,8 @@ mod tests {
         assert_eq!(sym(&owned_vec), Some("hew_vec_free_owned"));
     }
 
-    /// A `Vec` whose element is a `fn` / closure releases via
-    /// `hew_vec_free_closure_pairs` (each slot owns a heap pair-box + env box),
-    /// checked BEFORE the owned-element and plain arms. This must match the MIR
-    /// authority `project_field_inline_drop_symbol`: when the two disagreed,
-    /// the closure-pair Vec routed to a `RecordFieldDrop` whose `drop_fn`
-    /// (`hew_vec_free`) previously failed a codegen congruence assert that
-    /// expected `hew_vec_free_closure_pairs`. Pin both the dispatch and that the
-    /// symbol is in the permitted closed set.
+    /// A `Vec` whose element is a `fn` / closure uses the canonical descriptor
+    /// release symbol; its stamped drop thunk performs the pair/env walk.
     #[test]
     fn resolved_ty_cow_heap_release_routes_closure_pair_vec() {
         let ctx = Context::create();
@@ -51071,15 +51039,15 @@ mod tests {
         };
         assert_eq!(
             resolved_ty_cow_heap_release(&fn_ctx, &vec_of_closure).map(|r| r.release_symbol()),
-            Some("hew_vec_free_closure_pairs"),
-            "a `Vec<closure>` element must release via the closure-pair ABI"
+            Some("hew_vec_free_owned"),
+            "a `Vec<closure>` element must release via the descriptor ABI"
         );
 
         // The closure-pair symbol must be admitted by the closed congruence set
         // codegen validates RecordFieldDrop / inline-Drop symbols against.
         assert!(
-            is_known_cow_heap_drop_symbol("hew_vec_free_closure_pairs"),
-            "hew_vec_free_closure_pairs must be in the permitted CowHeap release set"
+            is_known_cow_heap_drop_symbol("hew_vec_free_owned"),
+            "hew_vec_free_owned must be in the permitted CowHeap release set"
         );
     }
 

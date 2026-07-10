@@ -5104,8 +5104,7 @@ impl Checker {
                 // (`enum R { A(Vec<R>); ... }`): admitting it requires the enum
                 // clone/drop thunk synthesis to recurse through the field's
                 // OWNED-Vec ops (`hew_vec_{clone,free}_owned` with the owned
-                // descriptor) rather than the witness-managed
-                // `hew_vec_free_managed` (which aborts on owned elements). That
+                // descriptor) through the canonical Vec release. That
                 // recursive-enum-clone synthesis is a follow-on; until it
                 // lands, `Vec<RedisReply>` stays fail-closed here (the empty
                 // `roots` set rejects every container field, self-recursive or

@@ -8985,17 +8985,11 @@ fn vec_iter_record_init_vec_source(instr: &Instr) -> Option<Place> {
         return None;
     };
     vec_iter_record_layout_key(ty)?;
-    // Only a drop-safe (BitCopy-element) cursor exempts its source from the
-    // escape scan. For an owned/string-element cursor the source vec is NOT
-    // freed at all (the body may retain-and-consume elements; see
-    // `vec_iter_elem_drop_safe`), so the source must stay EXCLUDED — do not
-    // exempt its ingress.
-    if !vec_iter_ty_drop_safe(ty) {
-        return None;
-    }
     // The `vec` field is declaration-order field 0; `idx` is field 1 (BitCopy,
-    // never an alias member). `make_vec_iter_init` constructs the literal with
-    // exactly this field order.
+    // never an alias member). Descriptor-driven recursive release makes this
+    // borrow rule independent of element depth: the source remains the sole
+    // owner for flat and nested Vecs alike, while indexed/rvalue cursors are
+    // classified separately by `vec_iter_let_cursor_owns_handle`.
     fields
         .iter()
         .find(|(offset, _)| offset.0 == 0)
@@ -12680,7 +12674,7 @@ impl Builder {
             //     at construction (`Vec::new` is NYI for `Bytes`) →
             //     `classify_vec_element_release` returns `Unsupported`.
             //   - `Function` / `Closure`: a closure pair released by
-            //     `ty_is_closure_pair_vec` / `hew_vec_free_closure_pairs`.
+            //     `ty_is_closure_pair_vec` / descriptor-driven `hew_vec_free_owned`.
             //   - `CancellationToken` and the remaining views/handles either own
             //     no heap as a flat element or are fail-closed at construction.
             ResolvedTy::I8
@@ -13088,7 +13082,7 @@ impl Builder {
     /// Vec (record/enum/tuple with a string/bytes/nested-collection field) is
     /// never admitted here and continues to route to its dedicated
     /// `hew_vec_free_owned` release; a closure-pair `Vec<fn>` is also excluded
-    /// and routes to `hew_vec_free_closure_pairs`.
+    /// and routes to descriptor-driven `hew_vec_free_owned`.
     ///
     /// For named records the `ValueClass::of_ty(Named{..}) == BitCopy` check is
     /// the discriminant. For direct user ENUMS it is NOT — `ValueClass` finalises
@@ -16035,7 +16029,7 @@ impl Builder {
                 // override gates below admit a field IN ISOLATION when it has a
                 // single-pointer inline-drop symbol (`project_field_inline_drop_-
                 // symbol`), and a `Vec<closure>` / `Vec<opaque>` element DOES have
-                // one (`hew_vec_free_closure_pairs` / `hew_vec_free`) even though
+                // one (`hew_vec_free_owned` / `hew_vec_free`) even though
                 // the whole record is NOT a consume-markable owned-aggregate
                 // (`is_owned_aggregate_record_ty` is false — its element fails
                 // `supports_value_class_drop_spine`). That record is never
@@ -17148,7 +17142,7 @@ impl Builder {
                 // Vec element STORES (push / set — user-authored or the
                 // array-literal desugar) are owning ingress for closure-pair
                 // elements: the slot byte-copies the pair and
-                // `hew_vec_free_closure_pairs` frees its env at scope exit.
+                // the Vec descriptor frees its env at scope exit.
                 // Route closure-typed element operands through the
                 // sole-owner ingress gate (owned binding → move; borrow →
                 // refuse). Non-closure args keep ordinary call semantics.
@@ -19745,9 +19739,7 @@ impl Builder {
                       drop tables rewire"
         )]
         match self.classify_vec_element_release(elem) {
-            VecElementRelease::ClosurePair => {
-                ReleaseSymbolVerdict::Wired("hew_vec_free_closure_pairs")
-            }
+            VecElementRelease::ClosurePair => ReleaseSymbolVerdict::Wired("hew_vec_free_owned"),
             VecElementRelease::OwnedElement => ReleaseSymbolVerdict::Wired("hew_vec_free_owned"),
             VecElementRelease::Plain => ReleaseSymbolVerdict::Wired("hew_vec_free"),
             VecElementRelease::Unsupported(reason @ FailClosedReason::NoReleaseProtocol)
@@ -20105,8 +20097,7 @@ impl Builder {
     /// (`codegen-rs/llvm.rs :: lower_inline_drop`) is allowed to emit:
     ///   - `string` → `hew_string_drop`
     ///   - `bytes`  → `hew_bytes_drop` (triple-field-0 release)
-    ///   - `Vec<T>` → `hew_vec_free`, `hew_vec_free_owned` (per-element-owns-heap),
-    ///     or `hew_vec_free_closure_pairs` (`Vec<fn>` / `Vec<closure>` element)
+    ///   - `Vec<T>` → `hew_vec_free` or descriptor-driven `hew_vec_free_owned`
     ///   - `HashMap<K,V>` → `hew_hashmap_free_layout`
     ///   - `HashSet<T>` → `hew_hashset_free_layout`
     ///   - `Generator<Y,R>` / `AsyncGenerator<Y>` → `hew_gen_coro_destroy`
@@ -35869,6 +35860,30 @@ fn elaborate(
             )
         },
     );
+    // D65: a place-source VecIter record init borrows its source handle. The
+    // generic dataflow sees the handle copied into the cursor aggregate and may
+    // conservatively report the source binding as Consumed, but the cursor is
+    // deliberately not an owner (`vec_iter_let_cursor_owns_handle`): recursive
+    // release must remain on the source binding. Recover that carried fact from
+    // the finalized RecordInit source place so increasing release depth and
+    // cursor ownership classification move together.
+    let vec_iter_borrowed_owned_sources: HashSet<BindingId> = checked
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(vec_iter_record_init_vec_source)
+        .filter_map(base_local)
+        .filter_map(|local| {
+            builder.binding_locals.iter().find_map(|(binding, place)| {
+                (base_local(*place) == Some(local)).then_some(*binding)
+            })
+        })
+        .filter(|binding| {
+            owned_locals_snapshot.iter().any(|(candidate, _, ty)| {
+                candidate == binding && builder.binding_ty_is_owned_element_vec(ty)
+            })
+        })
+        .collect();
     // #2418 — a binding carrying a path-sensitive collection drop-flag is
     // exempt from the consume-exit removal: its scope-exit release is gated on
     // `flag == 0` at runtime (skipped on the moved path, fired on the
@@ -35881,6 +35896,7 @@ fn elaborate(
                 state,
                 dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
             ) && !builder.collection_drop_flags.contains_key(binding)
+                && !vec_iter_borrowed_owned_sources.contains(binding)
             {
                 owned_vec_drop_allowed.remove(binding);
             }
@@ -36005,7 +36021,7 @@ fn elaborate(
     // same receiver-borrow escape model as the HashMap/HashSet derivation
     // (the handle is the owner; push/index/len reads borrow it), narrowed by
     // the same consume filter. An admitted handle releases every element's
-    // pair box + env box exactly once via `hew_vec_free_closure_pairs`; an
+    // pair box + env box exactly once via `hew_vec_free_owned`; an
     // excluded handle leaks (as every plain Vec local does today), never
     // double-frees.
     let mut closure_vec_drop_allowed = derive_local_collection_drop_allowed(
@@ -46888,7 +46904,7 @@ fn classify_closure_pair_rhs(
         }
         // Vec element reads are BORROWS: the vec slot keeps ownership of the
         // element's pair box and env. Admitting a `fns.get(i)` result would
-        // double-free against `hew_vec_free_closure_pairs`. `pop` transfers
+        // double-free against the descriptor-driven Vec release. `pop` transfers
         // ownership out of the vec (the marshalling frees the element box and
         // the popped pair keeps the env), so it stays on the Owned path.
         HirExprKind::ResolvedImplCall { target_symbol, .. }
@@ -47597,7 +47613,7 @@ fn build_lifo_drops(
         // local guard here only confirms the binding's type is a `Vec` so the
         // `hew_vec_free_owned` ABI is correct for the handle.
         // Closure-pair `Vec<fn(...)>` handle: each slot owns a heap-boxed
-        // pair (and its env box). `hew_vec_free_closure_pairs` walks the
+        // pair (and its env box). The stamped descriptor drop thunk walks the
         // elements (env free-thunk + pair-box free per slot), then frees the
         // buffer and the handle. Intercept BEFORE the owned-Vec arm so the
         // closure-element class never routes through the descriptor-driven
@@ -48326,7 +48342,7 @@ fn ty_is_vec(ty: &ResolvedTy) -> bool {
 /// True when `ty` is a builtin `Vec<T>` whose element is a closure pair
 /// (`fn(...) -> T` / closure surface type). Such a vec owns each element's
 /// pair box and, transitively, the pair's env box; its scope-exit release is
-/// `hew_vec_free_closure_pairs` (element walk + buffer + handle).
+/// descriptor-driven `hew_vec_free_owned` (element walk + buffer + handle).
 ///
 /// THE projection of the [`VecElementRelease::ClosurePair`] bucket for
 /// contexts without `Builder` state (the drop-plan validator and
@@ -56927,7 +56943,7 @@ mod binding_ty_is_plain_vec_tuple {
     /// release-symbol pickers must check the closure-pair bucket BEFORE the
     /// owned/plain split, matching codegen's `resolved_ty_cow_heap_release` dispatch
     /// order. A yielded or match-destructured `Vec<fn>` releases via
-    /// `hew_vec_free_closure_pairs`; the pre-fix `generator_yield_drop_symbol`
+    /// `hew_vec_free_owned`; the pre-fix `generator_yield_drop_symbol`
     /// had only an owned/plain split and computed `hew_vec_free`, which diverges
     /// from codegen and fails the inline-drop congruence check closed. The owned
     /// and plain arms are pinned too so the closure-pair arm cannot displace them.
@@ -56940,13 +56956,13 @@ mod binding_ty_is_plain_vec_tuple {
         });
         assert_eq!(
             builder.generator_yield_drop_symbol(&vec_fn),
-            ReleaseSymbolVerdict::Wired("hew_vec_free_closure_pairs"),
-            "a yielded Vec<fn> must release via hew_vec_free_closure_pairs, not hew_vec_free"
+            ReleaseSymbolVerdict::Wired("hew_vec_free_owned"),
+            "a yielded Vec<fn> must release via hew_vec_free_owned, not hew_vec_free"
         );
         assert_eq!(
             builder.project_field_inline_drop_symbol(&vec_fn),
-            ReleaseSymbolVerdict::Wired("hew_vec_free_closure_pairs"),
-            "a match-destructured Vec<fn> field must release via hew_vec_free_closure_pairs"
+            ReleaseSymbolVerdict::Wired("hew_vec_free_owned"),
+            "a match-destructured Vec<fn> field must release via hew_vec_free_owned"
         );
         // The owned and plain Vec arms are unchanged and dispatch AFTER the
         // closure-pair arm (a fn element is neither owned composite nor plain
@@ -58143,14 +58159,14 @@ mod drop_admission_type_shape_pins {
             (
                 "Vec<fn> (ClosurePair)",
                 vec_of(bare_fn()),
-                Wired("hew_vec_free_closure_pairs"),
-                Wired("hew_vec_free_closure_pairs"),
+                Wired("hew_vec_free_owned"),
+                Wired("hew_vec_free_owned"),
             ),
             (
                 "Vec<closure> (ClosurePair)",
                 vec_of(empty_capture_closure()),
-                Wired("hew_vec_free_closure_pairs"),
-                Wired("hew_vec_free_closure_pairs"),
+                Wired("hew_vec_free_owned"),
+                Wired("hew_vec_free_owned"),
             ),
             // Vec arm — Unsupported elements with NO owned-ABI release: the
             // FAIL-CLOSED verdict. A buffer-only free over these element
@@ -58288,7 +58304,7 @@ mod drop_admission_type_shape_pins {
         );
         assert_eq!(
             builder.project_field_inline_drop_symbol(&vec_t),
-            Wired("hew_vec_free_closure_pairs"),
+            Wired("hew_vec_free_owned"),
             "the field picker must substitute before classifying"
         );
     }

@@ -8606,20 +8606,25 @@ impl LowerCtx {
         // whenever no concrete-ABI overload matched. Reaching this fallback
         // means `stdlib_catalog::resolve_overload` found no monomorphic entry
         // (`println_i32`, `to_string_str`, …) for the argument type, yet the
-        // checker's `require_display_impl` gate has already verified the
-        // argument implements `Display` — a non-`Display` argument is rejected
-        // before HIR lowering runs (`println(blob)` on a type with no
-        // `impl Display` fails the checker's trait-bound gate, never reaching
-        // here). So the argument count is the only condition worth testing:
-        // `lower_display_dispatch` already has a working arm for every shape a
-        // `Display` value can take — `string`, every scalar (incl. `char` and
-        // the narrow ints via `scalar_display_builtin`), `duration`,
-        // named-`instant`, concrete named `impl Display` types, and abstract
-        // type parameters `T: Display` — and fails closed on anything else.
-        // Enumerating a subset of those shapes here only re-hid the rest behind
-        // `UnresolvedBuiltinOverload` (#2351: `char`/`i8`/`f32`; #2492: named
-        // types with a real `impl Display`), even though f-string interpolation
-        // of the identical value already renders it fine through this shell.
+        // argument is already known to implement `Display`: `println` / `print`
+        // / `to_string` are generic `T: Display` builtins, so the checker's
+        // type-parameter bound enforcement (`Checker::enforce_type_param_bounds`
+        // / `type_satisfies_trait_bound` in `check/generics.rs`) rejects a
+        // non-`Display` argument before HIR lowering runs — `println(blob)` on a
+        // type with no `impl Display` fails that bound gate with "does not
+        // implement trait `Display` required by `T`" and never reaches here.
+        // (That is a distinct gate from the f-string-only `require_display_impl`,
+        // which validates each interpolation part.) So the argument count is the
+        // only condition worth testing: `lower_display_dispatch` already has a
+        // working arm for every shape a `Display` value can take — `string`,
+        // every scalar (incl. `char` and the narrow ints via
+        // `scalar_display_builtin`), `duration`, named-`instant`, concrete named
+        // `impl Display` types, and abstract type parameters `T: Display` — and
+        // fails closed on anything else. Enumerating a subset of those shapes
+        // here only re-hid the rest behind `UnresolvedBuiltinOverload` (#2351:
+        // `char`/`i8`/`f32`; #2492: named types with a real `impl Display`),
+        // even though f-string interpolation of the identical value already
+        // renders it fine through this shell.
         let single_dispatchable = args.len() == 1;
         if !is_display_surface || !single_dispatchable || self.lang_items.display_method().is_none()
         {

@@ -7726,6 +7726,9 @@ impl Checker {
                     for dt in &drop_types {
                         self.registry.register_drop_type(dt.clone());
                     }
+                    for resource in &resource_wrapper_types {
+                        self.registry.register_resource_type(resource.clone());
+                    }
 
                     // Process resolved Hew source items from stdlib modules that ship
                     // alongside their C/Rust bindings so trait methods stay visible.

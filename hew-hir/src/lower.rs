@@ -9334,7 +9334,7 @@ impl LowerCtx {
             id: self.ids.item(),
             node: self.ids.node(),
             trait_name: decl.trait_bound.as_ref().map(|b| b.name.clone()),
-            self_type_name: self_type_name.clone(),
+            self_type_name: base_symbol_self_name.to_string(),
             type_params,
             self_type_concrete_args,
             type_aliases,

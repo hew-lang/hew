@@ -2128,6 +2128,28 @@ fn http_request_close_dispatches_through_resource_impl() {
 }
 
 #[test]
+fn registry_loaded_resource_close_moves_receiver() {
+    let output = typecheck_inline(
+        r"
+        import std::net::http;
+
+        fn release(req: http.Request) {
+            req.close();
+            req.path();
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::UseAfterMove),
+        "registry-loaded resource close must move the receiver, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn http_request_unknown_method_is_undefined() {
     let output = typecheck_inline(
         r"

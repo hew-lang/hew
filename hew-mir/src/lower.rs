@@ -8285,7 +8285,7 @@ fn lower_function(
     // codegen. A no-op here for every non-actor-handler lowering entry point
     // (`load_locals` is empty whenever `current_actor_state_fields` was
     // never populated).
-    classify_actor_state_load_modes(&mut blocks, &builder.suspend_kinds);
+    classify_actor_state_load_modes(&mut blocks, &builder.suspend_kinds, &builder.locals);
     // `CheckedMirFunction` mirrors `RawMirFunction.blocks` directly
     // (widened in Slice 2 from a single-block field to a vec). The
     // elaborator + check_function consume the block vec; legacy
@@ -38466,10 +38466,18 @@ fn derive_cow_sole_owner(
 ///     (`Instr::CallRuntimeAbi` or `Terminator::Call`) whose
 ///     `callee_ownership_contract` borrows the receiver
 ///     (`borrows_vec_receiver`/`borrows_collection_receiver`/
-///     `borrows_bytes_receiver` — e.g. `hew_vec_len`).
+///     `borrows_bytes_receiver` — e.g. `hew_vec_len`);
+///   - a string operand of a runtime call whose contract borrows its string
+///     args (`borrows_string_call_args` — every string inspector/transform
+///     and print sink, e.g. `hew_string_length`/`hew_string_concat`); string
+///     borrows live on a separate contract axis (`string_args`) from the
+///     Vec/bytes receiver axis (`call_arg_borrows_state_load` reads both);
+///   - the `.0` (vec) field source of a `RecordInit VecIter { .. }` — the
+///     `for x in <collection>` cursor, which BORROWS the source handle for the
+///     loop and never frees it (see `vec_iter_record_init_vec_source`).
 ///
 /// Any other use — a whole-value `Move`, a store src, a return/aggregate/
-/// spawn/by-value-call operand, or any use the two positive categories above
+/// spawn/by-value-call operand, or any use the positive categories above
 /// do not recognise — forces `Owned`, the fail-closed default every
 /// construct site already seeds. A `dest` with NO observed use also stays
 /// `Owned`: the positive `Borrowed` branch is reserved for an AFFIRMATIVELY
@@ -38477,6 +38485,7 @@ fn derive_cow_sole_owner(
 fn classify_actor_state_load_modes(
     blocks: &mut [BasicBlock],
     suspend_kinds: &HashMap<u32, SuspendKind>,
+    locals: &[ResolvedTy],
 ) {
     let mut load_locals: HashSet<u32> = HashSet::new();
     for block in blocks.iter() {
@@ -38505,11 +38514,18 @@ fn classify_actor_state_load_modes(
 
     for block in blocks.iter() {
         for instr in &block.instructions {
-            record_actor_state_load_instr_uses(instr, &load_locals, &mut any_use, &mut all_borrow);
+            record_actor_state_load_instr_uses(
+                instr,
+                locals,
+                &load_locals,
+                &mut any_use,
+                &mut all_borrow,
+            );
         }
         record_actor_state_load_terminator_uses(
             &block.terminator,
             suspend_kinds.get(&block.id),
+            locals,
             &load_locals,
             &mut any_use,
             &mut all_borrow,
@@ -38551,15 +38567,17 @@ fn mark_actor_state_load_use(
 }
 
 /// Classify one instruction's read(s) of any `load_locals` member as a
-/// borrow-consumer or an escape (`classify_actor_state_load_modes`'s two
-/// positive categories, §RecordFieldLoad/TupleFieldLoad/ClosureEnvFieldLoad
-/// base and interior-projection `Move` src). The `_` arm falls through to
-/// [`instr_source_places`] — itself a closed exhaustive match over every
-/// `Instr` variant — so a future MIR variant that reads a load's dest
+/// borrow-consumer or an escape (`classify_actor_state_load_modes`'s positive
+/// categories: §RecordFieldLoad/TupleFieldLoad/ClosureEnvFieldLoad base,
+/// interior-projection `Move` src, receiver-borrow / string-borrow call args,
+/// and the `for x in <collection>` `VecIter` cursor source). The `_` arm falls
+/// through to [`instr_source_places`] — itself a closed exhaustive match over
+/// every `Instr` variant — so a future MIR variant that reads a load's dest
 /// defaults to counting as a non-borrow use: over-classification always
 /// pushes toward `Owned`, never toward `Borrowed`.
 fn record_actor_state_load_instr_uses(
     instr: &Instr,
+    locals: &[ResolvedTy],
     load_locals: &HashSet<u32>,
     any_use: &mut HashSet<u32>,
     all_borrow: &mut HashMap<u32, bool>,
@@ -38588,9 +38606,6 @@ fn record_actor_state_load_instr_uses(
         }
         Instr::CallRuntimeAbi(call) => {
             let contract = crate::runtime_symbols::callee_ownership_contract(call.symbol());
-            let borrows_receiver = contract.borrows_vec_receiver()
-                || contract.borrows_collection_receiver()
-                || contract.borrows_bytes_receiver();
             for (i, place) in call.args().iter().enumerate() {
                 if let Some(l) = base_local(*place) {
                     mark_actor_state_load_use(
@@ -38598,8 +38613,29 @@ fn record_actor_state_load_instr_uses(
                         any_use,
                         all_borrow,
                         l,
-                        i == 0 && borrows_receiver,
+                        call_arg_borrows_state_load(contract, locals, i, l),
                     );
+                }
+            }
+        }
+        Instr::RecordInit { ty, fields, .. } if vec_iter_record_layout_key(ty).is_some() => {
+            // A `for x in <collection>` desugar lowers the source collection
+            // into a synthetic `VecIter { vec: <source>, idx: 0 }` cursor. The
+            // cursor BORROWS the source's handle for the loop's duration — it
+            // reads the handle via `len()`/`get(i)` and NEVER frees what it
+            // borrows (see `vec_iter_record_init_vec_source`). So the `.0`
+            // (vec) field source is a borrow-consumer of the loaded state
+            // field, not a whole-value escape: classifying the load `Borrowed`
+            // aliases the actor's still-owned state Vec (byte-identical to the
+            // pre-#2432 behaviour) instead of deep-cloning a handle the cursor
+            // never frees (the per-frame leak this arm closes). This holds for
+            // every element type — the cursor borrows a drop-safe (BitCopy)
+            // source it reads, and never frees an owned-element source at all.
+            // Any non-`.0` field source (only the BitCopy `idx` in practice) is
+            // an escape (fail-closed).
+            for (offset, src) in fields {
+                if let Some(l) = base_local(*src) {
+                    mark_actor_state_load_use(load_locals, any_use, all_borrow, l, offset.0 == 0);
                 }
             }
         }
@@ -38613,14 +38649,42 @@ fn record_actor_state_load_instr_uses(
     }
 }
 
+/// `true` when call argument `i` (a `load_locals` member, local `l`) is only
+/// BORROWED by `contract` — either the receiver-borrow arg[0] (Vec/collection/
+/// bytes receivers, e.g. `hew_vec_len`) or a string operand of a call that
+/// borrows its string args (`borrows_string_call_args` — every string
+/// inspector/transform and print sink; the string is read or refcount-copied,
+/// the caller keeps the drop obligation). A string state-field value read
+/// through such a call (`name.len()`, `name + "x"`, `println(name)`) therefore
+/// classifies `Borrowed` instead of emitting an unbalanced `hew_string_clone`.
+/// String borrows live in `string_args`, a separate contract axis from the
+/// receiver axis the Vec/bytes categories read, so both axes are consulted.
+fn call_arg_borrows_state_load(
+    contract: crate::runtime_symbols::CalleeOwnershipContract,
+    locals: &[ResolvedTy],
+    arg_index: usize,
+    arg_local: u32,
+) -> bool {
+    let borrows_receiver = contract.borrows_vec_receiver()
+        || contract.borrows_collection_receiver()
+        || contract.borrows_bytes_receiver();
+    if arg_index == 0 && borrows_receiver {
+        return true;
+    }
+    contract.borrows_string_call_args()
+        && matches!(locals.get(arg_local as usize), Some(ResolvedTy::String))
+}
+
 /// The `Terminator::Call` analogue of [`record_actor_state_load_instr_uses`]
-/// — the receiver-borrow-arg[0] positive category applies identically to a
-/// block-terminating call. Every other terminator variant falls through to
+/// — the receiver-borrow-arg[0] and string-borrow-arg positive categories
+/// (`call_arg_borrows_state_load`) apply identically to a block-terminating
+/// call. Every other terminator variant falls through to
 /// [`terminator_source_places`] (closed exhaustive match), marked as a
 /// non-borrow use.
 fn record_actor_state_load_terminator_uses(
     term: &Terminator,
     suspend_kind: Option<&SuspendKind>,
+    locals: &[ResolvedTy],
     load_locals: &HashSet<u32>,
     any_use: &mut HashSet<u32>,
     all_borrow: &mut HashMap<u32, bool>,
@@ -38628,9 +38692,6 @@ fn record_actor_state_load_terminator_uses(
     match term {
         Terminator::Call { callee, args, .. } => {
             let contract = crate::runtime_symbols::callee_ownership_contract(callee);
-            let borrows_receiver = contract.borrows_vec_receiver()
-                || contract.borrows_collection_receiver()
-                || contract.borrows_bytes_receiver();
             for (i, place) in args.iter().enumerate() {
                 if let Some(l) = base_local(*place) {
                     mark_actor_state_load_use(
@@ -38638,7 +38699,7 @@ fn record_actor_state_load_terminator_uses(
                         any_use,
                         all_borrow,
                         l,
-                        i == 0 && borrows_receiver,
+                        call_arg_borrows_state_load(contract, locals, i, l),
                     );
                 }
             }

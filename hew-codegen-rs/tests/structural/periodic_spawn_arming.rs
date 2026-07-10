@@ -120,6 +120,7 @@ fn spawn_pipeline(every_ms: Option<u64>) -> IrPipeline {
         cycle_capable: false,
         mailbox_capacity: None,
         overflow_policy: None,
+        coalesce_key_plan: None,
         handlers: vec![ActorHandlerLayout {
             name: "tick".to_string(),
             symbol: handler_symbol,

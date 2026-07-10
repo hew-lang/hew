@@ -729,11 +729,13 @@ pub struct ActorLayout {
     /// means the spec §6.2 default (`Block`) applies. Codegen maps this
     /// enum to the runtime's `HewOverflowPolicy` i32 encoding BY NAME (the
     /// two enums have different discriminant orders — an ordinal cast is
-    /// wrong-code). `Coalesce { .. }` fails closed at MIR lowering with a
-    /// `MailboxOverflowCoalesceNotYetImplemented` diagnostic rather than
-    /// silently threading a policy the codegen key-function ABI cannot
-    /// honour yet.
+    /// wrong-code).
     pub overflow_policy: Option<hew_parser::ast::OverflowPolicy>,
+    /// Resolved per-message extraction plan for `overflow coalesce(key)`.
+    /// MIR owns name-to-index resolution because handler parameter names do
+    /// not survive in `ActorHandlerLayout`; codegen consumes this plan without
+    /// re-deriving source names.
+    pub coalesce_key_plan: Option<CoalesceKeyPlan>,
     /// Receive handlers in message-type order.
     pub handlers: Vec<ActorHandlerLayout>,
     /// Mangled symbol of the per-actor synthesized C-ABI clone fn that
@@ -781,6 +783,27 @@ pub struct ActorLayout {
     /// the W2.001 runtime's `state_clone_fn = NULL` fall-through
     /// (which blocks supervisor restart per `actor.rs:766`).
     pub state_field_clone_kinds: Option<Vec<crate::state_clone::StateFieldCloneKind>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoalesceKeyPlan {
+    pub entries: Vec<CoalesceKeyEntry>,
+    /// Runtime `HewOverflowPolicy` encoding for the non-coalesce fallback.
+    pub fallback: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoalesceKeyEntry {
+    pub msg_type: i32,
+    pub param_index: u32,
+    pub kind: CoalesceKeyKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CoalesceKeyKind {
+    IntZext { width: u8 },
+    BoolZext,
+    StringHash,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -6263,14 +6286,13 @@ pub enum MirDiagnosticKind {
         field_name: String,
         reason: String,
     },
-    /// `overflow coalesce(key)` parses and type-checks, but codegen has
-    /// no coalesce key-function ABI slice to thread through the FFI boundary
-    /// yet. Threading a bare `Coalesce` tag through `HewOverflowPolicy`
-    /// without a key function would silently miscarry the declared policy —
-    /// exactly the "declared-and-accepted surface silently discarded" class
-    /// this fence closes — so lowering fails closed here with an honest NYI
-    /// diagnostic instead of a silent remap to another policy.
-    MailboxOverflowCoalesceNotYetImplemented { actor: String, key_field: String },
+    /// A declared coalesce key did not resolve to a supported handler
+    /// parameter, so lowering refuses to emit a partial key callback.
+    MailboxOverflowCoalesceKeyFieldInvalid {
+        actor: String,
+        key_field: String,
+        reason: String,
+    },
     /// An actor reached MIR layout lowering with `receive fn` handlers but no
     /// protocol descriptor, so no handler can be assigned its real
     /// message-kind discriminant. Emitting the `i32::MAX` sentinel instead

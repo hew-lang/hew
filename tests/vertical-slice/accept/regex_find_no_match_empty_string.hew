@@ -1,0 +1,33 @@
+// Regression for the regex no-match-vs-empty-string equality boundary (#2529).
+//
+// `Pattern.find` is documented as `-> string`, returning "the matched
+// substring, or an empty string if no match". Previously the FFI seam returned
+// a raw null on no match, and while `.len()`/`is_empty` treat null as empty,
+// `hew_string_equals(null, "")` reports 0 (a null and a non-null empty buffer
+// are unequal). So the idiomatic `pat.find(s) == ""` no-match check silently
+// reported a match. The fix normalizes the no-match (and invalid-handle) return
+// to the canonical empty string at the boundary so `== ""` holds.
+import std::text::regex;
+
+fn main() {
+    let pat = regex.new("[0-9]+");
+
+    // Positive match still returns the substring and compares by value.
+    let hit = pat.find("abc123def");
+    println(f"hit_eq={hit == "123"}");
+
+    // No match: len 0 AND compares == "" (the previously-broken case).
+    let miss = pat.find("abcdef");
+    println(f"miss_len={miss.len()}");
+    println(f"miss_eq_empty={miss == ""}");
+    println(f"miss_neq_hit={miss != "123"}");
+
+    // replace's `-> string` seam: a no-match replace returns the original
+    // (non-null) text, and an all-match replace substitutes as usual.
+    let repl_hit = pat.replace("a1b2c3", "N");
+    println(f"repl_hit_eq={repl_hit == "aNbNcN"}");
+    let repl_miss = pat.replace("abc", "N");
+    println(f"repl_miss_eq={repl_miss == "abc"}");
+
+    pat.close();
+}

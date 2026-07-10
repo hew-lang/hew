@@ -68,8 +68,18 @@ pub unsafe extern "C" fn hew_regex_is_match(re: *const HewRegex, text: *const c_
 /// Find the first match of the compiled regex in `text`.
 ///
 /// Returns a `malloc`-allocated, NUL-terminated C string containing the
-/// matched substring, or null if no match is found. The caller must free
-/// the returned string with `libc::free`.
+/// matched substring, or the canonical empty string (a non-null, zero-length
+/// buffer) when there is no match. The caller must free the returned string
+/// with `libc::free`.
+///
+/// The user-facing signature is `fn find(..) -> string` (not `Option<string>`),
+/// documented as returning "the matched substring, or an empty string if no
+/// match". Returning a raw null on no-match violated that contract at the string
+/// equality boundary: `hew_string_length`/`hew_string_is_empty` treat null as
+/// empty, but `hew_string_equals(null, "")` returns 0 (null and a non-null empty
+/// buffer are unequal), so the idiomatic `pat.find(s) == ""` no-match check
+/// silently reported a match. We normalize no-match to the canonical empty
+/// string here at the FFI boundary so the returned value compares `== ""`.
 ///
 /// # Safety
 ///
@@ -78,17 +88,17 @@ pub unsafe extern "C" fn hew_regex_is_match(re: *const HewRegex, text: *const c_
 #[no_mangle]
 pub unsafe extern "C" fn hew_regex_find(re: *const HewRegex, text: *const c_char) -> *mut c_char {
     if re.is_null() {
-        return std::ptr::null_mut();
+        return str_to_malloc("");
     }
     // SAFETY: re is a valid HewRegex pointer per caller contract.
     let regex = unsafe { &*re };
     // SAFETY: text is a valid NUL-terminated C string per caller contract.
     let Some(text_str) = (unsafe { cstr_to_str(text) }) else {
-        return std::ptr::null_mut();
+        return str_to_malloc("");
     };
     match regex.inner.find(text_str) {
         Some(m) => str_to_malloc(m.as_str()),
-        None => std::ptr::null_mut(),
+        None => str_to_malloc(""),
     }
 }
 
@@ -318,7 +328,10 @@ pub unsafe extern "C" fn hew_regex_capture_width(re: *const HewRegex) -> i64 {
 /// Replace all matches of the compiled regex in `text` with `replacement`.
 ///
 /// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
-/// it with `libc::free`. Returns null on error.
+/// it with `libc::free`. On an invalid handle or non-UTF-8 input it returns the
+/// canonical empty string (a non-null, zero-length buffer) rather than raw null,
+/// so the `-> string` result always compares correctly against a string literal
+/// (see the equality-boundary note on [`hew_regex_find`]).
 ///
 /// # Safety
 ///
@@ -331,17 +344,17 @@ pub unsafe extern "C" fn hew_regex_replace(
     replacement: *const c_char,
 ) -> *mut c_char {
     if re.is_null() {
-        return std::ptr::null_mut();
+        return str_to_malloc("");
     }
     // SAFETY: re is a valid HewRegex pointer per caller contract.
     let regex = unsafe { &*re };
     // SAFETY: text is a valid NUL-terminated C string per caller contract.
     let Some(text_str) = (unsafe { cstr_to_str(text) }) else {
-        return std::ptr::null_mut();
+        return str_to_malloc("");
     };
     // SAFETY: replacement is a valid NUL-terminated C string per caller contract.
     let Some(repl_str) = (unsafe { cstr_to_str(replacement) }) else {
-        return std::ptr::null_mut();
+        return str_to_malloc("");
     };
     str_to_malloc(&regex.inner.replace_all(text_str, repl_str))
 }
@@ -606,14 +619,70 @@ mod tests {
         // SAFETY: matched was allocated with libc::malloc.
         unsafe { hew_cabi::cabi::free_cstring(matched) }; // CSTRING-FREE: str-open (test str_to_malloc match)
 
-        // Test no match
+        // Test no match: returns the canonical empty string (non-null, len 0),
+        // NOT raw null, so `pat.find(s) == ""` works (hew_string_equals treats a
+        // null and a non-null empty buffer as unequal).
         let text_no = CString::new("123456").unwrap();
         // SAFETY: re and text pointers are valid.
         let no_match = unsafe { hew_regex_find(re, text_no.as_ptr()) };
-        assert!(no_match.is_null());
+        assert!(!no_match.is_null());
+        // SAFETY: no_match was allocated by hew_regex_find.
+        let no_match_str = unsafe { CStr::from_ptr(no_match) }.to_str().unwrap();
+        assert_eq!(no_match_str, "");
+        // SAFETY: no_match was allocated with libc::malloc.
+        unsafe { hew_cabi::cabi::free_cstring(no_match) }; // CSTRING-FREE: str-open (test str_to_malloc match)
 
         // SAFETY: re was returned by hew_regex_new.
         unsafe { hew_regex_free(re) };
+    }
+
+    #[test]
+    fn find_no_match_returns_canonical_empty_not_null() {
+        // Regression for the no-match-vs-empty equality-boundary bug: find must
+        // return a non-null, zero-length, NUL-terminated buffer (the canonical
+        // empty string) on no match, so `hew_regex_find(..) == ""` holds. A raw
+        // null return would make hew_string_equals(null, "") report 0 (unequal)
+        // even though hew_string_length/hew_string_is_empty treat null as empty.
+        let pattern = CString::new(r"[0-9]+").unwrap();
+        // SAFETY: pattern is a valid NUL-terminated C string.
+        let re = unsafe { hew_regex_new(pattern.as_ptr()) };
+        assert!(!re.is_null());
+
+        let text = CString::new("abc").unwrap();
+        // SAFETY: re and text pointers are valid.
+        let got = unsafe { hew_regex_find(re, text.as_ptr()) };
+        assert!(!got.is_null(), "no-match must not return null");
+        // SAFETY: got is a valid NUL-terminated buffer from hew_regex_find.
+        assert_eq!(unsafe { *got }, 0, "no-match buffer must be zero-length");
+        // SAFETY: got was allocated with libc::malloc.
+        unsafe { hew_cabi::cabi::free_cstring(got) }; // CSTRING-FREE: str-open (test str_to_malloc match)
+
+        // A null handle also returns the canonical empty, never null.
+        // SAFETY: passing a null handle is the documented invalid-handle path.
+        let from_null = unsafe { hew_regex_find(std::ptr::null(), text.as_ptr()) };
+        assert!(!from_null.is_null());
+        // SAFETY: from_null is a valid buffer from hew_regex_find.
+        assert_eq!(unsafe { *from_null }, 0);
+        // SAFETY: from_null was allocated with libc::malloc.
+        unsafe { hew_cabi::cabi::free_cstring(from_null) }; // CSTRING-FREE: str-open (test str_to_malloc match)
+
+        // SAFETY: re was returned by hew_regex_new.
+        unsafe { hew_regex_free(re) };
+    }
+
+    #[test]
+    fn replace_invalid_handle_returns_canonical_empty_not_null() {
+        // The `-> string` replace seam also normalizes its error paths to the
+        // canonical empty string rather than raw null.
+        let text = CString::new("abc").unwrap();
+        let repl = CString::new("X").unwrap();
+        // SAFETY: a null handle is the documented invalid-handle path.
+        let got = unsafe { hew_regex_replace(std::ptr::null(), text.as_ptr(), repl.as_ptr()) };
+        assert!(!got.is_null());
+        // SAFETY: got is a valid NUL-terminated buffer from hew_regex_replace.
+        assert_eq!(unsafe { *got }, 0);
+        // SAFETY: got was allocated with libc::malloc.
+        unsafe { hew_cabi::cabi::free_cstring(got) }; // CSTRING-FREE: str-open (test str_to_malloc match)
     }
 
     #[test]

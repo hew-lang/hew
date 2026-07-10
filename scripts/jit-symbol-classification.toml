@@ -10,7 +10,7 @@
 #
 #   result = "fresh" | "retained" | "borrowed" | "none"
 #   params = ["borrow" | "consume" | "retain", ...]
-#   release-symbol = "<hew_* release function>" | ""
+#   release-symbol = "<hew_* release function or type-directed drop thunk>" | ""
 #   discharge-depth = "shallow" | "deep" | "none"
 #
 # `fresh` transfers a newly owned allocation to the caller. `retained`
@@ -1223,3 +1223,27 @@ result = "none"
 params = ["borrow", "consume"]
 release-symbol = ""
 discharge-depth = "none"
+
+# hew-runtime/src/vec.rs:814-835 returns a header-retained string reference.
+[[ownership.contracts]]
+symbol = "hew_vec_get_str"
+result = "retained"
+params = ["borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:2771-2793 returns an alias invalidated by vec mutation.
+[[ownership.contracts]]
+symbol = "hew_vec_get_owned"
+result = "borrowed"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# hew-runtime/src/vec.rs:2796-2865 writes a fresh logical owner to `out`.
+[[ownership.contracts]]
+symbol = "hew_vec_get_clone"
+result = "fresh"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = "HewTypeLayout.drop_fn"
+discharge-depth = "deep"

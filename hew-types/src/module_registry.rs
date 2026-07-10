@@ -22,6 +22,10 @@ pub struct ModuleRegistry {
     search_paths: Vec<PathBuf>,
     /// Accumulated handle types from all loaded modules.
     handle_types: HashSet<String>,
+    /// Accumulated fielded `#[resource]` handle-wrapper types from all loaded
+    /// modules. Kept short-name-disjoint from `handle_types` (asserted at load)
+    /// so a bare-name receiver never resolves a wrapper as an opaque handle.
+    resource_wrapper_types: HashSet<String>,
     /// Accumulated drop types from all loaded modules.
     drop_types: HashSet<String>,
     /// Accumulated drop functions from all loaded modules: `type_name` → C func name.
@@ -244,6 +248,7 @@ impl ModuleRegistry {
             modules: HashMap::new(),
             search_paths,
             handle_types: HashSet::new(),
+            resource_wrapper_types: HashSet::new(),
             drop_types: HashSet::new(),
             drop_funcs: HashMap::new(),
         }
@@ -266,6 +271,14 @@ impl ModuleRegistry {
     ///
     /// Returns [`ModuleError::NotFound`] if no search path contains the module,
     /// or [`ModuleError::ParseError`] if the module file exists but cannot be parsed.
+    ///
+    /// # Panics
+    ///
+    /// Panics (fail-closed) if a newly loaded module makes a fielded
+    /// `#[resource]` handle-wrapper share its short name with a fieldless
+    /// `#[opaque]` handle in the loaded set — an internal stdlib-authoring
+    /// invariant that would otherwise let handle-method dispatch misclassify the
+    /// wrapper as an opaque handle. The current stdlib satisfies it.
     pub fn load(&mut self, module_path: &str) -> Result<&ModuleInfo, ModuleError> {
         let id = ModuleId::new(module_path.split("::").map(String::from).collect());
 
@@ -277,15 +290,41 @@ impl ModuleRegistry {
         // Try each search path in order.
         for search_path in &self.search_paths {
             if let Some(info) = load_module_checked(module_path, search_path)? {
-                // Accumulate handle types and drop types.
+                // Accumulate handle types, wrapper types, and drop types.
                 for ht in &info.handle_types {
                     self.handle_types.insert(ht.clone());
+                }
+                for wt in &info.resource_wrapper_types {
+                    self.resource_wrapper_types.insert(wt.clone());
                 }
                 for dt in &info.drop_types {
                     self.drop_types.insert(dt.clone());
                 }
                 for (ty, func) in &info.drop_funcs {
                     self.drop_funcs.insert(ty.clone(), func.clone());
+                }
+
+                // Fail closed: a fielded `#[resource]` handle-wrapper must never
+                // share its short name with a fieldless `#[opaque]` handle.
+                // `Checker::receiver_is_opaque_handle` qualifies a bare receiver
+                // name against `handle_types` by short name, so such a collision
+                // would silently re-admit the wrapper to the by-value handle-method
+                // rewrite (passing the whole struct to a pointer-typed extern). The
+                // current stdlib is disjoint (`Pattern` vs `PatternHandle`); trip
+                // loudly if a future module introduces a collision instead of
+                // miscompiling it.
+                if let Some((wrapper, handle)) =
+                    crate::stdlib_loader::resource_wrapper_shadowing_handle(
+                        &self.handle_types,
+                        &self.resource_wrapper_types,
+                    )
+                {
+                    panic!(
+                        "stdlib invariant violated: #[resource] handle-wrapper `{wrapper}` \
+                         shares its short name with fieldless #[opaque] handle `{handle}` — \
+                         rename one so handle-method dispatch cannot misclassify the wrapper \
+                         as an opaque handle"
+                    );
                 }
 
                 self.modules.insert(id.clone(), info);
@@ -592,8 +631,8 @@ mod tests {
         );
         reg.load("std::text::regex").unwrap();
         assert!(
-            !reg.is_drop_type("regex.Pattern"),
-            "regex.Pattern should not be a drop type"
+            reg.is_drop_type("regex.Pattern"),
+            "regex.Pattern is a `#[resource]` handle, so it is a drop type"
         );
     }
 

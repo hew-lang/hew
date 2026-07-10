@@ -50,8 +50,8 @@ fn main -> i64
 
 fn Pattern::is_match -> bool
   statements:
-    use BindingId(1) pat site=SiteId(23) ty=Pattern intent=Read
-    use BindingId(2) input site=SiteId(24) ty=string intent=Read
+    use BindingId(1) pat site=SiteId(24) ty=Pattern intent=Read
+    use BindingId(2) input site=SiteId(25) ty=string intent=Read
     return site=Some(SiteId(21)) ty=bool
   drop_plans:
     call[bb0 hew_regex_is_match -> bb1] ->
@@ -63,9 +63,9 @@ fn Pattern::is_match -> bool
 
 fn Pattern::matches -> bool
   statements:
-    use BindingId(3) pat site=SiteId(28) ty=Pattern intent=Read
-    use BindingId(4) input site=SiteId(29) ty=string intent=Read
-    return site=Some(SiteId(26)) ty=bool
+    use BindingId(3) pat site=SiteId(30) ty=Pattern intent=Read
+    use BindingId(4) input site=SiteId(31) ty=string intent=Read
+    return site=Some(SiteId(27)) ty=bool
   drop_plans:
     call[bb0 hew_regex_is_match -> bb1] ->
       (none)
@@ -76,9 +76,9 @@ fn Pattern::matches -> bool
 
 fn Pattern::find -> string
   statements:
-    use BindingId(5) pat site=SiteId(33) ty=Pattern intent=Read
-    use BindingId(6) input site=SiteId(34) ty=string intent=Read
-    return site=Some(SiteId(31)) ty=string
+    use BindingId(5) pat site=SiteId(36) ty=Pattern intent=Read
+    use BindingId(6) input site=SiteId(37) ty=string intent=Read
+    return site=Some(SiteId(33)) ty=string
   drop_plans:
     call[bb0 hew_regex_find -> bb1] ->
       (none)
@@ -89,10 +89,10 @@ fn Pattern::find -> string
 
 fn Pattern::replace -> string
   statements:
-    use BindingId(7) pat site=SiteId(38) ty=Pattern intent=Read
-    use BindingId(8) input site=SiteId(39) ty=string intent=Read
-    use BindingId(9) replacement site=SiteId(40) ty=string intent=Read
-    return site=Some(SiteId(36)) ty=string
+    use BindingId(7) pat site=SiteId(42) ty=Pattern intent=Read
+    use BindingId(8) input site=SiteId(43) ty=string intent=Read
+    use BindingId(9) replacement site=SiteId(44) ty=string intent=Read
+    return site=Some(SiteId(39)) ty=string
   drop_plans:
     call[bb0 hew_regex_replace -> bb1] ->
       (none)
@@ -103,9 +103,9 @@ fn Pattern::replace -> string
 
 fn Pattern::find_all -> Vec<string>
   statements:
-    use BindingId(10) pat site=SiteId(44) ty=Pattern intent=Read
-    use BindingId(11) input site=SiteId(45) ty=string intent=Read
-    return site=Some(SiteId(42)) ty=Vec<string>
+    use BindingId(10) pat site=SiteId(49) ty=Pattern intent=Read
+    use BindingId(11) input site=SiteId(50) ty=string intent=Read
+    return site=Some(SiteId(46)) ty=Vec<string>
   drop_plans:
     call[bb0 hew_regex_find_all -> bb1] ->
       (none)
@@ -116,13 +116,13 @@ fn Pattern::find_all -> Vec<string>
 
 fn Pattern::capture -> Option<string>
   statements:
-    use BindingId(12) pat site=SiteId(49) ty=Pattern intent=Read
-    use BindingId(13) input site=SiteId(50) ty=string intent=Read
-    use BindingId(14) group site=SiteId(51) ty=i64 intent=Read
-    bind BindingId(15) values site=SiteId(47) ty=Vec<string>
-    use BindingId(15) values site=SiteId(56) ty=Vec<string> intent=Read
-    use BindingId(15) values site=SiteId(63) ty=Vec<string> intent=Read
-    return site=Some(SiteId(53)) ty=Option<string>
+    use BindingId(12) pat site=SiteId(55) ty=Pattern intent=Read
+    use BindingId(13) input site=SiteId(56) ty=string intent=Read
+    use BindingId(14) group site=SiteId(57) ty=i64 intent=Read
+    bind BindingId(15) values site=SiteId(52) ty=Vec<string>
+    use BindingId(15) values site=SiteId(62) ty=Vec<string> intent=Read
+    use BindingId(15) values site=SiteId(69) ty=Vec<string> intent=Read
+    return site=Some(SiteId(59)) ty=Option<string>
     drop BindingId(15) values ty=Vec<string>
   drop_plans:
     call[bb0 hew_regex_capture_index_one -> bb1] ->
@@ -138,23 +138,23 @@ fn Pattern::capture -> Option<string>
     branch[bb4: bb6/bb7] ->
       (none)
     return[bb5] ->
-      drop _5 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _6 ty=Vec<string> kind=cow_heap(hew_vec_free)
     panic[bb6] ->
-      drop _5 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _6 ty=Vec<string> kind=cow_heap(hew_vec_free)
     goto[bb7->bb5] ->
       (none)
     cancel[bb7] ->
-      drop _5 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _6 ty=Vec<string> kind=cow_heap(hew_vec_free)
 
 fn Pattern::capture_named -> Option<string>
   statements:
-    use BindingId(16) pat site=SiteId(67) ty=Pattern intent=Read
-    use BindingId(17) input site=SiteId(68) ty=string intent=Read
-    use BindingId(18) name site=SiteId(69) ty=string intent=Read
-    bind BindingId(19) values site=SiteId(65) ty=Vec<string>
-    use BindingId(19) values site=SiteId(74) ty=Vec<string> intent=Read
+    use BindingId(16) pat site=SiteId(74) ty=Pattern intent=Read
+    use BindingId(17) input site=SiteId(75) ty=string intent=Read
+    use BindingId(18) name site=SiteId(76) ty=string intent=Read
+    bind BindingId(19) values site=SiteId(71) ty=Vec<string>
     use BindingId(19) values site=SiteId(81) ty=Vec<string> intent=Read
-    return site=Some(SiteId(71)) ty=Option<string>
+    use BindingId(19) values site=SiteId(88) ty=Vec<string> intent=Read
+    return site=Some(SiteId(78)) ty=Option<string>
     drop BindingId(19) values ty=Vec<string>
   drop_plans:
     call[bb0 hew_regex_capture_name_one -> bb1] ->
@@ -170,25 +170,25 @@ fn Pattern::capture_named -> Option<string>
     branch[bb4: bb6/bb7] ->
       (none)
     return[bb5] ->
-      drop _5 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _6 ty=Vec<string> kind=cow_heap(hew_vec_free)
     panic[bb6] ->
-      drop _5 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _6 ty=Vec<string> kind=cow_heap(hew_vec_free)
     goto[bb7->bb5] ->
       (none)
     cancel[bb7] ->
-      drop _5 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _6 ty=Vec<string> kind=cow_heap(hew_vec_free)
 
 fn Pattern::captures -> CaptureMatches
   statements:
-    use BindingId(20) pat site=SiteId(85) ty=Pattern intent=Read
-    use BindingId(21) input site=SiteId(86) ty=string intent=Read
-    bind BindingId(22) groups site=SiteId(83) ty=Vec<string>
-    use BindingId(20) pat site=SiteId(90) ty=Pattern intent=Read
-    bind BindingId(23) group_count site=SiteId(88) ty=i64
-    use BindingId(22) groups site=SiteId(93) ty=Vec<string> intent=Read
-    use BindingId(23) group_count site=SiteId(94) ty=i64 intent=Read
-    agg_alias BindingId(22) groups site=SiteId(93) ty=Vec<string>
-    return site=Some(SiteId(92)) ty=CaptureMatches
+    use BindingId(20) pat site=SiteId(93) ty=Pattern intent=Read
+    use BindingId(21) input site=SiteId(94) ty=string intent=Read
+    bind BindingId(22) groups site=SiteId(90) ty=Vec<string>
+    use BindingId(20) pat site=SiteId(99) ty=Pattern intent=Read
+    bind BindingId(23) group_count site=SiteId(96) ty=i64
+    use BindingId(22) groups site=SiteId(102) ty=Vec<string> intent=Read
+    use BindingId(23) group_count site=SiteId(103) ty=i64 intent=Read
+    agg_alias BindingId(22) groups site=SiteId(102) ty=Vec<string>
+    return site=Some(SiteId(101)) ty=CaptureMatches
     drop BindingId(22) groups ty=Vec<string>
   drop_plans:
     call[bb0 hew_regex_captures_flat -> bb1] ->
@@ -202,15 +202,15 @@ fn Pattern::captures -> CaptureMatches
 
 fn Pattern::find_all_submatch -> CaptureMatches
   statements:
-    use BindingId(24) pat site=SiteId(97) ty=Pattern intent=Read
-    use BindingId(25) input site=SiteId(98) ty=string intent=Read
-    bind BindingId(26) groups site=SiteId(95) ty=Vec<string>
-    use BindingId(24) pat site=SiteId(102) ty=Pattern intent=Read
-    bind BindingId(27) group_count site=SiteId(100) ty=i64
-    use BindingId(26) groups site=SiteId(105) ty=Vec<string> intent=Read
-    use BindingId(27) group_count site=SiteId(106) ty=i64 intent=Read
-    agg_alias BindingId(26) groups site=SiteId(105) ty=Vec<string>
-    return site=Some(SiteId(104)) ty=CaptureMatches
+    use BindingId(24) pat site=SiteId(107) ty=Pattern intent=Read
+    use BindingId(25) input site=SiteId(108) ty=string intent=Read
+    bind BindingId(26) groups site=SiteId(104) ty=Vec<string>
+    use BindingId(24) pat site=SiteId(113) ty=Pattern intent=Read
+    bind BindingId(27) group_count site=SiteId(110) ty=i64
+    use BindingId(26) groups site=SiteId(116) ty=Vec<string> intent=Read
+    use BindingId(27) group_count site=SiteId(117) ty=i64 intent=Read
+    agg_alias BindingId(26) groups site=SiteId(116) ty=Vec<string>
+    return site=Some(SiteId(115)) ty=CaptureMatches
     drop BindingId(26) groups ty=Vec<string>
   drop_plans:
     call[bb0 hew_regex_find_all_submatch_flat -> bb1] ->
@@ -224,8 +224,8 @@ fn Pattern::find_all_submatch -> CaptureMatches
 
 fn Pattern::clone -> Pattern
   statements:
-    use BindingId(28) pat site=SiteId(109) ty=Pattern intent=Read
-    return site=Some(SiteId(107)) ty=Pattern
+    use BindingId(28) pat site=SiteId(122) ty=Pattern intent=Read
+    return site=Some(SiteId(118)) ty=Pattern
   drop_plans:
     call[bb0 hew_regex_clone -> bb1] ->
       (none)
@@ -234,10 +234,10 @@ fn Pattern::clone -> Pattern
     return[bb1] ->
       (none)
 
-fn Pattern::free -> ()
+fn Pattern::close -> ()
   statements:
-    use BindingId(29) pat site=SiteId(113) ty=Pattern intent=Read
-    eval site=SiteId(111) ty=()
+    use BindingId(29) pat site=SiteId(127) ty=Pattern intent=Read
+    eval site=SiteId(124) ty=()
   drop_plans:
     call[bb0 hew_regex_free -> bb1] ->
       (none)
@@ -248,12 +248,12 @@ fn Pattern::free -> ()
 
 fn CaptureMatches::len -> i64
   statements:
-    use BindingId(30) rows site=SiteId(117) ty=CaptureMatches intent=Read
-    return site=Some(SiteId(119)) ty=i64
-    eval site=SiteId(121) ty=()
-    use BindingId(30) rows site=SiteId(125) ty=CaptureMatches intent=Read
-    use BindingId(30) rows site=SiteId(127) ty=CaptureMatches intent=Read
-    return site=Some(SiteId(122)) ty=i64
+    use BindingId(30) rows site=SiteId(131) ty=CaptureMatches intent=Read
+    return site=Some(SiteId(133)) ty=i64
+    eval site=SiteId(135) ty=()
+    use BindingId(30) rows site=SiteId(139) ty=CaptureMatches intent=Read
+    use BindingId(30) rows site=SiteId(141) ty=CaptureMatches intent=Read
+    return site=Some(SiteId(136)) ty=i64
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)
@@ -284,8 +284,8 @@ fn CaptureMatches::len -> i64
 
 fn CaptureMatches::is_empty -> bool
   statements:
-    use BindingId(31) rows site=SiteId(130) ty=CaptureMatches intent=Read
-    return site=Some(SiteId(128)) ty=bool
+    use BindingId(31) rows site=SiteId(144) ty=CaptureMatches intent=Read
+    return site=Some(SiteId(142)) ty=bool
   drop_plans:
     call[bb0 CaptureMatches::len -> bb1] ->
       (none)
@@ -296,31 +296,31 @@ fn CaptureMatches::is_empty -> bool
 
 fn CaptureMatches::width -> i64
   statements:
-    use BindingId(32) rows site=SiteId(134) ty=CaptureMatches intent=Read
-    return site=Some(SiteId(133)) ty=i64
+    use BindingId(32) rows site=SiteId(148) ty=CaptureMatches intent=Read
+    return site=Some(SiteId(147)) ty=i64
   drop_plans:
     return[bb0] ->
       (none)
 
 fn CaptureMatches::group -> Option<string>
   statements:
-    use BindingId(34) match_index site=SiteId(138) ty=i64 intent=Read
-    use BindingId(35) group_index site=SiteId(141) ty=i64 intent=Read
-    use BindingId(35) group_index site=SiteId(144) ty=i64 intent=Read
-    use BindingId(33) rows site=SiteId(146) ty=CaptureMatches intent=Read
-    return site=Some(SiteId(147)) ty=Option<string>
-    eval site=SiteId(149) ty=()
-    use BindingId(33) rows site=SiteId(151) ty=CaptureMatches intent=Read
-    bind BindingId(36) row_count site=SiteId(150) ty=i64
-    use BindingId(34) match_index site=SiteId(154) ty=i64 intent=Read
-    use BindingId(36) row_count site=SiteId(155) ty=i64 intent=Read
-    return site=Some(SiteId(156)) ty=Option<string>
-    eval site=SiteId(158) ty=()
-    use BindingId(33) rows site=SiteId(162) ty=CaptureMatches intent=Read
-    use BindingId(34) match_index site=SiteId(165) ty=i64 intent=Read
-    use BindingId(33) rows site=SiteId(167) ty=CaptureMatches intent=Read
-    use BindingId(35) group_index site=SiteId(168) ty=i64 intent=Read
-    return site=Some(SiteId(159)) ty=Option<string>
+    use BindingId(34) match_index site=SiteId(152) ty=i64 intent=Read
+    use BindingId(35) group_index site=SiteId(155) ty=i64 intent=Read
+    use BindingId(35) group_index site=SiteId(158) ty=i64 intent=Read
+    use BindingId(33) rows site=SiteId(160) ty=CaptureMatches intent=Read
+    return site=Some(SiteId(161)) ty=Option<string>
+    eval site=SiteId(163) ty=()
+    use BindingId(33) rows site=SiteId(165) ty=CaptureMatches intent=Read
+    bind BindingId(36) row_count site=SiteId(164) ty=i64
+    use BindingId(34) match_index site=SiteId(168) ty=i64 intent=Read
+    use BindingId(36) row_count site=SiteId(169) ty=i64 intent=Read
+    return site=Some(SiteId(170)) ty=Option<string>
+    eval site=SiteId(172) ty=()
+    use BindingId(33) rows site=SiteId(176) ty=CaptureMatches intent=Read
+    use BindingId(34) match_index site=SiteId(179) ty=i64 intent=Read
+    use BindingId(33) rows site=SiteId(181) ty=CaptureMatches intent=Read
+    use BindingId(35) group_index site=SiteId(182) ty=i64 intent=Read
+    return site=Some(SiteId(173)) ty=Option<string>
   drop_plans:
     branch[bb0: bb2/bb1] ->
       (none)
@@ -371,9 +371,9 @@ fn CaptureMatches::group -> Option<string>
 
 fn CaptureMatches::whole -> Option<string>
   statements:
-    use BindingId(37) rows site=SiteId(170) ty=CaptureMatches intent=Read
-    use BindingId(38) match_index site=SiteId(171) ty=i64 intent=Read
-    return site=Some(SiteId(169)) ty=Option<string>
+    use BindingId(37) rows site=SiteId(184) ty=CaptureMatches intent=Read
+    use BindingId(38) match_index site=SiteId(185) ty=i64 intent=Read
+    return site=Some(SiteId(183)) ty=Option<string>
   drop_plans:
     call[bb0 CaptureMatches::group -> bb1] ->
       (none)
@@ -384,14 +384,17 @@ fn CaptureMatches::whole -> Option<string>
 
 fn regex$new -> Pattern
   statements:
-    use BindingId(39) pattern site=SiteId(176) ty=string intent=Read
-    bind BindingId(40) re site=SiteId(175) ty=Pattern
-    use BindingId(40) re site=SiteId(180) ty=Pattern intent=Read
-    use BindingId(39) pattern site=SiteId(185) ty=string intent=Read
-    eval site=SiteId(192) ty=()
-    use BindingId(40) re site=SiteId(193) ty=Pattern intent=Read
-    return site=Some(SiteId(174)) ty=Pattern
-    eval site=SiteId(182) ty=!
+    use BindingId(39) pattern site=SiteId(190) ty=string intent=Read
+    bind BindingId(40) handle site=SiteId(189) ty=PatternHandle
+    use BindingId(40) handle site=SiteId(193) ty=PatternHandle intent=Read
+    bind BindingId(41) re site=SiteId(192) ty=Pattern
+    use BindingId(41) re site=SiteId(197) ty=Pattern intent=Read
+    use BindingId(39) pattern site=SiteId(202) ty=string intent=Read
+    eval site=SiteId(209) ty=()
+    use BindingId(41) re site=SiteId(210) ty=Pattern intent=Read
+    return site=Some(SiteId(188)) ty=Pattern
+    eval site=SiteId(199) ty=!
+    drop BindingId(41) re ty=Pattern
   drop_plans:
     call[bb0 hew_regex_new -> bb1] ->
       (none)
@@ -418,8 +421,8 @@ fn regex$new -> Pattern
 
 fn i8::fmt -> string
   statements:
-    use BindingId(49) val site=SiteId(264) ty=i8 intent=Read
-    return site=Some(SiteId(262)) ty=string
+    use BindingId(50) val site=SiteId(281) ty=i8 intent=Read
+    return site=Some(SiteId(279)) ty=string
   drop_plans:
     call[bb0 to_string_i32 -> bb1] ->
       (none)
@@ -430,8 +433,8 @@ fn i8::fmt -> string
 
 fn i16::fmt -> string
   statements:
-    use BindingId(50) val site=SiteId(268) ty=i16 intent=Read
-    return site=Some(SiteId(266)) ty=string
+    use BindingId(51) val site=SiteId(285) ty=i16 intent=Read
+    return site=Some(SiteId(283)) ty=string
   drop_plans:
     call[bb0 to_string_i32 -> bb1] ->
       (none)
@@ -442,8 +445,8 @@ fn i16::fmt -> string
 
 fn i32::fmt -> string
   statements:
-    use BindingId(51) val site=SiteId(271) ty=i32 intent=Read
-    return site=Some(SiteId(270)) ty=string
+    use BindingId(52) val site=SiteId(288) ty=i32 intent=Read
+    return site=Some(SiteId(287)) ty=string
   drop_plans:
     call[bb0 to_string_i32 -> bb1] ->
       (none)
@@ -454,8 +457,8 @@ fn i32::fmt -> string
 
 fn i64::fmt -> string
   statements:
-    use BindingId(52) val site=SiteId(274) ty=i64 intent=Read
-    return site=Some(SiteId(273)) ty=string
+    use BindingId(53) val site=SiteId(291) ty=i64 intent=Read
+    return site=Some(SiteId(290)) ty=string
   drop_plans:
     call[bb0 to_string_i64 -> bb1] ->
       (none)
@@ -466,8 +469,8 @@ fn i64::fmt -> string
 
 fn u8::fmt -> string
   statements:
-    use BindingId(53) val site=SiteId(277) ty=u8 intent=Read
-    return site=Some(SiteId(276)) ty=string
+    use BindingId(54) val site=SiteId(294) ty=u8 intent=Read
+    return site=Some(SiteId(293)) ty=string
   drop_plans:
     call[bb0 to_string_u8 -> bb1] ->
       (none)
@@ -478,8 +481,8 @@ fn u8::fmt -> string
 
 fn u16::fmt -> string
   statements:
-    use BindingId(54) val site=SiteId(280) ty=u16 intent=Read
-    return site=Some(SiteId(279)) ty=string
+    use BindingId(55) val site=SiteId(297) ty=u16 intent=Read
+    return site=Some(SiteId(296)) ty=string
   drop_plans:
     call[bb0 to_string_u16 -> bb1] ->
       (none)
@@ -490,8 +493,8 @@ fn u16::fmt -> string
 
 fn u32::fmt -> string
   statements:
-    use BindingId(55) val site=SiteId(283) ty=u32 intent=Read
-    return site=Some(SiteId(282)) ty=string
+    use BindingId(56) val site=SiteId(300) ty=u32 intent=Read
+    return site=Some(SiteId(299)) ty=string
   drop_plans:
     call[bb0 to_string_u32 -> bb1] ->
       (none)
@@ -502,8 +505,8 @@ fn u32::fmt -> string
 
 fn u64::fmt -> string
   statements:
-    use BindingId(56) val site=SiteId(286) ty=u64 intent=Read
-    return site=Some(SiteId(285)) ty=string
+    use BindingId(57) val site=SiteId(303) ty=u64 intent=Read
+    return site=Some(SiteId(302)) ty=string
   drop_plans:
     call[bb0 to_string_u64 -> bb1] ->
       (none)
@@ -514,8 +517,8 @@ fn u64::fmt -> string
 
 fn isize::fmt -> string
   statements:
-    use BindingId(57) val site=SiteId(290) ty=isize intent=Read
-    return site=Some(SiteId(288)) ty=string
+    use BindingId(58) val site=SiteId(307) ty=isize intent=Read
+    return site=Some(SiteId(305)) ty=string
   drop_plans:
     call[bb0 to_string_i64 -> bb1] ->
       (none)
@@ -526,8 +529,8 @@ fn isize::fmt -> string
 
 fn usize::fmt -> string
   statements:
-    use BindingId(58) val site=SiteId(294) ty=usize intent=Read
-    return site=Some(SiteId(292)) ty=string
+    use BindingId(59) val site=SiteId(311) ty=usize intent=Read
+    return site=Some(SiteId(309)) ty=string
   drop_plans:
     call[bb0 to_string_u64 -> bb1] ->
       (none)
@@ -538,8 +541,8 @@ fn usize::fmt -> string
 
 fn bool::fmt -> string
   statements:
-    use BindingId(59) val site=SiteId(297) ty=bool intent=Read
-    return site=Some(SiteId(296)) ty=string
+    use BindingId(60) val site=SiteId(314) ty=bool intent=Read
+    return site=Some(SiteId(313)) ty=string
   drop_plans:
     call[bb0 to_string_bool -> bb1] ->
       (none)
@@ -550,8 +553,8 @@ fn bool::fmt -> string
 
 fn char::fmt -> string
   statements:
-    use BindingId(60) val site=SiteId(300) ty=char intent=Read
-    return site=Some(SiteId(299)) ty=string
+    use BindingId(61) val site=SiteId(317) ty=char intent=Read
+    return site=Some(SiteId(316)) ty=string
   drop_plans:
     call[bb0 to_string_char -> bb1] ->
       (none)
@@ -562,8 +565,8 @@ fn char::fmt -> string
 
 fn f64::fmt -> string
   statements:
-    use BindingId(61) val site=SiteId(303) ty=f64 intent=Read
-    return site=Some(SiteId(302)) ty=string
+    use BindingId(62) val site=SiteId(320) ty=f64 intent=Read
+    return site=Some(SiteId(319)) ty=string
   drop_plans:
     call[bb0 to_string_f64 -> bb1] ->
       (none)
@@ -574,8 +577,8 @@ fn f64::fmt -> string
 
 fn f32::fmt -> string
   statements:
-    use BindingId(62) val site=SiteId(307) ty=f32 intent=Read
-    return site=Some(SiteId(305)) ty=string
+    use BindingId(63) val site=SiteId(324) ty=f32 intent=Read
+    return site=Some(SiteId(322)) ty=string
   drop_plans:
     call[bb0 to_string_f64 -> bb1] ->
       (none)
@@ -586,16 +589,16 @@ fn f32::fmt -> string
 
 fn string::fmt -> string
   statements:
-    use BindingId(63) val site=SiteId(309) ty=string intent=Read
-    return site=Some(SiteId(309)) ty=string
+    use BindingId(64) val site=SiteId(326) ty=string intent=Read
+    return site=Some(SiteId(326)) ty=string
   drop_plans:
     return[bb0] ->
       (none)
 
 fn duration::from_nanos -> duration
   statements:
-    use BindingId(64) n site=SiteId(311) ty=i64 intent=Read
-    return site=Some(SiteId(310)) ty=duration
+    use BindingId(65) n site=SiteId(328) ty=i64 intent=Read
+    return site=Some(SiteId(327)) ty=duration
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)
@@ -606,8 +609,8 @@ fn duration::from_nanos -> duration
 
 fn duration::from_micros -> duration
   statements:
-    use BindingId(65) n site=SiteId(314) ty=i64 intent=Read
-    return site=Some(SiteId(313)) ty=duration
+    use BindingId(66) n site=SiteId(331) ty=i64 intent=Read
+    return site=Some(SiteId(330)) ty=duration
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)
@@ -618,8 +621,8 @@ fn duration::from_micros -> duration
 
 fn duration::from_millis -> duration
   statements:
-    use BindingId(66) n site=SiteId(317) ty=i64 intent=Read
-    return site=Some(SiteId(316)) ty=duration
+    use BindingId(67) n site=SiteId(334) ty=i64 intent=Read
+    return site=Some(SiteId(333)) ty=duration
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)
@@ -630,8 +633,8 @@ fn duration::from_millis -> duration
 
 fn duration::from_secs -> duration
   statements:
-    use BindingId(67) n site=SiteId(320) ty=i64 intent=Read
-    return site=Some(SiteId(319)) ty=duration
+    use BindingId(68) n site=SiteId(337) ty=i64 intent=Read
+    return site=Some(SiteId(336)) ty=duration
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)
@@ -642,8 +645,8 @@ fn duration::from_secs -> duration
 
 fn duration::fmt -> string
   statements:
-    use BindingId(68) val site=SiteId(325) ty=duration intent=Read
-    return site=Some(SiteId(322)) ty=string
+    use BindingId(69) val site=SiteId(342) ty=duration intent=Read
+    return site=Some(SiteId(339)) ty=string
   drop_plans:
     call[bb0 to_string_i64 -> bb1] ->
       (none)

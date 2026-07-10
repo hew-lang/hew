@@ -1,0 +1,13 @@
+// Reject: closing a `regex.Pattern` twice is a compile-time
+// use-after-consume error. `close(self)` takes `Pattern` by value; the
+// second call reads a binding the move-checker already flagged as consumed
+// by the first — pinning the "close exactly once" resource guarantee this
+// PR establishes for regex patterns.
+import std::text::regex;
+
+fn main() -> i64 {
+    let pat = regex.new("[0-9]+");
+    pat.close();
+    pat.close();
+    0
+}

@@ -12,8 +12,8 @@ fn regex_pattern_clone_preserves_pattern_type_via_registry_fallback() {
         fn main() {
             let re = regex.new("a+");
             let copy: regex.Pattern = re.clone();
-            copy.free();
-            re.free();
+            copy.close();
+            re.close();
         }
         "#,
     );

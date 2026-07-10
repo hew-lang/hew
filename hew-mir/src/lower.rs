@@ -17745,10 +17745,13 @@ impl Builder {
                 // Reuses the same id-keyed indirection the match-arm path uses:
                 // a `ConstI64(literal_id)` local feeds a `CallRuntimeAbi` whose
                 // codegen arm GEP-loads the handle from the global array. The
-                // synthetic `hew_regex_handle` family performs ONLY the GEP-load
-                // (no runtime call) and stores the handle into `dest`. The handle
-                // is a borrowed pointer into the module-static slot — `regex.Pattern`
-                // is `#[opaque]`/`BitCopy` with no drop, so no cleanup is emitted.
+                // synthetic `hew_regex_handle` family GEP-loads the shared
+                // module-static handle, clones it via `hew_regex_clone`, and
+                // stores the clone into `dest`'s `Pattern.handle` field.
+                // `regex.Pattern` is `#[resource]`, so `dest` is a resource-typed
+                // local: normal scope-exit drop elaboration emits `close()` on it
+                // like any other owned `Pattern`, releasing the clone (not the
+                // shared literal-table entry) exactly once.
                 let lit_local = self.alloc_local(ResolvedTy::I64);
                 self.push_instr(Instr::ConstI64 {
                     dest: lit_local,

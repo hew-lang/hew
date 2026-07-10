@@ -5604,22 +5604,6 @@ pub(crate) fn primitive_to_llvm<'ctx>(
             // boundary-fail-closed, checker-authority.
             Ok(ctx.ptr_type(AddressSpace::default()).into())
         }
-        // A `regex.Pattern` value-position binding (`let pat = re"..."`) holds the
-        // compiled `*mut HewRegex` handle. The handle is the SAME `Box<HewRegex>`
-        // pointer that `hew_regex_new`/`hew_regex_compile` return and every
-        // `PatternMethods` FFI entry (`hew_regex_is_match`, …) consumes, so the
-        // slot is a bare opaque `ptr` like every other runtime handle (Duplex,
-        // Vec, HewTask). `regex.Pattern` is `#[opaque]` and classifies as
-        // `ResourceMarker::BitCopy` (no implicit drop — the literal handle is a
-        // module-static slot owned by `@hew_regex_handles`, never freed by the
-        // binding going out of scope). The producer is the `RegexLiteralRef`
-        // value-position arm in `hew-mir/src/lower.rs`, which GEP-loads the
-        // handle from `@hew_regex_handles[literal_id]` into this slot.
-        // Matched on the qualified `regex.Pattern` identity; a bare `Pattern`
-        // never reaches here (the checker stamps the qualified stdlib name).
-        ResolvedTy::Named { name, .. } if name == "regex.Pattern" => {
-            Ok(ctx.ptr_type(AddressSpace::default()).into())
-        }
         // `instant` is a monotonic i64-nanos timestamp. The field-type producer
         // surfaces it as `Named { builtin: Instant }` (not the canonical I64), so
         // a record/actor field typed `instant` reaches the emitter as a Named

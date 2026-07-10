@@ -363,18 +363,22 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     //   for the value-position regex literal (`let pat = re"..."`). It is NOT a
     //   real runtime extern: codegen's `RuntimeCallFamily::RegexHandle` arm
     //   resolves it entirely by GEP-loading the compiled handle from
-    //   `@hew_regex_handles[literal_id]` into the destination local — the same
-    //   load `hew_regex_match` / `hew_regex_capture` perform before their actual
-    //   runtime call — so no `hew_regex_handle` function is ever declared or
-    //   called. Allowlisted because the MIR producer (`lower_value`'s
+    //   `@hew_regex_handles[literal_id]`, cloning it via `hew_regex_clone`, and
+    //   storing the clone into the destination local's `Pattern.handle` field —
+    //   the same load `hew_regex_match` / `hew_regex_capture` perform before
+    //   their actual runtime call, plus the clone every other `Pattern`
+    //   producer performs — so no `hew_regex_handle` function is ever declared
+    //   or called. Allowlisted because the MIR producer (`lower_value`'s
     //   `RegexLiteralRef` arm) emits it via `Instr::CallRuntimeAbi` and
     //   `RuntimeCall::new` validates the symbol against this list.
-    //   WHY a synthetic CallRuntimeAbi symbol not a new MIR `Place`: the handle
-    //   is a borrowed `*const HewRegex` into a module-static slot with no drop
-    //   semantics (`regex.Pattern` is `#[opaque]`/`BitCopy`), so it needs no
-    //   drop-elaboration surface; reusing the existing GEP-load avoids a new
-    //   `Place` variant the drop elaborator, dataflow, and verify passes would
-    //   each have to grow an arm for. WHAT: the GEP-load arm in
+    //   WHY a synthetic CallRuntimeAbi symbol not a new MIR `Place`: the
+    //   module-static array slot is a borrowed `*const HewRegex` with no owner
+    //   of its own, but the destination is an ordinary resource-typed `Pattern`
+    //   local that already goes through the same drop elaboration as any other
+    //   `Pattern` producer (the clone gives it its own owned handle) — reusing
+    //   the existing GEP-load-plus-clone avoids a new `Place` variant the drop
+    //   elaborator, dataflow, and verify passes would each have to grow an arm
+    //   for. WHAT: the GEP-load-and-clone arm in
     //   `hew-codegen-rs/src/runtime_abi.rs` (`F::RegexHandle`).
     "hew_regex_handle",
     // `hew_regex_match(scrutinee: *const u8, literal_id: i64) -> i32` — returns

@@ -261,7 +261,7 @@ which mechanism applies and the order of the per-handle migration PRs.
 
 | Module | Type | Current release | Tier | Mechanism | Migration order | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| `std/text/regex` | `Pattern` | `free()` | 1 — per-call resource | C (affine) + H (drop table) | **1 (calibration pilot)** | Smallest blast radius; no streaming; no state machine. |
+| `std/text/regex` | `Pattern` | `close()` | 1 — per-call resource | C (affine) + H (drop table) | **1 (calibration pilot) — landed** | Smallest blast radius; no streaming; no state machine. `Pattern` is `#[resource]` with an opaque `handle` field; scope-exit drop calls `close()`, which frees the handle. Value-position `re"..."` literals clone the module-init-compiled handle on load (`hew-codegen-rs/src/runtime_abi.rs` `F::RegexHandle`), so each binding owns an independent handle and closes exactly once. |
 | `std/net/url` | `Url` | `free()` | 1 — per-call resource | C + H | 2 | Read-mostly; no streaming. |
 | `std/encoding/json` | `Value` | `free()` | 1 — per-call resource (with field-alias hazard) | C + H, requires `field-alias-fail-closed` enforcement to be live | 3 | Recursive ownership: every `get_field`/`array_get` returns a new owned `Value`; affine drop of the parent must not fire while a child is live. The move-checker substrate (issue #1399) must publish FieldAlias before this PR ships. |
 | `std/net/http_client` | `Response` | `free()` | 1 — per-call resource | C + H | 4 | One-shot; not streaming. |
@@ -378,7 +378,7 @@ by the PR itself; this spec fixes the *shape*.
 
 | Handle | User-facing change | Stdlib-internal change | Codegen change |
 | --- | --- | --- | --- |
-| `regex.Pattern` (calibration; not yet migrated — still `#[opaque]` with manual `.free()`) | `pat.free()` becomes a no-op; lines may be deleted | `Pattern` re-marked `#[resource]`; `free` becomes the `close` method the compiler calls implicitly | Drop emission for `Pattern` registered unconditionally (the `--experimental-handle-safety` flag this row described was never built — `#[resource]`/`#[linear]` ship unconditionally); null-after-move enforced |
+| `regex.Pattern` (calibration pilot — landed) | `pat.free()` removed; `pat.close()` releases early, scope-exit drop covers the rest | `Pattern` marked `#[resource]` with an opaque `handle` field; `close` is the method the compiler calls implicitly at scope exit | Drop emission for `Pattern` registered unconditionally (the `--experimental-handle-safety` flag this row described was never built — `#[resource]`/`#[linear]` ship unconditionally); null-after-move enforced; value-position `re"..."` literals clone the shared module-init handle on load so each binding owns an independent handle |
 | `url.Url` | `url.free()` becomes a no-op | tier-1 affine | drop registered |
 | `json.Value` | `val.free()` becomes a no-op; nested `get_field` results no longer require manual frees | tier-1 affine; FieldAlias must be live in the move-checker substrate (issue #1399) | drop registered; field-alias pre-scan enforced |
 | `http_client.Response` | `resp.free()` becomes a no-op | tier-1 affine | drop registered |

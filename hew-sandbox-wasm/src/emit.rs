@@ -2928,7 +2928,14 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 self.emit_instruction(opcode, Some(dst.clone()), operands, Some(span), None);
                 Ok(dst)
             }
-            "free" => {
+            // `Pattern.close()` is the surface resource-release method (Pattern
+            // is a `#[resource]`, renamed from `free()` in the resource
+            // migration). The sandbox VM models a compiled regex as a GC'd JS
+            // `RegExp`, so the release lowers to the `regex.free` no-op marker op
+            // and the `std.text.regex.free` handle-free symbol — the VM-layer
+            // name for the same action. Keeping the op/symbol stable keeps the
+            // golden bytecode fixtures byte-identical across the rename.
+            "close" => {
                 self.package.register_regex_symbol("free", "type:unit");
                 self.emit_instruction(
                     "regex.free",

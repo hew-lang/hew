@@ -821,7 +821,7 @@ let line = io.read_line();                  // Preferred stdin surface
 let re = regex.new("[a-z]+");
 let matched = regex.is_match(re, input);    // Returns bool
 server.close();
-re.free();
+re.close();
 ```
 
 This provides clean, namespaced access to stdlib functionality. The module name acts as a qualifier, avoiding verbose function names like `hew_http_server_new()`.
@@ -2457,10 +2457,10 @@ panic, assert, debug_assert
 #### 3.10.7 Typed Handles
 
 Standard library functions return opaque typed handle objects. Callers
-**must** invoke `close()` (or `free()` for `regex.Pattern`) explicitly
-to release the underlying resource. Dropping without `close()` is a
-resource leak; the compiler does not synthesise an implicit drop for
-these types in the current implementation.
+**must** invoke `close()` explicitly to release the underlying
+resource. Dropping without `close()` is a resource leak; the compiler
+does not synthesise an implicit drop for these types in the current
+implementation.
 
 | Type             | Created by                                 | Methods                                                                                                                              |
 | ---------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
@@ -2483,9 +2483,9 @@ a `main()`-body call outside any receive handler.
 #### 3.10.8 Regular Expressions
 
 > See HEW-FUTURE.md §3 for `std::text::regex` — targeted for v0.6+
-> alongside the stdlib port-forward. The current `regex.Pattern` typed
-> handle uses explicit `free()` for release; the future form is a
-> `#[resource]`-annotated type with RAII handles (§3.7.8).
+> alongside the stdlib port-forward. `regex.Pattern` is a
+> `#[resource]`-annotated type with RAII handles (§3.7.8): `close()`
+> releases early, and the implicit scope-exit drop covers the rest.
 
 ---
 

@@ -60,14 +60,14 @@ fn main() {
         line if mutating_re.is_match(line) => println(f"'{line}' mutates state"),
         _ => println(f"'{route}' is another command"),
     }
-    email_re.free();
-    url_re.free();
-    comment_re.free();
-    phone_re.free();
-    capitalized_name_re.free();
-    digit_re.free();
-    request_line_re.free();
-    read_only_re.free();
-    mutating_re.free();
+    email_re.close();
+    url_re.close();
+    comment_re.close();
+    phone_re.close();
+    capitalized_name_re.close();
+    digit_re.close();
+    request_line_re.close();
+    read_only_re.close();
+    mutating_re.close();
     println("All regex demos passed!");
 }

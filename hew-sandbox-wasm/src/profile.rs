@@ -985,7 +985,11 @@ impl<'a> ProfileChecker<'a> {
                     || name.ends_with(".Regex")
                     || name == "regex.Pattern" =>
             {
-                matches!(method, "find" | "is_match" | "replace" | "free")
+                // `Pattern` is a `#[resource]`; `close()` is its canonical
+                // release method (renamed from `free()` in the resource
+                // migration). Mirror the stdlib surface here so the sandbox
+                // admits the release call.
+                matches!(method, "find" | "is_match" | "replace" | "close")
             }
             Ty::Named {
                 builtin: Some(BuiltinType::Option),

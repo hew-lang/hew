@@ -2827,6 +2827,11 @@ run_accept_expect_stdout "regex_match_arm"
 # a function.
 run_accept_expect_stdout "regex_literal_value"
 
+# End-to-end: two `re"..."` literals with identical pattern text dedupe to the
+# same module-init global slot; each binding clones the handle independently
+# on load and can be closed on its own schedule without affecting the other.
+run_accept_expect_stdout "regex_literal_dual_alias"
+
 # Reject: malformed regex literal in match-arm position (E_INVALID_REGEX_LITERAL).
 # The type checker validates regex syntax before HIR lowering.
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/regex_invalid_pattern.hew" >"${reject_output}" 2>&1; then
@@ -2834,6 +2839,16 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/regex_invalid_pattern.hew
   exit 1
 fi
 grep -qF 'invalid regex pattern' "${reject_output}"
+
+# Reject: closing a `regex.Pattern` twice is a move-checker error (compiler-
+# enforced exactly-once cleanup for the resource this PR migrated).
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/regex_pattern_double_close.hew" >"${reject_output}" 2>&1; then
+  echo "expected regex_pattern_double_close fixture to fail" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks are literal — they match the
+# diagnostic's pretty-printed `pat` binding name.
+grep -qF 'use of moved value `pat`' "${reject_output}"
 
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/string_embedded_nul.hew" >"${reject_output}" 2>&1; then
   echo "expected string_embedded_nul fixture to fail" >&2

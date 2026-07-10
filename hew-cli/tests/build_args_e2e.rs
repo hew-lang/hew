@@ -72,9 +72,17 @@ fn net_parameter_surface_fixture_reaches_deep_gate() {
         source.display(),
         describe_output(&output),
     );
+    // Codegen-front counts as a deep gate here. The fixture now advances past
+    // HIR because the extern-callee gate correctly stopped a bogus handle-method
+    // registration (QUICConnection.observe() resolves via normal impl dispatch),
+    // so it reaches codegen-front and hits the pre-existing #2400
+    // duplicate-unqualified-symbol check (smtp and websocket both define a Conn
+    // type with a close method).
     assert!(
-        stderr.contains("E_HIR") || stderr.contains("E_NOT_YET_IMPLEMENTED"),
-        "fixture should reach the HIR/MIR deep gates, not fail in argument parsing or file loading:\n{stderr}",
+        stderr.contains("E_HIR")
+            || stderr.contains("E_NOT_YET_IMPLEMENTED")
+            || stderr.contains("E_CODEGEN_FRONT_FAIL_CLOSED"),
+        "fixture should reach the HIR/MIR/codegen-front deep gates, not fail in argument parsing or file loading:\n{stderr}",
     );
     assert!(
         !stderr.contains("type errors found"),

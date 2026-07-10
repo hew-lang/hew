@@ -244,9 +244,10 @@ is tracked per module.
 - `std::encoding::xml`, `::yaml`, `::toml`, `::csv` — encoding modules
   beyond JSON and MessagePack.
 - `std::text::regex` — regular expressions as first-class values
-  (currently `regex.Pattern` is a typed handle requiring explicit
-  `free()`; the post-`@resource` migration to RAII handles is part of
-  the next edition's stdlib port).
+  (`regex.Pattern` is already a `#[resource]`-annotated RAII handle —
+  the calibration pilot landed; promoting `std::text::regex` itself to
+  the edition 2026 normative surface is part of the next edition's
+  stdlib port).
 - `std::process` — child-process spawning.
 - `std::encoding::compress` — gzip/deflate/zlib decompressors.
 

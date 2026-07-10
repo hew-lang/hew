@@ -1,0 +1,81 @@
+//! Ratchets DIRECT (non-generic) Display coverage: `println`, `print`, and
+//! `to_string` invoked on a concrete value at the call site.
+//!
+//! The generic `T: Display` wrappers in display_primitive_coverage_test.hew
+//! never exercise this path — they dispatch through the type-parameter spine.
+//! These calls hit the builtin-overload fallback directly and must route
+//! through the shared Display dispatch shell: `char` and the narrow primitives
+//! the catalog has no concrete `println_*`/`print_*`/`to_string_*` overload for
+//! (#2351), plus a named type carrying a real `impl Display` (#2492).
+
+import std::testing;
+
+type Point {
+    x: i64,
+    y: i64,
+}
+
+impl Display for Point {
+    fn fmt(p: Point) -> string {
+        f"Point({p.x}, {p.y})"
+    }
+}
+
+#[test]
+fn test_direct_to_string_char_and_narrow_primitives() {
+    let cv: char = 'h';
+    let i8v: i8 = -7;
+    let i16v: i16 = -1234;
+    let u16v: u16 = 65000;
+    let isizev: isize = -4096;
+    let usizev: usize = 4000000000;
+    let f32v: f32 = 1.5;
+
+    testing.assert_eq_str(to_string(cv), "h");
+    testing.assert_eq_str(to_string(i8v), "-7");
+    testing.assert_eq_str(to_string(i16v), "-1234");
+    testing.assert_eq_str(to_string(u16v), "65000");
+    testing.assert_eq_str(to_string(isizev), "-4096");
+    testing.assert_eq_str(to_string(usizev), "4000000000");
+    testing.assert_eq_str(to_string(f32v), "1.5");
+}
+
+#[test]
+fn test_direct_to_string_named_display_type() {
+    let p = Point { x: 3, y: 4 };
+    testing.assert_eq_str(to_string(p), "Point(3, 4)");
+}
+
+#[test]
+fn test_direct_println_and_print_run_without_trap() {
+    // Direct println/print of char, a narrow primitive, and a named
+    // `impl Display` type in statement position — the same widened dispatch the
+    // to_string assertions verify by value. Must compile and run without a trap.
+    let cv: char = 'x';
+    let i8v: i8 = -7;
+    let f32v: f32 = 1.5;
+    let p = Point { x: 1, y: 2 };
+
+    println(cv);
+    print(i8v);
+    println(f32v);
+    println(p);
+    print(p);
+    println("");
+}
+
+#[test]
+fn test_concrete_fstring_renders_through_same_shell() {
+    // The shared Display shell serves both syntactic positions: the direct
+    // builtin call and f-string interpolation. Concrete (non-generic)
+    // interpolation of a raw `f32`, a `char`, and a named `impl Display` type
+    // must render identically to the direct-call path above — in particular
+    // the `f32 -> f64` widening the shell applies for `to_string_f64`.
+    let cv: char = 'h';
+    let f32v: f32 = 1.5;
+    let p = Point { x: 3, y: 4 };
+
+    testing.assert_eq_str(f"{cv}", "h");
+    testing.assert_eq_str(f"{f32v}", "1.5");
+    testing.assert_eq_str(f"{p}", "Point(3, 4)");
+}

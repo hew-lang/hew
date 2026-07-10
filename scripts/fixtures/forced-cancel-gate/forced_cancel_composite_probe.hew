@@ -1,0 +1,69 @@
+// #2437 forced-cancellation dynamic probe.
+//
+// Consumed by scripts/forced-cancel-composite-check.sh — NOT part of the
+// routine vertical-slice/hew-suite corpus (it references
+// `hew_test_pause_next_task_spawn_until_scope_cancel`, an extern symbol that
+// only exists in a `hew-runtime` build with `--features forced-cancel-test`;
+// linking it against the standard `libhew.a` fails on purpose).
+//
+// Forces a specific task's FIRST FunctionEntry cooperate check to observe
+// cancellation deterministically (via the feature-gated runtime hook, armed
+// through the extern block below), then drives the value through the
+// awaiter's bind edge (suspend.rs's "Null-buffer guard" path) to observe
+// whatever `emit_cancel_trap_or_return`'s composite arm published into
+// `out`. Post-fix, `out` must be the well-defined zero `Point{x:0,y:0}`.
+//
+// Uses the LEGACY `hew_task_scope_cancel_after_ns` live trigger (empty
+// `after(d) {}` body) rather than the modern `SuspendingScopeDeadline`
+// carrier's non-empty-body form: re-referencing a `fork`-bound task handle
+// from inside a non-empty `after(d) { ... }` body hits a separate,
+// pre-existing NYI gap (`is_value_task_await` does not currently resolve
+// such a reference — confirmed via `hew check`; not exercised or fixed
+// here). Both triggers funnel into the same `hew_task_scope_cancel`, which
+// is what the codegen bug actually depends on — this fixture stays on the
+// surface that compiles today.
+//
+// `after(d) {}` is positioned BEFORE `let v = await t;`, not after: the
+// legacy trigger arms `hew_task_scope_cancel_after_ns` at its own statement
+// position in program order, and `await t` suspends the calling coroutine —
+// so if the deadline arm sat after the await, the timer would never get a
+// chance to arm before the coroutine parks waiting on the very task the
+// timer is meant to cancel (self-deadlock, only broken by the hook's own
+// bounded-wait panic).
+record Point {
+    x: i64,
+    y: i64
+}
+
+fn compute() -> Point {
+    return Point { x: 11, y: 22 };
+}
+
+extern "C" {
+    fn hew_test_pause_next_task_spawn_until_scope_cancel();
+}
+
+actor Driver {
+    receive fn run_value() -> Point {
+        var out: Point = Point { x: 0, y: 0 };
+        scope {
+            unsafe {
+                hew_test_pause_next_task_spawn_until_scope_cancel()
+            };
+            fork t = compute();
+            after(1000000) {};
+            let v = await t;
+            out = v;
+        };
+        return out;
+    }
+}
+
+fn main() {
+    let d = spawn Driver;
+    let r = await d.run_value();
+    match r {
+        Ok(p) => println(f"x={p.x} y={p.y}"),
+        Err(_) => println("failed"),
+    }
+}

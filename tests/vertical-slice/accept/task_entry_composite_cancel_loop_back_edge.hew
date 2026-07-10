@@ -1,0 +1,42 @@
+// #2437 Validation candidate #5: the composite-arm fix in
+// emit_cancel_trap_or_return is arm-level, not cooperate-site-level — it
+// must apply uniformly whether the FunctionEntry or LoopBackEdge cooperate
+// site is what reaches the cancel_exit branch. `compute()` contains a loop
+// (a LoopBackEdge cooperate site, hew-mir/src/dataflow.rs), so this fixture
+// locks in that the fix generalizes beyond the FunctionEntry-only instance
+// the primary probe exercises.
+record Sum {
+    total: i64,
+    count: i64
+}
+
+fn compute() -> Sum {
+    var total: i64 = 0;
+    var count: i64 = 0;
+    for i in 0 .. 5 {
+        total = total + i;
+        count = count + 1;
+    }
+    return Sum { total: total, count: count };
+}
+
+actor Driver {
+    receive fn run_value() -> Sum {
+        var out: Sum = Sum { total: 0, count: 0 };
+        scope {
+            fork t = compute();
+            let v = await t;
+            out = v;
+        };
+        return out;
+    }
+}
+
+fn main() {
+    let d = spawn Driver;
+    let r = await d.run_value();
+    match r {
+        Ok(s) => println(f"total={s.total} count={s.count}"),
+        Err(_) => println("failed"),
+    }
+}

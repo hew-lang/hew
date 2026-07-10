@@ -1,0 +1,35 @@
+// #2437 Validation candidate #4: an owned-field composite (a record with a
+// heap-owned `string` field) forked and awaited through the TaskEntry
+// adapter. The cancel-exit fix (fn_ctx.return_ty.const_zero()) never
+// executes on this happy path — the point is to prove the composite arm's
+// fix does not disturb normal owned-field round-tripping for a
+// non-scalar-only record shape.
+record Wrapped {
+    s: string,
+    n: i64
+}
+
+fn compute() -> Wrapped {
+    return Wrapped { s: "hello", n: 7 };
+}
+
+actor Driver {
+    receive fn run_value() -> Wrapped {
+        var out: Wrapped = Wrapped { s: "", n: 0 };
+        scope {
+            fork t = compute();
+            let v = await t;
+            out = v;
+        };
+        return out;
+    }
+}
+
+fn main() {
+    let d = spawn Driver;
+    let r = await d.run_value();
+    match r {
+        Ok(w) => println(f"s={w.s} n={w.n}"),
+        Err(_) => println("failed"),
+    }
+}

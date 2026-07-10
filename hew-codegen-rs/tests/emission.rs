@@ -40,6 +40,8 @@ mod supervisor_child_get_emission;
 mod supervisor_emission;
 #[path = "emission/task_abi_emission.rs"]
 mod task_abi_emission;
+#[path = "emission/task_entry_cancel_composite_emission.rs"]
+mod task_entry_cancel_composite_emission;
 #[path = "emission/trap_kind_emission.rs"]
 mod trap_kind_emission;
 #[path = "emission/tuple_construct_emission.rs"]

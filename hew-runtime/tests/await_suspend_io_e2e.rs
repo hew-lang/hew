@@ -47,6 +47,7 @@ fn spawn_idle_actor() -> *mut hew_runtime::actor::HewActor {
         overflow: 0,
         coalesce_key_fn: None,
         coalesce_fallback: 0,
+        message_drop_fn: None,
         budget: 0,
         arena_cap_bytes: 0,
         cycle_capable: 0,

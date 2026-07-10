@@ -2288,6 +2288,10 @@ pub(crate) fn coalesce_key_fn_name(actor_name: &str) -> String {
     format!("__hew_coalesce_key_{}", mangle_dotted_name(actor_name))
 }
 
+pub(crate) fn message_drop_fn_name(actor_name: &str) -> String {
+    format!("__hew_message_drop_{}", mangle_dotted_name(actor_name))
+}
+
 /// Emit the runtime-registered key extractor for one coalescing actor.
 ///
 /// The callback rebuilds the same anonymous payload struct used by
@@ -2445,6 +2449,105 @@ pub(crate) fn emit_coalesce_key_fn<'ctx>(
         .build_return(Some(&default_key))
         .llvm_ctx("coalesce unkeyed return")?;
     Ok(key_fn)
+}
+
+/// Emit a per-actor typed payload destructor for mailbox eviction legs.
+///
+/// Dispatch moves owned fields out before freeing a consumed node, so this
+/// callback is registered only on eviction/replacement paths where dispatch
+/// will never run.
+pub(crate) fn emit_actor_message_drop_fn<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    layout: &ActorLayout,
+    record_layouts: &RecordLayoutMap<'ctx>,
+    mir_record_layouts: &[hew_mir::RecordLayout],
+    enum_layouts: &[hew_mir::EnumLayout],
+) -> CodegenResult<FunctionValue<'ctx>> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i32_ty = ctx.i32_type();
+    let size_ty = runtime_size_ty(ctx, llvm_mod);
+    let fn_name = message_drop_fn_name(&layout.name);
+    let drop_fn = llvm_mod.add_function(
+        &fn_name,
+        ctx.void_type()
+            .fn_type(&[i32_ty.into(), ptr_ty.into(), size_ty.into()], false),
+        Some(Linkage::Internal),
+    );
+    let builder = ctx.create_builder();
+    let entry = ctx.append_basic_block(drop_fn, "entry");
+    let default_bb = ctx.append_basic_block(drop_fn, "unknown_msg_type");
+    builder.position_at_end(entry);
+    let msg_type = drop_fn
+        .get_nth_param(0)
+        .ok_or_else(|| CodegenError::FailClosed("message drop fn missing msg_type".into()))?
+        .into_int_value();
+    let payload = drop_fn
+        .get_nth_param(1)
+        .ok_or_else(|| CodegenError::FailClosed("message drop fn missing payload".into()))?
+        .into_pointer_value();
+
+    let mut cases = Vec::with_capacity(layout.handlers.len());
+    for handler in &layout.handlers {
+        let bb = ctx.append_basic_block(drop_fn, &format!("msg_{}", handler.msg_type));
+        cases.push((i32_ty.const_int(handler.msg_type as u64, false), bb));
+    }
+    builder
+        .build_switch(msg_type, default_bb, &cases)
+        .llvm_ctx("message drop msg_type switch")?;
+
+    for (handler, (_, bb)) in layout.handlers.iter().zip(cases.iter()) {
+        builder.position_at_end(*bb);
+        if handler.param_tys.is_empty() {
+            builder
+                .build_return(None)
+                .llvm_ctx("unit message drop return")?;
+            continue;
+        }
+
+        let mut field_tys = Vec::with_capacity(handler.param_tys.len());
+        let mut field_kinds = Vec::with_capacity(handler.param_tys.len());
+        for param_ty in &handler.param_tys {
+            field_tys.push(resolve_ty(ctx, param_ty, record_layouts)?);
+            let mut visited = HashSet::new();
+            field_kinds.push(
+                hew_mir::classify_state_field_with_enum_layouts(
+                    param_ty,
+                    mir_record_layouts,
+                    enum_layouts,
+                    &mut visited,
+                )
+                .map_err(|error| {
+                    CodegenError::FailClosed(format!(
+                        "actor `{}` handler `{}` payload type `{param_ty:?}` is not drop-classifiable: {error}",
+                        layout.name, handler.name
+                    ))
+                })?,
+            );
+        }
+        let payload_struct = ctx.struct_type(&field_tys, false);
+        let helper_name = format!(
+            "{}_{}",
+            message_drop_fn_name(&layout.name),
+            handler.msg_type
+        );
+        let helper = llvm_mod.add_function(
+            &helper_name,
+            ctx.void_type().fn_type(&[ptr_ty.into()], false),
+            Some(Linkage::Internal),
+        );
+        emit_aggregate_drop_inplace_body(ctx, llvm_mod, helper, payload_struct, &field_kinds)?;
+        builder
+            .build_call(helper, &[payload.into()], "drop_message_payload")
+            .llvm_ctx("message payload drop helper call")?;
+        builder.build_return(None).llvm_ctx("message drop return")?;
+    }
+
+    builder.position_at_end(default_bb);
+    builder
+        .build_return(None)
+        .llvm_ctx("unknown message drop return")?;
+    Ok(drop_fn)
 }
 
 pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(

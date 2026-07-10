@@ -2153,6 +2153,8 @@ pub struct HewActorOpts {
     /// actor-ref cycle. Future consumer: cycle-detection / Machine Lane B
     /// cycle handling.
     pub cycle_capable: i32,
+    /// Typed destructor for queued message payloads evicted before dispatch.
+    pub message_drop_fn: Option<unsafe extern "C" fn(i32, *mut c_void, usize)>,
 }
 
 fn parse_overflow_policy(policy: i32) -> HewOverflowPolicy {
@@ -2572,6 +2574,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
     // SAFETY: mailbox pointer is valid.
     unsafe {
         mailbox::hew_mailbox_set_coalesce_config(mailbox, opts.coalesce_key_fn, coalesce_fallback);
+        mailbox::hew_mailbox_set_message_drop_fn(mailbox, opts.message_drop_fn);
     }
 
     let budget = if opts.budget > 0 {
@@ -2668,6 +2671,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts_adopt(
     // SAFETY: mailbox pointer is valid.
     unsafe {
         mailbox::hew_mailbox_set_coalesce_config(mailbox, opts.coalesce_key_fn, coalesce_fallback);
+        mailbox::hew_mailbox_set_message_drop_fn(mailbox, opts.message_drop_fn);
     }
 
     let budget = if opts.budget > 0 {
@@ -2725,6 +2729,10 @@ pub unsafe extern "C" fn hew_actor_spawn_opts_adopt(
             mailbox.cast::<crate::mailbox_wasm::HewMailboxWasm>(),
             opts.coalesce_key_fn,
             coalesce_fallback,
+        );
+        crate::mailbox_wasm::hew_mailbox_set_message_drop_fn(
+            mailbox.cast::<crate::mailbox_wasm::HewMailboxWasm>(),
+            opts.message_drop_fn,
         );
     }
 
@@ -5596,6 +5604,10 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
             opts.coalesce_key_fn,
             coalesce_fallback,
         );
+        crate::mailbox_wasm::hew_mailbox_set_message_drop_fn(
+            mailbox.cast::<crate::mailbox_wasm::HewMailboxWasm>(),
+            opts.message_drop_fn,
+        );
     }
 
     let budget = if opts.budget > 0 {
@@ -6859,6 +6871,7 @@ mod tests {
             overflow: HewOverflowPolicy::DropNew as i32,
             coalesce_key_fn: None,
             coalesce_fallback: 0,
+            message_drop_fn: None,
             budget: 0,
             arena_cap_bytes: 0,
             cycle_capable: 0,
@@ -6917,6 +6930,7 @@ mod tests {
             overflow: HewOverflowPolicy::Fail as i32,
             coalesce_key_fn: None,
             coalesce_fallback: 0,
+            message_drop_fn: None,
             budget: 0,
             arena_cap_bytes: 0,
             cycle_capable: 0,
@@ -10755,6 +10769,7 @@ mod tests {
             overflow: 0,
             coalesce_key_fn: None,
             coalesce_fallback: 0,
+            message_drop_fn: None,
             budget: 0,
             arena_cap_bytes: 128,
             cycle_capable: 0,
@@ -10820,6 +10835,7 @@ mod tests {
             overflow: 0,
             coalesce_key_fn: None,
             coalesce_fallback: 0,
+            message_drop_fn: None,
             budget: 0,
             arena_cap_bytes: 0,
             cycle_capable: 0,

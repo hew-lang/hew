@@ -207,6 +207,7 @@ fn v05_concurrency_program_has_no_unknown_trace_events() {
             overflow: OVERFLOW_DROP_NEW,
             coalesce_key_fn: None,
             coalesce_fallback: OVERFLOW_DROP_NEW,
+            message_drop_fn: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
             on_crash: None,

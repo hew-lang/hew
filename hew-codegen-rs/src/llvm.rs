@@ -7060,6 +7060,22 @@ fn emit_spawn_actor(
             }
             _ => (ptr_ty.const_null(), 0),
         };
+        let message_drop_fn = match overflow_policy {
+            Some(hew_parser::ast::OverflowPolicy::Coalesce { .. }) => {
+                let drop_name = crate::thunks::message_drop_fn_name(actor_name);
+                fn_ctx
+                    .llvm_mod
+                    .get_function(&drop_name)
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed(format!(
+                            "spawn `{actor_name}` requires message drop callback `{drop_name}`"
+                        ))
+                    })?
+                    .as_global_value()
+                    .as_pointer_value()
+            }
+            _ => ptr_ty.const_null(),
+        };
         let opts_ty = fn_ctx.ctx.struct_type(
             &[
                 ptr_ty.into(), // init_state
@@ -7072,6 +7088,7 @@ fn emit_spawn_actor(
                 i32_ty.into(), // budget
                 i64_ty.into(), // arena_cap_bytes
                 i32_ty.into(), // cycle_capable
+                ptr_ty.into(), // message_drop_fn
             ],
             false,
         );
@@ -7079,7 +7096,7 @@ fn emit_spawn_actor(
             .builder
             .build_alloca(opts_ty, "actor_spawn_opts")
             .llvm_ctx("HewActorOpts alloca")?;
-        let opts_fields: [(u32, BasicValueEnum<'_>); 10] = [
+        let opts_fields: [(u32, BasicValueEnum<'_>); 11] = [
             (0, state_ptr.into()),
             (1, state_size.into()),
             (2, dispatch.as_global_value().as_pointer_value().into()),
@@ -7093,6 +7110,7 @@ fn emit_spawn_actor(
             (7, i32_ty.const_zero().into()),
             (8, i64_ty.const_int(arena_cap, false).into()),
             (9, i32_ty.const_int(cycle_flag, false).into()),
+            (10, message_drop_fn.into()),
         ];
         for (field_idx, value) in opts_fields {
             let gep = fn_ctx
@@ -7349,6 +7367,7 @@ fn hew_child_spec_struct_type<'ctx>(ctx: &'ctx Context) -> StructType<'ctx> {
             ptr_ty.into(), // init_fn: per-child init thunk (null on the template path)
             ptr_ty.into(), // config: borrowed supervisor config buffer (null when no init_fn)
             i64_ty.into(), // config_size: bytes of `config` (0 when null)
+            ptr_ty.into(), // message_drop_fn
         ],
         false,
     )
@@ -8176,6 +8195,22 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
         }
         _ => (ptr_ty.const_null(), 0),
     };
+    let message_drop_fn = match child.overflow_policy.as_ref() {
+        Some(hew_parser::ast::OverflowPolicy::Coalesce { .. }) => {
+            let drop_name = crate::thunks::message_drop_fn_name(&child.actor_name);
+            llvm_mod
+                .get_function(&drop_name)
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "supervised child `{}` requires message drop callback `{drop_name}`",
+                        child.actor_name
+                    ))
+                })?
+                .as_global_value()
+                .as_pointer_value()
+        }
+        _ => ptr_ty.const_null(),
+    };
 
     // ── Init-closure (config) path vs literal-template path ─────────────
     //
@@ -8449,7 +8484,7 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
             }
         };
 
-    let field_values: [(u32, BasicValueEnum<'ctx>); 16] = [
+    let field_values: [(u32, BasicValueEnum<'ctx>); 17] = [
         (0, name_ptr.into()),
         (1, init_state_ptr),
         (2, init_state_size),
@@ -8476,6 +8511,7 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
         (13, init_fn_ptr), // init_fn: per-child thunk (null on template path)
         (14, config_ptr_for_spec), // config: borrowed supervisor config buffer (null when no thunk)
         (15, config_size_for_spec), // config_size: buffer size (0 when no thunk)
+        (16, message_drop_fn.into()),
     ];
     for (field_idx, value) in field_values {
         let gep = builder
@@ -40585,6 +40621,14 @@ fn build_module_for_target<'ctx>(
         )?;
         if actor.coalesce_key_plan.is_some() {
             crate::thunks::emit_coalesce_key_fn(ctx, &llvm_mod, actor, &record_layouts)?;
+            crate::thunks::emit_actor_message_drop_fn(
+                ctx,
+                &llvm_mod,
+                actor,
+                &record_layouts,
+                &pipeline.record_layouts,
+                &pipeline.enum_layouts,
+            )?;
         }
         if !actor.on_stop_symbols.is_empty() {
             crate::thunks::emit_actor_terminate_trampoline(ctx, &llvm_mod, actor, &fn_symbols)?;
@@ -56910,7 +56954,7 @@ fn main() {
         // (Rust offset_of, LLVM element index) for every field, in declaration
         // order. The pairing IS the ABI contract: element N of the LLVM struct
         // must land at the same byte offset as the matching Rust field.
-        let fields: [(usize, u32, &str); 16] = [
+        let fields: [(usize, u32, &str); 17] = [
             (std::mem::offset_of!(HewChildSpec, name), 0, "name"),
             (
                 std::mem::offset_of!(HewChildSpec, init_state),
@@ -56967,6 +57011,11 @@ fn main() {
                 std::mem::offset_of!(HewChildSpec, config_size),
                 15,
                 "config_size",
+            ),
+            (
+                std::mem::offset_of!(HewChildSpec, message_drop_fn),
+                16,
+                "message_drop_fn",
             ),
         ];
 

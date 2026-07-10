@@ -233,6 +233,7 @@ fn single_worker_message_budget_and_restart_budget_bound_execution() {
             overflow: 1,
             coalesce_key_fn: None,
             coalesce_fallback: 1,
+            message_drop_fn: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
             on_crash: None,

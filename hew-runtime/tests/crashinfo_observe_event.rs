@@ -168,6 +168,7 @@ fn divide_by_zero_trap_surfaces_trap_kind_on_observe_event_surface() {
             overflow: OVERFLOW_DROP_NEW,
             coalesce_key_fn: None,
             coalesce_fallback: OVERFLOW_DROP_NEW,
+            message_drop_fn: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
             on_crash: None,

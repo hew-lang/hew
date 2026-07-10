@@ -543,6 +543,8 @@ pub struct HewChildSpec {
     /// ABI: the final trailing `#[repr(C)]` field; the codegen mirror appends an
     /// `i64` slot. Field-order drift here is wrong-code at the FFI boundary.
     pub config_size: usize,
+    /// Typed destructor for queued message payloads evicted before dispatch.
+    pub message_drop_fn: Option<mailbox::HewMessageDropFn>,
 }
 
 /// Child lifecycle event (sent as system message payload).
@@ -772,6 +774,7 @@ struct InternalChildSpec {
     overflow: c_int,
     coalesce_key_fn: Option<mailbox::HewCoalesceKeyFn>,
     coalesce_fallback: c_int,
+    message_drop_fn: Option<mailbox::HewMessageDropFn>,
     /// Exponential backoff restart delay in milliseconds.
     restart_delay_ms: u64,
     /// Maximum restart delay (default 30 seconds).
@@ -879,6 +882,7 @@ impl Default for InternalChildSpec {
             overflow: OVERFLOW_DROP_NEW,
             coalesce_key_fn: None,
             coalesce_fallback: OVERFLOW_DROP_NEW,
+            message_drop_fn: None,
             restart_delay_ms: 0,
             max_restart_delay_ms: DEFAULT_MAX_RESTART_DELAY_MS,
             next_restart_time_ns: 0,
@@ -1711,6 +1715,7 @@ unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut
             budget: 0,
             arena_cap_bytes: spec.arena_cap_bytes,
             cycle_capable: spec.cycle_capable,
+            message_drop_fn: spec.message_drop_fn,
         };
         (
             opts,
@@ -1780,6 +1785,7 @@ unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut
             budget: 0,
             arena_cap_bytes: opts.arena_cap_bytes,
             cycle_capable: opts.cycle_capable,
+            message_drop_fn: opts.message_drop_fn,
         };
         // SAFETY: thunk_opts is valid; ownership of `res.state` transfers.
         unsafe { actor::hew_actor_spawn_opts_adopt(&raw const thunk_opts, res.state) }
@@ -2690,6 +2696,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
         overflow: sp.overflow,
         coalesce_key_fn: sp.coalesce_key_fn,
         coalesce_fallback: sp.coalesce_fallback,
+        message_drop_fn: sp.message_drop_fn,
         restart_delay_ms: 0,
         max_restart_delay_ms: DEFAULT_MAX_RESTART_DELAY_MS,
         next_restart_time_ns: 0,
@@ -2959,6 +2966,7 @@ mod tests {
                 overflow: OVERFLOW_DROP_NEW,
                 coalesce_key_fn: None,
                 coalesce_fallback: OVERFLOW_DROP_NEW,
+                message_drop_fn: None,
                 arena_cap_bytes: 0,
                 cycle_capable: 0,
                 on_crash: None,
@@ -4073,6 +4081,7 @@ mod tests {
                 overflow: OVERFLOW_DROP_NEW,
                 coalesce_key_fn: None,
                 coalesce_fallback: OVERFLOW_DROP_NEW,
+                message_drop_fn: None,
                 arena_cap_bytes: 0,
                 cycle_capable: 0,
                 on_crash: None,
@@ -4456,6 +4465,7 @@ mod tests {
                 overflow: OVERFLOW_DROP_NEW,
                 coalesce_key_fn: None,
                 coalesce_fallback: OVERFLOW_DROP_NEW,
+                message_drop_fn: None,
                 arena_cap_bytes: 0,
                 cycle_capable: 0,
                 on_crash: None,
@@ -5205,6 +5215,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
         overflow: sp.overflow,
         coalesce_key_fn: sp.coalesce_key_fn,
         coalesce_fallback: sp.coalesce_fallback,
+        message_drop_fn: sp.message_drop_fn,
         restart_delay_ms: 0,
         max_restart_delay_ms: DEFAULT_MAX_RESTART_DELAY_MS,
         next_restart_time_ns: 0,
@@ -6754,6 +6765,7 @@ mod pool_slot_tests {
             overflow: OVERFLOW_DROP_NEW,
             coalesce_key_fn: None,
             coalesce_fallback: OVERFLOW_DROP_NEW,
+            message_drop_fn: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
             on_crash: None,

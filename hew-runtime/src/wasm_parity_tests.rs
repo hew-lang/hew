@@ -24,6 +24,12 @@ unsafe extern "C" fn price_symbol_key(_msg_type: i32, data: *mut c_void, size: u
     u64::from_le_bytes(update.symbol)
 }
 
+static MESSAGE_DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+unsafe extern "C" fn message_drop_probe(_msg_type: i32, _data: *mut c_void, _size: usize) {
+    MESSAGE_DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+}
+
 #[derive(Debug, Eq, PartialEq)]
 struct CoalesceSnapshot {
     send_rcs: [i32; 2],
@@ -232,6 +238,80 @@ fn wasm_msg_type_coalesce_snapshot() -> MsgTypeCoalesceSnapshot {
     }
 }
 
+fn native_message_drop_count() -> usize {
+    MESSAGE_DROP_COUNT.store(0, Ordering::SeqCst);
+    let first = PriceUpdate {
+        symbol: *b"BTCUSD\0\0",
+        price: 1,
+    };
+    let second = PriceUpdate {
+        symbol: *b"ETHUSD\0\0",
+        price: 2,
+    };
+    // SAFETY: test owns the mailbox and drained node.
+    unsafe {
+        let mb = crate::mailbox::hew_mailbox_new_coalesce(1);
+        crate::mailbox::hew_mailbox_set_coalesce_config(
+            mb,
+            Some(price_symbol_key),
+            HewOverflowPolicy::DropOld,
+        );
+        crate::mailbox::hew_mailbox_set_message_drop_fn(mb, Some(message_drop_probe));
+        for payload in [first, second] {
+            assert_eq!(
+                crate::mailbox::hew_mailbox_send(
+                    mb,
+                    7,
+                    (&raw const payload).cast_mut().cast(),
+                    std::mem::size_of::<PriceUpdate>(),
+                ),
+                HewError::Ok as i32
+            );
+        }
+        let node = crate::mailbox::hew_mailbox_try_recv(mb);
+        crate::mailbox::hew_msg_node_free(node);
+        crate::mailbox::hew_mailbox_free(mb);
+    }
+    MESSAGE_DROP_COUNT.load(Ordering::SeqCst)
+}
+
+fn wasm_message_drop_count() -> usize {
+    MESSAGE_DROP_COUNT.store(0, Ordering::SeqCst);
+    let first = PriceUpdate {
+        symbol: *b"BTCUSD\0\0",
+        price: 1,
+    };
+    let second = PriceUpdate {
+        symbol: *b"ETHUSD\0\0",
+        price: 2,
+    };
+    // SAFETY: test owns the mailbox and drained node.
+    unsafe {
+        let mb = crate::mailbox_wasm::hew_mailbox_new_coalesce(1);
+        crate::mailbox_wasm::hew_mailbox_set_coalesce_config(
+            mb,
+            Some(price_symbol_key),
+            HewOverflowPolicy::DropOld,
+        );
+        crate::mailbox_wasm::hew_mailbox_set_message_drop_fn(mb, Some(message_drop_probe));
+        for payload in [first, second] {
+            assert_eq!(
+                crate::mailbox_wasm::hew_mailbox_send(
+                    mb,
+                    7,
+                    (&raw const payload).cast_mut().cast(),
+                    std::mem::size_of::<PriceUpdate>(),
+                ),
+                HewError::Ok as i32
+            );
+        }
+        let node = crate::mailbox_wasm::hew_mailbox_try_recv(mb);
+        crate::mailbox_wasm::hew_msg_node_free(node);
+        crate::mailbox_wasm::hew_mailbox_free(mb);
+    }
+    MESSAGE_DROP_COUNT.load(Ordering::SeqCst)
+}
+
 fn stub_wasm_actor(mailbox: *mut c_void) -> Box<HewActor> {
     Box::new(HewActor {
         sched_link_next: AtomicPtr::new(std::ptr::null_mut()),
@@ -363,6 +443,13 @@ fn coalesce_message_type_gate_matches_native_and_wasm() {
     };
     assert_eq!(native_msg_type_coalesce_snapshot(), expected);
     assert_eq!(wasm_msg_type_coalesce_snapshot(), expected);
+}
+
+#[test]
+fn coalesce_eviction_typed_drop_matches_native_and_wasm() {
+    let _guard = crate::runtime_test_guard();
+    assert_eq!(native_message_drop_count(), 1);
+    assert_eq!(wasm_message_drop_count(), 1);
 }
 
 #[test]

@@ -118,8 +118,7 @@ pub(crate) fn mir_diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'stat
         | hew_mir::MirDiagnosticKind::ContextBindingEscapes { .. }
         | hew_mir::MirDiagnosticKind::ClosurePairBorrowedStore { .. } => "E_MIR_CHECK",
         hew_mir::MirDiagnosticKind::NotYetImplemented { .. }
-        | hew_mir::MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported { .. }
-        | hew_mir::MirDiagnosticKind::MailboxOverflowCoalesceNotYetImplemented { .. } => {
+        | hew_mir::MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported { .. } => {
             "E_NOT_YET_IMPLEMENTED"
         }
         hew_mir::MirDiagnosticKind::RemotePayloadUnsupported { .. } => {
@@ -134,6 +133,7 @@ pub(crate) fn mir_diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'stat
         | hew_mir::MirDiagnosticKind::UnknownActorStateField { .. }
         | hew_mir::MirDiagnosticKind::ActorHandlerSymbolCollision { .. }
         | hew_mir::MirDiagnosticKind::ActorStateCloneClassificationFailed { .. }
+        | hew_mir::MirDiagnosticKind::MailboxOverflowCoalesceKeyFieldInvalid { .. }
         | hew_mir::MirDiagnosticKind::SelectArmNotImplemented { .. }
         | hew_mir::MirDiagnosticKind::UnresolvedStaticDispatchSubstitution { .. }
         | hew_mir::MirDiagnosticKind::StaticDispatchImplNotFound { .. }
@@ -562,8 +562,8 @@ fn mir_kind_name(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
         hew_mir::MirDiagnosticKind::ActorStateCloneClassificationFailed { .. } => {
             "ActorStateCloneClassificationFailed"
         }
-        hew_mir::MirDiagnosticKind::MailboxOverflowCoalesceNotYetImplemented { .. } => {
-            "MailboxOverflowCoalesceNotYetImplemented"
+        hew_mir::MirDiagnosticKind::MailboxOverflowCoalesceKeyFieldInvalid { .. } => {
+            "MailboxOverflowCoalesceKeyFieldInvalid"
         }
         hew_mir::MirDiagnosticKind::ActorProtocolDescriptorMissing { .. } => {
             "ActorProtocolDescriptorMissing"
@@ -649,7 +649,7 @@ fn mir_primary_site(kind: &hew_mir::MirDiagnosticKind) -> Option<hew_hir::SiteId
         | hew_mir::MirDiagnosticKind::ActorStateCloneClassificationFailed { .. }
         | hew_mir::MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported { .. }
         | hew_mir::MirDiagnosticKind::ActorProtocolDescriptorMissing { .. }
-        | hew_mir::MirDiagnosticKind::MailboxOverflowCoalesceNotYetImplemented { .. } => None,
+        | hew_mir::MirDiagnosticKind::MailboxOverflowCoalesceKeyFieldInvalid { .. } => None,
     }
 }
 
@@ -738,13 +738,12 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
         } => format!(
             "could not classify actor `{actor}` state field `{field_name}` for clone lowering: {reason}"
         ),
-        hew_mir::MirDiagnosticKind::MailboxOverflowCoalesceNotYetImplemented {
+        hew_mir::MirDiagnosticKind::MailboxOverflowCoalesceKeyFieldInvalid {
             actor,
             key_field,
+            reason,
         } => format!(
-            "actor `{actor}` declares `overflow coalesce({key_field})`, which is not yet \
-             implemented — the coalesce key-function ABI slice does not exist in codegen; \
-             use `drop_new`, `drop_old`, `block`, or `fail` instead"
+            "actor `{actor}` has invalid `overflow coalesce({key_field})`: {reason}"
         ),
         hew_mir::MirDiagnosticKind::ActorProtocolDescriptorMissing {
             actor,
@@ -892,7 +891,7 @@ fn mir_context_notes(diagnostic: &hew_mir::MirDiagnostic) -> Vec<String> {
         hew_mir::MirDiagnosticKind::ActorStateCloneClassificationFailed { field_index, .. } => {
             notes.push(format!("field index: {field_index}"));
         }
-        hew_mir::MirDiagnosticKind::MailboxOverflowCoalesceNotYetImplemented {
+        hew_mir::MirDiagnosticKind::MailboxOverflowCoalesceKeyFieldInvalid {
             key_field, ..
         } => {
             notes.push(format!("coalesce key field: {key_field}"));

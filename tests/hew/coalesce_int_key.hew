@@ -1,0 +1,47 @@
+//! Coalesce regression: integer keys replace in place and keep the newest
+//! payload without growing the logical queue beyond capacity.
+
+import std::testing;
+
+actor IntCoalescer {
+    var processed: i64 = 0;
+    var latest: i64 = -1;
+
+    mailbox 1 overflow coalesce(id) fallback drop_new;
+
+    receive fn update(id: i64, value: i64, pause: duration) {
+        sleep(pause);
+        processed = processed + 1;
+        latest = value;
+    }
+
+    receive fn count() -> i64 {
+        processed
+    }
+
+    receive fn value() -> i64 {
+        latest
+    }
+}
+
+#[test]
+fn coalesce_int_key_latest_wins() {
+    let worker = spawn IntCoalescer(processed: 0, latest: -1);
+
+    worker.update(0, 0, 150ms);
+    sleep(20ms);
+    worker.update(7, 1, 0ms);
+    worker.update(7, 2, 0ms);
+    worker.update(7, 3, 0ms);
+    worker.update(7, 4, 0ms);
+
+    sleep(350ms);
+    match await worker.count() {
+        Ok(value) => testing.assert_eq(value, 2),
+        Err(_) => testing.assert_true(false),
+    }
+    match await worker.value() {
+        Ok(value) => testing.assert_eq(value, 4),
+        Err(_) => testing.assert_true(false),
+    }
+}

@@ -26,6 +26,8 @@ use crate::set_last_error;
 
 /// Key extractor used by coalescing mailboxes.
 pub type HewCoalesceKeyFn = unsafe extern "C" fn(i32, *mut c_void, usize) -> u64;
+/// Generated typed destructor for one actor message payload.
+pub type HewMessageDropFn = unsafe extern "C" fn(i32, *mut c_void, usize);
 
 // ── Conditional no_mangle ───────────────────────────────────────────────
 //
@@ -44,6 +46,24 @@ macro_rules! wasm_no_mangle {
     };
 }
 
+unsafe fn msg_node_free_with_message_drop(
+    node: *mut HewMsgNode,
+    message_drop_fn: Option<HewMessageDropFn>,
+) {
+    if node.is_null() {
+        return;
+    }
+    // SAFETY: caller transfers exclusive ownership of `node`.
+    unsafe {
+        if (*node).envelope.is_null() {
+            if let Some(drop_fn) = message_drop_fn {
+                drop_fn((*node).msg_type, (*node).data, (*node).data_size);
+            }
+        }
+        msg_node_free(node);
+    }
+}
+
 #[cfg(test)]
 thread_local! {
     static FAIL_MAILBOX_ALLOC_ON_NTH: Cell<usize> = const { Cell::new(usize::MAX) };
@@ -56,6 +76,21 @@ struct MailboxAllocFailureGuard;
 impl Drop for MailboxAllocFailureGuard {
     fn drop(&mut self) {
         FAIL_MAILBOX_ALLOC_ON_NTH.with(|slot| slot.set(usize::MAX));
+    }
+}
+
+wasm_no_mangle! {
+    /// Register the typed destructor used for evicted copied payloads.
+    ///
+    /// # Safety
+    ///
+    /// `mb` must be valid and `drop_fn` must match the actor's message layouts.
+    pub unsafe extern "C" fn hew_mailbox_set_message_drop_fn(
+        mb: *mut HewMailboxWasm,
+        drop_fn: Option<HewMessageDropFn>,
+    ) {
+        // SAFETY: caller guarantees `mb` is valid.
+        unsafe { (*mb).message_drop_fn = drop_fn };
     }
 }
 
@@ -570,6 +605,8 @@ pub struct HewMailboxWasm {
     coalesce_key_fn: Option<HewCoalesceKeyFn>,
     /// Fallback policy used when coalesce finds no matching key.
     coalesce_fallback: HewOverflowPolicy,
+    /// Typed destructor for legacy copied payloads evicted before dispatch.
+    message_drop_fn: Option<HewMessageDropFn>,
     /// High-water mark: maximum `count` value observed.
     high_water_mark: i64,
     /// Whether the mailbox has been closed.
@@ -621,6 +658,7 @@ unsafe fn replace_node_payload(
     msg_type: i32,
     data: *const c_void,
     data_size: usize,
+    message_drop_fn: Option<HewMessageDropFn>,
 ) -> bool {
     // SAFETY: `node` is a valid queued node exclusively owned by the mailbox.
     unsafe {
@@ -633,7 +671,15 @@ unsafe fn replace_node_payload(
             libc::memcpy(new_buf, data, data_size);
         }
 
-        libc::free((*node).data);
+        if (*node).envelope.is_null() {
+            if let Some(drop_fn) = message_drop_fn {
+                drop_fn((*node).msg_type, (*node).data, (*node).data_size);
+            }
+            libc::free((*node).data);
+        } else {
+            hew_msg_envelope_release((*node).envelope);
+            (*node).envelope = ptr::null_mut();
+        }
         (*node).data = new_buf;
         (*node).msg_type = msg_type;
         (*node).data_size = data_size;
@@ -722,7 +768,7 @@ unsafe fn send_user_message_inner(
                 // Allocation succeeded — now safe to evict the oldest.
                 if let Some(old) = mb.user_queue.pop_front() {
                     // SAFETY: node was allocated by msg_node_alloc.
-                    unsafe { msg_node_free(old) };
+                    unsafe { msg_node_free_with_message_drop(old, mb.message_drop_fn) };
                     mb.count -= 1;
                 }
                 // SAFETY: node was just allocated and is exclusively owned.
@@ -743,12 +789,13 @@ unsafe fn send_user_message_inner(
                     .find(|&&node| {
                         // SAFETY: all queued nodes were allocated by msg_node_alloc.
                         unsafe {
-                            coalesce_message_key(
-                                mb.coalesce_key_fn,
-                                (*node).msg_type,
-                                (*node).data,
-                                (*node).data_size,
-                            ) == incoming_key
+                            (*node).msg_type == msg_type
+                                && coalesce_message_key(
+                                    mb.coalesce_key_fn,
+                                    (*node).msg_type,
+                                    (*node).data,
+                                    (*node).data_size,
+                                ) == incoming_key
                         }
                     })
                     .copied();
@@ -757,7 +804,9 @@ unsafe fn send_user_message_inner(
                     // `mb`, so reading its reply-channel field is valid.
                     let existing_reply_channel = unsafe { (*existing).reply_channel };
                     // SAFETY: `existing` remains owned by the mailbox queue.
-                    let ok = unsafe { replace_node_payload(existing, msg_type, data, size) };
+                    let ok = unsafe {
+                        replace_node_payload(existing, msg_type, data, size, mb.message_drop_fn)
+                    };
                     if !ok {
                         return SendOutcome::Oom;
                     }
@@ -793,7 +842,9 @@ unsafe fn send_user_message_inner(
                         // Allocation succeeded — now safe to evict the oldest.
                         if let Some(old) = mb.user_queue.pop_front() {
                             // SAFETY: node was allocated by msg_node_alloc.
-                            unsafe { msg_node_free(old) };
+                            unsafe {
+                                msg_node_free_with_message_drop(old, mb.message_drop_fn);
+                            };
                             mb.count -= 1;
                         }
                         // SAFETY: node was just allocated and is exclusively owned.
@@ -873,6 +924,7 @@ wasm_no_mangle! {
             overflow: HewOverflowPolicy::DropNew,
             coalesce_key_fn: None,
             coalesce_fallback: HewOverflowPolicy::DropOld,
+            message_drop_fn: None,
             high_water_mark: 0,
             closed: false,
             stop_signal_sent: false,
@@ -895,6 +947,7 @@ wasm_no_mangle! {
             overflow: HewOverflowPolicy::DropNew,
             coalesce_key_fn: None,
             coalesce_fallback: HewOverflowPolicy::DropOld,
+            message_drop_fn: None,
             high_water_mark: 0,
             closed: false,
             stop_signal_sent: false,
@@ -928,6 +981,7 @@ wasm_no_mangle! {
             overflow: policy,
             coalesce_key_fn: None,
             coalesce_fallback: HewOverflowPolicy::DropOld,
+            message_drop_fn: None,
             high_water_mark: 0,
             closed: false,
             stop_signal_sent: false,
@@ -2003,7 +2057,7 @@ mod tests {
             assert_eq!(
                 hew_mailbox_send(
                     mb,
-                    300,
+                    100,
                     (&raw const replacement).cast_mut().cast(),
                     size_of::<PriceUpdate>(),
                 ),
@@ -2012,7 +2066,7 @@ mod tests {
             assert_eq!(hew_mailbox_len(mb), 2);
 
             let node = hew_mailbox_try_recv(mb);
-            assert_eq!((*node).msg_type, 300);
+            assert_eq!((*node).msg_type, 100);
             let payload = (*node).data.cast::<PriceUpdate>();
             assert_eq!((*payload).symbol, 7);
             assert_eq!((*payload).price, 99);
@@ -2430,14 +2484,14 @@ mod tests {
                 0
             );
             assert_eq!(
-                hew_mailbox_try_push(mb, 300, (&raw const c).cast(), size_of::<PriceUpdate>()),
+                hew_mailbox_try_push(mb, 100, (&raw const c).cast(), size_of::<PriceUpdate>()),
                 3,
                 "coalesce try_push with matching key must return 3 (Coalesced)"
             );
             assert_eq!(hew_mailbox_len(mb), 2);
 
             let node = hew_mailbox_try_recv(mb);
-            assert_eq!((*node).msg_type, 300);
+            assert_eq!((*node).msg_type, 100);
             let payload = (*node).data.cast::<PriceUpdate>();
             assert_eq!((*payload).symbol, 7);
             assert_eq!((*payload).price, 99);

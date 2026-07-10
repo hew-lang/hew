@@ -327,6 +327,7 @@ stable = [
   "hew_mailbox_send_sys",
   "hew_mailbox_send_with_reply",
   "hew_mailbox_set_coalesce_config",
+  "hew_mailbox_set_message_drop_fn",
   "hew_mailbox_sys_len",
   "hew_mailbox_try_push",
   "hew_mailbox_try_recv",

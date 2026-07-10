@@ -119,6 +119,7 @@ fn spawn_pipeline() -> IrPipeline {
         cycle_capable: false,
         mailbox_capacity: None,
         overflow_policy: None,
+        coalesce_key_plan: None,
         handlers: vec![ActorHandlerLayout {
             name: "handle_ping".to_string(),
             symbol: handler_symbol,

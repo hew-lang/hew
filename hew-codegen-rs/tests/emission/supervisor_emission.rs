@@ -66,6 +66,7 @@ fn supervisor_pipeline() -> IrPipeline {
         cycle_capable: false,
         mailbox_capacity: None,
         overflow_policy: None,
+        coalesce_key_plan: None,
         handlers: vec![],
         state_clone_fn_symbol: None,
         state_drop_fn_symbol: None,
@@ -369,6 +370,7 @@ fn on_crash_pipeline() -> IrPipeline {
         cycle_capable: false,
         mailbox_capacity: None,
         overflow_policy: None,
+        coalesce_key_plan: None,
         handlers: vec![],
         state_clone_fn_symbol: None,
         state_drop_fn_symbol: None,
@@ -577,11 +579,11 @@ fn supervisor_bootstrap_populates_cycle_capable_child_spec_bit() {
 
     let ir = emit_to_string(&pipeline, "cycle-capable-child");
     assert!(
-        ir.contains("child_spec_0_f8"),
-        "expected child spec field 8 GEP for cycle_capable; got:\n{ir}"
+        ir.contains("child_spec_0_f10"),
+        "expected child spec field 10 GEP for cycle_capable; got:\n{ir}"
     );
     assert!(
-        ir.contains("store i32 1, ptr %child_spec_0_f8"),
+        ir.contains("store i32 1, ptr %child_spec_0_f10"),
         "expected child spec cycle_capable store to be 1; got:\n{ir}"
     );
 }
@@ -688,6 +690,7 @@ fn nested_supervisor_pipeline() -> IrPipeline {
         cycle_capable: false,
         mailbox_capacity: None,
         overflow_policy: None,
+        coalesce_key_plan: None,
         handlers: vec![],
         state_clone_fn_symbol: None,
         state_drop_fn_symbol: None,
@@ -917,6 +920,7 @@ fn pool_then_static_pipeline() -> IrPipeline {
         cycle_capable: false,
         mailbox_capacity: None,
         overflow_policy: None,
+        coalesce_key_plan: None,
         handlers: vec![],
         state_clone_fn_symbol: None,
         state_drop_fn_symbol: None,

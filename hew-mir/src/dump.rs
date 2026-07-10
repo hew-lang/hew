@@ -1563,9 +1563,13 @@ fn render_diag_kind(kind: &MirDiagnosticKind) -> String {
         } => format!(
             "ActorStateCloneClassificationFailed {actor}.{field_index}({field_name}) {reason:?}"
         ),
-        MirDiagnosticKind::MailboxOverflowCoalesceNotYetImplemented { actor, key_field } => {
-            format!("MailboxOverflowCoalesceNotYetImplemented {actor} key_field={key_field}")
-        }
+        MirDiagnosticKind::MailboxOverflowCoalesceKeyFieldInvalid {
+            actor,
+            key_field,
+            reason,
+        } => format!(
+            "MailboxOverflowCoalesceKeyFieldInvalid {actor} key_field={key_field} {reason:?}"
+        ),
         MirDiagnosticKind::ActorProtocolDescriptorMissing {
             actor,
             handler_count,

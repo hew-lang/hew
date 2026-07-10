@@ -89,6 +89,7 @@ fn spawn_capture_actor() -> *mut hew_runtime::actor::HewActor {
         overflow: 0,
         coalesce_key_fn: None,
         coalesce_fallback: 0,
+        message_drop_fn: None,
         budget: 0,
         arena_cap_bytes: 0,
         cycle_capable: 0,
@@ -203,6 +204,7 @@ fn scenario_attach_refuses_eviction_mailbox() {
             overflow: 2, // HewOverflowPolicy::DropOld
             coalesce_key_fn: None,
             coalesce_fallback: 0,
+            message_drop_fn: None,
             budget: 0,
             arena_cap_bytes: 0,
             cycle_capable: 0,
@@ -233,6 +235,7 @@ fn scenario_attach_refuses_eviction_mailbox() {
             overflow: 4, // HewOverflowPolicy::Coalesce
             coalesce_key_fn: None,
             coalesce_fallback: 0,
+            message_drop_fn: None,
             budget: 0,
             arena_cap_bytes: 0,
             cycle_capable: 0,
@@ -262,6 +265,7 @@ fn scenario_attach_refuses_eviction_mailbox() {
             overflow: 1, // HewOverflowPolicy::DropNew
             coalesce_key_fn: None,
             coalesce_fallback: 0,
+            message_drop_fn: None,
             budget: 0,
             arena_cap_bytes: 0,
             cycle_capable: 0,
@@ -474,6 +478,7 @@ fn scenario_echo_round_trips_through_actor() {
         overflow: 0,
         coalesce_key_fn: None,
         coalesce_fallback: 0,
+        message_drop_fn: None,
         budget: 0,
         arena_cap_bytes: 0,
         cycle_capable: 0,

@@ -85,6 +85,7 @@ fn spawn_pipeline(
         cycle_capable,
         mailbox_capacity: None,
         overflow_policy: None,
+        coalesce_key_plan: None,
         handlers: vec![],
         state_clone_fn_symbol: None,
         state_drop_fn_symbol: None,

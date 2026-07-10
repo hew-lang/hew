@@ -31,12 +31,13 @@ use hew_types::{
 use crate::dataflow;
 use crate::model::{
     ActorHandlerLayout, ActorLayout, ActorStateLoadMode, BasicBlock, BlockKind, CheckedMirFunction,
-    ClosureEnvAllocation, ClosureEnvFieldInit, ClosureEnvFieldOwnership, CmpPred, DecisionFact,
-    DropKind, DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, FieldOffset,
-    FloatWidth, Instr, IntArithOp, IntSignedness, IrPipeline, JoinBranch, LambdaCapture, MirCheck,
-    MirConst, MirConstValue, MirDiagnostic, MirDiagnosticKind, MirStatement, Place, PointerWidth,
-    RawMirFunction, SelectArm, SelectArmKind, SourceOrigin, SpawnEnvFieldOwnership, Strategy,
-    SuspendKind, Terminator, ThirFunction, TraitObjectStorage, TrapKind,
+    ClosureEnvAllocation, ClosureEnvFieldInit, ClosureEnvFieldOwnership, CmpPred, CoalesceKeyEntry,
+    CoalesceKeyKind, CoalesceKeyPlan, DecisionFact, DropKind, DropPlan, ElabBlock, ElabDrop,
+    ElaboratedMirFunction, ExitPath, FieldOffset, FloatWidth, Instr, IntArithOp, IntSignedness,
+    IrPipeline, JoinBranch, LambdaCapture, MirCheck, MirConst, MirConstValue, MirDiagnostic,
+    MirDiagnosticKind, MirStatement, Place, PointerWidth, RawMirFunction, SelectArm, SelectArmKind,
+    SourceOrigin, SpawnEnvFieldOwnership, Strategy, SuspendKind, Terminator, ThirFunction,
+    TraitObjectStorage, TrapKind,
 };
 use crate::ownership::FailClosedReason;
 use crate::ownership::LayoutClass;
@@ -1202,6 +1203,140 @@ pub fn lower_hir_module_with_facts(
     actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
     pointer_width: PointerWidth,
 ) -> IrPipeline {
+    fn resolve_coalesce_key_plan(
+        actor: &HirActorDecl,
+        handlers: &[ActorHandlerLayout],
+        diagnostics: &mut Vec<MirDiagnostic>,
+    ) -> Option<CoalesceKeyPlan> {
+        let Some(hew_parser::ast::OverflowPolicy::Coalesce {
+            key_field,
+            fallback,
+        }) = &actor.overflow_policy
+        else {
+            return None;
+        };
+
+        let mut entries = Vec::new();
+        for handler in &actor.receive_handlers {
+            let Some((param_index, param)) = handler
+                .params
+                .iter()
+                .enumerate()
+                .find(|(_, param)| param.name == *key_field)
+            else {
+                // SHIM(Q244): strict all-handlers key_field rejection pending user decision; WHEN=Q244 answered; WHAT=reject-at-check if any handler message lacks key_field
+                continue;
+            };
+            let Some(kind) = coalesce_key_kind(&param.ty) else {
+                diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::MailboxOverflowCoalesceKeyFieldInvalid {
+                        actor: actor.name.clone(),
+                        key_field: key_field.clone(),
+                        reason: format!(
+                            "handler `{}` parameter `{key_field}` has unsupported type `{}`; \
+                             rc1 coalesce keys must be integer, bool, or string",
+                            handler.name,
+                            param.ty.user_facing()
+                        ),
+                    },
+                    note: format!(
+                        "actor `{}` cannot generate a coalesce key for handler `{}`",
+                        actor.name, handler.name
+                    ),
+                });
+                return None;
+            };
+            let Some(layout) = handlers.iter().find(|layout| layout.name == handler.name) else {
+                diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::MailboxOverflowCoalesceKeyFieldInvalid {
+                        actor: actor.name.clone(),
+                        key_field: key_field.clone(),
+                        reason: format!(
+                            "handler `{}` has no MIR handler layout for key extraction",
+                            handler.name
+                        ),
+                    },
+                    note: format!(
+                        "actor `{}` cannot generate a total coalesce key plan",
+                        actor.name
+                    ),
+                });
+                return None;
+            };
+            let Ok(param_index) = u32::try_from(param_index) else {
+                diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::MailboxOverflowCoalesceKeyFieldInvalid {
+                        actor: actor.name.clone(),
+                        key_field: key_field.clone(),
+                        reason: format!(
+                            "handler `{}` parameter index exceeds the codegen ABI limit",
+                            handler.name
+                        ),
+                    },
+                    note: format!(
+                        "actor `{}` cannot generate a coalesce key for handler `{}`",
+                        actor.name, handler.name
+                    ),
+                });
+                return None;
+            };
+            entries.push(CoalesceKeyEntry {
+                msg_type: layout.msg_type,
+                param_index,
+                kind,
+            });
+        }
+
+        if entries.is_empty() {
+            diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::MailboxOverflowCoalesceKeyFieldInvalid {
+                    actor: actor.name.clone(),
+                    key_field: key_field.clone(),
+                    reason: "no receive handler declares that parameter".to_string(),
+                },
+                note: format!(
+                    "actor `{}` cannot generate a coalesce key function for `{key_field}`",
+                    actor.name
+                ),
+            });
+            return None;
+        }
+
+        Some(CoalesceKeyPlan {
+            entries,
+            fallback: overflow_fallback_to_i32(fallback.as_ref()),
+        })
+    }
+
+    fn coalesce_key_kind(ty: &ResolvedTy) -> Option<CoalesceKeyKind> {
+        let width = match ty {
+            ResolvedTy::I8 | ResolvedTy::U8 => Some(8),
+            ResolvedTy::I16 | ResolvedTy::U16 => Some(16),
+            ResolvedTy::I32 | ResolvedTy::U32 => Some(32),
+            ResolvedTy::I64 | ResolvedTy::U64 => Some(64),
+            ResolvedTy::Isize | ResolvedTy::Usize => u8::try_from(usize::BITS).ok(),
+            _ => None,
+        };
+        if let Some(width) = width {
+            return Some(CoalesceKeyKind::IntZext { width });
+        }
+        match ty {
+            ResolvedTy::Bool => Some(CoalesceKeyKind::BoolZext),
+            ResolvedTy::String => Some(CoalesceKeyKind::StringHash),
+            _ => None,
+        }
+    }
+
+    fn overflow_fallback_to_i32(fallback: Option<&hew_parser::ast::OverflowFallback>) -> i32 {
+        use hew_parser::ast::OverflowFallback;
+        match fallback {
+            Some(OverflowFallback::Block) => 0,
+            None | Some(OverflowFallback::DropNew) => 1,
+            Some(OverflowFallback::DropOld) => 2,
+            Some(OverflowFallback::Fail) => 3,
+        }
+    }
+
     // The checker stamps `actor_send_aliasing` with a per-module `SpanKey`
     // index (0 = root, N = N-th non-root module), but MIR looks each send up
     // by `SpanKey::from(&arg.span)` (module_idx = 0) because post-flatten HIR
@@ -1801,31 +1936,8 @@ pub fn lower_hir_module_with_facts(
                 }
             }
         };
-        // `overflow coalesce(key)` genuinely parses and type-checks,
-        // but codegen has no coalesce key-function ABI slice yet. Threading
-        // a bare `Coalesce` tag through `HewOverflowPolicy` without a key
-        // function would silently miscarry the declared policy — fail
-        // closed here with an honest NYI diagnostic instead. The layout
-        // still carries the declared policy verbatim (never remapped) so a
-        // future codegen slice can pick it up unchanged once the ABI
-        // exists; only the diagnostic gates compilation today.
-        if let Some(hew_parser::ast::OverflowPolicy::Coalesce { key_field, .. }) =
-            &actor.overflow_policy
-        {
-            diagnostics.push(crate::model::MirDiagnostic {
-                kind: crate::model::MirDiagnosticKind::MailboxOverflowCoalesceNotYetImplemented {
-                    actor: actor.name.clone(),
-                    key_field: key_field.clone(),
-                },
-                note: format!(
-                    "actor `{}` declares `overflow coalesce({key_field})`; the coalesce \
-                     key-function slice is not yet implemented in codegen — declaring a \
-                     policy that would be silently miscarried is a hard error, not a \
-                     silent remap to another overflow policy",
-                    actor.name
-                ),
-            });
-        }
+        let handlers = lower_actor_handler_layouts(actor);
+        let coalesce_key_plan = resolve_coalesce_key_plan(actor, &handlers, &mut diagnostics);
         // Fail closed when receive handlers exist but no protocol descriptor
         // was attached: `lower_actor_handler_layouts` would fall back to the
         // `i32::MAX` sentinel for EVERY handler — a duplicate-switch-case
@@ -1913,7 +2025,8 @@ pub fn lower_hir_module_with_facts(
             cycle_capable: actor.cycle_capable,
             mailbox_capacity: actor.mailbox_capacity,
             overflow_policy: actor.overflow_policy.clone(),
-            handlers: lower_actor_handler_layouts(actor),
+            coalesce_key_plan,
+            handlers,
             state_clone_fn_symbol: clone_sym,
             state_drop_fn_symbol: drop_sym,
             state_field_clone_kinds: clone_kinds,

@@ -3758,8 +3758,6 @@ actor MyActor {
 }
 ```
 
-> **Note:** The `coalesce` policy is planned for a future release and is not yet implemented.
-
 ### 6.2 Overflow Policies
 
 | Policy               | Behaviour when mailbox is full                                       |

@@ -170,6 +170,10 @@ fn canonical_names_mirror_producer_and_consumer() {
 /// `event_type` resolves to the closed taxonomy and that the canonical
 /// events for the exercised scenario actually appeared.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the HewChildSpec coalesce ABI fields extend an existing linear integration setup"
+)]
 fn v05_concurrency_program_has_no_unknown_trace_events() {
     const STRATEGY_ONE_FOR_ONE: i32 = 0;
     const RESTART_PERMANENT: i32 = 0;
@@ -201,6 +205,9 @@ fn v05_concurrency_program_has_no_unknown_trace_events() {
             restart_policy: RESTART_PERMANENT,
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
+            coalesce_key_fn: None,
+            coalesce_fallback: OVERFLOW_DROP_NEW,
+            message_drop_fn: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
             on_crash: None,

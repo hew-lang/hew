@@ -23,8 +23,8 @@ use inkwell::{AddressSpace, IntPredicate};
 
 use hew_hir::mangle_dotted_name;
 use hew_mir::{
-    ActorLayout, IoHandleKind, LambdaEnvFieldDrop, Place, SpawnEnvFieldOwnership,
-    StateFieldCloneKind,
+    model::CoalesceKeyKind, ActorLayout, IoHandleKind, LambdaEnvFieldDrop, Place,
+    SpawnEnvFieldOwnership, StateFieldCloneKind,
 };
 use hew_runtime::internal::types::HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH;
 use hew_types::{BuiltinType, ResolvedTy};
@@ -2284,6 +2284,272 @@ pub(crate) fn emit_actor_terminate_trampoline<'ctx>(
     Ok(())
 }
 
+pub(crate) fn coalesce_key_fn_name(actor_name: &str) -> String {
+    format!("__hew_coalesce_key_{}", mangle_dotted_name(actor_name))
+}
+
+pub(crate) fn message_drop_fn_name(actor_name: &str) -> String {
+    format!("__hew_message_drop_{}", mangle_dotted_name(actor_name))
+}
+
+/// Emit the runtime-registered key extractor for one coalescing actor.
+///
+/// The callback rebuilds the same anonymous payload struct used by
+/// `emit_actor_dispatch_trampoline`, so sender packing, dispatch unpacking, and
+/// key extraction share one layout authority.
+pub(crate) fn emit_coalesce_key_fn<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    layout: &ActorLayout,
+    record_layouts: &RecordLayoutMap<'ctx>,
+) -> CodegenResult<FunctionValue<'ctx>> {
+    let plan = layout.coalesce_key_plan.as_ref().ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "actor `{}` requested coalesce key emission without a MIR key plan",
+            layout.name
+        ))
+    })?;
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i32_ty = ctx.i32_type();
+    let i64_ty = ctx.i64_type();
+    let size_ty = runtime_size_ty(ctx, llvm_mod);
+    let fn_name = coalesce_key_fn_name(&layout.name);
+    let fn_ty = i64_ty.fn_type(&[i32_ty.into(), ptr_ty.into(), size_ty.into()], false);
+    let key_fn = llvm_mod.add_function(&fn_name, fn_ty, Some(Linkage::Internal));
+    let builder = ctx.create_builder();
+    let entry = ctx.append_basic_block(key_fn, "entry");
+    let default_bb = ctx.append_basic_block(key_fn, "unkeyed_msg_type");
+    builder.position_at_end(entry);
+
+    let msg_type = key_fn
+        .get_nth_param(0)
+        .ok_or_else(|| CodegenError::FailClosed("coalesce key fn missing msg_type".into()))?
+        .into_int_value();
+    let payload = key_fn
+        .get_nth_param(1)
+        .ok_or_else(|| CodegenError::FailClosed("coalesce key fn missing payload".into()))?
+        .into_pointer_value();
+
+    let mut cases = Vec::with_capacity(plan.entries.len());
+    for entry in &plan.entries {
+        let bb = ctx.append_basic_block(key_fn, &format!("msg_{}", entry.msg_type));
+        cases.push((i32_ty.const_int(entry.msg_type as u64, false), bb));
+    }
+    builder
+        .build_switch(msg_type, default_bb, &cases)
+        .llvm_ctx("coalesce key msg_type switch")?;
+
+    for (entry, (_, bb)) in plan.entries.iter().zip(cases.iter()) {
+        builder.position_at_end(*bb);
+        let handler = layout
+            .handlers
+            .iter()
+            .find(|handler| handler.msg_type == entry.msg_type)
+            .ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "coalesce key plan for actor `{}` references unknown msg_type {}",
+                    layout.name, entry.msg_type
+                ))
+            })?;
+        let param_index = usize::try_from(entry.param_index).map_err(|_| {
+            CodegenError::FailClosed(format!(
+                "coalesce key param index {} does not fit usize",
+                entry.param_index
+            ))
+        })?;
+        let param_ty = handler.param_tys.get(param_index).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "coalesce key plan for actor `{}` handler `{}` references param {} of {}",
+                layout.name,
+                handler.name,
+                param_index,
+                handler.param_tys.len()
+            ))
+        })?;
+        let field_ty = resolve_ty(ctx, param_ty, record_layouts)?;
+        let field_ptr = if handler.param_tys.len() > 1 {
+            let mut packed_field_tys = Vec::with_capacity(handler.param_tys.len());
+            for ty in &handler.param_tys {
+                packed_field_tys.push(resolve_ty(ctx, ty, record_layouts)?);
+            }
+            let packed_st = ctx.struct_type(&packed_field_tys, false);
+            builder
+                .build_struct_gep(
+                    packed_st,
+                    payload,
+                    entry.param_index,
+                    "coalesce_key_field_ptr",
+                )
+                .llvm_ctx("coalesce key packed field gep")?
+        } else {
+            if entry.param_index != 0 {
+                return Err(CodegenError::FailClosed(format!(
+                    "single-parameter handler `{}` has coalesce key index {}",
+                    handler.name, entry.param_index
+                )));
+            }
+            payload
+        };
+        let loaded = builder
+            .build_load(field_ty, field_ptr, "coalesce_key_field")
+            .llvm_ctx("coalesce key field load")?;
+        let key = match entry.kind {
+            CoalesceKeyKind::IntZext { .. } | CoalesceKeyKind::BoolZext => {
+                let value = loaded.into_int_value();
+                match value.get_type().get_bit_width() {
+                    0..=63 => builder
+                        .build_int_z_extend(value, i64_ty, "coalesce_key_zext")
+                        .llvm_ctx("coalesce key integer zext")?,
+                    64 => value,
+                    width => {
+                        return Err(CodegenError::FailClosed(format!(
+                            "coalesce key integer field for actor `{}` has unsupported LLVM width {width}",
+                            layout.name
+                        )));
+                    }
+                }
+            }
+            CoalesceKeyKind::StringHash => {
+                let string_ptr = loaded.into_pointer_value();
+                let hash_fn = llvm_mod
+                    .get_function("hew_string_hash_fnv1a")
+                    .unwrap_or_else(|| {
+                        llvm_mod.add_function(
+                            "hew_string_hash_fnv1a",
+                            i64_ty.fn_type(&[ptr_ty.into()], false),
+                            Some(Linkage::External),
+                        )
+                    });
+                builder
+                    .build_call(hash_fn, &[string_ptr.into()], "coalesce_string_hash")
+                    .llvm_ctx("coalesce string hash call")?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "hew_string_hash_fnv1a returned void in coalesce key fn".into(),
+                        )
+                    })?
+                    .into_int_value()
+            }
+        };
+        builder
+            .build_return(Some(&key))
+            .llvm_ctx("coalesce key return")?;
+    }
+
+    builder.position_at_end(default_bb);
+    // D3/Q244 shim: handlers omitted from the MIR plan must not accidentally
+    // coalesce by msg_type alone. Legacy copied payloads have distinct queue and
+    // sender addresses, so pointer identity disables matching for those types.
+    let default_key = builder
+        .build_ptr_to_int(payload, i64_ty, "unkeyed_payload_identity")
+        .llvm_ctx("coalesce unkeyed payload identity")?;
+    builder
+        .build_return(Some(&default_key))
+        .llvm_ctx("coalesce unkeyed return")?;
+    Ok(key_fn)
+}
+
+/// Emit a per-actor typed payload destructor for mailbox eviction legs.
+///
+/// Dispatch moves owned fields out before freeing a consumed node, so this
+/// callback is registered only on eviction/replacement paths where dispatch
+/// will never run.
+pub(crate) fn emit_actor_message_drop_fn<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    layout: &ActorLayout,
+    record_layouts: &RecordLayoutMap<'ctx>,
+    mir_record_layouts: &[hew_mir::RecordLayout],
+    enum_layouts: &[hew_mir::EnumLayout],
+) -> CodegenResult<FunctionValue<'ctx>> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i32_ty = ctx.i32_type();
+    let size_ty = runtime_size_ty(ctx, llvm_mod);
+    let fn_name = message_drop_fn_name(&layout.name);
+    let drop_fn = llvm_mod.add_function(
+        &fn_name,
+        ctx.void_type()
+            .fn_type(&[i32_ty.into(), ptr_ty.into(), size_ty.into()], false),
+        Some(Linkage::Internal),
+    );
+    let builder = ctx.create_builder();
+    let entry = ctx.append_basic_block(drop_fn, "entry");
+    let default_bb = ctx.append_basic_block(drop_fn, "unknown_msg_type");
+    builder.position_at_end(entry);
+    let msg_type = drop_fn
+        .get_nth_param(0)
+        .ok_or_else(|| CodegenError::FailClosed("message drop fn missing msg_type".into()))?
+        .into_int_value();
+    let payload = drop_fn
+        .get_nth_param(1)
+        .ok_or_else(|| CodegenError::FailClosed("message drop fn missing payload".into()))?
+        .into_pointer_value();
+
+    let mut cases = Vec::with_capacity(layout.handlers.len());
+    for handler in &layout.handlers {
+        let bb = ctx.append_basic_block(drop_fn, &format!("msg_{}", handler.msg_type));
+        cases.push((i32_ty.const_int(handler.msg_type as u64, false), bb));
+    }
+    builder
+        .build_switch(msg_type, default_bb, &cases)
+        .llvm_ctx("message drop msg_type switch")?;
+
+    for (handler, (_, bb)) in layout.handlers.iter().zip(cases.iter()) {
+        builder.position_at_end(*bb);
+        if handler.param_tys.is_empty() {
+            builder
+                .build_return(None)
+                .llvm_ctx("unit message drop return")?;
+            continue;
+        }
+
+        let mut field_tys = Vec::with_capacity(handler.param_tys.len());
+        let mut field_kinds = Vec::with_capacity(handler.param_tys.len());
+        for param_ty in &handler.param_tys {
+            field_tys.push(resolve_ty(ctx, param_ty, record_layouts)?);
+            let mut visited = HashSet::new();
+            field_kinds.push(
+                hew_mir::classify_state_field_with_enum_layouts(
+                    param_ty,
+                    mir_record_layouts,
+                    enum_layouts,
+                    &mut visited,
+                )
+                .map_err(|error| {
+                    CodegenError::FailClosed(format!(
+                        "actor `{}` handler `{}` payload type `{param_ty:?}` is not drop-classifiable: {error}",
+                        layout.name, handler.name
+                    ))
+                })?,
+            );
+        }
+        let payload_struct = ctx.struct_type(&field_tys, false);
+        let helper_name = format!(
+            "{}_{}",
+            message_drop_fn_name(&layout.name),
+            handler.msg_type
+        );
+        let helper = llvm_mod.add_function(
+            &helper_name,
+            ctx.void_type().fn_type(&[ptr_ty.into()], false),
+            Some(Linkage::Internal),
+        );
+        emit_aggregate_drop_inplace_body(ctx, llvm_mod, helper, payload_struct, &field_kinds)?;
+        builder
+            .build_call(helper, &[payload.into()], "drop_message_payload")
+            .llvm_ctx("message payload drop helper call")?;
+        builder.build_return(None).llvm_ctx("message drop return")?;
+    }
+
+    builder.position_at_end(default_bb);
+    builder
+        .build_return(None)
+        .llvm_ctx("unknown message drop return")?;
+    Ok(drop_fn)
+}
+
 pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
@@ -2468,6 +2734,7 @@ pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
         let bb = ctx.append_basic_block(dispatch_fn, &format!("msg_{}", handler.msg_type));
         cases.push((i32_ty.const_int(handler.msg_type as u64, false), bb));
     }
+
     // M-7-R: route `SYS_MSG_EXIT` (103) to the actor's `#[on(exit)]` hook when
     // one is declared. The case block (emitted after the handler arms) unpacks
     // the `ExitMessage { crashed_actor_id: u64, reason: i32, crash_kind: i32 }`

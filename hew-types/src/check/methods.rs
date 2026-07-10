@@ -1776,8 +1776,35 @@ impl Checker {
             return;
         }
         if let Some(c_symbol) = self.module_registry.resolve_handle_method(name, method) {
-            self.record_runtime_method_call_rewrite(span, c_symbol);
+            // Only a genuine fieldless `#[opaque]` runtime handle — where the
+            // receiver value IS the runtime pointer — may be rewritten to a
+            // direct extern call that passes the receiver as the handle
+            // argument. A fielded `#[resource]` wrapper (e.g.
+            // `regex.Pattern { handle }`) registers its thin-forward methods for
+            // imported-signature resolution only; rewriting it would pass the
+            // whole struct by value to a pointer-typed extern
+            // (`hew_regex_is_match(%Pattern, …)`), and for a handle-returning
+            // method (`clone -> Pattern`) a bare rewrite cannot reconstruct the
+            // wrapper from the extern's inner-handle return. Those dispatch
+            // through their real impl body, which forwards `self.handle` and
+            // rebuilds the wrapper. This is the `is_handle_type` gate the
+            // wrapper-registration path documents but must actually enforce here.
+            if self.receiver_is_opaque_handle(name) {
+                self.record_runtime_method_call_rewrite(span, c_symbol);
+            }
         }
+    }
+
+    /// True when `name` (qualified `regex.PatternHandle` or bare `Listener`)
+    /// resolves to a fieldless `#[opaque]` runtime handle: the receiver value is
+    /// itself the runtime pointer, so a handle-method call is safe to rewrite to
+    /// a direct extern that takes the receiver as the handle argument. False for
+    /// a fielded `#[resource]` wrapper — whose qualified name is not in the
+    /// opaque `handle_types` set and whose short name matches no fieldless
+    /// handle — so its methods keep dispatching through their real impl body.
+    fn receiver_is_opaque_handle(&self, name: &str) -> bool {
+        self.module_registry.is_handle_type(name)
+            || self.module_registry.qualify_handle_type(name).is_some()
     }
 
     pub(super) fn record_module_qualified_stdlib_call_rewrite_if_any(

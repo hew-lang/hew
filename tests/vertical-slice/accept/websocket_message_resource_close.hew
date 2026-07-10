@@ -1,0 +1,9 @@
+import std::net::websocket;
+
+fn close_message(value: websocket.Message) {
+    value.close();
+}
+
+fn main() -> i64 {
+    0
+}

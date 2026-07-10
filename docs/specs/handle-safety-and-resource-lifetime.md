@@ -262,16 +262,25 @@ which mechanism applies and the order of the per-handle migration PRs.
 | Module | Type | Current release | Tier | Mechanism | Migration order | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | `std/text/regex` | `Pattern` | `close()` | 1 — per-call resource | C (affine) + H (drop table) | **1 (calibration pilot) — landed** | Smallest blast radius; no streaming; no state machine. `Pattern` is `#[resource]` with an opaque `handle` field; scope-exit drop calls `close()`, which frees the handle. Value-position `re"..."` literals clone the module-init-compiled handle on load (`hew-codegen-rs/src/runtime_abi.rs` `F::RegexHandle`), so each binding owns an independent handle and closes exactly once. |
-| `std/net/url` | `Url` | `free()` | 1 — per-call resource | C + H | 2 | Read-mostly; no streaming. |
-| `std/encoding/json` | `Value` | `free()` | 1 — per-call resource (with field-alias hazard) | C + H, requires `field-alias-fail-closed` enforcement to be live | 3 | Recursive ownership: every `get_field`/`array_get` returns a new owned `Value`; affine drop of the parent must not fire while a child is live. The move-checker substrate (issue #1399) must publish FieldAlias before this PR ships. |
-| `std/net/http_client` | `Response` | `free()` | 1 — per-call resource | C + H | 4 | One-shot; not streaming. |
-| `std/net/http` | `Request` | `free()` | 2 — per-recv allocation inside an actor scope | C + H + I (actor cleanup hook) | 5 | Lives inside a `receive fn` body; actor shutdown hook must release any in-flight `Request` whose handler did not return. |
+| `std/path` | `GlobResult` | `close()` | 1 — per-call resource | C + H | **B-1 safe set — landed** | Independent glob-result allocation; no child-transfer methods. |
+| `std/semaphore` | `Semaphore` | `close()` | 1 — per-call resource | C + H | **B-1 safe set — landed** | Independent runtime allocation; acquire/release borrow the handle. |
+| `std/deque` | `Deque` | `close()` | 1 — per-call resource | C + H | **B-1 safe set — landed** | Stores `i64` values only; no child handle transfer. |
+| `std/time/cron` | `Expr` | `close()` | 1 — per-call resource | C + H | **B-1 safe set — landed** | Parsed expression is an independent allocation. |
+| `std/net/url` | `Url` | `close()` | 1 — per-call resource | C + H | **B-1 safe set — landed** | Read-mostly; `resolve` returns a new independent URL allocation. |
+| `std/encoding/protobuf` | `Message` | `close()` | 1 — per-call resource | C + H | **B-1 safe set — landed** | Scalar/string field setters do not consume another message handle. |
+| `std/encoding/xml` | `Node` | `close()` | 1 — per-call resource | C + H | **B-1 safe set — landed** | `get_child` returns a cloned node allocation; no child-transfer builder exists. |
+| `std/encoding/json` | `Value` | `free()` | deferred — ownership transfer | blocked on transfer/disarm semantics | **deferred** | `with(key, child)` / `push(child)` consume the child natively with `Box::from_raw`; direct resource migration would double-free. |
+| `std/encoding/toml` | `Value` | `free()` | deferred — ownership transfer | blocked on transfer/disarm semantics | **deferred** | `with(key, child)` / `push(child)` consume the child natively with `Box::from_raw`. |
+| `std/encoding/yaml` | `Value` | `free()` | deferred — ownership transfer | blocked on transfer/disarm semantics | **deferred** | `with(key, child)` / `push(child)` consume the child natively with `Box::from_raw`. |
+| `std/net/http_client` | `Response` | `close()` | 1 — per-call resource | C + H | **B-1 safe set — landed** | One-shot independent response allocation. |
+| `std/net/http` | `Request` | `close()` | 2 — per-recv allocation inside an actor scope | C + H | **B-1 safe set — landed** | Request allocation has a single release path and no child handle transfer. |
 | `std/net/http` | `Server` | `close()` | 3 — long-lived server scope | C + H + I (session/actor cleanup hook) | 6 | Process-or-actor scoped; `hew_runtime_cleanup` must release any live `Server` (LESSONS `cleanup-all-exits`). |
 | `std/net/http` | response sink (`body.close()`) | `close()` | 2 — streaming sink | C + H, with explicit-finish protocol kept as opt-in (G `defer`) for conditional flush | 6 (with `Server`) | The sink represents an in-progress response; finishing the response is a *protocol* event, not just a release. Affine drop produces a default flush; `defer body.close();` permits explicit early finish. |
 | `std/net/tls` | `TlsStream` | `close()` | 2 — streaming connection | C + H + I (actor cleanup) | 7 | Same shape as `Server`. |
 | `std/net/websocket` | `Conn` | `close()` | 2 — streaming connection | C + H + I | 8 | Holds the read loop; per-recv `Message` allocation lives inside it. |
 | `std/net/websocket` | `Server` | `close()` | 3 — long-lived | C + H + I | 8 | Same shape as `http.Server`. |
-| `std/net/websocket` | `Message` | `free()` | 1 — per-recv allocation | C + H, scoped to the read-loop iteration | 8 | Stresses the model the hardest; affine drop fires per loop iteration, not per `Conn` lifetime. |
+| `std/net/quic` | `QUICEvent` | `close()` | 1 — per-event allocation | C + H | **B-1 safe set — landed** | Event accessors borrow; release is a single `Box::from_raw`. |
+| `std/net/websocket` | `Message` | `close()` | 1 — per-recv allocation | C + H, scoped to the read-loop iteration | **B-1 safe set — landed** | Independent per-recv allocation; affine drop fires per loop iteration. |
 | Runtime actor / scheduler | implicit | `hew_runtime_cleanup` (`hew-runtime/src/scheduler.rs:459-490`) | 4 — runtime scope | I (session-reset registry) only; not affine | runtime-scope cleanup milestone | Process-scoped; the session-reset hook registry is the canonical teardown (LESSONS `cleanup-all-exits`). No user-facing release call; no per-binding affinity. Tracked under issue #1228. |
 | WASM mirror | parity | `hew-runtime/src/scheduler_wasm.rs` | 4 — runtime scope | I, parity-required | runtime-scope cleanup milestone | LESSONS `native-wasm-parity` mandates symmetric session_reset from `hew_sched_shutdown` paths in both targets. See §10. |
 
@@ -379,16 +388,25 @@ by the PR itself; this spec fixes the *shape*.
 | Handle | User-facing change | Stdlib-internal change | Codegen change |
 | --- | --- | --- | --- |
 | `regex.Pattern` (calibration pilot — landed) | `pat.free()` removed; `pat.close()` releases early, scope-exit drop covers the rest | `Pattern` marked `#[resource]` with an opaque `handle` field; `close` is the method the compiler calls implicitly at scope exit | Drop emission for `Pattern` registered unconditionally (the `--experimental-handle-safety` flag this row described was never built — `#[resource]`/`#[linear]` ship unconditionally); null-after-move enforced; value-position `re"..."` literals clone the shared module-init handle on load so each binding owns an independent handle |
-| `url.Url` | `url.free()` becomes a no-op | tier-1 affine | drop registered |
-| `json.Value` | `val.free()` becomes a no-op; nested `get_field` results no longer require manual frees | tier-1 affine; FieldAlias must be live in the move-checker substrate (issue #1399) | drop registered; field-alias pre-scan enforced |
-| `http_client.Response` | `resp.free()` becomes a no-op | tier-1 affine | drop registered |
-| `http.Request` | `req.free()` becomes a no-op; `receive fn` handler never types release | tier-2; actor cleanup hook entry added | drop registered + actor hook |
+| `path.GlobResult` | `result.free()` removed; `result.close()` releases early | fielded `#[resource]` wrapper around `GlobResultHandle` | existing resource drop emission |
+| `semaphore.Semaphore` | `sem.free()` removed; `sem.close()` releases early | fielded `#[resource]` wrapper around `SemaphoreHandle` | existing resource drop emission |
+| `deque.Deque` | `dq.free()` removed; `dq.close()` releases early | fielded `#[resource]` wrapper around `DequeHandle` | existing resource drop emission |
+| `cron.Expr` | `expr.free()` removed; `expr.close()` releases early | fielded `#[resource]` wrapper around `ExprHandle` | existing resource drop emission |
+| `url.Url` | `url.free()` removed; `url.close()` releases early | fielded `#[resource]` wrapper around `UrlHandle` | existing resource drop emission |
+| `protobuf.Message` | `msg.free()` removed; `msg.close()` releases early | fielded `#[resource]` wrapper around `MessageHandle` | existing resource drop emission |
+| `xml.Node` | `node.free()` removed; `node.close()` releases early | fielded `#[resource]` wrapper around `NodeHandle` | existing resource drop emission |
+| `json.Value` | deferred; manual `free()` remains | child-consuming `with` / `push` require ownership-transfer semantics | no change |
+| `toml.Value` | deferred; manual `free()` remains | child-consuming `with` / `push` require ownership-transfer semantics | no change |
+| `yaml.Value` | deferred; manual `free()` remains | child-consuming `with` / `push` require ownership-transfer semantics | no change |
+| `http_client.Response` | `resp.free()` removed; `resp.close()` releases early | fielded `#[resource]` wrapper around `ResponseHandle` | existing resource drop emission |
+| `http.Request` | `req.free()` removed; `req.close()` releases early | fielded `#[resource]` wrapper around `RequestHandle` | existing resource drop emission |
 | `http.Server` | `srv.close()` becomes a no-op; long-lived server cleaned at session reset | tier-3; session-reset registry entry added | drop registered + session entry |
 | `http` response sink | `body.close()` becomes a no-op; affine drop produces a default flush; `defer body.close();` available for explicit early finish | tier-2; flush-on-drop semantics specified | drop registered with flush hook |
 | `tls.TlsStream` | `stream.close()` becomes a no-op | tier-2; actor hook | drop registered + actor hook |
 | `websocket.Conn` | `conn.close()` becomes a no-op | tier-2; actor hook | drop registered + actor hook |
 | `websocket.Server` | `srv.close()` becomes a no-op | tier-3; session entry | drop registered + session entry |
-| `websocket.Message` | `msg.free()` becomes a no-op; per-recv allocation released per loop iteration | tier-1 affine inside `Conn`'s read loop | drop registered |
+| `quic.QUICEvent` | `event.free()` removed; `event.close()` releases early | fielded `#[resource]` wrapper around `QUICEventHandle` | existing resource drop emission |
+| `websocket.Message` | `msg.free()` removed; `msg.close()` releases early; scope exit covers each loop iteration | fielded `#[resource]` wrapper around `MessageHandle` | existing resource drop emission |
 
 Each PR includes six fixtures (`forget_free`, `double_free`,
 `use_after_close`, `accept_no_manual_free`, `actor_shutdown_cleanup`,

@@ -1,0 +1,9 @@
+import std::net::http::http_client;
+
+fn close_response(value: http_client.Response) {
+    value.close();
+}
+
+fn main() -> i64 {
+    0
+}

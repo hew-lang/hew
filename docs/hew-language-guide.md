@@ -3068,6 +3068,11 @@ operations, converting a plain suspend into a timed suspend that returns
 | `await ln.accept()` | `net.Connection` |
 | `await ln.accept() \| after d` | `Result<net.Connection, IoError>` |
 
+If explicit runtime shutdown begins while a deadline-form read or accept is
+already parked, it resumes as `Err(NetError::Cancelled(0))`. Its own deadline
+still reports `Err(NetError::TimedOut(_))`. Plain forms have no `Result` error
+surface and retain their existing fail-closed empty/invalid value behaviour.
+
 Use inside a `scope` body to bound how long a handler waits for a peer:
 
 <!-- doctest: skip -->

@@ -1466,7 +1466,7 @@ pub(crate) struct CoroState<'ctx> {
 pub(crate) struct FnCtx<'a, 'ctx> {
     pub(crate) ctx: &'ctx Context,
     pub(crate) llvm_mod: &'a LlvmModule<'ctx>,
-    /// Emit `hew_shutdown_initiate(0)` + `hew_shutdown_wait()` before the
+    /// Emit `hew_shutdown_initiate_implicit(0)` + `hew_shutdown_wait()` before the
     /// `Terminator::Return` in the native program entry point of an
     /// actor-using program — the implicit actor-drain floor.
     ///
@@ -1494,7 +1494,8 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// `true` ONLY when ALL of: `func.name == "main"`, the module has at least
     /// one actor layout, the target is wasm32 (`emit_wasm_entry_alias`), and
     /// there are no supervisors. The native epilogue uses a thread-backed
-    /// `hew_shutdown_initiate`/`_wait`; on the wasm32 cooperative scheduler
+    /// `hew_shutdown_initiate_implicit`/`hew_shutdown_wait`; on the wasm32
+    /// cooperative scheduler
     /// that has no driver, the standalone-WASM runtime-exit helper runs all
     /// runnable actors to completion synchronously and then performs scheduler
     /// shutdown plus actor cleanup. Without it the mailbox never drains and
@@ -2578,7 +2579,7 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // down scheduler state, and runs the runtime cleanup chain before WASI
         // process return. WASI has no runtime-owned atexit hook to fill this gap.
         "hew_wasm_runtime_exit" => ctx.void_type().fn_type(&[], false),
-        // hew_shutdown_initiate(drain_timeout_ms: i64) -> void
+        // hew_shutdown_initiate{,_implicit}(drain_timeout_ms: i64) -> void
         // (`hew-runtime/src/shutdown.rs:183`). Non-blocking — sets the
         // shutdown phase to QUIESCE and spawns an orchestrator thread that
         // drains remaining actor messages then calls `hew_sched_shutdown`.
@@ -2587,14 +2588,15 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // Safe to call on an uninitialized scheduler: `drain_is_idle()`
         // returns `true` immediately when no scheduler is present, so the
         // orchestrator completes in ~20 ms (two idle polls at 10 ms each).
-        // Used by the implicit main-exit drain epilogue (codegen-emitted).
-        "hew_shutdown_initiate" => ctx.void_type().fn_type(&[i64_ty.into()], false),
+        "hew_shutdown_initiate" | "hew_shutdown_initiate_implicit" => {
+            ctx.void_type().fn_type(&[i64_ty.into()], false)
+        }
         // hew_shutdown_wait() -> i32
         // (`hew-runtime/src/shutdown.rs:231`). Blocks until `PHASE_DONE`
         // (returns 0). Returns -1 if shutdown was never initiated and -2
         // if the shutdown worker panicked. Paired with
-        // `hew_shutdown_initiate`; emitted by the implicit main-exit drain
-        // epilogue immediately after the initiate call (codegen-emitted).
+        // either initiate entry point; emitted by the implicit main-exit drain
+        // epilogue immediately after its implicit initiate call.
         "hew_shutdown_wait" => i32_ty.fn_type(&[], false),
         // hew_duplex_pair(s_cap: usize, r_cap: usize,
         //                 out_a: *mut *mut HewDuplexHandle,
@@ -31031,8 +31033,45 @@ pub(crate) fn emit_read_deadline_timeout_err(
     emit_result_err(fn_ctx, result_dest, error_dest)
 }
 
-/// Emit `Err(TimeoutError::Timeout)` into `result_dest` for the
-/// `await rx.recv() | after d` / `await stream.recv() | after d` timeout arm
+/// Emit `Err(NetError::Cancelled(0))` into `result_dest` for the shutdown-cancel
+/// arm of a suspending `await … | after d` accept/read arbiter. The typed
+/// counterpart of [`emit_read_deadline_timeout_err`]: a runtime shutdown sweep
+/// deposits `AwaitCancelStatus::Cancelled` on a parked wait, and the arbiter
+/// routes that to `NetError::Cancelled` rather than the deadline's `TimedOut`.
+///
+/// `NetError::Cancelled` is variant index 4 in `std/net/net.hew`
+/// (ConnectionRefused=0, AddressInUse=1, AddressNotAvailable=2, TimedOut=3,
+/// Cancelled=4, Other=5). Payload int 0, mirroring the `TimedOut` template.
+pub(crate) fn emit_read_deadline_cancelled_err(
+    fn_ctx: &FnCtx<'_, '_>,
+    result_dest: Place,
+    error_dest: Place,
+) -> CodegenResult<()> {
+    let error_local = composite_dest_local(error_dest, "SuspendingRead NetError")?;
+    store_composite_tag(fn_ctx, error_local, 4, "SuspendingRead NetError::Cancelled")?;
+    let (payload_ptr, payload_ty) = place_pointer(
+        fn_ctx,
+        Place::MachineVariant {
+            local: error_local,
+            variant_idx: 4,
+            field_idx: 0,
+        },
+    )?;
+    let payload_int_ty = match payload_ty {
+        BasicTypeEnum::IntType(t) => t,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "SuspendingRead NetError::Cancelled payload must be integer, got {other:?}"
+            )));
+        }
+    };
+    fn_ctx
+        .builder
+        .build_store(payload_ptr, payload_int_ty.const_zero())
+        .llvm_ctx("store SuspendingRead NetError::Cancelled payload")?;
+    emit_result_err(fn_ctx, result_dest, error_dest)
+}
+
 /// (L4 phase 2). `TimeoutError::Timeout` is variant 0 with no payload.
 pub(crate) fn emit_recv_deadline_timeout_err(
     fn_ctx: &FnCtx<'_, '_>,
@@ -32030,7 +32069,7 @@ fn lower_terminator<'ctx>(
     fn_ctx.suspend_abandon_block.set(block_id);
     match term {
         Terminator::Return => {
-            // Implicit actor-drain floor: emit `hew_shutdown_initiate(0)` then
+            // Implicit actor-drain floor: emit `hew_shutdown_initiate_implicit(0)` then
             // `hew_shutdown_wait()` before `main` returns. This ensures
             // fire-and-forget actor messages (spawned actors, pending handler
             // calls) are fully processed before the process exits. Without this,
@@ -32049,7 +32088,7 @@ fn lower_terminator<'ctx>(
                     fn_ctx.ctx,
                     fn_ctx.llvm_mod,
                     &mut fn_ctx.runtime_decls.borrow_mut(),
-                    "hew_shutdown_initiate",
+                    "hew_shutdown_initiate_implicit",
                 )?;
                 let shutdown_wait = intern_runtime_decl(
                     fn_ctx.ctx,
@@ -32067,9 +32106,9 @@ fn lower_terminator<'ctx>(
                     .build_call(
                         shutdown_initiate,
                         &[i64_ty.const_int(0, false).into()],
-                        "hew_shutdown_initiate_call",
+                        "hew_shutdown_initiate_implicit_call",
                     )
-                    .llvm_ctx("hew_shutdown_initiate call")?;
+                    .llvm_ctx("hew_shutdown_initiate_implicit call")?;
                 fn_ctx
                     .builder
                     .build_call(shutdown_wait, &[], "hew_shutdown_wait_call")
@@ -53551,7 +53590,7 @@ mod tests {
 
     // ── Actor-drain epilogue gate tests ──────────────────────────────────────
     //
-    // These tests verify that `hew_shutdown_initiate` / `hew_shutdown_wait`
+    // These tests verify that `hew_shutdown_initiate_implicit` / `hew_shutdown_wait`
     // appear in `main`'s LLVM IR exactly when expected: native actor-using
     // programs (gate = on), non-actor programs (gate = off), and non-`main`
     // functions even in actor programs (gate = off).
@@ -53651,7 +53690,7 @@ mod tests {
     }
 
     /// For a native actor-using program, the `main` function's IR must contain
-    /// `hew_shutdown_initiate` and `hew_shutdown_wait` calls immediately before
+    /// `hew_shutdown_initiate_implicit` and `hew_shutdown_wait` calls immediately before
     /// the return.  These are the implicit actor-drain floor that prevents
     /// fire-and-forget messages from being silently dropped when `main` returns
     /// before scheduler workers finish draining.
@@ -53667,8 +53706,8 @@ mod tests {
         );
         let ir = m.print_to_string().to_string();
         assert!(
-            ir.contains("hew_shutdown_initiate"),
-            "actor-using main must emit hew_shutdown_initiate call before return:\n{ir}"
+            ir.contains("hew_shutdown_initiate_implicit"),
+            "actor-using main must emit hew_shutdown_initiate_implicit call before return:\n{ir}"
         );
         assert!(
             ir.contains("hew_shutdown_wait"),
@@ -53726,8 +53765,8 @@ mod tests {
         );
         let ir = m.print_to_string().to_string();
         assert!(
-            !ir.contains("hew_shutdown_initiate"),
-            "non-actor main must NOT emit hew_shutdown_initiate:\n{ir}"
+            !ir.contains("hew_shutdown_initiate_implicit"),
+            "non-actor main must NOT emit hew_shutdown_initiate_implicit:\n{ir}"
         );
         assert!(
             !ir.contains("hew_shutdown_wait"),

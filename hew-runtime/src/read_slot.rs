@@ -27,7 +27,8 @@
 use std::sync::atomic::{AtomicI32, AtomicI64, AtomicPtr, AtomicUsize, Ordering};
 
 use crate::await_cancel::{
-    hew_await_cancel_complete, hew_await_cancel_free, hew_await_cancel_retain,
+    hew_await_cancel_cancel, hew_await_cancel_complete, hew_await_cancel_free,
+    hew_await_cancel_retain,
 };
 use crate::await_cancel::{AwaitCancelStatus, HewAwaitCancel};
 use crate::bytes::BytesTriple;
@@ -304,6 +305,44 @@ pub unsafe extern "C" fn hew_read_slot_set_await_cancel(
         // SAFETY: releases the slot's previous retained registration.
         unsafe { hew_await_cancel_free(old) };
     }
+}
+
+/// Resolve this slot's attached deadline arbiter as shutdown cancellation.
+///
+/// Returns `None` for the plain, non-deadline await form. For a deadline form,
+/// returns whether this call won the one-shot transition. The caller must hold a
+/// live slot ref across this call; the shutdown sweep takes that independent ref
+/// while the reactor registry lock still guarantees the slot is live.
+///
+/// # Safety
+///
+/// `slot` must be null or a live read slot the caller holds a ref to.
+pub(crate) unsafe fn read_slot_cancel_await_for_shutdown(
+    slot: *mut HewReadSlot,
+    wake_actor: bool,
+) -> Option<bool> {
+    if slot.is_null() {
+        return None;
+    }
+    // SAFETY: caller holds a live slot ref, so its retained registration pointer
+    // cannot be released by the slot's final drop while we retain it here.
+    let reg = unsafe { (*slot).await_cancel.load(Ordering::Acquire) };
+    if reg.is_null() {
+        return None;
+    }
+    // SAFETY: the live slot owns a retained reference.
+    unsafe { hew_await_cancel_retain(reg) };
+    // SAFETY: the retain above keeps the registration live for the cancellation.
+    let won = unsafe {
+        hew_await_cancel_cancel(
+            reg,
+            AwaitCancelStatus::Cancelled as i32,
+            i32::from(wake_actor),
+        ) != 0
+    };
+    // SAFETY: release exactly the temporary reference retained above.
+    unsafe { hew_await_cancel_free(reg) };
+    Some(won)
 }
 
 /// Cleanup callback for [`crate::await_cancel::HewAwaitCancel`] read waits.

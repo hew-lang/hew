@@ -1098,6 +1098,7 @@ internal = [
   "hew_sched_metrics_worker_count",
   "hew_sched_shutdown",
   "hew_shutdown_initiate",
+  "hew_shutdown_initiate_implicit",
   "hew_shutdown_phase",
   "hew_shutdown_register_supervisor",
   "hew_shutdown_unregister_supervisor",

@@ -1,0 +1,53 @@
+// A handler woken from a parked accept during explicit shutdown immediately
+// loops and attempts to park again. The paired reactor entry check must reject
+// that second registration synchronously as Cancelled, so the loop terminates
+// instead of re-parking forever.
+//
+// Exit-code contract: two Cancelled outcomes (sweep + entry check) -> 44;
+// unexpected Ok -> 2; TimedOut -> 41; another error -> 3; hang/fallback -> 99.
+import std::net;
+import std::observe;
+
+extern "C" {
+    fn hew_sched_metrics_active_workers() -> i64;
+    fn hew_shutdown_initiate(drain_timeout_ms: i64);
+    fn hew_shutdown_wait() -> i32;
+}
+
+actor Server {
+    receive fn go() {
+        let ln = net.listen("127.0.0.1:0");
+        var cancellations: i64 = 0;
+        loop {
+            match await ln.accept() | after 10s {
+                Ok(_conn) => exit(2),
+                Err(e) => match e {
+                    NetError::Cancelled(_c) => {
+                        cancellations = cancellations + 1;
+                        if cancellations == 2 {
+                            exit(44);
+                        }
+                    },
+                    NetError::TimedOut(_c) => exit(41),
+                    _ => exit(3),
+                },
+            }
+        }
+    }
+}
+
+fn main() {
+    let server = spawn Server;
+    server.go();
+    while observe.read("reactor.registrations_live") == 0 {}
+    while unsafe {
+        hew_sched_metrics_active_workers()
+    } != 0 {}
+    unsafe {
+        hew_shutdown_initiate(0);
+    };
+    unsafe {
+        hew_shutdown_wait();
+    };
+    exit(99);
+}

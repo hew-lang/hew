@@ -28,6 +28,45 @@ fn closure_pid_send_compile_and_exit_code() {
     compile_and_run_actor_fixture("actor_closure_pid_send", 42);
 }
 
+#[test]
+fn network_deadline_arbiters_emit_typed_cancelled_branch() {
+    for (fixture, prefix) in [
+        ("await_accept_deadline_timeout", "suspending_accept"),
+        ("await_read_string_deadline_timeout", "suspending_read"),
+    ] {
+        let ll = compile_vertical_slice_ll(fixture);
+        let compare = ll
+            .lines()
+            .find(|line| line.contains(&format!("%{prefix}_cancelled = icmp eq i32")))
+            .unwrap_or_else(|| panic!("{fixture}: missing Cancelled status compare in IR"));
+        assert!(
+            compare.ends_with(", 2"),
+            "{fixture}: Cancelled compare must test AwaitCancelStatus::Cancelled (2): {compare}"
+        );
+
+        let block_start = ll
+            .find(&format!("\n{prefix}_cancelled"))
+            .map(|index| index + 1)
+            .unwrap_or_else(|| panic!("{fixture}: missing Cancelled basic block in IR"));
+        let block = ll[block_start..].split("\n\n").next().unwrap_or_default();
+        assert!(
+            block.contains("store i8 4"),
+            "{fixture}: Cancelled block must store NetError::Cancelled tag 4:\n{block}"
+        );
+
+        let register_compare = ll
+            .lines()
+            .find(|line| line.contains(&format!("%{prefix}_register_cancelled = icmp eq i32")))
+            .unwrap_or_else(|| {
+                panic!("{fixture}: missing synchronous register-cancelled compare in IR")
+            });
+        assert!(
+            register_compare.ends_with(", 2"),
+            "{fixture}: register-error path must preserve Cancelled status 2: {register_compare}"
+        );
+    }
+}
+
 /// Drop-plan oracle (the truth standard): capturing a pid into a closure
 /// must add ZERO drops to the parent's emitted drop plan. The pid has no
 /// drop glue, so the closure fixture's `main` plan must be
@@ -287,6 +326,37 @@ fn ensure_codegen_artifacts(repo: &Path) {
             lib.display()
         );
     });
+}
+
+fn compile_vertical_slice_ll(fixture_name: &str) -> String {
+    let repo = repo_root();
+    ensure_codegen_artifacts(&repo);
+    let emit_dir = tempfile::Builder::new()
+        .prefix(&format!("hew-cancelled-arbiter-{fixture_name}-"))
+        .tempdir()
+        .expect("create cancelled-arbiter emit dir");
+    let source = format!("tests/vertical-slice/accept/{fixture_name}.hew");
+    let compile = Command::new(hew_bin(&repo))
+        .current_dir(&repo)
+        .args([
+            "compile",
+            "--emit-dir",
+            emit_dir
+                .path()
+                .to_str()
+                .expect("emit dir path is valid UTF-8"),
+            &source,
+        ])
+        .output()
+        .expect("run built hew compile");
+    assert!(
+        compile.status.success(),
+        "hew compile {source} failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    std::fs::read_to_string(emit_dir.path().join(format!("{fixture_name}.ll")))
+        .expect("read emitted cancelled-arbiter LLVM IR")
 }
 
 /// Run a compiled fixture, killing it if it does not exit within `secs`.

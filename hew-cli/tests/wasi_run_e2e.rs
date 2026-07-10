@@ -49,6 +49,7 @@ const EXPECTED_WASI_UNSUPPORTED: &[&str] = &[
     "concurrency/supervisor",
     "language/string_slicing",
     "machines/traffic_light",
+    "types/method_clone",
 ];
 
 // WINDOWS-TODO: requires wasmtime runtime which is not configured on Windows.
@@ -58,10 +59,17 @@ fn curated_playground_examples_run_under_wasi() {
     require_wasi_runner();
 
     let manifest = load_playground_manifest();
+    // Tracks the curated playground manifest's entry count as a deliberate
+    // tripwire: it forces a human to review EXPECTED_WASI_UNSUPPORTED (and the
+    // runnable loop below) whenever a fixture is added, rather than letting a
+    // new entry silently fall into the wrong bucket. A dynamic count derived
+    // from the manifest itself would be tautological against `manifest.len()`
+    // and lose that review trigger, so the literal is intentional; bump it
+    // alongside manifest.json (currently 44, +1 for types/method_clone).
     assert_eq!(
         manifest.len(),
-        43,
-        "expected the curated 43-snippet manifest"
+        44,
+        "expected the curated 44-snippet manifest"
     );
 
     let mut actual_unsupported: Vec<&str> = manifest

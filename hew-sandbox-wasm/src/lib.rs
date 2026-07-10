@@ -131,6 +131,16 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     "record_shorthand_destructure_let",
     "nested_tuple_destructure_let",
     "wrapping_binary_operators",
+    // `.clone()` method-call syntax on Vec/String/Array/Slice — an allowlist
+    // gap: the emitter's generic `local.set` → `cloneValue` clone arm already
+    // handled these receiver types, but the profile only admitted `clone` on
+    // user-defined records. Verifies independence (mutating the original
+    // after clone does not affect the copy) across all four types.
+    "method_clone",
+    // `regex.Pattern::clone()` — same allowlist gap, pinned separately since
+    // its source lives outside the curated playground manifest scope (see
+    // `regex_clone` in tests/parity.rs).
+    "regex_clone",
 ];
 
 const SANDBOX_STDIN_HELPER: &str = "__hew_sandbox_stdin_read_line";

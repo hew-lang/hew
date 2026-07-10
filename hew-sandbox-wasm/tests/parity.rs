@@ -395,6 +395,27 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/sandbox-graduation/wrapping_binary_operators.hew",
         accepted_divergences: &[],
     },
+    ParityCase {
+        // `.clone()` method-call syntax on Vec/String/Array/Slice. The
+        // emitter's generic clone arm (`local.set` → `cloneValue`) already
+        // handled these receiver types; the profile allowlist was the gap.
+        // Proves independence: mutating the original after clone leaves the
+        // copy unaffected, for every newly-admitted receiver type.
+        test_name: "method_clone",
+        source_rel: "examples/playground/types/method_clone.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        // `regex.Pattern::clone()` — same profile-allowlist gap as
+        // `method_clone`, covered by a source file outside the curated
+        // playground manifest scope: `std::text::regex` FFI is unresolvable
+        // by the hew-wasm browser analyzer (dev-tooling world, distinct from
+        // this sandbox VM), so a regex-importing fixture cannot live under
+        // `examples/playground/` without failing the analyzer smoke test.
+        test_name: "regex_clone",
+        source_rel: "examples/sandbox-graduation/regex_clone.hew",
+        accepted_divergences: &[],
+    },
 ];
 
 #[derive(Debug, Clone, Copy)]

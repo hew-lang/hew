@@ -1,0 +1,31 @@
+//! @name Method Clone
+//! @description `.clone()` method-call syntax on Vec/String/Array/Slice — each produces an independent deep copy, matching the `clone expr` prefix form.
+
+fn takes_slice(xs: [i64]) -> i64 {
+    let ys = xs.clone();
+    ys.len()
+}
+
+fn main() {
+    // Vec<T>::clone() — mutating the original after clone does not affect the copy.
+    let nums = Vec::new();
+    nums.push(1);
+    nums.push(2);
+    let nums_copy = nums.clone();
+    nums.push(3);
+    println(f"nums.len(): {nums.len()}");
+    println(f"nums_copy.len(): {nums_copy.len()}");
+
+    // string.clone()
+    let s = "sandbox";
+    let s_copy = s.clone();
+    println(f"s == s_copy: {s == s_copy}");
+
+    // Fixed-size array .clone()
+    let xs = [10, 20, 30];
+    let xs_copy = xs.clone();
+    println(f"xs_copy[1]: {xs_copy[1]}");
+
+    // Slice-typed parameter .clone() ([i64] receiver, distinct from Vec/Array).
+    println(f"takes_slice(nums_copy): {takes_slice(nums_copy)}");
+}

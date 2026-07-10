@@ -88,6 +88,7 @@ EXAMPLE_ORDER = {
         "vec_inclusive_slice",
         "record_clone",
         "fn_field_call",
+        "method_clone",
     ),
 }
 
@@ -207,6 +208,10 @@ SANDBOX_CAPABILITY: dict[str, str] = {
     # types/fn_field_call: `(rec.f)(args)` fn-field call via call.indirect.
     # Functions are materialised as function-kind values via const.function.
     "types/fn_field_call": "runnable",
+    # types/method_clone: `.clone()` method-call syntax on Vec/String/Array/
+    # Slice/Regex now lowers via the same local.set → cloneValue path as the
+    # `clone expr` prefix form and user-defined record `.clone()`.
+    "types/method_clone": "runnable",
 }
 
 # Entries omitted from WASI_CAPABILITY default to "runnable".
@@ -224,6 +229,11 @@ WASI_CAPABILITY: dict[str, str] = {
     # wasm-ld function-signature mismatch ((i32,i64,i64)->i32); the example runs
     # at native↔sandbox parity but is not WASI-runnable until that ABI gap closes.
     "language/string_slicing": "unsupported",
+    # types/method_clone: the wasm32-wasip1 runtime has no regex FFI symbols at
+    # all (hew_regex_new/is_match/clone/close are undefined at link time) — a
+    # pre-existing wasm32-wasi gap, not a clone-specific one. Runs at
+    # native↔sandbox parity; not WASI-runnable until regex ships for wasm32-wasi.
+    "types/method_clone": "unsupported",
 }
 
 

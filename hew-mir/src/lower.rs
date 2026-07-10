@@ -11421,6 +11421,48 @@ impl Builder {
         }
     }
 
+    /// True when the `for x in …` cursor `value` iterates an INDEX projection
+    /// `container[i]` whose `container` is an owned-element `Vec` — a
+    /// `Vec<Vec<T>>` / `Vec<HashMap>` / `Vec<HashSet>` / `Vec<heap-owning
+    /// record/tuple>` whose scope-exit (or actor-state) release is
+    /// `hew_vec_free_owned`, which RECURSES and frees every element handle,
+    /// including `container[i]`, via the per-element descriptor drop thunk.
+    ///
+    /// #2545 — the sibling of [`Self::vec_iter_source_projects_actor_state_field`]
+    /// for the LOCAL Vec-element case. `for v in rows[i]` lowers to
+    /// `VecIter { vec: rows[i], idx }`; the `vec` source is an `Index` expression,
+    /// not a bare `BindingRef` + `Capture`, so
+    /// [`vec_iter_let_cursor_owns_handle`] classifies the cursor as the SOLE
+    /// owner and registers it for a scope-exit `RecordFieldDrop` of `rows[i]`.
+    /// But the container `rows` (`Vec<Vec<T>>`) is itself released by
+    /// `hew_vec_free_owned`, whose recursion ALSO frees `rows[i]` — the exact
+    /// double-free the poisoned allocator turns into an abort. Unlike a local
+    /// RECORD field escaping into a cursor (`for v in localBox.v`), where the
+    /// record's drop of the escaped field is elided (#2212) so the cursor is the
+    /// lone freer, a Vec ELEMENT projection has NO such elision: the container's
+    /// recursive drop is the exactly-once freer, so the cursor must BORROW.
+    ///
+    /// Keyed on the container's resolved type being an owned-element Vec —
+    /// [`Self::binding_ty_is_owned_element_vec`], the SAME authority the
+    /// constructor and the container's own `hew_vec_free_owned` release consult —
+    /// so the borrow fires for exactly the containers whose recursion frees the
+    /// indexed element (`dedup-semantic-boundary`). Covers a local binding, an
+    /// actor-state field (whose recursive teardown lands in the same lane), and
+    /// an rvalue container equally: whichever owner recurses is the sole freer.
+    /// A plain `Vec<i64>` container is NOT owned-element, so `for v in flat[i]`
+    /// (element `i64`, no per-element drop) is untouched and keeps its existing
+    /// disposition. Fail-closed direction is a leak (borrow when the container
+    /// does not in fact recurse), never the double-free.
+    fn vec_iter_source_indexes_owned_element_vec(&self, value: &HirExpr) -> bool {
+        let Some(src) = vec_iter_init_vec_source_expr(value) else {
+            return false;
+        };
+        let HirExprKind::Index { container, .. } = &src.kind else {
+            return false;
+        };
+        self.binding_ty_is_owned_element_vec(&self.subst_ty(&container.ty))
+    }
+
     /// Close every `Stream<T>` / `Receiver<T>` for-await cursor declared in
     /// `scope_id` when that scope closes — the `Generator`/`VecIter` analogue of
     /// #1949 for the general `for await` consumption path. A `for await v in
@@ -13928,9 +13970,17 @@ impl Builder {
                     // that state-owned buffer against the state drop (the UAF the
                     // supervisor normal-return cleanup epilogue exposes). See
                     // `vec_iter_source_projects_actor_state_field`.
+                    //
+                    // #2545 — an INDEX projection of an owned-element Vec
+                    // (`for v in rows[i]`, `rows: Vec<Vec<T>>`) is excluded for the
+                    // same reason: the container's `hew_vec_free_owned` recursion
+                    // frees `rows[i]` exactly once, so the cursor must BORROW or
+                    // the inner handle is freed twice. See
+                    // `vec_iter_source_indexes_owned_element_vec`.
                     if vec_iter_ty_drop_safe(&binding_ty)
                         && vec_iter_let_cursor_owns_handle(value)
                         && !self.vec_iter_source_projects_actor_state_field(value)
+                        && !self.vec_iter_source_indexes_owned_element_vec(value)
                     {
                         if let Some(scope) = self.active_scopes.last().copied() {
                             self.scope_vec_iter_bindings.push((

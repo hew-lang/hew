@@ -387,6 +387,38 @@ impl StateFieldCloneKind {
         }
     }
 
+    /// True when this kind is a heap COLLECTION HANDLE — a `Vec`, `HashMap`, or
+    /// `HashSet`. Such a value is a single owned heap handle whose own release
+    /// (`hew_vec_free_owned` / `hew_hashmap_free_layout` / `hew_hashset_free_
+    /// layout`) recurses into its buffer.
+    ///
+    /// #2546 — the routing discriminator for a state `Vec<E>` field's clone/free
+    /// symbols. When `E` is one of these handles, the OUTER `Vec<E>` was
+    /// constructed through the owned descriptor ABI (`hew_vec_new_with_elem_
+    /// layout`, a per-element clone/drop thunk stamped by
+    /// `collection_elem_clone_drop_syms`), so the outer handle MUST clone/free
+    /// through the `_owned` pair, which runs those per-element thunks. The shallow
+    /// managed pair frees only the outer buffer + handle and leaks every element.
+    /// This is the exact structural subset of the constructor's
+    /// `is_owned_vec_element` / `resolved_ty_element_owns_heap_for_owned_vec`
+    /// authority that is decidable from the classified kind alone (a nested
+    /// collection element is UNAMBIGUOUSLY owned-descriptor), so the free symbol
+    /// can never disagree with the alloc ABI (`dedup-semantic-boundary`,
+    /// `vec-element-width-symmetric-abi`). A `Vec<record/tuple>` whose element
+    /// owns heap only through a nested user record/enum is NOT matched here — the
+    /// kind carries only a registry key for those, so it stays on the managed
+    /// pair (fail-closed: a leak, never a wrong-ABI free/abort); those shapes are
+    /// deferred to a sibling issue.
+    #[must_use]
+    pub fn is_heap_collection_handle(&self) -> bool {
+        matches!(
+            self,
+            StateFieldCloneKind::Vec { .. }
+                | StateFieldCloneKind::HashMap { .. }
+                | StateFieldCloneKind::HashSet { .. }
+        )
+    }
+
     /// True when a field of this kind is admissible to the owned-aggregate
     /// record value-class (the `__hew_record_{clone,drop}_inplace_<R>` in-place
     /// record spine).

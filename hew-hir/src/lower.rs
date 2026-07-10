@@ -11606,7 +11606,7 @@ impl LowerCtx {
     ) {
         let declared_fields: Vec<(String, ResolvedTy)> =
             if let ResolvedTy::Named { name, args, .. } = value_ty {
-                if let Some(entry) = self.record_registry.get(name.as_str()) {
+                if let Some(entry) = self.lookup_record_entry(name) {
                     let subst: HashMap<String, ResolvedTy> = entry
                         .type_params
                         .iter()

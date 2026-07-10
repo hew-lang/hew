@@ -247,6 +247,8 @@ wireAttr
     | 'since' INT_LIT                           // field version: since 2
     | 'json' '(' STRING_LIT ')'                 // per-field JSON key override
     | 'yaml' '(' STRING_LIT ')'                 // per-field YAML key override
+    | 'json_name' '=' STRING_LIT                // per-field JSON key override, assignment form
+    | 'yaml_name' '=' STRING_LIT                // per-field YAML key override, assignment form
     | reservedDecl
     ;
 
@@ -664,10 +666,12 @@ mulExpr
     ;
 
 unaryExpr
-    : ( '!' | '-' | '~' | 'await' ) unaryExpr
+    : ( '!' | '-' | '~' | 'await' | 'await_restart' ) unaryExpr
     | cloneExpr
     | postfixExpr
     ;
+// `await_restart <operand>` reads the post-restart value of a supervised
+// child accessor; same unary binding power as `await`.
 
 // `clone <operand>` duplicates the value at the same binding power as other
 // unary prefixes (parser CLONE_PREFIX_BP = 25).  `clone` is contextual: it

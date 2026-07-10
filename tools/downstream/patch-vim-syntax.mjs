@@ -95,8 +95,14 @@ const categoryMap = {
     group: 'hewControl',
     keywords: [...new Set([
       ...kw.control_flow,
-      // Actor keywords that serve as control flow
-      'select', 'join', 'yield', 'cooperate', 'after', 'from', 'await',
+      // Actor keywords that serve as control flow. `cooperate` is
+      // deliberately NOT here — syntax-data.json classifies it under
+      // reserved_unused (a compiler-internal safepoint token, not a source
+      // expression); it is supplied via the reserved_unused category
+      // (hewReserved group) instead. `await_restart` is not repeated here
+      // either — it is already emitted wholesale via kw.actors (actors
+      // category, hewActor group).
+      'select', 'join', 'yield', 'after', 'from', 'await',
       'scope',
     ])],
   },

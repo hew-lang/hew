@@ -93,7 +93,9 @@ WireAttr       = "optional" | "deprecated" | "repeated"
                | ("default" "(" Expr ")")  (* not yet implemented *)
                | ("since" IntLit)          (* field version: since 2 *)
                | "json" "(" StringLit ")"   (* per-field JSON key override *)
-               | "yaml" "(" StringLit ")"   ; (* per-field YAML key override *)
+               | "yaml" "(" StringLit ")"   (* per-field YAML key override *)
+               | "json_name" "=" StringLit  (* per-field JSON key override, assignment form *)
+               | "yaml_name" "=" StringLit ; (* per-field YAML key override, assignment form *)
 ReservedDecl   = "reserved" "@" IntLit { "," "@" IntLit } ";" ;
 
 VariantDecl    = Ident ( "(" TypeList ")" | "{" { StructFieldDecl } "}" )? ";" ;
@@ -232,7 +234,9 @@ BitAndExpr     = ShiftExpr { "&" ShiftExpr } ;
 ShiftExpr      = AddExpr { ("<<" | ">>") AddExpr } ;
 AddExpr        = MulExpr { ("+" | "-" | "&+" | "&-") MulExpr } ;   (* + also concatenates strings; &+/&- are wrapping forms *)
 MulExpr        = UnaryExpr { ("*" | "/" | "%" | "&*") UnaryExpr } ;  (* &* is wrapping multiply *)
-UnaryExpr      = ("!" | "-" | "~" | "await" | "clone") UnaryExpr | PostfixExpr ;
+UnaryExpr      = ("!" | "-" | "~" | "await" | "await_restart" | "clone") UnaryExpr | PostfixExpr ;
+(* `await_restart <operand>` reads the post-restart value of a supervised
+   child accessor; same unary binding power as `await`. *)
 (* `clone <operand>` is the prefix duplication form. It is contextual: `clone`
    acts as a prefix only when followed immediately by an operand token
    (identifier or literal). Otherwise it stays a plain identifier so that

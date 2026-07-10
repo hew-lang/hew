@@ -87,3 +87,23 @@ fn test_net_error_tcp_variants_are_distinct() {
         _ => panic("unexpected variant"),
     }
 }
+
+#[test]
+fn test_net_error_windows_wsa_variants() {
+    match net.net_error_from_errno(10061) {
+        NetError::ConnectionRefused(_) => {},
+        _ => panic("expected NetError::ConnectionRefused"),
+    }
+    match net.net_error_from_errno(10048) {
+        NetError::AddressInUse(_) => {},
+        _ => panic("expected NetError::AddressInUse"),
+    }
+    match net.net_error_from_errno(10060) {
+        NetError::TimedOut(_) => {},
+        _ => panic("expected NetError::TimedOut"),
+    }
+    match net.net_error_from_errno(10049) {
+        NetError::AddressNotAvailable(_) => {},
+        _ => panic("expected NetError::AddressNotAvailable"),
+    }
+}

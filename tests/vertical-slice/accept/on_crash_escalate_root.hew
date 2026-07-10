@@ -1,4 +1,4 @@
-// Acceptance fixture (G-S-A): a #[on(crash)] hook returning
+// Acceptance fixture: a #[on(crash)] hook returning
 // `CrashAction::Escalate` on a ROOT supervisor (no parent) must not abort
 // the process.
 //

@@ -2811,8 +2811,7 @@ fields, produced only via FFI. There is no struct-literal constructor;
 values come only from a foreign function. Most opaque types require an
 explicit `.close()`/`.free()` call since there is no implicit drop
 (HEW-SPEC-2026.md §3.10.7). Over twenty stdlib types use this pattern,
-including `Deque`, `json.Value`, `csv.Reader`, `regex.Pattern`, and
-`net.Connection`.
+including `Deque`, `json.Value`, `csv.Reader`, and `net.Connection`.
 
 `std/deque.hew`'s `#[opaque]\npub type Deque { }` plus its sibling `trait
 DequeMethods` / `impl DequeMethods for Deque` is the canonical shape to
@@ -2920,7 +2919,7 @@ fn main() {
         let val = match rows.group(i, 2) { Some(g) => g, None => "?" };
         println(f"{key} -> {val}");   // a -> 1 ; bb -> 22
     }
-    re.free();
+    re.close();
 }
 ```
 
@@ -2930,7 +2929,8 @@ indexed/named submatch of the FIRST match as an `Option<string>` — group 0 is 
 whole match. `find_all` returns every whole match as a `Vec<string>`;
 `find_all_submatch` returns a row-major `CaptureMatches` table — `rows.len()`
 rows, `rows.width()` groups each, read with `rows.group(row, col)` /
-`rows.whole(row)`. Always `free()` a compiled `Pattern`. Full example:
+`rows.whole(row)`. `Pattern` is a `#[resource]` — it auto-closes at scope
+exit; call `close()` to release it early. Full example:
 [`examples/v05/surfaces/regex_captures.hew`](../examples/v05/surfaces/regex_captures.hew).
 
 ### Templates — `parse` + `render_try`

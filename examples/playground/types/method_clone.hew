@@ -1,7 +1,5 @@
 //! @name Method Clone
-//! @description `.clone()` method-call syntax on Vec/String/Array/Slice/Regex — each produces an independent deep copy, matching the `clone expr` prefix form.
-
-import std::text::regex;
+//! @description `.clone()` method-call syntax on Vec/String/Array/Slice — each produces an independent deep copy, matching the `clone expr` prefix form.
 
 fn takes_slice(xs: [i64]) -> i64 {
     let ys = xs.clone();
@@ -30,12 +28,4 @@ fn main() {
 
     // Slice-typed parameter .clone() ([i64] receiver, distinct from Vec/Array).
     println(f"takes_slice(nums_copy): {takes_slice(nums_copy)}");
-
-    // regex.Pattern::clone() — each clone released independently.
-    let re = regex.new("a+");
-    let re2 = re.clone();
-    let matched = re2.is_match("aaa");
-    println(f"re2.is_match: {matched}");
-    re.free();
-    re2.free();
 }

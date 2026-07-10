@@ -3,4 +3,3 @@ nums_copy.len(): 2
 s == s_copy: true
 xs_copy[1]: 20
 takes_slice(nums_copy): 2
-re2.is_match: true

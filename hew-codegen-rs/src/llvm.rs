@@ -40543,6 +40543,9 @@ fn build_module_for_target<'ctx>(
             &fn_symbols,
             &record_layouts,
         )?;
+        if actor.coalesce_key_plan.is_some() {
+            crate::thunks::emit_coalesce_key_fn(ctx, &llvm_mod, actor, &record_layouts)?;
+        }
         if !actor.on_stop_symbols.is_empty() {
             crate::thunks::emit_actor_terminate_trampoline(ctx, &llvm_mod, actor, &fn_symbols)?;
         }

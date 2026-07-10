@@ -2445,11 +2445,11 @@ fn main() {
     println(dq.pop_front());  // 0
     println(dq.pop_back());   // 2
     println(dq.is_empty());   // false
-    dq.free();
+    dq.close();
 }
 ```
 
-`deque.new()` returns an opaque `Deque` handle. `push_front` / `push_back` add to either end; `pop_front` / `pop_back` remove and return the element (traps on empty). Current element type is `i64`. Call `free()` when done — the Deque is a heap-managed handle.
+`deque.new()` returns a resource `Deque` handle. `push_front` / `push_back` add to either end; `pop_front` / `pop_back` remove and return the element (traps on empty). Current element type is `i64`. It closes automatically at scope exit; call `close()` to release it early.
 
 ### Multiple stdlib imports coexisting
 

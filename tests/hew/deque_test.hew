@@ -14,7 +14,7 @@ fn test_new_deque_is_empty() {
     let dq = deque.new();
     testing.assert_true(dq.is_empty());
     testing.assert_eq(dq.len(), 0);
-    dq.free();
+    dq.close();
 }
 
 // ── push_back / pop_front (queue order) ──────────────────────────────
@@ -28,7 +28,7 @@ fn test_push_back_pop_front_fifo_order() {
     testing.assert_eq(dq.pop_front(), 10);
     testing.assert_eq(dq.pop_front(), 20);
     testing.assert_eq(dq.pop_front(), 30);
-    dq.free();
+    dq.close();
 }
 
 #[test]
@@ -38,7 +38,7 @@ fn test_push_back_increases_len() {
     testing.assert_eq(dq.len(), 1);
     dq.push_back(2);
     testing.assert_eq(dq.len(), 2);
-    dq.free();
+    dq.close();
 }
 
 // ── push_front / pop_back (reversed queue) ───────────────────────────
@@ -53,7 +53,7 @@ fn test_push_front_pop_back_order() {
     testing.assert_eq(dq.pop_back(), 1);
     testing.assert_eq(dq.pop_back(), 2);
     testing.assert_eq(dq.pop_back(), 3);
-    dq.free();
+    dq.close();
 }
 
 // ── push_front / pop_front (stack order) ─────────────────────────────
@@ -67,7 +67,7 @@ fn test_push_front_pop_front_lifo_order() {
     testing.assert_eq(dq.pop_front(), 300);
     testing.assert_eq(dq.pop_front(), 200);
     testing.assert_eq(dq.pop_front(), 100);
-    dq.free();
+    dq.close();
 }
 
 // ── mixed front and back operations ──────────────────────────────────
@@ -82,7 +82,7 @@ fn test_mixed_push_front_and_back() {
     testing.assert_eq(dq.pop_front(), 1);
     testing.assert_eq(dq.pop_back(), 3);
     testing.assert_eq(dq.pop_front(), 2);
-    dq.free();
+    dq.close();
 }
 
 // ── len after pops ────────────────────────────────────────────────────
@@ -97,7 +97,7 @@ fn test_len_decreases_after_pop() {
     dq.pop_front();
     testing.assert_eq(dq.len(), 0);
     testing.assert_true(dq.is_empty());
-    dq.free();
+    dq.close();
 }
 
 // ── single element edge case ──────────────────────────────────────────
@@ -109,7 +109,7 @@ fn test_single_element_push_back_pop_front() {
     testing.assert_false(dq.is_empty());
     testing.assert_eq(dq.pop_front(), 42);
     testing.assert_true(dq.is_empty());
-    dq.free();
+    dq.close();
 }
 
 #[test]
@@ -118,7 +118,7 @@ fn test_single_element_push_front_pop_back() {
     dq.push_front(99);
     testing.assert_eq(dq.pop_back(), 99);
     testing.assert_true(dq.is_empty());
-    dq.free();
+    dq.close();
 }
 
 // ── negative values ───────────────────────────────────────────────────
@@ -130,5 +130,5 @@ fn test_deque_stores_negative_values() {
     dq.push_back(-100);
     testing.assert_eq(dq.pop_front(), -1);
     testing.assert_eq(dq.pop_front(), -100);
-    dq.free();
+    dq.close();
 }

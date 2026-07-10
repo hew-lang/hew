@@ -15,16 +15,21 @@
 //!     for i in 0..result.len() {
 //!         println(result.get(i));
 //!     }
-//!     result.free();
+//!     result.close();
 //! }
 //! ```
 
 /// The result of a glob expansion.
 ///
-/// Created by `path.glob(pattern)`. Must be freed with `free()` when
-/// no longer needed to avoid leaking memory.
+/// Created by `path.glob(pattern)`. Glob results close automatically at scope
+/// exit; call `close()` to release one early.
 #[opaque]
+type GlobResultHandle {
+}
+
+#[resource]
 pub type GlobResult {
+    handle: GlobResultHandle;
 }
 
 /// Methods available on a `GlobResult`.
@@ -35,27 +40,28 @@ trait GlobResultMethods {
     /// Return the matched path at the given index.
     fn get(self, index: i64) -> string;
 
-    /// Release the glob result resources.
-    fn free(self);
 }
 
 impl GlobResultMethods for GlobResult {
     /// Return the number of matched paths.
     fn len(res: GlobResult) -> i64 {
         unsafe {
-            hew_glob_count(res) as i64
+            hew_glob_count(res.handle) as i64
         }
     }
     /// Return the matched path at the given index.
     fn get(res: GlobResult, index: i64) -> string {
         unsafe {
-            hew_glob_get(res, index as i32)
+            hew_glob_get(res.handle, index as i32)
         }
     } // INTERNAL-ABI: C ABI takes i32 index
-    /// Release the glob result resources.
-    fn free(res: GlobResult) {
+}
+
+impl GlobResult {
+    /// Release this glob result early.
+    fn close(res: GlobResult) {
         unsafe {
-            hew_glob_free(res)
+            hew_glob_free(res.handle)
         };
     }
 }
@@ -70,7 +76,7 @@ impl GlobResultMethods for GlobResult {
 /// ```
 pub fn glob(pattern: string) -> GlobResult {
     unsafe {
-        hew_glob(pattern)
+        GlobResult { handle: hew_glob(pattern) }
     }
 }
 
@@ -242,10 +248,10 @@ fn last_dot_pos(s: string) -> i64 {
 
 // ── FFI bindings (filesystem operations only) ────────────────────────
 extern "C" {
-    fn hew_glob(pattern: string) -> GlobResult;
-    fn hew_glob_count(result: GlobResult) -> i32;
-    fn hew_glob_get(result: GlobResult, index: i32) -> string;
-    fn hew_glob_free(result: GlobResult);
+    fn hew_glob(pattern: string) -> GlobResultHandle;
+    fn hew_glob_count(result: GlobResultHandle) -> i32;
+    fn hew_glob_get(result: GlobResultHandle, index: i32) -> string;
+    fn hew_glob_free(result: GlobResultHandle);
     fn hew_path_exists(path: string) -> bool;
     fn hew_path_is_file(path: string) -> bool;
     fn hew_path_is_dir(path: string) -> bool;

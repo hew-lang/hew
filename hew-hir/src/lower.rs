@@ -8340,24 +8340,6 @@ impl LowerCtx {
         }
     }
 
-    /// If `ty` is a bare reference to a type parameter of the function
-    /// currently being lowered, return its name. The checker lowers an
-    /// abstract `T` to `ResolvedTy::Named { args: [] }` (a structural
-    /// `ResolvedTy::TypeParam` also appears after substitution), so both
-    /// shapes are recognised. Used to route generic `Display` surfaces to
-    /// per-monomorphisation static dispatch instead of a concrete overload.
-    fn abstract_type_param_name<'a>(&self, ty: &'a ResolvedTy) -> Option<&'a str> {
-        match ty {
-            ResolvedTy::TypeParam { name } => Some(name),
-            ResolvedTy::Named { name, args, .. }
-                if args.is_empty() && self.current_fn_type_params.contains(name) =>
-            {
-                Some(name)
-            }
-            _ => None,
-        }
-    }
-
     /// Emit a `Display::fmt` static trait-dispatch over an abstract type
     /// parameter `type_param_name` (#1565). `bound_trait` and
     /// `declaring_trait` are both the `Display` lang-item trait; the concrete
@@ -8595,21 +8577,25 @@ impl LowerCtx {
         span: &Span,
     ) -> Result<(HirExprKind, ResolvedTy), Vec<HirExpr>> {
         let is_display_surface = matches!(name, "println" | "print" | "to_string");
-        // Route a single `dyn Display` argument through the Display dispatch
-        // spine when no concrete-ABI overload matched. This covers two shapes:
-        //   * an abstract type parameter `T: Display` (per-monomorphisation
-        //     static dispatch), and
-        //   * `duration`, whose `impl Display for duration` fmt has no
-        //     `to_string_*` catalog overload — without this it would fail closed
-        //     with `UnresolvedBuiltinOverload` even though the checker admitted
-        //     the call (`instant` needs no arm: it canonicalises to i64 and the
-        //     i64 overload renders it as raw nanos).
-        let single_dispatchable = args.len() == 1
-            && args.first().is_some_and(|arg| {
-                self.abstract_type_param_name(&arg.ty).is_some()
-                    || matches!(arg.ty, ResolvedTy::Duration)
-                    || is_named_instant(&arg.ty)
-            });
+        // Route a single `Display` argument through the Display dispatch spine
+        // whenever no concrete-ABI overload matched. Reaching this fallback
+        // means `stdlib_catalog::resolve_overload` found no monomorphic entry
+        // (`println_i32`, `to_string_str`, …) for the argument type, yet the
+        // checker's `require_display_impl` gate has already verified the
+        // argument implements `Display` — a non-`Display` argument is rejected
+        // before HIR lowering runs (`println(blob)` on a type with no
+        // `impl Display` fails the checker's trait-bound gate, never reaching
+        // here). So the argument count is the only condition worth testing:
+        // `lower_display_dispatch` already has a working arm for every shape a
+        // `Display` value can take — `string`, every scalar (incl. `char` and
+        // the narrow ints via `scalar_display_builtin`), `duration`,
+        // named-`instant`, concrete named `impl Display` types, and abstract
+        // type parameters `T: Display` — and fails closed on anything else.
+        // Enumerating a subset of those shapes here only re-hid the rest behind
+        // `UnresolvedBuiltinOverload` (#2351: `char`/`i8`/`f32`; #2492: named
+        // types with a real `impl Display`), even though f-string interpolation
+        // of the identical value already renders it fine through this shell.
+        let single_dispatchable = args.len() == 1;
         if !is_display_surface || !single_dispatchable || self.lang_items.display_method().is_none()
         {
             return Err(args);
@@ -28911,16 +28897,6 @@ fn scan_expr_for_vec_index_gate(
 /// expression-level `from_ty`, which canonicalises to i64), so any
 /// annotation/parameter-typed instant carries this shape rather than a bare
 /// `ResolvedTy::I64`.
-fn is_named_instant(ty: &ResolvedTy) -> bool {
-    matches!(
-        ty,
-        ResolvedTy::Named {
-            builtin: Some(BuiltinType::Instant),
-            ..
-        }
-    )
-}
-
 fn scalar_display_builtin(ty: &ResolvedTy) -> &'static str {
     match ty {
         ResolvedTy::I8 | ResolvedTy::I16 | ResolvedTy::I32 => "to_string_i32",

@@ -1304,14 +1304,14 @@ mod tests {
 
         let http_info =
             load_module("std::net::http", &test_root()).expect("should load http module");
-        let free = http_info
+        let close = http_info
             .handle_methods
             .iter()
-            .find(|m| m.type_name == "http.Request" && m.method_name == "free")
-            .expect("http.Request.free should be extracted");
-        assert_eq!(free.c_symbol, "hew_http_request_free");
-        assert_eq!(free.params, Vec::<Ty>::new());
-        assert_eq!(free.return_type, Ty::Unit);
+            .find(|m| m.type_name == "http.Request" && m.method_name == "close")
+            .expect("http.Request.close should be extracted");
+        assert_eq!(close.c_symbol, "hew_http_request_free");
+        assert_eq!(close.params, Vec::<Ty>::new());
+        assert_eq!(close.return_type, Ty::Unit);
     }
 
     #[test]
@@ -1511,8 +1511,8 @@ mod tests {
         let info = load_module("std::net::http", &test_root()).unwrap();
 
         assert!(
-            !info.drop_types.contains(&"http.Request".to_string()),
-            "http.Request should not be a drop type after impl Drop removal, got: {:?}",
+            info.drop_types.contains(&"http.Request".to_string()),
+            "http.Request should be a drop type as a `#[resource]`, got: {:?}",
             info.drop_types
         );
 
@@ -1530,7 +1530,7 @@ mod tests {
         let request_drop = info.drop_funcs.iter().find(|(ty, _)| ty == "http.Request");
         assert!(
             request_drop.is_none(),
-            "http.Request should not have a drop func, got: {:?}",
+            "http.Request.close forwards through its handle field, so no direct drop func is registered, got: {:?}",
             info.drop_funcs
         );
 

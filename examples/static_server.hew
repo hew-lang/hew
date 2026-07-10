@@ -45,7 +45,7 @@ fn serve_request(root: string, req: Request) {
             req.respond_text(404, "404 Not Found");
         }
     }
-    req.free();
+    req.close();
 }
 
 fn main() {

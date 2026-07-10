@@ -10,7 +10,7 @@ fn test_request_surface_is_importable_from_http_client() {
 
     let resp = http_client.request("TRACE", "http://example.com", "", headers);
     testing.assert_true(resp.status() == -1);
-    resp.free();
+    resp.close();
 }
 
 #[test]
@@ -36,6 +36,6 @@ fn test_request_with_header_pairs() {
     let resp = http_client.request("GET", "http://example.com", "", headers);
     // Transport will fail (TRACE/unsupported method or network), status -1 is acceptable.
     // The important property is that the call compiles and executes without panic.
-    resp.free();
+    resp.close();
     testing.assert_true(true);
 }

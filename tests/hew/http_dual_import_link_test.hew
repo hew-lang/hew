@@ -45,6 +45,6 @@ fn test_response_accessors_linked_in_dual_import_unit() {
     let _content_type = resp.content_type();
     let _header = resp.header("content-type");
     let _headers = resp.headers();
-    resp.free();
+    resp.close();
     testing.assert_true(true);
 }

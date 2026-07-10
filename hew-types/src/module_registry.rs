@@ -602,8 +602,8 @@ mod tests {
         reg.load("std::net::http").unwrap();
         assert!(reg.is_handle_type("json.Value"), "json.Value still present");
         assert!(
-            reg.is_handle_type("http.Request"),
-            "http.Request now present"
+            !reg.is_handle_type("http.Request"),
+            "http.Request is a fielded resource wrapper, not an opaque handle"
         );
     }
 
@@ -617,8 +617,8 @@ mod tests {
         );
         reg.load("std::net::http").unwrap();
         assert!(
-            !reg.is_drop_type("http.Request"),
-            "http.Request should not be a drop type"
+            reg.is_drop_type("http.Request"),
+            "http.Request is a `#[resource]` handle, so it is a drop type"
         );
         reg.load("std::process").unwrap();
         assert!(
@@ -734,7 +734,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_handle_method_sig_returns_listener_close_and_request_free() {
+    fn resolve_handle_method_sig_returns_listener_and_request_close() {
         let mut reg = registry();
         reg.load("std::net").unwrap();
         reg.load("std::net::http").unwrap();
@@ -746,12 +746,12 @@ mod tests {
         assert_eq!(listener_close.1, Vec::<crate::ty::Ty>::new());
         assert_eq!(listener_close.2, crate::ty::Ty::Unit);
 
-        let request_free = reg
-            .resolve_handle_method_sig("http.Request", "free")
-            .expect("http.Request.free should resolve");
-        assert_eq!(request_free.0, "hew_http_request_free");
-        assert_eq!(request_free.1, Vec::<crate::ty::Ty>::new());
-        assert_eq!(request_free.2, crate::ty::Ty::Unit);
+        let request_close = reg
+            .resolve_handle_method_sig("http.Request", "close")
+            .expect("http.Request.close should be extracted");
+        assert_eq!(request_close.0, "hew_http_request_free");
+        assert_eq!(request_close.1, Vec::<crate::ty::Ty>::new());
+        assert_eq!(request_close.2, crate::ty::Ty::Unit);
     }
 
     #[test]

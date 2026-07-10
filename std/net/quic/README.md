@@ -118,7 +118,7 @@ prefer the explicit TLS constructors shown in the API table below.
 | Method         | Description                                     |
 | -------------- | ----------------------------------------------- |
 | `event.kind()` | Return the event kind integer (see table below) |
-| `event.free()` | Release event resources                         |
+| `event.close()` | Release event resources early; otherwise scope exit closes it |
 
 **Event kinds:** `0` connected · `1` disconnected · `2` stream opened ·
 `3` stream closed · `-1` error.

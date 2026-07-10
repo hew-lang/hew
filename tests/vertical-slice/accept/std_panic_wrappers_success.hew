@@ -23,7 +23,7 @@ fn main() -> i64 {
 
     let parsed = url.parse("https://x.com");
     let host = parsed.host();
-    parsed.free();
+    parsed.close();
     if host != "x.com" {
         return 4;
     }

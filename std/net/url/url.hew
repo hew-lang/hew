@@ -15,7 +15,7 @@
 //!         Some(port) => println(port),
 //!         None => println("no port"),
 //!     }
-//!     u.free();
+//!     u.close();
 //! }
 //! ```
 
@@ -23,10 +23,15 @@ import std::string;
 
 /// A parsed URL.
 ///
-/// Created by `url.parse(s)`. Must be freed with `free()` when
-/// no longer needed to avoid leaking memory.
+/// Created by `url.parse(s)`. URLs close automatically at scope exit; call
+/// `close()` to release one early.
 #[opaque]
+type UrlHandle {
+}
+
+#[resource]
 pub type Url {
+    handle: UrlHandle;
 }
 
 /// Methods available on a parsed `Url`.
@@ -55,27 +60,25 @@ trait UrlMethods {
     /// Resolve a relative path onto this URL, returning a new `Url`.
     fn resolve(self, path: string) -> Url;
 
-    /// Release the parsed URL resources.
-    fn free(self);
 }
 
 impl UrlMethods for Url {
     /// Return the URL scheme (e.g. `"https"`).
     fn scheme(u: Url) -> string {
         unsafe {
-            hew_url_scheme(u)
+            hew_url_scheme(u.handle)
         }
     }
     /// Return the host name.
     fn host(u: Url) -> string {
         unsafe {
-            hew_url_host(u)
+            hew_url_host(u.handle)
         }
     }
     /// Return the explicit port number, if specified.
     fn port(u: Url) -> Option<i64> {
         let port: i32 = unsafe {
-            hew_url_port(u)
+            hew_url_port(u.handle)
         };
         if port < 0 {
             None
@@ -86,37 +89,40 @@ impl UrlMethods for Url {
     /// Return the path component.
     fn path(u: Url) -> string {
         unsafe {
-            hew_url_path(u)
+            hew_url_path(u.handle)
         }
     }
     /// Return the query string (without the leading `?`).
     fn query(u: Url) -> string {
         unsafe {
-            hew_url_query(u)
+            hew_url_query(u.handle)
         }
     }
     /// Return the fragment (without the leading `#`).
     fn fragment(u: Url) -> string {
         unsafe {
-            hew_url_fragment(u)
+            hew_url_fragment(u.handle)
         }
     }
     /// Return the full URL as a string.
     fn to_string(u: Url) -> string {
         unsafe {
-            hew_url_to_string(u)
+            hew_url_to_string(u.handle)
         }
     }
     /// Resolve a relative path onto this URL, returning a new `Url`.
     fn resolve(u: Url, path: string) -> Url {
         unsafe {
-            hew_url_join(u, path)
+            Url { handle: hew_url_join(u.handle, path) }
         }
     }
-    /// Release the parsed URL resources.
-    fn free(u: Url) {
+}
+
+impl Url {
+    /// Release this parsed URL early.
+    fn close(u: Url) {
         unsafe {
-            hew_url_free(u)
+            hew_url_free(u.handle)
         };
     }
 }
@@ -133,8 +139,8 @@ impl UrlMethods for Url {
 /// ```
 pub fn parse(s: string) -> Url {
     unsafe {
-        let u = hew_url_parse(s);
-        if !hew_url_is_valid(u) {
+        let u = Url { handle: hew_url_parse(s) };
+        if !hew_url_is_valid(u.handle) {
             panic(f"url.parse: invalid URL: {s}");
         }
         u
@@ -411,15 +417,15 @@ fn hex_nibble(b: u8) -> i32 { // INTERNAL-ABI: nibble values 0-15 and sentinel -
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
-    fn hew_url_parse(s: string) -> Url;
-    fn hew_url_is_valid(url: Url) -> bool;
-    fn hew_url_scheme(url: Url) -> string;
-    fn hew_url_host(url: Url) -> string;
-    fn hew_url_port(url: Url) -> i32;
-    fn hew_url_path(url: Url) -> string;
-    fn hew_url_query(url: Url) -> string;
-    fn hew_url_fragment(url: Url) -> string;
-    fn hew_url_to_string(url: Url) -> string;
-    fn hew_url_join(base: Url, path: string) -> Url;
-    fn hew_url_free(url: Url);
+    fn hew_url_parse(s: string) -> UrlHandle;
+    fn hew_url_is_valid(url: UrlHandle) -> bool;
+    fn hew_url_scheme(url: UrlHandle) -> string;
+    fn hew_url_host(url: UrlHandle) -> string;
+    fn hew_url_port(url: UrlHandle) -> i32;
+    fn hew_url_path(url: UrlHandle) -> string;
+    fn hew_url_query(url: UrlHandle) -> string;
+    fn hew_url_fragment(url: UrlHandle) -> string;
+    fn hew_url_to_string(url: UrlHandle) -> string;
+    fn hew_url_join(base: UrlHandle, path: string) -> UrlHandle;
+    fn hew_url_free(url: UrlHandle);
 }

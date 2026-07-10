@@ -48,8 +48,8 @@
 //!     // both the stream-closed (kind=3) and peer-disconnected (kind=1)
 //!     // events arrive can race delivery on the wire. Across separate
 //!     // processes the exact order is not guaranteed.
-//!     let ev1 = conn.on_event(); ev1.free();
-//!     let ev2 = conn.on_event(); ev2.free();
+//!     let ev1 = conn.on_event(); ev1.close();
+//!     let ev2 = conn.on_event(); ev2.close();
 //!     match conn.disconnect() {
 //!         Ok(_) => {},
 //!         Err(err) => panic(err),
@@ -128,7 +128,12 @@ pub type QUICStream {
 /// Used by the blocking event API to react to queued connection and channel
 /// events. Pair this with `observe()` for non-destructive snapshots.
 #[opaque]
+type QUICEventHandle {
+}
+
+#[resource]
 pub type QUICEvent {
+    handle: QUICEventHandle;
 }
 
 /// Non-destructive endpoint observation.
@@ -207,7 +212,7 @@ impl QUICEndpointMethods for QUICEndpoint {
     }
     fn on_event(ep: QUICEndpoint) -> QUICEvent {
         unsafe {
-            hew_quic_endpoint_on_event(ep)
+            QUICEvent { handle: hew_quic_endpoint_on_event(ep) }
         }
     }
     fn observe(ep: QUICEndpoint) -> QUICEndpointObservation {
@@ -259,7 +264,7 @@ impl QUICConnectionMethods for QUICConnection {
     }
     fn on_event(conn: QUICConnection) -> QUICEvent {
         unsafe {
-            hew_quic_conn_on_event(conn)
+            QUICEvent { handle: hew_quic_conn_on_event(conn) }
         }
     }
     fn observe(conn: QUICConnection) -> QUICConnectionObservation {
@@ -374,19 +379,21 @@ trait QUICEventMethods {
     ///   0 — connected, 1 — disconnected, 2 — stream opened,
     ///   3 — stream closed, −1 — error.
     fn kind(self) -> i32; // INTERNAL-ABI: opaque event-kind enum (0=connected, 1=disconnected, 2=stream-opened, 3=stream-closed, -1=error); planned enum migration
-    /// Release the event and its resources.
-    fn free(self);
 }
 
 impl QUICEventMethods for QUICEvent {
     fn kind(evt: QUICEvent) -> i32 { // INTERNAL-ABI: opaque event-kind enum; planned enum migration
         unsafe {
-            hew_quic_event_kind(evt)
+            hew_quic_event_kind(evt.handle)
         }
     }
-    fn free(evt: QUICEvent) {
+}
+
+impl QUICEvent {
+    /// Release this event early.
+    fn close(evt: QUICEvent) {
         unsafe {
-            hew_quic_event_free(evt)
+            hew_quic_event_free(evt.handle)
         };
     }
 }
@@ -675,7 +682,7 @@ extern "C" {
     fn hew_quic_endpoint_connect(ep: QUICEndpoint, addr: string, server_name: string) -> QUICConnection;
     fn hew_quic_endpoint_accept(ep: QUICEndpoint) -> QUICConnection;
     fn hew_quic_endpoint_close(ep: QUICEndpoint);
-    fn hew_quic_endpoint_on_event(ep: QUICEndpoint) -> QUICEvent;
+    fn hew_quic_endpoint_on_event(ep: QUICEndpoint) -> QUICEventHandle;
     fn hew_quic_endpoint_local_addr(ep: QUICEndpoint) -> string;
     fn hew_quic_endpoint_accepted_connections(ep: QUICEndpoint) -> i64;
     fn hew_quic_endpoint_last_error(ep: QUICEndpoint) -> string;
@@ -684,7 +691,7 @@ extern "C" {
     fn hew_quic_conn_open_stream(conn: QUICConnection) -> QUICStream;
     fn hew_quic_conn_accept_stream(conn: QUICConnection) -> QUICStream;
     fn hew_quic_conn_disconnect(conn: QUICConnection) -> i32;
-    fn hew_quic_conn_on_event(conn: QUICConnection) -> QUICEvent;
+    fn hew_quic_conn_on_event(conn: QUICConnection) -> QUICEventHandle;
     fn hew_quic_conn_local_addr(conn: QUICConnection) -> string;
     fn hew_quic_conn_peer_addr(conn: QUICConnection) -> string;
     fn hew_quic_conn_opened_streams(conn: QUICConnection) -> i64;
@@ -711,8 +718,8 @@ extern "C" {
     fn hew_quic_stream_last_error(stream: QUICStream) -> string;
 
     // Event methods
-    fn hew_quic_event_kind(event: QUICEvent) -> i32;
-    fn hew_quic_event_free(event: QUICEvent);
+    fn hew_quic_event_kind(event: QUICEventHandle) -> i32;
+    fn hew_quic_event_free(event: QUICEventHandle);
 
     // string conversion helpers (shared runtime builtins)
     fn hew_string_to_bytes(s: string) -> bytes;

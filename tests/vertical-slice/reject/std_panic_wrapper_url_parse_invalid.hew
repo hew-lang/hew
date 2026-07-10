@@ -3,6 +3,6 @@ import std::net::url;
 fn main() -> i64 {
     let parsed = url.parse("x");
     let host = parsed.host();
-    parsed.free();
+    parsed.close();
     host.len()
 }

@@ -4164,7 +4164,7 @@ fn run_imports_json_fluent_builders_round_trip() {
          \x20   let field = parsed.get_field(\"version\");\n\
          \x20   println(f\"version={field.get_int()}\");\n\
          \x20   field.free();\n\
-         \x20   parsed.free();\n\
+         \x20   parsed.close();\n\
          \x20   obj.free();\n\
          \x20   let arr = json.array().push_int(1).push_int(2).push_int(3);\n\
          \x20   println(f\"len={arr.array_len()}\");\n\

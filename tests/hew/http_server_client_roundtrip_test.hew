@@ -37,7 +37,7 @@ actor Client {
         let resp = http_client.get(url);
         status = resp.status();
         body = resp.body();
-        resp.free();
+        resp.close();
     }
 
     receive fn status_result() -> i64 {
@@ -63,7 +63,7 @@ fn test_server_client_roundtrip_returns_200_and_echoes_path() {
     let req = server.accept();
     let path = req.path();
     let _ = req.try_respond_text(200, "pong:" + path);
-    req.free();
+    req.close();
     server.close();
 
     match await client.status_result() {

@@ -38350,7 +38350,18 @@ pub fn terminator_source_places(
         Terminator::Call { args, .. } => args.clone(),
         Terminator::Yield { value, .. } => vec![*value],
         // `dest` is the handle slot the generator is written into (a write);
-        // `body_fn` is a static symbol, not a Place — no source operands.
+        // `body_fn` is a static symbol, not a Place. `env` (when present) IS
+        // read — the ramp flat-copies the capture env into the coro frame —
+        // but is deliberately NOT listed as a source: the env place is always
+        // the dedicated closure-env aggregate local `ClosureEnvInit` just
+        // built (never a user binding or a leaf string/bytes temp), and
+        // listing it would make the escape scans treat the env local itself
+        // as escaping. Every USER value enters the env through
+        // `ClosureEnvInit`, whose reads the dataflow table
+        // (`dataflow::instr_reads_writes`) already reports — consumers that
+        // need every read (the nested fresh-temp collectors) use that table,
+        // not this one. Note the asymmetry with `MakeLambdaActor` below,
+        // which does list its env.
         Terminator::MakeGenerator { .. } => Vec::new(),
         // Lambda-actor construction: `dest` is written; `body_fn` and
         // `state_drop_fn` are static symbols. The capture env (when
@@ -39845,11 +39856,17 @@ fn block_by_id(blocks: &[BasicBlock], id: u32) -> Option<&BasicBlock> {
 ///    construction, so a buffer is never claimed by both);
 /// 3. it has exactly ONE def, a known fresh producer (no instruction
 ///    re-definition; a producer-terminator temp has no instruction writer);
-/// 4. it has AT MOST ONE source-use, and (if present) that use is verified
-///    borrowing-only: a borrowing `Terminator::Call`, a string compare
-///    instruction, or the narrowly-proven nested `hew_string_concat` →
-///    `hew_string_concat` instruction chain. Any other use (`Move`/store/
-///    return/send/user-call) excludes it (leak, never double-free);
+/// 4. it has AT MOST ONE use-site in the FULL dataflow reads
+///    (`dataflow::instr_reads_writes(..).0` for instructions — which, unlike
+///    `instr_source_places`, also sees borrow-excluded readers such as
+///    `Instr::WireCodec`'s operand — plus `terminator_source_places` for
+///    terminators), and (if present) that use is verified borrowing-only: a
+///    borrowing `Terminator::Call`, a string compare instruction, or the
+///    narrowly-proven nested `hew_string_concat` → `hew_string_concat`
+///    instruction chain. Any other use (`Move`/store/return/send/user-call/
+///    `WireCodec`) excludes it (leak, never double-free) — the reads-based
+///    table is what keeps a `Packet.from_json(a + b)` operand ALIVE past the
+///    parse instead of routing it down the discard branch;
 /// 5. the drop site is provably dominated by the def and entered exactly once
 ///    (single-predecessor continuation), in one of these structural shapes:
 ///      * discard, instr def → drop right after the producer instruction (same
@@ -39906,13 +39923,32 @@ fn collect_nested_fresh_string_temp_drops(
         }
     }
 
-    // Source-use sites per local (rule 4), deduplicated within each
+    // Use sites per local (rule 4), deduplicated within each
     // instruction/terminator so a temp referenced twice by one call counts once.
+    //
+    // Instruction uses come from the full dataflow READS
+    // (`dataflow::instr_reads_writes(..).0`), NOT from `instr_source_places` —
+    // the same hidden-borrow-reader correction as the bytes collector
+    // (`collect_nested_fresh_bytes_temp_drops`). `instr_source_places`
+    // deliberately excludes borrow-only readers (`Instr::WireCodec`'s operand,
+    // borrow-only `ClosureEnvInit` fields) so a NAMED binding keeps its
+    // scope-exit drop past those reads; for a bare temp that exclusion
+    // registered ZERO uses, took the discard branch, and spliced
+    // `hew_string_drop` immediately after the producer — freeing the buffer
+    // BEFORE the hidden reader ran. `Packet.from_json(a + b)` parsed a freed
+    // buffer this way: a silent wrong-result (`Err`), while the named
+    // `let joined = a + b` sibling was correct. With the reads table a hidden
+    // reader is a real use-site the borrowing-use classification rejects, so
+    // the temp fails CLOSED to the leak direction. Terminator uses keep
+    // `terminator_source_places` (no borrow-exclusions for any reading
+    // variant; `MakeGenerator`'s env — see its arm's note — never carries a
+    // leaf string/bytes temp directly).
     let mut source_uses: HashMap<u32, Vec<NestedUseSite>> = HashMap::new();
     for block in blocks {
         for (idx, instr) in block.instructions.iter().enumerate() {
             let mut here: HashSet<u32> = HashSet::new();
-            for p in instr_source_places(instr) {
+            let (reads, _) = crate::dataflow::instr_reads_writes(instr);
+            for p in reads {
                 if let Some(l) = base_local(p) {
                     here.insert(l);
                 }
@@ -40362,6 +40398,39 @@ mod nested_fresh_string_temp_drop_admission {
             collect(&blocks, &locals, &HashMap::new()).is_empty(),
             "Vec owned-element ingress is not the proven borrowing concat chain; \
              the collector must leave ownership with the container path"
+        );
+    }
+
+    #[test]
+    fn concat_temp_read_only_by_wire_from_json_is_not_discard_dropped() {
+        // `Packet.from_json(a + b)`: the fresh concat temp's ONLY reader is
+        // `Instr::WireCodec` (FromJson operand) — a borrow-excluded read that
+        // `instr_source_places` hides. A source-places-based use table
+        // registered ZERO uses, took the discard branch, and spliced
+        // `hew_string_drop` immediately after the concat — the parse then read
+        // a freed buffer (silent wrong-result `Err`, while the named
+        // `let joined = a + b` sibling was correct). The reads-based table
+        // sees the WireCodec use-site; it is not an admissible borrowing use,
+        // so the temp fails CLOSED to the leak direction: NO drop is spliced.
+        let blocks = vec![block(
+            0,
+            vec![
+                concat(0, 1, 2),
+                Instr::WireCodec {
+                    dest: Place::Local(5),
+                    operand: Place::Local(2),
+                    direction: hew_types::WireCodecDirection::FromJson,
+                    value_ty: user_record_ty(),
+                },
+            ],
+            Terminator::Return,
+        )];
+        let locals = locals_with(&[(5, user_record_ty())]);
+        assert!(
+            collect(&blocks, &locals, &HashMap::new()).is_empty(),
+            "a string temp whose only reader is a WireCodec parse must not take \
+             the discard drop — an immediate post-producer hew_string_drop \
+             would free the buffer before the parse reads it"
         );
     }
 

@@ -1,0 +1,22 @@
+// Validation: an unnamed fresh `string` concat result flowing straight into a
+// JSON parse (`Packet.from_json(a + b)`) round-trips and returns the decoded
+// value. The parse reads its operand through the borrow-excluded `WireCodec`
+// instruction, so the transient-string drop pass must keep the buffer alive
+// past the parse: a mis-scheduled post-producer drop freed it before the read
+// — the parse then consumed a freed buffer and returned `Err` (a silent wrong
+// result, exit 7) — while the named `let joined = a + b` sibling worked.
+// Exit 42 proves the full round-trip.
+#[wire]
+type Packet {
+    id: i64 @1,
+}
+
+fn main() -> i64 {
+    let p = Packet { id: 42 };
+    let a = p.to_json();
+    let b = "";
+    match Packet.from_json(a + b) {
+        Ok(back) => back.id,
+        Err(_) => 7,
+    }
+}

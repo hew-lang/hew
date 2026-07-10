@@ -18,6 +18,11 @@ IO_RUNTIME_FFI_FILES = (
     "io_time.rs",
     "transport.rs",
 )
+CODEGEN_STABLE_IO_EXPORTS = {
+    "hew_conn_await_read",
+    "hew_listener_await_accept",
+    "hew_tcp_read_raw",
+}
 C_UNWIND_MACHINE_EMIT_EXPORTS = {
     "hew_machine_emit_step_enter",
     "hew_machine_emit_step_exit",
@@ -55,9 +60,13 @@ def test_classify_internal_outputs_sorted_names_only() -> None:
     assert result.returncode == 0, result.stderr
     lines = result.stdout.splitlines()
     assert lines == sorted(lines)
-    assert "hew_sched_init" in lines
+    assert "hew_sched_init" not in lines
     assert "hew_runtime_cleanup" in lines
     assert "hew_actor_spawn" not in lines
+
+    codegen_result = run_script("--classify", "codegen-stable", "--validate")
+    assert codegen_result.returncode == 0, codegen_result.stderr
+    assert "hew_sched_init" in codegen_result.stdout.splitlines()
 
 
 def test_validate_covers_every_runtime_export_exactly_once() -> None:
@@ -136,7 +145,8 @@ def test_io_runtime_exports_are_jit_stable() -> None:
 
     assert io_exports
     assert not (io_exports & classification["internal"])
-    assert io_exports <= classification["stable"]
+    assert io_exports & classification["codegen-stable"] == CODEGEN_STABLE_IO_EXPORTS
+    assert io_exports - CODEGEN_STABLE_IO_EXPORTS <= classification["stable"]
     assert "hew_shutdown_initiate" in classification["internal"]
 
 

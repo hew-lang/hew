@@ -1,0 +1,20 @@
+// Reject (CAP-11): forwarding a fn-typed parameter into a generator
+// constructor cannot prove that the function value has a null environment.
+gen fn mapped(n: i64, f: fn(i64) -> i64) -> i64 {
+    var i = 0;
+    while i < n {
+        yield f(i);
+        i = i + 1;
+    }
+}
+
+fn forward(f: fn(i64) -> i64) -> Generator<i64, ()> {
+    mapped(1, f)
+}
+
+fn main() {
+    let suffix = "owned-" + "heap";
+    for v in forward(|x: i64| x + suffix.len()) {
+        println(v);
+    }
+}

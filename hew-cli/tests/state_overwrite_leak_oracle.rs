@@ -216,6 +216,93 @@ fn enum_overwrite_source(frames: usize) -> String {
     )
 }
 
+/// String inspect-then-overwrite: each frame READS the `string` state field
+/// through a borrowing string call (`name.len()`) and then overwrites it
+/// (`name = name + "x"`). The load feeding `hew_string_length` borrows the
+/// field — it must NOT emit a `hew_string_clone` rc-bump. Pre-#2432-classifier
+/// the string-receiver borrow was not recognised (`string_args` is a separate
+/// contract axis from the Vec/bytes receiver axis), so the load classified
+/// `Owned` and leaked one string buffer per frame (`string_slope`: 2 @3 → 49
+/// @50 frames; merge-base 0/0). The store-side overwrite release of the OLD
+/// buffer is orthogonal and already correct.
+fn string_inspect_overwrite_source(frames: usize) -> String {
+    format!(
+        "actor Namer {{\n\
+         \x20   var name: string;\n\
+         \n\
+         \x20   receive fn tick() {{\n\
+         \x20       if name.len() < 1000000 {{\n\
+         \x20           name = name + \"x\";\n\
+         \x20       }}\n\
+         \x20   }}\n\
+         \n\
+         \x20   receive fn size() -> i64 {{\n\
+         \x20       name.len()\n\
+         \x20   }}\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   let h = spawn Namer(name: \"seed\".to_upper());\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       h.tick();\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   sleep(2000ms);\n\
+         \x20   match await h.size() {{\n\
+         \x20       Ok(v) => v,\n\
+         \x20       Err(_) => -1,\n\
+         \x20   }}\n\
+         }}\n"
+    )
+}
+
+/// Collection iteration (`for v in items`): each frame iterates a `Vec<i64>`
+/// state field. The `for x in <collection>` desugar lowers the field load into
+/// a synthetic `VecIter {{ vec: <load>, idx: 0 }}` cursor. Pre-#2432-classifier
+/// the `RecordInit VecIter` fell through the wildcard as a whole-value escape,
+/// so the load classified `Owned` and deep-cloned a Vec handle the cursor
+/// never frees — a per-frame leak on THE most common actor-collection read
+/// shape (`forin_slope`: 6 @3 → 100 @50 frames; merge-base 0/0). The cursor
+/// BORROWS the source handle (reads via `len()`/`get(i)`, never frees it), so
+/// the load must classify `Borrowed` and alias the actor's still-owned Vec.
+fn collection_iterate_source(frames: usize) -> String {
+    format!(
+        "actor Summer {{\n\
+         \x20   var items: Vec<i64>;\n\
+         \n\
+         \x20   receive fn spin() {{\n\
+         \x20       var s: i64 = 0;\n\
+         \x20       for v in items {{\n\
+         \x20           s = s + v;\n\
+         \x20       }}\n\
+         \x20   }}\n\
+         \n\
+         \x20   receive fn size() -> i64 {{\n\
+         \x20       items.len()\n\
+         \x20   }}\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   let xs: Vec<i64> = Vec::new();\n\
+         \x20   xs.push(1);\n\
+         \x20   xs.push(2);\n\
+         \x20   xs.push(3);\n\
+         \x20   let h = spawn Summer(items: xs);\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       h.spin();\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   sleep(2000ms);\n\
+         \x20   match await h.size() {{\n\
+         \x20       Ok(v) => v,\n\
+         \x20       Err(_) => -1,\n\
+         \x20   }}\n\
+         }}\n"
+    )
+}
+
 /// Whole-value self-store: `prof = prof` byte-copies every leaf, so the
 /// release must neutralise them ALL (drop nothing). The aliased `name`
 /// leaf is HEAP-allocated at spawn (`.to_upper()`) so an over-eager
@@ -288,6 +375,137 @@ fn main() -> i64 {
     }
     sleep(1000ms);
     match await s.len_a() {
+        Ok(v) => v,
+        Err(_) => -1,
+    }
+}
+";
+
+/// Temp-bridged two-field swap (#2432): `let t = x; x = y; y = t;` reads
+/// `x` through a THIRD binding (`t`) before either field is overwritten —
+/// two separate `ActorStateFieldLoad`s and two separate
+/// `ActorStateFieldStore`s, unlike `RECORD_SWAP_SOURCE`'s single
+/// self-referential store (`pair = Pair { a: pair.b, b: pair.a }`). The
+/// second store's per-store alias guard has no visibility into `t`, a
+/// still-live binding outside its own `(old, new)` pair: pre-fix,
+/// `ActorStateFieldLoad` never retains, so `t` bit-aliases the field-`x`
+/// buffer, the first store frees it out from under `t`, and the second
+/// store either double-frees (Vec/record) or corrupts the string header —
+/// deterministic SIGABRT / corrupted-header abort under the
+/// poisoned-allocator triple. After an odd swap count `x` holds the
+/// ORIGINAL `y` and vice versa — pinned by exact swapped value, not just
+/// a clean exit code.
+const VEC_SWAP_SOURCE: &str = "\
+actor TwoVecs {
+    var x: Vec<i64>;
+    var y: Vec<i64>;
+
+    receive fn flip() {
+        let t = x;
+        x = y;
+        y = t;
+    }
+
+    receive fn sum_x() -> i64 {
+        var s: i64 = 0;
+        for v in x { s = s + v; }
+        s
+    }
+}
+
+fn main() -> i64 {
+    let xs: Vec<i64> = Vec::new();
+    xs.push(1); xs.push(2); xs.push(3);
+    let ys: Vec<i64> = Vec::new();
+    ys.push(10); ys.push(20); ys.push(30); ys.push(40);
+    let a = spawn TwoVecs(x: xs, y: ys);
+    var i: i64 = 0;
+    while i < 25 {
+        a.flip();
+        i = i + 1;
+    }
+    sleep(1000ms);
+    match await a.sum_x() {
+        Ok(v) => v,
+        Err(_) => -1,
+    }
+}
+";
+
+/// Temp-bridged two-field swap — string kind. Both leaves are
+/// HEAP-allocated at spawn (`.to_upper()`), so a wrongful free or a
+/// corrupted refcount header (the string-specific crash signature)
+/// actually manifests. After an odd swap count `x` holds the ORIGINAL
+/// `y` (`"RIGHT-SIDE"`, len 10).
+const STRING_SWAP_SOURCE: &str = "\
+actor TwoStrings {
+    var x: string;
+    var y: string;
+
+    receive fn flip() {
+        let t = x;
+        x = y;
+        y = t;
+    }
+
+    receive fn len_x() -> i64 {
+        x.len()
+    }
+}
+
+fn main() -> i64 {
+    let a = spawn TwoStrings(x: \"left\".to_upper(), y: \"right-side\".to_upper());
+    var i: i64 = 0;
+    while i < 25 {
+        a.flip();
+        i = i + 1;
+    }
+    sleep(1000ms);
+    match await a.len_x() {
+        Ok(v) => v,
+        Err(_) => -1,
+    }
+}
+";
+
+/// Temp-bridged two-field swap — record kind (`Box { v: Vec<i64> }`), the
+/// nested-aggregate analogue of `VEC_SWAP_SOURCE`. After an odd swap count
+/// `x` holds the ORIGINAL `y` (sum 100).
+const RECORD_TEMP_SWAP_SOURCE: &str = "\
+type Box {
+    v: Vec<i64>,
+}
+
+actor TwoBoxes {
+    var x: Box;
+    var y: Box;
+
+    receive fn flip() {
+        let t = x;
+        x = y;
+        y = t;
+    }
+
+    receive fn sum_x() -> i64 {
+        var s: i64 = 0;
+        for v in x.v { s = s + v; }
+        s
+    }
+}
+
+fn main() -> i64 {
+    let xv: Vec<i64> = Vec::new();
+    xv.push(1); xv.push(2); xv.push(3);
+    let yv: Vec<i64> = Vec::new();
+    yv.push(10); yv.push(20); yv.push(30); yv.push(40);
+    let a = spawn TwoBoxes(x: Box { v: xv }, y: Box { v: yv });
+    var i: i64 = 0;
+    while i < 25 {
+        a.flip();
+        i = i + 1;
+    }
+    sleep(1000ms);
+    match await a.sum_x() {
         Ok(v) => v,
         Err(_) => -1,
     }
@@ -500,6 +718,26 @@ fn enum_state_overwrite_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance("enum_overwrite", enum_overwrite_source);
 }
 
+/// #2432 — a per-frame handler that INSPECTS a `string` state field through a
+/// borrowing string call (`name.len()`) and overwrites it must not clone the
+/// field on the borrowing load. The own/borrow classifier recognises the
+/// `string_args` borrow axis, so the load classifies `Borrowed` and emits no
+/// unbalanced `hew_string_clone` (pre-classifier slope ~1 buffer/frame).
+#[test]
+fn string_state_inspect_overwrite_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance("string_inspect_overwrite", string_inspect_overwrite_source);
+}
+
+/// #2432 — a per-frame handler that ITERATES a `Vec` state field
+/// (`for v in items`) must borrow, not deep-clone, the collection: the
+/// synthetic `VecIter` cursor borrows the source handle it never frees, so the
+/// load classifies `Borrowed` (pre-classifier slope ~2 nodes/frame — the
+/// cloned handle plus buffer the cursor never released).
+#[test]
+fn collection_state_iterate_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance("collection_iterate", collection_iterate_source);
+}
+
 /// UAF pin — whole-value self-store: every leaf of the incoming value
 /// aliases the old value; the release must free nothing and the final
 /// read must see the heap-built name (`"SELF-STORE-NAME"`, len 15).
@@ -525,4 +763,26 @@ fn record_functional_update_keeps_aliased_label_alive() {
         &record_functional_update_source(HIGH_FRAMES),
         i32::try_from(HIGH_FRAMES).expect("frame count fits in i32"),
     );
+}
+
+/// UAF pin — #2432 temp-bridged swap, Vec kind: `let t = x; x = y; y = t;`
+/// reads `x` through a third binding the per-store alias guard cannot see.
+/// After 25 (odd) flips `x` holds the ORIGINAL `y` ([10,20,30,40], sum 100).
+#[test]
+fn vec_temp_bridged_swap_keeps_third_alias_alive() {
+    assert_scribbled_run_exit("vec_temp_swap", VEC_SWAP_SOURCE, 100);
+}
+
+/// UAF pin — #2432 temp-bridged swap, string kind. After 25 (odd) flips
+/// `x` holds the ORIGINAL `y` (`"RIGHT-SIDE"`, len 10).
+#[test]
+fn string_temp_bridged_swap_keeps_third_alias_alive() {
+    assert_scribbled_run_exit("string_temp_swap", STRING_SWAP_SOURCE, 10);
+}
+
+/// UAF pin — #2432 temp-bridged swap, record kind (nested `Vec<i64>`
+/// field). After 25 (odd) flips `x` holds the ORIGINAL `y` (sum 100).
+#[test]
+fn record_temp_bridged_swap_keeps_third_alias_alive() {
+    assert_scribbled_run_exit("record_temp_swap", RECORD_TEMP_SWAP_SOURCE, 100);
 }

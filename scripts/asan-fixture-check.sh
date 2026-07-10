@@ -38,6 +38,15 @@
 #       (the full CLI link step, routing through hew-cli/src/link.rs).  Proves
 #       the CLI flag path is exercised by this CI gate, not only the manual
 #       clang step in the emit-obj pipeline.  Must produce ZERO findings.
+#   bytes COW retain-on-share (A240 S1)
+#       Field-load-of-live-root, container element read, live-local co-own,
+#       duplicating return, mutation-triggered COW fork, plus the two plain
+#       move-share co-own shapes: `let alias = <by-value bytes param>` (the
+#       source is a caller-owned borrow) and `let alias = source; ...; source`
+#       (the co-owner escapes by return while alias drops locally). Each shape
+#       mints multiple references to one bytes buffer; a missing retain-on-share
+#       double-frees under ASan (the underflow macOS `leaks` cannot see). All
+#       must remain ASan/LSan-clean.
 #
 # SHIM: Linux-only gate.  On macOS the leak oracle is the `leaks --atExit`
 # path in hew-cli/tests/*_leak_oracle.rs; ASan + LSan on Darwin does not
@@ -300,6 +309,7 @@ LEAK_SRC="${ROOT}/tests/vertical-slice/accept/asan_fixture_leak_probe.hew"
 # would OOB-read and abort here; ASan would catch the heap-buffer-overflow even
 # before the abort.
 CRASH_RESTART_SRC="${ROOT}/tests/vertical-slice/accept/on_crash_action_restart_real_crash.hew"
+BYTES_COW_SRC="${ROOT}/tests/vertical-slice/accept/bytes_cow_retain_s1.hew"
 
 # ── Step 3: compile the Hew fixtures ─────────────────────────────────────
 echo ""
@@ -322,6 +332,9 @@ compile_asan_fixture "leak-probe (Hew generated-code)" "${LEAK_SRC}" "${LEAK_BIN
 # be ASan/LSan-clean across the crash and restart.
 CRASH_RESTART_BIN="${WORK_DIR}/on_crash_action_restart_real_crash"
 compile_asan_fixture "crash-restart (on_crash real crash)" "${CRASH_RESTART_SRC}" "${CRASH_RESTART_BIN}"
+
+BYTES_COW_BIN="${WORK_DIR}/bytes_cow_retain_s1"
+compile_asan_fixture "bytes COW retain-on-share (A240 S1)" "${BYTES_COW_SRC}" "${BYTES_COW_BIN}"
 
 # ── Step 3c: compile and link the clean probe via the CLI flag path ───────
 # Uses HEW_SANITIZE_ADDRESS=1 hew build (full link, not --emit-obj) to exercise
@@ -389,6 +402,13 @@ fi
 # Exit 42 = the restarted child's init value; any ASan/LSan finding (or a non-42
 # exit) fails the gate.
 if run_asan_fixture "crash-restart (on_crash real crash)" "${CRASH_RESTART_BIN}" 42; then
+  pass=$((pass + 1))
+else
+  fail=$((fail + 1))
+fi
+
+# ── Gate 5: bytes retain-on-share mint points MUST be ASan/LSan-clean ─────
+if run_asan_fixture "bytes COW retain-on-share (A240 S1)" "${BYTES_COW_BIN}" 0; then
   pass=$((pass + 1))
 else
   fail=$((fail + 1))

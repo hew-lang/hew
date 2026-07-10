@@ -1,0 +1,100 @@
+// A240 retain-on-share Stage S1: compiled ownership probe for every bytes
+// co-owner mint plus mutation-triggered copy-on-write.
+
+type Holder {
+    payload: bytes,
+}
+
+fn duplicate(value: bytes) -> (bytes, bytes) {
+    (value, value)
+}
+
+fn field_load_share() -> i64 {
+    let holder = Holder { payload: "field-load".to_bytes() };
+    let extracted = holder.payload;
+    extracted.len() + holder.payload.len()
+}
+
+fn container_element_read() -> i64 {
+    let values: Vec<((bytes, i64), bool)> = Vec::new();
+    let source = "container-read".to_bytes();
+    values.push(((source, 7), true));
+    let item = values[0];
+    let (inner, flag) = item;
+    let (payload, number) = inner;
+    if flag {
+        payload.len() + number + values.len()
+    } else {
+        -1
+    }
+}
+
+fn live_local_coown() -> i64 {
+    let source = "aggregate-share".to_bytes();
+    let holder = Holder { payload: source };
+    source.len() + holder.payload.len()
+}
+
+fn duplicating_return() -> i64 {
+    let source = "return-share".to_bytes();
+    let returned = duplicate(source);
+    let (left, right) = returned;
+    source.len() + left.len() + right.len()
+}
+
+fn local_share_cow() -> i64 {
+    let source = "abc".to_bytes();
+    let shared = source;
+    shared.set(0, 90);
+    if source[0] == 97 && shared[0] == 90 {
+        source.len() + shared.len()
+    } else {
+        -1
+    }
+}
+
+// Move-share where the source is a by-value bytes PARAMETER. A by-value heap
+// param is a borrow: the caller retains ownership and drops the original. The
+// `let alias = value` co-owner therefore shares the caller's live buffer, so
+// its scope-exit drop double-frees unless the share mints a retain. Reading
+// both `value` and `alias` keeps the param live past the share (a genuine
+// co-own, not a move).
+fn param_coown_share(value: bytes) -> i64 {
+    let alias = value;
+    value.len() + alias.len()
+}
+
+// Move-share where the co-owning partner ESCAPES by return. `source` and
+// `alias` co-own one buffer; `source` is moved out to the caller while `alias`
+// drops locally. Without a retain, `alias`'s scope-exit drop frees the buffer
+// the caller now owns — a use-after-free on the returned handle then a double
+// free at the caller's own drop.
+fn owned_partner_escape() -> bytes {
+    let source = "owned-partner-escape".to_bytes();
+    let alias = source;
+    let _len = alias.len();
+    source
+}
+
+fn main() -> i64 {
+    var i: i64 = 0;
+    var total: i64 = 0;
+    while i < 20 {
+        let borrowed = "borrowed-param-coown".to_bytes();
+        let escaped = owned_partner_escape();
+        total = total
+            + field_load_share()
+            + container_element_read()
+            + live_local_coown()
+            + duplicating_return()
+            + local_share_cow()
+            + param_coown_share(borrowed)
+            + escaped.len();
+        i = i + 1;
+    }
+    if total > 0 {
+        0
+    } else {
+        1
+    }
+}

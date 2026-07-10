@@ -9305,6 +9305,18 @@ pub(crate) const HASHSET_FREE_LAYOUT_SYMBOL: &str = "hew_hashset_free_layout";
 pub(crate) const VEC_CLONE_MANAGED_SYMBOL: &str = "hew_vec_clone_managed";
 pub(crate) const VEC_FREE_MANAGED_SYMBOL: &str = "hew_vec_free_managed";
 
+/// The owned-descriptor clone/free pair, for a state `Vec<E>` whose element `E`
+/// is itself a heap collection handle (`Vec` / `HashMap` / `HashSet`). Such an
+/// outer handle is constructed through the owned descriptor ABI
+/// (`hew_vec_new_with_elem_layout`), so its clone/free MUST run the per-element
+/// descriptor thunks — the managed pair frees only the outer buffer and leaks
+/// every element (#2546). Symmetric with the local `Vec<Vec<T>>` release and
+/// with the element thunks `collection_elem_clone_drop_syms` selects, so the
+/// state clone/drop, the overwrite-release store, and the field-load retain all
+/// agree per element-class (`lifecycle-symmetry`, W4.045 UAF class).
+pub(crate) const VEC_CLONE_OWNED_SYMBOL: &str = "hew_vec_clone_owned";
+pub(crate) const VEC_FREE_OWNED_SYMBOL: &str = "hew_vec_free_owned";
+
 fn clone_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<CloneHelper>> {
     match kind {
         StateFieldCloneKind::BitCopy { .. } => Ok(None),

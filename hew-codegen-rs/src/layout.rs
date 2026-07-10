@@ -888,6 +888,21 @@ pub(crate) fn collection_layout_witness(
         )));
     }
     Ok(match kind {
+        StateFieldCloneKind::Vec { elem } if elem.is_heap_collection_handle() => {
+            // #2546 — a nested/heap-element Vec (`Vec<Vec<T>>` / `Vec<HashMap>` /
+            // `Vec<HashSet>`). The outer handle was constructed through the OWNED
+            // descriptor ABI (`hew_vec_new_with_elem_layout` with the per-element
+            // clone/drop thunk `collection_elem_clone_drop_syms` stamped), so its
+            // clone/free MUST run those thunks via the `_owned` pair. The managed
+            // pair below frees only the outer buffer + handle and leaks every
+            // inner handle. Symmetric with the local `Vec<Vec<T>>` release, so the
+            // state clone/drop, the overwrite-release store, and the field-load
+            // retain never select mismatched symbols (`lifecycle-symmetry`).
+            Some(CollectionLayoutWitness {
+                clone_sym: VEC_CLONE_OWNED_SYMBOL,
+                drop_sym: VEC_FREE_OWNED_SYMBOL,
+            })
+        }
         StateFieldCloneKind::Vec { .. } => Some(CollectionLayoutWitness {
             // Constructor lowering stamps every layout-backed Vec<T> handle with
             // its `HewTypeLayout` descriptor; the managed pair reads it from the

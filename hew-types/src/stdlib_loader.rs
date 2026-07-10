@@ -931,17 +931,25 @@ fn extract_handle_methods(
         // here — the shared `is_pass_through_arg` predicate (which also drives
         // `clean_names` and drop-func extraction) is left untouched. Skip the
         // `self` parameter when matching — it's not part of the call.
-        let extracted = extract_call_target(&method.body).or_else(|| {
-            let field_names = wrapper_field_names?;
-            let receiver = method.params.first()?.name.as_str();
-            let ctx = WrapperForward {
-                receiver,
-                wrapper_simple_name,
-                field_names,
-                extern_fn_names,
-            };
-            extract_handle_forwarding_target(&method.body, &ctx)
-        });
+        let extracted = extract_call_target(&method.body)
+            .or_else(|| {
+                let field_names = wrapper_field_names?;
+                let receiver = method.params.first()?.name.as_str();
+                let ctx = WrapperForward {
+                    receiver,
+                    wrapper_simple_name,
+                    field_names,
+                    extern_fn_names,
+                };
+                extract_handle_forwarding_target(&method.body, &ctx)
+            })
+            // Authoritative extern gate for BOTH extraction paths: a handle
+            // method is a thin FFI shim, so its forwarded callee must be an
+            // extern C symbol. This also closes the older bare-identifier path
+            // (`extract_call_target` does not check extern membership itself) —
+            // a body like `helper(self)` calling a same-module Hew helper must
+            // not register as a C-backed method.
+            .filter(|(c_symbol, _)| extern_fn_names.contains(c_symbol));
         if let Some((c_symbol, _arg_count)) = extracted {
             let params = method
                 .params
@@ -1760,6 +1768,44 @@ mod tests {
         assert!(
             !handle_method_registered(&info, "m.Wrap", "bad"),
             "forwarding to a non-extern Hew helper must not register, got: {:?}",
+            info.handle_methods
+        );
+    }
+
+    #[test]
+    fn handle_method_bare_forward_requires_extern_callee() {
+        // Legacy bare-identifier path (`extract_call_target`): `good` forwards
+        // the whole receiver to an extern C symbol and must still register (the
+        // pre-migration handle shim); `bad` forwards it to a same-module Hew
+        // helper and must not. The uniform extern gate covers this path, which
+        // `extract_call_target` does not check itself.
+        let result = parse(
+            "#[opaque]\n\
+             pub type Handle {}\n\
+             impl Handle {\n\
+             \x20   fn good(h: Handle) -> i64 { unsafe { c_use(h) } }\n\
+             \x20   fn bad(h: Handle) -> i64 { helper(h) }\n\
+             }\n\
+             fn helper(h: Handle) -> i64 { 0 }\n\
+             extern \"C\" {\n\
+             \x20   fn c_use(h: Handle) -> i64;\n\
+             }\n",
+        );
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let info = extract_module_info(&result.program, "m");
+
+        assert!(
+            handle_method_registered(&info, "m.Handle", "good"),
+            "a bare-receiver forward to an extern C symbol should register, got: {:?}",
+            info.handle_methods
+        );
+        assert!(
+            !handle_method_registered(&info, "m.Handle", "bad"),
+            "a bare-receiver forward to a non-extern Hew helper must not register, got: {:?}",
             info.handle_methods
         );
     }

@@ -62,14 +62,27 @@ const keywordGroups = {
     ...kw.control_flow,
     // Actor keywords that serve as control flow. `cooperate` is deliberately
     // NOT here — syntax-data.json classifies it under reserved_unused (a
-    // compiler-internal safepoint token, not a source expression); it is
-    // supplied via keyword.reserved.hew below.
+    // compiler-internal safepoint token, not a source expression). It is not
+    // emitted by any keywordGroups entry at all: vscode-hew's template
+    // classifies every reserved_unused word under invalid.removed.hew (a
+    // scope this generator does not own or manage), and an explicit vitest
+    // guard (tests/grammar-structure.test.ts, "marks rejected keywords as
+    // invalid.removed.hew, not keyword.reserved.hew") asserts no separate
+    // keyword.reserved.hew scope exists. See the coverage-check exclusion
+    // below for the same reasoning.
     'select', 'join', 'after', 'from', 'await', 'await_restart', 'scope',
   ])],
 
-  'keyword.declaration.hew': [
-    ...kw.declarations,
-  ],
+  // `mut` is deliberately excluded from kw.declarations here even though
+  // syntax-data.json lists it under declarations: it is operator-context
+  // only (`*mut T` in extern/FFI/unsafe), never a general declaration
+  // keyword — bare `mut` bindings are invalid in the current language
+  // surface. The dedicated meta.type.pointer.raw.hew rule (vscode-hew's
+  // template) already scopes it correctly as
+  // storage.modifier.pointer-mutability.hew; adding it here would be
+  // reachable by no valid Hew construct and vscode-hew's own vitest guard
+  // ("does not include mut in declaration keywords") asserts it stays out.
+  'keyword.declaration.hew': kw.declarations.filter(k => k !== 'mut'),
 
   'keyword.actor.hew': [
     'actor', 'fork', 'init', 'move', 'receive', 'spawn', 'this',
@@ -95,8 +108,13 @@ const keywordGroups = {
 
   'constant.language.boolean.hew': ['true', 'false'],
 
-  // Reserved keywords not yet used in the language
-  'keyword.reserved.hew': [...kw.reserved_unused],
+  // NOTE: no keyword.reserved.hew entry here. reserved_unused words
+  // (cooperate/try/catch/race/foreign) are deliberately NOT assigned a
+  // scope by this generator — vscode-hew's template already classifies
+  // them under invalid.removed.hew, a scope this generator does not own,
+  // and a vitest guard asserts a separate keyword.reserved.hew scope must
+  // not exist (see the keyword.control.hew comment above). Adding this
+  // entry back reintroduces a redundant, test-failing pattern.
 };
 
 // -- Type group mapping ----------------------------------------------------
@@ -219,7 +237,6 @@ for (const [scope, keywords] of Object.entries(allGroups)) {
   if (!grammar.repository[section]?.patterns) continue;
 
   const commentMap = {
-    'keyword.reserved.hew': 'Reserved keywords (not yet used in the language)',
     'variable.language.contextual.hew': 'Contextual identifiers (special meaning in specific contexts)',
   };
 
@@ -284,7 +301,16 @@ for (const keywords of Object.values(keywordGroups)) {
   for (const k of keywords) coveredKeywords.add(k);
 }
 
-const missing = syntaxData.all_keywords.filter(k => !coveredKeywords.has(k));
+// Deliberately unassigned by any keywordGroups entry (see the comments at
+// their exclusion sites above) \u2014 not coverage gaps, so exclude them from the
+// "missing" report: kw.reserved_unused is classified under
+// invalid.removed.hew (a scope outside this generator's ownership), and
+// `mut` is operator-context-only, already scoped correctly by the dedicated
+// meta.type.pointer.raw.hew rule.
+const intentionallyUnassigned = new Set([...kw.reserved_unused, 'mut']);
+
+const missing = syntaxData.all_keywords
+  .filter(k => !coveredKeywords.has(k) && !intentionallyUnassigned.has(k));
 if (missing.length > 0) {
   console.log(`\u26a0 Keywords in all_keywords not assigned to any grammar scope:`);
   console.log(`   ${missing.join(', ')}\n`);

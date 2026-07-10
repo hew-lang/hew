@@ -1707,6 +1707,11 @@ run_accept_expect_status "vec_set_oob_traps" 134
 run_accept_expect_status "vec_pop_empty_traps" 134
 run_accept_expect_status "vec_remove_oob_traps" 134
 
+# Main-context Deque method bounds ratchets: same fail-closed contract as the
+# Vec pops above — no actor recovery frame, so the trap helper aborts.
+run_accept_expect_status "deque_pop_front_empty_traps" 134
+run_accept_expect_status "deque_pop_back_empty_traps" 134
+
 run_accept_expect_stdout "regex_captures_find_all"
 run_check_run_expect_stdout "stdlib_io_scanner_file_oracle"
 run_accept_expect_stdout "tls_ffi_result_lowering"
@@ -1807,6 +1812,14 @@ run_actor_bounds_trap_fixture \
   "string_slice_oob_actor_isolated" \
   "PANIC: string slice range 1..99 out of bounds (len 5)" \
   "StringSliceCrasher"
+run_actor_bounds_trap_fixture \
+  "deque_pop_front_empty_actor_isolated" \
+  "PANIC: Deque.pop_front() on an empty deque" \
+  "DequePopFrontCrasher"
+run_actor_bounds_trap_fixture \
+  "deque_pop_back_empty_actor_isolated" \
+  "PANIC: Deque.pop_back() on an empty deque" \
+  "DequePopBackCrasher"
 
 run_accept_expect_status "directory_module_call" 7
 

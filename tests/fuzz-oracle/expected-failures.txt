@@ -21,7 +21,7 @@
 # map_literal_empty_annotated.hew, array_repeat_int_sum.hew, and
 # array_repeat_runtime_count.hew are intentionally absent: they must pass.
 #
-# Total: 26 known-failing entries (26 intentional-trap/abort fixtures).
+# Total: 28 known-failing entries (28 intentional-trap/abort fixtures).
 #
 # Intentional aborts/traps: fixtures in tests/vertical-slice/accept/ that are
 # designed to trap or abort at runtime as their correctness proof.  Listed here
@@ -39,6 +39,8 @@ string_index_oob_traps.hew   # intentional abort: out-of-bounds string index s[i
 vec_set_oob_traps.hew        # intentional abort: out-of-bounds Vec.set() calls libc::abort() → SIGABRT (signal 6)
 vec_pop_empty_traps.hew      # intentional abort: empty Vec.pop() calls libc::abort() → SIGABRT (signal 6)
 vec_remove_oob_traps.hew     # intentional abort: out-of-bounds Vec.remove() calls libc::abort() → SIGABRT (signal 6)
+deque_pop_front_empty_traps.hew  # intentional abort: empty Deque.pop_front() routes through runtime_bounds_trap → std::process::abort() (no main-context actor recovery frame) → SIGABRT (signal 6)
+deque_pop_back_empty_traps.hew   # intentional abort: empty Deque.pop_back() routes through runtime_bounds_trap → std::process::abort() (no main-context actor recovery frame) → SIGABRT (signal 6)
 # Arch-dependent trap signals: SIGILL (132) on x86_64 Linux, SIGTRAP (133) on aarch64/macOS.
 isize_div_by_zero_traps.hew  # intentional trap: isize / 0 → DivideByZero signal (SIGILL x86_64 / SIGTRAP aarch64)
 isize_shift_oob_traps.hew    # intentional trap: isize << 64 → ShiftOutOfRange signal (SIGILL x86_64 / SIGTRAP aarch64)

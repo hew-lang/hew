@@ -1,0 +1,25 @@
+import std::deque;
+
+actor DequePopFrontCrasher {
+    receive fn boom() {
+        let dq = deque.new();
+        let _ = dq.pop_front();
+    }
+}
+
+actor DequePopFrontProbe {
+    receive fn ping() -> i64 {
+        0
+    }
+}
+
+fn main() -> i64 {
+    let crasher = spawn DequePopFrontCrasher;
+    let probe = spawn DequePopFrontProbe;
+    crasher.boom();
+    sleep(300ms);
+    match await probe.ping() {
+        Ok(v) => v,
+        Err(_) => 1,
+    }
+}

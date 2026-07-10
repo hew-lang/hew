@@ -1,0 +1,29 @@
+//! A test runner that returns with a live supervisor must use the supervisor-safe
+//! native cleanup tail instead of the generic idle drain.
+
+import std::testing;
+
+actor Worker {
+    var value: i64;
+
+    receive fn get() -> i64 {
+        value
+    }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child first: Worker(value: 42);
+    child second: Worker(value: 7);
+}
+
+#[test]
+fn live_supervisor_does_not_block_test_runner_exit() {
+    let sup = spawn App;
+    match await sup.first.get() {
+        Ok(n) => testing.assert_eq(n, 42),
+        Err(_) => testing.assert_true(false),
+    }
+}

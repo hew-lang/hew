@@ -11350,6 +11350,61 @@ impl Builder {
         }
     }
 
+    /// True when the `for x in …` cursor `value` (a HIR `VecIter { vec, idx }`
+    /// struct-init) iterates a field/tuple PROJECTION rooted at a bare actor
+    /// state-field reference — `for v in x.v` where `x` is a `var` state field.
+    ///
+    /// #2540 — the projected leaf (`x.v`) is owned by the actor STATE: the
+    /// global `__hew_state_drop_*` destructor frees every state field
+    /// unconditionally at actor teardown, and (unlike a local record's own drop)
+    /// that state drop CANNOT be elided by the escaped-sibling analysis (#2212).
+    /// So a projected-state-field cursor must NOT be registered for a scope-exit
+    /// `RecordFieldDrop` of its `vec` handle: doing so frees the state-owned
+    /// buffer a second time against the state drop — the use-after-free the
+    /// supervisor normal-return cleanup epilogue exposes (latent on `main`,
+    /// which never dropped the state, so the cursor's lone free went unnoticed
+    /// as a leak-masking single free). The cursor instead BORROWS the handle,
+    /// exactly as `vec_iter_let_cursor_owns_handle`'s bare-`BindingRef` arm
+    /// already grants the direct-field `for v in x` (#2432/#2525): the state
+    /// owns the handle and the state drop frees it exactly once.
+    ///
+    /// A LOCAL record projection (`for v in localBox.v`) is deliberately NOT
+    /// matched. There the cursor is the sole owner and the local record's own
+    /// drop of the escaped `v` field is elided (#2212), so the handle is freed
+    /// exactly once — by the cursor; flipping it to a borrow would LEAK. Only a
+    /// state-field root, whose drop is unconditional and un-elidable, needs the
+    /// cursor's free suppressed. The root discriminator (`id` is not a
+    /// function-local AND its `name` resolves in `current_actor_state_fields`)
+    /// is the same one the `ActorStateFieldLoad` emitter uses to recognise a
+    /// bare state field.
+    fn vec_iter_source_projects_actor_state_field(&self, value: &HirExpr) -> bool {
+        let Some(mut cur) = vec_iter_init_vec_source_expr(value) else {
+            return false;
+        };
+        let mut projected = false;
+        loop {
+            match &cur.kind {
+                HirExprKind::FieldAccess { object, .. } => {
+                    projected = true;
+                    cur = &**object;
+                }
+                HirExprKind::TupleIndex { tuple, .. } => {
+                    projected = true;
+                    cur = &**tuple;
+                }
+                HirExprKind::BindingRef {
+                    name,
+                    resolved: ResolvedRef::Binding(id),
+                } => {
+                    return projected
+                        && !self.binding_locals.contains_key(id)
+                        && self.current_actor_state_fields.contains_key(name);
+                }
+                _ => return false,
+            }
+        }
+    }
+
     /// Close every `Stream<T>` / `Receiver<T>` for-await cursor declared in
     /// `scope_id` when that scope closes — the `Generator`/`VecIter` analogue of
     /// #1949 for the general `for await` consumption path. A `for await v in
@@ -13839,7 +13894,17 @@ impl Builder {
                     // `into_iter()` source) is registered; a CowShare place source
                     // keeps the source binding's drop instead (see
                     // `vec_iter_let_cursor_owns_handle`).
-                    if vec_iter_ty_drop_safe(&binding_ty) && vec_iter_let_cursor_owns_handle(value)
+                    //
+                    // #2540 — a projection rooted at an actor state field
+                    // (`for v in x.v`) is ALSO excluded: the projected leaf is
+                    // owned by the actor STATE, whose `__hew_state_drop_*` frees
+                    // it unconditionally. Registering the cursor would double-free
+                    // that state-owned buffer against the state drop (the UAF the
+                    // supervisor normal-return cleanup epilogue exposes). See
+                    // `vec_iter_source_projects_actor_state_field`.
+                    if vec_iter_ty_drop_safe(&binding_ty)
+                        && vec_iter_let_cursor_owns_handle(value)
+                        && !self.vec_iter_source_projects_actor_state_field(value)
                     {
                         if let Some(scope) = self.active_scopes.last().copied() {
                             self.scope_vec_iter_bindings.push((
@@ -46453,6 +46518,32 @@ fn ty_is_stream_handle(ty: &ResolvedTy) -> bool {
     stream_handle_drop_descriptor(ty).is_some()
 }
 
+/// The `vec`-field source expression of a HIR `VecIter { vec, idx }` cursor
+/// struct-init, or `None` for any other expression.
+///
+/// The HIR-level counterpart of [`vec_iter_record_init_vec_source`] (which reads
+/// the already-lowered `Instr::RecordInit`): consulted before lowering, so it
+/// can inspect the SOURCE's syntactic shape — a bare place (`for v in x`), a
+/// field/tuple projection (`for v in x.v`), or an rvalue (`for v in make()`).
+fn vec_iter_init_vec_source_expr(value: &HirExpr) -> Option<&HirExpr> {
+    let HirExprKind::StructInit {
+        name,
+        fields,
+        base: None,
+        ..
+    } = &value.kind
+    else {
+        return None;
+    };
+    if name != "VecIter" {
+        return None;
+    }
+    fields
+        .iter()
+        .find(|(field, _)| field == "vec")
+        .map(|(_, src)| src)
+}
+
 /// True when a `for x in …` cursor `let __hew_for_iter = <value>` makes the
 /// cursor the SOLE owner of the `Vec` handle in its `vec` field, so the cursor
 /// (not a still-live source binding) must free that handle when its scope
@@ -46477,20 +46568,15 @@ fn ty_is_stream_handle(ty: &ResolvedTy) -> bool {
 /// consumes the source and the existing owner's registration already covers the
 /// single free. Returning false in every ambiguous shape is fail-closed (leak,
 /// never double-free), matching the sibling drop authorities.
+///
+/// NOTE: a field/tuple projection rooted at an actor state field
+/// (`for v in x.v`) reaches this through the non-place `vec` source and returns
+/// true (owns) — but the projected leaf is state-owned. The registration site
+/// therefore ALSO gates on [`Builder::vec_iter_source_projects_actor_state_field`]
+/// (#2540) so such a cursor borrows, letting the unconditional state drop free
+/// the leaf exactly once.
 fn vec_iter_let_cursor_owns_handle(value: &HirExpr) -> bool {
-    let HirExprKind::StructInit {
-        name,
-        fields,
-        base: None,
-        ..
-    } = &value.kind
-    else {
-        return false;
-    };
-    if name != "VecIter" {
-        return false;
-    }
-    let Some((_, vec_src)) = fields.iter().find(|(field, _)| field == "vec") else {
+    let Some(vec_src) = vec_iter_init_vec_source_expr(value) else {
         return false;
     };
     // A bare `BindingRef` with `Capture` intent is the CowShare place source

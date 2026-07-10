@@ -1487,6 +1487,24 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// the lowerer, so the drain is part of the program's control-flow graph
     /// rather than a codegen epilogue injection.
     pub(crate) emit_drain_epilogue: bool,
+    /// Emit `hew_sched_shutdown()` before the shared native runtime cleanup
+    /// tail when `main` uses runtime state but intentionally does not use the
+    /// generic idle drain.
+    ///
+    /// Supervisor programs take this path because their supervisor actors keep
+    /// `drain_is_idle()` active indefinitely. The immediate scheduler shutdown
+    /// joins workers without calling `hew_supervisor_stop`; the following
+    /// `hew_runtime_cleanup_after_main()` call then consumes registered
+    /// supervisor roots through the canonical post-worker cleanup path.
+    pub(crate) emit_immediate_shutdown_epilogue: bool,
+    /// Emit `hew_runtime_cleanup_after_main()` before the native `main` return
+    /// after the program-specific drain/shutdown behavior has completed.
+    ///
+    /// This is the shared ownership tail for ordinary actor programs,
+    /// supervisor programs, and other native runtime users. It frees registered
+    /// supervisor roots exactly once, then actors/registries, and detaches the
+    /// runtime last. False for non-main functions and wasm32.
+    pub(crate) emit_runtime_cleanup_epilogue: bool,
     /// Emit `hew_wasm_runtime_exit()` before the `Terminator::Return` of the
     /// wasm32 program entry point of an actor-using program — the wasm analogue
     /// of `emit_drain_epilogue`.
@@ -2570,6 +2588,13 @@ pub(crate) fn intern_runtime_decl<'ctx>(
             .bool_type()
             .fn_type(&[ptr_ty.into(), ptr_ty.into(), size_ty.into()], false),
         "hew_sched_init" => i32_ty.fn_type(&[], false),
+        // Native lifecycle tail entry points. `hew_sched_shutdown` closes and
+        // joins scheduler workers; `hew_runtime_cleanup_after_main` then checks
+        // that post-worker cleanup is safe before entering the canonical runtime
+        // cleanup chain.
+        "hew_sched_shutdown" | "hew_runtime_cleanup_after_main" => {
+            ctx.void_type().fn_type(&[], false)
+        }
         // hew_sched_run() -> void (`hew-runtime/src/scheduler_wasm.rs`).
         // Host/re-entrant cooperative drain: runs runnable actors to completion
         // without owning scheduler shutdown or actor cleanup.
@@ -8151,6 +8176,7 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
     let init_fn_ptr: BasicValueEnum<'ctx>;
     let config_ptr_for_spec: BasicValueEnum<'ctx>;
     let config_size_for_spec: BasicValueEnum<'ctx>;
+    let mut owned_init_state_template: Option<PointerValue<'ctx>> = None;
 
     let (init_state_ptr, init_state_size): (BasicValueEnum<'ctx>, BasicValueEnum<'ctx>) =
         if has_config_field {
@@ -8336,12 +8362,10 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
                 };
 
                 // Malloc a heap buffer and memcpy the stack template into it.
-                // The runtime's hew_supervisor_add_child_spec deep-copies this
-                // template (supervisor.rs:1861-1891) and takes ownership of the
-                // copy. We own the original malloc until add_child_spec returns,
-                // then we do NOT free it — the runtime frees the deep copy via its
-                // own allocator. Our malloc is leaked intentionally; the runtime's
-                // copy is the live template.
+                // `hew_supervisor_add_child_spec` synchronously deep-copies this
+                // caller-owned template. We retain ownership of the original and
+                // free it immediately after the call; the runtime owns only its
+                // independent copy, which InternalChildSpec::drop later releases.
                 //
                 // WHY malloc rather than alloca: the runtime's add_child_spec
                 // does a synchronous memcpy before returning, so passing a stack
@@ -8398,6 +8422,7 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
                     )
                     .llvm_ctx("child state template memcpy")?;
 
+                owned_init_state_template = Some(heap_ptr);
                 (heap_ptr.into(), state_size_i64.into())
             }
         };
@@ -8449,6 +8474,17 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
             &format!("hew_supervisor_add_child_spec_call_{idx}"),
         )
         .llvm_ctx("hew_supervisor_add_child_spec call")?;
+
+    if let Some(template) = owned_init_state_template {
+        let free_fn = get_or_declare_libc_free(ctx, llvm_mod);
+        builder
+            .build_call(
+                free_fn,
+                &[template.into()],
+                &format!("free_child_state_template_{idx}"),
+            )
+            .llvm_ctx("free child state template")?;
+    }
 
     // Register the init thunk + config buffer for parity / back-fill symmetry
     // with the other per-child setters. The literal carrier above already
@@ -32466,6 +32502,31 @@ fn lower_terminator<'ctx>(
                     "hew_lambda_drain_all call",
                 )?;
             }
+            // Supervisor-safe native shutdown: supervisor actors intentionally
+            // bypass the generic idle drain because they remain live by design.
+            // Close and join scheduler workers directly; the shared cleanup tail
+            // below owns root extraction and child-spec destruction.
+            if fn_ctx.emit_immediate_shutdown_epilogue {
+                fn_ctx.call_runtime_void(
+                    "hew_sched_shutdown",
+                    &[],
+                    "hew_sched_shutdown_call",
+                    "hew_sched_shutdown call",
+                )?;
+            }
+            // Shared native runtime ownership tail. Ordinary actor programs
+            // arrive here after graceful drain; supervisor programs arrive after
+            // immediate worker shutdown. Both consume registered supervisor roots
+            // through free_registered_supervisors/InternalChildSpec::drop before
+            // actor cleanup and runtime detach.
+            if fn_ctx.emit_runtime_cleanup_epilogue {
+                fn_ctx.call_runtime_void(
+                    "hew_runtime_cleanup_after_main",
+                    &[],
+                    "hew_runtime_cleanup_after_main_call",
+                    "hew_runtime_cleanup_after_main call",
+                )?;
+            }
             // Coroutine completion (W6.010 value routing): a suspendable handler
             // does NOT `ret` its Hew value — the ramp returns the `coro.begin`
             // handle. The body DEPOSITS its logical reply value directly onto its
@@ -39516,6 +39577,24 @@ fn lower_function<'ctx>(
         && !has_supervisors
         && !emit_wasm_entry_alias;
 
+    // Native runtime programs that deliberately omit the generic idle drain
+    // still need workers closed before the shared cleanup tail. Supervisors are
+    // the primary case: their own actors stay live by design, so waiting for
+    // scheduler idleness can hang. Node-only runtime users also take this
+    // immediate path because there is no actor-drain behavior to preserve.
+    let emit_immediate_shutdown_epilogue = func.name == "main"
+        && module_uses_runtime
+        && !emit_drain_epilogue
+        && !emit_wasm_entry_alias;
+
+    // All native runtime-using main functions converge on one ownership tail
+    // after their intentionally different drain/shutdown behavior. The runtime
+    // cleanup extracts registered supervisor roots once, drops child specs
+    // through InternalChildSpec::drop, sweeps actors/registries, and detaches
+    // the runtime last. WASM owns an explicit, separate runtime-exit helper.
+    let emit_runtime_cleanup_epilogue =
+        func.name == "main" && module_uses_runtime && !emit_wasm_entry_alias;
+
     // Lambda-actor drain epilogue: gated on `main` (native target) and
     // unconditional w.r.t. lambda-actor usage. Each lambda actor runs on
     // its own dedicated OS thread outside the work-stealing scheduler, so
@@ -39596,6 +39675,8 @@ fn lower_function<'ctx>(
         ctx,
         llvm_mod,
         emit_drain_epilogue,
+        emit_immediate_shutdown_epilogue,
+        emit_runtime_cleanup_epilogue,
         emit_wasm_runtime_exit,
         emit_lambda_drain_epilogue,
         target_data,
@@ -50271,6 +50352,8 @@ mod tests {
             // the flag off so the test builder's block does not attempt to
             // intern shutdown symbols that are absent from the minimal fixture.
             emit_drain_epilogue: false,
+            emit_immediate_shutdown_epilogue: false,
+            emit_runtime_cleanup_epilogue: false,
             emit_wasm_runtime_exit: false,
             emit_lambda_drain_epilogue: false,
             target_data: &harness.target_data,
@@ -54034,6 +54117,14 @@ mod tests {
             ir.contains("hew_shutdown_wait"),
             "actor-using main must emit hew_shutdown_wait call before return:\n{ir}"
         );
+        assert!(
+            ir.contains("hew_runtime_cleanup_after_main"),
+            "actor-using main must emit the shared native runtime cleanup tail:\n{ir}"
+        );
+        assert!(
+            !ir.contains("call void @hew_sched_shutdown"),
+            "ordinary actor main must rely on graceful shutdown, not the immediate supervisor path:\n{ir}"
+        );
     }
 
     /// For a wasm32 actor-using program, the `main` function's IR must contain
@@ -54064,6 +54155,10 @@ mod tests {
             "wasm actor-using main must emit hew_wasm_runtime_exit before return:\n{ir}"
         );
         assert!(
+            !ir.contains("hew_runtime_cleanup_after_main"),
+            "wasm actor-using main must not emit the native runtime cleanup tail:\n{ir}"
+        );
+        assert!(
             !ir.contains("hew_sched_run_call"),
             "wasm actor-using main must not regress to drain-only epilogue:\n{ir}"
         );
@@ -54092,6 +54187,10 @@ mod tests {
         assert!(
             !ir.contains("hew_shutdown_wait"),
             "non-actor main must NOT emit hew_shutdown_wait:\n{ir}"
+        );
+        assert!(
+            !ir.contains("hew_runtime_cleanup_after_main"),
+            "non-runtime main must NOT emit hew_runtime_cleanup_after_main:\n{ir}"
         );
     }
 

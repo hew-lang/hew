@@ -1,0 +1,44 @@
+// Regression fixture: a supervised handler stops its own supervisor tree, then
+// main returns through the immediate scheduler-shutdown cleanup tail.
+//
+// With one worker, the handler queues sibling work, calls supervisor_stop,
+// signals main, and remains Running briefly. Main therefore starts its exit
+// tail before the worker can activate the Runnable sibling.
+import std::channel::channel;
+
+extern "C" {
+    fn usleep(usec: i32) -> i32;
+}
+
+actor Busy {
+    receive fn work(_n: i64) {
+        _n;
+    }
+}
+
+actor Stopper {
+    receive fn stop_tree(sup: LocalPid<App>, ready: channel.Sender<i64>) {
+        sup.busy.work(1);
+        supervisor_stop(sup);
+        ready.send(42);
+        let _ = unsafe { usleep(200000) };
+    }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child busy: Busy;
+    child stopper: Stopper;
+}
+
+fn main() -> i64 {
+    let sup = spawn App;
+    let (ready_tx, ready_rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
+    sup.stopper.stop_tree(sup, ready_tx);
+    match await ready_rx.recv() {
+        Some(n) => n,
+        None => 1,
+    }
+}

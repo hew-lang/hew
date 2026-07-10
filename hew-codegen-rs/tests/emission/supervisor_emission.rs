@@ -21,8 +21,8 @@
 
 use hew_hir::HirSupervisorStrategy;
 use hew_mir::{
-    ActorLayout, BasicBlock, FunctionCallConv, IrPipeline, RawMirFunction, SupervisorChildLayout,
-    SupervisorLayout, Terminator,
+    ActorLayout, BasicBlock, ChildInitArg, FunctionCallConv, IrPipeline, RawMirFunction,
+    RecordLayout, SupervisorChildLayout, SupervisorLayout, Terminator,
 };
 use hew_types::ResolvedTy;
 
@@ -47,15 +47,14 @@ fn supervisor_pipeline() -> IrPipeline {
     let bootstrap_symbol = "AppSupervisor__bootstrap".to_string();
     let bootstrap_return_ty = local_pid_of("AppSupervisor");
 
-    // Worker actor — zero receive handlers keeps the dispatch trampoline
-    // minimal but still present (it is what the bootstrap's HewChildSpec
-    // `.dispatch` field references by name).
+    // Worker actor — one scalar state field exercises the caller-owned child
+    // state template that add_child_spec deep-copies synchronously.
     let worker_layout = ActorLayout {
         name: "Worker".to_string(),
         defining_module: None,
-        state_field_names: vec![],
-        state_field_tys: vec![],
-        state_field_defaults: vec![],
+        state_field_names: vec!["value".to_string()],
+        state_field_tys: vec![ResolvedTy::I64],
+        state_field_defaults: vec![None],
         init_param_names: vec![],
         init_param_tys: vec![],
         init_symbol: None,
@@ -171,7 +170,7 @@ fn supervisor_pipeline() -> IrPipeline {
             cycle_capable: false,
             mailbox_capacity: None,
             overflow_policy: None,
-            init_state_fields: vec![],
+            init_state_fields: vec![("value".to_string(), ChildInitArg::I64(42))],
             nested_bootstrap_symbol: None,
             pool_count: None,
         }],
@@ -189,7 +188,11 @@ fn supervisor_pipeline() -> IrPipeline {
         diagnostics: vec![],
         wire_layouts: std::sync::Arc::default(),
         opaque_handle_names: vec![],
-        record_layouts: vec![],
+        record_layouts: vec![RecordLayout {
+            name: "Worker".to_string(),
+            field_tys: vec![ResolvedTy::I64],
+            field_names: vec!["value".to_string()],
+        }],
         actor_layouts: vec![worker_layout],
         supervisor_layouts: vec![supervisor_layout],
         machine_layouts: vec![],
@@ -240,6 +243,52 @@ fn supervisor_bootstrap_declares_runtime_symbols() {
             "expected emitted IR to declare {sym}; got:\n{ir}"
         );
     }
+}
+
+/// Native supervisor main must skip the generic idle drain, close workers
+/// directly, and then enter the shared canonical runtime cleanup tail.
+#[test]
+fn supervisor_main_emits_immediate_shutdown_and_cleanup() {
+    let ir = emit_to_string(&supervisor_pipeline(), "normal-exit-cleanup");
+    assert!(
+        !ir.contains("@hew_shutdown_initiate_implicit"),
+        "supervisor main must not emit the hanging generic idle-drain path:\n{ir}"
+    );
+    assert!(
+        !ir.contains("@hew_shutdown_wait"),
+        "supervisor main must not wait for perpetual supervisor idleness:\n{ir}"
+    );
+    let shutdown = ir
+        .find("call void @hew_sched_shutdown")
+        .unwrap_or_else(|| panic!("supervisor main must close scheduler workers:\n{ir}"));
+    let cleanup = ir
+        .find("call void @hew_runtime_cleanup_after_main")
+        .unwrap_or_else(|| panic!("supervisor main must emit canonical runtime cleanup:\n{ir}"));
+    assert!(
+        shutdown < cleanup,
+        "worker shutdown must precede supervisor-root cleanup; positions {shutdown} >= {cleanup}:\n{ir}"
+    );
+}
+
+/// The runtime deep-copies legacy literal state templates, so codegen must free
+/// its caller-owned malloc immediately after add_child_spec returns.
+#[test]
+fn supervisor_bootstrap_frees_caller_owned_state_template() {
+    let ir = emit_to_string(&supervisor_pipeline(), "state-template-free");
+    let allocation = ir
+        .find("%child_state_heap_0 = call ptr @malloc")
+        .unwrap_or_else(|| panic!("stateful child must allocate a template:\n{ir}"));
+    let add = ir
+        .find("call i32 @hew_supervisor_add_child_spec(")
+        .unwrap_or_else(|| panic!("stateful child must register its spec:\n{ir}"));
+    let free = ir
+        .find("call void @free(ptr %child_state_heap_0)")
+        .unwrap_or_else(|| panic!("caller-owned state template must be freed:\n{ir}"));
+    assert!(
+        allocation < add && add < free,
+        "template ownership must be allocate -> deep-copy call -> caller free; \
+         positions {allocation}, {add}, {free}:\n{ir}"
+    );
 }
 
 /// The bootstrap's body must call `hew_supervisor_new`,

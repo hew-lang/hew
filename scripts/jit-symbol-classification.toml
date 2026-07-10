@@ -1072,6 +1072,7 @@ internal = [
   # routes; a cross-runtime route is refused by the held-pointer send check.
   "hew_registry_lookup_with_runtime",
   "hew_runtime_cleanup",
+  "hew_runtime_cleanup_after_main",
   # Host/embedder runtime handle lifecycle (AOT-only, never JIT-reachable): the
   # external owner token for the runtime, refcounted, with leak-on-close
   # teardown. Same lifecycle/bootstrap tier as hew_runtime_cleanup. `id_of` is

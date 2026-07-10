@@ -1,9 +1,9 @@
 //! Hew runtime: `toml_parser` module.
 //!
 //! Provides TOML parsing and value inspection for compiled Hew programs.
-//! All returned strings are allocated with `libc::malloc` so callers can
-//! free them with `libc::free`. Opaque [`HewTomlValue`] handles must be
-//! freed with [`hew_toml_free`].
+//! Returned strings are header-aware Hew strings that callers release with
+//! `hew_string_drop`. Opaque [`HewTomlValue`] handles must be freed with
+//! [`hew_toml_free`].
 use hew_cabi::cabi::str_to_malloc;
 use std::ffi::CStr;
 use std::os::raw::c_char;
@@ -106,8 +106,8 @@ pub unsafe extern "C" fn hew_toml_type(val: *const HewTomlValue) -> i32 {
     }
 }
 
-/// Returns a `malloc`-allocated NUL-terminated C string. The caller must
-/// free it with `libc::free`. Returns null if `val` is null or not a string.
+/// Returns a header-aware, NUL-terminated Hew string. The caller must release
+/// it with `hew_string_drop`. Returns null if `val` is null or not a string.
 ///
 /// # Safety
 ///
@@ -263,8 +263,8 @@ pub unsafe extern "C" fn hew_toml_array_get(
 
 /// Serialize a TOML value back to a TOML-formatted string.
 ///
-/// Returns a `malloc`-allocated NUL-terminated C string. The caller must
-/// free it with `libc::free`. Returns null if `val` is null or serialization
+/// Returns a header-aware, NUL-terminated Hew string. The caller must release
+/// it with `hew_string_drop`. Returns null if `val` is null or serialization
 /// fails.
 ///
 /// # Safety

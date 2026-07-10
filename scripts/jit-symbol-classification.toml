@@ -4,6 +4,22 @@
 # as part of the candidate host ABI and requires it to appear exactly once
 # in one of the three lists below. Keep entries sorted for stable diffs.
 #
+# Ownership contracts live in [[ownership.contracts]] entries at the end of
+# this file. Every symbol in any ABI tier must either have one contract or be
+# counted by scripts/ffi-ownership-ratchet.toml.
+#
+#   result = "fresh" | "retained" | "borrowed" | "none"
+#   params = ["borrow" | "consume" | "retain", ...]
+#   release-symbol = "<hew_* release function or type-directed drop thunk>" | ""
+#   discharge-depth = "shallow" | "deep" | "none"
+#
+# `fresh` transfers a newly owned allocation to the caller. `retained`
+# transfers an additional reference to an existing ref-counted allocation.
+# `borrowed` remains owned elsewhere and may be invalidated by mutation.
+# `none` carries no owned result. Fresh and retained results must name their
+# release symbol and whether that release recursively discharges children.
+# Borrowed and none results use an empty release symbol and depth "none".
+#
 # Three-tier model (rationale: Option A chosen over Option B for substrate
 # clarity — the tier boundary is a compile-time contract, not just a doc claim):
 #
@@ -862,6 +878,21 @@ stable-stdlib = [
   "hew_datetime_second",
   "hew_datetime_weekday",
   "hew_datetime_year",
+  "hew_json_array_push",
+  "hew_json_free",
+  "hew_json_object_set",
+  "hew_markdown_to_html",
+  "hew_markdown_to_html_safe",
+  "hew_proto_msg_get_string",
+  "hew_toml_array_push",
+  "hew_toml_free",
+  "hew_toml_get_string",
+  "hew_toml_last_error",
+  "hew_toml_table_set",
+  "hew_toml_stringify",
+  "hew_yaml_array_push",
+  "hew_yaml_free",
+  "hew_yaml_object_set",
 ]
 
 # jit: codegen-stable — symbols the Hew compiler emits into generated IR for
@@ -1124,3 +1155,373 @@ internal = [
   "hew_trace_drain",
   "hew_trace_reset",
 ]
+
+[ownership]
+
+# hew-std/src/json.rs:379-384 reconstructs and drops `val`.
+[[ownership.contracts]]
+symbol = "hew_json_free"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+# hew-std/src/json.rs:635-652 moves `val` into the object.
+[[ownership.contracts]]
+symbol = "hew_json_object_set"
+result = "none"
+params = ["borrow", "borrow", "consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+# hew-std/src/json.rs:777-785 moves `val` into the array.
+[[ownership.contracts]]
+symbol = "hew_json_array_push"
+result = "none"
+params = ["borrow", "consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+# hew-std/src/toml.rs:610-615 reconstructs and drops `val`.
+[[ownership.contracts]]
+symbol = "hew_toml_free"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+# hew-std/src/toml.rs:420-437 moves `val` into the table.
+[[ownership.contracts]]
+symbol = "hew_toml_table_set"
+result = "none"
+params = ["borrow", "borrow", "consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+# hew-std/src/toml.rs:539-547 moves `val` into the array.
+[[ownership.contracts]]
+symbol = "hew_toml_array_push"
+result = "none"
+params = ["borrow", "consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+# hew-std/src/yaml.rs:476-481 reconstructs and drops `val`.
+[[ownership.contracts]]
+symbol = "hew_yaml_free"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+# hew-std/src/yaml.rs:711-728 moves `val` into the mapping.
+[[ownership.contracts]]
+symbol = "hew_yaml_object_set"
+result = "none"
+params = ["borrow", "borrow", "consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+# hew-std/src/yaml.rs:875-883 moves `val` into the sequence.
+[[ownership.contracts]]
+symbol = "hew_yaml_array_push"
+result = "none"
+params = ["borrow", "consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+# hew-runtime/src/vec.rs:814-835 returns a header-retained string reference.
+[[ownership.contracts]]
+symbol = "hew_vec_get_str"
+result = "retained"
+params = ["borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:2771-2793 returns an alias invalidated by vec mutation.
+[[ownership.contracts]]
+symbol = "hew_vec_get_owned"
+result = "borrowed"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# hew-runtime/src/vec.rs:2796-2865 writes a fresh logical owner to `out`.
+[[ownership.contracts]]
+symbol = "hew_vec_get_clone"
+result = "fresh"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = "HewTypeLayout.drop_fn"
+discharge-depth = "deep"
+
+# hew-std/src/protobuf.rs:589-618 allocates a header-aware string copy.
+[[ownership.contracts]]
+symbol = "hew_proto_msg_get_string"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+# hew-std/src/toml.rs:73-81 allocates the actor-local error string.
+[[ownership.contracts]]
+symbol = "hew_toml_last_error"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+# hew-std/src/toml.rs:109-123 allocates a string value copy.
+[[ownership.contracts]]
+symbol = "hew_toml_get_string"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+# hew-std/src/toml.rs:264-282 allocates serialized TOML text.
+[[ownership.contracts]]
+symbol = "hew_toml_stringify"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+# hew-std/src/markdown.rs:38-56 allocates rendered HTML.
+[[ownership.contracts]]
+symbol = "hew_markdown_to_html"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+# hew-std/src/markdown.rs:59-79 allocates sanitized rendered HTML.
+[[ownership.contracts]]
+symbol = "hew_markdown_to_html_safe"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:323-348 allocates an empty plain vector.
+[[ownership.contracts]]
+symbol = "hew_vec_new_with_elem_size"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:352-366 allocates an i32 vector.
+[[ownership.contracts]]
+symbol = "hew_vec_new"
+result = "fresh"
+params = []
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:369-383 allocates a bool vector.
+[[ownership.contracts]]
+symbol = "hew_vec_new_bool"
+result = "fresh"
+params = []
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:386-394 allocates an i8 vector.
+[[ownership.contracts]]
+symbol = "hew_vec_new_i8"
+result = "fresh"
+params = []
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:397-405 allocates a u8 vector.
+[[ownership.contracts]]
+symbol = "hew_vec_new_u8"
+result = "fresh"
+params = []
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:408-416 allocates an i16 vector.
+[[ownership.contracts]]
+symbol = "hew_vec_new_i16"
+result = "fresh"
+params = []
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:419-427 allocates a u16 vector.
+[[ownership.contracts]]
+symbol = "hew_vec_new_u16"
+result = "fresh"
+params = []
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:430-445 allocates a string-owning vector.
+[[ownership.contracts]]
+symbol = "hew_vec_new_str"
+result = "fresh"
+params = []
+release-symbol = "hew_vec_free"
+discharge-depth = "deep"
+
+# hew-runtime/src/vec.rs:448-462 allocates an i64 vector.
+[[ownership.contracts]]
+symbol = "hew_vec_new_i64"
+result = "fresh"
+params = []
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:465-479 allocates an f64 vector.
+[[ownership.contracts]]
+symbol = "hew_vec_new_f64"
+result = "fresh"
+params = []
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:482-490 allocates an f32 vector.
+[[ownership.contracts]]
+symbol = "hew_vec_new_f32"
+result = "fresh"
+params = []
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:493-507 allocates a pointer-element vector.
+[[ownership.contracts]]
+symbol = "hew_vec_new_ptr"
+result = "fresh"
+params = []
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:510-537 allocates an i32 vector from borrowed bytes.
+[[ownership.contracts]]
+symbol = "hew_vec_from_u8_data"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:540-570 copies a type descriptor into a fresh vector.
+[[ownership.contracts]]
+symbol = "hew_vec_new_with_layout"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "deep"
+
+# hew-runtime/src/vec.rs:2320-2341 allocates a plain generic vector.
+[[ownership.contracts]]
+symbol = "hew_vec_new_generic"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:2636-2650 allocates an owned-element vector.
+[[ownership.contracts]]
+symbol = "hew_vec_new_with_elem_layout"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_vec_free_owned"
+discharge-depth = "deep"
+
+# hew-runtime/src/vec.rs:929-954 allocates an i32 slice.
+[[ownership.contracts]]
+symbol = "hew_vec_slice_range_i32"
+result = "fresh"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:958-983 allocates an i64 slice.
+[[ownership.contracts]]
+symbol = "hew_vec_slice_range_i64"
+result = "fresh"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:987-1012 allocates an f64 slice.
+[[ownership.contracts]]
+symbol = "hew_vec_slice_range_f64"
+result = "fresh"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:1016-1063 allocates a plain byte-stride slice.
+[[ownership.contracts]]
+symbol = "hew_vec_slice_range_bytesize"
+result = "fresh"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:1067-1094 allocates a pointer-element slice.
+[[ownership.contracts]]
+symbol = "hew_vec_slice_range_ptr"
+result = "fresh"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:1098-1130 allocates a string-retaining slice.
+[[ownership.contracts]]
+symbol = "hew_vec_slice_range_str"
+result = "fresh"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "deep"
+
+# hew-runtime/src/vec.rs:1134-1179 allocates a BitCopy layout slice.
+[[ownership.contracts]]
+symbol = "hew_vec_slice_range_layout"
+result = "fresh"
+params = ["borrow", "borrow", "borrow", "borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:1183-1224 allocates a deep-cloned owned slice.
+[[ownership.contracts]]
+symbol = "hew_vec_slice_range_owned"
+result = "fresh"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = "hew_vec_free_owned"
+discharge-depth = "deep"
+
+# hew-runtime/src/vec.rs:1702-1739 allocates a clone, retaining string elements.
+[[ownership.contracts]]
+symbol = "hew_vec_clone"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "deep"
+
+# hew-runtime/src/vec.rs:1743-1779 allocates a BitCopy layout clone.
+[[ownership.contracts]]
+symbol = "hew_vec_clone_layout"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:1783-1815 allocates a witness-managed clone.
+[[ownership.contracts]]
+symbol = "hew_vec_clone_managed"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_vec_free_managed"
+discharge-depth = "deep"
+
+# hew-runtime/src/vec.rs:2964-3009 allocates a deep owned-element clone.
+[[ownership.contracts]]
+symbol = "hew_vec_clone_owned"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_vec_free_owned"
+discharge-depth = "deep"

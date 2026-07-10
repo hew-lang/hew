@@ -739,6 +739,10 @@ pub enum StringArgsOwnership {
 pub enum ResultOwnership {
     /// Fresh or refcount-retained string; caller owes one `hew_string_drop`.
     FreshOwnedString,
+    /// Fresh bytes allocation; caller owes the matching bytes release.
+    FreshOwnedBytes,
+    /// Result is borrowed and carries no caller-owned drop obligation.
+    Borrowed,
     /// Result borrows storage owned by arg[0].
     InteriorAliasOfReceiver,
     /// No drop obligation is tracked by this contract.
@@ -837,7 +841,10 @@ impl CalleeOwnershipContract {
 
     #[must_use]
     pub const fn returns_receiver_interior_alias(self) -> bool {
-        matches!(self.result, ResultOwnership::InteriorAliasOfReceiver)
+        matches!(
+            self.result,
+            ResultOwnership::Borrowed | ResultOwnership::InteriorAliasOfReceiver
+        )
     }
 }
 
@@ -858,7 +865,7 @@ impl Default for CalleeOwnershipContract {
 #[must_use]
 pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
     use ReceiverOwnership::{BorrowsReceiver, BytesAllArgsBorrow, Escapes, VecCopyInElementStore};
-    use ResultOwnership::{FreshOwnedString, InteriorAliasOfReceiver, Untracked};
+    use ResultOwnership::{Borrowed, FreshOwnedString, Untracked};
     use StringArgsOwnership::{BorrowingUse, Escaping, PrintSink};
 
     match callee {
@@ -963,7 +970,7 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
                 scans: ReceiverScanSet::VEC,
             },
             Escaping,
-            InteriorAliasOfReceiver,
+            Borrowed,
         ),
 
         // Vec receivers are borrowed in place; element and range operands keep
@@ -1140,6 +1147,17 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
         _ => CalleeOwnershipContract::FAIL_CLOSED,
     }
 }
+
+#[cfg(test)]
+const TOML_RESULT_CONSISTENCY: &[(&str, &str, ResultOwnership)] = &[
+    ("hew_vec_get_clone", "fresh", ResultOwnership::Untracked),
+    ("hew_vec_get_owned", "borrowed", ResultOwnership::Borrowed),
+    (
+        "hew_vec_get_str",
+        "retained",
+        ResultOwnership::FreshOwnedString,
+    ),
+];
 
 #[cfg(test)]
 mod tests {
@@ -1393,6 +1411,17 @@ mod tests {
             callee_ownership_contract("hew_nope"),
             CalleeOwnershipContract::FAIL_CLOSED
         );
+    }
+
+    #[test]
+    fn toml_checked_result_contracts_match_hand_table() {
+        for (symbol, _toml_result, expected) in TOML_RESULT_CONSISTENCY {
+            assert_eq!(
+                callee_ownership_contract(symbol).result,
+                *expected,
+                "{symbol} diverges from its TOML-checked result contract",
+            );
+        }
     }
 
     #[test]

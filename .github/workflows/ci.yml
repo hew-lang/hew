@@ -169,7 +169,7 @@ jobs:
             | sarif-fmt
 
       - name: Verify JIT host ABI classification
-        run: make verify-ffi
+        run: make verify-ffi test-verify-ffi
 
       - name: Upload Clippy SARIF
         if: always() && hashFiles('clippy-results.sarif') != ''

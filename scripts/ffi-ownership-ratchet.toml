@@ -1,0 +1,5 @@
+# Exact number of ABI-classified symbols without ownership contracts.
+#
+# This value must exactly match the verifier's computed count. Any classification
+# or contract change that changes the count must deliberately update this ratchet.
+unclassified = 988

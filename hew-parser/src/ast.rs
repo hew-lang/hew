@@ -708,6 +708,8 @@ pub struct TimeoutClause {
 pub struct LambdaParam {
     pub name: String,
     pub ty: Option<Spanned<TypeExpr>>,
+    /// Span of the parameter name.
+    pub name_span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -4,6 +4,8 @@
 )]
 pub(super) use super::*;
 
+use crate::error::Severity;
+
 #[test]
 fn warn_unused_variable() {
     let source = "fn main() { let unused_var = 42; }";
@@ -2341,6 +2343,92 @@ fn warn_nested_scope_shadowing_of_receive_fn_param() {
         warnings.iter().any(|w| w.kind == TypeErrorKind::Shadowing
             && w.message.contains("shadows a binding in an outer scope")),
         "expected outer-scope shadowing warning for parameter `name`, got warnings: {warnings:?}",
+    );
+}
+
+#[test]
+fn lambda_param_shadowing_in_nested_scope_is_a_warning() {
+    let source = r"
+        fn main() {
+            let captured = 1;
+            let f = |x: i64| -> i64 {
+                let x = 2;
+                return captured + x;
+            };
+            println(f(5));
+        }
+    ";
+    let lambda_param_start = source.find("|x: i64|").unwrap() + 1;
+    let local_start = source.find("let x = 2").unwrap() + 4;
+    let (errors, warnings) = parse_and_check(source);
+
+    assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    assert_eq!(warnings.len(), 1, "unexpected warnings: {warnings:?}");
+    let shadowing = &warnings[0];
+    assert_eq!(shadowing.kind.as_kind_str(), "Shadowing");
+    assert_eq!(shadowing.severity, Severity::Warning);
+    assert_eq!(
+        shadowing.span.start, local_start,
+        "the diagnostic must point at the shadowing local"
+    );
+    assert_eq!(
+        shadowing.notes[0].0,
+        lambda_param_start..lambda_param_start + 1,
+        "the note must point at the lambda parameter"
+    );
+}
+
+#[test]
+fn nested_lambda_param_shadowing_is_a_warning() {
+    let source = r"
+        fn main() {
+            let f = |x: i64| -> i64 {
+                let g = |x: i64| -> i64 { return x; };
+                return g(x);
+            };
+            println(f(1));
+        }
+    ";
+    let (errors, warnings) = parse_and_check(source);
+
+    assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    assert_eq!(warnings.len(), 1, "unexpected warnings: {warnings:?}");
+    assert_eq!(warnings[0].kind.as_kind_str(), "Shadowing");
+    assert_eq!(warnings[0].severity, Severity::Warning);
+}
+
+#[test]
+fn duplicate_lambda_param_is_a_shadowing_error() {
+    let source = r"
+        fn main() {
+            let f = |x: i64, x: i64| -> i64 { return x; };
+            println(f(1, 2));
+        }
+    ";
+    let (errors, warnings) = parse_and_check(source);
+
+    assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+    assert_eq!(errors.len(), 1, "unexpected errors: {errors:?}");
+    assert_eq!(errors[0].kind.as_kind_str(), "Shadowing");
+    assert_eq!(errors[0].severity, Severity::Error);
+}
+
+#[test]
+fn unused_lambda_param_is_not_warned() {
+    let source = r"
+        fn main() {
+            let f = |unused: i64| -> i64 { return 5; };
+            println(f(1));
+        }
+    ";
+    let (errors, warnings) = parse_and_check(source);
+
+    assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    assert!(
+        warnings
+            .iter()
+            .all(|warning| warning.kind.as_kind_str() != "UnusedVariable"),
+        "unused lambda parameters must remain exempt: {warnings:?}",
     );
 }
 

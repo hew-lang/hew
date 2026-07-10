@@ -1469,6 +1469,7 @@ impl Parser<'_> {
         let mut params = Vec::new();
 
         while !self.at_end() && self.peek() != Some(&Token::Pipe) {
+            let name_span = self.peek_span();
             let name = self.expect_ident()?;
 
             let ty = if self.eat(&Token::Colon) {
@@ -1477,7 +1478,11 @@ impl Parser<'_> {
                 None
             };
 
-            params.push(LambdaParam { name, ty });
+            params.push(LambdaParam {
+                name,
+                ty,
+                name_span,
+            });
 
             if !self.eat(&Token::Comma) {
                 break;
@@ -1491,6 +1496,7 @@ impl Parser<'_> {
         let mut params = Vec::new();
 
         while !self.at_end() && self.peek() != Some(&Token::RightParen) {
+            let name_span = self.peek_span();
             let name = self.expect_ident()?;
 
             let ty = if self.eat(&Token::Colon) {
@@ -1499,7 +1505,11 @@ impl Parser<'_> {
                 None
             };
 
-            params.push(LambdaParam { name, ty });
+            params.push(LambdaParam {
+                name,
+                ty,
+                name_span,
+            });
 
             if !self.eat(&Token::Comma) {
                 break;

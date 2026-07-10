@@ -5942,7 +5942,9 @@ impl Checker {
             } else {
                 Ty::Var(TypeVar::fresh())
             };
-            self.env.define(p.name.clone(), ty.clone(), false);
+            self.check_shadowing(&p.name, &p.name_span);
+            self.env
+                .define_param_with_span(p.name.clone(), ty.clone(), false, p.name_span.clone());
             param_tys.push(ty);
         }
 

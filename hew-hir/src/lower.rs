@@ -8340,24 +8340,6 @@ impl LowerCtx {
         }
     }
 
-    /// If `ty` is a bare reference to a type parameter of the function
-    /// currently being lowered, return its name. The checker lowers an
-    /// abstract `T` to `ResolvedTy::Named { args: [] }` (a structural
-    /// `ResolvedTy::TypeParam` also appears after substitution), so both
-    /// shapes are recognised. Used to route generic `Display` surfaces to
-    /// per-monomorphisation static dispatch instead of a concrete overload.
-    fn abstract_type_param_name<'a>(&self, ty: &'a ResolvedTy) -> Option<&'a str> {
-        match ty {
-            ResolvedTy::TypeParam { name } => Some(name),
-            ResolvedTy::Named { name, args, .. }
-                if args.is_empty() && self.current_fn_type_params.contains(name) =>
-            {
-                Some(name)
-            }
-            _ => None,
-        }
-    }
-
     /// Emit a `Display::fmt` static trait-dispatch over an abstract type
     /// parameter `type_param_name` (#1565). `bound_trait` and
     /// `declaring_trait` are both the `Display` lang-item trait; the concrete
@@ -8469,12 +8451,37 @@ impl LowerCtx {
             | ResolvedTy::U64
             | ResolvedTy::Isize
             | ResolvedTy::Usize
-            | ResolvedTy::F32
             | ResolvedTy::F64
             | ResolvedTy::Bool
             | ResolvedTy::Char => {
                 let builtin = scalar_display_builtin(&ty);
                 self.build_catalog_call(builtin, vec![value], span)
+            }
+            ResolvedTy::F32 => {
+                // `to_string_f64` (`hew_float_to_string`) is the only float
+                // formatter symbol and takes an `f64`; the value here is a raw
+                // `f32`. The builtin `impl Display for f32` renders through
+                // `to_string(val as f64)`, so this shared shell must apply the
+                // same widening. Without the explicit `f32 -> f64` cast, codegen
+                // emits `hew_float_to_string(float)` against a `double`
+                // signature and the module fails LLVM verification — the exact
+                // failure a direct `to_string(f32)` / `println(f32)` and a
+                // concrete-`f32` f-string (`f"{x}"`) both hit before this arm
+                // was split out.
+                let widened = HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    value_class: ValueClass::of_ty(&ResolvedTy::F64, &self.type_classes),
+                    ty: ResolvedTy::F64,
+                    intent: IntentKind::Read,
+                    kind: HirExprKind::NumericCast {
+                        value: Box::new(value),
+                        from_ty: ResolvedTy::F32,
+                        to_ty: ResolvedTy::F64,
+                    },
+                    span: span.clone(),
+                };
+                self.build_catalog_call("to_string_f64", vec![widened], span)
             }
             // `duration` has a pure-Hew `impl Display for duration` (rendered
             // through `is_builtin_display_impl`), so dispatch to its fmt symbol
@@ -8595,21 +8602,30 @@ impl LowerCtx {
         span: &Span,
     ) -> Result<(HirExprKind, ResolvedTy), Vec<HirExpr>> {
         let is_display_surface = matches!(name, "println" | "print" | "to_string");
-        // Route a single `dyn Display` argument through the Display dispatch
-        // spine when no concrete-ABI overload matched. This covers two shapes:
-        //   * an abstract type parameter `T: Display` (per-monomorphisation
-        //     static dispatch), and
-        //   * `duration`, whose `impl Display for duration` fmt has no
-        //     `to_string_*` catalog overload — without this it would fail closed
-        //     with `UnresolvedBuiltinOverload` even though the checker admitted
-        //     the call (`instant` needs no arm: it canonicalises to i64 and the
-        //     i64 overload renders it as raw nanos).
-        let single_dispatchable = args.len() == 1
-            && args.first().is_some_and(|arg| {
-                self.abstract_type_param_name(&arg.ty).is_some()
-                    || matches!(arg.ty, ResolvedTy::Duration)
-                    || is_named_instant(&arg.ty)
-            });
+        // Route a single `Display` argument through the Display dispatch spine
+        // whenever no concrete-ABI overload matched. Reaching this fallback
+        // means `stdlib_catalog::resolve_overload` found no monomorphic entry
+        // (`println_i32`, `to_string_str`, …) for the argument type, yet the
+        // argument is already known to implement `Display`: `println` / `print`
+        // / `to_string` are generic `T: Display` builtins, so the checker's
+        // type-parameter bound enforcement (`Checker::enforce_type_param_bounds`
+        // / `type_satisfies_trait_bound` in `check/generics.rs`) rejects a
+        // non-`Display` argument before HIR lowering runs — `println(blob)` on a
+        // type with no `impl Display` fails that bound gate with "does not
+        // implement trait `Display` required by `T`" and never reaches here.
+        // (That is a distinct gate from the f-string-only `require_display_impl`,
+        // which validates each interpolation part.) So the argument count is the
+        // only condition worth testing: `lower_display_dispatch` already has a
+        // working arm for every shape a `Display` value can take — `string`,
+        // every scalar (incl. `char` and the narrow ints via
+        // `scalar_display_builtin`), `duration`, named-`instant`, concrete named
+        // `impl Display` types, and abstract type parameters `T: Display` — and
+        // fails closed on anything else. Enumerating a subset of those shapes
+        // here only re-hid the rest behind `UnresolvedBuiltinOverload` (#2351:
+        // `char`/`i8`/`f32`; #2492: named types with a real `impl Display`),
+        // even though f-string interpolation of the identical value already
+        // renders it fine through this shell.
+        let single_dispatchable = args.len() == 1;
         if !is_display_surface || !single_dispatchable || self.lang_items.display_method().is_none()
         {
             return Err(args);
@@ -28905,22 +28921,6 @@ fn scan_expr_for_vec_index_gate(
 /// Map a scalar `ResolvedTy` to its `to_string_*` catalog builtin for Display
 /// dispatch. Only the scalar arm of `lower_display_dispatch` reaches here; any
 /// non-scalar type is a caller bug (the dispatch match never routes it here).
-/// Whether `ty` is a typed `instant` (`Named { builtin: Some(Instant) }`).
-///
-/// Annotation-lowering preserves the named form for `instant` (unlike the
-/// expression-level `from_ty`, which canonicalises to i64), so any
-/// annotation/parameter-typed instant carries this shape rather than a bare
-/// `ResolvedTy::I64`.
-fn is_named_instant(ty: &ResolvedTy) -> bool {
-    matches!(
-        ty,
-        ResolvedTy::Named {
-            builtin: Some(BuiltinType::Instant),
-            ..
-        }
-    )
-}
-
 fn scalar_display_builtin(ty: &ResolvedTy) -> &'static str {
     match ty {
         ResolvedTy::I8 | ResolvedTy::I16 | ResolvedTy::I32 => "to_string_i32",

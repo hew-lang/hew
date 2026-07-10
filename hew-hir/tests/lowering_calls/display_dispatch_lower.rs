@@ -383,3 +383,87 @@ fn fstring_string_routes_through_user_display_impl() {
          user `impl Display for string` (`string::fmt`); observed calls: {calls:?}"
     );
 }
+
+/// Assert a lowered program raised no `UnresolvedBuiltinOverload` — i.e. the
+/// direct `println`/`print`/`to_string` call routed through the shared
+/// `lower_display_dispatch` shell instead of failing closed at the widened
+/// `single_dispatchable` gate.
+fn assert_no_unresolved_overload(source: &str) {
+    let output = lower_checked(source);
+    let unresolved: Vec<_> = output
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(&d.kind, HirDiagnosticKind::UnresolvedBuiltinOverload { .. }))
+        .collect();
+    assert!(
+        unresolved.is_empty(),
+        "direct display-surface call must not fail closed with \
+         UnresolvedBuiltinOverload once `single_dispatchable` is widened to \
+         trust the checker's Display gate; got: {unresolved:#?}\nsource:\n{source}"
+    );
+}
+
+/// #2351: a direct (non-generic-wrapped) `println`/`print`/`to_string` of
+/// `char` and every narrow primitive the catalog has no concrete
+/// `println_*`/`print_*`/`to_string_*` overload for must route through the
+/// Display dispatch shell rather than hitting `UnresolvedBuiltinOverload` —
+/// the exact same values already render fine through f-string interpolation.
+#[test]
+fn direct_display_surface_narrow_primitives_lower() {
+    // (type, literal) pairs whose direct display-surface calls reached the
+    // `single_dispatchable` fallback on the pre-fix admit-list. `char`, `i8`,
+    // `f32` are the shapes named in #2351; `i16`/`u16`/`isize`/`usize` share
+    // the identical seam.
+    let matrix = [
+        ("char", "'x'"),
+        ("i8", "-3"),
+        ("i16", "300"),
+        ("u16", "7"),
+        ("isize", "9"),
+        ("usize", "4"),
+        ("f32", "1.5"),
+    ];
+    for (ty, lit) in matrix {
+        assert_no_unresolved_overload(&format!("fn main() {{ let v: {ty} = {lit}; println(v); }}"));
+        assert_no_unresolved_overload(&format!("fn main() {{ let v: {ty} = {lit}; print(v); }}"));
+        assert_no_unresolved_overload(&format!(
+            "fn main() {{ let v: {ty} = {lit}; let s: string = to_string(v); }}"
+        ));
+    }
+}
+
+/// #2492: a direct `println`/`print`/`to_string` of a concrete named type
+/// carrying a real `impl Display` must route through the type's `fmt` symbol
+/// via the shared shell — the same dispatch f-string interpolation already
+/// performs — instead of failing closed with `UnresolvedBuiltinOverload`.
+#[test]
+fn direct_display_surface_named_type_routes_to_impl() {
+    let prelude = "type Point { x: i64 } \
+                   impl Display for Point { fn fmt(p: Point) -> string { \"P\" } }";
+    let surfaces = [
+        ("println(p);", "println_str"),
+        ("print(p);", "print_str"),
+        ("let s: string = to_string(p);", "Point::fmt"),
+    ];
+    for (call, _wrapper) in surfaces {
+        let source = format!("{prelude} fn main() {{ let p = Point {{ x: 7 }}; {call} }}");
+        let output = lower_checked(&source);
+        let unresolved: Vec<_> = output
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(&d.kind, HirDiagnosticKind::UnresolvedBuiltinOverload { .. }))
+            .collect();
+        assert!(
+            unresolved.is_empty(),
+            "direct display-surface call of a named `impl Display` type must not \
+             fail closed; got: {unresolved:#?}\nsource:\n{source}"
+        );
+        let calls = collect_calls(&output);
+        assert!(
+            calls.iter().any(|c| c == "Point::fmt"),
+            "direct display-surface call of `Point` must dispatch through its \
+             `impl Display` fmt symbol (`Point::fmt`); observed calls: {calls:?}\n\
+             source:\n{source}"
+        );
+    }
+}

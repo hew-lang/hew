@@ -125,11 +125,16 @@ emit(`color brightmagenta ${nanoKeywordRegex(booleans)}`);
 blank();
 
 // Control flow keywords
-// Actor keywords that serve as control flow are mixed in
+// Actor keywords that serve as control flow are mixed in. `cooperate` is
+// deliberately NOT here — syntax-data.json classifies it under
+// reserved_unused (a compiler-internal safepoint token, not a source
+// expression); it is supplied via the reserved_unused category instead.
+// `await_restart` is not repeated here either — it is already emitted
+// wholesale via kw.actors (the actors category, below).
 emit('# Control flow keywords');
 const controlFlow = [...new Set([
   ...kw.control_flow,
-  'select', 'join', 'yield', 'cooperate', 'after', 'from', 'await',
+  'select', 'join', 'yield', 'after', 'from', 'await',
   'scope',
 ])];
 // Split across multiple lines for readability if needed

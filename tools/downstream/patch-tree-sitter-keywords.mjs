@@ -76,8 +76,14 @@ const categoryKeywords = {
     'f32', 'f64',
     'bool', 'bytes', 'string',
   ],
-  // Only standalone wire attributes — 'default' and 'reserved' appear in seq() expressions
-  wire_attributes: kw.wire.filter(w => !['wire', 'default', 'reserved'].includes(w)),
+  // Only standalone wire attributes — 'default' and 'reserved' appear in seq() expressions.
+  // 'repeated' is a real bare WireAttr alternative (grammar.ebnf:92, grammar.js
+  // wire_attribute production) but lives in syntax-data.json's
+  // contextual_identifiers, not keywords.wire — kw.wire alone can never produce
+  // it, so it must be appended explicitly or this category silently drops it
+  // (and deletes it from grammar.js) on every sync run.
+  wire_attributes: kw.wire.filter(w => !['wire', 'default', 'reserved'].includes(w))
+    .concat(['repeated']),
   overflow_kinds: ['block', 'drop_new', 'drop_old', 'fail'],
   restart_permanence: kw.supervisor_config.filter(
     k => ['permanent', 'transient', 'temporary'].includes(k)

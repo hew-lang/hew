@@ -37,7 +37,7 @@ color brightmagenta "\<(true|false|None)\>"
 
 # Control flow keywords
 color brightwhite "\<(if|else|match|loop|for|while|break|continue|return|in)\>"
-color brightwhite "\<(yield|defer|select|join|cooperate|after|from|await|scope)\>"
+color brightwhite "\<(yield|defer|select|join|after|from|await|scope)\>"
 
 # Declaration keywords
 color green "\<(let|var|const|mut|fn|gen|async|pub|import|package)\>"

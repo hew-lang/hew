@@ -60,8 +60,11 @@ const types = syntaxData.types;
 const keywordGroups = {
   'keyword.control.hew': [...new Set([
     ...kw.control_flow,
-    // Actor keywords that serve as control flow
-    'select', 'join', 'after', 'from', 'await', 'scope', 'cooperate',
+    // Actor keywords that serve as control flow. `cooperate` is deliberately
+    // NOT here — syntax-data.json classifies it under reserved_unused (a
+    // compiler-internal safepoint token, not a source expression); it is
+    // supplied via keyword.reserved.hew below.
+    'select', 'join', 'after', 'from', 'await', 'await_restart', 'scope',
   ])],
 
   'keyword.declaration.hew': [
@@ -130,8 +133,21 @@ const typeGroups = {
 // -- Contextual identifiers ------------------------------------------------
 // NOT keywords — have special meaning only in specific parser contexts.
 
+// Type-decl attribute names (`#[resource]`, `#[linear]`, `#[opaque]`,
+// `#[wire]`) only ever have keyword meaning inside `#[...]`, which the
+// earlier #attributes pattern already scopes as meta.attribute.hew before
+// the variables section is reached. Including them in the broad
+// variable.language.contextual.hew fallback mis-highlights ordinary
+// identifiers (`let resource = compute();`) as a contextual keyword —
+// confirmed by empirical TextMate tokenization (hew-lang/hew#2410, which
+// applied the same exclusion to editors/sublime/Hew.tmLanguage.json).
+// Revisit if syntax-data.json's contextual_identifiers schema ever tags
+// entries as "only valid inside an attribute" so this becomes data-driven.
+const ATTRIBUTE_ONLY_CONTEXTUAL = ['resource', 'linear', 'opaque', 'wire'];
+
 const contextualNames = Object.keys(syntaxData.contextual_identifiers)
-  .filter(name => name !== 'self' && name !== 'description');
+  .filter(name => name !== 'self' && name !== 'description'
+    && !ATTRIBUTE_ONLY_CONTEXTUAL.includes(name));
 
 const contextualGroup = {
   'variable.language.contextual.hew': contextualNames,

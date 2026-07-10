@@ -392,6 +392,53 @@ pub const PRIMITIVE_ALIASES: &[(&str, &[&str])] = &[
     ("!", &["!"]),
 ];
 
+/// Structural type-encoder "heads" — the leading tokens the monomorph and
+/// resolved-type manglers emit for non-primitive structural shapes
+/// (`tuple$x...$g`, `array$x...$g`, `fn$x...$r...$g`, etc.). A user type
+/// declaration whose bare name collides with one of these heads would be
+/// indistinguishable from a mangled structural fragment at the symbol layer,
+/// so the checker reserves them alongside the primitive spellings.
+///
+/// Kept in lockstep with `hew-hir/src/monomorph.rs::mangle_resolved_ty` and
+/// `hew-types/src/resolved_ty.rs::mangle_resolved_ty_segment`.
+pub const STRUCTURAL_ENCODER_HEADS: &[&str] = &[
+    "tuple",
+    "array",
+    "slice",
+    "fn",
+    "closure",
+    "ptr",
+    "ptrmut",
+    "borrow",
+    "dyn",
+    "task",
+    "unit",
+    "never",
+    "typeparam",
+];
+
+/// Return `true` if `name` is a reserved type-declaration name: either a
+/// primitive type spelling (`i64`, `bool`, `string`, …) or a structural
+/// encoder head (`tuple`, `array`, …). User `type`/`record`/`actor`/`machine`
+/// declarations may not use these names because the type-fragment encoder
+/// leaves such fragments unchanged, so a declaration named `i64` or `tuple`
+/// would collide with the compiler's own type vocabulary.
+///
+/// Structural spellings like `()` and `!` are excluded here because they are
+/// not valid identifiers and can never appear as a declared type name.
+#[must_use]
+pub fn is_reserved_type_name(name: &str) -> bool {
+    if STRUCTURAL_ENCODER_HEADS.contains(&name) {
+        return true;
+    }
+    for (_canonical, aliases) in PRIMITIVE_ALIASES {
+        if aliases.contains(&name) && name != "()" && name != "!" {
+            return true;
+        }
+    }
+    false
+}
+
 /// Return the alias slice for the given canonical primitive name.
 ///
 /// Intended for use in `const` initializers in downstream crates that need
@@ -1756,6 +1803,49 @@ impl fmt::Display for UserFacingTy<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reserved_type_name_covers_primitives_and_structural_heads() {
+        // Primitive spellings are reserved.
+        for name in [
+            "i64", "i32", "u64", "bool", "char", "string", "bytes", "duration",
+        ] {
+            assert!(
+                is_reserved_type_name(name),
+                "`{name}` should be a reserved type name"
+            );
+        }
+        // Structural encoder heads are reserved.
+        for name in [
+            "tuple",
+            "array",
+            "slice",
+            "fn",
+            "closure",
+            "ptr",
+            "ptrmut",
+            "borrow",
+            "dyn",
+            "task",
+            "unit",
+            "never",
+            "typeparam",
+        ] {
+            assert!(
+                is_reserved_type_name(name),
+                "`{name}` should be a reserved type name"
+            );
+        }
+        // Ordinary user names (including near-misses) are not reserved.
+        for name in [
+            "Point", "Tuple", "MyString", "I64", "String", "Array", "foo", "bar",
+        ] {
+            assert!(
+                !is_reserved_type_name(name),
+                "`{name}` should NOT be a reserved type name"
+            );
+        }
+    }
 
     #[test]
     fn test_type_var_fresh() {

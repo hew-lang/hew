@@ -1426,3 +1426,84 @@ fn typecheck_local_result_enum_not_qualified_to_sqlite() {
         }
     );
 }
+
+// --- #2520: reserved type names (primitives + structural encoder heads) ---
+
+#[test]
+fn reserved_primitive_type_name_i64_rejected() {
+    // `type i64 { ... }` collides with the primitive spelling. The
+    // type-fragment encoder leaves primitive fragments unchanged, so the
+    // checker must reject the declaration rather than treat it as a mangling
+    // concern.
+    let output = check_source("type i64 { value: i64; }\nfn main() -> i64 { return 0; }");
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::ReservedTypeName && e.message.contains("i64")),
+        "expected ReservedTypeName citing `i64`; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn reserved_structural_head_tuple_rejected() {
+    // `type tuple<T> { ... }` collides with the structural encoder head
+    // `tuple$x...$g`.
+    let output = check_source("type tuple<T> { value: T; }\nfn main() -> i64 { return 0; }");
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::ReservedTypeName && e.message.contains("tuple")),
+        "expected ReservedTypeName citing `tuple`; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn reserved_type_name_rejected_across_declaration_kinds() {
+    // The gate lives in the shared namespace-registration chokepoint, so
+    // `record`/`actor` declarations are rejected the same way `type` is.
+    for (src, needle) in [
+        (
+            "record string { a: i64 }\nfn main() -> i64 { return 0; }",
+            "string",
+        ),
+        (
+            "actor bytes {\n  receive fn ping() {}\n}\nfn main() -> i64 { return 0; }",
+            "bytes",
+        ),
+    ] {
+        let output = check_source(src);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::ReservedTypeName && e.message.contains(needle)),
+            "expected ReservedTypeName citing `{needle}` for source `{src}`; got: {:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn non_reserved_type_names_still_accepted() {
+    // Names that merely resemble but do not equal a reserved spelling must
+    // still be accepted (no over-fire).
+    let output = check_source(
+        "type Point { x: i64; y: i64; }\n\
+         type Tuple { a: i64; }\n\
+         type MyString { s: i64; }\n\
+         enum Colour { Red; Green; Blue; }\n\
+         fn main() -> i64 { return 0; }",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| e.kind != TypeErrorKind::ReservedTypeName),
+        "no ReservedTypeName expected for non-reserved names; got: {:?}",
+        output.errors
+    );
+}

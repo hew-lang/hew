@@ -223,6 +223,17 @@ impl TypeError {
         .with_note(prev_span, "previous definition here".to_string())
     }
 
+    /// Create a reserved-type-name error for a user declaration that reuses a
+    /// primitive spelling or a structural type-encoder head.
+    #[must_use]
+    pub fn reserved_type_name(span: Span, name: &str) -> Self {
+        Self::new(
+            TypeErrorKind::ReservedTypeName,
+            span,
+            format!("`{name}` is a reserved type name and cannot be used for a declaration"),
+        )
+    }
+
     /// Create a mutability error.
     #[must_use]
     pub fn mutability_error(span: Span, name: &str) -> Self {
@@ -551,6 +562,11 @@ pub enum TypeErrorKind {
     NonExhaustiveMatch,
     /// Name defined multiple times
     DuplicateDefinition,
+    /// A user type declaration uses a reserved name: either a primitive type
+    /// spelling (`i64`, `bool`, `string`, …) or a structural type-encoder head
+    /// (`tuple`, `array`, `fn`, …). These names collide with the compiler's
+    /// own type vocabulary and cannot be redeclared.
+    ReservedTypeName,
     /// Assigning to immutable variable
     MutabilityError,
     /// Return statement type doesn't match function signature
@@ -1180,6 +1196,7 @@ impl TypeErrorKind {
             Self::InferenceFailed => "InferenceFailed",
             Self::NonExhaustiveMatch => "NonExhaustiveMatch",
             Self::DuplicateDefinition => "DuplicateDefinition",
+            Self::ReservedTypeName => "ReservedTypeName",
             Self::MutabilityError => "MutabilityError",
             Self::ReturnTypeMismatch => "ReturnTypeMismatch",
             Self::UseAfterMove => "UseAfterMove",

@@ -2347,6 +2347,11 @@ impl Checker {
         name: &str,
         span: &Span,
     ) -> bool {
+        if crate::ty::is_reserved_type_name(name) {
+            self.errors
+                .push(TypeError::reserved_type_name(span.clone(), name));
+            return false;
+        }
         let owner_key = (module_short.map(str::to_string), name.to_string());
         if let Some(prev_span) = self.type_namespace_owners.get(&owner_key).cloned() {
             self.report_duplicate_type_namespace_name(name, span, prev_span);
@@ -2379,6 +2384,11 @@ impl Checker {
         machine_name: &str,
         span: &Span,
     ) -> bool {
+        if crate::ty::is_reserved_type_name(machine_name) {
+            self.errors
+                .push(TypeError::reserved_type_name(span.clone(), machine_name));
+            return false;
+        }
         let machine_key = (module_short.map(str::to_string), machine_name.to_string());
         if let Some(prev_span) = self.type_namespace_owners.get(&machine_key).cloned() {
             self.report_duplicate_type_namespace_name(machine_name, span, prev_span);

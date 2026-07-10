@@ -23,11 +23,23 @@ impl Checker {
     pub(super) fn check_item(&mut self, item: &Item, span: &Span) {
         match item {
             Item::Function(fd) => self.check_function(fd),
-            Item::Actor(ad) => self.check_actor(ad),
+            Item::Actor(ad) => {
+                if !crate::ty::is_reserved_type_name(&ad.name) {
+                    self.check_actor(ad);
+                }
+            }
             Item::Const(cd) => self.check_const(cd, span),
             Item::Impl(id) => self.check_impl(id, span),
-            Item::Machine(md) => self.check_machine_exhaustiveness(md, span),
-            Item::Trait(td) => self.check_trait_defaults(td),
+            Item::Machine(md) => {
+                if !crate::ty::is_reserved_type_name(&md.name) {
+                    self.check_machine_exhaustiveness(md, span);
+                }
+            }
+            Item::Trait(td) => {
+                if !crate::ty::is_reserved_type_name(&td.name) {
+                    self.check_trait_defaults(td);
+                }
+            }
             // All of these are fully handled during earlier registration passes
             // and require no second-pass body checking.  Record declarations
             // specifically are registered by `register_record_decl`; they have

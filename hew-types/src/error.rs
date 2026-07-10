@@ -223,6 +223,19 @@ impl TypeError {
         .with_note(prev_span, "previous definition here".to_string())
     }
 
+    /// Create an `E_RESERVED_TYPE_NAME` error for a declaration that collides
+    /// with a compiler-emitted type fragment.
+    #[must_use]
+    pub fn reserved_type_name(span: Span, name: &str) -> Self {
+        Self::new(
+            TypeErrorKind::ReservedTypeName,
+            span,
+            format!(
+                "E_RESERVED_TYPE_NAME: `{name}` is reserved and cannot be used for a type declaration"
+            ),
+        )
+    }
+
     /// Create a mutability error.
     #[must_use]
     pub fn mutability_error(span: Span, name: &str) -> Self {
@@ -551,6 +564,8 @@ pub enum TypeErrorKind {
     NonExhaustiveMatch,
     /// Name defined multiple times
     DuplicateDefinition,
+    /// A declaration reuses a compiler-emitted primitive or structural type name.
+    ReservedTypeName,
     /// Assigning to immutable variable
     MutabilityError,
     /// Return statement type doesn't match function signature
@@ -1180,6 +1195,7 @@ impl TypeErrorKind {
             Self::InferenceFailed => "InferenceFailed",
             Self::NonExhaustiveMatch => "NonExhaustiveMatch",
             Self::DuplicateDefinition => "DuplicateDefinition",
+            Self::ReservedTypeName => "ReservedTypeName",
             Self::MutabilityError => "MutabilityError",
             Self::ReturnTypeMismatch => "ReturnTypeMismatch",
             Self::UseAfterMove => "UseAfterMove",

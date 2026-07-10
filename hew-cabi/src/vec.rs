@@ -28,7 +28,11 @@ pub enum HewTypeOwnershipKind {
     Bytes = 3,
 }
 
-/// Runtime-visible layout descriptor for a Hew value type.
+/// Runtime-visible layout descriptor for a plain Hew value type.
+///
+/// This remains the per-call descriptor for the legacy `BitCopy` `_layout`
+/// operations. `HewVec` stores only the thunk-bearing [`HewVecElemLayout`]
+/// witness, so clone/drop never depend on this thunk-less shape.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct HewTypeLayout {
@@ -75,32 +79,18 @@ pub struct HewVec {
     pub elem_size: usize,
     /// Element ownership semantics.
     pub elem_kind: ElemKind,
-    /// Optional runtime type layout descriptor. Null preserves the legacy ABI path.
+    /// Optional runtime element descriptor. Null preserves the legacy typed path.
     ///
     /// When non-null, always points into `layout_storage` (same allocation).
     /// Callers must not assume this pointer outlives the `HewVec`.
-    pub layout: *const HewTypeLayout,
-    /// Inline storage for the layout descriptor copied in by `hew_vec_new_with_layout`.
+    pub layout: *const HewVecElemLayout,
+    /// Inline storage for the descriptor copied in by
+    /// `hew_vec_new_with_layout` or `hew_vec_new_with_elem_layout`.
     ///
-    /// Keeping the descriptor inside the vec allocation means the `layout`
-    /// pointer above never dangles — the value lives exactly as long as the
-    /// vec itself.  Callers that previously passed a long-lived (static or
-    /// heap-allocated) pointer are unaffected: `hew_vec_new_with_layout` still
-    /// accepts any valid pointer and copies its fields here.
-    pub layout_storage: HewTypeLayout,
-    /// Optional owned-element descriptor (W5.016). Null for every non-owned
-    /// path (scalar, string, ptr, and `BitCopy` `layout`). When non-null it
-    /// points into `elem_layout_storage` (same allocation) and the owned ops
-    /// (`hew_vec_*_owned`) read the clone/drop thunks from it.
-    ///
-    /// This is additive: the Plain `_layout` path (`layout`/`layout_storage`)
-    /// is untouched, so the `BitCopy` ABI is unchanged (R307).
-    pub elem_layout: *const HewVecElemLayout,
-    /// Inline storage for the owned-element descriptor copied in by
-    /// `hew_vec_new_with_elem_layout`. Mirrors `layout_storage`: the descriptor
-    /// (and its thunk pointers) live exactly as long as the vec, so
-    /// `elem_layout` never dangles.
-    pub elem_layout_storage: HewVecElemLayout,
+    /// Keeping the descriptor inside the vec allocation means the pointer above
+    /// never dangles. Plain `_layout` constructors widen their thunk-less
+    /// `HewTypeLayout` argument into this authoritative shape with null thunks.
+    pub layout_storage: HewVecElemLayout,
 }
 
 /// Equality callback for layout-backed Vec contains.
@@ -113,13 +103,11 @@ pub type HewVecEqThunk = unsafe extern "C" fn(a: *const c_void, b: *const c_void
 // Owned-element descriptor (W5.016 — Vec<non-Copy / owned composite>)
 // ---------------------------------------------------------------------------
 //
-// `HewVecElemLayout` is the per-element witness for an ordered container whose
-// element type owns heap (strings, nested owned aggregates, owned-payload or
-// self-recursive enums). It is a NEW descriptor struct (R307 / Q351), distinct
-// from the thunk-less `HewTypeLayout` above: extending `HewTypeLayout` would
-// churn the field layout of every BitCopy `_layout` op and silently ABI-break
-// the Plain path. The Vec twin of `HewMapValueLayout` (`map.rs`), minus the
-// hash/eq identity thunks an ordered container does not need.
+// `HewVecElemLayout` is the authoritative per-element witness for every
+// descriptor-backed Vec. Plain elements carry null thunks; heap-owning elements
+// carry semantic clone/drop thunks. `HewTypeLayout` remains only as the
+// compatibility argument shape of BitCopy `_layout` operations and is widened
+// into this descriptor at construction.
 //
 // # Ownership contract (LESSONS `container-ingress-ownership-is-per-container`
 // P0) — the per-element discipline the owned runtime ops enforce:
@@ -149,10 +137,10 @@ pub type HewVecEqThunk = unsafe extern "C" fn(a: *const c_void, b: *const c_void
 // the owned push/set/clone ops satisfy this precondition.
 //
 // # Fail-closed contract (LESSONS `boundary-fail-closed` P0)
-// Both thunks are `Option<...>`. `None` means "no thunk provided". The owned
-// constructor (`hew_vec_new_with_elem_layout`) MUST reject `None` thunks for a
-// non-`Plain` ownership kind and abort fail-closed — a null thunk on a
-// LayoutManaged element is a silent UAF/leak channel.
+// Both thunks are `Option<...>`. `None` means "no thunk provided". A non-Plain
+// descriptor must provide a drop thunk; clone entry points fail closed when the
+// clone thunk is absent. This permits release-only witnesses such as closure
+// pairs without weakening recursive drop.
 
 /// Thunk that clones an owned Vec element from `src` to `dst`.
 ///
@@ -223,16 +211,52 @@ pub struct HewVecElemLayout {
     pub align: usize,
     /// Ownership discipline of the element type.
     pub ownership_kind: HewTypeOwnershipKind,
-    /// Clone thunk invoked on push/set/clone (deep copy in). `None` is valid
-    /// only for `ownership_kind == Plain`; `String`/`LayoutManaged` require
-    /// `Some(_)` (fail-closed constructor check in
-    /// `hew_vec_new_with_elem_layout`).
+    /// Clone thunk invoked on push/set/clone (deep copy in). `None` is valid for
+    /// Plain elements and release-only descriptors; clone entry points reject a
+    /// missing thunk when semantic cloning is required.
     pub clone_fn: Option<HewVecElemCloneThunk>,
-    /// Drop thunk invoked on set-overwrite (old element) and free (every live
-    /// element). `None` is valid only for `ownership_kind == Plain`;
-    /// `String`/`LayoutManaged` require `Some(_)`.
+    /// Drop thunk invoked on set-overwrite, truncate/clear, and free. `None` is
+    /// valid only for `ownership_kind == Plain`.
     pub drop_fn: Option<HewVecElemDropThunk>,
 }
+
+#[cfg(target_pointer_width = "64")]
+const _: () = {
+    assert!(core::mem::offset_of!(HewVecElemLayout, size) == 0);
+    assert!(core::mem::offset_of!(HewVecElemLayout, align) == 8);
+    assert!(core::mem::offset_of!(HewVecElemLayout, ownership_kind) == 16);
+    assert!(core::mem::offset_of!(HewVecElemLayout, clone_fn) == 24);
+    assert!(core::mem::offset_of!(HewVecElemLayout, drop_fn) == 32);
+    assert!(core::mem::size_of::<HewVecElemLayout>() == 40);
+
+    assert!(core::mem::offset_of!(HewVec, data) == 0);
+    assert!(core::mem::offset_of!(HewVec, len) == 8);
+    assert!(core::mem::offset_of!(HewVec, cap) == 16);
+    assert!(core::mem::offset_of!(HewVec, elem_size) == 24);
+    assert!(core::mem::offset_of!(HewVec, elem_kind) == 32);
+    assert!(core::mem::offset_of!(HewVec, layout) == 40);
+    assert!(core::mem::offset_of!(HewVec, layout_storage) == 48);
+    assert!(core::mem::size_of::<HewVec>() == 88);
+};
+
+#[cfg(target_pointer_width = "32")]
+const _: () = {
+    assert!(core::mem::offset_of!(HewVecElemLayout, size) == 0);
+    assert!(core::mem::offset_of!(HewVecElemLayout, align) == 4);
+    assert!(core::mem::offset_of!(HewVecElemLayout, ownership_kind) == 8);
+    assert!(core::mem::offset_of!(HewVecElemLayout, clone_fn) == 12);
+    assert!(core::mem::offset_of!(HewVecElemLayout, drop_fn) == 16);
+    assert!(core::mem::size_of::<HewVecElemLayout>() == 20);
+
+    assert!(core::mem::offset_of!(HewVec, data) == 0);
+    assert!(core::mem::offset_of!(HewVec, len) == 4);
+    assert!(core::mem::offset_of!(HewVec, cap) == 8);
+    assert!(core::mem::offset_of!(HewVec, elem_size) == 12);
+    assert!(core::mem::offset_of!(HewVec, elem_kind) == 16);
+    assert!(core::mem::offset_of!(HewVec, layout) == 20);
+    assert!(core::mem::offset_of!(HewVec, layout_storage) == 24);
+    assert!(core::mem::size_of::<HewVec>() == 44);
+};
 
 // ---------------------------------------------------------------------------
 // Extern declarations — resolved at link time against libhew_runtime.a
@@ -360,16 +384,10 @@ extern "C" {
     pub fn hew_vec_sort_f64(v: *mut HewVec);
     pub fn hew_vec_clone(v: *const HewVec) -> *mut HewVec;
     pub fn hew_vec_clone_layout(v: *const HewVec, layout: *const HewTypeLayout) -> *mut HewVec;
-    // Witness-managed clone/free pair (W5.002 F0b). Single-arg, descriptor read
-    // from the handle (`(*v).layout`), mirroring the HashMap/HashSet
-    // `*_clone_layout`/`*_free_layout` family. Codegen derives both from
-    // `collection_layout_witness`, so the allocate/free symbols can never drift
-    // (W4.045 UAF class).
-    pub fn hew_vec_clone_managed(v: *const HewVec) -> *mut HewVec;
-    pub fn hew_vec_free_managed(v: *mut HewVec);
-    // Owned-element clone/free pair (W5.016). `clone_owned` deep-copies every
-    // element via the descriptor `clone_fn`; `free_owned` drops every live
-    // element via `drop_fn` exactly once, then frees the buffer.
+    // Descriptor-driven clone/free pair. Both symbols use the same recursive
+    // protocol as `hew_vec_clone`/`hew_vec_free`; the `_owned` names remain for
+    // existing owned-element call sites while context-specific managed and
+    // closure-pair variants are retired.
     pub fn hew_vec_clone_owned(v: *const HewVec) -> *mut HewVec;
     pub fn hew_vec_free_owned(v: *mut HewVec);
     pub fn hew_vec_append(dst: *mut HewVec, src: *const HewVec);
@@ -397,9 +415,6 @@ extern "C" {
         rhs: *const HewVec,
         eq_fn: Option<HewVecEqThunk>,
     ) -> i32;
-    // WASM-TODO(#1451): mirror the descriptor Vec contains/slice symbols in the
-    // wasm/sandbox runtime path; native stays fail-closed through the C ABI
-    // declarations below until that parity sweep lands.
     pub fn hew_vec_contains_owned(
         v: *const HewVec,
         data: *const c_void,
@@ -669,8 +684,6 @@ mod tests {
                 elem_kind: ElemKind::String,
                 layout: std::ptr::null(),
                 layout_storage: core::mem::zeroed(),
-                elem_layout: std::ptr::null(),
-                elem_layout_storage: core::mem::zeroed(),
             }
         };
         assert_eq!(v.data as usize, 0xAAAA);
@@ -693,8 +706,6 @@ mod tests {
                 elem_kind: ElemKind::Plain,
                 layout: std::ptr::null(),
                 layout_storage: core::mem::zeroed(),
-                elem_layout: std::ptr::null(),
-                elem_layout_storage: core::mem::zeroed(),
             }
         };
         let debug = format!("{v:?}");
@@ -718,8 +729,6 @@ mod tests {
                 elem_kind: ElemKind::Plain,
                 layout: std::ptr::null(),
                 layout_storage: core::mem::zeroed(),
-                elem_layout: std::ptr::null(),
-                elem_layout_storage: core::mem::zeroed(),
             }
         };
         assert!(v.data.is_null());
@@ -755,8 +764,6 @@ mod tests {
                 elem_kind: ElemKind::Plain,
                 layout: std::ptr::null(),
                 layout_storage: core::mem::zeroed(),
-                elem_layout: std::ptr::null(),
-                elem_layout_storage: core::mem::zeroed(),
             }
         };
         let vec_ptr = &raw mut vec;
@@ -794,8 +801,6 @@ mod tests {
                 elem_kind: ElemKind::Plain,
                 layout: std::ptr::null(),
                 layout_storage: core::mem::zeroed(),
-                elem_layout: std::ptr::null(),
-                elem_layout_storage: core::mem::zeroed(),
             }
         };
         let vec_ptr = &raw mut vec;
@@ -816,8 +821,6 @@ mod tests {
                 elem_kind: ElemKind::String, // not Plain
                 layout: std::ptr::null(),
                 layout_storage: core::mem::zeroed(),
-                elem_layout: std::ptr::null(),
-                elem_layout_storage: core::mem::zeroed(),
             }
         };
         let vec_ptr = &raw mut vec;
@@ -839,8 +842,6 @@ mod tests {
                 elem_kind: ElemKind::Plain,
                 layout: std::ptr::null(),
                 layout_storage: core::mem::zeroed(),
-                elem_layout: std::ptr::null(),
-                elem_layout_storage: core::mem::zeroed(),
             }
         };
         let vec_ptr = &raw mut vec;

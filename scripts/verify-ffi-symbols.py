@@ -30,29 +30,17 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 RUNTIME_SRC = ROOT / "hew-runtime" / "src"
 JIT_SYMBOL_CLASSIFICATION = ROOT / "scripts" / "jit-symbol-classification.toml"
+FFI_OWNERSHIP_RATCHET = ROOT / "scripts" / "ffi-ownership-ratchet.toml"
 SOURCE_ENCODING = "utf-8"
-
-# Function prefixes that live in separate stdlib packages, not hew-runtime.
-# These are linked by the compiler driver when the user imports the module.
-STDLIB_PACKAGE_PREFIXES = (
-    "hew_http_",
-    "hew_tls_",
-    "hew_json_",
-    "hew_regex_",
-    "hew_sqlite_",
-    "hew_postgres_",
-    "hew_redis_",
-    "hew_csv_",
-    "hew_toml_",
-    "hew_yaml_",
-    "hew_mqtt_",
-    "hew_grpc_",
-)
+OWNERSHIP_RESULTS = {"fresh", "retained", "borrowed", "none"}
+PARAM_OWNERSHIP = {"borrow", "consume", "retain"}
+DISCHARGE_DEPTHS = {"shallow", "deep", "none"}
 
 # Exact function names that are codegen-internal (intercepted/rewritten, never linked).
 # For example, hew_log_debug is rewritten to hew_log_emit with a level argument.
@@ -213,10 +201,6 @@ def extract_runtime_exports() -> set[str]:
     return exports
 
 
-def is_stdlib_package(name: str) -> bool:
-    return any(name.startswith(prefix) for prefix in STDLIB_PACKAGE_PREFIXES)
-
-
 def classify(name: str, runtime_exports: set[str]) -> str:
     """Classify a codegen reference. Returns '' if covered, else 'UNCOVERED'."""
     if name in runtime_exports:
@@ -224,8 +208,6 @@ def classify(name: str, runtime_exports: set[str]) -> str:
     if name in CODEGEN_INTERNAL:
         return ""
     if name in TEMPLATE_NAMES:
-        return ""
-    if is_stdlib_package(name):
         return ""
     # Check if it's a suffixed variant of a runtime function
     # e.g. hew_print_u32 → base hew_print is in runtime
@@ -247,6 +229,88 @@ def load_jit_symbol_classification() -> dict[str, set[str]]:
             raise ValueError(f"{JIT_SYMBOL_CLASSIFICATION}: duplicate entries in {key}")
         classification[key] = set(symbols)
     return classification
+
+
+def validate_ownership_contracts(classification: dict[str, set[str]]) -> list[str]:
+    errors: list[str] = []
+    document = tomllib.loads(
+        JIT_SYMBOL_CLASSIFICATION.read_text(encoding=SOURCE_ENCODING)
+    )
+    ownership = document.get("ownership")
+    if not isinstance(ownership, dict):
+        return [f"{JIT_SYMBOL_CLASSIFICATION}: missing [ownership] table"]
+    contracts = ownership.get("contracts")
+    if not isinstance(contracts, list):
+        return [f"{JIT_SYMBOL_CLASSIFICATION}: ownership.contracts must be an array"]
+
+    classified = set().union(*classification.values())
+    contracted: set[str] = set()
+    for index, contract in enumerate(contracts, start=1):
+        location = f"{JIT_SYMBOL_CLASSIFICATION}: ownership contract #{index}"
+        if not isinstance(contract, dict):
+            errors.append(f"{location} must be a table")
+            continue
+
+        symbol = contract.get("symbol")
+        if not isinstance(symbol, str) or not symbol:
+            errors.append(f"{location} requires a non-empty symbol")
+            continue
+        location = f"{JIT_SYMBOL_CLASSIFICATION}: ownership contract for {symbol}"
+        if symbol in contracted:
+            errors.append(f"{location} is duplicated")
+            continue
+        contracted.add(symbol)
+        if symbol not in classified:
+            errors.append(f"{location} is not ABI-classified")
+
+        result = contract.get("result")
+        if result not in OWNERSHIP_RESULTS:
+            errors.append(
+                f"{location} result must be one of {sorted(OWNERSHIP_RESULTS)}"
+            )
+
+        params = contract.get("params")
+        if not isinstance(params, list) or any(
+            param not in PARAM_OWNERSHIP for param in params
+        ):
+            errors.append(
+                f"{location} params must contain only {sorted(PARAM_OWNERSHIP)}"
+            )
+
+        release_symbol = contract.get("release-symbol")
+        discharge_depth = contract.get("discharge-depth")
+        if not isinstance(release_symbol, str):
+            errors.append(f"{location} requires string release-symbol")
+        if discharge_depth not in DISCHARGE_DEPTHS:
+            errors.append(
+                f"{location} discharge-depth must be one of {sorted(DISCHARGE_DEPTHS)}"
+            )
+        elif result in {"fresh", "retained"}:
+            if not release_symbol:
+                errors.append(f"{location} owned result requires release-symbol")
+            if discharge_depth == "none":
+                errors.append(
+                    f"{location} owned result requires shallow or deep discharge"
+                )
+        elif release_symbol or discharge_depth != "none":
+            errors.append(
+                f"{location} borrowed/none result must use empty release-symbol "
+                'and discharge-depth = "none"'
+            )
+
+    ratchet = tomllib.loads(FFI_OWNERSHIP_RATCHET.read_text(encoding=SOURCE_ENCODING))
+    expected_unclassified = ratchet.get("unclassified")
+    if not isinstance(expected_unclassified, int) or expected_unclassified < 0:
+        errors.append(f"{FFI_OWNERSHIP_RATCHET}: unclassified must be non-negative")
+    else:
+        actual_unclassified = len(classified - contracted)
+        if actual_unclassified != expected_unclassified:
+            errors.append(
+                f"unclassified ownership contracts: expected "
+                f"{expected_unclassified}, found {actual_unclassified}; "
+                f"curation must only lower {FFI_OWNERSHIP_RATCHET}"
+            )
+    return errors
 
 
 def validate_jit_symbol_classification(
@@ -291,6 +355,7 @@ def validate_jit_symbol_classification(
             + ", ".join(extra)
             + f" (remove from {JIT_SYMBOL_CLASSIFICATION})"
         )
+    errors.extend(validate_ownership_contracts(classification))
     return errors
 
 

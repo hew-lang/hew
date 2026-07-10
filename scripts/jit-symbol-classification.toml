@@ -4,6 +4,22 @@
 # as part of the candidate host ABI and requires it to appear exactly once
 # in one of the three lists below. Keep entries sorted for stable diffs.
 #
+# Ownership contracts live in [[ownership.contracts]] entries at the end of
+# this file. Every symbol in any ABI tier must either have one contract or be
+# counted by scripts/ffi-ownership-ratchet.toml.
+#
+#   result = "fresh" | "retained" | "borrowed" | "none"
+#   params = ["borrow" | "consume" | "retain", ...]
+#   release-symbol = "<hew_* release function>" | ""
+#   discharge-depth = "shallow" | "deep" | "none"
+#
+# `fresh` transfers a newly owned allocation to the caller. `retained`
+# transfers an additional reference to an existing ref-counted allocation.
+# `borrowed` remains owned elsewhere and may be invalidated by mutation.
+# `none` carries no owned result. Fresh and retained results must name their
+# release symbol and whether that release recursively discharges children.
+# Borrowed and none results use an empty release symbol and depth "none".
+#
 # Three-tier model (rationale: Option A chosen over Option B for substrate
 # clarity — the tier boundary is a compile-time contract, not just a doc claim):
 #
@@ -1124,3 +1140,6 @@ internal = [
   "hew_trace_drain",
   "hew_trace_reset",
 ]
+
+[ownership]
+contracts = []

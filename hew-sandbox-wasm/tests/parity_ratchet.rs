@@ -828,6 +828,18 @@ const CONSTRUCTS: &[Construct] = &[
         probe: "fn main() {\n    let zero: f64 = 0.0;\n    let nan: f64 = zero / zero;\n    let inf: f64 = 1.0 / zero;\n    let nans: Vec<f64> = Vec::new();\n    nans.push(nan);\n    println(nans.contains(nan));\n    println(nans.contains(inf));\n    let nums: Vec<f64> = Vec::new();\n    nums.push(2.5);\n    println(nums.contains(2.5));\n}\n",
         coverage: Coverage::Parity("vec_f64_nonfinite_contains"),
     },
+    Construct {
+        // `.clone()` method-call syntax on Vec/String/Array/Slice/Regex (B-7
+        // allowlist gap). The emitter's generic `local.set` → `cloneValue`
+        // clone arm already handled every one of these receiver types; the
+        // profile allowlist only admitted `clone` on user-defined records.
+        // `Option`/`Result` are deliberately excluded: native Hew has no
+        // `Option::clone`/`Result::clone` (checker reports `UndefinedMethod`),
+        // so no valid program can reach the emitter with one.
+        id: "Vec/String/Array/Slice/Regex method `clone()`",
+        probe: "import std::text::regex;\nfn takes(xs: [i64]) -> i64 {\n    let ys = xs.clone();\n    ys.len()\n}\nfn main() {\n    let v: Vec<i64> = Vec::new();\n    v.push(1);\n    let vc = v.clone();\n    println(vc.len());\n    let s = \"hi\";\n    let sc = s.clone();\n    println(sc);\n    let xs = [1, 2, 3];\n    let xc = xs.clone();\n    println(xc[0]);\n    println(takes(v));\n    let re = regex.new(\"a+\");\n    let re2 = re.clone();\n    println(re2.is_match(\"aaa\"));\n    re.free();\n    re2.free();\n}\n",
+        coverage: Coverage::Parity("method_clone"),
+    },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────

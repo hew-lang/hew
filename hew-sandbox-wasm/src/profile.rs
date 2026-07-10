@@ -975,10 +975,25 @@ impl<'a> ProfileChecker<'a> {
             }
         }
         match receiver_ty.materialize_literal_defaults() {
-            Ty::String => matches!(method, "len" | "slice" | "to_string"),
-            Ty::Array(_, _) | Ty::Slice(_) => matches!(method, "len" | "get" | "to_string"),
+            // `clone` on String/Array/Slice/Vec/Regex lowers through the same
+            // generic `local.set` → `cloneValue` path as the user-defined-record
+            // arm below (`emit.rs`'s `"clone"` arm dispatches on method name
+            // alone, not receiver type) — the VM's `cloneValue` has a case for
+            // every `VmValue` kind these types resolve to (string, vector,
+            // regex). `Option`/`Result` are deliberately excluded: native Hew
+            // has no `Option::clone`/`Result::clone` (`hew check` reports
+            // `UndefinedMethod`), so no valid program can reach this arm with
+            // one — admitting it here would be dead, unreachable surface, not a
+            // real capability.
+            Ty::String => matches!(method, "len" | "slice" | "to_string" | "clone"),
+            Ty::Array(_, _) | Ty::Slice(_) => {
+                matches!(method, "len" | "get" | "to_string" | "clone")
+            }
             Ty::Named { name, .. } if name == "Vec" => {
-                matches!(method, "len" | "push" | "get" | "contains" | "to_string")
+                matches!(
+                    method,
+                    "len" | "push" | "get" | "contains" | "to_string" | "clone"
+                )
             }
             Ty::Named { name, .. }
                 if name.eq_ignore_ascii_case("Regex")
@@ -988,8 +1003,9 @@ impl<'a> ProfileChecker<'a> {
                 // `Pattern` is a `#[resource]`; `close()` is its canonical
                 // release method (renamed from `free()` in the resource
                 // migration). Mirror the stdlib surface here so the sandbox
-                // admits the release call.
-                matches!(method, "find" | "is_match" | "replace" | "close")
+                // admits the release call, plus `clone` which the emitter
+                // already handles via the generic `local.set` deep-copy path.
+                matches!(method, "find" | "is_match" | "replace" | "close" | "clone")
             }
             Ty::Named {
                 builtin: Some(BuiltinType::Option),

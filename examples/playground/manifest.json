@@ -557,5 +557,18 @@
       "sandbox": "runnable",
       "wasi": "runnable"
     }
+  },
+  {
+    "id": "types/method_clone",
+    "category": "types",
+    "name": "Method Clone",
+    "description": "`.clone()` method-call syntax on Vec/String/Array/Slice/Regex \u2014 each produces an independent deep copy, matching the `clone expr` prefix form.",
+    "source_path": "types/method_clone.hew",
+    "expected_path": "types/method_clone.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "unsupported"
+    }
   }
 ]

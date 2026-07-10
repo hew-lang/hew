@@ -592,8 +592,8 @@ mod tests {
         );
         reg.load("std::text::regex").unwrap();
         assert!(
-            !reg.is_drop_type("regex.Pattern"),
-            "regex.Pattern should not be a drop type"
+            reg.is_drop_type("regex.Pattern"),
+            "regex.Pattern is a `#[resource]` handle, so it is a drop type"
         );
     }
 

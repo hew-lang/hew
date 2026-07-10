@@ -236,6 +236,7 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
     // at the importer's call site.
     let extern_fn_names = collect_extern_fn_names(program);
     let resource_type_names = collect_resource_type_names(program, module_short);
+    let wrapper_resource_type_names = collect_wrapper_resource_type_names(program, module_short);
 
     for (item, _span) in &program.items {
         match item {
@@ -308,7 +309,13 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
                 info.clean_names.push((fn_decl.name.clone(), c_target));
             }
             Item::Impl(impl_decl) => {
-                extract_impl_info(impl_decl, module_short, &mut info, &resource_type_names);
+                extract_impl_info(
+                    impl_decl,
+                    module_short,
+                    &mut info,
+                    &resource_type_names,
+                    &wrapper_resource_type_names,
+                );
             }
             _ => {}
         }
@@ -338,6 +345,32 @@ fn collect_resource_type_names(
         .collect()
 }
 
+/// Collect the fully-qualified names of every `#[resource]` type that carries
+/// fields (e.g. `regex.Pattern { handle: PatternHandle }`) — a handle *wrapper*,
+/// as opposed to a fieldless `#[resource] #[opaque]` handle (`process.Child`).
+/// A wrapper is not itself a handle type, so its methods forward the inner
+/// handle field and are safe to register in the handle-method table.
+fn collect_wrapper_resource_type_names(
+    program: &hew_parser::ast::Program,
+    module_short: &str,
+) -> HashSet<String> {
+    program
+        .items
+        .iter()
+        .filter_map(|(item, _)| {
+            let Item::TypeDecl(td) = item else {
+                return None;
+            };
+            let has_fields = td
+                .body
+                .iter()
+                .any(|b| matches!(b, TypeBodyItem::Field { .. }));
+            (td.resource_marker == ResourceMarker::Resource && has_fields)
+                .then(|| format!("{module_short}.{}", td.name))
+        })
+        .collect()
+}
+
 /// Resolve an `impl` block's target type to its fully-qualified name,
 /// prefixing the module short name when the target is unqualified.
 fn qualified_impl_type_name(impl_decl: &ImplDecl, module_short: &str) -> Option<String> {
@@ -361,6 +394,7 @@ fn extract_impl_info(
     module_short: &str,
     info: &mut ModuleInfo,
     resource_type_names: &HashSet<String>,
+    wrapper_resource_type_names: &HashSet<String>,
 ) {
     let impl_type_name = qualified_impl_type_name(impl_decl, module_short);
     // Detect `#[resource] type T` + `impl T { fn close(...) { ... } }`:
@@ -394,7 +428,13 @@ fn extract_impl_info(
             }
         }
     }
-    extract_handle_methods(impl_decl, module_short, info, resource_type_names);
+    extract_handle_methods(
+        impl_decl,
+        module_short,
+        info,
+        resource_type_names,
+        wrapper_resource_type_names,
+    );
 }
 
 /// Convert an extern function declaration to type checker types.
@@ -726,6 +766,70 @@ fn is_pass_through_arg(expr: &Expr) -> bool {
     }
 }
 
+/// Recognise a `#[resource]` handle-wrapper method body and return the forwarded
+/// C symbol + argument count.
+///
+/// Complements [`extract_call_target`] for the `#[resource] T { handle: H }`
+/// idiom. A borrowing method on such a wrapper cannot pass the resource itself
+/// across the FFI boundary (`ResourceBoundaryParamMustConsume`); instead it
+/// forwards the inner non-resource handle field, either directly
+/// (`hew_foo(self.handle, ...rest)`) or through the wrapper-constructing clone
+/// idiom (`T { handle: hew_foo(self.handle, ...) }`), where the remaining args
+/// are plain pass-throughs. Only ever called for resource wrappers, so the
+/// returned symbol never feeds a handle-method rewrite (that path is gated on
+/// `is_handle_type`, false for a fielded wrapper); it supplies the checker's
+/// imported-method signature fallback alone.
+fn extract_handle_forwarding_target(body: &Block) -> Option<(String, usize)> {
+    if let Some(trailing) = &body.trailing_expr {
+        if body.stmts.is_empty() {
+            return handle_forwarding_call_from_expr(&trailing.0);
+        }
+        return None;
+    }
+    if body.stmts.len() == 1 {
+        if let Some((Stmt::Expression(expr) | Stmt::Return(Some(expr)), _)) = body.stmts.last() {
+            return handle_forwarding_call_from_expr(&expr.0);
+        }
+    }
+    None
+}
+
+/// Find a handle-forwarding C call in a wrapper method's tail expression,
+/// peeling `unsafe`/block/cast wrappers and single-field struct literals (the
+/// clone idiom). A call qualifies when every argument is either a plain
+/// pass-through (`is_pass_through_arg`) or a field access on a parameter
+/// (`self.handle`), and at least one argument is such a field access — the
+/// property that distinguishes a genuine handle forward from a plain shim.
+fn handle_forwarding_call_from_expr(expr: &Expr) -> Option<(String, usize)> {
+    match expr {
+        Expr::Call { function, args, .. } => {
+            let Expr::Identifier(name) = &function.0 else {
+                return None;
+            };
+            let mut forwards_handle_field = false;
+            for arg in args {
+                match &arg.expr().0 {
+                    e if is_pass_through_arg(e) => {}
+                    Expr::FieldAccess { object, .. } if matches!(object.0, Expr::Identifier(_)) => {
+                        forwards_handle_field = true;
+                    }
+                    _ => return None,
+                }
+            }
+            forwards_handle_field.then(|| (name.clone(), args.len()))
+        }
+        Expr::Block(block) => extract_handle_forwarding_target(block),
+        Expr::UnsafeBlock(block) => extract_handle_forwarding_target(block),
+        Expr::Cast { expr, .. } => handle_forwarding_call_from_expr(&expr.0),
+        Expr::StructInit {
+            fields, base: None, ..
+        } => fields
+            .iter()
+            .find_map(|(_, value)| handle_forwarding_call_from_expr(&value.0)),
+        _ => None,
+    }
+}
+
 /// Extract handle method → C symbol mappings from an `impl` block.
 ///
 /// For `impl FooMethods for Foo { fn bar(self: Foo) { hew_foo_bar(self); } }`,
@@ -735,6 +839,7 @@ fn extract_handle_methods(
     module_short: &str,
     info: &mut ModuleInfo,
     resource_type_names: &HashSet<String>,
+    wrapper_resource_type_names: &HashSet<String>,
 ) {
     // Get the target type name
     let type_name = match &impl_decl.target_type.0 {
@@ -748,12 +853,40 @@ fn extract_handle_methods(
         _ => return,
     };
 
+    // A fielded `#[resource] T { handle: H }` wrapper (e.g. regex.Pattern). Its
+    // methods forward the inner handle field across the FFI boundary rather than
+    // the resource itself; it is NOT a handle type, so nothing it registers can
+    // feed the `is_handle_type`-gated handle-method rewrite.
+    let is_resource_wrapper = wrapper_resource_type_names.contains(&type_name);
+
     for method in &impl_decl.methods {
-        if method.name == "close" && resource_type_names.contains(&type_name) {
+        // A fieldless `#[resource]` handle (e.g. process.Child) IS a handle
+        // type, so its inherent `close` stays out of the handle-method table —
+        // registering it would trip the `is_handle_type`-gated rewrite. A
+        // fielded wrapper's `close` is rewrite-safe and must register so the
+        // importer's impl-less registry path can resolve `x.close()`.
+        if method.name == "close"
+            && resource_type_names.contains(&type_name)
+            && !is_resource_wrapper
+        {
             continue;
         }
-        // Skip the `self` parameter when matching — it's not part of the call
-        if let Some((c_symbol, _arg_count)) = extract_call_target(&method.body) {
+        // A trivial C shim forwards `self` directly (`hew_foo(self, ...)`). A
+        // `#[resource] T { handle: H }` wrapper cannot: a borrowing method may
+        // not pass the resource itself across the FFI boundary
+        // (`ResourceBoundaryParamMustConsume`), so it forwards the inner
+        // non-resource handle field (`hew_foo(self.handle, ...)`). Recognise
+        // that shape for resource wrappers so their impl methods still register
+        // into the handle-method table the importer's checker resolves against.
+        // Scoped here — the shared `is_pass_through_arg` predicate (which also
+        // drives `clean_names` and drop-func extraction) is left untouched. Skip
+        // the `self` parameter when matching — it's not part of the call.
+        let extracted = extract_call_target(&method.body).or_else(|| {
+            is_resource_wrapper
+                .then(|| extract_handle_forwarding_target(&method.body))
+                .flatten()
+        });
+        if let Some((c_symbol, _arg_count)) = extracted {
             let params = method
                 .params
                 .iter()
@@ -1319,17 +1452,24 @@ mod tests {
     }
 
     #[test]
-    fn regex_module_no_drop_type_without_impl_drop() {
+    fn regex_module_pattern_is_drop_resource_via_marker() {
         let info = load_module("std::text::regex", &test_root()).unwrap();
 
+        // `Pattern` is a `#[resource]` handle wrapper, so it is a drop type —
+        // scope exit runs its inherent `close()`.
         assert!(
-            !info.drop_types.contains(&"regex.Pattern".to_string()),
-            "regex.Pattern should not be a drop type, got: {:?}",
+            info.drop_types.contains(&"regex.Pattern".to_string()),
+            "regex.Pattern is a `#[resource]`, so it should be a drop type, got: {:?}",
             info.drop_types
         );
+        // No registry drop func: `close()` forwards the inner handle field
+        // (`hew_regex_free(pat.handle)`), which the direct-C-shim extractor
+        // deliberately does not collapse. Scope-exit drop resolves `close()`
+        // through the impl block, not this legacy table.
         assert!(
             info.drop_funcs.iter().all(|(ty, _)| ty != "regex.Pattern"),
-            "regex.Pattern should not have a drop func, got: {:?}",
+            "regex.Pattern close() forwards through its handle field, so no \
+             direct drop func is registered, got: {:?}",
             info.drop_funcs
         );
     }

@@ -1,0 +1,48 @@
+//! Owned-payload coalesce oracle. Each superseded string must be dropped once:
+//! skipping a drop leaks under the vertical-slice leak oracle, while dropping
+//! twice trips the poisoned allocator/double-free path.
+
+import std::testing;
+
+actor OwnedCoalescer {
+    var processed: i64 = 0;
+    var latest_len: i64 = -1;
+
+    mailbox 1 overflow coalesce(id) fallback drop_new;
+
+    receive fn update(id: i64, payload: string, pause: duration) {
+        sleep(pause);
+        processed = processed + 1;
+        latest_len = payload.len() as i64;
+    }
+
+    receive fn count() -> i64 {
+        processed
+    }
+
+    receive fn length() -> i64 {
+        latest_len
+    }
+}
+
+#[test]
+fn coalesce_owned_payload_superseded_values_drop_once() {
+    let worker = spawn OwnedCoalescer(processed: 0, latest_len: -1);
+
+    worker.update(0, "active", 150ms);
+    sleep(20ms);
+    worker.update(9, "one", 0ms);
+    worker.update(9, "two-two", 0ms);
+    worker.update(9, "three-three-three", 0ms);
+    worker.update(9, "latest-payload", 0ms);
+
+    sleep(350ms);
+    match await worker.count() {
+        Ok(value) => testing.assert_eq(value, 2),
+        Err(_) => testing.assert_true(false),
+    }
+    match await worker.length() {
+        Ok(value) => testing.assert_eq(value, 14),
+        Err(_) => testing.assert_true(false),
+    }
+}

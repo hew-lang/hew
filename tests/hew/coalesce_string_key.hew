@@ -1,0 +1,65 @@
+//! Coalesce regression: string keys preserve the latest same-key payload while
+//! a distinct key survives the bounded-mailbox flood.
+
+import std::testing;
+
+actor StringCoalescer {
+    var processed: i64 = 0;
+    var latest_one: i64 = -1;
+    var latest_two: i64 = -1;
+
+    mailbox 2 overflow coalesce(symbol) fallback drop_new;
+
+    receive fn update(symbol: string, value: i64, pause: duration) {
+        sleep(pause);
+        processed = processed + 1;
+        if symbol == "one" {
+            latest_one = value;
+        } else {
+            latest_two = value;
+        }
+    }
+
+    receive fn count() -> i64 {
+        processed
+    }
+
+    receive fn one() -> i64 {
+        latest_one
+    }
+
+    receive fn two() -> i64 {
+        latest_two
+    }
+}
+
+#[test]
+fn coalesce_string_key_latest_wins_and_distinct_keys_survive() {
+    let worker = spawn StringCoalescer(
+        processed: 0,
+        latest_one: -1,
+        latest_two: -1,
+    );
+
+    worker.update("active", 0, 150ms);
+    sleep(20ms);
+    worker.update("one", 1, 0ms);
+    worker.update("two", 20, 0ms);
+    worker.update("one", 2, 0ms);
+    worker.update("one", 3, 0ms);
+    worker.update("one", 4, 0ms);
+
+    sleep(400ms);
+    match await worker.count() {
+        Ok(value) => testing.assert_eq(value, 3),
+        Err(_) => testing.assert_true(false),
+    }
+    match await worker.one() {
+        Ok(value) => testing.assert_eq(value, 4),
+        Err(_) => testing.assert_true(false),
+    }
+    match await worker.two() {
+        Ok(value) => testing.assert_eq(value, 20),
+        Err(_) => testing.assert_true(false),
+    }
+}

@@ -1,0 +1,63 @@
+//! Coalesce regression for spec section 6.3: equal keys on different message
+//! types must not merge.
+
+import std::testing;
+
+actor KindCoalescer {
+    var alpha_count: i64 = 0;
+    var beta_count: i64 = 0;
+    var alpha_latest: i64 = -1;
+
+    mailbox 2 overflow coalesce(id) fallback drop_new;
+
+    receive fn alpha(id: i64, value: i64, pause: duration) {
+        sleep(pause);
+        alpha_count = alpha_count + 1;
+        alpha_latest = value;
+    }
+
+    receive fn beta(id: i64, value: i64) {
+        beta_count = beta_count + 1;
+    }
+
+    receive fn alpha_seen() -> i64 {
+        alpha_count
+    }
+
+    receive fn beta_seen() -> i64 {
+        beta_count
+    }
+
+    receive fn latest() -> i64 {
+        alpha_latest
+    }
+}
+
+#[test]
+fn coalesce_same_key_different_message_types_do_not_merge() {
+    let worker = spawn KindCoalescer(
+        alpha_count: 0,
+        beta_count: 0,
+        alpha_latest: -1,
+    );
+
+    worker.alpha(0, 0, 150ms);
+    sleep(20ms);
+    worker.beta(7, 70);
+    worker.alpha(7, 1, 0ms);
+    worker.alpha(7, 2, 0ms);
+
+    sleep(400ms);
+    match await worker.alpha_seen() {
+        Ok(value) => testing.assert_eq(value, 2),
+        Err(_) => testing.assert_true(false),
+    }
+    match await worker.beta_seen() {
+        Ok(value) => testing.assert_eq(value, 1),
+        Err(_) => testing.assert_true(false),
+    }
+    match await worker.latest() {
+        Ok(value) => testing.assert_eq(value, 2),
+        Err(_) => testing.assert_true(false),
+    }
+}

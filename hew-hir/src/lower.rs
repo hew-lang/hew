@@ -11137,6 +11137,16 @@ impl LowerCtx {
         }
     }
 
+    /// Finds a record declaration by its source name, accepting the
+    /// module-qualified spelling assigned by the type checker for imports.
+    fn lookup_record_entry(&self, type_name: &str) -> Option<&RecordEntry> {
+        if let Some(entry) = self.record_registry.get(type_name) {
+            return Some(entry);
+        }
+        let bare = type_name.rsplit_once('.').map(|(_, bare)| bare)?;
+        self.record_registry.get(bare)
+    }
+
     /// Lower a statement, returning zero or more `HirStmt`s.
     ///
     /// Most statements produce exactly one `HirStmt` (delegated to `lower_stmt`).
@@ -11323,7 +11333,7 @@ impl LowerCtx {
                 // type args from the resolved value type.
                 let (type_params, declared_fields): (Vec<String>, Vec<(String, ResolvedTy)>) =
                     if let ResolvedTy::Named { name, args, .. } = &rec_ty {
-                        if let Some(entry) = self.record_registry.get(name.as_str()) {
+                        if let Some(entry) = self.lookup_record_entry(name) {
                             let type_params = entry.type_params.clone();
                             let subst: HashMap<String, ResolvedTy> = type_params
                                 .iter()

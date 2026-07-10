@@ -1,0 +1,9 @@
+// A selectively imported record's checker-resolved name is module-qualified,
+// while HIR registers its source declaration under the bare name.
+import let_record_destructure_selective_import_module::{ Vec2 };
+
+fn main() {
+    let v = Vec2 { x: 3, y: 4 };
+    let Vec2 { x, y } = v;
+    println(x + y);
+}

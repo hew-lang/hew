@@ -4280,6 +4280,10 @@ run_accept_expect_status "let_record_destructure_owned_field" 7
 # dot(Vec2{3,4}) = 25; norm_sq desugar + outer desugar both fire.
 run_accept_expect_status "let_record_destructure_in_fn" 25
 
+# Accept: a selectively imported record resolves from its checker-qualified
+# name to HIR's bare registry key during record-let desugaring.
+run_check_run_expect_stdout "let_record_destructure_selective_import"
+
 # Reject: enum-variant Constructor pattern in `let` binding must emit exactly
 # one spanned error pointing to `if let` or `match`; no cascade.
 expect_check_fail_error_count \

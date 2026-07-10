@@ -881,9 +881,15 @@ stable-stdlib = [
   "hew_json_array_push",
   "hew_json_free",
   "hew_json_object_set",
+  "hew_markdown_to_html",
+  "hew_markdown_to_html_safe",
+  "hew_proto_msg_get_string",
   "hew_toml_array_push",
   "hew_toml_free",
+  "hew_toml_get_string",
+  "hew_toml_last_error",
   "hew_toml_object_set",
+  "hew_toml_stringify",
   "hew_yaml_array_push",
   "hew_yaml_free",
   "hew_yaml_object_set",
@@ -1247,3 +1253,51 @@ result = "fresh"
 params = ["borrow", "borrow", "borrow"]
 release-symbol = "HewTypeLayout.drop_fn"
 discharge-depth = "deep"
+
+# hew-std/src/protobuf.rs:589-618 allocates a header-aware string copy.
+[[ownership.contracts]]
+symbol = "hew_proto_msg_get_string"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+# hew-std/src/toml.rs:73-81 allocates the actor-local error string.
+[[ownership.contracts]]
+symbol = "hew_toml_last_error"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+# hew-std/src/toml.rs:109-123 allocates a string value copy.
+[[ownership.contracts]]
+symbol = "hew_toml_get_string"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+# hew-std/src/toml.rs:264-282 allocates serialized TOML text.
+[[ownership.contracts]]
+symbol = "hew_toml_stringify"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+# hew-std/src/markdown.rs:38-56 allocates rendered HTML.
+[[ownership.contracts]]
+symbol = "hew_markdown_to_html"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+# hew-std/src/markdown.rs:59-79 allocates sanitized rendered HTML.
+[[ownership.contracts]]
+symbol = "hew_markdown_to_html_safe"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"

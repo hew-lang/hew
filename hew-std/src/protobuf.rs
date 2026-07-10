@@ -586,8 +586,8 @@ pub unsafe extern "C" fn hew_proto_msg_get_bytes(
     }
 }
 
-/// Get a string field as a `malloc`-allocated, NUL-terminated C string.
-/// The caller must free the returned pointer with `libc::free`.
+/// Get a string field as a header-aware, NUL-terminated Hew string.
+/// The caller must release the returned pointer with `hew_string_drop`.
 /// Returns null if the field is missing or has a different wire type.
 ///
 /// # Safety

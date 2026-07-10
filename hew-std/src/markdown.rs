@@ -1,8 +1,8 @@
 //! Hew runtime: Markdown to HTML conversion.
 //!
 //! Provides Markdown-to-HTML rendering for compiled Hew programs using
-//! [`pulldown_cmark`]. All returned strings are allocated with `libc::malloc`
-//! and NUL-terminated.
+//! [`pulldown_cmark`]. Returned strings are header-aware Hew strings and are
+//! NUL-terminated.
 use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
 use std::ffi::c_char;
 
@@ -37,8 +37,8 @@ fn strip_html_tags(html_str: &str) -> String {
 
 /// Convert a Markdown string to HTML.
 ///
-/// Returns a `malloc`-allocated, NUL-terminated C string containing the
-/// rendered HTML. The caller must free it with `libc::free`.
+/// Returns a header-aware, NUL-terminated Hew string containing the rendered
+/// HTML. The caller must release it with `hew_string_drop`.
 /// Returns null on error.
 ///
 /// # Safety
@@ -60,8 +60,8 @@ pub unsafe extern "C" fn hew_markdown_to_html(md: *const c_char) -> *mut c_char 
 ///
 /// Like [`hew_markdown_to_html`] but additionally strips any raw HTML tags
 /// from the output, leaving only the Markdown-generated structure and text.
-/// Returns a `malloc`-allocated, NUL-terminated C string. The caller must
-/// be freed with `libc::free`. Returns null on error.
+/// Returns a header-aware, NUL-terminated Hew string. The caller must release
+/// it with `hew_string_drop`. Returns null on error.
 ///
 /// # Safety
 ///
@@ -94,9 +94,9 @@ mod tests {
         // SAFETY: c is a valid NUL-terminated C string.
         let ptr = unsafe { hew_markdown_to_html(c.as_ptr()) };
         assert!(!ptr.is_null());
-        // SAFETY: ptr is a valid NUL-terminated C string from malloc.
+        // SAFETY: ptr is a valid header-aware NUL-terminated Hew string.
         let s = unsafe { cstr_to_str(ptr) }.unwrap().to_owned();
-        // SAFETY: ptr was allocated with malloc.
+        // SAFETY: ptr was allocated by the header-aware string allocator.
         unsafe { hew_cabi::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (test str_to_malloc html)
         s
     }
@@ -143,9 +143,9 @@ mod tests {
         // SAFETY: c is a valid NUL-terminated C string.
         let ptr = unsafe { hew_markdown_to_html_safe(c.as_ptr()) };
         assert!(!ptr.is_null());
-        // SAFETY: ptr is a valid NUL-terminated C string from malloc.
+        // SAFETY: ptr is a valid header-aware NUL-terminated Hew string.
         let s = unsafe { cstr_to_str(ptr) }.unwrap().to_owned();
-        // SAFETY: ptr was allocated with malloc.
+        // SAFETY: ptr was allocated by the header-aware string allocator.
         unsafe { hew_cabi::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (test str_to_malloc)
         assert!(!s.contains("<script>"), "raw HTML should be stripped: {s}");
         assert!(s.contains("Hello"), "text should be preserved: {s}");

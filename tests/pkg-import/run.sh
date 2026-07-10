@@ -65,6 +65,10 @@ fixtures=(
   # qualified outer name before the lookup, or the construction falls through
   # the field-order / record-layout fail-closed.
   qualified_construct_layout
+  # A selectively imported `Point` resolves to the checker-qualified
+  # `qualshapes.Point`, while HIR registers its declaration as bare `Point`.
+  # Record-let desugaring must strip that qualifier when it looks up fields.
+  record_destructure_selective_import
   # An `impl Closable` whose `close` returns the error type through its
   # module-qualified spelling (`closableerr.CloseError`) while the trait
   # declares it bare (`CloseError`). `check_impl_method_against_trait` must

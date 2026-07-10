@@ -1,0 +1,13 @@
+// A selective import resolves `Point` to `qualshapes.Point` in the checker,
+// while HIR stores the declaration under its bare source name. Destructuring
+// must use the shared qualifier-aware record registry lookup.
+//
+// Harness verb: hew run
+// Expected: destructured fields sum to 7.
+import hew::qualshapes::{ Point };
+
+fn main() {
+    let point = Point { x: 3, y: 4 };
+    let Point { x, y } = point;
+    println(x + y);
+}

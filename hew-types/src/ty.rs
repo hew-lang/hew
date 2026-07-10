@@ -392,6 +392,50 @@ pub const PRIMITIVE_ALIASES: &[(&str, &[&str])] = &[
     ("!", &["!"]),
 ];
 
+/// Structural type-encoder heads emitted for non-primitive `ResolvedTy`
+/// shapes (`tuple$x...$g`, `array$x...$g`, `fn$x...$r...$g`, etc.).
+///
+/// Kept in lockstep with `hew-hir/src/monomorph.rs::mangle_resolved_ty` and
+/// `hew-types/src/resolved_ty.rs::mangle_resolved_ty_segment`.
+pub const STRUCTURAL_ENCODER_HEADS: &[&str] = &[
+    "tuple",
+    "array",
+    "slice",
+    "fn",
+    "closure",
+    "ptr",
+    "ptrmut",
+    "borrow",
+    "dyn",
+    "task",
+    "unit",
+    "never",
+    "typeparam",
+];
+
+/// Return `true` if `name` is reserved for a compiler-emitted type fragment.
+///
+/// These spellings appear unescaped in the type manglers, so declarations
+/// using them would collide with the compiler's own type vocabulary. The
+/// primitive table is the canonical source for primitive names;
+/// `CancellationToken` is a separately encoded compiler leaf.
+///
+/// `()` and `!` are excluded because neither is a valid declaration identifier.
+#[must_use]
+pub fn is_reserved_type_name(name: &str) -> bool {
+    if name == BuiltinType::CancellationToken.canonical_name()
+        || STRUCTURAL_ENCODER_HEADS.contains(&name)
+    {
+        return true;
+    }
+    for (_canonical, aliases) in PRIMITIVE_ALIASES {
+        if aliases.contains(&name) && name != "()" && name != "!" {
+            return true;
+        }
+    }
+    false
+}
+
 /// Return the alias slice for the given canonical primitive name.
 ///
 /// Intended for use in `const` initializers in downstream crates that need
@@ -1756,6 +1800,48 @@ impl fmt::Display for UserFacingTy<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reserved_type_names_cover_every_bare_compiler_type_fragment() {
+        for (_canonical, aliases) in PRIMITIVE_ALIASES {
+            for &name in *aliases {
+                if matches!(name, "()" | "!") {
+                    continue;
+                }
+                assert!(
+                    is_reserved_type_name(name),
+                    "`{name}` should be a reserved primitive type name"
+                );
+            }
+        }
+        assert!(is_reserved_type_name(
+            BuiltinType::CancellationToken.canonical_name()
+        ));
+        for &name in STRUCTURAL_ENCODER_HEADS {
+            assert!(
+                is_reserved_type_name(name),
+                "`{name}` should be a reserved structural type head"
+            );
+        }
+    }
+
+    #[test]
+    fn reserved_type_names_require_an_exact_match() {
+        for name in [
+            "Point",
+            "Tuple",
+            "MyString",
+            "I64",
+            "String",
+            "Array",
+            "CancellationTokens",
+        ] {
+            assert!(
+                !is_reserved_type_name(name),
+                "`{name}` should not be a reserved type name"
+            );
+        }
+    }
 
     #[test]
     fn test_type_var_fresh() {

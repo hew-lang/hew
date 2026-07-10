@@ -1426,3 +1426,86 @@ fn typecheck_local_result_enum_not_qualified_to_sqlite() {
         }
     );
 }
+
+// --- Reserved compiler type fragments ---
+
+#[test]
+fn reserved_type_names_fail_closed_across_declaration_kinds() {
+    for (source, name) in [
+        (
+            "type i64 { value: i64; }\nfn main() -> i64 { return 0; }",
+            "i64",
+        ),
+        (
+            "type CancellationToken { value: i64; }\nfn main() -> i64 { return 0; }",
+            "CancellationToken",
+        ),
+        (
+            "type tuple<T> { value: T; }\nfn main() -> i64 { return 0; }",
+            "tuple",
+        ),
+        (
+            "type typeparam<T> { value: T; }\nfn main() -> i64 { return 0; }",
+            "typeparam",
+        ),
+        (
+            "record string { value: i64, }\nfn main() -> i64 { return 0; }",
+            "string",
+        ),
+        (
+            "actor bytes { receive fn ping() {} }\nfn main() -> i64 { return 0; }",
+            "bytes",
+        ),
+        ("type char = i64;", "char"),
+        ("trait f32 {}", "f32"),
+        (
+            r"
+            machine tuple {
+                events { Toggle; }
+                state Closed;
+                state Open;
+                on Toggle: Closed => Open { Open }
+                on Toggle: Open => Closed { Closed }
+            }
+            fn main() {}
+            ",
+            "tuple",
+        ),
+    ] {
+        let output = check_source(source);
+        assert_eq!(
+            output.errors.len(),
+            1,
+            "expected exactly one error for `{name}`; got: {:?}",
+            output.errors
+        );
+        assert_eq!(
+            output.errors[0].kind,
+            TypeErrorKind::ReservedTypeName,
+            "expected ReservedTypeName for `{name}`"
+        );
+        assert_eq!(
+            output.errors[0].message,
+            format!(
+                "E_RESERVED_TYPE_NAME: `{name}` is reserved and cannot be used for a type declaration"
+            )
+        );
+    }
+}
+
+#[test]
+fn non_reserved_type_names_remain_accepted() {
+    let output = check_source(
+        "type Point { x: i64; y: i64; }\n\
+         type Tuple { a: i64; }\n\
+         type MyString { s: i64; }\n\
+         type CancellationTokens { count: i64; }\n\
+         enum Colour { Red; Green; Blue; }\n\
+         fn main() -> i64 { return 0; }",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "non-reserved type names should be accepted; got: {:?}",
+        output.errors
+    );
+}

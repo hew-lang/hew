@@ -1,5 +1,5 @@
-//! Empirical leak / UAF oracle for the `#[on(crash)]` `CrashInfo.message`
-//! lifecycle on a REAL crash.
+//! Empirical leak / UAF oracle for supervisor child-spec cleanup and the
+//! `#[on(crash)]` `CrashInfo.message` lifecycle on a REAL crash.
 //!
 //! ## The bug this pins
 //!
@@ -33,18 +33,19 @@
 //!
 //! ## What this oracle measures
 //!
-//! Runs the committed `on_crash_action_restart_real_crash` fixture (an actor that
-//! really traps, fires its `#[on(crash)]` hook reading `info.message` and
-//! returning `Restart`, gets restarted, and exits 42) under the macOS poisoned-
-//! allocator triple (`MallocScribble` + `MallocPreScribble` + `MallocGuardEdges`)
-//! and `leaks --atExit`. It asserts:
+//! Runs three committed fixtures under the macOS poisoned-allocator triple
+//! (`MallocScribble` + `MallocPreScribble` + `MallocGuardEdges`) and
+//! `leaks --atExit`:
 //!
-//!   1. Exit 42 — the clean-restart path completed. Pre-fix this aborted (exit
-//!      134 from `validate_cstring_header`'s `libc::abort()`), or crashed under
-//!      `MallocGuardEdges` when the headerless free hit a guard page.
-//!   2. A bounded leak count on the crash+restart path — the crash-message
-//!      allocation is freed exactly once, so it does not appear as a leak, and
-//!      the double-free is gone (a double-free aborts before `leaks` can run).
+//!   1. `supervisor_normal_return_cleanup` returns 42 with a live supervisor and
+//!      three registered children. This is the direct #2252 normal-return
+//!      child-spec ownership oracle.
+//!   2. `on_crash_action_restart_real_crash` returns 42 after a real crash and
+//!      restart, proving the cleanup tail preserves the crash-message path.
+//!   3. `supervisor_stop_basic` explicitly stops its supervisor and returns 0,
+//!      proving the implicit cleanup tail does not double-consume the root.
+//!
+//! Every fixture must report exactly zero leaked nodes and bytes.
 //!
 //! ## Skip behaviour
 //!
@@ -120,11 +121,47 @@ fn leaks_report(bin: &std::path::Path) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// The crash+restart path is ASan/leak-clean and survives the real crash
-/// (no abort, no double-free, no OOB) — the M-5 crash-message fix proven on a
-/// REAL trap that actually runs the emitted `__on_crash`.
+fn leak_summary(report: &str) -> Option<(usize, usize)> {
+    report.lines().find_map(|line| {
+        let rest = line.strip_prefix("Process ")?;
+        if !rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        let summary = rest.split_once(": ")?.1;
+        let mut words = summary.split_whitespace();
+        let leaks = words.next()?.parse().ok()?;
+        let leak_word = words.next()?;
+        if leak_word != "leak" && leak_word != "leaks" {
+            return None;
+        }
+        if words.next()? != "for" {
+            return None;
+        }
+        let bytes = words.next()?.parse().ok()?;
+        Some((leaks, bytes))
+    })
+}
+
+fn assert_plain_exit(bin: &std::path::Path, expected: i32, label: &str) {
+    let run = Command::new(bin)
+        .env("MallocScribble", "1")
+        .env("MallocPreScribble", "1")
+        .env("MallocGuardEdges", "1")
+        .env("HEW_WORKERS", "2")
+        .output()
+        .unwrap_or_else(|error| panic!("run {label} under guard malloc: {error}"));
+    assert_eq!(
+        run.status.code(),
+        Some(expected),
+        "{label} did not preserve its expected exit code under the poisoned allocator.\n{}",
+        describe_output(&run)
+    );
+}
+
+/// Normal return, real-crash restart, and explicit stop must all converge on the
+/// canonical supervisor-root destructor path exactly once.
 #[test]
-fn on_crash_real_crash_message_clean_under_guard_malloc() {
+fn supervisor_exit_paths_are_leak_free_under_guard_malloc() {
     if !cfg!(target_os = "macos") {
         eprintln!("skip: leaks(1) is macOS-only (Linux coverage: scripts/asan-fixture-check.sh)");
         return;
@@ -145,49 +182,29 @@ fn on_crash_real_crash_message_clean_under_guard_malloc() {
         .tempdir()
         .expect("tempdir");
 
-    let bin = compile_fixture("on_crash_action_restart_real_crash", dir.path());
-
-    // First: a plain run under the poisoned-allocator triple. The crash+restart
-    // path must NOT abort (pre-fix exit 134 from validate_cstring_header) and
-    // must NOT trip a guard page (pre-fix headerless free on a wrong base). A
-    // clean exit 42 proves the message was cloned + dropped correctly across a
-    // real crash.
-    let run = Command::new(&bin)
-        .env("MallocScribble", "1")
-        .env("MallocPreScribble", "1")
-        .env("MallocGuardEdges", "1")
-        .env("HEW_WORKERS", "2")
-        .output()
-        .expect("run crash+restart fixture under guard malloc");
-    let code = run.status.code();
-    assert_eq!(
-        code,
-        Some(42),
-        "crash+restart fixture did not exit 42 under the poisoned allocator — a wrong \
-         crash-message string ABI or a move-of-borrow aborts the runtime (134) or trips a \
-         guard page when the emitted __on_crash runs on a real crash.\n{}",
-        describe_output(&run)
-    );
-
-    // Second: corroborate via `leaks --atExit` that the run completes a clean
-    // restart with `leaks` able to attach (a double-free would have aborted the
-    // process before `leaks` could snapshot). We do NOT assert a node-count cap or
-    // string-alloc-leak-freedom here: a separate, pre-existing drop-elaboration
-    // limitation leaves a small per-crash `string` leak when the hook BODY reads
-    // `info.message` via a borrowing call (the codegen field-read `hew_string_clone`
-    // retain temp is not yet released for the synthetic-prologue shape — tracked
-    // in #2252). That leak is orthogonal to the crash-message ABI bug this fix
-    // addresses: the reported defect was an ABORT / heap-corruption / double-free
-    // on the crash path, which the `exit 42 under guard malloc` check above pins as
-    // eliminated (pre-fix this path aborted at 134 or corrupted the heap). The
-    // leaks attach here simply confirms no abort fired.
-    let Some(report) = leaks_report(&bin) else {
-        return; // leaks declined to attach — the exit-42 check above is the gate.
-    };
-    assert!(
-        report.contains("leaks for") || report.contains("leak for"),
-        "leaks did not produce a summary for the crash+restart binary — the process \
-         may have aborted (a double-free / OOB on the crash-message path) before \
-         `leaks --atExit` could snapshot. Report:\n{report}"
-    );
+    for (fixture, expected_exit) in [
+        ("supervisor_normal_return_cleanup", 42),
+        ("on_crash_action_restart_real_crash", 42),
+        ("supervisor_stop_basic", 0),
+    ] {
+        let bin = compile_fixture(fixture, dir.path());
+        assert_plain_exit(&bin, expected_exit, fixture);
+        let Some(report) = leaks_report(&bin) else {
+            return;
+        };
+        let summary = leak_summary(&report).unwrap_or_else(|| {
+            panic!(
+                "leaks did not produce a usable summary for {fixture}; a double-free, OOB, \
+                 or early abort may have prevented the snapshot. Report:\n{report}"
+            )
+        });
+        assert_eq!(
+            summary,
+            (0, 0),
+            "{fixture} must free every registered supervisor root exactly once; \
+             observed {} leak(s) for {} byte(s). Report:\n{report}",
+            summary.0,
+            summary.1
+        );
+    }
 }

@@ -1289,6 +1289,11 @@ grep -qF 'select arm source must be actor.method(args)' "${reject_output}"
 # main returns 42 after bootstrap completes successfully.
 run_accept_expect_status "supervisor_basic" 42
 
+# Supervisor normal-return cleanup: main returns 42 with a live top-level
+# supervisor and three registered child specs. The native cleanup tail must not
+# use the supervisor-incompatible idle drain or overwrite the return value.
+run_accept_expect_status "supervisor_normal_return_cleanup" 42
+
 # Supervisor child-accessor round-trip: spawn App → hew_supervisor_child_get
 # returns a Live handle (tag=0) → ask child worker → echo 42 back as exit code.
 # Exercises the { i64, i64 } ABI fix for hew_supervisor_child_get.

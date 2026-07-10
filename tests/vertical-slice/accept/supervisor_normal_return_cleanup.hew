@@ -1,0 +1,32 @@
+// A live top-level supervisor must be reclaimed when main returns normally.
+//
+// The three child specs intentionally give the leak oracle a per-child slope.
+// The runtime-owned copies (including strdup'd names) must be released through
+// InternalChildSpec::drop, while codegen's caller-owned literal state templates
+// must be freed after hew_supervisor_add_child_spec deep-copies them. No explicit
+// supervisor_stop is present; returning 42 proves cleanup preserves the program
+// result and does not wait for supervisor actors to become idle.
+actor Worker {
+    var value: i64;
+
+    receive fn get() -> i64 {
+        value
+    }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child first: Worker(value: 42);
+    child second: Worker(value: 7);
+    child third: Worker(value: 9);
+}
+
+fn main() -> i64 {
+    let sup = spawn App;
+    match await sup.first.get() {
+        Ok(n) => n,
+        Err(_) => 1,
+    }
+}

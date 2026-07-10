@@ -60,19 +60,20 @@
 
 ;; Keywords
 ;; Keywords — sourced from hew-lexer ALL_KEYWORDS (single source of truth).
-;; v0.5 additions: is, emit, entry, exit, transitions, drives (machine sub-keywords);
-;;                 link, monitor (actor sub-keywords); fork promoted from actor group.
+;; v0.5 additions: is, emit, entry, exit (machine sub-keywords); fork promoted
+;;                 from actor group.
 ;; v0.6: struct keyword removed (#[wire] type/enum only); wire keyword removed
-;;       (attribute-only via #[wire]); await_restart added; ActorRef -> LocalPid/RemotePid/LambdaPid.
+;;       (attribute-only via #[wire]); await_restart added; mut added;
+;;       ActorRef -> LocalPid/RemotePid/LambdaPid.
 (defconst hew-keywords
   '("if" "else" "is" "match" "loop" "for" "in" "while"
     "break" "continue" "return"
-    "let" "var" "const" "fn" "gen" "type" "record" "indirect" "enum"
+    "let" "var" "const" "mut" "fn" "gen" "type" "record" "indirect" "enum"
     "trait" "impl" "import" "pub" "super" "where"
-    "actor" "fork" "link" "monitor" "receive" "init" "spawn" "async" "move" "await" "await_restart" "this"
+    "actor" "fork" "receive" "init" "spawn" "async" "move" "await" "await_restart" "this"
     "supervisor" "child" "restart" "budget" "strategy"
     "reserved" "optional" "deprecated" "default"
-    "machine" "state" "event" "on" "when" "entry" "exit" "emit" "transitions" "drives"
+    "machine" "state" "event" "on" "when" "entry" "exit" "emit"
     "try" "catch" "select" "join" "yield" "cooperate" "after" "from"
     "scope" "race" "defer" "foreign"
     "dyn" "unsafe" "extern" "package"
@@ -146,11 +147,8 @@
       ("\\<0[oO][0-7_]+\\>" . font-lock-constant-face)
       ("\\<[0-9][0-9_]*\\(?:\\.[0-9][0-9_]*\\)?\\(?:[eE][+-]?[0-9_]+\\)?\\>" . font-lock-constant-face)
 
-      ;; Regex literals: re"..." 
+      ;; Regex literals: re"..."
       ("re\"" . font-lock-string-face)
-
-      ;; Template literals: `...`
-      ("`[^`]*`" . font-lock-string-face)
 
       ;; Format strings: f"..."
       ("\\<f\"" . font-lock-string-face)

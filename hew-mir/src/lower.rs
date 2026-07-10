@@ -40520,11 +40520,17 @@ mod nested_fresh_string_temp_drop_admission {
 ///    `derive_local_bytes_drop_allowed` drops — disjoint by construction, so a
 ///    buffer is never claimed by both);
 /// 3. it has NO instruction writer (its sole def is the producer terminator);
-/// 4. it has AT MOST ONE source-use, and (if present) that use is a
-///    receiver-/all-args-borrowing `bytes` runtime op — an
-///    `Instr::CallRuntimeAbi` or a `Terminator::Call` on a listed bytes symbol.
-///    Any other use (`Move`/store/return/send/aggregate ingress/user call)
-///    excludes it (leak, never double-free);
+/// 4. it has AT MOST ONE use-site in the FULL dataflow reads
+///    (`dataflow::instr_reads_writes(..).0` for instructions — which, unlike
+///    `instr_source_places`, also sees the borrow-excluded readers
+///    `Instr::WireCodec` / `Instr::BytesRetain` / `Instr::GeneratorNext` — plus
+///    `terminator_source_places` for terminators), and (if present) that use is
+///    a borrowing bytes op — an `Instr::CallRuntimeAbi` with a
+///    receiver-/all-args-borrowing contract, or a `Terminator::Call`. Any other
+///    use (`Move`/store/return/send/aggregate ingress/`WireCodec`/`BytesRetain`)
+///    excludes it (leak, never double-free) — the reads-based table is what
+///    keeps a `Packet.decode(mk())` operand ALIVE past the decode instead of
+///    routing it down the discard branch;
 /// 5. the drop site is provably dominated by the def and entered exactly once
 ///    (single-predecessor continuation), in one of these shapes:
 ///      * discard (zero uses) → drop at the front of the producer's
@@ -40580,13 +40586,31 @@ fn collect_nested_fresh_bytes_temp_drops(
         }
     }
 
-    // Source-use sites per local (rule 4), deduplicated within each
+    // Use sites per local (rule 4), deduplicated within each
     // instruction/terminator so a temp referenced twice by one call counts once.
+    //
+    // Instruction uses come from the full dataflow READS
+    // (`dataflow::instr_reads_writes(..).0`), NOT from `instr_source_places`.
+    // The two tables encode different facts: `instr_source_places` deliberately
+    // EXCLUDES borrow-only readers (`Instr::WireCodec`'s decode operand,
+    // `Instr::BytesRetain`'s value, `Instr::GeneratorNext`'s ctx) so a NAMED
+    // binding keeps its scope-exit drop past those reads — but this collector
+    // needs "is the temp actually read at all / where". A hidden reader the
+    // source table hides would register ZERO uses, route the temp down the
+    // discard branch, and splice `hew_bytes_drop` at the front of the
+    // continuation BEFORE the reader runs — a use-after-free
+    // (`Packet.decode(mk())` trapped exactly this way). With the reads table, a
+    // hidden reader is a real use-site that the borrow-only classification
+    // rejects (not an admissible borrowing bytes runtime op), so the temp fails
+    // CLOSED to the leak direction. Terminator uses keep
+    // `terminator_source_places`, which has no borrow-exclusions (every reading
+    // variant lists its operands).
     let mut source_uses: HashMap<u32, Vec<NestedUseSite>> = HashMap::new();
     for block in blocks {
         for (idx, instr) in block.instructions.iter().enumerate() {
             let mut here: HashSet<u32> = HashSet::new();
-            for p in instr_source_places(instr) {
+            let (reads, _) = crate::dataflow::instr_reads_writes(instr);
+            for p in reads {
                 if let Some(l) = base_local(p) {
                     here.insert(l);
                 }
@@ -41141,6 +41165,63 @@ mod nested_fresh_bytes_temp_drop_admission {
             collect(&blocks, &locals, &HashMap::new()).is_empty(),
             "a bytes temp consumed by an actor send must not be dropped by the \
              sender (the mailbox copy / state_drop owns the release)"
+        );
+    }
+
+    #[test]
+    fn usercall_result_read_only_by_wire_decode_is_not_discard_dropped() {
+        // `Packet.decode(mk())`: the fresh bytes temp's ONLY reader is
+        // `Instr::WireCodec` (decode operand). `instr_source_places` deliberately
+        // excludes that read (a borrow-exclusion so NAMED bindings keep their
+        // scope-exit drop) — a source-places-based use table would register ZERO
+        // uses, take the discard branch, and splice `hew_bytes_drop` at the
+        // front of the continuation BEFORE the decode reads the buffer (the
+        // reproduced use-after-free). The reads-based table sees the WireCodec
+        // use-site; it is not an admissible borrowing bytes runtime op, so the
+        // temp fails CLOSED to the leak direction: NO drop is spliced.
+        let blocks = vec![
+            block(0, vec![], user_call("mk", 2, 1)),
+            block(
+                1,
+                vec![Instr::WireCodec {
+                    dest: Place::Local(5),
+                    operand: Place::Local(2),
+                    direction: hew_types::WireCodecDirection::Decode,
+                    value_ty: ResolvedTy::named_user("Packet", vec![]),
+                }],
+                Terminator::Return,
+            ),
+        ];
+        let locals = bytes_locals_with(&[(5, ResolvedTy::named_user("Packet", vec![]))]);
+        assert!(
+            collect(&blocks, &locals, &HashMap::new()).is_empty(),
+            "a bytes temp whose only reader is a WireCodec decode must not take \
+             the discard drop — a front-of-continuation hew_bytes_drop would free \
+             the buffer before the decode reads it (use-after-free)"
+        );
+    }
+
+    #[test]
+    fn usercall_result_read_only_by_bytes_retain_is_not_discard_dropped() {
+        // Same hidden-reader class: `Instr::BytesRetain` reads its value but is
+        // excluded from `instr_source_places`. The reads-based use table must
+        // see it and fail closed (no discard drop), never splice a drop the
+        // retain's co-owner accounting did not budget for.
+        let blocks = vec![
+            block(0, vec![], user_call("mk", 2, 1)),
+            block(
+                1,
+                vec![Instr::BytesRetain {
+                    value: Place::Local(2),
+                }],
+                Terminator::Return,
+            ),
+        ];
+        let locals = bytes_locals_with(&[]);
+        assert!(
+            collect(&blocks, &locals, &HashMap::new()).is_empty(),
+            "a bytes temp read by a BytesRetain must not take the discard drop; \
+             the retain implies a co-owner mint this collector cannot balance"
         );
     }
 

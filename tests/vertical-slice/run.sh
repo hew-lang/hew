@@ -4404,6 +4404,9 @@ run_check_run_expect_stdout wrapping_saturating_as_cast
 # fixture proves the codec fails closed (traps) on garbage rather than
 # fabricating a partial value.
 run_accept_expect_status "wire_cbor_roundtrip_packet" 42
+# An unnamed fresh bytes call-result into decode: the transient-bytes drop
+# pass must not free the operand before the WireCodec decode reads it.
+run_accept_expect_status "wire_cbor_fresh_call_result" 42
 run_accept_expect_trap "wire_cbor_decode_malformed_traps"
 run_accept_expect_trap "wire_cbor_enum_oob_tag_traps"
 run_accept_expect_trap "wire_cbor_narrow_int_over_range_traps"

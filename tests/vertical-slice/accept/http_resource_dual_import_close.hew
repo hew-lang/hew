@@ -1,4 +1,5 @@
 import std::net::http;
+
 import std::net::http::http_client;
 
 fn close_request(value: http.Request) {

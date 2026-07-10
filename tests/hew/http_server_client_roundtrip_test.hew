@@ -59,13 +59,11 @@ fn test_server_client_roundtrip_returns_200_and_echoes_path() {
     let server = http.listen("127.0.0.1:19717");
     let client = spawn Client(url: "http://127.0.0.1:19717/ping", status: 0, body: "");
     client.fetch(0);
-
     let req = server.accept();
     let path = req.path();
     let _ = req.try_respond_text(200, "pong:" + path);
     req.close();
     server.close();
-
     match await client.status_result() {
         Ok(status) => testing.assert_eq(status, 200),
         Err(_e) => testing.assert_true(false),

@@ -1,10 +1,17 @@
 import std::path;
+
 import std::semaphore;
+
 import std::deque;
+
 import std::time::cron;
+
 import std::net::http;
+
 import std::net::quic;
+
 import std::net::url;
+
 import std::encoding::xml;
 
 fn close_request(value: http.Request) {
@@ -18,21 +25,15 @@ fn close_event(value: quic.QUICEvent) {
 fn main() -> i64 {
     let glob = path.glob("tests/vertical-slice/accept/*.hew");
     glob.close();
-
     let sem = semaphore.new(1);
     sem.close();
-
     let queue = deque.new();
     queue.close();
-
     let schedule = cron.parse("* * * * *");
     schedule.close();
-
     let parsed_url = url.parse("https://example.com");
     parsed_url.close();
-
     let node = xml.parse("<root/>");
     node.close();
-
     0
 }

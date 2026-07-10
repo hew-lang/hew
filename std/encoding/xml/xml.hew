@@ -53,9 +53,8 @@ trait NodeMethods {
     fn get_text(self) -> string;
 
     /// Return 1 if this is an element node, 0 if text, -1 if null.
-    fn is_element(self) -> i32; // INTERNAL-ABI: tri-state kind (1=element, 0=text, -1=null); planned enum migration
-}
-
+    fn is_element(self) -> i32;
+} // INTERNAL-ABI: tri-state kind (1=element, 0=text, -1=null); planned enum migration
 impl NodeMethods for Node {
     fn to_string(node: Node) -> string {
         unsafe {

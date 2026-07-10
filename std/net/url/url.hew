@@ -59,7 +59,6 @@ trait UrlMethods {
 
     /// Resolve a relative path onto this URL, returning a new `Url`.
     fn resolve(self, path: string) -> Url;
-
 }
 
 impl UrlMethods for Url {

@@ -73,7 +73,6 @@ trait ResponseMethods {
     /// when it goes out of scope. Returns an empty vector if no headers were
     /// captured or the response is invalid.
     fn headers(self) -> Vec<(string, string)>;
-
 }
 
 impl ResponseMethods for Response {

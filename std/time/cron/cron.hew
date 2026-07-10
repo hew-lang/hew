@@ -79,7 +79,6 @@ trait ExprMethods {
 
     /// Return the cron expression as a string.
     fn to_string(self) -> string;
-
 }
 
 impl ExprMethods for Expr {

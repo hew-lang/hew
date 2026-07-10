@@ -39,7 +39,6 @@ trait GlobResultMethods {
 
     /// Return the matched path at the given index.
     fn get(self, index: i64) -> string;
-
 }
 
 impl GlobResultMethods for GlobResult {

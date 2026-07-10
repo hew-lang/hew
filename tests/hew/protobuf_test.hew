@@ -1,11 +1,12 @@
 //! Behavioural tests for std::encoding::protobuf.
 
 import std::encoding::protobuf;
+
 import std::net::websocket;
+
 import std::testing;
 
 // ── set_varint / get_varint / has_field ───────────────────────────────
-
 #[test]
 fn test_set_get_varint() {
     let msg = protobuf.new();
@@ -30,7 +31,6 @@ fn test_has_field_absent() {
 }
 
 // ── set_string / get_string ───────────────────────────────────────────
-
 #[test]
 fn test_set_get_string() {
     let msg = protobuf.new();
@@ -40,7 +40,6 @@ fn test_set_get_string() {
 }
 
 // ── get_varint fallback when absent ──────────────────────────────────
-
 #[test]
 fn test_get_varint_fallback_when_absent() {
     let msg = protobuf.new();
@@ -49,7 +48,6 @@ fn test_get_varint_fallback_when_absent() {
 }
 
 // ── close() does not panic ────────────────────────────────────────────
-
 #[test]
 fn test_close_no_panic() {
     let msg = protobuf.new();

@@ -150,7 +150,6 @@ trait MessageMethods {
     fn msg_type(self) -> i32; // INTERNAL-ABI: opaque frame-type enum; planned enum migration
     /// Extract the text content of a text message.
     fn text(self) -> string;
-
 }
 
 impl MessageMethods for Message {

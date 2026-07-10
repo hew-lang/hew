@@ -50,7 +50,6 @@ trait SemaphoreMethods {
 
     /// Return the current number of available permits.
     fn count(self) -> i64;
-
 }
 
 impl SemaphoreMethods for Semaphore {

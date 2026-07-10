@@ -56,7 +56,6 @@ trait MessageMethods {
 
     /// Test whether a field is present in the message.
     fn has_field(self, field_number: i64) -> bool;
-
 }
 
 impl MessageMethods for Message {

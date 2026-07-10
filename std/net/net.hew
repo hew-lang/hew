@@ -87,20 +87,20 @@ pub enum NetError {
 ///
 /// Covers TCP, QUIC, TLS, HTTP, WebSocket, and DNS failure codes.
 pub fn net_error_from_errno(errno: i64) -> NetError {
-    // ECONNREFUSED: Linux=111, macOS=61
-    if errno == 111 || errno == 61 {
+    // ECONNREFUSED: Linux=111, macOS=61, Windows=10061
+    if errno == 111 || errno == 61 || errno == 10061 {
         NetError::ConnectionRefused(errno)
-    // EADDRINUSE: Linux=98, macOS=48
-    } else if errno == 98 || errno == 48 {
+    // EADDRINUSE: Linux=98, macOS=48, Windows=10048
+    } else if errno == 98 || errno == 48 || errno == 10048 {
         NetError::AddressInUse(errno)
-    // ETIMEDOUT: Linux=110, macOS=60
-    } else if errno == 110 || errno == 60 {
+    // ETIMEDOUT: Linux=110, macOS=60, Windows=10060
+    } else if errno == 110 || errno == 60 || errno == 10060 {
         NetError::TimedOut(errno)
     // ECANCELED: Linux=125, macOS=89
     } else if errno == 125 || errno == 89 {
         NetError::Cancelled(errno)
-    // EADDRNOTAVAIL: Linux=99, macOS=49
-    } else if errno == 99 || errno == 49 {
+    // EADDRNOTAVAIL: Linux=99, macOS=49, Windows=10049
+    } else if errno == 99 || errno == 49 || errno == 10049 {
         NetError::AddressNotAvailable(errno)
     } else {
         NetError::Other(errno)

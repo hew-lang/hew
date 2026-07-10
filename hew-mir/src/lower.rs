@@ -9452,11 +9452,11 @@ struct Builder {
     /// closes. The `Generator`/`VecIter` analogue of #1949 for the general
     /// `for await` consumption path: a `for await v in <stream>` desugars to a
     /// `__hew_for_iter_*` cursor whose close was otherwise deferred to the
-    /// ENCLOSING FUNCTION's exit-LIFO plan, so `break`/exhaustion left the
-    /// stream open — deadlocking any function that abandons a live stream then
-    /// does more work before returning (the producer stays parked on
-    /// backpressure, its peer never observed as closed). Closing at block-scope
-    /// exit wakes the parked producer promptly. Mirrors
+    /// ENCLOSING FUNCTION's exit-LIFO plan, so `break`/early `return`/exhaustion
+    /// left the stream open — deadlocking any function that abandons a live
+    /// stream then does more work before returning (the producer stays parked
+    /// on backpressure, its peer never observed as closed). Closing at each
+    /// exit edge wakes the parked producer promptly. Mirrors
     /// `scope_generator_bindings`: entries are dispositioned `ScopeReleased`
     /// once the inline close is emitted so the function-exit LIFO cannot fire a
     /// second close, and the inline `Instr::Drop` null-stores the slot
@@ -11396,19 +11396,20 @@ impl Builder {
     }
 
     /// Close a `Stream<T>` / `Receiver<T>` for-await cursor opened INSIDE a loop
-    /// body on the `break`/`continue` edge — the analogue of
+    /// body on a `break`/`continue`/`return` edge — the analogue of
     /// [`Self::emit_generator_drops_for_break_continue`] for the stream handle.
     /// A stream abandoned per-iteration must close on that edge, because the
     /// block-scope close on the fall-through path is never reached on
-    /// break/continue.
+    /// break/continue/return. Break and continue pass their loop frame's scope
+    /// depth; return passes zero because it leaves every enclosing loop.
     ///
     /// CLONE discipline (mirrors the generator handle release): entries are NOT
     /// removed from `scope_stream_bindings` — the mutually-exclusive
     /// fall-through path still closes via the block-scope drain, and the inline
     /// close's null-after-close makes a structurally-reachable second close a
     /// no-op (`raii-null-after-move`; the runtime symbols also null-guard).
-    fn emit_stream_drops_for_break_continue(&mut self, loop_scope_depth: usize) {
-        let window: HashSet<ScopeId> = self.active_scopes[loop_scope_depth..]
+    fn emit_stream_drops_for_exit_edge(&mut self, min_scope_depth: usize) {
+        let window: HashSet<ScopeId> = self.active_scopes[min_scope_depth..]
             .iter()
             .copied()
             .collect();
@@ -13810,9 +13811,10 @@ impl Builder {
                     // `Stream<T>` / `Receiver<T>` CURSOR with its declaring scope
                     // so a per-scope-exit `hew_stream_close` /
                     // `hew_channel_receiver_close` fires when the scope closes,
-                    // closing the stream on `break` / exhaustion instead of
-                    // deferring to function exit (the deadlock this fixes — see
-                    // `scope_stream_bindings`). Gated to the cursor binding: a
+                    // closing the stream on `break` / early `return` /
+                    // exhaustion instead of deferring to function exit (the
+                    // deadlock this fixes — see `scope_stream_bindings`). Gated
+                    // to the cursor binding: a
                     // user `let s = <stream>` that is returned or consumed
                     // elsewhere must keep its move-checked function-exit close,
                     // or the unconditional inline close would free a moved-out
@@ -13975,6 +13977,7 @@ impl Builder {
                 // protected by the per-entry escape scan — the ReturnSlot
                 // Move above marks the value caller-owned.
                 self.emit_generator_yield_value_drops_for_exit_edge(0);
+                self.emit_stream_drops_for_exit_edge(0);
                 // Seal the current basic block with Terminator::Return so
                 // codegen actually emits an early return at this program
                 // point. Codegen consumes the block terminator (not the
@@ -13994,6 +13997,7 @@ impl Builder {
                 // Release the current iteration's yielded value(s) on this
                 // return edge — same discipline as Return(Some) above.
                 self.emit_generator_yield_value_drops_for_exit_edge(0);
+                self.emit_stream_drops_for_exit_edge(0);
                 self.statements.push(MirStatement::Return {
                     site: None,
                     ty: ResolvedTy::Unit,
@@ -17581,7 +17585,7 @@ impl Builder {
                 self.emit_generator_drops_for_break_continue(frame.scope_depth);
                 // 3b-1 — close in-loop for-await stream cursors on this edge
                 // (the block-scope close on the fall-through path is skipped).
-                self.emit_stream_drops_for_break_continue(frame.scope_depth);
+                self.emit_stream_drops_for_exit_edge(frame.scope_depth);
                 self.finish_current_block(Terminator::Goto {
                     target: frame.exit_target,
                 });
@@ -17625,6 +17629,7 @@ impl Builder {
                 // return (`cleanup-all-exits`; the per-entry escape scan
                 // keeps a `return v` caller-owned).
                 self.emit_generator_yield_value_drops_for_exit_edge(0);
+                self.emit_stream_drops_for_exit_edge(0);
                 self.finish_current_block(Terminator::Return);
                 let dead = self.alloc_block();
                 self.start_dead_block(dead);
@@ -17644,7 +17649,7 @@ impl Builder {
                 self.emit_generator_drops_for_break_continue(frame.scope_depth);
                 // 3b-1 — close in-loop for-await stream cursors on this edge
                 // (the block-scope close on the fall-through path is skipped).
-                self.emit_stream_drops_for_break_continue(frame.scope_depth);
+                self.emit_stream_drops_for_exit_edge(frame.scope_depth);
                 // Register THIS block as a loop back-edge so `enumerate_exits`
                 // populates its `Goto` `DropPlan` with the scope-filtered
                 // releases for body-scope heap-owning bindings (a live
@@ -43567,6 +43572,22 @@ fn detect_unproven_aggregate_handle_double_free(
     if carries.is_empty() {
         return Vec::new();
     }
+    let synthetic_stream_cursor_locals: HashSet<u32> = blocks
+        .iter()
+        .flat_map(|block| block.statements.iter())
+        .filter_map(|statement| {
+            let MirStatement::Bind { binding, name, .. } = statement else {
+                return None;
+            };
+            name.starts_with(FOR_ITER_CURSOR_NAME_PREFIX)
+                .then(|| {
+                    binding_locals
+                        .get(binding)
+                        .and_then(|place| base_local(*place))
+                })
+                .flatten()
+        })
+        .collect();
     let merge = |from: &HashSet<u32>, into: &mut HashSet<u32>| -> bool {
         let mut changed = false;
         for &o in from {
@@ -43708,8 +43729,9 @@ fn detect_unproven_aggregate_handle_double_free(
     };
 
     // Source 1: inline consumer drops.
+    let mut inline_drop_sites: HashMap<u32, Vec<(u32, usize)>> = HashMap::new();
     for block in blocks {
-        for instr in &block.instructions {
+        for (index, instr) in block.instructions.iter().enumerate() {
             if let Instr::Drop {
                 place,
                 drop_fn: Some(_),
@@ -43718,6 +43740,12 @@ fn detect_unproven_aggregate_handle_double_free(
             {
                 if let Some(l) = base_local(*place) {
                     if let Some(o) = carries.get(&l).cloned() {
+                        for origin in &o {
+                            inline_drop_sites
+                                .entry(*origin)
+                                .or_default()
+                                .push((block.id, index));
+                        }
                         bump(&o, &mut free_count);
                     }
                 }
@@ -43726,6 +43754,7 @@ fn detect_unproven_aggregate_handle_double_free(
     }
 
     // Sources 2 + 3: source LIFO drops and aggregate member drops.
+    let mut non_inline_freed: HashSet<u32> = HashSet::new();
     for (binding, _name, ty) in owned_locals {
         let Some(place) = binding_locals.get(binding) else {
             continue;
@@ -43748,13 +43777,94 @@ fn detect_unproven_aggregate_handle_double_free(
             // Source's own standalone drop frees its origin once.
             let mut self_origin = HashSet::new();
             self_origin.insert(local);
+            non_inline_freed.insert(local);
             bump(&self_origin, &mut free_count);
         }
         if is_aggregate && composite_drop_allowed.contains(binding) {
             // Aggregate member drop frees every origin its handle members carry.
+            non_inline_freed.extend(origins.iter().copied());
             bump(&origins, &mut free_count);
         }
     }
+
+    // A synthetic for-await cursor deliberately carries one cloned inline close
+    // on each exit edge. Coalesce those sites only when no source/aggregate drop
+    // also frees the origin and no close can reach another while the SAME
+    // runtime handle remains in the slot. Loop re-entry may reach a later close
+    // only after a `Move` installs a fresh cursor; sequential duplicate closes
+    // without that reinitialization remain refused.
+    let blocks_by_id: HashMap<u32, &BasicBlock> =
+        blocks.iter().map(|block| (block.id, block)).collect();
+    let can_reach_same_value = |from: (u32, usize), target: (u32, usize), local: u32| -> bool {
+        let reinitializes = |instructions: &[Instr]| {
+            instructions.iter().any(|instr| {
+                matches!(
+                    instr,
+                    Instr::Move { dest, .. } if base_local(*dest) == Some(local)
+                )
+            })
+        };
+        let Some(from_block) = blocks_by_id.get(&from.0) else {
+            return false;
+        };
+        if from.0 == target.0
+            && from.1 < target.1
+            && !reinitializes(&from_block.instructions[from.1 + 1..target.1])
+        {
+            return true;
+        }
+        if reinitializes(&from_block.instructions[from.1 + 1..]) {
+            return false;
+        }
+        let mut seen = HashSet::new();
+        let mut pending = from_block.successors();
+        while let Some(id) = pending.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let Some(block) = blocks_by_id.get(&id) else {
+                continue;
+            };
+            if id == target.0 {
+                if !reinitializes(&block.instructions[..target.1]) {
+                    return true;
+                }
+                continue;
+            }
+            if reinitializes(&block.instructions) {
+                continue;
+            }
+            pending.extend(block.successors());
+        }
+        false
+    };
+    let path_exclusive_inline_frees: HashSet<u32> = synthetic_stream_cursor_locals
+        .iter()
+        .copied()
+        .filter(|origin| {
+            if non_inline_freed.contains(origin) {
+                return false;
+            }
+            let Some(sites) = inline_drop_sites.get(origin) else {
+                return false;
+            };
+            let unique_sites: HashSet<(u32, usize)> = sites.iter().copied().collect();
+            if sites.len() < 2 || unique_sites.len() != sites.len() {
+                return false;
+            }
+            let sites: Vec<(u32, usize)> = unique_sites.into_iter().collect();
+            for (index, &left) in sites.iter().enumerate() {
+                for &right in &sites[index + 1..] {
+                    if can_reach_same_value(left, right, *origin)
+                        || can_reach_same_value(right, left, *origin)
+                    {
+                        return false;
+                    }
+                }
+            }
+            true
+        })
+        .collect();
 
     // ── escape poisoning ──────────────────────────────────────────────────
     // The per-origin tally above models the drops the elaborator emits or
@@ -43836,7 +43946,7 @@ fn detect_unproven_aggregate_handle_double_free(
     let mut refused: HashSet<BindingId> = HashSet::new();
     for (binding, local) in &handle_bindings {
         let fc = free_count.get(local).copied().unwrap_or(0);
-        let over_freed = fc > 1;
+        let over_freed = fc > 1 && !path_exclusive_inline_frees.contains(local);
         let escaped = poisoned.contains(local);
         let returned = returned_origins.contains(local);
         // Refuse when the origin is freed more than once on tracked paths, OR
@@ -52819,6 +52929,143 @@ mod w3053_aggregate_handle_double_free_gate {
             !is_refused(&findings, g),
             "single-hop extraction proven freed exactly once must NOT be refused; \
              got {findings:?}"
+        );
+    }
+
+    fn stream_ty() -> ResolvedTy {
+        ResolvedTy::named_builtin("Stream", BuiltinType::Stream, vec![ResolvedTy::I64])
+    }
+
+    fn stream_close() -> Instr {
+        Instr::Drop {
+            place: Place::Local(1),
+            ty: stream_ty(),
+            drop_fn: Some(crate::model::DropFnSpec::Runtime(
+                hew_types::runtime_call::RuntimeDropDescriptor::StreamClose,
+            )),
+        }
+    }
+
+    fn synthetic_cursor_findings(blocks: &[BasicBlock]) -> Vec<MirCheck> {
+        let cursor = BindingId(1);
+        let mut binding_locals = HashMap::new();
+        binding_locals.insert(cursor, Place::Local(1));
+        detect_unproven_aggregate_handle_double_free(
+            blocks,
+            &HashMap::new(),
+            &[],
+            &binding_locals,
+            &[ResolvedTy::Bool, stream_ty()],
+            &HashMap::new(),
+            &[],
+            &HashSet::new(),
+            &HashSet::new(),
+        )
+    }
+
+    #[test]
+    fn mutually_exclusive_stream_cursor_closes_are_not_refused() {
+        let cursor = BindingId(1);
+        let blocks = vec![
+            BasicBlock {
+                id: 0,
+                statements: vec![MirStatement::Bind {
+                    binding: cursor,
+                    name: format!("{FOR_ITER_CURSOR_NAME_PREFIX}1"),
+                    site: SiteId(0),
+                    ty: stream_ty(),
+                }],
+                instructions: vec![],
+                terminator: Terminator::Branch {
+                    cond: Place::Local(0),
+                    then_target: 1,
+                    else_target: 2,
+                },
+            },
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: vec![stream_close()],
+                terminator: Terminator::Return,
+            },
+            BasicBlock {
+                id: 2,
+                statements: vec![],
+                instructions: vec![stream_close()],
+                terminator: Terminator::Return,
+            },
+        ];
+        let findings = synthetic_cursor_findings(&blocks);
+        assert!(
+            !is_refused(&findings, cursor),
+            "cloned closes on mutually-exclusive cursor exits are exactly-once; got {findings:?}"
+        );
+    }
+
+    #[test]
+    fn reinitialized_stream_cursor_closes_are_not_refused() {
+        let cursor = BindingId(1);
+        let blocks = vec![
+            BasicBlock {
+                id: 0,
+                statements: vec![MirStatement::Bind {
+                    binding: cursor,
+                    name: format!("{FOR_ITER_CURSOR_NAME_PREFIX}1"),
+                    site: SiteId(0),
+                    ty: stream_ty(),
+                }],
+                instructions: vec![stream_close()],
+                terminator: Terminator::Goto { target: 1 },
+            },
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: vec![Instr::Move {
+                    dest: Place::Local(1),
+                    src: Place::Local(2),
+                }],
+                terminator: Terminator::Goto { target: 2 },
+            },
+            BasicBlock {
+                id: 2,
+                statements: vec![],
+                instructions: vec![stream_close()],
+                terminator: Terminator::Return,
+            },
+        ];
+        let findings = synthetic_cursor_findings(&blocks);
+        assert!(
+            !is_refused(&findings, cursor),
+            "a loop re-entry installs a fresh cursor before the later close; got {findings:?}"
+        );
+    }
+
+    #[test]
+    fn sequential_stream_cursor_closes_remain_refused() {
+        let cursor = BindingId(1);
+        let blocks = vec![
+            BasicBlock {
+                id: 0,
+                statements: vec![MirStatement::Bind {
+                    binding: cursor,
+                    name: format!("{FOR_ITER_CURSOR_NAME_PREFIX}1"),
+                    site: SiteId(0),
+                    ty: stream_ty(),
+                }],
+                instructions: vec![stream_close()],
+                terminator: Terminator::Goto { target: 1 },
+            },
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: vec![stream_close()],
+                terminator: Terminator::Return,
+            },
+        ];
+        let findings = synthetic_cursor_findings(&blocks);
+        assert!(
+            is_refused(&findings, cursor),
+            "two cursor closes on one CFG path must remain refused; got {findings:?}"
         );
     }
 

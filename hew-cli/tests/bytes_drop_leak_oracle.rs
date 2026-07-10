@@ -265,6 +265,105 @@ fn owned_partner_escape_source(frames: usize) -> String {
     )
 }
 
+/// Fixture I — #2542: an UNNAMED user-call `bytes` result used as a transient
+/// method receiver. `mk()` returns a fresh owned bytes; `.len()` borrows it
+/// (`hew_vec_len`); with no `let` binding the result flows straight into that
+/// borrow and then dies. Pre-fix the temp had no drop on ANY edge (slope 1.0
+/// leak/frame — the leak this issue reports); post-fix the
+/// nested-fresh-bytes-temp splice releases it exactly once right after the
+/// borrow. The sibling `let b = mk(); b.len()` already held flat (it routes
+/// through the binding-scoped `derive_local_bytes_drop_allowed`), so this
+/// fixture pins the transient gap specifically.
+fn usercall_transient_len_source(frames: usize) -> String {
+    format!(
+        "fn mk() -> bytes {{ \"unnamed-usercall-transient-payload\".to_bytes() }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       total = total + mk().len();\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n"
+    )
+}
+
+/// Fixture I2 — #2542 terminator-use path: an unnamed user-call `bytes` result
+/// borrowed by a method that lowers to a `Terminator::Call` (`.get(i)` →
+/// `hew_bytes_get`). Every `Terminator::Call` bytes arg is a borrow (Hew's
+/// by-value heap params), so the transient is released at the call's
+/// continuation. Pre-fix slope 1.0 leak/frame; post-fix flat.
+fn usercall_transient_get_source(frames: usize) -> String {
+    format!(
+        "fn mk() -> bytes {{ \"usercall-get-transient-payload\".to_bytes() }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       match mk().get(0) {{\n\
+         \x20           Some(_b) => {{ total = total + 1; }}\n\
+         \x20           None => {{}}\n\
+         \x20       }}\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n"
+    )
+}
+
+/// Fixture J — #2542 discard: a user-call `bytes` result in statement position
+/// (`mk();`). Zero uses; pre-fix the discarded temp leaked every frame, post-fix
+/// the splice drops it at the front of the producer's single-predecessor
+/// continuation. The slope doubles as the over-retain gate: an inline drop that
+/// mis-fired more than once would still fail the balance.
+fn usercall_discarded_source(frames: usize) -> String {
+    format!(
+        "fn mk() -> bytes {{ \"usercall-discarded-transient-payload\".to_bytes() }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       mk();\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   i\n\
+         }}\n"
+    )
+}
+
+/// No-double-free pin (#2542): the shapes the nested-fresh-bytes-temp pass must
+/// NOT drop. `let b = mk()` is released by the binding-scoped derivation; a
+/// user-call result RETURNED by `forward()` is owned by the caller; a user-call
+/// result moved into a record FIELD is owned by the aggregate. If the pass
+/// mis-admitted any (a `Move`/return/record-ingress is NOT a borrowing use, so
+/// each must stay excluded), the producer-side drop would free a buffer the real
+/// owner also frees — a crash under the poisoned-allocator triple before the
+/// `42 OK` checksum prints. Each payload is 14 bytes, so the three `.len()`
+/// reads sum to 42.
+const BYTES_USERCALL_NO_DOUBLE_FREE_SOURCE: &str = "\
+fn mk() -> bytes {\n\
+\x20   \"escape-payload\".to_bytes()\n\
+}\n\
+\n\
+fn forward() -> bytes {\n\
+\x20   mk()\n\
+}\n\
+\n\
+type Boxed {\n\
+\x20   payload: bytes,\n\
+}\n\
+\n\
+fn main() {\n\
+\x20   let b = mk();\n\
+\x20   let named_len = b.len();\n\
+\x20   let fwd = forward();\n\
+\x20   let fwd_len = fwd.len();\n\
+\x20   let boxed = Boxed { payload: mk() };\n\
+\x20   let box_len = boxed.payload.len();\n\
+\x20   print(named_len + fwd_len + box_len);\n\
+\x20   print(\"OK\");\n\
+}\n";
+
 // ── leak measurement plumbing (same shape as recv_loop_leak_oracle) ──────
 
 /// Compile `source` to a native binary via `hew compile --emit-dir` and
@@ -539,5 +638,91 @@ fn bytes_owned_partner_escape_no_per_frame_leak_slope() {
         owned_partner_escape_source,
         LOW_FRAMES,
         HIGH_FRAMES,
+    );
+}
+
+/// Fixture I: an unnamed user-call `bytes` result used as a transient method
+/// receiver (`mk().len()`) — the #2542 leak. Pre-fix slope 1.0 leak/frame (the
+/// temp had no drop on any edge); post-fix the nested-fresh-bytes-temp splice
+/// releases it once after the borrow. Reverting either the collector's
+/// admission or the apply splice fails this by ~47 nodes.
+#[test]
+fn bytes_usercall_transient_receiver_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance(
+        "bytes_usercall_transient_len",
+        usercall_transient_len_source,
+        LOW_FRAMES,
+        HIGH_FRAMES,
+    );
+}
+
+/// Fixture I2: an unnamed user-call `bytes` result borrowed by a
+/// `Terminator::Call` method (`mk().get(0)`). Pre-fix slope 1.0 leak/frame;
+/// post-fix the terminator-use splice releases it at the continuation.
+#[test]
+fn bytes_usercall_transient_terminator_use_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance(
+        "bytes_usercall_transient_get",
+        usercall_transient_get_source,
+        LOW_FRAMES,
+        HIGH_FRAMES,
+    );
+}
+
+/// Fixture J: a discarded user-call `bytes` result (`mk();`). Pre-fix slope 1.0
+/// leak/frame; post-fix the discard splice drops it at the producer's
+/// continuation. Holds flat.
+#[test]
+fn bytes_usercall_discarded_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance(
+        "bytes_usercall_discarded",
+        usercall_discarded_source,
+        LOW_FRAMES,
+        HIGH_FRAMES,
+    );
+}
+
+/// No-double-free pin (#2542): the named-binding / returned / record-ingress
+/// shapes the nested-fresh-bytes-temp pass must leave alone run to completion
+/// under the poisoned-allocator triple and print the `42 OK` checksum. A
+/// producer-side drop of any of those (mis-admitting a `Move`/return/record
+/// ingress as a borrowing use) would free a buffer the real owner also frees —
+/// a crash or scribbled value before the checksum prints.
+#[test]
+fn bytes_usercall_escape_shapes_run_clean_under_malloc_scribble() {
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix("bytes-leak-usercall-escape-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        BYTES_USERCALL_NO_DOUBLE_FREE_SOURCE,
+        dir.path(),
+        "usercall_escape_shapes",
+    );
+
+    let output = Command::new(&bin)
+        .env("MallocScribble", "1")
+        .env("MallocPreScribble", "1")
+        .env("MallocGuardEdges", "1")
+        .output()
+        .expect("run usercall-escape-shapes binary");
+
+    assert!(
+        output.status.success(),
+        "usercall escape shapes must run clean under the poisoned allocator — a \
+         crash here indicates the nested-fresh-bytes-temp pass mis-dropped a \
+         named-binding / returned / record-ingress bytes value (double free);\n{}",
+        describe_output(&output)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout,
+        "42OK",
+        "usercall escape shapes must print the 3x14 checksum untouched — a \
+         scribbled value indicates the producer freed a buffer the real owner \
+         still reads;\n{}",
+        describe_output(&output)
     );
 }

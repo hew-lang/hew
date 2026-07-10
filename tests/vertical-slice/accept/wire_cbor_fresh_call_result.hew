@@ -1,0 +1,21 @@
+// Validation: an unnamed fresh `bytes` call-result flowing straight into a
+// wire decode (`Packet.decode(mk())`) round-trips and returns the decoded
+// value. The decode reads its operand through the borrow-excluded `WireCodec`
+// instruction, so the transient-bytes drop pass must keep the buffer alive
+// past the decode: a mis-scheduled front-of-continuation drop freed it before
+// the read — a use-after-free trap — while the named `let raw = mk();
+// Packet.decode(raw)` sibling worked. Exit 42 proves the full round-trip.
+#[wire]
+type Packet {
+    id: i64 @1,
+}
+
+fn mk() -> bytes {
+    let p = Packet { id: 42 };
+    p.encode()
+}
+
+fn main() -> i64 {
+    let back = Packet.decode(mk());
+    back.id
+}

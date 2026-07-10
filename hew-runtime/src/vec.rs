@@ -2727,7 +2727,9 @@ pub unsafe extern "C" fn hew_vec_get_clone(
                 out.cast::<*mut c_char>().write(retained);
             }
             ElemKind::Plain => {
-                if (*v).layout.is_null() {
+                if (*v).layout.is_null()
+                    || (*(*v).layout).ownership_kind == HewTypeOwnershipKind::Plain
+                {
                     // scalar / BitCopy / Copy handle: the bits are a fresh owner.
                     let elem_size = (*v).elem_size;
                     let src = (*v).data.add(idx * elem_size);

@@ -81,6 +81,94 @@ fn vec_release_owner_slots(body: &str) -> std::collections::BTreeSet<&str> {
         .collect()
 }
 
+fn assert_exact_owner_slot_count(
+    name: &str,
+    owner_slots: &std::collections::BTreeSet<&str>,
+    expected: usize,
+) {
+    assert_eq!(
+        owner_slots.len(),
+        expected,
+        "{name}: expected exactly {expected} Vec owner release slot(s), got \
+         {owner_slots:?}"
+    );
+}
+
+fn exact_count_rejects_mutations(observed: usize, expected: usize) -> bool {
+    observed + 1 != expected && observed.saturating_sub(1) != expected
+}
+
+fn d65_shape_exact_count(name: &str) -> (usize, usize) {
+    let (source, symbol, expected, owner_slots) = match name {
+        "local_flat_full" => (LOCAL_FLAT_FULL.to_string(), "main", 1, true),
+        "local_flat_partial" => (LOCAL_FLAT_PARTIAL.to_string(), "main", 1, true),
+        "local_nested_full" => (LOCAL_NESTED_FULL.to_string(), "main", 2, true),
+        "local_nested_partial" => (LOCAL_NESTED_PARTIAL.to_string(), "main", 2, true),
+        "state_flat_full" => (
+            state_source(
+                "Vec<i64>",
+                "var total: i64 = 0; for value in values { total = total + value; } total",
+                "let values: Vec<i64> = Vec::new(); values.push(1); values.push(2);",
+            ),
+            "__hew_state_drop_Holder",
+            1,
+            false,
+        ),
+        "state_flat_partial" => (
+            state_source(
+                "Vec<i64>",
+                "for value in values { if value == 1 { break; } } 0",
+                "let values: Vec<i64> = Vec::new(); values.push(1); values.push(2);",
+            ),
+            "__hew_state_drop_Holder",
+            1,
+            false,
+        ),
+        "state_nested_full" => (
+            state_source(
+                "Vec<Vec<i64>>",
+                "var total: i64 = 0; for row in values { total = total + row[0]; } total",
+                "let values: Vec<Vec<i64>> = Vec::new(); let row: Vec<i64> = Vec::new(); \
+                 row.push(1); values.push(row);",
+            ),
+            "__hew_state_drop_Holder",
+            1,
+            false,
+        ),
+        "state_nested_partial" => (
+            state_source(
+                "Vec<Vec<i64>>",
+                "for value in values[0] { if value == 1 { break; } } 0",
+                "let values: Vec<Vec<i64>> = Vec::new(); let row: Vec<i64> = Vec::new(); \
+                 row.push(1); row.push(2); values.push(row);",
+            ),
+            "__hew_state_drop_Holder",
+            1,
+            false,
+        ),
+        other => panic!("unknown D65 shape: {other}"),
+    };
+    let ir = emit_ir(&source, name);
+    let body = function_body(&ir, symbol);
+    let observed = if owner_slots {
+        vec_release_owner_slots(body).len()
+    } else {
+        vec_release_calls(body)
+    };
+    (observed, expected)
+}
+
+fn enforce_exact_release_count(name: &str, observed: usize, expected: usize) {
+    if observed > expected {
+        eprintln!("{name}: injected extra release: observed {observed}, expected {expected}");
+        std::process::abort();
+    }
+    assert_eq!(
+        observed, expected,
+        "{name}: suppressed release: observed {observed}, expected {expected}"
+    );
+}
+
 const LOCAL_FLAT_FULL: &str = r#"
 fn main() -> i64 {
     let values: Vec<i64> = Vec::new();
@@ -169,13 +257,7 @@ fn d65_cursor_recursion_truth_table_has_one_owner_release_per_shape() {
         let ir = emit_ir(source, name);
         let main = function_body(&ir, "main");
         let owner_slots = vec_release_owner_slots(main);
-        assert_eq!(
-            owner_slots.len(),
-            expected_owner_slots,
-            "{name}: every normal/trap/cancel exit must release the same sole Vec \
-             owner slot; a cursor release adds a second slot, while a suppressed \
-             owner release leaves none. slots={owner_slots:?}\n{main}"
-        );
+        assert_exact_owner_slot_count(name, &owner_slots, expected_owner_slots);
     }
 
     let state_shapes = [
@@ -229,4 +311,78 @@ fn d65_cursor_recursion_truth_table_has_one_owner_release_per_shape() {
             "{name}: actor-state teardown must be the sole Vec release\n{state_drop}"
         );
     }
+}
+
+#[test]
+fn d65_exact_count_oracle_rejects_extra_and_suppressed_release_per_shape() {
+    for name in [
+        "local_flat_full",
+        "local_flat_partial",
+        "local_nested_full",
+        "local_nested_partial",
+        "state_flat_full",
+        "state_flat_partial",
+        "state_nested_full",
+        "state_nested_partial",
+    ] {
+        let (observed, expected) = d65_shape_exact_count(name);
+        enforce_exact_release_count(name, observed, expected);
+        assert!(
+            exact_count_rejects_mutations(observed, expected),
+            "{name}: exact count accepted an injected extra or suppressed release"
+        );
+        assert!(
+            std::panic::catch_unwind(|| {
+                enforce_exact_release_count(name, observed.saturating_sub(1), expected);
+            })
+            .is_err(),
+            "{name}: suppressed release did not fail the exact-count oracle"
+        );
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn d65_injected_extra_release_aborts_for_every_shape() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let current_exe = std::env::current_exe().expect("current structural test executable");
+    for name in [
+        "local_flat_full",
+        "local_flat_partial",
+        "local_nested_full",
+        "local_nested_partial",
+        "state_flat_full",
+        "state_flat_partial",
+        "state_nested_full",
+        "state_nested_partial",
+    ] {
+        let output = std::process::Command::new(&current_exe)
+            .args([
+                "--exact",
+                "d65_vec_release_truth_table::d65_injected_extra_release_helper",
+                "--nocapture",
+            ])
+            .env("HEW_D65_EXTRA_RELEASE_SHAPE", name)
+            .output()
+            .unwrap_or_else(|error| panic!("run D65 extra-release helper for {name}: {error}"));
+        assert_eq!(
+            output.status.signal(),
+            Some(libc::SIGABRT),
+            "{name}: injected extra release must abort loudly; status={:?}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn d65_injected_extra_release_helper() {
+    let Ok(name) = std::env::var("HEW_D65_EXTRA_RELEASE_SHAPE") else {
+        return;
+    };
+    let (observed, expected) = d65_shape_exact_count(&name);
+    enforce_exact_release_count(&name, observed + 1, expected);
+    panic!("{name}: injected extra release did not abort");
 }

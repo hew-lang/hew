@@ -216,20 +216,14 @@ unsafe fn parse_headers_from_hew_tuple_vec(
 
     let mut parsed_headers = Vec::with_capacity(headers_ref.len);
     for index in 0..headers_ref.len {
-        let Ok(index_i64) = i64::try_from(index) else {
-            return Err("headers length exceeds Hew index range".to_string());
-        };
-        // SAFETY: index_i64 is a valid in-bounds index for this HewVec.
-        let elem_ptr =
-            unsafe { hew_cabi::vec::hew_vec_get_generic(headers.cast_const(), index_i64) };
-        if elem_ptr.is_null() {
-            return Err(format!(
-                "corrupt header Vec: null element pointer at in-bounds index {index_i64}"
-            ));
-        }
-        // SAFETY: elem_ptr points to a HewStringPair within the vector's element buffer.
-        // The pair's string pointers are owned by the vector; we read but do not free them.
-        let pair = unsafe { &*(elem_ptr.cast::<HewStringPair>()) };
+        // Borrow the live element slot directly. Descriptor-backed tuple Vecs
+        // intentionally reject the legacy generic accessor, but this FFI bridge
+        // only needs a read-only view while the caller-owned Vec remains live.
+        // SAFETY: index < len and elem_size was validated above.
+        let elem_ptr = unsafe { headers_ref.data.add(index * headers_ref.elem_size) };
+        // SAFETY: elem_ptr addresses one complete HewStringPair slot. The copied
+        // raw pointers remain owned by the vector; we only borrow their strings.
+        let pair = unsafe { elem_ptr.cast::<HewStringPair>().read_unaligned() };
         if pair.name.is_null() || pair.value.is_null() {
             return Err("malformed header pair: null name or value pointer".to_string());
         }
@@ -670,9 +664,8 @@ pub unsafe extern "C" fn hew_http_response_content_type(
 
 /// ABI layout for a `(String, String)` tuple element in a Hew `Vec<(String, String)>`.
 ///
-/// Both pointers are `malloc`-allocated and must be freed by the owner. Hew's
-/// compiled destructor handles this automatically; Rust callers must free them
-/// manually before calling `hew_vec_free`.
+/// Both pointers are header-aware heap strings owned by the descriptor-backed
+/// Vec. `hew_vec_free` and `hew_vec_free_owned` both release them recursively.
 #[repr(C)]
 struct HewStringPair {
     name: *mut c_char,
@@ -898,13 +891,12 @@ mod tests {
 
     /// Build a Hew `Vec<(String, String)>` populated with the provided `(name, value)` pairs.
     ///
-    /// Produces a Plain-kind `HewVec` of `HewStringPair` elements, matching the ABI expected
-    /// by `parse_headers_from_hew_tuple_vec` and the Hew compiler's `Vec<(String, String)>` layout.
+    /// Produces a descriptor-backed `HewVec` of `HewStringPair` elements,
+    /// matching the ABI emitted for Hew `Vec<(string, string)>`.
     unsafe fn make_tuple_vec(pairs: &[(&str, &str)]) -> *mut HewVec {
-        let elem_size = i64::try_from(2 * std::mem::size_of::<*mut c_char>())
-            .expect("pointer-pair elem_size always fits i64");
-        // SAFETY: hew_vec_new_generic allocates a valid Plain-kind HewVec.
-        let vec = unsafe { hew_cabi::vec::hew_vec_new_generic(elem_size, 0) };
+        let layout = string_pair_elem_layout();
+        // SAFETY: the descriptor matches HewStringPair and is copied into the Vec.
+        let vec = unsafe { hew_cabi::vec::hew_vec_new_with_elem_layout(&raw const layout) };
         assert!(!vec.is_null(), "test setup must allocate a HewVec");
         for (name, value) in pairs {
             let name_c = CString::new(*name).unwrap();
@@ -919,9 +911,11 @@ mod tests {
                 !(pair.name.is_null() || pair.value.is_null()),
                 "test setup must allocate header pairs"
             );
-            // SAFETY: vec is a valid HewVec; &pair is a valid elem_size-byte region.
+            // SAFETY: vec is descriptor-backed and pair matches its element layout.
             unsafe {
-                hew_cabi::vec::hew_vec_push_generic(vec, std::ptr::addr_of!(pair).cast::<c_void>());
+                hew_cabi::vec::hew_vec_push_owned(vec, std::ptr::addr_of!(pair).cast::<c_void>());
+                free_cstring(pair.name);
+                free_cstring(pair.value);
             };
         }
         vec
@@ -1331,15 +1325,13 @@ mod tests {
         let len = unsafe { hew_cabi::vec::hew_vec_len(vec) };
         assert_eq!(len, 2);
 
-        // Read and verify each (name, value) pair.
-        // Elements must be freed manually: ElemKind::Plain means hew_vec_free
-        // only releases the backing buffer, not the embedded string pointers.
+        // Read and verify each borrowed (name, value) pair.
         for i in 0..2i64 {
+            let index = usize::try_from(i).expect("non-negative in-bounds test index");
             // SAFETY: vec is valid and i is in range.
-            let elem_ptr = unsafe { hew_cabi::vec::hew_vec_get_generic(vec, i) };
-            assert!(!elem_ptr.is_null());
-            // SAFETY: elem_ptr points to a HewStringPair (two consecutive *mut c_char).
-            let pair = unsafe { &*(elem_ptr.cast::<HewStringPair>()) };
+            let elem_ptr = unsafe { (*vec).data.add(index * (*vec).elem_size) };
+            // SAFETY: elem_ptr addresses one complete HewStringPair slot.
+            let pair = unsafe { elem_ptr.cast::<HewStringPair>().read_unaligned() };
             assert!(!pair.name.is_null());
             assert!(!pair.value.is_null());
             // SAFETY: name and value are valid malloc'd C strings from hew_http_response_headers.
@@ -1359,14 +1351,9 @@ mod tests {
                 assert_eq!(name, "x-request-id");
                 assert_eq!(value, "abc-123");
             }
-            // Free the strings before freeing the backing buffer.
-            // SAFETY: pair.name was malloc'd by hew_http_response_headers.
-            unsafe { free_cstring(pair.name) }; // CSTRING-FREE: str-open (header name)
-                                                // SAFETY: pair.value was malloc'd by hew_http_response_headers.
-            unsafe { free_cstring(pair.value) }; // CSTRING-FREE: str-open (header value)
         }
 
-        // SAFETY: string elements already freed above; just releases the buffer.
+        // SAFETY: descriptor-driven free releases both strings in every pair.
         unsafe { hew_cabi::vec::hew_vec_free(vec) };
         // SAFETY: resp is still valid.
         unsafe { hew_http_response_free(resp) };
@@ -1411,9 +1398,9 @@ mod tests {
         assert_eq!(unsafe { hew_cabi::vec::hew_vec_len(vec) }, 1);
 
         // SAFETY: index 0 is in range.
-        let elem_ptr = unsafe { hew_cabi::vec::hew_vec_get_generic(vec, 0) };
-        // SAFETY: elem_ptr points to a HewStringPair.
-        let pair = unsafe { &*(elem_ptr.cast::<HewStringPair>()) };
+        let elem_ptr = unsafe { (*vec).data };
+        // SAFETY: elem_ptr addresses one complete HewStringPair slot.
+        let pair = unsafe { elem_ptr.cast::<HewStringPair>().read_unaligned() };
         // SAFETY: pointers are valid malloc'd C strings from hew_http_response_headers.
         let name = unsafe { CStr::from_ptr(pair.name) }
             .to_str()
@@ -1426,12 +1413,8 @@ mod tests {
             .to_owned();
         assert_eq!(name, "x-custom");
         assert_eq!(value, "my-value");
-        // SAFETY: pair.name was malloc'd by hew_http_response_headers.
-        unsafe { free_cstring(pair.name) }; // CSTRING-FREE: str-open (header name)
-                                            // SAFETY: pair.value was malloc'd by hew_http_response_headers.
-        unsafe { free_cstring(pair.value) }; // CSTRING-FREE: str-open (header value)
 
-        // SAFETY: elements freed; safe to release the buffer.
+        // SAFETY: descriptor-driven free releases both strings in the pair.
         unsafe { hew_cabi::vec::hew_vec_free(vec) };
         // SAFETY: resp is still valid.
         unsafe { hew_http_response_free(resp) };

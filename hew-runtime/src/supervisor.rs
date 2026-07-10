@@ -1498,37 +1498,65 @@ fn request_supervisor_shutdown(sup: *mut HewSupervisor) {
     }
 }
 
-fn wait_for_supervisor_self_actor_quiescent(sup: *mut HewSupervisor) {
+fn wait_for_supervisor_self_actor_quiescent(sup: *mut HewSupervisor) -> bool {
     if sup.is_null() {
-        return;
+        return true;
     }
 
     // SAFETY: caller guarantees `sup` is a valid live supervisor pointer.
     unsafe {
         let s = &*sup;
         if s.self_actor.is_null() {
-            return;
+            return true;
         }
 
         actor::hew_actor_stop(s.self_actor);
         loop {
             let state = (*s.self_actor).actor_state.load(Ordering::Acquire);
             if state != HewActorState::Running as i32 && state != HewActorState::Runnable as i32 {
-                break;
+                return true;
+            }
+            if scheduler::shutdown_requested() {
+                return false;
             }
             std::thread::yield_now();
         }
     }
 }
 
+unsafe fn return_supervisor_to_runtime_cleanup(sup: *mut HewSupervisor) {
+    // Top-level stops unregister before the deferred owner starts. If scheduler
+    // shutdown prevents that owner from reaching a safe actor-quiescence point,
+    // restore the root so canonical post-worker cleanup remains the sole
+    // destructor. Keep teardown claimed so a still-running worker cannot start
+    // a second stop before the root sweep. Nested supervisors stay owned by
+    // their parent tree.
+    // SAFETY: the deferred owner still holds the live supervisor allocation.
+    if unsafe { (*sup).parent.is_null() } {
+        // SAFETY: the deferred owner is returning the still-live allocation
+        // without consuming it.
+        unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
+    }
+}
+
 unsafe fn stop_supervisor_owned(sup: *mut HewSupervisor) {
     request_supervisor_shutdown(sup);
-    wait_for_supervisor_self_actor_quiescent(sup);
+    if !wait_for_supervisor_self_actor_quiescent(sup) {
+        // SAFETY: teardown ownership is still held and no allocation was
+        // consumed; canonical runtime cleanup takes ownership back.
+        unsafe { return_supervisor_to_runtime_cleanup(sup) };
+        return;
+    }
 
     // SAFETY: teardown ownership is held exclusively by this thread and the
     // supervisor memory remains live until `Box::from_raw` below.
     let shared = unsafe { &*sup };
     while shared.pending_restart_timers.load(Ordering::Acquire) != 0 {
+        if scheduler::shutdown_requested() {
+            // SAFETY: as above; the supervisor has not been consumed yet.
+            unsafe { return_supervisor_to_runtime_cleanup(sup) };
+            return;
+        }
         std::thread::yield_now();
     }
 
@@ -1540,6 +1568,11 @@ unsafe fn stop_supervisor_owned(sup: *mut HewSupervisor) {
     // Recursively stop all child supervisors first.
     for child_sup in std::mem::take(&mut s.child_supervisors) {
         if !child_sup.is_null() {
+            // Ownership has been detached from `s`. If scheduler shutdown makes
+            // the child's stop hand back to canonical cleanup, it must register
+            // as an independent root rather than relying on this now-empty list.
+            // SAFETY: teardown ownership for `s` is exclusive.
+            unsafe { (*child_sup).parent = ptr::null_mut() };
             // SAFETY: child_sup is a valid supervisor added via
             // hew_supervisor_add_child_supervisor.
             unsafe { hew_supervisor_stop(child_sup) };
@@ -1559,6 +1592,13 @@ unsafe fn stop_supervisor_owned(sup: *mut HewSupervisor) {
                         && state != HewActorState::Runnable as i32
                     {
                         break;
+                    }
+                    if scheduler::shutdown_requested() {
+                        let sup = Box::into_raw(s);
+                        // SAFETY: Box ownership is converted back to the raw
+                        // pointer expected by canonical runtime cleanup.
+                        return_supervisor_to_runtime_cleanup(sup);
+                        return;
                     }
                     std::thread::yield_now();
                 }
@@ -3042,6 +3082,51 @@ mod tests {
     /// Production only ever drains once, single-threaded, in
     /// `cleanup_all_actors`; this lock restores that precondition for the tests.
     static TEARDOWN_DRAIN_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn deferred_stop_returns_root_to_cleanup_after_scheduler_shutdown() {
+        let _rt = crate::runtime_test_guard();
+        let _serial = TEARDOWN_DRAIN_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SAFETY: this test owns the supervisor tree and installs the child as
+        // the current actor only long enough to select the deferred stop path.
+        unsafe {
+            let (sup, child, _self_actor) = make_supervisor_with_child();
+            crate::shutdown::hew_shutdown_register_supervisor(sup);
+            (*child)
+                .actor_state
+                .store(HewActorState::Runnable as i32, Ordering::Release);
+
+            let _ctx = TestExecutionContext::install(HewExecutionContext {
+                actor: child,
+                actor_id: (*child).id,
+                ..HewExecutionContext::default()
+            });
+            hew_supervisor_stop(sup);
+
+            assert!(
+                wait_for_condition(std::time::Duration::from_secs(2), || {
+                    crate::lifetime::live_actors::deferred_teardown_thread_count() == 1
+                }),
+                "deferred supervisor owner must be registered before shutdown"
+            );
+
+            crate::scheduler::hew_sched_shutdown();
+            crate::lifetime::live_actors::drain_deferred_teardown_threads();
+
+            assert!(
+                crate::shutdown::is_supervisor_registered_for_test(sup),
+                "shutdown-aware deferred stop must restore the top-level root"
+            );
+            assert!(
+                (*sup).teardown_claimed.load(Ordering::Acquire),
+                "handoff must keep teardown claimed until canonical cleanup"
+            );
+
+            crate::scheduler::hew_runtime_cleanup();
+        }
+    }
 
     #[test]
     fn drain_deferred_teardown_joins_in_flight_supervisor_stop() {

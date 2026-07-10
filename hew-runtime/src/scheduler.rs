@@ -620,6 +620,10 @@ pub extern "C" fn hew_sched_shutdown() {
     crate::session::session_reset();
 }
 
+pub(crate) fn shutdown_requested() -> bool {
+    get_scheduler().is_some_and(|sched| sched.shutdown.load(Ordering::Acquire))
+}
+
 /// Clean up all remaining runtime resources after shutdown.
 ///
 /// Must be called after [`hew_sched_shutdown`] — all worker threads must
@@ -648,6 +652,13 @@ pub extern "C" fn hew_runtime_cleanup() {
     // must stay installed in its slot until the sweep completes. Detaching it
     // here would make `rt_current()` trap mid-cleanup.
     teardown_workers(get_scheduler().map(|s| s as *const Scheduler), None, false);
+
+    // A handler-initiated supervisor stop may have deferred ownership to a
+    // teardown thread. Once scheduler shutdown begins, that thread returns the
+    // partially stopped supervisor to the root registry instead of waiting for
+    // Runnable children that workers can no longer drain. Join that handoff
+    // before taking the root list for canonical destruction.
+    crate::lifetime::live_actors::drain_deferred_teardown_threads();
 
     // Free any registered top-level supervisors — this drops their child
     // specs (names + init_state) via the InternalChildSpec Drop impl.
@@ -5212,14 +5223,10 @@ mod tests {
     /// **while the runtime is still installed** — before the runtime is detached
     /// and dropped.
     ///
-    /// The proof is the ordering, not a leak count: `free_registered_supervisors`
-    /// (which reads `rt_current().supervisor_roots`) runs strictly before the
-    /// live-actor sweep inside cleanup. We gate cleanup mid-sweep on a deferred
-    /// reaper join (which happens during the *later* `cleanup_all_actors` step)
-    /// and observe that, at that point, the supervisor root has already been
-    /// swept out of the runtime-owned list while the runtime is still installed
-    /// and not yet dropped. If the sweep instead read a detached runtime,
-    /// `rt_current()` would trap and cleanup would never reach the join.
+    /// The proof is the ordering, not a leak count: deferred teardown is joined
+    /// first so a shutdown-aware supervisor stop can return ownership to the root
+    /// list, then `free_registered_supervisors` consumes that list while the
+    /// runtime is still installed, and detach/drop remains the final step.
     #[test]
     fn runtime_cleanup_frees_supervisor_root_before_detach() {
         let _g = SCHED_TEST_MUTEX
@@ -5238,10 +5245,9 @@ mod tests {
             "supervisor root must be registered on the runtime-owned list before cleanup"
         );
 
-        // Gate cleanup inside the LATER live-actor sweep (the deferred-teardown
-        // join), so when it blocks here `free_registered_supervisors` has already
-        // run. The reaper dereferences the runtime-owned live-actor registry, so
-        // the runtime must still be installed for cleanup to reach the join.
+        // Gate cleanup in the deferred-teardown handoff that now precedes the
+        // root sweep. The runtime and root must remain installed until this join
+        // completes, so a shutdown-aware deferred owner can safely restore a root.
         let release = std::sync::Arc::new(AtomicBool::new(false));
         let release2 = std::sync::Arc::clone(&release);
         crate::lifetime::live_actors::push_deferred_teardown_thread(thread::spawn(move || {
@@ -5254,9 +5260,8 @@ mod tests {
 
         let cleanup = thread::spawn(|| hew_runtime_cleanup());
 
-        // Cleanup is now blocked in the actor-sweep join — which is AFTER the
-        // supervisor-roots sweep. While blocked, the runtime is still installed
-        // and not yet dropped, and the supervisor root has already been freed.
+        // Cleanup is blocked before the root sweep. The runtime and root remain
+        // installed until the deferred handoff completes.
         thread::sleep(Duration::from_millis(40));
         assert!(
             !runtime::default_runtime_ptr(Ordering::SeqCst).is_null(),
@@ -5268,12 +5273,12 @@ mod tests {
             "runtime must not be dropped before the supervisor-roots sweep completes"
         );
         assert!(
-            !crate::shutdown::is_supervisor_registered_for_test(sup),
-            "free_registered_supervisors must empty the runtime-owned supervisor \
-             roots while the runtime is still installed, before detach/drop"
+            crate::shutdown::is_supervisor_registered_for_test(sup),
+            "supervisor root must remain registered until deferred teardown joins"
         );
 
-        // Let cleanup finish: it joins the reaper, then detaches + drops last.
+        // Let cleanup finish: it joins the reaper, sweeps the root, then detaches
+        // and drops the runtime last.
         release.store(true, Ordering::Release);
         cleanup.join().unwrap();
 

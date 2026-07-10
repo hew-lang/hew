@@ -70,6 +70,7 @@ run_fixture_path_expect_status() {
 run_accept_expect_status() {
   local fixture="$1"
   local expected_status="$2"
+  shift 2
   echo "RUN ${fixture}"
   compile_accept "${fixture}"
   local bin="${ROOT}/.tmp/compile-out/${fixture}"
@@ -79,7 +80,7 @@ run_accept_expect_status() {
   # `timeout` then fail the exit-code assertion below rather than blocking.
   # shellcheck disable=SC2016  # $1/$2/$3 are positional args to the inner
   # `bash -c`, expanded there — the single quotes are deliberate.
-  if "${TIMEOUT}" --kill-after=5s 30s bash -c '"$1" >"$2" 2>"$3"' _ "${bin}" "${stdout_output}" "${stderr_output}" 2>/dev/null; then
+  if "${TIMEOUT}" --kill-after=5s 30s env "$@" bash -c '"$1" >"$2" 2>"$3"' _ "${bin}" "${stdout_output}" "${stderr_output}" 2>/dev/null; then
     status=0
   else
     status=$?
@@ -1310,6 +1311,11 @@ run_accept_expect_status "supervisor_nested_accessor" 42
 # hew_supervisor_stop; main returns 0. Exercises the user-name → C-ABI bridge and
 # the void-return (dest: None) MIR + codegen path.
 run_accept_expect_status "supervisor_stop_basic" 0
+
+# Handler-initiated self-tree stop takes the deferred teardown path. Keep one
+# worker so the sibling remains Runnable until the stopping handler returns;
+# shutdown must hand ownership back before canonical root cleanup.
+run_accept_expect_status "supervisor_deferred_stop_normal_return" 42 HEW_WORKERS=1
 
 # Regression guard (issue #382 Bug 1): supervised actor with init() block.
 # Before the fix: restart_child_from_spec → hew_actor_spawn_opts →

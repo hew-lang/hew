@@ -8,7 +8,7 @@ fn Cache__recv__get_cap(i64) -> i64 [conv=actor_handler]
     stmt: eval site=SiteId(0) ty=i64
     enter_context
     _1 = actor_state_load field[0]
-    _2 = actor_state_load field[1]
+    _2 = actor_state_load field[1] [borrow]
     _3 = call hew_string_length(_2) -> bb1
   bb1:
     stmt: return site=Some(SiteId(1)) ty=i64

@@ -539,22 +539,71 @@ pub(crate) fn emit_suspending_read_terminator<'ctx>(
         .build_call(slot_free, &[slot.into()], "suspending_read_err_free")
         .llvm_ctx("hew_read_slot_free (register err) call")?;
     if let Some(reg) = reg {
+        let status = fn_ctx.call_runtime_int(
+            "hew_await_cancel_status",
+            &[reg.into()],
+            "suspending_read_register_status",
+            "hew_await_cancel_status (read register err) call",
+        )?;
+        let cancelled = fn_ctx
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                i32_ty.const_int(2, false),
+                "suspending_read_register_cancelled",
+            )
+            .llvm_ctx("suspending read register-cancelled compare")?;
+        let cancelled_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent, "suspending_read_register_cancelled");
+        let timeout_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent, "suspending_read_register_timeout");
+        fn_ctx
+            .builder
+            .build_conditional_branch(cancelled, cancelled_bb, timeout_bb)
+            .llvm_ctx("suspending read register-error status branch")?;
+
+        let result_dest = term.deadline_result_dest.ok_or_else(|| {
+            CodegenError::FailClosed("SuspendingRead register error missing Result dest".into())
+        })?;
+        let error_dest = term.error_dest.ok_or_else(|| {
+            CodegenError::FailClosed("SuspendingRead register error missing NetError dest".into())
+        })?;
+
+        fn_ctx.builder.position_at_end(cancelled_bb);
         fn_ctx.call_runtime_void(
             "hew_await_cancel_free",
             &[reg.into()],
-            "suspending_read_err_reg_free",
-            "hew_await_cancel_free (register err) call",
+            "suspending_read_err_cancelled_reg_free",
+            "hew_await_cancel_free (read register cancelled) call",
         )?;
-    }
-    if let (Some(result_dest), Some(error_dest)) = (term.deadline_result_dest, term.error_dest) {
+        emit_read_deadline_cancelled_err(fn_ctx, result_dest, error_dest)?;
+        fn_ctx
+            .builder
+            .build_unconditional_branch(resume_bb)
+            .llvm_ctx("suspending read register-cancelled br")?;
+
+        fn_ctx.builder.position_at_end(timeout_bb);
+        fn_ctx.call_runtime_void(
+            "hew_await_cancel_free",
+            &[reg.into()],
+            "suspending_read_err_timeout_reg_free",
+            "hew_await_cancel_free (read register timeout) call",
+        )?;
         emit_read_deadline_timeout_err(fn_ctx, result_dest, error_dest)?;
+        fn_ctx
+            .builder
+            .build_unconditional_branch(resume_bb)
+            .llvm_ctx("suspending read register-timeout br")?;
     } else {
         store_empty_bytes(fn_ctx, term.result_dest)?;
+        fn_ctx
+            .builder
+            .build_unconditional_branch(resume_bb)
+            .llvm_ctx("suspending read register-err br")?;
     }
-    fn_ctx
-        .builder
-        .build_unconditional_branch(resume_bb)
-        .llvm_ctx("suspending read register-err br")?;
 
     // ── do_suspend: park the continuation (non-final suspend). The default edge
     // returns the coro handle to the trampoline (which parks it on this actor);
@@ -1253,26 +1302,71 @@ pub(crate) fn emit_suspending_accept_terminator<'ctx>(
         .build_call(slot_free, &[slot.into()], "suspending_accept_err_free")
         .llvm_ctx("hew_read_slot_free (register err) call")?;
     if let Some(reg) = reg {
-        let reg_free = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_free",
+        let status = fn_ctx.call_runtime_int(
+            "hew_await_cancel_status",
+            &[reg.into()],
+            "suspending_accept_register_status",
+            "hew_await_cancel_status (accept register err) call",
         )?;
+        let cancelled = fn_ctx
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                i32_ty.const_int(2, false),
+                "suspending_accept_register_cancelled",
+            )
+            .llvm_ctx("suspending accept register-cancelled compare")?;
+        let cancelled_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent, "suspending_accept_register_cancelled");
+        let timeout_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent, "suspending_accept_register_timeout");
         fn_ctx
             .builder
-            .build_call(reg_free, &[reg.into()], "suspending_accept_err_reg_free")
-            .llvm_ctx("hew_await_cancel_free (register err) call")?;
-    }
-    if let (Some(result_dest), Some(error_dest)) = (term.deadline_result_dest, term.error_dest) {
+            .build_conditional_branch(cancelled, cancelled_bb, timeout_bb)
+            .llvm_ctx("suspending accept register-error status branch")?;
+
+        let result_dest = term.deadline_result_dest.ok_or_else(|| {
+            CodegenError::FailClosed("SuspendingAccept register error missing Result dest".into())
+        })?;
+        let error_dest = term.error_dest.ok_or_else(|| {
+            CodegenError::FailClosed("SuspendingAccept register error missing NetError dest".into())
+        })?;
+
+        fn_ctx.builder.position_at_end(cancelled_bb);
+        fn_ctx.call_runtime_void(
+            "hew_await_cancel_free",
+            &[reg.into()],
+            "suspending_accept_err_cancelled_reg_free",
+            "hew_await_cancel_free (accept register cancelled) call",
+        )?;
+        emit_read_deadline_cancelled_err(fn_ctx, result_dest, error_dest)?;
+        fn_ctx
+            .builder
+            .build_unconditional_branch(resume_bb)
+            .llvm_ctx("suspending accept register-cancelled br")?;
+
+        fn_ctx.builder.position_at_end(timeout_bb);
+        fn_ctx.call_runtime_void(
+            "hew_await_cancel_free",
+            &[reg.into()],
+            "suspending_accept_err_timeout_reg_free",
+            "hew_await_cancel_free (accept register timeout) call",
+        )?;
         emit_read_deadline_timeout_err(fn_ctx, result_dest, error_dest)?;
+        fn_ctx
+            .builder
+            .build_unconditional_branch(resume_bb)
+            .llvm_ctx("suspending accept register-timeout br")?;
     } else {
         store_invalid_connection(fn_ctx, term.result_dest)?;
+        fn_ctx
+            .builder
+            .build_unconditional_branch(resume_bb)
+            .llvm_ctx("suspending accept register-err br")?;
     }
-    fn_ctx
-        .builder
-        .build_unconditional_branch(resume_bb)
-        .llvm_ctx("suspending accept register-err br")?;
 
     // ── do_suspend: park the continuation (non-final suspend). ─────────────────
     fn_ctx.builder.position_at_end(do_suspend_bb);

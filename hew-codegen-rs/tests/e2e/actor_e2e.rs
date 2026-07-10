@@ -53,6 +53,17 @@ fn network_deadline_arbiters_emit_typed_cancelled_branch() {
             block.contains("store i8 4"),
             "{fixture}: Cancelled block must store NetError::Cancelled tag 4:\n{block}"
         );
+
+        let register_compare = ll
+            .lines()
+            .find(|line| line.contains(&format!("%{prefix}_register_cancelled = icmp eq i32")))
+            .unwrap_or_else(|| {
+                panic!("{fixture}: missing synchronous register-cancelled compare in IR")
+            });
+        assert!(
+            register_compare.ends_with(", 2"),
+            "{fixture}: register-error path must preserve Cancelled status 2: {register_compare}"
+        );
     }
 }
 

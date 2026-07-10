@@ -48,7 +48,7 @@
     reason = "FFI-adjacent module; SAFETY documented at each unsafe site."
 )]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{c_int, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -206,6 +206,11 @@ struct ReactorState {
     conn_to_fd: HashMap<c_int, c_int>,
     /// Queued mutations from worker/teardown threads.
     pending: Vec<Pending>,
+    /// Actors whose already-parked wait was swept during shutdown. The paired
+    /// await entry check rejects only these actors if they loop and try to park
+    /// again; actors that had not reached their await when shutdown began retain
+    /// the existing fast-shutdown abandonment behaviour.
+    shutdown_cancelled_actors: HashSet<usize>,
 }
 
 impl ReactorState {
@@ -214,6 +219,7 @@ impl ReactorState {
             registry: HashMap::new(),
             conn_to_fd: HashMap::new(),
             pending: Vec::new(),
+            shutdown_cancelled_actors: HashSet::new(),
         }
     }
 }
@@ -509,6 +515,60 @@ impl Drop for InflightSlotRef {
         // here drops exactly that one in-flight ref; the slot box is reclaimed
         // only when its last ref (creator/registration/in-flight) drops.
         unsafe { crate::read_slot::hew_read_slot_free(self.0) };
+    }
+}
+
+/// A parked read/accept registration removed by the shutdown sweep.
+///
+/// `registration` keeps the reactor-owned slot ref until the cancellation has
+/// been deposited. `_slot_ref` is the sweep's independent in-flight ref, taken
+/// under the registry lock in the same snapshot that removes the registration.
+/// It remains live after `registration` drops, preserving the same cross-thread
+/// delivery invariant as [`ReadySnapshot`].
+struct ShutdownWait {
+    registration: Registration,
+    _slot_ref: InflightSlotRef,
+}
+
+impl ShutdownWait {
+    fn new(registration: Registration) -> Self {
+        let read_slot = match registration.mode {
+            RegMode::Resume { read_slot } | RegMode::Accept { read_slot } => read_slot,
+            RegMode::AutoSend { .. } => {
+                unreachable!("shutdown sweep only snapshots parked waits")
+            }
+        };
+        // SAFETY: this constructor runs under the reactor-state lock immediately
+        // after removing a Registration that still owns a live slot ref.
+        unsafe { crate::read_slot::read_slot_retain(read_slot) };
+        Self {
+            registration,
+            _slot_ref: InflightSlotRef(read_slot),
+        }
+    }
+
+    fn actor_key(&self) -> usize {
+        self.registration.actor_key
+    }
+
+    fn read_slot(&self) -> *mut crate::read_slot::HewReadSlot {
+        match self.registration.mode {
+            RegMode::Resume { read_slot } | RegMode::Accept { read_slot } => read_slot,
+            RegMode::AutoSend { .. } => unreachable!("shutdown wait must carry a read slot"),
+        }
+    }
+
+    fn cancel(&self) {
+        // Deadline forms resolve through the common one-shot arbiter. Plain forms
+        // have no typed error carrier, so reuse the existing fail-closed
+        // deposit+wake path (empty/error bytes or INVALID_CONNECTION_HANDLE).
+        // SAFETY: the sweep's independent `_slot_ref` keeps this slot live.
+        let deadline = unsafe {
+            crate::read_slot::read_slot_cancel_await_for_shutdown(self.read_slot(), true)
+        };
+        if deadline.is_none() {
+            deliver_orphan_close(&self.registration);
+        }
     }
 }
 
@@ -1101,6 +1161,151 @@ fn resume_with_status(
     }
 }
 
+fn is_parked_wait(reg: &Registration) -> bool {
+    matches!(reg.mode, RegMode::Resume { .. } | RegMode::Accept { .. })
+}
+
+/// Remove every currently parked read/accept registration under the reactor
+/// lock, taking an independent slot ref for each before releasing the lock.
+///
+/// Registry entries also queue their poller-side unregister. Pending adds never
+/// reached the poller and are simply removed. Actor keys are recorded before any
+/// wake so a resumed loop cannot publish another parked wait during shutdown.
+fn take_shutdown_waits() -> Vec<ShutdownWait> {
+    REACTOR_STATE.access(|state| {
+        let registry_fds: Vec<c_int> = state
+            .registry
+            .iter()
+            .filter_map(|(fd, reg)| is_parked_wait(reg).then_some(*fd))
+            .collect();
+        let mut waits = Vec::with_capacity(registry_fds.len());
+        for fd in &registry_fds {
+            let reg = state
+                .registry
+                .remove(fd)
+                .expect("shutdown sweep fd came from the registry");
+            state.conn_to_fd.retain(|_, mapped| mapped != fd);
+            let wait = ShutdownWait::new(reg);
+            state.shutdown_cancelled_actors.insert(wait.actor_key());
+            waits.push(wait);
+        }
+        if !registry_fds.is_empty() {
+            crate::observe::record_reactor_unregistration(registry_fds.len() as u64);
+        }
+
+        let pending = std::mem::take(&mut state.pending);
+        let mut retained = Vec::with_capacity(pending.len() + registry_fds.len());
+        for req in pending {
+            match req {
+                Pending::Add { reg, .. } if is_parked_wait(&reg) => {
+                    let wait = ShutdownWait::new(reg);
+                    state.shutdown_cancelled_actors.insert(wait.actor_key());
+                    waits.push(wait);
+                }
+                other => retained.push(other),
+            }
+        }
+        retained.extend(
+            registry_fds
+                .into_iter()
+                .map(|fd| Pending::UnregisterFd { fd }),
+        );
+        state.pending = retained;
+        waits
+    })
+}
+
+fn shutdown_waits_quiescent(cancelled_actors: &HashSet<usize>) -> bool {
+    let no_parked_state = REACTOR_STATE.access(|state| {
+        !state.registry.values().any(is_parked_wait)
+            && !state.pending.iter().any(|req| match req {
+                Pending::Add { reg, .. } => is_parked_wait(reg),
+                _ => false,
+            })
+    });
+    let delivering = DELIVERING_ACTOR.load(Ordering::SeqCst);
+    no_parked_state
+        && PROMOTING_ACTOR.load(Ordering::SeqCst) == 0
+        && !cancelled_actors.contains(&delivering)
+}
+
+/// Resolve all reactor waits that were already parked when shutdown entered its
+/// drain phase.
+///
+/// The sweep is scrub-then-wait looped against the same promotion/delivery
+/// guards as actor teardown. Each batch is cancelled outside the registry lock;
+/// the one-shot await arbiter decides cancellation-vs-readiness exactly once.
+/// The returned count lets immediate shutdown run a bounded re-drain only when
+/// the sweep actually made actors runnable.
+pub(crate) fn reactor_cancel_parked_waits_for_shutdown() -> usize {
+    let mut swept = 0;
+    let mut cancelled_actors = HashSet::new();
+    loop {
+        let waits = take_shutdown_waits();
+        swept += waits.len();
+        cancelled_actors.extend(waits.iter().map(ShutdownWait::actor_key));
+        for wait in &waits {
+            wait.cancel();
+        }
+        drop(waits);
+
+        while PROMOTING_ACTOR.load(Ordering::SeqCst) != 0
+            || cancelled_actors.contains(&DELIVERING_ACTOR.load(Ordering::SeqCst))
+        {
+            std::hint::spin_loop();
+        }
+        if shutdown_waits_quiescent(&cancelled_actors) {
+            return swept;
+        }
+    }
+}
+
+fn shutdown_rejects_actor_wait(state: &ReactorState, actor_key: usize) -> bool {
+    crate::shutdown::hew_is_shutting_down() != 0
+        && state.shutdown_cancelled_actors.contains(&actor_key)
+}
+
+unsafe fn reject_read_wait_during_shutdown(read_slot: *mut crate::read_slot::HewReadSlot) -> c_int {
+    // Deadline form: resolve the arbiter without waking because the actor is
+    // still running on this synchronous register-error edge.
+    // SAFETY: the codegen caller still owns the slot's creator ref.
+    let deadline =
+        unsafe { crate::read_slot::read_slot_cancel_await_for_shutdown(read_slot, false) };
+    if deadline.is_none() {
+        // Plain form: preserve its existing empty/error fail-closed outcome.
+        // SAFETY: the caller owns the creator ref and the slot is live.
+        let _ = unsafe {
+            crate::read_slot::read_slot_deposit_status(
+                read_slot,
+                crate::read_slot::ReadStatus::Error,
+            )
+        };
+    }
+    crate::set_last_error("hew_conn_await_read: runtime is shutting down");
+    -1
+}
+
+unsafe fn reject_accept_wait_during_shutdown(
+    read_slot: *mut crate::read_slot::HewReadSlot,
+) -> c_int {
+    // SAFETY: the codegen caller still owns the slot's creator ref.
+    let deadline =
+        unsafe { crate::read_slot::read_slot_cancel_await_for_shutdown(read_slot, false) };
+    if deadline.is_none() {
+        // Plain form: preserve its existing invalid-Connection fail-closed
+        // outcome. No wake is needed because codegen follows register_err.
+        // SAFETY: the caller owns the creator ref and the slot is live.
+        let _ = unsafe {
+            crate::read_slot::read_slot_deposit_handle(
+                read_slot,
+                crate::read_slot::INVALID_CONNECTION_HANDLE,
+            )
+        };
+    }
+    crate::set_last_error("hew_listener_await_accept: runtime is shutting down");
+    -1
+}
+
 // ---------------------------------------------------------------------------
 // Public registration API (called from FFI in 4c)
 // ---------------------------------------------------------------------------
@@ -1245,24 +1450,34 @@ pub(crate) unsafe fn reactor_await_read(
     let actor_local = actor_ref_local_ptr(&snapshot).cast::<HewActor>();
     let actor_key = actor_local as usize;
 
-    // Take the REACTOR ref on the slot BEFORE queueing the registration, so the
-    // slot cannot be freed out from under the reactor between the queue and the
-    // promotion. The ref is owned by the `Registration` and released by its
-    // `Drop` (the single authority) on removal.
-    // SAFETY: caller holds a ref, so the slot is live for this retain.
-    unsafe { crate::read_slot::read_slot_retain(read_slot) };
-
-    let reg = Registration {
-        conn,
-        actor_ref: snapshot,
-        actor_key,
-        mode: RegMode::Resume { read_slot },
-        closed: false,
-    };
-    REACTOR_STATE.access(|state| {
-        state.pending.push(Pending::Add { fd, reg });
+    // Publish atomically with the shutdown pairing. If this actor was swept from
+    // an already-parked wait, reject its attempt to re-park; otherwise retain the
+    // reactor ref and queue the registration under the same lock the sweep uses.
+    let queued = REACTOR_STATE.access(|state| {
+        if shutdown_rejects_actor_wait(state, actor_key) {
+            return false;
+        }
+        // SAFETY: caller holds a ref, so the slot is live for this retain. The
+        // resulting ref is owned by Registration and released by its Drop.
+        unsafe { crate::read_slot::read_slot_retain(read_slot) };
+        state.pending.push(Pending::Add {
+            fd,
+            reg: Registration {
+                conn,
+                actor_ref: snapshot,
+                actor_key,
+                mode: RegMode::Resume { read_slot },
+                closed: false,
+            },
+        });
+        true
     });
-    0
+    if queued {
+        0
+    } else {
+        // SAFETY: the caller still owns the untouched creator ref.
+        unsafe { reject_read_wait_during_shutdown(read_slot) }
+    }
 }
 
 /// Register a TCP listener for a SUSPENDING `await listener.accept()` (NEW-2,
@@ -1320,26 +1535,32 @@ pub(crate) unsafe fn reactor_await_accept(
     let actor_local = actor_ref_local_ptr(&snapshot).cast::<HewActor>();
     let actor_key = actor_local as usize;
 
-    // Take the REACTOR ref on the slot BEFORE queueing the registration (the same
-    // single-authority discipline as `reactor_await_read`); the `Registration`'s
-    // `Drop` releases it on removal.
-    // SAFETY: caller holds a ref, so the slot is live for this retain.
-    unsafe { crate::read_slot::read_slot_retain(read_slot) };
-
-    let reg = Registration {
-        // The accept registration's `conn` field carries the LISTENER handle the
-        // fd belongs to (the reactor `accept()`s on it; it is not read as a
-        // stream).
-        conn: listener,
-        actor_ref: snapshot,
-        actor_key,
-        mode: RegMode::Accept { read_slot },
-        closed: false,
-    };
-    REACTOR_STATE.access(|state| {
-        state.pending.push(Pending::Add { fd, reg });
+    let queued = REACTOR_STATE.access(|state| {
+        if shutdown_rejects_actor_wait(state, actor_key) {
+            return false;
+        }
+        // SAFETY: caller holds a ref, so the slot is live for this retain.
+        unsafe { crate::read_slot::read_slot_retain(read_slot) };
+        state.pending.push(Pending::Add {
+            fd,
+            reg: Registration {
+                // The accept registration's `conn` field carries the LISTENER
+                // handle the fd belongs to.
+                conn: listener,
+                actor_ref: snapshot,
+                actor_key,
+                mode: RegMode::Accept { read_slot },
+                closed: false,
+            },
+        });
+        true
     });
-    0
+    if queued {
+        0
+    } else {
+        // SAFETY: the caller still owns the untouched creator ref.
+        unsafe { reject_accept_wait_during_shutdown(read_slot) }
+    }
 }
 
 /// Detach a connection handle from the reactor (queue an unregister).
@@ -1578,6 +1799,7 @@ pub(crate) fn reactor_shutdown() {
         state.registry.clear();
         state.conn_to_fd.clear();
         state.pending.clear();
+        state.shutdown_cancelled_actors.clear();
     });
 }
 
@@ -2650,6 +2872,183 @@ mod tests {
             hew_io_poller_stop(poller);
         }
         free_parked_actor(actor);
+        reset_reactor();
+    }
+
+    /// Forced-ordering shutdown race: readiness has snapshotted its independent
+    /// slot ref and is paused immediately before deposit. The shutdown sweep then
+    /// removes the registration, takes its own independent ref under the lock,
+    /// and resolves the deadline arbiter as Cancelled. The resumed reactor deposit
+    /// must lose the one-shot race without touching freed memory or replacing the
+    /// terminal status.
+    #[test]
+    #[allow(
+        clippy::undocumented_unsafe_blocks,
+        reason = "test-only FFI: every pointer is a fresh local registration, slot, \
+                  actor, poller, or socket with lifecycle asserted in the body"
+    )]
+    fn shutdown_sweep_cancel_wins_inflight_deposit_exactly_once() {
+        use std::io::Write;
+        const KEY: usize = 0x00C4_11ED;
+
+        let _rt = crate::runtime_test_guard();
+        let _guard = REACTOR_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_reactor();
+        crate::await_cancel::reset_await_cancel_final_free_count_for_test();
+        crate::read_slot::reset_read_slot_final_free_count_for_test();
+
+        let poller = unsafe { hew_io_poller_new() };
+        assert!(!poller.is_null());
+        let (conn, mut client) = crate::transport::tcp_socketpair_conn_for_test();
+        let fd = crate::transport::tcp_conn_raw_fd(conn).expect("conn fd");
+        assert!(crate::transport::tcp_conn_set_nonblocking(conn, true));
+        assert_eq!(
+            unsafe { hew_io_poller_register(poller, fd, std::ptr::null_mut(), 0, HEW_IO_READ) },
+            0
+        );
+
+        let actor = spawn_full_reject_actor();
+        let actor_ref = unsafe { crate::transport::hew_actor_ref_local(actor) };
+        let slot = crate::read_slot::hew_read_slot_new();
+        let await_cancel = unsafe {
+            crate::await_cancel::hew_await_cancel_new(
+                std::ptr::null_mut(),
+                Some(crate::read_slot::hew_read_slot_cancel_cleanup),
+                slot.cast(),
+            )
+        };
+        unsafe { crate::read_slot::hew_read_slot_set_await_cancel(slot, await_cancel) };
+        unsafe { crate::read_slot::read_slot_retain(slot) }; // registration ref
+        inject_resume_registration_for_test(fd, conn, actor_ref, KEY, slot);
+
+        client.write_all(b"shutdown-race").expect("client write");
+        client.flush().ok();
+        std::thread::sleep(Duration::from_millis(20));
+
+        let slot_addr = slot as usize;
+        let refs_observed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let refs_observed_h = std::sync::Arc::clone(&refs_observed);
+        set_resume_pre_deposit_hook(Some(Box::new(move || {
+            let slot = slot_addr as *mut crate::read_slot::HewReadSlot;
+            assert_eq!(
+                unsafe { crate::read_slot::read_slot_refs_for_test(slot) },
+                3,
+                "creator + registration + readiness in-flight refs must be live"
+            );
+            let waits = take_shutdown_waits();
+            assert_eq!(waits.len(), 1, "sweep must snapshot the parked read");
+            let refs_during_sweep = unsafe { crate::read_slot::read_slot_refs_for_test(slot) };
+            for wait in &waits {
+                wait.cancel();
+            }
+            drop(waits);
+            let refs_after_sweep = unsafe { crate::read_slot::read_slot_refs_for_test(slot) };
+            refs_observed_h.store(
+                (refs_during_sweep << 8) | refs_after_sweep,
+                Ordering::SeqCst,
+            );
+        })));
+
+        handle_ready_fd_for_test(poller, fd, HEW_IO_READ);
+        set_resume_pre_deposit_hook(None);
+
+        let observed = refs_observed.load(Ordering::SeqCst);
+        assert_eq!(
+            observed >> 8,
+            4,
+            "the sweep must hold its own ref in addition to creator, registration, \
+             and readiness refs"
+        );
+        assert_eq!(
+            observed & 0xff,
+            2,
+            "after the sweep batch drops, creator + readiness refs must remain"
+        );
+        assert_eq!(
+            unsafe { crate::read_slot::hew_read_slot_status(slot) },
+            crate::read_slot::ReadStatus::Cancelled as i32,
+            "the readiness deposit must not overwrite shutdown cancellation"
+        );
+        assert_eq!(
+            unsafe { crate::await_cancel::hew_await_cancel_status(await_cancel) },
+            crate::await_cancel::AwaitCancelStatus::Cancelled as i32
+        );
+        assert_eq!(registration_count_for_test(), 0);
+
+        unsafe { crate::read_slot::hew_read_slot_free(slot) };
+        unsafe { crate::await_cancel::hew_await_cancel_free(await_cancel) };
+        assert_eq!(
+            crate::read_slot::read_slot_final_free_count_for_test(),
+            1,
+            "slot must be reclaimed exactly once"
+        );
+        assert_eq!(
+            crate::await_cancel::await_cancel_final_free_count_for_test(),
+            1,
+            "deadline arbiter must be reclaimed exactly once"
+        );
+
+        drop(client);
+        unsafe {
+            crate::transport::tcp_close_raw_for_test(conn);
+            hew_io_poller_stop(poller);
+        }
+        free_parked_actor(actor);
+        reset_reactor();
+    }
+
+    #[test]
+    #[allow(
+        clippy::undocumented_unsafe_blocks,
+        reason = "test-only FFI: the pending registration owns the retained slot \
+                  reference and the test releases every creator reference"
+    )]
+    fn shutdown_sweep_scrubs_pending_wait_before_promotion() {
+        const KEY: usize = 0x00C4_11EE;
+
+        let _guard = REACTOR_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_reactor();
+
+        let slot = crate::read_slot::hew_read_slot_new();
+        let await_cancel = unsafe {
+            crate::await_cancel::hew_await_cancel_new(
+                std::ptr::null_mut(),
+                Some(crate::read_slot::hew_read_slot_cancel_cleanup),
+                slot.cast(),
+            )
+        };
+        unsafe { crate::read_slot::hew_read_slot_set_await_cancel(slot, await_cancel) };
+        unsafe { crate::read_slot::read_slot_retain(slot) }; // registration ref
+        REACTOR_STATE.access(|state| {
+            state.pending.push(Pending::Add {
+                fd: 73,
+                reg: Registration {
+                    conn: 74,
+                    actor_ref: dead_actor_ref(),
+                    actor_key: KEY,
+                    mode: RegMode::Resume { read_slot: slot },
+                    closed: false,
+                },
+            });
+        });
+
+        assert_eq!(reactor_cancel_parked_waits_for_shutdown(), 1);
+        assert_eq!(
+            pending_count_for_test(),
+            0,
+            "a swept pending add must never reach poller promotion"
+        );
+        assert_eq!(
+            unsafe { crate::await_cancel::hew_await_cancel_status(await_cancel) },
+            crate::await_cancel::AwaitCancelStatus::Cancelled as i32
+        );
+
+        unsafe { crate::read_slot::hew_read_slot_free(slot) };
+        unsafe { crate::await_cancel::hew_await_cancel_free(await_cancel) };
         reset_reactor();
     }
 

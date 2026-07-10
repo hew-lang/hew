@@ -21,6 +21,7 @@ use std::ffi::c_int;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
+use crate::reactor;
 use crate::runtime::{rt_current, rt_default};
 use crate::scheduler;
 
@@ -69,6 +70,10 @@ fn shutdown_phase_store(value: i32, ordering: Ordering) {
 const DEFAULT_DRAIN_TIMEOUT_MS: u64 = 5_000;
 /// Poll interval while waiting for the scheduler to drain existing work.
 const DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
+/// Immediate shutdown normally skips the drain. If the reactor sweep wakes an
+/// already-parked actor, give that typed cancellation a short bounded window to
+/// run before workers are joined.
+const SHUTDOWN_CANCEL_REDRAIN_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// Wrapper for `*mut HewSupervisor` to impl `Send`.
 ///
@@ -209,15 +214,24 @@ pub(crate) fn registered_supervisors_snapshot() -> Vec<*mut crate::supervisor::H
 /// Must only be called once. Subsequent calls are no-ops.
 #[no_mangle]
 pub extern "C" fn hew_shutdown_initiate(drain_timeout_ms: i64) {
+    shutdown_initiate(drain_timeout_ms, true);
+}
+
+/// Initiate the compiler-generated main-exit drain.
+///
+/// This preserves the pre-existing implicit drain contract: queued actor work may
+/// finish, but already-parked reactor waits remain abandoned rather than being
+/// surfaced as user-visible shutdown errors. Explicit [`hew_shutdown_initiate`]
+/// is the typed-cancellation boundary.
+#[no_mangle]
+pub extern "C" fn hew_shutdown_initiate_implicit(drain_timeout_ms: i64) {
+    shutdown_initiate(drain_timeout_ms, false);
+}
+
+fn shutdown_initiate(drain_timeout_ms: i64, cancel_parked_waits: bool) {
     // No runtime installed → nothing to shut down. The implicit actor-drain
-    // epilogue (codegen) emits `hew_shutdown_initiate`/`hew_shutdown_wait` for
-    // every program that declares an actor type, but `hew_sched_init` only runs
-    // at an actual spawn site. A program that declares an actor type yet never
-    // spawns one therefore reaches this call with no `RuntimeInner` installed;
-    // there is no scheduler and no in-flight work to drain, so this is a no-op —
-    // matching `hew_sched_shutdown`/`hew_runtime_cleanup`, which are likewise
-    // safe to call on a never-initialized runtime. Guarding here (before
-    // `rt_current()`) keeps that resolver fail-closed for genuine authority use.
+    // epilogue emits the implicit entry point for every program that declares an
+    // actor type, but `hew_sched_init` only runs at an actual spawn site.
     if rt_default().is_none() {
         return;
     }
@@ -248,9 +262,9 @@ pub extern "C" fn hew_shutdown_initiate(drain_timeout_ms: i64) {
     match std::thread::Builder::new()
         .name("hew-shutdown".into())
         .spawn(move || {
-            if let Err(panic_payload) =
-                run_shutdown_with_panic_handling(|| shutdown_orchestrate(timeout))
-            {
+            if let Err(panic_payload) = run_shutdown_with_panic_handling(|| {
+                shutdown_orchestrate_mode(timeout, cancel_parked_waits);
+            }) {
                 std::panic::resume_unwind(panic_payload);
             }
         }) {
@@ -260,7 +274,9 @@ pub extern "C" fn hew_shutdown_initiate(drain_timeout_ms: i64) {
         Err(_) => {
             // Spawn failed — run shutdown synchronously on current thread.
             // This ensures shutdown completes even if thread spawning fails.
-            let _ = run_shutdown_with_panic_handling(|| shutdown_orchestrate(timeout));
+            let _ = run_shutdown_with_panic_handling(|| {
+                shutdown_orchestrate_mode(timeout, cancel_parked_waits);
+            });
         }
     }
 }
@@ -404,8 +420,40 @@ fn report_shutdown_panic(panic_payload: &(dyn std::any::Any + Send)) {
     eprintln!("hew-runtime: shutdown orchestration panicked: {reason}");
 }
 
+fn drain_until_idle(timeout: Duration) -> bool {
+    if timeout.is_zero() {
+        return true;
+    }
+    let deadline = Instant::now() + timeout;
+    let mut idle_polls = 0;
+    while Instant::now() < deadline {
+        if scheduler::drain_is_idle() {
+            idle_polls += 1;
+            if idle_polls >= 2 {
+                return true;
+            }
+        } else {
+            idle_polls = 0;
+        }
+
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        std::thread::sleep(DRAIN_POLL_INTERVAL.min(remaining));
+    }
+    // Covers the case where the deadline expired while sleeping but the runtime
+    // became idle before the final observation.
+    scheduler::drain_is_idle()
+}
+
 /// Orchestrate the 3-phase shutdown.
+#[cfg(test)]
 fn shutdown_orchestrate(drain_timeout: Duration) {
+    shutdown_orchestrate_mode(drain_timeout, true);
+}
+
+fn shutdown_orchestrate_mode(drain_timeout: Duration, cancel_parked_waits: bool) {
     // Phase 1: Quiesce (already set by caller).
     // Nothing else to do — hew_is_shutting_down() now returns 1, which
     // callers can check before spawning new actors.
@@ -413,40 +461,27 @@ fn shutdown_orchestrate(drain_timeout: Duration) {
     // Phase 2: Drain — let workers process remaining messages.
     shutdown_phase_store(PHASE_DRAIN, Ordering::Release);
 
+    // Resolve waits that were already parked when shutdown began. The sweep
+    // deposits a terminal outcome and wakes outside the reactor lock; running it
+    // before the drain lets those resumptions settle before the worker join.
+    let swept_waits = if cancel_parked_waits {
+        reactor::reactor_cancel_parked_waits_for_shutdown()
+    } else {
+        0
+    };
+    let drain_window = if drain_timeout.is_zero() && swept_waits != 0 {
+        SHUTDOWN_CANCEL_REDRAIN_TIMEOUT
+    } else {
+        drain_timeout
+    };
+
     // Track whether the drain loop reached idle before the deadline.
     // WHY: Phase 3 join safety depends on this.  If the drain converged
     // (all workers parked), joining is instant and safe.  If it timed out,
     // a worker thread is still executing a handler; joining would block
     // forever.  The timed-out path skips join and all post-join cleanup,
     // letting process exit reap the stuck thread.
-    let mut drain_converged = drain_timeout.is_zero(); // zero-timeout ⇒ skip drain ⇒ treat as converged
-
-    if !drain_timeout.is_zero() {
-        let deadline = Instant::now() + drain_timeout;
-        let mut idle_polls = 0;
-        while Instant::now() < deadline {
-            if scheduler::drain_is_idle() {
-                idle_polls += 1;
-                if idle_polls >= 2 {
-                    drain_converged = true;
-                    break;
-                }
-            } else {
-                idle_polls = 0;
-            }
-
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                break;
-            }
-            std::thread::sleep(DRAIN_POLL_INTERVAL.min(remaining));
-        }
-        // Final idle check after the loop: covers the case where the deadline
-        // expired while sleeping but the runtime is actually idle now.
-        if !drain_converged && scheduler::drain_is_idle() {
-            drain_converged = true;
-        }
-    }
+    let drain_converged = drain_until_idle(drain_window);
 
     // Phase 3: Terminate.
     shutdown_phase_store(PHASE_TERMINATE, Ordering::Release);

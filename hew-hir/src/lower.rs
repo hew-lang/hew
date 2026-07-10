@@ -28916,12 +28916,6 @@ fn scan_expr_for_vec_index_gate(
 /// Map a scalar `ResolvedTy` to its `to_string_*` catalog builtin for Display
 /// dispatch. Only the scalar arm of `lower_display_dispatch` reaches here; any
 /// non-scalar type is a caller bug (the dispatch match never routes it here).
-/// Whether `ty` is a typed `instant` (`Named { builtin: Some(Instant) }`).
-///
-/// Annotation-lowering preserves the named form for `instant` (unlike the
-/// expression-level `from_ty`, which canonicalises to i64), so any
-/// annotation/parameter-typed instant carries this shape rather than a bare
-/// `ResolvedTy::I64`.
 fn scalar_display_builtin(ty: &ResolvedTy) -> &'static str {
     match ty {
         ResolvedTy::I8 | ResolvedTy::I16 | ResolvedTy::I32 => "to_string_i32",

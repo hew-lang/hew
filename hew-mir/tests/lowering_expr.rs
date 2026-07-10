@@ -2,6 +2,8 @@
 // Add new lowering_expr-behaviour tests under `tests/lowering_expr/`, wire them into this
 // file via #[path] — do not create a new top-level tests/*.rs file.
 
+#[path = "lowering_expr/anonymous_owned_temp_drop.rs"]
+mod anonymous_owned_temp_drop;
 #[path = "lowering_expr/binop_bitwise_logical.rs"]
 mod binop_bitwise_logical;
 #[path = "lowering_expr/bytes_literal_lowering.rs"]

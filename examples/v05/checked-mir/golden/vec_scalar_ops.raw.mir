@@ -664,6 +664,7 @@ fn duration::fmt(duration) -> string [conv=default]
     stmt: return site=Some(SiteId(258)) ty=string
     _3 = string_lit "ns"
     _4 = call_rt hew_string_concat(_2, _3)
+    drop _2 ty=string fn=release(hew_string_drop)
     ret = move _4
     return
 

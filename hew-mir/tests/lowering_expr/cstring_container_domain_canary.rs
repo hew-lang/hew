@@ -160,6 +160,9 @@ fn vec_string_for_in_emits_retained_getter_with_iteration_drop() {
 
     let mut string_drops = Vec::new();
     for f in &pl.raw_mir {
+        if !matches!(f.source_origin, hew_mir::SourceOrigin::RootUnit) {
+            continue;
+        }
         for b in &f.blocks {
             for instr in &b.instructions {
                 if let Instr::Drop {
@@ -195,17 +198,19 @@ fn vec_string_for_in_emits_retained_getter_with_iteration_drop() {
 fn string_drop_count(pl: &IrPipeline) -> usize {
     let mut n = 0;
     for f in &pl.raw_mir {
-        // Each canary measures the drop balance of the construct under test,
-        // which always lives in a named helper fn (`transform`, `keep`, `pick`,
-        // `count`, …). `main` is pure test scaffolding that calls the helper and
-        // prints the result. A harness that wraps an `i64`-returning helper in a
+        // Each canary measures the drop balance of the root-unit construct under
+        // test, which always lives in a named helper fn (`transform`, `keep`,
+        // `pick`, `count`, …). Imported stdlib functions may independently gain
+        // legitimate drops as their own leak fixes land; they are not part of
+        // this container-domain count. `main` is pure test scaffolding that calls
+        // the helper and prints the result. A harness that wraps an `i64`-returning helper in a
         // bare single-interpolation f-string — `println(f"{count(v)}")` — now
         // earns its own legitimate inline `hew_string_drop` for the
         // `to_string_i64` result (the f-string interpolation leak fix). That
         // harness-side drop is correct but unrelated to the construct under test,
         // so counting it pipeline-wide would conflate two independent ownership
         // balances. Scope the count to the helper functions by skipping `main`.
-        if f.name == "main" {
+        if f.name == "main" || !matches!(f.source_origin, hew_mir::SourceOrigin::RootUnit) {
             continue;
         }
         for b in &f.blocks {

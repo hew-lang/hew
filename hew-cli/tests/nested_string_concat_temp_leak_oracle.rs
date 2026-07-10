@@ -66,6 +66,40 @@ fn nested_concat_no_record_source(frames: usize) -> String {
     )
 }
 
+fn terminator_produced_operand_source(frames: usize) -> String {
+    let expected = frames * 17;
+    format!(
+        "fn emit_full() -> i64 {{\n\
+         \x20   let full = \"left-\" + \"middle\".to_upper() + \"-right\";\n\
+         \x20   full.len()\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var total = 0;\n\
+         \x20   for i in 0..{frames} {{ total = total + emit_full(); }}\n\
+         \x20   if total == {expected} {{ 0 }} else {{ 93 }}\n\
+         }}\n"
+    )
+}
+
+fn closure_returned_operand_source(frames: usize) -> String {
+    let expected = frames * 17;
+    format!(
+        "fn emit_full() -> i64 {{\n\
+         \x20   let middle = \"middle\";\n\
+         \x20   let compose = || {{\n\
+         \x20       let full = \"left-\" + middle.to_upper() + \"-right\";\n\
+         \x20       full.len()\n\
+         \x20   }};\n\
+         \x20   compose()\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var total = 0;\n\
+         \x20   for i in 0..{frames} {{ total = total + emit_full(); }}\n\
+         \x20   if total == {expected} {{ 0 }} else {{ 94 }}\n\
+         }}\n"
+    )
+}
+
 fn assert_no_double_free(shape_name: &str, source: &str) {
     require_codegen();
 
@@ -108,6 +142,28 @@ fn nested_concat_without_record_has_no_per_iteration_leak_slope() {
 }
 
 #[test]
+fn terminator_produced_concat_operand_has_no_per_iteration_leak_slope() {
+    assert_frame_slope_below_tolerance_with(
+        "nested_concat_terminator_operand",
+        terminator_produced_operand_source,
+        LOW_FRAMES,
+        HIGH_FRAMES,
+        SLOPE_TOLERANCE,
+    );
+}
+
+#[test]
+fn closure_returned_concat_operand_has_no_per_iteration_leak_slope() {
+    assert_frame_slope_below_tolerance_with(
+        "nested_concat_closure_operand",
+        closure_returned_operand_source,
+        LOW_FRAMES,
+        HIGH_FRAMES,
+        SLOPE_TOLERANCE,
+    );
+}
+
+#[test]
 fn generic_record_repeat_field_freed_exactly_once_under_malloc_scribble() {
     assert_no_double_free(
         "generic_record_repeat_df",
@@ -120,5 +176,21 @@ fn nested_concat_without_record_freed_exactly_once_under_malloc_scribble() {
     assert_no_double_free(
         "nested_concat_no_record_df",
         &nested_concat_no_record_source(200),
+    );
+}
+
+#[test]
+fn terminator_produced_concat_operand_freed_exactly_once_under_malloc_scribble() {
+    assert_no_double_free(
+        "nested_concat_terminator_operand_df",
+        &terminator_produced_operand_source(200),
+    );
+}
+
+#[test]
+fn closure_returned_concat_operand_freed_exactly_once_under_malloc_scribble() {
+    assert_no_double_free(
+        "nested_concat_closure_operand_df",
+        &closure_returned_operand_source(200),
     );
 }

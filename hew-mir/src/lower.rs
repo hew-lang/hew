@@ -144,28 +144,22 @@ const SENTINEL_EXIT_KIND_TAG_BINDING: BindingId = BindingId(u32::MAX - 3);
 /// dedicated value keeps the pump self-contained and future-proof).
 const SENTINEL_RECV_GEN_COMPANION_BINDING: BindingId = BindingId(u32::MAX - 4);
 
-/// Base of the per-function synthetic binding-id range for FROM-CALL match
-/// scrutinee temps (#2429). `match f() { Ok(b) => …, Err(e) => {} }` consumes
-/// the callee's `Result`/`Option` return through an anonymous MIR temp; with
-/// no `BindingId` the temp is invisible to `build_lifo_drops` /
-/// `enumerate_exits`, so the arm-destructured payload was released on NO edge
-/// — one leaked payload per iteration of a `while … { match f() { … } }`
-/// read loop. Minting a synthetic owned binding over the temp routes it
-/// through the PROVEN let-bound discipline (enum-composite sole-owner prover,
-/// back-edge body-scope filter, return/cancel plans).
+/// Base of the per-function synthetic binding-id range for anonymous
+/// caller-owned temps. From-call match/while-let scrutinees and discarded
+/// caller-owned `Option<T>` results all materialise into MIR locals without a
+/// user binding; without a `BindingId` they are invisible to the ordinary
+/// sole-owner/drop-plan machinery.
 ///
-/// The range DESCENDS from here (`base`, `base - 1`, …), one id per from-call
-/// scrutinee in the function, so it can never collide with the fixed
+/// The range DESCENDS from here (`base`, `base - 1`, …), one id per anonymous
+/// owner in the function, so it can never collide with the fixed
 /// sentinels above (`u32::MAX ..= u32::MAX - 4`). Collision with real HIR
 /// binding ids would need a function with ~4.29 billion bindings — outside
 /// any representable source. If HIR ever exposes a per-function binding-id
 /// ceiling, mint above it instead and retire this reserved range.
-const SYNTHETIC_MATCH_SCRUTINEE_BINDING_BASE: u32 = u32::MAX - 64;
+const SYNTHETIC_OWNED_TEMP_BINDING_BASE: u32 = u32::MAX - 64;
 
-/// Diagnostic name for synthetic from-call match-scrutinee bindings. Never
-/// user-visible (no `-g` variable DIE is minted for it); shows up only in MIR
-/// dumps and drop-plan diagnostics.
-const SYNTHETIC_MATCH_SCRUTINEE_NAME: &str = "__hew_match_scrutinee";
+const SYNTHETIC_CALL_SCRUTINEE_NAME: &str = "__hew_call_scrutinee";
+const SYNTHETIC_DISCARDED_CALL_RESULT_NAME: &str = "__hew_discarded_call_result";
 
 /// Prefix of the synthetic for-iteration cursor binding minted by the HIR
 /// for-loop desugar (`hew-hir/src/lower.rs`, `lower_for_iter_desugar`:
@@ -9051,6 +9045,15 @@ struct LoopFrame {
     body_scope: ScopeId,
 }
 
+#[derive(Debug, Clone)]
+struct ActiveIterationOwner {
+    scope_depth: usize,
+    binding: BindingId,
+    name: String,
+    site: SiteId,
+    ty: ResolvedTy,
+}
+
 /// Accumulated lexical-scope facts for one HIR `ScopeId`, built incrementally
 /// while lowering a function body (see `Builder::scope_info`). `parent` is the
 /// enclosing scope (the frame below this one on `active_scopes` at first
@@ -9308,12 +9311,12 @@ struct Builder {
     /// initialiser. Cluster 1 reads the slot directly; later clusters add
     /// drop-cleanup and rebinding semantics.
     binding_locals: HashMap<BindingId, Place>,
-    /// Count of synthetic from-call match-scrutinee bindings minted so far in
-    /// this function (#2429). The next mint is
-    /// `BindingId(SYNTHETIC_MATCH_SCRUTINEE_BINDING_BASE - count)` — a
+    /// Count of anonymous caller-owned temp bindings minted so far in this
+    /// function. The next mint is
+    /// `BindingId(SYNTHETIC_OWNED_TEMP_BINDING_BASE - count)` — a
     /// descending per-function range that stays clear of both the fixed
     /// `u32::MAX ..= u32::MAX - 4` sentinels and real HIR binding ids.
-    synthetic_match_scrutinee_bindings: u32,
+    synthetic_owned_temp_bindings: u32,
     /// Per-function destructive-funcupdate base provenance. Maps a `BindingId`
     /// to whether `{ ..<binding>, f: new }` over it is a PROVEN unique owner of
     /// its heap fields — i.e. consuming it leaves no live alias, so the
@@ -9497,6 +9500,11 @@ struct Builder {
         u32,
         usize,
     )>,
+    /// Header-defined while-let scrutinee owners active while their body is
+    /// lowered. Break/continue edges consume these owners and record an
+    /// explicit edge drop; returns/panic/cancellation leave them Live so the
+    /// ordinary exit planner releases them.
+    active_iteration_owners: Vec<ActiveIterationOwner>,
     /// Map from each MIR-bound HIR `BindingId` to the HIR `ScopeId` it was
     /// declared in. Populated at every `MirStatement::Bind` push site (let
     /// statements, match-arm payload bindings, function parameters, for-range
@@ -9516,6 +9524,11 @@ struct Builder {
     /// drop set per-iteration and CFG-correct: outer-scope bindings keep their
     /// function-exit drop, inner-scope bindings get one drop per iteration.
     binding_scope: HashMap<BindingId, ScopeId>,
+    /// Scope facts for transient payload-binding locals whose `binding_locals`
+    /// entry is restored after a match-like body lowers. The enum sole-owner
+    /// prover still needs their real body lifetime to distinguish an in-body
+    /// handoff from an escape into a surviving outer binding.
+    transient_local_scopes: HashMap<u32, ScopeId>,
     /// gdb `-g` lexical-block scoping. Accumulates, per HIR `ScopeId` ever active
     /// while lowering this function's body, the scope's parent `ScopeId` (the
     /// scope directly below it on `active_scopes` when first observed) and the
@@ -9553,6 +9566,10 @@ struct Builder {
     /// / pass-by-value / first-iteration-uninit double-free corner cases are
     /// handled by the existing dataflow without bespoke logic.
     loop_back_edge_blocks: HashMap<u32, ScopeId>,
+    /// Goto-edge blocks that must release header-defined iteration owners.
+    /// Each binding is also marked consumed in the source block's statement
+    /// stream, so the target's later function exit cannot release it again.
+    iteration_owner_drop_blocks: HashMap<u32, Vec<BindingId>>,
     /// Diagnostics collected during MIR building (e.g., Unsupported HIR nodes).
     diagnostics: Vec<MirDiagnostic>,
     /// Per-function de-duplication for W3.029 user-aggregate value-class
@@ -10298,6 +10315,28 @@ impl Builder {
         });
     }
 
+    fn register_synthetic_owned_local(
+        &mut self,
+        name: &'static str,
+        site: SiteId,
+        local: u32,
+        ty: ResolvedTy,
+    ) -> BindingId {
+        let binding =
+            BindingId(SYNTHETIC_OWNED_TEMP_BINDING_BASE - self.synthetic_owned_temp_bindings);
+        self.synthetic_owned_temp_bindings += 1;
+        self.statements.push(MirStatement::Bind {
+            binding,
+            name: name.to_string(),
+            site,
+            ty: ty.clone(),
+        });
+        self.binding_locals.insert(binding, Place::Local(local));
+        self.record_binding_scope(binding);
+        self.register_owned_local(binding, name.to_string(), ty);
+        binding
+    }
+
     /// Register a `let`-bound field projection whose result is a byte-copy
     /// interior ALIAS of the still-live owner named by `provenance` — the
     /// [`ByteCopyAlias`](FieldLoadClass::ByteCopyAlias) class of the field-load
@@ -10351,13 +10390,13 @@ impl Builder {
     /// Registration alone never emits a drop: an escaping payload keeps
     /// today's leak-not-double-free posture because
     /// `derive_enum_composite_drop_allowed` still excludes the composite.
-    fn register_from_call_scrutinee_owner(&mut self, scrutinee: &HirExpr, scrutinee_local: u32) {
+    fn call_scrutinee_owned_ty(&self, scrutinee: &HirExpr) -> Option<ResolvedTy> {
         // Only the direct-call rvalue shape. A `BindingRef` scrutinee already
         // owns its slot through its own `let`/param registration — a second
         // owner over the same local would double-free — and every non-call
         // rvalue keeps its pre-fix posture (fail-closed).
         let HirExprKind::Call { callee, .. } = &scrutinee.kind else {
-            return;
+            return None;
         };
         // Recv-next / vec-string-iter-next scrutinees already carry their own
         // per-iteration release discipline (`Disposition::BodyEndReleased` on
@@ -10369,7 +10408,7 @@ impl Builder {
         if Self::is_recv_next_scrutinee(scrutinee)
             || self.is_vec_string_iter_next_scrutinee(scrutinee)
         {
-            return;
+            return None;
         }
         // Runtime-symbol / builtin producers have per-symbol ownership
         // contracts — an interior getter may hand back a BORROW of storage
@@ -10383,29 +10422,123 @@ impl Builder {
             if matches!(resolved, ResolvedRef::Builtin(_))
                 || crate::runtime_symbols::is_known_runtime_symbol(name)
             {
-                return;
+                return None;
             }
         }
         // Exactly the value class the `EnumInPlace` scope-exit machinery
         // owns; anything else keeps its pre-fix posture.
         let ty = self.subst_ty(&scrutinee.ty);
         if !ty_is_heap_owning_enum_composite(&ty, &self.record_field_orders, &self.enum_layouts) {
+            return None;
+        }
+        Some(ty)
+    }
+
+    fn register_from_call_scrutinee_owner(
+        &mut self,
+        scrutinee: &HirExpr,
+        scrutinee_local: u32,
+    ) -> Option<(BindingId, ResolvedTy)> {
+        let ty = self.call_scrutinee_owned_ty(scrutinee)?;
+        let binding = self.register_synthetic_owned_local(
+            SYNTHETIC_CALL_SCRUTINEE_NAME,
+            scrutinee.site,
+            scrutinee_local,
+            ty.clone(),
+        );
+        Some((binding, ty))
+    }
+
+    fn discarded_call_result_owned_ty(&self, expr: &HirExpr) -> Option<ResolvedTy> {
+        if let Some(ty) = self.call_scrutinee_owned_ty(expr) {
+            return Some(ty);
+        }
+        let HirExprKind::ResolvedImplCall {
+            target_symbol,
+            target_family,
+            ..
+        } = &expr.kind
+        else {
+            return None;
+        };
+        let caller_owned = matches!(
+            (target_family, target_symbol.as_str()),
+            (
+                hew_types::MethodTargetFamily::HashMap(hew_types::HashMapMethod::Get),
+                "hew_hashmap_get_layout"
+            ) | (
+                hew_types::MethodTargetFamily::HashMap(hew_types::HashMapMethod::Remove),
+                "hew_hashmap_remove_take_layout"
+            )
+        );
+        if !caller_owned {
+            return None;
+        }
+        let ty = self.subst_ty(&expr.ty);
+        ty_is_heap_owning_enum_composite(&ty, &self.record_field_orders, &self.enum_layouts)
+            .then_some(ty)
+    }
+
+    fn register_discarded_call_result_owner(&mut self, expr: &HirExpr, place: Place) {
+        let Some(ty) = self.discarded_call_result_owned_ty(expr) else {
+            return;
+        };
+        let Place::Local(local) = place else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "discarded caller-owned result place shape".to_string(),
+                    site: expr.site,
+                },
+                note: format!(
+                    "a proven caller-owned discarded result must lower to Place::Local; got \
+                     {place:?}"
+                ),
+            });
+            return;
+        };
+        self.register_synthetic_owned_local(
+            SYNTHETIC_DISCARDED_CALL_RESULT_NAME,
+            expr.site,
+            local,
+            ty,
+        );
+    }
+
+    fn record_iteration_owner_drop(
+        &mut self,
+        binding: BindingId,
+        name: &str,
+        site: SiteId,
+        ty: &ResolvedTy,
+    ) {
+        let drops = self
+            .iteration_owner_drop_blocks
+            .entry(self.current_block_id)
+            .or_default();
+        if drops.contains(&binding) {
             return;
         }
-        let binding = BindingId(
-            SYNTHETIC_MATCH_SCRUTINEE_BINDING_BASE - self.synthetic_match_scrutinee_bindings,
-        );
-        self.synthetic_match_scrutinee_bindings += 1;
-        self.statements.push(MirStatement::Bind {
+        self.statements.push(MirStatement::Use {
             binding,
-            name: SYNTHETIC_MATCH_SCRUTINEE_NAME.to_string(),
-            site: scrutinee.site,
+            name: name.to_string(),
+            site,
             ty: ty.clone(),
+            intent: IntentKind::Consume,
         });
-        self.binding_locals
-            .insert(binding, Place::Local(scrutinee_local));
-        self.record_binding_scope(binding);
-        self.register_owned_local(binding, SYNTHETIC_MATCH_SCRUTINEE_NAME.to_string(), ty);
+        drops.push(binding);
+    }
+
+    fn record_active_iteration_owner_drops_for_exit_edge(&mut self, min_scope_depth: usize) {
+        let owners: Vec<ActiveIterationOwner> = self
+            .active_iteration_owners
+            .iter()
+            .rev()
+            .filter(|owner| owner.scope_depth >= min_scope_depth)
+            .cloned()
+            .collect();
+        for owner in owners {
+            self.record_iteration_owner_drop(owner.binding, &owner.name, owner.site, &owner.ty);
+        }
     }
 
     /// Provenance of a `let`-bound field projection that is a byte-copy interior
@@ -14100,7 +14233,9 @@ impl Builder {
             // (`apply_nested_fresh_string_temp_drops`), which splices one inline
             // `hew_string_drop` after the unused producer. No Vec-specific
             // handling is owed here.
-            self.lower_value(expr);
+            if let Some(place) = self.lower_value(expr) {
+                self.register_discarded_call_result_owner(expr, place);
+            }
         }
     }
 
@@ -17419,6 +17554,7 @@ impl Builder {
                 // Value before handle: the yielded buffer is inner heap, the
                 // handle owns the coro frame + heap companion (LIFO inner-first).
                 self.emit_generator_yield_value_drops_for_exit_edge(frame.scope_depth);
+                self.record_active_iteration_owner_drops_for_exit_edge(frame.scope_depth);
                 // Release in-loop generators on the break edge so the
                 // break-iteration's coro frame + heap companion are not leaked.
                 self.emit_generator_drops_for_break_continue(frame.scope_depth);
@@ -17481,6 +17617,7 @@ impl Builder {
                 // continue edge (the body-end drop is past the continue — would
                 // leak it). Value before handle (LIFO inner-first).
                 self.emit_generator_yield_value_drops_for_exit_edge(frame.scope_depth);
+                self.record_active_iteration_owner_drops_for_exit_edge(frame.scope_depth);
                 // Release in-loop generators on the continue edge so the
                 // skipped iteration's coro frame + heap companion are not leaked.
                 self.emit_generator_drops_for_break_continue(frame.scope_depth);
@@ -23033,6 +23170,8 @@ impl Builder {
                 return None;
             }
         };
+        let scrutinee_owner = self.register_from_call_scrutinee_owner(scrutinee, scrutinee_local);
+        let false_cleanup_bb = scrutinee_owner.as_ref().map(|_| self.alloc_block());
 
         // Load the variant tag into a fresh i64 local, mirroring
         // `lower_match_enum_tag`. `Place::EnumTag(local)` is the substrate
@@ -23060,7 +23199,7 @@ impl Builder {
         self.finish_current_block(Terminator::Branch {
             cond: cond_local,
             then_target: body_bb,
-            else_target: exit_bb,
+            else_target: false_cleanup_bb.unwrap_or(exit_bb),
         });
 
         // Body: bind payload fields, lower body, loop back to header.
@@ -23078,7 +23217,7 @@ impl Builder {
                 pvp,
                 scrutinee_local,
                 variant_idx,
-                exit_bb,
+                false_cleanup_bb.unwrap_or(exit_bb),
                 scrutinee.site,
                 &mut nested_binding_jobs,
             )?;
@@ -23112,6 +23251,9 @@ impl Builder {
                 },
             });
             let previous = self.binding_locals.insert(binding.binding, dest);
+            if let Some(local) = base_local(dest) {
+                self.transient_local_scopes.insert(local, body.scope);
+            }
             overwritten_bindings.push((binding.binding, previous));
         }
         for (src_local, src_variant_idx, binding) in nested_binding_jobs {
@@ -23140,6 +23282,9 @@ impl Builder {
                 },
             });
             let previous = self.binding_locals.insert(binding.binding, dest);
+            if let Some(local) = base_local(dest) {
+                self.transient_local_scopes.insert(local, body.scope);
+            }
             overwritten_bindings.push((binding.binding, previous));
         }
 
@@ -23153,6 +23298,16 @@ impl Builder {
             scope_depth: loop_scope_depth,
             body_scope: body.scope,
         });
+        let active_iteration_owner_mark = self.active_iteration_owners.len();
+        if let Some((binding, ty)) = &scrutinee_owner {
+            self.active_iteration_owners.push(ActiveIterationOwner {
+                scope_depth: self.active_scopes.len(),
+                binding: *binding,
+                name: SYNTHETIC_CALL_SCRUTINEE_NAME.to_string(),
+                site: scrutinee.site,
+                ty: ty.clone(),
+            });
+        }
         for stmt in &body.statements {
             self.stmt(stmt);
         }
@@ -23168,12 +23323,22 @@ impl Builder {
         // the generator release above (see `emit_scope_vec_iter_drops`).
         self.emit_scope_vec_iter_drops(body.scope);
         self.emit_scope_stream_drops(body.scope);
+        if let Some((binding, ty)) = &scrutinee_owner {
+            self.record_iteration_owner_drop(
+                *binding,
+                SYNTHETIC_CALL_SCRUTINEE_NAME,
+                scrutinee.site,
+                ty,
+            );
+        }
         // Record this block as a loop-body back-edge so `enumerate_exits`
         // populates its `Goto` `DropPlan` with per-iteration releases for
         // heap-owning bindings declared in `body.scope` (including the
         // match-arm payload bindings the `while let` itself introduces).
         self.loop_back_edge_blocks
             .insert(self.current_block_id, body.scope);
+        self.active_iteration_owners
+            .truncate(active_iteration_owner_mark);
         self.active_scopes.pop();
         self.loop_stack.pop();
         // Restore the prior `binding_locals` entries so the binding scope
@@ -23187,6 +23352,18 @@ impl Builder {
         }
 
         self.finish_current_block(Terminator::Goto { target: header_bb });
+
+        if let (Some(false_cleanup_bb), Some((binding, ty))) = (false_cleanup_bb, &scrutinee_owner)
+        {
+            self.start_block(false_cleanup_bb);
+            self.record_iteration_owner_drop(
+                *binding,
+                SYNTHETIC_CALL_SCRUTINEE_NAME,
+                scrutinee.site,
+                ty,
+            );
+            self.finish_current_block(Terminator::Goto { target: exit_bb });
+        }
 
         // Exit: subsequent lowering continues here.
         self.start_block(exit_bb);
@@ -35258,6 +35435,7 @@ fn elaborate(
         &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.binding_scope,
+        &builder.transient_local_scopes,
         &builder.locals,
         &builder.record_field_orders,
         &builder.enum_layouts,
@@ -35677,6 +35855,26 @@ fn elaborate(
         &builder.loop_back_edge_blocks,
         &builder.locals,
     );
+
+    for (exit, plan) in &mut drop_plans {
+        let ExitPath::Goto { block, .. } = exit else {
+            continue;
+        };
+        let Some(bindings) = builder.iteration_owner_drop_blocks.get(block) else {
+            continue;
+        };
+        for binding in bindings {
+            let Some(place) = builder.binding_locals.get(binding) else {
+                continue;
+            };
+            if plan.drops.iter().any(|drop| drop.place == *place) {
+                continue;
+            }
+            if let Some(drop) = lifo_drops.iter().find(|drop| drop.place == *place) {
+                plan.drops.push(drop.clone());
+            }
+        }
+    }
 
     // #2395 decision 2 — append each suspend's escape-poisoned abandon-edge drops
     // (today: the `SuspendKind::StreamSend` in-flight value) to its
@@ -38667,19 +38865,24 @@ fn is_hew_string_concat_runtime_call(call: &crate::model::RuntimeCall) -> bool {
     call.symbol() == "hew_string_concat"
 }
 
-fn is_fresh_string_concat_instr_def(def: NestedDefSite, blocks: &[BasicBlock], t: u32) -> bool {
-    let NestedDefSite::Instr { block, idx } = def else {
-        return false;
+fn is_fresh_string_producer_def(
+    def: NestedDefSite,
+    blocks: &[BasicBlock],
+    locals: &[ResolvedTy],
+    t: u32,
+) -> bool {
+    let dest = match def {
+        NestedDefSite::Instr { block, idx } => block_by_id(blocks, block)
+            .and_then(|b| b.instructions.get(idx))
+            .and_then(|instr| {
+                fresh_string_producer_dest(instr)
+                    .or_else(|| string_field_load_producer_dest(instr, locals))
+            }),
+        NestedDefSite::Term { block } => {
+            block_by_id(blocks, block).and_then(|b| fresh_string_producer_term_dest(&b.terminator))
+        }
     };
-    let Some(Instr::CallRuntimeAbi(call)) =
-        block_by_id(blocks, block).and_then(|b| b.instructions.get(idx))
-    else {
-        return false;
-    };
-    is_hew_string_concat_runtime_call(call)
-        && call.dest().and_then(base_local) == Some(t)
-        && crate::runtime_symbols::callee_ownership_contract(call.symbol())
-            .produces_fresh_owned_string()
+    dest.and_then(base_local) == Some(t)
 }
 
 fn is_borrowing_string_concat_instr_use(instr: &Instr, t: u32) -> bool {
@@ -39223,7 +39426,7 @@ fn nested_fresh_string_temp_drop(
             let ub = *ub;
             let use_instr = block_by_id(blocks, ub)?.instructions.get(*ui)?;
             let borrowing_use = is_borrowing_string_cmp_instr(use_instr, t)
-                || (is_fresh_string_concat_instr_def(def, blocks, t)
+                || (is_fresh_string_producer_def(def, blocks, locals, t)
                     && is_borrowing_string_concat_instr_use(use_instr, t));
             if !borrowing_use {
                 return None;
@@ -39333,6 +39536,16 @@ mod nested_fresh_string_temp_drop_admission {
         )
     }
 
+    fn fresh_string_call(callee: &str, dest: u32, next: u32) -> Terminator {
+        Terminator::Call {
+            callee: callee.to_string(),
+            builtin: None,
+            args: vec![Place::Local(0)],
+            dest: Some(Place::Local(dest)),
+            next,
+        }
+    }
+
     fn user_record_ty() -> ResolvedTy {
         ResolvedTy::named_user("Holder", vec![])
     }
@@ -39380,6 +39593,26 @@ mod nested_fresh_string_temp_drop_admission {
             "the first concat temp is a fresh owner used exactly once by the \
              second borrowing concat; it must be dropped immediately after that \
              use and only once"
+        );
+    }
+
+    #[test]
+    fn terminator_fresh_temp_gets_one_inline_drop_after_borrowing_concat_use() {
+        let blocks = vec![
+            block(
+                0,
+                vec![],
+                fresh_string_call("hew_string_to_uppercase", 2, 1),
+            ),
+            block(1, vec![concat(3, 2, 4)], Terminator::Return),
+        ];
+        let drops = collect(&blocks, &locals_with(&[]), &second_concat_binding());
+
+        assert_eq!(
+            drops,
+            vec![(1, 1, Place::Local(2), ResolvedTy::String)],
+            "a proven fresh terminator-produced operand used once by borrowing concat \
+             must be dropped immediately after that concat"
         );
     }
 
@@ -40507,6 +40740,7 @@ fn derive_enum_composite_drop_allowed(
     owned_locals: &[(BindingId, String, ResolvedTy)],
     binding_locals: &HashMap<BindingId, Place>,
     binding_scope: &HashMap<BindingId, ScopeId>,
+    transient_local_scopes: &HashMap<u32, ScopeId>,
     local_tys: &[ResolvedTy],
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
@@ -40559,7 +40793,7 @@ fn derive_enum_composite_drop_allowed(
     // outlive its surrounding statement and so can safely participate
     // in payload-binder chains without inflating the surviving-binding
     // set.
-    let local_scope: HashMap<u32, ScopeId> = binding_locals
+    let mut local_scope: HashMap<u32, ScopeId> = binding_locals
         .iter()
         .filter_map(|(binding, place)| {
             let local = base_local(*place)?;
@@ -40567,6 +40801,11 @@ fn derive_enum_composite_drop_allowed(
             Some((local, scope))
         })
         .collect();
+    local_scope.extend(
+        transient_local_scopes
+            .iter()
+            .map(|(local, scope)| (*local, *scope)),
+    );
 
     // Payload-binder set: destinations of `Move { dest, src: interior
     // projection of an alias-set local }` — the match/while-let destructure
@@ -51581,6 +51820,7 @@ mod enum_composite_field_drop_exemption {
             &HashMap::new(),
             &owned,
             &binding_locals,
+            &HashMap::new(),
             &HashMap::new(),
             &local_tys,
             &record_field_orders,

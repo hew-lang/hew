@@ -473,3 +473,26 @@ fn canary7_fstring_interpolation_gen_yield_releases_conversion_temp() {
         "the conversion temp is a NESTED (unbound) shape, not a scope-exit-drop binding"
     );
 }
+
+#[test]
+fn terminator_produced_nested_concat_operand_releases_after_borrowing_concat() {
+    let pl = pipeline_with_tc(
+        r#"
+fn compose() -> i64 {
+    let full = "left-" + "middle".to_upper() + "-right";
+    full.len()
+}
+"#,
+    );
+    assert_no_nyi(&pl);
+    assert_eq!(
+        inline_string_drops(&pl, "compose"),
+        2,
+        "the function-returned operand and the first concat intermediate each need one inline drop"
+    );
+    assert_eq!(
+        return_exit_string_drops(&pl, "compose"),
+        1,
+        "the final bound concat result remains owned by the ordinary scope-exit path"
+    );
+}

@@ -3585,7 +3585,13 @@ mod tests {
                 (*sup).restart_await_waiters.lock_or_recover().is_empty(),
                 "notify_restart must drain every parked waiter"
             );
-            // notify drained + freed the observer's retained ref; the slot is gone.
+            assert_eq!(
+                crate::read_slot::read_slot_refs_for_test(slot),
+                1,
+                "notify must release only the observer ref"
+            );
+            // Match the codegen bind edge: the caller releases the creator ref.
+            crate::read_slot::hew_read_slot_free(slot);
 
             hew_supervisor_stop(sup);
         }
@@ -3612,6 +3618,13 @@ mod tests {
                 (*sup).restart_await_waiters.lock_or_recover().is_empty(),
                 "detach must remove the waiter"
             );
+            assert_eq!(
+                crate::read_slot::read_slot_refs_for_test(slot),
+                1,
+                "detach must release only the observer ref"
+            );
+            // The direct caller still releases the creator ref after detach.
+            crate::read_slot::hew_read_slot_free(slot);
 
             // A later notify has nothing to wake (the waiter is gone).
             store_child_slot(&mut *sup, 0, child);

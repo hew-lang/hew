@@ -16,9 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use crate::actor::{self, HewActor, HewActorOpts};
-use crate::internal::types::{
-    HewActorState, HewDispatchFn, HewLifecycleFn, HewOnCrashFn, HewOverflowPolicy,
-};
+use crate::internal::types::{HewActorState, HewDispatchFn, HewLifecycleFn, HewOnCrashFn};
 use crate::io_time::hew_now_ms;
 use crate::mailbox;
 use crate::pool::{HewActorPool, PoolStrategy};
@@ -470,6 +468,8 @@ pub struct HewChildSpec {
     pub restart_policy: c_int,
     pub mailbox_capacity: c_int,
     pub overflow: c_int,
+    pub coalesce_key_fn: Option<mailbox::HewCoalesceKeyFn>,
+    pub coalesce_fallback: c_int,
     /// Per-dispatch arena cap in bytes. 0 = unbounded. Mirrors
     /// `hew_actor_spawn_opts::arena_cap_bytes`; supervisor restart path
     /// re-applies this cap to every restarted child so `#[max_heap(N)]`
@@ -770,6 +770,8 @@ struct InternalChildSpec {
     restart_policy: c_int,
     mailbox_capacity: c_int,
     overflow: c_int,
+    coalesce_key_fn: Option<mailbox::HewCoalesceKeyFn>,
+    coalesce_fallback: c_int,
     /// Exponential backoff restart delay in milliseconds.
     restart_delay_ms: u64,
     /// Maximum restart delay (default 30 seconds).
@@ -875,6 +877,8 @@ impl Default for InternalChildSpec {
             restart_policy: RESTART_PERMANENT,
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
+            coalesce_key_fn: None,
+            coalesce_fallback: OVERFLOW_DROP_NEW,
             restart_delay_ms: 0,
             max_restart_delay_ms: DEFAULT_MAX_RESTART_DELAY_MS,
             next_restart_time_ns: 0,
@@ -1702,8 +1706,8 @@ unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut
             dispatch: spec.dispatch,
             mailbox_capacity: spec.mailbox_capacity,
             overflow: spec.overflow,
-            coalesce_key_fn: None,
-            coalesce_fallback: HewOverflowPolicy::DropOld as c_int,
+            coalesce_key_fn: spec.coalesce_key_fn,
+            coalesce_fallback: spec.coalesce_fallback,
             budget: 0,
             arena_cap_bytes: spec.arena_cap_bytes,
             cycle_capable: spec.cycle_capable,
@@ -1771,8 +1775,8 @@ unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut
             dispatch: opts.dispatch,
             mailbox_capacity: opts.mailbox_capacity,
             overflow: opts.overflow,
-            coalesce_key_fn: None,
-            coalesce_fallback: HewOverflowPolicy::DropOld as c_int,
+            coalesce_key_fn: opts.coalesce_key_fn,
+            coalesce_fallback: opts.coalesce_fallback,
             budget: 0,
             arena_cap_bytes: opts.arena_cap_bytes,
             cycle_capable: opts.cycle_capable,
@@ -2684,6 +2688,8 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
         restart_policy: sp.restart_policy,
         mailbox_capacity: sp.mailbox_capacity,
         overflow: sp.overflow,
+        coalesce_key_fn: sp.coalesce_key_fn,
+        coalesce_fallback: sp.coalesce_fallback,
         restart_delay_ms: 0,
         max_restart_delay_ms: DEFAULT_MAX_RESTART_DELAY_MS,
         next_restart_time_ns: 0,
@@ -2951,6 +2957,8 @@ mod tests {
                 restart_policy: RESTART_TEMPORARY,
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
+                coalesce_key_fn: None,
+                coalesce_fallback: OVERFLOW_DROP_NEW,
                 arena_cap_bytes: 0,
                 cycle_capable: 0,
                 on_crash: None,
@@ -4063,6 +4071,8 @@ mod tests {
                 restart_policy: RESTART_PERMANENT,
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
+                coalesce_key_fn: None,
+                coalesce_fallback: OVERFLOW_DROP_NEW,
                 arena_cap_bytes: 0,
                 cycle_capable: 0,
                 on_crash: None,
@@ -4444,6 +4454,8 @@ mod tests {
                 restart_policy: RESTART_TEMPORARY,
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
+                coalesce_key_fn: None,
+                coalesce_fallback: OVERFLOW_DROP_NEW,
                 arena_cap_bytes: 0,
                 cycle_capable: 0,
                 on_crash: None,
@@ -5191,6 +5203,8 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
         restart_policy: sp.restart_policy,
         mailbox_capacity: sp.mailbox_capacity,
         overflow: sp.overflow,
+        coalesce_key_fn: sp.coalesce_key_fn,
+        coalesce_fallback: sp.coalesce_fallback,
         restart_delay_ms: 0,
         max_restart_delay_ms: DEFAULT_MAX_RESTART_DELAY_MS,
         next_restart_time_ns: 0,
@@ -6738,6 +6752,8 @@ mod pool_slot_tests {
             restart_policy: RESTART_PERMANENT,
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
+            coalesce_key_fn: None,
+            coalesce_fallback: OVERFLOW_DROP_NEW,
             arena_cap_bytes: 0,
             cycle_capable: 0,
             on_crash: None,

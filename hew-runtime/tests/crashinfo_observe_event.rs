@@ -166,6 +166,8 @@ fn divide_by_zero_trap_surfaces_trap_kind_on_observe_event_surface() {
             restart_policy: RESTART_PERMANENT,
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
+            coalesce_key_fn: None,
+            coalesce_fallback: OVERFLOW_DROP_NEW,
             arena_cap_bytes: 0,
             cycle_capable: 0,
             on_crash: None,

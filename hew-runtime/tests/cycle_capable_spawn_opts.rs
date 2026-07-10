@@ -80,6 +80,8 @@ fn supervisor_child_spec_accepts_cycle_capable_bit() {
         restart_policy: RESTART_PERMANENT,
         mailbox_capacity: -1,
         overflow: 1,
+        coalesce_key_fn: None,
+        coalesce_fallback: 1,
         arena_cap_bytes: 0,
         cycle_capable: 1,
         on_crash: None,

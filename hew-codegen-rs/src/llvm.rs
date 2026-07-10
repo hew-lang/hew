@@ -6938,13 +6938,8 @@ fn emit_actor_state_clone_drop_registration<'ctx>(
 /// `None` maps to `Block` — `mailbox N;` with no explicit `overflow` clause
 /// defaults to `block` per spec §6.2 ("default: capacity=1024, overflow=block").
 ///
-/// `Coalesce { .. }` fails closed: MIR lowering already refuses to compile a
-/// program that declares it
-/// (`MirDiagnosticKind::MailboxOverflowCoalesceNotYetImplemented`), so
-/// reaching this arm means that gate was bypassed — belt-and-brace, never
-/// silently remap to another policy.
 fn overflow_policy_to_i32(
-    actor_name: &str,
+    _actor_name: &str,
     policy: Option<&hew_parser::ast::OverflowPolicy>,
 ) -> CodegenResult<i32> {
     use hew_parser::ast::OverflowPolicy;
@@ -6953,12 +6948,20 @@ fn overflow_policy_to_i32(
         Some(OverflowPolicy::DropNew) => Ok(1),
         Some(OverflowPolicy::DropOld) => Ok(2),
         Some(OverflowPolicy::Fail) => Ok(3),
-        Some(OverflowPolicy::Coalesce { key_field, .. }) => Err(CodegenError::FailClosed(format!(
-            "actor `{actor_name}` declares `overflow coalesce({key_field})`, which has no \
-             codegen key-function ABI slice yet; this should have been rejected at MIR \
-             lowering (MailboxOverflowCoalesceNotYetImplemented) — refusing to silently \
-             thread an unimplemented policy through the FFI boundary"
-        ))),
+        Some(OverflowPolicy::Coalesce { .. }) => Ok(4),
+    }
+}
+
+/// Map parser fallback variants to the runtime `HewOverflowPolicy` ABI by
+/// name. Parser declaration order differs from the runtime encoding, so an
+/// ordinal cast is wrong-code. The spec default is `drop_new`.
+fn overflow_fallback_to_i32(fallback: Option<&hew_parser::ast::OverflowFallback>) -> i32 {
+    use hew_parser::ast::OverflowFallback;
+    match fallback {
+        Some(OverflowFallback::Block) => 0,
+        None | Some(OverflowFallback::DropNew) => 1,
+        Some(OverflowFallback::DropOld) => 2,
+        Some(OverflowFallback::Fail) => 3,
     }
 }
 
@@ -7042,6 +7045,21 @@ fn emit_spawn_actor(
             .map(|n| i32::try_from(n).unwrap_or(i32::MAX))
             .unwrap_or(0);
         let overflow_i32 = overflow_policy_to_i32(actor_name, overflow_policy)?;
+        let (coalesce_key_fn, coalesce_fallback) = match overflow_policy {
+            Some(hew_parser::ast::OverflowPolicy::Coalesce { fallback, .. }) => {
+                let key_name = crate::thunks::coalesce_key_fn_name(actor_name);
+                let key_fn = fn_ctx.llvm_mod.get_function(&key_name).ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "spawn `{actor_name}` requires coalesce key callback `{key_name}`"
+                    ))
+                })?;
+                (
+                    key_fn.as_global_value().as_pointer_value(),
+                    overflow_fallback_to_i32(fallback.as_ref()),
+                )
+            }
+            _ => (ptr_ty.const_null(), 0),
+        };
         let opts_ty = fn_ctx.ctx.struct_type(
             &[
                 ptr_ty.into(), // init_state
@@ -7049,7 +7067,7 @@ fn emit_spawn_actor(
                 ptr_ty.into(), // dispatch
                 i32_ty.into(), // mailbox_capacity
                 i32_ty.into(), // overflow
-                ptr_ty.into(), // coalesce_key_fn (null)
+                ptr_ty.into(), // coalesce_key_fn
                 i32_ty.into(), // coalesce_fallback
                 i32_ty.into(), // budget
                 i64_ty.into(), // arena_cap_bytes
@@ -7070,8 +7088,8 @@ fn emit_spawn_actor(
                 i32_ty.const_int(mailbox_capacity_i32 as u64, true).into(),
             ),
             (4, i32_ty.const_int(overflow_i32 as u64, true).into()),
-            (5, ptr_ty.const_null().into()),
-            (6, i32_ty.const_zero().into()),
+            (5, coalesce_key_fn.into()),
+            (6, i32_ty.const_int(coalesce_fallback as u64, true).into()),
             (7, i32_ty.const_zero().into()),
             (8, i64_ty.const_int(arena_cap, false).into()),
             (9, i32_ty.const_int(cycle_flag, false).into()),
@@ -7287,6 +7305,8 @@ fn restart_policy_to_int(policy: HirRestartPolicy) -> i32 {
 /// - `restart_policy: c_int`                → `i32`
 /// - `mailbox_capacity: c_int`              → `i32`
 /// - `overflow: c_int`                      → `i32`
+/// - `coalesce_key_fn: Option<fn>`          → `ptr`
+/// - `coalesce_fallback: c_int`             → `i32`
 /// - `arena_cap_bytes: usize`               → `i64`
 /// - `cycle_capable: c_int`                 → `i32`
 /// - `on_crash: Option<HewOnCrashFn>`       → `ptr`
@@ -7313,6 +7333,8 @@ fn hew_child_spec_struct_type<'ctx>(ctx: &'ctx Context) -> StructType<'ctx> {
             i32_ty.into(), // restart_policy
             i32_ty.into(), // mailbox_capacity
             i32_ty.into(), // overflow
+            ptr_ty.into(), // coalesce_key_fn
+            i32_ty.into(), // coalesce_fallback
             i64_ty.into(), // arena_cap_bytes (alignment introduces 4B pad after `overflow`)
             i32_ty.into(), // cycle_capable
             ptr_ty.into(), // on_crash fn-pointer: null when child's actor has no #[on(crash)]; otherwise pointer to `{actor_name}__on_crash`
@@ -8015,8 +8037,8 @@ fn emit_supervised_child_handler_name_registration<'ctx>(
 ///   helper. Fail-closed if missing.
 /// - `restart_policy` — child's policy via `restart_policy_to_int`; `None`
 ///   defaults to `RESTART_PERMANENT` (`0`) to match runtime defaults.
-/// - `mailbox_capacity` / `overflow` — `0` for both, which the runtime maps
-///   to its bounded defaults. Richer per-child overrides are deferred.
+/// - `mailbox_capacity` / `overflow` / coalesce callback + fallback — mirrored
+///   from the child actor layout so initial spawn and restart are identical.
 /// - `arena_cap_bytes` / `cycle_capable` — mirrored from the child's
 ///   `ActorLayout` through `SupervisorChildLayout` so restarts preserve the
 ///   same spawn policy bits as direct spawn.
@@ -8138,6 +8160,22 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
         .map(|n| i32::try_from(n).unwrap_or(i32::MAX))
         .unwrap_or(0);
     let overflow_i32 = overflow_policy_to_i32(&child.actor_name, child.overflow_policy.as_ref())?;
+    let (coalesce_key_fn, coalesce_fallback) = match child.overflow_policy.as_ref() {
+        Some(hew_parser::ast::OverflowPolicy::Coalesce { fallback, .. }) => {
+            let key_name = crate::thunks::coalesce_key_fn_name(&child.actor_name);
+            let key_fn = llvm_mod.get_function(&key_name).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "supervised child `{}` requires coalesce key callback `{key_name}`",
+                    child.actor_name
+                ))
+            })?;
+            (
+                key_fn.as_global_value().as_pointer_value(),
+                overflow_fallback_to_i32(fallback.as_ref()),
+            )
+        }
+        _ => (ptr_ty.const_null(), 0),
+    };
 
     // ── Init-closure (config) path vs literal-template path ─────────────
     //
@@ -8411,7 +8449,7 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
             }
         };
 
-    let field_values: [(u32, BasicValueEnum<'ctx>); 14] = [
+    let field_values: [(u32, BasicValueEnum<'ctx>); 16] = [
         (0, name_ptr.into()),
         (1, init_state_ptr),
         (2, init_state_size),
@@ -8422,10 +8460,12 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
             i32_ty.const_int(mailbox_capacity_i32 as u64, true).into(),
         ), // mailbox_capacity from declared `mailbox N;`
         (6, i32_ty.const_int(overflow_i32 as u64, true).into()), // overflow: mapped by name from declared `overflow <policy>;`
-        (7, i64_ty.const_int(arena_cap, false).into()), // arena_cap_bytes from #[max_heap(N)]
-        (8, i32_ty.const_int(cycle_flag, false).into()), // cycle_capable from checker side-table
-        (9, on_crash_ptr), // on_crash: fn-pointer when child's actor has #[on(crash)], null otherwise
-        (10, lifecycle_ptr), // lifecycle_fn: __hew_lifecycle_<actor> when child's actor has init/#[on(start)], null otherwise
+        (7, coalesce_key_fn.into()),
+        (8, i32_ty.const_int(coalesce_fallback as u64, true).into()),
+        (9, i64_ty.const_int(arena_cap, false).into()), // arena_cap_bytes from #[max_heap(N)]
+        (10, i32_ty.const_int(cycle_flag, false).into()), // cycle_capable from checker side-table
+        (11, on_crash_ptr), // on_crash: fn-pointer when child's actor has #[on(crash)], null otherwise
+        (12, lifecycle_ptr), // lifecycle_fn: __hew_lifecycle_<actor> when child's actor has init/#[on(start)], null otherwise
         // v0.6 init-closure restart model trailing fields. For a config-init
         // child these carry the per-child init thunk + the borrowed,
         // supervisor-owned config buffer + its size; the literal carrier IS the
@@ -8433,9 +8473,9 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
         // from the literal before any post-hoc setter runs), exactly like
         // lifecycle_fn. A literal-only child leaves init_fn null (the runtime
         // then ignores config / config_size and takes the template path).
-        (11, init_fn_ptr), // init_fn: per-child thunk (null on template path)
-        (12, config_ptr_for_spec), // config: borrowed supervisor config buffer (null when no thunk)
-        (13, config_size_for_spec), // config_size: buffer size (0 when no thunk)
+        (13, init_fn_ptr), // init_fn: per-child thunk (null on template path)
+        (14, config_ptr_for_spec), // config: borrowed supervisor config buffer (null when no thunk)
+        (15, config_size_for_spec), // config_size: buffer size (0 when no thunk)
     ];
     for (field_idx, value) in field_values {
         let gep = builder
@@ -56870,7 +56910,7 @@ fn main() {
         // (Rust offset_of, LLVM element index) for every field, in declaration
         // order. The pairing IS the ABI contract: element N of the LLVM struct
         // must land at the same byte offset as the matching Rust field.
-        let fields: [(usize, u32, &str); 14] = [
+        let fields: [(usize, u32, &str); 16] = [
             (std::mem::offset_of!(HewChildSpec, name), 0, "name"),
             (
                 std::mem::offset_of!(HewChildSpec, init_state),
@@ -56895,27 +56935,37 @@ fn main() {
             ),
             (std::mem::offset_of!(HewChildSpec, overflow), 6, "overflow"),
             (
-                std::mem::offset_of!(HewChildSpec, arena_cap_bytes),
+                std::mem::offset_of!(HewChildSpec, coalesce_key_fn),
                 7,
+                "coalesce_key_fn",
+            ),
+            (
+                std::mem::offset_of!(HewChildSpec, coalesce_fallback),
+                8,
+                "coalesce_fallback",
+            ),
+            (
+                std::mem::offset_of!(HewChildSpec, arena_cap_bytes),
+                9,
                 "arena_cap_bytes",
             ),
             (
                 std::mem::offset_of!(HewChildSpec, cycle_capable),
-                8,
+                10,
                 "cycle_capable",
             ),
-            (std::mem::offset_of!(HewChildSpec, on_crash), 9, "on_crash"),
+            (std::mem::offset_of!(HewChildSpec, on_crash), 11, "on_crash"),
             (
                 std::mem::offset_of!(HewChildSpec, lifecycle_fn),
-                10,
+                12,
                 "lifecycle_fn",
             ),
             // v0.6 init-closure restart model trailing fields.
-            (std::mem::offset_of!(HewChildSpec, init_fn), 11, "init_fn"),
-            (std::mem::offset_of!(HewChildSpec, config), 12, "config"),
+            (std::mem::offset_of!(HewChildSpec, init_fn), 13, "init_fn"),
+            (std::mem::offset_of!(HewChildSpec, config), 14, "config"),
             (
                 std::mem::offset_of!(HewChildSpec, config_size),
-                13,
+                15,
                 "config_size",
             ),
         ];

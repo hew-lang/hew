@@ -102,6 +102,8 @@ fn start_one_child_supervisor(name: &str) -> (TestSupervisor, CString) {
             restart_policy: RESTART_PERMANENT,
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
+            coalesce_key_fn: None,
+            coalesce_fallback: OVERFLOW_DROP_NEW,
             arena_cap_bytes: 0,
             cycle_capable: 0,
             on_crash: None,

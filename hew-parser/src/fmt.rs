@@ -954,8 +954,9 @@ impl<'a> Formatter<'a> {
                     } => {
                         self.write("coalesce(");
                         self.write(key_field);
+                        self.write(")");
                         if let Some(fb) = fallback {
-                            self.write(", ");
+                            self.write(" fallback ");
                             match fb {
                                 crate::ast::OverflowFallback::DropNew => self.write("drop_new"),
                                 crate::ast::OverflowFallback::DropOld => self.write("drop_old"),
@@ -963,7 +964,6 @@ impl<'a> Formatter<'a> {
                                 crate::ast::OverflowFallback::Fail => self.write("fail"),
                             }
                         }
-                        self.write(")");
                     }
                 }
             }

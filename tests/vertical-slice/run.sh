@@ -1712,6 +1712,7 @@ run_accept_expect_status "deque_pop_front_empty_traps" 134
 run_accept_expect_status "deque_pop_back_empty_traps" 134
 
 run_accept_expect_stdout "regex_captures_find_all"
+run_accept_expect_stdout "regex_find_no_match_empty_string"
 run_check_run_expect_stdout "stdlib_io_scanner_file_oracle"
 run_accept_expect_stdout "tls_ffi_result_lowering"
 

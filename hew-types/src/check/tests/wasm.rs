@@ -14,7 +14,7 @@ pub(super) use super::*;
 // Coverage:
 //  - channel.new / send / try_recv → allowed on wasm32 bounded subset
 //  - Receiver<T>::recv / `for await ... in Receiver<T>` → BlockingChannelRecv error
-//  - semaphore.new / try_acquire / release / count / free → allowed on wasm32
+//  - semaphore.new / try_acquire / release / count / close → allowed on wasm32
 //  - Semaphore::acquire / Semaphore::acquire_timeout → BlockingSemaphoreAcquire error
 //  - sleep_ms → now an undefined-function error (removed; use sleep(duration))
 //  - sleep → Timers warning
@@ -479,7 +479,7 @@ mod wasm_rejects {
             "    let _ = sem.count();\n",
             "    let _ = sem.try_acquire();\n",
             "    sem.release();\n",
-            "    sem.free();\n",
+            "    sem.close();\n",
             "}\n",
         );
         let result = hew_parser::parse(source);
@@ -506,7 +506,7 @@ mod wasm_rejects {
             "    let sem = semaphore.new(1);\n",
             "    sem.acquire();\n",
             "    let _ = sem.acquire_timeout(10);\n",
-            "    sem.free();\n",
+            "    sem.close();\n",
             "}\n",
         );
         let result = hew_parser::parse(source);
@@ -542,7 +542,7 @@ mod wasm_rejects {
             "    sem.acquire();\n",
             "    let _ = sem.acquire_timeout(10);\n",
             "    sem.release();\n",
-            "    sem.free();\n",
+            "    sem.close();\n",
             "}\n",
         );
         let result = hew_parser::parse(source);

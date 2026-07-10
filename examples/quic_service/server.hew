@@ -48,15 +48,15 @@ fn main() {
     // Accept one incoming connection.
     let conn = ep.accept();
     let connected = ep.on_event();
-    assert_eq(connected.kind(), 0);
-    connected.free();
+    assert(connected.kind() == 0);
+    connected.close();
     println("[server] accepted connection");
 
     // Accept a stream on that connection.
     let stream = conn.accept_stream();
     let opened = conn.on_event();
-    assert_eq(opened.kind(), 2);
-    opened.free();
+    assert(opened.kind() == 2);
+    opened.close();
     println("[server] accepted stream");
 
     // Receive a UTF-8 message from the client.
@@ -76,10 +76,10 @@ fn main() {
     // connection. Across separate processes the exact event order can vary.
     let ev1 = conn.on_event();
     let kind1 = ev1.kind();
-    ev1.free();
+    ev1.close();
     let ev2 = conn.on_event();
     let kind2 = ev2.kind();
-    ev2.free();
+    ev2.close();
     assert((kind1 == 3 || kind2 == 3) && (kind1 == 1 || kind2 == 1));
 
     // Clean shutdown of connection.

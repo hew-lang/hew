@@ -55,6 +55,9 @@ pub struct HandleMethod {
     pub params: Vec<Ty>,
     /// Return type.
     pub return_type: Ty,
+    /// The method's signature is registry-visible, but its real Hew impl must
+    /// run because it unwraps or constructs a fielded resource wrapper.
+    pub dispatch_through_impl: bool,
 }
 
 /// All type information extracted from a single `.hew` module file.
@@ -919,6 +922,83 @@ fn handle_forwarding_call_from_expr(expr: &Expr, ctx: &WrapperForward) -> Option
     }
 }
 
+/// Recognise an opaque-handle method that returns a resource wrapper around an
+/// extern call, e.g. `Request { handle: hew_http_server_recv(server) }`.
+fn extract_wrapper_constructor_target(
+    body: &Block,
+    wrapper_simple_name: &str,
+    field_names: &HashSet<String>,
+    extern_fn_names: &HashSet<String>,
+) -> Option<(String, usize)> {
+    if let Some(trailing) = &body.trailing_expr {
+        if body.stmts.is_empty() {
+            return wrapper_constructor_call_from_expr(
+                &trailing.0,
+                wrapper_simple_name,
+                field_names,
+                extern_fn_names,
+            );
+        }
+        return None;
+    }
+    if body.stmts.len() == 1 {
+        if let Some((Stmt::Expression(expr) | Stmt::Return(Some(expr)), _)) = body.stmts.last() {
+            return wrapper_constructor_call_from_expr(
+                &expr.0,
+                wrapper_simple_name,
+                field_names,
+                extern_fn_names,
+            );
+        }
+    }
+    None
+}
+
+fn wrapper_constructor_call_from_expr(
+    expr: &Expr,
+    wrapper_simple_name: &str,
+    field_names: &HashSet<String>,
+    extern_fn_names: &HashSet<String>,
+) -> Option<(String, usize)> {
+    match expr {
+        Expr::Block(block) => extract_wrapper_constructor_target(
+            block,
+            wrapper_simple_name,
+            field_names,
+            extern_fn_names,
+        ),
+        Expr::UnsafeBlock(block) => extract_wrapper_constructor_target(
+            block,
+            wrapper_simple_name,
+            field_names,
+            extern_fn_names,
+        ),
+        Expr::Cast { expr, .. } => wrapper_constructor_call_from_expr(
+            &expr.0,
+            wrapper_simple_name,
+            field_names,
+            extern_fn_names,
+        ),
+        Expr::StructInit {
+            name,
+            fields,
+            base: None,
+            ..
+        } if name.rsplit('.').next() == Some(wrapper_simple_name)
+            && fields.len() == 1
+            && field_names.len() == 1 =>
+        {
+            let (field_name, value) = fields.first()?;
+            if !field_names.contains(field_name) {
+                return None;
+            }
+            call_target_from_expr(&value.0)
+                .filter(|(c_symbol, _)| extern_fn_names.contains(c_symbol))
+        }
+        _ => None,
+    }
+}
+
 /// Extract handle method → C symbol mappings from an `impl` block.
 ///
 /// For `impl FooMethods for Foo { fn bar(self: Foo) { hew_foo_bar(self); } }`,
@@ -974,7 +1054,34 @@ fn extract_handle_methods(
         // here — the shared `is_pass_through_arg` predicate (which also drives
         // `clean_names` and drop-func extraction) is left untouched. Skip the
         // `self` parameter when matching — it's not part of the call.
+        let returned_wrapper = method.return_type.as_ref().and_then(|return_type| {
+            let TypeExpr::Named { name, .. } = &return_type.0 else {
+                return None;
+            };
+            let qualified = if name.contains('.') {
+                name.clone()
+            } else {
+                format!("{module_short}.{name}")
+            };
+            wrapper_resource_fields.get(&qualified).map(|field_names| {
+                (
+                    name.rsplit('.').next().unwrap_or(name.as_str()),
+                    field_names,
+                )
+            })
+        });
         let extracted = extract_call_target(&method.body)
+            .map(|target| (target, false))
+            .or_else(|| {
+                let (returned_wrapper_name, returned_wrapper_fields) = returned_wrapper?;
+                extract_wrapper_constructor_target(
+                    &method.body,
+                    returned_wrapper_name,
+                    returned_wrapper_fields,
+                    extern_fn_names,
+                )
+                .map(|target| (target, true))
+            })
             .or_else(|| {
                 let field_names = wrapper_field_names?;
                 let receiver = method.params.first()?.name.as_str();
@@ -984,7 +1091,7 @@ fn extract_handle_methods(
                     field_names,
                     extern_fn_names,
                 };
-                extract_handle_forwarding_target(&method.body, &ctx)
+                extract_handle_forwarding_target(&method.body, &ctx).map(|target| (target, true))
             })
             // Authoritative extern gate for BOTH extraction paths: a handle
             // method is a thin FFI shim, so its forwarded callee must be an
@@ -992,8 +1099,8 @@ fn extract_handle_methods(
             // (`extract_call_target` does not check extern membership itself) —
             // a body like `helper(self)` calling a same-module Hew helper must
             // not register as a C-backed method.
-            .filter(|(c_symbol, _)| extern_fn_names.contains(c_symbol));
-        if let Some((c_symbol, _arg_count)) = extracted {
+            .filter(|((c_symbol, _), _)| extern_fn_names.contains(c_symbol));
+        if let Some(((c_symbol, _arg_count), dispatch_through_impl)) = extracted {
             let params = method
                 .params
                 .iter()
@@ -1010,6 +1117,7 @@ fn extract_handle_methods(
                 c_symbol,
                 params,
                 return_type,
+                dispatch_through_impl,
             });
         }
     }
@@ -1143,11 +1251,22 @@ mod tests {
         assert!(info.is_some(), "should load semaphore module");
         let info = info.unwrap();
 
-        // Should have semaphore.Semaphore handle type
+        // The public resource is a fielded wrapper around the opaque handle.
         assert!(
             info.handle_types
+                .contains(&"semaphore.SemaphoreHandle".to_string()),
+            "semaphore module should declare SemaphoreHandle"
+        );
+        assert!(
+            !info
+                .handle_types
                 .contains(&"semaphore.Semaphore".to_string()),
-            "semaphore module should declare Semaphore type"
+            "semaphore.Semaphore is a resource wrapper, not an opaque handle"
+        );
+        assert!(
+            info.resource_wrapper_types
+                .contains(&"semaphore.Semaphore".to_string()),
+            "semaphore module should register the Semaphore resource wrapper"
         );
 
         // Should have handle methods
@@ -1304,14 +1423,14 @@ mod tests {
 
         let http_info =
             load_module("std::net::http", &test_root()).expect("should load http module");
-        let free = http_info
+        let close = http_info
             .handle_methods
             .iter()
-            .find(|m| m.type_name == "http.Request" && m.method_name == "free")
-            .expect("http.Request.free should be extracted");
-        assert_eq!(free.c_symbol, "hew_http_request_free");
-        assert_eq!(free.params, Vec::<Ty>::new());
-        assert_eq!(free.return_type, Ty::Unit);
+            .find(|m| m.type_name == "http.Request" && m.method_name == "close")
+            .expect("http.Request.close should be extracted");
+        assert_eq!(close.c_symbol, "hew_http_request_free");
+        assert_eq!(close.params, Vec::<Ty>::new());
+        assert_eq!(close.return_type, Ty::Unit);
     }
 
     #[test]
@@ -1511,8 +1630,8 @@ mod tests {
         let info = load_module("std::net::http", &test_root()).unwrap();
 
         assert!(
-            !info.drop_types.contains(&"http.Request".to_string()),
-            "http.Request should not be a drop type after impl Drop removal, got: {:?}",
+            info.drop_types.contains(&"http.Request".to_string()),
+            "http.Request should be a drop type as a `#[resource]`, got: {:?}",
             info.drop_types
         );
 
@@ -1530,7 +1649,7 @@ mod tests {
         let request_drop = info.drop_funcs.iter().find(|(ty, _)| ty == "http.Request");
         assert!(
             request_drop.is_none(),
-            "http.Request should not have a drop func, got: {:?}",
+            "http.Request.close forwards through its handle field, so no direct drop func is registered, got: {:?}",
             info.drop_funcs
         );
 
@@ -1763,6 +1882,38 @@ mod tests {
         assert!(
             !handle_method_registered(&info, "m.Wrap", "bad"),
             "forwarding `other.handle` (not the receiver) must not register, got: {:?}",
+            info.handle_methods
+        );
+    }
+
+    #[test]
+    fn opaque_handle_method_registers_resource_wrapper_return() {
+        let result = parse(
+            "#[opaque]\n\
+             pub type Server {}\n\
+             #[opaque]\n\
+             type RequestHandle {}\n\
+             #[resource]\n\
+             pub type Request { handle: RequestHandle; }\n\
+             impl Server {\n\
+             \x20   fn accept(server: Server) -> Request {\n\
+             \x20       unsafe { Request { handle: c_accept(server) } }\n\
+             \x20   }\n\
+             }\n\
+             extern \"C\" {\n\
+             \x20   fn c_accept(server: Server) -> RequestHandle;\n\
+             }\n",
+        );
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let info = extract_module_info(&result.program, "m");
+
+        assert!(
+            handle_method_registered(&info, "m.Server", "accept"),
+            "opaque parent methods returning a registered resource wrapper must be loaded, got: {:?}",
             info.handle_methods
         );
     }

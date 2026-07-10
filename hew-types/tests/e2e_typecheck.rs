@@ -443,7 +443,7 @@ fn consume(s: Stream<bytes>) {
 }
 
 #[test]
-fn method_call_rewrites_record_handle_runtime_dispatch() {
+fn method_call_dispatches_resource_wrapper_through_impl() {
     let output = typecheck_inline(
         r#"
 import std::net::http;
@@ -459,12 +459,8 @@ fn respond(req: http.Request) -> i64 {
         output.errors
     );
     assert!(
-        output.method_call_rewrites.values().any(|rewrite| matches!(
-            rewrite,
-            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
-                if c_symbol == "hew_http_respond_text"
-        )),
-        "expected checker-owned handle rewrite metadata, got: {:?}",
+        output.method_call_rewrites.is_empty(),
+        "resource-wrapper methods must dispatch through their impl body, got: {:?}",
         output.method_call_rewrites
     );
 }
@@ -2109,29 +2105,47 @@ fn net_listener_close_resolves_via_fallback() {
 }
 
 #[test]
-fn http_request_free_resolves_via_fallback() {
+fn http_request_close_dispatches_through_resource_impl() {
     let output = typecheck_inline(
         r"
         import std::net::http;
 
         fn release(req: http.Request) {
-            req.free();
+            req.close();
         }
         ",
     );
     assert!(
         output.errors.is_empty(),
-        "expected http.Request::free to resolve cleanly via fallback, got: {:#?}",
+        "expected http.Request::close to resolve through the resource impl, got: {:#?}",
         output.errors
     );
     assert!(
-        output.method_call_rewrites.values().any(|rewrite| matches!(
-            rewrite,
-            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
-                if c_symbol == "hew_http_request_free"
-        )),
-        "expected http.Request::free fallback rewrite, got: {:?}",
+        output.method_call_rewrites.is_empty(),
+        "resource-wrapper close must not use the opaque-handle fallback rewrite, got: {:?}",
         output.method_call_rewrites
+    );
+}
+
+#[test]
+fn registry_loaded_resource_close_moves_receiver() {
+    let output = typecheck_inline(
+        r"
+        import std::net::http;
+
+        fn release(req: http.Request) {
+            req.close();
+            req.path();
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::UseAfterMove),
+        "registry-loaded resource close must move the receiver, got: {:#?}",
+        output.errors
     );
 }
 
@@ -2369,7 +2383,7 @@ fn http_client_response_methods_rejected_on_wasm() {
         fn main() {
             let resp = unsafe { fake_response() };
             let _status = resp.status();
-            resp.free();
+            resp.close();
         }
         "#,
     );
@@ -2491,7 +2505,7 @@ fn wasm_rejects_all_native_only_handle_methods() {
             "std::net::quic",
             "quic.QUICEvent",
             "fn fake_event() -> quic.QUICEvent",
-            "let ev = unsafe { fake_event() };\n            ev.free();",
+            "let ev = unsafe { fake_event() };\n            ev.close();",
             "std::net::quic",
         ),
     ];
@@ -2562,7 +2576,7 @@ fn native_allows_all_native_only_handle_methods_no_platform_error() {
             "std::net::quic",
             "quic.QUICEvent",
             "fn fake_event() -> quic.QUICEvent",
-            "let ev = unsafe { fake_event() };\n            ev.free();",
+            "let ev = unsafe { fake_event() };\n            ev.close();",
             "std::net::quic",
         ),
     ];

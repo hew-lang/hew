@@ -1,0 +1,15 @@
+import std::net::websocket;
+
+import std::encoding::protobuf;
+
+fn close_websocket(value: websocket.Message) {
+    value.close();
+}
+
+fn close_protobuf(value: protobuf.Message) {
+    value.close();
+}
+
+fn main() -> i64 {
+    0
+}

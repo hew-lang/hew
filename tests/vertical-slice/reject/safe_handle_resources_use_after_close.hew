@@ -1,0 +1,80 @@
+import std::path;
+
+import std::semaphore;
+
+import std::deque;
+
+import std::time::cron;
+
+import std::net::http;
+
+import std::net::http::http_client;
+
+import std::net::quic;
+
+import std::net::url;
+
+import std::net::websocket;
+
+import std::encoding::protobuf;
+
+import std::encoding::xml;
+
+fn use_glob(value: path.GlobResult) {
+    value.close();
+    let _ = value.len();
+}
+
+fn use_semaphore(value: semaphore.Semaphore) {
+    value.close();
+    let _ = value.count();
+}
+
+fn use_deque(value: deque.Deque) {
+    value.close();
+    let _ = value.len();
+}
+
+fn use_cron(value: cron.Expr) {
+    value.close();
+    let _ = value.to_string();
+}
+
+fn use_request(value: http.Request) {
+    value.close();
+    let _ = value.path();
+}
+
+fn use_response(value: http_client.Response) {
+    value.close();
+    let _ = value.status();
+}
+
+fn use_event(value: quic.QUICEvent) {
+    value.close();
+    let _ = value.kind();
+}
+
+fn use_url(value: url.Url) {
+    value.close();
+    let _ = value.host();
+}
+
+fn use_message(value: websocket.Message) {
+    value.close();
+    let _ = value.msg_type();
+}
+
+fn use_protobuf(value: protobuf.Message) {
+    value.close();
+    let _ = value.has_field(1);
+}
+
+fn use_xml(value: xml.Node) {
+    value.close();
+    let _ = value.get_tag();
+}
+
+fn main() -> i64 {
+    0
+}

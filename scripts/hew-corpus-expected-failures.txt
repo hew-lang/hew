@@ -69,8 +69,6 @@ examples/net/probe_opaque_actor_state.hew
 # deferred-nyi: QUIC / advanced net NYI
 examples/quic_mesh/client.hew
 examples/quic_mesh/selector_smoke.hew
-examples/quic_service/client.hew
-examples/quic_service/server.hew
 
 # deferred-nyi: advanced actor patterns NYI
 examples/services/circuit_breaker.hew
@@ -163,11 +161,6 @@ hew-sandbox-vm/fixtures/26-i64-bigint/main.hew
 hew-sandbox-vm/fixtures/27-actor-crash-restart-ignored/main.hew
 hew-sandbox-vm/fixtures/28-actor-state-arity-trap/main.hew
 hew-sandbox-vm/fixtures/29-mixed-scalar-compare-trap/main.hew
-
-# ── hew-types/ ───────────────────────────────────────────────────────────────
-
-# deferred-nyi: net parameter surfaces typecheck fixture uses NYI net types
-hew-types/tests/fixtures/net_parameter_surfaces_typecheck.hew
 
 # ── repros/ ───────────────────────────────────────────────────────────────────
 

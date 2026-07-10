@@ -13,16 +13,21 @@
 //!     let expr = cron.parse("0 */5 * * *");
 //!     let next_run = expr.next(datetime.now_secs());
 //!     println(next_run);
-//!     expr.free();
+//!     expr.close();
 //! }
 //! ```
 
 /// A parsed cron expression.
 ///
-/// Created by `cron.parse(expr)`. Must be freed with `free()` when
-/// no longer needed to avoid leaking memory.
+/// Created by `cron.parse(expr)`. Expressions close automatically at scope
+/// exit; call `close()` to release one early.
 #[opaque]
+type ExprHandle {
+}
+
+#[resource]
 pub type Expr {
+    handle: ExprHandle;
 }
 
 /// Structured cron scheduling errors surfaced by the native ABI.
@@ -74,9 +79,6 @@ trait ExprMethods {
 
     /// Return the cron expression as a string.
     fn to_string(self) -> string;
-
-    /// Release the parsed expression resources.
-    fn free(self);
 }
 
 impl ExprMethods for Expr {
@@ -93,7 +95,7 @@ impl ExprMethods for Expr {
     /// Compute the next firing time (epoch seconds) after the given timestamp.
     fn try_next(expr: Expr, after_epoch_secs: i64) -> Result<i64, CronError> {
         let result = unsafe {
-            hew_cron_next_hew(expr, after_epoch_secs as i64)
+            hew_cron_next_hew(expr.handle, after_epoch_secs as i64)
         };
         if result.status == 0 {
             Ok(result.timestamp as i64)
@@ -104,13 +106,16 @@ impl ExprMethods for Expr {
     /// Return the cron expression as a string.
     fn to_string(expr: Expr) -> string {
         unsafe {
-            hew_cron_to_string(expr)
+            hew_cron_to_string(expr.handle)
         }
     }
-    /// Release the parsed expression resources.
-    fn free(expr: Expr) {
+}
+
+impl Expr {
+    /// Release this parsed expression early.
+    fn close(expr: Expr) {
         unsafe {
-            hew_cron_free(expr)
+            hew_cron_free(expr.handle)
         };
     }
 }
@@ -128,8 +133,8 @@ impl ExprMethods for Expr {
 /// ```
 pub fn parse(expr: string) -> Expr {
     unsafe {
-        let parsed = hew_cron_parse(expr);
-        if !hew_cron_is_valid(parsed) {
+        let parsed = Expr { handle: hew_cron_parse(expr) };
+        if !hew_cron_is_valid(parsed.handle) {
             let detail = cron_last_error_message();
             if detail.len() == 0 {
                 panic(f"cron.parse: invalid expression: {expr}");
@@ -143,13 +148,13 @@ pub fn parse(expr: string) -> Expr {
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
-    fn hew_cron_parse(expr: string) -> Expr;
-    fn hew_cron_is_valid(expr: Expr) -> bool;
-    fn hew_cron_next(expr: Expr, after_epoch_secs: i64, out_ts: *mut i64) -> i32;
-    fn hew_cron_next_hew(expr: Expr, after_epoch_secs: i64) -> CronNextResult;
+    fn hew_cron_parse(expr: string) -> ExprHandle;
+    fn hew_cron_is_valid(expr: ExprHandle) -> bool;
+    fn hew_cron_next(expr: ExprHandle, after_epoch_secs: i64, out_ts: *mut i64) -> i32;
+    fn hew_cron_next_hew(expr: ExprHandle, after_epoch_secs: i64) -> CronNextResult;
     fn hew_cron_last_error() -> string;
-    fn hew_cron_to_string(expr: Expr) -> string;
-    fn hew_cron_free(expr: Expr);
+    fn hew_cron_to_string(expr: ExprHandle) -> string;
+    fn hew_cron_free(expr: ExprHandle);
 }
 
 // ── Status-code parity tests ──────────────────────────────────────────

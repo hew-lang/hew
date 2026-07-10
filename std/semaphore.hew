@@ -13,16 +13,21 @@
 //!     sem.acquire();
 //!     // critical section
 //!     sem.release();
-//!     sem.free();
+//!     sem.close();
 //! }
 //! ```
 
 /// An opaque counting semaphore handle.
 ///
-/// Created by `semaphore.new(count)`. Must be freed with `free()` when
-/// no longer needed to avoid leaking memory.
+/// Created by `semaphore.new(count)`. Semaphores close automatically at scope
+/// exit; call `close()` to release one early.
 #[opaque]
+type SemaphoreHandle {
+}
+
+#[resource]
 pub type Semaphore {
+    handle: SemaphoreHandle;
 }
 
 /// Methods available on a `Semaphore`.
@@ -45,46 +50,46 @@ trait SemaphoreMethods {
 
     /// Return the current number of available permits.
     fn count(self) -> i64;
-
-    /// Release the semaphore resources.
-    fn free(self);
 }
 
 impl SemaphoreMethods for Semaphore {
     /// Block until a permit is available, then acquire it.
     fn acquire(sem: Semaphore) {
         unsafe {
-            hew_semaphore_acquire(sem)
+            hew_semaphore_acquire(sem.handle)
         };
     }
     /// Try to acquire a permit without blocking.
     fn try_acquire(sem: Semaphore) -> bool {
         unsafe {
-            hew_semaphore_try_acquire(sem)
+            hew_semaphore_try_acquire(sem.handle)
         }
     }
     /// Try to acquire a permit, waiting up to `timeout_ms` milliseconds.
     fn acquire_timeout(sem: Semaphore, timeout_ms: i64) -> bool {
         unsafe {
-            hew_semaphore_acquire_timeout(sem, timeout_ms as i64)
+            hew_semaphore_acquire_timeout(sem.handle, timeout_ms as i64)
         } // INTERNAL-ABI: C ABI takes i64 timeout
     }
     /// Release a previously acquired permit.
     fn release(sem: Semaphore) {
         unsafe {
-            hew_semaphore_release(sem)
+            hew_semaphore_release(sem.handle)
         };
     }
     /// Return the current number of available permits.
     fn count(sem: Semaphore) -> i64 {
         unsafe {
-            hew_semaphore_count(sem) as i64
+            hew_semaphore_count(sem.handle) as i64
         }
     }
-    /// Release the semaphore resources.
-    fn free(sem: Semaphore) {
+}
+
+impl Semaphore {
+    /// Release this semaphore early.
+    fn close(sem: Semaphore) {
         unsafe {
-            hew_semaphore_free(sem)
+            hew_semaphore_free(sem.handle)
         };
     }
 }
@@ -99,17 +104,17 @@ impl SemaphoreMethods for Semaphore {
 /// ```
 pub fn new(count: i64) -> Semaphore {
     unsafe {
-        hew_semaphore_new(count as i32)
+        Semaphore { handle: hew_semaphore_new(count as i32) }
     } // INTERNAL-ABI: C ABI takes i32 initial count
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
-    fn hew_semaphore_new(initial_count: i32) -> Semaphore;
-    fn hew_semaphore_acquire(sem: Semaphore);
-    fn hew_semaphore_try_acquire(sem: Semaphore) -> bool;
-    fn hew_semaphore_acquire_timeout(sem: Semaphore, timeout_ms: i64) -> bool;
-    fn hew_semaphore_release(sem: Semaphore);
-    fn hew_semaphore_count(sem: Semaphore) -> i32;
-    fn hew_semaphore_free(sem: Semaphore);
+    fn hew_semaphore_new(initial_count: i32) -> SemaphoreHandle;
+    fn hew_semaphore_acquire(sem: SemaphoreHandle);
+    fn hew_semaphore_try_acquire(sem: SemaphoreHandle) -> bool;
+    fn hew_semaphore_acquire_timeout(sem: SemaphoreHandle, timeout_ms: i64) -> bool;
+    fn hew_semaphore_release(sem: SemaphoreHandle);
+    fn hew_semaphore_count(sem: SemaphoreHandle) -> i32;
+    fn hew_semaphore_free(sem: SemaphoreHandle);
 }

@@ -16,16 +16,21 @@
 //!     println(dq.len());          // 3
 //!     println(dq.pop_front());    // 0
 //!     println(dq.pop_back());     // 2
-//!     dq.free();
+//!     dq.close();
 //! }
 //! ```
 
 /// An opaque double-ended queue handle.
 ///
-/// Created by `deque.new()`. Must be freed with `free()` when no longer
-/// needed to avoid leaking memory.
+/// Created by `deque.new()`. Deques close automatically at scope exit; call
+/// `close()` to release one early.
 #[opaque]
+type DequeHandle {
+}
+
+#[resource]
 pub type Deque {
+    handle: DequeHandle;
 }
 
 /// Methods available on a `Deque`.
@@ -41,44 +46,46 @@ trait DequeMethods {
     fn len(self) -> i64;
 
     fn is_empty(self) -> bool;
-
-    fn free(self);
 }
 
 impl DequeMethods for Deque {
     fn push_front(dq: Deque, value: i64) {
         unsafe {
-            hew_deque_push_front(dq, value)
+            hew_deque_push_front(dq.handle, value)
         };
     }
     fn push_back(dq: Deque, value: i64) {
         unsafe {
-            hew_deque_push_back(dq, value)
+            hew_deque_push_back(dq.handle, value)
         };
     }
     fn pop_front(dq: Deque) -> i64 {
         unsafe {
-            hew_deque_pop_front(dq)
+            hew_deque_pop_front(dq.handle)
         }
     }
     fn pop_back(dq: Deque) -> i64 {
         unsafe {
-            hew_deque_pop_back(dq)
+            hew_deque_pop_back(dq.handle)
         }
     }
     fn len(dq: Deque) -> i64 {
         unsafe {
-            hew_deque_len(dq)
+            hew_deque_len(dq.handle)
         }
     }
     fn is_empty(dq: Deque) -> bool {
         unsafe {
-            hew_deque_is_empty(dq)
+            hew_deque_is_empty(dq.handle)
         }
     }
-    fn free(dq: Deque) {
+}
+
+impl Deque {
+    /// Release this deque early.
+    fn close(dq: Deque) {
         unsafe {
-            hew_deque_free(dq)
+            hew_deque_free(dq.handle)
         };
     }
 }
@@ -86,18 +93,18 @@ impl DequeMethods for Deque {
 /// Create a new, empty deque.
 pub fn new() -> Deque {
     unsafe {
-        hew_deque_new()
+        Deque { handle: hew_deque_new() }
     }
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
-    fn hew_deque_new() -> Deque;
-    fn hew_deque_push_front(dq: Deque, value: i64);
-    fn hew_deque_push_back(dq: Deque, value: i64);
-    fn hew_deque_pop_front(dq: Deque) -> i64;
-    fn hew_deque_pop_back(dq: Deque) -> i64;
-    fn hew_deque_len(dq: Deque) -> i64;
-    fn hew_deque_is_empty(dq: Deque) -> bool;
-    fn hew_deque_free(dq: Deque);
+    fn hew_deque_new() -> DequeHandle;
+    fn hew_deque_push_front(dq: DequeHandle, value: i64);
+    fn hew_deque_push_back(dq: DequeHandle, value: i64);
+    fn hew_deque_pop_front(dq: DequeHandle) -> i64;
+    fn hew_deque_pop_back(dq: DequeHandle) -> i64;
+    fn hew_deque_len(dq: DequeHandle) -> i64;
+    fn hew_deque_is_empty(dq: DequeHandle) -> bool;
+    fn hew_deque_free(dq: DequeHandle);
 }

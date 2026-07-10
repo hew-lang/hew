@@ -1,0 +1,24 @@
+// Accept (#2400 resource-wrapper collision, now qualified): two imported
+// modules each define a DISTINCT type named `Server` with an
+// `impl ServerMethods for Server` block. Both are close resources, so both
+// used to lower `Server::close` under one unqualified raw-MIR name and collide
+// on a single compilation unit — the historical #2400 duplicate-symbol
+// fail-closed case.
+//
+// The free->close migration qualifies colliding imported resource wrappers, so
+// http and websocket `Server::close` now lower to distinct module-qualified
+// symbols and both bodies coexist. This program compiles to native and runs;
+// full LLVM verification passing is the anti-fail-open guard — a silent
+// linkonce merge or a dropped body would surface as the "Global is external,
+// but doesn't have external or weak linkage!" verifier dump instead. The
+// compiler still fails closed for genuinely-unqualifiable same-name collisions.
+import std::net::http;
+
+import std::net::websocket;
+
+fn main() {
+    let http_server = http.listen(":0");
+    http_server.close();
+    let ws_server = websocket.listen(":0");
+    ws_server.close();
+}

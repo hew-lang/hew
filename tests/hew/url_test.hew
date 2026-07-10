@@ -68,7 +68,7 @@ fn test_decode_query_skips_entries_without_equals() {
 fn test_port_returns_none_when_absent() {
     let parsed = url.parse("http://localhost/path");
     let port = parsed.port();
-    parsed.free();
+    parsed.close();
     match port {
         Some(value) => panic(f"expected None, got Some({value})"),
         None => {},
@@ -79,7 +79,7 @@ fn test_port_returns_none_when_absent() {
 fn test_port_returns_some_when_explicit() {
     let parsed = url.parse("http://localhost:8080/path");
     let port = parsed.port();
-    parsed.free();
+    parsed.close();
     match port {
         Some(value) => testing.assert_eq(value, 8080),
         None => panic("expected Some(8080), got None"),

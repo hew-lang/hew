@@ -1,7 +1,11 @@
 import std::fs;
+
 import std::os;
+
 import std::net::url;
+
 import std::text::regex;
+
 import std::time::cron;
 
 fn main() -> i64 {
@@ -10,25 +14,21 @@ fn main() -> i64 {
         return 1;
     }
     re.close();
-
     let contents = fs.read("tests/vertical-slice/accept/std_panic_wrappers_success.hew");
     if contents.len() == 0 {
         return 2;
     }
-
     let arg0 = os.args(0);
     if arg0.len() == 0 {
         return 3;
     }
-
     let parsed = url.parse("https://x.com");
     let host = parsed.host();
-    parsed.free();
+    parsed.close();
     if host != "x.com" {
         return 4;
     }
-
     let expr = cron.parse("* * * * *");
-    expr.free();
+    expr.close();
     0
 }

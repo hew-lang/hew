@@ -45,15 +45,15 @@ fn main() {
     // server_name is the TLS SNI field; localhost is used for permissive dev verification.
     let conn = ep.connect(server_addr, "localhost");
     let connected = ep.on_event();
-    assert_eq(connected.kind(), 0);
-    connected.free();
+    assert(connected.kind() == 0);
+    connected.close();
     println("[client] connected to server");
 
     // Open a new stream on the connection.
     let stream = conn.open_stream();
     let opened = conn.on_event();
-    assert_eq(opened.kind(), 2);
-    opened.free();
+    assert(opened.kind() == 2);
+    opened.close();
     println("[client] opened stream");
 
     // Send a message to the server.
@@ -73,8 +73,8 @@ fn main() {
     // Clean shutdown of stream.
     stream.close();
     let closed = conn.on_event();
-    assert_eq(closed.kind(), 3);
-    closed.free();
+    assert(closed.kind() == 3);
+    closed.close();
 
     // Clean shutdown of connection.
     assert_ok(conn.disconnect());

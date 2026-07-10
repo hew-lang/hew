@@ -27,7 +27,7 @@ fn test_headers_drop_without_consume_does_not_abort() {
     // Post-fix: string_pair_drop_thunk is called on each (zero) element, no abort.
     let _h = resp.headers();
     // _h drops here.
-    resp.free();
+    resp.close();
     testing.assert_true(true);
 }
 
@@ -40,6 +40,6 @@ fn test_headers_len_bind_does_not_abort() {
     let h = resp.headers();
     let _n = h.len();
     // h drops here.
-    resp.free();
+    resp.close();
     testing.assert_true(true);
 }

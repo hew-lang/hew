@@ -2838,6 +2838,31 @@ fi
 # diagnostic's pretty-printed `pat` binding name.
 grep -qF 'use of moved value `pat`' "${reject_output}"
 
+# B-1 safe stdlib resource migration: every migrated handle surface resolves
+# `close(self)` through its wrapper impl, including the same-short-name Message
+# wrappers that must be compiled in separate importer fixtures.
+compile_accept "safe_handle_resources_close"
+compile_accept "http_client_response_resource_close"
+compile_accept "websocket_message_resource_close"
+compile_accept "protobuf_message_resource_close"
+compile_accept "http_resource_dual_import_close"
+compile_accept "same_name_message_resources_close"
+
+# Reject: each migrated safe handle is unavailable after explicit close.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/safe_handle_resources_use_after_close.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected safe_handle_resources_use_after_close fixture to fail" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+safe_handle_use_after_close_count="$(grep -c 'use of moved value `value`' "${reject_output}")"
+if [[ "${safe_handle_use_after_close_count}" -ne 11 ]]; then
+  echo "expected 11 safe-handle use-after-close diagnostics, got ${safe_handle_use_after_close_count}" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/string_embedded_nul.hew" >"${reject_output}" 2>&1; then
   echo "expected string_embedded_nul fixture to fail" >&2
   exit 1

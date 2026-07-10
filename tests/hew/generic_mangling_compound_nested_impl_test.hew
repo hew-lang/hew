@@ -1,0 +1,36 @@
+//! Concrete specialised impls over a COMPOUND-NESTED type arg
+//! (`Wrapper<Boxx<i64>>` vs `Wrapper<Boxx<string>>`). The checker registers
+//! the impl method under `hew_types::mangle_impl_self_name`; HIR emits the
+//! call symbol under `hew_hir::monomorph::mangle`. The two manglers must
+//! agree byte-for-byte or method dispatch resolves to the wrong symbol (or
+//! no symbol at all). A LEAF type arg (`Wrapper<i64>`) already exercises
+//! this seam, but the two schemes agreed for leaf args even when desynced —
+//! only a nested compound arg (`Boxx<i64>` inside `Wrapper<...>`) exposes a
+//! divergence between the two encoders.
+
+import std::testing;
+
+trait Describe {
+    fn describe(val: Self) -> i64;
+}
+
+type Boxx<T> { inner: T; }
+type Wrapper<T> { payload: T; }
+
+impl Describe for Wrapper<Boxx<i64>> {
+    fn describe(w: Wrapper<Boxx<i64>>) -> i64 { 111 }
+}
+
+impl Describe for Wrapper<Boxx<string>> {
+    fn describe(w: Wrapper<Boxx<string>>) -> i64 { 222 }
+}
+
+#[test]
+fn test_compound_nested_specialised_impl_dispatches_to_matching_arm() {
+    let a = Wrapper<Boxx<i64>> { payload: Boxx { inner: 1 } };
+    let b = Wrapper<Boxx<string>> { payload: Boxx { inner: "x" } };
+
+    testing.assert_eq(a.describe(), 111);
+    testing.assert_eq(b.describe(), 222);
+    println("VALUES-OK generic-mangling-compound-nested");
+}

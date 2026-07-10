@@ -12,8 +12,8 @@
 //!     let root = xml.parse("<book><title>Hew Guide</title></book>");
 //!     let title = root.get_child(0);
 //!     println(title.get_text());
-//!     title.free();
-//!     root.free();
+//!     title.close();
+//!     root.close();
 //! }
 //! ```
 
@@ -21,9 +21,15 @@
 ///
 /// Represents either an element (with tag, attributes, and children) or a
 /// text node. Created by `xml.parse(s)` or by navigating into a parsed
-/// tree. Must be freed with `free()` when no longer needed.
+/// tree. Nodes close automatically at scope exit; call `close()` to release
+/// one early.
 #[opaque]
+type NodeHandle {
+}
+
+#[resource]
 pub type Node {
+    handle: NodeHandle;
 }
 
 /// Methods available on an XML `Node`.
@@ -48,49 +54,51 @@ trait NodeMethods {
 
     /// Return 1 if this is an element node, 0 if text, -1 if null.
     fn is_element(self) -> i32; // INTERNAL-ABI: tri-state kind (1=element, 0=text, -1=null); planned enum migration
-    /// Release the node resources.
-    fn free(self);
 }
 
 impl NodeMethods for Node {
     fn to_string(node: Node) -> string {
         unsafe {
-            hew_xml_to_string(node)
+            hew_xml_to_string(node.handle)
         }
     }
     fn get_tag(node: Node) -> string {
         unsafe {
-            hew_xml_get_tag(node)
+            hew_xml_get_tag(node.handle)
         }
     }
     fn get_attribute(node: Node, name: string) -> string {
         unsafe {
-            hew_xml_get_attribute(node, name)
+            hew_xml_get_attribute(node.handle, name)
         }
     }
     fn children_count(node: Node) -> i64 {
         unsafe {
-            hew_xml_children_count(node) as i64
+            hew_xml_children_count(node.handle) as i64
         }
     }
     fn get_child(node: Node, index: i64) -> Node {
         unsafe {
-            hew_xml_get_child(node, index as i32)
+            Node { handle: hew_xml_get_child(node.handle, index as i32) }
         }
     } // INTERNAL-ABI: C ABI index is i32
     fn get_text(node: Node) -> string {
         unsafe {
-            hew_xml_get_text(node)
+            hew_xml_get_text(node.handle)
         }
     }
     fn is_element(node: Node) -> i32 { // INTERNAL-ABI: tri-state kind (1=element, 0=text, -1=null); planned enum migration
         unsafe {
-            hew_xml_is_element(node)
+            hew_xml_is_element(node.handle)
         }
     }
-    fn free(node: Node) {
+}
+
+impl Node {
+    /// Release this node early.
+    fn close(node: Node) {
         unsafe {
-            hew_xml_free(node)
+            hew_xml_free(node.handle)
         };
     }
 }
@@ -99,40 +107,40 @@ impl NodeMethods for Node {
 /// Parse an XML string into a `Node` tree.
 pub fn parse(s: string) -> Node {
     unsafe {
-        hew_xml_parse(s)
+        Node { handle: hew_xml_parse(s) }
     }
 }
 
 /// Serialize a `Node` tree back to an XML string.
 pub fn to_string(node: Node) -> string {
     unsafe {
-        hew_xml_to_string(node)
+        hew_xml_to_string(node.handle)
     }
 }
 
 /// Get an attribute value from a node. Returns empty string if not found.
 pub fn get_attribute(node: Node, name: string) -> string {
     unsafe {
-        hew_xml_get_attribute(node, name)
+        hew_xml_get_attribute(node.handle, name)
     }
 }
 
 /// Get the concatenated text content of a node and its descendants.
 pub fn get_text(node: Node) -> string {
     unsafe {
-        hew_xml_get_text(node)
+        hew_xml_get_text(node.handle)
     }
 }
 
 // ── FFI bindings (implementation detail) ──────────────────────────────
 extern "C" {
-    fn hew_xml_parse(xml_str: string) -> Node;
-    fn hew_xml_to_string(node: Node) -> string;
-    fn hew_xml_get_tag(node: Node) -> string;
-    fn hew_xml_get_attribute(node: Node, name: string) -> string;
-    fn hew_xml_children_count(node: Node) -> i32;
-    fn hew_xml_get_child(node: Node, index: i32) -> Node;
-    fn hew_xml_get_text(node: Node) -> string;
-    fn hew_xml_is_element(node: Node) -> i32;
-    fn hew_xml_free(node: Node);
+    fn hew_xml_parse(xml_str: string) -> NodeHandle;
+    fn hew_xml_to_string(node: NodeHandle) -> string;
+    fn hew_xml_get_tag(node: NodeHandle) -> string;
+    fn hew_xml_get_attribute(node: NodeHandle, name: string) -> string;
+    fn hew_xml_children_count(node: NodeHandle) -> i32;
+    fn hew_xml_get_child(node: NodeHandle, index: i32) -> NodeHandle;
+    fn hew_xml_get_text(node: NodeHandle) -> string;
+    fn hew_xml_is_element(node: NodeHandle) -> i32;
+    fn hew_xml_free(node: NodeHandle);
 }

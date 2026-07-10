@@ -10,7 +10,7 @@ fn test_set_get_varint() {
     let msg = protobuf.new();
     msg.set_varint(1, 42);
     testing.assert_eq(msg.get_varint(1, 0), 42);
-    msg.free();
+    msg.close();
 }
 
 #[test]
@@ -18,14 +18,14 @@ fn test_has_field_set() {
     let msg = protobuf.new();
     msg.set_varint(2, 100);
     testing.assert_true(msg.has_field(2));
-    msg.free();
+    msg.close();
 }
 
 #[test]
 fn test_has_field_absent() {
     let msg = protobuf.new();
     testing.assert_false(msg.has_field(1));
-    msg.free();
+    msg.close();
 }
 
 // ── set_string / get_string ───────────────────────────────────────────
@@ -35,7 +35,7 @@ fn test_set_get_string() {
     let msg = protobuf.new();
     msg.set_string(3, "hello");
     testing.assert_eq_str(msg.get_string(3), "hello");
-    msg.free();
+    msg.close();
 }
 
 // ── get_varint fallback when absent ──────────────────────────────────
@@ -44,13 +44,13 @@ fn test_set_get_string() {
 fn test_get_varint_fallback_when_absent() {
     let msg = protobuf.new();
     testing.assert_eq(msg.get_varint(99, 7), 7);
-    msg.free();
+    msg.close();
 }
 
-// ── free() does not panic ─────────────────────────────────────────────
+// ── close() does not panic ────────────────────────────────────────────
 
 #[test]
-fn test_free_no_panic() {
+fn test_close_no_panic() {
     let msg = protobuf.new();
-    msg.free();
+    msg.close();
 }

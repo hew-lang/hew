@@ -18,16 +18,22 @@
 //!     msg.set_string(2, "hello");
 //!     let val = msg.get_string(2);
 //!     println(val);
-//!     msg.free();
+//!     msg.close();
 //! }
 //! ```
 
 /// An opaque Protocol Buffers message.
 ///
 /// Created by `protobuf.new()`. Fields are accessed by their field
-/// number. Must be freed with `free()` when no longer needed.
+/// number. Messages close automatically at scope exit; call `close()` to
+/// release one early.
 #[opaque]
+type MessageHandle {
+}
+
+#[resource]
 pub type Message {
+    handle: MessageHandle;
 }
 
 /// Methods available on a protobuf `Message`.
@@ -51,45 +57,46 @@ trait MessageMethods {
     /// Test whether a field is present in the message.
     fn has_field(self, field_number: i64) -> bool;
 
-    /// Release the message resources.
-    fn free(self);
 }
 
 impl MessageMethods for Message {
     /// Set a string field by field number.
     fn set_string(msg: Message, field_number: i64, value: string) {
         unsafe {
-            hew_proto_msg_set_string(msg, field_number as i32, value)
+            hew_proto_msg_set_string(msg.handle, field_number as i32, value)
         }; // INTERNAL-ABI: C ABI field_number is i32
     }
     /// Get a string field by field number.
     fn get_string(msg: Message, field_number: i64) -> string {
         unsafe {
-            hew_proto_msg_get_string(msg, field_number as i32)
+            hew_proto_msg_get_string(msg.handle, field_number as i32)
         } // INTERNAL-ABI: C ABI field_number is i32
     }
     /// Set a varint (integer) field by field number.
     fn set_varint(msg: Message, field_number: i64, value: i64) {
         unsafe {
-            hew_proto_msg_set_varint(msg, field_number as i32, value as i64)
+            hew_proto_msg_set_varint(msg.handle, field_number as i32, value as i64)
         }; // INTERNAL-ABI: C ABI uses i32/i64
     }
     /// Get a varint (integer) field by field number.
     fn get_varint(msg: Message, field_number: i64, fallback: i64) -> i64 {
         unsafe {
-            hew_proto_msg_get_varint(msg, field_number as i32, fallback as i64)
+            hew_proto_msg_get_varint(msg.handle, field_number as i32, fallback as i64)
         } // INTERNAL-ABI: C ABI uses i32/i64
     }
     /// Test whether a field is present in the message.
     fn has_field(msg: Message, field_number: i64) -> bool {
         unsafe {
-            hew_proto_msg_has_field(msg, field_number as i32)
+            hew_proto_msg_has_field(msg.handle, field_number as i32)
         } != 0 // INTERNAL-ABI: C ABI returns i32 (1=present, 0=absent); explicit != 0 required (no implicit i32→bool)
     }
-    /// Release the message resources.
-    fn free(msg: Message) {
+}
+
+impl Message {
+    /// Release this message early.
+    fn close(msg: Message) {
         unsafe {
-            hew_proto_msg_free(msg)
+            hew_proto_msg_free(msg.handle)
         };
     }
 }
@@ -102,23 +109,23 @@ impl MessageMethods for Message {
 /// ```
 /// let msg = protobuf.new();
 /// msg.set_varint(1, 100);
-/// msg.free();
+/// msg.close();
 /// ```
 pub fn new() -> Message {
     unsafe {
-        hew_proto_msg_new()
+        Message { handle: hew_proto_msg_new() }
     }
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
-    fn hew_proto_msg_new() -> Message;
-    fn hew_proto_msg_set_string(msg: Message, field_number: i32, s: string);
-    fn hew_proto_msg_get_string(msg: Message, field_number: i32) -> string;
-    fn hew_proto_msg_set_varint(msg: Message, field_number: i32, value: i64);
-    fn hew_proto_msg_get_varint(msg: Message, field_number: i32, fallback: i64) -> i64;
-    fn hew_proto_msg_has_field(msg: Message, field_number: i32) -> i32;
-    fn hew_proto_msg_free(msg: Message);
+    fn hew_proto_msg_new() -> MessageHandle;
+    fn hew_proto_msg_set_string(msg: MessageHandle, field_number: i32, s: string);
+    fn hew_proto_msg_get_string(msg: MessageHandle, field_number: i32) -> string;
+    fn hew_proto_msg_set_varint(msg: MessageHandle, field_number: i32, value: i64);
+    fn hew_proto_msg_get_varint(msg: MessageHandle, field_number: i32, fallback: i64) -> i64;
+    fn hew_proto_msg_has_field(msg: MessageHandle, field_number: i32) -> i32;
+    fn hew_proto_msg_free(msg: MessageHandle);
     // Note: encode, decode, set_bytes, and get_bytes require byte array
     // support not yet available in Hew.
 }

@@ -14,7 +14,7 @@ XML parsing and serialization for Hew.
 | `node.get_child(i)` | Get child node by index |
 | `node.get_text()` | Concatenated text content (recursive) |
 | `node.is_element()` | 1 for elements, 0 for text nodes |
-| `node.free()` | Release node resources |
+| `node.close()` | Release node resources early; otherwise scope exit closes it |
 
 ## Example
 
@@ -27,7 +27,7 @@ fn main() {
     println(root.get_attribute("lang")); // en
     let title = root.get_child(0);
     println(title.get_text());          // Hew Guide
-    title.free();
-    root.free();
+    title.close();
+    root.close();
 }
 ```

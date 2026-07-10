@@ -1427,7 +1427,6 @@ fn fs$try_read_bytes(string) -> Result<bytes, IoError> [conv=default]
     _8 = call hew_stream_last_error() -> bb6
   bb4:
     stmt: use BindingId(54) data site=SiteId(467) ty=bytes intent=Read
-    stmt: agg_alias BindingId(54) data site=SiteId(467) ty=bytes
     _15 = const.i64 0
     mtag14 = move _15
     mvar14.0.0 = move _2

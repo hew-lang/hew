@@ -8284,7 +8284,7 @@ fn lower_function(
     // (widened in Slice 2 from a single-block field to a vec). The
     // elaborator + check_function consume the block vec; legacy
     // single-block tests still see `blocks[0]` as the entry block.
-    let raw = RawMirFunction {
+    let mut raw = RawMirFunction {
         name: emit_name.clone(),
         return_ty: return_ty.clone(),
         call_conv,
@@ -8365,6 +8365,8 @@ fn lower_function(
 
     collect_unknown_type_diagnostics(func, &builder, &mut diagnostics);
 
+    let bytes_derivation = finalize_bytes_ownership(&mut raw, &builder, &dataflow_result);
+
     // Compute cooperate-check sites from the CFG. Empty for leaf functions
     // (< 10 MIR statements, no calls, no loops). Codegen reads
     // `cooperate_sites` to inject `call @hew_actor_cooperate()`.
@@ -8397,7 +8399,13 @@ fn lower_function(
     // fixtures — real programs whose native binaries are proven leak- and
     // double-free-clean under `leaks --atExit` and the poisoned allocator —
     // as well as by hew-mir's hand-constructed CheckedMirFunction unit inputs.
-    let elaborated = elaborate(&checked, &builder, &thir.statements, &dataflow_result);
+    let elaborated = elaborate(
+        &checked,
+        &builder,
+        &thir.statements,
+        &dataflow_result,
+        Some(&bytes_derivation.allowed),
+    );
 
     // Fail-closed validation of the elaborated drop plan. Surfaces a
     // `MirCheck::DropPlanUndetermined` for any Return-block whose
@@ -9369,6 +9377,14 @@ struct Builder {
     /// a field read refcount-bumps and a local move consumes, both empirically
     /// owner-preserving.
     funcupdate_param_ids: Rc<HashSet<BindingId>>,
+    /// MIR locals for by-value `bytes` parameters that remain caller-owned
+    /// borrows. Returning or storing one mints a co-owner and therefore needs
+    /// an explicit `BytesRetain`; ordinary calls continue to borrow it.
+    borrowed_bytes_param_locals: HashSet<u32>,
+    /// Binding-reference sites used as the RHS of `let next = current` for
+    /// `bytes`. Stage S1 treats these as retained shares, so their checker use
+    /// intent is downgraded from `Consume` to `Read`.
+    bytes_local_share_sites: HashSet<SiteId>,
     /// F-04 fungible supervisor-child reference table. Maps the handle local id
     /// produced by `lower_supervisor_child_get` (`Place::ActorHandle(N)`) to the
     /// stable `(supervisor, slot)` reference it stands for.
@@ -11750,13 +11766,18 @@ impl Builder {
             // is dropped exactly once and never double-freed. Keyed by the
             // ORIGIN `(ItemId, index)`; a BORROW param is absent and never
             // registered (the caller keeps ownership and drops it).
-            if self
+            let param_is_consumed = self
                 .param_ownership
                 .param_consume
                 .get(&(func.id, i))
                 .copied()
-                == Some(true)
-            {
+                == Some(true);
+            if matches!(self.subst_ty(&param.ty), ResolvedTy::Bytes) && !param_is_consumed {
+                if let Place::Local(local) = slot {
+                    self.borrowed_bytes_param_locals.insert(local);
+                }
+            }
+            if param_is_consumed {
                 let owned_ty = self.subst_ty(&param.ty);
                 self.register_owned_local(param.id, param.name.clone(), owned_ty.clone());
                 // Register the param in the function's top body scope so it
@@ -13636,6 +13657,11 @@ impl Builder {
                 };
                 self.pending_closure_literal_suspends = None;
                 self.pending_closure_literal_heap = None;
+                if matches!(binding_ty, ResolvedTy::Bytes)
+                    && matches!(value.kind, HirExprKind::BindingRef { .. })
+                {
+                    self.bytes_local_share_sites.insert(value.site);
+                }
                 let diag_len_before_value = self.diagnostics.len();
                 let value_place = self.lower_value(value);
                 // Cascade suppression: a `let` whose initializer failed to lower
@@ -14822,7 +14848,9 @@ impl Builder {
                     // exit. Consulted at the single resource-arg `Use` emission
                     // point; non-borrow sites (consumed params, unresolved
                     // callees) keep the over-stamped intent unchanged.
-                    let use_intent = if self.param_ownership.borrow_arg_sites.contains(&expr.site) {
+                    let use_intent = if self.param_ownership.borrow_arg_sites.contains(&expr.site)
+                        || self.bytes_local_share_sites.contains(&expr.site)
+                    {
                         IntentKind::Read
                     } else {
                         expr.intent
@@ -20299,7 +20327,7 @@ impl Builder {
             return false;
         }
         match &ty {
-            ResolvedTy::String => false,
+            ResolvedTy::String | ResolvedTy::Bytes => false,
             ResolvedTy::Tuple(items) => items
                 .iter()
                 .any(|item| self.ty_has_unretained_owned_leaf(item)),
@@ -25434,7 +25462,7 @@ impl Builder {
             return_ty: adapter_return_ty.clone(),
             statements: vec![],
         };
-        let raw = RawMirFunction {
+        let mut raw = RawMirFunction {
             name: adapter_symbol.to_string(),
             return_ty: adapter_return_ty.clone(),
             call_conv: crate::model::FunctionCallConv::TaskEntry,
@@ -25469,6 +25497,7 @@ impl Builder {
             .iter()
             .filter_map(check_to_diagnostic)
             .collect();
+        let bytes_derivation = finalize_bytes_ownership(&mut raw, &builder, &dataflow_result);
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let checked = CheckedMirFunction {
             name: adapter_symbol.to_string(),
@@ -25478,7 +25507,13 @@ impl Builder {
             checks: dataflow_result.checks.clone(),
             cooperate_sites,
         };
-        let elaborated = elaborate(&checked, &builder, &[], &dataflow_result);
+        let elaborated = elaborate(
+            &checked,
+            &builder,
+            &[],
+            &dataflow_result,
+            Some(&bytes_derivation.allowed),
+        );
         LoweredFunction {
             thir,
             raw,
@@ -25987,7 +26022,7 @@ impl Builder {
             return_ty: ResolvedTy::Unit,
             statements: thir_statements,
         };
-        let raw = RawMirFunction {
+        let mut raw = RawMirFunction {
             name: shim_name.to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: crate::model::FunctionCallConv::ClosureInvoke,
@@ -26037,6 +26072,7 @@ impl Builder {
             .collect();
         diagnostics.append(&mut builder.diagnostics);
         collect_unknown_type_diagnostics(&synthetic_func, &builder, &mut diagnostics);
+        let bytes_derivation = finalize_bytes_ownership(&mut raw, &builder, &dataflow_result);
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let checked = CheckedMirFunction {
             name: shim_name.to_string(),
@@ -26046,7 +26082,13 @@ impl Builder {
             checks: dataflow_result.checks.clone(),
             cooperate_sites,
         };
-        let elaborated = elaborate(&checked, &builder, &thir.statements, &dataflow_result);
+        let elaborated = elaborate(
+            &checked,
+            &builder,
+            &thir.statements,
+            &dataflow_result,
+            Some(&bytes_derivation.allowed),
+        );
 
         LoweredFunction {
             thir,
@@ -32155,7 +32197,7 @@ impl Builder {
         let mut raw_params = Vec::with_capacity(params.len() + 1);
         raw_params.push(env_ptr_ty);
         raw_params.extend(params.iter().map(|param| self.subst_ty(&param.ty)));
-        let raw = RawMirFunction {
+        let mut raw = RawMirFunction {
             name: shim_name.to_string(),
             return_ty: ret_ty.clone(),
             call_conv: crate::model::FunctionCallConv::ClosureInvoke,
@@ -32203,6 +32245,7 @@ impl Builder {
             .collect();
         diagnostics.append(&mut builder.diagnostics);
         collect_unknown_type_diagnostics(&synthetic_func, &builder, &mut diagnostics);
+        let bytes_derivation = finalize_bytes_ownership(&mut raw, &builder, &dataflow_result);
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let checked = CheckedMirFunction {
             name: shim_name.to_string(),
@@ -32212,7 +32255,13 @@ impl Builder {
             checks: dataflow_result.checks.clone(),
             cooperate_sites,
         };
-        let elaborated = elaborate(&checked, &builder, &thir.statements, &dataflow_result);
+        let elaborated = elaborate(
+            &checked,
+            &builder,
+            &thir.statements,
+            &dataflow_result,
+            Some(&bytes_derivation.allowed),
+        );
 
         LoweredFunction {
             thir,
@@ -32313,7 +32362,7 @@ impl Builder {
         let mut raw_params = Vec::with_capacity(param_tys.len() + 1);
         raw_params.push(env_ptr_ty);
         raw_params.extend_from_slice(param_tys);
-        let raw = RawMirFunction {
+        let mut raw = RawMirFunction {
             name: shim_name.to_string(),
             return_ty: ret_ty.clone(),
             call_conv: crate::model::FunctionCallConv::ClosureInvoke,
@@ -32366,6 +32415,7 @@ impl Builder {
             .collect();
         diagnostics.append(&mut builder.diagnostics);
         collect_unknown_type_diagnostics(&synthetic_func, &builder, &mut diagnostics);
+        let bytes_derivation = finalize_bytes_ownership(&mut raw, &builder, &dataflow_result);
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let checked = CheckedMirFunction {
             name: shim_name.to_string(),
@@ -32375,7 +32425,13 @@ impl Builder {
             checks: dataflow_result.checks.clone(),
             cooperate_sites,
         };
-        let elaborated = elaborate(&checked, &builder, &thir.statements, &dataflow_result);
+        let elaborated = elaborate(
+            &checked,
+            &builder,
+            &thir.statements,
+            &dataflow_result,
+            Some(&bytes_derivation.allowed),
+        );
 
         LoweredFunction {
             thir,
@@ -32801,7 +32857,7 @@ impl Builder {
         // `Unit` (Tell). Codegen consults this to pick the reply
         // serialisation width; the LLVM return type is always `i32`
         // (the status code) — see codegen's LambdaActorBody arm.
-        let raw = RawMirFunction {
+        let mut raw = RawMirFunction {
             name: body_name.clone(),
             return_ty: body_user_return_ty.clone(),
             call_conv: crate::model::FunctionCallConv::LambdaActorBody(shape),
@@ -32876,6 +32932,7 @@ impl Builder {
             .collect();
         body_diagnostics.append(&mut body_builder.diagnostics);
         collect_unknown_type_diagnostics(&synthetic_fn, &body_builder, &mut body_diagnostics);
+        let bytes_derivation = finalize_bytes_ownership(&mut raw, &body_builder, &dataflow_result);
 
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let checked = CheckedMirFunction {
@@ -32886,7 +32943,13 @@ impl Builder {
             checks: dataflow_result.checks.clone(),
             cooperate_sites,
         };
-        let elaborated = elaborate(&checked, &body_builder, &thir.statements, &dataflow_result);
+        let elaborated = elaborate(
+            &checked,
+            &body_builder,
+            &thir.statements,
+            &dataflow_result,
+            Some(&bytes_derivation.allowed),
+        );
 
         let body_lowered = LoweredFunction {
             thir,
@@ -33599,7 +33662,7 @@ impl Builder {
                 pointee: Box::new(ResolvedTy::Unit),
             });
         }
-        let raw = RawMirFunction {
+        let mut raw = RawMirFunction {
             name: body_name.clone(),
             return_ty: return_ty.clone(),
             call_conv: crate::model::FunctionCallConv::Default,
@@ -33651,6 +33714,7 @@ impl Builder {
             .collect();
         body_diagnostics.append(&mut body_builder.diagnostics);
         collect_unknown_type_diagnostics(&synthetic_fn, &body_builder, &mut body_diagnostics);
+        let bytes_derivation = finalize_bytes_ownership(&mut raw, &body_builder, &dataflow_result);
 
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let checked = CheckedMirFunction {
@@ -33661,7 +33725,13 @@ impl Builder {
             checks: dataflow_result.checks.clone(),
             cooperate_sites,
         };
-        let elaborated = elaborate(&checked, &body_builder, &thir.statements, &dataflow_result);
+        let elaborated = elaborate(
+            &checked,
+            &body_builder,
+            &thir.statements,
+            &dataflow_result,
+            Some(&bytes_derivation.allowed),
+        );
 
         let body_lowered = LoweredFunction {
             thir,
@@ -34638,6 +34708,12 @@ impl Builder {
         if !self.aggregate_ingress_moves_binding_ty(&ty) {
             return;
         }
+        // Stage S1: bytes aggregate ingress is retain-on-share, not a move.
+        // The finalized MIR bytes prover emits `BytesRetain` immediately before
+        // the owning store and keeps the source binding's drop obligation.
+        if matches!(ty, ResolvedTy::Bytes) {
+            return;
+        }
         // A CowValue binding with Capture intent is a refcount-share (CowShare),
         // not a structural move.  The source stays Live; skip the alias marker.
         // This intent is set exclusively by the for-in Vec borrow desugaring path.
@@ -35430,6 +35506,7 @@ fn elaborate(
     builder: &Builder,
     flat_statements: &[MirStatement],
     dataflow_result: &dataflow::DataflowResult,
+    precomputed_local_bytes_drop_allowed: Option<&HashSet<BindingId>>,
 ) -> ElaboratedMirFunction {
     // Statements stream: retained for snapshot/compat continuity with
     // the pre-Cluster-3 elaborator. Every non-`BitCopy` owned local
@@ -35688,22 +35765,30 @@ fn elaborate(
     // owned-Vec / collection arms use. Both directions only ever over-EXCLUDE
     // (leak), never re-admit — a binding the prover did not clear is never
     // double-freed (`boundary-fail-closed`, `cleanup-all-exits`).
-    let mut local_bytes_drop_allowed = derive_local_bytes_drop_allowed(
-        &checked.blocks,
-        &builder.suspend_kinds,
-        &owned_locals_snapshot,
-        &builder.binding_locals,
-    );
-    for states in dataflow_result.exit_states.values() {
-        for (binding, state) in states {
-            if matches!(
-                state,
-                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
-            ) {
-                local_bytes_drop_allowed.remove(binding);
+    let local_bytes_drop_allowed = if let Some(precomputed) = precomputed_local_bytes_drop_allowed {
+        precomputed.clone()
+    } else {
+        let mut derived = derive_local_bytes_drop_allowed(
+            &checked.blocks,
+            &builder.suspend_kinds,
+            &owned_locals_snapshot,
+            &builder.binding_locals,
+            &builder.locals,
+            &builder.borrowed_bytes_param_locals,
+        )
+        .allowed;
+        for states in dataflow_result.exit_states.values() {
+            for (binding, state) in states {
+                if matches!(
+                    state,
+                    dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+                ) {
+                    derived.remove(binding);
+                }
             }
         }
-    }
+        derived
+    };
 
     // Closure-pair `Vec<fn(...)>` handle scope-exit drop allow-set. Rides the
     // same receiver-borrow escape model as the HashMap/HashSet derivation
@@ -36962,6 +37047,7 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
             ..
         } => vec![*dest, *operand, *overflow_flag],
         Instr::Move { dest, src } => vec![*dest, *src],
+        Instr::BytesRetain { value } => vec![*value],
         Instr::NumericCast { dest, src, .. }
         | Instr::SaturatingWidthCast { dest, src, .. }
         | Instr::TryWidthCast { dest, src, .. } => {
@@ -37854,6 +37940,9 @@ pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
         | Instr::IntNegChecked { operand, .. } => vec![*operand],
         // The src is read into the dest; the dest is a write.
         Instr::Move { src, .. } => vec![*src],
+        // A retain reads the triple but transfers no ownership out of the
+        // current scope; the matching co-owner mint is classified separately.
+        Instr::BytesRetain { .. } => Vec::new(),
         Instr::NumericCast { src, .. }
         | Instr::SaturatingWidthCast { src, .. }
         | Instr::TryWidthCast { src, .. } => vec![*src],
@@ -38202,6 +38291,7 @@ fn call_args_borrow_safe(
 /// defaulting to "safe to drop" (which could re-open a double-free).
 #[allow(
     clippy::match_same_arms,
+    clippy::too_many_lines,
     reason = "exhaustive match over every Instr variant; several ownership-transfer \
               shapes (Move/WitnessMove, the aggregate stores) and every borrow shape \
               share a body, but are kept as separate arms so a future Instr cannot be \
@@ -38303,6 +38393,7 @@ fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
         | Instr::CancellationTokenIsCancelled { .. }
         | Instr::GeneratorNext { .. }
         | Instr::WireCodec { .. }
+        | Instr::BytesRetain { .. }
         | Instr::NumericCast { .. }
         | Instr::SaturatingWidthCast { .. }
         | Instr::TryWidthCast { .. }
@@ -38560,6 +38651,7 @@ fn projection_alias_dest(instr: &Instr) -> Option<Place> {
         | Instr::GeneratorNext { .. }
         | Instr::WireCodec { .. }
         | Instr::Move { .. }
+        | Instr::BytesRetain { .. }
         | Instr::NumericCast { .. }
         | Instr::SaturatingWidthCast { .. }
         | Instr::TryWidthCast { .. }
@@ -41710,6 +41802,22 @@ fn derive_owned_record_drop_allowed(
             .entry(alias_local)
             .or_insert(FieldBinderProvenance::RootOnly { root: owner_local });
     }
+    let retained_bytes_field_seeds: HashSet<u32> = blocks
+        .iter()
+        .flat_map(|block| block.instructions.windows(2))
+        .filter_map(|pair| {
+            let dest = bytes_interior_producer_dest(&pair[0], local_tys)?;
+            matches!(pair[1], Instr::BytesRetain { value } if value == dest)
+                .then(|| base_local(dest))
+                .flatten()
+        })
+        .collect();
+    let retained_bytes_field_aliases: HashSet<u32> =
+        propagate_whole_value_alias_roots(blocks, retained_bytes_field_seeds.iter().copied())
+            .into_keys()
+            .collect();
+    field_binders.retain(|local| !retained_bytes_field_aliases.contains(local));
+    binder_provenance.retain(|local, _| !retained_bytes_field_aliases.contains(local));
 
     // #2384 — match-bound hop aliases: a chain hop bound out of a `match`
     // destructure (a byte-copy aggregate loaded off the scrutinee COPY of a
@@ -41795,15 +41903,21 @@ fn derive_owned_record_drop_allowed(
     // generator handle `let g = pair.0`, an owned nested record `let inner =
     // b.inner`) — which moves the ORIGINAL owner out and DOES need the record
     // excluded — is not a `string_field_load_producer_dest` and still seeds.
-    let exempt_read_temp_locals: HashSet<u32> = blocks
+    let mut exempt_read_temp_locals: HashSet<u32> = blocks
         .iter()
         .flat_map(|block| block.instructions.iter())
         .filter_map(|instr| string_field_load_producer_dest(instr, local_tys))
         .filter_map(base_local)
         .collect();
+    exempt_read_temp_locals.extend(retained_bytes_field_aliases);
+    exempt_read_temp_locals.extend(
+        propagate_whole_value_alias_roots(blocks, exempt_read_temp_locals.iter().copied())
+            .into_keys(),
+    );
     let mut release_owner_bases: HashSet<u32> = owned_locals
         .iter()
         .filter_map(|(binding, _, _)| binding_locals.get(binding).and_then(|p| base_local(*p)))
+        .filter(|local| !exempt_read_temp_locals.contains(local))
         .collect();
     for block in blocks {
         for instr in &block.instructions {
@@ -42327,12 +42441,267 @@ fn derive_local_collection_drop_allowed(
     allowed
 }
 
-/// Fail-closed sole-owner derivation for **local `bytes`** bindings. Returns
-/// the subset of `owned_locals` whose `BytesTriple` is proven to still solely
-/// own its refcounted data buffer at every exit, and therefore earns a
-/// `DropKind::CowHeap { release: Bytes }` (`hew_bytes_drop`) scope-exit drop (lowered
-/// by codegen's `emit_bytes_inplace_drop`: GEP field 0, load the data pointer,
-/// `hew_bytes_drop(data_ptr)`, null-store the field).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum BytesRetainPlacement {
+    Before,
+    After,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct BytesRetainSite {
+    block: u32,
+    instr_index: usize,
+    placement: BytesRetainPlacement,
+    value: Place,
+    required_bindings: Vec<BindingId>,
+}
+
+#[derive(Debug, Default)]
+struct BytesDropDerivation {
+    allowed: HashSet<BindingId>,
+    retain_sites: Vec<BytesRetainSite>,
+}
+
+fn bytes_place_is_typed(place: Place, local_tys: &[ResolvedTy]) -> bool {
+    base_local(place)
+        .is_some_and(|local| matches!(local_tys.get(local as usize), Some(ResolvedTy::Bytes)))
+}
+
+fn bytes_interior_producer_dest(instr: &Instr, local_tys: &[ResolvedTy]) -> Option<Place> {
+    let dest = match instr {
+        Instr::RecordFieldLoad { dest, .. }
+        | Instr::TupleFieldLoad { dest, .. }
+        | Instr::ClosureEnvFieldLoad { dest, .. } => *dest,
+        Instr::CallRuntimeAbi(call)
+            if matches!(call.symbol(), "hew_vec_get_owned" | "hew_vec_get_ptr") =>
+        {
+            call.dest()?
+        }
+        _ => return None,
+    };
+    bytes_place_is_typed(dest, local_tys).then_some(dest)
+}
+
+fn bytes_runtime_arg_is_borrow(call: &crate::model::RuntimeCall, arg_index: usize) -> bool {
+    let contract = crate::runtime_symbols::callee_ownership_contract(call.symbol());
+    contract.borrows_all_bytes_args()
+        || (arg_index == 0 && contract.borrows_bytes_receiver())
+        || contract.is_vec_copy_in_element_store()
+}
+
+fn bytes_share_sink_places(instr: &Instr) -> Vec<Place> {
+    match instr {
+        Instr::RecordInit { fields, .. } => fields.iter().map(|(_, place)| *place).collect(),
+        Instr::TupleConstruct { elements, .. } => elements.clone(),
+        Instr::RecordFieldStore { src, .. }
+        | Instr::ActorStateFieldStore { src, .. }
+        | Instr::ClosureEnvFieldStore { src, .. } => vec![*src],
+        Instr::SpawnActor {
+            state, init_args, ..
+        } => state.iter().chain(init_args).copied().collect(),
+        Instr::ClosureEnvInit { fields, .. } => fields
+            .iter()
+            .filter(|field| field.ownership == ClosureEnvFieldOwnership::OwnsClonedOrRetained)
+            .map(|field| field.src)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn readmit_retained_bytes_tuple_roots(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    alias_of: &HashMap<u32, u32>,
+    retained_roots: &HashSet<u32>,
+    excluded_roots: &mut HashSet<u32>,
+) {
+    for &retained_root in retained_roots {
+        let root_members: HashSet<u32> = alias_of
+            .iter()
+            .filter_map(|(&local, &root)| (root == retained_root).then_some(local))
+            .collect();
+        let mut escapes = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                if let Instr::Move { dest, src } = instr {
+                    if base_local(*src).is_some_and(|local| root_members.contains(&local)) {
+                        let benign = base_local(*dest)
+                            .is_some_and(|local| root_members.contains(&local))
+                            && matches!(dest, Place::Local(_));
+                        if !benign {
+                            escapes = true;
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                if matches!(
+                    instr,
+                    Instr::TupleFieldLoad { .. }
+                        | Instr::BytesRetain { .. }
+                        | Instr::Drop { .. }
+                        | Instr::FieldDropInPlace { .. }
+                ) {
+                    continue;
+                }
+                for place in instr_source_places(instr) {
+                    let Some(local) = base_local(place) else {
+                        continue;
+                    };
+                    if root_members.contains(&local)
+                        && !binder_read_is_borrow_safe_instr(instr, local)
+                    {
+                        escapes = true;
+                        break;
+                    }
+                }
+                if escapes {
+                    break;
+                }
+            }
+            if escapes {
+                break;
+            }
+            for place in terminator_source_places(&block.terminator, suspend_kinds.get(&block.id)) {
+                let Some(local) = base_local(place) else {
+                    continue;
+                };
+                if root_members.contains(&local)
+                    && !binder_read_is_borrow_safe_terminator(
+                        &block.terminator,
+                        suspend_kinds.get(&block.id),
+                        local,
+                    )
+                {
+                    escapes = true;
+                    break;
+                }
+            }
+            if escapes {
+                break;
+            }
+        }
+        if !escapes {
+            excluded_roots.remove(&retained_root);
+        }
+    }
+}
+
+fn apply_bytes_retain_sites(
+    blocks: &mut [BasicBlock],
+    instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
+    retain_sites: &[BytesRetainSite],
+) {
+    let mut before: HashMap<(u32, usize), Vec<Place>> = HashMap::new();
+    let mut after: HashMap<(u32, usize), Vec<Place>> = HashMap::new();
+    for site in retain_sites {
+        let table = match site.placement {
+            BytesRetainPlacement::Before => &mut before,
+            BytesRetainPlacement::After => &mut after,
+        };
+        table
+            .entry((site.block, site.instr_index))
+            .or_default()
+            .push(site.value);
+    }
+
+    let old_spans = std::mem::take(instr_spans);
+    let mut new_spans = BTreeMap::new();
+    for block in blocks {
+        let old_instructions = std::mem::take(&mut block.instructions);
+        let old_len = old_instructions.len();
+        let mut rewritten = Vec::with_capacity(old_len);
+        for (old_index, instr) in old_instructions.into_iter().enumerate() {
+            let span = old_spans
+                .get(&(block.id, u32::try_from(old_index).unwrap_or(u32::MAX)))
+                .copied();
+            if let Some(values) = before.get(&(block.id, old_index)) {
+                for value in values {
+                    let new_index = u32::try_from(rewritten.len()).unwrap_or(u32::MAX);
+                    rewritten.push(Instr::BytesRetain { value: *value });
+                    if let Some(span) = span {
+                        new_spans.insert((block.id, new_index), span);
+                    }
+                }
+            }
+            let new_index = u32::try_from(rewritten.len()).unwrap_or(u32::MAX);
+            rewritten.push(instr);
+            if let Some(span) = span {
+                new_spans.insert((block.id, new_index), span);
+            }
+            if let Some(values) = after.get(&(block.id, old_index)) {
+                for value in values {
+                    let new_index = u32::try_from(rewritten.len()).unwrap_or(u32::MAX);
+                    rewritten.push(Instr::BytesRetain { value: *value });
+                    if let Some(span) = span {
+                        new_spans.insert((block.id, new_index), span);
+                    }
+                }
+            }
+        }
+        // Stage 2 (gdb `-g`): `record_terminator_span` keys the block
+        // terminator's span one slot PAST the last instruction (at
+        // `instructions.len()`). The rewrite above only re-keys indices
+        // `0..old_len`, so without carrying this entry over, every block's
+        // terminator span is silently dropped — call statements and
+        // control-flow exits lose their line-table entry, collapsing the
+        // breakpoint's `DILocation` onto the previous instruction's scope and
+        // hiding shadowed inner bindings. Re-key it to the new terminator slot
+        // (`rewritten.len()`), which grows by any `after`-placed retains on the
+        // final instruction.
+        if let Some(span) = old_spans
+            .get(&(block.id, u32::try_from(old_len).unwrap_or(u32::MAX)))
+            .copied()
+        {
+            let term_index = u32::try_from(rewritten.len()).unwrap_or(u32::MAX);
+            new_spans.insert((block.id, term_index), span);
+        }
+        block.instructions = rewritten;
+    }
+    *instr_spans = new_spans;
+}
+
+fn finalize_bytes_ownership(
+    raw: &mut RawMirFunction,
+    builder: &Builder,
+    dataflow_result: &dataflow::DataflowResult,
+) -> BytesDropDerivation {
+    let owned_locals_snapshot = builder.owned_locals_snapshot();
+    let mut derivation = derive_local_bytes_drop_allowed(
+        &raw.blocks,
+        &builder.suspend_kinds,
+        &owned_locals_snapshot,
+        &builder.binding_locals,
+        &builder.locals,
+        &builder.borrowed_bytes_param_locals,
+    );
+    for states in dataflow_result.exit_states.values() {
+        for (binding, state) in states {
+            if matches!(
+                state,
+                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+            ) {
+                derivation.allowed.remove(binding);
+            }
+        }
+    }
+    derivation.retain_sites.retain(|site| {
+        site.required_bindings
+            .iter()
+            .all(|binding| derivation.allowed.contains(binding))
+    });
+    apply_bytes_retain_sites(
+        &mut raw.blocks,
+        &mut raw.instr_spans,
+        &derivation.retain_sites,
+    );
+    derivation
+}
+
+/// Fail-closed retain/drop derivation for **local `bytes`** bindings. Returns
+/// both the scope-exit drop allow-set and the explicit MIR retain markers that
+/// mint additional owners. Codegen consumes only those markers; it never
+/// independently infers bytes retains from a type-shaped LLVM value.
 ///
 /// Structure mirrors `derive_local_collection_drop_allowed` (the default-deny
 /// escape-scan precedent): candidate collection, whole-value alias propagation
@@ -42347,11 +42716,9 @@ fn derive_local_collection_drop_allowed(
 ///    (`RecordFieldLoad` / `TupleFieldLoad` / `ClosureEnvFieldLoad` /
 ///    `ActorStateFieldLoad`, or a `Move` from an enum/machine variant
 ///    projection) byte-copies the triple with NO refcount bump — the parent
-///    aggregate still owns the same buffer, and its own drop path releases it.
-///    Dropping the loaded-out binding too would double-free, so every
-///    candidate whose local is in `compute_projection_alias_taint` (with the
-///    conservative empty exemption set) is excluded. The string prover
-///    (`derive_cow_sole_owner`) applies the identical exclusion.
+///    aggregate still owns the same buffer. A producer whose result becomes an
+///    owner is marked with `BytesRetain` and removed from the taint in lockstep;
+///    a borrow-only transient stays tainted and unretained.
 ///
 /// 2. **Bytes runtime ops are instruction-level.** Collection ops lower as
 ///    `Terminator::Call`; the bytes surface ops (`len`/`index`/`slice`/`push`)
@@ -42365,16 +42732,11 @@ fn derive_local_collection_drop_allowed(
 /// escape under this scan), and the move checker marks the binding `Consumed`,
 /// which the caller's dataflow filter removes as the belt-and-suspenders net.
 ///
-/// SUBSTRATE INVARIANT: unlike the collection handles, the bytes buffer IS
-/// refcounted (`hew_bytes_drop` decrements and frees at zero), but the codegen
-/// share paths still never emit a retain — a `Move`, a mailbox send, and an
-/// aggregate ingress all byte-copy the triple at rc unchanged. Exactly one
-/// live owner per reference therefore still holds at every program point, and
-/// the only refcount-bumping producer (`hew_bytes_slice`) mints a reference
-/// for its RESULT, leaving the receiver's reference untouched. When the
-/// retain-on-share spine lands, shares stop consuming their source and this
-/// allow-set extends rather than inverts (the refcount-aware release already
-/// tolerates multiple owners).
+/// STAGE S1 INVARIANT: every genuine bytes co-owner mint has one explicit
+/// `BytesRetain` immediately before/after the share, and every admitted owner
+/// releases once. Calls borrow by value; actor sends remain consuming hand-offs.
+/// The marker and allow-set are produced together here, so a codegen-local type
+/// check cannot over-retain borrow-only temporaries.
 ///
 /// LESSONS: `drop-allowset-from-value-flow`, `boundary-fail-closed`,
 /// `cleanup-all-exits`, `raii-null-after-move`.
@@ -42390,7 +42752,9 @@ fn derive_local_bytes_drop_allowed(
     suspend_kinds: &HashMap<u32, SuspendKind>,
     owned_locals: &[(BindingId, String, ResolvedTy)],
     binding_locals: &HashMap<BindingId, Place>,
-) -> HashSet<BindingId> {
+    local_tys: &[ResolvedTy],
+    borrowed_param_locals: &HashSet<u32>,
+) -> BytesDropDerivation {
     // Candidate bytes locals: base locals of owned `bytes` bindings.
     let mut candidate_local_to_binding: HashMap<u32, BindingId> = HashMap::new();
     for (binding, _name, ty) in owned_locals {
@@ -42405,9 +42769,82 @@ fn derive_local_bytes_drop_allowed(
         };
         candidate_local_to_binding.insert(local, *binding);
     }
-    if candidate_local_to_binding.is_empty() {
-        return HashSet::new();
+    let candidate_locals: HashSet<u32> = candidate_local_to_binding.keys().copied().collect();
+
+    // Interior producers start as raw aliases. They become retained fresh owners
+    // only when their result is bound to an owned bytes local, dropped inline, or
+    // sent to an owning sink/return. Borrow-only receiver temps have none of
+    // those uses and therefore remain unretained.
+    let mut producer_sites: HashMap<u32, (u32, usize, Place)> = HashMap::new();
+    for block in blocks {
+        for (instr_index, instr) in block.instructions.iter().enumerate() {
+            if let Some(dest) = bytes_interior_producer_dest(instr, local_tys) {
+                if let Some(local) = base_local(dest) {
+                    producer_sites.insert(local, (block.id, instr_index, dest));
+                }
+            }
+        }
     }
+    let producer_alias_of =
+        propagate_whole_value_alias_roots(blocks, producer_sites.keys().copied());
+    let mut retained_producer_roots: HashSet<u32> = candidate_locals
+        .iter()
+        .filter_map(|local| producer_alias_of.get(local).copied())
+        .collect();
+    for block in blocks {
+        for instr in &block.instructions {
+            if let Instr::Move { dest, src } = instr {
+                if matches!(dest, Place::ReturnSlot) {
+                    if let Some(root) =
+                        base_local(*src).and_then(|local| producer_alias_of.get(&local).copied())
+                    {
+                        retained_producer_roots.insert(root);
+                    }
+                }
+                continue;
+            }
+            if let Instr::CallRuntimeAbi(call) = instr {
+                for (arg_index, place) in call.args().iter().enumerate() {
+                    let Some(root) =
+                        base_local(*place).and_then(|local| producer_alias_of.get(&local).copied())
+                    else {
+                        continue;
+                    };
+                    if !bytes_runtime_arg_is_borrow(call, arg_index) {
+                        retained_producer_roots.insert(root);
+                    }
+                }
+                continue;
+            }
+            // An inline drop of a projection temp is the existing destructive
+            // release of the parent's original reference (match wildcard /
+            // field-discard path), not a new co-owner. Retaining it would turn
+            // the drop into a no-op and leak the consumed parent's field.
+            if matches!(instr, Instr::Drop { .. }) {
+                continue;
+            }
+            for place in instr_source_places(instr) {
+                if let Some(root) =
+                    base_local(place).and_then(|local| producer_alias_of.get(&local).copied())
+                {
+                    retained_producer_roots.insert(root);
+                }
+            }
+        }
+        if !matches!(block.terminator, Terminator::Call { .. }) {
+            for place in terminator_source_places(&block.terminator, suspend_kinds.get(&block.id)) {
+                if let Some(root) =
+                    base_local(place).and_then(|local| producer_alias_of.get(&local).copied())
+                {
+                    retained_producer_roots.insert(root);
+                }
+            }
+        }
+    }
+    let retained_producer_aliases: HashSet<u32> = producer_alias_of
+        .iter()
+        .filter_map(|(&local, &root)| retained_producer_roots.contains(&root).then_some(local))
+        .collect();
 
     // Projection-alias taint: a candidate whose local aliases interior storage
     // of a still-live aggregate must never drop (the parent's drop path owns
@@ -42416,15 +42853,19 @@ fn derive_local_bytes_drop_allowed(
     // so a `bytes` triple borrowed out of a `Vec<bytes>` slot
     // (`hew_vec_get_ptr` / `hew_vec_get_owned`) is excluded too, not only the
     // record/tuple/closure-env/actor-state field-load aliases.
-    let tainted = compute_collection_interior_alias_taint(blocks);
+    let mut tainted = compute_collection_interior_alias_taint(blocks);
+    tainted.retain(|local| !retained_producer_aliases.contains(local));
 
     // Whole-value alias set: each candidate plus every local reachable through
     // forward-propagated whole-value `Move { dest: Local, src: Local }` copies.
     // Monotone: a slot reachable from two distinct roots is evicted (#1942).
     let alias_of =
         propagate_whole_value_alias_roots(blocks, candidate_local_to_binding.keys().copied());
+    let borrowed_alias_of =
+        propagate_whole_value_alias_roots(blocks, borrowed_param_locals.iter().copied());
 
     let mut excluded_roots: HashSet<u32> = HashSet::new();
+    let mut pending_share_sites: Vec<(u32, usize, Place, Vec<BindingId>)> = Vec::new();
     let note_escape = |local: u32, excluded: &mut HashSet<u32>| {
         if let Some(&root) = alias_of.get(&local) {
             excluded.insert(root);
@@ -42445,7 +42886,7 @@ fn derive_local_bytes_drop_allowed(
     };
 
     for block in blocks {
-        for instr in &block.instructions {
+        for (instr_index, instr) in block.instructions.iter().enumerate() {
             // A `Move` discriminates a benign whole-value hand-off (dest is
             // another alias member — already folded into the alias set) from a
             // real escape (dest is a non-member local or the `ReturnSlot`).
@@ -42480,6 +42921,24 @@ fn derive_local_bytes_drop_allowed(
                     continue;
                 }
             }
+            let share_places = bytes_share_sink_places(instr);
+            if !share_places.is_empty() {
+                for place in share_places {
+                    let Some(local) = base_local(place) else {
+                        continue;
+                    };
+                    if let Some(&root) = alias_of.get(&local) {
+                        if let Some(&binding) = candidate_local_to_binding.get(&root) {
+                            pending_share_sites.push((block.id, instr_index, place, vec![binding]));
+                        }
+                    } else if borrowed_alias_of.contains_key(&local)
+                        && !matches!(instr, Instr::ActorStateFieldStore { .. })
+                    {
+                        pending_share_sites.push((block.id, instr_index, place, Vec::new()));
+                    }
+                }
+                continue;
+            }
             // A receiver-borrowing bytes runtime op reads the triple as arg[0]
             // but only borrows it; scan
             // only arg[1..]. Every other instruction reading an alias member is
@@ -42510,12 +42969,9 @@ fn derive_local_bytes_drop_allowed(
         // the `ReturnSlot`, …) is scanned in full: a member read there is an
         // escape.
         match &block.terminator {
-            Terminator::Call { callee, args, .. }
-                if crate::runtime_symbols::callee_ownership_contract(callee)
-                    .borrows_bytes_receiver() =>
-            {
-                scan_places(&args[1..], &alias_of, &mut excluded_roots);
-            }
+            // Hew's by-value heap parameters are borrows. A call never mints a
+            // co-owner and never consumes the caller's bytes reference.
+            Terminator::Call { .. } => {}
             other => {
                 for p in terminator_source_places(other, suspend_kinds.get(&block.id)) {
                     if let Some(l) = base_local(p) {
@@ -42546,7 +43002,142 @@ fn derive_local_bytes_drop_allowed(
             allowed.insert(binding);
         }
     }
-    allowed
+    let mut retain_sites = Vec::new();
+    for (&producer_local, &(block, instr_index, dest)) in &producer_sites {
+        if retained_producer_roots.contains(&producer_local) {
+            retain_sites.push(BytesRetainSite {
+                block,
+                instr_index,
+                placement: BytesRetainPlacement::After,
+                value: dest,
+                required_bindings: Vec::new(),
+            });
+        }
+    }
+    for (block, instr_index, value, required_bindings) in pending_share_sites {
+        retain_sites.push(BytesRetainSite {
+            block,
+            instr_index,
+            placement: BytesRetainPlacement::Before,
+            value,
+            required_bindings,
+        });
+    }
+
+    // A by-value bytes parameter is a borrow from the caller. Returning it
+    // duplicates that live external owner, so retain immediately before the
+    // Move into ReturnSlot. Ordinary calls remain borrow-only and emit nothing.
+    for block in blocks {
+        for (instr_index, instr) in block.instructions.iter().enumerate() {
+            let Instr::Move {
+                dest: Place::ReturnSlot,
+                src,
+            } = instr
+            else {
+                continue;
+            };
+            if base_local(*src).is_some_and(|local| borrowed_alias_of.contains_key(&local)) {
+                retain_sites.push(BytesRetainSite {
+                    block: block.id,
+                    instr_index,
+                    placement: BytesRetainPlacement::Before,
+                    value: *src,
+                    required_bindings: Vec::new(),
+                });
+            }
+        }
+    }
+
+    // A `CowShare` local-to-local copy (`let b = a;`) keeps both bindings live:
+    // both `a` and `b` are distinct `bytes` triples pointing at ONE buffer that
+    // the byte-copy `Move` shared with NO refcount bump. A fresh reference must
+    // be minted so each end that reaches a drop (locally, or by handing its
+    // reference to a caller/sink) balances against the buffer's rc. The mint
+    // splits on whether the SOURCE is itself an owned-candidate bytes local:
+    //
+    // * Source IS a candidate (both ends are owned locals that drop at scope
+    //   exit): retain once, gated on BOTH bindings surviving to a drop.
+    //
+    // * Source is NOT a candidate — a by-value `bytes` PARAMETER (a borrow; the
+    //   caller retains ownership and drops the original) or an owned binding
+    //   already CONSUMED/RETURNED (its single reference handed off to a caller /
+    //   sink, so it is no longer in `owned_locals`). In both, `dest` is a fresh
+    //   co-owner that MUST retain to balance its own scope-exit drop against the
+    //   surviving external owner; dropping `dest` unretained double-frees that
+    //   shared buffer (the caller's borrow, or the returned/sent handle). Gate
+    //   solely on `dest` reaching a drop (`required_bindings = [dest]`): if
+    //   `dest` itself escapes it is not a candidate here and the return / sink
+    //   retain path mints its reference instead. Restricted to a Move whose
+    //   source base is a NAMED binding slot (`binding_local_bases`) so an
+    //   initialiser move (`let a = <fresh producer temp>`) or a projection temp
+    //   — neither a `let b = a` co-own share — cannot mint a spurious owner.
+    //   LESSONS: raii-null-after-move (S171: a by-value heap param is a borrow).
+    let binding_local_bases: HashSet<u32> = binding_locals
+        .values()
+        .filter_map(|place| base_local(*place))
+        .collect();
+    for block in blocks {
+        for (instr_index, instr) in block.instructions.iter().enumerate() {
+            let Instr::Move {
+                dest: Place::Local(dest_local),
+                src,
+            } = instr
+            else {
+                continue;
+            };
+            let Some(src_local) = base_local(*src) else {
+                continue;
+            };
+            let Some(&dest_binding) = candidate_local_to_binding.get(dest_local) else {
+                continue;
+            };
+            if let Some(&root) = alias_of.get(&src_local) {
+                // Source is itself an owned bytes candidate (or its alias): both
+                // ends are locals that drop at scope exit, so retain once, gated
+                // on BOTH bindings surviving to a drop.
+                let Some(&src_binding) = candidate_local_to_binding.get(&root) else {
+                    continue;
+                };
+                if src_binding == dest_binding {
+                    continue;
+                }
+                retain_sites.push(BytesRetainSite {
+                    block: block.id,
+                    instr_index,
+                    placement: BytesRetainPlacement::Before,
+                    value: *src,
+                    required_bindings: vec![src_binding, dest_binding],
+                });
+            } else {
+                // Source is NOT an owned candidate. Fail-closed: only mint for a
+                // genuine bytes co-own share — the source must be a live `bytes`
+                // value that is either a by-value parameter borrow
+                // (`borrowed_alias_of`) or a named binding slot
+                // (`binding_local_bases`, i.e. an owned binding consumed/returned
+                // before scope exit). An initialiser move (`let a = <fresh
+                // producer temp>`) or a projection temp is neither, so it keeps
+                // the pre-fix behaviour (no mint), which never double-frees.
+                if !bytes_place_is_typed(*src, local_tys)
+                    || !(binding_local_bases.contains(&src_local)
+                        || borrowed_alias_of.contains_key(&src_local))
+                {
+                    continue;
+                }
+                retain_sites.push(BytesRetainSite {
+                    block: block.id,
+                    instr_index,
+                    placement: BytesRetainPlacement::Before,
+                    value: *src,
+                    required_bindings: vec![dest_binding],
+                });
+            }
+        }
+    }
+
+    BytesDropDerivation {
+        allowed,
+        retain_sites,
+    }
 }
 
 /// W5.021 — fail-closed sole-owner derivation for owned-aggregate **tuple**
@@ -42692,6 +43283,24 @@ fn derive_tuple_composite_drop_allowed(
             elem_binders.insert(alias_local);
         }
     }
+    let retained_bytes_element_seeds: HashSet<u32> = blocks
+        .iter()
+        .flat_map(|block| block.instructions.windows(2))
+        .filter_map(|pair| {
+            let Instr::TupleFieldLoad { dest, .. } = pair[0] else {
+                return None;
+            };
+            (bytes_place_is_typed(dest, local_tys)
+                && matches!(pair[1], Instr::BytesRetain { value } if value == dest))
+            .then(|| base_local(dest))
+            .flatten()
+        })
+        .collect();
+    let retained_bytes_element_aliases: HashSet<u32> =
+        propagate_whole_value_alias_roots(blocks, retained_bytes_element_seeds.iter().copied())
+            .into_keys()
+            .collect();
+    elem_binders.retain(|local| !retained_bytes_element_aliases.contains(local));
 
     // #2384 (tuple twin) — match-bound hop aliases: an element bound out of a
     // `match` destructure of a chain alias (`let leaf = match mid { (l, _) =>
@@ -42729,7 +43338,21 @@ fn derive_tuple_composite_drop_allowed(
     // double-free. Over-exclude every interior-alias-tainted candidate up front
     // (fail-closed) so the borrow-aware member-read exemption below cannot
     // re-admit an aliased element to drop (`compute_collection_interior_alias_taint`).
-    let interior_alias_tainted = compute_collection_interior_alias_taint(blocks);
+    let retained_bytes_owner_bases: HashSet<u32> = blocks
+        .iter()
+        .flat_map(|block| block.instructions.windows(2))
+        .filter_map(|pair| {
+            let Instr::TupleFieldLoad { tuple, dest, .. } = pair[0] else {
+                return None;
+            };
+            (bytes_place_is_typed(dest, local_tys)
+                && matches!(pair[1], Instr::BytesRetain { value } if value == dest))
+            .then(|| base_local(tuple))
+            .flatten()
+        })
+        .collect();
+    let mut interior_alias_tainted = compute_collection_interior_alias_taint(blocks);
+    interior_alias_tainted.retain(|local| !retained_bytes_owner_bases.contains(local));
     for &local in candidate_local_to_binding.keys() {
         if interior_alias_tainted.contains(&local) {
             excluded_roots.insert(local);
@@ -42758,9 +43381,21 @@ fn derive_tuple_composite_drop_allowed(
     // excludes the tuple when an extracted binder is read into an owning sink
     // (returned / sent / `close()`d); this seed adds the two
     // exempt-from-that-scan release paths (standalone `Drop`, for-in consume).
+    let mut exempt_read_temp_locals: HashSet<u32> = blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter_map(|instr| string_field_load_producer_dest(instr, local_tys))
+        .filter_map(base_local)
+        .collect();
+    exempt_read_temp_locals.extend(retained_bytes_element_aliases);
+    exempt_read_temp_locals.extend(
+        propagate_whole_value_alias_roots(blocks, exempt_read_temp_locals.iter().copied())
+            .into_keys(),
+    );
     let mut release_owner_bases: HashSet<u32> = owned_locals
         .iter()
         .filter_map(|(binding, _, _)| binding_locals.get(binding).and_then(|p| base_local(*p)))
+        .filter(|local| !exempt_read_temp_locals.contains(local))
         .collect();
     // Plus any local that is the place of an inline generator/owned-handle
     // release `Drop` already emitted into the finalized MIR — the for-in iterator
@@ -42784,12 +43419,6 @@ fn derive_tuple_composite_drop_allowed(
     // strings every call). A NON-string element extracted into an owning
     // binding (a generator handle `let g = pair.0`) is not a
     // `string_field_load_producer_dest` and still seeds.
-    let exempt_read_temp_locals: HashSet<u32> = blocks
-        .iter()
-        .flat_map(|block| block.instructions.iter())
-        .filter_map(|instr| string_field_load_producer_dest(instr, local_tys))
-        .filter_map(base_local)
-        .collect();
     for block in blocks {
         for instr in &block.instructions {
             if let Instr::Drop {
@@ -42973,6 +43602,14 @@ fn derive_tuple_composite_drop_allowed(
             }
         }
     }
+
+    readmit_retained_bytes_tuple_roots(
+        blocks,
+        suspend_kinds,
+        &alias_of,
+        &retained_bytes_owner_bases,
+        &mut excluded_roots,
+    );
 
     let mut allowed = HashSet::new();
     for (&local, &binding) in &candidate_local_to_binding {
@@ -53745,12 +54382,18 @@ mod f1_suspending_escape_poison {
         Vec<(BindingId, String, ResolvedTy)>,
         HashMap<BindingId, Place>,
         BindingId,
+        Vec<ResolvedTy>,
     ) {
         let binding = BindingId(301);
         let owned_locals = vec![(binding, "b".to_string(), ResolvedTy::Bytes)];
         let binding_locals: HashMap<BindingId, Place> =
             [(binding, Place::Local(1))].into_iter().collect();
-        (owned_locals, binding_locals, binding)
+        (
+            owned_locals,
+            binding_locals,
+            binding,
+            vec![ResolvedTy::Unit, ResolvedTy::Bytes],
+        )
     }
 
     /// A bytes local that is never read anywhere is the sole owner of its
@@ -53758,7 +54401,7 @@ mod f1_suspending_escape_poison {
     /// sender-local leak shape this prover exists to close.
     #[test]
     fn derive_local_bytes_drop_allowed_admits_sole_owner_local() {
-        let (owned_locals, binding_locals, binding) = bytes_prover_fixture();
+        let (owned_locals, binding_locals, binding, local_tys) = bytes_prover_fixture();
         let block = BasicBlock {
             id: 0,
             statements: vec![],
@@ -53770,7 +54413,10 @@ mod f1_suspending_escape_poison {
             &std::collections::HashMap::new(),
             &owned_locals,
             &binding_locals,
-        );
+            &local_tys,
+            &HashSet::new(),
+        )
+        .allowed;
         assert!(
             allowed.contains(&binding),
             "a never-read bytes local must earn its scope-exit drop; allowed: {allowed:?}"
@@ -53784,7 +54430,7 @@ mod f1_suspending_escape_poison {
     /// `Consumed` filter (the belt-and-suspenders net) runs.
     #[test]
     fn derive_local_bytes_drop_allowed_excludes_send_consumed_local() {
-        let (owned_locals, binding_locals, binding) = bytes_prover_fixture();
+        let (owned_locals, binding_locals, binding, local_tys) = bytes_prover_fixture();
         let block = BasicBlock {
             id: 0,
             statements: vec![],
@@ -53802,7 +54448,10 @@ mod f1_suspending_escape_poison {
             &std::collections::HashMap::new(),
             &owned_locals,
             &binding_locals,
-        );
+            &local_tys,
+            &HashSet::new(),
+        )
+        .allowed;
         assert!(
             !allowed.contains(&binding),
             "a send-consumed bytes local must NOT earn a sender-side drop — the \
@@ -53817,7 +54466,7 @@ mod f1_suspending_escape_poison {
     /// silently reintroduce the leak).
     #[test]
     fn derive_local_bytes_drop_allowed_admits_borrow_receiver_read() {
-        let (owned_locals, binding_locals, binding) = bytes_prover_fixture();
+        let (owned_locals, binding_locals, binding, local_tys) = bytes_prover_fixture();
         let call = crate::model::RuntimeCall::new(
             "hew_bytes_len",
             vec![Place::Local(1)],
@@ -53835,7 +54484,10 @@ mod f1_suspending_escape_poison {
             &std::collections::HashMap::new(),
             &owned_locals,
             &binding_locals,
-        );
+            &local_tys,
+            &HashSet::new(),
+        )
+        .allowed;
         assert!(
             allowed.contains(&binding),
             "a borrow-listed receiver read must not exclude the binding; \
@@ -53848,7 +54500,7 @@ mod f1_suspending_escape_poison {
     /// risking a free against an unverified ownership contract.
     #[test]
     fn derive_local_bytes_drop_allowed_excludes_unlisted_runtime_read() {
-        let (owned_locals, binding_locals, binding) = bytes_prover_fixture();
+        let (owned_locals, binding_locals, binding, local_tys) = bytes_prover_fixture();
         let call =
             crate::model::RuntimeCall::new("hew_task_scope_join_all", vec![Place::Local(1)], None)
                 .expect("hew_task_scope_join_all is an allowlisted runtime symbol");
@@ -53863,7 +54515,10 @@ mod f1_suspending_escape_poison {
             &std::collections::HashMap::new(),
             &owned_locals,
             &binding_locals,
-        );
+            &local_tys,
+            &HashSet::new(),
+        )
+        .allowed;
         assert!(
             !allowed.contains(&binding),
             "an unlisted runtime read must default-deny (leak, never \
@@ -53871,13 +54526,12 @@ mod f1_suspending_escape_poison {
         );
     }
 
-    /// A bytes triple loaded OUT of a still-live aggregate
-    /// (`RecordFieldLoad` dest) byte-copies the triple with no refcount bump;
-    /// the parent's drop path owns the release, so the projection-tainted
-    /// binding must be excluded (dropping it too would double-free).
+    /// A bytes triple loaded out of a still-live aggregate becomes a retained
+    /// co-owner when the dest is an owned binding: MIR emits one retain marker
+    /// and admits the binding's balancing scope-exit drop.
     #[test]
-    fn derive_local_bytes_drop_allowed_excludes_projection_tainted_binding() {
-        let (owned_locals, binding_locals, binding) = bytes_prover_fixture();
+    fn derive_local_bytes_drop_allowed_admits_retained_projection_binding() {
+        let (owned_locals, binding_locals, binding, local_tys) = bytes_prover_fixture();
         let block = BasicBlock {
             id: 0,
             statements: vec![],
@@ -53888,26 +54542,111 @@ mod f1_suspending_escape_poison {
             }],
             terminator: Terminator::Return,
         };
-        let allowed = derive_local_bytes_drop_allowed(
+        let derivation = derive_local_bytes_drop_allowed(
             &[block],
             &std::collections::HashMap::new(),
             &owned_locals,
             &binding_locals,
+            &local_tys,
+            &HashSet::new(),
         );
         assert!(
-            !allowed.contains(&binding),
-            "a field-loaded bytes triple aliases its parent aggregate's buffer \
-             and must not earn its own drop; allowed: {allowed:?}"
+            derivation.allowed.contains(&binding),
+            "a retained field-loaded bytes binding must earn its balancing drop; \
+             allowed: {:?}",
+            derivation.allowed
+        );
+        assert_eq!(
+            derivation.retain_sites,
+            vec![BytesRetainSite {
+                block: 0,
+                instr_index: 0,
+                placement: BytesRetainPlacement::After,
+                value: Place::Local(1),
+                required_bindings: Vec::new(),
+            }]
         );
     }
 
-    /// A bytes triple moved into an aggregate (`RecordInit` operand — the
-    /// `spawn A(f: b)` ingress shape) is owned by the aggregate now; the
-    /// escape scan must exclude it so the aggregate's drop path remains the
-    /// sole release.
     #[test]
-    fn derive_local_bytes_drop_allowed_excludes_aggregate_ingress() {
-        let (owned_locals, binding_locals, binding) = bytes_prover_fixture();
+    fn derive_local_bytes_drop_allowed_skips_borrow_only_field_temp_retain() {
+        let local_tys = vec![ResolvedTy::Unit, ResolvedTy::Bytes, ResolvedTy::I64];
+        let len_call = crate::model::RuntimeCall::new(
+            "hew_bytes_len",
+            vec![Place::Local(1)],
+            Some(Place::Local(2)),
+        )
+        .expect("hew_bytes_len is allowlisted");
+        let block = BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![
+                Instr::RecordFieldLoad {
+                    record: Place::Local(5),
+                    field_offset: FieldOffset(0),
+                    dest: Place::Local(1),
+                },
+                Instr::CallRuntimeAbi(len_call),
+            ],
+            terminator: Terminator::Return,
+        };
+        let derivation = derive_local_bytes_drop_allowed(
+            &[block],
+            &HashMap::new(),
+            &[],
+            &HashMap::new(),
+            &local_tys,
+            &HashSet::new(),
+        );
+        assert!(
+            derivation.retain_sites.is_empty(),
+            "borrow-only field receiver temps must not be retained: {:?}",
+            derivation.retain_sites
+        );
+    }
+
+    #[test]
+    fn derive_local_bytes_drop_allowed_marks_live_local_coown_move() {
+        let a = BindingId(401);
+        let b = BindingId(402);
+        let owned = vec![
+            (a, "a".to_string(), ResolvedTy::Bytes),
+            (b, "b".to_string(), ResolvedTy::Bytes),
+        ];
+        let binding_locals = HashMap::from([(a, Place::Local(1)), (b, Place::Local(2))]);
+        let block = BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![Instr::Move {
+                dest: Place::Local(2),
+                src: Place::Local(1),
+            }],
+            terminator: Terminator::Return,
+        };
+        let derivation = derive_local_bytes_drop_allowed(
+            &[block],
+            &HashMap::new(),
+            &owned,
+            &binding_locals,
+            &[ResolvedTy::Unit, ResolvedTy::Bytes, ResolvedTy::Bytes],
+            &HashSet::new(),
+        );
+        assert_eq!(derivation.allowed, HashSet::from([a, b]));
+        assert_eq!(
+            derivation.retain_sites,
+            vec![BytesRetainSite {
+                block: 0,
+                instr_index: 0,
+                placement: BytesRetainPlacement::Before,
+                value: Place::Local(1),
+                required_bindings: vec![a, b],
+            }]
+        );
+    }
+
+    #[test]
+    fn derive_local_bytes_drop_allowed_marks_live_local_aggregate_coown() {
+        let (owned_locals, binding_locals, binding, local_tys) = bytes_prover_fixture();
         let block = BasicBlock {
             id: 0,
             statements: vec![],
@@ -53923,16 +54662,246 @@ mod f1_suspending_escape_poison {
             }],
             terminator: Terminator::Return,
         };
-        let allowed = derive_local_bytes_drop_allowed(
+        let derivation = derive_local_bytes_drop_allowed(
             &[block],
-            &std::collections::HashMap::new(),
+            &HashMap::new(),
             &owned_locals,
             &binding_locals,
+            &local_tys,
+            &HashSet::new(),
+        );
+        assert!(derivation.allowed.contains(&binding));
+        assert_eq!(
+            derivation.retain_sites,
+            vec![BytesRetainSite {
+                block: 0,
+                instr_index: 0,
+                placement: BytesRetainPlacement::Before,
+                value: Place::Local(1),
+                required_bindings: vec![binding],
+            }]
+        );
+    }
+
+    #[test]
+    fn derive_local_bytes_drop_allowed_marks_borrowed_param_return() {
+        let block = BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![Instr::Move {
+                dest: Place::ReturnSlot,
+                src: Place::Local(1),
+            }],
+            terminator: Terminator::Return,
+        };
+        let derivation = derive_local_bytes_drop_allowed(
+            &[block],
+            &HashMap::new(),
+            &[],
+            &HashMap::new(),
+            &[ResolvedTy::Unit, ResolvedTy::Bytes],
+            &HashSet::from([1]),
+        );
+        assert_eq!(
+            derivation.retain_sites,
+            vec![BytesRetainSite {
+                block: 0,
+                instr_index: 0,
+                placement: BytesRetainPlacement::Before,
+                value: Place::Local(1),
+                required_bindings: Vec::new(),
+            }]
+        );
+    }
+
+    #[test]
+    fn derive_local_bytes_drop_allowed_marks_each_borrowed_param_return_copy() {
+        let block = BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![
+                Instr::TupleConstruct {
+                    elements: vec![Place::Local(1), Place::Local(1)],
+                    dest: Place::Local(2),
+                },
+                Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src: Place::Local(2),
+                },
+            ],
+            terminator: Terminator::Return,
+        };
+        let derivation = derive_local_bytes_drop_allowed(
+            &[block],
+            &HashMap::new(),
+            &[],
+            &HashMap::new(),
+            &[
+                ResolvedTy::Unit,
+                ResolvedTy::Bytes,
+                ResolvedTy::Tuple(vec![ResolvedTy::Bytes, ResolvedTy::Bytes]),
+            ],
+            &HashSet::from([1]),
+        );
+        assert_eq!(
+            derivation.retain_sites,
+            vec![
+                BytesRetainSite {
+                    block: 0,
+                    instr_index: 0,
+                    placement: BytesRetainPlacement::Before,
+                    value: Place::Local(1),
+                    required_bindings: Vec::new(),
+                },
+                BytesRetainSite {
+                    block: 0,
+                    instr_index: 0,
+                    placement: BytesRetainPlacement::Before,
+                    value: Place::Local(1),
+                    required_bindings: Vec::new(),
+                },
+            ]
+        );
+    }
+
+    /// A240 Stage S1 hole #1: `let b = a;` where `a` is a by-value `bytes`
+    /// PARAMETER (a borrow — the caller retains ownership and drops the
+    /// original). `b` is an owned local admitted to its scope-exit drop, so
+    /// dropping `b` unretained would free the caller's live buffer and the
+    /// caller's own drop would then double-free it. The move-share scan must
+    /// mint a `BytesRetain` for `b` even though the source is not an owned
+    /// candidate — matched here purely via `borrowed_alias_of` (the param is
+    /// deliberately absent from `binding_locals` to isolate that trigger).
+    #[test]
+    fn derive_local_bytes_drop_allowed_marks_borrowed_param_local_coown() {
+        let b = BindingId(501);
+        let owned = vec![(b, "b".to_string(), ResolvedTy::Bytes)];
+        // `b` at Local(1); the borrowed param `a` at Local(0) is NOT owned.
+        let binding_locals = HashMap::from([(b, Place::Local(1))]);
+        let block = BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![Instr::Move {
+                dest: Place::Local(1),
+                src: Place::Local(0),
+            }],
+            terminator: Terminator::Return,
+        };
+        let derivation = derive_local_bytes_drop_allowed(
+            &[block],
+            &HashMap::new(),
+            &owned,
+            &binding_locals,
+            &[ResolvedTy::Bytes, ResolvedTy::Bytes],
+            &HashSet::from([0]),
         );
         assert!(
-            !allowed.contains(&binding),
-            "an aggregate-ingress bytes triple must not earn a producer-side \
-             drop; allowed: {allowed:?}"
+            derivation.allowed.contains(&b),
+            "the co-owning local must still earn its scope-exit drop; allowed: {:?}",
+            derivation.allowed
+        );
+        assert_eq!(
+            derivation.retain_sites,
+            vec![BytesRetainSite {
+                block: 0,
+                instr_index: 0,
+                placement: BytesRetainPlacement::Before,
+                value: Place::Local(0),
+                required_bindings: vec![b],
+            }],
+            "b co-owning a borrowed param buffer must retain, gated on b's own drop"
+        );
+    }
+
+    /// A240 Stage S1 hole #2: `let a = ..; let b = a; return a;`. Both `a` and
+    /// `b` co-own ONE buffer; `a` is RETURNED (moved out — its reference handed
+    /// to the caller, so `a` leaves `owned_locals`) while `b` drops locally.
+    /// Dropping `b` unretained double-frees the returned buffer. The scan must
+    /// mint `b`'s retain even though the source `a` is no longer an owned
+    /// candidate — matched via `binding_local_bases` (a named binding slot),
+    /// NOT via `borrowed_alias_of`. The return move (`ReturnSlot ← Local(1)`)
+    /// mints nothing itself (its dest is not a `Place::Local`).
+    #[test]
+    fn derive_local_bytes_drop_allowed_marks_owned_partner_escape_coown() {
+        let a = BindingId(601);
+        let b = BindingId(602);
+        // Only `b` is owned at scope exit; `a` was consumed by the return.
+        let owned = vec![(b, "b".to_string(), ResolvedTy::Bytes)];
+        let binding_locals = HashMap::from([(a, Place::Local(1)), (b, Place::Local(2))]);
+        let block = BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![
+                Instr::Move {
+                    dest: Place::Local(2),
+                    src: Place::Local(1),
+                },
+                Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src: Place::Local(1),
+                },
+            ],
+            terminator: Terminator::Return,
+        };
+        let derivation = derive_local_bytes_drop_allowed(
+            &[block],
+            &HashMap::new(),
+            &owned,
+            &binding_locals,
+            &[ResolvedTy::Unit, ResolvedTy::Bytes, ResolvedTy::Bytes],
+            &HashSet::new(),
+        );
+        assert!(
+            derivation.allowed.contains(&b),
+            "the surviving local co-owner must still earn its scope-exit drop; allowed: {:?}",
+            derivation.allowed
+        );
+        assert_eq!(
+            derivation.retain_sites,
+            vec![BytesRetainSite {
+                block: 0,
+                instr_index: 0,
+                placement: BytesRetainPlacement::Before,
+                value: Place::Local(1),
+                required_bindings: vec![b],
+            }],
+            "b co-owning a returned buffer must retain, gated on b's own drop"
+        );
+    }
+
+    #[test]
+    fn derive_local_bytes_drop_allowed_marks_container_element_read() {
+        let (owned_locals, binding_locals, binding, local_tys) = bytes_prover_fixture();
+        let get = crate::model::RuntimeCall::new(
+            "hew_vec_get_owned",
+            vec![Place::Local(5), Place::Local(6)],
+            Some(Place::Local(1)),
+        )
+        .expect("hew_vec_get_owned is allowlisted");
+        let block = BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![Instr::CallRuntimeAbi(get)],
+            terminator: Terminator::Return,
+        };
+        let derivation = derive_local_bytes_drop_allowed(
+            &[block],
+            &HashMap::new(),
+            &owned_locals,
+            &binding_locals,
+            &local_tys,
+            &HashSet::new(),
+        );
+        assert!(derivation.allowed.contains(&binding));
+        assert_eq!(
+            derivation.retain_sites,
+            vec![BytesRetainSite {
+                block: 0,
+                instr_index: 0,
+                placement: BytesRetainPlacement::After,
+                value: Place::Local(1),
+                required_bindings: Vec::new(),
+            }]
         );
     }
 }

@@ -137,6 +137,134 @@ fn overwrite_source(frames: usize) -> String {
     )
 }
 
+fn field_load_share_source(frames: usize) -> String {
+    format!(
+        "type Holder {{ payload: bytes, }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let holder = Holder {{ payload: \"field-load\".to_bytes() }};\n\
+         \x20       let extracted = holder.payload;\n\
+         \x20       total = total + extracted.len() + holder.payload.len();\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n"
+    )
+}
+
+fn container_element_read_source(frames: usize) -> String {
+    format!(
+        "fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let values: Vec<((bytes, i64), bool)> = Vec::new();\n\
+         \x20       let source = \"container-read\".to_bytes();\n\
+         \x20       values.push(((source, 7), true));\n\
+         \x20       let item = values[0];\n\
+         \x20       let (inner, flag) = item;\n\
+         \x20       let (payload, number) = inner;\n\
+         \x20       if flag {{ total = total + payload.len() + number; }}\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n"
+    )
+}
+
+fn live_local_coown_source(frames: usize) -> String {
+    format!(
+        "type Holder {{ payload: bytes, }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let source = \"aggregate-share\".to_bytes();\n\
+         \x20       let holder = Holder {{ payload: source }};\n\
+         \x20       total = total + holder.payload.len();\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n"
+    )
+}
+
+fn duplicating_return_source(frames: usize) -> String {
+    format!(
+        "fn duplicate(value: bytes) -> (bytes, bytes) {{ (value, value) }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let source = \"return-share\".to_bytes();\n\
+         \x20       let returned = duplicate(source);\n\
+         \x20       let (left, right) = returned;\n\
+         \x20       total = total + source.len() + left.len() + right.len();\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n"
+    )
+}
+
+/// Fixture G — A240 S1 hole #1: `let alias = value` where `value` is a by-value
+/// `bytes` PARAMETER. A by-value heap param is a borrow (the caller retains
+/// ownership and drops the original), so the co-owning `alias` shares the
+/// caller's live buffer. Pre-fix `alias`'s scope-exit drop double-frees the
+/// caller's buffer (a UAF/abort under the poisoned allocator, not a leak);
+/// post-fix the move-share retain balances it and the per-frame buffer — one
+/// per iteration in `main` — is freed exactly once. The slope check pins the
+/// post-fix balance: an OVER-retain (leaking instead of double-freeing) would
+/// grow the count per frame and fail here, so this also gates against the
+/// leak-direction over-correction.
+fn param_coown_source(frames: usize) -> String {
+    format!(
+        "fn share_param(value: bytes) -> i64 {{\n\
+         \x20   let alias = value;\n\
+         \x20   value.len() + alias.len()\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let payload = \"param-coown-payload\".to_bytes();\n\
+         \x20       total = total + share_param(payload);\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n"
+    )
+}
+
+/// Fixture H — A240 S1 hole #2: `let alias = source; ...; source` where the
+/// co-owner `source` ESCAPES by return while `alias` drops locally. Pre-fix
+/// `alias`'s drop frees the buffer the caller now owns (UAF on the returned
+/// handle, then a double free at the caller's drop); post-fix the move-share
+/// retain balances `alias`'s drop against the caller's. Same slope-as-balance
+/// gate as fixture G.
+fn owned_partner_escape_source(frames: usize) -> String {
+    format!(
+        "fn make_escape() -> bytes {{\n\
+         \x20   let source = \"owned-escape-payload\".to_bytes();\n\
+         \x20   let alias = source;\n\
+         \x20   let _len = alias.len();\n\
+         \x20   source\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let escaped = make_escape();\n\
+         \x20       total = total + escaped.len();\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n"
+    )
+}
+
 // ── leak measurement plumbing (same shape as recv_loop_leak_oracle) ──────
 
 /// Compile `source` to a native binary via `hew compile --emit-dir` and
@@ -341,5 +469,75 @@ fn bytes_state_overwrite_long_run_holds_flat() {
         overwrite_source,
         LOW_FRAMES,
         LONG_FRAMES,
+    );
+}
+
+#[test]
+fn bytes_field_load_share_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance(
+        "bytes_field_load_share",
+        field_load_share_source,
+        LOW_FRAMES,
+        HIGH_FRAMES,
+    );
+}
+
+#[test]
+fn bytes_container_element_read_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance(
+        "bytes_container_element_read",
+        container_element_read_source,
+        LOW_FRAMES,
+        HIGH_FRAMES,
+    );
+}
+
+#[test]
+fn bytes_live_local_coown_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance(
+        "bytes_live_local_coown",
+        live_local_coown_source,
+        LOW_FRAMES,
+        HIGH_FRAMES,
+    );
+}
+
+#[test]
+fn bytes_duplicating_return_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance(
+        "bytes_duplicating_return",
+        duplicating_return_source,
+        LOW_FRAMES,
+        HIGH_FRAMES,
+    );
+}
+
+/// Fixture G: move-share of a by-value bytes PARAMETER (A240 S1 hole #1). The
+/// co-owning local must retain so its scope-exit drop does not double-free the
+/// caller's borrowed buffer. Post-fix holds flat (each per-frame buffer freed
+/// exactly once by the caller); an OVER-retain would leak per frame and fail
+/// the slope. Pre-fix the double-free is a UAF/abort (macOS `leaks` is blind to
+/// the underflow; the Linux `ASan` fixture is the authoritative double-free gate).
+#[test]
+fn bytes_param_coown_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance(
+        "bytes_param_coown",
+        param_coown_source,
+        LOW_FRAMES,
+        HIGH_FRAMES,
+    );
+}
+
+/// Fixture H: move-share whose co-owner escapes by return (A240 S1 hole #2).
+/// The surviving local co-owner must retain so its scope-exit drop does not
+/// double-free the returned buffer. Post-fix holds flat; same balance-vs-leak
+/// gate as fixture G.
+#[test]
+fn bytes_owned_partner_escape_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance(
+        "bytes_owned_partner_escape",
+        owned_partner_escape_source,
+        LOW_FRAMES,
+        HIGH_FRAMES,
     );
 }

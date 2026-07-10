@@ -865,7 +865,6 @@ fn fs$try_read_bytes -> Result<bytes, IoError>
     bind BindingId(55) errno site=SiteId(464) ty=i32
     use BindingId(55) errno site=SiteId(468) ty=i32 intent=Read
     use BindingId(54) data site=SiteId(480) ty=bytes intent=Read
-    agg_alias BindingId(54) data site=SiteId(480) ty=bytes
     return site=Some(SiteId(460)) ty=Result<bytes, IoError>
     eval site=SiteId(471) ty=string
     use BindingId(55) errno site=SiteId(476) ty=i32 intent=Read

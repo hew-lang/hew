@@ -288,6 +288,7 @@ tests/pkg-import/published_bare_no_poison.hew
 tests/pkg-import/published_bare_two_optin_ambiguous.hew
 tests/pkg-import/qualified_construct_layout.hew
 tests/pkg-import/qualified_trait_sig.hew
+tests/pkg-import/record_destructure_selective_import.hew
 tests/pkg-import/reexport_aliased_super_inline_supermethod_accept.hew
 tests/pkg-import/reexport_chain_inline_supermethods_accept.hew
 tests/pkg-import/reexport_super_inline_supermethod_accept.hew

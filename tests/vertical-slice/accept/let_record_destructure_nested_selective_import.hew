@@ -1,0 +1,15 @@
+// A locally declared outer record retains the qualified imported field type in
+// HIR's registry, so nested destructuring must resolve the same bare layout.
+import let_record_destructure_selective_import_module;
+import let_record_destructure_selective_import_module::{ Vec2 };
+
+type Line {
+    a: let_record_destructure_selective_import_module.Vec2;
+    b: i64;
+}
+
+fn main() {
+    let line = Line { a: Vec2 { x: 3, y: 4 }, b: 5 };
+    let Line { a: Vec2 { x, y }, b } = line;
+    println(x + y + b);
+}

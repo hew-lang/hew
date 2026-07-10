@@ -22,7 +22,10 @@ use inkwell::values::{BasicMetadataValueEnum, FunctionValue, IntValue, PointerVa
 use inkwell::{AddressSpace, IntPredicate};
 
 use hew_hir::mangle_dotted_name;
-use hew_mir::{ActorLayout, IoHandleKind, LambdaEnvFieldDrop, Place, StateFieldCloneKind};
+use hew_mir::{
+    ActorLayout, IoHandleKind, LambdaEnvFieldDrop, Place, SpawnEnvFieldOwnership,
+    StateFieldCloneKind,
+};
 use hew_runtime::internal::types::HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH;
 use hew_types::{BuiltinType, ResolvedTy};
 
@@ -499,6 +502,7 @@ pub(crate) fn emit_spawn_task_closure(
     fn_symbol: &str,
     env: Place,
     env_ty: &ResolvedTy,
+    env_ownership: &[SpawnEnvFieldOwnership],
 ) -> CodegenResult<()> {
     let spilled_ctx = fn_ctx.execution_context.ok_or_else(|| {
         CodegenError::FailClosed("SpawnTaskClosure spawn site requires an execution context".into())
@@ -515,6 +519,14 @@ pub(crate) fn emit_spawn_task_closure(
         return Err(CodegenError::FailClosed(format!(
             "SpawnTaskClosure env place type {env_slot_ty:?} does not match registered env \
              struct {env_struct:?}"
+        )));
+    }
+    let field_count = env_struct.count_fields() as usize;
+    if env_ownership.len() != field_count {
+        return Err(CodegenError::FailClosed(format!(
+            "SpawnTaskClosure environment for `{fn_symbol}` has {field_count} fields but \
+             ownership manifest has {} entries",
+            env_ownership.len()
         )));
     }
     let Some(env_size) = env_struct.size_of() else {
@@ -537,6 +549,28 @@ pub(crate) fn emit_spawn_task_closure(
         "hew_rc_new",
     )?;
     let null_drop = fn_ctx.ctx.ptr_type(AddressSpace::default()).const_null();
+    let owned_field_kinds: Vec<(u32, StateFieldCloneKind)> =
+        if env_ownership.contains(&SpawnEnvFieldOwnership::OwnsMoved) {
+            crate::llvm::env_field_drop_kinds(fn_ctx, fn_symbol, env, "spawn task")?
+                .into_iter()
+                .enumerate()
+                .filter_map(|(idx, kind)| {
+                    (env_ownership[idx] == SpawnEnvFieldOwnership::OwnsMoved).then_some((
+                        u32::try_from(idx).expect("spawn env field count exceeds u32::MAX"),
+                        kind,
+                    ))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+    let drop_fn = if owned_field_kinds.is_empty() {
+        null_drop
+    } else {
+        get_or_emit_spawn_env_rc_drop_thunk(fn_ctx, fn_symbol, env_struct, &owned_field_kinds)?
+            .as_global_value()
+            .as_pointer_value()
+    };
     let rc_env = fn_ctx
         .builder
         .build_call(
@@ -545,7 +579,7 @@ pub(crate) fn emit_spawn_task_closure(
                 env_ptr.into(),
                 env_size.into(),
                 env_align.into(),
-                null_drop.into(),
+                drop_fn.into(),
             ],
             "hew_closure_env_rc_new",
         )
@@ -581,6 +615,55 @@ pub(crate) fn emit_spawn_task_closure(
         )
         .llvm_ctx("hew_task_spawn_thread_with_inherited_context call")?;
     Ok(())
+}
+
+/// Synthesise a payload-only callback for an Rc task environment.
+///
+/// `hew_rc_new` owns and reclaims the allocation itself, so this callback drops
+/// only the manifest-owned fields and must never call `hew_dyn_box_free`.
+fn get_or_emit_spawn_env_rc_drop_thunk<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    fn_symbol: &str,
+    env_struct: StructType<'ctx>,
+    owned_field_kinds: &[(u32, StateFieldCloneKind)],
+) -> CodegenResult<FunctionValue<'ctx>> {
+    let symbol = format!("__hew_spawn_env_rc_drop_{fn_symbol}");
+    if let Some(existing) = fn_ctx.llvm_mod.get_function(&symbol) {
+        return Ok(existing);
+    }
+    let ctx = fn_ctx.ctx;
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let thunk = fn_ctx.llvm_mod.add_function(
+        &symbol,
+        ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        Some(Linkage::Private),
+    );
+    let entry = ctx.append_basic_block(thunk, "entry");
+    let builder = ctx.create_builder();
+    builder.position_at_end(entry);
+    let env = thunk
+        .get_nth_param(0)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "spawn env Rc drop thunk `{symbol}`: synthesised function missing env parameter"
+            ))
+        })?
+        .into_pointer_value();
+    for (field_idx, kind) in owned_field_kinds.iter().rev() {
+        crate::llvm::emit_field_drop_step(
+            ctx,
+            fn_ctx.llvm_mod,
+            &builder,
+            Some(env_struct),
+            env,
+            *field_idx,
+            kind,
+        )?;
+    }
+    builder
+        .build_return(None)
+        .llvm_ctx_with(|| format!("spawn env Rc drop thunk `{symbol}`: return"))?;
+    Ok(thunk)
 }
 
 /// Synthesise (once per closure shim) the `void(ptr env)` free thunk the

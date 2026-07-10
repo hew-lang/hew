@@ -1,5 +1,7 @@
 use hew_hir::{lower_program, ResolutionCtx};
-use hew_mir::{lower_hir_module, Instr, IrPipeline, MirCheck, MirDiagnosticKind};
+use hew_mir::{
+    lower_hir_module, Instr, IrPipeline, MirCheck, MirDiagnosticKind, SpawnEnvFieldOwnership,
+};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
 
@@ -213,9 +215,9 @@ fn fork_string_arg_parent_and_shim_emit_no_drops_for_moved_arg() {
     // Drop-plan oracle (the truth standard): the moved-in string rides the
     // env bytes into the child. The parent's emitted drop plans carry NO
     // release for it (the consume fact removed it) and the shim's plans are
-    // empty — byte-for-byte the posture of the direct-call baseline, which
-    // also emits no drops for a by-value string arg under the move-only
-    // M-COW spine. Leak-as-before; never a double free.
+    // empty. The shim does emit an explicit inline release for its temporary
+    // retained env load; the Rc environment callback remains the sole release
+    // site for the moved source owner.
     let mir = lower_clean_to_mir(FORK_ARGS_DRIVER);
     for func in &mir.elaborated_mir {
         if func.name.contains("drive") || func.name.starts_with("__hew_fork_entry_") {
@@ -229,6 +231,91 @@ fn fork_string_arg_parent_and_shim_emit_no_drops_for_moved_arg() {
             }
         }
     }
+    let shim = mir
+        .raw_mir
+        .iter()
+        .find(|func| func.name.starts_with("__hew_fork_entry_"))
+        .expect("arg-bearing fork entry shim");
+    let inline_string_drops = shim
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter(|instr| {
+            matches!(
+                instr,
+                Instr::Drop {
+                    ty: hew_types::ResolvedTy::String,
+                    drop_fn: Some(hew_mir::DropFnSpec::Release("hew_string_drop")),
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(
+        inline_string_drops, 1,
+        "the shim must balance exactly one retain from its string env load"
+    );
+}
+
+#[test]
+fn fork_string_arg_spawn_env_owns_the_moved_field() {
+    let mir = lower_clean_to_mir(FORK_ARGS_DRIVER);
+    let ownership = mir
+        .raw_mir
+        .iter()
+        .flat_map(|func| &func.blocks)
+        .flat_map(|block| block.instructions.iter())
+        .find_map(|instr| match instr {
+            Instr::SpawnTaskClosure { env_ownership, .. } => Some(env_ownership),
+            _ => None,
+        })
+        .expect("arg-bearing fork must emit a spawn env ownership manifest");
+    assert_eq!(
+        ownership,
+        &[SpawnEnvFieldOwnership::OwnsMoved],
+        "the fork environment is the sole owner after the parent consumes its string"
+    );
+}
+
+#[test]
+fn spawned_closure_env_borrows_its_scope_owned_capture() {
+    let mir = lower_clean_to_mir(
+        r#"
+        actor _Driver {
+            receive fn drive() {
+                let greeting = "hello" + " world";
+                scope {
+                    (|| println(greeting))();
+                };
+            }
+        }
+
+        fn main() -> i64 {
+            let d = spawn _Driver;
+            d.drive();
+            0
+        }
+        "#,
+    );
+    let ownership = mir
+        .raw_mir
+        .iter()
+        .flat_map(|func| &func.blocks)
+        .flat_map(|block| block.instructions.iter())
+        .find_map(|instr| match instr {
+            Instr::SpawnTaskClosure { env_ownership, .. } if !env_ownership.is_empty() => {
+                Some(env_ownership)
+            }
+            _ => None,
+        })
+        .expect("spawned closure must emit a non-empty scope-owned environment manifest");
+    assert!(
+        ownership
+            .iter()
+            .all(|ownership| *ownership == SpawnEnvFieldOwnership::BorrowsOnly),
+        "scope-owned closure captures remain borrowed and must not receive an Rc payload drop: \
+         {ownership:?}"
+    );
 }
 
 #[test]

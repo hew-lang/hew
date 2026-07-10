@@ -14,6 +14,8 @@ mod composite_return;
 mod emit_duplex_pair;
 #[path = "structural/error_enum_cross_crate_parity.rs"]
 mod error_enum_cross_crate_parity;
+#[path = "structural/fork_spawn_env_drop.rs"]
+mod fork_spawn_env_drop;
 #[path = "structural/hashmap_layout_ops.rs"]
 mod hashmap_layout_ops;
 #[path = "structural/machine_layout.rs"]

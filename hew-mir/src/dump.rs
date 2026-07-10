@@ -34,7 +34,8 @@ use crate::model::{
     CmpPred, Direction, DropFnSpec, DropKind, DropPlan, ElabDrop, ElaboratedMirFunction, ExitPath,
     FloatWidth, FunctionCallConv, Instr, IntArithOp, IntSignedness, IrPipeline, JoinBranch,
     LambdaEnvFieldDrop, MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement, Place,
-    RawMirFunction, SelectArm, SelectArmKind, SuspendKind, Terminator, TrapKind,
+    RawMirFunction, SelectArm, SelectArmKind, SpawnEnvFieldOwnership, SuspendKind, Terminator,
+    TrapKind,
 };
 
 /// Which stage of the pipeline to render.
@@ -931,11 +932,20 @@ fn render_instr(instr: &Instr) -> String {
             fn_symbol,
             env,
             env_ty,
+            env_ownership,
         } => format!(
-            "{} = spawn_task_closure {fn_symbol} env={} env_ty={}",
+            "{} = spawn_task_closure {fn_symbol} env={} env_ty={} ownership=[{}]",
             render_place(task),
             render_place(env),
-            env_ty.user_facing()
+            env_ty.user_facing(),
+            env_ownership
+                .iter()
+                .map(|ownership| match ownership {
+                    SpawnEnvFieldOwnership::BorrowsOnly => "borrow",
+                    SpawnEnvFieldOwnership::OwnsMoved => "own_moved",
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
 
         // Drop

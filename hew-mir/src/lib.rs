@@ -62,9 +62,9 @@ pub use model::{
     MachineLayout, MachineVariantLayout, MirCheck, MirConst, MirConstValue, MirDiagnostic,
     MirDiagnosticKind, MirHeapLayouts, MirLint, MirScope, MirStatement, Place, PointerWidth,
     PolymorphicMirFunction, PoolCount, RawMirFunction, RecordLayout, RegexLiteral, RuntimeCall,
-    SelectArm, SelectArmKind, SendAliasMode, SourceOrigin, Strategy, SupervisorChildLayout,
-    SupervisorConfigParam, SupervisorLayout, SuspendKind, Terminator, ThirFunction,
-    TraitObjectStorage, TrapKind, WitnessOperand,
+    SelectArm, SelectArmKind, SendAliasMode, SourceOrigin, SpawnEnvFieldOwnership, Strategy,
+    SupervisorChildLayout, SupervisorConfigParam, SupervisorLayout, SuspendKind, Terminator,
+    ThirFunction, TraitObjectStorage, TrapKind, WitnessOperand,
 };
 pub use ownership::{
     AbiClass, CowHeapRelease, DropClass, FailClosedReason, HandleRole, HeapLeaf,

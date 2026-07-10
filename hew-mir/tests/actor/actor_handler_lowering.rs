@@ -816,6 +816,26 @@ fn is_inline_stream_close(instr: &Instr) -> bool {
     )
 }
 
+/// Scope-inline stream cursor closes split by whether the carrying block
+/// returns from the function or remains on a fall-through path.
+fn inline_stream_closes_by_edge(func: &hew_mir::RawMirFunction) -> (usize, usize) {
+    let mut on_return_edge = 0;
+    let mut on_fall_through = 0;
+    for block in &func.blocks {
+        let closes = block
+            .instructions
+            .iter()
+            .filter(|instr| is_inline_stream_close(instr))
+            .count();
+        if matches!(block.terminator, Terminator::Return) {
+            on_return_edge += closes;
+        } else {
+            on_fall_through += closes;
+        }
+    }
+    (on_return_edge, on_fall_through)
+}
+
 #[test]
 fn generator_handler_pump_registers_checks_peer_and_completes_sink() {
     // The pump's fault-close and cancellation wiring (decisions 6+7): its
@@ -1839,5 +1859,95 @@ fn for_await_stream_cursor_gets_scope_inline_close_but_returned_binding_does_not
         "a plain `let`-bound stream returned out of its function must NOT \
          get an inline scope-exit close — it relies on the move-aware \
          function-exit LIFO drop plan instead: {passthrough_fn:#?}"
+    );
+}
+
+#[test]
+fn forawait_early_return_closes_cursor_on_return_edge() {
+    let pipeline = source_pipeline(
+        r#"
+        actor Ticker {
+            receive gen fn stream() -> i64 {
+                yield 1;
+                yield 2;
+            }
+        }
+
+        fn drain(t: LocalPid<Ticker>) -> i64 {
+            for await v in t.stream() {
+                if v > 0 {
+                    return v;
+                }
+            }
+            println("drained");
+            return 0;
+        }
+        "#,
+    );
+    let drain_fn = pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "drain")
+        .expect("drain fn must lower");
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "MIR diagnostics: {:#?}\n{drain_fn:#?}",
+        pipeline.diagnostics
+    );
+    let (return_edge, fall_through) = inline_stream_closes_by_edge(drain_fn);
+    assert!(
+        return_edge >= 1,
+        "the early-return edge must close the active for-await cursor: {drain_fn:#?}"
+    );
+    assert!(
+        fall_through >= 1,
+        "the mutually-exclusive fall-through path must retain its scope close: {drain_fn:#?}"
+    );
+}
+
+#[test]
+fn forawait_nested_early_return_closes_all_cursors() {
+    let pipeline = source_pipeline(
+        r#"
+        actor Outer {
+            receive gen fn stream() -> i64 {
+                yield 1;
+                yield 2;
+            }
+        }
+
+        actor Inner {
+            receive gen fn stream() -> i64 {
+                yield 3;
+                yield 4;
+            }
+        }
+
+        fn drain(outer: LocalPid<Outer>, inner: LocalPid<Inner>) -> i64 {
+            for await x in outer.stream() {
+                for await y in inner.stream() {
+                    return x + y;
+                }
+            }
+            println("drained");
+            return 0;
+        }
+        "#,
+    );
+    let drain_fn = pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "drain")
+        .expect("drain fn must lower");
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "MIR diagnostics: {:#?}\n{drain_fn:#?}",
+        pipeline.diagnostics
+    );
+    let (return_edge, _) = inline_stream_closes_by_edge(drain_fn);
+    assert_eq!(
+        return_edge, 2,
+        "a function return from nested for-await loops must close both active cursors: \
+         {drain_fn:#?}"
     );
 }

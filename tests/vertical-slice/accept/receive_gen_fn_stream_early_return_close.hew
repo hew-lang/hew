@@ -1,0 +1,41 @@
+// Returning from a for-await drain must close the synthetic stream cursor.
+// The producer yields beyond the channel capacity, so without the close it
+// parks on backpressure and cannot serve the later ping.
+actor Ticker {
+    receive gen fn stream() -> i64 {
+        yield 0;
+        yield 1;
+        yield 2;
+        yield 3;
+        yield 4;
+        yield 5;
+        yield 6;
+        yield 7;
+        yield 8;
+        yield 9;
+        yield 10;
+        yield 11;
+        yield 12;
+    }
+
+    receive fn ping() -> i64 {
+        99
+    }
+}
+
+fn first(t: LocalPid<Ticker>) -> i64 {
+    for await v in t.stream() {
+        return v;
+    }
+    0 - 1
+}
+
+fn main() {
+    let t = spawn Ticker;
+    let value = first(t);
+    println(f"first={value}");
+    match await t.ping() {
+        Ok(v) => println(f"ping={v}"),
+        Err(_) => println("ping failed"),
+    }
+}

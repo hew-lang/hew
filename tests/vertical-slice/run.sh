@@ -2724,6 +2724,7 @@ run_accept_expect_stdout "receive_gen_fn_record_stream_break"
 # on the return edge, and the returned result proves the received values were
 # intact when read. Leak slope pinned by the recv-loop leak oracle in hew-cli.
 run_accept_expect_stdout "receive_gen_fn_stream_early_return"
+run_accept_expect_stdout "receive_gen_fn_stream_early_return_close"
 
 # Fault (producer crash): the gen body yields once, then traps on a
 # runtime div-by-zero. The consumer, having already received the first value,

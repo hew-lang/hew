@@ -38847,19 +38847,24 @@ fn is_hew_string_concat_runtime_call(call: &crate::model::RuntimeCall) -> bool {
     call.symbol() == "hew_string_concat"
 }
 
-fn is_fresh_string_concat_instr_def(def: NestedDefSite, blocks: &[BasicBlock], t: u32) -> bool {
-    let NestedDefSite::Instr { block, idx } = def else {
-        return false;
+fn is_fresh_string_producer_def(
+    def: NestedDefSite,
+    blocks: &[BasicBlock],
+    locals: &[ResolvedTy],
+    t: u32,
+) -> bool {
+    let dest = match def {
+        NestedDefSite::Instr { block, idx } => block_by_id(blocks, block)
+            .and_then(|b| b.instructions.get(idx))
+            .and_then(|instr| {
+                fresh_string_producer_dest(instr)
+                    .or_else(|| string_field_load_producer_dest(instr, locals))
+            }),
+        NestedDefSite::Term { block } => {
+            block_by_id(blocks, block).and_then(|b| fresh_string_producer_term_dest(&b.terminator))
+        }
     };
-    let Some(Instr::CallRuntimeAbi(call)) =
-        block_by_id(blocks, block).and_then(|b| b.instructions.get(idx))
-    else {
-        return false;
-    };
-    is_hew_string_concat_runtime_call(call)
-        && call.dest().and_then(base_local) == Some(t)
-        && crate::runtime_symbols::callee_ownership_contract(call.symbol())
-            .produces_fresh_owned_string()
+    dest.and_then(base_local) == Some(t)
 }
 
 fn is_borrowing_string_concat_instr_use(instr: &Instr, t: u32) -> bool {
@@ -39403,7 +39408,7 @@ fn nested_fresh_string_temp_drop(
             let ub = *ub;
             let use_instr = block_by_id(blocks, ub)?.instructions.get(*ui)?;
             let borrowing_use = is_borrowing_string_cmp_instr(use_instr, t)
-                || (is_fresh_string_concat_instr_def(def, blocks, t)
+                || (is_fresh_string_producer_def(def, blocks, locals, t)
                     && is_borrowing_string_concat_instr_use(use_instr, t));
             if !borrowing_use {
                 return None;
@@ -39513,6 +39518,16 @@ mod nested_fresh_string_temp_drop_admission {
         )
     }
 
+    fn fresh_string_call(callee: &str, dest: u32, next: u32) -> Terminator {
+        Terminator::Call {
+            callee: callee.to_string(),
+            builtin: None,
+            args: vec![Place::Local(0)],
+            dest: Some(Place::Local(dest)),
+            next,
+        }
+    }
+
     fn user_record_ty() -> ResolvedTy {
         ResolvedTy::named_user("Holder", vec![])
     }
@@ -39560,6 +39575,26 @@ mod nested_fresh_string_temp_drop_admission {
             "the first concat temp is a fresh owner used exactly once by the \
              second borrowing concat; it must be dropped immediately after that \
              use and only once"
+        );
+    }
+
+    #[test]
+    fn terminator_fresh_temp_gets_one_inline_drop_after_borrowing_concat_use() {
+        let blocks = vec![
+            block(
+                0,
+                vec![],
+                fresh_string_call("hew_string_to_uppercase", 2, 1),
+            ),
+            block(1, vec![concat(3, 2, 4)], Terminator::Return),
+        ];
+        let drops = collect(&blocks, &locals_with(&[]), &second_concat_binding());
+
+        assert_eq!(
+            drops,
+            vec![(1, 1, Place::Local(2), ResolvedTy::String)],
+            "a proven fresh terminator-produced operand used once by borrowing concat \
+             must be dropped immediately after that concat"
         );
     }
 

@@ -708,6 +708,15 @@ pub struct TimeoutClause {
 pub struct LambdaParam {
     pub name: String,
     pub ty: Option<Spanned<TypeExpr>>,
+    /// Source span of the parameter *name* token, used only for outer-scope
+    /// shadowing classification (see `Checker::check_lambda` /
+    /// `Env::define_param_with_span`). Free/receive-fn/init/hook parameters
+    /// already carry this via `Param.ty.1`; lambda parameters had no name
+    /// span at all prior to this field, so a nested `let` shadowing a
+    /// lambda parameter was indistinguishable from shadowing a fully
+    /// synthetic binding and hard-errored instead of warning.
+    #[serde(default)]
+    pub name_span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

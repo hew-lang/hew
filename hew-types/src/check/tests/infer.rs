@@ -816,6 +816,7 @@ mod non_root_module_inference_scope {
             params: vec![LambdaParam {
                 name: "x".to_string(),
                 ty: Some((TypeExpr::Infer, 15..16)),
+                name_span: 14..15,
             }],
             return_type: None,
             body: Box::new((Expr::Identifier("x".to_string()), 19..20)),

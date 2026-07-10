@@ -2345,6 +2345,56 @@ fn warn_nested_scope_shadowing_of_receive_fn_param() {
 }
 
 #[test]
+fn warn_nested_scope_shadowing_of_lambda_param() {
+    // #2503: PR #2499 fixed function/receive-fn/actor-init/actor-hook
+    // parameters (bound via `define_param_with_span`) but explicitly did not
+    // cover lambda parameters, a 5th surface with the same bug class —
+    // lambda params were bound via plain `env.define` (no span at all), so a
+    // nested `let` shadowing a lambda's own parameter was indistinguishable
+    // from shadowing a synthetic binding and hard-errored instead of warning.
+    let source = r#"
+        fn main() {
+            let f = |x: i64| -> i64 {
+                let x = 2;
+                return x;
+            };
+            println(f(5));
+        }
+    "#;
+    let (errors, warnings) = parse_and_check(source);
+    assert!(
+        !errors.iter().any(|e| e.kind == TypeErrorKind::Shadowing),
+        "shadowing a lambda parameter should not be a hard error, got errors: {errors:?}",
+    );
+    assert!(
+        warnings.iter().any(|w| w.kind == TypeErrorKind::Shadowing
+            && w.message.contains("shadows a binding in an outer scope")),
+        "expected outer-scope shadowing warning for parameter `x`, got warnings: {warnings:?}",
+    );
+}
+
+#[test]
+fn unused_lambda_param_is_not_warned() {
+    // Lambda parameters must stay exempt from the `UnusedVariable` lint —
+    // same contract as free-fn params (see `unused_free_fn_param_is_not_warned`
+    // below) — the shadowing-severity fix must not regress this.
+    let source = r#"
+        fn main() {
+            let f = |unused: i64| -> i64 { return 5; };
+            println(f(1));
+        }
+    "#;
+    let (errors, warnings) = parse_and_check(source);
+    assert!(
+        !warnings
+            .iter()
+            .any(|w| w.kind == TypeErrorKind::UnusedVariable),
+        "unused lambda parameters must not trigger UnusedVariable, got warnings: {warnings:?}",
+    );
+    assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+}
+
+#[test]
 fn unused_free_fn_param_is_not_warned() {
     // Parameters keep `def_span: None` (see `define_param_with_span`) even
     // though they now carry a `shadow_span` for the shadowing fix above, so

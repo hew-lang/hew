@@ -15,6 +15,12 @@ IO_RUNTIME_FFI_FILES = (
     "io_time.rs",
     "transport.rs",
 )
+C_UNWIND_MACHINE_EMIT_EXPORTS = {
+    "hew_machine_emit_step_enter",
+    "hew_machine_emit_step_exit",
+    "hew_machine_emit_step_exit_keep",
+    "hew_machine_emit_take",
+}
 
 spec = importlib.util.spec_from_file_location("verify_ffi_symbols", SCRIPT)
 verify_ffi_symbols = importlib.util.module_from_spec(spec)
@@ -65,7 +71,12 @@ def test_validate_covers_every_runtime_export_exactly_once() -> None:
 def test_validate_reports_missing_symbol_with_classification_file_path() -> None:
     errors = verify_ffi_symbols.validate_jit_symbol_classification(
         {"hew_zzz_test_symbol"},
-        {"stable": set(), "internal": set()},
+        {
+            "stable": set(),
+            "stable-stdlib": set(),
+            "codegen-stable": set(),
+            "internal": set(),
+        },
     )
     assert errors == [
         "unclassified runtime exports (1): "
@@ -94,12 +105,26 @@ def test_io_runtime_exports_are_jit_stable() -> None:
     assert "hew_shutdown_initiate" in classification["internal"]
 
 
+def test_c_unwind_machine_emit_exports_are_classified() -> None:
+    runtime_exports = verify_ffi_symbols.extract_runtime_exports()
+    classification = verify_ffi_symbols.load_jit_symbol_classification()
+
+    assert C_UNWIND_MACHINE_EMIT_EXPORTS <= runtime_exports
+    assert {
+        "hew_machine_emit_step_enter",
+        "hew_machine_emit_step_exit_keep",
+        "hew_machine_emit_take",
+    } <= classification["codegen-stable"]
+    assert "hew_machine_emit_step_exit" in classification["internal"]
+
+
 _TESTS = [
     test_classify_stable_outputs_sorted_names_only,
     test_classify_internal_outputs_sorted_names_only,
     test_validate_covers_every_runtime_export_exactly_once,
     test_validate_reports_missing_symbol_with_classification_file_path,
     test_io_runtime_exports_are_jit_stable,
+    test_c_unwind_machine_emit_exports_are_classified,
 ]
 
 if __name__ == "__main__":

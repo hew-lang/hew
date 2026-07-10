@@ -7,11 +7,10 @@
 //! name plus concrete type and const arguments, prefixed by a
 //! class-tag derived from [`SymbolClass`]:
 //!
-//! - [`SymbolClass::Function`] (empty class prefix): `<name>$$<args>`
-//!   — byte-identical to the legacy [`crate::monomorph::mangle`]
-//!   output for the same `(name, type_args)` input, and with empty
-//!   `const_args` produces no additional suffix. The legacy helper is
-//!   now a thin wrapper over this entry point.
+//! - [`SymbolClass::Function`] (empty class prefix): `<name>$$<args>`.
+//!   With empty `const_args` it produces no additional suffix. The
+//!   legacy helper is a thin wrapper over this entry point, so both
+//!   paths always use the same current type-fragment encoding.
 //! - All other [`SymbolClass`] variants prefix the symbol with
 //!   `<tag>$$` where `<tag>` is a short ASCII discriminator
 //!   (`mc` for machine, `ac` for actor, etc.). The prefix ensures two
@@ -31,8 +30,8 @@
 //! Per-`ResolvedTy` segment rendering is delegated to
 //! [`crate::monomorph::mangle_resolved_ty`], which the legacy
 //! [`crate::monomorph::mangle`] also uses — so individual type-arg
-//! fragments are byte-identical between the legacy and new paths by
-//! construction. Only the surrounding prefix/separator scheme is new.
+//! fragments are identical between the two paths by construction. Only
+//! the surrounding prefix/separator scheme differs by symbol class.
 
 use std::fmt::Write;
 

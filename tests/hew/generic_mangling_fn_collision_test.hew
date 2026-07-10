@@ -1,0 +1,21 @@
+//! The generic instantiation `Foo<i64>` and literal type `Foo_i64` used to
+//! share the `Foo_i64` type fragment, causing `through<T>` specializations to
+//! collide. Both values must retain their independent fields after distinct
+//! monomorphizations are emitted.
+
+import std::testing;
+
+type Foo<T> { value: T; }
+type Foo_i64 { value: i64; }
+
+fn through<T>(value: T) -> T { value }
+
+#[test]
+fn test_generic_mangle_keeps_literal_and_generic_specializations_distinct() {
+    let generic = through(Foo { value: 17 });
+    let literal = through(Foo_i64 { value: 29 });
+
+    testing.assert_eq(generic.value, 17);
+    testing.assert_eq(literal.value, 29);
+    println("VALUES-OK generic-mangling-fn");
+}

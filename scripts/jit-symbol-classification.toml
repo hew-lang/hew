@@ -1508,14 +1508,6 @@ params = ["borrow", "borrow"]
 release-symbol = "hew_vec_free"
 discharge-depth = "shallow"
 
-# hew-runtime/src/vec.rs:1783-1815 allocates a witness-managed clone.
-[[ownership.contracts]]
-symbol = "hew_vec_clone_managed"
-result = "fresh"
-params = ["borrow"]
-release-symbol = "hew_vec_free_managed"
-discharge-depth = "deep"
-
 # hew-runtime/src/vec.rs:2964-3009 allocates a deep owned-element clone.
 [[ownership.contracts]]
 symbol = "hew_vec_clone_owned"

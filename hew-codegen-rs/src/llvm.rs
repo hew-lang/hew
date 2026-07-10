@@ -31031,8 +31031,45 @@ pub(crate) fn emit_read_deadline_timeout_err(
     emit_result_err(fn_ctx, result_dest, error_dest)
 }
 
-/// Emit `Err(TimeoutError::Timeout)` into `result_dest` for the
-/// `await rx.recv() | after d` / `await stream.recv() | after d` timeout arm
+/// Emit `Err(NetError::Cancelled(0))` into `result_dest` for the shutdown-cancel
+/// arm of a suspending `await … | after d` accept/read arbiter. The typed
+/// counterpart of [`emit_read_deadline_timeout_err`]: a runtime shutdown sweep
+/// deposits `AwaitCancelStatus::Cancelled` on a parked wait, and the arbiter
+/// routes that to `NetError::Cancelled` rather than the deadline's `TimedOut`.
+///
+/// `NetError::Cancelled` is variant index 4 in `std/net/net.hew`
+/// (ConnectionRefused=0, AddressInUse=1, AddressNotAvailable=2, TimedOut=3,
+/// Cancelled=4, Other=5). Payload int 0, mirroring the `TimedOut` template.
+pub(crate) fn emit_read_deadline_cancelled_err(
+    fn_ctx: &FnCtx<'_, '_>,
+    result_dest: Place,
+    error_dest: Place,
+) -> CodegenResult<()> {
+    let error_local = composite_dest_local(error_dest, "SuspendingRead NetError")?;
+    store_composite_tag(fn_ctx, error_local, 4, "SuspendingRead NetError::Cancelled")?;
+    let (payload_ptr, payload_ty) = place_pointer(
+        fn_ctx,
+        Place::MachineVariant {
+            local: error_local,
+            variant_idx: 4,
+            field_idx: 0,
+        },
+    )?;
+    let payload_int_ty = match payload_ty {
+        BasicTypeEnum::IntType(t) => t,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "SuspendingRead NetError::Cancelled payload must be integer, got {other:?}"
+            )));
+        }
+    };
+    fn_ctx
+        .builder
+        .build_store(payload_ptr, payload_int_ty.const_zero())
+        .llvm_ctx("store SuspendingRead NetError::Cancelled payload")?;
+    emit_result_err(fn_ctx, result_dest, error_dest)
+}
+
 /// (L4 phase 2). `TimeoutError::Timeout` is variant 0 with no payload.
 pub(crate) fn emit_recv_deadline_timeout_err(
     fn_ctx: &FnCtx<'_, '_>,

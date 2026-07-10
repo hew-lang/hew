@@ -832,6 +832,66 @@ fn emit_suspending_read_bind<'ctx>(
                 CodegenError::FailClosed("hew_await_cancel_status returned void".into())
             })?
             .into_int_value();
+        // Three-way resume arbiter (was two-way TimedOut-vs-proceed). A runtime
+        // shutdown sweep can deposit `AwaitCancelStatus::Cancelled (2)` on a
+        // parked wait; route that to a typed `Err(NetError::Cancelled)` instead
+        // of falling through to the proceed arm (which would wrap an invalid
+        // read as `Ok(_)`). Order: Cancelled (2) → TimedOut (3) → proceed.
+        let cancelled = fn_ctx
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                i32_ty.const_int(2, false),
+                "suspending_read_cancelled",
+            )
+            .llvm_ctx("suspending read cancelled compare")?;
+        let cancelled_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent, "suspending_read_cancelled");
+        let timeout_check_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent, "suspending_read_timeout_check");
+        fn_ctx
+            .builder
+            .build_conditional_branch(cancelled, cancelled_bb, timeout_check_bb)
+            .llvm_ctx("suspending read cancelled branch")?;
+
+        // Cancelled arm — structurally identical to the timeout arm but emits
+        // `NetError::Cancelled`: free the deadline reg, free the slot, store the
+        // typed error, and resume.
+        fn_ctx.builder.position_at_end(cancelled_bb);
+        let reg_free_cancel = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_free",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(
+                reg_free_cancel,
+                &[reg.into()],
+                "suspending_read_cancelled_reg_free",
+            )
+            .llvm_ctx("hew_await_cancel_free (read cancelled) call")?;
+        fn_ctx
+            .builder
+            .build_call(slot_free, &[slot.into()], "suspending_read_cancelled_free")
+            .llvm_ctx("hew_read_slot_free (cancelled) call")?;
+        let cancel_result_dest = term.deadline_result_dest.ok_or_else(|| {
+            CodegenError::FailClosed("SuspendingRead cancelled missing Result dest".into())
+        })?;
+        let cancel_error_dest = term.error_dest.ok_or_else(|| {
+            CodegenError::FailClosed("SuspendingRead cancelled missing NetError dest".into())
+        })?;
+        emit_read_deadline_cancelled_err(fn_ctx, cancel_result_dest, cancel_error_dest)?;
+        fn_ctx
+            .builder
+            .build_unconditional_branch(resume_bb)
+            .llvm_ctx("suspending read cancelled br")?;
+
+        fn_ctx.builder.position_at_end(timeout_check_bb);
         let timed_out = fn_ctx
             .builder
             .build_int_compare(
@@ -1507,6 +1567,65 @@ fn emit_suspending_accept_bind<'ctx>(
                 CodegenError::FailClosed("hew_await_cancel_status returned void".into())
             })?
             .into_int_value();
+        // A shutdown sweep resolves the common arbiter as Cancelled before
+        // waking the parked actor. Route that status to the typed NetError arm
+        // instead of treating the invalid accept handle as a successful value.
+        let cancelled = fn_ctx
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                i32_ty.const_int(2, false),
+                "suspending_accept_cancelled",
+            )
+            .llvm_ctx("suspending accept cancelled compare")?;
+        let cancelled_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent, "suspending_accept_cancelled");
+        let timeout_check_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent, "suspending_accept_timeout_check");
+        fn_ctx
+            .builder
+            .build_conditional_branch(cancelled, cancelled_bb, timeout_check_bb)
+            .llvm_ctx("suspending accept cancelled branch")?;
+
+        fn_ctx.builder.position_at_end(cancelled_bb);
+        let reg_free_cancel = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_free",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(
+                reg_free_cancel,
+                &[reg.into()],
+                "suspending_accept_cancelled_reg_free",
+            )
+            .llvm_ctx("hew_await_cancel_free (accept cancelled) call")?;
+        fn_ctx
+            .builder
+            .build_call(
+                slot_free,
+                &[slot.into()],
+                "suspending_accept_cancelled_free",
+            )
+            .llvm_ctx("hew_read_slot_free (cancelled) call")?;
+        let cancel_result_dest = term.deadline_result_dest.ok_or_else(|| {
+            CodegenError::FailClosed("SuspendingAccept cancelled missing Result dest".into())
+        })?;
+        let cancel_error_dest = term.error_dest.ok_or_else(|| {
+            CodegenError::FailClosed("SuspendingAccept cancelled missing NetError dest".into())
+        })?;
+        emit_read_deadline_cancelled_err(fn_ctx, cancel_result_dest, cancel_error_dest)?;
+        fn_ctx
+            .builder
+            .build_unconditional_branch(resume_bb)
+            .llvm_ctx("suspending accept cancelled br")?;
+
+        fn_ctx.builder.position_at_end(timeout_check_bb);
         let timed_out = fn_ctx
             .builder
             .build_int_compare(

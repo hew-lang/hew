@@ -26949,7 +26949,28 @@ fn resolve_drop_fn<'ctx>(
             Ok(DropDispatch::RuntimeSymbol(descriptor.c_symbol()))
         }
         hew_mir::DropFnSpec::UserClose(name) => {
-            let entry = fn_symbols.get(name).ok_or_else(|| {
+            // Resolve the `<Type>::<method>` close symbol. A module-qualified
+            // receiver (`http_client.Response`) carries its source qualifier into
+            // the drop symbol so same-short-name types from different modules keep
+            // distinct layout/dispatch identities (#2270). A non-colliding
+            // resource's `close` body is registered under the BARE `<Short>::close`
+            // mangling, so on a miss for the qualified spelling retry the bare form
+            // — the same strip-on-miss MIR layout/field lookup uses. A genuinely
+            // colliding type registers a DISTINCT qualified symbol (the #2400
+            // guard forbids two bare `<Short>::close`), so the exact lookup hits
+            // first and this fallback never crosses two distinct bodies; if
+            // neither spelling is registered the drop still fails closed below.
+            let bare_fallback = name.split_once("::").and_then(|(ty, method)| {
+                ty.rsplit_once('.')
+                    .map(|(_, short)| format!("{short}::{method}"))
+            });
+            let resolved: &str = match bare_fallback.as_deref() {
+                Some(bare) if !fn_symbols.contains_key(name) && fn_symbols.contains_key(bare) => {
+                    bare
+                }
+                _ => name.as_str(),
+            };
+            let entry = fn_symbols.get(resolved).ok_or_else(|| {
                 CodegenError::FailClosed(format!(
                     "drop_fn=UserClose({name:?}): no function with that mangled \
                      symbol is registered in the codegen function pre-pass. A \
@@ -26962,7 +26983,7 @@ fn resolve_drop_fn<'ctx>(
                      lifecycle-symmetry)."
                 ))
             })?;
-            let (value, _return_ty, returns_unit) = entry.real(name, "drop dispatch")?;
+            let (value, _return_ty, returns_unit) = entry.real(resolved, "drop dispatch")?;
             if !returns_unit {
                 return Err(CodegenError::FailClosed(format!(
                     "drop_fn=UserClose({name:?}): user-resource `close` must return \
@@ -26975,7 +26996,7 @@ fn resolve_drop_fn<'ctx>(
             }
             Ok(DropDispatch::UserFn {
                 value,
-                symbol: name.clone(),
+                symbol: resolved.to_string(),
             })
         }
         hew_mir::DropFnSpec::Release(symbol) => Err(CodegenError::FailClosed(format!(

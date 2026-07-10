@@ -42609,7 +42609,8 @@ fn apply_bytes_retain_sites(
     let mut new_spans = BTreeMap::new();
     for block in blocks {
         let old_instructions = std::mem::take(&mut block.instructions);
-        let mut rewritten = Vec::with_capacity(old_instructions.len());
+        let old_len = old_instructions.len();
+        let mut rewritten = Vec::with_capacity(old_len);
         for (old_index, instr) in old_instructions.into_iter().enumerate() {
             let span = old_spans
                 .get(&(block.id, u32::try_from(old_index).unwrap_or(u32::MAX)))
@@ -42637,6 +42638,23 @@ fn apply_bytes_retain_sites(
                     }
                 }
             }
+        }
+        // Stage 2 (gdb `-g`): `record_terminator_span` keys the block
+        // terminator's span one slot PAST the last instruction (at
+        // `instructions.len()`). The rewrite above only re-keys indices
+        // `0..old_len`, so without carrying this entry over, every block's
+        // terminator span is silently dropped — call statements and
+        // control-flow exits lose their line-table entry, collapsing the
+        // breakpoint's `DILocation` onto the previous instruction's scope and
+        // hiding shadowed inner bindings. Re-key it to the new terminator slot
+        // (`rewritten.len()`), which grows by any `after`-placed retains on the
+        // final instruction.
+        if let Some(span) = old_spans
+            .get(&(block.id, u32::try_from(old_len).unwrap_or(u32::MAX)))
+            .copied()
+        {
+            let term_index = u32::try_from(rewritten.len()).unwrap_or(u32::MAX);
+            new_spans.insert((block.id, term_index), span);
         }
         block.instructions = rewritten;
     }

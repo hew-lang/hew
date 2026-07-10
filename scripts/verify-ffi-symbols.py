@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Classify and validate the stable JIT host ABI exported by hew-runtime.
 
-Scans all hew-runtime Rust source files for #[no_mangle] extern "C" and
-extern "C-unwind" fn exports and validates each one is classified (stable,
-codegen-stable, or internal) in scripts/jit-symbol-classification.toml.
+Scans hew-runtime and hew-std Rust source files for #[no_mangle] extern "C"
+and extern "C-unwind" fn exports and validates the classifications in
+scripts/jit-symbol-classification.toml.
 
 Three-tier model:
   stable         -- user-visible runtime surface; user `extern "rt"` blocks
@@ -35,6 +35,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 RUNTIME_SRC = ROOT / "hew-runtime" / "src"
+STDLIB_SRC = ROOT / "hew-std" / "src"
 JIT_SYMBOL_CLASSIFICATION = ROOT / "scripts" / "jit-symbol-classification.toml"
 FFI_OWNERSHIP_RATCHET = ROOT / "scripts" / "ffi-ownership-ratchet.toml"
 SOURCE_ENCODING = "utf-8"
@@ -164,8 +165,8 @@ def _extract_macro_generated_exports(
     return exports
 
 
-def extract_runtime_exports() -> set[str]:
-    """Scan all hew-runtime .rs files for #[no_mangle] function names.
+def _extract_native_exports(source_dir: Path) -> set[str]:
+    """Scan Rust source files for #[no_mangle] function names.
 
     Two passes are performed:
 
@@ -189,7 +190,7 @@ def extract_runtime_exports() -> set[str]:
     )
     sources: list[tuple] = []
     exports: set[str] = set()
-    for rs_file in RUNTIME_SRC.rglob("*.rs"):
+    for rs_file in source_dir.rglob("*.rs"):
         source = rs_file.read_text(encoding=SOURCE_ENCODING)
         sources.append((rs_file, source))
         for match in fn_pattern.finditer(source):
@@ -199,6 +200,16 @@ def extract_runtime_exports() -> set[str]:
     no_mangle_macros = _find_no_mangle_macros(sources)
     exports.update(_extract_macro_generated_exports(sources, no_mangle_macros))
     return exports
+
+
+def extract_runtime_exports() -> set[str]:
+    """Return native exports defined by hew-runtime."""
+    return _extract_native_exports(RUNTIME_SRC)
+
+
+def extract_stdlib_exports() -> set[str]:
+    """Return native exports defined by hew-std."""
+    return _extract_native_exports(STDLIB_SRC)
 
 
 def classify(name: str, runtime_exports: set[str]) -> str:
@@ -308,13 +319,15 @@ def validate_ownership_contracts(classification: dict[str, set[str]]) -> list[st
             errors.append(
                 f"unclassified ownership contracts: expected "
                 f"{expected_unclassified}, found {actual_unclassified}; "
-                f"curation must only lower {FFI_OWNERSHIP_RATCHET}"
+                f"update the exact count in {FFI_OWNERSHIP_RATCHET}"
             )
     return errors
 
 
 def validate_jit_symbol_classification(
-    runtime_exports: set[str], classification: dict[str, set[str]]
+    runtime_exports: set[str],
+    stdlib_exports: set[str],
+    classification: dict[str, set[str]],
 ) -> list[str]:
     errors: list[str] = []
     stable = classification["stable"]
@@ -337,9 +350,8 @@ def validate_jit_symbol_classification(
                 + ", ".join(overlap)
                 + f" (update {JIT_SYMBOL_CLASSIFICATION})"
             )
-    # `stable-stdlib` is intentionally NOT unioned into the runtime-coverage
-    # check: those symbols come from sibling stdlib crates, not hew-runtime,
-    # so they would always show up as "extra" runtime classifications.
+    # `stable-stdlib` is intentionally NOT unioned into the runtime completeness
+    # check because those symbols come from hew-std rather than hew-runtime.
     classified = stable | codegen_stable | internal
     missing = sorted(runtime_exports - classified)
     extra = sorted(classified - runtime_exports)
@@ -353,6 +365,14 @@ def validate_jit_symbol_classification(
         errors.append(
             f"classification names not exported by hew-runtime ({len(extra)}): "
             + ", ".join(extra)
+            + f" (remove from {JIT_SYMBOL_CLASSIFICATION})"
+        )
+    missing_stdlib_exports = sorted(stable_stdlib - stdlib_exports)
+    if missing_stdlib_exports:
+        errors.append(
+            "stable-stdlib classification names not exported by hew-std "
+            f"({len(missing_stdlib_exports)}): "
+            + ", ".join(missing_stdlib_exports)
             + f" (remove from {JIT_SYMBOL_CLASSIFICATION})"
         )
     errors.extend(validate_ownership_contracts(classification))
@@ -378,10 +398,16 @@ def emit_cpp_header(path: Path, stable_symbols: list[str]) -> None:
     )
 
 
-def run_classification_mode(args: argparse.Namespace, runtime_exports: set[str]) -> int:
+def run_classification_mode(
+    args: argparse.Namespace,
+    runtime_exports: set[str],
+    stdlib_exports: set[str],
+) -> int:
     classification = load_jit_symbol_classification()
     if args.validate:
-        errors = validate_jit_symbol_classification(runtime_exports, classification)
+        errors = validate_jit_symbol_classification(
+            runtime_exports, stdlib_exports, classification
+        )
         if errors:
             for error in errors:
                 print(f"ERROR: {error}", file=sys.stderr)
@@ -421,7 +447,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if args.classify is not None or args.validate or args.emit_cpp_header is not None:
         runtime_exports = extract_runtime_exports()
-        return run_classification_mode(args, runtime_exports)
+        stdlib_exports = extract_stdlib_exports()
+        return run_classification_mode(args, runtime_exports, stdlib_exports)
     return run_coverage_mode(args.strict)
 
 

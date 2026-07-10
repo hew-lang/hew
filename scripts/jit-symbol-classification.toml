@@ -888,7 +888,7 @@ stable-stdlib = [
   "hew_toml_free",
   "hew_toml_get_string",
   "hew_toml_last_error",
-  "hew_toml_object_set",
+  "hew_toml_table_set",
   "hew_toml_stringify",
   "hew_yaml_array_push",
   "hew_yaml_free",
@@ -1192,7 +1192,7 @@ discharge-depth = "none"
 
 # hew-std/src/toml.rs:420-437 moves `val` into the table.
 [[ownership.contracts]]
-symbol = "hew_toml_object_set"
+symbol = "hew_toml_table_set"
 result = "none"
 params = ["borrow", "borrow", "consume"]
 release-symbol = ""

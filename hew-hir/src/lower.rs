@@ -18308,28 +18308,33 @@ impl LowerCtx {
     }
 
     fn canonical_current_module_record_name(&self, name: &str) -> String {
-        let short = name.rsplit_once('.').map_or(name, |(_, short)| short);
-        if self.colliding_imported_record_names.contains(short) {
-            if name.contains('.') {
-                return name.to_string();
-            }
+        // An explicitly-qualified annotation (`module.Type`) is authoritative:
+        // preserve its qualifier into HIR so two same-short-name types from
+        // different modules keep distinct layout identities (#2270). Auto-
+        // qualification below only ever disambiguates a BARE name to the current
+        // module — it must never STRIP a qualifier the source already wrote
+        // (stripping `bank.Widget` to `Widget` collapses the per-module layout
+        // key and preempts the qualifier-preserving branch in
+        // `resolve_named_type_ref`).
+        if name.contains('.') {
+            return name.to_string();
+        }
+        // Bare reference to a short name that collides across imported modules:
+        // disambiguate to the current module's copy so the two same-named
+        // records stay distinct.
+        if self.colliding_imported_record_names.contains(name) {
             if let Some(module_short) = self
                 .current_module_name
                 .as_deref()
                 .and_then(|module| module.rsplit('.').next())
             {
-                let qualified = format!("{module_short}.{short}");
+                let qualified = format!("{module_short}.{name}");
                 if self.record_registry.contains_key(&qualified) {
                     return qualified;
                 }
             }
-            return name.to_string();
         }
-        if self.record_registry.contains_key(short) {
-            short.to_string()
-        } else {
-            name.to_string()
-        }
+        name.to_string()
     }
 
     fn qualify_imported_impl_method_symbol(

@@ -513,6 +513,608 @@ fn gen_block_capturing_fn_typed_param_is_admitted() {
     let _body = find_gen_body(&pipeline, "mapped");
 }
 
+/// CAP-11 P0: a plain function may not forward an unproven fn-typed parameter
+/// into a generator constructor. The caller can supply a capturing closure, so
+/// the parameter's env word is not provably null at the crossing.
+#[test]
+fn gen_fn_forwarded_fn_parameter_fails_closed() {
+    let pipeline = lower_checked(
+        r"
+        gen fn mapped(f: fn(i64) -> i64) -> i64 { yield f(1); }
+        fn forward(f: fn(i64) -> i64) -> Generator<i64, ()> { mapped(f) }
+        fn dbl(x: i64) -> i64 { x * 2 }
+        fn main() { for v in forward(dbl) { println(v); } }
+        ",
+    );
+
+    let rejected = pipeline.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct.contains("capturing closure as a generator")
+        )
+    });
+    assert!(
+        rejected,
+        "a forwarded fn parameter must fail closed because its env provenance is \
+         not provably null; got: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+/// CAP-11 P0: a fn-valued call result is also unproven. This is the direct
+/// laundering shape: the capturing closure is hidden behind `identity(...)`
+/// before it reaches the generator constructor.
+#[test]
+fn gen_fn_fn_valued_call_result_fails_closed() {
+    let pipeline = lower_checked(
+        r#"
+        gen fn mapped(f: fn(i64) -> i64) -> i64 { yield f(1); }
+        fn identity(f: fn(i64) -> i64) -> fn(i64) -> i64 { f }
+        fn main() {
+            let suffix = "owned";
+            for v in mapped(identity(|x: i64| x + suffix.len())) { println(v); }
+        }
+        "#,
+    );
+
+    let rejected = pipeline.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct.contains("capturing closure as a generator")
+        )
+    });
+    assert!(
+        rejected,
+        "a fn-valued call result must fail closed because it may hide a capturing \
+         closure env; got: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+/// The call-result provenance must survive a local binding. Otherwise
+/// `let f = producer(); mapped(f)` would erase the producer shape before the
+/// generator gate examines the argument.
+#[test]
+fn gen_fn_bound_fn_valued_call_result_fails_closed() {
+    let pipeline = lower_checked(
+        r#"
+        gen fn mapped(f: fn(i64) -> i64) -> i64 { yield f(1); }
+        fn identity(f: fn(i64) -> i64) -> fn(i64) -> i64 { f }
+        fn main() {
+            let suffix = "owned";
+            let f = identity(|x: i64| x + suffix.len());
+            for v in mapped(f) { println(v); }
+        }
+        "#,
+    );
+
+    let rejected = pipeline.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct.contains("capturing closure as a generator")
+        )
+    });
+    assert!(
+        rejected,
+        "a bound fn-valued call result must retain its unproven env provenance; \
+         got: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+/// Owning aggregates can safely hold capturing closures because their own drop
+/// machinery releases the env. Reading that fn value into a generator is not
+/// safe: the generator flat-copies the pair but cannot release the inner env.
+#[test]
+fn gen_fn_fn_valued_aggregate_read_fails_closed() {
+    let pipeline = lower_checked(
+        r"
+        type Handler { action: fn(i64) -> i64; }
+        gen fn mapped(f: fn(i64) -> i64) -> i64 { yield f(1); }
+        fn make_adder(n: i64) -> fn(i64) -> i64 { |x: i64| x + n }
+        fn main() {
+            let h = Handler { action: make_adder(2) };
+            for v in mapped(h.action) { println(v); }
+        }
+        ",
+    );
+
+    let rejected = pipeline.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct.contains("capturing closure as a generator")
+        )
+    });
+    assert!(
+        rejected,
+        "a fn-valued aggregate read must fail closed because the field may own a \
+         capturing closure env; got: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+/// Anonymous `gen {}` construction bypasses `lower_direct_call`, so its env
+/// materialiser must independently reject a local fn-valued call result whose
+/// closure env is not provably null.
+#[test]
+fn gen_block_fn_valued_call_result_capture_fails_closed() {
+    let pipeline = lower_checked(
+        r"
+        fn make_adder(n: i64) -> fn(i64) -> i64 { |x: i64| x + n }
+        fn main() {
+            let f = make_adder(2);
+            let g = gen { yield f(1); };
+        }
+        ",
+    );
+
+    let rejected = pipeline.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct.contains("unproven env provenance")
+        )
+    });
+    assert!(
+        rejected,
+        "an anonymous gen block must reject an unproven fn-valued capture; got: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+/// Negative control for the anonymous-gen capture-site gate: a local binding
+/// sourced from a named function has a provably-null env word.
+#[test]
+fn gen_block_named_fn_capture_is_admitted() {
+    let pipeline = lower_checked(
+        r"
+        fn dbl(x: i64) -> i64 { x * 2 }
+        fn main() {
+            let f = dbl;
+            let g = gen { yield f(1); };
+        }
+        ",
+    );
+
+    let rejected = pipeline.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct.contains("into a generator")
+        )
+    });
+    assert!(
+        !rejected,
+        "an anonymous gen block must admit a named-function capture; got: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+/// Provenance collection must reach a fixed point. The outer binding is
+/// examined before the nested block's `g = make_adder(...)` producer is
+/// discovered on the first pass; a second pass must propagate the taint to
+/// `f` before `mapped(f)` lowers.
+#[test]
+fn gen_fn_nested_binding_provenance_reaches_fixed_point() {
+    let pipeline = lower_checked(
+        r"
+        gen fn mapped(f: fn(i64) -> i64) -> i64 { yield f(1); }
+        fn make_adder(n: i64) -> fn(i64) -> i64 { |x: i64| x + n }
+        fn main() {
+            let f = {
+                let g = make_adder(2);
+                g
+            };
+            for v in mapped(f) { println(v); }
+        }
+        ",
+    );
+
+    let rejected = pipeline.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct.contains("capturing closure as a generator")
+        )
+    });
+    assert!(
+        rejected,
+        "nested producer provenance must propagate before generator calls lower; \
+         got: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+/// The same fixed point must cover a loop back-edge: on the second iteration
+/// `f = g` receives the capturing closure produced at the end of the first.
+#[test]
+fn gen_fn_loop_backedge_provenance_reaches_fixed_point() {
+    let pipeline = lower_checked(
+        r"
+        gen fn mapped(f: fn(i64) -> i64) -> i64 { yield f(1); }
+        fn dbl(x: i64) -> i64 { x * 2 }
+        fn make_adder(n: i64) -> fn(i64) -> i64 { |x: i64| x + n }
+        fn main() {
+            var f = dbl;
+            var g = dbl;
+            var i = 0;
+            while i < 2 {
+                f = g;
+                g = make_adder(i);
+                i = i + 1;
+            }
+            for v in mapped(f) { println(v); }
+        }
+        ",
+    );
+
+    let rejected = pipeline.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct.contains("capturing closure as a generator")
+        )
+    });
+    assert!(
+        rejected,
+        "loop back-edge provenance must propagate before generator calls lower; \
+         got: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+/// Generator bodies use a fresh child builder, so they need the same fixed-point
+/// pre-pass as top-level functions before lowering nested generator calls.
+#[test]
+fn nested_generator_body_provenance_reaches_fixed_point() {
+    let pipeline = lower_checked(
+        r"
+        gen fn mapped(f: fn(i64) -> i64) -> i64 { yield f(1); }
+        fn make_adder(n: i64) -> fn(i64) -> i64 { |x: i64| x + n }
+        fn main() {
+            let outer = gen {
+                let f = {
+                    let g = make_adder(2);
+                    g
+                };
+                for v in mapped(f) { yield v; }
+            };
+        }
+        ",
+    );
+
+    let rejected = pipeline.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct.contains("capturing closure as a generator")
+        )
+    });
+    assert!(
+        rejected,
+        "generator body provenance must reach a fixed point before nested generator \
+         calls lower; got: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+/// Pattern payloads come from owning enum storage and may contain capturing
+/// closures. The payload binder must be marked unproven before an anonymous
+/// generator captures it.
+#[test]
+fn gen_block_fn_valued_pattern_payload_fails_closed() {
+    let pipeline = lower_checked(
+        r"
+        fn make_opt(n: i64) -> Option<fn(i64) -> i64> {
+            Some(|x: i64| x + n)
+        }
+        fn main() {
+            if let Some(f) = make_opt(2) {
+                let g = gen { yield f(1); };
+            }
+        }
+        ",
+    );
+
+    let rejected = pipeline.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct.contains("unproven env provenance")
+        )
+    });
+    assert!(
+        rejected,
+        "a fn-valued pattern payload must not enter an anonymous generator env; \
+         got: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+/// `receive gen fn` calls use the actor-stream lowering path rather than
+/// `lower_direct_call`; that boundary must reject the same fn-valued call
+/// results before the handler shell copies its parameter into the generator env.
+#[test]
+fn actor_gen_stream_fn_valued_call_result_fails_closed() {
+    let pipeline = lower_checked(
+        r"
+        actor Mapper {
+            init() {}
+            receive gen fn mapped(f: fn(i64) -> i64) -> i64 { yield f(1); }
+        }
+        fn make_adder(n: i64) -> fn(i64) -> i64 { |x: i64| x + n }
+        fn main() {
+            let mapper = spawn Mapper();
+            let stream = mapper.mapped(make_adder(2));
+        }
+        ",
+    );
+
+    let rejected = pipeline.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct.contains("capturing closure as a generator")
+        )
+    });
+    assert!(
+        rejected,
+        "an actor generator stream call must reject an unproven fn-valued argument; \
+         got: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+/// Negative control for the actor-stream gate: a named function has a null env
+/// word and remains a supported direct argument.
+#[test]
+fn actor_gen_stream_named_fn_is_admitted() {
+    let pipeline = lower_checked(
+        r"
+        actor Mapper {
+            init() {}
+            receive gen fn mapped(f: fn(i64) -> i64) -> i64 { yield f(1); }
+        }
+        fn dbl(x: i64) -> i64 { x * 2 }
+        fn main() {
+            let mapper = spawn Mapper();
+            let stream = mapper.mapped(dbl);
+        }
+        ",
+    );
+
+    let rejected = pipeline.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct.contains("capturing closure as a generator")
+        )
+    });
+    assert!(
+        !rejected,
+        "an actor generator stream must admit a direct named function; got: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+/// Closure invoke shims use a child builder. Their fn-typed parameters must be
+/// seeded as unproven before a closure body can forward one into a generator.
+#[test]
+fn closure_body_forwarded_fn_parameter_fails_closed() {
+    let pipeline = lower_checked(
+        r"
+        gen fn mapped(f: fn(i64) -> i64) -> i64 { yield f(1); }
+        fn main() {
+            let forward = |f: fn(i64) -> i64| mapped(f);
+            let base = 2;
+            let g = forward(|x: i64| x + base);
+        }
+        ",
+    );
+
+    let rejected = pipeline.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct.contains("capturing closure as a generator")
+        )
+    });
+    assert!(
+        rejected,
+        "a closure body must reject a forwarded fn parameter with unproven env \
+         provenance; got: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+/// The child closure builder must also inherit provenance for fn-valued
+/// captures from its enclosing function.
+#[test]
+fn closure_body_captured_fn_call_result_fails_closed() {
+    let pipeline = lower_checked(
+        r"
+        gen fn mapped(f: fn(i64) -> i64) -> i64 { yield f(1); }
+        fn make_adder(n: i64) -> fn(i64) -> i64 { |x: i64| x + n }
+        fn main() {
+            let f = make_adder(2);
+            let forward = || mapped(f);
+            let g = forward();
+        }
+        ",
+    );
+
+    let rejected = pipeline.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct.contains("capturing closure as a generator")
+        )
+    });
+    assert!(
+        rejected,
+        "a closure body must retain an enclosing fn capture's unproven env \
+         provenance; got: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+/// Lambda-actor bodies are another child-builder path with user parameters.
+/// A fn-typed message parameter may carry a capturing closure and cannot be
+/// forwarded into a generator env.
+#[test]
+fn lambda_actor_body_forwarded_fn_parameter_fails_closed() {
+    let pipeline = lower_checked(
+        r"
+        gen fn mapped(f: fn(i64) -> i64) -> i64 { yield f(1); }
+        fn main() {
+            let worker = actor |f: fn(i64) -> i64| {
+                let g = mapped(f);
+            };
+            let base = 2;
+            let _sent = worker.send(|x: i64| x + base);
+        }
+        ",
+    );
+
+    let rejected = pipeline.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct.contains("capturing closure as a generator")
+        )
+    });
+    assert!(
+        rejected,
+        "a lambda-actor body must reject a forwarded fn message parameter; got: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+/// A named generator function can itself be used as a first-class fn value.
+/// Calls through that binding lower via `CallClosure`, so the indirect path must
+/// enforce the same fn-argument provenance gate as `lower_direct_call`.
+#[test]
+fn indirect_gen_fn_call_result_fails_closed() {
+    let pipeline = lower_checked(
+        r"
+        gen fn mapped(f: fn(i64) -> i64) -> i64 { yield f(1); }
+        fn main() {
+            let make = mapped;
+            let base = 2;
+            let g = make(|x: i64| x + base);
+        }
+        ",
+    );
+
+    let rejected = pipeline.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct.contains("capturing closure as a generator")
+        )
+    });
+    assert!(
+        rejected,
+        "an indirect generator call must reject a capturing closure argument; got: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+/// Negative control for the indirect-call gate: named functions and
+/// capture-free closures still carry null env words.
+#[test]
+fn indirect_gen_fn_null_env_args_are_admitted() {
+    let pipeline = lower_checked(
+        r"
+        gen fn mapped(f: fn(i64) -> i64) -> i64 { yield f(1); }
+        fn dbl(x: i64) -> i64 { x * 2 }
+        fn main() {
+            let make = mapped;
+            let g1 = make(dbl);
+            let g2 = make(|x: i64| x + 1);
+        }
+        ",
+    );
+
+    let rejected = pipeline.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct.contains("capturing closure as a generator")
+        )
+    });
+    assert!(
+        !rejected,
+        "an indirect generator call must admit null-env function arguments; got: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+/// A whole-scrutinee match binding (`f => ...`) is another pattern-introduced
+/// fn value and must be treated as unproven.
+#[test]
+fn match_binding_fn_provenance_fails_closed() {
+    let pipeline = lower_checked(
+        r"
+        gen fn mapped(f: fn(i64) -> i64) -> i64 { yield f(1); }
+        fn make_adder(n: i64) -> fn(i64) -> i64 { |x: i64| x + n }
+        fn main() {
+            match make_adder(2) {
+                f => { let g = mapped(f); },
+            }
+        }
+        ",
+    );
+
+    let rejected = pipeline.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct.contains("capturing closure as a generator")
+        )
+    });
+    assert!(
+        rejected,
+        "a fn-valued match binding must carry unproven env provenance; got: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+/// Negative control for the widened gate: direct generator calls with a named
+/// function or capture-free closure have provably-null env words and remain
+/// supported.
+#[test]
+fn gen_fn_direct_null_env_function_values_are_admitted() {
+    let pipeline = lower_checked(
+        r"
+        gen fn mapped(f: fn(i64) -> i64) -> i64 { yield f(1); }
+        fn dbl(x: i64) -> i64 { x * 2 }
+        fn main() {
+            for v in mapped(dbl) { println(v); }
+            for v in mapped(|x: i64| x + 1) { println(v); }
+        }
+        ",
+    );
+
+    let rejected = pipeline.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct.contains("capturing closure as a generator")
+        )
+    });
+    assert!(
+        !rejected,
+        "direct named functions and capture-free closures must remain admitted; \
+         got: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
 /// A generator that captures a closure-with-env must STILL fail closed after the
 /// fn-typed-param admission gate is widened.
 ///

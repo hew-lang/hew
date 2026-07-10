@@ -878,6 +878,15 @@ stable-stdlib = [
   "hew_datetime_second",
   "hew_datetime_weekday",
   "hew_datetime_year",
+  "hew_json_array_push",
+  "hew_json_free",
+  "hew_json_object_set",
+  "hew_toml_array_push",
+  "hew_toml_free",
+  "hew_toml_object_set",
+  "hew_yaml_array_push",
+  "hew_yaml_free",
+  "hew_yaml_object_set",
 ]
 
 # jit: codegen-stable — symbols the Hew compiler emits into generated IR for
@@ -1142,4 +1151,75 @@ internal = [
 ]
 
 [ownership]
-contracts = []
+
+# hew-std/src/json.rs:379-384 reconstructs and drops `val`.
+[[ownership.contracts]]
+symbol = "hew_json_free"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+# hew-std/src/json.rs:635-652 moves `val` into the object.
+[[ownership.contracts]]
+symbol = "hew_json_object_set"
+result = "none"
+params = ["borrow", "borrow", "consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+# hew-std/src/json.rs:777-785 moves `val` into the array.
+[[ownership.contracts]]
+symbol = "hew_json_array_push"
+result = "none"
+params = ["borrow", "consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+# hew-std/src/toml.rs:610-615 reconstructs and drops `val`.
+[[ownership.contracts]]
+symbol = "hew_toml_free"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+# hew-std/src/toml.rs:420-437 moves `val` into the table.
+[[ownership.contracts]]
+symbol = "hew_toml_object_set"
+result = "none"
+params = ["borrow", "borrow", "consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+# hew-std/src/toml.rs:539-547 moves `val` into the array.
+[[ownership.contracts]]
+symbol = "hew_toml_array_push"
+result = "none"
+params = ["borrow", "consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+# hew-std/src/yaml.rs:476-481 reconstructs and drops `val`.
+[[ownership.contracts]]
+symbol = "hew_yaml_free"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+# hew-std/src/yaml.rs:711-728 moves `val` into the mapping.
+[[ownership.contracts]]
+symbol = "hew_yaml_object_set"
+result = "none"
+params = ["borrow", "borrow", "consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+# hew-std/src/yaml.rs:875-883 moves `val` into the sequence.
+[[ownership.contracts]]
+symbol = "hew_yaml_array_push"
+result = "none"
+params = ["borrow", "consume"]
+release-symbol = ""
+discharge-depth = "none"

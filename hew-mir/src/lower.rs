@@ -8338,6 +8338,17 @@ fn lower_function(
         &builder.binding_locals,
         &mut builder.instr_spans,
     );
+    // #2542 — release nested fresh-owned `bytes` user-call-result temporaries
+    // (`mk().len()`, `mk().to_string()`, discarded `mk();`) that
+    // `derive_local_bytes_drop_allowed` (binding-scoped) cannot see. Same
+    // pre-`check_function` ordering rationale as the string splice above.
+    apply_nested_fresh_bytes_temp_drops(
+        &mut blocks,
+        &builder.suspend_kinds,
+        &builder.locals,
+        &builder.binding_locals,
+        &mut builder.instr_spans,
+    );
     // The scope-exit-live owned-locals view, materialised once for the
     // escaped-sibling emitter and the double-free gate below — the same
     // `(binding, name, ty)` tuples they read before the ledger carried richer
@@ -32365,6 +32376,15 @@ impl Builder {
             &builder.binding_locals,
             &mut builder.instr_spans,
         );
+        // #2542 — mirror the closure-shim ramp's string splice for the bytes
+        // user-call-result temp class (see `lower_function`'s call site).
+        apply_nested_fresh_bytes_temp_drops(
+            &mut blocks,
+            &builder.suspend_kinds,
+            &builder.locals,
+            &builder.binding_locals,
+            &mut builder.instr_spans,
+        );
         let thir_statements: Vec<MirStatement> = blocks
             .iter()
             .flat_map(|b| b.statements.iter().cloned())
@@ -33792,6 +33812,17 @@ impl Builder {
         // `check_function`/`elaborate` below so the dataflow observes each
         // inline drop as a read of its temp and codegen emits the release.
         apply_nested_fresh_string_temp_drops(
+            &mut blocks,
+            &body_builder.suspend_kinds,
+            &body_builder.locals,
+            &body_builder.binding_locals,
+            &mut body_builder.instr_spans,
+        );
+        // #2542 — the gen-body ramp needs the identical bytes user-call-result
+        // temp splice as `lower_function` (a `mk().len()` inside a `yield`
+        // expression would otherwise leak per iteration). Must run BEFORE
+        // `check_function`/elaborate below, same as the string splice.
+        apply_nested_fresh_bytes_temp_drops(
             &mut blocks,
             &body_builder.suspend_kinds,
             &body_builder.locals,
@@ -40425,6 +40456,711 @@ mod nested_fresh_string_temp_drop_admission {
             collect(&blocks, &locals, &second_concat_binding()).is_empty(),
             "the use block is reachable from a path that skipped the producer; \
              inserting a drop there would free an uninitialized temp"
+        );
+    }
+}
+
+/// #2542 — release a nested fresh-owned `bytes` CALL-RESULT temporary. The
+/// bytes analogue of [`collect_nested_fresh_string_temp_drops`], scoped to the
+/// one producer the string pass cannot see: a USER Hew function returning an
+/// owned `bytes` value whose result flows straight into a borrowing use (or is
+/// discarded) WITHOUT a `let` binding, so the binding-scoped
+/// [`derive_local_bytes_drop_allowed`] never sees it.
+///
+/// Shapes this releases exactly once (each leaked before this fix):
+///
+/// ```text
+///   mk().len()               // user-call bytes temp, borrowed by hew_vec_len
+///   mk().get(i)              // borrowed by hew_bytes_get
+///   mk();                    // discarded user-call bytes temp (zero uses)
+///   "x".to_bytes().len()     // hew_string_to_bytes fresh temp, borrowed
+/// ```
+///
+/// A `let b = mk(); b.len()` is UNCHANGED: `mk`'s dest is a separate temp
+/// `move`d into `b`'s binding local, and a `Move` is not a borrowing use, so the
+/// temp is excluded here (rule 4) and `b`'s scope-exit
+/// `derive_local_bytes_drop_allowed` release remains the sole drop. No double
+/// free.
+///
+/// ## Ownership model (the same refcount keystone as the binding path)
+///
+/// A user Hew function returning `bytes` hands the caller the SOLE drop
+/// obligation: the callee retracts its own return-slot release
+/// (`derive_returned_aggregate_member_bindings` / the `ReturnSlot` move), so the
+/// caller owns exactly one `hew_bytes_drop`. A receiver-/all-args-borrowing
+/// `bytes` runtime op (`hew_vec_len`, `hew_bytes_get`, `hew_bytes_contains`,
+/// `hew_bytes_to_string`, `hew_bytes_slice`, … — every `borrows_bytes_receiver`
+/// / `borrows_all_bytes_args` contract) reads the triple WITHOUT consuming its
+/// refcount, so a fresh temp used once by such a borrow (or never used) still
+/// owns its single obligation afterwards; releasing it once balances the callee.
+///
+/// ## Producer scope (fail-closed, safe direction)
+///
+/// A `builtin: None` `Terminator::Call` returning a `bytes`-typed dest whose
+/// callee is NOT a known runtime symbol AND whose contract does not classify its
+/// result as an interior alias of the receiver. Two producers satisfy this:
+///
+///   * a USER Hew function returning `bytes` — its ABI hands the caller the sole
+///     release (`FAIL_CLOSED` contract), and a Hew function can never return a
+///     borrow (no lifetimes);
+///   * `hew_string_to_bytes` (`"x".to_bytes()`), the one non-allowlisted fresh
+///     `bytes` runtime helper — it allocates a fresh rc==1 buffer.
+///
+/// ALLOWLISTED runtime callees (`hew_bytes_slice`, `hew_vec_get_owned`, …) are
+/// EXCLUDED: some borrow their receiver / return an interior alias, and the
+/// `FreshOwnedBytes` result contract that would let us tell fresh from borrow
+/// per-symbol does not exist yet, so admitting one risks dropping a value that is
+/// actually a borrow (double free). A `b.slice(..).len()` transient therefore
+/// still leaks — a separate, tracked follow-up. The leak is the safe side.
+///
+/// ## Fail-closed admission — a temp earns a drop iff ALL hold
+///
+/// 1. its local is a `bytes` local;
+/// 2. it is NOT a `let`/parameter binding local (those belong to the scope-exit
+///    `derive_local_bytes_drop_allowed` drops — disjoint by construction, so a
+///    buffer is never claimed by both);
+/// 3. it has NO instruction writer (its sole def is the producer terminator);
+/// 4. it has AT MOST ONE source-use, and (if present) that use is a
+///    receiver-/all-args-borrowing `bytes` runtime op — an
+///    `Instr::CallRuntimeAbi` or a `Terminator::Call` on a listed bytes symbol.
+///    Any other use (`Move`/store/return/send/aggregate ingress/user call)
+///    excludes it (leak, never double-free);
+/// 5. the drop site is provably dominated by the def and entered exactly once
+///    (single-predecessor continuation), in one of these shapes:
+///      * discard (zero uses) → drop at the front of the producer's
+///        single-predecessor continuation;
+///      * single borrowing instruction use in the producer's single-predecessor
+///        continuation → drop immediately after the use instruction;
+///      * single borrowing terminator use whose block is the producer's
+///        single-predecessor continuation → drop at the front of that use's
+///        single-predecessor continuation.
+///
+/// Any other CFG shape fails closed (the temp leaks, as before this fix). The
+/// return is a list of `(block_id, insert_index, place, ty)` inline-drop
+/// insertions for the caller to splice in. Pure over `blocks` (no mutation) so
+/// it is unit-testable.
+///
+/// LESSONS: boundary-fail-closed (P0), cleanup-all-exits, raii-null-after-move.
+#[must_use]
+fn collect_nested_fresh_bytes_temp_drops(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    locals: &[ResolvedTy],
+    binding_locals: &HashMap<BindingId, Place>,
+) -> Vec<(u32, usize, Place, ResolvedTy)> {
+    // A drop spliced at the FRONT of a block is sound only if that block is
+    // entered from exactly one place — otherwise it could fire on a path where
+    // the temp was never produced (free of an uninitialised slot / double-free).
+    let mut pred_count: HashMap<u32, usize> = HashMap::new();
+    for block in blocks {
+        for succ in block.successors() {
+            *pred_count.entry(succ).or_insert(0) += 1;
+        }
+    }
+
+    // Binding/parameter locals are released by the scope-exit
+    // `derive_local_bytes_drop_allowed` drops; never double-claim one here.
+    let binding_local_ids: HashSet<u32> = binding_locals
+        .values()
+        .filter_map(|p| base_local(*p))
+        .collect();
+
+    // Any local an instruction writes to. A user-call bytes temp is produced by
+    // its terminator (rule 3): an admissible temp has NO instruction writer, so
+    // a slot reused/re-defined by a later instruction is excluded fail-closed.
+    let mut instr_written: HashSet<u32> = HashSet::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            let (_, writes) = crate::dataflow::instr_reads_writes(instr);
+            for w in writes {
+                if let Some(l) = base_local(w) {
+                    instr_written.insert(l);
+                }
+            }
+        }
+    }
+
+    // Source-use sites per local (rule 4), deduplicated within each
+    // instruction/terminator so a temp referenced twice by one call counts once.
+    let mut source_uses: HashMap<u32, Vec<NestedUseSite>> = HashMap::new();
+    for block in blocks {
+        for (idx, instr) in block.instructions.iter().enumerate() {
+            let mut here: HashSet<u32> = HashSet::new();
+            for p in instr_source_places(instr) {
+                if let Some(l) = base_local(p) {
+                    here.insert(l);
+                }
+            }
+            for l in here {
+                source_uses
+                    .entry(l)
+                    .or_default()
+                    .push(NestedUseSite::Instr {
+                        block: block.id,
+                        idx,
+                    });
+            }
+        }
+        let mut here: HashSet<u32> = HashSet::new();
+        for p in terminator_source_places(&block.terminator, suspend_kinds.get(&block.id)) {
+            if let Some(l) = base_local(p) {
+                here.insert(l);
+            }
+        }
+        for l in here {
+            source_uses
+                .entry(l)
+                .or_default()
+                .push(NestedUseSite::Term { block: block.id });
+        }
+    }
+
+    let mut result: Vec<(u32, usize, Place, ResolvedTy)> = Vec::new();
+    let mut seen: HashSet<u32> = HashSet::new();
+    for block in blocks {
+        // Producer: a `builtin: None` `Terminator::Call` returning an owned
+        // `bytes` dest whose callee is NOT a known runtime symbol. This is a
+        // user Hew function (its ABI hands the caller the sole release —
+        // `FAIL_CLOSED`), OR a non-allowlisted fresh-`bytes` helper such as
+        // `hew_string_to_bytes` (`"x".to_bytes()`), which likewise allocates a
+        // fresh rc==1 buffer. Allowlisted runtime callees (`hew_bytes_slice`,
+        // `hew_bytes_get`, …) are excluded here: some borrow their receiver, and
+        // the FreshOwnedBytes result contract that would let us tell fresh from
+        // borrow does not exist yet, so admitting one risks a double-free.
+        // Defense-in-depth: a callee whose contract classifies its result as an
+        // interior alias of arg[0] is ALSO excluded, so a borrow-returner can
+        // never be dropped even if a future one lands without the allowlist
+        // entry (a Hew user fn can never return a borrow — no lifetimes).
+        let Terminator::Call {
+            callee,
+            builtin: None,
+            dest: Some(dest),
+            next,
+            ..
+        } = &block.terminator
+        else {
+            continue;
+        };
+        if crate::runtime_symbols::is_known_runtime_symbol(callee)
+            || crate::runtime_symbols::callee_ownership_contract(callee)
+                .returns_receiver_interior_alias()
+        {
+            continue;
+        }
+        if !bytes_place_is_typed(*dest, locals) {
+            continue;
+        }
+        let Some(t) = base_local(*dest) else {
+            continue;
+        };
+        if !seen.insert(t) {
+            continue;
+        }
+        if let Some(ins) = nested_fresh_bytes_temp_drop(
+            t,
+            *next,
+            blocks,
+            &pred_count,
+            &binding_local_ids,
+            &instr_written,
+            &source_uses,
+        ) {
+            result.push(ins);
+        }
+    }
+    result
+}
+
+/// Per-candidate admission for [`collect_nested_fresh_bytes_temp_drops`].
+/// Returns the inline-drop insertion `(block_id, insert_index, place, ty)` if
+/// the fresh-owned `bytes` temp `t` (produced by a `Terminator::Call` whose
+/// continuation is `def_next`) satisfies every fail-closed rule, else `None`.
+#[must_use]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "admission threads the precomputed CFG/dataflow tables (pred counts, \
+              binding locals, instruction-written set, source uses) needed to prove \
+              the temp is a no-instr-writer, borrow-only, dominated fresh-owned bytes"
+)]
+fn nested_fresh_bytes_temp_drop(
+    t: u32,
+    def_next: u32,
+    blocks: &[BasicBlock],
+    pred_count: &HashMap<u32, usize>,
+    binding_local_ids: &HashSet<u32>,
+    instr_written: &HashSet<u32>,
+    source_uses: &HashMap<u32, Vec<NestedUseSite>>,
+) -> Option<(u32, usize, Place, ResolvedTy)> {
+    // 2. not a binding/parameter local.
+    if binding_local_ids.contains(&t) {
+        return None;
+    }
+    // 3. the producer terminator is the sole def — no instruction rewrites `t`.
+    if instr_written.contains(&t) {
+        return None;
+    }
+    // 4. at most one source-use.
+    let uses: &[NestedUseSite] = source_uses.get(&t).map_or(&[][..], Vec::as_slice);
+    if uses.len() > 1 {
+        return None;
+    }
+    let drop_place = Place::Local(t);
+    let drop_ty = ResolvedTy::Bytes;
+
+    match uses.first() {
+        // Discard (zero uses): drop at the front of the producer's continuation,
+        // which must be single-predecessor so the temp was provably produced.
+        None => (pred_count.get(&def_next).copied().unwrap_or(0) == 1)
+            .then_some((def_next, 0, drop_place, drop_ty)),
+        // Single instruction use: it must be a borrowing `bytes` runtime op, and
+        // the def must dominate it. The producer's continuation `def_next` is the
+        // ONLY block the def dominates by structural single-entry; requiring the
+        // use to live there (single-predecessor) proves the def ran before it.
+        Some(NestedUseSite::Instr { block: ub, idx: ui }) => {
+            let ub = *ub;
+            let use_instr = block_by_id(blocks, ub)?.instructions.get(*ui)?;
+            if !bytes_temp_instr_use_is_borrow_only(use_instr, t) {
+                return None;
+            }
+            let def_dominates = ub == def_next && pred_count.get(&ub).copied().unwrap_or(0) == 1;
+            // Drop immediately after the borrowing use (straight-line in `ub`),
+            // so the release runs exactly once on the path that produced and
+            // borrowed the temp.
+            def_dominates.then_some((ub, ui + 1, drop_place, drop_ty))
+        }
+        // Single terminator use: a `Terminator::Call` reading `t`. Hew's
+        // by-value heap parameters are BORROWS — a plain function/method call
+        // never consumes the caller's `bytes` reference (a callee that shares it
+        // mints its own retain), so EVERY `Terminator::Call` bytes arg is a
+        // borrow. This mirrors `derive_local_bytes_drop_allowed`'s uniform
+        // `Terminator::Call { .. } => {}` (no-escape) posture, which is why a
+        // named `let b = mk(); b.get(0)` keeps its scope-exit drop; the bare temp
+        // needs the identical release. Actor `Send`/`Ask` (which DO consume the
+        // triple via the mailbox hand-off) are distinct terminators, so the
+        // pattern below excludes them fail-closed. Drop at the front of the use's
+        // single-predecessor continuation.
+        Some(NestedUseSite::Term { block: ub }) => {
+            let ub = *ub;
+            let Terminator::Call { args, next, .. } = &block_by_id(blocks, ub)?.terminator else {
+                return None;
+            };
+            if !args.iter().any(|p| place_refs_local(*p, t)) {
+                return None;
+            }
+            if pred_count.get(next).copied().unwrap_or(0) != 1 {
+                return None;
+            }
+            let def_dominates = ub == def_next && pred_count.get(&ub).copied().unwrap_or(0) == 1;
+            def_dominates.then_some((*next, 0, drop_place, drop_ty))
+        }
+    }
+}
+
+/// A `bytes` runtime-op argument position is a BORROW (reads the triple without
+/// consuming its refcount) iff the callee's ownership contract borrows all bytes
+/// args, or borrows the receiver and `t` sits at arg[0]. The
+/// `VecCopyInElementStore` receiver class is deliberately NOT admitted here:
+/// that is container-ingress ownership, out of scope for this fix.
+#[must_use]
+fn bytes_call_arg_is_borrow(callee: &str, arg_index: usize) -> bool {
+    let contract = crate::runtime_symbols::callee_ownership_contract(callee);
+    contract.borrows_all_bytes_args() || (arg_index == 0 && contract.borrows_bytes_receiver())
+}
+
+/// True iff every position at which `t` appears in `args` is a borrowing `bytes`
+/// position for `callee`, and `t` appears at least once. A single non-borrow
+/// position (an escaping tail operand) fails the whole use closed.
+#[must_use]
+fn bytes_temp_call_use_is_borrow_only(callee: &str, args: &[Place], t: u32) -> bool {
+    let mut appears = false;
+    for (arg_index, place) in args.iter().enumerate() {
+        if place_refs_local(*place, t) {
+            appears = true;
+            if !bytes_call_arg_is_borrow(callee, arg_index) {
+                return false;
+            }
+        }
+    }
+    appears
+}
+
+/// True iff `instr` is an `Instr::CallRuntimeAbi` whose every use of `t` is a
+/// borrowing `bytes` position. Every non-runtime-call instruction use
+/// (`Move`/store/aggregate ingress/…) is an ownership transfer or escape and
+/// fails closed — the temp keeps its leak (never a double-free).
+#[must_use]
+fn bytes_temp_instr_use_is_borrow_only(instr: &Instr, t: u32) -> bool {
+    match instr {
+        Instr::CallRuntimeAbi(call) => {
+            bytes_temp_call_use_is_borrow_only(call.symbol(), call.args(), t)
+        }
+        _ => false,
+    }
+}
+
+/// #2542 — splice the inline `hew_bytes_drop`s computed by
+/// [`collect_nested_fresh_bytes_temp_drops`] into `blocks`. Applied during
+/// lowering BEFORE `check_function` / drop elaboration so the dataflow observes
+/// each drop as a read of its temp (no use-after-free flag) and so codegen emits
+/// the release. Per-block insertions are applied in descending index order so an
+/// earlier splice does not shift a later (lower-index) one. Codegen routes a
+/// `bytes`-typed inline `Instr::Drop` carrying `Release("hew_bytes_drop")`
+/// through `emit_bytes_inplace_drop` (the `BytesTriple` field-0 release).
+fn apply_nested_fresh_bytes_temp_drops(
+    blocks: &mut [BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    locals: &[ResolvedTy],
+    binding_locals: &HashMap<BindingId, Place>,
+    instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
+) {
+    let insertions =
+        collect_nested_fresh_bytes_temp_drops(blocks, suspend_kinds, locals, binding_locals);
+    if insertions.is_empty() {
+        return;
+    }
+    let mut by_block: HashMap<u32, Vec<(usize, Place, ResolvedTy)>> = HashMap::new();
+    for (bid, idx, place, ty) in insertions {
+        by_block.entry(bid).or_default().push((idx, place, ty));
+    }
+    for block in blocks.iter_mut() {
+        let Some(mut ins) = by_block.remove(&block.id) else {
+            continue;
+        };
+        // Apply in descending index order so an earlier splice does not shift
+        // the insertion point of a later (lower-index) one.
+        ins.sort_by_key(|entry| std::cmp::Reverse(entry.0));
+        for (idx, place, ty) in ins {
+            let at = idx.min(block.instructions.len());
+            block.instructions.insert(
+                at,
+                Instr::Drop {
+                    place,
+                    ty,
+                    drop_fn: Some(crate::model::DropFnSpec::Release("hew_bytes_drop")),
+                },
+            );
+            shift_instr_spans_on_insert(
+                instr_spans,
+                block.id,
+                u32::try_from(at).unwrap_or(u32::MAX),
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod nested_fresh_bytes_temp_drop_admission {
+    use super::*;
+
+    fn block(id: u32, instructions: Vec<Instr>, terminator: Terminator) -> BasicBlock {
+        BasicBlock {
+            id,
+            statements: vec![],
+            instructions,
+            terminator,
+        }
+    }
+
+    fn ret_block(id: u32) -> BasicBlock {
+        block(id, vec![], Terminator::Return)
+    }
+
+    /// A user Hew callee producing a `bytes` dest — the #2542 shape.
+    fn user_call(callee: &str, dest: u32, next: u32) -> Terminator {
+        Terminator::Call {
+            callee: callee.to_string(),
+            builtin: None,
+            args: vec![],
+            dest: Some(Place::Local(dest)),
+            next,
+        }
+    }
+
+    fn runtime_call(symbol: &str, args: Vec<Place>, dest: Option<Place>) -> Instr {
+        Instr::CallRuntimeAbi(
+            crate::model::RuntimeCall::new(symbol, args, dest)
+                .unwrap_or_else(|_| panic!("{symbol} must be an allowlisted RuntimeCall")),
+        )
+    }
+
+    /// `hew_vec_len` is the polymorphic bytes/vec length borrow (`.len()`).
+    fn bytes_len(recv: u32, dest: u32) -> Instr {
+        runtime_call(
+            "hew_vec_len",
+            vec![Place::Local(recv)],
+            Some(Place::Local(dest)),
+        )
+    }
+
+    fn boxed_ty() -> ResolvedTy {
+        ResolvedTy::named_user("Boxed", vec![])
+    }
+
+    /// All locals `bytes` except the listed overrides (e.g. an `i64` length).
+    fn bytes_locals_with(overrides: &[(usize, ResolvedTy)]) -> Vec<ResolvedTy> {
+        let mut locals = vec![ResolvedTy::Bytes; 10];
+        for (idx, ty) in overrides {
+            locals[*idx] = ty.clone();
+        }
+        locals
+    }
+
+    fn collect(
+        blocks: &[BasicBlock],
+        locals: &[ResolvedTy],
+        binding_locals: &HashMap<BindingId, Place>,
+    ) -> Vec<(u32, usize, Place, ResolvedTy)> {
+        collect_nested_fresh_bytes_temp_drops(blocks, &HashMap::new(), locals, binding_locals)
+    }
+
+    #[test]
+    fn usercall_transient_receiver_gets_one_inline_drop_after_borrowing_use() {
+        // bb0: _2 = call mk() -> bb1
+        // bb1: _3 = hew_vec_len(_2)  (borrow)  -> Return
+        let blocks = vec![
+            block(0, vec![], user_call("mk", 2, 1)),
+            block(1, vec![bytes_len(2, 3)], Terminator::Return),
+        ];
+        let locals = bytes_locals_with(&[(3, ResolvedTy::I64)]);
+        assert_eq!(
+            collect(&blocks, &locals, &HashMap::new()),
+            vec![(1, 1, Place::Local(2), ResolvedTy::Bytes)],
+            "the user-call bytes temp is used once by a borrowing hew_vec_len; it \
+             must be dropped immediately after that use, exactly once"
+        );
+    }
+
+    #[test]
+    fn usercall_result_moved_into_local_is_not_dropped_by_collector() {
+        // The `let b = mk(); b.len()` shape: mk's dest _2 is `move`d into b's
+        // local _4, then _4 is borrowed. _2's only use is the Move (ownership
+        // transfer), so dropping _2 would double-free b's buffer.
+        let blocks = vec![
+            block(0, vec![], user_call("mk", 2, 1)),
+            block(
+                1,
+                vec![
+                    Instr::Move {
+                        dest: Place::Local(4),
+                        src: Place::Local(2),
+                    },
+                    bytes_len(4, 3),
+                ],
+                Terminator::Return,
+            ),
+        ];
+        let locals = bytes_locals_with(&[(3, ResolvedTy::I64)]);
+        let binding_locals: HashMap<BindingId, Place> =
+            [(BindingId(7), Place::Local(4))].into_iter().collect();
+        assert!(
+            collect(&blocks, &locals, &binding_locals).is_empty(),
+            "the mk() temp's only use is a Move (ownership transfer to b); dropping \
+             it would double-free the buffer b's scope-exit release owns"
+        );
+    }
+
+    #[test]
+    fn binding_local_usercall_result_stays_out_of_collector() {
+        // mk()'s dest IS a binding local directly — owned by the scope-exit
+        // derive_local_bytes_drop_allowed release, not the bare-temp collector.
+        let blocks = vec![
+            block(0, vec![], user_call("mk", 2, 1)),
+            block(1, vec![bytes_len(2, 3)], Terminator::Return),
+        ];
+        let locals = bytes_locals_with(&[(3, ResolvedTy::I64)]);
+        let binding_locals: HashMap<BindingId, Place> =
+            [(BindingId(9), Place::Local(2))].into_iter().collect();
+        assert!(
+            collect(&blocks, &locals, &binding_locals).is_empty(),
+            "a bytes local owned by a let/parameter binding belongs to \
+             derive_local_bytes_drop_allowed, not the bare-temp collector"
+        );
+    }
+
+    #[test]
+    fn fresh_bytes_helper_transient_is_admitted() {
+        // `"x".to_bytes().len()`: hew_string_to_bytes is a non-allowlisted fresh
+        // bytes helper (builtin: None, result not an interior alias), so its
+        // transient result is admitted like a user call.
+        let blocks = vec![
+            block(
+                0,
+                vec![],
+                Terminator::Call {
+                    callee: "hew_string_to_bytes".to_string(),
+                    builtin: None,
+                    args: vec![Place::Local(5)],
+                    dest: Some(Place::Local(2)),
+                    next: 1,
+                },
+            ),
+            block(1, vec![bytes_len(2, 3)], Terminator::Return),
+        ];
+        let locals = bytes_locals_with(&[(3, ResolvedTy::I64)]);
+        assert_eq!(
+            collect(&blocks, &locals, &HashMap::new()),
+            vec![(1, 1, Place::Local(2), ResolvedTy::Bytes)],
+            "hew_string_to_bytes hands the caller a fresh rc==1 buffer; its \
+             transient result borrowed once must be dropped exactly once"
+        );
+    }
+
+    #[test]
+    fn allowlisted_runtime_bytes_terminator_is_not_admitted() {
+        // hew_bytes_slice returns fresh bytes but is an ALLOWLISTED runtime
+        // symbol; excluded fail-closed pending a FreshOwnedBytes contract (some
+        // allowlisted bytes callees borrow / alias their receiver).
+        let blocks = vec![
+            block(
+                0,
+                vec![],
+                Terminator::Call {
+                    callee: "hew_bytes_slice".to_string(),
+                    builtin: None,
+                    args: vec![Place::Local(5)],
+                    dest: Some(Place::Local(2)),
+                    next: 1,
+                },
+            ),
+            block(1, vec![bytes_len(2, 3)], Terminator::Return),
+        ];
+        let locals = bytes_locals_with(&[(3, ResolvedTy::I64)]);
+        assert!(
+            collect(&blocks, &locals, &HashMap::new()).is_empty(),
+            "an allowlisted runtime bytes callee is excluded (leak-safe) until a \
+             per-symbol FreshOwnedBytes contract can tell fresh from borrow"
+        );
+    }
+
+    #[test]
+    fn discarded_usercall_result_dropped_at_single_pred_continuation() {
+        // bb0: _2 = call mk() -> bb1 ; bb1 never reads _2 (discard).
+        let blocks = vec![block(0, vec![], user_call("mk", 2, 1)), ret_block(1)];
+        let locals = bytes_locals_with(&[]);
+        assert_eq!(
+            collect(&blocks, &locals, &HashMap::new()),
+            vec![(1, 0, Place::Local(2), ResolvedTy::Bytes)],
+            "a discarded user-call bytes temp is dropped at the front of its \
+             single-predecessor continuation"
+        );
+    }
+
+    #[test]
+    fn discarded_usercall_result_at_multipred_continuation_not_dropped() {
+        // bb1 (the continuation) has two predecessors: bb0 (producer) and bb2. A
+        // front-of-block drop could fire on the bb2 path that never produced _2.
+        let blocks = vec![
+            block(0, vec![], user_call("mk", 2, 1)),
+            ret_block(1),
+            block(2, vec![], Terminator::Goto { target: 1 }),
+        ];
+        let locals = bytes_locals_with(&[]);
+        assert!(
+            collect(&blocks, &locals, &HashMap::new()).is_empty(),
+            "a front-of-block drop on a multi-predecessor continuation could free \
+             an uninitialised temp — fail closed"
+        );
+    }
+
+    #[test]
+    fn usercall_result_moved_into_record_not_dropped() {
+        // mk()'s result is stored into a record field (aggregate ingress); the
+        // aggregate owns the release. RecordInit is not a borrowing runtime call.
+        let blocks = vec![
+            block(0, vec![], user_call("mk", 2, 1)),
+            block(
+                1,
+                vec![Instr::RecordInit {
+                    ty: boxed_ty(),
+                    fields: vec![(FieldOffset(0), Place::Local(2))],
+                    dest: Place::Local(5),
+                }],
+                Terminator::Return,
+            ),
+        ];
+        let locals = bytes_locals_with(&[(5, boxed_ty())]);
+        assert!(
+            collect(&blocks, &locals, &HashMap::new()).is_empty(),
+            "record ingress transfers ownership to the aggregate; an inline temp \
+             drop would double-free the field"
+        );
+    }
+
+    #[test]
+    fn usercall_result_borrowed_by_terminator_call_gets_dropped_at_continuation() {
+        // `mk().get(0)`: mk's dest _2 is borrowed by a `Terminator::Call`
+        // (`hew_bytes_get`, a COLLECTION-scan receiver borrow). Every
+        // Terminator::Call bytes arg is a borrow (Hew by-value heap params), so
+        // the temp is dropped at the front of the call's continuation.
+        let blocks = vec![
+            block(0, vec![], user_call("mk", 2, 1)),
+            block(
+                1,
+                vec![],
+                Terminator::Call {
+                    callee: "hew_bytes_get".to_string(),
+                    builtin: None,
+                    args: vec![Place::Local(2), Place::Local(6)],
+                    dest: Some(Place::Local(7)),
+                    next: 2,
+                },
+            ),
+            ret_block(2),
+        ];
+        let locals = bytes_locals_with(&[(6, ResolvedTy::I64)]);
+        assert_eq!(
+            collect(&blocks, &locals, &HashMap::new()),
+            vec![(2, 0, Place::Local(2), ResolvedTy::Bytes)],
+            "a bytes temp borrowed by a Terminator::Call is released at the front \
+             of the call's single-predecessor continuation"
+        );
+    }
+
+    #[test]
+    fn usercall_result_sent_to_actor_is_not_dropped() {
+        // A `Terminator::Send` CONSUMES the bytes (mailbox hand-off); the sender
+        // must NOT drop it. Only `Terminator::Call` is a borrow — `Send` is
+        // excluded fail-closed.
+        let blocks = vec![
+            block(0, vec![], user_call("mk", 2, 1)),
+            block(
+                1,
+                vec![],
+                Terminator::Send {
+                    actor: Place::Local(6),
+                    msg_type: 0,
+                    value: Place::Local(2),
+                    next: 2,
+                    alias_mode: crate::model::SendAliasMode::Copy,
+                },
+            ),
+            ret_block(2),
+        ];
+        let locals = bytes_locals_with(&[]);
+        assert!(
+            collect(&blocks, &locals, &HashMap::new()).is_empty(),
+            "a bytes temp consumed by an actor send must not be dropped by the \
+             sender (the mailbox copy / state_drop owns the release)"
+        );
+    }
+
+    #[test]
+    fn usercall_result_used_twice_not_dropped() {
+        // Two source-uses (rule 4: at most one). Fail closed rather than guess
+        // which use is the last.
+        let blocks = vec![
+            block(0, vec![], user_call("mk", 2, 1)),
+            block(
+                1,
+                vec![bytes_len(2, 3), bytes_len(2, 6)],
+                Terminator::Return,
+            ),
+        ];
+        let locals = bytes_locals_with(&[(3, ResolvedTy::I64), (6, ResolvedTy::I64)]);
+        assert!(
+            collect(&blocks, &locals, &HashMap::new()).is_empty(),
+            "a temp with more than one source-use is not the single-borrow shape; \
+             fail closed (leak, never double-free)"
         );
     }
 }

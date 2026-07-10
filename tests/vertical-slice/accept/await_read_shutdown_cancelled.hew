@@ -1,0 +1,54 @@
+// A read that is already parked when explicit shutdown begins must resume with
+// the exact typed shutdown outcome, not Ok(empty bytes) or its own deadline.
+//
+// The reactor registration gauge plus the active-worker idle check form the
+// parking barrier: the read registration is live and its handler has suspended.
+//
+// Exit-code contract: Cancelled -> 43; TimedOut -> 41; Ok -> 2; another error
+// -> 3; no reader outcome -> main fallback 99.
+import std::net::{Listener};
+import std::observe;
+
+extern "C" {
+    fn hew_tcp_listener_local_port(listener: Listener) -> i32;
+    fn hew_sched_metrics_active_workers() -> i64;
+    fn hew_shutdown_initiate(drain_timeout_ms: i64);
+    fn hew_shutdown_wait() -> i32;
+}
+
+actor Reader {
+    let port: i32;
+    receive fn go() {
+        let conn = net.connect(f"127.0.0.1:{port}");
+        let code = match await conn.read() | after 10s {
+            Ok(_body) => 2,
+            Err(e) => match e {
+                NetError::Cancelled(_c) => 43,
+                NetError::TimedOut(_c) => 41,
+                _ => 3,
+            },
+        };
+        exit(code);
+    }
+}
+
+fn main() {
+    let listener = net.listen("127.0.0.1:0");
+    let port = unsafe {
+        hew_tcp_listener_local_port(listener)
+    };
+    let reader = spawn Reader(port: port);
+    reader.go();
+    let _peer = listener.accept();
+    while observe.read("reactor.registrations_live") == 0 {}
+    while unsafe {
+        hew_sched_metrics_active_workers()
+    } != 0 {}
+    unsafe {
+        hew_shutdown_initiate(0);
+    };
+    unsafe {
+        hew_shutdown_wait();
+    };
+    exit(99);
+}

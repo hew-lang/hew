@@ -3641,6 +3641,24 @@ if [[ "${read_ok_status}" -ne 42 ]]; then
   exit 1
 fi
 
+# Accept (#2446 read-half shutdown outcome): a read registration is confirmed
+# live and its actor parked before explicit shutdown. The sweep must resume it
+# with the exact Err(NetError::Cancelled) branch -> exit 43.
+compile_accept "await_read_shutdown_cancelled"
+read_shutdown_bin="${ROOT}/.tmp/compile-out/await_read_shutdown_cancelled"
+read_shutdown_status=0
+if "${TIMEOUT}" --kill-after=5s 30s env HEW_WORKERS=1 "${read_shutdown_bin}" \
+    >"${stdout_output}" 2>"${stderr_output}"; then
+  read_shutdown_status=0
+else
+  read_shutdown_status=$?
+fi
+if [[ "${read_shutdown_status}" -ne 43 ]]; then
+  echo "expected await_read_shutdown_cancelled (HEW_WORKERS=1) to exit 43, got ${read_shutdown_status}" >&2
+  cat "${accept_output}" "${stdout_output}" "${stderr_output}" >&2
+  exit 1
+fi
+
 # Accept (TCP write-side backpressure): a producer with a short write timeout
 # writes a 16 MiB payload to a peer that never reads. The send buffer fills, the
 # write cannot complete within the deadline, and conn.write() returns
@@ -3829,6 +3847,43 @@ else
 fi
 if [[ "${accept_ok_status}" -ne 42 ]]; then
   echo "expected await_accept_deadline_ok (HEW_WORKERS=1) to exit 42, got ${accept_ok_status}" >&2
+  cat "${accept_output}" "${stdout_output}" "${stderr_output}" >&2
+  exit 1
+fi
+
+# Accept (#2446 accept-half shutdown outcome): the accept is confirmed parked
+# before explicit shutdown. It must resume with Err(NetError::Cancelled) -> 42,
+# never Ok(INVALID_CONNECTION_HANDLE), its own deadline, or abandonment.
+compile_accept "await_accept_shutdown_abandoned"
+accept_shutdown_bin="${ROOT}/.tmp/compile-out/await_accept_shutdown_abandoned"
+accept_shutdown_status=0
+if "${TIMEOUT}" --kill-after=5s 30s env HEW_WORKERS=1 "${accept_shutdown_bin}" \
+    >"${stdout_output}" 2>"${stderr_output}"; then
+  accept_shutdown_status=0
+else
+  accept_shutdown_status=$?
+fi
+if [[ "${accept_shutdown_status}" -ne 42 ]]; then
+  echo "expected await_accept_shutdown_abandoned (HEW_WORKERS=1) to exit 42, got ${accept_shutdown_status}" >&2
+  cat "${accept_output}" "${stdout_output}" "${stderr_output}" >&2
+  exit 1
+fi
+
+# Accept (#2446 shutdown re-park guard): the first Cancelled comes from the
+# sweep; the handler immediately loops, and the paired entry check must reject
+# the second accept synchronously as Cancelled -> exit 44. A tight timeout makes
+# any re-park/livelock fail as 124/137 instead of hanging the suite.
+compile_accept "await_accept_shutdown_repark_loop"
+accept_repark_bin="${ROOT}/.tmp/compile-out/await_accept_shutdown_repark_loop"
+accept_repark_status=0
+if "${TIMEOUT}" --kill-after=1s 2s env HEW_WORKERS=1 "${accept_repark_bin}" \
+    >"${stdout_output}" 2>"${stderr_output}"; then
+  accept_repark_status=0
+else
+  accept_repark_status=$?
+fi
+if [[ "${accept_repark_status}" -ne 44 ]]; then
+  echo "expected await_accept_shutdown_repark_loop (HEW_WORKERS=1) to exit 44 promptly, got ${accept_repark_status}" >&2
   cat "${accept_output}" "${stdout_output}" "${stderr_output}" >&2
   exit 1
 fi

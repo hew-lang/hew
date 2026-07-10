@@ -1301,3 +1301,131 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:323-348 allocates an empty plain vector.
+[[ownership.contracts]]
+symbol = "hew_vec_new_with_elem_size"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:352-366 allocates an i32 vector.
+[[ownership.contracts]]
+symbol = "hew_vec_new"
+result = "fresh"
+params = []
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:369-383 allocates a bool vector.
+[[ownership.contracts]]
+symbol = "hew_vec_new_bool"
+result = "fresh"
+params = []
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:386-394 allocates an i8 vector.
+[[ownership.contracts]]
+symbol = "hew_vec_new_i8"
+result = "fresh"
+params = []
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:397-405 allocates a u8 vector.
+[[ownership.contracts]]
+symbol = "hew_vec_new_u8"
+result = "fresh"
+params = []
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:408-416 allocates an i16 vector.
+[[ownership.contracts]]
+symbol = "hew_vec_new_i16"
+result = "fresh"
+params = []
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:419-427 allocates a u16 vector.
+[[ownership.contracts]]
+symbol = "hew_vec_new_u16"
+result = "fresh"
+params = []
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:430-445 allocates a string-owning vector.
+[[ownership.contracts]]
+symbol = "hew_vec_new_str"
+result = "fresh"
+params = []
+release-symbol = "hew_vec_free"
+discharge-depth = "deep"
+
+# hew-runtime/src/vec.rs:448-462 allocates an i64 vector.
+[[ownership.contracts]]
+symbol = "hew_vec_new_i64"
+result = "fresh"
+params = []
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:465-479 allocates an f64 vector.
+[[ownership.contracts]]
+symbol = "hew_vec_new_f64"
+result = "fresh"
+params = []
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:482-490 allocates an f32 vector.
+[[ownership.contracts]]
+symbol = "hew_vec_new_f32"
+result = "fresh"
+params = []
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:493-507 allocates a pointer-element vector.
+[[ownership.contracts]]
+symbol = "hew_vec_new_ptr"
+result = "fresh"
+params = []
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:510-537 allocates an i32 vector from borrowed bytes.
+[[ownership.contracts]]
+symbol = "hew_vec_from_u8_data"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:540-570 copies a type descriptor into a fresh vector.
+[[ownership.contracts]]
+symbol = "hew_vec_new_with_layout"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "deep"
+
+# hew-runtime/src/vec.rs:2320-2341 allocates a plain generic vector.
+[[ownership.contracts]]
+symbol = "hew_vec_new_generic"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/vec.rs:2636-2650 allocates an owned-element vector.
+[[ownership.contracts]]
+symbol = "hew_vec_new_with_elem_layout"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_vec_free_owned"
+discharge-depth = "deep"

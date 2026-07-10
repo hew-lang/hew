@@ -55,7 +55,7 @@ fn werror_flag_is_accepted_by_build_style_commands() {
 }
 
 #[test]
-fn net_parameter_surface_fixture_reaches_deep_gate() {
+fn net_parameter_surface_fixture_checks_clean_after_resource_qualification() {
     let source = repo_root().join("hew-types/tests/fixtures/net_parameter_surfaces_typecheck.hew");
     let source_arg = source.to_str().expect("source path should be valid UTF-8");
 
@@ -66,26 +66,35 @@ fn net_parameter_surface_fixture_reaches_deep_gate() {
         .expect("run hew check");
     let stderr = String::from_utf8_lossy(&output.stderr);
 
+    // This fixture exercises a wide net parameter surface (tls, smtp,
+    // websocket, quic, net.connect_timeout). It is valid Hew — it typechecks,
+    // compiles, and runs. Historically `hew check` still rejected it at a deep
+    // gate: smtp and websocket each define a distinct `Conn` type with a
+    // `close` method, and once both became close resources those two impls
+    // lowered to the same unqualified `Conn::close` symbol, tripping the #2400
+    // duplicate-unqualified-symbol fail-closed guard at codegen-front. That was
+    // a compiler limitation, not a defect in this program.
+    //
+    // The free->close migration qualifies colliding resource wrappers, so the
+    // two `Conn::close` impls now lower to distinct symbols and the fixture
+    // checks clean. The resource-wrapper case of #2400 is closed by that
+    // qualification; the guard itself still fences other same-name collisions.
     assert!(
-        !output.status.success(),
-        "Stage 2 check should reject {} after frontend typechecking\n{}",
-        source.display(),
+        output.status.success(),
+        "net parameter surface fixture should now check clean after resource \
+         wrappers are qualified\n{}",
         describe_output(&output),
     );
-    // Codegen-front counts as a deep gate here. The fixture now advances past
-    // HIR because the extern-callee gate correctly stopped a bogus handle-method
-    // registration (QUICConnection.observe() resolves via normal impl dispatch),
-    // so it reaches codegen-front and hits the pre-existing #2400
-    // duplicate-unqualified-symbol check (smtp and websocket both define a Conn
-    // type with a close method).
+    // Teeth: if the qualification regresses, the #2400 collision comes back and
+    // the check fails on the duplicate symbol again — guard against that here so
+    // the failure names the actual cause instead of a bare non-zero exit.
     assert!(
-        stderr.contains("E_HIR")
-            || stderr.contains("E_NOT_YET_IMPLEMENTED")
-            || stderr.contains("E_CODEGEN_FRONT_FAIL_CLOSED"),
-        "fixture should reach the HIR/MIR/codegen-front deep gates, not fail in argument parsing or file loading:\n{stderr}",
+        !stderr.contains("duplicate function symbol"),
+        "resource wrapper qualification regressed — smtp/websocket `Conn::close` \
+         collided at codegen-front again:\n{stderr}",
     );
     assert!(
         !stderr.contains("type errors found"),
-        "net parameter surface fixture should still pass the frontend typecheck before deep gates:\n{stderr}",
+        "net parameter surface fixture should pass the frontend typecheck:\n{stderr}",
     );
 }

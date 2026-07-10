@@ -627,9 +627,9 @@ pub extern "C" fn hew_sched_shutdown() {
 /// explicitly freed by user code, clears the name registry, and drops
 /// the scheduler itself (crossbeam deques, parkers, stealer handles).
 ///
-/// In compiled Hew programs this is called automatically after the
-/// scheduler shuts down. It is a no-op if the scheduler was never
-/// initialized.
+/// In compiled native Hew programs this is called automatically from the shared
+/// `main` return tail after graceful drain or immediate supervisor-safe worker
+/// shutdown. It is a no-op if the scheduler was never initialized.
 #[no_mangle]
 pub extern "C" fn hew_runtime_cleanup() {
     // Stop the active-mode I/O reactor BEFORE any actors are freed. The reactor
@@ -675,6 +675,27 @@ pub extern "C" fn hew_runtime_cleanup() {
     // can still reference it. Dropping it frees the scheduler (deques, parkers,
     // stealers, global queue) and the now-empty live-actor registry.
     drop(runtime::take_default());
+}
+
+/// Run the canonical runtime cleanup chain from a compiled native `main` return.
+///
+/// Graceful shutdown deliberately leaves workers live when its bounded drain
+/// does not converge; process return is then the only safe teardown because
+/// joining or freeing runtime-owned memory could hang or race an active handler.
+/// Supervisor programs take an immediate scheduler-shutdown path instead, so
+/// their workers are joined and this entry proceeds into [`hew_runtime_cleanup`].
+///
+/// This guard keeps the codegen cleanup tail shared across both shells without
+/// weakening the existing timed-out shutdown policy.
+#[no_mangle]
+pub extern "C" fn hew_runtime_cleanup_after_main() {
+    let Some(sched) = get_scheduler() else {
+        return;
+    };
+    if !sched.shutdown.load(Ordering::Acquire) {
+        return;
+    }
+    hew_runtime_cleanup();
 }
 
 // ── Internal API ────────────────────────────────────────────────────────
@@ -5265,6 +5286,33 @@ mod tests {
             before + 1,
             "cleanup must drop the runtime exactly once after sweeping supervisor roots"
         );
+    }
+
+    #[test]
+    fn runtime_cleanup_after_main_skips_unjoined_runtime() {
+        let _g = SCHED_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        install_scheduler_for_test(worker_less_scheduler_for_test());
+
+        // SAFETY: hew_supervisor_new returns a valid owned supervisor pointer.
+        let sup = unsafe { crate::supervisor::hew_supervisor_new(1, 3, 60) };
+        // SAFETY: sup is valid and remains registered until cleanup below.
+        unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
+
+        hew_runtime_cleanup_after_main();
+
+        assert!(
+            !runtime::default_runtime_ptr(Ordering::SeqCst).is_null(),
+            "main-return cleanup must not detach a runtime whose workers were not shut down"
+        );
+        assert!(
+            crate::shutdown::is_supervisor_registered_for_test(sup),
+            "unsafe-to-clean main return must leave supervisor roots for process teardown"
+        );
+
+        hew_runtime_cleanup();
     }
 
     #[test]

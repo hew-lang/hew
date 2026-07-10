@@ -216,6 +216,93 @@ fn enum_overwrite_source(frames: usize) -> String {
     )
 }
 
+/// String inspect-then-overwrite: each frame READS the `string` state field
+/// through a borrowing string call (`name.len()`) and then overwrites it
+/// (`name = name + "x"`). The load feeding `hew_string_length` borrows the
+/// field — it must NOT emit a `hew_string_clone` rc-bump. Pre-#2432-classifier
+/// the string-receiver borrow was not recognised (`string_args` is a separate
+/// contract axis from the Vec/bytes receiver axis), so the load classified
+/// `Owned` and leaked one string buffer per frame (`string_slope`: 2 @3 → 49
+/// @50 frames; merge-base 0/0). The store-side overwrite release of the OLD
+/// buffer is orthogonal and already correct.
+fn string_inspect_overwrite_source(frames: usize) -> String {
+    format!(
+        "actor Namer {{\n\
+         \x20   var name: string;\n\
+         \n\
+         \x20   receive fn tick() {{\n\
+         \x20       if name.len() < 1000000 {{\n\
+         \x20           name = name + \"x\";\n\
+         \x20       }}\n\
+         \x20   }}\n\
+         \n\
+         \x20   receive fn size() -> i64 {{\n\
+         \x20       name.len()\n\
+         \x20   }}\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   let h = spawn Namer(name: \"seed\".to_upper());\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       h.tick();\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   sleep(2000ms);\n\
+         \x20   match await h.size() {{\n\
+         \x20       Ok(v) => v,\n\
+         \x20       Err(_) => -1,\n\
+         \x20   }}\n\
+         }}\n"
+    )
+}
+
+/// Collection iteration (`for v in items`): each frame iterates a `Vec<i64>`
+/// state field. The `for x in <collection>` desugar lowers the field load into
+/// a synthetic `VecIter {{ vec: <load>, idx: 0 }}` cursor. Pre-#2432-classifier
+/// the `RecordInit VecIter` fell through the wildcard as a whole-value escape,
+/// so the load classified `Owned` and deep-cloned a Vec handle the cursor
+/// never frees — a per-frame leak on THE most common actor-collection read
+/// shape (`forin_slope`: 6 @3 → 100 @50 frames; merge-base 0/0). The cursor
+/// BORROWS the source handle (reads via `len()`/`get(i)`, never frees it), so
+/// the load must classify `Borrowed` and alias the actor's still-owned Vec.
+fn collection_iterate_source(frames: usize) -> String {
+    format!(
+        "actor Summer {{\n\
+         \x20   var items: Vec<i64>;\n\
+         \n\
+         \x20   receive fn spin() {{\n\
+         \x20       var s: i64 = 0;\n\
+         \x20       for v in items {{\n\
+         \x20           s = s + v;\n\
+         \x20       }}\n\
+         \x20   }}\n\
+         \n\
+         \x20   receive fn size() -> i64 {{\n\
+         \x20       items.len()\n\
+         \x20   }}\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   let xs: Vec<i64> = Vec::new();\n\
+         \x20   xs.push(1);\n\
+         \x20   xs.push(2);\n\
+         \x20   xs.push(3);\n\
+         \x20   let h = spawn Summer(items: xs);\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       h.spin();\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   sleep(2000ms);\n\
+         \x20   match await h.size() {{\n\
+         \x20       Ok(v) => v,\n\
+         \x20       Err(_) => -1,\n\
+         \x20   }}\n\
+         }}\n"
+    )
+}
+
 /// Whole-value self-store: `prof = prof` byte-copies every leaf, so the
 /// release must neutralise them ALL (drop nothing). The aliased `name`
 /// leaf is HEAP-allocated at spawn (`.to_upper()`) so an over-eager
@@ -629,6 +716,26 @@ fn record_state_overwrite_no_per_frame_leak_slope() {
 #[test]
 fn enum_state_overwrite_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance("enum_overwrite", enum_overwrite_source);
+}
+
+/// #2432 — a per-frame handler that INSPECTS a `string` state field through a
+/// borrowing string call (`name.len()`) and overwrites it must not clone the
+/// field on the borrowing load. The own/borrow classifier recognises the
+/// `string_args` borrow axis, so the load classifies `Borrowed` and emits no
+/// unbalanced `hew_string_clone` (pre-classifier slope ~1 buffer/frame).
+#[test]
+fn string_state_inspect_overwrite_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance("string_inspect_overwrite", string_inspect_overwrite_source);
+}
+
+/// #2432 — a per-frame handler that ITERATES a `Vec` state field
+/// (`for v in items`) must borrow, not deep-clone, the collection: the
+/// synthetic `VecIter` cursor borrows the source handle it never frees, so the
+/// load classifies `Borrowed` (pre-classifier slope ~2 nodes/frame — the
+/// cloned handle plus buffer the cursor never released).
+#[test]
+fn collection_state_iterate_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance("collection_iterate", collection_iterate_source);
 }
 
 /// UAF pin — whole-value self-store: every leaf of the incoming value

@@ -68,8 +68,8 @@ pub unsafe extern "C" fn hew_regex_is_match(re: *const HewRegex, text: *const c_
 /// Find the first match of the compiled regex in `text`.
 ///
 /// Returns a `malloc`-allocated, NUL-terminated C string containing the
-/// matched substring, or null if no match is found. The caller must free
-/// the returned string with `libc::free`.
+/// matched substring, or a non-null empty string if no match is found. The
+/// caller must free the returned string with `libc::free`.
 ///
 /// # Safety
 ///
@@ -88,7 +88,7 @@ pub unsafe extern "C" fn hew_regex_find(re: *const HewRegex, text: *const c_char
     };
     match regex.inner.find(text_str) {
         Some(m) => str_to_malloc(m.as_str()),
-        None => std::ptr::null_mut(),
+        None => str_to_malloc(""),
     }
 }
 
@@ -606,11 +606,16 @@ mod tests {
         // SAFETY: matched was allocated with libc::malloc.
         unsafe { hew_cabi::cabi::free_cstring(matched) }; // CSTRING-FREE: str-open (test str_to_malloc match)
 
-        // Test no match
+        // Test no match.
         let text_no = CString::new("123456").unwrap();
         // SAFETY: re and text pointers are valid.
         let no_match = unsafe { hew_regex_find(re, text_no.as_ptr()) };
-        assert!(no_match.is_null());
+        assert!(!no_match.is_null());
+        // SAFETY: no_match was allocated by hew_regex_find.
+        let no_match_str = unsafe { CStr::from_ptr(no_match) }.to_str().unwrap();
+        assert_eq!(no_match_str, "");
+        // SAFETY: no_match was allocated with libc::malloc.
+        unsafe { hew_cabi::cabi::free_cstring(no_match) }; // CSTRING-FREE: str-open (test str_to_malloc match)
 
         // SAFETY: re was returned by hew_regex_new.
         unsafe { hew_regex_free(re) };
@@ -784,6 +789,9 @@ mod tests {
         // SAFETY: Testing null pointer handling.
         assert!(unsafe { hew_regex_new(std::ptr::null()) }.is_null());
         assert!(!hew_regex_is_valid(std::ptr::null()));
+        let text = CString::new("text").unwrap();
+        // SAFETY: Testing a null handle with a valid input string.
+        assert!(unsafe { hew_regex_find(std::ptr::null(), text.as_ptr()) }.is_null());
         assert!(
             // SAFETY: Testing null pointer handling.
             !unsafe { hew_regex_is_match(std::ptr::null(), std::ptr::null()) },

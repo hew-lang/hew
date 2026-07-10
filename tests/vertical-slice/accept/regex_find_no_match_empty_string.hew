@@ -1,0 +1,16 @@
+// Regression for the regex no-match-vs-empty-string equality boundary.
+import std::text::regex;
+
+fn main() {
+    let pat = regex.new("[0-9]+");
+
+    let hit = pat.find("abc123def");
+    println(f"hit_eq={hit == "123"}");
+
+    let miss = pat.find("abcdef");
+    println(f"miss_len={miss.len()}");
+    println(f"miss_eq_empty={miss == ""}");
+    println(f"miss_neq_hit={miss != "123"}");
+
+    pat.close();
+}

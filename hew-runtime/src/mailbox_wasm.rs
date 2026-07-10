@@ -743,12 +743,13 @@ unsafe fn send_user_message_inner(
                     .find(|&&node| {
                         // SAFETY: all queued nodes were allocated by msg_node_alloc.
                         unsafe {
-                            coalesce_message_key(
-                                mb.coalesce_key_fn,
-                                (*node).msg_type,
-                                (*node).data,
-                                (*node).data_size,
-                            ) == incoming_key
+                            (*node).msg_type == msg_type
+                                && coalesce_message_key(
+                                    mb.coalesce_key_fn,
+                                    (*node).msg_type,
+                                    (*node).data,
+                                    (*node).data_size,
+                                ) == incoming_key
                         }
                     })
                     .copied();

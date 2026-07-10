@@ -33,6 +33,13 @@ struct CoalesceSnapshot {
     payload: PriceUpdate,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+struct MsgTypeCoalesceSnapshot {
+    first_type: i32,
+    second_type: i32,
+    second_price: i32,
+}
+
 fn native_coalesce_snapshot() -> CoalesceSnapshot {
     let _guard = crate::runtime_test_guard();
     crate::scheduler::hew_sched_metrics_reset();
@@ -128,6 +135,98 @@ fn wasm_coalesce_snapshot() -> CoalesceSnapshot {
             payload: *(*node).data.cast::<PriceUpdate>(),
         };
         crate::mailbox_wasm::hew_msg_node_free(node);
+        crate::mailbox_wasm::hew_mailbox_free(mb);
+        snapshot
+    }
+}
+
+fn native_msg_type_coalesce_snapshot() -> MsgTypeCoalesceSnapshot {
+    let beta = PriceUpdate {
+        symbol: *b"BTCUSD\0\0",
+        price: 20,
+    };
+    let alpha_old = PriceUpdate {
+        symbol: *b"BTCUSD\0\0",
+        price: 1,
+    };
+    let alpha_new = PriceUpdate {
+        symbol: *b"BTCUSD\0\0",
+        price: 2,
+    };
+    // SAFETY: test owns the mailbox and drained nodes.
+    unsafe {
+        let mb = crate::mailbox::hew_mailbox_new_coalesce(2);
+        crate::mailbox::hew_mailbox_set_coalesce_config(
+            mb,
+            Some(price_symbol_key),
+            HewOverflowPolicy::DropNew,
+        );
+        for (msg_type, payload) in [(8, beta), (7, alpha_old), (7, alpha_new)] {
+            assert_eq!(
+                crate::mailbox::hew_mailbox_send(
+                    mb,
+                    msg_type,
+                    (&raw const payload).cast_mut().cast(),
+                    std::mem::size_of::<PriceUpdate>(),
+                ),
+                HewError::Ok as i32
+            );
+        }
+        let first = crate::mailbox::hew_mailbox_try_recv(mb);
+        let second = crate::mailbox::hew_mailbox_try_recv(mb);
+        let snapshot = MsgTypeCoalesceSnapshot {
+            first_type: (*first).msg_type,
+            second_type: (*second).msg_type,
+            second_price: (*(*second).data.cast::<PriceUpdate>()).price,
+        };
+        crate::mailbox::hew_msg_node_free(first);
+        crate::mailbox::hew_msg_node_free(second);
+        crate::mailbox::hew_mailbox_free(mb);
+        snapshot
+    }
+}
+
+fn wasm_msg_type_coalesce_snapshot() -> MsgTypeCoalesceSnapshot {
+    let beta = PriceUpdate {
+        symbol: *b"BTCUSD\0\0",
+        price: 20,
+    };
+    let alpha_old = PriceUpdate {
+        symbol: *b"BTCUSD\0\0",
+        price: 1,
+    };
+    let alpha_new = PriceUpdate {
+        symbol: *b"BTCUSD\0\0",
+        price: 2,
+    };
+    // SAFETY: test owns the mailbox and drained nodes.
+    unsafe {
+        let mb = crate::mailbox_wasm::hew_mailbox_new_coalesce(2);
+        crate::mailbox_wasm::hew_mailbox_set_coalesce_config(
+            mb,
+            Some(price_symbol_key),
+            HewOverflowPolicy::DropNew,
+        );
+        for (msg_type, payload) in [(8, beta), (7, alpha_old), (7, alpha_new)] {
+            assert_eq!(
+                crate::mailbox_wasm::hew_mailbox_send(
+                    mb,
+                    msg_type,
+                    (&raw const payload).cast_mut().cast(),
+                    std::mem::size_of::<PriceUpdate>(),
+                ),
+                HewError::Ok as i32
+            );
+        }
+        let first = crate::mailbox_wasm::hew_mailbox_try_recv(mb);
+        let second = crate::mailbox_wasm::hew_mailbox_try_recv(mb);
+        let snapshot = MsgTypeCoalesceSnapshot {
+            first_type: (*first).msg_type,
+            second_type: (*second).msg_type,
+            second_price: (*(*second).data.cast::<PriceUpdate>()).price,
+        };
+        crate::mailbox_wasm::hew_msg_node_free(first);
+        crate::mailbox_wasm::hew_msg_node_free(second);
         crate::mailbox_wasm::hew_mailbox_free(mb);
         snapshot
     }
@@ -253,6 +352,17 @@ fn actor_state_clone_drop_setters_remain_linkable_and_mutate_slots() {
 #[test]
 fn coalesced_mailbox_metrics_match_native_and_wasm() {
     assert_eq!(native_coalesce_snapshot(), wasm_coalesce_snapshot());
+}
+
+#[test]
+fn coalesce_message_type_gate_matches_native_and_wasm() {
+    let expected = MsgTypeCoalesceSnapshot {
+        first_type: 8,
+        second_type: 7,
+        second_price: 2,
+    };
+    assert_eq!(native_msg_type_coalesce_snapshot(), expected);
+    assert_eq!(wasm_msg_type_coalesce_snapshot(), expected);
 }
 
 #[test]

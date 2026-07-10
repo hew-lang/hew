@@ -1446,12 +1446,13 @@ unsafe fn send_with_overflow(
                         .find(|&&n| {
                             // SAFETY: all nodes in the queue were allocated by msg_node_alloc.
                             unsafe {
-                                coalesce_message_key(
-                                    mb.coalesce_key_fn,
-                                    (*n).msg_type,
-                                    (*n).data,
-                                    (*n).data_size,
-                                ) == incoming_key
+                                (*n).msg_type == msg_type
+                                    && coalesce_message_key(
+                                        mb.coalesce_key_fn,
+                                        (*n).msg_type,
+                                        (*n).data,
+                                        (*n).data_size,
+                                    ) == incoming_key
                             }
                         })
                         .copied();
@@ -2570,6 +2571,63 @@ mod tests {
             );
             hew_msg_node_free(node);
 
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn coalesce_requires_matching_message_type() {
+        // SAFETY: test owns the mailbox and every drained node.
+        unsafe {
+            let mb = hew_mailbox_new_coalesce(2);
+            hew_mailbox_set_coalesce_config(mb, Some(price_symbol_key), HewOverflowPolicy::DropNew);
+            let beta = PriceUpdate {
+                symbol: 42,
+                price: 20,
+            };
+            let alpha_old = PriceUpdate {
+                symbol: 42,
+                price: 1,
+            };
+            let alpha_new = PriceUpdate {
+                symbol: 42,
+                price: 2,
+            };
+            assert_eq!(
+                hew_mailbox_try_send(
+                    mb,
+                    8,
+                    (&raw const beta).cast_mut().cast(),
+                    size_of::<PriceUpdate>(),
+                ),
+                HewError::Ok as i32
+            );
+            assert_eq!(
+                hew_mailbox_try_send(
+                    mb,
+                    7,
+                    (&raw const alpha_old).cast_mut().cast(),
+                    size_of::<PriceUpdate>(),
+                ),
+                HewError::Ok as i32
+            );
+            assert_eq!(
+                hew_mailbox_try_send(
+                    mb,
+                    7,
+                    (&raw const alpha_new).cast_mut().cast(),
+                    size_of::<PriceUpdate>(),
+                ),
+                HewError::Ok as i32
+            );
+
+            let first = hew_mailbox_try_recv(mb);
+            let second = hew_mailbox_try_recv(mb);
+            assert_eq!((*first).msg_type, 8);
+            assert_eq!((*second).msg_type, 7);
+            assert_eq!((*(*second).data.cast::<PriceUpdate>()).price, 2);
+            hew_msg_node_free(first);
+            hew_msg_node_free(second);
             hew_mailbox_free(mb);
         }
     }

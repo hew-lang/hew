@@ -427,6 +427,21 @@ impl ModuleRegistry {
             .map(|(c_sym, _, _)| c_sym)
     }
 
+    /// Whether a registry-visible handle method must dispatch through its Hew
+    /// impl instead of rewriting directly to the extracted C symbol.
+    #[must_use]
+    pub fn handle_method_dispatches_through_impl(&self, handle_type: &str, method: &str) -> bool {
+        for info in self.modules.values() {
+            for hm in &info.handle_methods {
+                if hm.type_name == handle_type && hm.method_name == method {
+                    return hm.dispatch_through_impl;
+                }
+            }
+        }
+        self.qualify_handle_type(handle_type)
+            .is_some_and(|qualified| self.handle_method_dispatches_through_impl(&qualified, method))
+    }
+
     /// Resolve a handle method to its C symbol and extracted signature.
     ///
     /// Returns `(c_symbol, param_types, return_type)` for trivial extracted

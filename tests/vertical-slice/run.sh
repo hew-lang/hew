@@ -2857,6 +2857,8 @@ compile_accept "safe_handle_resources_close"
 compile_accept "http_client_response_resource_close"
 compile_accept "websocket_message_resource_close"
 compile_accept "protobuf_message_resource_close"
+compile_accept "http_resource_dual_import_close"
+compile_accept "same_name_message_resources_close"
 
 # Reject: each migrated safe handle is unavailable after explicit close.
 if "${HEW}" check \

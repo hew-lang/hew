@@ -1,0 +1,14 @@
+import std::net::http;
+import std::net::http::http_client;
+
+fn close_request(value: http.Request) {
+    value.close();
+}
+
+fn close_response(value: http_client.Response) {
+    value.close();
+}
+
+fn main() -> i64 {
+    0
+}

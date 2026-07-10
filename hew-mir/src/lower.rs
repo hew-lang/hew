@@ -2999,6 +2999,18 @@ pub fn lower_hir_module_with_facts(
     // reads, and the `<Type>::close` symbol matches `declare_function`'s
     // flattened `<Self>::<method>` mangling, so MIR and codegen agree without
     // translation glue.
+    let colliding_record_shorts: HashSet<&str> = record_layouts
+        .iter()
+        .filter_map(|layout| {
+            let short = short_name(&layout.name);
+            (record_layouts
+                .iter()
+                .filter(|other| short_name(&other.name) == short)
+                .count()
+                > 1)
+            .then_some(short)
+        })
+        .collect();
     let resource_record_close: Vec<(String, String)> = record_layouts
         .iter()
         .filter_map(|layout| {
@@ -3012,10 +3024,15 @@ pub fn lower_hir_module_with_facts(
                 return None;
             }
             let close_method = close.as_ref()?;
-            // The close symbol is `<short type name>::<method>` — the same
-            // flattening `HirImplBlock::method_symbol` / `declare_function`
-            // and `resource_drop_fn`'s `UserClose` spelling use.
-            let symbol = format!("{short}::{close_method}");
+            // Colliding imported record types carry a qualified layout name and
+            // a matching qualified impl symbol; unique types retain the legacy
+            // bare spelling.
+            let symbol_type = if colliding_record_shorts.contains(short) {
+                layout.name.as_str()
+            } else {
+                short
+            };
+            let symbol = format!("{symbol_type}::{close_method}");
             Some((layout.name.clone(), symbol))
         })
         .collect();
@@ -45562,8 +45579,18 @@ fn resource_drop_fn(
         )),
         ResolvedTy::Named { name, .. } => {
             let short = short_name(name);
+            let qualified_collision = short != name
+                && type_classes
+                    .keys()
+                    .filter(|candidate| candidate.contains('.') && short_name(candidate) == short)
+                    .count()
+                    > 1;
             let class_entry = if short == name {
                 type_classes.get_key_value(name)
+            } else if qualified_collision {
+                type_classes
+                    .get_key_value(name)
+                    .or_else(|| type_classes.get_key_value(short))
             } else {
                 type_classes
                     .get_key_value(short)

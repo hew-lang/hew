@@ -929,6 +929,7 @@ struct ImplCloseSignature {
 struct ImportedImplLowering<'a> {
     rewrites: &'a HashMap<String, String>,
     skip_methods: &'a HashSet<String>,
+    symbol_self_name: Option<&'a str>,
 }
 
 /// Walk the program and its module graph collecting inherent-impl `close`
@@ -1649,9 +1650,9 @@ fn file_import_module_ids(program: &Program) -> HashSet<hew_parser::module::Modu
 /// SEMANTICS: over package modules only (the root and every
 /// `file_import_modules` id are excluded — file-import doubles are already
 /// handled by the splice-dedup guard), treat each module's `source_paths` as a
-/// canonical path set. Module M is *subsumed* iff some N ≠ M has
-/// `files(M) ⊆ files(N)` and EITHER `files(M) ⊊ files(N)` (a strict subset
-/// always loses, so the maximal superset survives — subset is transitive) OR
+/// canonical path set. Module M is *preferred for its own duplicate impls* iff
+/// some N ≠ M has `files(M) ⊆ files(N)` and EITHER `files(M) ⊊ files(N)` (the
+/// source-specific module owns impls duplicated in the directory superset) OR
 /// the sets are equal and N precedes M in `topo_order` (a deterministic
 /// tiebreak that keeps exactly one of two identical modules). Today's loader
 /// only ever yields disjoint, equal, or single-file ⊂ directory sets (peer
@@ -1671,15 +1672,15 @@ fn file_import_module_ids(program: &Program) -> HashSet<hew_parser::module::Modu
 /// each defining `Server`); tracked as the #2391 follow-up. Until then this
 /// keeps the #2391 flagship shape (one program importing both `std::net::http`
 /// and `std::net::http::http_client`) linking.
-fn subsumed_package_module_ids(
+fn preferred_package_module_ids(
     program: &Program,
     file_import_modules: &HashSet<hew_parser::module::ModuleId>,
 ) -> HashSet<hew_parser::module::ModuleId> {
     use std::path::{Path, PathBuf};
 
-    let mut subsumed = HashSet::new();
+    let mut preferred = HashSet::new();
     let Some(mg) = &program.module_graph else {
-        return subsumed;
+        return preferred;
     };
 
     // Candidate = package module actually visited by the fourth pass. Build in
@@ -1718,12 +1719,80 @@ fn subsumed_package_module_ids(
             // the pair survives.
             let equal = m_files.len() == n_files.len();
             if !equal || n_pos < m_pos {
-                subsumed.insert(candidates[i].0.clone());
+                preferred.insert(candidates[i].0.clone());
                 break;
             }
         }
     }
-    subsumed
+    preferred
+}
+
+fn item_is_duplicated_in_preferred_module(
+    program: &Program,
+    preferred_modules: &HashSet<hew_parser::module::ModuleId>,
+    current_module: &hew_parser::module::ModuleId,
+    item: &Item,
+) -> bool {
+    if preferred_modules.contains(current_module) {
+        return false;
+    }
+    let Some(module_graph) = &program.module_graph else {
+        return false;
+    };
+    preferred_modules.iter().any(|module_id| {
+        module_graph
+            .modules
+            .get(module_id)
+            .is_some_and(|module| module.items.iter().any(|(candidate, _)| candidate == item))
+    })
+}
+
+fn item_declares_type_name(item: &Item, type_name: &str) -> bool {
+    match item {
+        Item::TypeDecl(decl) => decl.name == type_name,
+        Item::Record(decl) => decl.name == type_name,
+        _ => false,
+    }
+}
+
+fn imported_type_name_collides(
+    program: &Program,
+    file_import_modules: &HashSet<hew_parser::module::ModuleId>,
+    preferred_modules: &HashSet<hew_parser::module::ModuleId>,
+    type_name: &str,
+) -> bool {
+    let Some(module_graph) = &program.module_graph else {
+        return false;
+    };
+    module_graph
+        .modules
+        .iter()
+        .filter(|(module_id, module)| {
+            **module_id != module_graph.root
+                && !file_import_modules.contains(*module_id)
+                && module.items.iter().any(|(item, _)| {
+                    if !item_declares_type_name(item, type_name) {
+                        return false;
+                    }
+                    if preferred_modules.contains(*module_id) {
+                        return true;
+                    }
+                    !preferred_modules.iter().any(|preferred_id| {
+                        module_graph
+                            .modules
+                            .get(preferred_id)
+                            .is_some_and(|preferred| {
+                                preferred
+                                    .items
+                                    .iter()
+                                    .any(|(candidate, _)| candidate == item)
+                            })
+                    })
+                })
+        })
+        .take(2)
+        .count()
+        > 1
 }
 
 #[must_use]
@@ -1924,6 +1993,25 @@ pub fn lower_program_with_mono_cap(
     // This walk runs AFTER the root-item pre-pass above so that any name
     // clash between a qualified key and a root-level function is caught by
     // the duplicate-short-module diagnostic in the frontend before HIR ingest.
+    let file_import_modules = file_import_module_ids(program);
+    let preferred_modules = preferred_package_module_ids(program, &file_import_modules);
+    let colliding_imported_record_names: HashSet<String> = program
+        .module_graph
+        .as_ref()
+        .into_iter()
+        .flat_map(|module_graph| module_graph.modules.values())
+        .flat_map(|module| module.items.iter())
+        .filter_map(|(item, _)| match item {
+            Item::TypeDecl(decl) => Some(decl.name.clone()),
+            Item::Record(decl) => Some(decl.name.clone()),
+            _ => None,
+        })
+        .filter(|name| {
+            imported_type_name_collides(program, &file_import_modules, &preferred_modules, name)
+        })
+        .collect();
+    ctx.colliding_imported_record_names
+        .clone_from(&colliding_imported_record_names);
     if let Some(ref mg) = program.module_graph {
         for mod_id in &mg.topo_order {
             if *mod_id == mg.root {
@@ -1977,6 +2065,14 @@ pub fn lower_program_with_mono_cap(
                                 }
                             }
                             ctx.record_registry.insert(
+                                format!("{module_short}.{}", decl.name),
+                                RecordEntry {
+                                    id,
+                                    type_params: type_params.clone(),
+                                    fields: fields.clone(),
+                                },
+                            );
+                            ctx.record_registry.insert(
                                 decl.name.clone(),
                                 RecordEntry {
                                     id,
@@ -1998,6 +2094,14 @@ pub fn lower_program_with_mono_cap(
                                     .collect(),
                                 RecordKind::Tuple(_) => Vec::new(),
                             };
+                            ctx.record_registry.insert(
+                                format!("{module_short}.{}", decl.name),
+                                RecordEntry {
+                                    id,
+                                    type_params: type_params.clone(),
+                                    fields: fields.clone(),
+                                },
+                            );
                             ctx.record_registry.insert(
                                 decl.name.clone(),
                                 RecordEntry {
@@ -2052,9 +2156,15 @@ pub fn lower_program_with_mono_cap(
                                     || classify_unsupported_where_clause(impl_decl).is_none()
                                 {
                                     let impl_type_params = impl_type_param_names(impl_decl);
+                                    let symbol_self_name =
+                                        if colliding_imported_record_names.contains(name) {
+                                            format!("{module_short}.{name}")
+                                        } else {
+                                            name.clone()
+                                        };
                                     for method in &impl_decl.methods {
                                         ctx.register_impl_method_fn_entry(
-                                            name,
+                                            &symbol_self_name,
                                             method,
                                             &impl_type_params,
                                         );
@@ -3323,14 +3433,9 @@ pub fn lower_program_with_mono_cap(
         // impl could silently shadow a same-named but DISTINCT package-import
         // impl. `file_import_module_ids` cannot misroute a package impl: package
         // modules are never in the set, so this walk emits them exactly once.
-        let file_import_modules = file_import_module_ids(program);
-        // Package modules whose impl blocks are byte-identical clones of a
-        // superset package module's (a directory module and an explicit
-        // sub-file import of one of its peers). Their impls MUST be skipped
-        // here or they lower twice under the same bare `<SelfType>::<method>`
-        // symbols — the #2391 dual-import link failure. See
-        // `subsumed_package_module_ids` for the full mechanism.
-        let subsumed_modules = subsumed_package_module_ids(program, &file_import_modules);
+        // Prefer a source-specific package module's impl over a byte-identical
+        // copy absorbed by a directory superset. Unique impls in the superset
+        // still lower normally. See `preferred_package_module_ids`.
         // Mirror the checker's 1-based non-root module index. The checker
         // increments `current_module_idx` before each non-root topo-order
         // module and uses it to stamp `SpanKey`s in `expr_types`. The HIR
@@ -3484,6 +3589,14 @@ pub fn lower_program_with_mono_cap(
                                 || (decl.kind == TypeDeclKind::Struct
                                     && decl.type_params.is_none()) =>
                         {
+                            if item_is_duplicated_in_preferred_module(
+                                program,
+                                &preferred_modules,
+                                mod_id,
+                                item,
+                            ) {
+                                continue;
+                            }
                             // Consume the cached `HirTypeDecl` produced by the
                             // §4b imported-module pre-pass so the emitted item
                             // shares the same `ItemId` already seeded into
@@ -3592,27 +3705,19 @@ pub fn lower_program_with_mono_cap(
                             // shares a bare type/trait name with a file-import
                             // or root impl is never skipped.
                             //
-                            // Also skip SUBSUMED package modules: a directory
-                            // module (`import std::net::http`) peer-absorbs a
-                            // file that an explicit sub-file import
-                            // (`import std::net::http::http_client`) re-imports
-                            // as its own module. Both survive the file-import
-                            // guard, so without this the shared file's impl
-                            // (`impl ResponseMethods for Response`) lowers twice
-                            // under identical bare symbols → the #2391
-                            // dual-import LLVM-verify failure. The superset
-                            // module lowers the identical items once; its larger
-                            // `same_module_pub_fns`/`fn_registry` view means it
-                            // resolves a SUPERSET of names, so the surviving copy
-                            // skips no method the subsumed copy would have kept
-                            // (strictly fewer `skip_methods`, never more). Both
-                            // guards are per-ITEM `continue`s — the enclosing
-                            // module loop and its `module_idx` increment are
-                            // never skipped, keeping the HIR/checker module-index
-                            // mirroring in sync. See
-                            // `subsumed_package_module_ids`.
+                            // A directory module may absorb the same impl that a
+                            // source-specific submodule also contributes. Keep
+                            // the source-specific copy so its qualified type and
+                            // impl symbol remain aligned; skip only the duplicate
+                            // impl in the superset, not the superset's unique
+                            // impls.
                             if file_import_modules.contains(mod_id)
-                                || subsumed_modules.contains(mod_id)
+                                || item_is_duplicated_in_preferred_module(
+                                    program,
+                                    &preferred_modules,
+                                    mod_id,
+                                    item,
+                                )
                             {
                                 continue;
                             }
@@ -3749,6 +3854,9 @@ pub fn lower_program_with_mono_cap(
                                         break;
                                     }
                                 }
+                                let qualified_symbol_self_name = colliding_imported_record_names
+                                    .contains(self_type_name)
+                                    .then(|| format!("{module_short}.{self_type_name}"));
                                 ctx.lower_impl_block(
                                     impl_decl,
                                     span.clone(),
@@ -3757,6 +3865,7 @@ pub fn lower_program_with_mono_cap(
                                     Some(&ImportedImplLowering {
                                         rewrites: &same_module_fn_rewrites,
                                         skip_methods: &skip_methods,
+                                        symbol_self_name: qualified_symbol_self_name.as_deref(),
                                     }),
                                 );
                             }
@@ -5205,6 +5314,9 @@ struct LowerCtx {
     /// land here with `fields = []`; they never trigger record-layout
     /// emission (their constructor goes through `Expr::Call`).
     record_registry: HashMap<String, RecordEntry>,
+    /// Bare imported record names that have distinct definitions in more than
+    /// one canonical module and therefore require module-qualified identities.
+    colliding_imported_record_names: HashSet<String>,
     /// Checker-resolved type arguments for generic record-init sites
     /// (`R { ... }` against a `pub type R<T>` or `record R<T>`),
     /// keyed by the struct-init expression span.
@@ -5557,6 +5669,7 @@ impl LowerCtx {
             mono_cap_diag_emitted: false,
             call_site_type_args: HashMap::new(),
             record_registry: HashMap::new(),
+            colliding_imported_record_names: HashSet::new(),
             record_init_type_args: tc_output.record_init_type_args.clone(),
             record_layout_registry: RecordLayoutRegistry::with_cap(mono_cap),
             record_layout_cap_diag_emitted: false,
@@ -8729,7 +8842,9 @@ impl LowerCtx {
             .get(&key)
             .cloned()
             .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
-            .unwrap_or(ResolvedTy::Unit);
+            .map_or(ResolvedTy::Unit, |ty| {
+                self.qualify_current_module_record_ty(ty)
+            });
         self.assert_resolved_ty_totality(span);
         let resolved_ref = self
             .fn_registry
@@ -8796,7 +8911,7 @@ impl LowerCtx {
         let checker_key = self.mk_key(span);
         let result_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
             match ResolvedTy::from_ty(&ty) {
-                Ok(resolved) => resolved,
+                Ok(resolved) => self.qualify_current_module_record_ty(resolved),
                 Err(err) => {
                     let callee_name = if let Expr::Identifier(name) = &function.0 {
                         name.clone()
@@ -8964,11 +9079,14 @@ impl LowerCtx {
         };
         // Symbol name for this impl's methods: mangled when the impl is a concrete
         // specialisation of a generic type, bare otherwise.
+        let base_symbol_self_name = imported
+            .and_then(|context| context.symbol_self_name)
+            .unwrap_or(self_type_name.as_str());
         let symbol_self_name: std::borrow::Cow<str> = if self_type_concrete_args.is_empty() {
-            std::borrow::Cow::Borrowed(self_type_name.as_str())
+            std::borrow::Cow::Borrowed(base_symbol_self_name)
         } else {
             std::borrow::Cow::Owned(crate::monomorph::mangle(
-                self_type_name,
+                base_symbol_self_name,
                 &self_type_concrete_args,
             ))
         };
@@ -13743,7 +13861,7 @@ impl LowerCtx {
                     let checker_key = self.mk_key(&span);
                     let result_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
                         match ResolvedTy::from_ty(&ty) {
-                            Ok(resolved) => resolved,
+                            Ok(resolved) => self.qualify_current_module_record_ty(resolved),
                             Err(err) => {
                                 self.diagnostics.push(HirDiagnostic::new(
                                     HirDiagnosticKind::CheckerBoundaryViolation {
@@ -13895,9 +14013,10 @@ impl LowerCtx {
                             _ => None,
                         })
                         .unwrap_or_else(|| name.clone());
+                    let result_name = self.canonical_current_module_record_name(&result_name);
                     (
                         HirExprKind::StructInit {
-                            name: name.clone(),
+                            name: result_name.clone(),
                             type_args: resolved_type_args.clone(),
                             fields: hir_fields,
                             base: hir_base,
@@ -18081,6 +18200,12 @@ impl LowerCtx {
         let type_name = name
             .rsplit_once('.')
             .map_or(name, |(_, unqualified)| unqualified);
+        if args.is_empty() {
+            let canonical = self.canonical_current_module_record_name(name);
+            if canonical != name && !self.resolves_to_opaque_handle(&canonical, type_name) {
+                return ResolvedTy::named_user(canonical, args);
+            }
+        }
         // A declared user record shadows a same-named builtin for a bare,
         // argument-less reference: e.g. a package's `type Result { handle:
         // i64 }` annotation `-> Result` names the record, never the prelude's
@@ -18144,6 +18269,95 @@ impl LowerCtx {
             self.resolve_named_type_ref(&canonical, args)
         } else {
             ResolvedTy::named_user(type_name.to_string(), args)
+        }
+    }
+
+    fn qualify_current_module_record_ty(&self, ty: ResolvedTy) -> ResolvedTy {
+        let ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+            is_opaque,
+        } = ty
+        else {
+            return ty;
+        };
+        let args = args
+            .into_iter()
+            .map(|arg| self.qualify_current_module_record_ty(arg))
+            .collect();
+        if builtin.is_some() || is_opaque {
+            return ResolvedTy::Named {
+                name,
+                args,
+                builtin,
+                is_opaque,
+            };
+        }
+        let canonical = self.canonical_current_module_record_name(&name);
+        if canonical == name {
+            ResolvedTy::Named {
+                name,
+                args,
+                builtin,
+                is_opaque,
+            }
+        } else {
+            ResolvedTy::named_user(canonical, args)
+        }
+    }
+
+    fn canonical_current_module_record_name(&self, name: &str) -> String {
+        let short = name.rsplit_once('.').map_or(name, |(_, short)| short);
+        if self.colliding_imported_record_names.contains(short) {
+            if name.contains('.') {
+                return name.to_string();
+            }
+            if let Some(module_short) = self
+                .current_module_name
+                .as_deref()
+                .and_then(|module| module.rsplit('.').next())
+            {
+                let qualified = format!("{module_short}.{short}");
+                if self.record_registry.contains_key(&qualified) {
+                    return qualified;
+                }
+            }
+            return name.to_string();
+        }
+        if self.record_registry.contains_key(short) {
+            short.to_string()
+        } else {
+            name.to_string()
+        }
+    }
+
+    fn qualify_imported_impl_method_symbol(
+        &self,
+        symbol: &str,
+        receiver_ty: &ResolvedTy,
+    ) -> String {
+        let Some((symbol_type, method)) = symbol.split_once("::") else {
+            return symbol.to_string();
+        };
+        let ResolvedTy::Named {
+            name: receiver_name,
+            ..
+        } = receiver_ty
+        else {
+            return symbol.to_string();
+        };
+        let Some((_, receiver_short)) = receiver_name.rsplit_once('.') else {
+            return symbol.to_string();
+        };
+        if receiver_short != symbol_type {
+            return symbol.to_string();
+        }
+        let qualified = format!("{receiver_name}::{method}");
+        if self.fn_registry.contains_key(&qualified) {
+            qualified
+        } else {
+            symbol.to_string()
         }
     }
 
@@ -21091,6 +21305,8 @@ impl LowerCtx {
                     IntentKind::Read
                 };
                 let lowered_receiver = self.lower_expr(receiver, receiver_intent);
+                let c_symbol =
+                    self.qualify_imported_impl_method_symbol(&c_symbol, &lowered_receiver.ty);
                 // Slice 2: a by-value direct-dot call to a generic impl method
                 // on a concrete generic receiver (e.g. `p.first()` where
                 // `impl<T> Pair<T> { fn first(self) -> T }` and `p: Pair<i64>`)
@@ -22416,6 +22632,7 @@ impl LowerCtx {
         let Ok(resolved) = ResolvedTy::from_ty(&checker_ty) else {
             return;
         };
+        let resolved = self.qualify_current_module_record_ty(resolved);
         self.try_register_enum_instantiation_ty(&resolved, span);
     }
 
@@ -22548,7 +22765,7 @@ impl LowerCtx {
         let checker_key = self.mk_key(span);
         let result_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
             match ResolvedTy::from_ty(&ty) {
-                Ok(resolved) => resolved,
+                Ok(resolved) => self.qualify_current_module_record_ty(resolved),
                 Err(err) => {
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::CheckerBoundaryViolation {

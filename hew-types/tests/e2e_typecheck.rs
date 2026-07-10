@@ -443,7 +443,7 @@ fn consume(s: Stream<bytes>) {
 }
 
 #[test]
-fn method_call_rewrites_record_handle_runtime_dispatch() {
+fn method_call_dispatches_resource_wrapper_through_impl() {
     let output = typecheck_inline(
         r#"
 import std::net::http;
@@ -459,12 +459,8 @@ fn respond(req: http.Request) -> i64 {
         output.errors
     );
     assert!(
-        output.method_call_rewrites.values().any(|rewrite| matches!(
-            rewrite,
-            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
-                if c_symbol == "hew_http_respond_text"
-        )),
-        "expected checker-owned handle rewrite metadata, got: {:?}",
+        output.method_call_rewrites.is_empty(),
+        "resource-wrapper methods must dispatch through their impl body, got: {:?}",
         output.method_call_rewrites
     );
 }

@@ -1789,7 +1789,11 @@ impl Checker {
             // through their real impl body, which forwards `self.handle` and
             // rebuilds the wrapper. This is the `is_handle_type` gate the
             // wrapper-registration path documents but must actually enforce here.
-            if self.receiver_is_opaque_handle(name) {
+            if self.receiver_is_opaque_handle(name)
+                && !self
+                    .module_registry
+                    .handle_method_dispatches_through_impl(name, method)
+            {
                 self.record_runtime_method_call_rewrite(span, c_symbol);
             }
         }

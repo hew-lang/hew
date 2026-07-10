@@ -7648,6 +7648,7 @@ impl Checker {
                     let wrapper_fns = info.wrapper_fns.clone();
                     let clean_names = info.clean_names.clone();
                     let handle_types = info.handle_types.clone();
+                    let resource_wrapper_types = info.resource_wrapper_types.clone();
                     let drop_types = info.drop_types.clone();
 
                     let short = module_path
@@ -7712,8 +7713,9 @@ impl Checker {
                         }
                     }
 
-                    // Register handle type names so they can be used in type annotations
-                    for type_name in &handle_types {
+                    // Register opaque handles and fielded resource wrappers so
+                    // registry-only imports can use either in type annotations.
+                    for type_name in handle_types.iter().chain(&resource_wrapper_types) {
                         self.known_types.insert(type_name.clone());
                     }
 

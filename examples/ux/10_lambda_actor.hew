@@ -3,8 +3,17 @@ fn main() {
     let worker = actor |msg: i64| {
         println(msg * 2);
     };
-    worker.send(5);
-    worker.send(10);
-    worker.send(15);
+    match worker.send(5) {
+        Ok(_) => {},
+        Err(_) => panic("failed to send 5"),
+    }
+    match worker.send(10) {
+        Ok(_) => {},
+        Err(_) => panic("failed to send 10"),
+    }
+    match worker.send(15) {
+        Ok(_) => {},
+        Err(_) => panic("failed to send 15"),
+    }
     await worker.close();
 }

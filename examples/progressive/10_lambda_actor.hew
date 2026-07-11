@@ -5,8 +5,17 @@ fn main() {
     let counter = actor |msg: i64| {
         println(msg * 2);
     };
-    counter.send(5);
-    counter.send(10);
-    counter.send(15);
+    match counter.send(5) {
+        Ok(_) => {},
+        Err(_) => panic("failed to send 5"),
+    }
+    match counter.send(10) {
+        Ok(_) => {},
+        Err(_) => panic("failed to send 10"),
+    }
+    match counter.send(15) {
+        Ok(_) => {},
+        Err(_) => panic("failed to send 15"),
+    }
     await counter.close();
 }

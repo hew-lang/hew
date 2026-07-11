@@ -156,6 +156,68 @@ fn supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi() {
 // WINDOWS-TODO: requires wasmtime runtime which is not configured on Windows.
 #[cfg_attr(windows, ignore)]
 #[test]
+fn task_scope_stays_on_the_fail_closed_diagnostic_path_under_wasi() {
+    require_wasi_runner();
+
+    let dir = support::tempdir();
+    let source = dir.path().join("task_scope_wasi.hew");
+    fs::write(
+        &source,
+        r#"fn worker() {
+    println("worker ran");
+}
+
+actor Driver {
+    receive fn run() -> i64 {
+        scope {
+            fork task = worker();
+            await task;
+        }
+        7
+    }
+}
+
+fn main() -> i64 {
+    let driver = spawn Driver;
+    match await driver.run() {
+        Ok(value) => value - 7,
+        Err(_error) => 1,
+    }
+}
+"#,
+    )
+    .expect("write task-scope WASI probe");
+
+    let output = run_wasi_example(&source);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "task scope should fail in compile phase\nstdout:\n{stdout}\nstderr:\n{stderr}",
+    );
+    assert!(
+        stderr.contains("no cooperative task executor or non-blocking scope join"),
+        "scope diagnostic should name the missing wasm32 executor/join path\nstderr:\n{stderr}",
+    );
+    assert!(
+        stderr.contains(
+            "task spawn is thread-based and no cooperative task executor drives forked bodies"
+        ),
+        "task diagnostic should name the missing task spawn/executor path\nstderr:\n{stderr}",
+    );
+    assert!(
+        !stderr.contains("undefined symbol")
+            && !stderr.contains("wasm-ld")
+            && !stderr.contains("hew_task_"),
+        "task scope must fail before LLVM/linking exposes runtime symbols\nstderr:\n{stderr}",
+    );
+}
+
+// WINDOWS-TODO: requires wasmtime runtime which is not configured on Windows.
+#[cfg_attr(windows, ignore)]
+#[test]
 fn toml_encoding_round_trips_under_wasi() {
     require_wasi_runner();
 

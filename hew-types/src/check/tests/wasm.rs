@@ -1371,6 +1371,11 @@ fn main() {
             "error message should mention Structured concurrency feature; got: {:?}",
             output.errors
         );
+        assert!(
+            platform_error_contains(&output, "no cooperative task executor"),
+            "error message should name the missing wasm32 task executor; got: {:?}",
+            output.errors
+        );
     }
 
     #[test]
@@ -1394,6 +1399,14 @@ fn main() {
         assert!(
             platform_error_contains(&output, "Task handles"),
             "error message should mention Task feature; got: {:?}",
+            output.errors
+        );
+        assert!(
+            platform_error_contains(
+                &output,
+                "task spawn is thread-based and no cooperative task executor drives forked bodies"
+            ),
+            "error message should name the missing task spawn/executor path; got: {:?}",
             output.errors
         );
     }

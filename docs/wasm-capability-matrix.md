@@ -83,8 +83,8 @@ The **Checker disposition** column documents what the type checker emits when
 | `select {}` (any timeout expression, any arm count) | ✅ Pass | Implemented | — |
 | Supervision trees (`supervisor`, `supervisor_child`, `supervisor_stop`) | 🚫 Error (`SupervisionTrees`) | Educational sandbox subset implements deterministic restart trees; native runtime parity remains gated | M6 |
 | Actor `link` / `unlink` / `monitor` / `demonitor` | 🚫 Error (`LinkMonitor`) | Educational sandbox subset implements deterministic graph state, exit signals, and monitor notifications; native runtime parity remains gated | M6 |
-| Structured concurrency (`scope {}`, `scope.launch`, `scope.await`) | 🚫 Error (`StructuredConcurrency`) | Native-only runtime module | WASM-TODO |
-| Scope-spawned `Task` handles | 🚫 Error (`Tasks`) | Native-only runtime module | WASM-TODO |
+| Structured concurrency (`scope {}`, `scope.launch`, `scope.await`) | 🚫 Error (`StructuredConcurrency`) | Native thread/condvar task runtime only; wasm32 has no cooperative task work queue or join | WASM-TODO |
+| Scope-spawned `Task` handles | 🚫 Error (`Tasks`) | Task spawn is thread-based and no cooperative task executor drives forked bodies on wasm32 | WASM-TODO |
 | **`channel.new`, `Sender<T>::send/clone/close`, `Receiver<T>::try_recv/close`** | ✅ Pass | Bounded non-blocking slice implemented; `send` traps on full queue | v0.3.2 |
 | **`Receiver<T>::recv`, `for await item in rx` over `Receiver<T>`** | 🚫 Error (`BlockingChannelRecv`) | `unreachable!()` trap | WASM-TODO |
 | **`semaphore.new`, `Semaphore::try_acquire/release/count/free`** | ✅ Pass | Non-blocking semaphore subset only | — |
@@ -138,6 +138,16 @@ would otherwise end in a trap or linker failure:
   with deterministic virtual time and typed fail-closed traps; Tier 2 still
   rejects the production surface at check time to avoid undefined-symbol linker
   failures.
+
+  **Release decision:** Tier 2 `scope {}` / `Task` support is deferred from
+  v0.6.0-rc1 to a later v0.6.x. LLVM lowering is shared across native and
+  wasm32, but every `SpawnTask*` site still emits
+  `hew_task_spawn_thread_with_inherited_context`; completion and `await task`
+  use the native thread/condvar plus `hew_read_slot_*` wakeup path. The wasm32
+  scheduler has an actor run queue, but no task work queue, task continuation
+  driver, or non-blocking scope join. A synchronous shim is not parity: it
+  erases concurrency and can deadlock task/actor coordination, so the compiler
+  continues to reject the surface before LLVM/linking.
 
 - **Channels (bounded subset)**: `channel.new`, sender clone/close,
   `Receiver::try_recv`, and typed `send` are available on wasm32 via the
@@ -311,19 +321,16 @@ These gaps are explicitly deferred and tracked here:
 | Distributed node API / remote-actor messaging parity | wasm peer transport for the `Node::*` cluster API and `RemotePid` routing (`hew_node_api_*` is native-only) | `WASM-TODO: distributed` |
 | Supervision tree restart strategies | OS-thread-free supervision design | `WASM-TODO: supervision` |
 | Actor link/monitor fault propagation | OS-thread-free exit propagation | `WASM-TODO: link-monitor` |
-| Structured concurrency scopes | Thread-free scope scheduler | `WASM-TODO: scope` |
+| Structured concurrency scopes | Cooperative task work queue integrated with `hew_sched_run`, `TaskEntry` continuation/resume, completion wakeups, and non-blocking scope joins | `WASM-TODO: scope` |
 
-> **Stackless suspension substrate (R326/R327, W6.007).** The cooperative
-> yield/resume mechanism the `scope` and blocking-`recv` rows above need is now
-> BUILT — an LLVM `llvm.coro.*` switched-resume continuation driven by ONE
-> poll/resume executor, identical IR on native + wasm32 (see
-> `docs/internal/v05-ir-ladder.md` §2.4 "Stackless suspend carrier"). It is
-> **production-capable but dormant**: no source construct emits a suspend point
-> yet, so these gates stay CLOSED (a relaxed gate with no readiness waker is
-> fail-OPEN). The per-construct relaxation lands with the source-to-suspend flip
-> + readiness waker (NEW-3); on wasm32 the `hew_sched_run` drain then drives
-> resume of parked continuations cooperatively. Until then the gated behaviour
-> is unchanged.
+> **Stackless suspension substrate (R326/R327, W6.007).** The shared LLVM
+> `llvm.coro.*` switched-resume carrier is built, and native `await task` now
+> emits a suspend point. That does not by itself provide wasm32 task scopes:
+> task spawn still targets the native thread entry point, task readiness still
+> wakes through the native-only `hew_read_slot_*` path, and `hew_sched_run` has
+> no task work queue to drive. The gate can relax only when those three pieces
+> and non-blocking scope join are wired together; relaxing it around a
+> synchronous stub would be fail-open.
 
 ---
 

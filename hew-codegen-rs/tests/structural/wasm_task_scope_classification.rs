@@ -1,11 +1,12 @@
-//! W2.006 Stage 1 — WASM parity classification for the `scope {}` structured-
-//! concurrency substrate.
+//! WASM parity classification for the `scope {}` structured-concurrency
+//! substrate.
 //!
 //! `hew-runtime/src/task_scope.rs` is gated `cfg(not(target_arch = "wasm32"))`
-//! at `hew-runtime/src/lib.rs:466`. The native impl depends on OS-thread-backed
-//! join semantics that wasm32 lacks. If `emit_module` proceeded with WASM
-//! emission for a `scope {}` program, `wasm-ld` would fail with
-//! `undefined symbol: hew_task_scope_*`.
+//! in `hew-runtime/src/lib.rs`. The native impl launches `TaskEntry` work on OS
+//! threads and completes joins through thread/condvar and read-slot wakeups.
+//! wasm32 has no cooperative task work queue or non-blocking scope join. If
+//! `emit_module` proceeded with WASM emission, `wasm-ld` would fail with an
+//! undefined `hew_task_scope_*` or `hew_task_*` symbol.
 //!
 //! Defence in depth — the type checker (`hew-types/src/check/expressions.rs`)
 //! rejects `Expr::Scope { .. }` on WASM targets via
@@ -21,7 +22,8 @@
 use hew_codegen_rs::{emit_module, CodegenError, EmitOptions};
 use hew_mir::{
     BasicBlock, BlockKind, CheckedMirFunction, DropPlan, ElabBlock, ElaboratedMirFunction,
-    ExitPath, FunctionCallConv, Instr, IrPipeline, Place, RawMirFunction, RuntimeCall, Terminator,
+    ExitPath, FunctionCallConv, Instr, IrPipeline, Place, RawMirFunction, RuntimeCall, SelectArm,
+    SelectArmKind, Terminator,
 };
 use hew_types::ResolvedTy;
 
@@ -117,24 +119,14 @@ fn pipeline_with_task_scope_new_call() -> IrPipeline {
     }
 }
 
-fn pipeline_with_task_scope_spawn_call() -> IrPipeline {
+fn pipeline_with_task_new_call() -> IrPipeline {
     let raw_blocks = vec![BasicBlock {
         id: 0,
         statements: vec![],
-        instructions: vec![
-            Instr::CallRuntimeAbi(
-                RuntimeCall::new("hew_task_new", vec![], Some(Place::DuplexHandle(0)))
-                    .expect("hew_task_new is on the runtime allowlist"),
-            ),
-            Instr::CallRuntimeAbi(
-                RuntimeCall::new(
-                    "hew_task_scope_spawn",
-                    vec![Place::DuplexHandle(0), Place::DuplexHandle(0)],
-                    None,
-                )
-                .expect("hew_task_scope_spawn is on the runtime allowlist"),
-            ),
-        ],
+        instructions: vec![Instr::CallRuntimeAbi(
+            RuntimeCall::new("hew_task_new", vec![], Some(Place::DuplexHandle(0)))
+                .expect("hew_task_new is on the runtime allowlist"),
+        )],
         terminator: Terminator::Return,
     }];
     IrPipeline {
@@ -211,6 +203,38 @@ fn pipeline_with_task_scope_spawn_call() -> IrPipeline {
     }
 }
 
+fn pipeline_with_spawn_task_instruction() -> IrPipeline {
+    let mut pipeline = pipeline_with_task_new_call();
+    pipeline.raw_mir[0].blocks[0].instructions = vec![Instr::SpawnTaskDirect {
+        task: Place::DuplexHandle(0),
+        callee_symbol: "worker".to_string(),
+    }];
+    pipeline.checked_mir[0].blocks[0].instructions = vec![Instr::SpawnTaskDirect {
+        task: Place::DuplexHandle(0),
+        callee_symbol: "worker".to_string(),
+    }];
+    pipeline
+}
+
+fn pipeline_with_task_await_select() -> IrPipeline {
+    let mut pipeline = pipeline_with_task_new_call();
+    let select = Terminator::Select {
+        arms: vec![SelectArm {
+            kind: SelectArmKind::TaskAwait {
+                task: Place::DuplexHandle(0),
+            },
+            body_block: 0,
+            binding: Some(Place::DuplexHandle(0)),
+        }],
+        next: 0,
+    };
+    pipeline.raw_mir[0].blocks[0].instructions.clear();
+    pipeline.raw_mir[0].blocks[0].terminator = select.clone();
+    pipeline.checked_mir[0].blocks[0].instructions.clear();
+    pipeline.checked_mir[0].blocks[0].terminator = select;
+    pipeline
+}
+
 fn out_dir(suffix: &str) -> std::path::PathBuf {
     let d = std::env::temp_dir().join(format!("hew-wasm-task-scope-{suffix}"));
     std::fs::create_dir_all(&d).expect("create out_dir");
@@ -251,14 +275,13 @@ fn task_scope_new_call_blocks_wasm_emission() {
     }
 }
 
-/// `hew_task_scope_spawn` (used by lower_spawned_fn_task / lower_spawned_closure_task)
-/// must also block WASM emission.
+/// Direct task ABI calls must fail closed even without a preceding scope symbol.
 #[test]
-fn task_scope_spawn_call_blocks_wasm_emission() {
-    let pipeline = pipeline_with_task_scope_spawn_call();
-    let dir = out_dir("spawn-wasm-block");
+fn task_new_call_blocks_wasm_emission() {
+    let pipeline = pipeline_with_task_new_call();
+    let dir = out_dir("task-new-wasm-block");
     let options = EmitOptions {
-        module_name: "task_scope_spawn_wasm_block",
+        module_name: "task_new_wasm_block",
         out_dir: &dir,
         native: false,
         wasm: true,
@@ -270,13 +293,73 @@ fn task_scope_spawn_call_blocks_wasm_emission() {
     let result = emit_module(&pipeline, &options);
     match result {
         Err(CodegenError::WasmUnsupportedSubstrate { symbol }) => {
-            assert!(
-                symbol.starts_with("hew_task_scope_"),
-                "WasmUnsupportedSubstrate symbol must be a task_scope symbol; got: {symbol}"
-            );
+            assert_eq!(symbol, "hew_task_new");
         }
         Ok(_) => panic!(
-            "expected WasmUnsupportedSubstrate error for hew_task_scope_spawn call with \
+            "expected WasmUnsupportedSubstrate error for hew_task_new call with \
+             wasm: true, but emit_module succeeded"
+        ),
+        Err(other) => {
+            panic!("expected WasmUnsupportedSubstrate, got a different error: {other}")
+        }
+    }
+}
+
+/// `SpawnTaskDirect` synthesizes
+/// `hew_task_spawn_thread_with_inherited_context` during LLVM emission, so the
+/// pre-link scan must reject the MIR instruction itself.
+#[test]
+fn spawn_task_instruction_blocks_wasm_emission() {
+    let pipeline = pipeline_with_spawn_task_instruction();
+    let dir = out_dir("spawn-instr-wasm-block");
+    let options = EmitOptions {
+        module_name: "spawn_task_instr_wasm_block",
+        out_dir: &dir,
+        native: false,
+        wasm: true,
+        target_triple: None,
+        debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
+        source_path: None,
+    };
+    let result = emit_module(&pipeline, &options);
+    match result {
+        Err(CodegenError::WasmUnsupportedSubstrate { symbol }) => {
+            assert_eq!(symbol, "hew_task_spawn_thread_with_inherited_context");
+        }
+        Ok(_) => panic!(
+            "expected WasmUnsupportedSubstrate error for SpawnTaskDirect with \
+             wasm: true, but emit_module succeeded"
+        ),
+        Err(other) => {
+            panic!("expected WasmUnsupportedSubstrate, got a different error: {other}")
+        }
+    }
+}
+
+/// A `TaskAwait` select arm emits `hew_task_completion_observe`; the wasm
+/// pre-link scan must reject the arm before LLVM can reference that symbol.
+#[test]
+fn task_await_select_arm_blocks_wasm_emission() {
+    let pipeline = pipeline_with_task_await_select();
+    let dir = out_dir("task-await-select-wasm-block");
+    let options = EmitOptions {
+        module_name: "task_await_select_wasm_block",
+        out_dir: &dir,
+        native: false,
+        wasm: true,
+        target_triple: None,
+        debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
+        source_path: None,
+    };
+    let result = emit_module(&pipeline, &options);
+    match result {
+        Err(CodegenError::WasmUnsupportedSubstrate { symbol }) => {
+            assert_eq!(symbol, "hew_task_completion_observe");
+        }
+        Ok(_) => panic!(
+            "expected WasmUnsupportedSubstrate error for TaskAwait select arm with \
              wasm: true, but emit_module succeeded"
         ),
         Err(other) => {

@@ -1,0 +1,54 @@
+[
+  {
+    "id": "hello-world",
+    "starterCode": "// Lesson 1: Hello World\n// TODO: Replace the placeholder below with a greeting.\n\nfn main() {\n    println(\"...\");\n}\n"
+  },
+  {
+    "id": "variables",
+    "starterCode": "// Lesson 2: Variables & Constants\n// TODO: Declare a mutable variable `count` starting at 1,\n//       then increment it by 1 and print the result.\n\nfn main() {\n    let name = \"Hew\";\n    var count = 1;\n    count = count + 1;\n    println(name);\n    println(count);\n}\n"
+  },
+  {
+    "id": "functions",
+    "starterCode": "// Lesson 3: Functions\n// TODO: Write a function `add` that takes two i64 parameters\n//       and returns their sum.\n\nfn add(a: i64, b: i64) -> i64 {\n    a + b\n}\n\nfn main() {\n    let result = add(3, 4);\n    println(result);\n}\n"
+  },
+  {
+    "id": "control-flow",
+    "starterCode": "// Lesson 4: While Let\n// `while let` keeps looping while the pattern matches.\n\nfn countdown(n: i64) -> Option<i64> {\n    if n > 0 {\n        Some(n - 1)\n    } else {\n        None\n    }\n}\n\nfn main() {\n    var opt: Option<i64> = Some(3);\n    while let Some(value) = opt {\n        println(value);\n        opt = countdown(value);\n    }\n    println(\"done\");\n}\n"
+  },
+  {
+    "id": "actors-intro",
+    "starterCode": "// Lesson 5: Actors Intro\n// A simple counter actor that tracks a value.\n// Send it a message with `await`.\n\nactor Counter {\n    var count: i64;\n\n    receive fn increment() -> i64 {\n        count = count + 1;\n        println(count);\n        count\n    }\n}\n\nfn main() {\n    let counter = spawn Counter(count: 0);\n    await counter.increment();\n    await counter.increment();\n    await counter.increment();\n}\n"
+  },
+  {
+    "id": "actor-messaging",
+    "starterCode": "// Lesson 6: Actor Messaging\n// Spawn several actors and send each its own message.\n// Each actor runs concurrently on its own task.\n\nactor Worker {\n    let id: i64;\n\n    receive fn task(name: string) -> i64 {\n        println(f\"Worker {id} got task: {name}\");\n        id\n    }\n}\n\nfn main() {\n    let w1 = spawn Worker(id: 1);\n    let w2 = spawn Worker(id: 2);\n    await w1.task(\"build widgets\");\n    await w2.task(\"paint widgets\");\n}\n"
+  },
+  {
+    "id": "for-loops",
+    "starterCode": "// Lesson 7: For Loops\n// TODO: Print the numbers 1 through 5 using a for loop.\n\nfn main() {\n    for i in 1..6 {\n        println(\"...\");\n    }\n}\n"
+  },
+  {
+    "id": "enums",
+    "starterCode": "// Lesson 8: Enums & Match\n// TODO: Add a Triangle variant and handle it in the match.\n\nenum Shape {\n    Circle(i64);\n    Rectangle(i64, i64);\n}\n\nfn describe(s: Shape) {\n    match s {\n        Circle(r) => println(f\"circle with radius {r}\"),\n        Rectangle(w, h) => println(f\"rectangle {w}x{h}\"),\n    }\n}\n\nfn main() {\n    describe(Circle(5));\n    describe(Rectangle(3, 4));\n}\n"
+  },
+  {
+    "id": "option-type",
+    "starterCode": "// Lesson 9: Option Type\n// TODO: Handle the None case so the program prints \"not found\".\n\nfn find(items: i64, target: i64) -> Option<i64> {\n    if target <= items {\n        Some(target)\n    } else {\n        None\n    }\n}\n\nfn main() {\n    match find(10, 5) {\n        Some(x) => println(f\"found: {x}\"),\n        None => println(\"not found\"),\n    }\n    match find(3, 7) {\n        Some(x) => println(f\"found: {x}\"),\n        None => println(\"not found\"),\n    }\n}\n"
+  },
+  {
+    "id": "closures",
+    "starterCode": "// Lesson 10: Higher-Order Functions\n// TODO: Write a function that triples its input.\n\nfn triple(x: i64) -> i64 { x * 3 }\n\nfn apply(f: fn(i64) -> i64, x: i64) -> i64 {\n    f(x)\n}\n\nfn main() {\n    println(apply(triple, 7));\n}\n"
+  },
+  {
+    "id": "closure-captures",
+    "starterCode": "// Lesson 11: Closures\n// TODO: Capture `factor` so the closure multiplies its argument by it.\n\nfn main() {\n    let factor: i64 = 4;\n    let scale = |x: i64| x;\n    println(scale(10));\n}\n"
+  },
+  {
+    "id": "async-await",
+    "starterCode": "// Lesson 12: Async / Await\n// Hew has no `async fn` — actors are the unit of concurrency.\n// `await` sends a message to an actor and waits for its reply.\n\nfn fib(n: i64) -> i64 {\n    if n <= 1 { n }\n    else { fib(n - 1) + fib(n - 2) }\n}\n\nactor Calculator {\n    receive fn compute(n: i64) -> i64 {\n        fib(n)\n    }\n}\n\nfn main() {\n    let calc = spawn Calculator;\n    match await calc.compute(10) {\n        Ok(result) => println(f\"fib(10) = {result}\"),\n        Err(_) => println(\"failed\"),\n    }\n}\n"
+  },
+  {
+    "id": "state-machines",
+    "starterCode": "// Lesson 13: State Machines\n// TODO: Toggle the light twice and print each state.\n\nmachine Light {\n    events { Toggle; }\n    state Off;\n    state On;\n    on Toggle: Off => On;\n    on Toggle: On => Off;\n}\n\nfn main() -> i64 {\n    var light = Light::Off;\n    println(light.state_name());\n    light.step(Toggle);\n    println(light.state_name());\n    light.step(Toggle);\n    println(light.state_name());\n    0\n}\n"
+  }
+]

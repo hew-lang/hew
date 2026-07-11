@@ -1,0 +1,54 @@
+[
+  {
+    "id": "hello-world",
+    "source": "fn main() {\n    println(\"Hello, World!\");\n}\n"
+  },
+  {
+    "id": "fibonacci",
+    "source": "fn fib(n: i64) -> i64 {\n    if n <= 1 {\n        n\n    } else {\n        fib(n - 1) + fib(n - 2)\n    }\n}\n\nfn main() {\n    for i in 0..10 {\n        print(f\"fib({i}) = \");\n        println(fib(i));\n    }\n}\n"
+  },
+  {
+    "id": "while-let",
+    "source": "// Test while-let pattern matching loops with Option types\n\nfn countdown(n: i64) -> Option<i64> {\n    if n > 0 {\n        Some(n - 1)\n    } else {\n        let none: Option<i64> = None;\n        none\n    }\n}\n\nfn main() -> i64 {\n    // Basic while-let: iterate until None\n    var opt: Option<i64> = Some(3);\n    while let Some(x) = opt {\n        println(x);\n        opt = countdown(x);\n    }\n\n    // Early exit with break\n    var opt2: Option<i64> = Some(10);\n    while let Some(x) = opt2 {\n        if x < 8 {\n            break;\n        }\n        println(x);\n        opt2 = countdown(x);\n    }\n    println(\"done\");\n\n    return 0;\n}\n"
+  },
+  {
+    "id": "pattern-matching",
+    "source": "enum Shape {\n    Circle(i64);\n    Rectangle(i64, i64);\n    Triangle(i64, i64);\n}\n\nfn area(shape: Shape) -> i64 {\n    match shape {\n        Circle(r) => r * r * 3,\n        Rectangle(w, h) => w * h,\n        Triangle(b, h) => b * h / 2,\n    }\n}\n\nfn main() {\n    let c = Circle(5);\n    let r = Rectangle(4, 6);\n    let t = Triangle(3, 8);\n\n    print(\"Circle area: \");\n    println(area(c));\n    print(\"Rectangle area: \");\n    println(area(r));\n    // Or using inline interpolation\n    println(f\"Triangle area: {area(t)}\");\n}\n"
+  },
+  {
+    "id": "actor-counter",
+    "source": "actor Counter {\n    var count: i64;\n\n    receive fn increment(n: i64) -> i64 {\n        count = count + n;\n        print(\"Count is now: \");\n        println(count);\n        count\n    }\n}\n\nfn main() {\n    let c = spawn Counter(count: 0);\n    await c.increment(5);\n    await c.increment(3);\n    match await c.increment(12) {\n        Ok(total) => println(f\"Final total: {total}\"),\n        Err(_) => println(\"send failed\"),\n    }\n}\n"
+  },
+  {
+    "id": "multiple-actors",
+    "source": "// Spawn several actors and send each a message with `await`.\n// Each actor runs on its own task and replies independently.\n\nactor Worker {\n    let id: i64;\n\n    receive fn handle(task: i64) -> i64 {\n        println(f\"Worker {id} handling task {task}\");\n        task * 2\n    }\n}\n\nfn main() {\n    let w1 = spawn Worker(id: 1);\n    let w2 = spawn Worker(id: 2);\n    await w1.handle(10);\n    await w2.handle(20);\n    await w1.handle(30);\n}\n"
+  },
+  {
+    "id": "async-await",
+    "source": "// Hew handles concurrency with actors and `await`.\n// `await` sends a message to an actor and waits for its reply.\n\nactor Calculator {\n    var total: i64;\n\n    receive fn add(n: i64) -> i64 {\n        total = total + n;\n        println(f\"running total: {total}\");\n        total\n    }\n}\n\nfn main() {\n    let calc = spawn Calculator(total: 0);\n    await calc.add(10);\n    await calc.add(20);\n    await calc.add(12);\n    println(\"done\");\n}\n"
+  },
+  {
+    "id": "state-machine",
+    "source": "machine Light {\n    events { Toggle; }\n    state Off;\n    state On;\n    on Toggle: Off => On;\n    on Toggle: On => Off;\n}\n\nfn main() -> i64 {\n    var light = Light::Off;\n    println(light.state_name());\n    light.step(Toggle);\n    println(light.state_name());\n    light.step(Toggle);\n    println(light.state_name());\n    0\n}\n"
+  },
+  {
+    "id": "for-loops",
+    "source": "fn main() {\n    // Range-based for loop\n    for i in 0..5 {\n        println(f\"count: {i}\");\n    }\n}\n"
+  },
+  {
+    "id": "enums",
+    "source": "enum Direction {\n    North;\n    South;\n    East;\n    West;\n}\n\nfn describe(dir: Direction) -> string {\n    match dir {\n        North => \"heading north\",\n        South => \"heading south\",\n        East => \"heading east\",\n        West => \"heading west\",\n    }\n}\n\nfn main() {\n    let dir = North;\n    println(describe(dir));\n    println(describe(South));\n}\n"
+  },
+  {
+    "id": "error-handling",
+    "source": "fn divide(a: i64, b: i64) -> Option<i64> {\n    if b == 0 {\n        None\n    } else {\n        Some(a / b)\n    }\n}\n\nfn main() {\n    match divide(10, 3) {\n        Some(result) => println(f\"10 / 3 = {result}\"),\n        None => println(\"cannot divide by zero\"),\n    }\n\n    match divide(10, 0) {\n        Some(result) => println(f\"10 / 0 = {result}\"),\n        None => println(\"cannot divide by zero\"),\n    }\n}\n"
+  },
+  {
+    "id": "higher-order-functions",
+    "source": "fn double(x: i64) -> i64 { x * 2 }\nfn square(x: i64) -> i64 { x * x }\n\nfn apply(f: fn(i64) -> i64, x: i64) -> i64 {\n    f(x)\n}\n\nfn main() {\n    println(f\"double(5) = {apply(double, 5)}\");\n    println(f\"square(4) = {apply(square, 4)}\");\n}\n"
+  },
+  {
+    "id": "supervisor",
+    "source": "actor Worker {\n    let id: i64;\n\n    receive fn work(x: i64) -> i64 {\n        println(f\"Worker {id} processing {x}\");\n        x * 2\n    }\n}\n\n// A supervisor starts and restarts a tree of child actors.\nsupervisor WorkerPool {\n    strategy: one_for_one;\n    intensity: 5 within 60s;\n    child w1: Worker(id: 1);\n    child w2: Worker(id: 2);\n}\n\nfn main() {\n    let workers = spawn WorkerPool;\n    let w1 = workers.w1;\n    await w1.work(10);\n    let w2 = workers.w2;\n    await w2.work(20);\n}\n"
+  }
+]

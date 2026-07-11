@@ -1228,6 +1228,16 @@ params = ["borrow", "consume"]
 release-symbol = ""
 discharge-depth = "none"
 
+# hew-runtime/src/bytes.rs:818-852 allocates a fresh header-aware string on both
+# the empty and non-empty paths (`alloc_cstring_from_str`); result reaches
+# `hew_string_drop`. The caller owes exactly one balancing drop.
+[[ownership.contracts]]
+symbol = "hew_bytes_to_string"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
 # hew-runtime/src/vec.rs:814-835 returns a header-retained string reference.
 [[ownership.contracts]]
 symbol = "hew_vec_get_str"

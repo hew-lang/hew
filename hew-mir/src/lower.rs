@@ -49730,6 +49730,7 @@ mod runtime_callee_ownership_contract_parity {
 
     const FRESH_STRING_SYMBOLS: &[&str] = &[
         "hew_bool_to_string",
+        "hew_bytes_to_string",
         "hew_char_to_string",
         "hew_float_to_string",
         "hew_i64_to_string",
@@ -49791,7 +49792,7 @@ mod runtime_callee_ownership_contract_parity {
         assert_eq!(collection_receiver.len(), 19);
         assert_eq!(bytes_receiver.len(), 11);
         assert_eq!(string_use.len(), 27);
-        assert_eq!(fresh_string.len(), 29);
+        assert_eq!(fresh_string.len(), 30);
 
         for symbol in parity_symbols() {
             let contract = callee_ownership_contract(symbol);

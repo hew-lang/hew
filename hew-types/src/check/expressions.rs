@@ -6743,19 +6743,60 @@ impl Checker {
         // parameter's declared width is the checker-authoritative one — the
         // init body may narrow/widen before storing into the field). Look up
         // `actor_init_params` first so a param like `init(start: i32)` gets
-        // `check_against(..., i32)` here; only actors with no explicit init
-        // (whose spawn args map directly onto bare field names) fall back to
-        // the field-type lookup. Without this, an unmatched `field_name`
-        // silently synthesizes the arg (defaulting an untyped int literal to
-        // `i64`), which then mismatches the init thunk's declared i32
-        // parameter and trips the LLVM verifier at the spawn call site
-        // (#2402).
+        // `check_against(..., i32)` here. The field-type lookup is the
+        // fallback for two shapes: an actor with no explicit `init` (whose
+        // spawn args map directly onto bare field names), and an init-bearing
+        // actor whose spawn arg name does not match any init parameter and so
+        // routes straight into a same-named state field. Without this, an
+        // unmatched `field_name` silently synthesizes the arg (defaulting an
+        // untyped int literal to `i64`), which then mismatches the init
+        // thunk's declared i32 parameter and trips the LLVM verifier at the
+        // spawn call site (#2402).
         let init_params = self.actor_init_params.get(actor_name).cloned();
         for (field_name, (arg, as_)) in args {
             let declared_init_param = init_params
                 .as_ref()
                 .and_then(|params| params.iter().find(|p| &p.name == field_name))
                 .map(|p| p.ty.clone());
+            // A spawn arg name that matches BOTH an init parameter and a state
+            // field with a DIFFERENT declared type is unsatisfiable: the one
+            // provided value cannot simultaneously be the init parameter's type
+            // (which the init thunk expects) and the field's type (which the
+            // constructor stores it into). Checking the arg against the init
+            // parameter alone lets it pass here, but codegen then stores the
+            // value into the mismatched field slot and fails closed with a raw
+            // RecordInit verifier dump (#2448). Name the collision at the
+            // checker level -- the parameter, the field, and the two disagreeing
+            // types -- and skip the per-arg check so no confusing secondary
+            // diagnostic piles on.
+            let field_ty = actor_fields.as_ref().and_then(|f| f.get(field_name));
+            if let (Some(param_ty), Some(field_ty)) = (declared_init_param.as_ref(), field_ty) {
+                if param_ty != field_ty {
+                    let param_display = param_ty.user_facing().to_string();
+                    let field_display = field_ty.user_facing().to_string();
+                    self.report_error(
+                        TypeErrorKind::Mismatch {
+                            expected: field_display.clone(),
+                            actual: param_display.clone(),
+                        },
+                        as_,
+                        format!(
+                            "spawn argument `{field_name}` matches both the `init` \
+                             parameter `{field_name}: {param_display}` and the state \
+                             field `{field_name}: {field_display}` of actor \
+                             `{actor_name}`, whose types disagree; one value cannot \
+                             fill both. Rename the `init` parameter or the field so the \
+                             spawn argument targets exactly one of them."
+                        ),
+                    );
+                    // Still synthesize the arg so downstream expression typing
+                    // sees a type for this span, but do not run `check_against`
+                    // (it would emit a second, less-informative mismatch).
+                    let ty_raw = self.synthesize(arg, as_);
+                    self.enforce_actor_boundary_send(arg, as_, as_, &ty_raw);
+                    continue;
+                }
+            }
             let declared = declared_init_param
                 .as_ref()
                 .or_else(|| actor_fields.as_ref().and_then(|f| f.get(field_name)));

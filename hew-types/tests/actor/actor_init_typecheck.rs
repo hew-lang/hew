@@ -271,3 +271,80 @@ fn ask_method_form_rejected_by_typechecker() {
          called directly by their `receive fn` name, not via an `.ask()` method"
     );
 }
+
+// #2448 — a spawn arg name that matches BOTH an `init` parameter and a state
+// field with a DIFFERENT type is unsatisfiable. Before the checker guard this
+// slipped through arg checking (the arg was validated against the init param
+// only) and failed closed in codegen with a raw `E_CODEGEN_FRONT_FAIL_CLOSED`
+// RecordInit verifier dump. It must now be a clean checker diagnostic that
+// names the parameter, the field, and the two disagreeing types.
+#[test]
+fn spawn_arg_name_collision_differing_types_reports_checker_diagnostic() {
+    let output = typecheck(
+        r"
+        actor Widget {
+            var n: string;
+            init(n: i32) {
+                let _ = n;
+            }
+            receive fn peek() -> string { n }
+        }
+        fn main() {
+            let _w = spawn Widget(n: 7);
+        }
+    ",
+    );
+    let hit = output.errors.iter().find(|e| {
+        e.message.contains("matches both the `init` parameter") && e.message.contains("state field")
+    });
+    assert!(
+        hit.is_some(),
+        "differing-type spawn-arg name collision should be a named checker \
+         diagnostic, not a codegen fail-closed: {:?}",
+        output.errors
+    );
+    let msg = &hit.unwrap().message;
+    assert!(
+        msg.contains("i32") && msg.contains("string"),
+        "diagnostic should name both disagreeing types (i32 / string): {msg}"
+    );
+    // No raw codegen-front verifier dump should leak through.
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("RecordInit")
+                || e.message.contains("E_CODEGEN_FRONT_FAIL_CLOSED")),
+        "the checker diagnostic must pre-empt the raw codegen dump: {:?}",
+        output.errors
+    );
+}
+
+// #2448 companion — a same-name collision whose types AGREE is a legitimate
+// COEXIST spawn (state field passed at spawn time alongside a same-named init
+// param); it must NOT trip the differing-type guard.
+#[test]
+fn spawn_arg_name_collision_matching_types_is_accepted() {
+    let output = typecheck(
+        r"
+        actor Widget2 {
+            var n: i64;
+            init(n: i64) {
+                let _ = n;
+            }
+            receive fn peek() -> i64 { n }
+        }
+        fn main() {
+            let _w = spawn Widget2(n: 7);
+        }
+    ",
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("matches both the `init` parameter")),
+        "a same-type same-name spawn arg is a valid COEXIST, not a collision: {:?}",
+        output.errors
+    );
+}

@@ -1268,10 +1268,22 @@ unsafe fn coalesce_message_key(
     msg_type: i32,
     data: *mut c_void,
     data_size: usize,
+    envelope: *mut HewMsgEnvelope,
 ) -> u64 {
     if let Some(key_fn) = key_fn {
+        let (payload, payload_size) = if data.is_null() && !envelope.is_null() {
+            // SAFETY: the queued node owns a live envelope reference while the mailbox is locked.
+            unsafe {
+                (
+                    hew_msg_envelope_payload_ptr(envelope),
+                    (*envelope).payload_size,
+                )
+            }
+        } else {
+            (data, data_size)
+        };
         // SAFETY: caller guarantees key function and payload pointers are valid.
-        unsafe { key_fn(msg_type, data, data_size) }
+        unsafe { key_fn(msg_type, payload, payload_size) }
     } else {
         #[expect(
             clippy::cast_sign_loss,
@@ -1489,6 +1501,7 @@ unsafe fn send_with_overflow(
                             msg_type,
                             data.cast_mut(),
                             data_size,
+                            ptr::null_mut(),
                         )
                     };
                     let found = q
@@ -1503,6 +1516,7 @@ unsafe fn send_with_overflow(
                                         (*n).msg_type,
                                         (*n).data,
                                         (*n).data_size,
+                                        (*n).envelope,
                                     ) == incoming_key
                             }
                         })
@@ -2719,6 +2733,38 @@ mod tests {
             assert_eq!(ENVELOPE_DROP_COUNT.load(Ordering::SeqCst), 1);
             hew_msg_node_free(node);
             assert_eq!(ENVELOPE_DROP_COUNT.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[test]
+    fn coalesce_key_reads_envelope_backed_payload() {
+        // SAFETY: test owns the envelope-backed node and frees it after the key lookup.
+        unsafe {
+            let update = PriceUpdate {
+                symbol: 42,
+                price: 99,
+            };
+            let payload = libc::malloc(size_of::<PriceUpdate>());
+            assert!(!payload.is_null());
+            ptr::write(payload.cast::<PriceUpdate>(), update);
+            let envelope = hew_msg_envelope_new(payload, size_of::<PriceUpdate>(), None);
+            let node = msg_node_alloc_aliased(7, envelope, ptr::null_mut());
+            assert!(!node.is_null());
+            assert!((*node).data.is_null(), "envelope nodes have null data");
+            assert_eq!((*node).data_size, 0, "envelope nodes have no data size");
+
+            assert_eq!(
+                coalesce_message_key(
+                    Some(price_symbol_key),
+                    (*node).msg_type,
+                    (*node).data,
+                    (*node).data_size,
+                    (*node).envelope,
+                ),
+                update.symbol,
+            );
+
+            hew_msg_node_free(node);
         }
     }
 

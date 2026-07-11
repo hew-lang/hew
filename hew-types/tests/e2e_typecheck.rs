@@ -260,6 +260,36 @@ fn main() {
 }
 
 #[test]
+fn array_repeat_unannotated_local_count_in_fixed_array_position_is_rejected() {
+    // Regression: an unannotated immutable integer literal binding (`let n = 4`)
+    // is inserted into the checker's `const_values` map purely to retain
+    // literal-coercion semantics. It is NOT a declared compile-time constant,
+    // so it must not satisfy a fixed-array length. Before the declared-const
+    // provenance gate, `const_eval_env` trusted every `const_values` entry and
+    // this program type-checked with zero errors, silently bypassing the
+    // non-constant-count rejection policy.
+    let output = typecheck_inline(
+        r"
+fn main() {
+    let n = 4;
+    let xs: [i64; 4] = [0; n];
+}
+",
+    );
+
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::ArityMismatch
+                && error.message.contains("compile-time integer")),
+        "an unannotated local (literal-coercion entry, not a declared const) cannot satisfy a \
+         fixed-array length and must be rejected: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn unannotated_array_repeat_with_runtime_count_still_infers_vec() {
     assert_inline_typechecks_cleanly(
         r"

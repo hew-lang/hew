@@ -2042,11 +2042,13 @@ impl Checker {
             if let Some(v) = extract_integer_literal_value(&cd.value.0) {
                 self.const_values
                     .insert(cd.name.clone(), ConstValue::Integer(v));
+                self.declared_const_names.insert(cd.name.clone());
             }
         } else if is_default_float {
             if let Some(v) = extract_float_literal_value(&cd.value.0) {
                 self.const_values
                     .insert(cd.name.clone(), ConstValue::Float(v));
+                self.declared_const_names.insert(cd.name.clone());
             }
         }
         self.env.define(cd.name.clone(), actual, false);

@@ -1727,11 +1727,11 @@ pub fn lower_hir_module_with_facts(
     // substrate records needed by synthetic MIR construction.
     register_builtin_record_layouts(&mut record_layouts, &mut record_field_orders);
 
-    // Pre-compute the opaque handle names before the state-field classification
-    // pass so the opaque-aware classifier can recognise `#[opaque]` types (e.g.
-    // `json.Value`, `cron.Expr`) that appear in actor state (directly or inside
-    // `Result`/`Option`). Mirrors the IrPipeline construction below; both draws
-    // are from the same `module.items` so they are guaranteed to agree.
+    // Pre-compute the opaque handle names and resource-close registry before the
+    // state-field classification pass so the classifier can distinguish plain
+    // `#[opaque]` handles from `#[resource] #[opaque]` handles. The same registry
+    // is moved into the `IrPipeline` below, keeping MIR admission and codegen
+    // drop synthesis on one classification authority.
     let opaque_handle_names: Vec<String> = module
         .items
         .iter()
@@ -1740,6 +1740,8 @@ pub fn lower_hir_module_with_facts(
             _ => None,
         })
         .collect();
+    let resource_opaque_close =
+        resource_opaque_close_registry(&opaque_handle_names, &module.type_classes);
 
     // Machines are enums at the value-classification layer: build every
     // machine's layout descriptor BEFORE the actor classification pass
@@ -1845,11 +1847,12 @@ pub fn lower_hir_module_with_facts(
         let closure_field = actor.state_fields.iter().enumerate().find(|(_, field)| {
             crate::model::ty_contains_closure_value(&field.ty, &record_layouts, &enum_layouts)
         });
-        let classification = crate::state_clone::classify_actor_state_fields_with_opaque_handles(
+        let classification = crate::state_clone::classify_actor_state_fields_with_resource_handles(
             &state_field_tys,
             &record_layouts,
             &classification_enum_layouts,
             &opaque_handle_names,
+            &resource_opaque_close,
         );
         let (clone_sym, drop_sym, clone_kinds) = if let Some((field_index, field)) = closure_field {
             let reason = format!(
@@ -3154,15 +3157,6 @@ pub fn lower_hir_module_with_facts(
             Some((layout.name.clone(), symbol))
         })
         .collect();
-
-    // RAII-1 complement of `resource_record_close`: the close registry for
-    // single-slot `#[resource] #[opaque]` HANDLES (no record layout, hence
-    // excluded above). Built from the SAME `opaque_handle_names` +
-    // `module.type_classes` the lowering `Builder` ctor used for the admission
-    // gate (`resource_opaque_close_registry`), so codegen's drop-body synthesis
-    // classifies a resource-bearing record identically to MIR admission.
-    let resource_opaque_close =
-        resource_opaque_close_registry(&opaque_handle_names, &module.type_classes);
 
     IrPipeline {
         thir,
@@ -11159,8 +11153,9 @@ impl Builder {
     ///
     /// Returns `Some(kinds)` iff the record named by `key`:
     ///   1. has a registered layout (`record_field_orders`),
-    ///   2. classifies cleanly under the SAME field classifier actor-state
-    ///      records use (`classify_actor_state_fields_with_opaque_handles`), AND
+    ///   2. classifies cleanly under the SAME resource-aware field classifier
+    ///      actor state uses (`classify_actor_state_fields_with_resource_handles`),
+    ///      AND
     ///   3. every field's kind is admissible to the in-place record value-class
     ///      (`StateFieldCloneKind::supports_value_class_drop_spine`) — so codegen
     ///      can synthesize BOTH the clone and drop side of the

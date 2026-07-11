@@ -353,10 +353,20 @@ mod every_attribute {
     use super::*;
 
     fn invalid_op_contains(output: &TypeCheckOutput, fragment: &str) -> bool {
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::InvalidOperation && e.message.contains(fragment))
+        output.errors.iter().any(|e| {
+            // Most `#[every]` diagnostics use the generic `InvalidOperation`
+            // kind; the two supervisor-periodic-child cases now carry the
+            // distinct `SupervisorError { PeriodicChild }` kind (#2377). Accept
+            // either so this fragment helper keeps checking the diagnostic body
+            // regardless of which of the two related kinds emitted it.
+            matches!(
+                e.kind,
+                TypeErrorKind::InvalidOperation
+                    | TypeErrorKind::SupervisorError {
+                        subkind: SupervisorErrorKind::PeriodicChild,
+                    }
+            ) && e.message.contains(fragment)
+        })
     }
 
     #[test]

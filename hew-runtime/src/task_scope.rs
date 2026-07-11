@@ -480,6 +480,16 @@ impl std::fmt::Debug for HewTask {
 // the enclosing task scope. No cross-thread sharing occurs.
 unsafe impl Send for HewTask {}
 
+fn panic_payload_message(panic_payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = panic_payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "non-string panic payload".to_string()
+    }
+}
+
 impl HewTask {
     /// Atomically load the current state with `Acquire` ordering.
     ///
@@ -548,13 +558,7 @@ impl HewTask {
                     unsafe { f(env_ptr) };
                 }));
                 if let Err(panic_payload) = result {
-                    let msg: String = if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                        (*s).to_string()
-                    } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-                        s.clone()
-                    } else {
-                        "non-string panic payload".to_string()
-                    };
+                    let msg = panic_payload_message(panic_payload.as_ref());
                     let error_msg = format!("task_scope cancel_cleanup_fn panicked: {msg}");
                     crate::set_last_error(error_msg.clone());
                     #[cfg(test)]
@@ -590,7 +594,16 @@ fn reap_detached_scope_tasks(
     detached_handles: Vec<std::thread::JoinHandle<()>>,
 ) {
     for handle in detached_handles {
-        let _ = handle.join();
+        if let Err(panic_payload) = handle.join() {
+            let error_msg = format!(
+                "task_scope detached worker panicked during teardown: {}",
+                panic_payload_message(panic_payload.as_ref())
+            );
+            crate::set_last_error(error_msg.clone());
+            // Background reapers have a separate thread-local error slot, so
+            // make this teardown failure visible to the process as well.
+            eprintln!("hew: {error_msg}");
+        }
     }
     // SAFETY: every detached worker has exited, so no task pointer can be
     // observed again after this point.
@@ -3554,6 +3567,36 @@ mod tests {
         assert!(
             msg.contains("cancel_cleanup intentional panic"),
             "error message must contain the original panic payload; got: {msg:?}"
+        );
+    }
+
+    #[test]
+    fn detached_task_reaper_reports_worker_panic() {
+        crate::hew_clear_error();
+        // SAFETY: this takes ownership of a newly allocated, otherwise-empty scope.
+        let scope = unsafe { Box::from_raw(hew_task_scope_new()) };
+        let worker = std::thread::spawn(|| panic!("detached worker intentional panic"));
+
+        reap_detached_scope_tasks(scope, vec![worker]);
+
+        let error_ptr = crate::hew_last_error();
+        assert!(
+            !error_ptr.is_null(),
+            "reaping a panicked worker must record a diagnostic"
+        );
+        // SAFETY: the reaper just populated the current thread's last-error slot.
+        let error = unsafe {
+            CStr::from_ptr(error_ptr)
+                .to_str()
+                .expect("last error should be utf-8")
+        };
+        assert!(
+            error.contains("task_scope detached worker panicked during teardown"),
+            "unexpected last error: {error}"
+        );
+        assert!(
+            error.contains("detached worker intentional panic"),
+            "panic payload must be included in the diagnostic: {error}"
         );
     }
 

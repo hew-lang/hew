@@ -97,6 +97,19 @@ pub(crate) struct RuntimeInner {
     /// (the `hew_node_monitor_recv` observation slots) and target-side remote
     /// watchers (the terminal-sweep fan-out list).
     pub(crate) dist_monitors: crate::dist_monitor::DistMonitorState,
+    /// Per-instance drop observer for the "exactly once" teardown oracles.
+    ///
+    /// Replaces the former process-global `RUNTIME_INNER_DROPS` counter, whose
+    /// delta-based (`before` → `before + 1`) assertions were corrupted under
+    /// parallel test execution: any `RuntimeInner` built and dropped by a test
+    /// in another module (which does not hold `SCHED_TEST_MUTEX`) bumped the
+    /// shared counter between an oracle's `before` read and its final assert,
+    /// producing an intermittent off-by-one (issue #2572). A probe is bound to a
+    /// single runtime instance, so it counts *only that instance's* drop and is
+    /// immune to concurrent drops elsewhere. Left `None` for every runtime a
+    /// test does not explicitly observe.
+    #[cfg(test)]
+    pub(crate) drop_probe: std::sync::Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>>,
 }
 
 impl RuntimeInner {
@@ -113,6 +126,8 @@ impl RuntimeInner {
             metrics: crate::metrics::MetricsState::new(),
             monitors: crate::monitor::MonitorState::new(),
             dist_monitors: crate::dist_monitor::DistMonitorState::new(),
+            #[cfg(test)]
+            drop_probe: std::sync::Mutex::new(None),
         }
     }
 
@@ -151,21 +166,42 @@ impl RuntimeInner {
     }
 }
 
-/// Number of [`RuntimeInner`] instances dropped, for drop-order/release-count
-/// oracles. A leak detector running green is *non-evidence* for ownership
-/// correctness (a thread-backed handle leak is invisible to it); the honest
-/// oracle is an exact drop-count assertion under a known teardown sequence.
+/// Test-only per-instance drop observer: bind a fresh counter to a single
+/// installed `RuntimeInner` so an "exactly once" teardown oracle counts only
+/// *that instance's* drop.
+///
+/// This replaces the former process-global `RUNTIME_INNER_DROPS` counter, whose
+/// delta assertions were corrupted under parallel test execution by unrelated
+/// `RuntimeInner`s built and dropped in other modules (issue #2572). The caller
+/// must hold `SCHED_TEST_MUTEX` and pass a pointer to a live runtime it owns.
 #[cfg(test)]
-pub(crate) static RUNTIME_INNER_DROPS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+pub(crate) fn install_drop_probe_for_test(
+    ptr: *const RuntimeInner,
+) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+    let probe = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // SAFETY: `ptr` refers to a live `RuntimeInner` the caller owns and keeps
+    // installed for the duration of the test; `drop_probe` uses interior
+    // mutability (a `Mutex`) so a shared reference may set it.
+    let inner = unsafe { &*ptr };
+    *inner
+        .drop_probe
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(std::sync::Arc::clone(&probe));
+    probe
+}
 
 /// Test-only drop observer. Production builds compile no `Drop` impl, so the
 /// inner frees by field-drop; the `#[cfg(test)]` impl only records that the
-/// field-drop happened, then lets the fields drop normally as it returns.
+/// field-drop happened (into an optional per-instance probe), then lets the
+/// fields drop normally as it returns.
 #[cfg(test)]
 impl Drop for RuntimeInner {
     fn drop(&mut self) {
-        RUNTIME_INNER_DROPS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if let Ok(mut guard) = self.drop_probe.lock() {
+            if let Some(probe) = guard.take() {
+                probe.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
     }
 }
 

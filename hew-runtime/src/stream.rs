@@ -2600,10 +2600,11 @@ pub unsafe extern "C" fn hew_sink_detach_await(
 /// Non-blocking variant of [`hew_sink_write_string`].
 ///
 /// Writes a null-terminated C string to the sink if the backing buffer has
-/// capacity. Returns `0` (`SendError::Ok`) on success or `2`
+/// capacity. Returns `0` (`SendError::Ok`) on success, `1`
+/// (`SendError::Closed`) if the sink or its receiving peer is closed, or `2`
 /// (`SendError::Full`) if the buffer is at capacity and the write would have
-/// blocked. For non-channel sinks the backing falls back to a blocking write
-/// and always returns `0`.
+/// blocked. For open non-channel sinks the backing falls back to a blocking
+/// write and returns `0`.
 ///
 /// Returns `1` (`SendError::Closed`) if `sink` or `data` is null.
 ///
@@ -2622,7 +2623,7 @@ pub unsafe extern "C" fn hew_sink_detach_await(
 /// copies the bytes before returning.
 ///
 /// ## Return value
-/// `0` = item accepted; `1` = null argument (closed); `2` = channel full.
+/// `0` = item accepted; `1` = closed/null argument; `2` = channel full.
 ///
 /// ## Caller responsibility
 /// The caller retains ownership of `data`; the runtime copies the bytes.
@@ -2644,7 +2645,7 @@ pub unsafe extern "C" fn hew_sink_try_write_string(sink: *mut HewSink, data: *co
     // Channel-backed sinks use the core's genuine non-blocking `try_send`.
     // SAFETY: sink is valid per the guard above.
     if let Some(core) = unsafe { sink_channel_core(sink) } {
-        return if core.try_send(bytes.to_vec()) { 0 } else { 2 };
+        return core.try_send(bytes.to_vec()).into_abi_code();
     }
     // SAFETY:
     //   Provenance: `sink` came from a `hew_*_sink_*` constructor; non-null by guard above.
@@ -2653,12 +2654,7 @@ pub unsafe extern "C" fn hew_sink_try_write_string(sink: *mut HewSink, data: *co
     //   Aliasing/concurrency: caller contract bans concurrent writes; backing's try_write is internally synchronised.
     //   Bounds: not a slice access — method dispatch with the bytes slice we just borrowed.
     //   Failure mode: violations are UAF / data race; documented at fn level. Non-channel sinks fall back to blocking write per `SinkOps::try_write_item` default.
-    let accepted = unsafe { (*sink).try_write_item(bytes) };
-    if accepted {
-        0
-    } else {
-        2
-    } // 0 = Ok, 2 = Full
+    unsafe { (*sink).try_write_item(bytes) }.into_abi_code()
 }
 
 /// If `sink` is a channel-backed (NEW-7) sink, return a borrow of its core.
@@ -2686,9 +2682,10 @@ unsafe fn sink_channel_core<'a>(
 /// Non-blocking variant of [`hew_sink_write_bytes`].
 ///
 /// Writes a `bytes` value to the sink if the backing buffer has capacity.
-/// Returns `0` (`SendError::Ok`) on success or `2` (`SendError::Full`) if
-/// the buffer is at capacity. For non-channel sinks the backing falls back
-/// to a blocking write and always returns `0`.
+/// Returns `0` (`SendError::Ok`) on success, `1` (`SendError::Closed`) if the
+/// sink or its receiving peer is closed, or `2` (`SendError::Full`) if the
+/// buffer is at capacity. For open non-channel sinks the backing falls back
+/// to a blocking write and returns `0`.
 ///
 /// Returns `1` (`SendError::Closed`) if `sink` or `data` is null.
 ///
@@ -2714,7 +2711,7 @@ unsafe fn sink_channel_core<'a>(
 /// runtime copies the bytes before returning.
 ///
 /// ## Return value
-/// `0` = item accepted; `1` = null sink/data (closed); `2` = channel full.
+/// `0` = item accepted; `1` = closed/null sink or data; `2` = channel full.
 #[no_mangle]
 pub unsafe extern "C" fn hew_sink_try_write_bytes(
     sink: *mut HewSink,
@@ -2738,7 +2735,7 @@ pub unsafe extern "C" fn hew_sink_try_write_bytes(
     // (the CallbackSink default would block).
     // SAFETY: sink is valid per caller contract.
     if let Some(core) = unsafe { sink_channel_core(sink) } {
-        return if core.try_send(bytes.to_vec()) { 0 } else { 2 };
+        return core.try_send(bytes.to_vec()).into_abi_code();
     }
     // SAFETY:
     //   Provenance: `sink` came from a `hew_*_sink_*` constructor; non-null by guard above.
@@ -2747,12 +2744,7 @@ pub unsafe extern "C" fn hew_sink_try_write_bytes(
     //   Aliasing/concurrency: caller contract bans concurrent writes; backing's try_write is internally synchronised.
     //   Bounds: method dispatch with the bytes slice borrowed above.
     //   Failure mode: violations are UAF / data race. Non-channel sinks fall back to blocking write.
-    let accepted = unsafe { (*sink).try_write_item(bytes) };
-    if accepted {
-        0
-    } else {
-        2
-    } // 0 = Ok, 2 = Full
+    unsafe { (*sink).try_write_item(bytes) }.into_abi_code()
 }
 
 #[cfg(test)]
@@ -3351,6 +3343,53 @@ mod tests {
             hew_sink_flush(sink);
             hew_sink_close(sink);
             hew_stream_pair_free(pair);
+        }
+    }
+
+    #[test]
+    fn sink_try_write_string_reports_accepted_full_and_closed() {
+        let data = CString::new("message").unwrap();
+        // SAFETY: all handles and data pointers come from their matching constructors.
+        unsafe {
+            let pair = hew_stream_channel(1);
+            let sink = hew_stream_pair_sink(pair);
+            let stream = hew_stream_pair_stream(pair);
+            hew_stream_pair_free(pair);
+
+            assert_eq!(hew_sink_try_write_string(sink, data.as_ptr()), 0);
+            assert_eq!(hew_sink_try_write_string(sink, data.as_ptr()), 2);
+            hew_stream_close(stream);
+            assert_eq!(hew_sink_try_write_string(sink, data.as_ptr()), 1);
+
+            hew_sink_close(sink);
+        }
+    }
+
+    #[test]
+    fn sink_try_write_bytes_reports_accepted_full_and_closed() {
+        let payload = b"message";
+        // SAFETY: payload is valid for its length and the returned bytes allocation
+        // remains live until the matching hew_bytes_drop below.
+        let data = unsafe {
+            crate::bytes::hew_bytes_from_static(
+                payload.as_ptr(),
+                u32::try_from(payload.len()).unwrap(),
+            )
+        };
+        // SAFETY: all handles and data pointers come from their matching constructors.
+        unsafe {
+            let pair = hew_stream_channel(1);
+            let sink = hew_stream_pair_sink_bytes(pair);
+            let stream = hew_stream_pair_stream_bytes(pair);
+            hew_stream_pair_free(pair);
+
+            assert_eq!(hew_sink_try_write_bytes(sink, &raw const data), 0);
+            assert_eq!(hew_sink_try_write_bytes(sink, &raw const data), 2);
+            hew_stream_close(stream);
+            assert_eq!(hew_sink_try_write_bytes(sink, &raw const data), 1);
+
+            hew_sink_close(sink);
+            crate::bytes::hew_bytes_drop(data.ptr);
         }
     }
 

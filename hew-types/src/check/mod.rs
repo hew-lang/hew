@@ -1,7 +1,7 @@
 //! Bidirectional type checker for Hew programs.
 
 use crate::builtin_names::{builtin_named_type, builtin_named_types, BuiltinMethodRuntime};
-use crate::error::{TypeError, TypeErrorKind};
+use crate::error::{SupervisorErrorKind, TypeError, TypeErrorKind};
 use crate::module_registry::ModuleError;
 use crate::resolved_ty::{BoundaryError, ResolvedTy};
 use crate::traits::MarkerTrait;

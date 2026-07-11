@@ -106,12 +106,19 @@ pub(crate) enum AbiClass {
 /// The byte size above which SysV / AAPCS pass an aggregate indirectly.
 const SMALL_AGGREGATE_MAX: u64 = 16;
 
-/// Returns `true` when `triple` names the Windows x64 MSVC environment, whose
-/// aggregate ABI differs from SysV/AAPCS (every non-{1,2,4,8}-byte aggregate is
-/// indirect). Matches on the `-msvc` environment suffix, not the arch, because
-/// only the MSVC environment carries this rule.
+/// Returns `true` when `triple` names the Windows **x64** MSVC environment,
+/// whose aggregate ABI differs from SysV/AAPCS (every non-{1,2,4,8}-byte
+/// aggregate is indirect). Matches the `-msvc` environment AND a 64-bit arch:
+/// the Win64 aggregate rule this admits is the x86_64/aarch64 one, not the
+/// 32-bit x86 (`i686-pc-windows-msvc`) cdecl/stdcall rule, which differs and is
+/// not modelled here. Gating on the arch keeps a 32-bit x86 MSVC triple OUT of
+/// this arm so it falls through to the fail-closed default rather than
+/// borrowing the x64 indirect rule. Hew targets Windows via 64-bit MSVC.
 fn is_windows_msvc(triple: &str) -> bool {
-    triple.contains("windows-msvc") || triple.ends_with("-msvc")
+    let is_msvc = triple.contains("windows-msvc") || triple.ends_with("-msvc");
+    let arch = triple.split('-').next().unwrap_or(triple);
+    let is_64bit_x86_or_arm = matches!(arch, "x86_64" | "amd64" | "aarch64" | "arm64");
+    is_msvc && is_64bit_x86_or_arm
 }
 
 /// Returns `true` for any Windows triple. Used to keep `*-windows-gnu`
@@ -434,6 +441,7 @@ mod tests {
     const SYSV: &str = "x86_64-unknown-linux-gnu";
     const AARCH64_DARWIN: &str = "aarch64-apple-darwin";
     const WIN_MSVC: &str = "x86_64-pc-windows-msvc";
+    const WIN_MSVC_X86: &str = "i686-pc-windows-msvc";
     const WASM32: &str = "wasm32-unknown-unknown";
 
     #[test]
@@ -493,6 +501,46 @@ mod tests {
             classify_aggregate(child_lookup(&ctx), &td, WIN_MSVC).unwrap(),
             AbiClass::Indirect
         );
+    }
+
+    #[test]
+    fn windows_msvc_rule_is_gated_to_64bit_arch() {
+        // `is_windows_msvc` matches the `-msvc` ENVIRONMENT; before the arch
+        // gate, `i686-pc-windows-msvc` (32-bit x86) borrowed the Win64
+        // aggregate rule. 32-bit x86 MSVC uses a different cdecl/stdcall
+        // aggregate ABI that is not modelled here, so it must now fall THROUGH
+        // the msvc arm to the fail-closed default rather than be classified
+        // under the x64 indirect rule.
+        assert!(is_windows_msvc("x86_64-pc-windows-msvc"));
+        assert!(is_windows_msvc("aarch64-pc-windows-msvc"));
+        assert!(
+            !is_windows_msvc("i686-pc-windows-msvc"),
+            "32-bit x86 MSVC must not borrow the Win64 aggregate rule"
+        );
+        assert!(
+            !is_windows_msvc("i586-pc-windows-msvc"),
+            "32-bit x86 MSVC must not borrow the Win64 aggregate rule"
+        );
+    }
+
+    #[test]
+    fn bytes_triple_fails_closed_on_32bit_x86_msvc() {
+        // Deletion proof for the arch gate: a 16-byte aggregate on
+        // i686-pc-windows-msvc must NOT be silently classified Indirect via the
+        // Win64 rule. With the gate it falls through to the fail-closed arm
+        // (32-bit x86 MSVC aggregate ABI is unmodelled), the honest outcome
+        // until that ABI is proven against the corpus.
+        let ctx = Context::create();
+        let td = target_data_for(WIN_MSVC); // 64-bit TargetData; the triple STRING drives the rule
+        let err = classify_aggregate(bytes_triple(&ctx), &td, WIN_MSVC_X86).expect_err(
+            "32-bit x86 MSVC aggregate ABI must fail closed, not borrow the Win64 rule",
+        );
+        match err {
+            CodegenError::FailClosed(msg) => {
+                assert!(msg.contains("i686-pc-windows-msvc"), "msg: {msg}");
+            }
+            other => panic!("expected FailClosed, got {other:?}"),
+        }
     }
 
     #[test]

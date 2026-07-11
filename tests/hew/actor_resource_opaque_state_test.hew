@@ -1,0 +1,57 @@
+import std::testing;
+
+#[resource]
+#[opaque]
+type Dq {}
+
+impl Dq {
+    fn close(self) {
+        unsafe { hew_deque_free(self) };
+        println("resource-state-closed");
+    }
+}
+
+extern "C" {
+    fn hew_deque_new() -> Dq;
+    fn hew_deque_free(consume dq: Dq);
+}
+
+type Holder {
+    dq: Dq
+}
+
+actor DirectKeeper {
+    let dq: Dq;
+
+    receive fn ping() -> i64 {
+        1
+    }
+}
+
+actor WrappedKeeper {
+    let holder: Holder;
+
+    receive fn ping() -> i64 {
+        2
+    }
+}
+
+#[test]
+fn direct_resource_actor_field_compiles_and_runs() {
+    let keeper = spawn DirectKeeper(dq: unsafe { hew_deque_new() });
+    match await keeper.ping() {
+        Ok(n) => testing.assert_eq(n, 1),
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn wrapped_resource_actor_field_still_compiles_and_runs() {
+    let keeper = spawn WrappedKeeper(
+        holder: Holder { dq: unsafe { hew_deque_new() } }
+    );
+    match await keeper.ping() {
+        Ok(n) => testing.assert_eq(n, 2),
+        Err(_) => testing.assert_true(false),
+    }
+}

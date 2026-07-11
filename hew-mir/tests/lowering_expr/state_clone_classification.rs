@@ -103,6 +103,64 @@ fn trivial_state_actor_gets_paired_clone_and_drop_symbols() {
 }
 
 #[test]
+fn opaque_resource_actor_field_classifies_as_resource_directly_and_when_wrapped() {
+    let src = r"
+        #[resource]
+        #[opaque]
+        type Dq {}
+
+        impl Dq {
+            fn close(self) {}
+        }
+
+        type Holder {
+            dq: Dq
+        }
+
+        actor Direct {
+            let dq: Dq;
+        }
+
+        actor Wrapped {
+            let holder: Holder;
+        }
+    ";
+    let pipeline = lower_source(src);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "unexpected MIR diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+
+    let resource_kind = StateFieldCloneKind::Resource {
+        name: "Dq".to_string(),
+        close_symbol: "Dq::close".to_string(),
+    };
+    let direct = find_actor(&pipeline, "Direct");
+    assert_eq!(
+        direct.state_field_clone_kinds.as_deref(),
+        Some(std::slice::from_ref(&resource_kind)),
+        "a direct `#[resource] #[opaque]` actor field must not fall through to OpaqueHandle",
+    );
+
+    let wrapped = find_actor(&pipeline, "Wrapped");
+    assert_eq!(
+        wrapped.state_field_clone_kinds.as_deref(),
+        Some(
+            &[StateFieldCloneKind::UserRecord {
+                name: "Holder".to_string(),
+            }][..]
+        ),
+        "the already-supported record-wrapped resource path must remain unchanged",
+    );
+    assert_eq!(
+        pipeline.resource_opaque_close,
+        vec![("Dq".to_string(), "Dq::close".to_string())],
+        "the shared resource registry must remain available to nested-record codegen",
+    );
+}
+
+#[test]
 fn zero_state_actor_also_gets_paired_symbols() {
     // Plan §4.2: "Emit both `state_clone_fn` and `state_drop_fn`
     // registration unconditionally for every actor." Zero-state actors

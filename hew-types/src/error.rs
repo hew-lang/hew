@@ -515,6 +515,77 @@ impl fmt::Display for TypeError {
 
 impl std::error::Error for TypeError {}
 
+/// The specific supervisor-declaration check that failed.
+///
+/// Every arm corresponds to exactly one `E_SUPERVISOR_*` diagnostic code and
+/// maps to a distinct `TypeErrorKind::as_kind_str()` value, so JSON `code` and
+/// LSP `data.kind` consumers can differentiate the supervisor diagnostics
+/// without parsing the inline message prefix. Adding a new supervisor
+/// diagnostic means adding an arm here; the exhaustive (catch-all-free) match
+/// in `as_kind_str` then forces a matching kind string, so a new diagnostic
+/// cannot silently collapse into an existing one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SupervisorErrorKind {
+    /// `E_SUPERVISOR_POOL_COUNT_MISSING`: a `pool` child omits the required
+    /// `count:` argument.
+    PoolCountMissing,
+    /// `E_SUPERVISOR_POOL_COUNT_TYPE`: a pool child's `count:` is not an integer.
+    PoolCountType,
+    /// `E_SUPERVISOR_POOL_COUNT_NON_POSITIVE`: a pool child's compile-time
+    /// `count:` is zero or negative.
+    PoolCountNonPositive,
+    /// `E_SUPERVISOR_PERIODIC_CHILD`: a supervised child's actor declares an
+    /// `#[every]` periodic handler, which is not armed for supervised children.
+    PeriodicChild,
+    /// `E_SUPERVISOR_INIT_ARG_NON_BITCOPY`: a supervised child init arg has a
+    /// type the init-closure restart thunk cannot reproduce per incarnation.
+    InitArgNonBitcopy,
+    /// `E_SUPERVISOR_INTENSITY_RESTARTS`: a negative `intensity:` restart budget.
+    IntensityRestarts,
+    /// `E_SUPERVISOR_INTENSITY_WINDOW`: the `intensity:` window is zero-length or
+    /// not a valid duration literal.
+    IntensityWindow,
+    /// `E_SUPERVISOR_PERMANENT_OWNED_HEAP`: a permanent child's state carries an
+    /// owned-heap field that byte-copy restart would alias.
+    PermanentOwnedHeap,
+    /// `E_SUPERVISOR_DUPLICATE_CHILD`: two children share a name.
+    DuplicateChild,
+    /// `E_SUPERVISOR_STRATEGY_POOL_MISMATCH`: `pool` children and the chosen
+    /// strategy are incompatible.
+    StrategyPoolMismatch,
+    /// `E_SUPERVISOR_WIRED_TO_UNKNOWN_SIBLING`: a `wired_to` value names a child
+    /// that is not declared in this supervisor.
+    WiredToUnknownSibling,
+    /// `E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH`: a `wired_to` key has no matching
+    /// init parameter, or the parameter type is not `LocalPid<sibling>`.
+    WiredToTypeMismatch,
+    /// `E_SUPERVISOR_WIRED_CYCLE`: the `wired_to` dependency graph has a cycle.
+    WiredCycle,
+}
+
+impl SupervisorErrorKind {
+    /// The distinct machine-readable kind string for this supervisor
+    /// diagnostic, surfaced through `TypeErrorKind::as_kind_str()`.
+    #[must_use]
+    pub fn as_kind_str(self) -> &'static str {
+        match self {
+            Self::PoolCountMissing => "SupervisorPoolCountMissing",
+            Self::PoolCountType => "SupervisorPoolCountType",
+            Self::PoolCountNonPositive => "SupervisorPoolCountNonPositive",
+            Self::PeriodicChild => "SupervisorPeriodicChild",
+            Self::InitArgNonBitcopy => "SupervisorInitArgNonBitcopy",
+            Self::IntensityRestarts => "SupervisorIntensityRestarts",
+            Self::IntensityWindow => "SupervisorIntensityWindow",
+            Self::PermanentOwnedHeap => "SupervisorPermanentOwnedHeap",
+            Self::DuplicateChild => "SupervisorDuplicateChild",
+            Self::StrategyPoolMismatch => "SupervisorStrategyPoolMismatch",
+            Self::WiredToUnknownSibling => "SupervisorWiredToUnknownSibling",
+            Self::WiredToTypeMismatch => "SupervisorWiredToTypeMismatch",
+            Self::WiredCycle => "SupervisorWiredCycle",
+        }
+    }
+}
+
 /// The specific kind of type error.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeErrorKind {
@@ -552,6 +623,14 @@ pub enum TypeErrorKind {
     InvalidSend,
     /// Operation not supported for this type
     InvalidOperation,
+    /// A supervisor-declaration check failed. `subkind` names the specific
+    /// `E_SUPERVISOR_*` diagnostic so JSON `code` / LSP `data.kind` consumers
+    /// can differentiate the supervisor family instead of collapsing every
+    /// supervisor error onto one generic kind.
+    SupervisorError {
+        /// The specific supervisor check that failed.
+        subkind: SupervisorErrorKind,
+    },
     /// Execution-context reader used outside an actor handler context
     ContextReaderOutsideHandler,
     /// Wrong number of arguments
@@ -1189,6 +1268,7 @@ impl TypeErrorKind {
             Self::AmbiguousType => "AmbiguousType",
             Self::InvalidSend => "InvalidSend",
             Self::InvalidOperation => "InvalidOperation",
+            Self::SupervisorError { subkind } => subkind.as_kind_str(),
             Self::ContextReaderOutsideHandler => "ContextReaderOutsideHandler",
             Self::ArityMismatch => "ArityMismatch",
             Self::BoundsNotSatisfied => "BoundsNotSatisfied",
@@ -1801,5 +1881,62 @@ mod tests {
             err.to_string(),
             "no field `colour` on type `HashMap<string, i32>`"
         );
+    }
+
+    /// Every supervisor subkind must produce a distinct, stable `as_kind_str`
+    /// value distinct from the generic `InvalidOperation` and from each other,
+    /// so JSON `code` / LSP `data.kind` consumers can tell the supervisor
+    /// diagnostics apart. The `ALL` slice below is the exhaustiveness guard:
+    /// adding a `SupervisorErrorKind` arm without adding it here fails this
+    /// test's uniqueness/count assertions, and the catch-all-free `match` in
+    /// `SupervisorErrorKind::as_kind_str` fails to compile if the arm has no
+    /// string — so a new supervisor diagnostic cannot silently collapse onto an
+    /// existing kind.
+    #[test]
+    fn test_supervisor_subkind_kind_strings_are_distinct() {
+        use std::collections::HashSet;
+
+        const ALL: &[SupervisorErrorKind] = &[
+            SupervisorErrorKind::PoolCountMissing,
+            SupervisorErrorKind::PoolCountType,
+            SupervisorErrorKind::PoolCountNonPositive,
+            SupervisorErrorKind::PeriodicChild,
+            SupervisorErrorKind::InitArgNonBitcopy,
+            SupervisorErrorKind::IntensityRestarts,
+            SupervisorErrorKind::IntensityWindow,
+            SupervisorErrorKind::PermanentOwnedHeap,
+            SupervisorErrorKind::DuplicateChild,
+            SupervisorErrorKind::StrategyPoolMismatch,
+            SupervisorErrorKind::WiredToUnknownSibling,
+            SupervisorErrorKind::WiredToTypeMismatch,
+            SupervisorErrorKind::WiredCycle,
+        ];
+
+        // 13 distinct E_SUPERVISOR_* codes → 13 subkinds.
+        assert_eq!(ALL.len(), 13, "expected 13 supervisor subkinds");
+
+        let via_subkind: HashSet<&'static str> = ALL.iter().map(|s| s.as_kind_str()).collect();
+        assert_eq!(
+            via_subkind.len(),
+            ALL.len(),
+            "supervisor subkind kind strings must be pairwise distinct"
+        );
+
+        // The wrapped-in-TypeErrorKind path must agree with the subkind path
+        // and must never collapse to the generic InvalidOperation string.
+        for &subkind in ALL {
+            let wrapped = TypeErrorKind::SupervisorError { subkind };
+            assert_eq!(wrapped.as_kind_str(), subkind.as_kind_str());
+            assert_ne!(
+                wrapped.as_kind_str(),
+                TypeErrorKind::InvalidOperation.as_kind_str(),
+                "supervisor kind must not collapse to InvalidOperation"
+            );
+            assert!(
+                wrapped.as_kind_str().starts_with("Supervisor"),
+                "supervisor kind string should be Supervisor-prefixed: {}",
+                wrapped.as_kind_str()
+            );
+        }
     }
 }

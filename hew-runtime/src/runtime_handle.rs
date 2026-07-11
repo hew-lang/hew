@@ -121,7 +121,7 @@
 //!
 //! A leak detector running green is non-evidence that the runtime was released
 //! (a thread-backed handle leak is invisible to it); the honest oracle is the
-//! `RUNTIME_INNER_DROPS` drop-count under a known release sequence (see
+//! per-instance `RuntimeInner` drop probe under a known release sequence (see
 //! `runtime.rs`).
 
 #![cfg(not(target_arch = "wasm32"))]

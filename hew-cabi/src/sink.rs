@@ -136,14 +136,34 @@ pub fn take_last_errno() -> i32 {
 
 // ── Sink handle ───────────────────────────────────────────────────────────────
 
+/// Result of a non-blocking sink write attempt.
+#[must_use]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(i32)]
+pub enum TrySendResult {
+    /// The item was accepted by the sink.
+    Accepted = 0,
+    /// The sink or its receiving peer is closed.
+    Closed = 1,
+    /// The sink is open, but its bounded buffer has no capacity.
+    Full = 2,
+}
+
+impl TrySendResult {
+    /// Return the stable C ABI status code for this result.
+    #[must_use]
+    pub const fn into_abi_code(self) -> i32 {
+        self as i32
+    }
+}
+
 trait SinkOps: Send {
     fn write_item(&mut self, data: &[u8]);
-    /// Non-blocking write attempt. Returns `true` if the item was accepted,
-    /// `false` if the backing buffer is full. The default delegates to
-    /// `write_item` (always blocks, always returns `true`).
-    fn try_write_item(&mut self, data: &[u8]) -> bool {
+    /// Non-blocking write attempt. The default delegates to `write_item`, which
+    /// blocks until the item is accepted.
+    fn try_write_item(&mut self, data: &[u8]) -> TrySendResult {
         self.write_item(data);
-        true
+        TrySendResult::Accepted
     }
     fn flush(&mut self);
     fn close(&mut self);
@@ -212,14 +232,14 @@ impl HewSink {
 
     /// Attempt to write one item without blocking.
     ///
-    /// Returns `true` if the item was accepted; `false` if the backing buffer
-    /// was full and the write would have blocked. For non-channel sinks the
-    /// default behaviour is to block (delegating to `write_item`) and return
-    /// `true` — callers that need genuine non-blocking semantics should create
-    /// the sink with [`into_channel_sink_ptr`].
-    pub fn try_write_item(&mut self, data: &[u8]) -> bool {
+    /// Returns whether the item was accepted, the buffer was full, or the sink
+    /// was closed. For non-channel sinks the default behaviour is to block
+    /// (delegating to `write_item`) until the item is accepted — callers that
+    /// need genuine non-blocking semantics should create the sink with
+    /// [`into_channel_sink_ptr`].
+    pub fn try_write_item(&mut self, data: &[u8]) -> TrySendResult {
         let Some(inner) = self.inner.as_mut() else {
-            return true; // closed sink: item silently discarded, not "full"
+            return TrySendResult::Closed;
         };
         inner.try_write_item(data)
     }
@@ -312,7 +332,7 @@ pub fn into_write_sink_ptr(backing: impl Write + Send + 'static) -> *mut HewSink
 // ── Channel-backed sink ───────────────────────────────────────────────────────
 
 /// Channel sink: wraps an `mpsc::SyncSender` and provides genuine non-blocking
-/// `try_write_item` semantics (returns `false` when the queue is at capacity).
+/// `try_write_item` semantics.
 struct ChannelSinkBacking {
     tx: std::sync::mpsc::SyncSender<Vec<u8>>,
 }
@@ -328,14 +348,13 @@ impl SinkOps for ChannelSinkBacking {
         let _ = self.tx.send(data.to_vec());
     }
 
-    /// Non-blocking send. Returns `false` when the channel queue is full.
-    fn try_write_item(&mut self, data: &[u8]) -> bool {
+    /// Non-blocking send that distinguishes acceptance, backpressure, and closure.
+    fn try_write_item(&mut self, data: &[u8]) -> TrySendResult {
         use std::sync::mpsc::TrySendError;
         match self.tx.try_send(data.to_vec()) {
-            // Disconnected: receiver is gone; item silently discarded.
-            // Report success so callers don't mistake a closed channel for a full one.
-            Ok(()) | Err(TrySendError::Disconnected(_)) => true,
-            Err(TrySendError::Full(_)) => false,
+            Ok(()) => TrySendResult::Accepted,
+            Err(TrySendError::Disconnected(_)) => TrySendResult::Closed,
+            Err(TrySendError::Full(_)) => TrySendResult::Full,
         }
     }
 
@@ -351,8 +370,8 @@ impl SinkOps for ChannelSinkBacking {
 /// Create a heap-allocated [`HewSink`] backed by a bounded `mpsc` channel sender.
 ///
 /// Unlike [`into_write_sink_ptr`], the returned sink supports genuine non-blocking
-/// writes via [`HewSink::try_write_item`]: the call returns `false` immediately if
-/// the channel queue is at capacity rather than blocking until space is available.
+/// writes via [`HewSink::try_write_item`], distinguishing an accepted item from a
+/// full queue or a disconnected receiver.
 ///
 /// # Ownership
 ///
@@ -714,5 +733,30 @@ mod tests {
         let items = written.lock().unwrap();
         assert_eq!(items.as_slice(), &[b"abc".to_vec()]);
         assert_eq!(close_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn channel_sink_try_write_distinguishes_accepted_full_and_closed() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let ptr = into_channel_sink_ptr(tx);
+        // SAFETY: ptr was created by into_channel_sink_ptr and is reclaimed once.
+        let mut sink = unsafe { Box::from_raw(ptr) }; // ALLOCATOR-PAIRING: GlobalAlloc
+
+        assert_eq!(sink.try_write_item(b"accepted"), TrySendResult::Accepted);
+        assert_eq!(sink.try_write_item(b"full"), TrySendResult::Full);
+
+        drop(rx);
+        assert_eq!(sink.try_write_item(b"closed"), TrySendResult::Closed);
+    }
+
+    #[test]
+    fn closed_sink_try_write_reports_closed() {
+        let (mock, written, _flush_count, _close_count) = MockSink::new();
+        // SAFETY: into_write_sink_ptr returns a Box::into_raw allocation owned by this test.
+        let mut sink = unsafe { Box::from_raw(into_write_sink_ptr(mock)) }; // ALLOCATOR-PAIRING: GlobalAlloc
+        sink.close();
+
+        assert_eq!(sink.try_write_item(b"discarded"), TrySendResult::Closed);
+        assert!(written.lock().unwrap().is_empty());
     }
 }

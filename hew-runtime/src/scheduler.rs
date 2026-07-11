@@ -4787,20 +4787,24 @@ mod tests {
     /// default runtime is detached from its slot *before* it is freed, and it
     /// is freed exactly once on cleanup. A leak detector running green is
     /// non-evidence for this (thread-backed handle leaks are invisible to it);
-    /// the honest oracle is the exact `RUNTIME_INNER_DROPS` count below.
+    /// the honest oracle is the exact per-instance drop probe below (bound via
+    /// [`runtime::install_drop_probe_for_test`]).
     #[test]
     fn default_runtime_detaches_before_free_and_drops_exactly_once() {
         let _g = SCHED_TEST_MUTEX
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        let before = runtime::RUNTIME_INNER_DROPS.load(Ordering::SeqCst);
-        let _rt_ptr = install_scheduler_for_test(worker_less_scheduler_for_test());
+        let rt_ptr = install_scheduler_for_test(worker_less_scheduler_for_test());
+
+        // Bind a per-instance drop probe to *this* runtime so the oracle counts
+        // only its own drop, never a concurrent drop from a parallel test.
+        let probe = runtime::install_drop_probe_for_test(rt_ptr);
 
         // While installed, nothing has been freed.
         assert_eq!(
-            runtime::RUNTIME_INNER_DROPS.load(Ordering::SeqCst),
-            before,
+            probe.load(Ordering::SeqCst),
+            0,
             "installing the runtime must not free anything"
         );
 
@@ -4812,16 +4816,16 @@ mod tests {
             "take_default must clear the slot before the runtime is freed"
         );
         assert_eq!(
-            runtime::RUNTIME_INNER_DROPS.load(Ordering::SeqCst),
-            before,
+            probe.load(Ordering::SeqCst),
+            0,
             "detaching the runtime from its slot must not free it"
         );
 
         // Explicit drop is the single free site — exactly once, never twice.
         drop(taken);
         assert_eq!(
-            runtime::RUNTIME_INNER_DROPS.load(Ordering::SeqCst),
-            before + 1,
+            probe.load(Ordering::SeqCst),
+            1,
             "the detached runtime must be freed exactly once on explicit drop"
         );
 
@@ -4829,8 +4833,8 @@ mod tests {
         // free): take_default returns None and the drop count is unchanged.
         assert!(runtime::take_default().is_none());
         assert_eq!(
-            runtime::RUNTIME_INNER_DROPS.load(Ordering::SeqCst),
-            before + 1,
+            probe.load(Ordering::SeqCst),
+            1,
             "a second teardown of an empty slot must not free anything"
         );
     }
@@ -4845,17 +4849,18 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let first = install_scheduler_for_test(worker_less_scheduler_for_test());
-        let before = runtime::RUNTIME_INNER_DROPS.load(Ordering::SeqCst);
 
-        // Attempt to install a second runtime: rejected (slot occupied).
-        let installed = runtime::install_default(Box::new(RuntimeInner::new(
-            worker_less_scheduler_for_test(),
-        )));
+        // Attempt to install a second runtime: rejected (slot occupied). Bind a
+        // drop probe to the rejected runtime so the oracle counts only *its*
+        // free, immune to concurrent drops from parallel tests.
+        let rejected = Box::new(RuntimeInner::new(worker_less_scheduler_for_test()));
+        let probe = runtime::install_drop_probe_for_test(&raw const *rejected);
+        let installed = runtime::install_default(rejected);
         assert!(!installed, "second install must be rejected");
         // The rejected runtime is freed immediately, exactly once.
         assert_eq!(
-            runtime::RUNTIME_INNER_DROPS.load(Ordering::SeqCst),
-            before + 1,
+            probe.load(Ordering::SeqCst),
+            1,
             "install_default must free the rejected runtime exactly once"
         );
         // The originally-installed runtime is still the one in the slot.
@@ -5146,7 +5151,7 @@ mod tests {
     /// `drain_deferred_teardown_threads` → `rt_current()` would trap on a
     /// missing runtime mid-cleanup. A registered-but-not-yet-joined reaper that
     /// the cleanup joins is the proof the sweep saw an installed runtime; the
-    /// exact `RUNTIME_INNER_DROPS` delta proves the drop is the single final
+    /// exact per-instance drop-probe delta proves the drop is the single final
     /// step, never doubled and never driven by detaching the slot.
     #[test]
     fn runtime_cleanup_sweeps_before_detach_and_drops_runtime_once() {
@@ -5171,7 +5176,10 @@ mod tests {
             joined2.store(true, Ordering::Release);
         }));
 
-        let before = runtime::RUNTIME_INNER_DROPS.load(Ordering::SeqCst);
+        // Bind a per-instance drop probe to the installed runtime so the oracle
+        // counts only its own drop, immune to concurrent parallel-test drops.
+        let probe =
+            runtime::install_drop_probe_for_test(runtime::default_runtime_ptr(Ordering::SeqCst));
 
         let cleanup_done = std::sync::Arc::new(AtomicBool::new(false));
         let cleanup_done2 = std::sync::Arc::clone(&cleanup_done);
@@ -5193,8 +5201,8 @@ mod tests {
             "runtime must stay installed through the sweep — detach is the FINAL step"
         );
         assert_eq!(
-            runtime::RUNTIME_INNER_DROPS.load(Ordering::SeqCst),
-            before,
+            probe.load(Ordering::SeqCst),
+            0,
             "runtime must not be dropped before the sweep completes"
         );
 
@@ -5211,8 +5219,8 @@ mod tests {
             "cleanup must detach the runtime as its final step"
         );
         assert_eq!(
-            runtime::RUNTIME_INNER_DROPS.load(Ordering::SeqCst),
-            before + 1,
+            probe.load(Ordering::SeqCst),
+            1,
             "cleanup must drop the runtime exactly once as the final teardown step"
         );
     }
@@ -5256,7 +5264,10 @@ mod tests {
             }
         }));
 
-        let before = runtime::RUNTIME_INNER_DROPS.load(Ordering::SeqCst);
+        // Bind a per-instance drop probe to the installed runtime so the oracle
+        // counts only its own drop, immune to concurrent parallel-test drops.
+        let probe =
+            runtime::install_drop_probe_for_test(runtime::default_runtime_ptr(Ordering::SeqCst));
 
         let cleanup = thread::spawn(|| hew_runtime_cleanup());
 
@@ -5268,8 +5279,8 @@ mod tests {
             "runtime must stay installed through the supervisor-roots sweep"
         );
         assert_eq!(
-            runtime::RUNTIME_INNER_DROPS.load(Ordering::SeqCst),
-            before,
+            probe.load(Ordering::SeqCst),
+            0,
             "runtime must not be dropped before the supervisor-roots sweep completes"
         );
         assert!(
@@ -5287,8 +5298,8 @@ mod tests {
             "cleanup must detach the runtime as its final step"
         );
         assert_eq!(
-            runtime::RUNTIME_INNER_DROPS.load(Ordering::SeqCst),
-            before + 1,
+            probe.load(Ordering::SeqCst),
+            1,
             "cleanup must drop the runtime exactly once after sweeping supervisor roots"
         );
     }

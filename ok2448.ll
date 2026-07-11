@@ -1,0 +1,1249 @@
+; ModuleID = 'ok2448'
+source_filename = "ok2448"
+target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+target triple = "x86_64-unknown-linux-gnu"
+
+%Counter = type { i32 }
+%CrashInfo = type { i64, ptr }
+
+@str_actor_meta_name_Counter = private unnamed_addr constant [8 x i8] c"Counter\00", align 1
+@str_actor_meta_handler_Counter_0_ping = private unnamed_addr constant [5 x i8] c"ping\00", align 1
+@str_actor_type_name_Counter = private unnamed_addr constant [8 x i8] c"Counter\00", align 1
+@str_actor_handler_name_Counter_0_ping = private unnamed_addr constant [14 x i8] c"Counter::ping\00", align 1
+@str_lit = private unnamed_addr constant [3 x i8] c"ns\00", align 1
+
+declare void @hew_sleep_ns(i64)
+
+declare void @hew_sleep_until_ns(i64)
+
+declare void @hew_exit(i64)
+
+declare void @hew_panic_msg(ptr)
+
+declare void @hew_assert(i8)
+
+declare void @hew_print_value(i8, i64, i1)
+
+declare ptr @hew_int_to_string(i32)
+
+declare ptr @hew_i64_to_string(i64)
+
+declare ptr @hew_u8_to_string(i8)
+
+declare ptr @hew_uint_to_string(i32)
+
+declare ptr @hew_u64_to_string(i64)
+
+declare ptr @hew_float_to_string(double)
+
+declare ptr @hew_bool_to_string(i8)
+
+declare ptr @hew_char_to_string(i32)
+
+declare ptr @hew_string_clone(ptr)
+
+declare ptr @hew_string_concat(ptr, ptr)
+
+declare void @hew_assert_eq_i64(i64, i64)
+
+declare void @hew_assert_eq_u8(i8, i8)
+
+declare void @hew_assert_eq_str(ptr, ptr)
+
+declare void @hew_assert_eq_f64(double, double)
+
+declare void @hew_assert_eq_bool(i8, i8)
+
+declare void @hew_assert_ne_i64(i64, i64)
+
+declare void @hew_assert_ne_u8(i8, i8)
+
+declare void @hew_assert_ne_str(ptr, ptr)
+
+declare void @hew_assert_ne_f64(double, double)
+
+declare void @hew_assert_ne_bool(i8, i8)
+
+declare i32 @hew_string_length(ptr)
+
+declare i64 @hew_vec_len(ptr)
+
+declare i64 @hew_duration_nanos(i64)
+
+declare i64 @hew_duration_micros(i64)
+
+declare i64 @hew_duration_millis(i64)
+
+declare i64 @hew_duration_secs(i64)
+
+declare i64 @hew_duration_mins(i64)
+
+declare i64 @hew_duration_hours(i64)
+
+declare i64 @hew_duration_abs(i64)
+
+declare i32 @hew_duration_is_zero(i64)
+
+declare i64 @hew_instant_now()
+
+declare i64 @hew_instant_elapsed(i64)
+
+declare i64 @hew_instant_duration_since(i64, i64)
+
+declare i8 @hew_string_starts_with(ptr, ptr)
+
+declare i8 @hew_string_ends_with(ptr, ptr)
+
+declare i8 @hew_string_contains(ptr, ptr)
+
+declare i8 @hew_string_is_empty(ptr)
+
+declare i8 @hew_string_is_digit(ptr)
+
+declare i8 @hew_string_is_alpha(ptr)
+
+declare i8 @hew_string_is_alphanumeric(ptr)
+
+declare ptr @hew_string_trim(ptr)
+
+declare ptr @hew_string_to_lowercase(ptr)
+
+declare ptr @hew_string_to_uppercase(ptr)
+
+declare void @hew_string_to_bytes_raw(ptr, ptr)
+
+declare ptr @hew_string_replace(ptr, ptr, ptr)
+
+declare ptr @hew_string_split(ptr, ptr)
+
+declare ptr @hew_string_lines(ptr)
+
+declare ptr @hew_string_slice(ptr, i64, i64)
+
+declare ptr @hew_string_repeat(ptr, i64)
+
+declare ptr @hew_string_chars(ptr)
+
+declare i32 @hew_string_char_count(ptr)
+
+declare void @hew_vec_push_bool(ptr, i1)
+
+declare void @hew_vec_push_i8(ptr, i8)
+
+declare void @hew_vec_push_u8(ptr, i8)
+
+declare void @hew_vec_push_i16(ptr, i16)
+
+declare void @hew_vec_push_u16(ptr, i16)
+
+declare void @hew_vec_push_i32(ptr, i32)
+
+declare void @hew_vec_push_i64(ptr, i64)
+
+declare void @hew_vec_push_f64(ptr, double)
+
+declare void @hew_vec_push_f32(ptr, float)
+
+declare void @hew_vec_push_str(ptr, ptr)
+
+declare void @hew_vec_push_ptr(ptr, ptr)
+
+declare i1 @hew_vec_pop_bool(ptr)
+
+declare i8 @hew_vec_pop_i8(ptr)
+
+declare i8 @hew_vec_pop_u8(ptr)
+
+declare i16 @hew_vec_pop_i16(ptr)
+
+declare i16 @hew_vec_pop_u16(ptr)
+
+declare i32 @hew_vec_pop_i32(ptr)
+
+declare i64 @hew_vec_pop_i64(ptr)
+
+declare double @hew_vec_pop_f64(ptr)
+
+declare float @hew_vec_pop_f32(ptr)
+
+declare ptr @hew_vec_pop_str(ptr)
+
+declare ptr @hew_vec_pop_ptr(ptr)
+
+declare i1 @hew_vec_get_bool(ptr, i64)
+
+declare i8 @hew_vec_get_i8(ptr, i64)
+
+declare i8 @hew_vec_get_u8(ptr, i64)
+
+declare i16 @hew_vec_get_i16(ptr, i64)
+
+declare i16 @hew_vec_get_u16(ptr, i64)
+
+declare i32 @hew_vec_get_i32(ptr, i64)
+
+declare i64 @hew_vec_get_i64(ptr, i64)
+
+declare double @hew_vec_get_f64(ptr, i64)
+
+declare float @hew_vec_get_f32(ptr, i64)
+
+declare ptr @hew_vec_get_str(ptr, i64)
+
+declare ptr @hew_vec_get_ptr(ptr, i64)
+
+declare void @hew_vec_set_bool(ptr, i64, i1)
+
+declare void @hew_vec_set_i8(ptr, i64, i8)
+
+declare void @hew_vec_set_u8(ptr, i64, i8)
+
+declare void @hew_vec_set_i16(ptr, i64, i16)
+
+declare void @hew_vec_set_u16(ptr, i64, i16)
+
+declare void @hew_vec_set_i32(ptr, i64, i32)
+
+declare void @hew_vec_set_i64(ptr, i64, i64)
+
+declare void @hew_vec_set_f64(ptr, i64, double)
+
+declare void @hew_vec_set_f32(ptr, i64, float)
+
+declare void @hew_vec_set_str(ptr, i64, ptr)
+
+declare void @hew_vec_set_ptr(ptr, i64, ptr)
+
+declare i8 @hew_vec_is_empty(ptr)
+
+declare void @hew_vec_clear(ptr)
+
+declare i8 @hew_vec_contains_i32(ptr, i32)
+
+declare i8 @hew_vec_contains_i64(ptr, i64)
+
+declare i8 @hew_vec_contains_f64(ptr, double)
+
+declare i8 @hew_vec_contains_str(ptr, ptr)
+
+declare ptr @hew_bytes_to_string(ptr)
+
+declare void @hew_vec_append(ptr, ptr)
+
+declare i1 @hew_vec_remove_at_bool(ptr, i64)
+
+declare i8 @hew_vec_remove_at_i8(ptr, i64)
+
+declare i8 @hew_vec_remove_at_u8(ptr, i64)
+
+declare i16 @hew_vec_remove_at_i16(ptr, i64)
+
+declare i16 @hew_vec_remove_at_u16(ptr, i64)
+
+declare i32 @hew_vec_remove_at_i32(ptr, i64)
+
+declare i64 @hew_vec_remove_at_i64(ptr, i64)
+
+declare float @hew_vec_remove_at_f32(ptr, i64)
+
+declare double @hew_vec_remove_at_f64(ptr, i64)
+
+declare ptr @hew_vec_remove_at_str(ptr, i64)
+
+declare ptr @hew_vec_remove_at_ptr(ptr, i64)
+
+declare ptr @hew_vec_clone(ptr)
+
+declare ptr @hew_vec_join_str(ptr, ptr)
+
+declare void @hew_random_seed(i64)
+
+declare double @hew_random_random()
+
+declare double @hew_random_gauss(double, double)
+
+declare i64 @hew_random_randint(i64, i64)
+
+declare void @hew_random_shuffle_i64(ptr)
+
+declare i64 @hew_random_choices_vec(ptr, double, i64)
+
+declare void @hew_node_api_set_transport(ptr)
+
+declare void @hew_node_api_start(ptr)
+
+declare void @hew_node_api_connect(ptr)
+
+declare void @hew_node_api_shutdown()
+
+declare void @hew_node_api_load_keys(ptr)
+
+declare void @hew_node_api_allow_peer(ptr)
+
+declare i64 @hew_actor_pid(ptr)
+
+declare i32 @hew_node_api_register_by_pid(ptr, i64)
+
+declare i64 @hew_remote_pid_from_raw(i64, i64)
+
+declare i64 @hew_node_api_lookup(ptr)
+
+declare ptr @hew_stream_channel(i64)
+
+declare ptr @hew_stream_pair_sink(ptr)
+
+declare ptr @hew_stream_pair_stream(ptr)
+
+declare void @hew_stream_pair_free(ptr)
+
+declare void @hew_sink_close(ptr)
+
+declare i32 @hew_sink_peer_closed(ptr)
+
+declare void @hew_actor_gen_sink_register(ptr, ptr)
+
+declare void @hew_actor_gen_sink_complete(ptr, ptr)
+
+define internal i8 @Counter__init(ptr %0, i32 %1) {
+entry:
+  %return_slot = alloca i8, align 1
+  %local_0 = alloca i32, align 4
+  store i32 %1, ptr %local_0, align 4
+  br label %bb0
+
+bb0:                                              ; preds = %entry
+  ret i8 0
+}
+
+define internal i32 @Counter__recv__ping(ptr %0, i32 %1) {
+entry:
+  %return_slot = alloca i32, align 4
+  %local_0 = alloca i32, align 4
+  br label %bb0
+
+bb0:                                              ; preds = %entry
+  store i32 0, ptr %local_0, align 4
+  %move_load = load i32, ptr %local_0, align 4
+  store i32 %move_load, ptr %return_slot, align 4
+  %ret_val = load i32, ptr %return_slot, align 4
+  ret i32 %ret_val
+}
+
+define i8 @main() {
+entry:
+  %return_slot = alloca i8, align 1
+  %local_0 = alloca i32, align 4
+  %local_1 = alloca %Counter, align 8
+  %local_2 = alloca i32, align 4
+  %local_3 = alloca ptr, align 8
+  %hew_sched_init_entry_call = call i32 @hew_sched_init()
+  br label %bb0
+
+bb0:                                              ; preds = %entry
+  store i32 5, ptr %local_0, align 4
+  store i32 5, ptr %local_2, align 4
+  %field_0_init_ptr = getelementptr inbounds nuw %Counter, ptr %local_1, i32 0, i32 0
+  %field_0_init_src = load i32, ptr %local_2, align 4
+  store i32 %field_0_init_src, ptr %field_0_init_ptr, align 4
+  %hew_sched_init_call = call i32 @hew_sched_init()
+  %actor_meta_handlers_Counter = alloca [1 x { ptr, i32, i32, ptr, ptr, i32 }], align 8
+  %actor_meta_handler_0 = getelementptr [1 x { ptr, i32, i32, ptr, ptr, i32 }], ptr %actor_meta_handlers_Counter, i32 0, i32 0
+  %actor_meta_handler_0_f0 = getelementptr inbounds nuw { ptr, i32, i32, ptr, ptr, i32 }, ptr %actor_meta_handler_0, i32 0, i32 0
+  store ptr @str_actor_meta_handler_Counter_0_ping, ptr %actor_meta_handler_0_f0, align 8
+  %actor_meta_handler_0_f1 = getelementptr inbounds nuw { ptr, i32, i32, ptr, ptr, i32 }, ptr %actor_meta_handler_0, i32 0, i32 1
+  store i32 -257771385, ptr %actor_meta_handler_0_f1, align 4
+  %actor_meta_handler_0_f2 = getelementptr inbounds nuw { ptr, i32, i32, ptr, ptr, i32 }, ptr %actor_meta_handler_0, i32 0, i32 2
+  store i32 0, ptr %actor_meta_handler_0_f2, align 4
+  %actor_meta_handler_0_f3 = getelementptr inbounds nuw { ptr, i32, i32, ptr, ptr, i32 }, ptr %actor_meta_handler_0, i32 0, i32 3
+  store ptr null, ptr %actor_meta_handler_0_f3, align 8
+  %actor_meta_handler_0_f4 = getelementptr inbounds nuw { ptr, i32, i32, ptr, ptr, i32 }, ptr %actor_meta_handler_0, i32 0, i32 4
+  store ptr null, ptr %actor_meta_handler_0_f4, align 8
+  %actor_meta_handler_0_f5 = getelementptr inbounds nuw { ptr, i32, i32, ptr, ptr, i32 }, ptr %actor_meta_handler_0, i32 0, i32 5
+  store i32 0, ptr %actor_meta_handler_0_f5, align 4
+  %actor_meta_handlers_ptr = getelementptr [1 x { ptr, i32, i32, ptr, ptr, i32 }], ptr %actor_meta_handlers_Counter, i32 0, i32 0
+  %actor_meta_Counter = alloca { ptr, i32, ptr }, align 8
+  %actor_meta_f0 = getelementptr inbounds nuw { ptr, i32, ptr }, ptr %actor_meta_Counter, i32 0, i32 0
+  store ptr @str_actor_meta_name_Counter, ptr %actor_meta_f0, align 8
+  %actor_meta_f1 = getelementptr inbounds nuw { ptr, i32, ptr }, ptr %actor_meta_Counter, i32 0, i32 1
+  store i32 1, ptr %actor_meta_f1, align 4
+  %actor_meta_f2 = getelementptr inbounds nuw { ptr, i32, ptr }, ptr %actor_meta_Counter, i32 0, i32 2
+  store ptr %actor_meta_handlers_ptr, ptr %actor_meta_f2, align 8
+  call void @hew_wasm_register_actor_meta(ptr %actor_meta_Counter)
+  call void @hew_actor_register_type(ptr @__hew_actor_dispatch_Counter, ptr @str_actor_type_name_Counter)
+  call void @hew_register_handler_name(ptr @__hew_actor_dispatch_Counter, i32 -257771385, ptr @str_actor_handler_name_Counter_0_ping)
+  %hew_actor_spawn_call = call ptr @hew_actor_spawn(ptr %local_1, i64 ptrtoint (ptr getelementptr (%Counter, ptr null, i32 1) to i64), ptr @__hew_actor_dispatch_Counter)
+  call void @hew_actor_set_state_drop(ptr %hew_actor_spawn_call, ptr @__hew_state_drop_Counter)
+  call void @hew_actor_set_state_clone(ptr %hew_actor_spawn_call, ptr @__hew_state_clone_Counter)
+  %actor_init_arg_0_load = load i32, ptr %local_0, align 4
+  %actor_spawn_lifecycle_ctx = alloca [16 x i64], align 8
+  store [16 x i64] zeroinitializer, ptr %actor_spawn_lifecycle_ctx, align 8
+  %ctx_actor_slot = getelementptr i8, ptr %actor_spawn_lifecycle_ctx, i64 0
+  store ptr %hew_actor_spawn_call, ptr %ctx_actor_slot, align 8
+  %actor_id_slot = getelementptr i8, ptr %hew_actor_spawn_call, i64 8
+  %actor_id = load i64, ptr %actor_id_slot, align 8
+  %ctx_actor_id_slot = getelementptr i8, ptr %actor_spawn_lifecycle_ctx, i64 8
+  store i64 %actor_id, ptr %ctx_actor_id_slot, align 8
+  %lifecycle_ctx_install = call ptr @hew_context_install(ptr %actor_spawn_lifecycle_ctx)
+  %hew_actor_state_lock_acquire_call = call i32 @hew_actor_state_lock_acquire(ptr %hew_actor_spawn_call)
+  %hew_actor_state_lock_acquire_ok = icmp eq i32 %hew_actor_state_lock_acquire_call, 0
+  br i1 %hew_actor_state_lock_acquire_ok, label %hew_actor_state_lock_acquire_ok_bb, label %hew_actor_state_lock_acquire_trap_bb
+
+hew_actor_state_lock_acquire_ok_bb:               ; preds = %bb0
+  %call_Counter__init = call i8 @Counter__init(ptr %actor_spawn_lifecycle_ctx, i32 %actor_init_arg_0_load)
+  %hew_actor_state_lock_release_call = call i32 @hew_actor_state_lock_release(ptr %hew_actor_spawn_call)
+  %hew_actor_state_lock_release_ok = icmp eq i32 %hew_actor_state_lock_release_call, 0
+  br i1 %hew_actor_state_lock_release_ok, label %hew_actor_state_lock_release_ok_bb, label %hew_actor_state_lock_release_trap_bb
+
+hew_actor_state_lock_acquire_trap_bb:             ; preds = %bb0
+  call void @llvm.trap()
+  unreachable
+
+hew_actor_state_lock_release_ok_bb:               ; preds = %hew_actor_state_lock_acquire_ok_bb
+  call void @hew_context_restore(ptr %lifecycle_ctx_install)
+  store ptr %hew_actor_spawn_call, ptr %local_3, align 8
+  call void @hew_shutdown_initiate_implicit(i64 0)
+  %hew_shutdown_wait_call = call i32 @hew_shutdown_wait()
+  %hew_lambda_drain_all_call = call i32 @hew_lambda_drain_all(i64 0)
+  call void @hew_runtime_cleanup_after_main()
+  ret i8 0
+
+hew_actor_state_lock_release_trap_bb:             ; preds = %hew_actor_state_lock_acquire_ok_bb
+  call void @llvm.trap()
+  unreachable
+}
+
+define internal ptr @"i8::fmt"(i8 %0) {
+entry:
+  %return_slot = alloca ptr, align 8
+  %local_0 = alloca i8, align 1
+  %local_1 = alloca i32, align 4
+  %local_2 = alloca ptr, align 8
+  store i8 %0, ptr %local_0, align 1
+  %hew_actor_cooperate = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
+  br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
+
+bb0:                                              ; preds = %after_cooperate
+  %cast_int_src = load i8, ptr %local_0, align 1
+  %cast_int_sext = sext i8 %cast_int_src to i32
+  store i32 %cast_int_sext, ptr %local_1, align 4
+  %call_arg = load i32, ptr %local_1, align 4
+  %call_result = call ptr @hew_int_to_string(i32 %call_arg)
+  store ptr %call_result, ptr %local_2, align 8
+  br label %bb1
+
+bb1:                                              ; preds = %bb0
+  %move_load = load ptr, ptr %local_2, align 8
+  store ptr %move_load, ptr %return_slot, align 8
+  %ret_val = load ptr, ptr %return_slot, align 8
+  ret ptr %ret_val
+
+cancel_exit:                                      ; preds = %entry
+  ret ptr null
+
+after_cooperate:                                  ; preds = %entry
+  br label %bb0
+}
+
+define internal ptr @"i16::fmt"(i16 %0) {
+entry:
+  %return_slot = alloca ptr, align 8
+  %local_0 = alloca i16, align 2
+  %local_1 = alloca i32, align 4
+  %local_2 = alloca ptr, align 8
+  store i16 %0, ptr %local_0, align 2
+  %hew_actor_cooperate = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
+  br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
+
+bb0:                                              ; preds = %after_cooperate
+  %cast_int_src = load i16, ptr %local_0, align 2
+  %cast_int_sext = sext i16 %cast_int_src to i32
+  store i32 %cast_int_sext, ptr %local_1, align 4
+  %call_arg = load i32, ptr %local_1, align 4
+  %call_result = call ptr @hew_int_to_string(i32 %call_arg)
+  store ptr %call_result, ptr %local_2, align 8
+  br label %bb1
+
+bb1:                                              ; preds = %bb0
+  %move_load = load ptr, ptr %local_2, align 8
+  store ptr %move_load, ptr %return_slot, align 8
+  %ret_val = load ptr, ptr %return_slot, align 8
+  ret ptr %ret_val
+
+cancel_exit:                                      ; preds = %entry
+  ret ptr null
+
+after_cooperate:                                  ; preds = %entry
+  br label %bb0
+}
+
+define internal ptr @"i32::fmt"(i32 %0) {
+entry:
+  %return_slot = alloca ptr, align 8
+  %local_0 = alloca i32, align 4
+  %local_1 = alloca ptr, align 8
+  store i32 %0, ptr %local_0, align 4
+  %hew_actor_cooperate = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
+  br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
+
+bb0:                                              ; preds = %after_cooperate
+  %call_arg = load i32, ptr %local_0, align 4
+  %call_result = call ptr @hew_int_to_string(i32 %call_arg)
+  store ptr %call_result, ptr %local_1, align 8
+  br label %bb1
+
+bb1:                                              ; preds = %bb0
+  %move_load = load ptr, ptr %local_1, align 8
+  store ptr %move_load, ptr %return_slot, align 8
+  %ret_val = load ptr, ptr %return_slot, align 8
+  ret ptr %ret_val
+
+cancel_exit:                                      ; preds = %entry
+  ret ptr null
+
+after_cooperate:                                  ; preds = %entry
+  br label %bb0
+}
+
+define internal ptr @"i64::fmt"(i64 %0) {
+entry:
+  %return_slot = alloca ptr, align 8
+  %local_0 = alloca i64, align 8
+  %local_1 = alloca ptr, align 8
+  store i64 %0, ptr %local_0, align 8
+  %hew_actor_cooperate = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
+  br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
+
+bb0:                                              ; preds = %after_cooperate
+  %call_arg = load i64, ptr %local_0, align 8
+  %call_result = call ptr @hew_i64_to_string(i64 %call_arg)
+  store ptr %call_result, ptr %local_1, align 8
+  br label %bb1
+
+bb1:                                              ; preds = %bb0
+  %move_load = load ptr, ptr %local_1, align 8
+  store ptr %move_load, ptr %return_slot, align 8
+  %ret_val = load ptr, ptr %return_slot, align 8
+  ret ptr %ret_val
+
+cancel_exit:                                      ; preds = %entry
+  ret ptr null
+
+after_cooperate:                                  ; preds = %entry
+  br label %bb0
+}
+
+define internal ptr @"u8::fmt"(i8 %0) {
+entry:
+  %return_slot = alloca ptr, align 8
+  %local_0 = alloca i8, align 1
+  %local_1 = alloca ptr, align 8
+  store i8 %0, ptr %local_0, align 1
+  %hew_actor_cooperate = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
+  br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
+
+bb0:                                              ; preds = %after_cooperate
+  %call_arg = load i8, ptr %local_0, align 1
+  %call_result = call ptr @hew_u8_to_string(i8 %call_arg)
+  store ptr %call_result, ptr %local_1, align 8
+  br label %bb1
+
+bb1:                                              ; preds = %bb0
+  %move_load = load ptr, ptr %local_1, align 8
+  store ptr %move_load, ptr %return_slot, align 8
+  %ret_val = load ptr, ptr %return_slot, align 8
+  ret ptr %ret_val
+
+cancel_exit:                                      ; preds = %entry
+  ret ptr null
+
+after_cooperate:                                  ; preds = %entry
+  br label %bb0
+}
+
+define internal ptr @"u16::fmt"(i16 %0) {
+entry:
+  %return_slot = alloca ptr, align 8
+  %local_0 = alloca i16, align 2
+  %local_1 = alloca ptr, align 8
+  store i16 %0, ptr %local_0, align 2
+  %hew_actor_cooperate = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
+  br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
+
+bb0:                                              ; preds = %after_cooperate
+  %call_arg = load i16, ptr %local_0, align 2
+  %ffi_zext = zext i16 %call_arg to i32
+  %call_result = call ptr @hew_uint_to_string(i32 %ffi_zext)
+  store ptr %call_result, ptr %local_1, align 8
+  br label %bb1
+
+bb1:                                              ; preds = %bb0
+  %move_load = load ptr, ptr %local_1, align 8
+  store ptr %move_load, ptr %return_slot, align 8
+  %ret_val = load ptr, ptr %return_slot, align 8
+  ret ptr %ret_val
+
+cancel_exit:                                      ; preds = %entry
+  ret ptr null
+
+after_cooperate:                                  ; preds = %entry
+  br label %bb0
+}
+
+define internal ptr @"u32::fmt"(i32 %0) {
+entry:
+  %return_slot = alloca ptr, align 8
+  %local_0 = alloca i32, align 4
+  %local_1 = alloca ptr, align 8
+  store i32 %0, ptr %local_0, align 4
+  %hew_actor_cooperate = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
+  br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
+
+bb0:                                              ; preds = %after_cooperate
+  %call_arg = load i32, ptr %local_0, align 4
+  %call_result = call ptr @hew_uint_to_string(i32 %call_arg)
+  store ptr %call_result, ptr %local_1, align 8
+  br label %bb1
+
+bb1:                                              ; preds = %bb0
+  %move_load = load ptr, ptr %local_1, align 8
+  store ptr %move_load, ptr %return_slot, align 8
+  %ret_val = load ptr, ptr %return_slot, align 8
+  ret ptr %ret_val
+
+cancel_exit:                                      ; preds = %entry
+  ret ptr null
+
+after_cooperate:                                  ; preds = %entry
+  br label %bb0
+}
+
+define internal ptr @"u64::fmt"(i64 %0) {
+entry:
+  %return_slot = alloca ptr, align 8
+  %local_0 = alloca i64, align 8
+  %local_1 = alloca ptr, align 8
+  store i64 %0, ptr %local_0, align 8
+  %hew_actor_cooperate = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
+  br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
+
+bb0:                                              ; preds = %after_cooperate
+  %call_arg = load i64, ptr %local_0, align 8
+  %call_result = call ptr @hew_u64_to_string(i64 %call_arg)
+  store ptr %call_result, ptr %local_1, align 8
+  br label %bb1
+
+bb1:                                              ; preds = %bb0
+  %move_load = load ptr, ptr %local_1, align 8
+  store ptr %move_load, ptr %return_slot, align 8
+  %ret_val = load ptr, ptr %return_slot, align 8
+  ret ptr %ret_val
+
+cancel_exit:                                      ; preds = %entry
+  ret ptr null
+
+after_cooperate:                                  ; preds = %entry
+  br label %bb0
+}
+
+define internal ptr @"isize::fmt"(i64 %0) {
+entry:
+  %return_slot = alloca ptr, align 8
+  %local_0 = alloca i64, align 8
+  %local_1 = alloca i64, align 8
+  %local_2 = alloca ptr, align 8
+  store i64 %0, ptr %local_0, align 8
+  %hew_actor_cooperate = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
+  br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
+
+bb0:                                              ; preds = %after_cooperate
+  %cast_int_src = load i64, ptr %local_0, align 8
+  store i64 %cast_int_src, ptr %local_1, align 8
+  %call_arg = load i64, ptr %local_1, align 8
+  %call_result = call ptr @hew_i64_to_string(i64 %call_arg)
+  store ptr %call_result, ptr %local_2, align 8
+  br label %bb1
+
+bb1:                                              ; preds = %bb0
+  %move_load = load ptr, ptr %local_2, align 8
+  store ptr %move_load, ptr %return_slot, align 8
+  %ret_val = load ptr, ptr %return_slot, align 8
+  ret ptr %ret_val
+
+cancel_exit:                                      ; preds = %entry
+  ret ptr null
+
+after_cooperate:                                  ; preds = %entry
+  br label %bb0
+}
+
+define internal ptr @"usize::fmt"(i64 %0) {
+entry:
+  %return_slot = alloca ptr, align 8
+  %local_0 = alloca i64, align 8
+  %local_1 = alloca i64, align 8
+  %local_2 = alloca ptr, align 8
+  store i64 %0, ptr %local_0, align 8
+  %hew_actor_cooperate = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
+  br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
+
+bb0:                                              ; preds = %after_cooperate
+  %cast_int_src = load i64, ptr %local_0, align 8
+  store i64 %cast_int_src, ptr %local_1, align 8
+  %call_arg = load i64, ptr %local_1, align 8
+  %call_result = call ptr @hew_u64_to_string(i64 %call_arg)
+  store ptr %call_result, ptr %local_2, align 8
+  br label %bb1
+
+bb1:                                              ; preds = %bb0
+  %move_load = load ptr, ptr %local_2, align 8
+  store ptr %move_load, ptr %return_slot, align 8
+  %ret_val = load ptr, ptr %return_slot, align 8
+  ret ptr %ret_val
+
+cancel_exit:                                      ; preds = %entry
+  ret ptr null
+
+after_cooperate:                                  ; preds = %entry
+  br label %bb0
+}
+
+define internal ptr @"bool::fmt"(i8 %0) {
+entry:
+  %return_slot = alloca ptr, align 8
+  %local_0 = alloca i8, align 1
+  %local_1 = alloca ptr, align 8
+  store i8 %0, ptr %local_0, align 1
+  %hew_actor_cooperate = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
+  br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
+
+bb0:                                              ; preds = %after_cooperate
+  %call_arg = load i8, ptr %local_0, align 1
+  %call_result = call ptr @hew_bool_to_string(i8 %call_arg)
+  store ptr %call_result, ptr %local_1, align 8
+  br label %bb1
+
+bb1:                                              ; preds = %bb0
+  %move_load = load ptr, ptr %local_1, align 8
+  store ptr %move_load, ptr %return_slot, align 8
+  %ret_val = load ptr, ptr %return_slot, align 8
+  ret ptr %ret_val
+
+cancel_exit:                                      ; preds = %entry
+  ret ptr null
+
+after_cooperate:                                  ; preds = %entry
+  br label %bb0
+}
+
+define internal ptr @"char::fmt"(i32 %0) {
+entry:
+  %return_slot = alloca ptr, align 8
+  %local_0 = alloca i32, align 4
+  %local_1 = alloca ptr, align 8
+  store i32 %0, ptr %local_0, align 4
+  %hew_actor_cooperate = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
+  br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
+
+bb0:                                              ; preds = %after_cooperate
+  %call_arg = load i32, ptr %local_0, align 4
+  %call_result = call ptr @hew_char_to_string(i32 %call_arg)
+  store ptr %call_result, ptr %local_1, align 8
+  br label %bb1
+
+bb1:                                              ; preds = %bb0
+  %move_load = load ptr, ptr %local_1, align 8
+  store ptr %move_load, ptr %return_slot, align 8
+  %ret_val = load ptr, ptr %return_slot, align 8
+  ret ptr %ret_val
+
+cancel_exit:                                      ; preds = %entry
+  ret ptr null
+
+after_cooperate:                                  ; preds = %entry
+  br label %bb0
+}
+
+define internal ptr @"f64::fmt"(double %0) {
+entry:
+  %return_slot = alloca ptr, align 8
+  %local_0 = alloca double, align 8
+  %local_1 = alloca ptr, align 8
+  store double %0, ptr %local_0, align 8
+  %hew_actor_cooperate = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
+  br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
+
+bb0:                                              ; preds = %after_cooperate
+  %call_arg = load double, ptr %local_0, align 8
+  %call_result = call ptr @hew_float_to_string(double %call_arg)
+  store ptr %call_result, ptr %local_1, align 8
+  br label %bb1
+
+bb1:                                              ; preds = %bb0
+  %move_load = load ptr, ptr %local_1, align 8
+  store ptr %move_load, ptr %return_slot, align 8
+  %ret_val = load ptr, ptr %return_slot, align 8
+  ret ptr %ret_val
+
+cancel_exit:                                      ; preds = %entry
+  ret ptr null
+
+after_cooperate:                                  ; preds = %entry
+  br label %bb0
+}
+
+define internal ptr @"f32::fmt"(float %0) {
+entry:
+  %return_slot = alloca ptr, align 8
+  %local_0 = alloca float, align 4
+  %local_1 = alloca double, align 8
+  %local_2 = alloca ptr, align 8
+  store float %0, ptr %local_0, align 4
+  %hew_actor_cooperate = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
+  br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
+
+bb0:                                              ; preds = %after_cooperate
+  %cast_float_src = load float, ptr %local_0, align 4
+  %cast_float_ext = fpext float %cast_float_src to double
+  store double %cast_float_ext, ptr %local_1, align 8
+  %call_arg = load double, ptr %local_1, align 8
+  %call_result = call ptr @hew_float_to_string(double %call_arg)
+  store ptr %call_result, ptr %local_2, align 8
+  br label %bb1
+
+bb1:                                              ; preds = %bb0
+  %move_load = load ptr, ptr %local_2, align 8
+  store ptr %move_load, ptr %return_slot, align 8
+  %ret_val = load ptr, ptr %return_slot, align 8
+  ret ptr %ret_val
+
+cancel_exit:                                      ; preds = %entry
+  ret ptr null
+
+after_cooperate:                                  ; preds = %entry
+  br label %bb0
+}
+
+define internal ptr @"string::fmt"(ptr %0) {
+entry:
+  %return_slot = alloca ptr, align 8
+  %local_0 = alloca ptr, align 8
+  store ptr %0, ptr %local_0, align 8
+  br label %bb0
+
+bb0:                                              ; preds = %entry
+  %move_load = load ptr, ptr %local_0, align 8
+  store ptr %move_load, ptr %return_slot, align 8
+  %ret_val = load ptr, ptr %return_slot, align 8
+  ret ptr %ret_val
+}
+
+define internal i64 @"duration::from_nanos"(i64 %0) {
+entry:
+  %return_slot = alloca i64, align 8
+  %local_0 = alloca i64, align 8
+  %local_1 = alloca i64, align 8
+  %local_2 = alloca i64, align 8
+  %local_3 = alloca i8, align 1
+  store i64 %0, ptr %local_0, align 8
+  br label %bb0
+
+bb0:                                              ; preds = %entry
+  store i64 1, ptr %local_1, align 8
+  %checked_lhs = load i64, ptr %local_0, align 8
+  %checked_rhs = load i64, ptr %local_1, align 8
+  %with_overflow = call { i64, i1 } @llvm.smul.with.overflow.i64(i64 %checked_lhs, i64 %checked_rhs)
+  %checked_result = extractvalue { i64, i1 } %with_overflow, 0
+  %checked_overflow = extractvalue { i64, i1 } %with_overflow, 1
+  %checked_overflow_widen = zext i1 %checked_overflow to i8
+  store i64 %checked_result, ptr %local_2, align 8
+  store i8 %checked_overflow_widen, ptr %local_3, align 1
+  %cond_load = load i8, ptr %local_3, align 1
+  %cond_nz = icmp ne i8 %cond_load, 0
+  br i1 %cond_nz, label %bb1, label %bb2
+
+bb1:                                              ; preds = %bb0
+  call void @hew_trap_with_code(i32 201)
+  call void @llvm.trap()
+  unreachable
+
+bb2:                                              ; preds = %bb0
+  %move_load = load i64, ptr %local_2, align 8
+  store i64 %move_load, ptr %return_slot, align 8
+  %ret_val = load i64, ptr %return_slot, align 8
+  ret i64 %ret_val
+}
+
+define internal i64 @"duration::from_micros"(i64 %0) {
+entry:
+  %return_slot = alloca i64, align 8
+  %local_0 = alloca i64, align 8
+  %local_1 = alloca i64, align 8
+  %local_2 = alloca i64, align 8
+  %local_3 = alloca i8, align 1
+  store i64 %0, ptr %local_0, align 8
+  br label %bb0
+
+bb0:                                              ; preds = %entry
+  store i64 1000, ptr %local_1, align 8
+  %checked_lhs = load i64, ptr %local_0, align 8
+  %checked_rhs = load i64, ptr %local_1, align 8
+  %with_overflow = call { i64, i1 } @llvm.smul.with.overflow.i64(i64 %checked_lhs, i64 %checked_rhs)
+  %checked_result = extractvalue { i64, i1 } %with_overflow, 0
+  %checked_overflow = extractvalue { i64, i1 } %with_overflow, 1
+  %checked_overflow_widen = zext i1 %checked_overflow to i8
+  store i64 %checked_result, ptr %local_2, align 8
+  store i8 %checked_overflow_widen, ptr %local_3, align 1
+  %cond_load = load i8, ptr %local_3, align 1
+  %cond_nz = icmp ne i8 %cond_load, 0
+  br i1 %cond_nz, label %bb1, label %bb2
+
+bb1:                                              ; preds = %bb0
+  call void @hew_trap_with_code(i32 201)
+  call void @llvm.trap()
+  unreachable
+
+bb2:                                              ; preds = %bb0
+  %move_load = load i64, ptr %local_2, align 8
+  store i64 %move_load, ptr %return_slot, align 8
+  %ret_val = load i64, ptr %return_slot, align 8
+  ret i64 %ret_val
+}
+
+define internal i64 @"duration::from_millis"(i64 %0) {
+entry:
+  %return_slot = alloca i64, align 8
+  %local_0 = alloca i64, align 8
+  %local_1 = alloca i64, align 8
+  %local_2 = alloca i64, align 8
+  %local_3 = alloca i8, align 1
+  store i64 %0, ptr %local_0, align 8
+  br label %bb0
+
+bb0:                                              ; preds = %entry
+  store i64 1000000, ptr %local_1, align 8
+  %checked_lhs = load i64, ptr %local_0, align 8
+  %checked_rhs = load i64, ptr %local_1, align 8
+  %with_overflow = call { i64, i1 } @llvm.smul.with.overflow.i64(i64 %checked_lhs, i64 %checked_rhs)
+  %checked_result = extractvalue { i64, i1 } %with_overflow, 0
+  %checked_overflow = extractvalue { i64, i1 } %with_overflow, 1
+  %checked_overflow_widen = zext i1 %checked_overflow to i8
+  store i64 %checked_result, ptr %local_2, align 8
+  store i8 %checked_overflow_widen, ptr %local_3, align 1
+  %cond_load = load i8, ptr %local_3, align 1
+  %cond_nz = icmp ne i8 %cond_load, 0
+  br i1 %cond_nz, label %bb1, label %bb2
+
+bb1:                                              ; preds = %bb0
+  call void @hew_trap_with_code(i32 201)
+  call void @llvm.trap()
+  unreachable
+
+bb2:                                              ; preds = %bb0
+  %move_load = load i64, ptr %local_2, align 8
+  store i64 %move_load, ptr %return_slot, align 8
+  %ret_val = load i64, ptr %return_slot, align 8
+  ret i64 %ret_val
+}
+
+define internal i64 @"duration::from_secs"(i64 %0) {
+entry:
+  %return_slot = alloca i64, align 8
+  %local_0 = alloca i64, align 8
+  %local_1 = alloca i64, align 8
+  %local_2 = alloca i64, align 8
+  %local_3 = alloca i8, align 1
+  store i64 %0, ptr %local_0, align 8
+  br label %bb0
+
+bb0:                                              ; preds = %entry
+  store i64 1000000000, ptr %local_1, align 8
+  %checked_lhs = load i64, ptr %local_0, align 8
+  %checked_rhs = load i64, ptr %local_1, align 8
+  %with_overflow = call { i64, i1 } @llvm.smul.with.overflow.i64(i64 %checked_lhs, i64 %checked_rhs)
+  %checked_result = extractvalue { i64, i1 } %with_overflow, 0
+  %checked_overflow = extractvalue { i64, i1 } %with_overflow, 1
+  %checked_overflow_widen = zext i1 %checked_overflow to i8
+  store i64 %checked_result, ptr %local_2, align 8
+  store i8 %checked_overflow_widen, ptr %local_3, align 1
+  %cond_load = load i8, ptr %local_3, align 1
+  %cond_nz = icmp ne i8 %cond_load, 0
+  br i1 %cond_nz, label %bb1, label %bb2
+
+bb1:                                              ; preds = %bb0
+  call void @hew_trap_with_code(i32 201)
+  call void @llvm.trap()
+  unreachable
+
+bb2:                                              ; preds = %bb0
+  %move_load = load i64, ptr %local_2, align 8
+  store i64 %move_load, ptr %return_slot, align 8
+  %ret_val = load i64, ptr %return_slot, align 8
+  ret i64 %ret_val
+}
+
+define internal ptr @"duration::fmt"(i64 %0) {
+entry:
+  %return_slot = alloca ptr, align 8
+  %local_0 = alloca i64, align 8
+  %local_1 = alloca i64, align 8
+  %local_2 = alloca ptr, align 8
+  %local_3 = alloca ptr, align 8
+  %local_4 = alloca ptr, align 8
+  store i64 %0, ptr %local_0, align 8
+  %hew_actor_cooperate = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
+  br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
+
+bb0:                                              ; preds = %after_cooperate
+  %hew_duration_nanos = load i64, ptr %local_0, align 8
+  %hew_duration_nanos_call = call i64 @hew_duration_nanos(i64 %hew_duration_nanos)
+  store i64 %hew_duration_nanos_call, ptr %local_1, align 8
+  %call_arg = load i64, ptr %local_1, align 8
+  %call_result = call ptr @hew_i64_to_string(i64 %call_arg)
+  store ptr %call_result, ptr %local_2, align 8
+  br label %bb1
+
+bb1:                                              ; preds = %bb0
+  store ptr @str_lit, ptr %local_3, align 8
+  %"hew_string_concat arg0" = load ptr, ptr %local_2, align 8
+  %"hew_string_concat arg1" = load ptr, ptr %local_3, align 8
+  %hew_string_concat_call = call ptr @hew_string_concat(ptr %"hew_string_concat arg0", ptr %"hew_string_concat arg1")
+  store ptr %hew_string_concat_call, ptr %local_4, align 8
+  %"hew_string_drop drop" = load ptr, ptr %local_2, align 8
+  call void @hew_string_drop(ptr %"hew_string_drop drop")
+  store ptr null, ptr %local_2, align 8
+  %move_load = load ptr, ptr %local_4, align 8
+  store ptr %move_load, ptr %return_slot, align 8
+  %ret_val = load ptr, ptr %return_slot, align 8
+  ret ptr %ret_val
+
+cancel_exit:                                      ; preds = %entry
+  ret ptr null
+
+after_cooperate:                                  ; preds = %entry
+  br label %bb0
+}
+
+define internal ptr @__hew_actor_dispatch_Counter(ptr %0, ptr %1, i32 %2, ptr %3, i64 %4, i32 %5) {
+entry:
+  %dispatch_is_borrow = icmp ne i32 %5, 0
+  br i1 %dispatch_is_borrow, label %borrow_src, label %copy_src
+
+unknown_msg_type:                                 ; preds = %payload_src
+  call void @llvm.trap()
+  unreachable
+
+dispatch_done:                                    ; preds = %msg_sys_exit_unhandled, %msg_-257771385
+  %dispatch_suspend_handle = phi ptr [ null, %msg_-257771385 ], [ null, %msg_sys_exit_unhandled ]
+  ret ptr %dispatch_suspend_handle
+
+borrow_src:                                       ; preds = %entry
+  %envelope_payload_ptr = call ptr @hew_msg_envelope_payload_ptr(ptr %3)
+  %borrow_payload_is_null = icmp eq ptr %envelope_payload_ptr, null
+  br i1 %borrow_payload_is_null, label %borrow_payload_null, label %borrow_payload_ok
+
+copy_src:                                         ; preds = %entry
+  br label %payload_src
+
+payload_src:                                      ; preds = %copy_src, %borrow_payload_ok
+  %payload_src_ptr = phi ptr [ %envelope_payload_ptr, %borrow_payload_ok ], [ %3, %copy_src ]
+  switch i32 %2, label %unknown_msg_type [
+    i32 -257771385, label %msg_-257771385
+    i32 103, label %msg_sys_exit_unhandled
+  ]
+
+borrow_payload_null:                              ; preds = %borrow_src
+  call void @hew_panic()
+  unreachable
+
+borrow_payload_ok:                                ; preds = %borrow_src
+  br label %payload_src
+
+msg_-257771385:                                   ; preds = %payload_src
+  %call_ping = call i32 @Counter__recv__ping(ptr %0, i32 %5)
+  %hew_get_reply_channel_call = call ptr @hew_get_reply_channel()
+  %actor_reply_slot = alloca i32, align 4
+  store i32 %call_ping, ptr %actor_reply_slot, align 4
+  %hew_reply_call = call i1 @hew_reply(ptr %hew_get_reply_channel_call, ptr %actor_reply_slot, i64 ptrtoint (ptr getelementptr (i32, ptr null, i32 1) to i64))
+  br label %dispatch_done
+
+msg_sys_exit_unhandled:                           ; preds = %payload_src
+  %exit_reason_ptr = getelementptr inbounds nuw { i64, i32, i32 }, ptr %payload_src_ptr, i32 0, i32 1
+  %exit_reason = load i32, ptr %exit_reason_ptr, align 4
+  call void @hew_actor_exit_unhandled(i32 %exit_reason)
+  br label %dispatch_done
+}
+
+declare ptr @hew_msg_envelope_payload_ptr(ptr)
+
+declare void @hew_panic()
+
+declare ptr @hew_get_reply_channel()
+
+declare i1 @hew_reply(ptr, ptr, i64)
+
+declare void @hew_actor_exit_unhandled(i32)
+
+; Function Attrs: cold noreturn nounwind memory(inaccessiblemem: write)
+declare void @llvm.trap() #0
+
+define internal i32 @__hew_record_clone_inplace_CrashInfo(ptr %0, ptr %1) {
+entry:
+  br label %step_0_clone
+
+success:                                          ; preds = %step_0_store
+  ret i32 0
+
+fail:                                             ; preds = %rb_step_0
+  ret i32 1
+
+rb_step_0:                                        ; preds = %step_0_clone
+  br label %fail
+
+step_0_store:                                     ; preds = %step_0_clone
+  %dst_f1_ptr = getelementptr inbounds nuw %CrashInfo, ptr %1, i32 0, i32 1
+  store ptr %clone_helper_f1, ptr %dst_f1_ptr, align 8
+  br label %success
+
+step_0_clone:                                     ; preds = %entry
+  %src_f1_ptr = getelementptr inbounds nuw %CrashInfo, ptr %0, i32 0, i32 1
+  %src_f1 = load ptr, ptr %src_f1_ptr, align 8
+  %clone_helper_f1 = call ptr @hew_string_clone(ptr %src_f1)
+  %cloned_f1_int = ptrtoint ptr %clone_helper_f1 to i64
+  %cloned_f1_null = icmp eq i64 %cloned_f1_int, 0
+  br i1 %cloned_f1_null, label %rb_step_0, label %step_0_store
+}
+
+define internal void @__hew_record_drop_inplace_CrashInfo(ptr %0) {
+entry:
+  %rec_int = ptrtoint ptr %0 to i64
+  %rec_is_null = icmp eq i64 %rec_int, 0
+  br i1 %rec_is_null, label %done, label %do_drop
+
+do_drop:                                          ; preds = %entry
+  %drop_f1_ptr = getelementptr inbounds nuw %CrashInfo, ptr %0, i32 0, i32 1
+  %drop_f1 = load ptr, ptr %drop_f1_ptr, align 8
+  call void @hew_string_drop(ptr %drop_f1)
+  br label %done
+
+done:                                             ; preds = %do_drop, %entry
+  ret void
+}
+
+declare void @hew_string_drop(ptr)
+
+define internal void @__hew_record_overwrite_release_CrashInfo(ptr %0, ptr %1) {
+entry:
+  %ow_slot_0 = alloca ptr, align 8
+  store ptr null, ptr %ow_slot_0, align 8
+  %ow_new_d0_f1_ptr = getelementptr inbounds nuw %CrashInfo, ptr %1, i32 0, i32 1
+  %ow_new_d0_f1_leaf = load ptr, ptr %ow_new_d0_f1_ptr, align 8
+  store ptr %ow_new_d0_f1_leaf, ptr %ow_slot_0, align 8
+  %ow_old_d0_f1_ptr = getelementptr inbounds nuw %CrashInfo, ptr %0, i32 0, i32 1
+  %ow_old_d0_f1_val = load ptr, ptr %ow_old_d0_f1_ptr, align 8
+  %ow_old_d0_f1_int = ptrtoint ptr %ow_old_d0_f1_val to i64
+  %ow_old_d0_f1_cmp0_leaf = load ptr, ptr %ow_slot_0, align 8
+  %ow_old_d0_f1_cmp0_int = ptrtoint ptr %ow_old_d0_f1_cmp0_leaf to i64
+  %ow_old_d0_f1_cmp0_eq = icmp eq i64 %ow_old_d0_f1_int, %ow_old_d0_f1_cmp0_int
+  %ow_old_d0_f1_matched0 = or i1 false, %ow_old_d0_f1_cmp0_eq
+  %ow_old_d0_f1_neutralized = select i1 %ow_old_d0_f1_matched0, ptr null, ptr %ow_old_d0_f1_val
+  store ptr %ow_old_d0_f1_neutralized, ptr %ow_old_d0_f1_ptr, align 8
+  call void @__hew_record_drop_inplace_CrashInfo(ptr %0)
+  ret void
+}
+
+define ptr @__hew_state_clone_Counter(ptr %0) {
+entry:
+  %src_as_int = ptrtoint ptr %0 to i64
+  %src_is_null = icmp eq i64 %src_as_int, 0
+  br i1 %src_is_null, label %ret_null, label %alloc
+
+ret_null:                                         ; preds = %alloc, %entry
+  ret ptr null
+
+alloc:                                            ; preds = %entry
+  %state_wrapper = call ptr @malloc(i64 4)
+  %dst_as_int = ptrtoint ptr %state_wrapper to i64
+  %dst_is_null = icmp eq i64 %dst_as_int, 0
+  br i1 %dst_is_null, label %ret_null, label %memcpy_wholesale
+
+memcpy_wholesale:                                 ; preds = %alloc
+  call void @llvm.memcpy.p0.p0.i64(ptr align 4 %state_wrapper, ptr align 4 %0, i64 4, i1 false)
+  br label %success
+
+success:                                          ; preds = %memcpy_wholesale
+  ret ptr %state_wrapper
+}
+
+declare ptr @malloc(i64)
+
+; Function Attrs: nocallback nofree nounwind willreturn memory(argmem: readwrite)
+declare void @llvm.memcpy.p0.p0.i64(ptr noalias writeonly captures(none), ptr noalias readonly captures(none), i64, i1 immarg) #1
+
+define void @__hew_state_drop_Counter(ptr %0) {
+entry:
+  %state_int = ptrtoint ptr %0 to i64
+  %state_is_null = icmp eq i64 %state_int, 0
+  br i1 %state_is_null, label %done, label %do_drop
+
+do_drop:                                          ; preds = %entry
+  br label %done
+
+done:                                             ; preds = %do_drop, %entry
+  ret void
+}
+
+declare i32 @hew_sched_init()
+
+declare void @hew_wasm_register_actor_meta(ptr)
+
+declare void @hew_actor_register_type(ptr, ptr)
+
+declare void @hew_register_handler_name(ptr, i32, ptr)
+
+declare ptr @hew_actor_spawn(ptr, i64, ptr)
+
+declare void @hew_actor_set_state_drop(ptr, ptr)
+
+declare void @hew_actor_set_state_clone(ptr, ptr)
+
+declare ptr @hew_context_install(ptr)
+
+declare i32 @hew_actor_state_lock_acquire(ptr)
+
+declare i32 @hew_actor_state_lock_release(ptr)
+
+declare void @hew_context_restore(ptr)
+
+declare void @hew_shutdown_initiate_implicit(i64)
+
+declare i32 @hew_shutdown_wait()
+
+declare i32 @hew_lambda_drain_all(i64)
+
+declare void @hew_runtime_cleanup_after_main()
+
+declare i32 @hew_actor_cooperate()
+
+; Function Attrs: nocallback nocreateundeforpoison nofree nosync nounwind speculatable willreturn memory(none)
+declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64) #2
+
+declare void @hew_trap_with_code(i32)
+
+attributes #0 = { cold noreturn nounwind memory(inaccessiblemem: write) }
+attributes #1 = { nocallback nofree nounwind willreturn memory(argmem: readwrite) }
+attributes #2 = { nocallback nocreateundeforpoison nofree nosync nounwind speculatable willreturn memory(none) }

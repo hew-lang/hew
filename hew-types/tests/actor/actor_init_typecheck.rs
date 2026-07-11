@@ -271,3 +271,75 @@ fn ask_method_form_rejected_by_typechecker() {
          called directly by their `receive fn` name, not via an `.ask()` method"
     );
 }
+
+// #2448: when a spawn arg name matches BOTH an explicit `init(...)` parameter
+// and a state field whose types DISAGREE, the checker validates the arg
+// against the init-param type but MIR routes the arg value into the
+// same-named state-field slot. Before this fix the mismatch surfaced only as
+// a raw `RecordInit ... source slot type does not match struct field type`
+// codegen dump; now the checker names the collision (arg, both declarations,
+// both types) with a note pointing at the init parameter.
+#[test]
+fn test_spawn_arg_param_field_type_collision_named_at_checker() {
+    let output = typecheck(
+        r"
+        actor Counter {
+            var count: bool;
+            init(count: i32) {
+            }
+            receive fn ping() -> i32 { 0 }
+        }
+        fn main() {
+            let _c = spawn Counter(count: 5);
+        }
+    ",
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message.contains("names both `init` parameter")
+                && e.message.contains("state field")
+                && e.message.contains("types disagree")
+        }),
+        "param/field type collision should be named at the checker, not left \
+         to a codegen RecordInit slot-type dump: {:?}",
+        output.errors
+    );
+    // The raw codegen-shaped diagnostic must never be the surface for this.
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("RecordInit") || e.message.contains("source slot type")),
+        "collision must not surface as a raw RecordInit dump: {:?}",
+        output.errors
+    );
+}
+
+// The collision guard must NOT fire when the same-named init parameter and
+// state field agree on type — this is the common, legal shape (an
+// `init(count: i32)` that stores into a `var count: i32` field), and the
+// spawn arg checks cleanly against the init-param type.
+#[test]
+fn test_spawn_arg_param_field_same_type_is_not_a_collision() {
+    let output = typecheck(
+        r"
+        actor Counter {
+            var count: i32;
+            init(count: i32) {
+            }
+            receive fn ping() -> i32 { 0 }
+        }
+        fn main() {
+            let _c = spawn Counter(count: 5);
+        }
+    ",
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("types disagree")),
+        "matching param/field types must not be flagged as a collision: {:?}",
+        output.errors
+    );
+}

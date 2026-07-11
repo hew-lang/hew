@@ -6733,19 +6733,66 @@ impl Checker {
         // parameter's declared width is the checker-authoritative one — the
         // init body may narrow/widen before storing into the field). Look up
         // `actor_init_params` first so a param like `init(start: i32)` gets
-        // `check_against(..., i32)` here; only actors with no explicit init
-        // (whose spawn args map directly onto bare field names) fall back to
-        // the field-type lookup. Without this, an unmatched `field_name`
+        // `check_against(..., i32)` here. The field-type lookup is the
+        // FALLBACK, and it serves two shapes: (a) actors with no explicit
+        // `init` (whose spawn args map directly onto bare field names), and
+        // (b) an arg on an explicit-init actor whose name matches a state
+        // field but NOT any init parameter (spawn-time field routing). In
+        // both cases the arg lands in the field slot, so the field type is
+        // the right thing to check against. Without the param-first lookup,
+        // an unmatched `field_name`
         // silently synthesizes the arg (defaulting an untyped int literal to
         // `i64`), which then mismatches the init thunk's declared i32
         // parameter and trips the LLVM verifier at the spawn call site
         // (#2402).
         let init_params = self.actor_init_params.get(actor_name).cloned();
         for (field_name, (arg, as_)) in args {
-            let declared_init_param = init_params
+            let declared_init_param_info = init_params
                 .as_ref()
                 .and_then(|params| params.iter().find(|p| &p.name == field_name))
-                .map(|p| p.ty.clone());
+                .cloned();
+            let declared_init_param = declared_init_param_info.as_ref().map(|p| p.ty.clone());
+            // Diagnostic-quality guard (#2448): when a spawn arg name matches
+            // BOTH an explicit `init(...)` parameter and a state field whose
+            // types DISAGREE, the checker validates the arg against the init
+            // parameter type here, but MIR (`lower_spawn_actor_state`) routes
+            // the arg value straight into the same-named state-field slot of
+            // the `RecordInit`. The field type is therefore the ABI-
+            // authoritative one, so a param/field type disagreement fails
+            // closed at the `RecordInit` verifier in codegen as a raw
+            // `source slot type does not match struct field type` dump. That
+            // is fail-closed (nothing miscompiles) but the diagnostic belongs
+            // in the checker: name the arg, the two disagreeing declarations,
+            // and their types. Emitted once here and we still check the arg
+            // against the init-param type below so no second diagnostic piles
+            // on the same span.
+            if let (Some(param_info), Some(field_ty)) = (
+                declared_init_param_info.as_ref(),
+                actor_fields.as_ref().and_then(|f| f.get(field_name)),
+            ) {
+                if param_info.ty != *field_ty {
+                    self.report_error_with_note(
+                        TypeErrorKind::Mismatch {
+                            expected: field_ty.user_facing().to_string(),
+                            actual: param_info.ty.user_facing().to_string(),
+                        },
+                        as_,
+                        format!(
+                            "spawn argument `{field_name}` names both `init` parameter \
+                             `{field_name}: {}` and state field `{field_name}: {}`, whose \
+                             types disagree; the argument value is stored into the state \
+                             field, so the two declarations must have the same type",
+                            param_info.ty.user_facing(),
+                            field_ty.user_facing(),
+                        ),
+                        &param_info.span,
+                        format!(
+                            "`init` parameter `{field_name}` is declared `{}` here",
+                            param_info.ty.user_facing()
+                        ),
+                    );
+                }
+            }
             let declared = declared_init_param
                 .as_ref()
                 .or_else(|| actor_fields.as_ref().and_then(|f| f.get(field_name)));

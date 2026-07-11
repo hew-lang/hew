@@ -6341,10 +6341,8 @@ impl Checker {
         // downstream MIR field-order failure. The `::` enum-variant and
         // explicitly module-qualified spellings already routed above are left
         // untouched (they carry a `.` or `::` and never match a bare name).
-        if !name.contains('.')
-            && !name.contains("::")
-            && self.report_bare_type_scope_error(name, span)
-        {
+        let is_bare_constructor = !name.contains('.') && !name.contains("::");
+        if is_bare_constructor && self.report_bare_type_scope_error(name, span) {
             return Ty::Error;
         }
         // A bare construction (`Gadget { … }`) of a type published by exactly
@@ -6401,9 +6399,12 @@ impl Checker {
             );
             return Ty::Error;
         }
-        let td = self
-            .module_local_type_def(unqualified)
-            .or_else(|| self.lookup_type_def(name));
+        let td = if is_bare_constructor {
+            self.module_local_type_def(unqualified)
+        } else {
+            None
+        }
+        .or_else(|| self.lookup_type_def(name));
         if let Some(td) = td {
             // Track inferred type arguments for generic structs.
             // If the caller supplied explicit type args (e.g. `Wrapper<String> { ... }`),

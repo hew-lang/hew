@@ -133,6 +133,63 @@ mod cross_module_same_name {
     }
 
     #[test]
+    fn qualified_construction_uses_imported_same_named_record() {
+        let root_id = ModuleId::root();
+        let alpha_id = ModuleId::new(vec!["alpha".to_string()]);
+        let beta_id = ModuleId::new(vec!["beta".to_string()]);
+
+        let alpha_module = Module {
+            id: alpha_id.clone(),
+            items: vec![
+                (Item::TypeDecl(make_record("Thing", &[("a", "i64")])), 0..10),
+                (
+                    Item::Function(make_constructor_body("beta.Thing", "p")),
+                    10..20,
+                ),
+            ],
+            imports: vec![hew_parser::module::ModuleImport {
+                target: beta_id.clone(),
+                spec: None,
+                span: 0..0,
+            }],
+            source_paths: vec![],
+            doc: None,
+        };
+        let beta_module = Module {
+            id: beta_id.clone(),
+            items: vec![(Item::TypeDecl(make_record("Thing", &[("p", "i64")])), 0..10)],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+        let root_module = Module {
+            id: root_id.clone(),
+            items: vec![],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+
+        let mut mg = ModuleGraph::new(root_id.clone());
+        mg.add_module(root_module).unwrap();
+        mg.add_module(alpha_module).unwrap();
+        mg.add_module(beta_module).unwrap();
+        mg.topo_order = vec![beta_id, alpha_id, root_id];
+
+        let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&Program {
+            module_graph: Some(mg),
+            items: vec![],
+            module_doc: None,
+        });
+
+        assert!(
+            output.errors.is_empty(),
+            "qualified imported records must not resolve to same-named local records; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
     fn construction_rejects_ambiguous_same_named_imports() {
         let alpha_import = make_user_import(
             &["alpha"],

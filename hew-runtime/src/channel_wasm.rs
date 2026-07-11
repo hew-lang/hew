@@ -154,15 +154,15 @@ pub fn channel(capacity: usize) -> (WasmChannelSender, WasmChannelReceiver) {
 #[cfg_attr(target_arch = "wasm32", no_mangle)]
 pub extern "C" fn hew_channel_new(capacity: i64) -> *mut HewWasmChannelPair {
     if capacity < 0 {
-        crate::set_last_error(format!(
-            "hew_channel_new: invalid capacity {capacity} (must be >= 0)"
-        ));
+        let message = format!("hew_channel_new: invalid capacity {capacity} (must be >= 0)");
+        crate::set_last_error(message.clone());
+        crate::stream_error::set_last_error(message);
         return ptr::null_mut();
     }
     let Some(cap) = usize::try_from(capacity.max(1)).ok() else {
-        crate::set_last_error(format!(
-            "hew_channel_new: capacity {capacity} exceeds platform maximum"
-        ));
+        let message = format!("hew_channel_new: capacity {capacity} exceeds platform maximum");
+        crate::set_last_error(message.clone());
+        crate::stream_error::set_last_error(message);
         return ptr::null_mut();
     };
 
@@ -171,6 +171,16 @@ pub extern "C" fn hew_channel_new(capacity: i64) -> *mut HewWasmChannelPair {
     let receiver = Box::into_raw(Box::new(HewWasmChannelReceiver::new(receiver))); // ALLOCATOR-PAIRING: GlobalAlloc
 
     Box::into_raw(Box::new(HewWasmChannelPair { sender, receiver })) // ALLOCATOR-PAIRING: GlobalAlloc
+}
+
+/// Return whether `pair` is a valid channel-pair handle.
+#[cfg_attr(target_arch = "wasm32", no_mangle)]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(dead_code, reason = "exported only for the wasm32 channel ABI")
+)]
+pub const extern "C" fn hew_channel_pair_is_valid(pair: *const HewWasmChannelPair) -> bool {
+    !pair.is_null()
 }
 
 /// Extract the sender from a channel pair.

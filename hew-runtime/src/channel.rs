@@ -133,15 +133,15 @@ impl std::fmt::Debug for HewChannelPair {
 #[no_mangle]
 pub extern "C" fn hew_channel_new(capacity: i64) -> *mut HewChannelPair {
     if capacity < 0 {
-        crate::set_last_error(format!(
-            "hew_channel_new: invalid capacity {capacity} (must be >= 0)"
-        ));
+        let message = format!("hew_channel_new: invalid capacity {capacity} (must be >= 0)");
+        crate::set_last_error(message.clone());
+        crate::stream_error::set_last_error(message);
         return ptr::null_mut();
     }
     let Ok(cap) = usize::try_from(capacity.max(1)) else {
-        crate::set_last_error(format!(
-            "hew_channel_new: capacity {capacity} exceeds platform maximum"
-        ));
+        let message = format!("hew_channel_new: capacity {capacity} exceeds platform maximum");
+        crate::set_last_error(message.clone());
+        crate::stream_error::set_last_error(message);
         return ptr::null_mut();
     };
     let core = Arc::new(ChannelCore::new(cap));
@@ -158,6 +158,12 @@ pub extern "C" fn hew_channel_new(capacity: i64) -> *mut HewChannelPair {
     })); // ALLOCATOR-PAIRING: GlobalAlloc
 
     Box::into_raw(Box::new(HewChannelPair { sender, receiver })) // ALLOCATOR-PAIRING: GlobalAlloc
+}
+
+/// Return whether `pair` is a valid channel-pair handle.
+#[no_mangle]
+pub const extern "C" fn hew_channel_pair_is_valid(pair: *const HewChannelPair) -> bool {
+    !pair.is_null()
 }
 
 /// Extract the sender from a channel pair.
@@ -703,6 +709,22 @@ pub unsafe extern "C" fn hew_channel_recv_cancel_cleanup(source: *mut c_void, _s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn negative_capacity_returns_invalid_pair_with_exact_error() {
+        crate::hew_clear_error();
+        let pair = hew_channel_new(-1);
+        assert!(!hew_channel_pair_is_valid(pair));
+        // SAFETY: hew_last_error returns a runtime-owned NUL-terminated string.
+        let err = unsafe { CStr::from_ptr(crate::hew_last_error()) }
+            .to_str()
+            .unwrap();
+        assert_eq!(err, "hew_channel_new: invalid capacity -1 (must be >= 0)");
+        assert_eq!(
+            crate::stream_error::take_last_error().as_deref(),
+            Some("hew_channel_new: invalid capacity -1 (must be >= 0)")
+        );
+    }
     use std::ffi::{c_char, CStr};
     use std::thread;
 

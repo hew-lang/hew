@@ -165,12 +165,33 @@ impl ReceiverMethods for Receiver {
 /// println(rx.recv());     // infers Receiver<string>
 /// ```
 pub fn new(capacity: i64) -> (Sender, Receiver) {
+    match try_new(capacity) {
+        Ok(pair) => pair,
+        Err(err) => panic(err),
+    }
+}
+
+/// Try to create a bounded MPSC channel with the given capacity.
+///
+/// Returns `Err` when the capacity is invalid instead of returning null-backed
+/// sender and receiver handles.
+pub fn try_new(capacity: i64) -> Result<(Sender, Receiver), string> {
+    if capacity < 0 {
+        return Err(f"channel.new: invalid capacity {capacity} (must be >= 0)");
+    }
     unsafe {
         let pair = hew_channel_new(capacity as i64); // INTERNAL-ABI: runtime ABI takes i64 capacity
+        if !hew_channel_pair_is_valid(pair) {
+            let detail = hew_stream_last_error();
+            if detail == "" {
+                return Err("channel.new: channel allocation failed");
+            }
+            return Err(detail);
+        }
         let tx = hew_channel_pair_sender(pair);
         let rx = hew_channel_pair_receiver(pair);
         hew_channel_pair_free(pair);
-        (tx, rx)
+        Ok((tx, rx))
     }
 }
 
@@ -182,9 +203,11 @@ pub type ChannelPair {
 
 extern "C" {
     fn hew_channel_new(capacity: i64) -> ChannelPair;
+    fn hew_channel_pair_is_valid(pair: ChannelPair) -> bool;
     fn hew_channel_pair_sender(pair: ChannelPair) -> Sender;
     fn hew_channel_pair_receiver(pair: ChannelPair) -> Receiver;
     fn hew_channel_pair_free(pair: ChannelPair);
+    fn hew_stream_last_error() -> string;
     // hew_channel_send_layout, hew_channel_recv_layout, and
     // hew_channel_try_recv_layout use an out-parameter + element-layout
     // witness ABI and are declared by codegen with the correct calling

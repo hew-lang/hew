@@ -204,6 +204,10 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     "hew_node_link_remote",
     // -- Ptr element-type variants with no source-reachable producer
     //    (no user surface yields a ptr-element Vec).
+    // -- Owned Vec.get is lowered through the clone-returning ABI for
+    //    ownership-safe extraction; the legacy move-out symbol is no longer
+    //    emitted by checked MIR.
+    "hew_vec_get_owned",
     "hew_vec_get_ptr",
     "hew_vec_slice_range_ptr",
     // -- Per-type slice-range symbols replaced by the unified bytesize path.

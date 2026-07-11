@@ -290,14 +290,14 @@ fn main() -> () [conv=default]
     _70 = string_lit "a"
     _71 = const.i64 1
     _72 = record_init Tag { .0=_70, .1=_71 }
-    call hew_vec_push_owned(_69, _72) -> bb40
+    call hew_vec_push_owned_move(_69, _72) -> bb40
   bb40:
     stmt: eval site=SiteId(87) ty=()
     stmt: use BindingId(10) tags site=SiteId(93) ty=Vec<Tag> intent=Read
     _73 = string_lit "b"
     _74 = const.i64 2
     _75 = record_init Tag { .0=_73, .1=_74 }
-    call hew_vec_push_owned(_69, _75) -> bb41
+    call hew_vec_push_owned_move(_69, _75) -> bb41
   bb41:
     stmt: eval site=SiteId(92) ty=()
     stmt: use BindingId(10) tags site=SiteId(98) ty=Vec<Tag> intent=Read
@@ -308,26 +308,27 @@ fn main() -> () [conv=default]
   bb42:
     trap(IndexOutOfBounds)
   bb43:
+    _79 = call hew_vec_get_clone(_69, _76) -> bb44
+  bb44:
     stmt: bind BindingId(11) t site=SiteId(97) ty=Tag
     stmt: use BindingId(11) t site=SiteId(102) ty=Tag intent=Read
-    _79 = call_rt hew_vec_get_owned(_69, _76)
     _80 = move _79
     _81 = _80.field[1]
-    call println_i64(_81) -> bb44
-  bb44:
+    call println_i64(_81) -> bb45
+  bb45:
     stmt: eval site=SiteId(100) ty=()
     stmt: use BindingId(10) tags site=SiteId(105) ty=Vec<Tag> intent=Read
     _82 = const.i64 1
     _83 = const.i64 2
     _84 = icmp.sgt _82 _83
-    branch _84 ? bb45 : bb46
-  bb45:
-    trap(IndexOutOfBounds)
+    branch _84 ? bb46 : bb47
   bb46:
+    trap(IndexOutOfBounds)
+  bb47:
     _85 = call_rt hew_vec_len(_69)
     _86 = icmp.sgt _83 _85
-    branch _86 ? bb45 : bb47
-  bb47:
+    branch _86 ? bb46 : bb48
+  bb48:
     stmt: bind BindingId(12) tail_tags site=SiteId(104) ty=Vec<Tag>
     stmt: use BindingId(12) tail_tags site=SiteId(111) ty=Vec<Tag> intent=Read
     _87 = call_rt hew_vec_slice_range_owned(_69, _82, _83)
@@ -335,14 +336,15 @@ fn main() -> () [conv=default]
     _89 = const.i64 0
     _90 = call_rt hew_vec_len(_88)
     _91 = icmp.uge _89 _90
-    branch _91 ? bb48 : bb49
-  bb48:
-    trap(IndexOutOfBounds)
+    branch _91 ? bb49 : bb50
   bb49:
-    _92 = call_rt hew_vec_get_owned(_88, _89)
-    _93 = _92.field[1]
-    call println_i64(_93) -> bb50
+    trap(IndexOutOfBounds)
   bb50:
+    _92 = call hew_vec_get_clone(_88, _89) -> bb51
+  bb51:
+    _93 = _92.field[1]
+    call println_i64(_93) -> bb52
+  bb52:
     stmt: eval site=SiteId(108) ty=()
     return
 

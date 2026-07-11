@@ -2038,21 +2038,25 @@ impl Checker {
         // depending on synthesis-time i64/f64 defaults.
         let is_default_int = expected == Ty::I64;
         let is_default_float = expected == Ty::F64;
-        if is_default_int {
-            if let Some(v) = extract_integer_literal_value(&cd.value.0) {
-                self.const_values
-                    .insert(cd.name.clone(), ConstValue::Integer(v));
-                self.declared_const_names.insert(cd.name.clone());
-            }
+        let const_value = if is_default_int {
+            extract_integer_literal_value(&cd.value.0).map(ConstValue::Integer)
         } else if is_default_float {
-            if let Some(v) = extract_float_literal_value(&cd.value.0) {
-                self.const_values
-                    .insert(cd.name.clone(), ConstValue::Float(v));
-                self.declared_const_names.insert(cd.name.clone());
-            }
-        }
+            extract_float_literal_value(&cd.value.0).map(ConstValue::Float)
+        } else {
+            None
+        };
         self.env.define(cd.name.clone(), actual, false);
         self.record_root_value_binding(&cd.name);
+        if let Some(value) = const_value {
+            let binding_id = self
+                .env
+                .lookup_ref(&cd.name)
+                .expect("constant binding was just defined")
+                .id;
+            self.const_values.insert(cd.name.clone(), value);
+            self.declared_const_bindings
+                .insert(cd.name.clone(), binding_id);
+        }
     }
 
     pub(super) fn check_impl(&mut self, id: &ImplDecl, span: &Span) {

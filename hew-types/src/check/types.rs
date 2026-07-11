@@ -3034,15 +3034,13 @@ pub struct Checker {
     pub(super) current_machine_lifecycle: Option<(String, String)>,
     /// Compile-time known numeric literal values used by later coercion sites.
     pub(super) const_values: HashMap<String, ConstValue>,
-    /// Names in `const_values` that originate from a real `const` declaration
-    /// (or other declared constexpr authority), as opposed to the
+    /// Lexical bindings in `const_values` that originate from a real `const`
+    /// declaration (or other declared constexpr authority), as opposed to the
     /// literal-coercion entries `check_let` inserts for every unannotated
-    /// immutable integer/float literal binding. Only these names are trusted as
-    /// compile-time constant *values* for constexpr length/count evaluation
-    /// (e.g. the fixed-array repeat-length check); an unannotated `let n = 4`
-    /// retains literal-coercion semantics but must NOT satisfy a fixed-array
-    /// length, since its value is not a declared compile-time constant.
-    pub(super) declared_const_names: HashSet<String>,
+    /// immutable integer/float literal binding. The binding identity prevents a
+    /// local or parameter with the same name from inheriting a module constant's
+    /// value during constexpr length/count evaluation (e.g. fixed-array repeats).
+    pub(super) declared_const_bindings: HashMap<String, TypeBindingId>,
     /// Inferred type arguments for generic function calls that omit explicit
     /// type annotations.  Populated in `check_call` after argument unification.
     pub(super) call_type_args: HashMap<SpanKey, Vec<Ty>>,
@@ -3380,7 +3378,7 @@ impl Checker {
             current_machine_transition: None,
             current_machine_lifecycle: None,
             const_values: HashMap::new(),
-            declared_const_names: HashSet::new(),
+            declared_const_bindings: HashMap::new(),
             call_type_args: HashMap::new(),
             record_init_type_args: HashMap::new(),
             builtin_result_output_type_args: HashMap::new(),

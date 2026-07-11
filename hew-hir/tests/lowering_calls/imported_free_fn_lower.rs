@@ -8,7 +8,8 @@
 //! private helpers that are actually reachable from exported bodies.
 
 use hew_hir::{
-    lower_program_host_target, HirDiagnosticKind, HirExprKind, HirFn, HirItem, ResolutionCtx,
+    lower_program_host_target, HirDiagnosticKind, HirExpr, HirExprKind, HirFn, HirItem,
+    ResolutionCtx, ResolvedRef,
 };
 use hew_parser::ast::{Item, Program};
 use hew_parser::module::{Module, ModuleGraph, ModuleId};
@@ -119,13 +120,21 @@ fn function_by_name<'a>(output: &'a hew_hir::LowerOutput, name: &str) -> &'a Hir
 
 fn tail_call_callee_name(function: &HirFn) -> Option<&str> {
     let tail = function.body.tail.as_ref()?;
-    let HirExprKind::Call { callee, .. } = &tail.kind else {
-        return None;
-    };
-    if let HirExprKind::BindingRef { name, .. } = &callee.kind {
-        Some(name.as_str())
-    } else {
-        None
+    call_callee_name(tail)
+}
+
+fn call_callee_name(expr: &HirExpr) -> Option<&str> {
+    match &expr.kind {
+        HirExprKind::Call { callee, .. } => {
+            if let HirExprKind::BindingRef { name, .. } = &callee.kind {
+                Some(name.as_str())
+            } else {
+                None
+            }
+        }
+        HirExprKind::Block(block) => block.tail.as_deref().and_then(call_callee_name),
+        HirExprKind::Return { value } => value.as_deref().and_then(call_callee_name),
+        _ => None,
     }
 }
 
@@ -233,6 +242,76 @@ fn root_local_free_function_shadows_import_with_mismatched_signature() {
         assert_eq!(
             tail_call_callee_name(function_by_name(&output, "main")),
             Some("foo")
+        );
+    }
+}
+
+#[test]
+fn root_local_const_shadows_imported_free_function() {
+    for import in ["import m::{answer};", "import m::*;"] {
+        let program = build_program_with_imported_module(
+            "pub fn answer() -> i64 { 7 }",
+            &format!("{import}\nconst answer: i64 = 99;\nfn main() -> i64 {{ answer + 1 }}"),
+        );
+        let (output, tco) = lower_with_checker(&program);
+
+        assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
+        assert!(
+            tco.root_value_bindings.contains("answer"),
+            "checker must publish the root const in its value namespace"
+        );
+        assert!(
+            output.diagnostics.is_empty(),
+            "checker and HIR should agree on the local const binding: {:#?}",
+            output.diagnostics
+        );
+
+        let tail = function_by_name(&output, "main")
+            .body
+            .tail
+            .as_deref()
+            .expect("main tail");
+        let HirExprKind::Binary { left, .. } = &tail.kind else {
+            panic!("expected binary tail, got: {tail:#?}");
+        };
+        let HirExprKind::BindingRef { name, resolved } = &left.kind else {
+            panic!("expected const binding ref, got: {left:#?}");
+        };
+        assert_eq!(name, "answer");
+        assert!(matches!(resolved, ResolvedRef::Const(_)));
+    }
+}
+
+#[test]
+fn root_local_extern_function_shadows_imported_free_function() {
+    for import in ["import m::{answer};", "import m::*;"] {
+        let program = build_program_with_imported_module(
+            "pub fn answer() -> i64 { 7 }",
+            &format!(
+                r#"{import}
+extern "C" {{
+    fn answer() -> i64;
+}}
+fn main() -> i64 {{
+    unsafe {{ answer() }}
+}}"#
+            ),
+        );
+        let (output, tco) = lower_with_checker(&program);
+
+        assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
+        assert!(
+            tco.root_value_bindings.contains("answer"),
+            "checker must publish the root extern fn in its value namespace"
+        );
+        assert!(
+            output.diagnostics.is_empty(),
+            "checker and HIR should agree on the local extern binding: {:#?}",
+            output.diagnostics
+        );
+        assert_eq!(
+            tail_call_callee_name(function_by_name(&output, "main")),
+            Some("answer")
         );
     }
 }

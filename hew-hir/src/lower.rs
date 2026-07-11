@@ -1801,19 +1801,11 @@ fn imported_type_name_collides(
 /// The checker publishes selected names from `import module::{name}` and
 /// `import module::*`, but HIR emits the function body under its module-qualified
 /// symbol. Preserve that source-to-symbol mapping while root bodies lower, except
-/// where a root-local function owns the same binding.
-fn root_imported_fn_rewrites(program: &Program) -> HashMap<String, String> {
-    let root_fn_names: HashSet<&str> = program
-        .items
-        .iter()
-        .filter_map(|(item, _)| {
-            if let Item::Function(function) = item {
-                Some(function.name.as_str())
-            } else {
-                None
-            }
-        })
-        .collect();
+/// where the checker's root value namespace already owns the same binding.
+fn root_imported_fn_rewrites(
+    program: &Program,
+    root_value_bindings: &HashSet<String>,
+) -> HashMap<String, String> {
     let mut rewrites = HashMap::new();
     for (item, _) in &program.items {
         let Item::Import(decl) = item else {
@@ -1845,7 +1837,7 @@ fn root_imported_fn_rewrites(program: &Program) -> HashMap<String, String> {
                 None => None,
             };
             if let Some(binding) = binding {
-                if root_fn_names.contains(binding.as_str()) {
+                if root_value_bindings.contains(&binding) {
                     continue;
                 }
                 rewrites.insert(
@@ -2265,7 +2257,10 @@ pub fn lower_program_with_mono_cap(
             }
         }
     }
-    ctx.imported_fn_rewrites = Some(root_imported_fn_rewrites(program));
+    ctx.imported_fn_rewrites = Some(root_imported_fn_rewrites(
+        program,
+        &type_check_output.root_value_bindings,
+    ));
 
     // Pre-pass: collect record/type-decl shapes so `Expr::StructInit`
     // lowering in the source-order pass can answer "is this a generic

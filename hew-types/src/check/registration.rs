@@ -4845,6 +4845,7 @@ impl Checker {
                     self.fn_visibility.insert(scoped_name, fd.visibility);
                 }
                 self.register_fn_sig(fd);
+                self.record_root_value_binding(&fd.name);
             }
             Item::Actor(ad) => {
                 // Module actors are identified by the dotted
@@ -7575,6 +7576,7 @@ impl Checker {
             self.record_fn_sig_inference_holes(&key, hole_vars);
             self.fn_sigs.insert(key.clone(), sig);
             self.unsafe_functions.insert(key);
+            self.record_root_value_binding(&f.name);
         }
 
         // Register codegen-intercepted channel functions that use

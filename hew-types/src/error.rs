@@ -1208,6 +1208,27 @@ pub enum TypeErrorKind {
         /// `"net.Listener"`).
         type_name: String,
     },
+    /// An `#[opaque]` handle type was used as a receive-fn (actor message)
+    /// parameter, directly or nested inside a record/enum/tuple payload.
+    ///
+    /// Actor message payloads are CBOR-serialized to cross the mailbox
+    /// dispatch boundary, but opaque handles are pointer-shaped runtime
+    /// resources (e.g. `net.Listener`, `net.Connection`) with no record
+    /// layout, so they cannot be serialized. Without this checker-layer
+    /// diagnostic the failure surfaces late as a raw codegen-front
+    /// `wire CBOR serialize: named type ... is not a registered record
+    /// layout` message that names an internal wire detail instead of the
+    /// offending parameter. The handle should be opened/constructed locally
+    /// inside the handler instead of being sent as a message.
+    ///
+    /// Envelope code: `E_OPAQUE_MESSAGE_PAYLOAD`.
+    OpaqueMessagePayload {
+        /// The resolved name of the opaque handle type reached at or within
+        /// the parameter (e.g. `"Listener"`, `"net.Connection"`).
+        type_name: String,
+        /// The `actor::handler` key the offending parameter belongs to.
+        handler: String,
+    },
     /// A cross-module or cross-package reference to a `private` symbol.
     ///
     /// `private` symbols are accessible only within the module that declares
@@ -1337,6 +1358,7 @@ impl TypeErrorKind {
             Self::RefutableLetPattern { .. } => "RefutableLetPattern",
             Self::LetElseDoesNotDiverge => "LetElseDoesNotDiverge",
             Self::OpaqueDirectConstruct { .. } => "OpaqueDirectConstruct",
+            Self::OpaqueMessagePayload { .. } => "OpaqueMessagePayload",
             Self::VisibilityViolationPrivate { .. } => "VisibilityViolationPrivate",
             Self::VisibilityViolationPackage { .. } => "VisibilityViolationPackage",
             Self::Lint(id) => id.as_str(),

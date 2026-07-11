@@ -1903,6 +1903,38 @@ impl Checker {
         }
     }
 
+    /// Reject an opaque handle type used as a receive-fn (actor message)
+    /// parameter, directly or nested inside a record/enum/tuple payload.
+    ///
+    /// Actor message payloads are CBOR-serialized to cross the mailbox
+    /// dispatch boundary. Opaque handle types (e.g. `net.Listener`,
+    /// `net.Connection`, user `#[opaque]` types) are pointer-shaped runtime
+    /// resources with no serializable record layout, so they can never be a
+    /// message payload. Without this checker-layer diagnostic the failure
+    /// surfaces late as a raw codegen-front `wire CBOR serialize: named type
+    /// ... is not a registered record layout` message that names an internal
+    /// wire detail instead of the offending parameter. See #2511.
+    fn reject_opaque_message_payload(&mut self, ty: &Ty, param_span: &Span, handler: &str) {
+        let mut visiting = std::collections::HashSet::new();
+        let Some(opaque_name) = self.ty_field_contains_opaque(ty, &mut visiting) else {
+            return;
+        };
+        self.report_error(
+            TypeErrorKind::OpaqueMessagePayload {
+                type_name: opaque_name.clone(),
+                handler: handler.to_string(),
+            },
+            param_span,
+            format!(
+                "opaque type `{opaque_name}` cannot be used as a receive-fn \
+                 parameter; actor message payloads must be CBOR-serializable, \
+                 and opaque handles have no serializable layout. Open or \
+                 construct the handle locally inside the handler instead \
+                 [E_OPAQUE_MESSAGE_PAYLOAD]"
+            ),
+        );
+    }
+
     pub(super) fn check_receive_fn(
         &mut self,
         actor_name: &str,
@@ -1955,6 +1987,7 @@ impl Checker {
         for p in &rf.params {
             self.check_shadowing(&p.name, &p.ty.1);
             let ty = self.resolve_type_expr(&p.ty);
+            self.reject_opaque_message_payload(&ty, &p.ty.1, &qualified_name);
             self.env
                 .define_param_with_span(p.name.clone(), ty, p.is_mutable, p.ty.1.clone());
         }

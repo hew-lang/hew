@@ -143,6 +143,7 @@ fn Echo__recv__run(i64) -> () [conv=actor_handler]
   bb23:
     call println_str(_34) -> bb24
   bb24:
+    drop _34 ty=string fn=release(hew_string_drop)
     goto bb18
   bb25:
     stmt: eval site=SiteId(45) ty=()

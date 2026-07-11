@@ -81,6 +81,7 @@ fn main() -> i64 [conv=default]
     stmt: use BindingId(0) b site=SiteId(35) ty=bytes intent=Read
     stmt: bind BindingId(4) popped site=SiteId(34) ty=u8
     stmt: use BindingId(4) popped site=SiteId(39) ty=u8 intent=Read
+    drop _15 ty=string fn=release(hew_string_drop)
     _16 = call_rt hew_bytes_pop(_2)
     _17 = move _16
     _18 = cast _17 u8 -> i64

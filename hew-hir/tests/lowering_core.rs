@@ -39,6 +39,8 @@ mod nested_match_payload_lower;
 mod numeric_cast_lowering;
 #[path = "lowering_core/raw_pointer_no_lowering.rs"]
 mod raw_pointer_no_lowering;
+#[path = "lowering_core/record_registry_collision_guard.rs"]
+mod record_registry_collision_guard;
 #[path = "lowering_core/regex_match_arm_lower.rs"]
 mod regex_match_arm_lower;
 #[path = "lowering_core/stdlib_catalog_layout_descriptor_coverage.rs"]

@@ -885,6 +885,7 @@ struct ConstEntry {
 #[derive(Debug)]
 struct RecordEntry {
     id: ItemId,
+    owner: RecordRegistryOwner,
     /// Source-declared generic type-parameter names, in order. Empty for
     /// monomorphic record/type declarations.
     type_params: Vec<String>,
@@ -893,6 +894,16 @@ struct RecordEntry {
     /// record-layout registry walks these and substitutes per
     /// instantiation.
     fields: Vec<(String, ResolvedTy)>,
+}
+
+/// Which pre-pass populated a `RecordEntry`.
+///
+/// A root-local entry intentionally overwrites an imported bare entry with the
+/// same name, matching the checker's local-over-import precedence rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecordRegistryOwner {
+    Imported,
+    RootLocal,
 }
 
 /// Resolve a record declaration by source name against `record_registry`,
@@ -907,7 +918,9 @@ struct RecordEntry {
 /// resolve the wrong module's record layout. Fail closed there instead of
 /// relying solely on the upstream checker's ambiguity guard to have fired
 /// first, so a future checker gap cannot leak a wrong-record layout through
-/// the HIR bare fallback.
+/// the HIR bare fallback. A root-local entry is the exception: root registration
+/// intentionally overwrites imported bare entries and must retain the checker's
+/// local-over-import precedence.
 fn lookup_record_entry_guarded<'a>(
     record_registry: &'a HashMap<String, RecordEntry>,
     colliding: &HashSet<String>,
@@ -921,11 +934,14 @@ fn lookup_record_entry_guarded<'a>(
         .rsplit_once('.')
         .map_or(type_name, |(_, bare)| bare);
     let is_bare_input = !type_name.contains('.');
-    if is_bare_input && colliding.contains(bare_stem) {
-        return None;
-    }
     if let Some(entry) = record_registry.get(type_name) {
-        return Some(entry);
+        if !is_bare_input
+            || !colliding.contains(bare_stem)
+            || entry.owner == RecordRegistryOwner::RootLocal
+        {
+            return Some(entry);
+        }
+        return None;
     }
     if type_name == bare_stem {
         // No qualifier to strip; the direct lookup above was the only route.
@@ -2110,6 +2126,7 @@ pub fn lower_program_with_mono_cap(
                                 format!("{module_short}.{}", decl.name),
                                 RecordEntry {
                                     id,
+                                    owner: RecordRegistryOwner::Imported,
                                     type_params: type_params.clone(),
                                     fields: fields.clone(),
                                 },
@@ -2118,6 +2135,7 @@ pub fn lower_program_with_mono_cap(
                                 decl.name.clone(),
                                 RecordEntry {
                                     id,
+                                    owner: RecordRegistryOwner::Imported,
                                     type_params,
                                     fields,
                                 },
@@ -2140,6 +2158,7 @@ pub fn lower_program_with_mono_cap(
                                 format!("{module_short}.{}", decl.name),
                                 RecordEntry {
                                     id,
+                                    owner: RecordRegistryOwner::Imported,
                                     type_params: type_params.clone(),
                                     fields: fields.clone(),
                                 },
@@ -2148,6 +2167,7 @@ pub fn lower_program_with_mono_cap(
                                 decl.name.clone(),
                                 RecordEntry {
                                     id,
+                                    owner: RecordRegistryOwner::Imported,
                                     type_params,
                                     fields,
                                 },
@@ -2268,6 +2288,7 @@ pub fn lower_program_with_mono_cap(
                     decl.name.clone(),
                     RecordEntry {
                         id,
+                        owner: RecordRegistryOwner::RootLocal,
                         type_params,
                         fields,
                     },
@@ -2296,6 +2317,7 @@ pub fn lower_program_with_mono_cap(
                     decl.name.clone(),
                     RecordEntry {
                         id,
+                        owner: RecordRegistryOwner::RootLocal,
                         type_params,
                         fields,
                     },
@@ -11307,8 +11329,9 @@ impl LowerCtx {
     /// Rather than trust the checker's upstream ambiguity guard to have
     /// fired first, self-guard here: if the bare name is a known
     /// cross-module collision (`colliding_imported_record_names`), fail
-    /// closed on the bare fallback instead of silently returning the
-    /// last-writer entry, which may be the wrong module's record.
+    /// closed on an imported bare entry instead of silently returning the
+    /// last-writer entry, which may be the wrong module's record. A root-local
+    /// entry intentionally wins over imported collisions.
     fn lookup_record_entry(&self, type_name: &str) -> Option<&RecordEntry> {
         lookup_record_entry_guarded(
             &self.record_registry,
@@ -31256,6 +31279,7 @@ mod tests {
     fn record_entry(id: u32) -> RecordEntry {
         RecordEntry {
             id: ItemId(id),
+            owner: RecordRegistryOwner::Imported,
             type_params: Vec::new(),
             fields: Vec::new(),
         }

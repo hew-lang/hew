@@ -8,9 +8,9 @@ fn main() {
     println(f"wsub: {a &- b}");
     println(f"wmul: {a &* b}");
     // Overflow boundary: results must wrap, not grow past i64.
-    let max = 9223372036854775807;  // i64::MAX
+    let max = 9223372036854775807; // i64::MAX
     let min = -9223372036854775808; // i64::MIN
-    println(f"max_add_one: {max &+ 1}");   // -> i64::MIN
-    println(f"min_sub_one: {min &- 1}");   // -> i64::MAX
-    println(f"max_mul_two: {max &* 2}");   // -> -2
+    println(f"max_add_one: {max &+ 1}"); // -> i64::MIN
+    println(f"min_sub_one: {min &- 1}"); // -> i64::MAX
+    println(f"max_mul_two: {max &* 2}"); // -> -2
 }

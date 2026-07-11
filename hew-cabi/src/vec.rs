@@ -531,8 +531,9 @@ pub unsafe fn hwvec_to_u8(v: *mut HewVec) -> Vec<u8> {
 /// Copies the payload bytes into a fresh `Vec<u8>` and returns `Some(Vec<u8>)`
 /// on success.  Returns `None` if `v` is null, has the wrong element shape
 /// (`elem_kind` != `Plain` or `elem_size` != `size_of::<i32>()`), or contains
-/// a value outside the byte range `0..=255`.  Does not consume or free the
-/// `HewVec` header — ownership stays with the caller.
+/// a value outside the byte range `0..=255`, or reports a negative length.
+/// Does not consume or free the `HewVec` header — ownership stays with the
+/// caller.
 ///
 /// This is the correct choice for any call site that must be fail-closed rather
 /// than abort-on-bad-input (e.g. FFI wrappers that return a sentinel on error).
@@ -556,8 +557,10 @@ pub unsafe fn try_hwvec_to_u8(v: *mut HewVec) -> Option<Vec<u8>> {
     #[cfg(not(test))]
     // SAFETY: caller guarantees `v` points to a valid HewVec.
     let len = unsafe { hew_vec_len(v) };
-    // A negative len is malformed; treat as empty rather than aborting.
-    let len_usize = usize::try_from(len).unwrap_or(0);
+    if len < 0 {
+        return None;
+    }
+    let len_usize = usize::try_from(len).ok()?;
     let mut out = Vec::with_capacity(len_usize);
     for i in 0..len {
         #[cfg(test)]
@@ -852,5 +855,30 @@ mod tests {
             Some(vec![]),
             "empty plain HewVec must return Some([])"
         );
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn try_hwvec_to_u8_returns_none_for_negative_length() {
+        // The test-only length export converts the platform-sized `len` to
+        // i64, making this malformed header report -1. Rejection happens before
+        // the null data pointer can be inspected.
+        // SAFETY: layout is null so layout_storage is never read.
+        let mut vec = unsafe {
+            HewVec {
+                data: std::ptr::null_mut(),
+                len: usize::MAX,
+                cap: usize::MAX,
+                elem_size: mem::size_of::<i32>(),
+                elem_kind: ElemKind::Plain,
+                layout: std::ptr::null(),
+                layout_storage: core::mem::zeroed(),
+            }
+        };
+        let vec_ptr = &raw mut vec;
+        // SAFETY: the test passes a live header and asserts the malformed
+        // signed length is rejected before any element access.
+        let result = unsafe { try_hwvec_to_u8(vec_ptr) };
+        assert!(result.is_none(), "negative length must return None");
     }
 }

@@ -1,0 +1,24 @@
+// Accept (#2354): a struct-variant field typed as a tuple can be destructured
+// inside a match arm. The checker already accepted `Data { value: (a, b) }` and
+// bound `a`/`b`, but HIR lowering never materialised the nested tuple bindings
+// for a struct-variant field (only the tuple-VARIANT path `Data((a, b))` did),
+// so every inner identifier failed closed with
+// `E_HIR: identifier has no binding in resolved HIR`.
+//
+// Exit 7 (3 + 4) proves the field temp was bound by declaration-order index and
+// the inner tuple sub-pattern recursively bound `a`/`b` against it.
+enum Packet {
+    Data { value: (i64, i64) };
+    Empty;
+}
+
+fn sum(p: Packet) -> i64 {
+    match p {
+        Data { value: (a, b) } => a + b,
+        Empty => 0,
+    }
+}
+
+fn main() -> i64 {
+    sum(Data { value: (3, 4) })
+}

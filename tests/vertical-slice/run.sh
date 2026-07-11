@@ -3232,6 +3232,12 @@ test -s "${ROOT}/.tmp/compile-out/stdlib_option_none.wasm"
 # Exit 42 proves named-field variant payloads lower through the generic path.
 run_accept_expect_status "generic_enum_maybe_just" 42
 
+# Accept (#2354): a struct-variant field typed as a tuple destructures inside a
+# match arm (`Data { value: (a, b) }`). Regression for the E_HIR unbound-inner-
+# identifier failure where only the tuple-VARIANT path handled nested aggregate
+# payload sub-patterns. Exit 7 (3 + 4) proves the inner tuple leaves bound.
+run_accept_expect_status "struct_variant_field_tuple_destructure" 7
+
 # Accept: Result<i64, bool>::Ok(7) — two-type-parameter generic enum.
 # Exit 7 proves the Ok arm matched and the i64 payload was read correctly.
 run_accept_expect_status "generic_enum_result_ok" 7

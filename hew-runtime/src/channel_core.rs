@@ -34,6 +34,7 @@
 use std::collections::VecDeque;
 use std::sync::{Condvar, Mutex};
 
+use hew_cabi::sink::TrySendResult;
 use hew_cabi::vec::{HewTypeOwnershipKind, HewVecElemLayout};
 
 use crate::actor::HewActor;
@@ -504,23 +505,21 @@ impl ChannelCore {
         self.cv.notify_all();
     }
 
-    /// Non-blocking producer send (`try_send`). Returns `true` if accepted,
-    /// `false` if the ring is full.
-    #[must_use]
-    pub fn try_send(&self, item: Vec<u8>) -> bool {
+    /// Non-blocking producer send (`try_send`).
+    pub fn try_send(&self, item: Vec<u8>) -> TrySendResult {
         let consumer_wake;
         {
             let mut inner = self.locked();
-            if inner.stream_closed {
-                // Discard, not "full": release an owned envelope via the
-                // stamped witness, outside the lock.
+            if inner.stream_closed || inner.sink_closed {
+                // Release an owned envelope via the stamped witness outside the
+                // lock, and report that no consumer can accept the item.
                 let layout = inner.elem_layout;
                 drop(inner);
                 Self::drop_envelope(layout.as_ref(), item);
-                return true;
+                return TrySendResult::Closed;
             }
             if inner.queue.len() >= inner.capacity {
-                return false;
+                return TrySendResult::Full;
             }
             inner.queue.push_back(item);
             consumer_wake = inner.consumer.take();
@@ -530,7 +529,7 @@ impl ChannelCore {
             unsafe { Self::wake(w) };
         }
         self.cv.notify_all();
-        true
+        TrySendResult::Accepted
     }
 
     /// Detach an abandoned producer registration (the codegen abandon edge).
@@ -707,8 +706,8 @@ mod tests {
     #[test]
     fn fifo_push_pop_without_parking() {
         let core = ChannelCore::new(4);
-        assert!(core.try_send(b"a".to_vec()));
-        assert!(core.try_send(b"b".to_vec()));
+        assert_eq!(core.try_send(b"a".to_vec()), TrySendResult::Accepted);
+        assert_eq!(core.try_send(b"b".to_vec()), TrySendResult::Accepted);
         assert_eq!(core.pop(), Some(b"a".to_vec()));
         assert_eq!(core.pop(), Some(b"b".to_vec()));
         assert_eq!(core.pop(), None);
@@ -717,16 +716,32 @@ mod tests {
     #[test]
     fn full_ring_rejects_try_send() {
         let core = ChannelCore::new(1);
-        assert!(core.try_send(b"x".to_vec()));
-        assert!(!core.try_send(b"y".to_vec()), "ring is full");
+        assert_eq!(core.try_send(b"x".to_vec()), TrySendResult::Accepted);
+        assert_eq!(
+            core.try_send(b"y".to_vec()),
+            TrySendResult::Full,
+            "ring is full"
+        );
         assert_eq!(core.pop(), Some(b"x".to_vec()));
-        assert!(core.try_send(b"y".to_vec()), "space freed by pop");
+        assert_eq!(
+            core.try_send(b"y".to_vec()),
+            TrySendResult::Accepted,
+            "space freed by pop"
+        );
+    }
+
+    #[test]
+    fn closed_stream_rejects_try_send() {
+        let core = ChannelCore::new(1);
+        core.close_stream();
+        assert_eq!(core.try_send(b"discarded".to_vec()), TrySendResult::Closed);
+        assert_eq!(core.pop(), None);
     }
 
     #[test]
     fn await_next_ready_when_item_queued() {
         let core = ChannelCore::new(2);
-        assert!(core.try_send(b"hi".to_vec()));
+        assert_eq!(core.try_send(b"hi".to_vec()), TrySendResult::Accepted);
         let slot = hew_read_slot_new();
         let rc = unsafe { core.await_next(std::ptr::null_mut(), slot) };
         assert_eq!(rc, STREAM_AWAIT_READY);
@@ -745,7 +760,7 @@ mod tests {
         assert_eq!(rc, STREAM_AWAIT_SUSPEND);
         // A producer write deposits a Data signal + (null-actor) wake is dropped,
         // and releases the core's in-flight ref.
-        assert!(core.try_send(b"z".to_vec()));
+        assert_eq!(core.try_send(b"z".to_vec()), TrySendResult::Accepted);
         assert_eq!(
             unsafe { hew_read_slot_status(slot) },
             ReadStatus::Data as i32
@@ -781,14 +796,14 @@ mod tests {
         unsafe { hew_read_slot_free(slot) };
         // The item the producer writes after abandon stays queued (exactly-once:
         // never lost), available to the next consumer.
-        assert!(core.try_send(b"late".to_vec()));
+        assert_eq!(core.try_send(b"late".to_vec()), TrySendResult::Accepted);
         assert_eq!(core.pop(), Some(b"late".to_vec()));
     }
 
     #[test]
     fn parked_producer_drained_on_pop() {
         let core = ChannelCore::new(1);
-        assert!(core.try_send(b"first".to_vec()));
+        assert_eq!(core.try_send(b"first".to_vec()), TrySendResult::Accepted);
         let slot = hew_read_slot_new();
         // Ring full → producer parks, owning its item.
         let rc = unsafe { core.await_send(std::ptr::null_mut(), slot, b"second".to_vec()) };
@@ -807,7 +822,7 @@ mod tests {
     #[test]
     fn abandoned_producer_detach_drops_item_and_releases_ref() {
         let core = ChannelCore::new(1);
-        assert!(core.try_send(b"first".to_vec()));
+        assert_eq!(core.try_send(b"first".to_vec()), TrySendResult::Accepted);
         let slot = hew_read_slot_new();
         // Ring full → producer parks, owning "second".
         let rc = unsafe { core.await_send(std::ptr::null_mut(), slot, b"second".to_vec()) };
@@ -925,9 +940,9 @@ mod tests {
         let drops_before = OWNED_DROPS.load(Ordering::SeqCst);
         let core = ChannelCore::new(4);
         core.stamp_elem_layout(&owned_elem_layout());
-        assert!(core.try_send(owned_envelope(1)));
-        assert!(core.try_send(owned_envelope(2)));
-        assert!(core.try_send(owned_envelope(3)));
+        assert_eq!(core.try_send(owned_envelope(1)), TrySendResult::Accepted);
+        assert_eq!(core.try_send(owned_envelope(2)), TrySendResult::Accepted);
+        assert_eq!(core.try_send(owned_envelope(3)), TrySendResult::Accepted);
         drop(core);
         assert_eq!(
             OWNED_DROPS.load(Ordering::SeqCst) - drops_before,
@@ -944,7 +959,7 @@ mod tests {
         let drops_before = OWNED_DROPS.load(Ordering::SeqCst);
         let core = ChannelCore::new(1);
         core.stamp_elem_layout(&owned_elem_layout());
-        assert!(core.try_send(owned_envelope(1)));
+        assert_eq!(core.try_send(owned_envelope(1)), TrySendResult::Accepted);
         let slot = hew_read_slot_new();
         // Ring full → producer parks, owning its envelope.
         let rc = unsafe { core.await_send(std::ptr::null_mut(), slot, owned_envelope(2)) };
@@ -972,7 +987,11 @@ mod tests {
         core.stamp_elem_layout(&owned_elem_layout());
         core.close_stream();
         // Discards (consumer gone) must still release the owned envelope.
-        assert!(core.try_send(owned_envelope(7)), "discard, not full");
+        assert_eq!(
+            core.try_send(owned_envelope(7)),
+            TrySendResult::Closed,
+            "consumer closure must be reported"
+        );
         core.blocking_send(owned_envelope(8));
         assert_eq!(
             OWNED_DROPS.load(Ordering::SeqCst) - drops_before,
@@ -995,7 +1014,7 @@ mod tests {
         let drops_before = OWNED_DROPS.load(Ordering::SeqCst);
         let core = ChannelCore::new(2);
         core.stamp_elem_layout(&owned_elem_layout());
-        assert!(core.try_send(owned_envelope(9)));
+        assert_eq!(core.try_send(owned_envelope(9)), TrySendResult::Accepted);
         let mut env = core.pop().expect("queued envelope");
         assert_eq!(
             OWNED_DROPS.load(Ordering::SeqCst) - drops_before,
@@ -1011,7 +1030,7 @@ mod tests {
     #[test]
     fn close_stream_wakes_parked_producers_and_drops_items() {
         let core = ChannelCore::new(1);
-        assert!(core.try_send(b"x".to_vec()));
+        assert_eq!(core.try_send(b"x".to_vec()), TrySendResult::Accepted);
         let slot = hew_read_slot_new();
         let rc = unsafe { core.await_send(std::ptr::null_mut(), slot, b"y".to_vec()) };
         assert_eq!(rc, STREAM_AWAIT_SUSPEND);

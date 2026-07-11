@@ -2439,9 +2439,9 @@ pub(crate) fn emit_coalesce_key_fn<'ctx>(
     }
 
     builder.position_at_end(default_bb);
-    // D3/Q244 shim: handlers omitted from the MIR plan must not accidentally
-    // coalesce by msg_type alone. Legacy copied payloads have distinct queue and
-    // sender addresses, so pointer identity disables matching for those types.
+    // Only coalescing message types require `key_field`; mixed handlers are valid.
+    // This least-surprise rule intentionally avoids a blanket annotation burden on
+    // unrelated handlers. Pointer identity prevents unkeyed handlers from matching.
     let default_key = builder
         .build_ptr_to_int(payload, i64_ty, "unkeyed_payload_identity")
         .llvm_ctx("coalesce unkeyed payload identity")?;

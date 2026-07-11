@@ -263,7 +263,7 @@ impl std::fmt::Display for CodegenError {
                     ("the `Duplex` channel substrate", "WASM-TODO(#1451)")
                 } else if symbol.starts_with("hew_supervisor_") {
                     ("the supervisor restart machinery", "WASM-TODO(#1475)")
-                } else if symbol.starts_with("hew_task_scope_") {
+                } else if symbol.starts_with("hew_task_scope_") || symbol.starts_with("hew_task_") {
                     (
                         "the `scope {}` structured-concurrency substrate",
                         "WASM-TODO(#1451)",
@@ -787,18 +787,16 @@ fn validate_codegen_front_with_name(pipeline: &IrPipeline, module_name: &str) ->
 ///   Note: calls from the Hew stdlib `extern "C"` block in `std/net/net.hew`
 ///   bypass this scan (they produce direct LLVM calls, not `CallRuntimeAbi`
 ///   instructions); the wasm32 runtime stub is the safety net for those.
-/// - `hew_task_scope_*` — the structured-concurrency `scope {}` substrate
-///   (`hew-runtime/src/task_scope.rs`) is gated `cfg(not(target_arch = "wasm32"))`
-///   at `hew-runtime/src/lib.rs:466`. The native impl depends on OS-thread-backed
-///   join semantics that wasm32 lacks. This codegen-level scan is defence in
-///   depth — the type checker rejects `Expr::Scope { .. }` on WASM targets at
-///   `hew-types/src/check/expressions.rs` via `WasmUnsupportedFeature::
-///   StructuredConcurrency`; this scan catches any path that bypasses the
-///   type-checker gate (e.g. direct MIR construction in tests). The
-///   alternative — letting the program reach `wasm-ld` — produces a confusing
-///   linker error. W2.006 (HewScope removal) lane added this gate; the
-///   task-scope-specific tracking sub-task lives under the WASM parity
-///   umbrella issue #1451.
+/// - `hew_task_scope_*` / `hew_task_*` — the structured-concurrency scope and
+///   task substrate (`hew-runtime/src/task_scope.rs`) is gated
+///   `cfg(not(target_arch = "wasm32"))`. The native path launches
+///   `TaskEntry` work on OS threads and completes joins through thread/condvar
+///   and read-slot wakeups. The wasm32 scheduler has no cooperative task work
+///   queue or non-blocking scope join yet. This codegen-level scan is defence
+///   in depth — the type checker rejects `Expr::Scope { .. }` on WASM targets
+///   via `WasmUnsupportedFeature::StructuredConcurrency`; this scan catches
+///   direct-MIR paths that bypass the type-checker gate. The alternative —
+///   letting the program reach `wasm-ld` — produces a confusing linker error.
 ///   WASM-TODO(#1451): task-scope WASM parity sub-task.
 ///
 /// This scan detects them in the MIR before the `wasm-ld` step so the caller
@@ -823,12 +821,11 @@ pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String>
                     // `#![cfg(not(target_arch = "wasm32"))]`, WASM-TODO(#1451)),
                     // the Supervisor group (requires the native preemptive
                     // scheduler; WASM builds use a cooperative single-threaded
-                    // executor — WASM-TODO(#1475)), and the TaskScope group
-                    // (`hew-runtime/src/task_scope.rs` is native-only via
-                    // `hew-runtime/src/lib.rs:466`; the type checker already
-                    // rejects `scope {}` on WASM targets, this scan is the
-                    // defence-in-depth catch for direct-MIR paths — W2.006,
-                    // WASM-TODO(#1451)).
+                    // executor — WASM-TODO(#1475)), and the Task/TaskScope
+                    // groups (`hew-runtime/src/task_scope.rs` is native-only;
+                    // the type checker already rejects `scope {}` on WASM
+                    // targets, this scan is the defence-in-depth catch for
+                    // direct-MIR paths — WASM-TODO(#1451)).
                     //
                     // `hew_tcp_stream_from_conn` is unreachable through
                     // `Instr::CallRuntimeAbi`: it is not in
@@ -838,6 +835,9 @@ pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String>
                     // stub. WASM-TODO(#1451): TCP transport gap.
                     Instr::CallRuntimeAbi(call) => {
                         wasm_excluded_call_family(call.family()).then(|| call.symbol().to_string())
+                    }
+                    Instr::SpawnTaskDirect { .. } | Instr::SpawnTaskClosure { .. } => {
+                        Some("hew_task_spawn_thread_with_inherited_context".to_string())
                     }
                     Instr::Drop {
                         drop_fn: Some(spec),
@@ -1053,14 +1053,28 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::SupervisorPoolLen
         | F::SupervisorStop
         | F::SupervisorRestartAwaitBlocking
-        // Structured-concurrency task scopes are native-only
-        // (hew-runtime/src/lib.rs:466). WASM-TODO(#1451).
+        // Structured-concurrency task scopes and task handles are implemented
+        // only by the native thread/condvar runtime. wasm32 has no cooperative
+        // task work queue or non-blocking join/wakeup path yet.
+        // WASM-TODO(#1451).
+        | F::TaskAwaitBlocking
+        | F::TaskCompleteThreaded
+        | F::TaskCompletionObserve
+        | F::TaskCompletionUnobserve
+        | F::TaskFree
+        | F::TaskGetEnv
+        | F::TaskGetError
+        | F::TaskGetResult
+        | F::TaskNew
         | F::TaskScopeCancelAfterNs
         | F::TaskScopeDestroy
         | F::TaskScopeJoinAll
         | F::TaskScopeNew
         | F::TaskScopeSetCurrent
-        | F::TaskScopeSpawn => true,
+        | F::TaskScopeSpawn
+        | F::TaskSetEnv
+        | F::TaskSetResult
+        | F::TaskSpawnThread => true,
         // Everything else links and runs on wasm32 (or is gated earlier by
         // its own structured check). Exhaustively enumerated so a new
         // family cannot land without a wasm32 decision.
@@ -1199,18 +1213,6 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::StringIndex
         | F::StringSliceCodepoints
         | F::TcpAttachLocal
-        | F::TaskAwaitBlocking
-        | F::TaskCompleteThreaded
-        | F::TaskCompletionObserve
-        | F::TaskCompletionUnobserve
-        | F::TaskFree
-        | F::TaskGetEnv
-        | F::TaskGetError
-        | F::TaskGetResult
-        | F::TaskNew
-        | F::TaskSetEnv
-        | F::TaskSetResult
-        | F::TaskSpawnThread
         | F::VecGet(_)
         | F::VecLen
         | F::VecSliceRange(_)

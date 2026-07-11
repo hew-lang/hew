@@ -2045,8 +2045,12 @@ impl WasmUnsupportedFeature {
             Self::LinkMonitor => {
                 "they rely on OS threads to watch linked actors and propagate exits"
             }
-            Self::StructuredConcurrency => "they schedule child work on dedicated OS threads",
-            Self::Tasks => "they need OS threads to drive scope completions",
+            Self::StructuredConcurrency => {
+                "the wasm32 scheduler has no cooperative task executor or non-blocking scope join"
+            }
+            Self::Tasks => {
+                "native task completion and read-slot wakeups are not implemented on wasm32"
+            }
             Self::HttpClient => {
                 "the std::net::http::http_client wrappers are still native-only; \
                  no wasm32 networking bridge exists yet"

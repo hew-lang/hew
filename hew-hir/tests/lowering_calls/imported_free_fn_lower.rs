@@ -23,7 +23,7 @@ fn build_program_with_imported_module(imported_src: &str, root_src: &str) -> Pro
         "imported parse errors: {:?}",
         imported.errors
     );
-    let root = hew_parser::parse(root_src);
+    let mut root = hew_parser::parse(root_src);
     assert!(
         root.errors.is_empty(),
         "root parse errors: {:?}",
@@ -40,6 +40,13 @@ fn build_program_with_imported_module(imported_src: &str, root_src: &str) -> Pro
         .filter(|(item, _)| !matches!(item, Item::Import(_)))
         .cloned()
         .collect();
+    for (item, _) in &mut root.program.items {
+        if let Item::Import(import) = item {
+            if import.path == ["m"] {
+                import.resolved_items = Some(imported_items.clone());
+            }
+        }
+    }
 
     let imported_module = Module {
         id: imported_id.clone(),
@@ -160,6 +167,74 @@ pub fn entry(n: i64) -> i64 { peer(n) }
         tail_call_callee_name(function_by_name(&output, "m$entry")),
         Some("m$peer")
     );
+}
+
+#[test]
+fn selected_imported_free_function_call_resolves_to_qualified_symbol() {
+    for import in ["import m::{entry};", "import m::*;"] {
+        let program = build_program_with_imported_module(
+            "pub fn entry(n: i64) -> i64 { n + 1 }",
+            &format!("{import}\nfn main() -> i64 {{ entry(41) }}"),
+        );
+        let (output, tco) = lower_with_checker(&program);
+
+        assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
+        assert!(
+            output.diagnostics.is_empty(),
+            "selected imported function should lower cleanly: {:#?}",
+            output.diagnostics
+        );
+        assert_eq!(
+            tail_call_callee_name(function_by_name(&output, "main")),
+            Some("m$entry")
+        );
+    }
+}
+
+#[test]
+fn root_local_free_function_shadows_import_with_matching_signature() {
+    for import in ["import m::{foo};", "import m::*;"] {
+        let program = build_program_with_imported_module(
+            "pub fn foo() -> i64 { 99 }",
+            &format!("{import}\nfn foo() -> i64 {{ 1 }}\nfn main() -> i64 {{ foo() }}"),
+        );
+        let (output, tco) = lower_with_checker(&program);
+
+        assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
+        assert!(
+            output.diagnostics.is_empty(),
+            "local shadow should lower cleanly: {:#?}",
+            output.diagnostics
+        );
+        assert_eq!(
+            tail_call_callee_name(function_by_name(&output, "main")),
+            Some("foo")
+        );
+    }
+}
+
+#[test]
+fn root_local_free_function_shadows_import_with_mismatched_signature() {
+    for import in ["import m::{foo};", "import m::*;"] {
+        let program = build_program_with_imported_module(
+            "pub fn foo() -> i64 { 99 }",
+            &format!(
+                "{import}\nfn foo() -> string {{ \"local\" }}\nfn main() -> string {{ foo() }}"
+            ),
+        );
+        let (output, tco) = lower_with_checker(&program);
+
+        assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
+        assert!(
+            output.diagnostics.is_empty(),
+            "checker and HIR should agree on the local binding: {:#?}",
+            output.diagnostics
+        );
+        assert_eq!(
+            tail_call_callee_name(function_by_name(&output, "main")),
+            Some("foo")
+        );
+    }
 }
 
 #[test]

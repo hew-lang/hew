@@ -94,7 +94,6 @@ impl MessageMethods for Message {
             hew_proto_msg_has_field(msg.handle, field_number as i32)
         } != 0 // INTERNAL-ABI: C ABI returns i32 (1=present, 0=absent); explicit != 0 required (no implicit i32→bool)
     }
-
 }
 
 fn validate_field_number(field_number: i64) {

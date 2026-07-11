@@ -53,22 +53,38 @@ fn emit_ir(source: &str, name: &str) -> String {
 }
 
 fn function_body<'a>(ir: &'a str, symbol: &str) -> &'a str {
-    let symbol_pos = ir
-        .find(&format!("@{symbol}("))
-        .unwrap_or_else(|| panic!("missing function `{symbol}` in IR:\n{ir}"));
-    let start = ir[..symbol_pos]
-        .rfind("define ")
-        .unwrap_or_else(|| panic!("missing definition for `{symbol}`"));
-    let end = ir[start..]
-        .find("\n}\n")
-        .map(|offset| start + offset + 3)
-        .unwrap_or(ir.len());
-    &ir[start..end]
+    let needle = format!("@{symbol}(");
+    let mut offset = 0;
+    let start = ir
+        .split_inclusive('\n')
+        .find_map(|line| {
+            let line_start = offset;
+            offset += line.len();
+            (line.starts_with("define ") && line.contains(&needle)).then_some(line_start)
+        })
+        .unwrap_or_else(|| panic!("missing definition for `{symbol}` in IR:\n{ir}"));
+
+    let mut end = start;
+    for line in ir[start..].split_inclusive('\n') {
+        end += line.len();
+        if line.trim() == "}" {
+            return &ir[start..end];
+        }
+    }
+    panic!("missing closing brace for `{symbol}` in IR:\n{ir}");
 }
 
 fn vec_release_calls(body: &str) -> usize {
     body.matches("call void @hew_vec_free(").count()
         + body.matches("call void @hew_vec_free_owned(").count()
+}
+
+fn assert_iteration_cursor_borrows_actor_state(name: &str, handler: &str) {
+    assert_eq!(
+        vec_release_calls(handler),
+        0,
+        "{name}: the iteration cursor must borrow actor state\n{handler}"
+    );
 }
 
 fn vec_release_owner_slots(body: &str) -> std::collections::BTreeSet<&str> {
@@ -247,6 +263,41 @@ fn main() -> i64 {{
 }
 
 #[test]
+fn d65_function_body_handles_windows_line_endings() {
+    let valid = concat!(
+        "define internal i64 @Holder__recv__scan(ptr %0, i32 %1) {\r\n",
+        "entry:\r\n",
+        "  ret i64 0\r\n",
+        "}\r\n",
+        "\r\n",
+        "define void @__hew_state_drop_Holder(ptr %0) {\r\n",
+        "entry:\r\n",
+        "  call void @hew_vec_free_owned(ptr %0)\r\n",
+        "  ret void\r\n",
+        "}\r\n",
+    );
+    let handler = function_body(valid, "Holder__recv__scan");
+    let state_drop = function_body(valid, "__hew_state_drop_Holder");
+    assert_iteration_cursor_borrows_actor_state("windows_crlf", handler);
+    assert_eq!(vec_release_calls(state_drop), 1);
+    assert!(!handler.contains("__hew_state_drop_Holder"));
+
+    let broken = valid.replacen(
+        "entry:\r\n  ret i64 0",
+        "entry:\r\n  call void @hew_vec_free_owned(ptr %0)\r\n  ret i64 0",
+        1,
+    );
+    assert!(
+        std::panic::catch_unwind(|| {
+            let handler = function_body(&broken, "Holder__recv__scan");
+            assert_iteration_cursor_borrows_actor_state("injected_double_release", handler);
+        })
+        .is_err(),
+        "the actor-state borrow assertion accepted a real Vec release call"
+    );
+}
+
+#[test]
 fn d65_cursor_recursion_truth_table_has_one_owner_release_per_shape() {
     for (name, source, expected_owner_slots) in [
         ("local_flat_full", LOCAL_FLAT_FULL, 1),
@@ -300,11 +351,7 @@ fn d65_cursor_recursion_truth_table_has_one_owner_release_per_shape() {
         let ir = emit_ir(&source, name);
         let handler = function_body(&ir, "Holder__recv__scan");
         let state_drop = function_body(&ir, "__hew_state_drop_Holder");
-        assert_eq!(
-            vec_release_calls(handler),
-            0,
-            "{name}: the iteration cursor must borrow actor state\n{handler}"
-        );
+        assert_iteration_cursor_borrows_actor_state(name, handler);
         assert_eq!(
             vec_release_calls(state_drop),
             1,

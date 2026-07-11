@@ -1210,6 +1210,37 @@ mod opaque_receive_fn_param_rules {
     }
 
     #[test]
+    fn transferable_channel_handle_receive_fn_param_is_accepted() {
+        // Negative control for the transferable-handle carve-out: a channel
+        // `Receiver` handed to an observer actor through a message is a
+        // supported same-node BY-VALUE transfer. The mailbox deep-copies the
+        // handle pointer and codegen's cross-node codec seeder deliberately
+        // SKIPS any handler whose payload carries one of these builtins
+        // (`resolved_ty_contains_channel_handle` in hew-codegen-rs), so it
+        // never reaches the CBOR wire serializer. Rejecting it here as an
+        // opaque payload would break that supported path. Dispatched on the
+        // `builtin` discriminant, so `channel.Receiver` resolves as a builtin
+        // handle rather than a user opaque type.
+        let output = check_source(
+            r"
+            actor Observer {
+                var count: i64 = 0;
+                receive fn watch(rx: channel.Receiver<string>) {
+                    count = count + 1;
+                }
+            }
+            ",
+        );
+        assert!(
+            opaque_payload_errors(&output).is_empty(),
+            "a transferable channel handle (channel.Receiver) as a receive-fn \
+             param is a supported same-node value transfer and must NOT raise \
+             OpaqueMessagePayload; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
     fn opaque_handle_as_non_receive_fn_param_is_accepted() {
         // Negative control: the restriction is specific to receive-fn (message)
         // parameters. A plain free function taking an opaque handle is fine.

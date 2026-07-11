@@ -1879,6 +1879,23 @@ impl Checker {
     /// ... is not a registered record layout` message that names an internal
     /// wire detail instead of the offending parameter. See #2511.
     fn reject_opaque_message_payload(&mut self, ty: &Ty, param_span: &Span, handler: &str) {
+        // Transferable handle builtins (`Sender`/`Receiver`, `LocalPid`/
+        // `RemotePid`, `Sink`/`Stream`) are opaque, pointer-shaped runtime
+        // resources with no cross-node wire layout, yet a same-node send
+        // transfers them BY VALUE: the mailbox deep-copies the handle
+        // pointer / packed pid and the checker consumes the caller binding.
+        // Codegen's cross-node codec seeder deliberately SKIPS any handler
+        // whose message payload carries one of these (see
+        // `resolved_ty_contains_channel_handle`/`_actor_handle`/`_stream_handle`
+        // in hew-codegen-rs `llvm.rs`), so they never reach the CBOR wire
+        // serializer and never trigger the late codegen-front failure this
+        // diagnostic front-runs. Rejecting them here would break the
+        // supported local-transfer path (a channel `Receiver` handed to an
+        // observer actor through a message). Mirror the codegen skip: if the
+        // payload carries a transferable handle builtin, admit it.
+        if Self::ty_contains_transferable_handle(ty) {
+            return;
+        }
         let mut visiting = std::collections::HashSet::new();
         let Some(opaque_name) = self.ty_field_contains_opaque(ty, &mut visiting) else {
             return;
@@ -1897,6 +1914,38 @@ impl Checker {
                  [E_OPAQUE_MESSAGE_PAYLOAD]"
             ),
         );
+    }
+
+    /// True when `ty` is — or transitively carries through generic args,
+    /// tuples, arrays, or slices — a transferable handle builtin
+    /// (`Sender`/`Receiver`, `LocalPid`/`RemotePid`, `Sink`/`Stream`).
+    ///
+    /// Dispatched on the typed `builtin` discriminant ALONE, exactly like the
+    /// three coupled codegen predicates it mirrors: a user source type may
+    /// shadow a builtin name (resolving with `builtin: None`), and such a user
+    /// `record Receiver` is NOT a transferable handle. Record/enum FIELD
+    /// recursion is deliberately absent — an aggregate hiding a handle is not
+    /// itself value-transferred by the mailbox, so it stays subject to the
+    /// opaque-payload rejection (and fails closed at the serializer walk).
+    fn ty_contains_transferable_handle(ty: &Ty) -> bool {
+        match ty {
+            Ty::Named { args, builtin, .. } => {
+                matches!(
+                    builtin,
+                    Some(
+                        crate::BuiltinType::Sender
+                            | crate::BuiltinType::Receiver
+                            | crate::BuiltinType::LocalPid
+                            | crate::BuiltinType::RemotePid
+                            | crate::BuiltinType::Sink
+                            | crate::BuiltinType::Stream
+                    )
+                ) || args.iter().any(Self::ty_contains_transferable_handle)
+            }
+            Ty::Tuple(items) => items.iter().any(Self::ty_contains_transferable_handle),
+            Ty::Array(inner, _) | Ty::Slice(inner) => Self::ty_contains_transferable_handle(inner),
+            _ => false,
+        }
     }
 
     pub(super) fn check_receive_fn(

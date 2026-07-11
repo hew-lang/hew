@@ -1744,12 +1744,22 @@ mod tests {
                 thread::sleep(Duration::from_millis(5));
             }
             let outcome = recv_handle.join().expect("recv thread panicked");
-            // After destroy the partition flag is set and the conn
-            // table is cleared; whichever the recv loop sees first
-            // surfaces as Partitioned.
+            // `shutdown()` sets the partition flag AND clears the conn
+            // table (then `notify_all`s) — a woken recv loop can legally
+            // observe either first: the partition check at the top of the
+            // loop surfaces `Partitioned`, while re-taking the table lock
+            // after the cleared conns surfaces `InvalidConn`. Both prove
+            // the recv woke from `sim_transport_free` rather than its own
+            // watchdog timeout; the race over which wins is benign, so
+            // accept both instead of asserting a fixed winner (this is
+            // the de-flake per #1945 — the old `Partitioned`-only assert
+            // was timing-flaky on slower/contended runners).
             assert!(
-                matches!(outcome, SimRecvOutcome::Partitioned),
-                "expected Partitioned wake from destroy, got {outcome:?}"
+                matches!(
+                    outcome,
+                    SimRecvOutcome::Partitioned | SimRecvOutcome::InvalidConn
+                ),
+                "expected a destroy wake (Partitioned or InvalidConn), got {outcome:?}"
             );
         }
     }

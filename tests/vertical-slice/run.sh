@@ -656,6 +656,18 @@ expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/managed_record_or_enum_eq.hew" \
   "owned or heap-backed" \
   "managed_record_or_enum_eq"
+# #2509: user type name colliding with a loaded stdlib opaque handle name must
+# fail closed at codegen with an actionable rename diagnostic, not a raw LLVM
+# non-pointer-type dump.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/opaque_handle_name_collision.hew" \
+  "collides with the built-in opaque handle type of the same name" \
+  "opaque_handle_name_collision"
+if grep -qF 'resolves to non-pointer type' "${reject_output}"; then
+  echo "opaque_handle_name_collision leaked the raw LLVM non-pointer dump" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
 # Declaration-level generic bounds are authority at nominal instantiation sites:
 # valid arguments compile, invalid arguments fail closed at the reference site.
 compile_accept "generic_decl_bound_satisfied"

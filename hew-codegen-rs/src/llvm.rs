@@ -29878,6 +29878,32 @@ pub(crate) fn load_duplex_handle<'ctx>(
     let (slot, ty) = place_pointer(fn_ctx, place)?;
     match ty {
         BasicTypeEnum::PointerType(_) => {}
+        BasicTypeEnum::StructType(st)
+            if st
+                .get_name()
+                .and_then(|n| n.to_str().ok())
+                .is_some_and(|n| fn_ctx.record_layouts.opaque.contains(n)) =>
+        {
+            // Name-collision seam (#2509): the slot resolved to a user
+            // record/actor-state/enum/machine LLVM named struct whose bare name
+            // is ALSO a loaded `#[opaque]` runtime-handle name (e.g. a user
+            // `actor Listener` alongside stdlib `net.Listener`). The opaque
+            // handle should resolve to a bare `ptr`, but the user aggregate
+            // predeclared the named struct first, so `resolve_ty` returned the
+            // struct. Codegen fails closed here rather than miscompiling — but
+            // the raw LLVM-dump form of this message names an internal wire
+            // detail. Surface the actionable cause instead.
+            let collided = st
+                .get_name()
+                .and_then(|n| n.to_str().ok())
+                .unwrap_or("<unknown>");
+            return Err(CodegenError::FailClosed(format!(
+                "{label}: user type `{collided}` collides with the built-in opaque \
+                 handle type of the same name, so a handle operation here resolves to \
+                 your type's layout instead of the runtime handle pointer. Rename the \
+                 user `{collided}` (record/actor/enum/machine) to a distinct name."
+            )));
+        }
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "{label}: Place {place:?} resolves to non-pointer type {other:?}; \

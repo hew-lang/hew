@@ -1,0 +1,43 @@
+// #2509: a user actor/record/enum/machine whose bare name collides with a
+// loaded stdlib `#[opaque]` runtime-handle type name (here `net.Listener`)
+// makes a handle operation resolve to the user type's LLVM named struct
+// instead of the runtime handle `ptr`. Codegen must fail closed with an
+// actionable rename diagnostic rather than a raw LLVM-dump wire detail.
+import std::net::{Connection};
+
+actor Router {
+    receive fn register_client(cid: string) {
+        println(cid);
+    }
+}
+
+actor ClientHandler {
+    let conn: Connection;
+
+    receive fn start() {
+        conn.close();
+    }
+}
+
+actor Listener {
+    let router: LocalPid<Router>;
+
+    receive fn start() {
+        let lst = net.listen(":0");
+        var next_id: i32 = 1;
+        loop {
+            let conn = await lst.accept();
+            let cid = f"client-{next_id}";
+            let handler = spawn ClientHandler(conn: conn);
+            router.register_client(cid);
+            handler.start();
+            next_id = next_id + 1;
+        }
+    }
+}
+
+fn main() {
+    let router = spawn Router();
+    let listener = spawn Listener(router: router);
+    listener.start();
+}

@@ -6401,7 +6401,10 @@ impl Checker {
             );
             return Ty::Error;
         }
-        if let Some(td) = self.lookup_type_def(name) {
+        let td = self
+            .module_local_type_def(unqualified)
+            .or_else(|| self.lookup_type_def(name));
+        if let Some(td) = td {
             // Track inferred type arguments for generic structs.
             // If the caller supplied explicit type args (e.g. `Wrapper<String> { ... }`),
             // pre-seed the map from them so field checking constrains against the

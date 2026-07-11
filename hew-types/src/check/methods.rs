@@ -2118,6 +2118,17 @@ impl Checker {
         td.methods.get(method).cloned()
     }
 
+    /// Resolve a module-local type definition through its authoritative
+    /// qualified key (`{current_short}.{type_name}`).
+    ///
+    /// This avoids the bare-name last-write-wins entry when a sibling module
+    /// declares the same record/type name.
+    pub(super) fn module_local_type_def(&self, type_name: &str) -> Option<TypeDef> {
+        let short = self.current_module_short()?;
+        let qualified = format!("{short}.{type_name}");
+        self.type_defs.get(&qualified).cloned()
+    }
+
     pub(super) fn lookup_named_method_sig(
         &self,
         type_name: &str,

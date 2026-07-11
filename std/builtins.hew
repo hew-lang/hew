@@ -169,6 +169,13 @@ pub enum TimeoutError {
 pub enum LinkError {
     AlreadyLinked;
     TargetDead;
+    NodeNotRunning;
+    NoCurrentActor;
+    InvalidTarget;
+    Partition;
+    StaleRef;
+    EncodeFailure;
+    LocalShutdown;
 }
 
 /// Message contract for actor types used behind `LocalPid<A>` / `RemotePid<A>`.

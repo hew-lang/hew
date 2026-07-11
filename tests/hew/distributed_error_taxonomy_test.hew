@@ -60,13 +60,16 @@ fn ask_error_id(err: AskError) -> i64 {
 
 fn monitor_error_id(err: MonitorError) -> i64 {
     match err {
-        MonitorError::Partition => 1,
-        MonitorError::StaleRef => 2,
-        MonitorError::LocalShutdown => 3,
-        MonitorError::VersionMismatch => 4,
-        MonitorError::Unauthorized => 5,
-        MonitorError::DecodeFailure => 6,
-        MonitorError::MonitorLost => 7,
+        MonitorError::NodeNotRunning => 1,
+        MonitorError::InvalidTarget => 2,
+        MonitorError::Partition => 3,
+        MonitorError::StaleRef => 4,
+        MonitorError::EncodeFailure => 5,
+        MonitorError::LocalShutdown => 6,
+        MonitorError::VersionMismatch => 7,
+        MonitorError::Unauthorized => 8,
+        MonitorError::DecodeFailure => 9,
+        MonitorError::MonitorLost => 10,
     }
 }
 
@@ -134,13 +137,16 @@ fn test_ask_error_taxonomy_variants() {
 
 #[test]
 fn test_monitor_error_taxonomy_variants() {
-    testing.assert_eq(monitor_error_id(MonitorError::Partition), 1);
-    testing.assert_eq(monitor_error_id(MonitorError::StaleRef), 2);
-    testing.assert_eq(monitor_error_id(MonitorError::LocalShutdown), 3);
-    testing.assert_eq(monitor_error_id(MonitorError::VersionMismatch), 4);
-    testing.assert_eq(monitor_error_id(MonitorError::Unauthorized), 5);
-    testing.assert_eq(monitor_error_id(MonitorError::DecodeFailure), 6);
-    testing.assert_eq(monitor_error_id(MonitorError::MonitorLost), 7);
+    testing.assert_eq(monitor_error_id(MonitorError::NodeNotRunning), 1);
+    testing.assert_eq(monitor_error_id(MonitorError::InvalidTarget), 2);
+    testing.assert_eq(monitor_error_id(MonitorError::Partition), 3);
+    testing.assert_eq(monitor_error_id(MonitorError::StaleRef), 4);
+    testing.assert_eq(monitor_error_id(MonitorError::EncodeFailure), 5);
+    testing.assert_eq(monitor_error_id(MonitorError::LocalShutdown), 6);
+    testing.assert_eq(monitor_error_id(MonitorError::VersionMismatch), 7);
+    testing.assert_eq(monitor_error_id(MonitorError::Unauthorized), 8);
+    testing.assert_eq(monitor_error_id(MonitorError::DecodeFailure), 9);
+    testing.assert_eq(monitor_error_id(MonitorError::MonitorLost), 10);
 }
 
 #[test]

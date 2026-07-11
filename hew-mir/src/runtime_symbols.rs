@@ -307,9 +307,10 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     // link ref_id. The current node + calling actor are resolved internally.
     "hew_node_link_remote",
     // `hew_node_monitor(target_pid: i64) -> i64` registers a distributed
-    // monitor for a remote actor and returns the ref_id. `hew_node_monitor_recv
-    // (ref_id: i64, timeout_ms: i64) -> i64` blocks for that monitor's terminal
-    // signal and returns the carried down-reason. The current node is resolved
+    // monitor for a remote actor. Positive returns are ref_ids; negative returns
+    // encode MonitorError as `-(variant + 1)`. `hew_node_monitor_recv(ref_id:
+    // i64, timeout_ms: i64) -> i64` blocks for that monitor's terminal signal
+    // and returns the carried down-reason. The current node is resolved
     // internally (like `hew_actor_self`), so neither carries a node argument.
     "hew_node_monitor",
     "hew_node_monitor_recv",

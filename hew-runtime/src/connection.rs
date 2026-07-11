@@ -36,6 +36,7 @@
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
+use std::collections::HashMap;
 use std::ffi::{c_char, c_int, CStr};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -204,6 +205,9 @@ pub struct HewConnMgr {
     // native-only: ConnectionActor reader threads do not exist on WASM
     /// Active connections (protected by [`PoisonSafe`] for concurrent add/remove).
     connections: PoisonSafe<Vec<ConnectionActor>>,
+    /// Optional caller-supplied peer identity expectations, consumed exactly
+    /// once by `hew_connmgr_add` after the protocol handshake.
+    expected_peer_ids: PoisonSafe<HashMap<c_int, u16>>,
     /// Transport used for I/O operations.
     pub(crate) transport: *mut HewTransport,
     /// Callback for routing inbound messages to local actors.
@@ -513,6 +517,12 @@ fn publish_connection_established(
     let published = if mgr.cluster.is_null() {
         true
     } else {
+        // The handshake is the first point where a bare-address dial learns the
+        // peer's real node identity. Admit that authenticated identity before
+        // publishing the connection so SWIM, routing, and registry gossip all
+        // use the same NodeId instead of a caller-side placeholder.
+        // SAFETY: cluster is owned by the live manager.
+        unsafe { (&*mgr.cluster).admit_handshake_peer(peer_node_id) };
         // SAFETY: pointer validity is checked by the callee.
         unsafe {
             crate::cluster::hew_cluster_notify_connection_established_for_token_if_not_removed(
@@ -790,6 +800,12 @@ fn version_compatible(local: &HewHandshake, peer: &HewHandshake) -> bool {
 
 fn schema_compatible(local: &HewHandshake, peer: &HewHandshake) -> bool {
     local.schema_hash == peer.schema_hash
+}
+
+fn peer_identity_compatible(local_node_id: u16, peer_node_id: u16, expected: Option<u16>) -> bool {
+    peer_node_id != 0
+        && peer_node_id != local_node_id
+        && expected.is_none_or(|expected| expected == peer_node_id)
 }
 
 unsafe fn send_frame(transport: *mut HewTransport, conn_id: c_int, payload: &[u8]) -> bool {
@@ -1352,7 +1368,7 @@ fn flush_registry_gossip_to_connection(mgr: &HewConnMgr, conn_id: c_int, peer_fe
 /// Returns `0` if the connection is not active or is not registered. SWIM
 /// uses this to cross-check a frame's claimed `from_node` against the identity
 /// established during the handshake.
-fn peer_node_id_for_conn(mgr: &HewConnMgr, conn_id: c_int) -> u16 {
+pub(crate) fn peer_node_id_for_conn(mgr: &HewConnMgr, conn_id: c_int) -> u16 {
     mgr.connections.access(|conns| {
         conns
             .iter()
@@ -1926,6 +1942,7 @@ pub unsafe extern "C" fn hew_connmgr_new(
     cabi_guard!(transport.is_null(), std::ptr::null_mut());
     let mgr = Box::new(HewConnMgr {
         connections: PoisonSafe::new(Vec::with_capacity(16)),
+        expected_peer_ids: PoisonSafe::new(HashMap::new()),
         transport,
         inbound_router: router,
         routing_table,
@@ -1941,6 +1958,27 @@ pub unsafe extern "C" fn hew_connmgr_new(
         local_node_id,
     });
     Box::into_raw(mgr)
+}
+
+/// Bind an outbound transport connection to an expected peer `NodeId`.
+///
+/// The expectation is consumed by the next [`hew_connmgr_add`] for `conn_id`.
+/// A handshake claiming a different `NodeId` is rejected before the connection is
+/// installed or published.
+pub(crate) unsafe fn hew_connmgr_expect_peer(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    expected_node_id: u16,
+) -> c_int {
+    if mgr.is_null() || conn_id == HEW_CONN_INVALID || expected_node_id == 0 {
+        set_last_error("hew_connmgr_expect_peer: invalid manager, connection, or node id");
+        return -1;
+    }
+    // SAFETY: caller guarantees mgr is valid.
+    unsafe { &*mgr }
+        .expected_peer_ids
+        .access(|expected| expected.insert(conn_id, expected_node_id));
+    0
 }
 
 /// Destroy a connection manager, closing all connections.
@@ -2195,6 +2233,9 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     let mgr_ptr = mgr;
     // SAFETY: caller guarantees `mgr` is valid.
     let mgr = unsafe { &*mgr };
+    let expected_peer_node_id = mgr
+        .expected_peer_ids
+        .access(|expected| expected.remove(&conn_id));
 
     if mgr.reconnect_shutdown.load(Ordering::Acquire) {
         // SAFETY: conn_id came from the transport and is not yet tracked by the manager.
@@ -2252,6 +2293,27 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         unsafe { close_transport_conn(mgr.transport, conn_id) };
         return -1;
     };
+    if !peer_identity_compatible(mgr.local_node_id, peer_hs.node_id, expected_peer_node_id) {
+        // SAFETY: mgr.transport and conn_id are valid per caller contract.
+        unsafe { close_transport_conn(mgr.transport, conn_id) };
+        if peer_hs.node_id == 0 {
+            set_last_error(format!(
+                "hew_connmgr_add: peer handshake used reserved node id 0 for conn {conn_id}"
+            ));
+        } else if peer_hs.node_id == mgr.local_node_id {
+            set_last_error(format!(
+                "hew_connmgr_add: peer node id {} collides with local node id for conn {conn_id}",
+                peer_hs.node_id
+            ));
+        } else {
+            set_last_error(format!(
+                "hew_connmgr_add: peer node id {} does not match expected node id {} for conn {conn_id}",
+                peer_hs.node_id,
+                expected_peer_node_id.unwrap_or(0)
+            ));
+        }
+        return -1;
+    }
 
     #[cfg(feature = "encryption")]
     let skip_noise = {
@@ -3042,6 +3104,7 @@ mod tests {
 
         let mgr = HewConnMgr {
             connections: PoisonSafe::new(vec![active, draining]),
+            expected_peer_ids: PoisonSafe::new(HashMap::new()),
             transport: std::ptr::null_mut(),
             inbound_router: None,
             routing_table: std::ptr::null_mut(),
@@ -3085,6 +3148,15 @@ mod tests {
     }
 
     #[test]
+    fn peer_identity_validation_rejects_reserved_colliding_and_unexpected_ids() {
+        assert!(peer_identity_compatible(10, 20, None));
+        assert!(peer_identity_compatible(10, 20, Some(20)));
+        assert!(!peer_identity_compatible(10, 0, None));
+        assert!(!peer_identity_compatible(10, 10, None));
+        assert!(!peer_identity_compatible(10, 20, Some(21)));
+    }
+
+    #[test]
     fn link_controls_from_wrong_authenticated_peer_are_rejected() {
         let _guard = crate::runtime_test_guard();
         let mut peer = ConnectionActor::new(10);
@@ -3092,6 +3164,7 @@ mod tests {
         peer.state.store(CONN_STATE_ACTIVE, Ordering::Release);
         let mgr = HewConnMgr {
             connections: PoisonSafe::new(vec![peer]),
+            expected_peer_ids: PoisonSafe::new(HashMap::new()),
             transport: std::ptr::null_mut(),
             inbound_router: None,
             routing_table: std::ptr::null_mut(),

@@ -14,7 +14,7 @@
 //! verbatim here — no behaviour change; every emitted `.ll` is byte-identical.
 
 use inkwell::types::BasicTypeEnum;
-use inkwell::values::BasicMetadataValueEnum;
+use inkwell::values::{BasicMetadataValueEnum, IntValue};
 use inkwell::{AddressSpace, IntPredicate};
 
 use hew_mir::Place;
@@ -106,6 +106,195 @@ pub(crate) fn is_bytes_struct_expansion_consumer(symbol: &str) -> bool {
             | "hew_encrypt_try_open_hew"
             | "hew_encrypt_must_open_hew"
     )
+}
+
+/// Decode a setup ABI whose positive return is an internal ref id and whose
+/// negative return encodes an error enum as `-(variant + 1)`.
+///
+/// When `ok_ref_payload` is true, the Ok payload is `MonitorRef { ref_id }`;
+/// otherwise the Ok payload is unit. A defensive zero return maps to
+/// `zero_error_tag` rather than producing an uninitialised success value.
+fn emit_signed_setup_result(
+    fn_ctx: &FnCtx<'_, '_>,
+    raw_result: IntValue<'_>,
+    dest: Place,
+    ok_ref_payload: bool,
+    zero_error_tag: u64,
+    helper: &str,
+) -> CodegenResult<()> {
+    let dest_local = composite_dest_local(dest, helper)?;
+    let i64_ty = fn_ctx.ctx.i64_type();
+    let zero = i64_ty.const_zero();
+    let is_ok = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::SGT,
+            raw_result,
+            zero,
+            &format!("{helper}_is_ok"),
+        )
+        .llvm_ctx_with(|| format!("{helper}: compare setup result"))?;
+    let current_fn = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|block| block.get_parent())
+        .ok_or_else(|| CodegenError::FailClosed(format!("{helper}: no parent function")))?;
+    let ok_bb = fn_ctx
+        .ctx
+        .append_basic_block(current_fn, &format!("{helper}_ok"));
+    let err_bb = fn_ctx
+        .ctx
+        .append_basic_block(current_fn, &format!("{helper}_err"));
+    let merge_bb = fn_ctx
+        .ctx
+        .append_basic_block(current_fn, &format!("{helper}_merge"));
+    fn_ctx
+        .builder
+        .build_conditional_branch(is_ok, ok_bb, err_bb)
+        .llvm_ctx_with(|| format!("{helper}: branch on setup result"))?;
+
+    fn_ctx.builder.position_at_end(ok_bb);
+    store_composite_tag(fn_ctx, dest_local, 0, helper)?;
+    if ok_ref_payload {
+        let (monitor_ptr, monitor_ty) = place_pointer(
+            fn_ctx,
+            Place::MachineVariant {
+                local: dest_local,
+                variant_idx: 0,
+                field_idx: 0,
+            },
+        )?;
+        let BasicTypeEnum::StructType(monitor_struct) = monitor_ty else {
+            return Err(CodegenError::FailClosed(format!(
+                "{helper}: Ok payload must be MonitorRef struct, got {monitor_ty:?}"
+            )));
+        };
+        let Some(BasicTypeEnum::IntType(ref_id_ty)) = monitor_struct.get_field_type_at_index(0)
+        else {
+            return Err(CodegenError::FailClosed(format!(
+                "{helper}: MonitorRef.ref_id must be an integer field"
+            )));
+        };
+        if ref_id_ty.get_bit_width() != raw_result.get_type().get_bit_width() {
+            return Err(CodegenError::FailClosed(format!(
+                "{helper}: MonitorRef.ref_id width {} does not match setup ABI width {}",
+                ref_id_ty.get_bit_width(),
+                raw_result.get_type().get_bit_width()
+            )));
+        }
+        let ref_id_ptr = fn_ctx
+            .builder
+            .build_struct_gep(
+                monitor_struct,
+                monitor_ptr,
+                0,
+                &format!("{helper}_ref_id_ptr"),
+            )
+            .llvm_ctx_with(|| format!("{helper}: GEP MonitorRef.ref_id"))?;
+        fn_ctx
+            .builder
+            .build_store(ref_id_ptr, raw_result)
+            .llvm_ctx_with(|| format!("{helper}: store MonitorRef.ref_id"))?;
+    }
+    fn_ctx
+        .builder
+        .build_unconditional_branch(merge_bb)
+        .llvm_ctx_with(|| format!("{helper}: Ok branch to merge"))?;
+
+    fn_ctx.builder.position_at_end(err_bb);
+    store_composite_tag(fn_ctx, dest_local, 1, helper)?;
+    let (error_ptr, error_ty) = place_pointer(
+        fn_ctx,
+        Place::MachineVariant {
+            local: dest_local,
+            variant_idx: 1,
+            field_idx: 0,
+        },
+    )?;
+    let BasicTypeEnum::StructType(error_struct) = error_ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "{helper}: Err payload must be a unit-variant enum struct, got {error_ty:?}"
+        )));
+    };
+    let Some(BasicTypeEnum::IntType(error_tag_ty)) = error_struct.get_field_type_at_index(0) else {
+        return Err(CodegenError::FailClosed(format!(
+            "{helper}: error enum tag must be an integer field"
+        )));
+    };
+    let negated = fn_ctx
+        .builder
+        .build_int_sub(zero, raw_result, &format!("{helper}_negated"))
+        .llvm_ctx_with(|| format!("{helper}: negate setup error"))?;
+    let ordinal = fn_ctx
+        .builder
+        .build_int_sub(
+            negated,
+            i64_ty.const_int(1, false),
+            &format!("{helper}_error_ordinal"),
+        )
+        .llvm_ctx_with(|| format!("{helper}: decode setup error ordinal"))?;
+    let is_zero = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            raw_result,
+            zero,
+            &format!("{helper}_is_zero"),
+        )
+        .llvm_ctx_with(|| format!("{helper}: detect invalid zero setup result"))?;
+    let selected_tag = fn_ctx
+        .builder
+        .build_select(
+            is_zero,
+            i64_ty.const_int(zero_error_tag, false),
+            ordinal,
+            &format!("{helper}_selected_error_tag"),
+        )
+        .llvm_ctx_with(|| format!("{helper}: select setup error tag"))?
+        .into_int_value();
+    let stored_tag = match selected_tag
+        .get_type()
+        .get_bit_width()
+        .cmp(&error_tag_ty.get_bit_width())
+    {
+        std::cmp::Ordering::Equal => selected_tag,
+        std::cmp::Ordering::Less => fn_ctx
+            .builder
+            .build_int_z_extend(
+                selected_tag,
+                error_tag_ty,
+                &format!("{helper}_error_tag_zext"),
+            )
+            .llvm_ctx_with(|| format!("{helper}: widen error tag"))?,
+        std::cmp::Ordering::Greater => fn_ctx
+            .builder
+            .build_int_truncate(
+                selected_tag,
+                error_tag_ty,
+                &format!("{helper}_error_tag_trunc"),
+            )
+            .llvm_ctx_with(|| format!("{helper}: truncate error tag"))?,
+    };
+    let error_tag_ptr = fn_ctx
+        .builder
+        .build_struct_gep(
+            error_struct,
+            error_ptr,
+            0,
+            &format!("{helper}_error_tag_ptr"),
+        )
+        .llvm_ctx_with(|| format!("{helper}: GEP error enum tag"))?;
+    fn_ctx
+        .builder
+        .build_store(error_tag_ptr, stored_tag)
+        .llvm_ctx_with(|| format!("{helper}: store setup error tag"))?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(merge_bb)
+        .llvm_ctx_with(|| format!("{helper}: Err branch to merge"))?;
+
+    fn_ctx.builder.position_at_end(merge_bb);
+    Ok(())
 }
 
 /// The LLVM struct type matching the runtime `#[repr(C)] BytesTriple`
@@ -1693,12 +1882,10 @@ pub(crate) fn lower_call_runtime_abi(
             // void return; dest is always None (the close body is a void call).
             let _ = (i32_ty, ptr_ty, dest);
         }
-        // hew_node_monitor(target_pid: i64) -> i64. Registers a
-        // distributed monitor for a remote actor (the remote pid is a bare i64;
-        // the current node is resolved internally) and returns the ref_id. In
-        // value position the i64 ref_id is stored into the i64 dest; a subsequent
-        // MIR RecordInit assembles MonitorRef{ref_id}. In statement position the
-        // return is discarded. boundary-fail-closed (P0): BitCopy i64 args only.
+        // hew_node_monitor(target_pid: i64) -> i64. Positive returns are ref ids;
+        // negative returns encode MonitorError as `-(variant + 1)`. Value
+        // position constructs Result<MonitorRef, MonitorError>; statement
+        // position discards the setup result.
         F::NodeMonitor => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
@@ -1709,18 +1896,23 @@ pub(crate) fn lower_call_runtime_abi(
             }
             let target_pid = load_int_arg(fn_ctx, args[0], i64_ty, "node_monitor_target")?;
             let llvm_args: [BasicMetadataValueEnum; 1] = [target_pid.into()];
-            let ref_id = fn_ctx.call_runtime_int(
+            let setup_result = fn_ctx.call_runtime_int(
                 symbol,
                 &llvm_args,
                 "hew_node_monitor_call",
                 "hew_node_monitor call",
             )?;
             if let Some(d) = dest {
-                let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, d)?;
-                fn_ctx
-                    .builder
-                    .build_store(dest_ptr, ref_id)
-                    .llvm_ctx("hew_node_monitor store ref_id")?;
+                // MonitorError::NodeNotRunning is variant 0 and is the defensive
+                // mapping for an impossible zero return.
+                emit_signed_setup_result(
+                    fn_ctx,
+                    setup_result,
+                    d,
+                    true,
+                    0,
+                    "hew_node_monitor_result",
+                )?;
             }
             let _ = (i32_ty, ptr_ty);
         }
@@ -1755,13 +1947,9 @@ pub(crate) fn lower_call_runtime_abi(
             let _ = (i32_ty, ptr_ty);
         }
         // hew_node_link_remote(target_pid: i64, policy_tag: i64) -> i64.
-        // Establishes a cross-node link: the calling actor (resolved internally)
-        // links the remote actor `target_pid` with the `PartitionPolicy`
-        // discriminant `policy_tag`. Both args are BitCopy i64. The i64 return is
-        // the link ref_id; the immediate Hew-visible result is registration
-        // success — Ok(()) — because the EXIT arrives asynchronously when the
-        // remote dies (mirrors hew_actor_link's infallible immediate return).
-        // boundary-fail-closed (P0): i64 args only, no heap-owning composite.
+        // Positive returns are internal link ref ids; negative returns encode
+        // LinkError as `-(variant + 1)`. The immediate Hew-visible result is
+        // Result<(), LinkError>; EXIT arrives asynchronously when the remote dies.
         F::LinkRemote => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
@@ -1773,19 +1961,23 @@ pub(crate) fn lower_call_runtime_abi(
             let target_pid = load_int_arg(fn_ctx, args[0], i64_ty, "node_link_target")?;
             let policy_tag = load_int_arg(fn_ctx, args[1], i64_ty, "node_link_policy")?;
             let llvm_args: [BasicMetadataValueEnum; 2] = [target_pid.into(), policy_tag.into()];
-            // Call hew_node_link_remote → i64 ref_id. The ref_id is discarded at
-            // codegen: registration is the immediate result and the Result<(),
-            // LinkError> dest is written Ok(()). A failed registration is recorded
-            // via set_last_error in the runtime and the link simply never fires
-            // (it cannot crash an actor it never registered) — fail-closed.
-            let _ref_id = fn_ctx.call_runtime_int(
+            let setup_result = fn_ctx.call_runtime_int(
                 symbol,
                 &llvm_args,
                 "hew_node_link_remote_call",
                 "hew_node_link_remote call",
             )?;
             if let Some(d) = dest {
-                emit_result_ok(fn_ctx, d, None)?;
+                // LinkError::NodeNotRunning is variant 2 and is the defensive
+                // mapping for an impossible zero return.
+                emit_signed_setup_result(
+                    fn_ctx,
+                    setup_result,
+                    d,
+                    false,
+                    2,
+                    "hew_node_link_remote_result",
+                )?;
             }
             let _ = (i32_ty, ptr_ty);
         }

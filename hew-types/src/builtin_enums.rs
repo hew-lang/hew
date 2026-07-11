@@ -184,6 +184,23 @@ const LINK_ERROR_VARIANTS: &[BuiltinMonomorphicEnumVariant] = &[
         name: "AlreadyLinked",
     },
     BuiltinMonomorphicEnumVariant { name: "TargetDead" },
+    BuiltinMonomorphicEnumVariant {
+        name: "NodeNotRunning",
+    },
+    BuiltinMonomorphicEnumVariant {
+        name: "NoCurrentActor",
+    },
+    BuiltinMonomorphicEnumVariant {
+        name: "InvalidTarget",
+    },
+    BuiltinMonomorphicEnumVariant { name: "Partition" },
+    BuiltinMonomorphicEnumVariant { name: "StaleRef" },
+    BuiltinMonomorphicEnumVariant {
+        name: "EncodeFailure",
+    },
+    BuiltinMonomorphicEnumVariant {
+        name: "LocalShutdown",
+    },
 ];
 
 /// `CrashAction` variants in declaration order (`std/failure.hew`). The tag

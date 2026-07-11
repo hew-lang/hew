@@ -629,6 +629,21 @@ fn remote_monitor_down_on_connection_drop() {
     );
 }
 
+/// Cross-node monitor setup fails honestly after route teardown. The runtime
+/// must return `Err(MonitorError::Partition)`, never an inert `MonitorRef`.
+#[test]
+fn remote_monitor_setup_after_drop_returns_typed_partition() {
+    let stdout = run_conn_drop_scenario("remote_monitor_setup_after_drop");
+    assert!(
+        stdout.contains("PASS remote_monitor_setup_after_drop error=Partition"),
+        "expected typed MonitorError::Partition after route teardown; client stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("FAIL "),
+        "client reported a FAIL on monitor setup after drop; client stdout:\n{stdout}"
+    );
+}
+
 /// Partition gate: a remote ask whose target peer is gone must resolve
 /// fail-closed with a typed cause WITHOUT hanging, rather than blocking to the
 /// client ceiling or fabricating a value. The harness kills the server after the
@@ -712,6 +727,50 @@ fn remote_ask_round_trip_returns_exact_values() {
     assert!(
         !stdout.contains("FAIL "),
         "client reported a FAIL on the remote-ask round-trip; client stdout:\n{stdout}"
+    );
+}
+
+/// Node identity/location proof across two OS processes. The remote actor's
+/// packed `(node_id, serial)` identity must match the registry lookup exactly,
+/// carry fresh registration incarnation 0, and name an ALIVE SWIM member that is
+/// distinct from the client's non-zero node id.
+#[test]
+fn node_identity_location_and_incarnation_cross_process() {
+    let stdout = run_two_process_scenario("identity_location");
+    let line = stdout
+        .lines()
+        .find(|line| line.starts_with("PASS identity_location "))
+        .unwrap_or_else(|| panic!("missing identity PASS line; client stdout:\n{stdout}"));
+    let field = |name: &str| -> u64 {
+        line.split_whitespace()
+            .find_map(|part| part.strip_prefix(&format!("{name}=")))
+            .unwrap_or_else(|| panic!("missing {name}= field in {line}"))
+            .parse()
+            .unwrap_or_else(|error| panic!("invalid {name}= field in {line}: {error}"))
+    };
+    let local = field("local");
+    let remote = field("remote");
+    let serial = field("serial");
+    assert_ne!(local, 0, "local node id must be non-zero: {line}");
+    assert_ne!(remote, 0, "remote node id must be non-zero: {line}");
+    assert_ne!(
+        local, remote,
+        "two processes must have distinct node ids: {line}"
+    );
+    assert_ne!(serial, 0, "actor serial must be non-zero: {line}");
+    assert_eq!(
+        field("incarnation"),
+        0,
+        "fresh registration incarnation: {line}"
+    );
+    assert_eq!(
+        field("state"),
+        0,
+        "remote SWIM member must be ALIVE: {line}"
+    );
+    assert!(
+        !stdout.contains("FAIL "),
+        "client reported a FAIL on identity/location proof; client stdout:\n{stdout}"
     );
 }
 

@@ -138,11 +138,21 @@ pub type MonitorRef {
 pub enum LinkError {
     AlreadyLinked;
     TargetDead;
+    NodeNotRunning;
+    NoCurrentActor;
+    InvalidTarget;
+    Partition;
+    StaleRef;
+    EncodeFailure;
+    LocalShutdown;
 }
 
 pub enum MonitorError {
+    NodeNotRunning;
+    InvalidTarget;
     Partition;
     StaleRef;
+    EncodeFailure;
     LocalShutdown;
     VersionMismatch;
     Unauthorized;

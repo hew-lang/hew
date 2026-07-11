@@ -1124,6 +1124,25 @@ fn main() {
         "
     }
 
+    fn remote_monitor_returns_typed_result_source() -> &'static str {
+        r"
+            actor Worker {
+                receive fn ping() {}
+            }
+
+            fn main() {
+                let remote: RemotePid<Worker> = RemotePid::from_raw(2, 1);
+                let result: Result<MonitorRef, MonitorError> = monitor(remote);
+                match result {
+                    Ok(m) => {
+                        m.close();
+                    },
+                    Err(_) => {},
+                }
+            }
+        "
+    }
+
     fn structured_concurrency_scope_source() -> &'static str {
         "fn main() { let result = scope { 1 + 2 }; println(result); }"
     }
@@ -1341,6 +1360,16 @@ fn main() {
                 .iter()
                 .any(|e| matches!(e.kind, TypeErrorKind::Mismatch { .. })),
             "monitor() should no longer typecheck as i64; got errors: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn remote_monitor_returns_typed_result() {
+        let output = check_native(remote_monitor_returns_typed_result_source());
+        assert!(
+            output.errors.is_empty(),
+            "monitor(RemotePid) should return Result<MonitorRef, MonitorError>; got: {:?}",
             output.errors
         );
     }

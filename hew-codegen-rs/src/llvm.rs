@@ -26206,8 +26206,8 @@ fn lower_hashmap_index_trap_call(
     Ok(())
 }
 
-/// Lower the trait-routed `Vec::get` → `Option<T>` call (the Vec twin of
-/// `lower_hashmap_get_layout_call`). Calls the fresh-owner runtime choke point
+/// Lower the fresh-owner Vec getter used by trait-routed `Vec::get -> Option<T>`
+/// and trapping owned-value `v[i] -> T`. Calls the runtime choke point
 /// `hew_vec_get_clone(vec, index, out) -> bool`: the runtime bounds-checks and,
 /// on a hit, writes a freshly retained/cloned owner into the `Some` payload
 /// slot, so the `Option` payload is never a borrow into the live buffer
@@ -26227,7 +26227,7 @@ fn lower_vec_get_clone_call(
     }
     let dest_place = dest.ok_or_else(|| {
         CodegenError::FailClosed(
-            "hew_vec_get_clone returns Option<T>; call must supply a dest".into(),
+            "hew_vec_get_clone returns a value; call must supply a dest".into(),
         )
     })?;
 
@@ -26245,18 +26245,20 @@ fn lower_vec_get_clone_call(
         }
     };
     let dest_ty = place_resolved_ty(fn_ctx, *dest_place)?.clone();
-    match &dest_ty {
+    let dest_is_option = match &dest_ty {
         ResolvedTy::Named {
             name,
             args: ty_args,
             ..
-        } if name == "Option" && ty_args.len() == 1 && ty_args[0] == elem_resolved => {}
+        } if name == "Option" && ty_args.len() == 1 && ty_args[0] == elem_resolved => true,
+        ty if ty == &elem_resolved => false,
         other => {
             return Err(CodegenError::FailClosed(format!(
-                "hew_vec_get_clone dest must be Option<{elem_resolved:?}>, got {other:?}"
+                "hew_vec_get_clone dest must be Option<{elem_resolved:?}> or bare \
+                 {elem_resolved:?}, got {other:?}"
             )));
         }
-    }
+    };
 
     let elem_llvm_ty = resolve_ty(
         fn_ctx.ctx,
@@ -26273,28 +26275,30 @@ fn lower_vec_get_clone_call(
         .get_insert_block()
         .and_then(|bb| bb.get_parent())
         .ok_or_else(|| CodegenError::FailClosed("hew_vec_get_clone has no parent fn".into()))?;
-    let none_bb = fn_ctx.ctx.append_basic_block(parent, "vec_get_none");
-    let some_bb = fn_ctx.ctx.append_basic_block(parent, "vec_get_some");
     let next_bb = *fn_ctx
         .blocks
         .get(&next)
         .ok_or_else(|| CodegenError::FailClosed(format!("Call next bb{next} missing")))?;
 
-    // Compute the Some payload address up front; the runtime clones the stored
-    // slot value into it through the element descriptor's semantic clone path.
-    let dest_local = composite_dest_local(*dest_place, "hew_vec_get_clone")?;
-    let (payload_ptr, payload_ty) = place_pointer(
-        fn_ctx,
-        Place::MachineVariant {
-            local: dest_local,
-            variant_idx: 0,
-            field_idx: 0,
-        },
-    )?;
-    if payload_ty != elem_llvm_ty {
+    // `Vec::get` writes into the `Some` payload. Trapping scalar index over an
+    // owned element writes the same fresh owner directly into its bare `T` dest.
+    let (out_ptr, out_ty) = if dest_is_option {
+        let dest_local = composite_dest_local(*dest_place, "hew_vec_get_clone")?;
+        place_pointer(
+            fn_ctx,
+            Place::MachineVariant {
+                local: dest_local,
+                variant_idx: 0,
+                field_idx: 0,
+            },
+        )?
+    } else {
+        place_pointer(fn_ctx, *dest_place)?
+    };
+    if out_ty != elem_llvm_ty {
         return Err(CodegenError::FailClosed(format!(
-            "hew_vec_get_clone Option::Some payload type {payload_ty:?} \
-             does not match Vec element type {elem_llvm_ty:?}"
+            "hew_vec_get_clone output slot type {out_ty:?} does not match Vec \
+             element type {elem_llvm_ty:?}"
         )));
     }
     let fv = get_or_declare_vec_get_clone_runtime(fn_ctx.ctx, fn_ctx.llvm_mod);
@@ -26302,7 +26306,7 @@ fn lower_vec_get_clone_call(
         .builder
         .build_call(
             fv,
-            &[vec_ptr.into(), index.into(), payload_ptr.into()],
+            &[vec_ptr.into(), index.into(), out_ptr.into()],
             "hew_vec_get_clone_call",
         )
         .llvm_ctx("hew_vec_get_clone call")?
@@ -26310,6 +26314,26 @@ fn lower_vec_get_clone_call(
         .basic()
         .ok_or_else(|| CodegenError::FailClosed("hew_vec_get_clone returned void".into()))?
         .into_int_value();
+
+    if !dest_is_option {
+        let trap_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent, "vec_index_clone_absent_trap");
+        fn_ctx
+            .builder
+            .build_conditional_branch(is_some, next_bb, trap_bb)
+            .llvm_ctx("hew_vec_get_clone bare condbr")?;
+        fn_ctx.builder.position_at_end(trap_bb);
+        emit_trap_with_code(
+            fn_ctx,
+            HEW_TRAP_INDEX_OUT_OF_BOUNDS as u64,
+            "vec_index_clone_absent",
+        )?;
+        return Ok(());
+    }
+
+    let none_bb = fn_ctx.ctx.append_basic_block(parent, "vec_get_none");
+    let some_bb = fn_ctx.ctx.append_basic_block(parent, "vec_get_some");
     fn_ctx
         .builder
         .build_conditional_branch(is_some, some_bb, none_bb)

@@ -439,14 +439,14 @@ fn mixed_rebind_and_record_ingress_keeps_destination_release() {
 }
 
 // ---------------------------------------------------------------------------
-// Escape — fail-closed exclusions unchanged (negative controls).
+// Escape and borrow-call controls.
 // ---------------------------------------------------------------------------
 
-/// A vec conditionally consumed by a BY-VALUE CALL stays excluded (the
-/// callee-ownership question is the by-value-argument frontier, not this
-/// fix): no drop of the source on any path — leak, never a wrong free.
+/// A Vec passed to a helper whose parameter body is proven borrow-only remains
+/// caller-owned. Both the early-return call path and the ordinary fallthrough
+/// path must release it.
 #[test]
-fn conditional_by_value_call_arg_stays_excluded() {
+fn conditional_borrowing_value_call_drops_on_both_exits() {
     let pipeline = pipeline_with_tc(
         r"
         fn sink(xs: Vec<i64>) -> i64 {
@@ -475,9 +475,9 @@ fn conditional_by_value_call_arg_stays_excluded() {
     let drops = all_exit_drops(&pipeline, "probe");
     assert_eq!(
         frees(&drops, "hew_vec_free").len(),
-        0,
-        "a vec handed to a by-value callee must keep its fail-closed \
-         exclusion on every exit; got {drops:?}"
+        2,
+        "a Vec handed to a proven borrow-only callee must be released on both \
+         return exits; got {drops:?}"
     );
 }
 

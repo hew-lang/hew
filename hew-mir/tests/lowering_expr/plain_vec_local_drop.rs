@@ -33,7 +33,7 @@
 //! an allow-set test without a paired exclusion would pass even if the gate
 //! admitted everything (the double-free this fix must never introduce).
 
-use hew_mir::{DropKind, ElabDrop, ExitPath, IrPipeline};
+use hew_mir::{DropKind, ElabDrop, ExitPath, IrPipeline, Terminator};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
 
@@ -98,6 +98,19 @@ fn is_cow_heap_free(drop: &ElabDrop, symbol: &str) -> bool {
 
 fn count_free(drops: &[ElabDrop], symbol: &str) -> usize {
     drops.iter().filter(|d| is_cow_heap_free(d, symbol)).count()
+}
+
+fn count_calls(p: &IrPipeline, fn_name: &str, symbol: &str) -> usize {
+    p.raw_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present in raw_mir"))
+        .blocks
+        .iter()
+        .filter(|block| {
+            matches!(&block.terminator, Terminator::Call { callee, .. } if callee == symbol)
+        })
+        .count()
 }
 
 // ---------------------------------------------------------------------------
@@ -244,6 +257,35 @@ fn plain_vec_local_drop_bitcopy_record_array_repeat_frees_exactly_once() {
     );
 }
 
+/// A bound owned value remains caller-owned after `push`, so it must keep the
+/// copy-in clone route rather than transferring its heap into the Vec.
+#[test]
+fn owned_vec_push_of_bound_value_keeps_copy_in_route() {
+    let pipeline = pipeline_with_tc(
+        r#"
+        type Header {
+            name: string;
+        }
+        fn main() -> i64 {
+            let hs: Vec<Header> = Vec::new();
+            let header = Header { name: "content-type".to_upper() };
+            hs.push(header);
+            header.name.len() + hs.len()
+        }
+        "#,
+    );
+    assert_eq!(
+        count_calls(&pipeline, "main", "hew_vec_push_owned"),
+        1,
+        "a bound source must be cloned into the Vec"
+    );
+    assert_eq!(
+        count_calls(&pipeline, "main", "hew_vec_push_owned_move"),
+        0,
+        "a bound source must retain its independent owner"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Cancel parity — cancellation frees what normal return frees.
 // ---------------------------------------------------------------------------
@@ -314,6 +356,71 @@ fn plain_vec_local_drop_does_not_displace_owned_element_vec() {
         0,
         "the plain hew_vec_free must never fire on an owned-element Vec \
          (it would skip the per-element descriptor drops); got {drops:?}"
+    );
+}
+
+/// A direct generic helper that only borrows its `Vec<T>` parameter through
+/// `Vec::get` must not suppress the caller's owned-element Vec release. The
+/// returned `Option<Header>` owns a fresh clone; the caller still owns and drops
+/// the original Vec.
+#[test]
+fn owned_vec_get_through_borrowing_helper_keeps_caller_drop() {
+    let pipeline = pipeline_with_tc(
+        r#"
+        type Header {
+            name: string;
+        }
+        fn first<T>(xs: Vec<T>) -> Option<T> {
+            xs.get(0)
+        }
+        fn main() -> i64 {
+            let hs: Vec<Header> = Vec::new();
+            hs.push(Header { name: "content-type" });
+            match first(hs) {
+                Some(header) => header.name.len(),
+                None => 0,
+            }
+        }
+        "#,
+    );
+    assert_eq!(
+        count_calls(&pipeline, "main", "hew_vec_push_owned_move"),
+        1,
+        "the fresh Header literal must move into the Vec instead of leaking the \
+         anonymous source through clone-in"
+    );
+    let drops = return_drops(&pipeline, "main");
+    assert_eq!(
+        count_free(&drops, "hew_vec_free_owned"),
+        1,
+        "a borrow-only generic helper must leave the caller's owned Vec admitted \
+         for exactly one hew_vec_free_owned; got {drops:?}"
+    );
+}
+
+/// Trapping `v[i]` over an owned element must use the same fresh-owner clone
+/// choke as `Vec::get`; borrowing the live slot would let the indexed result
+/// release heap still owned by the Vec.
+#[test]
+fn owned_vec_index_uses_fresh_clone_choke() {
+    let pipeline = pipeline_with_tc(
+        r#"
+        type Header {
+            name: string;
+        }
+        fn main() -> i64 {
+            let hs: Vec<Header> = Vec::new();
+            hs.push(Header { name: "content-type".to_upper() });
+            let first = hs[0];
+            first.name.len() + hs[0].name.len()
+        }
+        "#,
+    );
+    assert_eq!(
+        count_calls(&pipeline, "main", "hew_vec_get_clone"),
+        2,
+        "each owned-element scalar index must materialise a fresh owner through \
+         hew_vec_get_clone"
     );
 }
 
@@ -560,10 +667,10 @@ fn plain_vec_local_drop_single_arm_match_frees_result_exactly_once() {
     );
 }
 
-/// A vec consumed by a by-value call is owned by the callee now; the calling
-/// function must NOT also free it. LESSONS: `raii-null-after-move`.
+/// A direct helper whose parameter body only borrows the Vec leaves ownership
+/// with the caller, which must keep its scope-exit release.
 #[test]
-fn plain_vec_local_drop_excludes_by_value_consumed_vec() {
+fn plain_vec_local_drop_keeps_vec_across_borrowing_value_call() {
     let pipeline = pipeline_with_tc(
         r"
         fn total(xs: Vec<i64>) -> i64 {
@@ -579,8 +686,33 @@ fn plain_vec_local_drop_excludes_by_value_consumed_vec() {
     let drops = all_exit_drops(&pipeline, "main");
     assert_eq!(
         count_free(&drops, "hew_vec_free"),
-        0,
-        "a vec passed by value is consumed by the callee; the caller must \
-         NOT also free it; got {drops:?}"
+        1,
+        "a borrow-only by-value helper leaves the Vec caller-owned; the caller \
+         must free it exactly once; got {drops:?}"
+    );
+}
+
+/// Negative control: a helper that returns its Vec parameter hands the handle
+/// to the result owner, so the caller's source binding must remain excluded.
+#[test]
+fn plain_vec_local_drop_excludes_value_call_that_returns_vec() {
+    let pipeline = pipeline_with_tc(
+        r"
+        fn identity(xs: Vec<i64>) -> Vec<i64> {
+            xs
+        }
+        fn main() -> i64 {
+            let v: Vec<i64> = Vec::new();
+            let out = identity(v);
+            out.len()
+        }
+        ",
+    );
+    let drops = all_exit_drops(&pipeline, "main");
+    assert_eq!(
+        count_free(&drops, "hew_vec_free"),
+        1,
+        "the returned Vec owner must free once while the caller's source stays \
+         excluded; got {drops:?}"
     );
 }

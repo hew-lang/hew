@@ -1076,3 +1076,156 @@ mod task_type_surface_rules {
         );
     }
 }
+
+// ── #2511: opaque handles rejected as receive-fn (message) parameters ───────
+//
+// Actor message payloads are CBOR-serialized to cross the mailbox dispatch
+// boundary. Opaque handle types (`net.Listener`, user `#[opaque]` types, etc.)
+// are pointer-shaped runtime resources with no serializable record layout, so
+// they cannot be message payloads. Before #2511 this fell through to a raw
+// codegen-front `wire CBOR serialize: named type ... is not a registered
+// record layout` failure surfaced even at `hew check`; the checker now emits a
+// clean `OpaqueMessagePayload` diagnostic pointing at the parameter.
+mod opaque_receive_fn_param_rules {
+    use super::*;
+
+    fn opaque_payload_errors(output: &TypeCheckOutput) -> Vec<&TypeError> {
+        output
+            .errors
+            .iter()
+            .filter(|e| matches!(&e.kind, TypeErrorKind::OpaqueMessagePayload { .. }))
+            .collect()
+    }
+
+    #[test]
+    fn user_opaque_direct_receive_fn_param_is_rejected() {
+        // A same-module `#[opaque]` type (producer-side, so constructing it is
+        // allowed) used directly as a receive-fn parameter must still be
+        // rejected: it can never cross the message boundary.
+        let output = check_source(
+            r"
+            #[opaque]
+            type Handle {}
+
+            actor Server {
+                var count: i64 = 0;
+                receive fn handle(h: Handle) {
+                    count = count + 1;
+                }
+            }
+            ",
+        );
+        let errs = opaque_payload_errors(&output);
+        assert_eq!(
+            errs.len(),
+            1,
+            "opaque handle as a receive-fn parameter must emit exactly one \
+             OpaqueMessagePayload error; got: {:#?}",
+            output.errors
+        );
+        assert!(
+            errs[0].message.contains("E_OPAQUE_MESSAGE_PAYLOAD"),
+            "diagnostic must carry the envelope code; got: {:?}",
+            errs[0].message
+        );
+        assert!(
+            matches!(&errs[0].kind, TypeErrorKind::OpaqueMessagePayload { type_name, .. } if type_name == "Handle"),
+            "diagnostic must name the opaque type `Handle`; got: {:?}",
+            errs[0].kind
+        );
+    }
+
+    #[test]
+    fn stdlib_handle_direct_receive_fn_param_is_rejected() {
+        // A registered stdlib-style owned handle used directly as a receive-fn
+        // parameter is rejected the same way.
+        let output = check_source_with_handle(
+            r"
+            actor Server {
+                var count: i64 = 0;
+                receive fn handle(p: regex.Pattern) {
+                    count = count + 1;
+                }
+            }
+            ",
+            "regex.Pattern",
+        );
+        let errs = opaque_payload_errors(&output);
+        assert_eq!(
+            errs.len(),
+            1,
+            "registered handle as a receive-fn parameter must emit exactly one \
+             OpaqueMessagePayload error; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn opaque_nested_in_record_receive_fn_param_is_rejected() {
+        // The opaque leaf is reached transitively through a record field, so a
+        // record-wrapped handle payload is rejected too (single clean error at
+        // the parameter, not a late codegen clone-gate message).
+        let output = check_source_with_handle(
+            r"
+            type Wrapper { conn: regex.Pattern }
+
+            actor Server {
+                var count: i64 = 0;
+                receive fn handle(w: Wrapper) {
+                    count = count + 1;
+                }
+            }
+            ",
+            "regex.Pattern",
+        );
+        let errs = opaque_payload_errors(&output);
+        assert_eq!(
+            errs.len(),
+            1,
+            "record field carrying an opaque handle must emit exactly one \
+             OpaqueMessagePayload error at the receive-fn parameter; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn serializable_receive_fn_params_are_accepted() {
+        // Negative control: ordinary CBOR-serializable payloads must NOT trip
+        // the new diagnostic.
+        let output = check_source(
+            r"
+            actor Server {
+                var count: i64 = 0;
+                receive fn handle(n: i64, label: string) {
+                    count = count + n;
+                }
+            }
+            ",
+        );
+        assert!(
+            opaque_payload_errors(&output).is_empty(),
+            "serializable receive-fn params must not raise OpaqueMessagePayload; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn opaque_handle_as_non_receive_fn_param_is_accepted() {
+        // Negative control: the restriction is specific to receive-fn (message)
+        // parameters. A plain free function taking an opaque handle is fine.
+        let output = check_source_with_handle(
+            r"
+            fn use_pattern(p: regex.Pattern) -> i64 {
+                0
+            }
+            ",
+            "regex.Pattern",
+        );
+        assert!(
+            opaque_payload_errors(&output).is_empty(),
+            "opaque handle as a non-receive fn param must not raise \
+             OpaqueMessagePayload; got: {:#?}",
+            output.errors
+        );
+    }
+}

@@ -24,10 +24,10 @@
 //! is the point: the decision *kind* alone cannot reproduce the seeds
 //! faithfully. A heap-free tuple is [`NoHeap`] yet `CowValue`; a `&[string]` is
 //! a non-owning [`Borrowed`] view yet `ty_owns_heap` recurses its element to
-//! `true`; a closure env is [`OwnsHeap`] yet `ty_owns_heap` answers `false`. So
-//! the seed must travel with the value, making [`ValueOwnership::owns_heap`] `≡`
-//! `ty_owns_heap` and [`ValueOwnership::to_value_class`] `≡` `ValueClass::of_ty`
-//! **exactly**, for every shape — the contract the consolidation relies on when it swaps a
+//! `true`. So the seed must travel with the value, making
+//! [`ValueOwnership::owns_heap`] `≡` `ty_owns_heap` and
+//! [`ValueOwnership::to_value_class`] `≡` `ValueClass::of_ty` **exactly**, for
+//! every shape — the contract the consolidation relies on when it swaps a
 //! seam's direct authority call for the projection.
 //!
 //! This carrier is now **read**, not merely defined. The per-function
@@ -788,7 +788,9 @@ impl OwnershipDecision {
                 }
             }
 
-            // A closure owns a heap env box iff it captures a heap-owning value.
+            // This type-level decision tracks captured payload ownership. The
+            // env-box ownership of an escaping closure with Copy-only captures is
+            // a construction-site fact handled by closure slot-drop codegen.
             ResolvedTy::Closure { captures, .. } => {
                 if captures.iter().any(|c| ty_owns_heap(c, &layouts)) {
                     OwnershipDecision::OwnsHeap {
@@ -1289,13 +1291,12 @@ impl OwnershipDecision {
 /// structural [`OwnershipDecision`] kind alone cannot reproduce the seeds
 /// faithfully (a heap-free tuple is [`NoHeap`](OwnershipDecision::NoHeap) yet
 /// `CowValue`; a `&[string]` is a [`Borrowed`](OwnershipDecision::Borrowed) view
-/// yet `ty_owns_heap` recurses its element to `true`; a closure env is
-/// [`OwnsHeap`](OwnershipDecision::OwnsHeap) yet `ty_owns_heap` answers `false`;
-/// a `Generator` is `OwnsHeap { CowHeapLeaf }` yet `AffineResource`). Because the
-/// facts are carried, [`owns_heap`](Self::owns_heap) `≡` `ty_owns_heap` and
+/// yet `ty_owns_heap` recurses its element to `true`; a `Generator` is
+/// `OwnsHeap { CowHeapLeaf }` yet `AffineResource`). Because the facts are
+/// carried, [`owns_heap`](Self::owns_heap) `≡` `ty_owns_heap` and
 /// [`to_value_class`](Self::to_value_class) `≡` `ValueClass::of_ty` **exactly**,
-/// so a future consolidation seam can swap its direct authority call for the projection with
-/// byte-identical behaviour.
+/// so a future consolidation seam can swap its direct authority call for the
+/// projection with byte-identical behaviour.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValueOwnership {
     /// The rich typed decision (drop / ABI / layout).
@@ -2000,8 +2001,8 @@ mod tests {
             assert_carries_live_seeds(label, ty, Place::Local(0), &none, &[], &classes);
         }
 
-        // The shapes the structural projection got WRONG (the gate's four named
-        // cases and their siblings) — each must still equal the live authority.
+        // Shapes where at least one coarse projection differs from the rich
+        // decision kind — each must still equal its live authority.
         let slice_string = ResolvedTy::Slice(Box::new(ResolvedTy::String));
         let drifted = [
             ("slice<string>", slice_string.clone()),
@@ -2044,6 +2045,10 @@ mod tests {
         assert!(
             ValueOwnership::classify(&slice_string, Place::Local(0), &c).owns_heap(),
             "&[string] transitively owns heap: owns_heap() is true (the kind projected false)",
+        );
+        assert!(
+            ValueOwnership::classify(&closure_capturing_string(), Place::Local(0), &c).owns_heap(),
+            "a closure capturing a string transitively owns heap",
         );
         assert_eq!(
             ValueOwnership::classify(

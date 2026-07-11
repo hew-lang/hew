@@ -2116,6 +2116,24 @@ fi
 # the diagnostic's pretty-printed `lines` / `Stream<bytes>` names.
 grep -qF 'no method `lines` on `Stream<bytes>`' "${reject_output}"
 
+# Reject: the lazy stream adapters (#2530 diagnostic-honesty gate).
+# `Stream<T>.take/map/filter` type-check but have no MIR lowering; they must
+# fail closed at the checker with exactly ONE honest capability-boundary
+# diagnostic (E_STREAM_ADAPTER_UNSUPPORTED) rather than dead-ending in HIR
+# lowering with the pair of internal-shaped NotYetImplemented notes the old
+# DeferToLowering stub emitted.
+expect_check_fail_error_count_no_cascade \
+  "${ROOT}/tests/vertical-slice/reject/stream_lazy_adapter_unsupported.hew" \
+  1 \
+  "stream-lazy-adapter-unsupported" \
+  "E_NOT_YET_IMPLEMENTED" \
+  "reached verification"
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/stream_lazy_adapter_unsupported.hew" >"${reject_output}" 2>&1; then
+  echo "expected stream-lazy-adapter-unsupported fixture to fail" >&2
+  exit 1
+fi
+grep -qF 'E_STREAM_ADAPTER_UNSUPPORTED' "${reject_output}"
+
 # Accept + run: the §6.5 first-class stream pipe round-trips bytes end-to-end.
 # Two writes then a close drain through `for await`; the summed chunk lengths
 # (2 + 3) leave exit code 5. Regression-guards the shipped stream surface so a

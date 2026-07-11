@@ -1208,6 +1208,24 @@ pub enum TypeErrorKind {
         /// `"net.Listener"`).
         type_name: String,
     },
+    /// A `Stream<T>` lazy adapter (`.take`/`.map`/`.filter`) was invoked.
+    ///
+    /// These adapters type-check (they have builtin signatures) but have no
+    /// lowering: they routed to the legacy `DeferToLowering` codegen path that
+    /// the Rust MIR pipeline does not consume, so they dead-ended in HIR
+    /// lowering with a pair of misleading, internal-shaped
+    /// `E_NOT_YET_IMPLEMENTED` notes ("method-call rewrite variant", "Unsupported
+    /// HIR node reached verification"). This error is emitted at the checker
+    /// layer to replace that downstream noise with a single clean, actionable
+    /// capability-boundary diagnostic that points at the supported alternative.
+    ///
+    /// Envelope code: `E_STREAM_ADAPTER_UNSUPPORTED`.
+    StreamAdapterNotSupported {
+        /// The adapter method that was invoked (`"take"`, `"map"`, `"filter"`).
+        method: String,
+        /// The user-facing element type of the receiver `Stream<T>`.
+        element_ty: String,
+    },
     /// A cross-module or cross-package reference to a `private` symbol.
     ///
     /// `private` symbols are accessible only within the module that declares
@@ -1337,6 +1355,7 @@ impl TypeErrorKind {
             Self::RefutableLetPattern { .. } => "RefutableLetPattern",
             Self::LetElseDoesNotDiverge => "LetElseDoesNotDiverge",
             Self::OpaqueDirectConstruct { .. } => "OpaqueDirectConstruct",
+            Self::StreamAdapterNotSupported { .. } => "StreamAdapterNotSupported",
             Self::VisibilityViolationPrivate { .. } => "VisibilityViolationPrivate",
             Self::VisibilityViolationPackage { .. } => "VisibilityViolationPackage",
             Self::Lint(id) => id.as_str(),

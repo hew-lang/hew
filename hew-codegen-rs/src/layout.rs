@@ -152,6 +152,7 @@ pub(crate) fn fill_record_layout_bodies<'ctx>(
     ctx: &'ctx Context,
     layouts: &[RecordLayout],
     map: &RecordLayoutMap<'ctx>,
+    target_data: &TargetData,
 ) -> CodegenResult<()> {
     for layout in layouts {
         let st = map.get(&layout.name).copied().ok_or_else(|| {
@@ -163,7 +164,7 @@ pub(crate) fn fill_record_layout_bodies<'ctx>(
         })?;
         let mut field_tys: Vec<BasicTypeEnum<'ctx>> = Vec::with_capacity(layout.field_tys.len());
         for fty in &layout.field_tys {
-            field_tys.push(resolve_ty(ctx, fty, map)?);
+            field_tys.push(resolve_ty(ctx, target_data, fty, map)?);
         }
         // packed = false: use the target's natural alignment per
         // `RecordLayout` doc (A-6b). LESSONS: parity-or-tracked-gap.
@@ -475,6 +476,13 @@ pub(crate) fn build_tagged_union_layout<'ctx>(
     enum_layouts: &[EnumLayout],
     target_data: Option<&TargetData>,
 ) -> CodegenResult<MachineCodegenLayout<'ctx>> {
+    let fallback_target_data;
+    let target_data = if let Some(target_data) = target_data {
+        target_data
+    } else {
+        fallback_target_data = host_target_data();
+        &fallback_target_data
+    };
     // Build each variant's LLVM struct type first, then query its ABI size.
     // This order is required: `get_abi_size` operates on a completed LLVM
     // type; we cannot query sizes incrementally from `ResolvedTy` fields
@@ -510,7 +518,7 @@ pub(crate) fn build_tagged_union_layout<'ctx>(
                         return Ok(ctx.ptr_type(AddressSpace::default()).into());
                     }
                 }
-                resolve_ty(ctx, fty, record_layout_map)
+                resolve_ty(ctx, target_data, fty, record_layout_map)
             })
             .collect::<CodegenResult<Vec<_>>>()?;
         variant_struct_tys.push(ctx.struct_type(&field_tys, false));
@@ -533,13 +541,7 @@ pub(crate) fn build_tagged_union_layout<'ctx>(
     // across native and wasm32 data layouts, so this single IR shape is
     // valid on every target Hew lowers to. See the "Alignment" note in the
     // layout-invariants block above.
-    let host_td;
-    let td = if let Some(td) = target_data {
-        td
-    } else {
-        host_td = host_target_data();
-        &host_td
-    };
+    let td = target_data;
     let mut max_bytes: u64 = 0;
     let mut max_align: u32 = 0;
     for vs in &variant_struct_tys {
@@ -1277,7 +1279,12 @@ pub(crate) fn channel_elem_layout_witness_ptr<'ctx>(
             const_elem_witness_global(fn_ctx, "__hew_elem_layout_bytes", size, align, 3)
         }
         _ if resolved_ty_element_owns_heap_for_owned_vec(fn_ctx, elem_ty) => {
-            let elem_llvm_ty = resolve_ty(fn_ctx.ctx, elem_ty, fn_ctx.record_layouts)?;
+            let elem_llvm_ty = resolve_ty(
+                fn_ctx.ctx,
+                fn_ctx.target_data,
+                elem_ty,
+                fn_ctx.record_layouts,
+            )?;
             owned_elem_layout_descriptor_ptr(fn_ctx, elem_ty, elem_llvm_ty, label)
         }
         _ => {
@@ -1286,7 +1293,12 @@ pub(crate) fn channel_elem_layout_witness_ptr<'ctx>(
             // the admission decision; an element type it should not have
             // admitted still gets a deterministic width here rather than a
             // silent misdecode (the runtime cross-checks envelope width).
-            let elem_llvm_ty = resolve_ty(fn_ctx.ctx, elem_ty, fn_ctx.record_layouts)?;
+            let elem_llvm_ty = resolve_ty(
+                fn_ctx.ctx,
+                fn_ctx.target_data,
+                elem_ty,
+                fn_ctx.record_layouts,
+            )?;
             let (size, align) = abi_size_align(elem_llvm_ty, Some(fn_ctx.target_data))?;
             const_elem_witness_global(
                 fn_ctx,

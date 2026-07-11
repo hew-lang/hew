@@ -3585,20 +3585,27 @@ fn get_or_declare_catalog_ffi<'ctx>(
 
 fn builtin_type_to_llvm<'ctx>(
     ctx: &'ctx Context,
+    target_data: &TargetData,
     ty: BuiltinTy,
     record_layouts: &RecordLayoutMap<'ctx>,
 ) -> CodegenResult<BasicTypeEnum<'ctx>> {
-    resolve_ty(ctx, &ty.to_resolved(), record_layouts)
+    resolve_ty(ctx, target_data, &ty.to_resolved(), record_layouts)
 }
 
 fn builtin_return_to_llvm<'ctx>(
     ctx: &'ctx Context,
+    target_data: &TargetData,
     ty: BuiltinTy,
     record_layouts: &RecordLayoutMap<'ctx>,
 ) -> CodegenResult<Option<BasicTypeEnum<'ctx>>> {
     match ty {
         BuiltinTy::Unit | BuiltinTy::Never => Ok(None),
-        other => Ok(Some(builtin_type_to_llvm(ctx, other, record_layouts)?)),
+        other => Ok(Some(builtin_type_to_llvm(
+            ctx,
+            target_data,
+            other,
+            record_layouts,
+        )?)),
     }
 }
 
@@ -3749,6 +3756,7 @@ pub(crate) fn reconcile_int_width_signed<'ctx>(
 fn declare_catalog_ffi<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
+    target_data: &TargetData,
     entry: &BuiltinEntry,
     symbol: &str,
     record_layouts: &RecordLayoutMap<'ctx>,
@@ -3757,7 +3765,7 @@ fn declare_catalog_ffi<'ctx>(
         let value = get_or_declare_bool_vec_runtime(ctx, llvm_mod, symbol)?;
         let return_ty = match entry.return_ty {
             BuiltinTy::Unit | BuiltinTy::Never => ctx.i8_type().into(),
-            _ => builtin_type_to_llvm(ctx, entry.return_ty, record_layouts)?,
+            _ => builtin_type_to_llvm(ctx, target_data, entry.return_ty, record_layouts)?,
         };
         return Ok(FnSymbol::Real {
             value,
@@ -3783,7 +3791,7 @@ fn declare_catalog_ffi<'ctx>(
                     "runtime FFI param ABI width {bits} for `{symbol}` arg {idx} is unsupported"
                 )));
             }
-            None => builtin_type_to_llvm(ctx, *param, record_layouts)?,
+            None => builtin_type_to_llvm(ctx, target_data, *param, record_layouts)?,
         };
         param_tys.push(metadata_type_from_basic(llvm_param));
     }
@@ -3806,7 +3814,7 @@ fn declare_catalog_ffi<'ctx>(
                     "runtime FFI ABI width {bits} for `{symbol}` is unsupported"
                 )));
             }
-            None => builtin_return_to_llvm(ctx, entry.return_ty, record_layouts)?,
+            None => builtin_return_to_llvm(ctx, target_data, entry.return_ty, record_layouts)?,
         }
     };
     let value = if bytes_return {
@@ -3830,6 +3838,7 @@ fn declare_catalog_ffi<'ctx>(
 fn predeclare_stdlib_catalog<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
+    target_data: &TargetData,
     fn_symbols: &mut FnSymbolMap<'ctx>,
     record_layouts: &RecordLayoutMap<'ctx>,
 ) -> CodegenResult<()> {
@@ -3839,7 +3848,7 @@ fn predeclare_stdlib_catalog<'ctx>(
             | BuiltinLinkage::ToStringShim { symbol }
             | BuiltinLinkage::StringCloneShim { symbol } => {
                 let symbol_entry =
-                    declare_catalog_ffi(ctx, llvm_mod, entry, symbol, record_layouts)?;
+                    declare_catalog_ffi(ctx, llvm_mod, target_data, entry, symbol, record_layouts)?;
                 fn_symbols.insert(entry.name.to_string(), symbol_entry);
                 fn_symbols.insert(symbol.to_string(), symbol_entry);
             }
@@ -4259,7 +4268,7 @@ fn predeclare_extern_decls<'ctx>(
             let return_ty = if matches!(decl.return_ty, ResolvedTy::Unit) {
                 ctx.i8_type().into()
             } else {
-                resolve_ty(ctx, &decl.return_ty, record_layouts)?
+                resolve_ty(ctx, target_data, &decl.return_ty, record_layouts)?
             };
             fn_symbols.insert(
                 decl.name.clone(),
@@ -4341,6 +4350,7 @@ fn predeclare_extern_decls<'ctx>(
             }
             param_tys.push(metadata_type_from_basic(resolve_ty(
                 ctx,
+                target_data,
                 ty,
                 record_layouts,
             )?));
@@ -4358,7 +4368,7 @@ fn predeclare_extern_decls<'ctx>(
         // scalar returns are not StructTypes and fall through untouched.
         if !matches!(decl.return_ty, ResolvedTy::Bytes | ResolvedTy::Unit) {
             if let BasicTypeEnum::StructType(struct_ty) =
-                resolve_ty(ctx, &decl.return_ty, record_layouts)?
+                resolve_ty(ctx, target_data, &decl.return_ty, record_layouts)?
             {
                 if let Some((value, extern_record_ret)) = classify_extern_record_return(
                     ctx,
@@ -4405,7 +4415,7 @@ fn predeclare_extern_decls<'ctx>(
             Some(if bytes_return {
                 ctx.i64_type().array_type(2).into()
             } else {
-                resolve_ty(ctx, &decl.return_ty, record_layouts)?
+                resolve_ty(ctx, target_data, &decl.return_ty, record_layouts)?
             })
         };
         let value = if bytes_return {
@@ -4857,6 +4867,7 @@ fn build_const_string_ptr<'ctx>(
 fn emit_const_globals<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
+    target_data: &TargetData,
     consts: &[MirConst],
     record_layouts: &RecordLayoutMap<'ctx>,
 ) -> CodegenResult<ConstGlobalMap<'ctx>> {
@@ -4871,7 +4882,7 @@ fn emit_const_globals<'ctx>(
                         c.name, c.ty
                     )));
                 }
-                let llvm_ty = resolve_ty(ctx, &c.ty, record_layouts)?;
+                let llvm_ty = resolve_ty(ctx, target_data, &c.ty, record_layouts)?;
                 let int_ty = match llvm_ty {
                     BasicTypeEnum::IntType(int_ty) => int_ty,
                     other => {
@@ -4906,7 +4917,7 @@ fn emit_const_globals<'ctx>(
                 (global, ptr_ty.into())
             }
             MirConstValue::Float(value) => {
-                let llvm_ty = resolve_ty(ctx, &c.ty, record_layouts)?;
+                let llvm_ty = resolve_ty(ctx, target_data, &c.ty, record_layouts)?;
                 let float_ty = match llvm_ty {
                     BasicTypeEnum::FloatType(float_ty) => float_ty,
                     other => {
@@ -5327,6 +5338,7 @@ fn resolve_machine_base_ptr<'ctx>(
 /// semantics) this arm can be updated to look up the map first.
 pub(crate) fn resolve_ty<'ctx>(
     ctx: &'ctx Context,
+    target_data: &TargetData,
     ty: &ResolvedTy,
     record_layouts: &RecordLayoutMap<'ctx>,
 ) -> CodegenResult<BasicTypeEnum<'ctx>> {
@@ -5420,15 +5432,16 @@ pub(crate) fn resolve_ty<'ctx>(
     if let ResolvedTy::Tuple(elems) = ty {
         let mut field_tys: Vec<BasicTypeEnum<'ctx>> = Vec::with_capacity(elems.len());
         for elem in elems {
-            field_tys.push(resolve_ty(ctx, elem, record_layouts)?);
+            field_tys.push(resolve_ty(ctx, target_data, elem, record_layouts)?);
         }
         return Ok(ctx.struct_type(&field_tys, false).into());
     }
-    primitive_to_llvm(ctx, ty)
+    primitive_to_llvm(ctx, target_data, ty)
 }
 
 pub(crate) fn primitive_to_llvm<'ctx>(
     ctx: &'ctx Context,
+    target_data: &TargetData,
     ty: &ResolvedTy,
 ) -> CodegenResult<BasicTypeEnum<'ctx>> {
     match ty {
@@ -5436,22 +5449,12 @@ pub(crate) fn primitive_to_llvm<'ctx>(
         ResolvedTy::I16 | ResolvedTy::U16 => Ok(ctx.i16_type().into()),
         ResolvedTy::I32 | ResolvedTy::U32 => Ok(ctx.i32_type().into()),
         ResolvedTy::I64 | ResolvedTy::U64 => Ok(ctx.i64_type().into()),
-        // Platform-sized integers: 32-bit on WASM32, 64-bit on native
-        // (Q42 ratification; B-D1).
-        //
-        // SHIM: pointer-width selection here is compile-time via the Rust
-        // usize width.  Replace with target-triple inspection once a
-        // multi-target codegen path (E5c) lands and `primitive_to_llvm`
-        // receives target information.
-        // WHY: Rust's usize matches the host pointer size; the LLVM
-        //      backend then maps to the correct machine width.
-        // WHEN: obsolete once E5c supplies explicit target info.
-        // WHAT: query `module.get_target_data().get_pointer_byte_size(None)`
-        //       and branch on `== 4`.
-        #[cfg(target_pointer_width = "32")]
-        ResolvedTy::Isize | ResolvedTy::Usize => Ok(ctx.i32_type().into()),
-        #[cfg(not(target_pointer_width = "32"))]
-        ResolvedTy::Isize | ResolvedTy::Usize => Ok(ctx.i64_type().into()),
+        // Platform-sized integers follow the active LLVM module target, not
+        // the Rust compiler host. This keeps native and cross-target modules
+        // correct when both are emitted by the same compiler process.
+        ResolvedTy::Isize | ResolvedTy::Usize => {
+            Ok(ctx.ptr_sized_int_type(target_data, None).into())
+        }
         ResolvedTy::Bool => Ok(ctx.i8_type().into()),
         // `Unit` lowers to a zero-sized stand-in (i8). Unit-returning
         // functions return the canonical zero value rather than reading
@@ -5739,16 +5742,15 @@ fn dyn_trait_fat_ptr_ty<'ctx>(ctx: &'ctx Context) -> StructType<'ctx> {
 /// `hew_vtable_prefix_offset_parity`, which calls this helper and
 /// compares against `std::mem::offset_of!` over the real struct.
 ///
-/// The `usize` slots are ptr-sized ints from `host_target_data()` —
-/// target-width, so a wasm32 build naturally produces `i32` slots and a
-/// native build produces `i64`, matching the runtime ABI's Rust `usize`
-/// on every Hew target. Anonymous (not a named struct): LLVM uniques
+/// The `usize` slots are ptr-sized ints from the active module's
+/// `TargetData`, so a wasm32 build produces `i32` slots and a 64-bit native
+/// build produces `i64`, matching the runtime ABI's Rust `usize` on every
+/// Hew target. Anonymous (not a named struct): LLVM uniques
 /// anonymous struct types structurally, so both consumers observe the
 /// identical type without introducing a new name into the emitted IR.
-fn dyn_vtable_prefix_ty<'ctx>(ctx: &'ctx Context) -> StructType<'ctx> {
+fn dyn_vtable_prefix_ty<'ctx>(ctx: &'ctx Context, target_data: &TargetData) -> StructType<'ctx> {
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
-    let host_td = host_target_data();
-    let usize_ty = ctx.ptr_sized_int_type(&host_td, None);
+    let usize_ty = ctx.ptr_sized_int_type(target_data, None);
     ctx.struct_type(&[ptr_ty.into(), usize_ty.into(), usize_ty.into()], false)
 }
 
@@ -5993,9 +5995,8 @@ fn lower_dyn_trait_vtable_drop(
     // side's layout. (Same idiom as `lower_call_trait_method`'s
     // method-slot GEP.)
     let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
-    let host_td = host_target_data();
-    let usize_ty = fn_ctx.ctx.ptr_sized_int_type(&host_td, None);
-    let view_ty = dyn_vtable_prefix_ty(fn_ctx.ctx);
+    let usize_ty = fn_ctx.ctx.ptr_sized_int_type(fn_ctx.target_data, None);
+    let view_ty = dyn_vtable_prefix_ty(fn_ctx.ctx, fn_ctx.target_data);
 
     // Slot 0: load the `drop_in_place` fn pointer and dispatch it on the
     // data word. The synthesised thunk runs the concrete's structural drop
@@ -6099,7 +6100,7 @@ fn lower_dyn_trait_vtable_drop(
 /// resolving the runtime vtable_id, we synthesise a *prefix-view*
 /// struct with exactly `slot + 1` fields whose layout matches the
 /// vtable's prefix bit-for-bit (ptr-sized integer widths come from
-/// the same `host_target_data()` authority
+/// the same module `TargetData` authority
 /// `emit_dyn_trait_vtable_definitions` uses). GEP at field index
 /// `slot` lands at the same byte offset as the corresponding method
 /// slot in the real vtable struct.
@@ -6204,7 +6205,7 @@ fn lower_call_trait_method(
         .expect("slot fits in usize+1 — checker bounds prevent overflow");
     let mut view_fields: Vec<BasicTypeEnum> = Vec::with_capacity(view_field_count);
     // Slots 0-2: the prefix (drop_in_place, size_of, align_of).
-    view_fields.extend(dyn_vtable_prefix_ty(fn_ctx.ctx).get_field_types());
+    view_fields.extend(dyn_vtable_prefix_ty(fn_ctx.ctx, fn_ctx.target_data).get_field_types());
     for _ in 3..view_field_count {
         view_fields.push(ptr_ty.into()); // slot 3..=slot: method thunk pointers
     }
@@ -6230,7 +6231,12 @@ fn lower_call_trait_method(
              leaked checker-internal state past the boundary: {e}"
         ))
     })?;
-    let return_basic = resolve_ty(fn_ctx.ctx, &return_resolved, fn_ctx.record_layouts)?;
+    let return_basic = resolve_ty(
+        fn_ctx.ctx,
+        fn_ctx.target_data,
+        &return_resolved,
+        fn_ctx.record_layouts,
+    )?;
 
     if args.len() != signature.params.len() {
         return Err(CodegenError::FailClosed(format!(
@@ -6254,7 +6260,12 @@ fn lower_call_trait_method(
                  leaked checker-internal state past the boundary: {e}"
             ))
         })?;
-        let basic = resolve_ty(fn_ctx.ctx, &resolved, fn_ctx.record_layouts)?;
+        let basic = resolve_ty(
+            fn_ctx.ctx,
+            fn_ctx.target_data,
+            &resolved,
+            fn_ctx.record_layouts,
+        )?;
         param_metas.push(metadata_type_from_basic(basic));
     }
     let fn_ty = fn_type_for_return(fn_ctx.ctx, Some(return_basic), &param_metas);
@@ -7404,6 +7415,7 @@ fn hew_child_spec_struct_type<'ctx>(ctx: &'ctx Context) -> StructType<'ctx> {
 fn emit_supervisor_bootstrap_body<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
+    target_data: &TargetData,
     layout: &SupervisorLayout,
     fn_symbols: &FnSymbolMap<'ctx>,
     actor_layouts: &[ActorLayout],
@@ -7782,6 +7794,7 @@ fn emit_supervisor_bootstrap_body<'ctx>(
                 actor_layouts,
                 record_layouts,
                 mir_record_layouts,
+                target_data,
             )?;
             continue;
         }
@@ -7829,6 +7842,7 @@ fn emit_supervisor_bootstrap_body<'ctx>(
                 actor_layouts,
                 record_layouts,
                 mir_record_layouts,
+                target_data,
             )?;
             actor_child_index += 1;
         }
@@ -8081,6 +8095,7 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
     actor_layouts: &[ActorLayout],
     record_layouts: &RecordLayoutMap<'ctx>,
     mir_record_layouts: &[RecordLayout],
+    target_data: &TargetData,
 ) -> CodegenResult<()> {
     let i32_ty = ctx.i32_type();
     let i64_ty = ctx.i64_type();
@@ -8262,6 +8277,7 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
                 actor_layouts,
                 record_layouts,
                 mir_record_layouts,
+                target_data,
             )?;
             init_fn_ptr = thunk.as_global_value().as_pointer_value().into();
             config_ptr_for_spec = cfg_buf.into();
@@ -8680,6 +8696,7 @@ fn emit_static_pool_members<'ctx>(
     actor_layouts: &[ActorLayout],
     record_layouts: &RecordLayoutMap<'ctx>,
     mir_record_layouts: &[RecordLayout],
+    target_data: &TargetData,
 ) -> CodegenResult<usize> {
     let i32_ty = ctx.i32_type();
     let i64_ty = ctx.i64_type();
@@ -8753,6 +8770,7 @@ fn emit_static_pool_members<'ctx>(
                     actor_layouts,
                     record_layouts,
                     mir_record_layouts,
+                    target_data,
                 )?;
                 // Bind this member's static index into the pool. `idx as u64`
                 // widens usize → u64 (the const_int arg); the runtime takes the
@@ -8835,6 +8853,7 @@ fn emit_child_init_thunk<'ctx>(
     actor_layouts: &[ActorLayout],
     record_layouts: &RecordLayoutMap<'ctx>,
     mir_record_layouts: &[RecordLayout],
+    target_data: &TargetData,
 ) -> CodegenResult<FunctionValue<'ctx>> {
     let thunk_name = format!(
         "__hew_child_init_{}_{}",
@@ -9033,7 +9052,7 @@ fn emit_child_init_thunk<'ctx>(
                 } else {
                     // Scalar config field: load the value at its resolved width
                     // and store it into the fresh state field.
-                    let scalar_llvm = resolve_ty(ctx, field_ty, record_layouts)?;
+                    let scalar_llvm = resolve_ty(ctx, target_data, field_ty, record_layouts)?;
                     let loaded = builder
                         .build_load(
                             scalar_llvm,
@@ -15495,8 +15514,8 @@ fn lower_numeric_cast(
 
     let (src_ptr, src_storage) = place_pointer(fn_ctx, src)?;
     let (dest_ptr, dest_storage) = place_pointer(fn_ctx, dest)?;
-    let expected_src = primitive_to_llvm(fn_ctx.ctx, from_ty)?;
-    let expected_dest = primitive_to_llvm(fn_ctx.ctx, to_ty)?;
+    let expected_src = primitive_to_llvm(fn_ctx.ctx, fn_ctx.target_data, from_ty)?;
+    let expected_dest = primitive_to_llvm(fn_ctx.ctx, fn_ctx.target_data, to_ty)?;
     if src_storage != expected_src {
         return Err(CodegenError::FailClosed(format!(
             "NumericCast source place storage {src_storage:?} disagrees with from_ty {} ({expected_src:?})",
@@ -16186,8 +16205,8 @@ fn lower_try_width_cast(
     kind: hew_types::TryConversionKind,
 ) -> CodegenResult<()> {
     let (src_ptr, src_storage) = place_pointer(fn_ctx, src)?;
-    let expected_src = primitive_to_llvm(fn_ctx.ctx, from_ty)?;
-    let expected_dest = primitive_to_llvm(fn_ctx.ctx, to_ty)?;
+    let expected_src = primitive_to_llvm(fn_ctx.ctx, fn_ctx.target_data, from_ty)?;
+    let expected_dest = primitive_to_llvm(fn_ctx.ctx, fn_ctx.target_data, to_ty)?;
     if src_storage != expected_src {
         return Err(CodegenError::FailClosed(format!(
             "TryWidthCast source storage {src_storage:?} disagrees with from_ty {}",
@@ -16519,7 +16538,12 @@ fn lower_instruction(
                 field_idx: 0,
             };
             let (payload_ptr, payload_ty) = place_pointer(fn_ctx, some_payload)?;
-            let yield_resolved = resolve_ty(fn_ctx.ctx, yield_ty, fn_ctx.record_layouts)?;
+            let yield_resolved = resolve_ty(
+                fn_ctx.ctx,
+                fn_ctx.target_data,
+                yield_ty,
+                fn_ctx.record_layouts,
+            )?;
             if yield_resolved != payload_ty || yield_resolved != yield_llvm {
                 return Err(CodegenError::FailClosed(format!(
                     "GeneratorNext yield type {yield_resolved:?} must match Some payload slot \
@@ -17537,7 +17561,12 @@ fn lower_instruction(
                              got lhs={lhs_resolved_ty:?}, rhs={rhs_resolved_ty:?}"
                         )));
                     }
-                    let elem_ty = resolve_ty(fn_ctx.ctx, &lhs_args[0], fn_ctx.record_layouts)?;
+                    let elem_ty = resolve_ty(
+                        fn_ctx.ctx,
+                        fn_ctx.target_data,
+                        &lhs_args[0],
+                        fn_ctx.record_layouts,
+                    )?;
                     let elem_eq =
                         crate::thunks::get_or_emit_eq_thunk(fn_ctx, elem_ty, Some(&lhs_args[0]))?;
                     let elem_eq_ptr = elem_eq.as_global_value().as_pointer_value();
@@ -22092,7 +22121,12 @@ fn lower_call_closure(
         arg_vals.push(metadata_value_from_basic(loaded));
     }
 
-    let ret_llvm = resolve_ty(fn_ctx.ctx, ret_ty, fn_ctx.record_layouts)?;
+    let ret_llvm = resolve_ty(
+        fn_ctx.ctx,
+        fn_ctx.target_data,
+        ret_ty,
+        fn_ctx.record_layouts,
+    )?;
     let fn_ty = fn_type_for_return(fn_ctx.ctx, Some(ret_llvm), &param_tys);
     let call = fn_ctx
         .builder
@@ -24388,6 +24422,7 @@ pub(crate) fn layout_vec_element_needs_descriptor<'ctx>(
             if resolved_ty_is_plain_bitcopy(fn_ctx, elem_ty, &mut HashSet::new())? {
                 Ok(Some(resolve_ty(
                     fn_ctx.ctx,
+                    fn_ctx.target_data,
                     elem_ty,
                     fn_ctx.record_layouts,
                 )?))
@@ -24421,6 +24456,7 @@ pub(crate) fn layout_vec_element_needs_descriptor<'ctx>(
             {
                 return Ok(Some(resolve_ty(
                     fn_ctx.ctx,
+                    fn_ctx.target_data,
                     elem_ty,
                     fn_ctx.record_layouts,
                 )?));
@@ -24617,12 +24653,22 @@ fn lower_vec_constructor_call(
             // it stays on the BitCopy `_layout` path on BOTH sides.
             let owned = resolved_ty_element_owns_heap_for_owned_vec(fn_ctx, elem_ty);
             if owned {
-                let elem_llvm_ty = resolve_ty(fn_ctx.ctx, elem_ty, fn_ctx.record_layouts)?;
+                let elem_llvm_ty = resolve_ty(
+                    fn_ctx.ctx,
+                    fn_ctx.target_data,
+                    elem_ty,
+                    fn_ctx.record_layouts,
+                )?;
                 VecCtor::Owned(elem_llvm_ty)
             } else if let Some(layout_ty) = layout_vec_element_needs_descriptor(fn_ctx, elem_ty)? {
                 VecCtor::BitCopyLayout(layout_ty)
             } else {
-                let elem_llvm_ty = resolve_ty(fn_ctx.ctx, elem_ty, fn_ctx.record_layouts)?;
+                let elem_llvm_ty = resolve_ty(
+                    fn_ctx.ctx,
+                    fn_ctx.target_data,
+                    elem_ty,
+                    fn_ctx.record_layouts,
+                )?;
                 if matches!(elem_llvm_ty, BasicTypeEnum::PointerType(_)) {
                     VecCtor::Plain("hew_vec_new_ptr")
                 } else {
@@ -25769,7 +25815,12 @@ fn lower_hashmap_get_layout_call(
         }
     }
 
-    let val_llvm_ty = resolve_ty(fn_ctx.ctx, &val_resolved, fn_ctx.record_layouts)?;
+    let val_llvm_ty = resolve_ty(
+        fn_ctx.ctx,
+        fn_ctx.target_data,
+        &val_resolved,
+        fn_ctx.record_layouts,
+    )?;
     let map_ptr = load_duplex_handle(fn_ctx, args[0], "hew_hashmap_get_layout arg0")?;
     let (key_ptr, _key_ty) = place_pointer(fn_ctx, args[1])?;
 
@@ -25900,7 +25951,12 @@ fn lower_hashmap_remove_take_call(
         }
     }
 
-    let val_llvm_ty = resolve_ty(fn_ctx.ctx, &val_resolved, fn_ctx.record_layouts)?;
+    let val_llvm_ty = resolve_ty(
+        fn_ctx.ctx,
+        fn_ctx.target_data,
+        &val_resolved,
+        fn_ctx.record_layouts,
+    )?;
     let map_ptr = load_duplex_handle(fn_ctx, args[0], "hew_hashmap_remove_take_layout arg0")?;
     let (key_ptr, _key_ty) = place_pointer(fn_ctx, args[1])?;
 
@@ -26034,7 +26090,12 @@ fn lower_hashmap_index_trap_call(
         )));
     }
 
-    let val_llvm_ty = resolve_ty(fn_ctx.ctx, &val_resolved, fn_ctx.record_layouts)?;
+    let val_llvm_ty = resolve_ty(
+        fn_ctx.ctx,
+        fn_ctx.target_data,
+        &val_resolved,
+        fn_ctx.record_layouts,
+    )?;
     let map_ptr = load_duplex_handle(
         fn_ctx,
         args[0],
@@ -26159,7 +26220,12 @@ fn lower_vec_get_clone_call(
         }
     }
 
-    let elem_llvm_ty = resolve_ty(fn_ctx.ctx, &elem_resolved, fn_ctx.record_layouts)?;
+    let elem_llvm_ty = resolve_ty(
+        fn_ctx.ctx,
+        fn_ctx.target_data,
+        &elem_resolved,
+        fn_ctx.record_layouts,
+    )?;
     let vec_ptr = load_duplex_handle(fn_ctx, args[0], "hew_vec_get_clone arg0")?;
     let i64_ty = fn_ctx.ctx.i64_type();
     let index = load_int_arg(fn_ctx, args[1], i64_ty, "hew_vec_get_clone index")?;
@@ -26830,8 +26896,18 @@ fn lower_hashmap_constructor_call(
             }
             let key_resolved = &ty_args[0];
             let val_resolved = &ty_args[1];
-            let key_llvm = resolve_ty(fn_ctx.ctx, key_resolved, fn_ctx.record_layouts)?;
-            let val_llvm = resolve_ty(fn_ctx.ctx, val_resolved, fn_ctx.record_layouts)?;
+            let key_llvm = resolve_ty(
+                fn_ctx.ctx,
+                fn_ctx.target_data,
+                key_resolved,
+                fn_ctx.record_layouts,
+            )?;
+            let val_llvm = resolve_ty(
+                fn_ctx.ctx,
+                fn_ctx.target_data,
+                val_resolved,
+                fn_ctx.record_layouts,
+            )?;
             let key_layout_ptr =
                 hashmap_key_layout_descriptor_ptr(fn_ctx, key_llvm, Some(key_resolved))?;
             let val_layout_ptr =
@@ -26853,7 +26929,12 @@ fn lower_hashmap_constructor_call(
                 )));
             }
             let elem_resolved = &ty_args[0];
-            let elem_llvm = resolve_ty(fn_ctx.ctx, elem_resolved, fn_ctx.record_layouts)?;
+            let elem_llvm = resolve_ty(
+                fn_ctx.ctx,
+                fn_ctx.target_data,
+                elem_resolved,
+                fn_ctx.record_layouts,
+            )?;
             // Per C-1c, the runtime injects the ZST value layout
             // internally — only the element (key) layout pointer is
             // passed across the ABI.
@@ -27225,7 +27306,7 @@ fn lower_inline_drop(
             }
             hew_mir::InPlaceReleaseKind::Enum => emit_enum_inplace_drop_call(fn_ctx, place, ty)?,
         }
-        let slot_llvm_ty = resolve_ty(fn_ctx.ctx, ty, fn_ctx.record_layouts)?;
+        let slot_llvm_ty = resolve_ty(fn_ctx.ctx, fn_ctx.target_data, ty, fn_ctx.record_layouts)?;
         let (slot, _) = place_pointer(fn_ctx, place)?;
         fn_ctx
             .builder
@@ -28441,7 +28522,12 @@ fn emit_one_elab_drop_unguarded(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> Code
             // tuple carrying a `Stream`/`Sink` handle has no dup helper so the
             // clone body would fail closed. The emitter is idempotent.
             let tuple_key = crate::thunks::tuple_thunk_key(elems);
-            let tuple_llvm_ty = resolve_ty(fn_ctx.ctx, &drop.ty, fn_ctx.record_layouts)?;
+            let tuple_llvm_ty = resolve_ty(
+                fn_ctx.ctx,
+                fn_ctx.target_data,
+                &drop.ty,
+                fn_ctx.record_layouts,
+            )?;
             emit_tuple_drop_inplace_body_only(fn_ctx, &tuple_key, elems, tuple_llvm_ty)?;
             let helper = get_or_declare_tuple_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &tuple_key);
             if helper.count_basic_blocks() == 0 {
@@ -29072,7 +29158,12 @@ fn emit_bytes_slot_drop<'ctx>(
 ) -> CodegenResult<()> {
     let ctx = fn_ctx.ctx;
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
-    let bytes_ty = match resolve_ty(ctx, &ResolvedTy::Bytes, fn_ctx.record_layouts)? {
+    let bytes_ty = match resolve_ty(
+        ctx,
+        fn_ctx.target_data,
+        &ResolvedTy::Bytes,
+        fn_ctx.record_layouts,
+    )? {
         BasicTypeEnum::StructType(st) => {
             let fields = st.get_field_types();
             let valid = fields.len() == 3
@@ -29144,7 +29235,7 @@ fn emit_aggregate_recursive_drop<'ctx>(
     }
     match ty {
         ResolvedTy::Tuple(elems) => {
-            let st = match resolve_ty(fn_ctx.ctx, ty, fn_ctx.record_layouts)? {
+            let st = match resolve_ty(fn_ctx.ctx, fn_ctx.target_data, ty, fn_ctx.record_layouts)? {
                 BasicTypeEnum::StructType(st) => st,
                 other => {
                     return Err(CodegenError::FailClosed(format!(
@@ -29168,7 +29259,7 @@ fn emit_aggregate_recursive_drop<'ctx>(
             Ok(())
         }
         ResolvedTy::Array(inner, len) => {
-            let elem_ty = resolve_ty(fn_ctx.ctx, inner, fn_ctx.record_layouts)?;
+            let elem_ty = resolve_ty(fn_ctx.ctx, fn_ctx.target_data, inner, fn_ctx.record_layouts)?;
             let arr_ty = elem_ty.array_type(u32::try_from(*len).map_err(|_| {
                 CodegenError::FailClosed(
                     "aggregate-recursive drop: array length exceeds u32".into(),
@@ -29510,7 +29601,7 @@ fn lower_field_drop_in_place(
     let expected_slot_ty: BasicTypeEnum = if field_is_indirect_enum {
         fn_ctx.ctx.ptr_type(AddressSpace::default()).into()
     } else {
-        resolve_ty(fn_ctx.ctx, ty, fn_ctx.record_layouts)?
+        resolve_ty(fn_ctx.ctx, fn_ctx.target_data, ty, fn_ctx.record_layouts)?
     };
     if slot_llvm_ty != expected_slot_ty {
         return Err(CodegenError::FailClosed(format!(
@@ -29915,7 +30006,7 @@ pub(crate) fn static_type_size_i64<'ctx>(
     if matches!(ty, ResolvedTy::Unit) {
         return Ok(fn_ctx.ctx.i64_type().const_zero());
     }
-    let llvm_ty = resolve_ty(fn_ctx.ctx, ty, fn_ctx.record_layouts)?;
+    let llvm_ty = resolve_ty(fn_ctx.ctx, fn_ctx.target_data, ty, fn_ctx.record_layouts)?;
     let size = llvm_ty.size_of().ok_or_else(|| {
         CodegenError::FailClosed(format!("{label}: type has no static size: {llvm_ty:?}"))
     })?;
@@ -32146,7 +32237,12 @@ fn generator_coro_companion_ty<'ctx>(
     let yield_llvm = if matches!(yield_ty, ResolvedTy::Never) {
         fn_ctx.ctx.i8_type().into()
     } else {
-        resolve_ty(fn_ctx.ctx, yield_ty, fn_ctx.record_layouts)?
+        resolve_ty(
+            fn_ctx.ctx,
+            fn_ctx.target_data,
+            yield_ty,
+            fn_ctx.record_layouts,
+        )?
     };
     let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
     let i8_ty = fn_ctx.ctx.i8_type();
@@ -37687,6 +37783,7 @@ fn bytes_param_is_aliasable(func: &RawMirFunction, param_idx: usize) -> bool {
 fn declare_function<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
+    target_data: &TargetData,
     func: &RawMirFunction,
     record_layouts: &RecordLayoutMap<'ctx>,
     enum_layouts: &[EnumLayout],
@@ -37701,7 +37798,7 @@ fn declare_function<'ctx>(
     // resolve_ty returns the struct type (struct-layout-first invariant for
     // collision safety), so override here for indirect enum names.
     let resolve_value_ty = |ty: &ResolvedTy| -> CodegenResult<BasicTypeEnum<'ctx>> {
-        let raw = resolve_ty(ctx, ty, record_layouts)?;
+        let raw = resolve_ty(ctx, target_data, ty, record_layouts)?;
         if let ResolvedTy::Named { name, .. } = ty {
             if crate::layout::is_indirect_enum(name, enum_layouts) {
                 return Ok(ctx.ptr_type(AddressSpace::default()).into());
@@ -38432,7 +38529,7 @@ fn resolve_enum_di_type<'ctx>(
             &variant
                 .field_tys
                 .iter()
-                .filter_map(|fty| resolve_ty(ctx, fty, record_layouts).ok())
+                .filter_map(|fty| resolve_ty(ctx, target_data, fty, record_layouts).ok())
                 .collect::<Vec<_>>(),
             false,
         );
@@ -39141,7 +39238,12 @@ fn lower_function<'ctx>(
         let logical_return_ty = if matches!(func.return_ty, ResolvedTy::Unit | ResolvedTy::Never) {
             None
         } else {
-            Some(resolve_ty(ctx, &func.return_ty, record_layouts)?)
+            Some(resolve_ty(
+                ctx,
+                target_data,
+                &func.return_ty,
+                record_layouts,
+            )?)
         };
         // `hew_cont_frame_alloc` takes `u64` (not `size_t`) on all targets —
         // the prologue always passes the i64 `coro.size` value directly.
@@ -39260,7 +39362,7 @@ fn lower_function<'ctx>(
         Some(coro) => match coro.logical_return_ty {
             Some(logical) => logical,
             None if matches!(func.return_ty, ResolvedTy::Unit) => {
-                resolve_ty(ctx, &func.return_ty, record_layouts)?
+                resolve_ty(ctx, target_data, &func.return_ty, record_layouts)?
             }
             None => return_ty_llvm,
         },
@@ -39270,7 +39372,7 @@ fn lower_function<'ctx>(
             // alloca to that logical width — the LLVM ABI return is
             // `i32` (the status code), serialised by the Return epilogue,
             // not the contents of this slot.
-            resolve_ty(ctx, &func.return_ty, record_layouts)?
+            resolve_ty(ctx, target_data, &func.return_ty, record_layouts)?
         }
         None => return_ty_llvm,
     };
@@ -39320,7 +39422,7 @@ fn lower_function<'ctx>(
             if matches!(ty, ResolvedTy::Never) {
                 ctx.i8_type().into()
             } else {
-                let raw_ty = resolve_ty(ctx, ty, record_layouts)?;
+                let raw_ty = resolve_ty(ctx, target_data, ty, record_layouts)?;
                 if let ResolvedTy::Named { name, .. } = ty {
                     if crate::layout::is_indirect_enum(name, enum_layouts) {
                         ctx.ptr_type(inkwell::AddressSpace::default()).into()
@@ -40396,7 +40498,12 @@ fn build_module_for_target<'ctx>(
         &pipeline.machine_layouts,
         &pipeline.opaque_handle_names,
     )?;
-    crate::layout::fill_record_layout_bodies(ctx, &pipeline.record_layouts, &record_layouts)?;
+    crate::layout::fill_record_layout_bodies(
+        ctx,
+        &pipeline.record_layouts,
+        &record_layouts,
+        &target_data,
+    )?;
     // Build a quick lookup from record name → field ResolvedTys, shared by
     // every per-function lowering context. The synthesis path consults this
     // when walking a struct hash thunk so a `bool` field (i8 storage, low
@@ -40480,7 +40587,13 @@ fn build_module_for_target<'ctx>(
         &mut machine_layouts,
         Some(&target_data),
     )?;
-    let const_globals = emit_const_globals(ctx, &llvm_mod, &pipeline.user_consts, &record_layouts)?;
+    let const_globals = emit_const_globals(
+        ctx,
+        &llvm_mod,
+        &target_data,
+        &pipeline.user_consts,
+        &record_layouts,
+    )?;
     // Emit the per-type text-codec descriptor globals BEFORE body lowering: the
     // `to_json`/`from_json` lowering (`lower_wire_text_codec_instr`) references
     // them by name at each call site, so they must exist when bodies are lowered.
@@ -40512,7 +40625,13 @@ fn build_module_for_target<'ctx>(
         }
     }
     let mut fn_symbols: FnSymbolMap<'ctx> = HashMap::new();
-    predeclare_stdlib_catalog(ctx, &llvm_mod, &mut fn_symbols, &record_layouts)?;
+    predeclare_stdlib_catalog(
+        ctx,
+        &llvm_mod,
+        &target_data,
+        &mut fn_symbols,
+        &record_layouts,
+    )?;
     predeclare_stream_producer_runtime_symbols(ctx, &llvm_mod, &mut fn_symbols);
     predeclare_extern_decls(
         ctx,
@@ -40556,6 +40675,7 @@ fn build_module_for_target<'ctx>(
         let sym = declare_function(
             ctx,
             &llvm_mod,
+            &target_data,
             func,
             &record_layouts,
             &pipeline.enum_layouts,
@@ -40621,16 +40741,24 @@ fn build_module_for_target<'ctx>(
         crate::thunks::emit_actor_dispatch_trampoline(
             ctx,
             &llvm_mod,
+            &target_data,
             actor,
             &handler_suspendable,
             &fn_symbols,
             &record_layouts,
         )?;
         if actor.coalesce_key_plan.is_some() {
-            crate::thunks::emit_coalesce_key_fn(ctx, &llvm_mod, actor, &record_layouts)?;
+            crate::thunks::emit_coalesce_key_fn(
+                ctx,
+                &llvm_mod,
+                &target_data,
+                actor,
+                &record_layouts,
+            )?;
             crate::thunks::emit_actor_message_drop_fn(
                 ctx,
                 &llvm_mod,
+                &target_data,
                 actor,
                 &record_layouts,
                 &pipeline.record_layouts,
@@ -40908,6 +41036,7 @@ fn build_module_for_target<'ctx>(
         emit_supervisor_bootstrap_body(
             ctx,
             &llvm_mod,
+            &target_data,
             sup,
             &fn_symbols,
             &pipeline.actor_layouts,
@@ -41037,6 +41166,7 @@ fn build_module_for_target<'ctx>(
     emit_dyn_trait_thunks(
         ctx,
         &llvm_mod,
+        &target_data,
         &pipeline.dyn_vtable_registry,
         &fn_symbols,
         &record_layouts,
@@ -41102,6 +41232,7 @@ fn build_module_for_target<'ctx>(
     emit_dyn_trait_vtable_definitions(
         ctx,
         &llvm_mod,
+        &target_data,
         &pipeline.dyn_vtable_registry,
         &record_layouts,
     )?;
@@ -41356,6 +41487,7 @@ fn emit_wasm_coro_runtime_overrides<'ctx>(
 fn emit_dyn_trait_thunks<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
+    target_data: &TargetData,
     registry: &[hew_mir::DynVtableInstance],
     fn_symbols: &FnSymbolMap<'ctx>,
     record_layouts: &RecordLayoutMap<'ctx>,
@@ -41407,7 +41539,7 @@ fn emit_dyn_trait_thunks<'ctx>(
                         inst.symbol, entry.trait_name
                     ))
                 })?;
-            let return_basic = resolve_ty(ctx, &return_resolved, record_layouts)?;
+            let return_basic = resolve_ty(ctx, target_data, &return_resolved, record_layouts)?;
 
             // Thunk param 0 is the erased self pointer; subsequent
             // params are the receiver-skipped trait method args.
@@ -41423,7 +41555,7 @@ fn emit_dyn_trait_thunks<'ctx>(
                         inst.symbol, entry.trait_name
                     ))
                 })?;
-                param_basics.push(resolve_ty(ctx, &resolved, record_layouts)?);
+                param_basics.push(resolve_ty(ctx, target_data, &resolved, record_layouts)?);
             }
 
             // The impl method receives a typed `self` at LLVM slot 0;
@@ -41531,7 +41663,8 @@ fn emit_dyn_trait_thunks<'ctx>(
                     // the data pointer. The concrete LLVM type is the resolved
                     // form of `inst.concrete_type` — the same type the impl fn
                     // was compiled to accept at its first parameter position.
-                    let concrete_ty = resolve_ty(ctx, &inst.concrete_type, record_layouts)?;
+                    let concrete_ty =
+                        resolve_ty(ctx, target_data, &inst.concrete_type, record_layouts)?;
                     let data_ptr = p.into_pointer_value();
                     builder
                         .build_load(concrete_ty, data_ptr, "dyn_recv_load")
@@ -41775,7 +41908,7 @@ fn emit_dyn_trait_drop_in_place_fns<'ctx>(
 ///   `emit_dyn_trait_drop_in_place_fns` (must run first).
 /// - Slot 1: `size_of::<ConcreteType>()` as a ptr-sized integer
 ///   (`<usize>`), sourced from the LLVM ABI layout of `inst.concrete_type`
-///   via `abi_size_align` against the host target data.
+///   via `abi_size_align` against the active module target data.
 /// - Slot 2: `align_of::<ConcreteType>()` as a ptr-sized integer
 ///   (`<usize>`), sourced the same way.
 /// - Slots 3..(3+N): pointers to the method thunks named by
@@ -41843,6 +41976,7 @@ fn emit_dyn_trait_drop_in_place_fns<'ctx>(
 fn emit_dyn_trait_vtable_definitions<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
+    target_data: &TargetData,
     registry: &[hew_mir::DynVtableInstance],
     record_layouts: &RecordLayoutMap<'ctx>,
 ) -> CodegenResult<()> {
@@ -41851,18 +41985,15 @@ fn emit_dyn_trait_vtable_definitions<'ctx>(
     }
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     // Ptr-sized integer for the `size_of` / `align_of` prefix slot
-    // VALUES. Sourced from the host target data (the same
-    // `host_target_data` that `emit_dyn_trait_drop_in_place_fns` uses) so
-    // a wasm32 build would naturally produce `i32` slots and a native
-    // build produces `i64`. The runtime ABI in
+    // VALUES. Sourced from the active module target data so wasm32 builds
+    // produce `i32` slots and 64-bit native builds produce `i64`. The runtime ABI in
     // `hew-runtime/src/trait_object.rs` declares `size_of`/`align_of` as
     // Rust `usize`, which lowers to exactly this width on every Hew
     // target. The prefix slot TYPES come from the shared authority
     // `dyn_vtable_prefix_ty` (same `host_target_data` sourcing), which
     // the drop/dispatch read sites also consume.
-    let host_td = host_target_data();
-    let usize_ty = ctx.ptr_sized_int_type(&host_td, None);
-    let prefix_field_tys = dyn_vtable_prefix_ty(ctx).get_field_types();
+    let usize_ty = ctx.ptr_sized_int_type(target_data, None);
+    let prefix_field_tys = dyn_vtable_prefix_ty(ctx, target_data).get_field_types();
     for inst in registry {
         // Ensure the forward declaration exists for vtables whose
         // coercion site, in some edge cases (registry pre-populated
@@ -41900,8 +42031,8 @@ fn emit_dyn_trait_vtable_definitions<'ctx>(
         // drop-in-place fn, which frees no storage). Drift between the
         // alloc and the free would surface as either an under-free (live
         // byte leak) or an over-free (dealloc with the wrong layout).
-        let concrete_llvm = resolve_ty(ctx, &inst.concrete_type, record_layouts)?;
-        let (concrete_size, concrete_align) = abi_size_align(concrete_llvm, Some(&host_td))?;
+        let concrete_llvm = resolve_ty(ctx, target_data, &inst.concrete_type, record_layouts)?;
+        let (concrete_size, concrete_align) = abi_size_align(concrete_llvm, Some(target_data))?;
 
         let n_methods = inst.vtable_entries.len();
         // Layout: 3-slot prefix (drop, size, align) + N method thunks.
@@ -42324,7 +42455,7 @@ fn emit_ser_value_cbor<'ctx>(
         | ResolvedTy::Isize
         | ResolvedTy::Usize
         | ResolvedTy::Duration => {
-            let llvm_ty = resolve_ty(ctx, ty, record_layouts)?;
+            let llvm_ty = resolve_ty(ctx, target_data, ty, record_layouts)?;
             let int_ty = llvm_ty.into_int_type();
             let raw = builder
                 .build_load(int_ty, value_ptr, "cbor_ser_scalar")
@@ -42387,7 +42518,7 @@ fn emit_ser_value_cbor<'ctx>(
             Ok(())
         }
         ResolvedTy::F32 | ResolvedTy::F64 => {
-            let llvm_ty = resolve_ty(ctx, ty, record_layouts)?;
+            let llvm_ty = resolve_ty(ctx, target_data, ty, record_layouts)?;
             let f = builder
                 .build_load(llvm_ty, value_ptr, "cbor_ser_float")
                 .llvm_ctx("cbor ser float load")?
@@ -42688,7 +42819,7 @@ fn emit_de_value_cbor<'ctx>(
         | ResolvedTy::Isize
         | ResolvedTy::Usize
         | ResolvedTy::Duration => {
-            let llvm_ty = resolve_ty(ctx, ty, record_layouts)?;
+            let llvm_ty = resolve_ty(ctx, target_data, ty, record_layouts)?;
             let int_ty = llvm_ty.into_int_type();
             if matches!(ty, ResolvedTy::Bool) {
                 let i8_ty = ctx.i8_type();
@@ -43734,7 +43865,7 @@ fn emit_ser_vec_cbor<'ctx>(
     // accessor (`hew_vec_get_generic`) aborts on a layout-aware vec. Scalar /
     // string vecs carry a NULL layout and use the generic accessor.
     let layout_ptr = if kind == CborVecElemKind::LayoutBitCopy {
-        let elem_llvm = resolve_ty(ctx, elem_ty, record_layouts)?;
+        let elem_llvm = resolve_ty(ctx, target_data, elem_ty, record_layouts)?;
         Some(codec_bitcopy_layout_descriptor_ptr(
             ctx,
             llvm_mod,
@@ -43913,7 +44044,7 @@ fn emit_de_vec_cbor<'ctx>(
     // would for a directly-constructed `Vec<record>`. Build the matching
     // descriptor once; the constructor and per-element push both consume it.
     let layout_ptr = if kind == CborVecElemKind::LayoutBitCopy {
-        let elem_llvm = resolve_ty(ctx, elem_ty, record_layouts)?;
+        let elem_llvm = resolve_ty(ctx, target_data, elem_ty, record_layouts)?;
         Some(codec_bitcopy_layout_descriptor_ptr(
             ctx,
             llvm_mod,
@@ -43939,7 +44070,7 @@ fn emit_de_vec_cbor<'ctx>(
                 .into_pointer_value()
         }
         CborVecElemKind::Plain => {
-            let elem_llvm = resolve_ty(ctx, elem_ty, record_layouts)?;
+            let elem_llvm = resolve_ty(ctx, target_data, elem_ty, record_layouts)?;
             let elem_size = elem_llvm
                 .size_of()
                 .ok_or_else(|| CodegenError::FailClosed("Vec element has no size".into()))?;
@@ -44066,7 +44197,7 @@ fn emit_de_vec_cbor<'ctx>(
                 .llvm_ctx("cbor de vec drop_str")?;
         }
         CborVecElemKind::Plain => {
-            let elem_llvm = resolve_ty(ctx, elem_ty, record_layouts)?;
+            let elem_llvm = resolve_ty(ctx, target_data, elem_ty, record_layouts)?;
             let temp = builder
                 .build_alloca(elem_llvm, "cbor_de_vec_elem")
                 .llvm_ctx("cbor de vec elem alloca")?;
@@ -44104,7 +44235,7 @@ fn emit_de_vec_cbor<'ctx>(
             let layout_ptr = layout_ptr.ok_or_else(|| {
                 CodegenError::FailClosed("layout-aware Vec decode missing descriptor".into())
             })?;
-            let elem_llvm = resolve_ty(ctx, elem_ty, record_layouts)?;
+            let elem_llvm = resolve_ty(ctx, target_data, elem_ty, record_layouts)?;
             let temp = builder
                 .build_alloca(elem_llvm, "cbor_de_vec_elem_layout")
                 .llvm_ctx("cbor de vec layout elem alloca")?;
@@ -45004,7 +45135,7 @@ fn emit_cbor_codec_thunks<'ctx>(
             .ok_or_else(|| CodegenError::FailClosed("hew_cbor_de_new void".into()))?
             .into_pointer_value();
 
-        let llvm_ty = resolve_ty(ctx, ty, record_layouts)?;
+        let llvm_ty = resolve_ty(ctx, target_data, ty, record_layouts)?;
         let size = llvm_ty.size_of().ok_or_else(|| {
             CodegenError::FailClosed("cbor deserialize: value has no static size".into())
         })?;
@@ -46024,9 +46155,11 @@ mod tests {
             .find(|entry| entry.name == "to_string_u32")
             .expect("to_string_u32 catalog entry");
         let record_layouts = RecordLayoutMap::new();
+        let target_data = host_target_data();
         let result = declare_catalog_ffi(
             &ctx,
             &llvm_mod,
+            &target_data,
             entry,
             "hew_uint_to_string",
             &record_layouts,
@@ -46081,15 +46214,23 @@ mod tests {
             checked_groups += 1;
             let ctx = Context::create();
             let llvm_mod = ctx.create_module("catalog_ffi_group_parity");
+            let target_data = host_target_data();
             for entry in entries {
-                declare_catalog_ffi(&ctx, &llvm_mod, entry, symbol, &record_layouts)
-                    .unwrap_or_else(|err| {
-                        panic!(
-                            "catalog FFI symbol `{symbol}` diverges across shared-symbol \
+                declare_catalog_ffi(
+                    &ctx,
+                    &llvm_mod,
+                    &target_data,
+                    entry,
+                    symbol,
+                    &record_layouts,
+                )
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "catalog FFI symbol `{symbol}` diverges across shared-symbol \
                              entries (entry `{}`): {err}",
-                            entry.name
-                        )
-                    });
+                        entry.name
+                    )
+                });
             }
         }
         assert!(
@@ -46362,6 +46503,125 @@ mod tests {
             builtin: None,
             is_opaque: false,
         }
+    }
+
+    fn platform_int_identity_fn(name: &str, ty: ResolvedTy) -> RawMirFunction {
+        RawMirFunction {
+            source_origin: hew_mir::SourceOrigin::Unknown,
+            name: name.to_string(),
+            return_ty: ty.clone(),
+            call_conv: hew_mir::FunctionCallConv::Default,
+            params: vec![ty.clone()],
+            locals: vec![ty],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
+            blocks: vec![BasicBlock {
+                id: 0,
+                statements: Vec::new(),
+                instructions: vec![Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src: Place::Local(0),
+                }],
+                terminator: Terminator::Return,
+            }],
+            decisions: Vec::new(),
+            intrinsic_id: None,
+            await_deadline_ns: HashMap::new(),
+            suspend_kinds: HashMap::new(),
+            lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: std::collections::BTreeMap::new(),
+        }
+    }
+
+    fn platform_int_width_probe_pipeline() -> IrPipeline {
+        let mut pipeline = empty_pipeline_with_const_42();
+        pipeline.raw_mir = vec![
+            RawMirFunction {
+                source_origin: hew_mir::SourceOrigin::Unknown,
+                name: "main".to_string(),
+                return_ty: ResolvedTy::Unit,
+                call_conv: hew_mir::FunctionCallConv::Default,
+                params: Vec::new(),
+                locals: Vec::new(),
+                local_names: Vec::new(),
+                local_scopes: Vec::new(),
+                local_decl_bytes: Vec::new(),
+                scope_table: Vec::new(),
+                blocks: vec![BasicBlock {
+                    id: 0,
+                    statements: Vec::new(),
+                    instructions: Vec::new(),
+                    terminator: Terminator::Return,
+                }],
+                decisions: Vec::new(),
+                intrinsic_id: None,
+                await_deadline_ns: HashMap::new(),
+                suspend_kinds: HashMap::new(),
+                lambda_actor_user_param_locals: Vec::new(),
+                span: None,
+                instr_spans: std::collections::BTreeMap::new(),
+            },
+            platform_int_identity_fn("id_usize", ResolvedTy::Usize),
+            platform_int_identity_fn("id_isize", ResolvedTy::Isize),
+            platform_int_identity_fn("id_platform_ints", named_record_ty("PlatformInts")),
+        ];
+        pipeline.record_layouts = vec![RecordLayout {
+            name: "PlatformInts".to_string(),
+            field_tys: vec![ResolvedTy::Usize, ResolvedTy::Isize],
+            field_names: vec!["unsigned".to_string(), "signed".to_string()],
+        }];
+        pipeline
+    }
+
+    fn platform_int_width_probe_ir(triple: &str) -> String {
+        let ctx = Context::create();
+        let pipeline = platform_int_width_probe_pipeline();
+        let machine = target_machine_for_triple(triple).expect("platform-int target machine");
+        let module = build_module_for_target(
+            &ctx,
+            &pipeline,
+            "platform_int_width_probe",
+            Some(&machine),
+            None,
+        )
+        .expect("platform-int target module");
+        module.print_to_string().to_string()
+    }
+
+    #[test]
+    fn platform_int_width_follows_module_target_data_in_same_process() {
+        let native = platform_int_width_probe_ir("x86_64-unknown-linux-gnu");
+        let wasm = platform_int_width_probe_ir("wasm32-unknown-unknown");
+
+        for (name, ir) in [("usize", &native), ("isize", &native)] {
+            assert!(
+                ir.contains(&format!("define internal i64 @id_{name}(i64 %0)")),
+                "64-bit native {name} identity ABI must use i64:\n{ir}"
+            );
+        }
+        assert!(
+            native.contains("%PlatformInts = type { i64, i64 }"),
+            "64-bit native record fields must use i64 platform integers:\n{native}"
+        );
+
+        for (name, ir) in [("usize", &wasm), ("isize", &wasm)] {
+            assert!(
+                ir.contains(&format!("define internal i32 @id_{name}(i32 %0)")),
+                "wasm32 {name} identity ABI must use i32:\n{ir}"
+            );
+        }
+        assert!(
+            wasm.contains("%PlatformInts = type { i32, i32 }"),
+            "wasm32 record fields must use i32 platform integers:\n{wasm}"
+        );
+        assert!(
+            !wasm.contains("define internal i64 @id_usize")
+                && !wasm.contains("define internal i64 @id_isize"),
+            "wasm32 platform integers must never retain the 64-bit target's ABI:\n{wasm}"
+        );
     }
 
     fn pointer_to(ty: ResolvedTy) -> ResolvedTy {
@@ -50424,8 +50684,13 @@ mod tests {
         let mut record_layouts: RecordLayoutMap<'ctx> =
             crate::layout::predeclare_named_layouts(ctx, record_fixtures, enum_fixtures, &[], &[])
                 .expect("named-layout predeclaration must succeed");
-        crate::layout::fill_record_layout_bodies(ctx, record_fixtures, &record_layouts)
-            .expect("record-layout body fill must succeed");
+        crate::layout::fill_record_layout_bodies(
+            ctx,
+            record_fixtures,
+            &record_layouts,
+            &target_data,
+        )
+        .expect("record-layout body fill must succeed");
         let mut machine_layouts: MachineLayoutMap<'ctx> = HashMap::new();
         crate::layout::register_enum_layouts(
             ctx,
@@ -50527,8 +50792,8 @@ mod tests {
     /// Allocate a local of the given resolved type within the current
     /// builder position. Inserts entries into `locals` and `local_tys`.
     fn alloc_local(fn_ctx: &mut FnCtx<'_, '_>, id: u32, ty: ResolvedTy) {
-        let llvm_ty =
-            resolve_ty(fn_ctx.ctx, &ty, fn_ctx.record_layouts).expect("resolve_ty for fixture");
+        let llvm_ty = resolve_ty(fn_ctx.ctx, fn_ctx.target_data, &ty, fn_ctx.record_layouts)
+            .expect("resolve_ty for fixture");
         let slot = fn_ctx
             .builder
             .build_alloca(llvm_ty, &format!("local_{id}"))
@@ -52131,10 +52396,11 @@ mod tests {
             None,
         )
         .expect("enum body-fill must succeed against predeclared opaque");
+        let target_data = host_target_data();
         // Now fill the record body. `resolve_ty` on the `CrashKind` field
         // must find the predeclared opaque in `map` rather than fall
         // through to `primitive_to_llvm`'s D10 arm.
-        crate::layout::fill_record_layout_bodies(&ctx, &record_fixtures, &map)
+        crate::layout::fill_record_layout_bodies(&ctx, &record_fixtures, &map, &target_data)
             .expect("record body-fill must resolve enum-typed field via predeclared opaque");
         assert!(
             map.contains_key("CrashKind"),
@@ -52193,7 +52459,8 @@ mod tests {
             map.contains_key("WorkerEvent"),
             "predeclare must register <Name>Event companion"
         );
-        crate::layout::fill_record_layout_bodies(&ctx, &record_fixtures, &map)
+        let target_data = host_target_data();
+        crate::layout::fill_record_layout_bodies(&ctx, &record_fixtures, &map, &target_data)
             .expect("record body-fill must resolve machine-typed field via predeclared opaque");
     }
 
@@ -52217,8 +52484,10 @@ mod tests {
         }];
         let map = crate::layout::predeclare_named_layouts(&ctx, &record_fixtures, &[], &[], &[])
             .expect("predeclare must succeed");
-        let err = crate::layout::fill_record_layout_bodies(&ctx, &record_fixtures, &map)
-            .expect_err("record body-fill must fail-closed on unknown Named type");
+        let target_data = host_target_data();
+        let err =
+            crate::layout::fill_record_layout_bodies(&ctx, &record_fixtures, &map, &target_data)
+                .expect_err("record body-fill must fail-closed on unknown Named type");
         match err {
             CodegenError::FailClosed(msg) => {
                 assert!(
@@ -53030,7 +53299,8 @@ mod tests {
                 assoc_bindings: vec![],
             }],
         };
-        let lowered = resolve_ty(&ctx, &trait_object, &record_layouts)
+        let target_data = host_target_data();
+        let lowered = resolve_ty(&ctx, &target_data, &trait_object, &record_layouts)
             .expect("dyn Trait must lower to the fat-pointer struct");
         let st = lowered.into_struct_type();
         assert_eq!(st, dyn_trait_fat_ptr_ty(&ctx));
@@ -53355,9 +53625,11 @@ mod tests {
         let llvm_mod = ctx.create_module("vtable_def_no_drop");
         let inst = build_minimal_dyn_vtable_instance();
         let record_layouts: RecordLayoutMap<'_> = RecordLayoutMap::new();
+        let target_data = host_target_data();
         let err = emit_dyn_trait_vtable_definitions(
             &ctx,
             &llvm_mod,
+            &target_data,
             std::slice::from_ref(&inst),
             &record_layouts,
         )
@@ -53410,9 +53682,11 @@ mod tests {
         llvm_mod.add_function(&drop_symbol, fn_ty, Some(Linkage::Private));
 
         let record_layouts: RecordLayoutMap<'_> = RecordLayoutMap::new();
+        let target_data = host_target_data();
         let err = emit_dyn_trait_vtable_definitions(
             &ctx,
             &llvm_mod,
+            &target_data,
             std::slice::from_ref(&inst),
             &record_layouts,
         )
@@ -53443,9 +53717,11 @@ mod tests {
 
         // First call: sets struct body and initialiser successfully.
         let record_layouts: RecordLayoutMap<'_> = RecordLayoutMap::new();
+        let target_data = host_target_data();
         emit_dyn_trait_vtable_definitions(
             &ctx,
             &llvm_mod,
+            &target_data,
             std::slice::from_ref(&inst),
             &record_layouts,
         )
@@ -53455,6 +53731,7 @@ mod tests {
         let err = emit_dyn_trait_vtable_definitions(
             &ctx,
             &llvm_mod,
+            &target_data,
             std::slice::from_ref(&inst),
             &record_layouts,
         )
@@ -53544,9 +53821,11 @@ mod tests {
         global.set_initializer(&ptr_ty.const_null());
 
         let record_layouts: RecordLayoutMap<'_> = RecordLayoutMap::new();
+        let target_data = host_target_data();
         let err = emit_dyn_trait_vtable_definitions(
             &ctx,
             &llvm_mod,
+            &target_data,
             std::slice::from_ref(&inst),
             &record_layouts,
         )
@@ -55661,8 +55940,17 @@ mod tests {
         let symbol = "GapActor__recv__work";
         let handler_fn = run_to_completion_handler_fn(symbol);
         let mut fn_symbols: FnSymbolMap = HashMap::new();
-        let sym = declare_function(&ctx, &llvm_mod, &handler_fn, &record_layouts, &[], false)
-            .expect("declare synthetic handler");
+        let target_data = host_target_data();
+        let sym = declare_function(
+            &ctx,
+            &llvm_mod,
+            &target_data,
+            &handler_fn,
+            &record_layouts,
+            &[],
+            false,
+        )
+        .expect("declare synthetic handler");
         fn_symbols.insert(symbol.to_string(), sym);
 
         let actor = ActorLayout {
@@ -55694,6 +55982,7 @@ mod tests {
         let result = crate::thunks::emit_actor_dispatch_trampoline(
             &ctx,
             &llvm_mod,
+            &target_data,
             &actor,
             &[None],
             &fn_symbols,
@@ -57248,7 +57537,7 @@ fn main() {
 
         let ctx = Context::create();
         let td = host_target_data();
-        let llvm_struct = dyn_vtable_prefix_ty(&ctx);
+        let llvm_struct = dyn_vtable_prefix_ty(&ctx, &td);
 
         let fields: [(usize, u32, &str); 3] = [
             (

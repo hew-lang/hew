@@ -17,6 +17,7 @@ use std::collections::HashSet;
 
 use inkwell::intrinsics::Intrinsic;
 use inkwell::module::{Linkage, Module as LlvmModule};
+use inkwell::targets::TargetData;
 use inkwell::types::{BasicType, BasicTypeEnum, FloatType, IntType, StructType};
 use inkwell::values::{BasicMetadataValueEnum, FunctionValue, IntValue, PointerValue};
 use inkwell::{AddressSpace, IntPredicate};
@@ -315,7 +316,7 @@ pub(crate) fn ask_reply_drop_thunk_ptr<'ctx>(
     // never silently under-drops.
     if let ResolvedTy::Tuple(elems) = reply_ty {
         let tuple_key = tuple_thunk_key(elems);
-        let tuple_llvm_ty = resolve_ty(ctx, reply_ty, fn_ctx.record_layouts)?;
+        let tuple_llvm_ty = resolve_ty(ctx, fn_ctx.target_data, reply_ty, fn_ctx.record_layouts)?;
         emit_tuple_drop_inplace_body_only(fn_ctx, &tuple_key, elems, tuple_llvm_ty)?;
         let helper = get_or_declare_tuple_drop_inplace(ctx, fn_ctx.llvm_mod, &tuple_key);
         if helper.count_basic_blocks() == 0 {
@@ -387,7 +388,7 @@ pub(crate) fn ask_reply_drop_thunk_ptr<'ctx>(
             if let Some(existing) = fn_ctx.llvm_mod.get_function(&sym) {
                 return Ok(existing.as_global_value().as_pointer_value());
             }
-            let field_abi = primitive_to_llvm(ctx, reply_ty)?;
+            let field_abi = primitive_to_llvm(ctx, fn_ctx.target_data, reply_ty)?;
             let wrapper = ctx.struct_type(&[field_abi], false);
             let f = fn_ctx.llvm_mod.add_function(
                 &sym,
@@ -1639,7 +1640,12 @@ fn emit_eq_thunk_field_check<'ctx>(
                 ..
             }) if args.len() == 1 => {
                 let elem_resolved_ty = resolved_vec_elem_ty(resolved_ty)?;
-                let elem_ty = resolve_ty(fn_ctx.ctx, elem_resolved_ty, fn_ctx.record_layouts)?;
+                let elem_ty = resolve_ty(
+                    fn_ctx.ctx,
+                    fn_ctx.target_data,
+                    elem_resolved_ty,
+                    fn_ctx.record_layouts,
+                )?;
                 let elem_eq = get_or_emit_eq_thunk(fn_ctx, elem_ty, Some(elem_resolved_ty))?;
                 let elem_eq_ptr = elem_eq.as_global_value().as_pointer_value();
                 let lhs_v = fn_ctx
@@ -2300,6 +2306,7 @@ pub(crate) fn message_drop_fn_name(actor_name: &str) -> String {
 pub(crate) fn emit_coalesce_key_fn<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
+    target_data: &TargetData,
     layout: &ActorLayout,
     record_layouts: &RecordLayoutMap<'ctx>,
 ) -> CodegenResult<FunctionValue<'ctx>> {
@@ -2366,11 +2373,11 @@ pub(crate) fn emit_coalesce_key_fn<'ctx>(
                 handler.param_tys.len()
             ))
         })?;
-        let field_ty = resolve_ty(ctx, param_ty, record_layouts)?;
+        let field_ty = resolve_ty(ctx, target_data, param_ty, record_layouts)?;
         let field_ptr = if handler.param_tys.len() > 1 {
             let mut packed_field_tys = Vec::with_capacity(handler.param_tys.len());
             for ty in &handler.param_tys {
-                packed_field_tys.push(resolve_ty(ctx, ty, record_layouts)?);
+                packed_field_tys.push(resolve_ty(ctx, target_data, ty, record_layouts)?);
             }
             let packed_st = ctx.struct_type(&packed_field_tys, false);
             builder
@@ -2459,6 +2466,7 @@ pub(crate) fn emit_coalesce_key_fn<'ctx>(
 pub(crate) fn emit_actor_message_drop_fn<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
+    target_data: &TargetData,
     layout: &ActorLayout,
     record_layouts: &RecordLayoutMap<'ctx>,
     mir_record_layouts: &[hew_mir::RecordLayout],
@@ -2508,7 +2516,7 @@ pub(crate) fn emit_actor_message_drop_fn<'ctx>(
         let mut field_tys = Vec::with_capacity(handler.param_tys.len());
         let mut field_kinds = Vec::with_capacity(handler.param_tys.len());
         for param_ty in &handler.param_tys {
-            field_tys.push(resolve_ty(ctx, param_ty, record_layouts)?);
+            field_tys.push(resolve_ty(ctx, target_data, param_ty, record_layouts)?);
             let mut visited = HashSet::new();
             field_kinds.push(
                 hew_mir::classify_state_field_with_enum_layouts(
@@ -2553,6 +2561,7 @@ pub(crate) fn emit_actor_message_drop_fn<'ctx>(
 pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
+    target_data: &TargetData,
     layout: &ActorLayout,
     // NEW-3a: per-handler suspendable predicate, parallel to `layout.handlers`.
     // `Some(true)`  — the handler's MIR carries `Terminator::Suspend`; it is
@@ -2851,7 +2860,7 @@ pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
             let mut packed_field_tys: Vec<BasicTypeEnum> =
                 Vec::with_capacity(handler.param_tys.len());
             for param_ty in &handler.param_tys {
-                packed_field_tys.push(resolve_ty(ctx, param_ty, record_layouts)?);
+                packed_field_tys.push(resolve_ty(ctx, target_data, param_ty, record_layouts)?);
             }
             let packed_st = ctx.struct_type(&packed_field_tys, false);
             for (idx, field_ty) in packed_field_tys.iter().enumerate() {
@@ -2877,7 +2886,7 @@ pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
             }
         } else {
             for (idx, param_ty) in handler.param_tys.iter().enumerate() {
-                let llvm_ty = resolve_ty(ctx, param_ty, record_layouts)?;
+                let llvm_ty = resolve_ty(ctx, target_data, param_ty, record_layouts)?;
                 let loaded = builder
                     .build_load(llvm_ty, payload_src, &format!("msg_arg_{idx}"))
                     .llvm_ctx("actor dispatch arg load")?;

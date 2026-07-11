@@ -154,8 +154,8 @@ pub(crate) fn lower_saturating_width_cast(
     let src_int_ty = expect_int_type(src_storage, "saturating width cast source")?;
     let dest_int_ty = expect_int_type(dest_storage, "saturating width cast dest")?;
 
-    let expected_src = primitive_to_llvm(fn_ctx.ctx, from_ty)?;
-    let expected_dest = primitive_to_llvm(fn_ctx.ctx, to_ty)?;
+    let expected_src = primitive_to_llvm(fn_ctx.ctx, fn_ctx.target_data, from_ty)?;
+    let expected_dest = primitive_to_llvm(fn_ctx.ctx, fn_ctx.target_data, to_ty)?;
     if src_storage != expected_src {
         return Err(CodegenError::FailClosed(format!(
             "SaturatingWidthCast source storage {src_storage:?} disagrees with from_ty {}",

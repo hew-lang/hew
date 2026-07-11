@@ -39615,6 +39615,61 @@ fn classify_actor_state_load_modes(
     }
 }
 
+#[cfg(test)]
+mod actor_state_load_classifier_direction_lock_tests {
+    use super::*;
+
+    fn actor_state_load_mode_after_move(src: Place) -> ActorStateLoadMode {
+        let load_dest = 3;
+        let mut blocks = vec![BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![
+                Instr::ActorStateFieldLoad {
+                    field_offset: FieldOffset(0),
+                    dest: Place::Local(load_dest),
+                    mode: ActorStateLoadMode::Owned,
+                },
+                Instr::Move {
+                    dest: Place::Local(4),
+                    src,
+                },
+            ],
+            terminator: Terminator::Return,
+        }];
+
+        classify_actor_state_load_modes(&mut blocks, &HashMap::new(), &[]);
+
+        match &blocks[0].instructions[0] {
+            Instr::ActorStateFieldLoad { mode, .. } => *mode,
+            _ => unreachable!("fixture's first instruction must be the actor-state load"),
+        }
+    }
+
+    #[test]
+    fn duplex_handle_move_keeps_actor_state_load_owned() {
+        assert_eq!(
+            actor_state_load_mode_after_move(Place::DuplexHandle(3)),
+            ActorStateLoadMode::Owned,
+            "#2524: the classifier must treat a duplex-handle whole-value move \
+             as an owned escape, retaining the actor-state load"
+        );
+    }
+
+    #[test]
+    fn interior_variant_move_borrows_actor_state_load() {
+        assert_eq!(
+            actor_state_load_mode_after_move(Place::MachineVariant {
+                local: 3,
+                variant_idx: 0,
+                field_idx: 0,
+            }),
+            ActorStateLoadMode::Borrowed,
+            "an interior variant payload move is a genuine borrow-consumer"
+        );
+    }
+}
+
 /// Record `local`'s use as borrow-consumer (`is_borrow`) or escape,
 /// AND-reducing the running per-local verdict `classify_actor_state_load_modes`
 /// reads back once every instruction/terminator has been scanned. A no-op

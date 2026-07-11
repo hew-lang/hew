@@ -866,9 +866,18 @@ impl Checker {
     /// integer `const` bindings currently in scope, for constexpr count/length
     /// evaluation (e.g. the fixed-array repeat-length check). Float consts are
     /// deliberately excluded — the const-eval sub-engine is integer-only.
+    ///
+    /// Only names with declared-const provenance (`declared_const_names`) are
+    /// admitted. `const_values` also holds literal-coercion entries for every
+    /// unannotated immutable integer literal (`let n = 4`), whose *value* is not
+    /// a compile-time constant for length purposes; admitting those would let a
+    /// runtime-shaped local silently satisfy a fixed-array length.
     fn const_eval_env(&self) -> crate::check::const_eval::ConstEnv {
         let mut env = crate::check::const_eval::ConstEnv::new();
         for (name, value) in &self.const_values {
+            if !self.declared_const_names.contains(name) {
+                continue;
+            }
             if let ConstValue::Integer(v) = value {
                 if let Ok(u) = u64::try_from(*v) {
                     env.insert(name.clone(), u);

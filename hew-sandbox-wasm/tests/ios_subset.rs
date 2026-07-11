@@ -9,6 +9,23 @@ use serde::Deserialize;
 
 const SANDBOX_PROFILE: &str = "sandbox-vm-export";
 const HEW_SEED: &str = "42";
+const CONTEXT_DEPENDENT_QUICK_REFERENCES: &[&str] = &[
+    "await-future",
+    "machine-step",
+    "match",
+    "send-message",
+    "spawn",
+    "state-name",
+];
+const QUICK_REFERENCE_TOP_LEVEL_KEYWORDS: &[&str] = &[
+    "fn ",
+    "actor ",
+    "enum ",
+    "machine ",
+    "supervisor ",
+    "async fn",
+    "import ",
+];
 const DEFAULT_TEMPLATE: &str = r#"// Hew: safe concurrency with actors
 // Try the examples or tutorials to learn more!
 
@@ -45,6 +62,12 @@ struct TutorialFixture {
     starter_code: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct QuickReferenceFixture {
+    id: String,
+    snippet: String,
+}
+
 #[derive(Debug, Clone, Copy)]
 enum Expectation {
     Parity,
@@ -61,14 +84,14 @@ struct IosCase {
 
 #[cfg_attr(windows, ignore)]
 #[test]
-fn ios_default_examples_and_tutorials_are_sandbox_safe() {
+fn ios_runnable_corpus_is_sandbox_safe() {
     set_test_hewpath();
     ensure_native_toolchain();
     ensure_parity_runner_built();
     let cases = load_cases();
     let unique_ids: BTreeSet<_> = cases.iter().map(|case| case.id.as_str()).collect();
 
-    assert_eq!(cases.len(), 27, "the pinned iOS core corpus changed");
+    assert_eq!(cases.len(), 40, "the pinned iOS runnable corpus changed");
     assert_eq!(
         unique_ids.len(),
         cases.len(),
@@ -92,6 +115,14 @@ fn load_cases() -> Vec<IosCase> {
     let tutorials: Vec<TutorialFixture> =
         serde_json::from_str(include_str!("fixtures/ios/tutorials.json"))
             .expect("iOS tutorial fixtures should parse");
+    let quick_references: Vec<QuickReferenceFixture> =
+        serde_json::from_str(include_str!("fixtures/ios/quick_ref.json"))
+            .expect("iOS quick-reference fixtures should parse");
+    assert_eq!(
+        quick_references.len(),
+        19,
+        "the pinned iOS quick-reference corpus changed"
+    );
 
     cases.extend(examples.into_iter().map(|fixture| {
         let expectation = match fixture.id.as_str() {
@@ -116,7 +147,46 @@ fn load_cases() -> Vec<IosCase> {
             expectation,
         }
     }));
+    let context_dependent: BTreeSet<_> =
+        CONTEXT_DEPENDENT_QUICK_REFERENCES.iter().copied().collect();
+    let actual_context_dependent: BTreeSet<_> = quick_references
+        .iter()
+        .filter(|fixture| CONTEXT_DEPENDENT_QUICK_REFERENCES.contains(&fixture.id.as_str()))
+        .map(|fixture| fixture.id.as_str())
+        .collect();
+    assert_eq!(
+        actual_context_dependent, context_dependent,
+        "the context-dependent iOS quick-reference boundary changed"
+    );
+    cases.extend(
+        quick_references
+            .into_iter()
+            .filter(|fixture| !CONTEXT_DEPENDENT_QUICK_REFERENCES.contains(&fixture.id.as_str()))
+            .map(|fixture| {
+                let expectation = match fixture.id.as_str() {
+                    "higher-order-functions" => Expectation::FailClosedProfile("unknown_symbol"),
+                    "import" => Expectation::FailClosedProfile("Unsupported::NATIVE_ONLY"),
+                    _ => Expectation::Parity,
+                };
+                IosCase {
+                    id: format!("quick-reference/{}", fixture.id),
+                    source: wrap_quick_reference(&fixture.snippet),
+                    expectation,
+                }
+            }),
+    );
     cases
+}
+
+fn wrap_quick_reference(snippet: &str) -> String {
+    if QUICK_REFERENCE_TOP_LEVEL_KEYWORDS
+        .iter()
+        .any(|keyword| snippet.contains(keyword))
+    {
+        snippet.to_owned()
+    } else {
+        format!("fn main() {{\n{snippet}\n}}")
+    }
 }
 
 fn assert_case(case: &IosCase) {

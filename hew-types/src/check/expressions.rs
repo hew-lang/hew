@@ -867,15 +867,21 @@ impl Checker {
     /// evaluation (e.g. the fixed-array repeat-length check). Float consts are
     /// deliberately excluded — the const-eval sub-engine is integer-only.
     ///
-    /// Only names with declared-const provenance (`declared_const_names`) are
-    /// admitted. `const_values` also holds literal-coercion entries for every
-    /// unannotated immutable integer literal (`let n = 4`), whose *value* is not
-    /// a compile-time constant for length purposes; admitting those would let a
-    /// runtime-shaped local silently satisfy a fixed-array length.
+    /// Only bindings with declared-const provenance (`declared_const_bindings`)
+    /// are admitted. The current lexical binding must match the declared
+    /// constant's binding ID, so a local or parameter cannot inherit a
+    /// same-named module constant's value. `const_values` also holds
+    /// literal-coercion entries for every unannotated immutable integer literal
+    /// (`let n = 4`), whose *value* is not a compile-time constant for length
+    /// purposes; admitting those would let a runtime-shaped local silently
+    /// satisfy a fixed-array length.
     fn const_eval_env(&self) -> crate::check::const_eval::ConstEnv {
         let mut env = crate::check::const_eval::ConstEnv::new();
         for (name, value) in &self.const_values {
-            if !self.declared_const_names.contains(name) {
+            let Some(declared_binding_id) = self.declared_const_bindings.get(name) else {
+                continue;
+            };
+            if self.env.lookup_ref(name).map(|binding| binding.id) != Some(*declared_binding_id) {
                 continue;
             }
             if let ConstValue::Integer(v) = value {

@@ -290,6 +290,82 @@ fn main() {
 }
 
 #[test]
+fn array_repeat_parameter_shadowing_const_is_rejected() {
+    let output = typecheck_inline(
+        r"
+const N: i64 = 4;
+
+fn repeat(N: i64) {
+    let xs: [i64; 4] = [0; N];
+}
+",
+    );
+
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::ArityMismatch
+                && error.message.contains("compile-time integer")),
+        "a parameter shadowing a declared const cannot satisfy a fixed-array length: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn array_repeat_typed_local_shadowing_const_is_rejected() {
+    let output = typecheck_inline(
+        r"
+const N: i64 = 4;
+
+fn repeat(n: i64) {
+    let N: i64 = n;
+    let xs: [i64; 4] = [0; N];
+}
+",
+    );
+
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::ArityMismatch
+                && error.message.contains("compile-time integer")),
+        "a typed nonliteral local shadowing a declared const cannot satisfy a fixed-array length: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn array_repeat_outer_const_survives_prior_inner_shadow() {
+    let output = typecheck_inline(
+        r"
+const N: i64 = 4;
+
+fn shadows() {
+    {
+        let N = 2;
+    }
+}
+
+fn main() {
+    let xs: [i64; 4] = [0; N];
+}
+",
+    );
+
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|error| error.kind == TypeErrorKind::Shadowing),
+        "the later fixed-array repeat must continue to accept the outer declared const after an \
+         earlier inner shadow; only the independent shadowing diagnostic is expected: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn unannotated_array_repeat_with_runtime_count_still_infers_vec() {
     assert_inline_typechecks_cleanly(
         r"

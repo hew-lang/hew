@@ -679,18 +679,10 @@ impl Checker {
                                 if let Some(v) = extract_integer_literal_value(val) {
                                     self.const_values
                                         .insert(name.clone(), ConstValue::Integer(v));
-                                    // Literal-coercion provenance: this local
-                                    // retains its literal kind for coercion but
-                                    // is NOT a declared compile-time constant.
-                                    // Drop any prior declared-const provenance a
-                                    // same-named binding might have carried so it
-                                    // cannot satisfy a fixed-array length.
-                                    self.declared_const_names.remove(name);
                                 }
                             } else if val_ty.is_float_literal() {
                                 if let Some(v) = extract_float_literal_value(val) {
                                     self.const_values.insert(name.clone(), ConstValue::Float(v));
-                                    self.declared_const_names.remove(name);
                                 }
                             }
                         }

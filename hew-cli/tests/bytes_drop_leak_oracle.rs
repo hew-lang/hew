@@ -266,7 +266,7 @@ fn owned_partner_escape_source(frames: usize) -> String {
 }
 
 /// Fixture K — #2559: an allowlisted fresh-owned-bytes runtime result used as a
-/// transient method receiver. `b.slice(1, 4)` lowers to `hew_bytes_slice`, an
+/// transient method receiver. `b[1..4]` lowers to `hew_bytes_slice`, an
 /// ALLOWLISTED runtime symbol that nonetheless hands back a fresh rc==1 handle
 /// (it bumps the shared buffer's refcount). The chained `.len()` borrows that
 /// transient (`hew_vec_len`) and it then dies with no binding. Pre-fix the
@@ -281,7 +281,7 @@ fn slice_transient_len_source(frames: usize) -> String {
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let b = \"slice-transient-source-payload\".to_bytes();\n\
-         \x20       total = total + b.slice(1, 4).len();\n\
+         \x20       total = total + b[1..4].len();\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
          \x20   total\n\
@@ -707,7 +707,7 @@ fn bytes_usercall_discarded_no_per_frame_leak_slope() {
 }
 
 /// Fixture K: an allowlisted fresh-owned-bytes runtime result used as a
-/// transient method receiver (`b.slice(1, 4).len()`) — the #2559 leak. Pre-fix
+/// transient method receiver (`b[1..4].len()`) — the #2559 leak. Pre-fix
 /// slope 1.0 leak/frame (the allowlist gate excluded `hew_bytes_slice`);
 /// post-fix the `FreshOwnedBytes` contract admits the transient and the splice
 /// releases it once after the borrow. Reverting the contract or the collector

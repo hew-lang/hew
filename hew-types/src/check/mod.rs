@@ -160,6 +160,12 @@ impl Checker {
         "trace",
     ];
 
+    pub(super) fn record_root_value_binding(&mut self, name: &str) {
+        if self.current_module.is_none() {
+            self.root_value_bindings.insert(name.to_string());
+        }
+    }
+
     /// Pass 3: Check all bodies
     #[expect(
         clippy::too_many_lines,
@@ -169,6 +175,7 @@ impl Checker {
                   would only obscure the pipeline order"
     )]
     pub fn check_program(&mut self, program: &Program) -> TypeCheckOutput {
+        self.root_value_bindings.clear();
         self.register_builtins();
         self.collect_types(program);
         // Record every declared type-parameter name (across all modules) before
@@ -736,6 +743,7 @@ impl Checker {
             type_defs: resolved_type_defs,
             internal_builtin_enum_names,
             fn_sigs: resolved_fn_sigs,
+            root_value_bindings: std::mem::take(&mut self.root_value_bindings),
             handle_bearing_structs: {
                 // Flush any pending dirty registration before the set is moved
                 // out — the output layer uses this set for codegen decisions.

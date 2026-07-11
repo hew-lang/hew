@@ -1,0 +1,14 @@
+import m::*;
+
+fn matching() -> i64 {
+    1
+}
+
+fn mismatched() -> string {
+    "local"
+}
+
+fn main() {
+    println(matching());
+    println(mismatched());
+}

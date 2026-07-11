@@ -18,10 +18,11 @@ use std::{
 
 use hew_parser::ast::{
     ActorDecl, AttributeArg, BinaryOp, Block, CallArg, CompoundAssignOp, ConstDecl, Expr, FnDecl,
-    Item, LambdaParam, Literal, MachineDecl, Param, Pattern, Program, ReceiveFnDecl, RecordDecl,
-    RecordKind, ResourceMarker as AstResourceMarker, RestartPolicy, SelectArm, ShutdownDirective,
-    Span, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitItem,
-    TraitMethod, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, UnaryOp, VariantKind,
+    ImportSpec, Item, LambdaParam, Literal, MachineDecl, Param, Pattern, Program, ReceiveFnDecl,
+    RecordDecl, RecordKind, ResourceMarker as AstResourceMarker, RestartPolicy, SelectArm,
+    ShutdownDirective, Span, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy,
+    TimeoutClause, TraitItem, TraitMethod, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, UnaryOp,
+    VariantKind,
 };
 use hew_types::BuiltinType;
 use hew_types::{
@@ -1795,6 +1796,60 @@ fn imported_type_name_collides(
         > 1
 }
 
+/// Build the root scope's bare imported-function bindings.
+///
+/// The checker publishes selected names from `import module::{name}` and
+/// `import module::*`, but HIR emits the function body under its module-qualified
+/// symbol. Preserve that source-to-symbol mapping while root bodies lower, except
+/// where the checker's root value namespace already owns the same binding.
+fn root_imported_fn_rewrites(
+    program: &Program,
+    root_value_bindings: &HashSet<String>,
+) -> HashMap<String, String> {
+    let mut rewrites = HashMap::new();
+    for (item, _) in &program.items {
+        let Item::Import(decl) = item else {
+            continue;
+        };
+        let (Some(module_short), Some(resolved_items)) =
+            (decl.path.last(), decl.resolved_items.as_ref())
+        else {
+            continue;
+        };
+        for (resolved_item, _) in resolved_items {
+            let Item::Function(function) = resolved_item else {
+                continue;
+            };
+            if !function.visibility.is_pub() {
+                continue;
+            }
+            let binding = match &decl.spec {
+                Some(ImportSpec::Glob) => Some(function.name.clone()),
+                Some(ImportSpec::Names(names)) => names
+                    .iter()
+                    .find(|imported| imported.name == function.name)
+                    .map(|imported| {
+                        imported
+                            .alias
+                            .clone()
+                            .unwrap_or_else(|| function.name.clone())
+                    }),
+                None => None,
+            };
+            if let Some(binding) = binding {
+                if root_value_bindings.contains(&binding) {
+                    continue;
+                }
+                rewrites.insert(
+                    binding,
+                    crate::mangle_dotted_name(&format!("{module_short}.{}", function.name)),
+                );
+            }
+        }
+    }
+    rewrites
+}
+
 #[must_use]
 pub fn lower_program(
     program: &Program,
@@ -2202,6 +2257,10 @@ pub fn lower_program_with_mono_cap(
             }
         }
     }
+    ctx.imported_fn_rewrites = Some(root_imported_fn_rewrites(
+        program,
+        &type_check_output.root_value_bindings,
+    ));
 
     // Pre-pass: collect record/type-decl shapes so `Expr::StructInit`
     // lowering in the source-order pass can answer "is this a generic

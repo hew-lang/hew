@@ -196,6 +196,7 @@ mod tests {
             type_defs: HashMap::new(),
             internal_builtin_enum_names: std::collections::HashSet::new(),
             fn_sigs,
+            root_value_bindings: HashSet::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
             method_call_consumes_receiver: HashSet::new(),
             cycle_capable_actors: HashSet::new(),

@@ -8364,7 +8364,8 @@ impl Checker {
                 let mut found_sig = None;
                 let mut found_bound = None;
                 for bound in traits {
-                    if let Some(sig) = self.lookup_trait_method(&bound.trait_name, method) {
+                    let trait_lookup_key = self.trait_ref_lookup_key(&bound.trait_name);
+                    if let Some(sig) = self.lookup_trait_method(&trait_lookup_key, method) {
                         found_sig = Some(sig);
                         found_bound = Some(bound);
                         break;
@@ -8438,7 +8439,8 @@ impl Checker {
                         // 0..3 are the fixed prefix triple
                         // (`drop_in_place`/`size_of`/`align_of`), trait methods
                         // start at slot 3 in trait-declaration order.
-                        if let Some(trait_info) = self.trait_defs.get(&bound.trait_name) {
+                        let trait_lookup_key = self.trait_ref_lookup_key(&bound.trait_name);
+                        if let Some(trait_info) = self.trait_defs.get(&trait_lookup_key) {
                             if let Some(method_idx) =
                                 trait_info.methods.iter().position(|m| m.name == method)
                             {

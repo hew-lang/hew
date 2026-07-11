@@ -258,6 +258,13 @@ pub struct TypeCheckOutput {
     /// `register_builtin_monomorphic_enum_layouts`.
     pub internal_builtin_enum_names: HashSet<String>,
     pub fn_sigs: HashMap<String, FnSig>,
+    /// Root-scope value bindings declared by the program itself.
+    ///
+    /// Populated at the same checker registration sites that publish root
+    /// functions, extern functions, and constants. HIR uses this authority to
+    /// prevent a selected imported function from rewriting a same-named local
+    /// value after the checker has resolved the local declaration.
+    pub root_value_bindings: HashSet<String>,
     /// Struct type names whose fields directly or transitively contain opaque
     /// handle values. Used to enforce owned-handle accessor restrictions and
     /// to thread proven-safe field-drop metadata into codegen.
@@ -1089,6 +1096,7 @@ impl Default for TypeCheckOutput {
             type_defs: HashMap::new(),
             internal_builtin_enum_names: HashSet::new(),
             fn_sigs: HashMap::new(),
+            root_value_bindings: HashSet::new(),
             handle_bearing_structs: HashSet::default(),
             cycle_capable_actors: HashSet::default(),
             user_modules: HashSet::default(),
@@ -2482,6 +2490,7 @@ pub struct Checker {
     pub(super) stack_hints: Vec<StackHint>,
     pub(super) type_defs: HashMap<String, TypeDef>,
     pub(super) fn_sigs: HashMap<String, FnSig>,
+    pub(super) root_value_bindings: HashSet<String>,
     pub(super) fn_type_param_assoc_bindings: HashMap<String, HashMap<(String, String, String), Ty>>,
     pub(super) handle_bearing_structs: HashSet<String>,
     /// Names of every user-declared `#[opaque]` type in this module.
@@ -3255,6 +3264,7 @@ impl Checker {
             stack_hints: Vec::new(),
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
+            root_value_bindings: HashSet::new(),
             fn_type_param_assoc_bindings: HashMap::new(),
             handle_bearing_structs: HashSet::new(),
             user_opaque_type_names: HashSet::new(),

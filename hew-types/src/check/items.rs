@@ -2050,6 +2050,7 @@ impl Checker {
             }
         }
         self.env.define(cd.name.clone(), actual, false);
+        self.record_root_value_binding(&cd.name);
     }
 
     pub(super) fn check_impl(&mut self, id: &ImplDecl, span: &Span) {

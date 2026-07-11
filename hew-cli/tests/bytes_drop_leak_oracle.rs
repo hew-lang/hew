@@ -265,6 +265,30 @@ fn owned_partner_escape_source(frames: usize) -> String {
     )
 }
 
+/// Fixture K — #2559: an allowlisted fresh-owned-bytes runtime result used as a
+/// transient method receiver. `b.slice(1, 4)` lowers to `hew_bytes_slice`, an
+/// ALLOWLISTED runtime symbol that nonetheless hands back a fresh rc==1 handle
+/// (it bumps the shared buffer's refcount). The chained `.len()` borrows that
+/// transient (`hew_vec_len`) and it then dies with no binding. Pre-fix the
+/// allowlist gate excluded every known runtime symbol, so the slice temp had no
+/// drop on any edge (slope 1.0 leak/frame — the leak #2559 reports); post-fix
+/// the `FreshOwnedBytes` contract admits it and the nested-fresh-bytes-temp
+/// splice releases it exactly once right after the borrow.
+fn slice_transient_len_source(frames: usize) -> String {
+    format!(
+        "fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let b = \"slice-transient-source-payload\".to_bytes();\n\
+         \x20       total = total + b.slice(1, 4).len();\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n"
+    )
+}
+
 /// Fixture I — #2542: an UNNAMED user-call `bytes` result used as a transient
 /// method receiver. `mk()` returns a fresh owned bytes; `.len()` borrows it
 /// (`hew_vec_len`); with no `let` binding the result flows straight into that
@@ -677,6 +701,22 @@ fn bytes_usercall_discarded_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
         "bytes_usercall_discarded",
         usercall_discarded_source,
+        LOW_FRAMES,
+        HIGH_FRAMES,
+    );
+}
+
+/// Fixture K: an allowlisted fresh-owned-bytes runtime result used as a
+/// transient method receiver (`b.slice(1, 4).len()`) — the #2559 leak. Pre-fix
+/// slope 1.0 leak/frame (the allowlist gate excluded `hew_bytes_slice`);
+/// post-fix the `FreshOwnedBytes` contract admits the transient and the splice
+/// releases it once after the borrow. Reverting the contract or the collector
+/// gate relaxation fails this by ~47 nodes.
+#[test]
+fn bytes_slice_transient_receiver_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance(
+        "bytes_slice_transient_len",
+        slice_transient_len_source,
         LOW_FRAMES,
         HIGH_FRAMES,
     );

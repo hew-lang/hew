@@ -40933,21 +40933,27 @@ mod nested_fresh_string_temp_drop_admission {
 /// ## Producer scope (fail-closed, safe direction)
 ///
 /// A `builtin: None` `Terminator::Call` returning a `bytes`-typed dest whose
-/// callee is NOT a known runtime symbol AND whose contract does not classify its
-/// result as an interior alias of the receiver. Two producers satisfy this:
+/// callee EITHER is not a known runtime symbol AND whose contract does not
+/// classify its result as an interior alias of the receiver, OR is an
+/// allowlisted runtime symbol whose contract classifies its result as
+/// `FreshOwnedBytes`. Three producer shapes satisfy this:
 ///
 ///   * a USER Hew function returning `bytes` — its ABI hands the caller the sole
 ///     release (`FAIL_CLOSED` contract), and a Hew function can never return a
 ///     borrow (no lifetimes);
 ///   * `hew_string_to_bytes` (`"x".to_bytes()`), the one non-allowlisted fresh
-///     `bytes` runtime helper — it allocates a fresh rc==1 buffer.
+///     `bytes` runtime helper — it allocates a fresh rc==1 buffer;
+///   * `hew_bytes_slice` (`b.slice(..)`), an allowlisted runtime symbol whose
+///     `FreshOwnedBytes` contract proves it hands back a fresh handle — the
+///     non-empty path bumps the shared buffer's refcount so the slice owner
+///     drops independently, and the empty path returns a null/0/0 triple whose
+///     release is a no-op. This is what lets a `b.slice(..).len()` transient
+///     earn its drop instead of leaking.
 ///
-/// ALLOWLISTED runtime callees (`hew_bytes_slice`, `hew_vec_get_owned`, …) are
-/// EXCLUDED: some borrow their receiver / return an interior alias, and the
-/// `FreshOwnedBytes` result contract that would let us tell fresh from borrow
-/// per-symbol does not exist yet, so admitting one risks dropping a value that is
-/// actually a borrow (double free). A `b.slice(..).len()` transient therefore
-/// still leaks — a separate, tracked follow-up. The leak is the safe side.
+/// Allowlisted runtime callees WITHOUT a `FreshOwnedBytes` result
+/// (`hew_bytes_get`, receiver-borrowing scans, …) are EXCLUDED: they may borrow
+/// their receiver or return an interior alias, so admitting one risks dropping a
+/// value that is actually a borrow (double free). The leak is the safe side.
 ///
 /// ## Fail-closed admission — a temp earns a drop iff ALL hold
 ///
@@ -40955,7 +40961,9 @@ mod nested_fresh_string_temp_drop_admission {
 /// 2. it is NOT a `let`/parameter binding local (those belong to the scope-exit
 ///    `derive_local_bytes_drop_allowed` drops — disjoint by construction, so a
 ///    buffer is never claimed by both);
-/// 3. it has NO instruction writer (its sole def is the producer terminator);
+/// 3. its sole def is its producer: a terminator producer has NO instruction
+///    writer; an instruction producer (`hew_bytes_slice`) has exactly its own
+///    producer instruction as the sole writer;
 /// 4. it has AT MOST ONE use-site in the FULL dataflow reads
 ///    (`dataflow::instr_reads_writes(..).0` for instructions — which, unlike
 ///    `instr_source_places`, also sees the borrow-excluded readers
@@ -40967,15 +40975,19 @@ mod nested_fresh_string_temp_drop_admission {
 ///    excludes it (leak, never double-free) — the reads-based table is what
 ///    keeps a `Packet.decode(mk())` operand ALIVE past the decode instead of
 ///    routing it down the discard branch;
-/// 5. the drop site is provably dominated by the def and entered exactly once
-///    (single-predecessor continuation), in one of these shapes:
-///      * discard (zero uses) → drop at the front of the producer's
-///        single-predecessor continuation;
-///      * single borrowing instruction use in the producer's single-predecessor
-///        continuation → drop immediately after the use instruction;
-///      * single borrowing terminator use whose block is the producer's
-///        single-predecessor continuation → drop at the front of that use's
-///        single-predecessor continuation.
+/// 5. the drop site is provably dominated by the def and entered exactly once,
+///    in one of these shapes (an instruction producer is straight-line, so its
+///    def dominates any later same-block position; a terminator producer
+///    dominates only its single-predecessor continuation):
+///      * discard (zero uses) → for an instruction producer, drop immediately
+///        after the producer instruction; for a terminator producer, drop at
+///        the front of its single-predecessor continuation;
+///      * single borrowing instruction use dominated by the def (an earlier
+///        instruction in the same block for an instruction producer, or the
+///        producer's single-predecessor continuation for a terminator producer)
+///        → drop immediately after the use instruction;
+///      * single borrowing terminator use dominated by the def → drop at the
+///        front of that use's single-predecessor continuation.
 ///
 /// Any other CFG shape fails closed (the temp leaks, as before this fix). The
 /// return is a list of `(block_id, insert_index, place, ty)` inline-drop
@@ -41007,16 +41019,17 @@ fn collect_nested_fresh_bytes_temp_drops(
         .filter_map(|p| base_local(*p))
         .collect();
 
-    // Any local an instruction writes to. A user-call bytes temp is produced by
-    // its terminator (rule 3): an admissible temp has NO instruction writer, so
-    // a slot reused/re-defined by a later instruction is excluded fail-closed.
-    let mut instr_written: HashSet<u32> = HashSet::new();
+    // Instruction writers per local (rule 3). The sole admissible writer of an
+    // instr-produced temp (`hew_bytes_slice`) is its producer instruction; a
+    // terminator-produced temp (user call / `hew_string_to_bytes`) has none.
+    // Same shape as `collect_nested_fresh_string_temp_drops`.
+    let mut instr_writers: HashMap<u32, Vec<(u32, usize)>> = HashMap::new();
     for block in blocks {
-        for instr in &block.instructions {
+        for (idx, instr) in block.instructions.iter().enumerate() {
             let (_, writes) = crate::dataflow::instr_reads_writes(instr);
             for w in writes {
                 if let Some(l) = base_local(w) {
-                    instr_written.insert(l);
+                    instr_writers.entry(l).or_default().push((block.id, idx));
                 }
             }
         }
@@ -41078,86 +41091,162 @@ fn collect_nested_fresh_bytes_temp_drops(
     let mut result: Vec<(u32, usize, Place, ResolvedTy)> = Vec::new();
     let mut seen: HashSet<u32> = HashSet::new();
     for block in blocks {
-        // Producer: a `builtin: None` `Terminator::Call` returning an owned
-        // `bytes` dest whose callee is NOT a known runtime symbol. This is a
-        // user Hew function (its ABI hands the caller the sole release —
-        // `FAIL_CLOSED`), OR a non-allowlisted fresh-`bytes` helper such as
-        // `hew_string_to_bytes` (`"x".to_bytes()`), which likewise allocates a
-        // fresh rc==1 buffer. Allowlisted runtime callees (`hew_bytes_slice`,
-        // `hew_bytes_get`, …) are excluded here: some borrow their receiver, and
-        // the FreshOwnedBytes result contract that would let us tell fresh from
-        // borrow does not exist yet, so admitting one risks a double-free.
-        // Defense-in-depth: a callee whose contract classifies its result as an
-        // interior alias of arg[0] is ALSO excluded, so a borrow-returner can
-        // never be dropped even if a future one lands without the allowlist
-        // entry (a Hew user fn can never return a borrow — no lifetimes).
-        let Terminator::Call {
-            callee,
-            builtin: None,
-            dest: Some(dest),
-            next,
-            ..
-        } = &block.terminator
-        else {
-            continue;
-        };
-        if crate::runtime_symbols::is_known_runtime_symbol(callee)
-            || crate::runtime_symbols::callee_ownership_contract(callee)
-                .returns_receiver_interior_alias()
-        {
-            continue;
-        }
-        if !bytes_place_is_typed(*dest, locals) {
-            continue;
-        }
-        let Some(t) = base_local(*dest) else {
-            continue;
-        };
-        if !seen.insert(t) {
-            continue;
-        }
-        if let Some(ins) = nested_fresh_bytes_temp_drop(
-            t,
-            *next,
-            blocks,
-            &pred_count,
-            &binding_local_ids,
-            &instr_written,
-            &source_uses,
-        ) {
-            result.push(ins);
+        // Producer defs in this block: instruction producers first, then the
+        // block-terminating producer.
+        //
+        // Instruction producer: an `Instr::CallRuntimeAbi` whose contract
+        // classifies its result as `FreshOwnedBytes` (`hew_bytes_slice`) — it
+        // bumps the shared buffer's refcount (or returns a null/0/0 empty
+        // triple), handing the caller a fresh rc==1 handle it owes exactly one
+        // release. This is the transient `b[a..b].len()` receiver the #2559
+        // leak reports (the slice lowers straight-line as a `call_rt`, so its
+        // borrowing `.len()` use lives in the SAME block, not a continuation).
+        //
+        // Terminator producer: a `builtin: None` `Terminator::Call` returning an
+        // owned `bytes` dest that is EITHER not a known runtime symbol — a user
+        // Hew function (its ABI hands the caller the sole release —
+        // `FAIL_CLOSED`), or a non-allowlisted fresh-`bytes` helper such as
+        // `hew_string_to_bytes` (`"x".to_bytes()`) — OR an allowlisted runtime
+        // symbol whose contract is `FreshOwnedBytes`.
+        //
+        // Allowlisted runtime callees WITHOUT a `FreshOwnedBytes` result are
+        // excluded (they may borrow their receiver or return an interior alias,
+        // so admitting one risks a double-free). Defense-in-depth: a callee
+        // whose contract classifies its result as an interior alias of arg[0]
+        // is ALSO excluded, so a borrow-returner can never be dropped even if a
+        // future one lands without the allowlist entry (a Hew user fn can never
+        // return a borrow — no lifetimes).
+        let defs = fresh_bytes_producer_defs_in_block(block, locals);
+        for (t, def) in defs {
+            if !seen.insert(t) {
+                continue;
+            }
+            if let Some(ins) = nested_fresh_bytes_temp_drop(
+                t,
+                def,
+                blocks,
+                &pred_count,
+                &binding_local_ids,
+                &instr_writers,
+                &source_uses,
+            ) {
+                result.push(ins);
+            }
         }
     }
     result
 }
 
+/// The fresh-owned-`bytes` producer defs in `block`: instruction producers
+/// (`hew_bytes_slice`, straight-line `call_rt`) first, then the block-terminating
+/// producer (user call / `hew_string_to_bytes` / allowlisted `FreshOwnedBytes`).
+/// Each admissible `bytes`-typed dest is returned with its [`NestedDefSite`].
+fn fresh_bytes_producer_defs_in_block(
+    block: &BasicBlock,
+    locals: &[ResolvedTy],
+) -> Vec<(u32, NestedDefSite)> {
+    let mut defs: Vec<(u32, NestedDefSite)> = Vec::new();
+    for (idx, instr) in block.instructions.iter().enumerate() {
+        if let Some(dest) = fresh_bytes_producer_instr_dest(instr) {
+            if bytes_place_is_typed(dest, locals) {
+                if let Some(t) = base_local(dest) {
+                    defs.push((
+                        t,
+                        NestedDefSite::Instr {
+                            block: block.id,
+                            idx,
+                        },
+                    ));
+                }
+            }
+        }
+    }
+    if let Terminator::Call {
+        callee,
+        builtin: None,
+        dest: Some(dest),
+        ..
+    } = &block.terminator
+    {
+        if fresh_bytes_producer_term_admissible(callee) && bytes_place_is_typed(*dest, locals) {
+            if let Some(t) = base_local(*dest) {
+                defs.push((t, NestedDefSite::Term { block: block.id }));
+            }
+        }
+    }
+    defs
+}
+
+/// The destination place of an `Instr::CallRuntimeAbi` whose ownership contract
+/// classifies its result as a fresh, solely-owned `bytes` (`hew_bytes_slice`) —
+/// a `+1` owner the caller must balance with exactly one `hew_bytes_drop`. Only
+/// validated runtime-ABI producers whose contract is `FreshOwnedBytes` qualify;
+/// everything else returns `None` (fail-closed — the local is never seeded).
+fn fresh_bytes_producer_instr_dest(instr: &Instr) -> Option<Place> {
+    match instr {
+        Instr::CallRuntimeAbi(call)
+            if crate::runtime_symbols::callee_ownership_contract(call.symbol())
+                .produces_fresh_owned_bytes() =>
+        {
+            call.dest()
+        }
+        _ => None,
+    }
+}
+
+/// True iff a `builtin: None` `Terminator::Call` to `callee` is an admissible
+/// fresh-owned-`bytes` producer: either NOT a known runtime symbol (a user Hew
+/// fn or the non-allowlisted `hew_string_to_bytes`, both fresh rc==1), or an
+/// allowlisted runtime symbol whose contract is `FreshOwnedBytes`. A callee
+/// whose result is an interior alias of the receiver is always excluded
+/// (defense-in-depth — a borrow-returner is never dropped).
+fn fresh_bytes_producer_term_admissible(callee: &str) -> bool {
+    let contract = crate::runtime_symbols::callee_ownership_contract(callee);
+    if contract.returns_receiver_interior_alias() {
+        return false;
+    }
+    !crate::runtime_symbols::is_known_runtime_symbol(callee) || contract.produces_fresh_owned_bytes()
+}
+
 /// Per-candidate admission for [`collect_nested_fresh_bytes_temp_drops`].
 /// Returns the inline-drop insertion `(block_id, insert_index, place, ty)` if
-/// the fresh-owned `bytes` temp `t` (produced by a `Terminator::Call` whose
-/// continuation is `def_next`) satisfies every fail-closed rule, else `None`.
+/// the fresh-owned `bytes` temp `t` (defined at `def`) satisfies every
+/// fail-closed rule, else `None`.
 #[must_use]
 #[allow(
     clippy::too_many_arguments,
     reason = "admission threads the precomputed CFG/dataflow tables (pred counts, \
-              binding locals, instruction-written set, source uses) needed to prove \
-              the temp is a no-instr-writer, borrow-only, dominated fresh-owned bytes"
+              binding locals, instr writers, source uses) needed to prove the temp \
+              is a single-def, borrow-only, dominated fresh-owned bytes"
 )]
 fn nested_fresh_bytes_temp_drop(
     t: u32,
-    def_next: u32,
+    def: NestedDefSite,
     blocks: &[BasicBlock],
     pred_count: &HashMap<u32, usize>,
     binding_local_ids: &HashSet<u32>,
-    instr_written: &HashSet<u32>,
+    instr_writers: &HashMap<u32, Vec<(u32, usize)>>,
     source_uses: &HashMap<u32, Vec<NestedUseSite>>,
 ) -> Option<(u32, usize, Place, ResolvedTy)> {
     // 2. not a binding/parameter local.
     if binding_local_ids.contains(&t) {
         return None;
     }
-    // 3. the producer terminator is the sole def — no instruction rewrites `t`.
-    if instr_written.contains(&t) {
-        return None;
+    // 3. the sole instruction writer (if any) is the producer instruction. A
+    // terminator-produced temp has no instruction writer; an instr-produced
+    // temp (`hew_bytes_slice`) has exactly its producer.
+    let writers: &[(u32, usize)] = instr_writers.get(&t).map_or(&[][..], Vec::as_slice);
+    match def {
+        NestedDefSite::Instr { block, idx } => {
+            if !(writers.len() == 1 && writers[0] == (block, idx)) {
+                return None;
+            }
+        }
+        NestedDefSite::Term { .. } => {
+            if !writers.is_empty() {
+                return None;
+            }
+        }
     }
     // 4. at most one source-use.
     let uses: &[NestedUseSite] = source_uses.get(&t).map_or(&[][..], Vec::as_slice);
@@ -41167,22 +41256,40 @@ fn nested_fresh_bytes_temp_drop(
     let drop_place = Place::Local(t);
     let drop_ty = ResolvedTy::Bytes;
 
-    match uses.first() {
-        // Discard (zero uses): drop at the front of the producer's continuation,
-        // which must be single-predecessor so the temp was provably produced.
-        None => (pred_count.get(&def_next).copied().unwrap_or(0) == 1)
-            .then_some((def_next, 0, drop_place, drop_ty)),
+    match (def, uses.first()) {
+        // Discarded instruction producer: drop right after it (straight-line in
+        // its block).
+        (NestedDefSite::Instr { block, idx }, None) => {
+            Some((block, idx + 1, drop_place, drop_ty))
+        }
+        // Discarded terminator producer `Call(next = N)`: drop at the front of
+        // its single-predecessor continuation, so the temp was provably produced.
+        (NestedDefSite::Term { block }, None) => {
+            let n = call_terminator_next(&block_by_id(blocks, block)?.terminator)?;
+            (pred_count.get(&n).copied().unwrap_or(0) == 1).then_some((n, 0, drop_place, drop_ty))
+        }
         // Single instruction use: it must be a borrowing `bytes` runtime op, and
-        // the def must dominate it. The producer's continuation `def_next` is the
-        // ONLY block the def dominates by structural single-entry; requiring the
-        // use to live there (single-predecessor) proves the def ran before it.
-        Some(NestedUseSite::Instr { block: ub, idx: ui }) => {
+        // the def must dominate it.
+        (_, Some(NestedUseSite::Instr { block: ub, idx: ui })) => {
             let ub = *ub;
             let use_instr = block_by_id(blocks, ub)?.instructions.get(*ui)?;
             if !bytes_temp_instr_use_is_borrow_only(use_instr, t) {
                 return None;
             }
-            let def_dominates = ub == def_next && pred_count.get(&ub).copied().unwrap_or(0) == 1;
+            let def_dominates = match def {
+                // Instruction def must be an EARLIER instruction in the use's own
+                // block: same-block straight-line execution means reaching the
+                // use (which reads `t`) implies the def ran. This is the
+                // `b[a..b].len()` shape — `hew_bytes_slice` then `hew_vec_len`
+                // in one block.
+                NestedDefSite::Instr { block, idx } => block == ub && idx < *ui,
+                // Terminator def `Call(next = U)`: a single-predecessor `U` is
+                // reached only from the def block, so the def ran before the use.
+                NestedDefSite::Term { block } => {
+                    call_terminator_next(&block_by_id(blocks, block)?.terminator) == Some(ub)
+                        && pred_count.get(&ub).copied().unwrap_or(0) == 1
+                }
+            };
             // Drop immediately after the borrowing use (straight-line in `ub`),
             // so the release runs exactly once on the path that produced and
             // borrowed the temp.
@@ -41199,7 +41306,7 @@ fn nested_fresh_bytes_temp_drop(
         // triple via the mailbox hand-off) are distinct terminators, so the
         // pattern below excludes them fail-closed. Drop at the front of the use's
         // single-predecessor continuation.
-        Some(NestedUseSite::Term { block: ub }) => {
+        (_, Some(NestedUseSite::Term { block: ub })) => {
             let ub = *ub;
             let Terminator::Call { args, next, .. } = &block_by_id(blocks, ub)?.terminator else {
                 return None;
@@ -41210,7 +41317,16 @@ fn nested_fresh_bytes_temp_drop(
             if pred_count.get(next).copied().unwrap_or(0) != 1 {
                 return None;
             }
-            let def_dominates = ub == def_next && pred_count.get(&ub).copied().unwrap_or(0) == 1;
+            let def_dominates = match def {
+                // Instruction def in the use's own block precedes the terminator.
+                NestedDefSite::Instr { block, .. } => block == ub,
+                // Terminator def `Call(next = U)`: a single-predecessor `U` is
+                // reached only from the def block, so the def ran.
+                NestedDefSite::Term { block } => {
+                    call_terminator_next(&block_by_id(blocks, block)?.terminator) == Some(ub)
+                        && pred_count.get(&ub).copied().unwrap_or(0) == 1
+                }
+            };
             def_dominates.then_some((*next, 0, drop_place, drop_ty))
         }
     }
@@ -41374,6 +41490,89 @@ mod nested_fresh_bytes_temp_drop_admission {
     }
 
     #[test]
+    fn slice_instr_transient_receiver_gets_one_inline_drop_after_borrowing_use() {
+        // The #2559 `b[a..b].len()` shape. `hew_bytes_slice` is an allowlisted
+        // runtime symbol whose result is `FreshOwnedBytes`; it lowers
+        // straight-line as an `Instr::CallRuntimeAbi`, so its borrowing `.len()`
+        // (`hew_vec_len`) use lives in the SAME block, not a continuation.
+        // bb0: _2 = hew_bytes_slice(_5, _3, _4)  (fresh +1, instr)
+        //      _6 = hew_vec_len(_2)              (borrow, instr)
+        //      Return
+        let blocks = vec![block(
+            0,
+            vec![
+                runtime_call(
+                    "hew_bytes_slice",
+                    vec![Place::Local(5), Place::Local(3), Place::Local(4)],
+                    Some(Place::Local(2)),
+                ),
+                bytes_len(2, 6),
+            ],
+            Terminator::Return,
+        )];
+        let locals = bytes_locals_with(&[(3, ResolvedTy::I64), (4, ResolvedTy::I64), (6, ResolvedTy::I64)]);
+        assert_eq!(
+            collect(&blocks, &locals, &HashMap::new()),
+            vec![(0, 2, Place::Local(2), ResolvedTy::Bytes)],
+            "the fresh-owned-bytes slice temp is borrowed once by hew_vec_len in \
+             its own block; it must be dropped immediately after that use"
+        );
+    }
+
+    #[test]
+    fn discarded_slice_instr_result_dropped_right_after_producer() {
+        // A discarded `hew_bytes_slice` instruction result (zero uses) drops
+        // immediately after the producer instruction (straight-line).
+        let blocks = vec![block(
+            0,
+            vec![runtime_call(
+                "hew_bytes_slice",
+                vec![Place::Local(5), Place::Local(3), Place::Local(4)],
+                Some(Place::Local(2)),
+            )],
+            Terminator::Return,
+        )];
+        let locals = bytes_locals_with(&[(3, ResolvedTy::I64), (4, ResolvedTy::I64)]);
+        assert_eq!(
+            collect(&blocks, &locals, &HashMap::new()),
+            vec![(0, 1, Place::Local(2), ResolvedTy::Bytes)],
+            "a discarded fresh-owned-bytes slice temp is dropped right after its \
+             producer instruction"
+        );
+    }
+
+    #[test]
+    fn slice_instr_result_moved_into_local_is_not_dropped_by_collector() {
+        // `let s = b[a..b]` — the slice result is moved into a binding local,
+        // which is released by the scope-exit `derive_local_bytes_drop_allowed`
+        // path. A `Move` is not a borrowing use, so the collector must leave it
+        // alone (no double-free).
+        let mut binding_locals: HashMap<BindingId, Place> = HashMap::new();
+        binding_locals.insert(BindingId(0), Place::Local(7));
+        let blocks = vec![block(
+            0,
+            vec![
+                runtime_call(
+                    "hew_bytes_slice",
+                    vec![Place::Local(5), Place::Local(3), Place::Local(4)],
+                    Some(Place::Local(2)),
+                ),
+                Instr::Move {
+                    dest: Place::Local(7),
+                    src: Place::Local(2),
+                },
+            ],
+            Terminator::Return,
+        )];
+        let locals = bytes_locals_with(&[(3, ResolvedTy::I64), (4, ResolvedTy::I64)]);
+        assert!(
+            collect(&blocks, &locals, &binding_locals).is_empty(),
+            "a slice result moved into a binding local is owned by that binding; \
+             the collector must not drop it (double-free otherwise)"
+        );
+    }
+
+    #[test]
     fn usercall_transient_receiver_gets_one_inline_drop_after_borrowing_use() {
         // bb0: _2 = call mk() -> bb1
         // bb1: _3 = hew_vec_len(_2)  (borrow)  -> Return
@@ -41466,10 +41665,12 @@ mod nested_fresh_bytes_temp_drop_admission {
     }
 
     #[test]
-    fn allowlisted_runtime_bytes_terminator_is_not_admitted() {
-        // hew_bytes_slice returns fresh bytes but is an ALLOWLISTED runtime
-        // symbol; excluded fail-closed pending a FreshOwnedBytes contract (some
-        // allowlisted bytes callees borrow / alias their receiver).
+    fn allowlisted_fresh_owned_bytes_terminator_is_admitted() {
+        // hew_bytes_slice is an ALLOWLISTED runtime symbol, but its ownership
+        // contract now classifies its result as `FreshOwnedBytes`: the non-empty
+        // path bumps the shared buffer's refcount and the empty path returns a
+        // null/0/0 triple, so the caller owes exactly one release. A transient
+        // `b.slice(..).len()` result must therefore be dropped exactly once.
         let blocks = vec![
             block(
                 0,
@@ -41485,10 +41686,38 @@ mod nested_fresh_bytes_temp_drop_admission {
             block(1, vec![bytes_len(2, 3)], Terminator::Return),
         ];
         let locals = bytes_locals_with(&[(3, ResolvedTy::I64)]);
+        assert_eq!(
+            collect(&blocks, &locals, &HashMap::new()),
+            vec![(1, 1, Place::Local(2), ResolvedTy::Bytes)],
+            "an allowlisted fresh-owned-bytes runtime callee (hew_bytes_slice) \
+             borrowed once must be dropped exactly once"
+        );
+    }
+
+    #[test]
+    fn allowlisted_borrowing_bytes_terminator_is_not_admitted() {
+        // hew_bytes_get is an ALLOWLISTED runtime symbol whose result is NOT
+        // `FreshOwnedBytes` (it borrows its receiver / returns a scalar); it
+        // stays excluded fail-closed so a borrow-returner is never dropped.
+        let blocks = vec![
+            block(
+                0,
+                vec![],
+                Terminator::Call {
+                    callee: "hew_bytes_get".to_string(),
+                    builtin: None,
+                    args: vec![Place::Local(5)],
+                    dest: Some(Place::Local(2)),
+                    next: 1,
+                },
+            ),
+            block(1, vec![bytes_len(2, 3)], Terminator::Return),
+        ];
+        let locals = bytes_locals_with(&[(3, ResolvedTy::I64)]);
         assert!(
             collect(&blocks, &locals, &HashMap::new()).is_empty(),
-            "an allowlisted runtime bytes callee is excluded (leak-safe) until a \
-             per-symbol FreshOwnedBytes contract can tell fresh from borrow"
+            "an allowlisted runtime bytes callee without a FreshOwnedBytes \
+             result is excluded (leak-safe) — it may borrow or alias"
         );
     }
 
@@ -49776,6 +50005,8 @@ mod runtime_callee_ownership_contract_parity {
 
     const INTERIOR_ALIAS_SYMBOLS: &[&str] = &["hew_vec_get_owned", "hew_vec_get_ptr"];
 
+    const FRESH_BYTES_SYMBOLS: &[&str] = &["hew_bytes_slice"];
+
     fn expected_set(symbols: &'static [&'static str]) -> BTreeSet<&'static str> {
         let set = symbols.iter().copied().collect::<BTreeSet<_>>();
         assert_eq!(set.len(), symbols.len(), "literal set contains duplicates");
@@ -49800,6 +50031,7 @@ mod runtime_callee_ownership_contract_parity {
         let print_sink = expected_set(PRINT_SINK_SYMBOLS);
         let fresh_string = expected_set(FRESH_STRING_SYMBOLS);
         let interior_alias = expected_set(INTERIOR_ALIAS_SYMBOLS);
+        let fresh_bytes = expected_set(FRESH_BYTES_SYMBOLS);
 
         assert_eq!(vec_receiver.len(), 91);
         assert_eq!(collection_receiver.len(), 19);
@@ -49853,6 +50085,11 @@ mod runtime_callee_ownership_contract_parity {
                 contract.produces_fresh_owned_string(),
                 fresh_string.contains(symbol),
                 "fresh-string projection mismatch for {symbol}",
+            );
+            assert_eq!(
+                contract.produces_fresh_owned_bytes(),
+                fresh_bytes.contains(symbol),
+                "fresh-bytes projection mismatch for {symbol}",
             );
             assert_eq!(
                 contract.returns_receiver_interior_alias(),

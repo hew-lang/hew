@@ -4183,6 +4183,80 @@ fn format_let_record_shorthand_round_trips_without_type_name() {
     );
 }
 
+// ── Rest patterns (`..`) in record/struct patterns (issue #2339) ──
+
+/// A named struct pattern with a `..` rest element in a match arm emits ONE
+/// honest "not yet supported" diagnostic (not the pre-fix cascade of five
+/// generic expected-identifier / expected-arrow errors), and recovers so
+/// nothing after the arm produces extra parse noise.
+#[test]
+fn record_rest_pattern_in_match_arm_reports_single_honest_error() {
+    let source = "fn main() { match p { Point { x, .. } => print(x) } }";
+    let result = parse(source);
+    let rest_errs: Vec<_> = result
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("rest patterns (`..`)"))
+        .collect();
+    assert_eq!(
+        rest_errs.len(),
+        1,
+        "expected exactly one rest-pattern diagnostic, got: {:?}",
+        result.errors
+    );
+    assert!(
+        rest_errs[0].hint.is_some(),
+        "rest-pattern diagnostic should carry a recovery hint"
+    );
+    // Recovery: no misleading `found \`..\`` / `found \`=>\`` cascade survives.
+    assert!(
+        !result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("found `..`") || e.message.contains("found `=>`")),
+        "rest-pattern recovery must not cascade generic token errors, got: {:?}",
+        result.errors
+    );
+}
+
+/// The shorthand record spelling (`let { x, .. } = p`, no type name) reaches
+/// the same single honest rest-pattern diagnostic.
+#[test]
+fn record_shorthand_rest_pattern_reports_single_honest_error() {
+    let source = "fn main() { let { x, .. } = p; }";
+    let result = parse(source);
+    let rest_errs: Vec<_> = result
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("rest patterns (`..`)"))
+        .collect();
+    assert_eq!(
+        rest_errs.len(),
+        1,
+        "expected exactly one rest-pattern diagnostic, got: {:?}",
+        result.errors
+    );
+}
+
+/// A `..` in leading or interior position (`Point { .., x }`) is recognised as
+/// a rest pattern too, and the trailing field still parses without cascade.
+#[test]
+fn record_rest_pattern_leading_position_recovers() {
+    let source = "fn main() { match p { Point { .., x } => print(x) } }";
+    let result = parse(source);
+    let rest_errs: Vec<_> = result
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("rest patterns (`..`)"))
+        .collect();
+    assert_eq!(
+        rest_errs.len(),
+        1,
+        "expected exactly one rest-pattern diagnostic, got: {:?}",
+        result.errors
+    );
+}
+
 // Proving gate: bare `wire` keyword is rejected as a declaration form.
 // Item::Wire no longer exists; the identifier "wire" produces a helpful error.
 #[test]

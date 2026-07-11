@@ -163,6 +163,225 @@ fn one(a: i64) -> [i64; 2] {
 }
 
 #[test]
+fn array_repeat_matching_length_typechecks_against_fixed_array() {
+    assert_inline_typechecks_cleanly(
+        r"
+fn main() {
+    let xs: [i64; 4] = [0; 4];
+}
+",
+        "array repeat with matching literal count should pass the checker",
+    );
+}
+
+#[test]
+fn array_repeat_length_mismatch_is_targeted() {
+    let output = typecheck_inline(
+        r"
+fn main() {
+    let xs: [i64; 4] = [0; 2];
+}
+",
+    );
+
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::ArityMismatch
+                && error.message.contains("repeat length mismatch")
+                && error.message.contains("expected 4")
+                && error.message.contains("found 2")),
+        "repeat length mismatch should emit a targeted arity diagnostic naming both lengths: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn array_repeat_named_const_count_matches_declared_length() {
+    assert_inline_typechecks_cleanly(
+        r"
+const N: i64 = 4;
+
+fn main() {
+    let xs: [i64; 4] = [0; N];
+}
+",
+        "array repeat with a named const count equal to N should pass the checker",
+    );
+}
+
+#[test]
+fn array_repeat_named_const_count_mismatch_is_rejected() {
+    let output = typecheck_inline(
+        r"
+const N: i64 = 3;
+
+fn main() {
+    let xs: [i64; 4] = [0; N];
+}
+",
+    );
+
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::ArityMismatch
+                && error.message.contains("repeat length mismatch")
+                && error.message.contains("expected 4")
+                && error.message.contains("found 3")),
+        "a named const repeat count differing from N should be rejected: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn array_repeat_non_constant_count_in_fixed_array_position_is_rejected() {
+    let output = typecheck_inline(
+        r"
+fn main() {
+    let n: i64 = 4;
+    let xs: [i64; 4] = [0; n];
+}
+",
+    );
+
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::ArityMismatch
+                && error.message.contains("compile-time integer")),
+        "a runtime (non-constant) repeat count cannot satisfy a fixed-array length and must be \
+         rejected: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn array_repeat_unannotated_local_count_in_fixed_array_position_is_rejected() {
+    // Regression: an unannotated immutable integer literal binding (`let n = 4`)
+    // is inserted into the checker's `const_values` map purely to retain
+    // literal-coercion semantics. It is NOT a declared compile-time constant,
+    // so it must not satisfy a fixed-array length. Before the declared-const
+    // provenance gate, `const_eval_env` trusted every `const_values` entry and
+    // this program type-checked with zero errors, silently bypassing the
+    // non-constant-count rejection policy.
+    let output = typecheck_inline(
+        r"
+fn main() {
+    let n = 4;
+    let xs: [i64; 4] = [0; n];
+}
+",
+    );
+
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::ArityMismatch
+                && error.message.contains("compile-time integer")),
+        "an unannotated local (literal-coercion entry, not a declared const) cannot satisfy a \
+         fixed-array length and must be rejected: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn array_repeat_parameter_shadowing_const_is_rejected() {
+    let output = typecheck_inline(
+        r"
+const N: i64 = 4;
+
+fn repeat(N: i64) {
+    let xs: [i64; 4] = [0; N];
+}
+",
+    );
+
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::ArityMismatch
+                && error.message.contains("compile-time integer")),
+        "a parameter shadowing a declared const cannot satisfy a fixed-array length: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn array_repeat_typed_local_shadowing_const_is_rejected() {
+    let output = typecheck_inline(
+        r"
+const N: i64 = 4;
+
+fn repeat(n: i64) {
+    let N: i64 = n;
+    let xs: [i64; 4] = [0; N];
+}
+",
+    );
+
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::ArityMismatch
+                && error.message.contains("compile-time integer")),
+        "a typed nonliteral local shadowing a declared const cannot satisfy a fixed-array length: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn array_repeat_outer_const_survives_prior_inner_shadow() {
+    let output = typecheck_inline(
+        r"
+const N: i64 = 4;
+
+fn shadows() {
+    {
+        let N = 2;
+    }
+}
+
+fn main() {
+    let xs: [i64; 4] = [0; N];
+}
+",
+    );
+
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|error| error.kind == TypeErrorKind::Shadowing),
+        "the later fixed-array repeat must continue to accept the outer declared const after an \
+         earlier inner shadow; only the independent shadowing diagnostic is expected: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn unannotated_array_repeat_with_runtime_count_still_infers_vec() {
+    assert_inline_typechecks_cleanly(
+        r"
+fn take_vec(xs: Vec<i64>) {}
+
+fn main() {
+    let n: i64 = 4;
+    let xs = [0; n];
+    take_vec(xs);
+}
+",
+        "an unannotated array repeat with a runtime count should still infer Vec<i64> unaffected",
+    );
+}
+
+#[test]
 fn fixed_array_literal_element_mismatch_cites_element() {
     let output = typecheck_inline(
         r"

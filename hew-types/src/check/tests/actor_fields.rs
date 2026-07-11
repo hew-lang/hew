@@ -1095,6 +1095,115 @@ mod every_attribute {
         );
     }
 
+    // ── Opaque handle as a receive-fn message parameter (#2511) ──────────────
+    //
+    // Actor message payloads are CBOR-serialized for mailbox dispatch. An
+    // `#[opaque]` handle has no record layout, so it cannot cross the actor
+    // message boundary. The checker must reject an opaque-typed receive-fn
+    // parameter with a clean `OpaqueMessagePayload` diagnostic rather than
+    // letting it reach codegen and surface as a raw wire-serialize failure.
+
+    #[test]
+    fn opaque_receive_fn_param_emits_opaque_message_payload_error() {
+        let output = check_source(
+            r"
+            #[opaque]
+            type Handle {}
+
+            actor Server {
+                receive fn handle(h: Handle) {}
+            }
+
+            fn main() {}
+            ",
+        );
+        let payload_errors: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(&e.kind, TypeErrorKind::OpaqueMessagePayload { .. }))
+            .collect();
+        assert_eq!(
+            payload_errors.len(),
+            1,
+            "an opaque-typed receive-fn parameter must emit exactly one \
+             OpaqueMessagePayload error; got: {:#?}",
+            output.errors
+        );
+        match &payload_errors[0].kind {
+            TypeErrorKind::OpaqueMessagePayload {
+                param_name,
+                opaque_name,
+            } => {
+                assert_eq!(param_name, "h");
+                assert_eq!(opaque_name, "Handle");
+            }
+            other => panic!("unexpected error kind: {other:?}"),
+        }
+        assert!(
+            payload_errors[0]
+                .message
+                .contains("E_OPAQUE_MESSAGE_PAYLOAD"),
+            "OpaqueMessagePayload message must carry the envelope code; got: {:?}",
+            payload_errors[0].message
+        );
+    }
+
+    #[test]
+    fn opaque_receive_fn_param_nested_in_vec_is_rejected() {
+        // The restriction is transitive: a `Vec<Handle>` payload also can't be
+        // serialized, so the opaque leaf must still be detected.
+        let output = check_source(
+            r"
+            #[opaque]
+            type Handle {}
+
+            actor Server {
+                receive fn handle(hs: Vec<Handle>) {}
+            }
+
+            fn main() {}
+            ",
+        );
+        let payload_errors: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(&e.kind, TypeErrorKind::OpaqueMessagePayload { .. }))
+            .collect();
+        assert_eq!(
+            payload_errors.len(),
+            1,
+            "an opaque handle nested in a Vec receive-fn parameter must be \
+             rejected; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn non_opaque_receive_fn_params_are_not_affected() {
+        // Plain serializable payloads (primitives, records) must still pass.
+        let output = check_source(
+            r"
+            type Point { x: i64; y: i64; }
+
+            actor Server {
+                receive fn handle(n: i64, s: string, p: Point) {}
+            }
+
+            fn main() {}
+            ",
+        );
+        let payload_errors: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(&e.kind, TypeErrorKind::OpaqueMessagePayload { .. }))
+            .collect();
+        assert!(
+            payload_errors.is_empty(),
+            "serializable receive-fn parameters must not produce \
+             OpaqueMessagePayload; got: {payload_errors:#?}",
+        );
+    }
+
     #[test]
     fn cross_actor_msg_id_collision_is_rejected() {
         // `Alpha::h69862` and `Beta::h103299` are a real SipHash-1-3 low-32-bit

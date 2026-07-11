@@ -1955,6 +1955,7 @@ impl Checker {
         for p in &rf.params {
             self.check_shadowing(&p.name, &p.ty.1);
             let ty = self.resolve_type_expr(&p.ty);
+            self.reject_opaque_receive_fn_param(&p.name, &ty, &p.ty.1);
             self.env
                 .define_param_with_span(p.name.clone(), ty, p.is_mutable, p.ty.1.clone());
         }
@@ -2027,6 +2028,36 @@ impl Checker {
         }
         self.env.pop_scope(); // params scope
         self.env.pop_scope(); // fields scope
+    }
+
+    /// Fail closed on an opaque-handle receive-fn parameter.
+    ///
+    /// Actor message payloads are CBOR-serialized for mailbox dispatch, but
+    /// `#[opaque]` runtime handles (e.g. `net.Listener`, `net.Connection`) are
+    /// pointer-shaped resources with no record layout, so they cannot cross the
+    /// actor message boundary. If a parameter type is (or transitively contains)
+    /// an opaque handle, emit a clean checker diagnostic that points at the
+    /// parameter instead of letting it reach codegen and surface as a raw
+    /// `E_CODEGEN_FRONT_FAIL_CLOSED: wire CBOR serialize …` message (#2511).
+    fn reject_opaque_receive_fn_param(&mut self, param_name: &str, ty: &Ty, span: &Span) {
+        let mut visiting = std::collections::HashSet::new();
+        let Some(opaque_name) = self.ty_field_contains_opaque(ty, &mut visiting) else {
+            return;
+        };
+        self.report_error(
+            TypeErrorKind::OpaqueMessagePayload {
+                param_name: param_name.to_string(),
+                opaque_name: opaque_name.clone(),
+            },
+            span,
+            format!(
+                "opaque type `{opaque_name}` cannot be used as receive-fn \
+                 parameter `{param_name}`; actor message payloads must be \
+                 serializable, but opaque handles carry no record layout — open \
+                 or construct it locally in the handler instead \
+                 [E_OPAQUE_MESSAGE_PAYLOAD]"
+            ),
+        );
     }
 
     pub(super) fn check_const(&mut self, cd: &ConstDecl, _span: &Span) {

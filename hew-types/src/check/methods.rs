@@ -2842,7 +2842,7 @@ impl Checker {
         found
     }
 
-    fn ty_field_contains_opaque(
+    pub(super) fn ty_field_contains_opaque(
         &self,
         ty: &Ty,
         visiting: &mut std::collections::HashSet<String>,

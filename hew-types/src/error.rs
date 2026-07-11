@@ -1226,6 +1226,26 @@ pub enum TypeErrorKind {
         /// The user-facing element type of the receiver `Stream<T>`.
         element_ty: String,
     },
+    /// An actor receive-fn declared a parameter whose type is (or transitively
+    /// contains) an `#[opaque]` runtime handle.
+    ///
+    /// Actor message payloads are CBOR-serialized for mailbox dispatch, but
+    /// opaque handles (e.g. `net.Listener`, `net.Connection`) are pointer-shaped
+    /// runtime resources with no record layout, so they cannot cross the actor
+    /// message boundary. Without this check the restriction surfaced only at
+    /// codegen as a raw `E_CODEGEN_FRONT_FAIL_CLOSED: wire CBOR serialize …`
+    /// message naming an internal wire-serialization detail. This error replaces
+    /// that downstream noise with a clean, actionable checker diagnostic that
+    /// points at the parameter.
+    ///
+    /// Envelope code: `E_OPAQUE_MESSAGE_PAYLOAD`.
+    OpaqueMessagePayload {
+        /// The receive-fn parameter name.
+        param_name: String,
+        /// The resolved opaque handle type name reached from the parameter type
+        /// (e.g. `"Listener"`, `"net.Connection"`).
+        opaque_name: String,
+    },
     /// A cross-module or cross-package reference to a `private` symbol.
     ///
     /// `private` symbols are accessible only within the module that declares
@@ -1356,6 +1376,7 @@ impl TypeErrorKind {
             Self::LetElseDoesNotDiverge => "LetElseDoesNotDiverge",
             Self::OpaqueDirectConstruct { .. } => "OpaqueDirectConstruct",
             Self::StreamAdapterNotSupported { .. } => "StreamAdapterNotSupported",
+            Self::OpaqueMessagePayload { .. } => "OpaqueMessagePayload",
             Self::VisibilityViolationPrivate { .. } => "VisibilityViolationPrivate",
             Self::VisibilityViolationPackage { .. } => "VisibilityViolationPackage",
             Self::Lint(id) => id.as_str(),

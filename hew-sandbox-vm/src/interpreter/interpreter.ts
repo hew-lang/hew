@@ -330,14 +330,18 @@ class Interpreter {
         frame.locals.set(target, cloneValue(this.resolve(frame, instruction.args[1], instruction.span)));
         return;
       }
+      // Wrapping arithmetic (`&+`/`&-`/`&*`): two's-complement wraparound.
+      // Truncate to 64 bits with asIntN(64) (same as i64.shl) so an
+      // overflowing operation observes native LLVM's wraparound (e.g.
+      // i64::MAX &+ 1 == i64::MIN) instead of an unbounded BigInt. See #2341.
       case "i64.add":
-        this.writeDst(frame, instruction, this.i64(this.i64Arg(frame, instruction.args[0], instruction.span) + this.i64Arg(frame, instruction.args[1], instruction.span)));
+        this.writeDst(frame, instruction, this.i64(BigInt.asIntN(64, this.i64Arg(frame, instruction.args[0], instruction.span) + this.i64Arg(frame, instruction.args[1], instruction.span))));
         return;
       case "i64.sub":
-        this.writeDst(frame, instruction, this.i64(this.i64Arg(frame, instruction.args[0], instruction.span) - this.i64Arg(frame, instruction.args[1], instruction.span)));
+        this.writeDst(frame, instruction, this.i64(BigInt.asIntN(64, this.i64Arg(frame, instruction.args[0], instruction.span) - this.i64Arg(frame, instruction.args[1], instruction.span))));
         return;
       case "i64.mul":
-        this.writeDst(frame, instruction, this.i64(this.i64Arg(frame, instruction.args[0], instruction.span) * this.i64Arg(frame, instruction.args[1], instruction.span)));
+        this.writeDst(frame, instruction, this.i64(BigInt.asIntN(64, this.i64Arg(frame, instruction.args[0], instruction.span) * this.i64Arg(frame, instruction.args[1], instruction.span))));
         return;
       case "i64.and":
         this.writeDst(frame, instruction, this.i64(this.i64Arg(frame, instruction.args[0], instruction.span) & this.i64Arg(frame, instruction.args[1], instruction.span)));

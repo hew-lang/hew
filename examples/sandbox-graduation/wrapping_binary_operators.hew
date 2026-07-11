@@ -1,8 +1,16 @@
-// IS: parity covers non-overflow values; the wraparound boundary is tracked in #2341.
+// Wrapping arithmetic (`&+`/`&-`/`&*`): two's-complement wraparound.
+// Covers both non-overflow values and the overflow boundary, so the sandbox
+// VM's asIntN(64) truncation is pinned against native LLVM wraparound (#2341).
 fn main() {
     let a = 10;
     let b = 3;
     println(f"wadd: {a &+ b}");
     println(f"wsub: {a &- b}");
     println(f"wmul: {a &* b}");
+    // Overflow boundary: results must wrap, not grow past i64.
+    let max = 9223372036854775807;  // i64::MAX
+    let min = -9223372036854775808; // i64::MIN
+    println(f"max_add_one: {max &+ 1}");   // -> i64::MIN
+    println(f"min_sub_one: {min &- 1}");   // -> i64::MAX
+    println(f"max_mul_two: {max &* 2}");   // -> -2
 }

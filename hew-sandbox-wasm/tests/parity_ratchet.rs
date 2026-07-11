@@ -207,8 +207,9 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "wrapping binary operators",
-        // IS: parity covers non-overflow values; the wraparound boundary is tracked in #2341.
-        probe: "fn main() {\n    let a = 10;\n    let b = 3;\n    println(a &+ b);\n    println(a &- b);\n    println(a &* b);\n}\n",
+        // Parity covers non-overflow values AND the overflow boundary; the VM
+        // truncates with asIntN(64) to match native wraparound (#2341).
+        probe: "fn main() {\n    let a = 10;\n    let b = 3;\n    println(a &+ b);\n    println(a &- b);\n    println(a &* b);\n    let max = 9223372036854775807;\n    println(max &+ 1);\n}\n",
         coverage: Coverage::Parity("wrapping_binary_operators"),
     },
     Construct {

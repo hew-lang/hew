@@ -24521,7 +24521,7 @@ impl LowerCtx {
                 // The closure body type will be checked after lowering via checker expr_types
                 // For now, we rely on the inline checks at lowering time
 
-                // (3) Check captures are Send (or conservatively reject if facts missing)
+                // (3) Check captures are Send.
                 let closure_span_key = self.mk_key(&function.1);
                 if let Some(captures) = self.closure_capture_facts.get(&closure_span_key) {
                     for capture in captures {
@@ -24540,12 +24540,15 @@ impl LowerCtx {
                         }
                     }
                 } else {
-                    // FC-P1-A1 Blocker 3: Conservative reject when capture facts missing
-                    // (Treat empty/missing as unknown — fail closed)
-                    // Note: Zero-param closures with no captures are OK (empty vec is different from missing entry)
-                    // We only warn here if there's actually a capture syntax present
-                    // A production implementation would track whether the closure has capture syntax
-                    // For now, we accept missing facts (assume no captures if not provided by checker)
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "closure literal".to_string(),
+                            reason: "closure_capture_facts has no record for closure literal span"
+                                .to_string(),
+                        },
+                        span.clone(),
+                        "closure literal reached HIR without checker capture metadata",
+                    ));
                 }
             }
             _ => {
@@ -27091,9 +27094,17 @@ fn check_fork_child_shape(
                         ));
                     }
                 }
+            } else {
+                ctx.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "closure literal".to_string(),
+                        reason: "closure_capture_facts has no record for closure literal span"
+                            .to_string(),
+                    },
+                    span.clone(),
+                    "closure literal reached HIR without checker capture metadata",
+                ));
             }
-            // Note: Missing closure_capture_facts is treated as "no captures" (acceptable)
-            // since checker only populates this for closures with actual captures.
         }
         _ => {
             ctx.diagnostics.push(HirDiagnostic::new(

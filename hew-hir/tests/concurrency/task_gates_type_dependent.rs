@@ -135,3 +135,51 @@ fn checker_pipeline_rc_capture_emits_non_send_diagnostic() {
         "non-Send spawned closure capture must make lowering fatal"
     );
 }
+
+#[test]
+fn missing_capture_facts_for_forked_closure_emit_boundary_diagnostics() {
+    let source = r"
+        fn main() {
+            let k: i64 = 1;
+            scope {
+                fork child = (move || { let _ = k; })();
+            }
+        }
+    ";
+    let (parsed, mut tco) = support::checker_pipeline::typecheck_source(source);
+    assert!(
+        tco.errors.is_empty(),
+        "forked closure fixture must typecheck cleanly: {:#?}",
+        tco.errors
+    );
+    assert_eq!(
+        tco.closure_capture_facts.len(),
+        1,
+        "test setup requires one checker-produced closure capture entry: {:#?}",
+        tco.closure_capture_facts
+    );
+    tco.closure_capture_facts.clear();
+
+    let output = lower_program_host_target(&parsed.program, &tco, &ResolutionCtx);
+    let boundary_count = output
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            matches!(
+                &diagnostic.kind,
+                HirDiagnosticKind::CheckerBoundaryViolation { name, reason }
+                    if name == "closure literal"
+                        && reason == "closure_capture_facts has no record for closure literal span"
+            )
+        })
+        .count();
+    assert_eq!(
+        boundary_count, 3,
+        "ordinary lowering and both spawned-closure validators must reject missing capture facts; got {:#?}",
+        output.diagnostics
+    );
+    assert!(
+        output.into_result().is_err(),
+        "missing spawned-closure capture facts must make lowering fatal"
+    );
+}

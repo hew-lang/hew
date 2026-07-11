@@ -1882,7 +1882,32 @@ impl Checker {
                     return Ty::Error;
                 }
                 let resolved_name = if is_local && self.type_defs.contains_key(name) {
-                    name.clone()
+                    // A bare reference to a locally-defined type normally binds
+                    // to the bare `type_defs` key. But when checking a non-root
+                    // module, the bare key is last-write-wins across modules that
+                    // declare the same bare name (`pre_register_type_decl`
+                    // documents this: the qualified alias is the authority). If a
+                    // sibling module later overwrites the bare `Wrap` entry, a
+                    // bare local `Wrap` here would resolve to the WRONG module's
+                    // fields downstream (observable as `no field ... help: <other
+                    // module's field>` — #2208). Bind to this module's OWN
+                    // qualified identity (`{short}.{name}`) when it exists so the
+                    // local reference is immune to the cross-module bare-key
+                    // race, mirroring the `published_bare_type_qualified` branch
+                    // below. `pre_register_type_decl` always seeds the qualified
+                    // key alongside the bare one, so non-colliding locals resolve
+                    // identically to their own def.
+                    match self.current_module_short() {
+                        Some(short) => {
+                            let qualified = format!("{short}.{name}");
+                            if self.type_defs.contains_key(&qualified) {
+                                qualified
+                            } else {
+                                name.clone()
+                            }
+                        }
+                        None => name.clone(),
+                    }
                 } else if let Some(qualified) = self.published_bare_type_qualified(name) {
                     // Exactly one module published this bare name. Bind to that
                     // owner's QUALIFIED identity (`owner.Name`) so a sibling

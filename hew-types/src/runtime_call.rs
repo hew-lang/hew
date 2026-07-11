@@ -338,10 +338,11 @@ pub enum RuntimeCallFamily {
     // here as a runtime-call family.
     NodeLookup,
     /// `monitor(RemotePid<T>)` → `hew_node_monitor(target_pid: i64) -> i64`.
-    /// Registers a distributed-monitor entry keyed by the packed remote pid's
-    /// `(node_id, serial)` and returns the `ref_id` assembled into `MonitorRef`.
-    /// The current node is resolved internally (like `hew_actor_self`), so the
-    /// single arg is the remote target pid (`BitCopy` `i64`); non-consuming.
+    /// Positive returns are distributed-monitor ref ids; negative returns encode
+    /// `MonitorError` as `-(variant + 1)`. Codegen assembles
+    /// `Result<MonitorRef, MonitorError>`. The current node is resolved
+    /// internally (like `hew_actor_self`), so the single runtime arg is the
+    /// remote target pid (`BitCopy` `i64`); non-consuming.
     NodeMonitor,
     /// `MonitorRef::recv_down` → `hew_node_monitor_recv(ref_id: i64,
     /// timeout_ms: i64) -> i64`. Blocks until the distributed monitor's terminal

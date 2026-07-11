@@ -1208,7 +1208,6 @@ pub struct HewNode {
     bind_addr_owned: *mut c_char,
     accept_stop: Arc<AtomicBool>,
     accept_thread: Mutex<Option<JoinHandle<()>>>,
-    next_peer_node: AtomicU16,
 }
 
 impl std::fmt::Debug for HewNode {
@@ -1970,33 +1969,19 @@ extern "C" fn node_registry_gossip_callback(
     }
 }
 
-fn next_peer_node_id(node: &HewNode) -> u16 {
-    let mut id = node.next_peer_node.fetch_add(1, Ordering::Relaxed);
-    if id == 0 || id == node.node_id {
-        id = node.next_peer_node.fetch_add(1, Ordering::Relaxed);
-        if id == 0 || id == node.node_id {
-            id = 1;
-        }
-    }
-    id
-}
-
-unsafe fn parse_connect_target(
-    addr: *const c_char,
-    fallback_node_id: u16,
-) -> Option<(u16, CString)> {
+unsafe fn parse_connect_target(addr: *const c_char) -> Option<(Option<u16>, CString)> {
     // SAFETY: caller validates non-null and C-string.
     let c_addr = unsafe { CStr::from_ptr(addr) };
     let addr_text = c_addr.to_string_lossy();
     if let Some((prefix, target)) = addr_text.split_once('@') {
         if let Ok(node_id) = prefix.parse::<u16>() {
-            if !target.is_empty() {
+            if node_id != 0 && !target.is_empty() {
                 let c_target = CString::new(target.as_bytes()).ok()?;
-                return Some((node_id, c_target));
+                return Some((Some(node_id), c_target));
             }
         }
     }
-    Some((fallback_node_id, CString::new(c_addr.to_bytes()).ok()?))
+    Some((None, CString::new(c_addr.to_bytes()).ok()?))
 }
 
 fn accept_loop(transport: SendTransport, conn_mgr: SendConnMgr, stop: &AtomicBool) {
@@ -2131,7 +2116,6 @@ pub unsafe extern "C" fn hew_node_new(node_id: u16, bind_addr: *const c_char) ->
         bind_addr_owned: bind_copy,
         accept_stop: Arc::new(AtomicBool::new(false)),
         accept_thread: Mutex::new(None),
-        next_peer_node: AtomicU16::new(1),
     });
     let raw = Box::into_raw(node);
     remember_node(raw);
@@ -2881,6 +2865,32 @@ pub unsafe extern "C" fn hew_node_send(
 
 // ── Cross-node monitor ───────────────────────────────────────────────────────
 
+const fn setup_error(variant: i64) -> i64 {
+    -(variant + 1)
+}
+
+// MonitorError declaration order in std/link_monitor.hew.
+const MONITOR_ERR_NODE_NOT_RUNNING: i64 = setup_error(0);
+const MONITOR_ERR_INVALID_TARGET: i64 = setup_error(1);
+const MONITOR_ERR_PARTITION: i64 = setup_error(2);
+const MONITOR_ERR_STALE_REF: i64 = setup_error(3);
+const MONITOR_ERR_ENCODE_FAILURE: i64 = setup_error(4);
+const MONITOR_ERR_LOCAL_SHUTDOWN: i64 = setup_error(5);
+
+// LinkError declaration order in std/builtins.hew. The local-only variants
+// AlreadyLinked=0 and TargetDead=1 remain first for compatibility.
+const LINK_ERR_NODE_NOT_RUNNING: i64 = setup_error(2);
+const LINK_ERR_NO_CURRENT_ACTOR: i64 = setup_error(3);
+const LINK_ERR_INVALID_TARGET: i64 = setup_error(4);
+const LINK_ERR_PARTITION: i64 = setup_error(5);
+const LINK_ERR_STALE_REF: i64 = setup_error(6);
+const LINK_ERR_ENCODE_FAILURE: i64 = setup_error(7);
+const LINK_ERR_LOCAL_SHUTDOWN: i64 = setup_error(8);
+
+fn setup_ref_id(ref_id: u64) -> i64 {
+    i64::try_from(ref_id).expect("distributed ref ids stay below i64::MAX")
+}
+
 /// Encode a `CTRL_MONITOR_*` control frame and send it on the connection routing
 /// to `target_pid`'s node. Returns 0 on a successful send, -1 otherwise (no
 /// route, no manager, encode failure). Never panics; logs via `set_last_error`.
@@ -2933,16 +2943,15 @@ unsafe fn send_monitor_control_frame(
 /// terminal state. The returned `ref_id` is assembled into the `MonitorRef`
 /// value and is the key `hew_node_monitor_recv` blocks on.
 ///
-/// Fail-closed: returns 0 (an invalid `ref_id`) when there is no current node,
-/// the target is local (cross-node monitor requires a remote target), or no
-/// route exists. The watcher entry is still recorded on a send failure so a
-/// later connection-drop fan-out can still deliver `MonitorLost` (the route may
-/// recover, or the drop itself is the terminal signal).
+/// Returns a positive `ref_id` on success. Setup failures are returned as
+/// negative `MonitorError` codes encoded as `-(variant + 1)`, so the Hew surface
+/// constructs `Result<MonitorRef, MonitorError>` and never manufactures an
+/// invalid zero-valued handle.
 #[no_mangle]
-pub extern "C" fn hew_node_monitor(target_pid: u64) -> u64 {
+pub extern "C" fn hew_node_monitor(target_pid: u64) -> i64 {
     let Some(rt) = crate::runtime::rt_current_opt() else {
         set_last_error("hew_node_monitor: no runtime installed");
-        return 0;
+        return MONITOR_ERR_NODE_NOT_RUNNING;
     };
     let remote_node_id = crate::pid::hew_pid_node(target_pid);
     let target_serial = crate::pid::hew_pid_serial(target_pid);
@@ -2950,15 +2959,14 @@ pub extern "C" fn hew_node_monitor(target_pid: u64) -> u64 {
         // Not a remote target — the cross-node route does not apply. The checker
         // routes only RemotePid receivers here, but guard fail-closed anyway.
         set_last_error("hew_node_monitor: target is not on a remote node");
-        return 0;
+        return MONITOR_ERR_INVALID_TARGET;
     }
 
     // StaleRef gate (shared with the send + ask paths): a captured
     // `RemotePid<T>` whose registration has been superseded fails CLOSED here —
-    // no watcher is registered against the stale capture, and the invalid `0`
-    // ref_id signals the failure (DI-012 / LESSONS `boundary-fail-closed`). The
-    // diagnostic names StaleRef so the cause is not collapsed into the generic
-    // no-route case.
+    // no watcher is registered against the stale capture, and the typed
+    // StaleRef setup error is returned. The diagnostic names StaleRef so the
+    // cause is not collapsed into the generic no-route case.
     let stale = with_current_node_read(|guard| {
         let node = *guard as *const HewNode;
         // SAFETY: read lock pins the current node pointer for this check.
@@ -2969,7 +2977,7 @@ pub extern "C" fn hew_node_monitor(target_pid: u64) -> u64 {
             "hew_node_monitor: target pid serial {target_serial} names a superseded \
              actor registration; the captured RemotePid is stale (StaleRef)"
         ));
-        return 0;
+        return MONITOR_ERR_STALE_REF;
     }
 
     // Record the watcher entry first so the connection-drop / SWIM-DEAD fan-out
@@ -2989,29 +2997,40 @@ pub extern "C" fn hew_node_monitor(target_pid: u64) -> u64 {
                 set_last_error(format!(
                     "hew_node_monitor: req payload encode failure: {err}"
                 ));
-                return ref_id;
+                rt.dist_monitors.remove_watcher(ref_id);
+                return MONITOR_ERR_ENCODE_FAILURE;
             }
         };
 
-    with_current_node_read(|guard| {
+    let send_result = with_current_node_read(|guard| {
         if *guard == 0 {
             set_last_error("hew_node_monitor: no current node");
-            return;
+            return None;
         }
         let node = *guard as *const HewNode;
         // SAFETY: read lock pins the current node pointer for this call.
         let node_ref = unsafe { &*node };
         // SAFETY: node_ref is valid for this call.
-        let _ = unsafe {
+        Some(unsafe {
             send_monitor_control_frame(
                 node_ref,
                 target_pid,
                 crate::envelope::CTRL_MONITOR_REQ,
                 payload,
             )
-        };
+        })
     });
-    ref_id
+    match send_result {
+        Some(0) => setup_ref_id(ref_id),
+        Some(_) => {
+            rt.dist_monitors.remove_watcher(ref_id);
+            MONITOR_ERR_PARTITION
+        }
+        None => {
+            rt.dist_monitors.remove_watcher(ref_id);
+            MONITOR_ERR_LOCAL_SHUTDOWN
+        }
+    }
 }
 
 /// `link_remote(RemotePid<T>, PartitionPolicy)` → establish a cross-node link
@@ -3025,17 +3044,14 @@ pub extern "C" fn hew_node_monitor(target_pid: u64) -> u64 {
 /// `CTRL_LINK_DOWN` back when the target dies AND (b) registers the reverse link
 /// so the LOCAL actor's death crashes the remote peer too (bidirectional OTP).
 ///
-/// Fail-closed: returns 0 (an invalid `ref_id`) when there is no runtime, no
-/// current actor (a link's subject is the calling actor — a link from `main` has
-/// nothing to crash), the target is local, or no route exists. The watcher entry
-/// is still recorded on a send failure so a later connection-drop fan-out can
-/// still deliver the cascade (the route may recover, or the drop is itself the
-/// terminal signal).
+/// Returns a positive internal `ref_id` on success. Setup failures are returned
+/// as negative `LinkError` codes encoded as `-(variant + 1)`, so
+/// `link_remote` cannot report `Ok(())` for a link that was never established.
 #[no_mangle]
 pub extern "C" fn hew_node_link_remote(target_pid: i64, policy_tag: i64) -> i64 {
     let Some(rt) = crate::runtime::rt_current_opt() else {
         set_last_error("hew_node_link_remote: no runtime installed");
-        return 0;
+        return LINK_ERR_NODE_NOT_RUNNING;
     };
     #[expect(
         clippy::cast_sign_loss,
@@ -3047,7 +3063,7 @@ pub extern "C" fn hew_node_link_remote(target_pid: i64, policy_tag: i64) -> i64 
     let self_actor = crate::actor::hew_actor_self();
     if self_actor.is_null() {
         set_last_error("hew_node_link_remote: no current actor (link subject)");
-        return 0;
+        return LINK_ERR_NO_CURRENT_ACTOR;
     }
     // SAFETY: hew_actor_self returned a non-null live actor pointer.
     // The actor `id` is already a packed pid (node<<48 | serial); the cascade
@@ -3060,7 +3076,19 @@ pub extern "C" fn hew_node_link_remote(target_pid: i64, policy_tag: i64) -> i64 
     let target_serial = crate::pid::hew_pid_serial(target_pid);
     if remote_node_id == 0 || remote_node_id == rt.node.local_node_id() {
         set_last_error("hew_node_link_remote: target is not on a remote node");
-        return 0;
+        return LINK_ERR_INVALID_TARGET;
+    }
+    let stale = with_current_node_read(|guard| {
+        let node = *guard as *const HewNode;
+        // SAFETY: read lock pins the current node pointer for this check.
+        !node.is_null() && dispatch_is_stale(unsafe { &*node }, target_pid)
+    });
+    if stale {
+        set_last_error(format!(
+            "hew_node_link_remote: target pid serial {target_serial} names a superseded \
+             actor registration; the captured RemotePid is stale (StaleRef)"
+        ));
+        return LINK_ERR_STALE_REF;
     }
     #[expect(
         clippy::cast_possible_truncation,
@@ -3093,38 +3121,39 @@ pub extern "C" fn hew_node_link_remote(target_pid: i64, policy_tag: i64) -> i64 
             set_last_error(format!(
                 "hew_node_link_remote: req payload encode failure: {err}"
             ));
-            #[expect(
-                clippy::cast_possible_wrap,
-                reason = "ref_id is a monotonic counter far below i64::MAX"
-            )]
-            return ref_id as i64;
+            rt.dist_monitors.remove_watcher(ref_id);
+            return LINK_ERR_ENCODE_FAILURE;
         }
     };
 
-    with_current_node_read(|guard| {
+    let send_result = with_current_node_read(|guard| {
         if *guard == 0 {
             set_last_error("hew_node_link_remote: no current node");
-            return;
+            return None;
         }
         let node = *guard as *const HewNode;
         // SAFETY: read lock pins the current node pointer for this call.
         let node_ref = unsafe { &*node };
         // SAFETY: node_ref is valid for this call.
-        let _ = unsafe {
+        Some(unsafe {
             send_monitor_control_frame(
                 node_ref,
                 target_pid,
                 crate::envelope::CTRL_LINK_REQ,
                 payload,
             )
-        };
+        })
     });
-    #[expect(
-        clippy::cast_possible_wrap,
-        reason = "ref_id is a monotonic counter far below i64::MAX"
-    )]
-    {
-        ref_id as i64
+    match send_result {
+        Some(0) => setup_ref_id(ref_id),
+        Some(_) => {
+            rt.dist_monitors.remove_watcher(ref_id);
+            LINK_ERR_PARTITION
+        }
+        None => {
+            rt.dist_monitors.remove_watcher(ref_id);
+            LINK_ERR_LOCAL_SHUTDOWN
+        }
     }
 }
 
@@ -3740,8 +3769,8 @@ pub extern "C" fn hew_dist_partition_pending_remote_asks() -> i64 {
 
 /// Connect to a remote node and register routing for its node ID.
 ///
-/// Supports `"<node_id>@<addr>"` format for explicit peer node IDs. If no
-/// prefix is supplied, an internal node-id allocator is used.
+/// Supports `"<node_id>@<addr>"` to require an exact peer `NodeId`. Without a
+/// prefix, the authenticated handshake `NodeId` is authoritative.
 ///
 /// # Safety
 ///
@@ -3760,11 +3789,8 @@ pub unsafe extern "C" fn hew_node_connect(node: *mut HewNode, addr: *const c_cha
         return -1;
     }
 
-    let fallback_node_id = next_peer_node_id(node);
     // SAFETY: addr pointer is non-null and valid by caller contract.
-    let Some((peer_node_id, target_addr)) =
-        (unsafe { parse_connect_target(addr, fallback_node_id) })
-    else {
+    let Some((expected_peer_node_id, target_addr)) = (unsafe { parse_connect_target(addr) }) else {
         set_last_error("hew_node_connect: invalid connect target");
         return -1;
     };
@@ -3787,6 +3813,20 @@ pub unsafe extern "C" fn hew_node_connect(node: *mut HewNode, addr: *const c_cha
         set_last_error("hew_node_connect: transport connect failed");
         return -1;
     }
+    if let Some(expected) = expected_peer_node_id {
+        // SAFETY: conn_mgr is live and conn_id was just returned by this node's
+        // transport. The expectation is consumed by hew_connmgr_add.
+        if unsafe { connection::hew_connmgr_expect_peer(node.conn_mgr, conn_id, expected) } != 0 {
+            // hew_connmgr_expect_peer does not take ownership on failure.
+            // SAFETY: transport and conn_id are still owned by this function.
+            if let Some(close_fn) = ops.close_conn {
+                // SAFETY: conn_id was just created by this transport and has not
+                // been transferred to the connection manager.
+                unsafe { close_fn(t.r#impl, conn_id) };
+            }
+            return -1;
+        }
+    }
 
     // SAFETY: conn_mgr pointer is valid and owned by this node.
     if unsafe { connection::hew_connmgr_add(node.conn_mgr, conn_id) } != 0 {
@@ -3804,12 +3844,6 @@ pub unsafe extern "C" fn hew_node_connect(node: *mut HewNode, addr: *const c_cha
             0,
         )
     };
-
-    if !node.cluster.is_null() {
-        // SAFETY: cluster pointer is valid if non-null.
-        let _ =
-            unsafe { cluster::hew_cluster_join(node.cluster, peer_node_id, target_addr.as_ptr()) };
-    }
 
     0
 }

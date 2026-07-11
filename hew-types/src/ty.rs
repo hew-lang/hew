@@ -966,6 +966,16 @@ impl Ty {
         Self::builtin_named(BuiltinType::LinkError, vec![])
     }
 
+    /// Construct `MonitorError` — setup error for `monitor(RemotePid<T>)`.
+    #[must_use]
+    pub fn monitor_error() -> Ty {
+        Ty::Named {
+            name: "MonitorError".to_string(),
+            args: vec![],
+            builtin: None,
+        }
+    }
+
     /// Construct `MonitorRef` — handle returned by `monitor(handle)`.
     ///
     /// The struct is declared in `std/link_monitor.hew` and registered via

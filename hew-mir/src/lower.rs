@@ -28661,12 +28661,12 @@ impl Builder {
     ///
     /// Unlike the local `hew_actor_monitor(watcher_ptr, target_ptr)` (which keys
     /// on `HewActor*` pointers), the remote target has no pointer in this
-    /// address space. `hew_node_monitor(target_remote_pid: i64) -> u64` takes the
+    /// address space. `hew_node_monitor(target_remote_pid: i64) -> i64` takes the
     /// packed remote pid and registers a distributed-table entry keyed by
-    /// `(node_id, serial)`, sending a `CTRL_MONITOR_REQ` to the owning peer. The
-    /// `u64` return is the `ref_id` keying the registration; it is assembled into
-    /// the same `MonitorRef { ref_id }` value the local path returns, reusing the
-    /// the composite-return construction used for monitor results.
+    /// `(node_id, serial)`, sending a `CTRL_MONITOR_REQ` to the owning peer.
+    /// Positive returns are the `ref_id` keying the registration; negative
+    /// returns encode `MonitorError` as `-(variant + 1)`. Codegen assembles the
+    /// checker-authoritative `Result<MonitorRef, MonitorError>` directly.
     fn lower_node_monitor(
         &mut self,
         hir_args: &[hew_hir::HirExpr],
@@ -28679,12 +28679,13 @@ impl Builder {
 
         if context != RuntimeCallContext::ValueNeeded {
             // Statement-position monitor: register but discard the ref. The
-            // codegen handler calls the ABI and ignores the u64 return.
+            // codegen handler calls the ABI and ignores the signed setup return.
             self.push_runtime_call("hew_node_monitor", vec![target], None);
             return None;
         }
 
-        // Value-needed: the checker records `MonitorRef` as the result type.
+        // Value-needed: the checker records
+        // `Result<MonitorRef, MonitorError>` as the result type.
         // Fail closed if it did not — a HIR→MIR boundary violation.
         let composite_ty = if let Some(ty) = result_ty {
             ty.clone()
@@ -28703,18 +28704,11 @@ impl Builder {
             return None;
         };
 
-        // hew_node_monitor returns a u64 ref_id; store it into a raw i64 temp,
-        // then assemble MonitorRef { ref_id } via RecordInit, exactly as the
-        // local hew_actor_monitor value path does.
-        let ref_id_local = self.alloc_local(ResolvedTy::I64);
-        self.push_runtime_call("hew_node_monitor", vec![target], Some(ref_id_local));
-        let monitor_ref_local = self.alloc_local(composite_ty.clone());
-        self.push_instr(Instr::RecordInit {
-            ty: composite_ty,
-            fields: vec![(FieldOffset(0), ref_id_local)],
-            dest: monitor_ref_local,
-        });
-        Some(monitor_ref_local)
+        // Codegen decodes the signed setup return and writes either
+        // Ok(MonitorRef { ref_id }) or Err(MonitorError::<variant>) in place.
+        let result_local = self.alloc_local(composite_ty);
+        self.push_runtime_call("hew_node_monitor", vec![target], Some(result_local));
+        Some(result_local)
     }
 
     /// Lower a cross-node `link_remote(RemotePid<T>, PartitionPolicy)` to the
@@ -28728,9 +28722,10 @@ impl Builder {
     /// (node<<48|serial); the policy is a fieldless enum whose discriminant tag is
     /// extracted via `Place::EnumTag` and passed as the `policy_tag` i64.
     ///
-    /// The return is `Result<(), LinkError>` (matching the local `link`); the
-    /// immediate result signals registration success — the EXIT arrives async when
-    /// the remote dies. Codegen writes Ok(()) and discards the ABI's `ref_id`.
+    /// The return is `Result<(), LinkError>` (matching the local `link`). Positive
+    /// ABI returns signal registration success; negative returns encode
+    /// `LinkError` as `-(variant + 1)`. The EXIT arrives asynchronously when the
+    /// remote dies.
     fn lower_node_link_remote(
         &mut self,
         hir_args: &[hew_hir::HirExpr],
@@ -28800,9 +28795,8 @@ impl Builder {
             });
             return None;
         };
-        // Allocate the Result<(), LinkError> dest and pass it to the ABI call. The
-        // codegen LinkRemote handler sees the dest and emits emit_result_ok (tag=0,
-        // no payload) — registration success; the EXIT arrives async on death.
+        // Allocate the Result<(), LinkError> dest and pass it to the ABI call.
+        // Codegen decodes the signed setup return into Ok(()) or the precise Err.
         let result_local = self.alloc_local(composite_ty);
         self.push_runtime_call(
             "hew_node_link_remote",
@@ -47129,11 +47123,32 @@ fn terminator_escape_places(
                 || is_handle_borrowing_call_abi(builtin)
         };
     match term {
-        Terminator::Call { builtin, args, .. } => args
-            .iter()
-            .copied()
-            .filter(|place| !arg_is_borrowed(*builtin, place))
-            .collect(),
+        Terminator::Call {
+            callee,
+            builtin,
+            args,
+            ..
+        } => {
+            // `MonitorRef::recv_down` is an ordinary stdlib method (not a
+            // BuiltinNamedType rewrite), but its ABI is a proven borrow: the
+            // body reads `ref_id`, calls `hew_node_monitor_recv`, and has no
+            // parameter drop plan. Treating the Result-pattern payload binder
+            // as escaping here would reject the safe
+            // `match monitor(remote) { Ok(m) => m.recv_down(..), .. }` shape.
+            let borrows_owned_handle = callee == "MonitorRef::recv_down";
+            args.iter()
+                .copied()
+                .filter(|place| {
+                    let borrowed_handle = borrows_owned_handle
+                        && base_local(*place).is_some_and(|local| {
+                            local_tys
+                                .get(local as usize)
+                                .is_some_and(ty_is_owned_handle_leaf)
+                        });
+                    !(borrowed_handle || arg_is_borrowed(*builtin, place))
+                })
+                .collect()
+        }
         Terminator::Yield { value, .. } => vec![*value],
         Terminator::Send { value, .. }
         | Terminator::Ask { value, .. }

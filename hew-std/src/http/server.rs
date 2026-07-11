@@ -82,7 +82,7 @@ impl ResponseThreadTracker {
         &self,
         request: tiny_http::Request,
         status: u16,
-        content_type: Option<String>,
+        content_type: Option<tiny_http::Header>,
         reader: ChannelReader,
     ) {
         self.reap_completed();
@@ -106,15 +106,8 @@ impl ResponseThreadTracker {
                 None, // No Content-Length — tiny_http uses chunked encoding
                 None,
             );
-            if let Some(ct) = content_type {
-                match tiny_http::Header::from_bytes("Content-Type", ct) {
-                    Ok(header) => {
-                        response = response.with_header(header);
-                    }
-                    Err(err) => {
-                        eprintln!("hew_http: ignoring invalid Content-Type header: {err:?}");
-                    }
-                }
+            if let Some(header) = content_type {
+                response = response.with_header(header);
             }
             if let Err(err) = request.respond(response) {
                 eprintln!("hew_http: streaming response thread failed to respond: {err}");
@@ -623,6 +616,19 @@ pub unsafe extern "C" fn hew_http_respond(
     if req.is_null() {
         return -1;
     }
+    let Ok(status_code) = validate_http_status(status) else {
+        set_last_error(format!(
+            "invalid HTTP response status {status}: expected 100..=599"
+        ));
+        return -1;
+    };
+    let content_type = match response_content_type_header(content_type) {
+        Ok(header) => header,
+        Err(message) => {
+            set_last_error(message);
+            return -1;
+        }
+    };
     // SAFETY: req was allocated by hew_http_server_recv and is valid.
     let request = unsafe { &mut *req };
     let Some(inner) = request.inner.take() else {
@@ -636,24 +642,10 @@ pub unsafe extern "C" fn hew_http_respond(
         unsafe { std::slice::from_raw_parts(body, body_len) }.to_vec()
     };
 
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "HTTP status codes fit in u16"
-    )]
-    #[expect(
-        clippy::cast_sign_loss,
-        reason = "status codes are always non-negative in practice"
-    )]
-    let status_code = tiny_http::StatusCode(status.max(0) as u16);
-    let mut response = tiny_http::Response::from_data(body_vec).with_status_code(status_code);
-
-    if !content_type.is_null() {
-        // SAFETY: content_type is a valid NUL-terminated C string per caller contract.
-        if let Ok(ct) = unsafe { CStr::from_ptr(content_type) }.to_str() {
-            if let Ok(header) = tiny_http::Header::from_bytes("Content-Type", ct) {
-                response = response.with_header(header);
-            }
-        }
+    let mut response = tiny_http::Response::from_data(body_vec)
+        .with_status_code(tiny_http::StatusCode(status_code));
+    if let Some(header) = content_type {
+        response = response.with_header(header);
     }
 
     if inner.respond(response).is_ok() {
@@ -851,22 +843,24 @@ pub unsafe extern "C" fn hew_http_respond_stream(
         set_last_error("invalid request pointer".into());
         return std::ptr::null_mut();
     }
+    let Ok(status_u16) = validate_http_status(status) else {
+        set_last_error(format!(
+            "invalid HTTP response status {status}: expected 100..=599"
+        ));
+        return std::ptr::null_mut();
+    };
+    let ct_header = match response_content_type_header(content_type) {
+        Ok(header) => header,
+        Err(message) => {
+            set_last_error(message);
+            return std::ptr::null_mut();
+        }
+    };
     // SAFETY: req was allocated by hew_http_server_recv and is valid.
     let request = unsafe { &mut *req };
     let Some(inner) = request.inner.take() else {
         set_last_error("request already responded to".into());
         return std::ptr::null_mut();
-    };
-
-    // Parse content type before spawning the thread.
-    let ct_string = if content_type.is_null() {
-        None
-    } else {
-        // SAFETY: content_type is a valid NUL-terminated C string per contract.
-        unsafe { CStr::from_ptr(content_type) }
-            .to_str()
-            .ok()
-            .map(String::from)
     };
 
     let Some(response_threads) = request.response_threads.clone() else {
@@ -885,21 +879,38 @@ pub unsafe extern "C" fn hew_http_respond_stream(
         offset: 0,
     };
 
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "HTTP status codes fit in u16"
-    )]
-    #[expect(
-        clippy::cast_sign_loss,
-        reason = "status codes are always non-negative in practice"
-    )]
-    let status_u16 = status.max(0) as u16;
-
-    response_threads.spawn_response(inner, status_u16, ct_string, reader);
+    response_threads.spawn_response(inner, status_u16, ct_header, reader);
     into_write_sink_ptr(HttpResponseSink {
         cancel,
         tx: Some(tx),
     })
+}
+
+fn validate_http_status(status: i32) -> Result<u16, ()> {
+    let status = u16::try_from(status).map_err(|_| ())?;
+    if (100..=599).contains(&status) {
+        Ok(status)
+    } else {
+        Err(())
+    }
+}
+
+fn response_content_type_header(
+    content_type: *const c_char,
+) -> Result<Option<tiny_http::Header>, String> {
+    if content_type.is_null() {
+        return Ok(None);
+    }
+    // SAFETY: caller guarantees a valid NUL-terminated C string.
+    let value = unsafe { CStr::from_ptr(content_type) }
+        .to_str()
+        .map_err(|_| "invalid Content-Type: value is not UTF-8".to_string())?;
+    if value.bytes().any(|byte| byte < b' ' || byte == 0x7f) {
+        return Err("invalid Content-Type: value contains forbidden bytes".to_string());
+    }
+    tiny_http::Header::from_bytes("Content-Type", value)
+        .map(Some)
+        .map_err(|()| "invalid Content-Type: value contains forbidden bytes".to_string())
 }
 
 /// Close and free the HTTP server.
@@ -1010,6 +1021,37 @@ pub unsafe extern "C" fn hew_http_request_headers(req: *const HewHttpRequest) ->
 mod tests {
     use super::*;
     use std::net::{Shutdown, SocketAddr, TcpStream};
+
+    #[test]
+    fn invalid_response_status_is_rejected_exactly() {
+        assert_eq!(validate_http_status(99), Err(()));
+        assert_eq!(validate_http_status(600), Err(()));
+        assert_eq!(validate_http_status(200), Ok(200));
+    }
+
+    #[test]
+    fn invalid_content_type_is_rejected_exactly() {
+        let invalid = c"text/plain\r\nX-Injected: yes";
+        assert_eq!(
+            response_content_type_header(invalid.as_ptr()).unwrap_err(),
+            "invalid Content-Type: value contains forbidden bytes"
+        );
+
+        let mut req = HewHttpRequest {
+            inner: None,
+            max_body_size: MAX_BODY_SIZE,
+            request_body_timeout: DEFAULT_REQUEST_BODY_TIMEOUT,
+            response_threads: None,
+        };
+        // SAFETY: req is a valid local handle and invalid is a valid C string.
+        let result =
+            unsafe { hew_http_respond(&raw mut req, 200, std::ptr::null(), 0, invalid.as_ptr()) };
+        assert_eq!(result, -1);
+        assert_eq!(
+            hew_cabi::sink::take_last_error().as_deref(),
+            Some("invalid Content-Type: value contains forbidden bytes")
+        );
+    }
 
     fn wait_for_condition(
         description: &str,

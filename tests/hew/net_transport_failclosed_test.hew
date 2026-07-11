@@ -1,0 +1,90 @@
+import std::channel;
+
+import std::crypto::password;
+
+import std::net::http::http_async_client;
+
+import std::net::http::http_async_server;
+
+import std::stream;
+
+import std::testing;
+
+#[test]
+fn test_negative_channel_capacity_is_rejected() {
+    match channel.try_new(-1) {
+        Ok(_) => panic("expected negative channel capacity to fail"),
+        Err(err) => testing.assert_eq_str(err, "channel.new: invalid capacity -1 (must be >= 0)"),
+    }
+}
+
+#[test]
+#[should_panic]
+fn test_negative_channel_capacity_panics_at_legacy_boundary() {
+    let (tx, rx) = channel.new(-1);
+    tx.send("unreachable");
+    rx.close();
+}
+
+#[test]
+fn test_negative_stream_capacities_are_rejected() {
+    match stream.try_pipe(-1) {
+        Ok(_) => panic("expected negative string-pipe capacity to fail"),
+        Err(err) => testing.assert_eq_str(err, "stream.pipe: invalid capacity -1 (must be >= 0)"),
+    }
+    match stream.try_bytes_pipe(-1) {
+        Ok(_) => panic("expected negative bytes-pipe capacity to fail"),
+        Err(err) => testing.assert_eq_str(err, "stream.bytes_pipe: invalid capacity -1 (must be >= 0)"),
+    }
+}
+
+#[test]
+#[should_panic]
+fn test_negative_stream_capacity_panics_at_legacy_boundary() {
+    let _ = stream.pipe(-1);
+}
+
+#[test]
+fn test_password_cost_overflow_is_rejected() {
+    match password.try_hash_custom("secret", 4294967299) {
+        Ok(_) => panic("expected oversized password cost to fail"),
+        Err(err) => testing.assert_eq_str(err, "password.hash_custom: invalid cost 4294967299 (must be 1..=2147483647)"),
+    }
+}
+
+#[test]
+#[should_panic]
+fn test_password_cost_overflow_panics_at_legacy_boundary() {
+    let _ = password.hash_custom("secret", 4294967299);
+}
+
+#[test]
+fn test_malformed_password_hash_is_not_a_mismatch() {
+    match password.try_verify("secret", "not-a-phc-hash") {
+        Ok(_) => panic("expected malformed password hash to fail"),
+        Err(err) => testing.assert_eq_str(err, "password.verify: malformed password hash"),
+    }
+}
+
+#[test]
+#[should_panic]
+fn test_malformed_password_hash_panics_at_legacy_boundary() {
+    let _ = password.verify("secret", "not-a-phc-hash");
+}
+
+#[test]
+fn test_async_http_query_and_ipv6_authority_split() {
+    let (query_addr, query_path) = http_async_client.split_address("http://example.com?x=1");
+    testing.assert_eq_str(query_addr, "example.com:80");
+    testing.assert_eq_str(query_path, "/?x=1");
+    let (ipv6_addr, ipv6_path) = http_async_client.split_address("http://[::1]:8080/status");
+    testing.assert_eq_str(ipv6_addr, "[::1]:8080");
+    testing.assert_eq_str(ipv6_path, "/status");
+    testing.assert_eq_str(http_async_client.host_of("http://[::1]:8080/status"), "[::1]");
+}
+
+#[test]
+fn test_async_http_invalid_status_is_rejected() {
+    testing.assert_eq_str(http_async_server.response_text(-1, "body"), "");
+    testing.assert_eq_str(http_async_server.response_text(600, "body"), "");
+}

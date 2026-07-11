@@ -21,6 +21,8 @@ mod gen_block_lowering;
 mod impl_block_lowering;
 #[path = "lowering_core/index_trait_lowering.rs"]
 mod index_trait_lowering;
+#[path = "lowering_core/invalid_constructor_diagnostics.rs"]
+mod invalid_constructor_diagnostics;
 #[path = "lowering_core/is_type_pattern_lowering.rs"]
 mod is_type_pattern_lowering;
 #[path = "lowering_core/let_wildcard_discard.rs"]

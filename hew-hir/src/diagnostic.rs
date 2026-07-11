@@ -98,6 +98,34 @@ pub enum HirDiagnosticKind {
         expected: ResolvedTy,
         actual: ResolvedTy,
     },
+    /// A tuple pattern has a different number of elements than its value.
+    TuplePatternArityMismatch {
+        expected: usize,
+        actual: usize,
+    },
+    /// A tuple pattern was applied to a value that is not a tuple.
+    TuplePatternNonTupleValue,
+    /// An enum variant constructor was written with syntax for a different
+    /// variant payload shape.
+    EnumVariantConstructorShapeMismatch {
+        variant: String,
+    },
+    /// An enum struct-variant constructor omitted a declared field.
+    EnumVariantConstructorMissingField {
+        variant: String,
+        field: String,
+    },
+    /// An enum struct-variant constructor named a field it does not declare.
+    EnumVariantConstructorUnknownField {
+        variant: String,
+        field: String,
+    },
+    /// An enum tuple-variant constructor received the wrong number of arguments.
+    EnumVariantConstructorArityMismatch {
+        variant: String,
+        expected: usize,
+        actual: usize,
+    },
     /// `#[resource]` type body has no method named `close` declared with
     /// `consuming self`. The implicit-drop contract for `@resource` types
     /// requires this method; missing it is a fail-closed compile error.

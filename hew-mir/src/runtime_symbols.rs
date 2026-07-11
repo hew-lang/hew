@@ -840,6 +840,11 @@ impl CalleeOwnershipContract {
     }
 
     #[must_use]
+    pub const fn produces_fresh_owned_bytes(self) -> bool {
+        matches!(self.result, ResultOwnership::FreshOwnedBytes)
+    }
+
+    #[must_use]
     pub const fn returns_receiver_interior_alias(self) -> bool {
         matches!(
             self.result,
@@ -865,7 +870,7 @@ impl Default for CalleeOwnershipContract {
 #[must_use]
 pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
     use ReceiverOwnership::{BorrowsReceiver, BytesAllArgsBorrow, Escapes, VecCopyInElementStore};
-    use ResultOwnership::{Borrowed, FreshOwnedString, Untracked};
+    use ResultOwnership::{Borrowed, FreshOwnedBytes, FreshOwnedString, Untracked};
     use StringArgsOwnership::{BorrowingUse, Escaping, PrintSink};
 
     match callee {
@@ -875,14 +880,15 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
         // Bytes receiver reads and in-place mutations leave arg[0] owned by the
         // caller and hand back no tracked result.
         "hew_bytes_clear" | "hew_bytes_contains" | "hew_bytes_index" | "hew_bytes_is_empty"
-        | "hew_bytes_len" | "hew_bytes_pop" | "hew_bytes_push" | "hew_bytes_set"
-        | "hew_bytes_slice" => CalleeOwnershipContract::new(
-            BorrowsReceiver {
-                scans: ReceiverScanSet::BYTES,
-            },
-            Escaping,
-            Untracked,
-        ),
+        | "hew_bytes_len" | "hew_bytes_pop" | "hew_bytes_push" | "hew_bytes_set" => {
+            CalleeOwnershipContract::new(
+                BorrowsReceiver {
+                    scans: ReceiverScanSet::BYTES,
+                },
+                Escaping,
+                Untracked,
+            )
+        }
 
         // `hew_bytes_to_string` borrows its bytes-triple arg[0] (the source
         // buffer stays owned by the caller) but its RESULT is a fresh, header-
@@ -901,6 +907,22 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
             },
             Escaping,
             FreshOwnedString,
+        ),
+
+        // `hew_bytes_slice(ptr, offset, len, start, end) -> BytesTriple`
+        // borrows its receiver for the scan but hands back a fresh rc==1
+        // handle: the non-empty path bumps the shared buffer's refcount
+        // (`hew_bytes_clone_ref`) so the slice owner drops independently, and
+        // the empty path returns a null/0/0 triple whose `hew_bytes_drop` is a
+        // no-op. Either way the caller owes exactly one bytes release, so the
+        // result is `FreshOwnedBytes` — this is what lets a transient
+        // `b.slice(..).len()` temp earn its drop instead of leaking.
+        "hew_bytes_slice" => CalleeOwnershipContract::new(
+            BorrowsReceiver {
+                scans: ReceiverScanSet::BYTES,
+            },
+            Escaping,
+            FreshOwnedBytes,
         ),
 
         // The polymorphic Vec length symbol is a receiver borrow for both the

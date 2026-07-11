@@ -39411,9 +39411,12 @@ fn derive_cow_sole_owner(
 /// instruction and terminator in the function, is one of:
 ///   - an interior projection of `dest` — `RecordFieldLoad`/`TupleFieldLoad`/
 ///     `ClosureEnvFieldLoad` whose base place's local is `dest`'s local, or a
-///     `Move` whose `src` is `place_is_interior_projection` AND
+///     `Move` whose `src` borrows per `move_src_borrows_actor_state_load` AND
 ///     `base_local(src) == base_local(dest)` (the enum/machine tag+payload
-///     destructure shape, `lower_match_enum_tag`/`lower_while_let`);
+///     destructure shape, `lower_match_enum_tag`/`lower_while_let`); that
+///     predicate is the direction-locked sibling of `place_is_interior_projection`
+///     — handle-place srcs fail closed to the non-borrow (`Owned`/retain)
+///     side here rather than the interior side (#2524);
 ///   - the receiver operand (arg[0]) of a runtime call
 ///     (`Instr::CallRuntimeAbi` or `Terminator::Call`) whose
 ///     `callee_ownership_contract` borrows the receiver
@@ -39434,6 +39437,132 @@ fn derive_cow_sole_owner(
 /// construct site already seeds. A `dest` with NO observed use also stays
 /// `Owned`: the positive `Borrowed` branch is reserved for an AFFIRMATIVELY
 /// proven borrow, never a vacuous one (`boundary-fail-closed`).
+/// Whether a `Move` whose `src` reads an actor-state load's `dest` is a
+/// borrow-consumer (no whole-value escape) for [`classify_actor_state_load_modes`].
+///
+/// This is the classifier-local, DIRECTION-LOCKED sibling of the shared
+/// [`place_is_interior_projection`] hand-off-vs-interior predicate. It exists
+/// because the two predicates fail closed in OPPOSITE directions and must not
+/// share an implementation (#2524):
+///
+///   - `place_is_interior_projection` answers "is this an interior alias I must
+///     NOT scope-exit-drop as a hand-off?". Its fail-closed direction is
+///     `true` (interior) — over-tainting only over-EXCLUDES a drop (leaks),
+///     so it parks handle/tag places on the `true` arm.
+///   - This predicate answers "is EVERY use of the load's `dest` a borrow, so
+///     codegen may skip the retain?". Here `true` is the `Borrowed` verdict —
+///     the bare-load/no-retain path, which is the USE-AFTER-FREE direction if
+///     the read value is ever an owned whole-value alias. Its fail-closed
+///     direction is therefore `false` (`Owned`/retain).
+///
+/// So a handle place (`Duplex/LambdaActor/Actor` handle, `Send/RecvHalf`)
+/// must classify `false` here even though `place_is_interior_projection`
+/// classifies it `true`: pinning it to `Owned` keeps the retain dispatch in
+/// force regardless of any future handle `StateFieldCloneKind` clone-kind
+/// change. This is behaviour-preserving today — every handle
+/// `StateFieldCloneKind` (`OpaqueHandle`/`Resource`/`BitCopy`/`IoHandle`)
+/// takes the no-retain arm in `lower_actor_state_field_load`, so the `Owned`
+/// and `Borrowed` codegen paths are byte-identical for a handle-typed field —
+/// but it removes the fragile coupling the shared predicate's handle arm
+/// created (if a handle place ever gained a retaining clone kind, routing it
+/// through `place_is_interior_projection` would silently over-borrow it into
+/// the UAF direction). Only the genuine interior-destructure projections
+/// (`MachineVariant`/`EnumVariant`) and the tag reads (`MachineTag`/`EnumTag`,
+/// bitcopy ordinals that transfer no heap) borrow here.
+fn move_src_borrows_actor_state_load(src: Place) -> bool {
+    match src {
+        // Interior payload destructure + tag reads: a bare alias / bitcopy
+        // ordinal, no whole-value heap escape. These are the ONLY borrows.
+        Place::MachineVariant { .. }
+        | Place::EnumVariant { .. }
+        | Place::MachineTag(_)
+        | Place::EnumTag(_) => true,
+        // Whole-value ownership slots AND handle places: fail closed to
+        // `Owned` (retain). A `Local`/`ReturnSlot` move is a hand-off escape;
+        // a handle place is direction-locked here (see doc comment) so it can
+        // never be demoted into the no-retain UAF direction by a future
+        // handle clone-kind change.
+        Place::Local(_)
+        | Place::ReturnSlot
+        | Place::DuplexHandle(_)
+        | Place::LambdaActorHandle(_)
+        | Place::ActorHandle(_)
+        | Place::SendHalf(_)
+        | Place::RecvHalf(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod actor_state_load_direction_lock_tests {
+    use super::*;
+
+    // Interior payload destructures + tag reads are the only borrows: a bare
+    // alias / bitcopy ordinal, no whole-value heap escape.
+    #[test]
+    fn interior_variant_and_tag_srcs_borrow() {
+        for src in [
+            Place::MachineVariant {
+                local: 3,
+                variant_idx: 0,
+                field_idx: 0,
+            },
+            Place::EnumVariant {
+                local: 3,
+                variant_idx: 1,
+                field_idx: 0,
+            },
+            Place::MachineTag(3),
+            Place::EnumTag(3),
+        ] {
+            assert!(
+                move_src_borrows_actor_state_load(src),
+                "{src:?} is an interior projection / tag read; it must borrow \
+                 (no retain) so the whole-parent clone stays consumable"
+            );
+        }
+    }
+
+    // Whole-value ownership slots are hand-off escapes: fail closed to Owned
+    // (retain), never Borrowed.
+    #[test]
+    fn whole_value_slots_do_not_borrow() {
+        for src in [Place::Local(3), Place::ReturnSlot] {
+            assert!(
+                !move_src_borrows_actor_state_load(src),
+                "{src:?} is a whole-value hand-off; it must classify Owned \
+                 (retain) so a later escape does not alias freed heap"
+            );
+        }
+    }
+
+    // #2524 direction lock: handle places must fail closed to Owned here even
+    // though `place_is_interior_projection` parks them on its `true` arm. The
+    // two predicates fail closed in OPPOSITE directions and must not agree on
+    // handle places.
+    #[test]
+    fn handle_places_are_direction_locked_to_owned() {
+        for src in [
+            Place::DuplexHandle(3),
+            Place::LambdaActorHandle(3),
+            Place::ActorHandle(3),
+            Place::SendHalf(3),
+            Place::RecvHalf(3),
+        ] {
+            assert!(
+                place_is_interior_projection(src),
+                "precondition: the shared hand-off predicate parks {src:?} on \
+                 its fail-closed `true` (interior) arm"
+            );
+            assert!(
+                !move_src_borrows_actor_state_load(src),
+                "#2524: {src:?} must NOT borrow at the actor-state-load site \
+                 (that is the no-retain UAF direction); it is direction-locked \
+                 to Owned/retain regardless of any future handle clone kind"
+            );
+        }
+    }
+}
+
 fn classify_actor_state_load_modes(
     blocks: &mut [BasicBlock],
     suspend_kinds: &HashMap<u32, SuspendKind>,
@@ -39499,6 +39628,61 @@ fn classify_actor_state_load_modes(
     }
 }
 
+#[cfg(test)]
+mod actor_state_load_classifier_direction_lock_tests {
+    use super::*;
+
+    fn actor_state_load_mode_after_move(src: Place) -> ActorStateLoadMode {
+        let load_dest = 3;
+        let mut blocks = vec![BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![
+                Instr::ActorStateFieldLoad {
+                    field_offset: FieldOffset(0),
+                    dest: Place::Local(load_dest),
+                    mode: ActorStateLoadMode::Owned,
+                },
+                Instr::Move {
+                    dest: Place::Local(4),
+                    src,
+                },
+            ],
+            terminator: Terminator::Return,
+        }];
+
+        classify_actor_state_load_modes(&mut blocks, &HashMap::new(), &[]);
+
+        match &blocks[0].instructions[0] {
+            Instr::ActorStateFieldLoad { mode, .. } => *mode,
+            _ => unreachable!("fixture's first instruction must be the actor-state load"),
+        }
+    }
+
+    #[test]
+    fn duplex_handle_move_keeps_actor_state_load_owned() {
+        assert_eq!(
+            actor_state_load_mode_after_move(Place::DuplexHandle(3)),
+            ActorStateLoadMode::Owned,
+            "#2524: the classifier must treat a duplex-handle whole-value move \
+             as an owned escape, retaining the actor-state load"
+        );
+    }
+
+    #[test]
+    fn interior_variant_move_borrows_actor_state_load() {
+        assert_eq!(
+            actor_state_load_mode_after_move(Place::MachineVariant {
+                local: 3,
+                variant_idx: 0,
+                field_idx: 0,
+            }),
+            ActorStateLoadMode::Borrowed,
+            "an interior variant payload move is a genuine borrow-consumer"
+        );
+    }
+}
+
 /// Record `local`'s use as borrow-consumer (`is_borrow`) or escape,
 /// AND-reducing the running per-local verdict `classify_actor_state_load_modes`
 /// reads back once every instruction/terminator has been scanned. A no-op
@@ -39552,7 +39736,7 @@ fn record_actor_state_load_instr_uses(
         }
         Instr::Move { src, .. } => {
             if let Some(l) = base_local(*src) {
-                let is_borrow = place_is_interior_projection(*src);
+                let is_borrow = move_src_borrows_actor_state_load(*src);
                 mark_actor_state_load_use(load_locals, any_use, all_borrow, l, is_borrow);
             }
         }

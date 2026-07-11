@@ -866,6 +866,16 @@ const CONSTRUCTS: &[Construct] = &[
             diagnostic_kind: "reserved_runtime_feature",
         },
     },
+    Construct {
+        // The emitter only lowers slices with both endpoints. Keep `[..]`,
+        // `[start..]`, and `[..end]` fail-closed at the profile gate rather
+        // than admitting bytecode that later traps as unsupported.
+        id: "open-ended Vec range slices",
+        probe: "fn main() {\n    let v: Vec<i64> = Vec::new();\n    let all = v[..];\n    let tail = v[1..];\n    let prefix = v[..2];\n    println(all.len() + tail.len() + prefix.len());\n}\n",
+        coverage: Coverage::RejectedByProfile {
+            diagnostic_kind: "reserved_runtime_feature",
+        },
+    },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────

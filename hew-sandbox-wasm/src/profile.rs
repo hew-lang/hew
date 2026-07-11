@@ -836,8 +836,9 @@ impl<'a> ProfileChecker<'a> {
                 self.check_expr(object);
                 // A range subscript (`v[a..b]`, `v[a..=b]`) is an admitted
                 // slice form that the emitter lowers via `vector.range_slice`.
-                // Descend into its bounds without rejecting the range itself.
-                self.check_range_operand(index);
+                // Open-ended forms are not lowered, so route them through the
+                // ordinary value-position gate and reject them before emission.
+                self.check_slice_range_operand(index);
             }
             Expr::Range { .. } => {
                 // A range in bare value position (e.g. `let r = a..b;`) has no
@@ -878,12 +879,9 @@ impl<'a> ProfileChecker<'a> {
         }
     }
 
-    /// Check an expression that appears in an *admitted range position* (a
-    /// `for` loop iterable or an index-slice subscript). If it is a range
-    /// (`a..b`, `a..=b`, or an open-ended `..b` / `a..`), descend into its
-    /// bounds without rejecting the range itself — those positions are lowered
-    /// by the emitter (`emit_for_range` / `vector.range_slice`). Any other
-    /// expression is checked normally.
+    /// Check an expression that appears as a `for` loop iterable. Range bounds
+    /// are structural here, including an omitted start (`for i in ..end`), so
+    /// descend into the present bounds without treating the range as a value.
     fn check_range_operand(&mut self, expr: &Spanned<Expr>) {
         match &expr.0 {
             Expr::Binary {
@@ -901,6 +899,31 @@ impl<'a> ProfileChecker<'a> {
                 if let Some(end) = end {
                     self.check_expr(end);
                 }
+            }
+            _ => self.check_expr(expr),
+        }
+    }
+
+    /// Check an index expression. The emitter only lowers slice ranges with
+    /// both endpoints, so all open-ended forms must remain fail-closed at the
+    /// profile gate instead of reaching `emit_unsupported`.
+    fn check_slice_range_operand(&mut self, expr: &Spanned<Expr>) {
+        match &expr.0 {
+            Expr::Binary {
+                left,
+                op: BinaryOp::Range | BinaryOp::RangeInclusive,
+                right,
+            } => {
+                self.check_expr(left);
+                self.check_expr(right);
+            }
+            Expr::Range {
+                start: Some(start),
+                end: Some(end),
+                ..
+            } => {
+                self.check_expr(start);
+                self.check_expr(end);
             }
             _ => self.check_expr(expr),
         }

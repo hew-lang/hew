@@ -1380,6 +1380,24 @@ fn main() {
     }
 
     #[test]
+    fn open_ended_slice_ranges_are_profile_rejected() {
+        // The emitter only lowers a slice when both endpoints are present. These
+        // forms must fail at the profile gate, not emit an unsupported opcode.
+        assert_profile_rejection(
+            r"
+fn main() {
+    let v: Vec<i64> = Vec::new();
+    let all = v[..];
+    let tail = v[1..];
+    let prefix = v[..2];
+    println(all.len() + tail.len() + prefix.len());
+}
+",
+            "reserved_runtime_feature",
+        );
+    }
+
+    #[test]
     fn bytecode_output_is_stable_for_same_source() {
         let source = fixture("01-hello-world");
         let first = compile_to_sandbox_bytecode(&source, Some("sandbox-vm-export"))

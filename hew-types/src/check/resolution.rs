@@ -1991,14 +1991,15 @@ impl Checker {
                 // Auto-parameterise channel handle types: bare `Sender`
                 // becomes `Sender<T>` with a fresh type variable so that
                 // function parameters accept any channel element type.
-                // Skip when the unqualified name is locally defined as
+                // Skip when the source spelling is locally defined as
                 // non-generic — standalone `hew check` on channel.hew
                 // defines `type Sender {}` with zero type params, and
                 // injecting fresh vars causes unification failures between
-                // extern decls and impl bodies.  Only bare (unqualified)
-                // names can match `local_type_defs`, so qualified imports
-                // like `channel.Sender` are still auto-parameterised.
-                let locally_non_generic = self.local_type_defs.contains(resolved_name.as_str())
+                // extern decls and impl bodies. Local resolution may now
+                // canonicalise the identity to `channel.Sender`, so test the
+                // original bare spelling against `local_type_defs` while
+                // reading arity from the resolved definition.
+                let locally_non_generic = self.local_type_defs.contains(name.as_str())
                     && self
                         .type_defs
                         .get(resolved_name.as_str())

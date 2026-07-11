@@ -993,7 +993,12 @@ impl Checker {
         // as the qualified-key prefix on per-method `td.methods` insertions
         // (none of which fire for primitive targets that lack a
         // `type_defs` entry).
-        self.register_stdlib_hew_items("builtins", &impl_items, StdlibBarePublication::Prelude);
+        self.register_stdlib_hew_items(
+            "builtins",
+            "std.builtins",
+            &impl_items,
+            StdlibBarePublication::Prelude,
+        );
         self.register_compiled_stdlib_receiver_impls(
             "string",
             include_str!("../../../std/string.hew"),
@@ -1046,8 +1051,10 @@ impl Checker {
             })
             .collect();
         if !impl_items.is_empty() {
+            let module_full_path = format!("std.{module_short}");
             self.register_stdlib_hew_items(
                 module_short,
+                &module_full_path,
                 &impl_items,
                 StdlibBarePublication::Prelude,
             );
@@ -1069,7 +1076,12 @@ impl Checker {
         );
         if parsed.errors.is_empty() {
             let items: Vec<_> = parsed.program.items.into_iter().collect();
-            self.register_stdlib_hew_items("closable", &items, StdlibBarePublication::Prelude);
+            self.register_stdlib_hew_items(
+                "closable",
+                "std.io.closable",
+                &items,
+                StdlibBarePublication::Prelude,
+            );
         }
     }
 
@@ -1091,7 +1103,12 @@ impl Checker {
         );
         if parsed.errors.is_empty() {
             let items: Vec<_> = parsed.program.items.into_iter().collect();
-            self.register_stdlib_hew_items("link_monitor", &items, StdlibBarePublication::Prelude);
+            self.register_stdlib_hew_items(
+                "link_monitor",
+                "std.link_monitor",
+                &items,
+                StdlibBarePublication::Prelude,
+            );
             // The on-disk stdlib path derives this from the `#[resource]` marker
             // in `stdlib_loader` (resource types are pushed into `drop_types`),
             // which makes the trait registry treat `MonitorRef` as move-only so
@@ -1126,7 +1143,12 @@ impl Checker {
         );
         if parsed.errors.is_empty() {
             let items: Vec<_> = parsed.program.items.into_iter().collect();
-            self.register_stdlib_hew_items("failure", &items, StdlibBarePublication::Prelude);
+            self.register_stdlib_hew_items(
+                "failure",
+                "std.failure",
+                &items,
+                StdlibBarePublication::Prelude,
+            );
         }
     }
 
@@ -1158,7 +1180,12 @@ impl Checker {
                     )
                 })
                 .collect();
-            self.register_stdlib_hew_items("lookup_error", &items, StdlibBarePublication::Prelude);
+            self.register_stdlib_hew_items(
+                "lookup_error",
+                "std.lookup_error",
+                &items,
+                StdlibBarePublication::Prelude,
+            );
         }
     }
 
@@ -6846,16 +6873,22 @@ impl Checker {
         // that have no flat variant (user-defined types, generics) take the
         // `Ty::Named` path as before.  Primitive types never carry type args,
         // so the from_name path only fires when self_type_args is empty.
+        let impl_self_name = self
+            .current_module_short()
+            .filter(|_| !type_name.contains('.'))
+            .map(|module| format!("{module}.{type_name}"))
+            .filter(|qualified| self.type_defs.contains_key(qualified))
+            .unwrap_or_else(|| type_name.to_string());
         let impl_self = if self_type_args.is_empty() {
-            Ty::from_name(type_name).unwrap_or_else(|| Ty::Named {
+            Ty::from_name(&impl_self_name).unwrap_or_else(|| Ty::Named {
                 builtin: None,
-                name: type_name.to_string(),
+                name: impl_self_name.clone(),
                 args: Vec::new(),
             })
         } else {
             Ty::Named {
                 builtin: None,
-                name: type_name.to_string(),
+                name: impl_self_name,
                 args: self_type_args.to_vec(),
             }
         };
@@ -7652,8 +7685,10 @@ impl Checker {
                     // alongside their C/Rust bindings so trait methods stay visible.
                     if let Some(ref resolved_items) = decl.resolved_items {
                         if !self.stdlib_hew_source_already_registered(decl, &module_path) {
+                            let module_full_path = module_path.replace("::", ".");
                             self.register_stdlib_hew_items(
                                 &short,
+                                &module_full_path,
                                 resolved_items,
                                 StdlibBarePublication::Import(&decl.spec),
                             );
@@ -7685,6 +7720,7 @@ impl Checker {
                                 let items: Vec<_> = parsed.program.items.into_iter().collect();
                                 self.register_stdlib_hew_items(
                                     &short,
+                                    "std.io.closable",
                                     &items,
                                     StdlibBarePublication::Prelude,
                                 );
@@ -7711,6 +7747,7 @@ impl Checker {
                                 let items: Vec<_> = parsed.program.items.into_iter().collect();
                                 self.register_stdlib_hew_items(
                                     &short,
+                                    "std.concurrency.lambda_actor",
                                     &items,
                                     StdlibBarePublication::Prelude,
                                 );
@@ -7868,6 +7905,7 @@ impl Checker {
     pub(super) fn register_stdlib_hew_items(
         &mut self,
         module_short: &str,
+        module_full_path: &str,
         items: &[Spanned<Item>],
         import_spec: StdlibBarePublication<'_>,
     ) {
@@ -7928,7 +7966,7 @@ impl Checker {
                     let qualified_type = format!("{module_short}.{}", td.name);
                     self.type_visibility
                         .entry(qualified_type.clone())
-                        .or_insert((td.visibility, Some(module_short.to_string())));
+                        .or_insert((td.visibility, Some(module_full_path.to_string())));
                     // Record the declaration span so E_VISIBILITY can point "declared
                     // here" at the actual declaration for both pub and non-pub types.
                     self.type_def_spans
@@ -7968,7 +8006,7 @@ impl Checker {
                     let qualified_type = format!("{module_short}.{}", md.name);
                     self.type_visibility
                         .entry(qualified_type.clone())
-                        .or_insert((md.visibility, Some(module_short.to_string())));
+                        .or_insert((md.visibility, Some(module_full_path.to_string())));
                     // Record the declaration span for non-pub machines.
                     self.type_def_spans
                         .entry(qualified_type)
@@ -8029,7 +8067,7 @@ impl Checker {
                     let qualified_type = format!("{module_short}.{}", tr.name);
                     self.type_visibility
                         .entry(qualified_type.clone())
-                        .or_insert((tr.visibility, Some(module_short.to_string())));
+                        .or_insert((tr.visibility, Some(module_full_path.to_string())));
                     self.type_def_spans
                         .entry(qualified_type)
                         .or_insert_with(|| span.clone());
@@ -8060,6 +8098,9 @@ impl Checker {
                     self.fn_visibility
                         .entry(qualified.clone())
                         .or_insert(fd.visibility);
+                    self.fn_def_spans
+                        .entry(qualified.clone())
+                        .or_insert_with(|| (span.clone(), Some(module_full_path.to_string())));
                     if !self.fn_sigs.contains_key(&qualified) {
                         let (sig, assoc_bindings) = self.build_fn_sig_from_decl_with_assoc(fd);
                         // Only `Pub` functions are module exports: `package fn` must
@@ -8107,7 +8148,7 @@ impl Checker {
                     let qualified_type = format!("{module_short}.{}", ad.name);
                     self.type_visibility
                         .entry(qualified_type.clone())
-                        .or_insert((ad.visibility, Some(module_short.to_string())));
+                        .or_insert((ad.visibility, Some(module_full_path.to_string())));
                     self.type_def_spans
                         .entry(qualified_type)
                         .or_insert_with(|| span.clone());
@@ -9175,6 +9216,17 @@ impl Checker {
     pub(super) fn register_qualified_type_alias(&mut self, module_short: &str, name: &str) {
         let qualified = format!("{module_short}.{name}");
         if let Some(def) = self.type_defs.get(name).cloned() {
+            // The bare entry is last-write-wins across modules, while an existing
+            // qualified entry is that module's authority. Cross-module import
+            // registration must not overwrite it with another module's bare
+            // winner. The owning module may overwrite its own qualified entry
+            // during Pass 1.5 member re-resolution, when the bare definition has
+            // just been upgraded after import aliases became available.
+            let owns_qualified = self.current_module_short() == Some(module_short);
+            let write_alias = owns_qualified || !self.type_defs.contains_key(&qualified);
+            if !write_alias {
+                return;
+            }
             self.type_defs.insert(qualified.clone(), def);
             if let Some(span) = self.type_def_spans.get(name).cloned() {
                 self.type_def_spans.insert(qualified.clone(), span);

@@ -41205,7 +41205,8 @@ fn fresh_bytes_producer_term_admissible(callee: &str) -> bool {
     if contract.returns_receiver_interior_alias() {
         return false;
     }
-    !crate::runtime_symbols::is_known_runtime_symbol(callee) || contract.produces_fresh_owned_bytes()
+    !crate::runtime_symbols::is_known_runtime_symbol(callee)
+        || contract.produces_fresh_owned_bytes()
 }
 
 /// Per-candidate admission for [`collect_nested_fresh_bytes_temp_drops`].
@@ -41259,9 +41260,7 @@ fn nested_fresh_bytes_temp_drop(
     match (def, uses.first()) {
         // Discarded instruction producer: drop right after it (straight-line in
         // its block).
-        (NestedDefSite::Instr { block, idx }, None) => {
-            Some((block, idx + 1, drop_place, drop_ty))
-        }
+        (NestedDefSite::Instr { block, idx }, None) => Some((block, idx + 1, drop_place, drop_ty)),
         // Discarded terminator producer `Call(next = N)`: drop at the front of
         // its single-predecessor continuation, so the temp was provably produced.
         (NestedDefSite::Term { block }, None) => {
@@ -41510,7 +41509,11 @@ mod nested_fresh_bytes_temp_drop_admission {
             ],
             Terminator::Return,
         )];
-        let locals = bytes_locals_with(&[(3, ResolvedTy::I64), (4, ResolvedTy::I64), (6, ResolvedTy::I64)]);
+        let locals = bytes_locals_with(&[
+            (3, ResolvedTy::I64),
+            (4, ResolvedTy::I64),
+            (6, ResolvedTy::I64),
+        ]);
         assert_eq!(
             collect(&blocks, &locals, &HashMap::new()),
             vec![(0, 2, Place::Local(2), ResolvedTy::Bytes)],

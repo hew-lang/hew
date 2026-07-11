@@ -2293,18 +2293,18 @@ pub(crate) fn lower_call_runtime_abi(
             let _ = i32_ty;
         }
         F::ObserveScrape | F::ObserveSeries => {
-            let (call_name, call_ctx, store_ctx) = match symbol {
-                "hew_observe_scrape" => (
+            let (call_name, call_ctx, store_ctx) = if call.family() == F::ObserveScrape {
+                (
                     "hew_observe_scrape_call",
                     "hew_observe_scrape call",
                     "hew_observe_scrape store",
-                ),
-                "hew_observe_series" => (
+                )
+            } else {
+                (
                     "hew_observe_series_call",
                     "hew_observe_series call",
                     "hew_observe_series store",
-                ),
-                _ => unreachable!("observe ABI branch only matches scrape/series"),
+                )
             };
             if !args.is_empty() {
                 return Err(CodegenError::FailClosed(format!(
@@ -2512,11 +2512,12 @@ pub(crate) fn lower_call_runtime_abi(
         // timestamps and return an i64-backed `duration`. Load each i64 arg,
         // call the extern, store the i64 result straight into the dest.
         F::InstantNow | F::InstantElapsed | F::InstantDurationSince => {
-            let expected = match symbol {
-                "hew_instant_now" => 0,
-                "hew_instant_elapsed" => 1,
-                "hew_instant_duration_since" => 2,
-                _ => unreachable!("instant codegen reached for non-instant symbol `{symbol}`"),
+            let expected = if call.family() == F::InstantNow {
+                0
+            } else if call.family() == F::InstantElapsed {
+                1
+            } else {
+                2
             };
             if args.len() != expected {
                 return Err(CodegenError::FailClosed(format!(

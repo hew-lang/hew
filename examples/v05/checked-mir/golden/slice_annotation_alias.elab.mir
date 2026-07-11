@@ -34,7 +34,7 @@ fn main -> ()
     call[bb4 println_i64 -> bb5] ->
       (none)
     return[bb5] ->
-      (none)
+      drop _1 ty=Vec<i32> kind=cow_heap(hew_vec_free)
 
 fn i8::fmt -> string
   statements:

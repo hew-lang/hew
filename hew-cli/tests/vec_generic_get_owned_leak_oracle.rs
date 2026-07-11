@@ -1,14 +1,16 @@
 //! Generic `Vec<T>.get` owned-element leak oracle (hew-lang/hew#1929 Stage 2).
 //!
-//! `Vec<T>.get` where `T` is a type parameter bound to a non-Copy record type
-//! routes through the owned-element ABI: the getter calls `hew_vec_get_owned`
-//! (borrows the live slot and transfers ownership to the caller), while the
-//! Vec's scope-exit drop calls `hew_vec_free_owned` (runs the per-element
-//! record drop thunk over every live slot). Pre-fix these two paths aliased
-//! the same heap string — the getter transferred ownership while `free_owned`
-//! also released the slot — producing a double-free on the first element's
-//! `label` field within a few iterations. A missed drop on the other side
-//! grows the leak-node count linearly with iteration count.
+//! `Vec<T>.get` where `T` is a type parameter bound to a non-Copy record routes
+//! through `hew_vec_get_clone`, which writes a fresh owner into `Option<T>`.
+//! The caller still owns the source Vec and must run `hew_vec_free_owned` at
+//! scope exit. Two ownership holes combined in the tracked leak:
+//! 1. the collection escape scan treated `first(vn)` as a handoff even though
+//!    `first` only borrowed its parameter, suppressing the caller's Vec drop;
+//! 2. `vn.push(Name { ... })` used copy-in for an anonymous fresh record, leaving
+//!    the source temporary's retained `label` owner with no balancing drop.
+//!
+//! The fix proves borrow-only direct-call parameters and moves fresh
+//! materialised owned push rvalues into the Vec.
 //!
 //! ## What each oracle pins
 //!
@@ -24,21 +26,11 @@
 //!   (`"owned-ok".to_upper()` — a static literal needs no free and would mask the
 //!   leak), looped at a LOW and a HIGH iteration count. The leak-node delta must
 //!   stay within tolerance. A getter that moves the owned element out of its
-//!   `Option<T>` while the element's `label` heap buffer never runs its drop
-//!   leaks ~3 nodes per iteration (the Vec handle + buffer the by-value generic
-//!   param leaves unreleased, plus the moved element's `label`).
-//!
-//!   ### TRACKED-RED (Stage A pin)
-//!
-//!   This slope oracle currently FAILS: the owned-element move-out path
-//!   (`let got = match first(vn) { Some(g) => g }; got.label.len()`) leaks the
-//!   element's heap `label` — the `hew_vec_get_owned` transfer plus the by-value
-//!   generic param `first<T>(v: Vec<T>)` drop the Vec but not the moved element's
-//!   string field. The original fixture masked this with a static `"owned-ok"`
-//!   label (nothing to free). The slope assertion below states the CORRECT
-//!   (no-leak) bar; it is `#[ignore]`d so the deterministic gate stays green
-//!   while the leak is tracked. The Stage C owned-element-drop fix removes the
-//!   `#[ignore]`.
+//!   `Option<T>` while the caller's source Vec drop is suppressed and the fresh
+//!   push source is stranded leaks ~3 nodes per iteration: the Vec handle,
+//!   backing buffer, and element label. The parameter-body proof must keep the
+//!   caller Vec admitted while still excluding helpers that return/store the
+//!   parameter, and fresh owned push rvalues must transfer rather than clone.
 //!
 //! ## Skip behaviour
 //!
@@ -166,17 +158,9 @@ fn vec_generic_get_owned_element_exact_contents_under_malloc_scribble() {
     );
 }
 
-/// Slope oracle (TRACKED-RED — see module header): the non-vacuous
-/// push-get(move-out)-drop cycle must hold the leak-node count flat. It does NOT
-/// today — the owned-element move-out leaks the element's heap `label` — so the
-/// assertion (which states the correct no-leak bar) is `#[ignore]`d to keep the
-/// deterministic gate green. The Stage C owned-element-drop fix removes the
-/// `#[ignore]`.
+/// Slope oracle: the non-vacuous push-get(move-out)-drop cycle must hold the
+/// leak-node count flat.
 #[test]
-#[ignore = "tracked-RED (no-leak-bar Stage A): owned-element Vec<T>.get move-out leaks the \
-            moved element's heap `label` — measured low=9 nodes/672 B at 3 frames vs \
-            high=150 nodes/11200 B at 50 frames (~3 nodes/iter). The assertion states the \
-            correct no-leak bar; the Stage C owned-element-drop fix removes this ignore."]
 fn vec_generic_get_owned_element_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("vec_generic_get_owned", generic_get_loop_source);
 }

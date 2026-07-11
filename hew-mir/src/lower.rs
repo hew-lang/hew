@@ -6536,6 +6536,13 @@ struct ParamOwnershipFacts {
     /// caller keeps ownership and the resource is dropped exactly once (at the
     /// caller's scope exit) instead of being moved into a borrowing callee.
     borrow_arg_sites: HashSet<hew_hir::SiteId>,
+    /// `SiteId`s of direct free-function arguments whose target parameter is
+    /// proven borrow-only by the same body scan used for resource parameters.
+    ///
+    /// This broader set does not change MIR move intent or callee-side drops. It
+    /// lets owned collection drop elaboration distinguish a genuine handoff from
+    /// a call-boundary borrow such as `first<T>(v: Vec<T>) { v.get(0) }`.
+    proven_borrow_arg_sites: HashSet<hew_hir::SiteId>,
 }
 
 /// True when `ty` is a user-declared affine `#[resource]` type — a
@@ -6694,6 +6701,107 @@ fn force_consume_method_nonreceiver_resource_params(
     }
 }
 
+/// Prove borrow-only direct-call parameters across every free function. This
+/// broader summary is consumed only by collection escape analysis; it does not
+/// change call-site move intent or register non-resource parameters for
+/// callee-side drops.
+fn compute_call_param_consumption(
+    fns: &HashMap<hew_hir::ItemId, &HirFn>,
+    methods: &HashSet<hew_hir::ItemId>,
+    resource_param_consume: &HashMap<(hew_hir::ItemId, usize), bool>,
+) -> HashMap<(hew_hir::ItemId, usize), bool> {
+    // Seed every parameter as BORROW, except explicit `consume` parameters and
+    // resource parameters the RAII table already classified CONSUME. The
+    // fail-closed body scan flips a parameter when it is returned, stored, sent,
+    // captured, or forwarded to an unproven/consuming parameter.
+    let mut consume: HashMap<(hew_hir::ItemId, usize), bool> = HashMap::new();
+    for (&id, &f) in fns {
+        for (i, param) in f.params.iter().enumerate() {
+            let resource_consume = resource_param_consume
+                .get(&(id, i))
+                .copied()
+                .unwrap_or(false);
+            consume.insert((id, i), param.is_consume || resource_consume);
+        }
+    }
+    loop {
+        let mut changed = false;
+        for (&id, &f) in fns {
+            for (i, param) in f.params.iter().enumerate() {
+                let key = (id, i);
+                if consume.get(&key) != Some(&false) {
+                    continue;
+                }
+                let consumed = {
+                    let cx = ScanCtx {
+                        consume: &consume,
+                        methods,
+                    };
+                    param_consumed_in_body(&f.body, param.id, &cx)
+                };
+                if consumed {
+                    consume.insert(key, true);
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    consume
+}
+
+/// Collect direct free-call argument sites whose target parameter is BORROW,
+/// across every user body in the module.
+fn collect_module_borrow_arg_sites(
+    items: &[HirItem],
+    cx: &ScanCtx<'_>,
+) -> HashSet<hew_hir::SiteId> {
+    let mut sites = HashSet::new();
+    for item in items {
+        match item {
+            HirItem::Function(f) => {
+                collect_borrow_arg_sites_in_block(&f.body, cx, &mut sites);
+            }
+            HirItem::Actor(actor) => {
+                if let Some(init) = &actor.init {
+                    collect_borrow_arg_sites_in_block(&init.body, cx, &mut sites);
+                }
+                for handler in &actor.receive_handlers {
+                    collect_borrow_arg_sites_in_block(&handler.body, cx, &mut sites);
+                }
+                for method in &actor.methods {
+                    collect_borrow_arg_sites_in_block(&method.body, cx, &mut sites);
+                }
+                for hook in &actor.lifecycle_hooks {
+                    collect_borrow_arg_sites_in_block(&hook.body, cx, &mut sites);
+                }
+            }
+            HirItem::Machine(machine) => {
+                for state in &machine.states {
+                    if let Some(entry) = &state.entry {
+                        collect_borrow_arg_sites_in_block(entry, cx, &mut sites);
+                    }
+                    if let Some(exit) = &state.exit {
+                        collect_borrow_arg_sites_in_block(exit, cx, &mut sites);
+                    }
+                }
+                for transition in &machine.transitions {
+                    if let Some(guard) = &transition.guard {
+                        collect_borrow_arg_sites_in_expr(guard, cx, &mut sites);
+                    }
+                    collect_borrow_arg_sites_in_expr(&transition.body, cx, &mut sites);
+                }
+            }
+            // No call-bearing user bodies: extern fns have none; impl methods
+            // are mirrored as `Function` items; other item kinds carry no calls.
+            _ => {}
+        }
+    }
+    sites
+}
+
 fn compute_param_ownership(
     fns: &HashMap<hew_hir::ItemId, &HirFn>,
     items: &[HirItem],
@@ -6756,6 +6864,7 @@ fn compute_param_ownership(
             break;
         }
     }
+    let call_param_consume = compute_call_param_consumption(fns, &methods, &param_consume);
     // With the verdict final, collect every free-call argument `SiteId` whose
     // target parameter is a resource BORROW. The arg's `Use` is then emitted
     // `Read` instead of the HIR-over-stamped `Consume`, so the caller keeps the
@@ -6773,55 +6882,24 @@ fn compute_param_ownership(
     // in that body. Scanning all bodies removes that false rejection. Impl
     // methods are reached via their mirror `HirItem::Function` entries, so the
     // `Impl` block itself is skipped to avoid a redundant re-scan.
-    let mut borrow_arg_sites: HashSet<hew_hir::SiteId> = HashSet::new();
-    let cx = ScanCtx {
-        consume: &param_consume,
-        methods: &methods,
-    };
-    for item in items {
-        match item {
-            HirItem::Function(f) => {
-                collect_borrow_arg_sites_in_block(&f.body, &cx, &mut borrow_arg_sites);
-            }
-            HirItem::Actor(actor) => {
-                if let Some(init) = &actor.init {
-                    collect_borrow_arg_sites_in_block(&init.body, &cx, &mut borrow_arg_sites);
-                }
-                for handler in &actor.receive_handlers {
-                    collect_borrow_arg_sites_in_block(&handler.body, &cx, &mut borrow_arg_sites);
-                }
-                for method in &actor.methods {
-                    collect_borrow_arg_sites_in_block(&method.body, &cx, &mut borrow_arg_sites);
-                }
-                for hook in &actor.lifecycle_hooks {
-                    collect_borrow_arg_sites_in_block(&hook.body, &cx, &mut borrow_arg_sites);
-                }
-            }
-            HirItem::Machine(machine) => {
-                for state in &machine.states {
-                    if let Some(entry) = &state.entry {
-                        collect_borrow_arg_sites_in_block(entry, &cx, &mut borrow_arg_sites);
-                    }
-                    if let Some(exit) = &state.exit {
-                        collect_borrow_arg_sites_in_block(exit, &cx, &mut borrow_arg_sites);
-                    }
-                }
-                for transition in &machine.transitions {
-                    if let Some(guard) = &transition.guard {
-                        collect_borrow_arg_sites_in_expr(guard, &cx, &mut borrow_arg_sites);
-                    }
-                    collect_borrow_arg_sites_in_expr(&transition.body, &cx, &mut borrow_arg_sites);
-                }
-            }
-            // No call-bearing user bodies: extern fns have none; impl methods
-            // are mirrored as `Function` items (scanned above); records, type
-            // decls, supervisors, and consts carry no free-call argument sites.
-            _ => {}
-        }
-    }
+    let borrow_arg_sites = collect_module_borrow_arg_sites(
+        items,
+        &ScanCtx {
+            consume: &param_consume,
+            methods: &methods,
+        },
+    );
+    let proven_borrow_arg_sites = collect_module_borrow_arg_sites(
+        items,
+        &ScanCtx {
+            consume: &call_param_consume,
+            methods: &methods,
+        },
+    );
     ParamOwnershipFacts {
         param_consume,
         borrow_arg_sites,
+        proven_borrow_arg_sites,
     }
 }
 
@@ -9500,6 +9578,11 @@ struct Builder {
     /// `Rc` so child builders share it cheaply; empty default leaves every
     /// arg `Consume` and drops no param (sound: pre-RAII-2 behaviour).
     param_ownership: Rc<ParamOwnershipFacts>,
+    /// Per-call direct-function argument positions proven borrow-only by the
+    /// module parameter-body summary. Keyed by the block containing the
+    /// `Terminator::Call`; consumed by collection drop escape analysis so a
+    /// caller-owned Vec survives a helper that only reads it.
+    proven_borrow_call_args: HashMap<u32, HashSet<usize>>,
     /// Binding ids of the CURRENT function's by-value parameters, captured in
     /// `lower_params`. A funcupdate base that is (or embeds in a construction) a
     /// WHOLE by-value parameter is NOT a unique owner — the parameter is a
@@ -17400,6 +17483,25 @@ impl Builder {
                 } else {
                     target_symbol.clone()
                 };
+                // A user-authored owned-element push of a fresh materialised
+                // rvalue (`v.push(Name { ... })`, `v.push(make_name())`,
+                // `v.push(existing.clone())`) has no source binding whose
+                // scope-exit drop can balance `hew_vec_push_owned`'s copy-in
+                // clone. Move that one-shot owner into the Vec instead. A bare
+                // binding is not a materialised rvalue, so
+                // `v.push(existing_owned)` keeps the clone-in contract and the
+                // caller keeps its own independent drop.
+                let callee = if callee == "hew_vec_push_owned"
+                    && args.len() == 1
+                    && Self::expr_is_materialized_owner(
+                        &args[0],
+                        &self.funcupdate_fn_returns_fresh,
+                        &self.funcupdate_param_ids,
+                    ) {
+                    "hew_vec_push_owned_move".to_string()
+                } else {
+                    callee
+                };
 
                 // Array literals are HIR-desugared to pushes into a synthetic
                 // Vec temp. Treat each pushed element as aggregate ingress so
@@ -24888,6 +24990,8 @@ impl Builder {
     /// cont_bb:
     ///   CallRuntimeAbi { symbol: "hew_vec_get_T",
     ///                    args: [vec_place, index_place], dest: result_place }
+    ///   -- owned elements instead use Terminator::Call("hew_vec_get_clone")
+    ///      so the bare `T` result owns an independent clone
     /// ```
     ///
     /// The `UnsignedGreaterEq` predicate catches both negative indices
@@ -24907,6 +25011,8 @@ impl Builder {
     /// - `BitCopy` `Named` value records and `Tuple` → `hew_vec_get_layout`
     ///   (layout-descriptor path; codegen loads the element via the dest-place
     ///   type so the full record stride is honoured)
+    /// - owned record/enum/tuple value elements → `hew_vec_get_clone` into a bare `T`
+    /// - nested collection handles → `hew_vec_get_owned` borrow
     /// - ptr-shaped (`Duplex`, `LambdaActorHandle`, non-`BitCopy` Named heap
     ///   types) → `hew_vec_get_ptr`
     ///
@@ -24999,14 +25105,16 @@ impl Builder {
         //     applies the correct per-element stride via the layout descriptor.
         //   - Heap-handle nominals (Resource / Linear): stored as pointer-sized
         //     opaque handles; `hew_vec_get_ptr` is correct for these.
-        // W5.016: an owned (non-Copy) record/enum/tuple element was constructed
-        // through the owned descriptor (`hew_vec_new_with_elem_layout`), so its
-        // element load must route to the owned borrow getter. `hew_vec_get_ptr`
-        // (8-byte stride) would mis-stride a value-shaped element (the E3
-        // panic); `hew_vec_get_layout` aborts on an owned descriptor. The
-        // owned getter borrows the live buffer slot (no clone/drop) — a for-in
-        // / index read is a BORROW, not an independent owner.
+        // W5.016: an owned (non-Copy) record/enum/tuple VALUE element was
+        // constructed through the owned descriptor. A scalar index result is an
+        // independently-droppable value, so route it through the same fresh-owner
+        // clone choke as `Vec::get`, with a bare `T` dest. Nested collection
+        // HANDLES keep the established borrow contract: for-in and chained reads
+        // rely on the outer Vec remaining the sole owner, and cloning each cursor
+        // read would create an untracked temporary collection.
         let owned_elem = self.is_owned_vec_element(elem_ty);
+        let clone_owned_value =
+            owned_elem && !ty_is_vec(elem_ty) && !ty_is_local_collection_handle(elem_ty);
         let get_symbol = match elem_ty {
             ResolvedTy::Bool => "hew_vec_get_bool",
             ResolvedTy::I8 => "hew_vec_get_i8",
@@ -25024,6 +25132,7 @@ impl Builder {
             ResolvedTy::F32 => "hew_vec_get_f32",
             ResolvedTy::F64 => "hew_vec_get_f64",
             ResolvedTy::String => "hew_vec_get_str",
+            _ if clone_owned_value => "hew_vec_get_clone",
             _ if owned_elem => "hew_vec_get_owned",
             // BitCopy Named value records: use layout-descriptor getter so the
             // runtime applies the correct element stride.
@@ -25086,14 +25195,26 @@ impl Builder {
         };
 
         let result_place = self.alloc_local(elem_ty.clone());
-        self.push_instr(Instr::CallRuntimeAbi(
-            crate::model::RuntimeCall::new(
-                get_symbol,
-                vec![vec_place, index_place],
-                Some(result_place),
-            )
-            .expect("hew_vec_get_T is an allowlisted runtime symbol"),
-        ));
+        if clone_owned_value {
+            let next = self.alloc_block();
+            self.finish_current_block(Terminator::Call {
+                callee: get_symbol.to_string(),
+                builtin: None,
+                args: vec![vec_place, index_place],
+                dest: Some(result_place),
+                next,
+            });
+            self.start_block(next);
+        } else {
+            self.push_instr(Instr::CallRuntimeAbi(
+                crate::model::RuntimeCall::new(
+                    get_symbol,
+                    vec![vec_place, index_place],
+                    Some(result_place),
+                )
+                .expect("hew_vec_get_T is an allowlisted runtime symbol"),
+            ));
+        }
 
         Some(result_place)
     }
@@ -27242,6 +27363,20 @@ impl Builder {
         }
 
         let next = self.alloc_block();
+        let proven_borrow_args: HashSet<usize> = hir_args
+            .iter()
+            .enumerate()
+            .filter_map(|(index, arg)| {
+                self.param_ownership
+                    .proven_borrow_arg_sites
+                    .contains(&arg.site)
+                    .then_some(index)
+            })
+            .collect();
+        if !proven_borrow_args.is_empty() {
+            self.proven_borrow_call_args
+                .insert(self.current_block_id, proven_borrow_args);
+        }
         self.finish_current_block(Terminator::Call {
             callee: callee_symbol.to_string(),
             builtin,
@@ -35495,6 +35630,16 @@ impl Builder {
                         .as_deref()
                         .is_none_or(|b| !Self::expr_embeds_whole_param(b, params))
             }
+            HirExprKind::TupleLiteral { elements } => !elements
+                .iter()
+                .any(|value| Self::expr_embeds_whole_param(value, params)),
+            HirExprKind::MachineVariantCtor { payload, .. } => {
+                payload.as_ref().is_none_or(|fields| {
+                    !fields
+                        .iter()
+                        .any(|(_, value)| Self::expr_embeds_whole_param(value, params))
+                })
+            }
             // A projection is materialised iff its object chain is.
             HirExprKind::FieldAccess { object, .. } => {
                 Self::expr_is_materialized_owner(object, fresh, params)
@@ -36194,6 +36339,7 @@ fn elaborate(
                 &builder.suspend_kinds,
                 view,
                 &builder.binding_locals,
+                &builder.proven_borrow_call_args,
                 |ty| builder.binding_ty_is_owned_element_vec(ty),
             )
         },
@@ -36299,6 +36445,7 @@ fn elaborate(
                 &builder.suspend_kinds,
                 view,
                 &builder.binding_locals,
+                &builder.proven_borrow_call_args,
                 ty_is_local_collection_handle,
             )
         },
@@ -36367,6 +36514,7 @@ fn elaborate(
         &builder.suspend_kinds,
         &owned_locals_snapshot,
         &builder.binding_locals,
+        &builder.proven_borrow_call_args,
         ty_is_closure_pair_vec,
     );
     for states in dataflow_result.exit_states.values() {
@@ -36406,6 +36554,7 @@ fn elaborate(
                 &builder.suspend_kinds,
                 view,
                 &builder.binding_locals,
+                &builder.proven_borrow_call_args,
                 |ty| builder.binding_ty_is_plain_vec(ty),
             )
         },
@@ -44060,6 +44209,7 @@ fn derive_local_collection_drop_allowed(
     suspend_kinds: &HashMap<u32, SuspendKind>,
     owned_locals: &[(BindingId, String, ResolvedTy)],
     binding_locals: &HashMap<BindingId, Place>,
+    proven_borrow_call_args: &HashMap<u32, HashSet<usize>>,
     ty_filter: impl Fn(&ResolvedTy) -> bool,
 ) -> HashSet<BindingId> {
     // Candidate collection locals: base locals of owned handle bindings of
@@ -44205,6 +44355,25 @@ fn derive_local_collection_drop_allowed(
             Terminator::Call { callee, .. }
                 if crate::runtime_symbols::callee_ownership_contract(callee)
                     .is_vec_copy_in_element_store() => {}
+            // A direct user-function call borrows only the argument positions
+            // proven by the module parameter-body summary. Scan every other
+            // position as an escape, preserving the fail-closed behavior for a
+            // helper that returns, stores, sends, or otherwise forwards the Vec.
+            Terminator::Call { args, .. } if proven_borrow_call_args.contains_key(&block.id) => {
+                let borrowed = &proven_borrow_call_args[&block.id];
+                for (index, p) in args.iter().enumerate() {
+                    if borrowed.contains(&index) {
+                        continue;
+                    }
+                    if let Some(l) = base_local(*p) {
+                        if alias_of.contains_key(&l)
+                            && matches!(p, Place::Local(_) | Place::ReturnSlot)
+                        {
+                            note_escape(l, &mut excluded_roots);
+                        }
+                    }
+                }
+            }
             Terminator::Call { callee, args, .. }
                 if {
                     let contract = crate::runtime_symbols::callee_ownership_contract(callee);
@@ -53607,6 +53776,7 @@ mod owned_record_drop_derivation {
             &HashMap::new(),
             &collection_owned,
             &collection_binding_locals,
+            &HashMap::new(),
             is_vec_handle,
         );
         assert!(
@@ -56163,6 +56333,7 @@ mod f1_suspending_escape_poison {
             &std::collections::HashMap::new(),
             &owned_locals,
             &binding_locals,
+            &HashMap::new(),
             ty_is_local_collection_handle,
         );
 
@@ -56227,6 +56398,7 @@ mod f1_suspending_escape_poison {
             &std::collections::HashMap::new(),
             &owned_locals,
             &binding_locals,
+            &HashMap::new(),
             ty_is_local_collection_handle,
         );
 
@@ -56862,6 +57034,7 @@ mod plain_vec_drop_interior_alias_and_escape {
             &std::collections::HashMap::new(),
             &owned_locals,
             &binding_locals,
+            &HashMap::new(),
             ty_is_vec_handle,
         );
         assert!(
@@ -56925,6 +57098,7 @@ mod plain_vec_drop_interior_alias_and_escape {
             &std::collections::HashMap::new(),
             &owned_locals,
             &binding_locals,
+            &HashMap::new(),
             ty_is_vec_handle,
         );
         assert!(
@@ -56993,6 +57167,7 @@ mod plain_vec_drop_interior_alias_and_escape {
             &std::collections::HashMap::new(),
             &owned_locals,
             &binding_locals,
+            &HashMap::new(),
             ty_is_vec_handle,
         );
         assert!(
@@ -57067,6 +57242,7 @@ mod plain_vec_drop_interior_alias_and_escape {
             &std::collections::HashMap::new(),
             &owned_locals,
             &binding_locals,
+            &HashMap::new(),
             ty_is_vec_handle,
         );
         assert!(
@@ -57111,6 +57287,7 @@ mod plain_vec_drop_interior_alias_and_escape {
             &std::collections::HashMap::new(),
             &owned_locals,
             &binding_locals,
+            &HashMap::new(),
             ty_is_vec_handle,
         );
         assert!(
@@ -57165,6 +57342,7 @@ mod plain_vec_drop_interior_alias_and_escape {
             &std::collections::HashMap::new(),
             &owned_locals,
             &binding_locals,
+            &HashMap::new(),
             ty_is_vec_handle,
         );
         assert!(

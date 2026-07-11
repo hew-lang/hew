@@ -862,6 +862,22 @@ impl Checker {
         target
     }
 
+    /// Build a [`ConstEnv`](crate::check::const_eval::ConstEnv) snapshot of the
+    /// integer `const` bindings currently in scope, for constexpr count/length
+    /// evaluation (e.g. the fixed-array repeat-length check). Float consts are
+    /// deliberately excluded — the const-eval sub-engine is integer-only.
+    fn const_eval_env(&self) -> crate::check::const_eval::ConstEnv {
+        let mut env = crate::check::const_eval::ConstEnv::new();
+        for (name, value) in &self.const_values {
+            if let ConstValue::Integer(v) = value {
+                if let Ok(u) = u64::try_from(*v) {
+                    env.insert(name.clone(), u);
+                }
+            }
+        }
+        env
+    }
+
     pub(super) fn synthesize_array_repeat(
         &mut self,
         value: &Spanned<Expr>,
@@ -2768,10 +2784,41 @@ impl Checker {
                 expected.clone()
             }
 
-            // Array repeat coercion to Array<T, N> type
-            (Expr::ArrayRepeat { value, count }, Ty::Array(elem_ty, _)) => {
+            // Array repeat coercion to Array<T, N> type. The declared length
+            // `N` is part of the fixed-array type, so — like the plain array
+            // literal arm above — the repeat count must agree with it. A
+            // constant count that differs is rejected with the same arity
+            // diagnostic; a count that is not a compile-time constant cannot be
+            // proven to equal `N` in a fixed-array position and is rejected too.
+            (Expr::ArrayRepeat { value, count }, Ty::Array(elem_ty, size)) => {
                 self.check_against(&value.0, &value.1, elem_ty);
                 self.check_against(&count.0, &count.1, &Ty::I64);
+                let const_env = self.const_eval_env();
+                match crate::check::const_eval::eval_const_expr(count, &const_env) {
+                    Ok(actual_count) if actual_count != *size => {
+                        self.report_error(
+                            TypeErrorKind::ArityMismatch,
+                            &count.1,
+                            format!(
+                                "array repeat length mismatch: expected {size} elements for `{}`, found {actual_count}",
+                                expected.user_facing()
+                            ),
+                        );
+                        return Ty::Error;
+                    }
+                    Ok(_) => {}
+                    Err(_) => {
+                        self.report_error(
+                            TypeErrorKind::ArityMismatch,
+                            &count.1,
+                            format!(
+                                "array repeat count must be a compile-time integer equal to the declared length {size} of `{}`",
+                                expected.user_facing()
+                            ),
+                        );
+                        return Ty::Error;
+                    }
+                }
                 self.record_type(span, expected);
                 expected.clone()
             }

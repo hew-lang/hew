@@ -15,11 +15,9 @@
 // is an actor that merges state via message passing. No shared memory,
 // no locks, no data races — the actor model guarantees it.
 //
-// NOTE: The Node API (Node::start, Node::connect, Node::lookup) exists
-// in the runtime but codegen lowering is not yet wired. This example
-// runs all replicas in a single process. When the Node API lands, the
-// only change is adding Node::start/register/lookup calls — the actor
-// code stays identical.
+// This example runs all replicas in one process to focus on the replication
+// pattern. A multi-node version would add a #[wire] message envelope and an
+// ActorMsg implementation before using Node::start/register/lookup.
 
 // Coordinator — merges replica counts into a global total.
 actor Coordinator {
@@ -122,7 +120,10 @@ fn main() {
     sleep(30ms);
 
     // ── Read global total ──
-    let global = await coord.get_global();
+    let global = match await coord.get_global() {
+        Ok(value) => value,
+        Err(_) => -1,
+    };
     println(f"Global counter: {global}");
     // Expected: 5+3 + 10 + 7+2 = 27
 
@@ -138,7 +139,10 @@ fn main() {
     sleep(10ms);
     r3.sync_to_coordinator();
     sleep(30ms);
-    let global2 = await coord.get_global();
+    let global2 = match await coord.get_global() {
+        Ok(value) => value,
+        Err(_) => -1,
+    };
     println(f"Global counter after update: {global2}");
     // Expected: 108 + 210 + 9 = 327
 
@@ -153,6 +157,5 @@ fn main() {
     println(f"  node-1: {l1}, node-2: {l2}, node-3: {l3}");
     println("");
     println("Distributed counter complete.");
-    println("When Node API lands, add Node::start/connect/lookup —");
-    println("the actor code stays exactly the same.");
+    println("A multi-node version would expose this protocol through ActorMsg.");
 }

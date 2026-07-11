@@ -62,13 +62,9 @@ examples/net/probe_opaque_actor_state.hew
 # deferred-nyi: profiler NYI
 
 # deferred-nyi: QUIC / advanced net NYI
-examples/quic_mesh/client.hew
 examples/quic_mesh/selector_smoke.hew
 
 # deferred-nyi: advanced actor patterns NYI
-examples/services/circuit_breaker.hew
-examples/services/distributed_counter.hew
-examples/services/health_monitor.hew
 examples/test_actors_messaging.hew
 
 # deferred-nyi: v05 examples using NYI features

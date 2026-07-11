@@ -823,29 +823,13 @@ test-stdlib-ratchet: hew
 # .expected file.  Any tutorial whose .expected output diverges from `hew run`
 # output fails the gate, catching dialect regressions before they reach users.
 #
-# Tutorials that depend on unimplemented substrate are explicitly listed in
-# UX_SKIP and PROG_SKIP with a one-line reason; they are reported as SKIP, not
-# failures.  Remove a file from the skip list once the substrate gap is closed.
-#
-#   hew_duplex_close NYI — lambda-actor close() not yet lowered to MIR
-#     tracked: deferred-v05-followups.md (hew_duplex_close)
-UX_SKIP   := examples/ux/10_lambda_actor.hew
-PROG_SKIP  := examples/progressive/10_lambda_actor.hew
-
 test-ux-examples: hew runtime stdlib
 	@echo "==> Running ux + progressive tutorials against .expected"
-	@fail=0; pass=0; skip=0; \
+	@fail=0; pass=0; \
 	for corpus in examples/ux examples/progressive; do \
 	  for src in $$(find $$corpus -maxdepth 1 -name '*.hew' | sort); do \
 	    exp="$${src%.hew}.expected"; \
 	    test -f "$$exp" || continue; \
-	    for s in $(UX_SKIP) $(PROG_SKIP); do \
-	      if [ "$$src" = "$$s" ]; then \
-	        echo "  SKIP: $$src  (substrate-gated: hew_duplex_close NYI)"; \
-	        skip=$$((skip + 1)); \
-	        continue 2; \
-	      fi; \
-	    done; \
 	    actual=$$($(DEBUG_DIR)/hew run "$$src" 2>&1); \
 	    expected=$$(cat "$$exp"); \
 	    if [ "$$actual" = "$$expected" ]; then \
@@ -858,7 +842,7 @@ test-ux-examples: hew runtime stdlib
 	    fi; \
 	  done; \
 	done; \
-	echo "  $$pass passed, $$skip skipped (substrate-gated), $$fail failed"; \
+	echo "  $$pass passed, $$fail failed"; \
 	if [ $$fail -gt 0 ]; then \
 	  echo "ERROR: $$fail tutorial(s) failed — run \`hew run <file>\` to reproduce"; \
 	  exit 1; \

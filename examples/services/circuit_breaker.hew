@@ -60,7 +60,10 @@ actor CircuitBreaker {
             println(f"[breaker] OPEN — rejecting request {id}");
             -1
         } else {
-            let result = await backend.call(id);
+            let result = match await backend.call(id) {
+                Ok(value) => value,
+                Err(_) => -1,
+            };
             if result < 0 {
                 // Backend returned an error — count as failure
                 failure_count = failure_count + 1;
@@ -120,9 +123,15 @@ fn main() {
     // Breaker is now open — requests rejected immediately
     println("");
     println("--- Breaker is open (fast-fail) ---");
-    let rejected = await breaker.request(7);
+    let rejected = match await breaker.request(7) {
+        Ok(value) => value,
+        Err(_) => -3,
+    };
     println(f"Result while open: {rejected}");
-    let rejected2 = await breaker.request(8);
+    let rejected2 = match await breaker.request(8) {
+        Ok(value) => value,
+        Err(_) => -3,
+    };
     println(f"Result while open: {rejected2}");
 
     // ── Backend recovers ──
@@ -134,7 +143,10 @@ fn main() {
     // Trigger half-open probe, then send a request
     breaker.probe();
     sleep(20ms);
-    let probe_result = await breaker.request(9);
+    let probe_result = match await breaker.request(9) {
+        Ok(value) => value,
+        Err(_) => -3,
+    };
     println(f"Probe request result: {probe_result}");
 
     // Breaker should be closed again — normal operation resumes
@@ -142,7 +154,10 @@ fn main() {
     println("--- Back to normal ---");
     let _ = await breaker.request(10);
     let _ = await breaker.request(11);
-    let final_state = await breaker.get_state();
+    let final_state = match await breaker.get_state() {
+        Ok(value) => value,
+        Err(_) => -1,
+    };
     println(f"Final breaker state: {final_state} (0=Closed)");
     println("");
     println("Circuit breaker complete.");

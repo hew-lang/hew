@@ -20,10 +20,11 @@ actor Service {
     var requests: i64;
     receive fn health_check() -> i64 {
         if healthy == 0 {
-            panic("service unhealthy");
+            0
+        } else {
+            requests = requests + 1;
+            1
         }
-        requests = requests + 1;
-        1
     }
     receive fn handle(id: i64) -> i64 {
         requests = requests + 1;
@@ -54,14 +55,20 @@ actor HealthMonitor {
         check_count = check_count + 1;
         println(f"[monitor] --- health check #{check_count} ---");
         for i in 0 .. svc_refs.len() {
-            let svc = svc_refs.get(i);
+            let svc = match svc_refs.get(i) {
+                Some(value) => value,
+                None => panic("service registry is inconsistent"),
+            };
             // Use select with timeout — if the service doesn't respond
             // within 500ms, mark it unhealthy.
             let result = select {
                 r from svc.health_check() => r,
                 after 500ms => -1,
             };
-            let svc_name = svc_names.get(i);
+            let svc_name = match svc_names.get(i) {
+                Some(value) => value,
+                None => panic("service registry is inconsistent"),
+            };
             if result == 1 {
                 svc_status.set(i, 1);
                 println(f"  {svc_name}: HEALTHY");
@@ -77,8 +84,14 @@ actor HealthMonitor {
         var healthy_count = 0;
         let total = svc_names.len();
         for i in 0 .. total {
-            let name = svc_names.get(i);
-            let status = svc_status.get(i);
+            let name = match svc_names.get(i) {
+                Some(value) => value,
+                None => panic("service registry is inconsistent"),
+            };
+            let status = match svc_status.get(i) {
+                Some(value) => value,
+                None => panic("service registry is inconsistent"),
+            };
             if status == 1 {
                 println(f"  {name}: UP");
                 healthy_count = healthy_count + 1;
@@ -112,7 +125,7 @@ fn main() {
 
     // ── All healthy ──
     println("--- All services healthy ---");
-    await monitor.check_all();
+    monitor.check_all();
     sleep(30ms);
     let _ = await monitor.report();
     // ── Normal traffic ──
@@ -126,7 +139,7 @@ fn main() {
     println("--- Cache goes down ---");
     cache.set_unhealthy();
     sleep(30ms);
-    await monitor.check_all();
+    monitor.check_all();
     sleep(600ms);
     let _ = await monitor.report();
     // ── Remaining services still serve traffic ──

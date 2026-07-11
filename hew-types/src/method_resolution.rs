@@ -213,8 +213,8 @@ pub fn lookup_named_method_sig(
         })
 }
 
-/// Instantiate a snapshotted builtin `Result`/`Option` method signature against
-/// the receiver's type arguments.
+/// Instantiate a snapshotted stdlib method signature against the receiver's
+/// type arguments.
 ///
 /// `sig` is the canonical signature captured from the compiled-in
 /// `std/result.hew` / `std/option.hew` impl block (see
@@ -225,7 +225,7 @@ pub fn lookup_named_method_sig(
 /// instantiated signature it would have before a user `type Result`/`type
 /// Option` collision could shadow the stdlib entry in `fn_sigs`.
 #[must_use]
-pub fn instantiate_builtin_result_option_method_sig(
+pub fn instantiate_stdlib_method_sig(
     sig: &FnSig,
     type_params: &[String],
     type_args: &[Ty],

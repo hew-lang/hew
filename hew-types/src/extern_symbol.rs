@@ -318,10 +318,8 @@ impl ExternSymbolTemplate {
     /// closed for unproven `Ty::Named` (routes to `LayoutDescriptor`
     /// and surfaces as [`TemplateExpansionError::UnsupportedCallingConvention`]).
     ///
-    /// Stage 3 (W3.001) defines the parallel call path that the
-    /// differential test pins against the legacy `resolve_vec_method`
-    /// magic table. Stage 4 deletes the magic table; Stage 5 wires
-    /// the e2e path so the attribute path drives production codegen.
+    /// Vec method templates are consumed by `crate::vec_authority`; other
+    /// declarative FFI receivers expand them directly at the call site.
     ///
     /// # Errors
     ///

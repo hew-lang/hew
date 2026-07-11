@@ -4,11 +4,11 @@ use std::{
 };
 
 use hew_parser::ast::{BinaryOp, OverflowPolicy, Span, UnaryOp};
-use hew_types::{stdlib::VecElementToken, NumericMethodFamily};
 use hew_types::{
     ChildSlot, ExecutionContextReader, ImplId, MethodTargetFamily, PoolAccessor, ResolvedTy, Ty,
     TyPattern, VariantMatch, WireLayoutTable,
 };
+use hew_types::{NumericMethodFamily, VecElementToken};
 use hew_types::{
     NumericMethodOp, NumericSignedness, NumericWidth, TryConversionKind, WireCodecDirection,
 };

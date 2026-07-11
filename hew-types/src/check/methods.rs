@@ -14,32 +14,11 @@ use crate::lowering_facts::{
     HashMapValueType,
 };
 use crate::method_resolution::{
-    collect_method_sigs_for_receiver, instantiate_builtin_result_option_method_sig,
-    lookup_builtin_method_sig, lookup_named_method_sig as shared_lookup_named_method_sig,
+    collect_method_sigs_for_receiver, instantiate_stdlib_method_sig, lookup_builtin_method_sig,
+    lookup_named_method_sig as shared_lookup_named_method_sig,
 };
 use crate::traits::RcFreeStatus;
 use crate::BuiltinType;
-
-/// Map a `Vec<T>` element method to its W5.016 owned-element runtime symbol.
-///
-/// Returns `None` for methods the owned runtime ops do not implement; the
-/// caller keeps those fail-closed. Mirrors the `_layout` family but routes to
-/// `hew_vec_*_owned`, which deep-clone on push/set/clone, borrow on get, and
-/// move on pop, dropping each element exactly once via the descriptor `drop_fn`.
-fn owned_vec_runtime_symbol(method: &str) -> Option<&'static str> {
-    match method {
-        "push" => Some("hew_vec_push_owned"),
-        "get" => Some("hew_vec_get_owned"),
-        "set" => Some("hew_vec_set_owned"),
-        "pop" => Some("hew_vec_pop_owned"),
-        // `remove(i)` moves the owned element OUT (no clone, no drop) and
-        // shifts the tail — the index-based twin of `pop`.
-        "remove" => Some("hew_vec_remove_at_owned"),
-        "contains" => Some("hew_vec_contains_owned"),
-        "clone" => Some("hew_vec_clone_owned"),
-        _ => None,
-    }
-}
 
 /// Peel the `Ok` payload type out of a `Result<T, E>` `Ty`. Returns `None` for a
 /// non-`Result` type or a malformed (wrong-arity) one. Used to recover the wire
@@ -61,7 +40,6 @@ fn result_ok_payload(ty: &Ty) -> Option<Ty> {
 pub(super) enum CollectionKind {
     HashMap,
     HashSet,
-    Vec,
 }
 
 impl CollectionKind {
@@ -71,7 +49,6 @@ impl CollectionKind {
         match self {
             CollectionKind::HashMap => "HashMap",
             CollectionKind::HashSet => "HashSet",
-            CollectionKind::Vec => "Vec",
         }
     }
 
@@ -79,7 +56,6 @@ impl CollectionKind {
         match self {
             CollectionKind::HashMap => BuiltinType::HashMap,
             CollectionKind::HashSet => BuiltinType::HashSet,
-            CollectionKind::Vec => BuiltinType::Vec,
         }
     }
 }
@@ -123,12 +99,8 @@ pub(super) enum ArgTemplate {
     Key,
     /// `HashMap` value type `V`.
     Value,
-    /// `HashSet` / `Vec` element type `elem`.
+    /// `HashSet` element type `elem`.
     Elem,
-    /// `i64` (Vec index / count arguments).
-    I64,
-    /// The receiver type itself (Vec `append`/`extend`).
-    Receiver,
 }
 
 /// Pure-data shape of a collection-method return type, instantiated against the
@@ -138,8 +110,6 @@ pub(super) enum RetTemplate {
     Unit,
     Bool,
     I64,
-    /// The element type `elem` (Vec `pop`/`get`).
-    Elem,
     /// `Vec<K>` (`HashMap` `keys`).
     VecOfKey,
     /// `Vec<V>` (`HashMap` `values`).
@@ -151,13 +121,13 @@ pub(super) enum RetTemplate {
 /// The data descriptor for one `(collection, method)` pair: arity, argument
 /// shape, and return shape.  This is the single source of truth for the shared
 /// arity → arg → return *walk*; the per-collection element validation, lowering
-/// facts, recording, and the Vec symbol-override remain code-side hooks
+/// facts and recording remain code-side hooks
 /// (`dedup-semantic-boundary`: centralise the walk, not the decision).
 #[derive(Clone, Copy, Debug)]
 pub(super) struct CollectionMethodDesc {
     /// `Some(n)` checks arity against `n`; `None` deliberately skips the arity
-    /// check (preserving `len`/`is_empty`/`set`/`append`/`extend`/`contains`
-    /// arms that historically never called `check_arity`).
+    /// check (preserving `len`/`is_empty` arms that historically never called
+    /// `check_arity`).
     arity: Option<usize>,
     arg_templates: &'static [ArgTemplate],
     ret: RetTemplate,
@@ -177,15 +147,14 @@ const fn desc(
 
 /// The descriptor table: the pure-data front-half admission shape for every
 /// table-driven builtin collection method.  Returns `None` for methods that are
-/// either unknown (→ fail-closed fallback) or genuinely divergent and handled
-/// as explicit code hooks (Vec `contains`/`map`/`filter`/`fold`/`join`).
+/// unknown (→ fail-closed fallback). Vec is sourced from `std/builtins.hew`.
 #[allow(
     clippy::match_same_arms,
     reason = "rows are kept per-method even when arity/arg/ret coincide; their downstream validation/record hooks differ (e.g. HashMap remove uses the owned validator, contains_key the key_value one)"
 )]
 fn collection_method_desc(kind: CollectionKind, method: &str) -> Option<CollectionMethodDesc> {
-    use ArgTemplate::{Elem, Key, Receiver, Value, I64};
-    use RetTemplate::{Bool, Elem as RetElem, SelfTy, Unit, VecOfKey, VecOfVal, I64 as RetI64};
+    use ArgTemplate::{Elem, Key, Value};
+    use RetTemplate::{Bool, SelfTy, Unit, VecOfKey, VecOfVal, I64 as RetI64};
     Some(match kind {
         CollectionKind::HashMap => match method {
             "insert" => desc(Some(2), &[Key, Value], Unit),
@@ -219,40 +188,17 @@ fn collection_method_desc(kind: CollectionKind, method: &str) -> Option<Collecti
             "clear" => desc(Some(0), &[], Unit),
             _ => return None,
         },
-        CollectionKind::Vec => match method {
-            "push" => desc(Some(1), &[Elem], Unit),
-            "pop" => desc(Some(0), &[], RetElem),
-            "len" => desc(None, &[], RetI64),
-            // `get` is intentionally ABSENT: it is routed through the
-            // `Index<i64>` trait (`<Vec<T> as Index>::get -> Option<T>`) so the
-            // accessor model is uniform across collections. `check_vec_method`
-            // falls through to `try_dispatch_primitive_trait_method`, which
-            // projects `Option<T>` and records the `hew_vec_get_clone`
-            // intrinsic via the `index_get` lang-item seam.
-            // `remove(i)` moves element `i` OUT and returns it (`-> T`),
-            // mirroring `pop`; it traps on an out-of-bounds index like `v[i]`.
-            "remove" => desc(Some(1), &[I64], RetElem),
-            "is_empty" => desc(None, &[], Bool),
-            "clear" => desc(Some(0), &[], Unit),
-            "clone" => desc(Some(0), &[], SelfTy),
-            "set" => desc(None, &[I64, Elem], Unit),
-            "append" => desc(None, &[Receiver], Unit),
-            _ => return None,
-        },
     })
 }
 
 /// The receiver's concrete type arguments for a collection method call, carried
 /// through the descriptor-driven driver.  Only the fields relevant to a given
-/// `CollectionKind` are meaningful (`HashMap` uses `key`/`val`; `HashSet`/`Vec` use
-/// `elem`; `Vec` additionally uses `receiver`/`resolved`); the rest hold the same
-/// placeholder fresh inference vars the legacy resolvers used.
+/// `CollectionKind` are meaningful (`HashMap` uses `key`/`val`; `HashSet`/`Vec`
+/// use `elem`); the rest hold placeholder values.
 pub(super) struct CollectionTyCx {
     key: Ty,
     val: Ty,
     elem: Ty,
-    receiver: Ty,
-    resolved: Ty,
 }
 
 impl CollectionTyCx {
@@ -262,8 +208,6 @@ impl CollectionTyCx {
             key,
             val,
             elem: Ty::Unit,
-            receiver: Ty::Unit,
-            resolved: Ty::Unit,
         }
     }
 
@@ -273,20 +217,6 @@ impl CollectionTyCx {
             key: Ty::Unit,
             val: Ty::Unit,
             elem,
-            receiver: Ty::Unit,
-            resolved: Ty::Unit,
-        }
-    }
-
-    /// `Vec<elem>` receiver type context, carrying the receiver and resolved
-    /// receiver types the Vec arms need (`append`/`extend` and `clone`).
-    fn vec(elem: Ty, receiver: Ty, resolved: Ty) -> Self {
-        Self {
-            key: Ty::Unit,
-            val: Ty::Unit,
-            elem,
-            receiver,
-            resolved,
         }
     }
 
@@ -297,7 +227,7 @@ impl CollectionTyCx {
     fn receiver_with_args(&self, kind: CollectionKind) -> Ty {
         let args = match kind {
             CollectionKind::HashMap => vec![self.key.clone(), self.val.clone()],
-            CollectionKind::HashSet | CollectionKind::Vec => vec![self.elem.clone()],
+            CollectionKind::HashSet => vec![self.elem.clone()],
         };
         Ty::Named {
             builtin: Some(kind.builtin()),
@@ -2158,7 +2088,18 @@ impl Checker {
         let sig = self
             .builtin_result_option_method_sigs
             .get(&(builtin, method.to_string()))?;
-        Some(instantiate_builtin_result_option_method_sig(
+        Some(instantiate_stdlib_method_sig(
+            sig,
+            &sig.type_params,
+            type_args,
+        ))
+    }
+
+    /// Resolve a runtime-backed Vec method from the compiled-in stdlib source,
+    /// never from user-shadowable `Vec::<method>` keys.
+    fn lookup_builtin_vec_method_sig(&self, type_args: &[Ty], method: &str) -> Option<FnSig> {
+        let sig = self.builtin_vec_method_sigs.get(method)?;
+        Some(instantiate_stdlib_method_sig(
             sig,
             &sig.type_params,
             type_args,
@@ -3952,18 +3893,13 @@ impl Checker {
         self.record_resolved_collection_call("Set", method, &receiver, span);
     }
 
-    /// Sole admission authority for Vec method dispatch (Stage 3 cutover);
-    /// the per-element-type symbol override remains until Lever 3 (W4.030)
-    /// collapses the scalar/`_layout` duality.
-    ///
-    /// Vec is still split between scalar-specific runtime kernels and
-    /// layout-backed kernels. The registry therefore carries a placeholder
-    /// `hew_vec_*_FAMILY` symbol so the MIR family gate recognises the call,
-    /// while this override writes the concrete symbol selected by the existing
-    /// Vec symbol router. The follow-up scalar/layout collapse removes this
-    /// override; until then this is the authority-transfer seam from registry
-    /// admission to per-element kernel selection.
+    /// Record one Vec resolved call, selecting its symbol through the shared
+    /// source-derived Vec authority. Abstract element methods retain the
+    /// registry's `_FAMILY` placeholder for MIR monomorphisation.
     pub(super) fn record_resolved_vec_call(&mut self, method: &str, elem_ty: &Ty, span: &Span) {
+        let Some(vec_method) = VecMethod::from_name(method) else {
+            return;
+        };
         let elem_ty = self.subst.resolve(elem_ty).materialize_literal_defaults();
         let receiver = TyPattern::App {
             ctor: "Vec".to_string(),
@@ -3975,66 +3911,84 @@ impl Checker {
             return;
         }
 
-        // `clone` (unlike `push`/`get`/`set`/`pop`/`remove`/`contains`) has no
-        // dedicated per-element-token entry in `resolve_vec_method` — its
-        // match arm falls back to the plain scalar/BitCopy symbol
-        // (`hew_vec_clone`) whenever `vec_element_runtime_suffix` returns
-        // anything other than `Some("layout")`, INCLUDING `None` (a bare
-        // declared type parameter, e.g. `T` in `fn f<T>(v: Vec<T>)` —
-        // `type_defs.get(name)` has no entry for a type param). So
-        // `resolve_vec_runtime_symbol("clone", abstract_T, ..)` below always
-        // returns `Some("hew_vec_clone")` for an abstract element: the
-        // `let Some(..) = .. else` placeholder-preserving branch never even
-        // fires for `clone`, unlike the element-typed ops it mirrors.
-        //
-        // The `Vec<T>::iter()` desugar hits exactly this gap: it pre-records
-        // a synthetic `recv.clone()` snapshot while `T` is still abstract
-        // (see the `"iter"` arm above), so `hew check` silently bakes in the
-        // legacy `hew_vec_clone` symbol. `hew_vec_clone` aborts at runtime on
-        // a layout-aware/owned Vec (its own doc comment: "Legacy
-        // `hew_vec_clone` aborts on a layout-backed Vec"), so instantiating
-        // the generic at an owned element type (e.g. a managed record) passes
-        // `hew check` clean and then panics at runtime — a real, live,
-        // checker-approved-code-crashes defect, not just a diagnostic gap.
-        //
-        // Fail this resolution closed here (treat it exactly like `push`/
-        // `get`/etc.'s abstract case) so the `_FAMILY` placeholder survives
-        // to MIR, which now re-resolves `clone` per-monomorphisation through
-        // the same `is_owned_vec_element` / `vec_generic_element_abi`
-        // authority the other element-typed ops already use.
-        if method == "clone" && self.is_vec_element_abstract_type_param(&elem_ty) {
-            return;
-        }
-
-        let Some(symbol_name) = self.resolve_vec_runtime_symbol(method, &elem_ty, span) else {
-            // Polymorphic element re-resolution (#1929 Stage 1). When the
-            // element is a declared type parameter the concrete `hew_vec_*`
-            // symbol cannot be chosen here — it depends on the type
-            // monomorphisation substitutes per instantiation. Rather than
-            // dropping the entry (which fails closed at HIR with
-            // `MethodCallNoRewrite`), KEEP the `hew_vec_{method}_FAMILY`
-            // placeholder the dispatch registry stamped: HIR lowers it to a
-            // `ResolvedImplCall` and MIR re-resolves the per-ABI symbol from
-            // the substituted concrete element via the same authority that
-            // backs the constructor (`vec_generic_element_abi` +
-            // `vec_element_op_symbol`). Scoped to the element-typed ops with a
-            // runtime-backed generic path; every other method/element keeps
-            // failing closed by dropping the entry.
-            if matches!(
-                method,
-                "push" | "get" | "set" | "pop" | "remove" | "contains"
-            ) && self.is_vec_element_abstract_type_param(&elem_ty)
-            {
-                return;
-            }
-            self.resolved_calls.remove(&key);
-            return;
+        let is_abstract = self.is_vec_element_abstract_type_param(&elem_ty);
+        let is_copy_layout = self.vec_element_has_copy_layout(&elem_ty);
+        let profile = crate::vec_authority::VecElementProfile {
+            abi: crate::vec_authority::classify_element(&elem_ty, &self.type_defs),
+            is_owned: !is_copy_layout && self.vec_owned_element_admissible(&elem_ty),
+            is_copy_layout,
+            is_function_like: matches!(elem_ty, Ty::Function { .. } | Ty::Closure { .. }),
+            is_abstract,
         };
-        self.resolved_calls
-            .get_mut(&key)
-            .expect("collection resolver inserted Vec call before symbol override")
-            .target
-            .symbol_name = symbol_name.to_string();
+        match crate::vec_authority::resolve_runtime_symbol(
+            vec_method,
+            profile,
+            crate::vec_authority::VecResolutionContext::CheckerConcrete,
+        ) {
+            crate::vec_authority::VecSymbolResolution::Resolved(symbol_name) => {
+                self.resolved_calls
+                    .get_mut(&key)
+                    .expect("collection resolver inserted Vec call before symbol override")
+                    .target
+                    .symbol_name = symbol_name;
+            }
+            crate::vec_authority::VecSymbolResolution::Deferred => {}
+            crate::vec_authority::VecSymbolResolution::Unavailable => {
+                self.resolved_calls.remove(&key);
+            }
+            crate::vec_authority::VecSymbolResolution::Unsupported(reason) => {
+                self.report_vec_symbol_unsupported(vec_method, &elem_ty, reason, span);
+                self.resolved_calls.remove(&key);
+            }
+        }
+    }
+
+    fn report_vec_symbol_unsupported(
+        &mut self,
+        method: VecMethod,
+        elem_ty: &Ty,
+        reason: crate::vec_authority::VecUnsupported,
+        span: &Span,
+    ) {
+        let message = match reason {
+            crate::vec_authority::VecUnsupported::FunctionGet => {
+                "`Vec::get` on a function/closure element is not supported under \
+                 the `Option<T>` accessor model: the element owns a heap-boxed \
+                 closure environment that the fresh-owner get choke point does \
+                 not yet clone (tracked gap)"
+                    .to_string()
+            }
+            crate::vec_authority::VecUnsupported::FunctionSharedCopy => format!(
+                "`Vec::{}` is not supported for function-valued elements: each element \
+                 owns its closure environment, and a shallow buffer copy would create \
+                 two owners of one environment",
+                method.name()
+            ),
+            crate::vec_authority::VecUnsupported::Layout {
+                expected_symbol,
+                bitcopy_supported,
+            } => {
+                if bitcopy_supported {
+                    let why = self.vec_element_rejection_reason(elem_ty);
+                    format!(
+                        "`{}` cannot be a `Vec` element for `Vec::{}`: {why} \
+                         (runtime symbol `{expected_symbol}`)",
+                        elem_ty.user_facing(),
+                        method.name()
+                    )
+                } else {
+                    format!(
+                        "`Vec::{}` on layout-backed element type `{}` is not \
+                         runtime-backed yet (runtime symbol `{expected_symbol}`); supported \
+                         layout Vec methods are push/get/set/pop/remove/clone for Copy \
+                         record/tuple elements",
+                        method.name(),
+                        elem_ty.user_facing()
+                    )
+                }
+            }
+        };
+        self.report_error(TypeErrorKind::InvalidOperation, span, message);
     }
 
     /// True when `elem_ty` is a bare, no-argument declared type parameter
@@ -4065,7 +4019,7 @@ impl Checker {
         call_type_args: &HashMap<SpanKey, Vec<Ty>>,
         record_init_type_args: &HashMap<SpanKey, Vec<Ty>>,
         type_defs: &HashMap<String, TypeDef>,
-    ) -> HashMap<Ty, crate::stdlib::VecElementToken> {
+    ) -> HashMap<Ty, crate::vec_authority::VecElementToken> {
         let mut out = HashMap::new();
         for args in call_type_args
             .values()
@@ -4084,8 +4038,8 @@ impl Checker {
     }
 
     /// Classify a concrete element type's `Vec<T>` runtime ABI for the
-    /// monomorphisation re-resolution path, using the same authority as the
-    /// constructor ([`crate::stdlib::vec_element_runtime_suffix`]).
+    /// monomorphisation re-resolution path, using
+    /// [`crate::vec_authority::classify_element`].
     ///
     /// Stage 1 admits exactly what already round-trips on the concrete path
     /// without new runtime/codegen machinery: scalar (`bool`/`i32`/`i64`/`f64`)
@@ -4102,16 +4056,15 @@ impl Checker {
         &self,
         ty: &Ty,
         type_defs: &HashMap<String, TypeDef>,
-    ) -> Option<crate::stdlib::VecElementToken> {
-        use crate::stdlib::VecElementToken;
-        let suffix = crate::stdlib::vec_element_runtime_suffix(ty, type_defs)?;
-        let token = VecElementToken::from_runtime_suffix(suffix)?;
+    ) -> Option<crate::vec_authority::VecElementToken> {
+        use crate::vec_authority::VecElementToken;
+        let token = crate::vec_authority::classify_element(ty, type_defs)?;
         let admissible = match token {
             // Bit-copy scalars and the CoW `string` representation carry no
             // owner-aliasing hazard across the shared-buffer element ops. Every
             // integer width and both float widths route to a dedicated
-            // `hew_vec_*_{suffix}` kernel (see `vec_element_op_symbol`), so the
-            // whole scalar set is unconditionally admissible.
+            // runtime kernel, so the whole scalar set is unconditionally
+            // admissible.
             VecElementToken::Bool
             | VecElementToken::I8
             | VecElementToken::U8
@@ -4187,8 +4140,6 @@ impl Checker {
             ArgTemplate::Key => cx.key.clone(),
             ArgTemplate::Value => cx.val.clone(),
             ArgTemplate::Elem => cx.elem.clone(),
-            ArgTemplate::I64 => Ty::I64,
-            ArgTemplate::Receiver => cx.receiver.clone(),
         }
     }
 
@@ -4221,29 +4172,6 @@ impl Checker {
             }
             let expected = Self::collection_arg_ty(*template, cx);
             let (expr, sp) = arg.expr();
-            // `ArgTemplate::I64` index slots (Vec `get`/`set`/`remove`): accept
-            // any signed integer narrower than i64 as a widening coercion.  The
-            // operand is widened at the index site — the Vec element type and the
-            // call's return type are NOT changed (LESSONS
-            // `widen-operands-not-result-when-tightening-int-coercion`).
-            // Codegen (via `load_signed_int_arg_to_declared_width`) sign-extends
-            // the narrower MIR local to the i64 ABI width; no MIR cast is needed
-            // for the `Terminator::Call` method path.
-            if matches!(template, ArgTemplate::I64) {
-                let actual = self.synthesize(expr, sp);
-                let resolved = self.subst.resolve(&actual);
-                if Self::is_narrower_signed_int(&resolved) {
-                    // Accept: the narrower signed int widens to i64 at the call
-                    // site. `synthesize` already recorded the actual type in
-                    // `expr_types`; we do not override it here — the identifier's
-                    // binding type (I32) is what HIR/MIR use for the local.
-                    continue;
-                }
-                // Not a narrower signed int — fall through to the normal path.
-                // `check_against` is called on the already-synthesised form; it
-                // will re-synthesize internally for non-identifier expressions
-                // (that is fine: the type is idempotent).
-            }
             self.check_against(expr, sp, &expected);
         }
         true
@@ -4276,7 +4204,6 @@ impl Checker {
             RetTemplate::Unit => Ty::Unit,
             RetTemplate::Bool => Ty::Bool,
             RetTemplate::I64 => Ty::I64,
-            RetTemplate::Elem => cx.elem.clone(),
             RetTemplate::VecOfKey => self.make_vec_type(cx.key.clone(), span),
             RetTemplate::VecOfVal => self.make_vec_type(cx.val.clone(), span),
             RetTemplate::SelfTy => match kind {
@@ -4290,9 +4217,6 @@ impl Checker {
                     name: "HashSet".to_string(),
                     args: vec![cx.elem.clone()],
                 },
-                // Vec `clone` returns the already-resolved receiver type
-                // (`resolved.clone()`), not a reconstructed `Self`.
-                CollectionKind::Vec => cx.resolved.clone(),
             },
         }
     }
@@ -4361,17 +4285,6 @@ impl Checker {
                 ) {
                     self.record_resolved_hashset_call(method, &cx.elem, span);
                 }
-            }
-            CollectionKind::Vec => {
-                // Element Rc-rejection on the mutating/element-consuming arms;
-                // fire-and-continue (does NOT short-circuit, matching history).
-                if matches!(method, "push" | "pop" | "get" | "remove" | "set" | "append") {
-                    self.reject_rc_collection_element("Vec", &cx.elem, span);
-                }
-                // Every table-driven Vec arm records via the symbol-override
-                // recorder using the *resolved* element type.
-                let resolved_elem = self.subst.resolve(&cx.elem);
-                self.record_resolved_vec_call(method, &resolved_elem, span);
             }
         }
         true
@@ -4702,165 +4615,6 @@ impl Checker {
                  remains fail-closed"
             ),
         );
-    }
-
-    /// Resolve a `Vec<T>` method to its runtime C-ABI symbol and emit a
-    /// precise fail-closed diagnostic when the element type would require
-    /// layout-descriptor support that is outside the current runtime/codegen
-    /// surface.
-    ///
-    /// Returns `None` in two distinct fail-closed conditions:
-    ///   1. The element type's runtime suffix cannot be determined
-    ///      (e.g. inference variable, unresolved nominal) — caller
-    ///      leaves `method_call_rewrites` absent, downstream layers
-    ///      fail closed without a user-facing error here.
-    ///   2. The element type is record/tuple (`_layout` suffix) but the
-    ///      method is not one of the `BitCopy` Plain operations currently
-    ///      backed by runtime + codegen (`push`, `get`, `set`, `pop`) or
-    ///      the element is not `Copy` — a precise
-    ///      `TypeErrorKind::InvalidOperation` is reported at `span` naming
-    ///      the would-be runtime symbol, and the rewrite is NOT recorded.
-    fn resolve_vec_runtime_symbol(
-        &mut self,
-        method: &str,
-        elem_ty: &Ty,
-        span: &Span,
-    ) -> Option<&'static str> {
-        // `get` is the trait-routed (`<Vec<T> as Index>::get`) accessor. Every
-        // ADMISSIBLE element class resolves to the SINGLE element-agnostic
-        // runtime choke point `hew_vec_get_clone`, which dispatches on the
-        // element descriptor at runtime and writes a FRESH OWNER into the
-        // `Option<T>` payload (the drop-safe Vec.get site —
-        // `by-value-heap-params-are-borrows` P0). One symbol covers every
-        // modelled element class, so `get` never needs the #1929 per-element /
-        // monomorphisation re-resolution. Admissibility is still gated below:
-        //   * function/closure elements own a heap-boxed environment the choke
-        //     point does not model — fail closed (GAP-2 parity-or-tracked-gap)
-        //     rather than aliasing a borrowed box into a `Some`;
-        //   * every other element flows through the normal per-element
-        //     resolution purely as the admissibility gate (an element it
-        //     rejects — `Rc`, unsupported layout — keeps failing closed), then
-        //     the resolved symbol is OVERRIDDEN to the choke point at the end.
-        if method == "get" {
-            let resolved_elem = self.subst.resolve(elem_ty);
-            if matches!(resolved_elem, Ty::Function { .. } | Ty::Closure { .. }) {
-                self.report_error(
-                    TypeErrorKind::InvalidOperation,
-                    span,
-                    "`Vec::get` on a function/closure element is not supported under \
-                     the `Option<T>` accessor model: the element owns a heap-boxed \
-                     closure environment that the fresh-owner get choke point does \
-                     not yet clone (tracked gap)"
-                        .to_string(),
-                );
-                return None;
-            }
-            // Run the per-element resolution as the admissibility gate; only on
-            // an admissible verdict (Some) do we route to the choke point.
-            let admissible = self.resolve_vec_element_runtime_symbol(method, &resolved_elem, span);
-            return admissible.map(|_| "hew_vec_get_clone");
-        }
-        self.resolve_vec_element_runtime_symbol(method, elem_ty, span)
-    }
-
-    /// Per-element `Vec<T>` runtime-symbol resolution (the legacy mapping:
-    /// `hew_vec_{method}_{i64,str,layout,owned,…}`). Used directly for every
-    /// element-typed Vec op EXCEPT `get`, which routes through the
-    /// element-agnostic `hew_vec_get_clone` choke point in
-    /// [`Self::resolve_vec_runtime_symbol`] but reuses this as its
-    /// admissibility gate.
-    fn resolve_vec_element_runtime_symbol(
-        &mut self,
-        method: &str,
-        elem_ty: &Ty,
-        span: &Span,
-    ) -> Option<&'static str> {
-        if method == "join" {
-            return matches!(elem_ty, Ty::String).then_some("hew_vec_join_str");
-        }
-        // Closure-pair elements: each slot owns a heap-boxed pair (and,
-        // transitively, the pair's env box). The shared-buffer methods would
-        // shallow-copy those boxes and double-free them at the two vecs'
-        // releases — fail closed with a precise diagnostic rather than alias
-        // owners (`boundary-fail-closed`, `ffi-ownership-contracts`).
-        if matches!(elem_ty, Ty::Function { .. } | Ty::Closure { .. })
-            && matches!(method, "clone" | "append")
-        {
-            self.report_error(
-                TypeErrorKind::InvalidOperation,
-                span,
-                format!(
-                    "`Vec::{method}` is not supported for function-valued elements: \
-                     each element owns its closure environment, and a shallow \
-                     buffer copy would create two owners of one environment"
-                ),
-            );
-            return None;
-        }
-        let sym = crate::stdlib::resolve_vec_method(method, elem_ty, &self.type_defs)?;
-        if sym.ends_with("_layout") {
-            let supported_bitcopy_method =
-                matches!(method, "push" | "get" | "set" | "pop" | "remove" | "clone");
-            let is_copy = self.vec_element_has_copy_layout(elem_ty);
-            if supported_bitcopy_method && is_copy {
-                return Some(sym);
-            }
-
-            // W5.016 owned-element path: a non-Copy record / enum element whose
-            // ownership has a synthesizable clone/drop thunk path (and which is
-            // RcFree, so the runtime can drop it deterministically) routes
-            // through the `hew_vec_*_owned` ABI instead of failing closed. The
-            // owned routing covers the methods the owned runtime ops implement
-            // (`hew_vec_{push,get,set,pop,remove,clone}_owned`); `remove(i)`
-            // moves the owned element OUT to the caller (no clone, no drop).
-            if matches!(
-                method,
-                "push" | "get" | "set" | "pop" | "remove" | "contains" | "clone"
-            ) && self.vec_owned_element_admissible(elem_ty)
-            {
-                if let Some(owned) = owned_vec_runtime_symbol(method) {
-                    return Some(owned);
-                }
-            }
-
-            // Stage 3a fail-closed boundary: layout-backed Vec operations are
-            // only lifted when type routing, runtime support, and codegen
-            // pseudo-FFI operand synthesis all exist.  Keep LayoutManaged
-            // records/tuples and unsupported layout methods out of the rewrite
-            // side table so downstream layers never fabricate a value.
-            let message = if supported_bitcopy_method {
-                // Non-Copy element on a supported op (push/get/set/pop/...): it
-                // reached here because it is neither Copy nor owned-admissible.
-                // Name the real blocker (recursive container / Rc / no thunk
-                // path) instead of a blanket Copy diagnostic.
-                let why = self.vec_element_rejection_reason(elem_ty);
-                format!(
-                    "`{}` cannot be a `Vec` element for `Vec::{method}`: {why} \
-                     (runtime symbol `{sym}`)",
-                    elem_ty.user_facing()
-                )
-            } else {
-                format!(
-                    "`Vec::{method}` on layout-backed element type `{}` is not \
-                     runtime-backed yet (runtime symbol `{sym}`); supported layout Vec \
-                     methods are push/get/set/pop/remove/clone for Copy record/tuple elements",
-                    elem_ty.user_facing()
-                )
-            };
-            self.report_error(TypeErrorKind::InvalidOperation, span, message);
-            return None;
-        }
-        if method == "contains"
-            && sym == "hew_vec_contains_thunk"
-            // Equality-eligible Copy records/tuples already use the thunked
-            // BitCopy layout Vec path. Only non-Copy, owned-admissible elements
-            // are upgraded to the owned descriptor ABI.
-            && !self.vec_element_has_copy_layout(elem_ty)
-            && self.vec_owned_element_admissible(elem_ty)
-        {
-            return Some("hew_vec_contains_owned");
-        }
-        Some(sym)
     }
 
     /// Decide whether a non-Copy `Vec<T>` element type may route through the
@@ -5327,14 +5081,53 @@ impl Checker {
         }
     }
 
+    fn check_runtime_vec_method_from_source(
+        &mut self,
+        type_args: &[Ty],
+        method: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Option<Ty> {
+        let sig = self.lookup_builtin_vec_method_sig(type_args, method)?;
+        sig.extern_symbol.as_ref()?;
+
+        if matches!(method, "push" | "pop" | "remove" | "clear" | "clone") {
+            self.check_arity(args, sig.params.len(), &format!("`Vec::{method}`"), span);
+        }
+
+        for (index, expected) in sig.params.iter().enumerate() {
+            let Some(arg) = args.get(index) else {
+                continue;
+            };
+            let (expr, arg_span) = arg.expr();
+            if matches!(method, "set" | "remove") && index == 0 {
+                let actual = self.synthesize(expr, arg_span);
+                let resolved = self.subst.resolve(&actual);
+                if Self::is_narrower_signed_int(&resolved) {
+                    continue;
+                }
+            }
+            self.check_against(expr, arg_span, expected);
+        }
+
+        let elem_ty = type_args
+            .first()
+            .map_or_else(|| Ty::Var(TypeVar::fresh()), |ty| self.subst.resolve(ty));
+        if matches!(method, "push" | "pop" | "remove" | "set" | "append") {
+            self.reject_rc_collection_element("Vec", &elem_ty, span);
+        }
+        self.record_resolved_vec_call(method, &elem_ty, span);
+        Some(sig.return_type)
+    }
+
     #[expect(
         clippy::too_many_lines,
-        reason = "Vec keeps the divergent contains/join/map/filter/fold arms and the structural-array guard inline; the table arms delegate to the shared driver."
+        reason = "Vec keeps the divergent contains/join/map/filter/fold arms and the structural-array guard inline; runtime-backed signatures delegate to the stdlib-source authority."
     )]
     pub(super) fn check_vec_method(
         &mut self,
         type_args: &[Ty],
-        receiver_ty: &Ty,
+        _receiver_ty: &Ty,
         resolved: &Ty,
         method: &str,
         args: &[CallArg],
@@ -5349,6 +5142,9 @@ impl Checker {
         let elem_ty_before_has_structural_array = self
             .vec_element_contains_structural_array(&elem_ty_before, &mut elem_ty_before_visiting);
         let _ = self.validate_vec_element_type(&elem_ty, span);
+        let runtime_method_declared = self
+            .lookup_builtin_vec_method_sig(type_args, method)
+            .is_some();
         let result = match method {
             "into_iter" => {
                 self.check_arity(args, 0, "`Vec::into_iter`", span);
@@ -5420,7 +5216,7 @@ impl Checker {
                     builtin: None,
                 }
             }
-            "get" => {
+            "get" if runtime_method_declared => {
                 // Trait-routed `Index<i64>` accessor: `<Vec<T> as Index>::get
                 // -> Option<T>`. Dispatch is marked as the `Index` primitive
                 // trait impl and lowered to the element-agnostic
@@ -5456,24 +5252,22 @@ impl Checker {
                         canonical_receiver: "Vec".to_string(),
                     },
                 );
-                // Records the `hew_vec_get_clone` resolved call (the symbol
-                // override lives in `resolve_vec_runtime_symbol`). For
-                // function/closure elements `resolve_vec_runtime_symbol`
-                // fails closed (named GAP-2 gap) so no resolved call is
-                // recorded and HIR fails closed on the missing entry.
+                // Records the `hew_vec_get_clone` resolved call through the
+                // shared Vec authority. Function/closure elements fail closed,
+                // so no resolved call is recorded.
                 self.record_resolved_vec_call("get", &resolved_elem, span);
                 // `<Vec<T> as Index>::Output` is `T`, so the projected return
                 // is `Option<T>`.
                 Ty::option(resolved_elem)
             }
-            "contains" => {
+            "contains" if runtime_method_declared => {
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &elem_ty);
                 }
                 let resolved_elem = self.subst.resolve(&elem_ty);
-                if crate::stdlib::vec_element_runtime_suffix(&resolved_elem, &self.type_defs)
-                    == Some("layout")
+                if crate::vec_authority::classify_element(&resolved_elem, &self.type_defs)
+                    == Some(crate::vec_authority::VecElementToken::Layout)
                 {
                     // W3.032 Slice 3e: lift the layout gate for equality-
                     // eligible Copy records/tuples.  Authority chain: the
@@ -5519,7 +5313,7 @@ impl Checker {
                 }
                 Ty::Bool
             }
-            "join" => {
+            "join" if runtime_method_declared => {
                 self.check_arity(args, 1, "`Vec::join`", span);
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
@@ -5644,21 +5438,9 @@ impl Checker {
                 }
                 self.subst.resolve(&acc_ty)
             }
-            _ if collection_method_desc(CollectionKind::Vec, method).is_some() => {
-                // Table-driven Vec arms (push/pop/len/get/remove/is_empty/
-                // clear/clone/set/append/extend) go through the shared
-                // descriptor-driven driver.  The structural-array pre/post
-                // guard and `validate_vec_element_type` top call stay here
-                // because they wrap the whole dispatch, and contains/join/map/
-                // filter/fold stay above as explicit code arms.  For these
-                // known methods the driver never hits its own fallback and
-                // always returns a value (Vec arg/admission hooks never
-                // short-circuit), so this falls through to the post-guard
-                // exactly as the legacy inline table arms did.
-                let cx =
-                    CollectionTyCx::vec(elem_ty.clone(), receiver_ty.clone(), resolved.clone());
-                self.check_collection_method(CollectionKind::Vec, &cx, method, args, span)
-            }
+            _ if runtime_method_declared => self
+                .check_runtime_vec_method_from_source(type_args, method, args, span)
+                .expect("Vec method signature was present immediately before dispatch"),
             _ => {
                 // Unknown method fail-closed fallback.  Kept inline (NOT routed
                 // through the shared `collection_method_fallback`) to preserve
@@ -8930,39 +8712,23 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
             args: vec![TyPattern::Var("T".to_string())],
         },
         where_bounds: vec![],
-        methods: vec![
-            vec_method_target("push", VecMethod::Push, RuntimeAbi::ByRefMut),
-            vec_method_target("pop", VecMethod::Pop, RuntimeAbi::ByRefMut),
-            vec_method_target("len", VecMethod::Len, RuntimeAbi::ByRef),
-            vec_method_target("get", VecMethod::Get, RuntimeAbi::ByRef),
-            vec_method_target("set", VecMethod::Set, RuntimeAbi::ByRefMut),
-            vec_method_target("remove", VecMethod::Remove, RuntimeAbi::ByRefMut),
-            vec_method_target("contains", VecMethod::Contains, RuntimeAbi::ByRef),
-            vec_method_target("is_empty", VecMethod::IsEmpty, RuntimeAbi::ByRef),
-            vec_method_target("clear", VecMethod::Clear, RuntimeAbi::ByRefMut),
-            vec_method_target("clone", VecMethod::Clone, RuntimeAbi::ByRef),
-            vec_method_target("append", VecMethod::Append, RuntimeAbi::ByRefMut),
-            vec_method_target("join", VecMethod::Join, RuntimeAbi::ByRef),
-        ],
+        methods: crate::vec_authority::method_specs()
+            .iter()
+            .map(|spec| {
+                (
+                    spec.name.clone(),
+                    MethodTarget {
+                        symbol_name: format!("hew_vec_{}_FAMILY", spec.name),
+                        family: MethodTargetFamily::Vec(spec.method),
+                        abi: spec.method.runtime_abi(),
+                        call_hint: CallAbiHint::RuntimeShim,
+                        consumes_receiver: false,
+                    },
+                )
+            })
+            .collect(),
     });
     registry
-}
-
-fn vec_method_target(
-    method: &str,
-    vec_method: VecMethod,
-    abi: RuntimeAbi,
-) -> (String, MethodTarget) {
-    (
-        method.to_string(),
-        MethodTarget {
-            symbol_name: format!("hew_vec_{method}_FAMILY"),
-            family: MethodTargetFamily::Vec(vec_method),
-            abi,
-            call_hint: CallAbiHint::RuntimeShim,
-            consumes_receiver: false,
-        },
-    )
 }
 #[cfg(test)]
 mod tests {
@@ -9370,11 +9136,7 @@ mod tests {
     fn descriptor_table_arity_skips_len_and_is_empty() {
         // `len`/`is_empty` historically never called `check_arity`; the
         // `Option<usize>` arity field must encode that asymmetry as `None`.
-        for kind in [
-            CollectionKind::HashMap,
-            CollectionKind::HashSet,
-            CollectionKind::Vec,
-        ] {
+        for kind in [CollectionKind::HashMap, CollectionKind::HashSet] {
             assert_eq!(arity_of(kind, "len"), None, "{kind:?}::len skips arity");
             assert_eq!(
                 arity_of(kind, "is_empty"),
@@ -9382,9 +9144,6 @@ mod tests {
                 "{kind:?}::is_empty skips arity"
             );
         }
-        // Vec `set`/`append` skip arity.
-        assert_eq!(arity_of(CollectionKind::Vec, "set"), None);
-        assert_eq!(arity_of(CollectionKind::Vec, "append"), None);
     }
 
     #[test]
@@ -9398,13 +9157,6 @@ mod tests {
         assert_eq!(arity_of(CollectionKind::HashSet, "insert"), Some(1));
         assert_eq!(arity_of(CollectionKind::HashSet, "contains"), Some(1));
         assert_eq!(arity_of(CollectionKind::HashSet, "clone"), Some(0));
-        assert_eq!(arity_of(CollectionKind::Vec, "push"), Some(1));
-        // Vec `get` is no longer in the descriptor table: it is trait-routed
-        // (`<Vec<T> as Index>::get -> Option<T>`) and resolved through
-        // `try_dispatch_primitive_trait_method`, not the collection driver.
-        assert!(collection_method_desc(CollectionKind::Vec, "get").is_none());
-        assert_eq!(arity_of(CollectionKind::Vec, "pop"), Some(0));
-        assert_eq!(arity_of(CollectionKind::Vec, "clone"), Some(0));
     }
 
     #[test]
@@ -9430,25 +9182,7 @@ mod tests {
         assert_eq!(set_insert.arg_templates, &[ArgTemplate::Elem]);
         assert_eq!(set_insert.ret, RetTemplate::Bool);
 
-        // Vec `get` is intentionally absent from the descriptor table: the
-        // accessor is trait-routed through `Index<i64>` (see
-        // `descriptor_table_checked_arities`).
-        assert!(collection_method_desc(CollectionKind::Vec, "get").is_none());
-
-        let vec_set = collection_method_desc(CollectionKind::Vec, "set").unwrap();
-        assert_eq!(
-            vec_set.arg_templates,
-            &[ArgTemplate::I64, ArgTemplate::Elem]
-        );
-
-        let vec_append = collection_method_desc(CollectionKind::Vec, "append").unwrap();
-        assert_eq!(vec_append.arg_templates, &[ArgTemplate::Receiver]);
-
-        for clone_kind in [
-            CollectionKind::HashMap,
-            CollectionKind::HashSet,
-            CollectionKind::Vec,
-        ] {
+        for clone_kind in [CollectionKind::HashMap, CollectionKind::HashSet] {
             assert_eq!(
                 collection_method_desc(clone_kind, "clone").unwrap().ret,
                 RetTemplate::SelfTy,
@@ -9461,12 +9195,23 @@ mod tests {
     fn descriptor_table_unknown_and_divergent_methods_have_no_row() {
         // Unknown methods → fail-closed fallback (no descriptor row).
         assert!(collection_method_desc(CollectionKind::HashMap, "frobnicate").is_none());
-        assert!(collection_method_desc(CollectionKind::Vec, "nope").is_none());
-        // Genuinely divergent Vec arms stay code-side hooks, not table rows.
-        for divergent in ["contains", "map", "filter", "fold", "join"] {
-            assert!(
-                collection_method_desc(CollectionKind::Vec, divergent).is_none(),
-                "Vec::{divergent} must remain a code-side hook, not a descriptor row"
+    }
+
+    #[test]
+    fn builtin_vec_signatures_match_source_authority() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        checker.register_builtins();
+        for spec in crate::vec_authority::method_specs() {
+            let sig = checker
+                .lookup_builtin_vec_method_sig(&[Ty::I64], &spec.name)
+                .unwrap_or_else(|| panic!("missing source signature for Vec::{}", spec.name));
+            assert_eq!(
+                sig.extern_symbol
+                    .as_ref()
+                    .map(|symbol| symbol.template.raw.as_str()),
+                Some(spec.template.raw.as_str()),
+                "Vec::{} signature/template drift",
+                spec.name
             );
         }
     }

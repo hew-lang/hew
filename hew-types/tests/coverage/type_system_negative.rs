@@ -2264,14 +2264,11 @@ fn vec_get_copy_record_element_is_accepted() {
 // The initial squash wired the fail-closed fence for push/pop/get/set but
 // missed three classes of bug:
 //
-//   (1) `contains` — returned `None` from `resolve_vec_method` for layout
-//       types (because the match had no `"layout"` arm), which caused
-//       `resolve_vec_runtime_symbol` to early-return `None` without emitting
-//       any diagnostic. `Ty::Bool` was returned silently.
+//   (1) `contains` — the old split resolvers had no complete layout route, so
+//       the call returned `Ty::Bool` without recording a symbol or diagnostic.
 //
-//   (2) `remove` — `resolve_vec_method` always returned the monomorphic
-//       `hew_vec_remove_at` for every element type, so the `_layout` suffix
-//       check in `resolve_vec_runtime_symbol` never triggered.
+//   (2) `remove` — the old method table returned one monomorphic symbol for
+//       every element type, bypassing the layout fence.
 //
 //   (3) `clear` / `clone` / `append` / `extend` — same as (2): always
 //       returned monomorphic symbols, bypassing the fence entirely.
@@ -2611,12 +2608,9 @@ fn vec_extend_retired_is_undefined_method() {
 
 // ── 23c. `len` and `is_empty` are header-only and must NOT fire the fence ──
 //
-// `Vec::len` bypasses `resolve_vec_runtime_symbol` entirely (hardcoded
-// `len_vec` rewrite in `check_vec_method`). `Vec::is_empty` routes through
-// the resolver but `resolve_vec_method` returns the monomorphic
-// `hew_vec_is_empty` which does not end with `_layout`, so no diagnostic
-// is emitted. Both methods are provably safe for layout-backed Vecs because
-// they only read the length header, not the element data.
+// The shared Vec authority resolves both methods to monomorphic header-only
+// symbols. They are safe for layout-backed Vecs because they only read the
+// length header, not element data.
 
 #[test]
 fn vec_len_and_is_empty_on_layout_element_do_not_fire_fence() {

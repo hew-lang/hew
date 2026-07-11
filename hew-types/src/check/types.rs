@@ -283,15 +283,15 @@ pub struct TypeCheckOutput {
     /// Populated at the checker output boundary by classifying every concrete
     /// type that appears as a generic call / record-init type-argument through
     /// the same authority that backs the constructor path
-    /// ([`crate::stdlib::vec_element_runtime_suffix`] + the `Copy` marker for
-    /// the `layout` class). A `Vec<T>` `push`/`get`/`set`/`pop` whose element
+    /// ([`crate::vec_authority::classify_element`] + the `Copy` marker for the
+    /// layout class). A `Vec<T>` `push`/`get`/`set`/`pop` whose element
     /// is a declared type parameter keeps the `hew_vec_*_FAMILY` placeholder
     /// through HIR; MIR substitutes the concrete element per instantiation,
-    /// looks it up here, and maps `(method, token)` to the concrete symbol via
-    /// [`crate::stdlib::vec_element_op_symbol`]. An element ABSENT from this
+    /// looks it up here, and resolves the concrete symbol through
+    /// [`crate::vec_authority::resolve_runtime_symbol`]. An element ABSENT from this
     /// map (non-`Copy`/owned layout, tuples, closures, unresolved nominals)
     /// fails closed at MIR — never a silent accept.
-    pub vec_generic_element_abi: HashMap<Ty, crate::stdlib::VecElementToken>,
+    pub vec_generic_element_abi: HashMap<Ty, crate::vec_authority::VecElementToken>,
     /// Inferred or explicit type arguments for record / enum-struct-variant
     /// initialiser sites on user-defined generic types.  Keyed by the
     /// initialiser expression's span.
@@ -2242,10 +2242,7 @@ pub struct FnSig {
     /// means the declaration is a valid attachment site (`extern "C"`
     /// fn or `impl` method).
     ///
-    /// Stage 2 (this field) records the parsed template — Stage 3
-    /// expands it at each reachable monomorphization and emits a
-    /// `MethodCallRewrite::RewriteToFunction { c_symbol, .. }`,
-    /// replacing the `crate::stdlib::resolve_vec_method` path.
+    /// This field records the parsed template for source-derived FFI dispatch.
     ///
     /// `None` for every signature that does not carry the attribute.
     pub extern_symbol: Option<crate::extern_symbol::ExternSymbolSpec>,
@@ -3149,6 +3146,10 @@ pub struct Checker {
     /// instantiate it against the receiver's type arguments exactly as
     /// `lookup_named_method_sig` would have.
     pub(super) builtin_result_option_method_sigs: HashMap<(crate::BuiltinType, String), FnSig>,
+    /// Canonical runtime-backed `Vec<T>` method signatures parsed from the
+    /// compiled-in `std/builtins.hew` inherent impl. Kept origin-separated from
+    /// user `Vec` declarations so builtin dispatch cannot be shadowed.
+    pub(super) builtin_vec_method_sigs: HashMap<String, FnSig>,
     /// Resolved reporting level for every semantic lint (see [`super::run_lints`]).
     ///
     /// Defaults to [`super::LintLevels::from_defaults`]; the CLI layer threads
@@ -3397,6 +3398,7 @@ impl Checker {
             lang_item_spans: HashMap::new(),
             actor_spawn_type_args: HashMap::new(),
             builtin_result_option_method_sigs: HashMap::new(),
+            builtin_vec_method_sigs: HashMap::new(),
             lint_levels: super::LintLevels::from_defaults(),
             lint_sources: super::LintSources::new(),
             import_type_name_aliases: HashMap::new(),

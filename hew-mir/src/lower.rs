@@ -38813,9 +38813,11 @@ fn place_refs_local(place: Place, local: u32) -> bool {
 
 /// True when every reference to `local` inside `args` is a borrow `contract`
 /// proves — a borrowing string-argument position (`hew_string_concat`,
-/// `print`/`println`, …), or the collection/Vec/bytes receiver slot
+/// `print`/`println`, …), the collection/Vec/bytes receiver slot
 /// (`args[0]`; a reference anywhere in the by-value tail `args[1..]` still
-/// counts as unproven). `true` when `local` does not appear in `args` at all.
+/// counts as unproven), or the all-args-borrow bytes contract
+/// (`hew_bytes_append`: receiver + unpacked source triple are every-position
+/// read-only borrows). `true` when `local` does not appear in `args` at all.
 ///
 /// Shared by the `Terminator::Call` arm of
 /// [`generator_yield_terminator_escapes`] and the `Instr::CallRuntimeAbi` arm
@@ -38840,6 +38842,17 @@ fn call_args_borrow_safe(
 ) -> bool {
     let refs = |p: &Place| place_refs_local(*p, local);
     if !args.iter().any(refs) {
+        return true;
+    }
+    // `hew_bytes_append` borrows the receiver AND the unpacked source triple —
+    // every argument position is a read-only borrow, none consumed — so a
+    // reference to `local` anywhere in the argument list is borrow-safe (it
+    // does not escape via the call). Mirrors the exemption the composite-drop
+    // provers `binder_read_is_borrow_safe_terminator`/`_instr` already carry;
+    // without it, threading a for-await/generator loop variable into the
+    // `hew_bytes_append` source triple made the exit-edge release retract and
+    // leaked that value on a `return`/`break`/`continue` exit (#2474).
+    if contract.borrows_all_bytes_args() {
         return true;
     }
     let receiver_borrow_safe = (contract.borrows_vec_receiver()
@@ -49730,6 +49743,7 @@ mod runtime_callee_ownership_contract_parity {
 
     const FRESH_STRING_SYMBOLS: &[&str] = &[
         "hew_bool_to_string",
+        "hew_bytes_to_string",
         "hew_char_to_string",
         "hew_float_to_string",
         "hew_i64_to_string",
@@ -49791,7 +49805,7 @@ mod runtime_callee_ownership_contract_parity {
         assert_eq!(collection_receiver.len(), 19);
         assert_eq!(bytes_receiver.len(), 11);
         assert_eq!(string_use.len(), 27);
-        assert_eq!(fresh_string.len(), 29);
+        assert_eq!(fresh_string.len(), 30);
 
         for symbol in parity_symbols() {
             let contract = callee_ownership_contract(symbol);
@@ -58693,6 +58707,84 @@ mod drop_admission_type_shape_pins {
              seed decisions route through `binding_seeds_drop_elaboration`, \
              never an inline class test — classify any change to this \
              population in the allowlist above deliberately"
+        );
+    }
+}
+
+#[cfg(test)]
+mod call_args_borrow_safe_bytes_append_pins {
+    //! #2474: `call_args_borrow_safe` (the escape scan the
+    //! for-await/generator loop-variable exit-edge release consults on
+    //! `return`/`break`/`continue`) must recognise the all-args-borrow bytes
+    //! contract. `hew_bytes_append` borrows its receiver AND the unpacked
+    //! source triple — no argument position is consumed — so a loop variable
+    //! threaded into the source triple (args[1..], NOT the receiver) stays
+    //! owned by its binding and its exit-edge drop must fire. The sibling
+    //! composite-drop provers
+    //! (`binder_read_is_borrow_safe_terminator`/`_instr`) already carry this
+    //! exemption; before the fix this function did not, so that shape leaked.
+    use super::*;
+
+    fn contract(sym: &str) -> crate::runtime_symbols::CalleeOwnershipContract {
+        crate::runtime_symbols::callee_ownership_contract(sym)
+    }
+
+    #[test]
+    fn bytes_append_receiver_reference_is_borrow_safe() {
+        // args[0] is the receiver triple's base local.
+        let args = [Place::Local(7)];
+        assert!(
+            call_args_borrow_safe(contract("hew_bytes_append"), &args, 7),
+            "the hew_bytes_append receiver is a read-only borrow"
+        );
+    }
+
+    #[test]
+    fn bytes_append_source_triple_reference_is_borrow_safe() {
+        // A for-await/generator loop variable (local 9) threaded into the
+        // source-triple positions (args[1..]) — the exact #2474 leak shape.
+        // hew_bytes_append(&mut dst_triple, src_ptr, src_offset, src_len):
+        // model the loop var appearing in the by-value source tail.
+        let args = [
+            Place::Local(3), // receiver dst triple
+            Place::Local(9), // src ptr (from loop var)
+            Place::Local(9), // src offset
+            Place::Local(9), // src len
+        ];
+        assert!(
+            call_args_borrow_safe(contract("hew_bytes_append"), &args, 9),
+            "every hew_bytes_append argument position is a read-only borrow; \
+             a source-triple reference does not escape (was leaking pre-#2474)"
+        );
+    }
+
+    #[test]
+    fn local_absent_is_borrow_safe_regardless_of_contract() {
+        // Baseline: a local that never appears in args is trivially safe.
+        let args = [Place::Local(1), Place::Local(2)];
+        assert!(call_args_borrow_safe(
+            contract("hew_bytes_append"),
+            &args,
+            42
+        ));
+    }
+
+    #[test]
+    fn non_borrowing_callee_reference_still_escapes() {
+        // Fail-closed anchor: a callee WITHOUT a proven borrow contract, with
+        // the tracked local in an argument, is still unproven (escape). This
+        // pins that the fix widened ONLY the bytes-all-args-borrow case and
+        // did not relax the fail-closed default for arbitrary callees.
+        let args = [Place::Local(5), Place::Local(9)];
+        let c = contract("hew_vec_push");
+        assert!(
+            !c.borrows_all_bytes_args(),
+            "guard: hew_vec_push must not be an all-args-borrow contract"
+        );
+        assert!(
+            !call_args_borrow_safe(c, &args, 9),
+            "a non-borrowing callee with the tracked local as a by-value arg \
+             must stay unproven (fail-closed leak, never re-admitted)"
         );
     }
 }

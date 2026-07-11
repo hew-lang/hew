@@ -4312,3 +4312,57 @@ fn wire_enum_keyword_form_rejected() {
         "hint should point at #[wire] type, got: {first_hint}"
     );
 }
+
+/// Record rest-patterns (`Point { x, .. }`) are not yet implemented. The parser
+/// must surface an honest "not yet supported" diagnostic pointing at the `..`
+/// rather than the generic `expected identifier, found `..`` error that gives
+/// no hint the construct is simply unimplemented. Covers the typed struct
+/// pattern, the enum-variant-qualified struct pattern, and the shorthand form.
+/// Regression for issue #2339.
+#[allow(clippy::doc_markdown, reason = "doc mentions code-like pattern syntax")]
+#[test]
+fn record_rest_pattern_reports_honest_unsupported_diagnostic() {
+    for source in [
+        // Typed struct pattern in a match arm.
+        "fn f(p: Point) -> i64 { match p { Point { x, .. } => x } }",
+        // Enum-variant-qualified struct pattern.
+        "fn f(e: E) -> i64 { match e { E::A { x, .. } => x } }",
+        // Shorthand record destructure.
+        "fn f(p: Point) -> i64 { match p { { x, .. } => x } }",
+    ] {
+        let result = parse(source);
+        assert!(
+            !result.errors.is_empty(),
+            "expected a parse error for rest pattern in: {source}"
+        );
+        let msg = &result.errors[0].message;
+        assert!(
+            msg.contains("rest-patterns") && msg.contains("not yet supported"),
+            "first error should be the honest unsupported-rest-pattern diagnostic, \
+             got: {msg} (source: {source})"
+        );
+        // The generic parser fallthrough must not fire ahead of the honest message.
+        assert!(
+            !msg.contains("expected identifier"),
+            "generic `expected identifier` should not precede the honest diagnostic, \
+             got: {msg} (source: {source})"
+        );
+        let hint = result.errors[0].hint.as_deref().unwrap_or_default();
+        assert!(
+            hint.contains("list every field explicitly"),
+            "diagnostic should hint at listing fields explicitly, got: {hint}"
+        );
+    }
+}
+
+/// A full field enumeration (no `..`) in a typed record pattern must still parse
+/// cleanly — the rest-pattern guard must not disturb valid destructures.
+#[test]
+fn typed_record_pattern_full_destructure_still_parses() {
+    let result = parse("fn f(p: Point) -> i64 { match p { Point { x, y } => x + y } }");
+    assert!(
+        result.errors.is_empty(),
+        "full typed destructure should parse cleanly, got: {:?}",
+        result.errors
+    );
+}

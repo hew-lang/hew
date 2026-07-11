@@ -284,6 +284,61 @@ fn typecheck_generator_yield_mismatch_reports_element_type() {
 }
 
 #[test]
+fn stream_lazy_adapters_fail_closed_with_one_honest_diagnostic() {
+    // `Stream<T>.take/map/filter` type-check (they carry builtin signatures)
+    // but have no MIR lowering: they previously routed to the legacy
+    // `DeferToLowering` codegen path the Rust MIR pipeline does not consume, so
+    // they dead-ended in HIR lowering with TWO misleading, internal-shaped
+    // `E_NOT_YET_IMPLEMENTED` notes ("method-call rewrite variant" +
+    // "Unsupported HIR node reached verification"). They must now fail closed at
+    // the checker with exactly ONE honest, user-facing capability-boundary
+    // diagnostic (issue #2530).
+    for method in ["take", "map", "filter"] {
+        let arg = if method == "take" { "3" } else { "|x| x" };
+        let source =
+            format!("fn use_stream(s: Stream<string>) {{\n    let _t = s.{method}({arg});\n}}\n");
+        let (errors, _warnings) = parse_and_check(&source);
+        let adapter_errors: Vec<_> = errors
+            .iter()
+            .filter(|e| e.kind.as_kind_str() == "StreamAdapterNotSupported")
+            .collect();
+        assert_eq!(
+            adapter_errors.len(),
+            1,
+            "`Stream<string>.{method}` must emit exactly one StreamAdapterNotSupported \
+             diagnostic; got errors: {errors:?}"
+        );
+        // No leftover internal-shaped NYI noise from the old DeferToLowering path.
+        assert!(
+            !errors
+                .iter()
+                .any(|e| e.kind.as_kind_str() == "NotYetImplemented"),
+            "`Stream<string>.{method}` must not leak the internal NotYetImplemented \
+             note; got errors: {errors:?}"
+        );
+        // The single diagnostic points at the supported alternative.
+        assert!(
+            adapter_errors[0].message.contains("for await"),
+            "the diagnostic must point at the supported `for await` consumption \
+             pattern; got: {}",
+            adapter_errors[0].message
+        );
+    }
+}
+
+#[test]
+fn stream_recv_still_type_checks_after_adapter_fail_closed() {
+    // Guard: fail-closing the lazy adapters must not regress the supported
+    // fundamental recv surface, which continues to type-check cleanly.
+    let source = "fn use_stream(s: Stream<string>) {\n    let _m = s.recv();\n}\n";
+    let (errors, _warnings) = parse_and_check(source);
+    assert!(
+        errors.is_empty(),
+        "`Stream<string>.recv()` must still type-check cleanly; got: {errors:?}"
+    );
+}
+
+#[test]
 fn test_stream_annotation_resolves_to_stream_type() {
     use hew_parser::ast::{FnDecl, Item, TypeExpr};
 

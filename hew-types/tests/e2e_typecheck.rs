@@ -363,7 +363,11 @@ fn consume(s: Stream<string>) {
 }
 
 #[test]
-fn method_call_rewrites_record_deferred_stream_lowering() {
+fn method_call_stream_take_fails_closed_with_honest_diagnostic() {
+    // `take` shares the lazy-adapter capability boundary with `map`/`filter`:
+    // it previously recorded a `DeferToLowering` rewrite that dead-ended in HIR
+    // lowering with an internal-shaped `NotYetImplemented` note. Per issue #2530
+    // it now fails closed at the checker with one honest diagnostic.
     let output = typecheck_inline(
         r"
 fn consume(s: Stream<bytes>) {
@@ -371,23 +375,44 @@ fn consume(s: Stream<bytes>) {
 }
 ",
     );
-    assert!(
-        output.errors.is_empty(),
-        "expected clean typecheck, got: {:#?}",
+    let adapter_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| matches!(&e.kind, TypeErrorKind::StreamAdapterNotSupported { .. }))
+        .collect();
+    assert_eq!(
+        adapter_errors.len(),
+        1,
+        "expected exactly one StreamAdapterNotSupported diagnostic, got: {:#?}",
         output.errors
     );
     assert!(
-        output
+        matches!(
+            &adapter_errors[0].kind,
+            TypeErrorKind::StreamAdapterNotSupported { method, element_ty }
+                if method == "take" && element_ty == "bytes"
+        ),
+        "expected `take`/`bytes` in the diagnostic, got: {:?}",
+        adapter_errors[0].kind
+    );
+    assert!(
+        !output
             .method_call_rewrites
             .values()
             .any(|rewrite| matches!(rewrite, hew_types::MethodCallRewrite::DeferToLowering)),
-        "expected checker-owned deferred rewrite metadata, got: {:?}",
+        "fail-closed adapters must record no DeferToLowering rewrite, got: {:?}",
         output.method_call_rewrites
     );
 }
 
 #[test]
-fn method_call_receiver_kinds_record_string_stream_dispatch() {
+fn method_call_stream_map_fails_closed_with_honest_diagnostic() {
+    // The lazy stream adapters (`take`/`map`/`filter`) have no MIR lowering.
+    // They previously type-checked clean and recorded `StreamInstance` receiver
+    // metadata before dead-ending in HIR lowering with internal-shaped
+    // `E_NOT_YET_IMPLEMENTED` noise. Per issue #2530 they now fail closed at the
+    // checker with exactly one honest `StreamAdapterNotSupported` diagnostic and
+    // record no receiver-kind metadata.
     let output = typecheck_inline(
         r"
 fn consume(s: Stream<string>) {
@@ -395,27 +420,41 @@ fn consume(s: Stream<string>) {
 }
 ",
     );
-    assert!(
-        output.errors.is_empty(),
-        "expected clean typecheck, got: {:#?}",
+    let adapter_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| matches!(&e.kind, TypeErrorKind::StreamAdapterNotSupported { .. }))
+        .collect();
+    assert_eq!(
+        adapter_errors.len(),
+        1,
+        "expected exactly one StreamAdapterNotSupported diagnostic, got: {:#?}",
         output.errors
     );
     assert!(
-        output
+        matches!(
+            &adapter_errors[0].kind,
+            TypeErrorKind::StreamAdapterNotSupported { method, element_ty }
+                if method == "map" && element_ty == "string"
+        ),
+        "expected `map`/`string` in the diagnostic, got: {:?}",
+        adapter_errors[0].kind
+    );
+    assert!(
+        !output
             .method_call_receiver_kinds
             .values()
             .any(|kind| matches!(
                 kind,
-                hew_types::MethodCallReceiverKind::StreamInstance { element_kind }
-                    if element_kind == "string"
+                hew_types::MethodCallReceiverKind::StreamInstance { .. }
             )),
-        "expected string stream receiver metadata, got: {:?}",
+        "fail-closed adapters must record no StreamInstance metadata, got: {:?}",
         output.method_call_receiver_kinds
     );
 }
 
 #[test]
-fn method_call_receiver_kinds_record_bytes_stream_dispatch() {
+fn method_call_stream_filter_fails_closed_with_honest_diagnostic() {
     let output = typecheck_inline(
         r"
 fn consume(s: Stream<bytes>) {
@@ -423,21 +462,35 @@ fn consume(s: Stream<bytes>) {
 }
 ",
     );
-    assert!(
-        output.errors.is_empty(),
-        "expected clean typecheck, got: {:#?}",
+    let adapter_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| matches!(&e.kind, TypeErrorKind::StreamAdapterNotSupported { .. }))
+        .collect();
+    assert_eq!(
+        adapter_errors.len(),
+        1,
+        "expected exactly one StreamAdapterNotSupported diagnostic, got: {:#?}",
         output.errors
     );
     assert!(
-        output
+        matches!(
+            &adapter_errors[0].kind,
+            TypeErrorKind::StreamAdapterNotSupported { method, element_ty }
+                if method == "filter" && element_ty == "bytes"
+        ),
+        "expected `filter`/`bytes` in the diagnostic, got: {:?}",
+        adapter_errors[0].kind
+    );
+    assert!(
+        !output
             .method_call_receiver_kinds
             .values()
             .any(|kind| matches!(
                 kind,
-                hew_types::MethodCallReceiverKind::StreamInstance { element_kind }
-                    if element_kind == "bytes"
+                hew_types::MethodCallReceiverKind::StreamInstance { .. }
             )),
-        "expected bytes stream receiver metadata, got: {:?}",
+        "fail-closed adapters must record no StreamInstance metadata, got: {:?}",
         output.method_call_receiver_kinds
     );
 }

@@ -1724,10 +1724,6 @@ impl Checker {
         );
     }
 
-    fn record_deferred_method_call_rewrite(&mut self, span: &Span) {
-        self.record_method_call_rewrite(span, MethodCallRewrite::DeferToLowering);
-    }
-
     /// Record a channel method rewrite to be resolved after inference settles.
     ///
     /// Called instead of `record_runtime_method_call_rewrite` when the inner
@@ -1960,14 +1956,6 @@ impl Checker {
             Ty::String => Some("string"),
             Ty::Bytes => Some("bytes"),
             _ => None,
-        }
-    }
-
-    fn stream_receiver_element_kind(ty: &Ty) -> &'static str {
-        match ty {
-            Ty::String => "string",
-            Ty::Bytes => "bytes",
-            _ => "",
         }
     }
 
@@ -3056,21 +3044,39 @@ impl Checker {
                 sig.return_type
             }
             "take" | "map" | "filter" => {
+                // These lazy adapters have builtin signatures (so they
+                // type-check) but no MIR lowering: they routed to the legacy
+                // `DeferToLowering` codegen path the Rust MIR pipeline does not
+                // consume, dead-ending in HIR lowering with two misleading,
+                // internal-shaped `E_NOT_YET_IMPLEMENTED` notes. Fail closed here
+                // at the checker with one honest capability-boundary diagnostic
+                // so the user sees a single clear message pointing at the
+                // supported alternative, and lowering never reaches the stub.
+                // Still check the argument so an ill-typed adapter arg is not
+                // masked by this boundary error.
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
                     if let Some(param_ty) = sig.params.first() {
                         self.check_against(expr, sp, param_ty);
                     }
                 }
-                self.record_deferred_method_call_rewrite(span);
-                self.record_method_call_receiver_kind(
-                    span,
-                    MethodCallReceiverKind::StreamInstance {
-                        element_kind: Self::stream_receiver_element_kind(&resolved_inner)
-                            .to_string(),
+                self.report_error(
+                    TypeErrorKind::StreamAdapterNotSupported {
+                        method: method.to_string(),
+                        element_ty: inner.user_facing().to_string(),
                     },
+                    span,
+                    format!(
+                        "`Stream<{}>.{method}` is not yet supported: the lazy \
+                         stream adapters (`take`/`map`/`filter`) have no lowering \
+                         yet; consume the stream directly with `for await x in \
+                         s {{ ... }}` (applying the `take`/`map`/`filter` logic in \
+                         the loop body), or `.recv()` in a loop \
+                         [E_STREAM_ADAPTER_UNSUPPORTED]",
+                        inner.user_facing()
+                    ),
                 );
-                sig.return_type
+                Ty::Error
             }
             _ => {
                 for arg in args {
@@ -8405,7 +8411,8 @@ impl Checker {
                 let mut found_sig = None;
                 let mut found_bound = None;
                 for bound in traits {
-                    if let Some(sig) = self.lookup_trait_method(&bound.trait_name, method) {
+                    let trait_lookup_key = self.trait_ref_lookup_key(&bound.trait_name);
+                    if let Some(sig) = self.lookup_trait_method(&trait_lookup_key, method) {
                         found_sig = Some(sig);
                         found_bound = Some(bound);
                         break;
@@ -8479,7 +8486,8 @@ impl Checker {
                         // 0..3 are the fixed prefix triple
                         // (`drop_in_place`/`size_of`/`align_of`), trait methods
                         // start at slot 3 in trait-declaration order.
-                        if let Some(trait_info) = self.trait_defs.get(&bound.trait_name) {
+                        let trait_lookup_key = self.trait_ref_lookup_key(&bound.trait_name);
+                        if let Some(trait_info) = self.trait_defs.get(&trait_lookup_key) {
                             if let Some(method_idx) =
                                 trait_info.methods.iter().position(|m| m.name == method)
                             {
@@ -8980,24 +8988,6 @@ mod tests {
                 args: vec![],
             }),
             None
-        );
-    }
-
-    #[test]
-    fn stream_receiver_element_kind_stays_canonical() {
-        assert_eq!(Checker::stream_receiver_element_kind(&Ty::String), "string");
-        assert_eq!(Checker::stream_receiver_element_kind(&Ty::Bytes), "bytes");
-        assert_eq!(
-            Checker::stream_receiver_element_kind(&Ty::Named {
-                builtin: None,
-                name: "String".into(),
-                args: vec![],
-            }),
-            ""
-        );
-        assert_eq!(
-            Checker::stream_receiver_element_kind(&Ty::Var(TypeVar::fresh())),
-            ""
         );
     }
 

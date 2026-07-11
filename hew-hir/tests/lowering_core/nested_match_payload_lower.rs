@@ -248,3 +248,162 @@ fn sum(t: (i64, i64, i64)) -> i64 {
     assert_eq!(arms[0].bindings[2].name, "c");
     assert_eq!(arms[0].bindings[2].field_idx, 2);
 }
+
+// ── Struct-variant field aggregate destructure (issue #2354) ──────────────────
+
+// Collect every `let`-binding name introduced in an arm body's prelude block.
+// Aggregate field destructures (`Variant { field: (a, b) }`) lower the inner
+// binders as prelude `let` statements off a synthetic per-field temp — the same
+// shape the tuple-variant path uses — so the arm's own `bindings` list carries
+// only that synthetic `__payload_*` temp, and the user-visible binders live in
+// the body block's statements.
+fn arm_body_prelude_binding_names(arm: &hew_hir::HirMatchArm) -> Vec<String> {
+    let HirExprKind::Block(block) = &arm.body.kind else {
+        return Vec::new();
+    };
+    block
+        .statements
+        .iter()
+        .filter_map(|stmt| match &stmt.kind {
+            hew_hir::HirStmtKind::Let(binding, _) => Some(binding.name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+// Regression for hew-lang/hew#2354: a tuple sub-pattern in enum struct-variant
+// field position (`Data { value: (a, b) }`) passed the checker but failed HIR
+// lowering with `E_HIR: identifier has no binding` because the aggregate
+// destructure lowering ran only for tuple-variant (`Pattern::Constructor`)
+// arms, never for struct-variant (`Pattern::Struct`) arms. The inner binders
+// must now materialise: a synthetic per-field temp in the arm bindings plus the
+// user-visible binders as prelude lets in the arm body.
+#[test]
+fn struct_variant_tuple_field_destructure_binds_inner_names() {
+    let output = lower_checked(
+        r"
+enum Packet {
+    Data { value: (i64, i64) };
+    Empty;
+}
+
+fn sum(p: Packet) -> i64 {
+    match p {
+        Data { value: (a, b) } => a + b,
+        Empty => 0,
+    }
+}",
+    );
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected HIR diagnostics: {:?}",
+        output.diagnostics
+    );
+
+    let HirExprKind::Match { arms, .. } = find_match_in_fn(&output, "sum") else {
+        panic!("expected match expression")
+    };
+    let data_arm = &arms[0];
+    // The synthetic per-field temp is the only arm binding; it drives the
+    // field projection MIR consumes.
+    let temp_names: Vec<&str> = data_arm.bindings.iter().map(|b| b.name.as_str()).collect();
+    assert!(
+        temp_names.iter().any(|n| n.starts_with("__payload_")),
+        "expected a synthetic payload temp in arm bindings: {temp_names:?}"
+    );
+    // The user-visible inner binders `a`/`b` must appear as prelude lets; before
+    // the fix they were never materialised and the body references dangled.
+    let inner = arm_body_prelude_binding_names(data_arm);
+    assert!(
+        inner.iter().any(|n| n == "a"),
+        "inner binder `a` missing from arm body prelude: {inner:?}"
+    );
+    assert!(
+        inner.iter().any(|n| n == "b"),
+        "inner binder `b` missing from arm body prelude: {inner:?}"
+    );
+}
+
+// A plain field binder alongside an aggregate field must both resolve, and the
+// field-to-declared-type mapping is by NAME, so a pattern whose field order
+// differs from declaration order still lowers cleanly (no dangling binders).
+#[test]
+fn struct_variant_mixed_and_reordered_fields_all_bind() {
+    let output = lower_checked(
+        r"
+enum P {
+    D { p: (i64, i64), q: (i64, i64) };
+    E;
+}
+
+fn sum(v: P) -> i64 {
+    match v {
+        D { q: (c, d), p: (a, b) } => a + b + c + d,
+        E => 0,
+    }
+}",
+    );
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected HIR diagnostics: {:?}",
+        output.diagnostics
+    );
+
+    let HirExprKind::Match { arms, .. } = find_match_in_fn(&output, "sum") else {
+        panic!("expected match expression")
+    };
+    let inner = arm_body_prelude_binding_names(&arms[0]);
+    for name in ["a", "b", "c", "d"] {
+        assert!(
+            inner.iter().any(|n| n == name),
+            "inner binder `{name}` missing from arm body prelude: {inner:?}"
+        );
+    }
+}
+
+// Generic enum struct-variant: the field's declared type mentions a type param
+// that must be substituted from the scrutinee's type args before the tuple
+// sub-pattern's inner binders are typed and materialised. The synthetic field
+// temp carries the substituted concrete field type (`(i64, i64)`).
+#[test]
+fn generic_struct_variant_tuple_field_destructure_binds_inner_names() {
+    let output = lower_checked(
+        r"
+enum Box<T> {
+    Pair { both: (T, T) };
+    Empty;
+}
+
+fn sum(b: Box<i64>) -> i64 {
+    match b {
+        Pair { both: (a, c) } => a + c,
+        Empty => 0,
+    }
+}",
+    );
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected HIR diagnostics: {:?}",
+        output.diagnostics
+    );
+
+    let HirExprKind::Match { arms, .. } = find_match_in_fn(&output, "sum") else {
+        panic!("expected match expression")
+    };
+    let inner = arm_body_prelude_binding_names(&arms[0]);
+    assert!(
+        inner.iter().any(|n| n == "a") && inner.iter().any(|n| n == "c"),
+        "inner binders `a`/`c` missing from arm body prelude: {inner:?}"
+    );
+    // The synthetic field temp carries the substituted concrete field type,
+    // not `(T, T)`.
+    let temp = arms[0]
+        .bindings
+        .iter()
+        .find(|b| b.name.starts_with("__payload_"))
+        .expect("synthetic payload temp present");
+    assert_eq!(
+        temp.ty,
+        ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64])
+    );
+}

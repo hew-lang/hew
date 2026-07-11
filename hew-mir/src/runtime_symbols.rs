@@ -873,22 +873,34 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
         "hew_bytes_append" => CalleeOwnershipContract::new(BytesAllArgsBorrow, Escaping, Untracked),
 
         // Bytes receiver reads and in-place mutations leave arg[0] owned by the
-        // caller. `hew_bytes_to_string` is not a fresh-string producer here.
-        "hew_bytes_clear"
-        | "hew_bytes_contains"
-        | "hew_bytes_index"
-        | "hew_bytes_is_empty"
-        | "hew_bytes_len"
-        | "hew_bytes_pop"
-        | "hew_bytes_push"
-        | "hew_bytes_set"
-        | "hew_bytes_slice"
-        | "hew_bytes_to_string" => CalleeOwnershipContract::new(
+        // caller and hand back no tracked result.
+        "hew_bytes_clear" | "hew_bytes_contains" | "hew_bytes_index" | "hew_bytes_is_empty"
+        | "hew_bytes_len" | "hew_bytes_pop" | "hew_bytes_push" | "hew_bytes_set"
+        | "hew_bytes_slice" => CalleeOwnershipContract::new(
             BorrowsReceiver {
                 scans: ReceiverScanSet::BYTES,
             },
             Escaping,
             Untracked,
+        ),
+
+        // `hew_bytes_to_string` borrows its bytes-triple arg[0] (the source
+        // buffer stays owned by the caller) but its RESULT is a fresh, header-
+        // aware `+1` string: `alloc_cstring_from_str` allocates on BOTH the
+        // empty and non-empty paths (hew-runtime/src/bytes.rs), and the result
+        // reaches `hew_string_drop`/`free_cstring`. So it is a fresh-owned-string
+        // producer, identical in ownership shape to the `Vec<string>` getter
+        // `hew_vec_get_str`: the caller owes exactly one balancing drop. The MIR
+        // `read_string` lowering (`await conn.read_string()`, non-deadline path)
+        // emits this call with a string destination; the deadline path converts
+        // codegen-side and SKIPS this call, so the MIR result is always a genuine
+        // sole owner with no other drop site (no double-free risk).
+        "hew_bytes_to_string" => CalleeOwnershipContract::new(
+            BorrowsReceiver {
+                scans: ReceiverScanSet::BYTES,
+            },
+            Escaping,
+            FreshOwnedString,
         ),
 
         // The polymorphic Vec length symbol is a receiver borrow for both the
@@ -1150,6 +1162,11 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
 
 #[cfg(test)]
 const TOML_RESULT_CONSISTENCY: &[(&str, &str, ResultOwnership)] = &[
+    (
+        "hew_bytes_to_string",
+        "fresh",
+        ResultOwnership::FreshOwnedString,
+    ),
     ("hew_vec_get_clone", "fresh", ResultOwnership::Untracked),
     ("hew_vec_get_owned", "borrowed", ResultOwnership::Borrowed),
     (
@@ -1422,6 +1439,31 @@ mod tests {
                 "{symbol} diverges from its TOML-checked result contract",
             );
         }
+    }
+
+    #[test]
+    fn hew_bytes_to_string_is_a_fresh_owned_string_producer_that_borrows_its_source() {
+        // Issue #2354/#2332: `hew_bytes_to_string` allocates a fresh header-aware
+        // string on BOTH the empty and non-empty paths
+        // (hew-runtime/src/bytes.rs `alloc_cstring_from_str`), so its RESULT is a
+        // `+1` owner the caller must release exactly once — never zero (leak),
+        // never twice (double-free). The MIR `read_string` lowering
+        // (`await conn.read_string()`, non-deadline path) emits this call with a
+        // string destination and no other drop site, so the widened admission is
+        // sound in both directions.
+        let contract = callee_ownership_contract("hew_bytes_to_string");
+        assert!(
+            contract.produces_fresh_owned_string(),
+            "hew_bytes_to_string must be classified as a fresh-owned-string producer",
+        );
+        // The SOURCE bytes-triple arg[0] is only borrowed (the caller keeps the
+        // buffer's drop obligation): the fresh RESULT and the borrowed SOURCE are
+        // independent, so admitting the result never double-accounts the input.
+        assert!(
+            contract.borrows_bytes_receiver(),
+            "hew_bytes_to_string must still borrow its bytes-triple source arg",
+        );
+        assert_eq!(contract.result, ResultOwnership::FreshOwnedString);
     }
 
     #[test]

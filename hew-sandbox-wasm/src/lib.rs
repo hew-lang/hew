@@ -1458,6 +1458,100 @@ fn main() {
             .collect()
     }
 
+    /// Collect the first-argument `Value` of every `const.i64` instruction.
+    fn const_i64_operand_values(bytecode: &SandboxBytecodePackage) -> Vec<serde_json::Value> {
+        bytecode
+            .functions
+            .iter()
+            .flat_map(|function| &function.blocks)
+            .flat_map(|block| &block.instructions)
+            .filter(|instruction| instruction.op == "const.i64")
+            .filter_map(|instruction| instruction.args.first())
+            .map(|operand| operand.value.clone())
+            .collect()
+    }
+
+    #[test]
+    fn large_i64_literal_is_string_encoded_to_survive_json_transport() {
+        // Any i64 outside the JS safe-integer range (|n| > 2^53 - 1) must be
+        // emitted as a decimal *string* operand, otherwise it loses precision
+        // when the JS VM re-parses the bytecode via JSON.parse (doubles).
+        set_test_hewpath();
+        let source = r#"
+fn main() {
+    let big = 9223372036854775807;
+    let neg = -9223372036854775808;
+    println("large literals");
+}
+"#;
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output.diagnostics.iter().all(|d| d.severity != "error"),
+            "unexpected diagnostics: {:#?}",
+            output.diagnostics
+        );
+        let bytecode = output.bytecode.expect("bytecode should be emitted");
+        let values = const_i64_operand_values(&bytecode);
+        assert!(
+            values
+                .iter()
+                .any(|v| v == &serde_json::json!("9223372036854775807")),
+            "i64::MAX must be string-encoded, got: {values:#?}"
+        );
+        assert!(
+            values
+                .iter()
+                .any(|v| v == &serde_json::json!("-9223372036854775808")),
+            "i64::MIN must be string-encoded, got: {values:#?}"
+        );
+        // Regression guard: the raw JSON must not contain the imprecise
+        // number-encoded form of i64::MAX.
+        let serialized = serde_json::to_string(&bytecode).expect("serialize");
+        assert!(
+            !serialized.contains(":9223372036854775807,")
+                && !serialized.contains(":9223372036854775807}"),
+            "i64::MAX must not appear as a bare JSON number operand"
+        );
+    }
+
+    #[test]
+    fn small_i64_literal_stays_numeric() {
+        // In-safe-range values stay compact JSON numbers so common-case
+        // bytecode remains small and diff-friendly.
+        set_test_hewpath();
+        let source = r#"
+fn main() {
+    let small = 42;
+    let boundary = 9007199254740991;
+    println("small literals");
+}
+"#;
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output.diagnostics.iter().all(|d| d.severity != "error"),
+            "unexpected diagnostics: {:#?}",
+            output.diagnostics
+        );
+        let bytecode = output.bytecode.expect("bytecode should be emitted");
+        let values = const_i64_operand_values(&bytecode);
+        assert!(
+            values.iter().any(|v| v == &serde_json::json!(42)),
+            "small literal must stay numeric, got: {values:#?}"
+        );
+        assert!(
+            values
+                .iter()
+                .any(|v| v == &serde_json::json!(9_007_199_254_740_991_i64)),
+            "safe-int boundary must stay numeric, got: {values:#?}"
+        );
+        assert!(
+            !values.iter().any(|v| v == &serde_json::json!("42")),
+            "small literal must not be string-encoded, got: {values:#?}"
+        );
+    }
+
     #[test]
     fn simple_for_range_lowers_to_bytecode() {
         set_test_hewpath();

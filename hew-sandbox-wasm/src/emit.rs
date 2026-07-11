@@ -2272,7 +2272,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 self.emit_instruction(
                     "const.i64",
                     Some(dst.clone()),
-                    vec![Operand::literal(*value)],
+                    vec![i64_literal_operand(*value)],
                     Some(span),
                     None,
                 );
@@ -2327,7 +2327,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 self.emit_instruction(
                     "const.i64",
                     Some(dst.clone()),
-                    vec![Operand::literal(*value)],
+                    vec![i64_literal_operand(*value)],
                     Some(span),
                     Some(json!({ "literal_kind": "duration_ns" })),
                 );
@@ -4759,6 +4759,25 @@ fn parse_duration_ms(raw: &str) -> u64 {
         "h" => value.saturating_mul(3_600_000),
         // Seconds is both the explicit `"s"` unit and the fallback default.
         _ => value.saturating_mul(1_000),
+    }
+}
+
+/// Build a `const.i64` literal operand that survives the VM's JSON transport.
+///
+/// The bytecode is serialized to JSON and re-parsed by the JS VM via
+/// `JSON.parse`, whose numbers are IEEE-754 doubles. Any i64 outside the
+/// safe-integer range (`|n| > 2^53 - 1`) would silently lose precision as a
+/// JSON number (e.g. `i64::MAX` → `9223372036854775808`). The VM's `bigintArg`
+/// reader already accepts a decimal *string* operand and parses it with
+/// `BigInt(..)`, so we string-encode out-of-safe-range values to preserve the
+/// exact 64-bit magnitude. In-range values stay numeric to keep the common-case
+/// bytecode compact and diff-friendly.
+fn i64_literal_operand(value: i64) -> Operand {
+    const SAFE_INT_MAX: i64 = 9_007_199_254_740_991; // 2^53 - 1
+    if value.unsigned_abs() > SAFE_INT_MAX as u64 {
+        Operand::literal(value.to_string())
+    } else {
+        Operand::literal(value)
     }
 }
 

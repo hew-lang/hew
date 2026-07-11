@@ -1556,14 +1556,16 @@ pub trait HeapOwnershipLayouts {
 ///
 /// Answers "does `ty` transitively own heap memory?" — `true` when `ty` is, or
 /// any type reachable through its record fields, enum/machine variant payloads,
-/// tuple/array/slice elements, or generic type arguments is, a heap-owning
-/// leaf. The leaf set is the `ValueClass::of_ty` heap classification made
-/// structural: `string`, `Bytes`, `CancellationToken`, `Generator<Y, R>`,
-/// `AsyncGenerator<Y>`, and the `Vec` / `HashMap` / `HashSet` collection
-/// handles (each owns a heap buffer / runtime handle regardless of its element
-/// type — even `Vec<i64>` owns its backing buffer, even `Generator<i64, ()>`
-/// owns its coro frame + heap companion). A record/enum/tuple FIELD of one of
-/// these makes the whole composite heap-owning.
+/// tuple/array/slice elements, closure captures, or generic type arguments is,
+/// a heap-owning leaf. The leaf set is the `ValueClass::of_ty` heap
+/// classification made structural: `string`, `Bytes`, `CancellationToken`,
+/// `Generator<Y, R>`, `AsyncGenerator<Y>`, and the `Vec` / `HashMap` /
+/// `HashSet` collection handles (each owns a heap buffer / runtime handle
+/// regardless of its element type — even `Vec<i64>` owns its backing buffer,
+/// even `Generator<i64, ()>` owns its coro frame + heap companion). A
+/// record/enum/tuple field or closure capture of one of these makes the whole
+/// value heap-owning. Bare `Function` values and closures whose captures are
+/// all non-owning remain heap-free.
 ///
 /// Every "does this own heap" decision — the MIR drop elaborator's composite
 /// drop-allow derivation, the move/double-free analyses, the owned-Vec element
@@ -1666,6 +1668,12 @@ fn ty_owns_heap_inner(
                 ),
             ..
         } => true,
+        // A bare function pair has no owned environment. A closure pair needs
+        // cleanup only when its captured state transitively owns heap; the env
+        // box's in-band free thunk releases both those captures and the box.
+        ResolvedTy::Closure { captures, .. } => captures
+            .iter()
+            .any(|capture| ty_owns_heap_inner(capture, layouts, visited)),
         ResolvedTy::Named { name, args, .. } => {
             // 1. Type arguments first (fast path: `Option<string>`, etc.).
             if args
@@ -1719,7 +1727,29 @@ fn ty_owns_heap_inner(
         ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
             ty_owns_heap_inner(inner, layouts, visited)
         }
-        _ => false,
+        ResolvedTy::I8
+        | ResolvedTy::I16
+        | ResolvedTy::I32
+        | ResolvedTy::I64
+        | ResolvedTy::U8
+        | ResolvedTy::U16
+        | ResolvedTy::U32
+        | ResolvedTy::U64
+        | ResolvedTy::Isize
+        | ResolvedTy::Usize
+        | ResolvedTy::F32
+        | ResolvedTy::F64
+        | ResolvedTy::Bool
+        | ResolvedTy::Char
+        | ResolvedTy::Duration
+        | ResolvedTy::Unit
+        | ResolvedTy::Never
+        | ResolvedTy::Function { .. }
+        | ResolvedTy::Pointer { .. }
+        | ResolvedTy::Borrow { .. }
+        | ResolvedTy::TraitObject { .. }
+        | ResolvedTy::Task(_)
+        | ResolvedTy::TypeParam { .. } => false,
     }
 }
 
@@ -6476,6 +6506,14 @@ mod heap_owning_tests {
         )
     }
 
+    fn closure_with_captures(captures: Vec<ResolvedTy>) -> ResolvedTy {
+        ResolvedTy::Closure {
+            params: vec![],
+            ret: Box::new(ResolvedTy::I64),
+            captures,
+        }
+    }
+
     #[test]
     fn generator_handle_is_heap_owning_despite_bitcopy_args() {
         // Regression: before this arm a `Generator<i64, ()>` was classified
@@ -6492,6 +6530,27 @@ mod heap_owning_tests {
     #[test]
     fn cancellation_token_is_heap_owning() {
         assert!(ty_contains_heap_owning(&ResolvedTy::CancellationToken, &[]));
+    }
+
+    #[test]
+    fn closure_with_heap_owning_capture_is_heap_owning() {
+        assert!(ty_contains_heap_owning(
+            &closure_with_captures(vec![ResolvedTy::String]),
+            &[],
+        ));
+    }
+
+    #[test]
+    fn function_and_copy_only_closure_are_not_heap_owning() {
+        let function = ResolvedTy::Function {
+            params: vec![],
+            ret: Box::new(ResolvedTy::I64),
+        };
+        assert!(!ty_contains_heap_owning(&function, &[]));
+        assert!(!ty_contains_heap_owning(
+            &closure_with_captures(vec![ResolvedTy::I64, ResolvedTy::Bool]),
+            &[],
+        ));
     }
 
     #[test]

@@ -28298,6 +28298,102 @@ fn ty_is_nonowning_pid_leaf(ty: &ResolvedTy) -> bool {
     )
 }
 
+/// Drop a two-pointer closure pair held at `pair_ptr`.
+///
+/// The env word is null for bare functions and capture-free closures. Otherwise
+/// it points at a heap env whose preceding header word carries the typed free
+/// thunk. Calling that thunk releases every owned capture and the env box, then
+/// the env slot is nulled so any structurally reachable second drop is a no-op.
+fn emit_closure_pair_drop_at_slot<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    pair_ptr: PointerValue<'ctx>,
+    pair_ty: BasicTypeEnum<'ctx>,
+    label: &str,
+) -> CodegenResult<()> {
+    let struct_ty = match pair_ty {
+        BasicTypeEnum::StructType(st)
+            if st.count_fields() == 2
+                && st
+                    .get_field_types()
+                    .iter()
+                    .all(|field| matches!(field, BasicTypeEnum::PointerType(_))) =>
+        {
+            st
+        }
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "{label}: closure pair slot is not the two-pointer closure pair \
+                 (got {other:?}); refusing to derive an env slot"
+            )));
+        }
+    };
+    let ctx = fn_ctx.ctx;
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let env_slot = fn_ctx
+        .builder
+        .build_struct_gep(struct_ty, pair_ptr, 1, &format!("{label}_env_slot"))
+        .llvm_ctx_with(|| format!("{label} closure env gep"))?;
+    let env = fn_ctx
+        .builder
+        .build_load(ptr_ty, env_slot, &format!("{label}_env"))
+        .llvm_ctx_with(|| format!("{label} closure env load"))?
+        .into_pointer_value();
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| CodegenError::Llvm(format!("{label}: closure pair drop has no parent")))?;
+    let free_bb = ctx.append_basic_block(parent, &format!("{label}_closure_env_free"));
+    let cont_bb = ctx.append_basic_block(parent, &format!("{label}_closure_env_drop_cont"));
+    let is_null = fn_ctx
+        .builder
+        .build_is_null(env, &format!("{label}_env_is_null"))
+        .llvm_ctx_with(|| format!("{label} closure env null check"))?;
+    fn_ctx
+        .builder
+        .build_conditional_branch(is_null, cont_bb, free_bb)
+        .llvm_ctx_with(|| format!("{label} closure env branch"))?;
+
+    fn_ctx.builder.position_at_end(free_bb);
+    let neg_header = ctx
+        .i64_type()
+        .const_int(CLOSURE_ENV_BOX_HEADER.wrapping_neg(), true);
+    let thunk_slot = unsafe {
+        fn_ctx.builder.build_in_bounds_gep(
+            ctx.i8_type(),
+            env,
+            &[neg_header],
+            &format!("{label}_env_thunk_slot"),
+        )
+    }
+    .llvm_ctx_with(|| format!("{label} closure env thunk gep"))?;
+    let thunk = fn_ctx
+        .builder
+        .build_load(ptr_ty, thunk_slot, &format!("{label}_env_free_thunk"))
+        .llvm_ctx_with(|| format!("{label} closure env thunk load"))?
+        .into_pointer_value();
+    let thunk_ty = ctx.void_type().fn_type(&[ptr_ty.into()], false);
+    fn_ctx
+        .builder
+        .build_indirect_call(
+            thunk_ty,
+            thunk,
+            &[env.into()],
+            &format!("{label}_closure_env_free_call"),
+        )
+        .llvm_ctx_with(|| format!("{label} closure env thunk call"))?;
+    fn_ctx
+        .builder
+        .build_store(env_slot, ptr_ty.const_null())
+        .llvm_ctx_with(|| format!("{label} closure env null store"))?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(cont_bb)
+        .llvm_ctx_with(|| format!("{label} closure env continuation"))?;
+    fn_ctx.builder.position_at_end(cont_bb);
+    Ok(())
+}
+
 fn emit_one_elab_drop_unguarded(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> CodegenResult<()> {
     // catch-all: a future drop-kind variant must force a compile error
     // here so a new heap-owning class can never be silently folded into
@@ -28509,78 +28605,7 @@ fn emit_one_elab_drop_unguarded(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> Code
                 )));
             }
             let (pair_ptr, pair_ty) = place_pointer(fn_ctx, drop.place)?;
-            let struct_ty = match pair_ty {
-                BasicTypeEnum::StructType(st) if st.count_fields() == 2 => st,
-                other => {
-                    return Err(CodegenError::FailClosed(format!(
-                        "ClosurePair ElabDrop @ {place:?}: place is not the \
-                         two-pointer closure pair (got {other:?}); the MIR \
-                         producer must only emit ClosurePair for fn-typed \
-                         locals (LESSONS: boundary-fail-closed).",
-                        place = drop.place,
-                    )));
-                }
-            };
-            let ctx = fn_ctx.ctx;
-            let ptr_ty = ctx.ptr_type(AddressSpace::default());
-            let i64_ty = ctx.i64_type();
-            let env_field = fn_ctx
-                .builder
-                .build_struct_gep(struct_ty, pair_ptr, 1, "closure_drop_env_slot")
-                .llvm_ctx("ClosurePair drop env gep")?;
-            let env = fn_ctx
-                .builder
-                .build_load(ptr_ty, env_field, "closure_drop_env")
-                .llvm_ctx("ClosurePair drop env load")?
-                .into_pointer_value();
-            let parent = fn_ctx
-                .builder
-                .get_insert_block()
-                .and_then(|bb| bb.get_parent())
-                .ok_or_else(|| {
-                    CodegenError::Llvm("ClosurePair drop has no parent function".into())
-                })?;
-            let free_bb = ctx.append_basic_block(parent, "closure_env_free");
-            let cont_bb = ctx.append_basic_block(parent, "closure_env_drop_cont");
-            let is_null = fn_ctx
-                .builder
-                .build_is_null(env, "closure_env_is_null")
-                .llvm_ctx("ClosurePair drop null check")?;
-            fn_ctx
-                .builder
-                .build_conditional_branch(is_null, cont_bb, free_bb)
-                .llvm_ctx("ClosurePair drop branch")?;
-            fn_ctx.builder.position_at_end(free_bb);
-            let neg_header = i64_ty.const_int(CLOSURE_ENV_BOX_HEADER.wrapping_neg(), true);
-            let thunk_slot = unsafe {
-                fn_ctx.builder.build_in_bounds_gep(
-                    ctx.i8_type(),
-                    env,
-                    &[neg_header],
-                    "closure_env_thunk_slot",
-                )
-            }
-            .llvm_ctx("ClosurePair drop thunk gep")?;
-            let thunk = fn_ctx
-                .builder
-                .build_load(ptr_ty, thunk_slot, "closure_env_free_thunk")
-                .llvm_ctx("ClosurePair drop thunk load")?
-                .into_pointer_value();
-            let thunk_ty = ctx.void_type().fn_type(&[ptr_ty.into()], false);
-            fn_ctx
-                .builder
-                .build_indirect_call(thunk_ty, thunk, &[env.into()], "closure_env_free_call")
-                .llvm_ctx("ClosurePair drop thunk call")?;
-            fn_ctx
-                .builder
-                .build_store(env_field, ptr_ty.const_null())
-                .llvm_ctx("ClosurePair drop env null store")?;
-            fn_ctx
-                .builder
-                .build_unconditional_branch(cont_bb)
-                .llvm_ctx("ClosurePair drop cont branch")?;
-            fn_ctx.builder.position_at_end(cont_bb);
-            Ok(())
+            emit_closure_pair_drop_at_slot(fn_ctx, pair_ptr, pair_ty, "closure_drop")
         }
         // `@resource` scope-exit drop. `Some(drop_fn)` dispatches the type's
         // close ritual — a runtime-substrate C-ABI symbol or a user
@@ -29208,12 +29233,12 @@ fn emit_aggregate_recursive_drop<'ctx>(
 }
 
 /// W5.011: drop the value held at slot address `slot_ptr` whose type is
-/// `ty`. Heap-owning leaves (`String` / `Vec` / `HashMap` / `HashSet`)
-/// load the handle pointer from the slot and call the release symbol;
-/// nested aggregates recurse; BitCopy leaves are no-ops. Used by the
-/// `AggregateRecursive` walk — `slot_ptr` is a field/element address, not
-/// a top-level `Place`, so this is the address-based dual of
-/// `emit_cow_heap_drop`.
+/// `ty`. Heap-owning leaves (`String` / `Vec` / `HashMap` / `HashSet`) load
+/// their handle and call the release symbol; heap-owning closures invoke the
+/// env box's in-band free thunk; nested aggregates recurse; BitCopy leaves are
+/// no-ops. Used by the `AggregateRecursive` walk — `slot_ptr` is a
+/// field/element address, not a top-level `Place`, so this is the address-based
+/// dual of `emit_cow_heap_drop`.
 fn emit_heap_slot_drop<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     slot_ptr: PointerValue<'ctx>,
@@ -29244,6 +29269,10 @@ fn emit_heap_slot_drop<'ctx>(
             .build_store(slot_ptr, null_ptr)
             .llvm_ctx_with(|| format!("{label} post-{symbol} null-store"))?;
         return Ok(());
+    }
+    if matches!(ty, ResolvedTy::Closure { .. }) {
+        let pair_ty = resolve_ty(fn_ctx.ctx, ty, fn_ctx.record_layouts)?;
+        return emit_closure_pair_drop_at_slot(fn_ctx, slot_ptr, pair_ty, label);
     }
     if matches!(ty, ResolvedTy::Tuple(_) | ResolvedTy::Array(_, _)) {
         return emit_aggregate_recursive_drop(fn_ctx, slot_ptr, ty, depth, label);
@@ -29327,8 +29356,8 @@ fn emit_heap_slot_drop<'ctx>(
     // Fix #2.1 — classify the remaining leaf fail-CLOSED instead of a blanket
     // `Ok(())`. Only PROVEN non-heap (bitcopy / zero-sized) leaves are a true
     // no-op. Any other leaf reaching here is either a heap-owning type this
-    // structural walk does not yet release (`Bytes`, `CancellationToken`, a
-    // user `Named` record/enum, a `Slice`/`Task`/closure) or an unexpected
+    // structural walk does not yet release (`CancellationToken`, a user
+    // `Named` record/enum, a `Slice`/`Task`) or an unexpected
     // shape — refuse rather than silently skip its release, which would leak
     // or (for a still-aliased buffer) risk a later double-free
     // (LESSONS: boundary-fail-closed, exhaustive-traversal-and-lowering).
@@ -32280,8 +32309,7 @@ fn gen_companion_out_drop_thunk<'ctx>(
         }
         return Err(e);
     }
-    // Terminate the thunk (the builder is still positioned at `entry`, after the
-    // drop's straight-line emission).
+    // Terminate the thunk at the drop path's continuation block.
     fn_ctx
         .builder
         .build_return(None)
@@ -49044,6 +49072,80 @@ mod tests {
         assert!(
             m.verify().is_ok(),
             "module with MakeGenerator must pass LLVM verify:\n{ir}"
+        );
+    }
+
+    #[test]
+    fn generator_out_drop_thunk_tracks_closure_capture_ownership() {
+        let ctx = Context::create();
+        let m = ctx.create_module("generator_closure_out_drop_test");
+        let harness = build_harness(&ctx, &[], &[]);
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "driver");
+        let generator_of = |yield_ty| {
+            ResolvedTy::named_builtin(
+                "Generator",
+                hew_types::BuiltinType::Generator,
+                vec![yield_ty, ResolvedTy::Unit],
+            )
+        };
+
+        let owned_closure = ResolvedTy::Closure {
+            params: vec![],
+            ret: Box::new(ResolvedTy::I64),
+            captures: vec![ResolvedTy::String],
+        };
+        alloc_local(&mut fn_ctx, 0, generator_of(owned_closure));
+        let (_, owned_companion) =
+            generator_coro_companion_ty(&fn_ctx, Place::Local(0)).expect("owned companion type");
+        assert!(
+            gen_companion_out_drop_thunk(
+                &fn_ctx,
+                Place::Local(0),
+                "owned_closure_yield",
+                owned_companion,
+            )
+            .expect("owned closure out-drop thunk")
+            .is_some(),
+            "a closure capturing heap-owning state must install an output-drop thunk"
+        );
+
+        let copy_closure = ResolvedTy::Closure {
+            params: vec![],
+            ret: Box::new(ResolvedTy::I64),
+            captures: vec![ResolvedTy::I64],
+        };
+        alloc_local(&mut fn_ctx, 1, generator_of(copy_closure));
+        let (_, copy_companion) =
+            generator_coro_companion_ty(&fn_ctx, Place::Local(1)).expect("copy companion type");
+        assert!(
+            gen_companion_out_drop_thunk(
+                &fn_ctx,
+                Place::Local(1),
+                "copy_closure_yield",
+                copy_companion,
+            )
+            .expect("copy closure out-drop decision")
+            .is_none(),
+            "a closure capturing only Copy scalars must keep the null-thunk fast path"
+        );
+
+        finish_test_fn(&fn_ctx);
+        let ir = m.print_to_string().to_string();
+        assert!(
+            ir.contains("define internal void @__hew_gen_out_drop_owned_closure_yield"),
+            "heap-capturing closure yields must synthesize a typed output-drop thunk:\n{ir}"
+        );
+        assert!(
+            ir.contains("call void %gen_out_drop_env_free_thunk"),
+            "the output-drop thunk must invoke the closure env's in-band free thunk:\n{ir}"
+        );
+        assert!(
+            !ir.contains("__hew_gen_out_drop_copy_closure_yield"),
+            "Copy-only closure yields must not synthesize an output-drop thunk:\n{ir}"
+        );
+        assert!(
+            m.verify().is_ok(),
+            "generator closure output-drop module must pass LLVM verify:\n{ir}"
         );
     }
 

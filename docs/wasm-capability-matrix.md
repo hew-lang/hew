@@ -84,7 +84,7 @@ The **Checker disposition** column documents what the type checker emits when
 | Supervision trees (`supervisor`, `supervisor_child`, `supervisor_stop`) | 🚫 Error (`SupervisionTrees`) | Educational sandbox subset implements deterministic restart trees; native runtime parity remains gated | M6 |
 | Actor `link` / `unlink` / `monitor` / `demonitor` | 🚫 Error (`LinkMonitor`) | Educational sandbox subset implements deterministic graph state, exit signals, and monitor notifications; native runtime parity remains gated | M6 |
 | Structured concurrency (`scope {}`, `scope.launch`, `scope.await`) | 🚫 Error (`StructuredConcurrency`) | Native thread/condvar task runtime only; wasm32 has no cooperative task work queue or join | WASM-TODO |
-| Scope-spawned `Task` handles | 🚫 Error (`Tasks`) | Native task completion/read-slot wakeup path only | WASM-TODO |
+| Scope-spawned `Task` handles | 🚫 Error (`Tasks`) | Task spawn is thread-based and no cooperative task executor drives forked bodies on wasm32 | WASM-TODO |
 | **`channel.new`, `Sender<T>::send/clone/close`, `Receiver<T>::try_recv/close`** | ✅ Pass | Bounded non-blocking slice implemented; `send` traps on full queue | v0.3.2 |
 | **`Receiver<T>::recv`, `for await item in rx` over `Receiver<T>`** | 🚫 Error (`BlockingChannelRecv`) | `unreachable!()` trap | WASM-TODO |
 | **`semaphore.new`, `Semaphore::try_acquire/release/count/free`** | ✅ Pass | Non-blocking semaphore subset only | — |

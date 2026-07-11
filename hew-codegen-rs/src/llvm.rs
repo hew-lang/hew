@@ -869,6 +869,12 @@ pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String>
                 {
                     return Some("hew_channel_poll".to_string());
                 }
+                if arms
+                    .iter()
+                    .any(|arm| matches!(arm.kind, hew_mir::SelectArmKind::TaskAwait { .. }))
+                {
+                    return Some("hew_task_completion_observe".to_string());
+                }
             }
             // cut-select-waitset cooperative `select{}` carrier: the suspending
             // select builds its readiness waitset on a shared `HewAwaitCancel`

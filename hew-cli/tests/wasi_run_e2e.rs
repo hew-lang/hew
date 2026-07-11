@@ -202,8 +202,10 @@ fn main() -> i64 {
         "scope diagnostic should name the missing wasm32 executor/join path\nstderr:\n{stderr}",
     );
     assert!(
-        stderr.contains("native task completion and read-slot wakeups"),
-        "task diagnostic should name the missing completion path\nstderr:\n{stderr}",
+        stderr.contains(
+            "task spawn is thread-based and no cooperative task executor drives forked bodies"
+        ),
+        "task diagnostic should name the missing task spawn/executor path\nstderr:\n{stderr}",
     );
     assert!(
         !stderr.contains("undefined symbol")

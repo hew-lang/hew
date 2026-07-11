@@ -1402,8 +1402,11 @@ fn main() {
             output.errors
         );
         assert!(
-            platform_error_contains(&output, "native task completion and read-slot wakeups"),
-            "error message should name the missing task completion path; got: {:?}",
+            platform_error_contains(
+                &output,
+                "task spawn is thread-based and no cooperative task executor drives forked bodies"
+            ),
+            "error message should name the missing task spawn/executor path; got: {:?}",
             output.errors
         );
     }

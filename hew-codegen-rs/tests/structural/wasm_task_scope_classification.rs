@@ -22,7 +22,8 @@
 use hew_codegen_rs::{emit_module, CodegenError, EmitOptions};
 use hew_mir::{
     BasicBlock, BlockKind, CheckedMirFunction, DropPlan, ElabBlock, ElaboratedMirFunction,
-    ExitPath, FunctionCallConv, Instr, IrPipeline, Place, RawMirFunction, RuntimeCall, Terminator,
+    ExitPath, FunctionCallConv, Instr, IrPipeline, Place, RawMirFunction, RuntimeCall, SelectArm,
+    SelectArmKind, Terminator,
 };
 use hew_types::ResolvedTy;
 
@@ -215,6 +216,25 @@ fn pipeline_with_spawn_task_instruction() -> IrPipeline {
     pipeline
 }
 
+fn pipeline_with_task_await_select() -> IrPipeline {
+    let mut pipeline = pipeline_with_task_new_call();
+    let select = Terminator::Select {
+        arms: vec![SelectArm {
+            kind: SelectArmKind::TaskAwait {
+                task: Place::DuplexHandle(0),
+            },
+            body_block: 0,
+            binding: Some(Place::DuplexHandle(0)),
+        }],
+        next: 0,
+    };
+    pipeline.raw_mir[0].blocks[0].instructions.clear();
+    pipeline.raw_mir[0].blocks[0].terminator = select.clone();
+    pipeline.checked_mir[0].blocks[0].instructions.clear();
+    pipeline.checked_mir[0].blocks[0].terminator = select;
+    pipeline
+}
+
 fn out_dir(suffix: &str) -> std::path::PathBuf {
     let d = std::env::temp_dir().join(format!("hew-wasm-task-scope-{suffix}"));
     std::fs::create_dir_all(&d).expect("create out_dir");
@@ -309,6 +329,37 @@ fn spawn_task_instruction_blocks_wasm_emission() {
         }
         Ok(_) => panic!(
             "expected WasmUnsupportedSubstrate error for SpawnTaskDirect with \
+             wasm: true, but emit_module succeeded"
+        ),
+        Err(other) => {
+            panic!("expected WasmUnsupportedSubstrate, got a different error: {other}")
+        }
+    }
+}
+
+/// A `TaskAwait` select arm emits `hew_task_completion_observe`; the wasm
+/// pre-link scan must reject the arm before LLVM can reference that symbol.
+#[test]
+fn task_await_select_arm_blocks_wasm_emission() {
+    let pipeline = pipeline_with_task_await_select();
+    let dir = out_dir("task-await-select-wasm-block");
+    let options = EmitOptions {
+        module_name: "task_await_select_wasm_block",
+        out_dir: &dir,
+        native: false,
+        wasm: true,
+        target_triple: None,
+        debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
+        source_path: None,
+    };
+    let result = emit_module(&pipeline, &options);
+    match result {
+        Err(CodegenError::WasmUnsupportedSubstrate { symbol }) => {
+            assert_eq!(symbol, "hew_task_completion_observe");
+        }
+        Ok(_) => panic!(
+            "expected WasmUnsupportedSubstrate error for TaskAwait select arm with \
              wasm: true, but emit_module succeeded"
         ),
         Err(other) => {

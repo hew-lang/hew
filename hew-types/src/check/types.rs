@@ -2049,7 +2049,7 @@ impl WasmUnsupportedFeature {
                 "the wasm32 scheduler has no cooperative task executor or non-blocking scope join"
             }
             Self::Tasks => {
-                "native task completion and read-slot wakeups are not implemented on wasm32"
+                "task spawn is thread-based and no cooperative task executor drives forked bodies on wasm32"
             }
             Self::HttpClient => {
                 "the std::net::http::http_client wrappers are still native-only; \

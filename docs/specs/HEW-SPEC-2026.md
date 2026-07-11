@@ -1735,8 +1735,15 @@ max(3.14, 2.71);       // max$f64
 
 #### 3.8.2 Type-Erased Dispatch with `dyn Trait`
 
-> See HEW-FUTURE.md §2.2 for `dyn Trait`, vtable layout, and object-safety
-> rules — targeted for v0.6.
+Single-trait `dyn Trait` dispatch is implemented. A concrete value whose type
+implements the trait can be passed to a `dyn Trait` parameter, where calls to
+the trait's instance methods dispatch through the runtime vtable. See
+[`examples/types_and_traits.hew`](../../examples/types_and_traits.hew) for a
+runnable example.
+
+The current subset does not yet fully enforce object-safety rules or support
+associated-type bounds and higher-ranked trait bounds in `dyn` position. See
+[HEW-FUTURE.md §2.2](HEW-FUTURE.md) for those remaining object-type details.
 
 #### 3.8.3 Trait Bounds
 
@@ -2482,10 +2489,12 @@ a `main()`-body call outside any receive handler.
 
 #### 3.10.8 Regular Expressions
 
-> See HEW-FUTURE.md §3 for `std::text::regex` — targeted for v0.6+
-> alongside the stdlib port-forward. `regex.Pattern` is a
-> `#[resource]`-annotated type with RAII handles (§3.7.8): `close()`
-> releases early, and the implicit scope-exit drop covers the rest.
+`std::text::regex` is shipped. It compiles patterns and supports matching,
+replacement, indexed and named captures, and multi-match capture tables.
+`regex.Pattern` is a `#[resource]`-annotated type with RAII handles (§3.7.8):
+`close()` releases early, and the implicit scope-exit drop covers the rest.
+Pattern construction is currently fail-fast: `regex.new()` panics for invalid
+syntax rather than returning a structured compile error.
 
 ---
 
@@ -4224,10 +4233,13 @@ enum Status { PendingReview; ActiveNow; Completed; }
 
 #### 7.3.2a YAML Encoding
 
-> See HEW-FUTURE.md §3 for `std::encoding::yaml` — targeted for v0.6+
-> alongside the stdlib port-forward. Wire types may serialize as YAML
-> via the same mapping rules JSON uses (§7.3.2); the normative YAML
-> mapping waits for the next edition.
+`std::encoding::yaml` is shipped for parsing, constructing, inspecting, and
+stringifying YAML values. Wire types can also serialize to and from YAML using
+the helper surface below.
+
+The exact normative YAML mapping for wire fields and variants remains deferred
+to the next edition. The current implementation follows the JSON mapping rules
+in §7.3.2 where those rules apply.
 
 #### 7.3.4 Encoding Selection
 

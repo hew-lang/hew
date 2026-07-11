@@ -52,12 +52,16 @@ Every shipped module under `std/` should appear here.
 | [`option`](option.hew) | `std::option` | Helper functions for common `Option<T>` patterns |
 | [`result`](result.hew) | `std::result` | Helper functions for common `Result<T, E>` patterns |
 | [`math`](math/math.hew) | `std::math` | Integer helpers, float ops, and common constants |
+| [`failure`](failure.hew) | `std::failure` | Crash-hook payloads and lifecycle failure actions |
+| [`mem`](mem/mem.hew) | `std::mem` | Compiler-internal allocation and typed-pointer intrinsics |
 
 ### Files, OS, and processes
 
 | Module | Import | Use for |
 | --- | --- | --- |
 | [`io`](io.hew) | `std::io` | stdin, stdout, and stderr helpers |
+| [`closable`](io/closable.hew) | `std::io::closable` | Explicit early release for IO and protocol handles |
+| [`scanner`](io/scanner.hew) | `std::io::scanner` | Line and word scanning over strings, stdin, and files |
 | [`fs`](fs.hew) | `std::fs` | File system operations |
 | [`path`](path.hew) | `std::path` | File path and glob utilities |
 | [`os`](os.hew) | `std::os` | Operating system interfaces |
@@ -75,12 +79,17 @@ Every shipped module under `std/` should appear here.
 | [`channel`](channel/channel.hew) | `std::channel::channel` | Bounded MPSC channels |
 | [`semaphore`](semaphore.hew) | `std::semaphore` | Counting semaphore for concurrency control |
 | [`concurrency`](concurrency/concurrency.hew) | `std::concurrency` | Structured concurrency support types such as `ScopeError<E>` |
+| [`lambda_actor`](concurrency/lambda_actor.hew) | `std::concurrency::lambda_actor` | Native lambda-actor handle declarations |
+| [`lifecycle`](concurrency/lifecycle.hew) | `std::concurrency::lifecycle` | Generic resource-service lifecycle state machine |
+| [`link_monitor`](link_monitor.hew) | `std::link_monitor` | Actor monitor handles and partition policies |
+| [`toggle`](machines/toggle.hew) | `std::machines::toggle` | Minimal reusable two-state machine |
 
 ### Encoding and wire formats
 
 | Module | Import | Use for |
 | --- | --- | --- |
 | [`base64`](encoding/base64/base64.hew) | `std::encoding::base64` | Base64 encoding and decoding |
+| [`binary`](encoding/binary/binary.hew) | `std::encoding::binary` | Fixed-width integer encoding in either byte order |
 | [`compress`](encoding/compress/compress.hew) | `std::encoding::compress` | Compression and decompression |
 | [`csv`](encoding/csv/csv.hew) | `std::encoding::csv` | CSV parsing |
 | [`hex`](encoding/hex/hex.hew) | `std::encoding::hex` | Hexadecimal encoding and decoding |
@@ -90,6 +99,7 @@ Every shipped module under `std/` should appear here.
 | [`protobuf`](encoding/protobuf/protobuf.hew) | `std::encoding::protobuf` | Protocol Buffers message construction |
 | [`toml`](encoding/toml/toml.hew) | `std::encoding::toml` | TOML parsing and generation |
 | [`wire`](encoding/wire/wire.hew) | `std::encoding::wire` | Hew wire format encoding and decoding |
+| [`value_trait`](encoding/wire/value_trait.hew) | `std::encoding::wire::value_trait` | Shared opaque-value contract for encoding modules |
 | [`xml`](encoding/xml/xml.hew) | `std::encoding::xml` | XML parsing and manipulation |
 | [`yaml`](encoding/yaml/yaml.hew) | `std::encoding::yaml` | YAML parsing and generation |
 
@@ -101,6 +111,7 @@ Every shipped module under `std/` should appear here.
 | [`encrypt`](crypto/encrypt/encrypt.hew) | `std::crypto::encrypt` | Symmetric encryption and decryption |
 | [`jwt`](crypto/jwt/jwt.hew) | `std::crypto::jwt` | JSON Web Token encoding and validation |
 | [`password`](crypto/password/password.hew) | `std::crypto::password` | Password hashing and verification |
+| [`sign`](crypto/sign/sign.hew) | `std::crypto::sign` | Ed25519 key generation, signing, and verification |
 
 ### Networking
 
@@ -109,6 +120,8 @@ Every shipped module under `std/` should appear here.
 | [`net`](net/net.hew) | `std::net` | TCP listeners and connections |
 | [`dns`](net/dns/dns.hew) | `std::net::dns` | DNS hostname resolution |
 | [`http`](net/http/http.hew) | `std::net::http` | HTTP server and request/response handling |
+| [`http_async_client`](net/http/http_async_client.hew) | `std::net::http::http_async_client` | Suspending HTTP/1.1 client codec for actor handlers |
+| [`http_async_server`](net/http/http_async_server.hew) | `std::net::http::http_async_server` | Suspending HTTP/1.1 server codec for actor handlers |
 | [`http_client`](net/http/http_client.hew) | `std::net::http::http_client` | Outbound HTTP request helpers (`request`, `request_string`, `get`, `post`) |
 | [`ipnet`](net/ipnet/ipnet.hew) | `std::net::ipnet` | IP address and CIDR utilities |
 | [`mime`](net/mime/mime.hew) | `std::net::mime` | MIME type detection |
@@ -124,10 +137,13 @@ Every shipped module under `std/` should appear here.
 | --- | --- | --- |
 | [`regex`](text/regex/regex.hew) | `std::text::regex` | Regular expression matching |
 | [`semver`](text/semver/semver.hew) | `std::text::semver` | Semantic version parsing and comparison |
+| [`template`](text/template/template.hew) | `std::text::template` | Go-style text template parsing and rendering |
+| [`unicode`](text/unicode/unicode.hew) | `std::text::unicode` | Unicode classification and UTF-8 codepoint helpers |
 | [`datetime`](time/datetime/datetime.hew) | `std::time::datetime` | Date and time operations |
 | [`cron`](time/cron/cron.hew) | `std::time::cron` | Cron expression parsing and scheduling |
 | [`log`](misc/log/log.hew) | `std::misc::log` | Structured logging |
 | [`uuid`](misc/uuid/uuid.hew) | `std::misc::uuid` | UUID generation and validation |
+| [`random`](random/random.hew) | `std::random` | Seedable random numbers, shuffling, and sampling |
 
 ### Testing and benchmarking
 
@@ -136,6 +152,7 @@ Every shipped module under `std/` should appear here.
 | [`testing`](testing/testing.hew) | `std::testing` | Assertion helpers for Hew tests |
 | [`bench`](bench/bench.hew) | `std::bench` | Benchmark harness for measuring function performance |
 | [`observe`](observe.hew) | `std::observe` | Runtime-owned observability reads, series discovery, and scrape text |
+| [`metrics`](metrics/metrics.hew) | `std::metrics` | Application counters, gauges, and histograms |
 
 ## Architecture
 

@@ -23,7 +23,12 @@ hew check hello.hew
 
 The `--` separator is mandatory when passing program arguments — everything before `--` is parsed as `hew run` options, and everything after is forwarded to your program as `os.args()`. Without `--`, unrecognised flags produce a usage error.
 
-**Working inside the Hew source checkout?** The stdlib resolver will find both the checkout's `std/` and the compiler's own stdlib and reject the ambiguity. Move your project to a directory outside the checkout, or use a standalone `hew init` directory.
+**Working inside the Hew source checkout?** An in-checkout compiler can resolve
+the repository's `std/` through the development fallback. Set `HEWPATH` or
+`HEW_STD` when selecting an alternate installation or when another directory
+layout would otherwise be ambiguous. See
+[Module search paths & stdlib discovery](../README.md#module-search-paths--stdlib-discovery)
+for the documented resolver precedence.
 
 ## Core idioms
 

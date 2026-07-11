@@ -1915,6 +1915,44 @@ fn is_32bit_x86_triple(triple: &str) -> bool {
     matches!(arch, "i386" | "i486" | "i586" | "i686")
 }
 
+/// Fail closed when the runtime-FFI `size_t`/`usize` width derived from the
+/// module triple diverges from the target's authoritative pointer width.
+///
+/// [`runtime_size_ty`] picks the width from a hard-coded triple allowlist
+/// (wasm32 + the 32-bit x86 family → `i32`, everything else → `i64`). That
+/// allowlist silently returns `i64` for every *other* 32-bit target — arm32,
+/// riscv32, mips32, ppc32, and the ILP32 variants — which is the exact
+/// wrong-width FFI-declaration class #2423 fixed for i386/i686, just on
+/// targets nobody compiles for yet. `TargetData::get_pointer_byte_size` is the
+/// authoritative `size_t` width for the module's data layout; when it
+/// disagrees with the allowlist-derived width, the runtime declarations this
+/// module emits (`hew_actor_spawn`, `malloc`, the CBOR reader, …) would
+/// mismatch the runtime's real C ABI. Refuse to emit rather than ship a
+/// silently wrong-width module. 64-bit natives and the modelled 32-bit targets
+/// (wasm32, i386/i686) agree and pass; only an unmodelled 32-bit triple trips
+/// this. (LESSONS: boundary-fail-closed)
+fn verify_runtime_size_width<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    target_data: &TargetData,
+    triple: &str,
+) -> CodegenResult<()> {
+    let declared_bits = runtime_size_ty(ctx, llvm_mod).get_bit_width();
+    let pointer_bits = target_data.get_pointer_byte_size(None) * 8;
+    if declared_bits != pointer_bits {
+        return Err(CodegenError::FailClosed(format!(
+            "runtime `size_t` width for target `{triple}` is not modelled: the FFI \
+             declaration width would be {declared_bits}-bit but the target's \
+             pointer/`size_t` width is {pointer_bits}-bit. This is the wrong-width \
+             runtime-declaration class fixed for 32-bit x86 in #2423, on an \
+             unmodelled 32-bit target. Add this target's arch to `runtime_size_ty`'s \
+             32-bit allowlist before emitting a module for it — codegen never emits a \
+             silently wrong-width runtime declaration. (LESSONS: boundary-fail-closed)"
+        )));
+    }
+    Ok(())
+}
+
 /// Intern a runtime-ABI function declaration for `symbol` in `llvm_mod`.
 ///
 /// Returns the cached `FunctionValue` on repeat lookups so multiple
@@ -8683,7 +8721,7 @@ fn emit_static_pool_members<'ctx>(
 ) -> CodegenResult<usize> {
     let i32_ty = ctx.i32_type();
     let i64_ty = ctx.i64_type();
-    let size_ty = ctx.i64_type(); // supervisors are HIR-gated off wasm32 → usize == i64.
+    let size_ty = runtime_size_ty(ctx, llvm_mod); // `size_t`/`usize` width; supervisors are HIR-gated off wasm32, so i64 on native and correct on 32-bit x86.
 
     let pool_count = child.pool_count.as_ref().ok_or_else(|| {
         CodegenError::FailClosed(format!(
@@ -40299,6 +40337,12 @@ fn build_module_for_target<'ctx>(
         (host_target_data(), native)
     };
 
+    // Fail closed before any body fill emits a runtime declaration: refuse an
+    // unmodelled 32-bit target whose `size_t` width `runtime_size_ty` would get
+    // wrong (silently falling through to i64). The module triple + target data
+    // are both set above, so this is the earliest point the check is valid.
+    verify_runtime_size_width(ctx, &llvm_mod, &target_data, &module_triple)?;
+
     // DWARF compile unit + file for `hew build -g` (W0.060). Created once per
     // module; the `DebugInfoBuilder` is finalized just before `verify()` below
     // (inkwell requires `finalize()` before any code generation, verification
@@ -45997,6 +46041,76 @@ mod tests {
                 ctx.i64_type(),
                 "runtime_size_ty should be i64 on 64-bit triple {triple}"
             );
+        }
+    }
+
+    #[test]
+    fn verify_runtime_size_width_accepts_modelled_targets() {
+        // wasm32 + 32-bit x86 (i32 size_t) and the 64-bit natives (i64 size_t)
+        // all AGREE between `runtime_size_ty`'s allowlist and the target's real
+        // pointer width, so the gate passes.
+        let ctx = Context::create();
+        for triple in [
+            "wasm32-unknown-unknown",
+            "i686-unknown-linux-gnu",
+            "i686-pc-windows-msvc",
+            "x86_64-unknown-linux-gnu",
+            "x86_64-pc-windows-msvc",
+            "aarch64-apple-darwin",
+            "aarch64-unknown-linux-gnu",
+        ] {
+            let llvm_mod = ctx.create_module("verify_size_ok");
+            llvm_mod.set_triple(&TargetTriple::create(triple));
+            let td = record_ret_target_data(triple);
+            verify_runtime_size_width(&ctx, &llvm_mod, &td, triple).unwrap_or_else(|e| {
+                panic!("modelled target {triple} must pass the width gate: {e:?}")
+            });
+        }
+    }
+
+    #[test]
+    fn verify_runtime_size_width_fails_closed_on_unmodelled_32bit_targets() {
+        // The bug: `runtime_size_ty` allowlists only wasm32 + 32-bit x86, so
+        // every OTHER 32-bit target (arm32, riscv32, mips32, ppc32) silently
+        // falls through to i64 while its real `size_t` is 32-bit. The gate must
+        // reject these before any wrong-width runtime declaration is emitted —
+        // this is the generalization of the #2423 i386/i686 fix to the rest of
+        // the 32-bit target space, expressed as a fail-closed check rather than
+        // an ever-growing arch allowlist.
+        let ctx = Context::create();
+        for triple in [
+            "arm-unknown-linux-gnueabi",
+            "armv7-unknown-linux-gnueabihf",
+            "riscv32imac-unknown-none-elf",
+            "mipsel-unknown-linux-gnu",
+            "powerpc-unknown-linux-gnu",
+        ] {
+            let llvm_mod = ctx.create_module("verify_size_bad");
+            llvm_mod.set_triple(&TargetTriple::create(triple));
+            // Build a 32-bit-pointer `TargetData` directly from a data-layout
+            // string so the test does not depend on the LLVM build shipping
+            // every 32-bit backend (riscv32/mips/ppc are not in the default
+            // `initialize_all` set on all hosts). `e-p:32:32` = little-endian,
+            // 32-bit pointer — the only datum the gate reads besides the triple.
+            let td = TargetData::create("e-p:32:32-i64:64");
+            let pointer_bits = td.get_pointer_byte_size(None) * 8;
+            assert_eq!(pointer_bits, 32, "expected a 32-bit pointer for {triple}");
+            let err = verify_runtime_size_width(&ctx, &llvm_mod, &td, triple).expect_err(
+                "unmodelled 32-bit target must fail closed, not emit a silently wrong-width module",
+            );
+            match err {
+                CodegenError::FailClosed(msg) => {
+                    assert!(
+                        msg.contains(triple),
+                        "diagnostic must name the target: {msg}"
+                    );
+                    assert!(
+                        msg.contains("32-bit"),
+                        "diagnostic must cite the width: {msg}"
+                    );
+                }
+                other => panic!("expected FailClosed for {triple}, got {other:?}"),
+            }
         }
     }
 

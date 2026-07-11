@@ -998,7 +998,8 @@ pub struct HewMailbox {
     sys_queue: MpscQueue,
     /// Mutex-protected user queue for Block/DropOld/Coalesce policies.
     slow_path: Mutex<SlowPathQueue>,
-    /// Approximate message count for capacity checks.
+    /// Queued user messages plus bounded fast-path slots reserved by in-flight
+    /// producers.
     pub(crate) count: AtomicI64,
     /// Approximate system-queue message count for observability.
     sys_count: AtomicUsize,
@@ -1091,6 +1092,38 @@ fn update_high_water_mark(mb: &HewMailbox) {
             Err(actual) => hwm = actual,
         }
     }
+}
+
+/// Atomically reserve one slot in a bounded lock-free mailbox.
+///
+/// Returns `false` without changing `count` when the mailbox is already at
+/// capacity. The caller must either publish one node with
+/// [`enqueue_reserved_fast_user_node`] or release the reservation if allocation
+/// fails.
+fn try_reserve_fast_path_capacity(mb: &HewMailbox) -> bool {
+    debug_assert!(mb.capacity > 0);
+    debug_assert!(!mb.use_slow_path);
+
+    let mut current = mb.count.load(Ordering::Acquire);
+    loop {
+        if current >= mb.capacity {
+            return false;
+        }
+        match mb.count.compare_exchange_weak(
+            current,
+            current + 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return true,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
+fn release_fast_path_capacity(mb: &HewMailbox) {
+    let previous = mb.count.fetch_sub(1, Ordering::AcqRel);
+    debug_assert!(previous > 0, "fast-path capacity reservation underflow");
 }
 
 // ── Constructors ────────────────────────────────────────────────────────
@@ -1443,7 +1476,36 @@ unsafe fn send_with_overflow(
         return SendOutcome::Closed;
     }
 
-    // Bounded capacity check.
+    // Lock-free bounded mailboxes must claim capacity before allocating or
+    // publishing a node so concurrent producers cannot all pass the same
+    // check. Slow-path policies retain their mutex-backed handling below.
+    if mb.capacity > 0 && !mb.use_slow_path {
+        if !try_reserve_fast_path_capacity(mb) {
+            return match mb.overflow {
+                HewOverflowPolicy::DropNew => SendOutcome::Dropped,
+                HewOverflowPolicy::Fail => SendOutcome::Failed,
+                HewOverflowPolicy::Block
+                | HewOverflowPolicy::DropOld
+                | HewOverflowPolicy::Coalesce => {
+                    unreachable!("complex overflow policies use the slow path")
+                }
+            };
+        }
+
+        // SAFETY: `data` validity guaranteed by caller.
+        let node = unsafe { msg_node_alloc(msg_type, data, data_size, reply_channel) };
+        if node.is_null() {
+            release_fast_path_capacity(mb);
+            return SendOutcome::Oom;
+        }
+
+        // SAFETY: `node` was just allocated with next == null and is owned here;
+        // the successful CAS above reserved its count slot.
+        unsafe { enqueue_reserved_fast_user_node(mb, node) };
+        return SendOutcome::Enqueued;
+    }
+
+    // Bounded slow-path capacity check.
     if mb.capacity > 0 {
         let cur = mb.count.load(Ordering::Acquire);
         if cur >= mb.capacity {
@@ -1621,7 +1683,7 @@ unsafe fn send_with_overflow(
         }
     }
 
-    // Fast path: no capacity issue (or unbounded).
+    // Unbounded fast path, or a slow-path mailbox currently below capacity.
     // SAFETY: `data` validity guaranteed by caller.
     let node = unsafe { msg_node_alloc(msg_type, data, data_size, reply_channel) };
     if node.is_null() {
@@ -1638,9 +1700,10 @@ unsafe fn send_with_overflow(
 ///
 /// Routes to the slow-path mutex queue or the lock-free fast queue
 /// depending on `mb.use_slow_path`, then bumps `count`, the high-water
-/// mark, and the global sent counter. Shared by the copy-mode fast path
-/// ([`send_with_overflow`]) and the envelope-mode alias path
-/// ([`send_aliased_with_overflow`]) so both enqueue identically.
+/// mark, and the global sent counter. Used for unbounded sends and
+/// mutex-backed sends below capacity; bounded lock-free sends use
+/// [`enqueue_reserved_fast_user_node`] because their CAS reservation has
+/// already incremented `count`.
 ///
 /// # Safety
 ///
@@ -1655,6 +1718,23 @@ unsafe fn enqueue_user_node(mb: &HewMailbox, node: *mut HewMsgNode) {
         unsafe { mb.user_fast.enqueue(node) };
     }
     mb.count.fetch_add(1, Ordering::Release);
+    update_high_water_mark(mb);
+    MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Publish a node after [`try_reserve_fast_path_capacity`] has already
+/// incremented `count`.
+///
+/// # Safety
+///
+/// `node` must be a valid, exclusively-owned [`HewMsgNode`] with
+/// `node.next == null`, and the caller must own one capacity reservation.
+unsafe fn enqueue_reserved_fast_user_node(mb: &HewMailbox, node: *mut HewMsgNode) {
+    debug_assert!(mb.capacity > 0);
+    debug_assert!(!mb.use_slow_path);
+
+    // SAFETY: `node` was allocated with next == null.
+    unsafe { mb.user_fast.enqueue(node) };
     update_high_water_mark(mb);
     MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
 }
@@ -1725,7 +1805,30 @@ unsafe fn send_aliased_with_overflow(
         return SendOutcome::Closed;
     }
 
-    // Bounded-capacity overflow handling.
+    // The node is already allocated on the alias path, but lock-free bounded
+    // mailboxes still reserve capacity atomically before publishing it.
+    if mb.capacity > 0 && !mb.use_slow_path {
+        if !try_reserve_fast_path_capacity(mb) {
+            // SAFETY: `node` is still exclusively owned here.
+            unsafe { hew_msg_node_free(node) };
+            return match mb.overflow {
+                HewOverflowPolicy::DropNew => SendOutcome::Dropped,
+                HewOverflowPolicy::Fail => SendOutcome::Failed,
+                HewOverflowPolicy::Block
+                | HewOverflowPolicy::DropOld
+                | HewOverflowPolicy::Coalesce => {
+                    unreachable!("complex overflow policies use the slow path")
+                }
+            };
+        }
+
+        // SAFETY: `node` is owned here with next == null; the successful CAS
+        // above reserved its count slot.
+        unsafe { enqueue_reserved_fast_user_node(mb, node) };
+        return SendOutcome::Enqueued;
+    }
+
+    // Bounded slow-path overflow handling.
     if mb.capacity > 0 {
         let cur = mb.count.load(Ordering::Acquire);
         if cur >= mb.capacity {
@@ -1867,7 +1970,7 @@ unsafe fn send_aliased_with_overflow(
         }
     }
 
-    // EXIT(fast-path): unbounded or below capacity; node enqueued.
+    // EXIT(fast-path): unbounded, or slow-path below capacity; node enqueued.
     // SAFETY: `node` owned here with next == null.
     unsafe { enqueue_user_node(mb, node) };
     SendOutcome::Enqueued
@@ -2519,6 +2622,127 @@ mod tests {
             assert_eq!(
                 hew_mailbox_send(mb, 0, p, size_of::<i32>()),
                 HewError::ErrMailboxFull as i32
+            );
+
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn bounded_fast_path_reserves_capacity_atomically() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        const CAPACITY: i32 = 1;
+        const SENDERS: usize = 16;
+        const ROUNDS: usize = 128;
+
+        // SAFETY: the mailbox remains live until every producer has joined, and
+        // the main test thread is the only consumer.
+        unsafe {
+            let mb = hew_mailbox_new_bounded(CAPACITY);
+            assert!(!mb.is_null());
+            assert!(!(*mb).use_slow_path, "DropNew should use the fast path");
+
+            let shared_mb = Arc::new(AtomicPtr::new(mb));
+            let start = Arc::new(Barrier::new(SENDERS + 1));
+            let finish = Arc::new(Barrier::new(SENDERS + 1));
+            let unexpected_status = Arc::new(AtomicBool::new(false));
+            let mut producers = Vec::with_capacity(SENDERS);
+
+            for producer_id in 0..SENDERS {
+                let shared_mb = Arc::clone(&shared_mb);
+                let start = Arc::clone(&start);
+                let finish = Arc::clone(&finish);
+                let unexpected_status = Arc::clone(&unexpected_status);
+                producers.push(thread::spawn(move || {
+                    let payload = i32::try_from(producer_id).expect("producer id fits in i32");
+                    for _ in 0..ROUNDS {
+                        start.wait();
+                        // SAFETY: the mailbox outlives this producer; the payload
+                        // is readable until the send finishes copying it.
+                        let rc = hew_mailbox_try_send(
+                            shared_mb.load(Ordering::Relaxed),
+                            0,
+                            (&raw const payload).cast_mut().cast(),
+                            size_of::<i32>(),
+                        );
+                        if rc != HewError::Ok as i32 && rc != HewError::ErrMailboxFull as i32 {
+                            unexpected_status.store(true, Ordering::Relaxed);
+                        }
+                        finish.wait();
+                    }
+                }));
+            }
+
+            let mut max_len = 0;
+            let mut count_mismatch = false;
+            for _ in 0..ROUNDS {
+                start.wait();
+                finish.wait();
+
+                let len = hew_mailbox_len(mb);
+                max_len = max_len.max(len);
+
+                let mut drained = 0;
+                loop {
+                    let node = hew_mailbox_try_recv(mb);
+                    if node.is_null() {
+                        break;
+                    }
+                    drained += 1;
+                    hew_msg_node_free(node);
+                }
+                count_mismatch |= drained != len;
+            }
+
+            for producer in producers {
+                producer.join().expect("producer thread panicked");
+            }
+
+            let high_water_mark = (*mb).high_water_mark.load(Ordering::Relaxed);
+            hew_mailbox_free(mb);
+
+            assert!(
+                !unexpected_status.load(Ordering::Relaxed),
+                "send returned an unexpected status"
+            );
+            assert!(!count_mismatch, "mailbox count diverged from queued nodes");
+            assert!(
+                max_len <= usize::try_from(CAPACITY).expect("positive capacity fits in usize"),
+                "bounded fast-path mailbox reached length {max_len} with capacity {CAPACITY}"
+            );
+            assert!(
+                high_water_mark <= i64::from(CAPACITY),
+                "bounded fast-path mailbox high-water mark {high_water_mark} exceeded capacity {CAPACITY}"
+            );
+        }
+    }
+
+    #[test]
+    fn bounded_fast_path_releases_capacity_reservation_on_oom() {
+        // SAFETY: test owns the mailbox exclusively; null data with zero size is valid.
+        unsafe {
+            let mb = hew_mailbox_new_bounded(1);
+            assert!(!mb.is_null());
+
+            let fail_guard = fail_mailbox_alloc_on_nth(0);
+            assert_eq!(
+                hew_mailbox_try_send(mb, 0, ptr::null_mut(), 0),
+                HewError::ErrOom as i32
+            );
+            drop(fail_guard);
+
+            assert_eq!(
+                hew_mailbox_len(mb),
+                0,
+                "allocation failure must release the reserved capacity slot"
+            );
+            assert_eq!(
+                hew_mailbox_try_send(mb, 0, ptr::null_mut(), 0),
+                HewError::Ok as i32,
+                "the rolled-back slot must be available to the next sender"
             );
 
             hew_mailbox_free(mb);

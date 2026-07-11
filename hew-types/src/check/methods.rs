@@ -2861,9 +2861,9 @@ impl Checker {
         found
     }
 
-    /// Return the first opaque message-payload type, exempting only the
-    /// compiler-built-in channel endpoints that local actor delivery transfers
-    /// by ownership.
+    /// Return the first opaque message-payload type, exempting compiler-built-in
+    /// channel endpoints and actor references that local actor delivery
+    /// transfers as handle values.
     pub(super) fn ty_message_payload_contains_opaque(
         &self,
         ty: &Ty,
@@ -2892,7 +2892,12 @@ impl Checker {
                 if skip_channel_handles
                     && matches!(
                         builtin,
-                        Some(crate::BuiltinType::Sender | crate::BuiltinType::Receiver)
+                        Some(
+                            crate::BuiltinType::Sender
+                                | crate::BuiltinType::Receiver
+                                | crate::BuiltinType::LocalPid
+                                | crate::BuiltinType::RemotePid
+                        )
                     )
                 {
                     return None;

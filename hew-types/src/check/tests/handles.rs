@@ -1210,6 +1210,33 @@ mod opaque_receive_fn_param_rules {
     }
 
     #[test]
+    fn actor_pid_param_does_not_walk_referenced_actor_state() {
+        let output = check_source(
+            r"
+            #[opaque]
+            type Handle {}
+
+            actor Worker {
+                let handle: Handle;
+                receive fn run() {}
+            }
+
+            actor Server {
+                receive fn register(worker: LocalPid<Worker>) {}
+                receive fn register_remote(worker: RemotePid<Worker>) {}
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "actor PID parameters are transferable references; the referenced \
+             actor's opaque state must not be treated as structurally embedded \
+             in the message payload; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
     fn serializable_receive_fn_params_are_accepted() {
         // Negative control: ordinary CBOR-serializable payloads must NOT trip
         // the new diagnostic.

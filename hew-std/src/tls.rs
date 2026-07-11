@@ -1569,12 +1569,22 @@ mod tests {
         std::ptr::null_mut()
     }
 
-    struct TlsRuntimeGuard;
+    static TLS_RUNTIME_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    struct TlsRuntimeGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
 
     impl TlsRuntimeGuard {
         fn new() -> Self {
+            // The scheduler is process-global: repeated init is a no-op, but
+            // cleanup frees every tracked actor. Hold exclusive ownership for
+            // the full test so one TLS test cannot reclaim another's live actor.
+            let lock = TLS_RUNTIME_TEST_LOCK
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             assert_eq!(scheduler::hew_sched_init(), 0);
-            Self
+            Self { _lock: lock }
         }
     }
 

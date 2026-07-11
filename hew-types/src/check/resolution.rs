@@ -126,6 +126,10 @@ impl Checker {
         false
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "trait-object bound validation keeps associated-type diagnostics in one pass"
+    )]
     fn resolve_trait_object_bound(
         &mut self,
         bound: &hew_parser::ast::TraitBound,
@@ -166,13 +170,16 @@ impl Checker {
         }
         assoc_bindings.sort_by(|a, b| a.0.cmp(&b.0));
 
-        if let Some(associated_type_names) = self.trait_defs.get(&bound.name).map(|trait_info| {
-            trait_info
-                .associated_types
-                .iter()
-                .map(|assoc| assoc.name.clone())
-                .collect::<Vec<_>>()
-        }) {
+        let trait_lookup_key = self.trait_ref_lookup_key(&bound.name);
+        if let Some(associated_type_names) =
+            self.trait_defs.get(&trait_lookup_key).map(|trait_info| {
+                trait_info
+                    .associated_types
+                    .iter()
+                    .map(|assoc| assoc.name.clone())
+                    .collect::<Vec<_>>()
+            })
+        {
             let declared_assoc: HashSet<&str> =
                 associated_type_names.iter().map(String::as_str).collect();
             let missing: Vec<String> = associated_type_names

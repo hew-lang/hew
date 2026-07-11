@@ -1825,7 +1825,8 @@ impl Checker {
 
     fn record_dyn_index_method_call(&mut self, bound: &crate::ty::TraitObjectBound, span: &Span) {
         let trait_name = bound.trait_name.as_str();
-        let Some(trait_info) = self.trait_defs.get(trait_name).cloned() else {
+        let trait_lookup_key = self.trait_ref_lookup_key(trait_name);
+        let Some(trait_info) = self.trait_defs.get(&trait_lookup_key).cloned() else {
             return;
         };
         let Some(method_idx) = trait_info
@@ -1839,7 +1840,7 @@ impl Checker {
         // bound (the bound's assoc bindings carry e.g. `Output = T`).
         // W3.031 Stage 1.6: the typed `FnSig` is self-contained on
         // the call-site side table; no codegen-time re-derivation.
-        let Some(mut sig) = self.lookup_trait_method(trait_name, "at") else {
+        let Some(mut sig) = self.lookup_trait_method(&trait_lookup_key, "at") else {
             return;
         };
         self.apply_trait_object_bound_substitutions(&mut sig, bound);

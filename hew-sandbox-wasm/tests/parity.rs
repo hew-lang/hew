@@ -464,6 +464,38 @@ fn minimum_parity_set_is_enforced_by_test_name() {
     );
 }
 
+#[test]
+fn sandbox_graduation_corpus_is_fully_covered() {
+    let graduation_dir = repo_root().join("examples").join("sandbox-graduation");
+    let expected: BTreeSet<PathBuf> = std::fs::read_dir(&graduation_dir)
+        .unwrap_or_else(|err| {
+            panic!(
+                "failed to read sandbox graduation directory {}: {err}",
+                graduation_dir.display()
+            )
+        })
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|err| panic!("failed to read sandbox graduation entry: {err}"))
+                .path()
+        })
+        .filter(|path| path.extension().is_some_and(|extension| extension == "hew"))
+        .collect();
+    let actual: BTreeSet<PathBuf> = PARITY_CASES
+        .iter()
+        .filter_map(|case| {
+            case.source_rel
+                .strip_prefix("examples/sandbox-graduation/")
+                .map(|source_rel| graduation_dir.join(source_rel))
+        })
+        .collect();
+
+    assert_eq!(
+        actual, expected,
+        "every sandbox-graduation Hew source must have a native↔sandbox parity case"
+    );
+}
+
 // Windows parity enforcement is tracked in #1823; Windows runners do not yet
 // provision the hew-sandbox-vm npm toolchain for this harness.
 #[cfg_attr(windows, ignore)]

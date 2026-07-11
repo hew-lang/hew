@@ -107,3 +107,25 @@ fn test_net_error_windows_wsa_variants() {
         _ => panic("expected NetError::AddressNotAvailable"),
     }
 }
+
+#[test]
+fn test_net_error_windows_cancelled_variants() {
+    // ERROR_OPERATION_ABORTED (995): a cancelled overlapped net op on Windows.
+    match net.net_error_from_errno(995) {
+        NetError::Cancelled(code) => {
+            if code != 995 {
+                panic("expected Cancelled payload 995");
+            }
+        },
+        _ => panic("expected NetError::Cancelled for 995"),
+    }
+    // WSAECANCELLED (10103).
+    match net.net_error_from_errno(10103) {
+        NetError::Cancelled(code) => {
+            if code != 10103 {
+                panic("expected Cancelled payload 10103");
+            }
+        },
+        _ => panic("expected NetError::Cancelled for 10103"),
+    }
+}

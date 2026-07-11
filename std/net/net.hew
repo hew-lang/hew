@@ -96,8 +96,10 @@ pub fn net_error_from_errno(errno: i64) -> NetError {
     // ETIMEDOUT: Linux=110, macOS=60, Windows=10060
     } else if errno == 110 || errno == 60 || errno == 10060 {
         NetError::TimedOut(errno)
-    // ECANCELED: Linux=125, macOS=89
-    } else if errno == 125 || errno == 89 {
+    // ECANCELED: Linux=125, macOS=89. Windows has no WSABASEERR-offset
+    // ECANCELED; a cancelled/aborted overlapped net op surfaces as
+    // ERROR_OPERATION_ABORTED (995) or WSAECANCELLED (10103) instead.
+    } else if errno == 125 || errno == 89 || errno == 995 || errno == 10103 {
         NetError::Cancelled(errno)
     // EADDRNOTAVAIL: Linux=99, macOS=49, Windows=10049
     } else if errno == 99 || errno == 49 || errno == 10049 {

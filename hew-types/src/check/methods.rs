@@ -2743,6 +2743,7 @@ impl Checker {
                 name,
                 type_args,
                 &mut std::collections::HashSet::new(),
+                false,
             ) {
                 return RecordCloneAdmissibility::OpaqueField { opaque_name };
             }
@@ -2769,6 +2770,7 @@ impl Checker {
             name,
             type_args,
             &mut std::collections::HashSet::new(),
+            false,
         ) {
             return RecordCloneAdmissibility::OpaqueField { opaque_name };
         }
@@ -2791,6 +2793,7 @@ impl Checker {
         name: &str,
         type_args: &[Ty],
         visiting: &mut std::collections::HashSet<String>,
+        skip_channel_handles: bool,
     ) -> Option<String> {
         if !visiting.insert(name.to_string()) {
             return None; // cycle protection
@@ -2800,7 +2803,9 @@ impl Checker {
             for field_ty in type_def.fields.values() {
                 let field_ty =
                     Self::instantiate_type_def_member(field_ty, &type_def.type_params, type_args);
-                if let Some(opaque) = self.ty_field_contains_opaque(&field_ty, visiting) {
+                if let Some(opaque) =
+                    self.ty_field_contains_opaque(&field_ty, visiting, skip_channel_handles)
+                {
                     found = Some(opaque);
                     break;
                 }
@@ -2825,6 +2830,7 @@ impl Checker {
         name: &str,
         type_args: &[Ty],
         visiting: &mut std::collections::HashSet<String>,
+        skip_channel_handles: bool,
     ) -> Option<String> {
         if !visiting.insert(name.to_string()) {
             return None; // cycle protection
@@ -2843,7 +2849,9 @@ impl Checker {
                         &type_def.type_params,
                         type_args,
                     );
-                    if let Some(opaque) = self.ty_field_contains_opaque(&payload_ty, visiting) {
+                    if let Some(opaque) =
+                        self.ty_field_contains_opaque(&payload_ty, visiting, skip_channel_handles)
+                    {
                         found = Some(opaque);
                         break 'variants;
                     }
@@ -2854,17 +2862,42 @@ impl Checker {
         found
     }
 
-    pub(super) fn ty_field_contains_opaque(
+    /// Return the first opaque message-payload type, exempting only the
+    /// compiler-built-in channel endpoints that local actor delivery transfers
+    /// by ownership.
+    pub(super) fn ty_message_payload_contains_opaque(
         &self,
         ty: &Ty,
         visiting: &mut std::collections::HashSet<String>,
+    ) -> Option<String> {
+        self.ty_field_contains_opaque(ty, visiting, true)
+    }
+
+    fn ty_field_contains_opaque(
+        &self,
+        ty: &Ty,
+        visiting: &mut std::collections::HashSet<String>,
+        skip_channel_handles: bool,
     ) -> Option<String> {
         // Resolve inference vars so a field whose type is still a `Ty::Var`
         // bound in the substitution environment is walked at its concrete type
         // (mirrors `vec_element_contains_structural_array`).
         let resolved = self.subst.resolve(ty);
         match &resolved {
-            Ty::Named { name, args, .. } => {
+            Ty::Named {
+                name,
+                args,
+                builtin,
+                ..
+            } => {
+                if skip_channel_handles
+                    && matches!(
+                        builtin,
+                        Some(crate::BuiltinType::Sender | crate::BuiltinType::Receiver)
+                    )
+                {
+                    return None;
+                }
                 // Direct opaque handle (imported via module registry OR user-declared #[opaque])?
                 if self.canonical_owned_handle_type_name(name).is_some()
                     || self.user_opaque_type_names.contains(name.as_str())
@@ -2873,13 +2906,17 @@ impl Checker {
                 }
                 // Recurse into type args (e.g. `Vec<Handle>`, `Option<Handle>`).
                 for arg in args {
-                    if let Some(n) = self.ty_field_contains_opaque(arg, visiting) {
+                    if let Some(n) =
+                        self.ty_field_contains_opaque(arg, visiting, skip_channel_handles)
+                    {
                         return Some(n);
                     }
                 }
                 // Recurse into the type def's fields, substituting the def's
                 // params with the concrete `args` at this use site.
-                if let Some(n) = self.record_field_contains_opaque(name, args, visiting) {
+                if let Some(n) =
+                    self.record_field_contains_opaque(name, args, visiting, skip_channel_handles)
+                {
                     return Some(n);
                 }
                 // Recurse into enum variant payloads too — a nested enum with a
@@ -2888,14 +2925,18 @@ impl Checker {
                 // walk, so without this an outer clone would admit an
                 // unclonable leaf. (`record_field_contains_opaque` is a no-op
                 // for an enum, and vice-versa, so both calls are kind-safe.)
-                if let Some(n) = self.enum_variant_contains_opaque(name, args, visiting) {
+                if let Some(n) =
+                    self.enum_variant_contains_opaque(name, args, visiting, skip_channel_handles)
+                {
                     return Some(n);
                 }
                 None
             }
             Ty::Tuple(items) => {
                 for item in items {
-                    if let Some(n) = self.ty_field_contains_opaque(item, visiting) {
+                    if let Some(n) =
+                        self.ty_field_contains_opaque(item, visiting, skip_channel_handles)
+                    {
                         return Some(n);
                     }
                 }

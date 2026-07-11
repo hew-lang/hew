@@ -2057,6 +2057,16 @@ impl Checker {
                 .insert(cd.name.clone(), binding_id);
         }
         self.record_root_value_binding(&cd.name);
+        if let Some(value) = const_value {
+            let binding_id = self
+                .env
+                .lookup_ref(&cd.name)
+                .expect("constant binding was just defined")
+                .id;
+            self.const_values.insert(cd.name.clone(), value);
+            self.declared_const_bindings
+                .insert(cd.name.clone(), binding_id);
+        }
     }
 
     pub(super) fn check_impl(&mut self, id: &ImplDecl, span: &Span) {

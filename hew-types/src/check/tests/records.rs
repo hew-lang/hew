@@ -4,6 +4,239 @@
 )]
 pub(super) use super::*;
 
+#[cfg(test)]
+mod cross_module_same_name {
+    use super::super::*;
+
+    fn make_record(name: &str, fields: &[(&str, &str)]) -> TypeDecl {
+        TypeDecl {
+            visibility: Visibility::Pub,
+            kind: TypeDeclKind::Struct,
+            name: name.to_string(),
+            type_params: None,
+            where_clause: None,
+            body: fields
+                .iter()
+                .map(|(field_name, ty_name)| TypeBodyItem::Field {
+                    name: field_name.to_string(),
+                    ty: (
+                        TypeExpr::Named {
+                            name: ty_name.to_string(),
+                            type_args: None,
+                        },
+                        0..0,
+                    ),
+                    attributes: vec![],
+                    doc_comment: None,
+                    span: 0..0,
+                })
+                .collect(),
+            doc_comment: None,
+            wire: None,
+            is_indirect: false,
+            resource_marker: hew_parser::ast::ResourceMarker::None,
+            is_opaque: false,
+            consuming_methods: vec![],
+        }
+    }
+
+    fn make_constructor_body(record_name: &str, field_name: &str) -> FnDecl {
+        FnDecl {
+            attributes: vec![],
+            is_async: false,
+            is_generator: false,
+            visibility: Visibility::Pub,
+            name: "ok".to_string(),
+            type_params: None,
+            params: vec![],
+            return_type: None,
+            where_clause: None,
+            body: Block {
+                stmts: vec![(
+                    Stmt::Let {
+                        pattern: (Pattern::Identifier("thing".to_string()), 0..0),
+                        ty: None,
+                        value: Some((
+                            Expr::StructInit {
+                                name: record_name.to_string(),
+                                fields: vec![(field_name.to_string(), make_int_literal(1, 0..0))],
+                                type_args: None,
+                                base: None,
+                            },
+                            0..0,
+                        )),
+                        else_block: None,
+                    },
+                    0..0,
+                )],
+                trailing_expr: None,
+            },
+            doc_comment: None,
+            decl_span: 0..0,
+            fn_span: 0..0,
+            intrinsic: None,
+            consumes_self: false,
+        }
+    }
+
+    #[test]
+    fn construction_uses_module_local_same_named_record() {
+        let root_id = ModuleId::root();
+        let alpha_id = ModuleId::new(vec!["alpha".to_string()]);
+        let beta_id = ModuleId::new(vec!["beta".to_string()]);
+
+        let alpha_module = Module {
+            id: alpha_id.clone(),
+            items: vec![
+                (Item::TypeDecl(make_record("Thing", &[("a", "i64")])), 0..10),
+                (Item::Function(make_constructor_body("Thing", "a")), 10..20),
+            ],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+        let beta_module = Module {
+            id: beta_id.clone(),
+            items: vec![(
+                Item::TypeDecl(make_record("Thing", &[("p", "i64"), ("q", "i64")])),
+                0..10,
+            )],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+        let root_module = Module {
+            id: root_id.clone(),
+            items: vec![],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+
+        let mut mg = ModuleGraph::new(root_id.clone());
+        mg.add_module(root_module).unwrap();
+        mg.add_module(alpha_module).unwrap();
+        mg.add_module(beta_module).unwrap();
+        mg.topo_order = vec![alpha_id, beta_id, root_id];
+
+        let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&Program {
+            module_graph: Some(mg),
+            items: vec![],
+            module_doc: None,
+        });
+
+        assert!(
+            output.errors.is_empty(),
+            "module-local same-named records must not cross-contaminate at construction; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn qualified_construction_uses_imported_same_named_record() {
+        let root_id = ModuleId::root();
+        let alpha_id = ModuleId::new(vec!["alpha".to_string()]);
+        let beta_id = ModuleId::new(vec!["beta".to_string()]);
+
+        let alpha_module = Module {
+            id: alpha_id.clone(),
+            items: vec![
+                (Item::TypeDecl(make_record("Thing", &[("a", "i64")])), 0..10),
+                (
+                    Item::Function(make_constructor_body("beta.Thing", "p")),
+                    10..20,
+                ),
+            ],
+            imports: vec![hew_parser::module::ModuleImport {
+                target: beta_id.clone(),
+                spec: None,
+                span: 0..0,
+            }],
+            source_paths: vec![],
+            doc: None,
+        };
+        let beta_module = Module {
+            id: beta_id.clone(),
+            items: vec![(Item::TypeDecl(make_record("Thing", &[("p", "i64")])), 0..10)],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+        let root_module = Module {
+            id: root_id.clone(),
+            items: vec![],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+
+        let mut mg = ModuleGraph::new(root_id.clone());
+        mg.add_module(root_module).unwrap();
+        mg.add_module(alpha_module).unwrap();
+        mg.add_module(beta_module).unwrap();
+        mg.topo_order = vec![beta_id, alpha_id, root_id];
+
+        let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&Program {
+            module_graph: Some(mg),
+            items: vec![],
+            module_doc: None,
+        });
+
+        assert!(
+            output.errors.is_empty(),
+            "qualified imported records must not resolve to same-named local records; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn construction_rejects_ambiguous_same_named_imports() {
+        let alpha_import = make_user_import(
+            &["alpha"],
+            Some(ImportSpec::Names(vec![ImportName {
+                name: "Thing".to_string(),
+                alias: None,
+            }])),
+            vec![(Item::TypeDecl(make_record("Thing", &[("a", "i64")])), 0..10)],
+        );
+        let beta_import = make_user_import(
+            &["beta"],
+            Some(ImportSpec::Names(vec![ImportName {
+                name: "Thing".to_string(),
+                alias: None,
+            }])),
+            vec![(
+                Item::TypeDecl(make_record("Thing", &[("p", "i64"), ("q", "i64")])),
+                0..10,
+            )],
+        );
+        let root_fn = make_constructor_body("Thing", "a");
+
+        let output = check_items(vec![
+            (Item::Import(alpha_import), 0..0),
+            (Item::Import(beta_import), 0..0),
+            (Item::Function(root_fn), 0..0),
+        ]);
+
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| matches!(e.kind, TypeErrorKind::AmbiguousType)),
+            "ambiguous bare imports must fail closed instead of falling back to the wrong record; got: {:?}",
+            output.errors
+        );
+        assert!(
+            !output
+                .errors
+                .iter()
+                .any(|e| e.message.contains("no field `a` on type `Thing`")),
+            "ambiguous bare imports must not leak a misleading field error from the wrong record; got: {:?}",
+            output.errors
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // record admission (A-3)
 // ---------------------------------------------------------------------------

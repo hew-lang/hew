@@ -1,0 +1,21 @@
+//! Tests for std::net::ipnet invalid-input handling.
+
+import std::net::ipnet;
+import std::testing;
+
+#[test]
+fn test_cidr_hosts_returns_exact_valid_host_count() {
+    testing.assert_eq(ipnet.cidr_hosts("192.168.1.0/24"), 254);
+}
+
+#[test]
+#[should_panic]
+fn test_cidr_hosts_rejects_ipv6_count_that_exceeds_i64() {
+    ipnet.cidr_hosts("::/65");
+}
+
+#[test]
+#[should_panic]
+fn test_cidr_contains_rejects_invalid_cidr() {
+    ipnet.cidr_contains("bad-cidr", "10.0.0.1");
+}

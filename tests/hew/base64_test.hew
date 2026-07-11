@@ -269,3 +269,9 @@ fn test_decode_invalid_single_char_returns_empty() {
     let result = base64.decode("Q");
     testing.assert_eq(result.len(), 0);
 }
+
+#[test]
+fn test_decode_rejects_trailing_single_base64_digit() {
+    let result = base64.decode("AAAAA");
+    testing.assert_eq(result.len(), 0);
+}

@@ -160,6 +160,9 @@ impl CanonicalValueMethods for Value {
         }
     }
     fn array_get(val: Value, index: i64) -> Value {
+        if index < 0 || index > 2147483647 {
+            panic(f"json.Value.array_get: index {index} is outside the supported range");
+        }
         unsafe {
             hew_json_array_get(val, index as i32)
         }

@@ -1,0 +1,15 @@
+//! Tests for std::text::unicode codepoint boundaries.
+
+import std::testing;
+import std::text::unicode;
+
+#[test]
+fn test_valid_codepoint_case_mapping_still_works() {
+    testing.assert_eq(unicode.to_upper(97), 65);
+}
+
+#[test]
+fn test_invalid_i64_codepoint_does_not_narrow_to_ascii() {
+    testing.assert_eq(unicode.to_upper(4294967393), 4294967393);
+    testing.assert_false(unicode.is_upper(4294967361));
+}

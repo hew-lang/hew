@@ -85,6 +85,12 @@ fn test_from_char_formats_single_character_strings() {
 }
 
 #[test]
+#[should_panic]
+fn test_from_char_rejects_i64_max_instead_of_narrowing() {
+    string.from_char(9223372036854775807);
+}
+
+#[test]
 fn test_to_int_parses_signed_decimal_strings() {
     testing.assert_eq(string.to_int("12345").unwrap_or(-1), 12345);
     testing.assert_eq(string.to_int("-19").unwrap_or(0), -19);
@@ -176,6 +182,18 @@ fn test_pad_left_adds_padding_until_width() {
 fn test_pad_right_adds_padding_until_width() {
     testing.assert_eq_str(string.pad_right("7", 3, "0"), "700");
     testing.assert_eq_str(string.pad_right("hello", 3, "0"), "hello");
+}
+
+#[test]
+fn test_padding_counts_unicode_characters_not_utf8_bytes() {
+    testing.assert_eq_str(string.pad_left("é", 3, "0"), "00é");
+    testing.assert_eq_str(string.pad_right("é", 3, "0"), "é00");
+}
+
+#[test]
+#[should_panic]
+fn test_padding_rejects_multi_character_pad() {
+    string.pad_left("x", 3, "ab");
 }
 
 #[test]

@@ -61,33 +61,45 @@ trait MessageMethods {
 impl MessageMethods for Message {
     /// Set a string field by field number.
     fn set_string(msg: Message, field_number: i64, value: string) {
+        validate_field_number(field_number);
         unsafe {
             hew_proto_msg_set_string(msg.handle, field_number as i32, value)
         }; // INTERNAL-ABI: C ABI field_number is i32
     }
     /// Get a string field by field number.
     fn get_string(msg: Message, field_number: i64) -> string {
+        validate_field_number(field_number);
         unsafe {
             hew_proto_msg_get_string(msg.handle, field_number as i32)
         } // INTERNAL-ABI: C ABI field_number is i32
     }
     /// Set a varint (integer) field by field number.
     fn set_varint(msg: Message, field_number: i64, value: i64) {
+        validate_field_number(field_number);
         unsafe {
             hew_proto_msg_set_varint(msg.handle, field_number as i32, value as i64)
         }; // INTERNAL-ABI: C ABI uses i32/i64
     }
     /// Get a varint (integer) field by field number.
     fn get_varint(msg: Message, field_number: i64, fallback: i64) -> i64 {
+        validate_field_number(field_number);
         unsafe {
             hew_proto_msg_get_varint(msg.handle, field_number as i32, fallback as i64)
         } // INTERNAL-ABI: C ABI uses i32/i64
     }
     /// Test whether a field is present in the message.
     fn has_field(msg: Message, field_number: i64) -> bool {
+        validate_field_number(field_number);
         unsafe {
             hew_proto_msg_has_field(msg.handle, field_number as i32)
         } != 0 // INTERNAL-ABI: C ABI returns i32 (1=present, 0=absent); explicit != 0 required (no implicit i32→bool)
+    }
+
+}
+
+fn validate_field_number(field_number: i64) {
+    if field_number < 1 || field_number > 536870911 {
+        panic(f"protobuf: field number {field_number} is outside 1..=536870911");
     }
 }
 

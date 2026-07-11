@@ -74,6 +74,26 @@ pub fn shuffle(v: Vec<i64>) {
 /// all weights up to and including that index), `total` is the grand total,
 /// and `n` is reserved for future multi-sample use (pass 1).
 pub fn choices(weights: Vec<f64>, total: f64, n: i64) -> i64 {
+    if weights.len() == 0 {
+        panic("random.choices: weights must not be empty");
+    }
+    if total <= 0.0 || total != total {
+        panic("random.choices: total must be a positive finite value");
+    }
+    if n != 1 {
+        panic("random.choices: only one sample is supported");
+    }
+    var previous = 0.0;
+    for i in 0 .. weights.len() {
+        let weight = weights[i];
+        if weight <= previous || weight != weight {
+            panic("random.choices: weights must be strictly increasing");
+        }
+        previous = weight;
+    }
+    if previous != total {
+        panic("random.choices: total must equal the final cumulative weight");
+    }
     unsafe {
         hew_random_choices_vec(weights, total, n)
     }

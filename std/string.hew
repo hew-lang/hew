@@ -52,6 +52,9 @@ pub fn from_bool(b: bool) -> string {
 /// let newline = string.from_char(10);
 /// ```
 pub fn from_char(code: i64) -> string {
+    if code < 0 || code > 0x10FFFF || code >= 0xD800 && code <= 0xDFFF {
+        panic(f"string.from_char: invalid Unicode scalar value {code}");
+    }
     unsafe {
         hew_char_to_string(code as i32)
     }
@@ -457,7 +460,11 @@ pub fn repeat(s: string, n: i64) -> string {
 /// string.pad_left("42", 5, "0")   // "00042"
 /// ```
 pub fn pad_left(s: string, width: i64, pad: string) -> string {
-    let slen = s.len();
+    let pad_len = pad.char_count_utf8();
+    if pad_len != 1 {
+        panic("string.pad_left: pad must contain exactly one character");
+    }
+    let slen = s.char_count_utf8();
     if slen >= width {
         return s;
     }
@@ -474,7 +481,11 @@ pub fn pad_left(s: string, width: i64, pad: string) -> string {
 /// string.pad_right("hi", 5, " ")  // "hi   "
 /// ```
 pub fn pad_right(s: string, width: i64, pad: string) -> string {
-    let slen = s.len();
+    let pad_len = pad.char_count_utf8();
+    if pad_len != 1 {
+        panic("string.pad_right: pad must contain exactly one character");
+    }
+    let slen = s.char_count_utf8();
     if slen >= width {
         return s;
     }

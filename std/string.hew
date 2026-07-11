@@ -112,7 +112,11 @@ pub fn try_to_int(s: string) -> Result<i64, string> {
     };
     var result = 0;
     for i in start .. slen {
-        let d = digit_value(s.slice(i, i + 1));
+        let digit = s.slice(i, i + 1);
+        let d = digit_value(digit);
+        unsafe {
+            hew_string_drop(digit)
+        };
         if d < 0 {
             return Err("string.try_to_int: invalid integer literal");
         }
@@ -780,7 +784,8 @@ pub trait ToString {
     fn to_str(val: Self) -> string;
 }
 
-// ── FFI binding (char-code-to-string has no builtin equivalent) ─────
+// ── FFI bindings ─────────────────────────────────────────────────────
 extern "C" {
     fn hew_char_to_string(code: i32) -> string;
+    fn hew_string_drop(consume s: string);
 }

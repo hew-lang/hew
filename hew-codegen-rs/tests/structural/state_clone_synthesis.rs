@@ -9,10 +9,10 @@
 //! - The synthesised function symbols exist with the expected linkage.
 //! - The body shape matches plan §6 Stage 3 (null guard → wholesale memcpy
 //!   → per-field clone with rollback chain → success / null return).
-//! - Per-field clone helpers (`hew_string_clone`, `hew_vec_clone_managed`,
+//! - Per-field clone helpers (`hew_string_clone`, `hew_vec_clone_owned`,
 //!   `hew_bytes_clone_ref`, `hew_hashmap_clone_layout`, `hew_hashset_clone_layout`,
 //!   per-record `__hew_record_clone_inplace_*`) are declared and called.
-//! - Per-field drop helpers (`hew_string_drop`, `hew_vec_free_managed`,
+//! - Per-field drop helpers (`hew_string_drop`, `hew_vec_free_owned`,
 //!   `hew_bytes_drop`, HashMap/HashSet free helpers,
 //!   `__hew_record_drop_inplace_*`) are declared and called. Collection
 //!   clone/drop symbols are derived from the single `collection_layout_witness`
@@ -292,12 +292,12 @@ fn state_clone_chatroom_string_and_vec_clone_with_rollback() {
         "expected hew_string_clone declaration; IR:\n{ir}"
     );
     assert!(
-        ir.contains("@hew_vec_clone_managed"),
-        "expected hew_vec_clone_managed declaration; IR:\n{ir}"
+        ir.contains("@hew_vec_clone_owned"),
+        "expected hew_vec_clone_owned declaration; IR:\n{ir}"
     );
     // Per-field drop helpers.
     assert!(ir.contains("@hew_string_drop"));
-    assert!(ir.contains("@hew_vec_free_managed"));
+    assert!(ir.contains("@hew_vec_free_owned"));
     // Regression guard: the migrated Vec field must NOT *call* the legacy
     // non-layout pair. (`hew_vec_clone`/`hew_vec_free` may still be *declared*
     // via the stdlib runtime-ABI predeclaration; only call-site routing
@@ -333,14 +333,14 @@ fn state_clone_chatroom_string_and_vec_clone_with_rollback() {
         .unwrap_or(ir.len());
     let drop_body = &ir[drop_fn_start..drop_fn_end];
     let vec_pos = drop_body
-        .find("call void @hew_vec_free_managed")
+        .find("call void @hew_vec_free_owned")
         .expect("vec drop call must appear in drop body");
     let string_pos = drop_body
         .find("call void @hew_string_drop")
         .expect("string drop call must appear in drop body");
     assert!(
         vec_pos < string_pos,
-        "drop must call hew_vec_free_managed BEFORE hew_string_drop (reverse-order LIFO); \
+        "drop must call hew_vec_free_owned BEFORE hew_string_drop (reverse-order LIFO); \
          vec_pos={vec_pos}, string_pos={string_pos}\nbody:\n{drop_body}"
     );
 }
@@ -478,7 +478,7 @@ fn state_clone_workspace_nested_user_record_synthesizes_record_helper() {
         ir.contains("call i32 @__hew_record_clone_inplace_Entry("),
         "actor clone must invoke nested record's in-place clone helper; IR:\n{ir}"
     );
-    // Entry helper itself must call hew_string_clone + hew_vec_clone_managed
+    // Entry helper itself must call hew_string_clone + hew_vec_clone_owned
     // for its two non-trivial fields (id: String, payload: Vec<i32>). The Vec
     // field routes through the witness-managed pair (W5.002 F0b).
     let entry_clone_start = ir
@@ -490,7 +490,7 @@ fn state_clone_workspace_nested_user_record_synthesizes_record_helper() {
         .unwrap_or(ir.len());
     let entry_body = &ir[entry_clone_start..entry_clone_end];
     assert!(entry_body.contains("@hew_string_clone"));
-    assert!(entry_body.contains("@hew_vec_clone_managed"));
+    assert!(entry_body.contains("@hew_vec_clone_owned"));
 }
 
 /// Connection-bearing actor: clone fn must short-circuit to `ret ptr

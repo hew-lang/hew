@@ -80,19 +80,21 @@ fn main -> ()
     branch[bb4: bb5/bb6] ->
       (none)
     panic[bb5] ->
-      (none)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
     call[bb6 println_str -> bb7] ->
       (none)
     branch[bb7: bb8/bb9] ->
       (none)
     panic[bb8] ->
       drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
     call[bb9 println_str -> bb10] ->
       (none)
     branch[bb10: bb11/bb12] ->
       (none)
     panic[bb11] ->
       drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
     branch[bb12: bb11/bb13] ->
       (none)
     call[bb13 hew_vec_len -> bb14] ->
@@ -116,21 +118,25 @@ fn main -> ()
     panic[bb22] ->
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
     branch[bb23: bb24/bb25] ->
       (none)
     panic[bb24] ->
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
     goto[bb25->bb21] ->
       (none)
     cancel[bb25] ->
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
     goto[bb26->bb16] ->
       (none)
     cancel[bb26] ->
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
     call[bb27 println_str -> bb31] ->
       (none)
     goto[bb28->bb17] ->
@@ -138,9 +144,11 @@ fn main -> ()
     cancel[bb28] ->
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
     panic[bb29] ->
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
     branch[bb30: bb28/bb29] ->
       (none)
     goto[bb31->bb26] ->
@@ -148,6 +156,7 @@ fn main -> ()
     cancel[bb31] ->
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
     goto[bb32->bb26] ->
       (none)
     cancel[bb32] ->
@@ -162,6 +171,7 @@ fn main -> ()
       drop _55 ty=Vec<Point> kind=cow_heap(hew_vec_free)
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
     call[bb37 println_i64 -> bb38] ->
       (none)
     call[bb38 Vec::new -> bb39] ->
@@ -177,6 +187,7 @@ fn main -> ()
       drop _55 ty=Vec<Point> kind=cow_heap(hew_vec_free)
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
     call[bb43 println_i64 -> bb44] ->
       (none)
     branch[bb44: bb45/bb46] ->
@@ -186,6 +197,7 @@ fn main -> ()
       drop _55 ty=Vec<Point> kind=cow_heap(hew_vec_free)
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
     branch[bb46: bb45/bb47] ->
       (none)
     branch[bb47: bb48/bb49] ->
@@ -196,6 +208,7 @@ fn main -> ()
       drop _55 ty=Vec<Point> kind=cow_heap(hew_vec_free)
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
     call[bb49 println_i64 -> bb50] ->
       (none)
     return[bb50] ->
@@ -204,6 +217,7 @@ fn main -> ()
       drop _55 ty=Vec<Point> kind=cow_heap(hew_vec_free)
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
 
 fn i8::fmt -> string
   statements:

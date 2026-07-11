@@ -167,39 +167,6 @@ unsafe fn abort_layout_aware_operation() -> ! {
     }
 }
 
-/// Fail-closed abort for the witness-managed Vec clone when the element layout
-/// is `LayoutManaged`.
-///
-/// `HewTypeLayout` carries only `{size, align, ownership_kind}` — it has no
-/// per-element clone thunk — so a faithful deep clone of layout-managed
-/// elements is impossible until the descriptor is extended (the `Vec<owned>`
-/// follow-on). This mirrors `hew_hashmap_clone_layout`'s "layout-managed clone
-/// thunk is unavailable" abort: fail closed rather than bit-copy owned handles
-/// and reintroduce the W4.045 UAF/double-free class
-/// (`codegen-abi-authority` / `lifecycle-symmetry` P0).
-unsafe fn abort_layout_managed_clone_unavailable() -> ! {
-    // SAFETY: writing to stderr and aborting is always safe.
-    unsafe {
-        let msg = b"PANIC: Vec layout-managed element clone thunk is unavailable\n\0";
-        write_stderr(&msg[..msg.len() - 1]);
-        libc::abort();
-    }
-}
-
-/// Drop-side companion to [`abort_layout_managed_clone_unavailable`]. Mirrors
-/// `hew_hashmap_free_layout`'s fail-closed layout-managed path: dropping a
-/// layout-managed element requires a descriptor drop thunk that `HewTypeLayout`
-/// does not yet carry, so a populated layout-managed Vec fails closed instead
-/// of leaking or mis-freeing element-owned heap.
-unsafe fn abort_layout_managed_drop_unavailable() -> ! {
-    // SAFETY: writing to stderr and aborting is always safe.
-    unsafe {
-        let msg = b"PANIC: Vec layout-managed element drop thunk is unavailable\n\0";
-        write_stderr(&msg[..msg.len() - 1]);
-        libc::abort();
-    }
-}
-
 /// Fail-closed gate rejecting `String`-kind elements at the untyped generic Vec
 /// constructor.
 ///
@@ -252,20 +219,6 @@ unsafe fn abort_if_layout_aware(v: *const HewVec) {
     }
 }
 
-/// Return whether a layout-aware vec contains elements whose drops still need
-/// descriptor-driven ownership semantics.
-///
-/// # Safety
-///
-/// `v` must point to a valid, non-null `HewVec`.
-unsafe fn layout_requires_fail_closed_drop(v: *const HewVec) -> bool {
-    // SAFETY: caller guarantees `v` is valid.
-    unsafe {
-        !(*v).layout.is_null()
-            && (*(*v).layout).ownership_kind == HewTypeOwnershipKind::LayoutManaged
-    }
-}
-
 /// Validate the static descriptor fields required to allocate a layout-aware Vec.
 ///
 /// # Safety
@@ -288,6 +241,39 @@ unsafe fn validate_type_layout(layout: *const HewTypeLayout) {
     }
 }
 
+/// Validate the authoritative thunk-bearing descriptor stored in a Vec.
+///
+/// # Safety
+///
+/// `layout` must point to a valid `HewVecElemLayout`.
+unsafe fn validate_elem_layout(layout: *const HewVecElemLayout) {
+    // SAFETY: caller guarantees `layout` is valid.
+    unsafe {
+        let descriptor = &*layout;
+        if descriptor.size == 0 {
+            let msg = b"PANIC: HewVecElemLayout size must be non-zero\n\0";
+            write_stderr(&msg[..msg.len() - 1]);
+            libc::abort();
+        }
+        if descriptor.align == 0 || !descriptor.align.is_power_of_two() {
+            let msg = b"PANIC: HewVecElemLayout align must be a non-zero power of two\n\0";
+            write_stderr(&msg[..msg.len() - 1]);
+            libc::abort();
+        }
+        if descriptor.ownership_kind == HewTypeOwnershipKind::Bytes {
+            let msg = b"PANIC: HewVecElemLayout ownership_kind=Bytes is not valid for Vec\n\0";
+            write_stderr(&msg[..msg.len() - 1]);
+            libc::abort();
+        }
+        if descriptor.ownership_kind != HewTypeOwnershipKind::Plain && descriptor.drop_fn.is_none()
+        {
+            let msg = b"PANIC: HewVecElemLayout non-Plain ownership requires drop_fn\n\0";
+            write_stderr(&msg[..msg.len() - 1]);
+            libc::abort();
+        }
+    }
+}
+
 /// Validate that a layout-aware operation is restricted to `BitCopy` elements.
 ///
 /// # Safety
@@ -301,7 +287,7 @@ unsafe fn validate_bitcopy_layout_operation(v: *const HewVec, layout: *const Hew
         if vec_layout.is_null() {
             abort_layout_aware_operation();
         }
-        validate_type_layout(vec_layout);
+        validate_elem_layout(vec_layout);
         let requested = &*layout;
         let stored = &*vec_layout;
         if requested.size != stored.size
@@ -339,12 +325,6 @@ pub unsafe extern "C" fn hew_vec_new_with_elem_size(elem_size: i64) -> *mut HewV
         (*v).elem_size = elem_size as usize;
         (*v).elem_kind = ElemKind::Plain;
         (*v).layout = ptr::null();
-        // W5.016: the owned-element descriptor is opt-in. Null it here so every
-        // constructor path (the typed `hew_vec_new_*` family, the Plain
-        // `_layout` constructor, the generic constructor) leaves it absent
-        // unless `hew_vec_new_with_elem_layout` stamps it. The owned ops gate on
-        // a non-null `elem_layout`; a null one keeps the legacy/Plain ABI.
-        (*v).elem_layout = ptr::null();
         v
     }
 }
@@ -539,13 +519,10 @@ pub unsafe extern "C" fn hew_vec_from_u8_data(data: *const u8, len: u32) -> *mut
 
 /// Create a new `HewVec` backed by a runtime type layout descriptor.
 ///
-/// Stage 1 only records the descriptor and fails closed for layout-aware
-/// operations that need full clone/drop semantics.
-///
-/// The descriptor is **copied** into the vec's inline `layout_storage` field
-/// so that `(*v).layout` always points into the same allocation as the vec
-/// itself.  Callers no longer need to ensure the pointer outlives the vec —
-/// the descriptor value is owned from this point.
+/// The thunk-less compatibility descriptor is widened into the Vec's
+/// authoritative [`HewVecElemLayout`] storage. Only Plain and String ownership
+/// are admissible through this entry point; layout-managed elements must use
+/// [`hew_vec_new_with_elem_layout`] and provide a drop thunk.
 ///
 /// # Safety
 ///
@@ -558,6 +535,11 @@ pub unsafe extern "C" fn hew_vec_new_with_layout(layout: *const HewTypeLayout) -
     unsafe {
         validate_type_layout(layout);
         let descriptor = &*layout;
+        if descriptor.ownership_kind == HewTypeOwnershipKind::LayoutManaged {
+            let msg = b"PANIC: HewTypeLayout LayoutManaged requires HewVecElemLayout thunks\n\0";
+            write_stderr(&msg[..msg.len() - 1]);
+            libc::abort();
+        }
         let elem_size = i64::try_from(descriptor.size).unwrap_or_else(|_| {
             let msg = b"PANIC: HewTypeLayout size exceeds Hew ABI range\n\0";
             write_stderr(&msg[..msg.len() - 1]);
@@ -565,8 +547,8 @@ pub unsafe extern "C" fn hew_vec_new_with_layout(layout: *const HewTypeLayout) -
         });
         let v = hew_vec_new_with_elem_size(elem_size);
         (*v).elem_kind = match descriptor.ownership_kind {
-            HewTypeOwnershipKind::String => ElemKind::String,
-            HewTypeOwnershipKind::Plain | HewTypeOwnershipKind::LayoutManaged => ElemKind::Plain,
+            HewTypeOwnershipKind::String | HewTypeOwnershipKind::Plain => ElemKind::Plain,
+            HewTypeOwnershipKind::LayoutManaged => unreachable!(),
             HewTypeOwnershipKind::Bytes => {
                 // The Bytes kind belongs to the channel/stream element
                 // witness; Vec descriptors never carry it. Fail closed.
@@ -575,12 +557,15 @@ pub unsafe extern "C" fn hew_vec_new_with_layout(layout: *const HewTypeLayout) -
                 libc::abort();
             }
         };
-        // Copy the descriptor into the inline storage so the `layout` pointer
-        // remains valid for the entire lifetime of the vec regardless of
-        // whether the caller's original pointer lives longer.  This closes the
-        // use-after-return class: callers that passed a stack-local or
-        // temporary layout are now safe.
-        (*v).layout_storage = *descriptor;
+        (*v).layout_storage = HewVecElemLayout {
+            size: descriptor.size,
+            align: descriptor.align,
+            ownership_kind: descriptor.ownership_kind,
+            clone_fn: (descriptor.ownership_kind == HewTypeOwnershipKind::String)
+                .then_some(vec_string_clone_inplace),
+            drop_fn: (descriptor.ownership_kind == HewTypeOwnershipKind::String)
+                .then_some(vec_string_drop_inplace),
+        };
         (*v).layout = core::ptr::addr_of!((*v).layout_storage);
         v
     }
@@ -682,6 +667,24 @@ unsafe fn release_string_element(s: *mut c_char) {
     unsafe { crate::string::hew_string_drop(s) }; // CSTRING-FREE: container-elem-P2b (vec string element — header-aware release replaces libc::free)
 }
 
+unsafe extern "C" fn vec_string_clone_inplace(src: *const c_void, dst: *mut c_void) -> i32 {
+    // SAFETY: descriptor callers provide valid pointer-sized string slots.
+    unsafe {
+        let value = *src.cast::<*const c_char>();
+        *dst.cast::<*mut c_char>() = retain_string_element(value);
+    }
+    0
+}
+
+unsafe extern "C" fn vec_string_drop_inplace(slot: *mut c_void) {
+    // SAFETY: descriptor callers provide a valid pointer-sized string slot.
+    unsafe {
+        let value = *slot.cast::<*mut c_char>();
+        release_string_element(value);
+        *slot.cast::<*mut c_char>() = ptr::null_mut();
+    }
+}
+
 /// Retain `count` string elements from `src` into `dst` (one VWT `copy` per
 /// element). `src`/`dst` point at the first `*mut c_char` slot of each region;
 /// the regions must not overlap. This is the single shared element-retain path
@@ -776,7 +779,30 @@ pub unsafe extern "C" fn hew_vec_push_str(v: *mut HewVec, val: *const c_char) {
 
 vec_push_primitive!(hew_vec_push_f64, f64);
 vec_push_primitive!(hew_vec_push_f32, f32);
-vec_push_primitive!(hew_vec_push_ptr, *mut c_void);
+
+/// Push a pointer-sized element. Descriptor-backed pointer Vecs use this as a
+/// move-in operation (closure-pair boxes); plain pointer Vecs retain the legacy
+/// behavior.
+///
+/// # Safety
+///
+/// `v` must be a valid pointer-element Vec.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_push_ptr(v: *mut HewVec, val: *mut c_void) {
+    // SAFETY: caller guarantees `v` is valid.
+    unsafe {
+        if (*v).elem_size != core::mem::size_of::<*mut c_void>() {
+            abort_ptr_stride_mismatch((*v).elem_size);
+        }
+        let len = (*v).len;
+        let Some(new_len) = len.checked_add(1) else {
+            libc::abort();
+        };
+        ensure_cap_raw(v, new_len);
+        (*v).data.cast::<*mut c_void>().add(len).write(val);
+        (*v).len = new_len;
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Get
@@ -1029,10 +1055,7 @@ pub unsafe extern "C" fn hew_vec_slice_range_bytesize(
 ) -> *mut HewVec {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
-        if (*v).elem_kind != ElemKind::Plain
-            || !(*v).layout.is_null()
-            || !(*v).elem_layout.is_null()
-        {
+        if (*v).elem_kind != ElemKind::Plain || !(*v).layout.is_null() {
             abort_layout_aware_operation();
         }
         let (start_u, end_u) = check_slice_bounds(v, start, end);
@@ -1465,25 +1488,55 @@ pub unsafe extern "C" fn hew_vec_is_empty(v: *mut HewVec) -> bool {
     unsafe { (*v).len == 0 }
 }
 
-/// Release individual string elements in the range `[0, len)` (VWT `destroy`).
+/// Drop live elements in `[start, end)` through the Vec's single descriptor
+/// protocol.
 ///
 /// # Safety
 ///
-/// `v` must be a valid string `HewVec` pointer with `elem_kind == String`.
-unsafe fn free_string_elements(v: *mut HewVec) {
-    // SAFETY: caller guarantees `v` is a valid string HewVec.
+/// `v` must be valid and `start <= end <= (*v).len`.
+unsafe fn drop_element_range(v: *mut HewVec, start: usize, end: usize) {
+    // SAFETY: caller guarantees `v` and the range are valid.
     unsafe {
         let vec = &*v;
-        for i in 0..vec.len {
-            let slot = vec.data.cast::<*mut c_char>().add(i);
-            // Release one owner (VWT destroy); handles null/static.
-            release_string_element(slot.read());
+        if !vec.layout.is_null() {
+            let layout = &*vec.layout;
+            if let Some(drop_fn) = layout.drop_fn {
+                for i in start..end {
+                    let slot = vec.data.add(i * layout.size);
+                    drop_fn(slot.cast::<c_void>());
+                }
+                return;
+            }
+        }
+        if vec.elem_kind == ElemKind::String {
+            for i in start..end {
+                let slot = vec.data.cast::<*mut c_char>().add(i);
+                release_string_element(slot.read());
+            }
         }
     }
 }
 
-/// Clear the vec (set len to 0). Frees individual string elements if
-/// `elem_kind == String`.
+/// Descriptor-driven Vec release shared by every exported free symbol.
+///
+/// # Safety
+///
+/// `v` must be null or a valid Vec allocation.
+unsafe fn free_vec_descriptor(v: *mut HewVec) {
+    // SAFETY: caller guarantees `v` was allocated by a Vec constructor.
+    unsafe {
+        if v.is_null() {
+            return;
+        }
+        if !(*v).data.is_null() {
+            drop_element_range(v, 0, (*v).len);
+            libc::free((*v).data.cast()); // ALLOCATOR-PAIRING: libc
+        }
+        libc::free(v.cast()); // ALLOCATOR-PAIRING: libc
+    }
+}
+
+/// Clear the vec (set len to 0), recursively dropping every live element.
 ///
 /// # Safety
 ///
@@ -1492,18 +1545,12 @@ unsafe fn free_string_elements(v: *mut HewVec) {
 pub unsafe extern "C" fn hew_vec_clear(v: *mut HewVec) {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
-        if layout_requires_fail_closed_drop(v) && (*v).len != 0 {
-            abort_layout_aware_operation();
-        }
-        if (*v).elem_kind == ElemKind::String {
-            free_string_elements(v);
-        }
+        drop_element_range(v, 0, (*v).len);
         (*v).len = 0;
     }
 }
 
-/// Free the vec's backing data and the `HewVec` struct itself. Frees
-/// individual string elements if `elem_kind == String`.
+/// Free the Vec through its descriptor-driven recursive release protocol.
 ///
 /// # Safety
 ///
@@ -1511,126 +1558,45 @@ pub unsafe extern "C" fn hew_vec_clear(v: *mut HewVec) {
 /// invalid.
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_free(v: *mut HewVec) {
-    // SAFETY: caller guarantees `v` was allocated with malloc (or is null).
-    unsafe {
-        if !v.is_null() {
-            if !(*v).data.is_null() {
-                if layout_requires_fail_closed_drop(v) && (*v).len != 0 {
-                    abort_layout_aware_operation();
-                }
-                if (*v).elem_kind == ElemKind::String {
-                    free_string_elements(v);
-                }
-                libc::free((*v).data.cast()); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes ((*v).data backing array)
-            }
-            libc::free(v.cast()); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: struct (HewVec struct)
-        }
-    }
+    // SAFETY: forwarded allocation contract.
+    unsafe { free_vec_descriptor(v) }
 }
 
-/// Free a closure-pair `Vec<fn(...)>`: release every element's environment
-/// and pair box, then the buffer and the handle.
+/// Drop one boxed closure pair in place.
 ///
 /// Element contract (planted by codegen's closure-pair vec marshalling):
-/// each 8-byte slot holds a `hew_dyn_box_alloc(16, 8)` box containing a copy
+/// the slot holds a `hew_dyn_box_alloc(16, 8)` box containing a copy
 /// of the closure pair `{ fn_ptr, env_ptr }`. A non-null `env_ptr` points at
 /// the captures region of a heap env box whose slot at `env_ptr - 8` holds
 /// the per-closure free thunk (`void (*)(env_ptr)`) the compiler synthesised
 /// with the box's static size/align. Null `env_ptr` (named-fn pairs,
 /// capture-free closures) owns nothing.
 ///
-/// Each element is released exactly once: env thunk first (if any), then the
-/// 16-byte pair box via [`crate::trait_object::hew_dyn_box_free`] with the
-/// exact alloc layout. Null element slots are skipped (defensive; codegen
-/// never stores one).
-///
 /// # Safety
 ///
-/// `v` must be a closure-pair vec built through `hew_vec_new_ptr` +
-/// `hew_vec_push_ptr`/`hew_vec_set_ptr` with boxed-pair elements as above
-/// (or null). After this call `v` is invalid.
+/// `slot` must point to one closure-pair pointer slot.
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_free_closure_pairs(v: *mut HewVec) {
+pub unsafe extern "C" fn hew_vec_closure_pair_drop_inplace(slot: *mut c_void) {
     const PAIR_BOX_SIZE: usize = 16;
     const PAIR_BOX_ALIGN: usize = 8;
-    // SAFETY: caller guarantees the closure-pair element contract.
+    // SAFETY: caller guarantees the closure-pair slot contract.
     unsafe {
-        if v.is_null() {
+        if slot.is_null() {
             return;
         }
-        if !(*v).data.is_null() {
-            for i in 0..(*v).len {
-                let slot = (*v).data.add(i * (*v).elem_size).cast::<*mut u8>();
-                let elem = *slot;
-                if elem.is_null() {
-                    continue;
-                }
-                // Pair layout: { fn_ptr @ +0, env_ptr @ +8 }.
-                let env = *elem.add(8).cast::<*mut u8>();
-                if !env.is_null() {
-                    // The compiler-planted free thunk sits immediately
-                    // before the captures region.
-                    let thunk = *env.sub(8).cast::<Option<unsafe extern "C" fn(*mut u8)>>();
-                    if let Some(thunk) = thunk {
-                        thunk(env);
-                    }
-                }
-                crate::trait_object::hew_dyn_box_free(elem, PAIR_BOX_SIZE, PAIR_BOX_ALIGN);
-            }
-            libc::free((*v).data.cast()); // ALLOCATOR-PAIRING: libc
-        }
-        libc::free(v.cast()); // ALLOCATOR-PAIRING: libc
-    }
-}
-
-/// Free a witness-managed `Vec<T>` handle, applying the element ownership
-/// discipline recorded in the handle's layout descriptor.
-///
-/// This is the drop half of the single layout-witness pair that codegen
-/// derives from `collection_layout_witness` (W5.002 F0b). Codegen routes every
-/// actor-state `Vec<T>` field through `hew_vec_clone_managed` /
-/// `hew_vec_free_managed`, so the allocate side and free side can never select
-/// mismatched runtime symbols — the structural retirement of the W4.045 UAF
-/// class for Vec (`codegen-abi-authority` / `lifecycle-symmetry` P0). The
-/// element layout lives *inside the handle* (`(*v).layout`, stamped by the
-/// constructor), exactly as `hew_hashmap_free_layout` reads its value layout
-/// from the map, so this symbol is single-arg and never takes a separate
-/// descriptor at the call site.
-///
-/// Ownership dispatch:
-/// - layout absent (legacy typed constructor) → `elem_kind`-driven free:
-///   `String` frees each slot, every other kind is covered by the bulk buffer.
-/// - layout `Plain` → bulk buffer free.
-/// - layout `String` → per-slot string free.
-/// - layout `LayoutManaged` with live elements → fail closed
-///   ([`abort_layout_managed_drop_unavailable`]): `HewTypeLayout` carries no
-///   drop thunk, mirroring `hew_hashmap_free_layout`'s fail-closed key path.
-///
-/// A null `v` is a documented no-op (`boundary-fail-closed` P0: `free(null)`
-/// is the only permitted silent-return shape).
-///
-/// # Safety
-///
-/// `v` must have been returned by [`hew_vec_clone_managed`] or a `hew_vec_new*`
-/// constructor (or be null). After this call, `v` is invalid and must not be
-/// used.
-#[no_mangle]
-pub unsafe extern "C" fn hew_vec_free_managed(v: *mut HewVec) {
-    // SAFETY: caller guarantees `v` was allocated with malloc (or is null).
-    unsafe {
-        if v.is_null() {
+        let elem = *slot.cast::<*mut u8>();
+        if elem.is_null() {
             return;
         }
-        if layout_requires_fail_closed_drop(v) && (*v).len != 0 {
-            abort_layout_managed_drop_unavailable();
-        }
-        if !(*v).data.is_null() {
-            if (*v).elem_kind == ElemKind::String {
-                free_string_elements(v);
+        let env = *elem.add(8).cast::<*mut u8>();
+        if !env.is_null() {
+            let thunk = *env.sub(8).cast::<Option<unsafe extern "C" fn(*mut u8)>>();
+            if let Some(thunk) = thunk {
+                thunk(env);
             }
-            libc::free((*v).data.cast()); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes ((*v).data backing array)
         }
-        libc::free(v.cast()); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: struct (HewVec struct)
+        crate::trait_object::hew_dyn_box_free(elem, PAIR_BOX_SIZE, PAIR_BOX_ALIGN);
+        *slot.cast::<*mut u8>() = ptr::null_mut();
     }
 }
 
@@ -1699,45 +1665,87 @@ pub unsafe extern "C" fn hew_vec_sort_f64(v: *mut HewVec) {
 // Clone
 // ---------------------------------------------------------------------------
 
-/// Deep-clone a `HewVec`. For string vecs, each element is **retained** (VWT
-/// `copy`) — the cloned slot array holds an independent owner of each shared,
-/// refcounted element buffer.
+/// Clone a Vec through its descriptor-driven recursive protocol.
+///
+/// # Safety
+///
+/// `v` must be null or a valid Vec allocation.
+unsafe fn clone_vec_descriptor(v: *const HewVec) -> *mut HewVec {
+    // SAFETY: caller guarantees `v` is valid.
+    unsafe {
+        if v.is_null() {
+            return ptr::null_mut();
+        }
+        let src = &*v;
+        let new_v = if src.layout.is_null() {
+            let out = hew_vec_new_with_elem_size(
+                #[expect(clippy::cast_possible_wrap, reason = "elem_size is small, fits in i64")]
+                {
+                    src.elem_size as i64
+                },
+            );
+            (*out).elem_kind = src.elem_kind;
+            out
+        } else {
+            let layout = &*src.layout;
+            if layout.ownership_kind != HewTypeOwnershipKind::Plain && layout.clone_fn.is_none() {
+                abort_owned_thunk_missing("clone");
+            }
+            hew_vec_new_with_elem_layout(src.layout)
+        };
+        if src.len == 0 {
+            return new_v;
+        }
+        ensure_cap_raw(new_v, src.len);
+        if src.layout.is_null() {
+            if src.elem_kind == ElemKind::String {
+                retain_string_elements_into(
+                    src.data.cast::<*const c_char>(),
+                    (*new_v).data.cast::<*mut c_char>(),
+                    src.len,
+                );
+            } else {
+                let byte_count = src.len * src.elem_size;
+                core::ptr::copy_nonoverlapping(src.data, (*new_v).data, byte_count);
+            }
+            (*new_v).len = src.len;
+            return new_v;
+        }
+
+        let layout = &*src.layout;
+        if let Some(clone_fn) = layout.clone_fn {
+            for i in 0..src.len {
+                let src_slot = src.data.add(i * layout.size);
+                let dst_slot = (*new_v).data.add(i * layout.size);
+                core::ptr::copy_nonoverlapping(src_slot, dst_slot, layout.size);
+                let status = clone_fn(src_slot.cast::<c_void>(), dst_slot.cast::<c_void>());
+                if status != 0 {
+                    (*new_v).len = i;
+                    free_vec_descriptor(new_v);
+                    let msg = b"PANIC: Vec descriptor clone failed\n\0";
+                    write_stderr(&msg[..msg.len() - 1]);
+                    libc::abort();
+                }
+                (*new_v).len = i + 1;
+            }
+        } else {
+            let byte_count = src.len * layout.size;
+            core::ptr::copy_nonoverlapping(src.data, (*new_v).data, byte_count);
+            (*new_v).len = src.len;
+        }
+        new_v
+    }
+}
+
+/// Deep-clone a `HewVec` through its stored element descriptor.
 ///
 /// # Safety
 ///
 /// `v` must be a valid `HewVec` pointer (or null, which returns null).
-/// The returned pointer must eventually be freed with [`hew_vec_free`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_clone(v: *const HewVec) -> *mut HewVec {
-    cabi_guard!(v.is_null(), ptr::null_mut());
-    // SAFETY: caller guarantees `v` is valid.
-    unsafe {
-        let src = &*v;
-        abort_if_layout_aware(v);
-        let new_v = hew_vec_new_with_elem_size(
-            #[expect(clippy::cast_possible_wrap, reason = "elem_size is small, fits in i64")]
-            {
-                src.elem_size as i64
-            },
-        );
-        (*new_v).elem_kind = src.elem_kind;
-        if src.len == 0 {
-            return new_v;
-        }
-        ensure_cap(new_v, src.len);
-        if src.elem_kind == ElemKind::String {
-            retain_string_elements_into(
-                src.data.cast::<*const c_char>(),
-                (*new_v).data.cast::<*mut c_char>(),
-                src.len,
-            );
-        } else {
-            let byte_count = src.len * src.elem_size;
-            core::ptr::copy_nonoverlapping(src.data, (*new_v).data, byte_count);
-        }
-        (*new_v).len = src.len;
-        new_v
-    }
+    // SAFETY: forwarded allocation contract.
+    unsafe { clone_vec_descriptor(v) }
 }
 
 /// Clone a layout-backed `BitCopy` (Plain ownership) vec by bulk-copying all
@@ -1763,100 +1771,7 @@ pub unsafe extern "C" fn hew_vec_clone_layout(
     // SAFETY: guards reject null pointers; helper validates BitCopy layout semantics.
     unsafe {
         validate_bitcopy_layout_operation(v, layout);
-        let src = &*v;
-        let new_v = hew_vec_new_with_layout(layout);
-        if new_v.is_null() {
-            libc::abort();
-        }
-        if src.len == 0 {
-            return new_v;
-        }
-        ensure_cap_raw(new_v, src.len);
-        let elem_size = (*layout).size;
-        let byte_count = src.len * elem_size;
-        core::ptr::copy_nonoverlapping(src.data, (*new_v).data, byte_count);
-        (*new_v).len = src.len;
-        new_v
-    }
-}
-
-/// Deep-clone a witness-managed `Vec<T>` handle, applying the element ownership
-/// discipline recorded in the handle's layout descriptor.
-///
-/// Clone half of the single layout-witness pair (see [`hew_vec_free_managed`]).
-/// Unlike the legacy [`hew_vec_clone`] — which calls `abort_if_layout_aware`
-/// and therefore *aborts* on any layout-backed Vec (e.g. a `Vec<Point>`
-/// actor-state field) — this entry point clones layout-backed `Plain` and
-/// `String` Vecs and only fails closed for `LayoutManaged` elements, whose
-/// per-element clone thunk `HewTypeLayout` does not yet carry. The element
-/// layout is read from the handle (`(*v).layout`) exactly as
-/// `hew_hashmap_clone_layout` reads its embedded value layout, so the symbol
-/// is single-arg and pairs with the constructor that stamped the descriptor.
-///
-/// The clone preserves the source descriptor so it frees with the *same*
-/// discipline through [`hew_vec_free_managed`] — clone/free symmetry, the
-/// W4.045 UAF guard.
-///
-/// Ownership dispatch:
-/// - layout absent → `elem_kind`-driven clone (`String` **retains** each slot,
-///   every other kind bulk-copies).
-/// - layout `Plain` → fresh layout-backed vec + bulk byte copy.
-/// - layout `String` → fresh layout-backed vec + per-slot **retain**.
-/// - layout `LayoutManaged` with live elements → fail closed
-///   ([`abort_layout_managed_clone_unavailable`]).
-///
-/// A null `v` returns null (`boundary-fail-closed` P0).
-///
-/// # Safety
-///
-/// `v` must be a valid `HewVec` pointer (or null). The returned pointer must
-/// eventually be freed with [`hew_vec_free_managed`].
-#[no_mangle]
-pub unsafe extern "C" fn hew_vec_clone_managed(v: *const HewVec) -> *mut HewVec {
-    cabi_guard!(v.is_null(), ptr::null_mut());
-    // SAFETY: caller guarantees `v` is valid.
-    unsafe {
-        let src = &*v;
-        // Fail closed before allocating anything if the element layout demands
-        // descriptor-thunk-driven clone semantics that HewTypeLayout cannot yet
-        // express (mirrors hew_hashmap_clone_layout's unavailable-thunk path).
-        if layout_requires_fail_closed_drop(v) && src.len != 0 {
-            abort_layout_managed_clone_unavailable();
-        }
-        let new_v = if src.layout.is_null() {
-            hew_vec_new_with_elem_size(
-                #[expect(clippy::cast_possible_wrap, reason = "elem_size is small, fits in i64")]
-                {
-                    src.elem_size as i64
-                },
-            )
-        } else {
-            // Preserve the layout descriptor so the clone frees with the same
-            // discipline (clone/free symmetry — W4.045 UAF class).
-            hew_vec_new_with_layout(src.layout)
-        };
-        if new_v.is_null() {
-            libc::abort();
-        }
-        (*new_v).elem_kind = src.elem_kind;
-        if src.len == 0 {
-            return new_v;
-        }
-        // ensure_cap (not ensure_cap_raw) would re-apply the legacy
-        // "no layout-aware ops" guard and abort on a layout-backed source.
-        ensure_cap_raw(new_v, src.len);
-        if src.elem_kind == ElemKind::String {
-            retain_string_elements_into(
-                src.data.cast::<*const c_char>(),
-                (*new_v).data.cast::<*mut c_char>(),
-                src.len,
-            );
-        } else {
-            let byte_count = src.len * src.elem_size;
-            core::ptr::copy_nonoverlapping(src.data, (*new_v).data, byte_count);
-        }
-        (*new_v).len = src.len;
-        new_v
+        clone_vec_descriptor(v)
     }
 }
 
@@ -2215,6 +2130,12 @@ pub unsafe extern "C" fn hew_vec_set_ptr(v: *mut HewVec, index: i64, val: *mut c
         if index >= (*v).len {
             abort_oob("Vec.set()", index, (*v).len);
         }
+        if !(*v).layout.is_null() {
+            if let Some(drop_fn) = (*(*v).layout).drop_fn {
+                let slot = (*v).data.add(index * (*v).elem_size);
+                drop_fn(slot.cast::<c_void>());
+            }
+        }
         (*v).data.cast::<*mut c_void>().add(index).write(val);
     }
 }
@@ -2295,16 +2216,7 @@ pub unsafe extern "C" fn hew_vec_truncate(v: *mut HewVec, new_len: i64) {
         if new_len >= vec.len {
             return;
         }
-        if layout_requires_fail_closed_drop(v) {
-            abort_layout_aware_operation();
-        }
-        if vec.elem_kind == ElemKind::String {
-            for i in new_len..vec.len {
-                let slot = vec.data.cast::<*mut c_char>().add(i);
-                // Release one owner of the dropped element (VWT destroy).
-                release_string_element(slot.read());
-            }
-        }
+        drop_element_range(v, new_len, vec.len);
         vec.len = new_len;
     }
 }
@@ -2571,7 +2483,7 @@ pub unsafe extern "C" fn hew_vec_pop_layout(
 // per-container` / `lifecycle-symmetry` P0).
 
 /// Abort fail-closed when an owned Vec op is reached without a stamped owned
-/// descriptor. A null `elem_layout` on an owned op means codegen routed a
+/// descriptor. A null `layout` on an owned op means codegen routed a
 /// non-owned vec into the owned path — a substrate invariant violation that
 /// must never silently bit-copy owned handles (`boundary-fail-closed` P0).
 unsafe fn abort_owned_descriptor_missing() -> ! {
@@ -2597,7 +2509,7 @@ unsafe fn abort_owned_thunk_missing(which: &str) -> ! {
 }
 
 /// Read the stamped owned descriptor from a vec, aborting fail-closed if it is
-/// absent. The returned reference borrows the vec's inline `elem_layout_storage`.
+/// absent. The returned reference borrows the vec's inline `layout_storage`.
 ///
 /// # Safety
 ///
@@ -2605,7 +2517,7 @@ unsafe fn abort_owned_thunk_missing(which: &str) -> ! {
 unsafe fn owned_descriptor<'a>(v: *const HewVec) -> &'a HewVecElemLayout {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
-        let layout = (*v).elem_layout;
+        let layout = (*v).layout;
         if layout.is_null() {
             abort_owned_descriptor_missing();
         }
@@ -2635,10 +2547,9 @@ unsafe fn owned_drop_fn(layout: &HewVecElemLayout) -> hew_cabi::vec::HewVecElemD
 
 /// Create a new owned-element `HewVec` backed by a `HewVecElemLayout`.
 ///
-/// Copies the descriptor into the vec's inline `elem_layout_storage` so
-/// `elem_layout` never dangles (mirrors `hew_vec_new_with_layout`). Fails closed
-/// when the descriptor is non-`Plain` but is missing a clone or drop thunk —
-/// a thunk-absent owned element is a silent UAF/leak channel.
+/// Copies the descriptor into the vec's inline `layout_storage` so `layout`
+/// never dangles. Non-Plain descriptors require a drop thunk; clone operations
+/// independently fail closed if their descriptor has no clone thunk.
 ///
 /// # Safety
 ///
@@ -2651,29 +2562,8 @@ pub unsafe extern "C" fn hew_vec_new_with_elem_layout(
     cabi_guard!(layout.is_null(), ptr::null_mut());
     // SAFETY: null was rejected above.
     unsafe {
+        validate_elem_layout(layout);
         let descriptor = &*layout;
-        if descriptor.size == 0 {
-            let msg = b"PANIC: HewVecElemLayout size must be non-zero\n\0";
-            write_stderr(&msg[..msg.len() - 1]);
-            libc::abort();
-        }
-        if descriptor.align == 0 || !descriptor.align.is_power_of_two() {
-            let msg = b"PANIC: HewVecElemLayout align must be a non-zero power of two\n\0";
-            write_stderr(&msg[..msg.len() - 1]);
-            libc::abort();
-        }
-        // Fail-closed thunk presence check for non-Plain elements. A Plain owned
-        // descriptor is admissible (no heap to clone/drop) but the owned ops
-        // would never be selected for one; the check protects the LayoutManaged
-        // / String path that DOES carry owned heap.
-        if descriptor.ownership_kind != HewTypeOwnershipKind::Plain {
-            if descriptor.clone_fn.is_none() {
-                abort_owned_thunk_missing("clone");
-            }
-            if descriptor.drop_fn.is_none() {
-                abort_owned_thunk_missing("drop");
-            }
-        }
         let elem_size = i64::try_from(descriptor.size).unwrap_or_else(|_| {
             let msg = b"PANIC: HewVecElemLayout size exceeds Hew ABI range\n\0";
             write_stderr(&msg[..msg.len() - 1]);
@@ -2683,8 +2573,8 @@ pub unsafe extern "C" fn hew_vec_new_with_elem_layout(
         // Owned elements use the Plain bulk-buffer kind; ownership is driven by
         // the descriptor thunks, not the legacy `elem_kind` string path.
         (*v).elem_kind = ElemKind::Plain;
-        (*v).elem_layout_storage = *descriptor;
-        (*v).elem_layout = core::ptr::addr_of!((*v).elem_layout_storage);
+        (*v).layout_storage = *descriptor;
+        (*v).layout = core::ptr::addr_of!((*v).layout_storage);
         v
     }
 }
@@ -2837,7 +2727,9 @@ pub unsafe extern "C" fn hew_vec_get_clone(
                 out.cast::<*mut c_char>().write(retained);
             }
             ElemKind::Plain => {
-                if (*v).elem_layout.is_null() {
+                if (*v).layout.is_null()
+                    || (*(*v).layout).ownership_kind == HewTypeOwnershipKind::Plain
+                {
                     // scalar / BitCopy / Copy handle: the bits are a fresh owner.
                     let elem_size = (*v).elem_size;
                     let src = (*v).data.add(idx * elem_size);
@@ -2930,9 +2822,8 @@ pub unsafe extern "C" fn hew_vec_pop_owned(v: *mut HewVec, out: *mut core::ffi::
     }
 }
 
-/// Free an owned-element `HewVec`, dropping every live element exactly once via
-/// the descriptor `drop_fn` and then freeing the backing buffer + struct. A
-/// null `v` is a documented no-op.
+/// Free a Vec through the same descriptor-driven recursive protocol as
+/// [`hew_vec_free`].
 ///
 /// # Safety
 ///
@@ -2940,29 +2831,12 @@ pub unsafe extern "C" fn hew_vec_pop_owned(v: *mut HewVec, out: *mut core::ffi::
 /// [`hew_vec_clone_owned`] (or be null). After this call `v` is invalid.
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_free_owned(v: *mut HewVec) {
-    // SAFETY: caller guarantees `v` was allocated by the owned constructor (or
-    // is null).
-    unsafe {
-        if v.is_null() {
-            return;
-        }
-        let layout = owned_descriptor(v);
-        let elem_size = layout.size;
-        let drop_fn = owned_drop_fn(layout);
-        if !(*v).data.is_null() {
-            // Drop each live element exactly once, in order.
-            for i in 0..(*v).len {
-                let slot = (*v).data.add(i * elem_size);
-                drop_fn(slot.cast::<core::ffi::c_void>());
-            }
-            libc::free((*v).data.cast()); // ALLOCATOR-PAIRING: libc
-        }
-        libc::free(v.cast()); // ALLOCATOR-PAIRING: libc
-    }
+    // SAFETY: forwarded allocation contract.
+    unsafe { free_vec_descriptor(v) }
 }
 
-/// Deep-clone an owned-element `HewVec`: every element is independently cloned
-/// via the descriptor `clone_fn`, so the result owns its own heap.
+/// Clone a Vec through the same descriptor-driven recursive protocol as
+/// [`hew_vec_clone`].
 ///
 /// # Safety
 ///
@@ -2970,44 +2844,8 @@ pub unsafe extern "C" fn hew_vec_free_owned(v: *mut HewVec) {
 /// result must eventually be freed with [`hew_vec_free_owned`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_clone_owned(v: *const HewVec) -> *mut HewVec {
-    cabi_guard!(v.is_null(), ptr::null_mut());
-    // SAFETY: guards reject null; descriptor presence is validated.
-    unsafe {
-        let layout = owned_descriptor(v);
-        let elem_size = layout.size;
-        let clone_fn = owned_clone_fn(layout);
-        let new_v = hew_vec_new_with_elem_layout(layout);
-        let len = (*v).len;
-        if len == 0 {
-            return new_v;
-        }
-        ensure_cap_raw(new_v, len);
-        for i in 0..len {
-            let src = (*v).data.add(i * elem_size);
-            let dst = (*new_v).data.add(i * elem_size);
-            core::ptr::copy_nonoverlapping(src, dst, elem_size);
-            let status = clone_fn(
-                src.cast::<core::ffi::c_void>(),
-                dst.cast::<core::ffi::c_void>(),
-            );
-            if status != 0 {
-                // Roll back: drop the elements cloned so far, then free.
-                if let Some(drop_fn) = layout.drop_fn {
-                    for j in 0..i {
-                        let cleanup = (*new_v).data.add(j * elem_size);
-                        drop_fn(cleanup.cast::<core::ffi::c_void>());
-                    }
-                }
-                (*new_v).len = 0;
-                hew_vec_free_owned(new_v);
-                let msg = b"PANIC: Vec owned clone failed\n\0";
-                write_stderr(&msg[..msg.len() - 1]);
-                libc::abort();
-            }
-        }
-        (*new_v).len = len;
-        new_v
-    }
+    // SAFETY: forwarded allocation contract.
+    unsafe { clone_vec_descriptor(v) }
 }
 
 /// Stage 1 fail-closed stub for layout-descriptor equality/contains.
@@ -3062,7 +2900,13 @@ pub unsafe extern "C" fn hew_vec_contains_thunk(
         if layout.is_null() {
             abort_layout_aware_operation();
         }
-        validate_bitcopy_layout_operation(v, layout);
+        validate_elem_layout(layout);
+        if (*layout).ownership_kind != HewTypeOwnershipKind::Plain
+            || (*v).elem_size != (*layout).size
+            || (*v).elem_kind != ElemKind::Plain
+        {
+            abort_layout_aware_operation();
+        }
         let len = (*v).len;
         if len > (*v).cap || (len > 0 && (*v).data.is_null()) {
             abort_layout_aware_operation();
@@ -3605,7 +3449,7 @@ mod tests {
         let layout = HewTypeLayout {
             size: core::mem::size_of::<Payload>(),
             align: core::mem::align_of::<Payload>(),
-            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+            ownership_kind: HewTypeOwnershipKind::Plain,
         };
 
         // SAFETY: layout is valid for this call; the vec copies the descriptor.
@@ -3622,63 +3466,6 @@ mod tests {
             assert_eq!((*(*v).layout).ownership_kind, layout.ownership_kind);
             assert_eq!(hew_vec_len(v), 0);
             hew_vec_free(v);
-        }
-    }
-
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    #[cfg_attr(
-        miri,
-        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
-    )]
-    fn test_vec_push_layout_stub_fails_closed() {
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "vec::tests::_helper_vec_push_layout_stub_fails_closed",
-            ])
-            .env("RUST_TEST_THREADS", "1")
-            .env(
-                "HEW_DEATH_TEST",
-                "_helper_vec_push_layout_stub_fails_closed",
-            )
-            .output()
-            .unwrap();
-        assert!(
-            !status.status.success(),
-            "layout-aware push must terminate abnormally"
-        );
-        assert!(
-            String::from_utf8_lossy(&status.stderr)
-                .contains("PANIC: Vec layout-aware operation is not implemented"),
-            "layout-aware push must report the staged fail-closed diagnostic"
-        );
-    }
-
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn _helper_vec_push_layout_stub_fails_closed() {
-        #[repr(C)]
-        struct Payload {
-            a: u64,
-            b: u64,
-        }
-        if std::env::var("HEW_DEATH_TEST")
-            .map_or(true, |v| v != "_helper_vec_push_layout_stub_fails_closed")
-        {
-            return;
-        }
-        let layout = HewTypeLayout {
-            size: core::mem::size_of::<Payload>(),
-            align: core::mem::align_of::<Payload>(),
-            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
-        };
-
-        // SAFETY: FFI calls use a valid descriptor and stack-allocated payload.
-        unsafe {
-            let v = hew_vec_new_with_layout(&raw const layout);
-            let payload = Payload { a: 1, b: 2 };
-            hew_vec_push_layout(v, (&raw const payload).cast(), &raw const layout);
         }
     }
 
@@ -4402,7 +4189,7 @@ mod tests {
         );
         let stderr = String::from_utf8_lossy(&status.stderr);
         assert!(
-            stderr.contains("PANIC: Vec layout-aware operation is not implemented"),
+            stderr.contains("HewTypeLayout LayoutManaged requires HewVecElemLayout thunks"),
             "LayoutManaged remove must report the fail-closed diagnostic; got: {stderr}"
         );
     }
@@ -4847,7 +4634,7 @@ mod tests {
         );
         let stderr = String::from_utf8_lossy(&status.stderr);
         assert!(
-            stderr.contains("PANIC: Vec layout-aware operation is not implemented"),
+            stderr.contains("HewTypeLayout LayoutManaged requires HewVecElemLayout thunks"),
             "LayoutManaged clone must report the fail-closed diagnostic; got: {stderr}"
         );
     }
@@ -4871,29 +4658,8 @@ mod tests {
         }
     }
 
-    // ------------------------------------------------------------------
-    // Witness-managed Vec clone/free pair (hew_vec_clone_managed /
-    // hew_vec_free_managed — W5.002 F0b)
-    // ------------------------------------------------------------------
-
     #[test]
-    fn vec_clone_managed_null_returns_null() {
-        // SAFETY: null is a documented boundary-fail-closed shape.
-        unsafe {
-            assert!(hew_vec_clone_managed(ptr::null()).is_null());
-        }
-    }
-
-    #[test]
-    fn vec_free_managed_null_is_noop() {
-        // SAFETY: free(null) is the only permitted silent-return shape.
-        unsafe {
-            hew_vec_free_managed(ptr::null_mut());
-        }
-    }
-
-    #[test]
-    fn vec_clone_managed_plain_primitive_roundtrip() {
+    fn vec_clone_owned_plain_primitive_roundtrip() {
         // SAFETY: FFI calls use a valid i64 HewVec (layout absent).
         unsafe {
             let v = hew_vec_new_i64();
@@ -4901,7 +4667,7 @@ mod tests {
             hew_vec_push_i64(v, 22);
             hew_vec_push_i64(v, 33);
 
-            let cloned = hew_vec_clone_managed(v);
+            let cloned = hew_vec_clone_owned(v);
             assert!(!cloned.is_null());
             assert_eq!(hew_vec_len(cloned), 3);
             assert_eq!(hew_vec_get_i64(cloned, 0), 11);
@@ -4912,8 +4678,8 @@ mod tests {
             hew_vec_set_i64(v, 0, 99);
             assert_eq!(hew_vec_get_i64(cloned, 0), 11);
 
-            hew_vec_free_managed(cloned);
-            hew_vec_free_managed(v);
+            hew_vec_free_owned(cloned);
+            hew_vec_free_owned(v);
         }
     }
 
@@ -4922,7 +4688,7 @@ mod tests {
         miri,
         ignore = "String-element drop/clone reads the loader image extent via is_static_string (extern static); Miri cannot model the executable image"
     )]
-    fn vec_clone_managed_string_elements_are_independent() {
+    fn vec_clone_owned_string_elements_are_independent() {
         // SAFETY: FFI calls use a valid string HewVec and header-aware C strings.
         unsafe {
             let v = hew_vec_new_str();
@@ -4933,7 +4699,7 @@ mod tests {
             release_string_element(a);
             release_string_element(b);
 
-            let cloned = hew_vec_clone_managed(v);
+            let cloned = hew_vec_clone_owned(v);
             assert!(!cloned.is_null());
             assert_eq!(hew_vec_len(cloned), 2);
             assert_eq!((*cloned).elem_kind, ElemKind::String);
@@ -4944,19 +4710,16 @@ mod tests {
 
             // Freeing the clone (per-slot retained owners) must not invalidate
             // the source strings — refcounting keeps each buffer alive.
-            hew_vec_free_managed(cloned);
+            hew_vec_free_owned(cloned);
             let s0 = hew_vec_get_str(v, 0);
             assert_eq!(std::ffi::CStr::from_ptr(s0).to_string_lossy(), "alpha");
             release_string_element(s0.cast_mut());
-            hew_vec_free_managed(v);
+            hew_vec_free_owned(v);
         }
     }
 
     #[test]
-    fn vec_clone_managed_layout_backed_plain_roundtrip() {
-        // Legacy `hew_vec_clone` aborts on a layout-backed Vec via
-        // `abort_if_layout_aware`; the managed clone must succeed and preserve
-        // the descriptor so the clone frees with the same discipline.
+    fn vec_clone_owned_layout_backed_plain_roundtrip() {
         #[repr(C)]
         struct Point {
             x: i64,
@@ -4969,7 +4732,7 @@ mod tests {
             push_point(v, 10, 20, &layout);
             push_point(v, 30, 40, &layout);
 
-            let cloned = hew_vec_clone_managed(v);
+            let cloned = hew_vec_clone_owned(v);
             assert!(!cloned.is_null());
             assert_eq!(hew_vec_len(cloned), 2);
             assert!(!(*cloned).layout.is_null());
@@ -4987,119 +4750,18 @@ mod tests {
             );
             assert_eq!(get_point(cloned, 0, &layout), (10, 20));
 
-            // Free both through the managed drop (clone/free symmetry).
-            hew_vec_free_managed(cloned);
-            hew_vec_free_managed(v);
+            hew_vec_free_owned(cloned);
+            hew_vec_free_owned(v);
         }
     }
 
     #[test]
-    fn vec_free_managed_empty_layout_backed_is_safe() {
+    fn vec_free_owned_empty_layout_backed_is_safe() {
         let layout = point_layout();
         // SAFETY: layout is valid and outlives the vec.
         unsafe {
             let v = hew_vec_new_with_layout(&raw const layout);
-            // Empty layout-managed-free path: no elements, no fail-closed abort.
-            hew_vec_free_managed(v);
-        }
-    }
-
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    #[cfg_attr(
-        miri,
-        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
-    )]
-    fn vec_clone_managed_layout_managed_aborts() {
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "vec::tests::_helper_vec_clone_managed_layout_managed",
-            ])
-            .env("RUST_TEST_THREADS", "1")
-            .env("HEW_DEATH_TEST", "_helper_vec_clone_managed_layout_managed")
-            .output()
-            .unwrap();
-        assert!(
-            !status.status.success(),
-            "LayoutManaged managed-clone must terminate abnormally"
-        );
-        let stderr = String::from_utf8_lossy(&status.stderr);
-        assert!(
-            stderr.contains("Vec layout-managed element clone thunk is unavailable"),
-            "LayoutManaged managed-clone must report the fail-closed diagnostic; got: {stderr}"
-        );
-    }
-
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn _helper_vec_clone_managed_layout_managed() {
-        if std::env::var("HEW_DEATH_TEST")
-            .map_or(true, |v| v != "_helper_vec_clone_managed_layout_managed")
-        {
-            return;
-        }
-        let layout = HewTypeLayout {
-            size: 16,
-            align: 8,
-            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
-        };
-        // SAFETY: FFI calls use a valid layout pointer; the abort is expected.
-        unsafe {
-            let v = hew_vec_new_with_layout(&raw const layout);
-            // Force a live element so the fail-closed guard fires (an empty
-            // layout-managed vec is droppable/cloneable without thunks).
-            (*v).len = 1;
-            hew_vec_clone_managed(v);
-        }
-    }
-
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    #[cfg_attr(
-        miri,
-        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
-    )]
-    fn vec_free_managed_layout_managed_aborts() {
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "vec::tests::_helper_vec_free_managed_layout_managed",
-            ])
-            .env("RUST_TEST_THREADS", "1")
-            .env("HEW_DEATH_TEST", "_helper_vec_free_managed_layout_managed")
-            .output()
-            .unwrap();
-        assert!(
-            !status.status.success(),
-            "LayoutManaged managed-free must terminate abnormally"
-        );
-        let stderr = String::from_utf8_lossy(&status.stderr);
-        assert!(
-            stderr.contains("Vec layout-managed element drop thunk is unavailable"),
-            "LayoutManaged managed-free must report the fail-closed diagnostic; got: {stderr}"
-        );
-    }
-
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn _helper_vec_free_managed_layout_managed() {
-        if std::env::var("HEW_DEATH_TEST")
-            .map_or(true, |v| v != "_helper_vec_free_managed_layout_managed")
-        {
-            return;
-        }
-        let layout = HewTypeLayout {
-            size: 16,
-            align: 8,
-            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
-        };
-        // SAFETY: FFI calls use a valid layout pointer; the abort is expected.
-        unsafe {
-            let v = hew_vec_new_with_layout(&raw const layout);
-            // Pretend a live element exists so the fail-closed drop guard fires.
-            (*v).len = 1;
-            hew_vec_free_managed(v);
+            hew_vec_free_owned(v);
         }
     }
 }
@@ -5396,16 +5058,47 @@ mod vec_owned_tests {
         }
     }
 
-    /// The owned constructor fails closed when a non-Plain descriptor omits a
-    /// required thunk (silent UAF/leak channel). `libc::abort()` is not catchable
-    /// by `should_panic`, so this uses the repo's death-test subprocess pattern.
+    #[test]
+    fn truncate_and_clear_drop_exact_live_ranges() {
+        let _guard = reset_counters();
+        // SAFETY: owned ops use a valid descriptor and stack element sources.
+        unsafe {
+            let layout = owned_layout();
+            let v = hew_vec_new_with_elem_layout(&raw const layout);
+            let sources = [
+                make_source(1),
+                make_source(2),
+                make_source(3),
+                make_source(4),
+            ];
+            for source in sources {
+                hew_vec_push_owned(v, (&raw const source).cast());
+                free_source(source);
+            }
+
+            hew_vec_truncate(v, 2);
+            assert_eq!(DROP_CALLS.load(Ordering::SeqCst), 2);
+            hew_vec_clear(v);
+            assert_eq!(DROP_CALLS.load(Ordering::SeqCst), 4);
+            hew_vec_free_owned(v);
+            assert_eq!(
+                DROP_CALLS.load(Ordering::SeqCst),
+                4,
+                "free after clear must not re-drop dead slots"
+            );
+            assert_eq!(live_allocations(), 0);
+        }
+    }
+
+    /// A release-only descriptor is constructible, but clone fails closed when
+    /// its semantic clone thunk is unavailable.
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg_attr(
         miri,
         ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
     )]
-    fn constructor_rejects_missing_clone_thunk_aborts() {
+    fn clone_rejects_missing_clone_thunk_aborts() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -5417,7 +5110,7 @@ mod vec_owned_tests {
             .unwrap();
         assert!(
             !status.status.success(),
-            "owned constructor with no clone thunk must terminate abnormally"
+            "owned clone with no clone thunk must terminate abnormally"
         );
         let stderr = String::from_utf8_lossy(&status.stderr);
         assert!(
@@ -5441,9 +5134,10 @@ mod vec_owned_tests {
             clone_fn: None,
             drop_fn: Some(drop_thunk),
         };
-        // SAFETY: the fail-closed abort is the expected outcome.
+        // SAFETY: the release-only descriptor is valid; clone must fail closed.
         unsafe {
-            let _ = hew_vec_new_with_elem_layout(&raw const layout);
+            let v = hew_vec_new_with_elem_layout(&raw const layout);
+            let _ = hew_vec_clone_owned(v);
         }
     }
 

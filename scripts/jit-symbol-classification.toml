@@ -731,8 +731,8 @@ stable = [
   "hew_vec_clear",
   "hew_vec_clone",
   "hew_vec_clone_layout",
-  "hew_vec_clone_managed",
   "hew_vec_clone_owned",
+  "hew_vec_closure_pair_drop_inplace",
   "hew_vec_contains_f64",
   "hew_vec_contains_i32",
   "hew_vec_contains_i64",
@@ -742,8 +742,6 @@ stable = [
   "hew_vec_contains_thunk",
   "hew_vec_equals_thunk",
   "hew_vec_free",
-  "hew_vec_free_closure_pairs",
-  "hew_vec_free_managed",
   "hew_vec_free_owned",
   "hew_vec_from_u8_data",
   "hew_vec_get_bool",
@@ -1509,14 +1507,6 @@ result = "fresh"
 params = ["borrow", "borrow"]
 release-symbol = "hew_vec_free"
 discharge-depth = "shallow"
-
-# hew-runtime/src/vec.rs:1783-1815 allocates a witness-managed clone.
-[[ownership.contracts]]
-symbol = "hew_vec_clone_managed"
-result = "fresh"
-params = ["borrow"]
-release-symbol = "hew_vec_free_managed"
-discharge-depth = "deep"
 
 # hew-runtime/src/vec.rs:2964-3009 allocates a deep owned-element clone.
 [[ownership.contracts]]

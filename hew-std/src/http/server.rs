@@ -1374,11 +1374,11 @@ mod tests {
         // Find the X-Custom header among the returned pairs.
         let mut found = false;
         for i in 0..len {
+            let index = usize::try_from(i).expect("non-negative in-bounds header index");
             // SAFETY: vec is valid; i is in bounds.
-            let elem_ptr = unsafe { hew_cabi::vec::hew_vec_get_generic(vec, i) };
-            assert!(!elem_ptr.is_null());
-            // SAFETY: elem_ptr points to a HewStringPair (two consecutive *mut c_char).
-            let pair = unsafe { &*(elem_ptr.cast::<HewStringPair>()) };
+            let elem_ptr = unsafe { (*vec).data.add(index * (*vec).elem_size) };
+            // SAFETY: elem_ptr addresses one complete HewStringPair slot.
+            let pair = unsafe { elem_ptr.cast::<HewStringPair>().read_unaligned() };
             assert!(!pair.name.is_null());
             assert!(!pair.value.is_null());
             // SAFETY: pair.name is a valid malloc'd C string from hew_http_request_headers.
@@ -1395,14 +1395,10 @@ mod tests {
                 assert_eq!(value, "hello");
                 found = true;
             }
-            // SAFETY: pair.name was malloc'd by hew_http_request_headers.
-            unsafe { hew_cabi::cabi::free_cstring(pair.name) }; // CSTRING-FREE: str-open (header name)
-                                                                // SAFETY: pair.value was malloc'd by hew_http_request_headers.
-            unsafe { hew_cabi::cabi::free_cstring(pair.value) }; // CSTRING-FREE: str-open (header value)
         }
         assert!(found, "X-Custom header not found in request headers");
 
-        // SAFETY: vec elements have been freed; vec itself is still valid.
+        // SAFETY: descriptor-driven free releases every header pair recursively.
         unsafe { hew_cabi::vec::hew_vec_free(vec) };
 
         let text = c"ok";
@@ -1446,11 +1442,11 @@ mod tests {
 
         let mut pairs: Vec<(String, String)> = Vec::new();
         for i in 0..len {
+            let index = usize::try_from(i).expect("non-negative in-bounds header index");
             // SAFETY: vec is valid; i is in bounds.
-            let elem_ptr = unsafe { hew_cabi::vec::hew_vec_get_generic(vec, i) };
-            assert!(!elem_ptr.is_null());
-            // SAFETY: elem_ptr points to a HewStringPair.
-            let pair = unsafe { &*(elem_ptr.cast::<HewStringPair>()) };
+            let elem_ptr = unsafe { (*vec).data.add(index * (*vec).elem_size) };
+            // SAFETY: elem_ptr addresses one complete HewStringPair slot.
+            let pair = unsafe { elem_ptr.cast::<HewStringPair>().read_unaligned() };
             assert!(!pair.name.is_null());
             assert!(!pair.value.is_null());
             // SAFETY: pair.name is a valid malloc'd C string from hew_http_request_headers.
@@ -1464,10 +1460,6 @@ mod tests {
                 .unwrap()
                 .to_owned();
             pairs.push((name, value));
-            // SAFETY: pair.name was malloc'd by hew_http_request_headers.
-            unsafe { hew_cabi::cabi::free_cstring(pair.name) }; // CSTRING-FREE: str-open (header name)
-                                                                // SAFETY: pair.value was malloc'd by hew_http_request_headers.
-            unsafe { hew_cabi::cabi::free_cstring(pair.value) }; // CSTRING-FREE: str-open (header value)
         }
 
         let first_pos = pairs
@@ -1499,7 +1491,7 @@ mod tests {
             "X-First must appear before X-Second"
         );
 
-        // SAFETY: vec elements have been freed; vec itself is still valid.
+        // SAFETY: descriptor-driven free releases every header pair recursively.
         unsafe { hew_cabi::vec::hew_vec_free(vec) };
 
         let text = c"ok";

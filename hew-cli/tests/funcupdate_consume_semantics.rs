@@ -79,7 +79,7 @@
 //! — shared by the functional-update override-drop AND the match-destructure
 //! wildcard inline-drop — must agree with codegen's `cow_heap_release_symbol`
 //! for EVERY type, including a closure-pair `Vec<fn>` (release symbol
-//! `hew_vec_free_closure_pairs`, not `hew_vec_free`) and a `Generator`
+//! descriptor-driven `hew_vec_free_owned`, not `hew_vec_free`) and a `Generator`
 //! (`hew_gen_coro_destroy`). A tuple wildcard-destructure over those element
 //! types exercises the shared authority end-to-end and must run clean.
 
@@ -885,7 +885,7 @@ fn main() {
 
 /// A tuple `(Vec<fn(...)>, i64)` wildcard-destructure releases the discarded
 /// `Vec<fn>` field via the shared `project_field_inline_drop_symbol` authority.
-/// Its release symbol is `hew_vec_free_closure_pairs` (the per-element env
+/// Its release symbol is `hew_vec_free_owned` (the descriptor's per-element env
 /// thunk + pair-box walk), NOT `hew_vec_free`. Before the parity fix the MIR
 /// authority emitted `hew_vec_free`, which codegen rejected as incongruent
 /// with the field type (a hard fail-closed). It must now `check` and `run`
@@ -1579,7 +1579,7 @@ fn main() {
 /// an internal compiler panic.
 ///
 /// The carried `Vec<fn() -> string>` has a single-pointer inline-drop symbol
-/// (`hew_vec_free_closure_pairs`), so the per-field carry gate admits it in
+/// (`hew_vec_free_owned`), so the per-field carry gate admits it in
 /// isolation. But the WHOLE record is not a consume-markable owned-aggregate
 /// (its `Vec`-of-closure element fails `supports_value_class_drop_spine`), so
 /// the base was never consume-marked. Releasing the overridden `churn` field in

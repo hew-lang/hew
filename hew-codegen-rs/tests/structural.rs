@@ -10,6 +10,8 @@ mod bytes_extern_fail_closed;
 mod closure_env_drop_manifest;
 #[path = "structural/composite_return.rs"]
 mod composite_return;
+#[path = "structural/d65_vec_release_truth_table.rs"]
+mod d65_vec_release_truth_table;
 #[path = "structural/emit_duplex_pair.rs"]
 mod emit_duplex_pair;
 #[path = "structural/error_enum_cross_crate_parity.rs"]

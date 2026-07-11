@@ -1906,11 +1906,11 @@ mod generic_vec_tests {
     }
 
     #[test]
-    fn layout_descriptor_constructor_records_nullable_abi_pointer() {
+    fn layout_descriptor_constructor_widens_plain_descriptor() {
         let layout = HewTypeLayout {
             size: core::mem::size_of::<Point>(),
             align: core::mem::align_of::<Point>(),
-            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+            ownership_kind: HewTypeOwnershipKind::Plain,
         };
 
         unsafe {
@@ -2114,8 +2114,8 @@ mod generic_vec_tests {
         );
         assert!(
             String::from_utf8_lossy(&status.stderr)
-                .contains("PANIC: Vec layout-aware operation is not implemented"),
-            "layout-managed contains must report the staged fail-closed diagnostic"
+                .contains("HewTypeLayout LayoutManaged requires HewVecElemLayout thunks"),
+            "thunk-less LayoutManaged construction must report the hard-cutover diagnostic"
         );
     }
 
@@ -2237,8 +2237,8 @@ mod generic_vec_tests {
         );
         assert!(
             String::from_utf8_lossy(&status.stderr)
-                .contains("PANIC: Vec layout-aware operation is not implemented"),
-            "layout-managed push must report the staged fail-closed diagnostic"
+                .contains("HewTypeLayout LayoutManaged requires HewVecElemLayout thunks"),
+            "thunk-less LayoutManaged construction must report the hard-cutover diagnostic"
         );
     }
 

@@ -746,17 +746,15 @@ pub unsafe extern "C" fn hew_hashmap_new_with_layout(
     // SAFETY: cap > 0, stride > 0, entries_align is power of two.
     let entries = unsafe { alloc_layout_entries(cap, stride, entries_align) };
 
-    let struct_layout = std::alloc::Layout::new::<HewLayoutHashMap>();
-    // SAFETY: non-zero size; alloc returns a pointer aligned to
-    // `align_of::<HewLayoutHashMap>()` per Layout, so the typed cast below
-    // is sound. We cast through a typed `NonNull` to make the intent obvious.
-    let raw_bytes = unsafe { std::alloc::alloc(struct_layout) };
-    if raw_bytes.is_null() {
+    // Keep the handle on the same libc allocator family as Vec and HashSet.
+    // SAFETY: malloc returns storage suitably aligned for HewLayoutHashMap.
+    let raw: *mut HewLayoutHashMap =
+        unsafe { libc::malloc(core::mem::size_of::<HewLayoutHashMap>()).cast() };
+    if raw.is_null() {
         // SAFETY: entries just allocated with these params.
         unsafe { dealloc_layout_entries(entries, cap, stride, entries_align) };
-        std::alloc::handle_alloc_error(struct_layout);
+        std::process::abort();
     }
-    let raw: *mut HewLayoutHashMap = raw_bytes.cast();
     // SAFETY: raw is a fresh allocation of HewLayoutHashMap size.
     unsafe {
         ptr::write(
@@ -900,15 +898,14 @@ pub unsafe extern "C" fn hew_hashmap_clone_layout(
 
     // SAFETY: source map was validated at construction time.
     let cloned_entries = unsafe { alloc_layout_entries(src.cap, src.stride, entries_align) };
-    let struct_layout = std::alloc::Layout::new::<HewLayoutHashMap>();
-    // SAFETY: non-zero sized layout allocation.
-    let raw_bytes = unsafe { std::alloc::alloc(struct_layout) };
-    if raw_bytes.is_null() {
+    // SAFETY: malloc returns storage suitably aligned for HewLayoutHashMap.
+    let cloned: *mut HewLayoutHashMap =
+        unsafe { libc::malloc(core::mem::size_of::<HewLayoutHashMap>()).cast() };
+    if cloned.is_null() {
         // SAFETY: entries just allocated with these params.
         unsafe { dealloc_layout_entries(cloned_entries, src.cap, src.stride, entries_align) };
-        std::alloc::handle_alloc_error(struct_layout);
+        std::process::abort();
     }
-    let cloned: *mut HewLayoutHashMap = raw_bytes.cast();
     // SAFETY: cloned is a fresh allocation of HewLayoutHashMap size.
     unsafe {
         ptr::write(
@@ -1593,13 +1590,10 @@ pub unsafe extern "C" fn hew_hashmap_free_layout(m: *mut HewLayoutHashMap) {
     // SAFETY: entries allocated by alloc_layout_entries with these exact params.
     unsafe { dealloc_layout_entries(entries, cap, stride, entries_align) };
 
-    // SAFETY: m allocated by std::alloc::alloc with Layout::new::<HewLayoutHashMap>().
+    // SAFETY: m allocated by libc::malloc in hew_hashmap_new_with_layout or clone.
     unsafe {
         ptr::drop_in_place(m);
-        std::alloc::dealloc(
-            m.cast::<u8>(),
-            std::alloc::Layout::new::<HewLayoutHashMap>(),
-        );
+        libc::free(m.cast());
     }
 }
 

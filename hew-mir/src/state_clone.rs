@@ -124,8 +124,8 @@ pub enum StateFieldCloneKind {
         len: u64,
     },
 
-    /// `Vec<T>` — actor-state clone/drop routes through the layout-managed
-    /// witness pair `hew_vec_clone_managed` / `hew_vec_free_managed`, derived
+    /// `Vec<T>` — actor-state clone/drop routes through the descriptor-driven
+    /// witness pair `hew_vec_clone_owned` / `hew_vec_free_owned`, derived
     /// by codegen from `collection_layout_witness` (the sole clone/drop symbol
     /// authority, alongside the HashMap/HashSet `*_layout` family). The managed
     /// pair reads the `HewTypeLayout` descriptor stamped into the handle at
@@ -312,7 +312,7 @@ impl StateFieldCloneKind {
     /// shallow-copy the pair and create two owners of one environment box
     /// (double free at the two containers' releases). Closure-pair `Vec<fn>`
     /// handles have their own dedicated release
-    /// (`hew_vec_free_closure_pairs`) and never ride the managed witness.
+    /// (the release-only Vec descriptor) and never ride the state clone witness.
     ///
     /// [`ClosurePair`]: StateFieldCloneKind::ClosurePair
     /// [`contains_opaque_handle`]: StateFieldCloneKind::contains_opaque_handle
@@ -494,8 +494,8 @@ impl StateFieldCloneKind {
             // clone/free witness fails closed on an opaque-bearing container),
             // no closure pair (the managed clone would shallow-copy the pair
             // and alias its sole-owner environment; closure-pair Vecs ride the
-            // dedicated `hew_vec_free_closure_pairs` release, not the managed
-            // witness), no `#[resource]` handle (RAII-1 wires the exactly-once
+            // release-only descriptor, not a cloneable state witness), no
+            // `#[resource]` handle (RAII-1 wires the exactly-once
             // close only for direct/nested-record fields, not for a managed
             // collection element / tuple member whose tag-aware clone would
             // alias the handle), and the element/key/value kind is itself

@@ -16942,8 +16942,8 @@ impl LowerCtx {
             ResolvedTy::String => Some("hew_vec_push_str"),
             ResolvedTy::Tuple(_) => Some("hew_vec_push_layout"),
             // A closure-pair `Vec<fn>` / `Vec<closure>` element keeps the
-            // pointer push (boxing marshalling + `hew_vec_free_closure_pairs`
-            // release) — a separate lane (#1722 out-of-scope). Checked before
+            // pointer push; the stamped Vec descriptor owns recursive release.
+            // Checked before
             // the general collection arm so it is never routed to copy-in.
             ResolvedTy::Named {
                 builtin: Some(BuiltinType::Vec),

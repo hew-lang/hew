@@ -850,6 +850,33 @@ const CONSTRUCTS: &[Construct] = &[
         probe: "import std::text::regex;\nfn main() {\n    let re = regex.new(\"a+\");\n    let re2 = re.clone();\n    println(re2.is_match(\"aaa\"));\n    re.close();\n    re2.close();\n}\n",
         coverage: Coverage::Parity("regex_clone"),
     },
+    Construct {
+        // A range in bare value position (`let r = a..b;`) is fail-closed
+        // rejected. `lower_binary` / `lower_expr` have no arm for a first-class
+        // range value — they fall to `emit_unsupported`, which traps at runtime
+        // (`unsupported_instruction`). Before this gate the profile admitted the
+        // program and emitted bytecode that trapped only when the VM reached the
+        // instruction (a compile-time surprise for playground users). The two
+        // admitted range positions — `for` loop iterables (`for i in 0..n`) and
+        // slice subscripts (`v[a..b]`) — are pinned as Parity constructs above,
+        // so this rejection cannot regress those. Matches native's rejection of
+        // range-in-value position.
+        id: "range value in bare position (`let r = a..b`)",
+        probe: "fn main() {\n    let r = 0..3;\n    println(\"x\");\n}\n",
+        coverage: Coverage::RejectedByProfile {
+            diagnostic_kind: "reserved_runtime_feature",
+        },
+    },
+    Construct {
+        // The emitter only lowers slices with both endpoints. Keep `[..]`,
+        // `[start..]`, and `[..end]` fail-closed at the profile gate rather
+        // than admitting bytecode that later traps as unsupported.
+        id: "open-ended Vec range slices",
+        probe: "fn main() {\n    let v: Vec<i64> = Vec::new();\n    let all = v[..];\n    let tail = v[1..];\n    let prefix = v[..2];\n    println(all.len() + tail.len() + prefix.len());\n}\n",
+        coverage: Coverage::RejectedByProfile {
+            diagnostic_kind: "reserved_runtime_feature",
+        },
+    },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────

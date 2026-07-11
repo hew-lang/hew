@@ -485,6 +485,7 @@ fn render_instr(instr: &Instr) -> String {
             format!("{} = context_field[{offset}]", render_place(dest))
         }
         Instr::BytesRetain { value } => format!("bytes.retain {}", render_place(value)),
+        Instr::StringRetain { value } => format!("string.retain {}", render_place(value)),
 
         // Integer constants
         Instr::ConstI64 { dest, value } => format!("{} = const.i64 {value}", render_place(dest)),

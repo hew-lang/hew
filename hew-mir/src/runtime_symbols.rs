@@ -973,7 +973,7 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
 
         // Vec string element stores borrow the receiver and copy the string
         // argument; the caller keeps the string drop obligation.
-        "hew_vec_push_str" => CalleeOwnershipContract::new(
+        "hew_vec_push_str" | "hew_vec_set_str" => CalleeOwnershipContract::new(
             BorrowsReceiver {
                 scans: ReceiverScanSet::VEC,
             },
@@ -1081,7 +1081,6 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
         | "hew_vec_set_i8"
         | "hew_vec_set_layout"
         | "hew_vec_set_ptr"
-        | "hew_vec_set_str"
         | "hew_vec_set_u16"
         | "hew_vec_set_u8"
         | "hew_vec_slice_range_bytesize"

@@ -18121,6 +18121,10 @@ fn lower_instruction(
             retain_bytes_value(fn_ctx, *value, "mir_share")?;
             let _ = ctx;
         }
+        Instr::StringRetain { value } => {
+            retain_string_value(fn_ctx, *value, "mir_share")?;
+            let _ = ctx;
+        }
         Instr::Move { dest, src } => {
             // #46: allocate an `indirect enum` node at its construction site
             // (the tag store) rather than in an entry-block prologue. This puts
@@ -19749,6 +19753,43 @@ fn retain_bytes_value(fn_ctx: &FnCtx<'_, '_>, value: Place, label: &str) -> Code
             &format!("{label}_bytes_retain"),
         )
         .llvm_ctx_with(|| format!("hew_bytes_clone_ref retain for {label}"))?;
+    Ok(())
+}
+
+/// Consume the MIR ownership prover's explicit retain marker for one `string`
+/// co-owner mint. The runtime wrapper handles null and static strings before
+/// touching the refcount header.
+fn retain_string_value(fn_ctx: &FnCtx<'_, '_>, value: Place, label: &str) -> CodegenResult<()> {
+    if !is_codegen_string_ty(place_resolved_ty(fn_ctx, value)?) {
+        return Err(CodegenError::FailClosed(format!(
+            "StringRetain value is not string-typed: {value:?}"
+        )));
+    }
+    let (value_ptr, value_ty) = place_pointer(fn_ctx, value)?;
+    let BasicTypeEnum::PointerType(_) = value_ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "StringRetain value has non-pointer slot type: {value_ty:?}"
+        )));
+    };
+    let string = fn_ctx
+        .builder
+        .build_load(value_ty, value_ptr, &format!("{label}_string_load"))
+        .llvm_ctx_with(|| format!("StringRetain load for {label}"))?;
+    let clone_fn = get_or_declare_clone_helper(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &CloneHelper::Allocating {
+            name: "hew_string_clone",
+        },
+    );
+    fn_ctx
+        .builder
+        .build_call(
+            clone_fn,
+            &[string.into()],
+            &format!("{label}_string_retain"),
+        )
+        .llvm_ctx_with(|| format!("hew_string_clone retain for {label}"))?;
     Ok(())
 }
 

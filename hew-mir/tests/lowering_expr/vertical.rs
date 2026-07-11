@@ -490,7 +490,18 @@ fn bitcopy_arithmetic_has_no_drop() {
 
 #[test]
 fn checked_mir_rejects_use_after_consume() {
-    let pipeline = pipeline(r#"fn main() -> string { let s = "hello"; let t = s; return s; }"#);
+    let pipeline = lower_source(
+        r"
+        #[resource]
+        type File { fd: i64 }
+        impl File { fn close(self) { } }
+        fn main() -> i64 {
+            let s = File { fd: 1 };
+            let _t = s;
+            s.fd
+        }
+    ",
+    );
 
     assert!(pipeline.diagnostics.iter().any(|diagnostic| matches!(
         diagnostic.kind,
@@ -503,7 +514,18 @@ fn checked_mir_finding_carries_consume_and_use_sites() {
     // The payload-bearing `MirCheck::UseAfterConsume` shape projects
     // through to the diagnostic so a CLI consumer can point at both
     // ends of the bug, not just the binding name.
-    let pipeline = pipeline(r#"fn main() -> string { let s = "hello"; let t = s; return s; }"#);
+    let pipeline = lower_source(
+        r"
+        #[resource]
+        type File { fd: i64 }
+        impl File { fn close(self) { } }
+        fn main() -> i64 {
+            let s = File { fd: 1 };
+            let _t = s;
+            s.fd
+        }
+    ",
+    );
     let func = pipeline
         .checked_mir
         .iter()
@@ -1086,12 +1108,12 @@ fn copy_operands_moved_into_tuple_are_not_flagged() {
 }
 
 #[test]
-fn cowvalue_string_moved_into_tuple_rejects_post_move_use() {
-    // A heap-owning CowValue string moved into a tuple transfers ownership to
-    // the aggregate. Reading the source binding afterwards must be rejected.
+fn cowvalue_string_shared_into_tuple_allows_post_share_use() {
+    // Tuple ingress retains a string that stays live, so the source and tuple
+    // element are independent owners.
     let p = lower_source(
         r#"fn main() -> string {
-            let a = "hello";
+            let a = "he" + "llo";
             let pair = (a, "world");
             let reused = a;
             let _ = pair;
@@ -1099,11 +1121,10 @@ fn cowvalue_string_moved_into_tuple_rejects_post_move_use() {
         }"#,
     );
     assert!(
-        p.diagnostics.iter().any(
-            |d| matches!(&d.kind, MirDiagnosticKind::UseAfterConsume { name, .. } if name == "a")
-        ),
-        "reusing a CowValue string after it was placed into a tuple must \
-         fire UseAfterConsume: {:?}",
+        !p.diagnostics
+            .iter()
+            .any(|d| matches!(&d.kind, MirDiagnosticKind::UseAfterConsume { .. })),
+        "retained tuple ingress must keep the source usable: {:?}",
         p.diagnostics
     );
 }
@@ -1212,8 +1233,17 @@ fn checked_mir_rejects_use_after_consume_inside_block_expression() {
     // `HirStmtKind::Expr` forwards. A real use-after-consume inside
     // `{ ... }` would compile cleanly and emit a binary. Pin the
     // recursive-lowering path here.
-    let pipeline =
-        pipeline(r#"fn main() -> i64 { { let s = "hello"; let t = s; let _u = s; } return 42; }"#);
+    let pipeline = lower_source(
+        r"
+        #[resource]
+        type File { fd: i64 }
+        impl File { fn close(self) { } }
+        fn main() -> i64 {
+            { let s = File { fd: 1 }; let _t = s; let _u = s.fd; }
+            42
+        }
+    ",
+    );
     assert!(
         pipeline.diagnostics.iter().any(|d| matches!(
             &d.kind,
@@ -1246,13 +1276,23 @@ fn checked_mir_rejects_use_after_consume_inside_if_arm() {
     // expression, the recursion path runs through `HirExprKind::If`
     // -> `lower_value(then_expr)` -> `HirExprKind::Block`. Pin that
     // the arm's nested `let` statements reach the move-checker.
-    let pipeline = pipeline(
-        "fn main() -> i64 { \
-             let _r = if 1 + 1 { \
-                 let s = \"hello\"; let t = s; let _u = s; 7 \
-             } else { 8 }; \
-             return 42; \
-         }",
+    let pipeline = lower_source(
+        r"
+        #[resource]
+        type File { fd: i64 }
+        impl File { fn close(self) { } }
+        fn main() -> i64 {
+            let _r = if true {
+                let s = File { fd: 1 };
+                let _t = s;
+                let _u = s.fd;
+                7
+            } else {
+                8
+            };
+            42
+        }
+    ",
     );
     assert!(
         pipeline.diagnostics.iter().any(|d| matches!(
@@ -2276,13 +2316,17 @@ fn cross_arm_consume_then_use_after_join_rejects() {
     // Consume `s` in the then arm only. After the join, `s`'s state
     // is MaybeConsumed (one path Consumed, one path Live). The next
     // use of `s` must be flagged as UseAfterConsume.
-    let p = pipeline(
-        r#"fn main() -> i64 {
-            let s = "hello";
-            let _r = if 1 == 1 { let _t = s; 7 } else { 8 };
-            let _u = s;
-            0
-        }"#,
+    let p = lower_source(
+        r"
+        #[resource]
+        type File { fd: i64 }
+        impl File { fn close(self) { } }
+        fn main() -> i64 {
+            let s = File { fd: 1 };
+            let _r = if true { let _t = s; 7 } else { 8 };
+            s.fd
+        }
+    ",
     );
     assert!(
         p.diagnostics.iter().any(|d| matches!(
@@ -2299,13 +2343,17 @@ fn consume_in_both_arms_then_use_after_join_rejects() {
     // Consume in BOTH arms: state at join is Consumed. Post-join
     // use rejects as plain UseAfterConsume (not the MaybeConsumed
     // variant).
-    let p = pipeline(
-        r#"fn main() -> i64 {
-            let s = "hello";
-            let _r = if 1 == 1 { let _a = s; 7 } else { let _b = s; 8 };
-            let _u = s;
-            0
-        }"#,
+    let p = lower_source(
+        r"
+        #[resource]
+        type File { fd: i64 }
+        impl File { fn close(self) { } }
+        fn main() -> i64 {
+            let s = File { fd: 1 };
+            let _r = if true { let _a = s; 7 } else { let _b = s; 8 };
+            s.fd
+        }
+    ",
     );
     assert!(
         p.diagnostics.iter().any(|d| matches!(
@@ -2321,12 +2369,17 @@ fn consume_in_both_arms_then_use_after_join_rejects() {
 fn consume_in_both_arms_without_post_join_use_is_accepted() {
     // Consumed on every reachable path, never used after the join.
     // The dataflow must NOT emit UseAfterConsume here.
-    let p = pipeline(
-        r#"fn main() -> i64 {
-            let s = "hello";
-            let _r = if 1 == 1 { let _a = s; 7 } else { let _b = s; 8 };
+    let p = lower_source(
+        r"
+        #[resource]
+        type File { fd: i64 }
+        impl File { fn close(self) { } }
+        fn main() -> i64 {
+            let s = File { fd: 1 };
+            let _r = if true { let _a = s; 7 } else { let _b = s; 8 };
             0
-        }"#,
+        }
+    ",
     );
     assert!(
         !p.diagnostics.iter().any(|d| matches!(

@@ -4192,6 +4192,10 @@ pub enum Instr {
     /// minted. This marker is emitted only by the MIR bytes ownership prover;
     /// codegen must not infer the retain from the LLVM storage type.
     BytesRetain { value: Place },
+    /// Increment the refcount of a `string` value before a genuine co-owner is
+    /// minted. Existing retained producers (field loads and `Vec<string>` gets)
+    /// already return `+1`; this marker covers the remaining share points.
+    StringRetain { value: Place },
     /// Explicit checker-admitted numeric `as` cast.
     ///
     /// `from_ty` and `to_ty` are carried from HIR so codegen can choose the

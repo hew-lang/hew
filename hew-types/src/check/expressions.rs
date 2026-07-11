@@ -6724,7 +6724,12 @@ impl Checker {
     /// 2. Bare-actor-name field (e.g. `let target: Printer`): the spawn arg is
     ///    `LocalPid<Printer>`, not `Printer`, so checking against the bare name
     ///    produces a spurious type mismatch.
-    fn check_spawn_constructor_args(&mut self, actor_name: &str, args: &[(String, Spanned<Expr>)]) {
+    fn check_spawn_constructor_args(
+        &mut self,
+        actor_name: &str,
+        args: &[(String, Spanned<Expr>)],
+        type_subst: Option<&HashMap<String, Ty>>,
+    ) {
         let actor_fields: Option<HashMap<String, Ty>> =
             self.lookup_type_def(actor_name).map(|td| td.fields);
         // An actor with an explicit `init(...)` names its spawn args after
@@ -6749,6 +6754,17 @@ impl Checker {
             let declared = declared_init_param
                 .as_ref()
                 .or_else(|| actor_fields.as_ref().and_then(|f| f.get(field_name)));
+            // Substitute the spawn site's type arguments into the declared
+            // type before checking, so a generic field/init param (`value: T`)
+            // is compared against the instantiated type (`i64`) rather than
+            // the unbound generic `T` (#2447). Non-generic actors and
+            // arity-mismatched spawns pass `None` and check against the raw
+            // declared type unchanged.
+            let declared_owned: Option<Ty> = match (declared, type_subst) {
+                (Some(ty), Some(subst)) => Some(ty.substitute_named_params_parallel(subst)),
+                _ => None,
+            };
+            let declared = declared_owned.as_ref().or(declared);
             let ty_raw = match declared {
                 Some(declared_ty) => {
                     let is_bare_actor = if let Ty::Named {
@@ -6882,8 +6898,6 @@ impl Checker {
         };
 
         if let Some(name) = actor_name {
-            self.check_spawn_constructor_args(&name, args);
-
             // Resolve the explicit type-argument list.  When type_args is
             // non-empty, substitute them into the PID type and enforce any
             // declared bounds.  When empty, check whether the actor is
@@ -6895,10 +6909,33 @@ impl Checker {
 
             // Look up the arity of the actor's declared type params (0 for
             // non-generic actors).
-            let declared_arity = self
+            let type_params: Vec<String> = self
                 .type_defs
                 .get(&name)
-                .map_or(0, |td| td.type_params.len());
+                .map_or_else(Vec::new, |td| td.type_params.clone());
+            let declared_arity = type_params.len();
+
+            // Build the spawn-site substitution map (declared param name ->
+            // resolved type argument) so a generic actor field/init param
+            // like `value: T` is checked against `i64` for `spawn Box<i64>(
+            // value: 5)`, not against the unsubstituted `T` (#2447). Only
+            // populated when the supplied arity matches the declared arity;
+            // an arity mismatch is diagnosed below and the raw declared type
+            // is left in place (no partial/misaligned substitution).
+            let type_subst: Option<HashMap<String, Ty>> =
+                if declared_arity > 0 && resolved_type_args.len() == declared_arity {
+                    Some(
+                        type_params
+                            .iter()
+                            .cloned()
+                            .zip(resolved_type_args.iter().cloned())
+                            .collect(),
+                    )
+                } else {
+                    None
+                };
+
+            self.check_spawn_constructor_args(&name, args, type_subst.as_ref());
 
             if declared_arity > 0 && resolved_type_args.is_empty() {
                 // Generic actor spawned without type arguments.

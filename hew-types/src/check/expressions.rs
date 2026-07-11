@@ -862,6 +862,34 @@ impl Checker {
         target
     }
 
+    /// Fold an array-repeat count expression to a compile-time `i64`, or
+    /// `None` when it is not a checker-visible constant.
+    ///
+    /// Only the shapes that can legitimately name a fixed-array length are
+    /// recognized: a bare integer literal, a negated integer literal, and an
+    /// identifier bound to an integer `const`/`let` (tracked in
+    /// `const_values`). Anything else — a runtime variable, a call, an
+    /// arithmetic expression — returns `None` so the caller can reject a
+    /// non-constant length in a `[T; N]` position (issue #2330). This is a
+    /// pure classification of `count`; it emits no diagnostics of its own.
+    pub(super) fn const_array_repeat_count(&self, count: &Expr) -> Option<i64> {
+        match count {
+            Expr::Literal(Literal::Integer { value, .. }) => Some(*value),
+            Expr::Unary {
+                op: UnaryOp::Negate,
+                operand,
+            } => match &operand.0 {
+                Expr::Literal(Literal::Integer { value, .. }) => value.checked_neg(),
+                _ => None,
+            },
+            Expr::Identifier(name) => match self.const_values.get(name) {
+                Some(ConstValue::Integer(v)) => Some(*v),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     pub(super) fn synthesize_array_repeat(
         &mut self,
         value: &Spanned<Expr>,
@@ -2768,10 +2796,59 @@ impl Checker {
                 expected.clone()
             }
 
-            // Array repeat coercion to Array<T, N> type
-            (Expr::ArrayRepeat { value, count }, Ty::Array(elem_ty, _)) => {
+            // Array repeat coercion to Array<T, N> type.
+            //
+            // The declared length `N` is part of the fixed-array type, so the
+            // repeat count must agree with it — the same line the plain array
+            // literal arm above holds. A constant count that differs from `N`
+            // is an arity mismatch; a non-constant count is rejected outright
+            // because the length in a `[T; N]` position must be known at check
+            // time (issue #2330).
+            (Expr::ArrayRepeat { value, count }, Ty::Array(elem_ty, size)) => {
                 self.check_against(&value.0, &value.1, elem_ty);
                 self.check_against(&count.0, &count.1, &Ty::I64);
+
+                match self.const_array_repeat_count(&count.0) {
+                    Some(actual) if actual < 0 => {
+                        self.report_error(
+                            TypeErrorKind::ArityMismatch,
+                            &count.1,
+                            format!(
+                                "array repeat count cannot be negative: `{}` requires {size} elements, found {actual}",
+                                expected.user_facing()
+                            ),
+                        );
+                        return Ty::Error;
+                    }
+                    #[allow(
+                        clippy::cast_sign_loss,
+                        reason = "the negative branch above returns first, so `actual` is non-negative here"
+                    )]
+                    Some(actual) if (actual as u64) != *size => {
+                        self.report_error(
+                            TypeErrorKind::ArityMismatch,
+                            span,
+                            format!(
+                                "array repeat length mismatch: expected {size} elements for `{}`, found {actual}",
+                                expected.user_facing()
+                            ),
+                        );
+                        return Ty::Error;
+                    }
+                    Some(_) => {}
+                    None => {
+                        self.report_error(
+                            TypeErrorKind::ArityMismatch,
+                            &count.1,
+                            format!(
+                                "array repeat count must be a constant to coerce to fixed-array type `{}` (length {size} is part of the type); use a compile-time-constant count",
+                                expected.user_facing()
+                            ),
+                        );
+                        return Ty::Error;
+                    }
+                }
+
                 self.record_type(span, expected);
                 expected.clone()
             }

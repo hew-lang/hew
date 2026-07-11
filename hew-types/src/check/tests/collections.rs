@@ -90,6 +90,90 @@ fn literal_coercion_array_literal_element_mismatch() {
 }
 
 #[test]
+fn literal_coercion_array_repeat_length_mismatch() {
+    // `let a: [i64; 4] = [0; 2]` — the repeat count disagrees with the
+    // declared fixed-array length and must be rejected the same way a plain
+    // array literal of the wrong arity is (issue #2330).
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let span = 0..8;
+    let expected = Ty::Array(Box::new(Ty::I64), 4);
+    let expr = Expr::ArrayRepeat {
+        value: Box::new(make_int_literal(0, 1..2)),
+        count: Box::new(make_int_literal(2, 4..5)),
+    };
+
+    let result = checker.check_against(&expr, &span, &expected);
+
+    assert_eq!(result, Ty::Error);
+    assert_eq!(
+        checker.errors.len(),
+        1,
+        "repeat length mismatch should emit one targeted diagnostic: {:#?}",
+        checker.errors
+    );
+    let error = &checker.errors[0];
+    assert_eq!(error.kind, TypeErrorKind::ArityMismatch);
+    assert_eq!(error.span, span);
+    assert!(
+        error.message.contains("expected 4") && error.message.contains("found 2"),
+        "diagnostic should name expected and actual arity: {error:#?}"
+    );
+}
+
+#[test]
+fn literal_coercion_array_repeat_length_match() {
+    // A matching constant count coerces cleanly with no diagnostic.
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let span = 0..8;
+    let expected = Ty::Array(Box::new(Ty::I64), 3);
+    let expr = Expr::ArrayRepeat {
+        value: Box::new(make_int_literal(7, 1..2)),
+        count: Box::new(make_int_literal(3, 4..5)),
+    };
+
+    let result = checker.check_against(&expr, &span, &expected);
+
+    assert_eq!(result, expected);
+    assert!(
+        checker.errors.is_empty(),
+        "matching repeat count should coerce cleanly: {:#?}",
+        checker.errors
+    );
+    assert_eq!(
+        checker.expr_types.get(&SpanKey::from(&span)),
+        Some(&expected)
+    );
+}
+
+#[test]
+fn literal_coercion_array_repeat_non_constant_count_rejected() {
+    // A runtime (non-constant) count cannot name a fixed-array length, so
+    // it is rejected in `[T; N]` position rather than silently accepted.
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let span = 0..8;
+    let count_span = 4..5;
+    let expected = Ty::Array(Box::new(Ty::I64), 4);
+    let expr = Expr::ArrayRepeat {
+        value: Box::new(make_int_literal(0, 1..2)),
+        count: Box::new((Expr::Identifier("n".to_string()), count_span.clone())),
+    };
+
+    let result = checker.check_against(&expr, &span, &expected);
+
+    assert_eq!(result, Ty::Error);
+    assert!(
+        checker
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::ArityMismatch
+                && e.span == count_span
+                && e.message.contains("must be a constant")),
+        "non-constant count should be rejected in fixed-array position: {:#?}",
+        checker.errors
+    );
+}
+
+#[test]
 fn vec_copy_record_new_constructor_typechecks() {
     let output = check_source(
         r"

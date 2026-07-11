@@ -2780,6 +2780,16 @@ impl Checker {
         type_args: &[Ty],
         visiting: &mut std::collections::HashSet<String>,
     ) -> Option<String> {
+        self.record_field_contains_opaque_inner(name, type_args, visiting, false)
+    }
+
+    fn record_field_contains_opaque_inner(
+        &self,
+        name: &str,
+        type_args: &[Ty],
+        visiting: &mut std::collections::HashSet<String>,
+        allow_channel_handles: bool,
+    ) -> Option<String> {
         if !visiting.insert(name.to_string()) {
             return None; // cycle protection
         }
@@ -2788,7 +2798,9 @@ impl Checker {
             for field_ty in type_def.fields.values() {
                 let field_ty =
                     Self::instantiate_type_def_member(field_ty, &type_def.type_params, type_args);
-                if let Some(opaque) = self.ty_field_contains_opaque(&field_ty, visiting) {
+                if let Some(opaque) =
+                    self.ty_field_contains_opaque_inner(&field_ty, visiting, allow_channel_handles)
+                {
                     found = Some(opaque);
                     break;
                 }
@@ -2814,6 +2826,16 @@ impl Checker {
         type_args: &[Ty],
         visiting: &mut std::collections::HashSet<String>,
     ) -> Option<String> {
+        self.enum_variant_contains_opaque_inner(name, type_args, visiting, false)
+    }
+
+    fn enum_variant_contains_opaque_inner(
+        &self,
+        name: &str,
+        type_args: &[Ty],
+        visiting: &mut std::collections::HashSet<String>,
+        allow_channel_handles: bool,
+    ) -> Option<String> {
         if !visiting.insert(name.to_string()) {
             return None; // cycle protection
         }
@@ -2831,7 +2853,11 @@ impl Checker {
                         &type_def.type_params,
                         type_args,
                     );
-                    if let Some(opaque) = self.ty_field_contains_opaque(&payload_ty, visiting) {
+                    if let Some(opaque) = self.ty_field_contains_opaque_inner(
+                        &payload_ty,
+                        visiting,
+                        allow_channel_handles,
+                    ) {
                         found = Some(opaque);
                         break 'variants;
                     }
@@ -2842,32 +2868,51 @@ impl Checker {
         found
     }
 
-    pub(super) fn ty_field_contains_opaque(
+    /// Transitive opaque-leaf walk. The receive-fn boundary opts into the
+    /// channel-handle carve-out because `Sender`/`Receiver` are transferable
+    /// mailbox capabilities; clone-site callers retain the strict default.
+    pub(super) fn ty_field_contains_opaque_inner(
         &self,
         ty: &Ty,
         visiting: &mut std::collections::HashSet<String>,
+        allow_channel_handles: bool,
     ) -> Option<String> {
         // Resolve inference vars so a field whose type is still a `Ty::Var`
         // bound in the substitution environment is walked at its concrete type
         // (mirrors `vec_element_contains_structural_array`).
         let resolved = self.subst.resolve(ty);
         match &resolved {
-            Ty::Named { name, args, .. } => {
+            Ty::Named {
+                name,
+                args,
+                builtin,
+                ..
+            } => {
+                let is_channel_handle = builtin.is_some_and(BuiltinType::is_channel_handle);
                 // Direct opaque handle (imported via module registry OR user-declared #[opaque])?
-                if self.canonical_owned_handle_type_name(name).is_some()
-                    || self.user_opaque_type_names.contains(name.as_str())
+                if !(allow_channel_handles && is_channel_handle)
+                    && (self.canonical_owned_handle_type_name(name).is_some()
+                        || self.user_opaque_type_names.contains(name.as_str()))
                 {
                     return Some(name.clone());
                 }
-                // Recurse into type args (e.g. `Vec<Handle>`, `Option<Handle>`).
+                // Recurse into type args (e.g. `Vec<Handle>`, `Option<Handle>`,
+                // `Sender<T>`/`Receiver<T>`'s own element type `T`).
                 for arg in args {
-                    if let Some(n) = self.ty_field_contains_opaque(arg, visiting) {
+                    if let Some(n) =
+                        self.ty_field_contains_opaque_inner(arg, visiting, allow_channel_handles)
+                    {
                         return Some(n);
                     }
                 }
                 // Recurse into the type def's fields, substituting the def's
                 // params with the concrete `args` at this use site.
-                if let Some(n) = self.record_field_contains_opaque(name, args, visiting) {
+                if let Some(n) = self.record_field_contains_opaque_inner(
+                    name,
+                    args,
+                    visiting,
+                    allow_channel_handles,
+                ) {
                     return Some(n);
                 }
                 // Recurse into enum variant payloads too — a nested enum with a
@@ -2876,14 +2921,21 @@ impl Checker {
                 // walk, so without this an outer clone would admit an
                 // unclonable leaf. (`record_field_contains_opaque` is a no-op
                 // for an enum, and vice-versa, so both calls are kind-safe.)
-                if let Some(n) = self.enum_variant_contains_opaque(name, args, visiting) {
+                if let Some(n) = self.enum_variant_contains_opaque_inner(
+                    name,
+                    args,
+                    visiting,
+                    allow_channel_handles,
+                ) {
                     return Some(n);
                 }
                 None
             }
             Ty::Tuple(items) => {
                 for item in items {
-                    if let Some(n) = self.ty_field_contains_opaque(item, visiting) {
+                    if let Some(n) =
+                        self.ty_field_contains_opaque_inner(item, visiting, allow_channel_handles)
+                    {
                         return Some(n);
                     }
                 }

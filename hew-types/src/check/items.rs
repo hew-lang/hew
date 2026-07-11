@@ -2041,7 +2041,7 @@ impl Checker {
     /// `E_CODEGEN_FRONT_FAIL_CLOSED: wire CBOR serialize …` message (#2511).
     fn reject_opaque_receive_fn_param(&mut self, param_name: &str, ty: &Ty, span: &Span) {
         let mut visiting = std::collections::HashSet::new();
-        let Some(opaque_name) = self.ty_field_contains_opaque(ty, &mut visiting) else {
+        let Some(opaque_name) = self.ty_field_contains_opaque_inner(ty, &mut visiting, true) else {
             return;
         };
         self.report_error(

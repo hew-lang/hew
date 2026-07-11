@@ -3634,6 +3634,32 @@ fn cross_module_fn_value_shadowed_local_binding_resolves_as_field() {
     );
 }
 
+/// Root-local functions take precedence over wildcard-imported functions with
+/// the same name, including when their signatures differ.
+#[test]
+fn imported_free_functions_do_not_shadow_root_local_functions() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/imported_fn_local_shadow/main.hew");
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "local function shadowing fixture should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/imported_fn_local_shadow/main.expected"),
+    )
+    .expect("read main.expected");
+    assert_eq!(
+        actual, expected,
+        "expected calls to resolve to the root-local functions; got: {actual:?}"
+    );
+}
+
 /// An unannotated GENERIC cross-module named function used as a value is
 /// rejected: the type parameters cannot be determined from context and the
 /// diagnostic names the function and asks for an annotation.

@@ -516,10 +516,11 @@ impl Checker {
         span: &Span,
     ) -> Option<Vec<DynVtableEntry>> {
         let trait_name = bound.trait_name.as_str();
+        let trait_lookup_key = self.trait_ref_lookup_key(trait_name);
         // Resolve the trait declaration; an unregistered trait can never be
         // object-safe (and the caller's type-implements check would already
         // have rejected it).
-        let trait_info = self.trait_defs.get(trait_name).cloned()?;
+        let trait_info = self.trait_defs.get(&trait_lookup_key).cloned()?;
         if !Self::dyn_assoc_bindings_complete(&trait_info, bound) {
             return None;
         }
@@ -528,25 +529,27 @@ impl Checker {
         //   1. No generic methods.
         //   2. No `Self`-returning methods.
         // Both are rejected with `E_TRAIT_NOT_OBJECT_SAFE`.
-        if !self.validate_dyn_object_safety(trait_name, &trait_info, span) {
+        if !self.validate_dyn_object_safety(&trait_lookup_key, &trait_info, span) {
             return None;
         }
 
         // Build the method-table. Prefer the nominal impl registries; fall
         // back to the structural match path so bare `impl T { fn ... }` that
         // structurally satisfies a trait also gets a populated table.
-        let nominal_impl = self
-            .trait_impls_set
-            .contains(&(concrete_type_name.to_string(), trait_name.to_string()));
+        let nominal_impl = self.type_implements_trait(concrete_type_name, &trait_lookup_key);
 
         let primitive_impl_methods = self
             .primitive_trait_impls
-            .get(&(concrete_type_name.to_string(), trait_name.to_string()))
+            .get(&(concrete_type_name.to_string(), trait_lookup_key.clone()))
+            .or_else(|| {
+                self.primitive_trait_impls
+                    .get(&(concrete_type_name.to_string(), trait_name.to_string()))
+            })
             .cloned();
 
         let structural_ok = !nominal_impl
             && primitive_impl_methods.is_none()
-            && self.type_structurally_satisfies(concrete_type_name, trait_name);
+            && self.type_structurally_satisfies(concrete_type_name, &trait_lookup_key);
 
         if !nominal_impl && primitive_impl_methods.is_none() && !structural_ok {
             return None;
@@ -558,7 +561,8 @@ impl Checker {
         let mut table: Vec<DynVtableEntry> = Vec::with_capacity(trait_info.methods.len());
         for method in &trait_info.methods {
             let impl_fn_key = format!("{concrete_type_name}::{}", method.name);
-            let Some(mut signature) = self.lookup_trait_method(trait_name, &method.name) else {
+            let Some(mut signature) = self.lookup_trait_method(&trait_lookup_key, &method.name)
+            else {
                 // JUSTIFIED: `trait_info` is cloned from `trait_defs[trait_name]`,
                 // and this loop iterates its own `methods`. If lookup fails,
                 // the checker metadata is internally inconsistent; fabricating

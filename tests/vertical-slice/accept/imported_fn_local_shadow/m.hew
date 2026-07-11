@@ -1,0 +1,7 @@
+pub fn matching() -> i64 {
+    99
+}
+
+pub fn mismatched() -> i64 {
+    99
+}

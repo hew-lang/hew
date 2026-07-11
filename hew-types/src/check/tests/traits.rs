@@ -14,6 +14,97 @@ fn structural_satisfies_returns_false_for_unknown_trait() {
 }
 
 #[test]
+fn module_local_dyn_trait_method_records_vtable_call() {
+    let module_source = r#"
+        pub trait Drawable {
+            fn draw(val: Self) -> string;
+        }
+
+        pub type Circle {}
+
+        pub fn make_circle() -> Circle {
+            Circle {}
+        }
+
+        impl Drawable for Circle {
+            fn draw(circle: Circle) -> string { "Circle" }
+        }
+
+        pub fn render(item: dyn Drawable) -> string {
+            item.draw()
+        }
+    "#;
+    let module = hew_parser::parse(module_source);
+    assert!(
+        module.errors.is_empty(),
+        "module source must parse cleanly: {:?}",
+        module.errors
+    );
+    let module_items = module.program.items;
+    let mut root = hew_parser::parse(
+        "import shapes;\nfn main() -> string { let circle = shapes.make_circle(); shapes.render(circle) }\n",
+    );
+    assert!(
+        root.errors.is_empty(),
+        "root source must parse cleanly: {:?}",
+        root.errors
+    );
+    let import = root
+        .program
+        .items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            Item::Import(import) => Some(import),
+            _ => None,
+        })
+        .expect("root program must contain the shapes import");
+    import.resolved_items = Some(module_items.clone());
+
+    let root_id = ModuleId::root();
+    let shapes_id = ModuleId::new(vec!["shapes".to_string()]);
+    let mut module_graph = ModuleGraph::new(root_id.clone());
+    module_graph
+        .add_module(Module {
+            id: shapes_id.clone(),
+            items: module_items,
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        })
+        .expect("add shapes module");
+    module_graph
+        .add_module(Module {
+            id: root_id.clone(),
+            items: root.program.items.clone(),
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        })
+        .expect("add root module");
+    module_graph.topo_order = vec![shapes_id, root_id];
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        items: root.program.items,
+        module_graph: Some(module_graph),
+        module_doc: None,
+    });
+
+    assert!(
+        output.errors.is_empty(),
+        "module-local dyn trait call should type-check: {:#?}",
+        output.errors
+    );
+    let dyn_call = output
+        .dyn_trait_method_calls
+        .values()
+        .next()
+        .expect("module-local dyn trait call should populate vtable metadata");
+    assert_eq!(dyn_call.trait_name, "Drawable");
+    assert_eq!(dyn_call.method_name, "draw");
+}
+
+#[test]
 fn structural_satisfies_e1_guard_associated_types() {
     let mut checker = make_checker_with_trait("Indexed", &["get"], true, false);
     assert!(

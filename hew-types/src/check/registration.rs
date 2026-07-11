@@ -4845,6 +4845,7 @@ impl Checker {
                     self.fn_visibility.insert(scoped_name, fd.visibility);
                 }
                 self.register_fn_sig(fd);
+                self.record_root_value_binding(&fd.name);
             }
             Item::Actor(ad) => {
                 // Module actors are identified by the dotted
@@ -6293,6 +6294,16 @@ impl Checker {
         //     spelled in a DECLARING module is never the importer's local trait of
         //     the same name; gating this on `Current` is the H11 scope correctness.
         if matches!(scope, TraitRefScope::Current) && self.local_trait_defs.contains(name) {
+            if let Some(module) = self
+                .current_module
+                .as_deref()
+                .and_then(|current| current.rsplit('.').next())
+            {
+                let qualified = format!("{module}.{name}");
+                if self.trait_defs.contains_key(&qualified) {
+                    return self.identity_from_trait_defs_key(&qualified);
+                }
+            }
             return ResolvedTraitIdentity {
                 owner: None,
                 source_trait_name: name.to_string(),
@@ -6340,7 +6351,14 @@ impl Checker {
             .trait_defs
             .keys()
             .filter_map(|k| k.strip_suffix(&suffix))
-            .filter(|module| !module.is_empty() && self.modules.contains(*module))
+            .filter(|module| {
+                !module.is_empty()
+                    && (self.modules.contains(*module)
+                        || self
+                            .current_module
+                            .as_deref()
+                            .is_some_and(|current| current.rsplit('.').next() == Some(*module)))
+            })
             .collect();
         owners.sort_unstable();
         owners.dedup();
@@ -6353,6 +6371,15 @@ impl Checker {
             source_trait_name: name.to_string(),
             is_local: false,
         }
+    }
+
+    /// Return the registry key for a trait name written in the current module.
+    ///
+    /// Trait-object bounds retain their source spelling for HIR/codegen, while
+    /// checker lookup must use the owning module's canonical key.
+    pub(super) fn trait_ref_lookup_key(&self, name: &str) -> String {
+        let identity = self.resolve_trait_ref(name, TraitRefScope::Current);
+        self.trait_defs_key_for_identity(&identity)
     }
 
     /// The set of method names a trait requires an impl to provide, resolved
@@ -7549,6 +7576,7 @@ impl Checker {
             self.record_fn_sig_inference_holes(&key, hole_vars);
             self.fn_sigs.insert(key.clone(), sig);
             self.unsafe_functions.insert(key);
+            self.record_root_value_binding(&f.name);
         }
 
         // Register codegen-intercepted channel functions that use

@@ -18,10 +18,11 @@ use std::{
 
 use hew_parser::ast::{
     ActorDecl, AttributeArg, BinaryOp, Block, CallArg, CompoundAssignOp, ConstDecl, Expr, FnDecl,
-    Item, LambdaParam, Literal, MachineDecl, Param, Pattern, Program, ReceiveFnDecl, RecordDecl,
-    RecordKind, ResourceMarker as AstResourceMarker, RestartPolicy, SelectArm, ShutdownDirective,
-    Span, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitItem,
-    TraitMethod, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, UnaryOp, VariantKind,
+    ImportSpec, Item, LambdaParam, Literal, MachineDecl, Param, Pattern, Program, ReceiveFnDecl,
+    RecordDecl, RecordKind, ResourceMarker as AstResourceMarker, RestartPolicy, SelectArm,
+    ShutdownDirective, Span, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy,
+    TimeoutClause, TraitItem, TraitMethod, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, UnaryOp,
+    VariantKind,
 };
 use hew_types::BuiltinType;
 use hew_types::{
@@ -236,6 +237,31 @@ fn constructor_payload_aggregate_subpatterns(pattern: &Pattern) -> bool {
     patterns.iter().any(|(sub_pat, _)| {
         matches!(sub_pat, Pattern::Struct { .. })
             || matches!(sub_pat, Pattern::Tuple(items) if !items.is_empty())
+    })
+}
+
+/// True when an enum struct-variant arm pattern (`Variant { field: (a, b) }`)
+/// has at least one field whose sub-pattern is an aggregate (a non-empty tuple
+/// or a nested struct/record) that needs recursive destructure lowering.
+///
+/// The checker accepts these field sub-patterns (see
+/// `unsupported_payload_subpattern_label`, which returns `None` for
+/// `Pattern::Tuple`), but the payload-binding side-table only records a
+/// `PayloadBinding` for plain-identifier field binders. Aggregate field
+/// sub-patterns therefore produce no arm binding on their own and must be
+/// materialised the same way the tuple-variant path is
+/// (`lower_struct_variant_payload_aggregates`). Mirrors
+/// `constructor_payload_aggregate_subpatterns` for the struct-variant shape.
+fn struct_variant_payload_aggregate_subpatterns(pattern: &Pattern) -> bool {
+    let Pattern::Struct { fields, .. } = pattern else {
+        return false;
+    };
+    fields.iter().any(|pf| match &pf.pattern {
+        Some((sub_pat, _)) => {
+            matches!(sub_pat, Pattern::Struct { .. })
+                || matches!(sub_pat, Pattern::Tuple(items) if !items.is_empty())
+        }
+        None => false,
     })
 }
 
@@ -1795,6 +1821,60 @@ fn imported_type_name_collides(
         > 1
 }
 
+/// Build the root scope's bare imported-function bindings.
+///
+/// The checker publishes selected names from `import module::{name}` and
+/// `import module::*`, but HIR emits the function body under its module-qualified
+/// symbol. Preserve that source-to-symbol mapping while root bodies lower, except
+/// where the checker's root value namespace already owns the same binding.
+fn root_imported_fn_rewrites(
+    program: &Program,
+    root_value_bindings: &HashSet<String>,
+) -> HashMap<String, String> {
+    let mut rewrites = HashMap::new();
+    for (item, _) in &program.items {
+        let Item::Import(decl) = item else {
+            continue;
+        };
+        let (Some(module_short), Some(resolved_items)) =
+            (decl.path.last(), decl.resolved_items.as_ref())
+        else {
+            continue;
+        };
+        for (resolved_item, _) in resolved_items {
+            let Item::Function(function) = resolved_item else {
+                continue;
+            };
+            if !function.visibility.is_pub() {
+                continue;
+            }
+            let binding = match &decl.spec {
+                Some(ImportSpec::Glob) => Some(function.name.clone()),
+                Some(ImportSpec::Names(names)) => names
+                    .iter()
+                    .find(|imported| imported.name == function.name)
+                    .map(|imported| {
+                        imported
+                            .alias
+                            .clone()
+                            .unwrap_or_else(|| function.name.clone())
+                    }),
+                None => None,
+            };
+            if let Some(binding) = binding {
+                if root_value_bindings.contains(&binding) {
+                    continue;
+                }
+                rewrites.insert(
+                    binding,
+                    crate::mangle_dotted_name(&format!("{module_short}.{}", function.name)),
+                );
+            }
+        }
+    }
+    rewrites
+}
+
 #[must_use]
 pub fn lower_program(
     program: &Program,
@@ -2202,6 +2282,10 @@ pub fn lower_program_with_mono_cap(
             }
         }
     }
+    ctx.imported_fn_rewrites = Some(root_imported_fn_rewrites(
+        program,
+        &type_check_output.root_value_bindings,
+    ));
 
     // Pre-pass: collect record/type-decl shapes so `Expr::StructInit`
     // lowering in the source-order pass can answer "is this a generic
@@ -12999,6 +13083,113 @@ impl LowerCtx {
         (prelude, had_error)
     }
 
+    /// Materialise aggregate field sub-patterns of an enum struct-variant match
+    /// arm (`Variant { field: (a, b) }`, `Variant { field: Inner { x } }`).
+    ///
+    /// The struct-variant sibling of `lower_constructor_payload_aggregates`.
+    /// The checker accepts a tuple/struct sub-pattern in struct-variant field
+    /// position but records no `PayloadBinding` for it (only plain-identifier
+    /// field binders get one), so the inner binders (`a`, `b`) are never
+    /// materialised and later fail closed with `E_HIR: identifier has no
+    /// binding`. This mirrors the tuple-variant path: for each aggregate field
+    /// it binds a synthetic `__payload_*` temp to the field slot (so MIR
+    /// projects the field into it) and then reuses the `let`-binding destructure
+    /// (`lower_pattern_value_into_stmts`) to bind the inner names off that temp.
+    ///
+    /// Fields are matched to their declared type by NAME (struct-variant field
+    /// order in the pattern need not match declaration order), and generic
+    /// enum type params are substituted from the scrutinee's type args, exactly
+    /// as the constructor path does positionally.
+    fn lower_struct_variant_payload_aggregates(
+        &mut self,
+        variant_name: &str,
+        fields: &[hew_parser::ast::PatternField],
+        scrutinee_ty: &ResolvedTy,
+        bindings: &mut Vec<HirMatchArmBinding>,
+        owning_pass: &'static str,
+    ) -> (Vec<HirStmt>, bool) {
+        let mut prelude = Vec::new();
+        let mut had_error = false;
+        // Declared struct-variant fields in declaration order, with generic
+        // type params substituted from the scrutinee's type args.
+        let field_decls: Vec<(String, ResolvedTy)> = self
+            .lookup_variant_ctor(variant_name)
+            .map(|(type_name, _, kind)| match kind {
+                HirVariantKind::Struct(field_decls) => {
+                    let scrutinee_args = match scrutinee_ty {
+                        ResolvedTy::Named { args, .. } => args.as_slice(),
+                        _ => &[],
+                    };
+                    let type_params = self
+                        .enum_type_params
+                        .get(&type_name)
+                        .cloned()
+                        .unwrap_or_default();
+                    if type_params.len() == scrutinee_args.len() {
+                        field_decls
+                            .iter()
+                            .map(|(name, ty)| {
+                                (
+                                    name.clone(),
+                                    substitute_type_params(ty, &type_params, scrutinee_args),
+                                )
+                            })
+                            .collect()
+                    } else {
+                        field_decls.clone()
+                    }
+                }
+                HirVariantKind::Unit | HirVariantKind::Tuple(_) => Vec::new(),
+            })
+            .unwrap_or_default();
+        for pf in fields {
+            let Some((sub_pat, sub_span)) = &pf.pattern else {
+                continue;
+            };
+            if !matches!(sub_pat, Pattern::Struct { .. })
+                && !matches!(sub_pat, Pattern::Tuple(items) if !items.is_empty())
+            {
+                continue;
+            }
+            let Some((field_idx, field_ty)) = field_decls
+                .iter()
+                .enumerate()
+                .find(|(_, (name, _))| name == &pf.name)
+                .map(|(idx, (_, ty))| (idx, ty.clone()))
+            else {
+                continue;
+            };
+            let Ok(field_idx_u32) = u32::try_from(field_idx) else {
+                self.unsupported(
+                    sub_span.clone(),
+                    "payload aggregate field index exceeds u32::MAX",
+                    owning_pass,
+                );
+                had_error = true;
+                continue;
+            };
+            let temp_name = format!("__payload_{}_{}", field_idx, self.ids.binding().0);
+            let bound = self.bind(temp_name.clone(), field_ty.clone(), false, sub_span.clone());
+            let temp_id = bound.id;
+            bindings.push(HirMatchArmBinding {
+                binding: temp_id,
+                field_idx: field_idx_u32,
+                name: temp_name.clone(),
+                ty: field_ty.clone(),
+            });
+            let temp_ref =
+                self.binding_ref_expr(temp_name, temp_id, field_ty.clone(), sub_span.clone());
+            self.lower_pattern_value_into_stmts(
+                &(sub_pat.clone(), sub_span.clone()),
+                temp_ref,
+                field_ty,
+                &mut prelude,
+                sub_span.clone(),
+            );
+        }
+        (prelude, had_error)
+    }
+
     /// Lower `let PAT = scrutinee else { <divergent block> };` to the dedicated
     /// `HirStmtKind::LetElse` node.
     ///
@@ -23742,7 +23933,8 @@ impl LowerCtx {
                     }
                 };
             let has_payload_aggregate_subpatterns =
-                constructor_payload_aggregate_subpatterns(&arm.pattern.0);
+                constructor_payload_aggregate_subpatterns(&arm.pattern.0)
+                    || struct_variant_payload_aggregate_subpatterns(&arm.pattern.0);
 
             // Nested constructor subpatterns only make sense on an
             // EnumVariant arm; anything else is a checker contract violation
@@ -23808,6 +24000,21 @@ impl LowerCtx {
                 let (prelude, had_error) = self.lower_constructor_payload_aggregates(
                     name,
                     patterns,
+                    &scrutinee_hir.ty,
+                    &mut bindings,
+                    "match-expression-substrate",
+                );
+                body_prelude = prelude;
+                binding_error |= had_error;
+            } else if let Pattern::Struct { name, fields } = &arm.pattern.0 {
+                // Enum struct-variant arm with aggregate field sub-patterns
+                // (`Variant { field: (a, b) }`). Plain record-project arms
+                // (`Point { x, y }`) and plain field binders route through the
+                // payload-binding side-table above and produce no aggregate
+                // fields, so this is a no-op for them.
+                let (prelude, had_error) = self.lower_struct_variant_payload_aggregates(
+                    name,
+                    fields,
                     &scrutinee_hir.ty,
                     &mut bindings,
                     "match-expression-substrate",

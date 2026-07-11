@@ -2056,6 +2056,7 @@ impl Checker {
             self.declared_const_bindings
                 .insert(cd.name.clone(), binding_id);
         }
+        self.record_root_value_binding(&cd.name);
     }
 
     pub(super) fn check_impl(&mut self, id: &ImplDecl, span: &Span) {

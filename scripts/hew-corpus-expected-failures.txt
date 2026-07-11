@@ -48,16 +48,11 @@ examples/lambda_actors.hew
 # deferred-nyi: machine select/transition watch NYI
 examples/machine/bounded_resource.hew
 
-# deferred-nyi: module_generic_boundaries multi-file typecheck NYI
-examples/module_generic_boundaries/main.hew
-
 # deferred-nyi: MQTT broker NYI features
 
 # deferred-nyi: multifile compilation NYI (requires multi-file resolve)
-examples/multifile/01_shapes/main.hew
 examples/multifile/02_geometry/geo/area.hew
 examples/multifile/02_geometry/geo/distance.hew
-examples/multifile/02_geometry/main.hew
 
 # deferred-nyi: net/await NYI
 examples/net/probe_opaque_actor_state.hew

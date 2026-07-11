@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 
-use hew_parser::ast::{CallArg, Expr, ImportDecl, Item, Pattern, Program, Spanned, Stmt, TypeExpr};
+use hew_parser::ast::{
+    BinaryOp, CallArg, Expr, ImportDecl, Item, Pattern, Program, Spanned, Stmt, TypeExpr,
+};
 use hew_types::{check::SpanKey, BuiltinType, Ty};
 
 use crate::Diagnostic;
@@ -452,7 +454,7 @@ impl<'a> ProfileChecker<'a> {
                         "labeled for loops are not yet admitted in the sandbox profile",
                     );
                 }
-                self.check_expr(iterable);
+                self.check_range_operand(iterable);
                 self.check_block(body);
             }
             Stmt::While { condition, body, label } => {
@@ -556,7 +558,21 @@ impl<'a> ProfileChecker<'a> {
         let (expr, span) = expr;
         match expr {
             Expr::Literal(_) | Expr::Identifier(_) | Expr::This | Expr::RegexLiteral(_) => {}
-            Expr::Binary { left, op: _, right } => {
+            Expr::Binary { left, op, right } => {
+                // `a..b` / `a..=b` parse as `Expr::Binary` with a range operator.
+                // In bare value position these have no sandbox lowering (the
+                // emitter's `lower_binary` catch-all traps at runtime), so reject
+                // them at the gate. The admitted structural positions (for-loop
+                // iterables and slice subscripts) route through
+                // `check_range_operand` and never reach this arm.
+                if matches!(op, BinaryOp::Range | BinaryOp::RangeInclusive) {
+                    self.reject(
+                        span.clone(),
+                        "reserved_runtime_feature",
+                        "range values are not admitted in the browser sandbox except as \
+                         `for` loop iterables and slice subscripts (`v[a..b]`)",
+                    );
+                }
                 // Structural equality (`==`/`!=`) on records, payload enums,
                 // Option, and Result is now admitted: `lower_binary` emits
                 // `cmp.eq`/`cmp.ne` for all types, and the VM's `compare` handler
@@ -818,14 +834,32 @@ impl<'a> ProfileChecker<'a> {
             }
             Expr::Index { object, index } => {
                 self.check_expr(object);
-                self.check_expr(index);
+                // A range subscript (`v[a..b]`, `v[a..=b]`) is an admitted
+                // slice form that the emitter lowers via `vector.range_slice`.
+                // Descend into its bounds without rejecting the range itself.
+                self.check_range_operand(index);
             }
-            Expr::Range { start, end, .. } => {
-                if let Some(start) = start {
-                    self.check_expr(start);
-                }
-                if let Some(end) = end {
-                    self.check_expr(end);
+            Expr::Range { .. } => {
+                // A range in bare value position (e.g. `let r = a..b;`) has no
+                // sandbox lowering — `lower_expr` falls to `emit_unsupported`
+                // and traps at runtime. Reject it at the profile gate so the
+                // gap fails closed at compile time, matching native's rejection
+                // of first-class range values. The two admitted structural
+                // positions (for-loop iterables and slice subscripts) route
+                // through `check_range_operand` and never reach this arm.
+                self.reject(
+                    span.clone(),
+                    "reserved_runtime_feature",
+                    "range values are not admitted in the browser sandbox except as \
+                     `for` loop iterables and slice subscripts (`v[a..b]`)",
+                );
+                if let Expr::Range { start, end, .. } = expr {
+                    if let Some(start) = start {
+                        self.check_expr(start);
+                    }
+                    if let Some(end) = end {
+                        self.check_expr(end);
+                    }
                 }
             }
             Expr::UnsafeBlock(block) => {
@@ -841,6 +875,34 @@ impl<'a> ProfileChecker<'a> {
                 "reserved_runtime_feature",
                 "this value form is not admitted to sandbox bytecode export yet",
             ),
+        }
+    }
+
+    /// Check an expression that appears in an *admitted range position* (a
+    /// `for` loop iterable or an index-slice subscript). If it is a range
+    /// (`a..b`, `a..=b`, or an open-ended `..b` / `a..`), descend into its
+    /// bounds without rejecting the range itself — those positions are lowered
+    /// by the emitter (`emit_for_range` / `vector.range_slice`). Any other
+    /// expression is checked normally.
+    fn check_range_operand(&mut self, expr: &Spanned<Expr>) {
+        match &expr.0 {
+            Expr::Binary {
+                left,
+                op: BinaryOp::Range | BinaryOp::RangeInclusive,
+                right,
+            } => {
+                self.check_expr(left);
+                self.check_expr(right);
+            }
+            Expr::Range { start, end, .. } => {
+                if let Some(start) = start {
+                    self.check_expr(start);
+                }
+                if let Some(end) = end {
+                    self.check_expr(end);
+                }
+            }
+            _ => self.check_expr(expr),
         }
     }
 

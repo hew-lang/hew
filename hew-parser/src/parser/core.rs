@@ -376,6 +376,32 @@ impl<'src> Parser<'src> {
         });
     }
 
+    /// Emit the clean "rest patterns not yet supported" diagnostic for a `..`
+    /// found at record/struct field-pattern position and consume the `..` (plus
+    /// any trailing comma) so the enclosing pattern still closes on the brace
+    /// instead of cascading a generic `expected identifier` error plus a run of
+    /// downstream arrow/semicolon recovery errors. The checker already carries the
+    /// authoritative unsupported-message for the omitted-field spelling; this
+    /// keeps the explicit-`..` spelling from being strictly worse than it.
+    pub(crate) fn consume_unsupported_rest_pattern(&mut self) {
+        let span = self.peek_span();
+        self.errors.push(ParseError {
+            message: "rest patterns (`..`) in record patterns are not yet supported".to_string(),
+            span,
+            hint: Some(
+                "bind the fields you need explicitly (`Point { x, y }`); \
+                 omitting fields via `..` is not implemented yet"
+                    .to_string(),
+            ),
+            severity: Severity::Error,
+            kind: ParseDiagnosticKind::InvalidPattern {
+                got: "`..`".to_string(),
+            },
+        });
+        self.advance(); // consume `..`
+        self.eat(&Token::Comma); // tolerate a trailing comma after `..`
+    }
+
     pub(crate) fn error_invalid_pattern(&mut self, got: impl Into<String>) {
         let got = got.into();
         let span = self.peek_span();

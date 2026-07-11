@@ -4312,3 +4312,82 @@ fn wire_enum_keyword_form_rejected() {
         "hint should point at #[wire] type, got: {first_hint}"
     );
 }
+
+/// A `..` rest pattern in a typed record match pattern (`Point { x, .. }`) is
+/// not yet implemented, but it must fail with ONE specific diagnostic that
+/// names rest patterns — not the generic `expected identifier` error
+/// followed by a cascade of arrow/semicolon recovery errors. Regression guard
+/// for hew-lang/hew#2339.
+#[test]
+fn record_pattern_rest_emits_specific_unsupported_diagnostic() {
+    let source =
+        "fn main() -> i64 { let p = Point { x: 1, y: 2 }; match p { Point { x, .. } => x } }";
+    let result = parse(source);
+    assert!(
+        !result.errors.is_empty(),
+        "expected a parse error for the unsupported `..` rest pattern"
+    );
+    let msg = &result.errors[0].message;
+    assert!(
+        msg.contains("rest patterns") && msg.contains("not yet supported"),
+        "first error should name rest patterns, got: {msg}"
+    );
+    // The `..` must be consumed so the pattern still closes on `}` — no cascade
+    // of downstream `expected identifier` / `expected `;`` recovery errors.
+    assert!(
+        !result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("expected identifier, found `..`")),
+        "should not surface the generic identifier error: {:?}",
+        result.errors
+    );
+}
+
+/// The same rest-pattern guard fires for the shorthand record spelling
+/// (`{ x, .. }`, no type name). hew-lang/hew#2339.
+#[test]
+fn record_shorthand_pattern_rest_emits_specific_unsupported_diagnostic() {
+    let source = "fn main() -> i64 { let p = Point { x: 1, y: 2 }; match p { { x, .. } => x } }";
+    let result = parse(source);
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("rest patterns") && e.message.contains("not yet supported")),
+        "expected the rest-pattern diagnostic, got: {:?}",
+        result.errors
+    );
+}
+
+/// A `..`-only record pattern (`Point { .. }`) — bind nothing, ignore all —
+/// also routes to the specific unsupported diagnostic rather than a generic
+/// identifier error. hew-lang/hew#2339.
+#[test]
+fn record_pattern_rest_only_emits_specific_unsupported_diagnostic() {
+    let source = "fn main() -> i64 { let p = Point { x: 1, y: 2 }; match p { Point { .. } => 0 } }";
+    let result = parse(source);
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("rest patterns") && e.message.contains("not yet supported")),
+        "expected the rest-pattern diagnostic, got: {:?}",
+        result.errors
+    );
+}
+
+/// Guard against over-eager recovery: a normal typed record pattern with all
+/// fields bound (`Point { x, y }`) still parses with zero errors after the
+/// `..` guard was added. hew-lang/hew#2339.
+#[test]
+fn record_pattern_without_rest_still_parses_clean() {
+    let source =
+        "fn main() -> i64 { let p = Point { x: 1, y: 2 }; match p { Point { x, y } => x + y } }";
+    let result = parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "unexpected errors: {:?}",
+        result.errors
+    );
+}

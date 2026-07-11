@@ -92,6 +92,10 @@ impl Parser<'_> {
                 } else if self.eat(&Token::LeftBrace) {
                     let mut fields = Vec::new();
                     while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                        if self.peek() == Some(&Token::DotDot) {
+                            self.consume_unsupported_rest_pattern();
+                            break;
+                        }
                         let field_name = self.expect_ident()?;
                         let pattern = if self.eat(&Token::Colon) {
                             Some(self.parse_pattern()?)
@@ -143,6 +147,10 @@ impl Parser<'_> {
                         // Struct pattern
                         let mut fields = Vec::new();
                         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                            if self.peek() == Some(&Token::DotDot) {
+                                self.consume_unsupported_rest_pattern();
+                                break;
+                            }
                             let field_name = self.expect_ident()?;
                             let pattern = if self.eat(&Token::Colon) {
                                 Some(self.parse_pattern()?)
@@ -194,6 +202,10 @@ impl Parser<'_> {
                 self.advance(); // consume '{'
                 let mut fields = Vec::new();
                 while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                    if self.peek() == Some(&Token::DotDot) {
+                        self.consume_unsupported_rest_pattern();
+                        break;
+                    }
                     let field_name = self.expect_ident()?;
                     let pattern = if self.eat(&Token::Colon) {
                         Some(self.parse_pattern()?)

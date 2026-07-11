@@ -264,12 +264,15 @@ impl Clone for WasmChannelSender {
 
 fn send_bytes(sender: &HewWasmChannelSender, bytes: Vec<u8>, api_name: &str) {
     match sender.inner.try_send(bytes) {
-        Ok(()) | Err(TrySendError::Closed) => {}
+        Ok(()) => {}
         Err(TrySendError::Full) => {
             panic!(
                 "{api_name}: channel is full; blocking send is not available on wasm32 \
                  (cooperative scheduler does not yet support yield/resume for send parks)"
             );
+        }
+        Err(TrySendError::Closed) => {
+            panic!("{api_name}: channel receiver is closed; message was not sent");
         }
     }
 }
@@ -277,8 +280,9 @@ fn send_bytes(sender: &HewWasmChannelSender, bytes: Vec<u8>, api_name: &str) {
 /// Send one element of any witness-describable type through the channel
 /// (the wasm32 counterpart of the native `hew_channel_send_layout`). The
 /// element is deep-copied into the envelope; the caller keeps its value.
-/// Non-blocking: a full queue traps because blocking send needs cooperative
-/// yield/resume parity.
+/// Non-blocking: a full queue or closed receiver traps because this void ABI
+/// cannot report a failed send. Blocking send needs cooperative yield/resume
+/// parity.
 ///
 /// # Safety
 ///
@@ -779,5 +783,18 @@ mod tests {
 
         // Send to a full channel — must trap rather than silently dropping.
         send_bytes(&tx, vec![2], "hew_channel_send_layout");
+    }
+
+    #[test]
+    #[should_panic(expected = "channel receiver is closed; message was not sent")]
+    fn send_bytes_closed_traps() {
+        crate::hew_clear_error();
+        let _guard = crate::runtime_test_guard();
+        let (tx, rx) = channel(1);
+        let tx = HewWasmChannelSender::new(tx);
+        drop(rx);
+
+        // A closed receiver must trap rather than silently dropping the envelope.
+        send_bytes(&tx, vec![1], "hew_channel_send_layout");
     }
 }

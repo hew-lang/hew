@@ -89,7 +89,7 @@ fn rejects_missing_or_unsupported_key_fields() {
 }
 
 #[test]
-fn q244_shim_allows_handlers_without_the_key_field() {
+fn allows_mixed_handlers_without_the_key_field() {
     let pipeline = lower_source(
         r"
         actor Mixed {

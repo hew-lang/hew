@@ -1224,7 +1224,9 @@ pub fn lower_hir_module_with_facts(
                 .enumerate()
                 .find(|(_, param)| param.name == *key_field)
             else {
-                // SHIM(Q244): strict all-handlers key_field rejection pending user decision; WHEN=Q244 answered; WHAT=reject-at-check if any handler message lacks key_field
+                // Only coalescing message types require `key_field`; mixed handlers are valid.
+                // This least-surprise rule intentionally avoids a blanket annotation burden on
+                // unrelated handlers.
                 continue;
             };
             let Some(kind) = coalesce_key_kind(&param.ty) else {

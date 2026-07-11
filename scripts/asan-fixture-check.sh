@@ -47,6 +47,15 @@
 #       mints multiple references to one bytes buffer; a missing retain-on-share
 #       double-frees under ASan (the underflow macOS `leaks` cannot see). All
 #       must remain ASan/LSan-clean.
+#   composite-drop leak-oracle shapes (#2488)
+#       Three already-clean vertical-slice fixtures covering the #2439 composite
+#       yield-release and #2462 match-scrutinee enum-payload-release drop
+#       mechanisms: an owned enum payload crossing the generator pump's yield
+#       send path (tag-dispatched in-place drop thunk), the break-edge release
+#       of an owned record on a cancelled `for await ... break` stream, and a
+#       match-arm destructured call-result payload released exactly once per
+#       loop back-edge. A refcount underflow in any would double-free a
+#       String/Bytes header — invisible to macOS `leaks`, caught here by ASan.
 #
 # SHIM: Linux-only gate.  On macOS the leak oracle is the `leaks --atExit`
 # path in hew-cli/tests/*_leak_oracle.rs; ASan + LSan on Darwin does not
@@ -310,6 +319,20 @@ LEAK_SRC="${ROOT}/tests/vertical-slice/accept/asan_fixture_leak_probe.hew"
 # before the abort.
 CRASH_RESTART_SRC="${ROOT}/tests/vertical-slice/accept/on_crash_action_restart_real_crash.hew"
 BYTES_COW_SRC="${ROOT}/tests/vertical-slice/accept/bytes_cow_retain_s1.hew"
+# Composite-drop leak-oracle shapes (#2488): three already-clean vertical-slice
+# fixtures that exercise the drop mechanisms #2439 (composite yield release via
+# in-place drop thunks) and #2462 (match-scrutinee enum payload release). Prior
+# to this the asan-fixtures corpus was blind to refcount-underflow double-frees
+# on String/Bytes in these shapes — only ASan on an instrumented runtime catches
+# that class as a heap-use-after-free (macOS `leaks` cannot see an underflow).
+# All three exit 0 and must remain ASan/LSan-clean. (receive_gen_fn_owned_record
+# _yield.hew is deliberately NOT added here: it carries a separate known 23-byte
+# residual — retained string-field reads in for-await bodies leak a per-iteration
+# temporary, called out in the #2439 merge message — so it would not be a clean
+# gate member until that residual is fixed or suppressed.)
+ENUM_YIELD_SRC="${ROOT}/tests/vertical-slice/accept/receive_gen_fn_owned_enum_yield.hew"
+RECORD_STREAM_BREAK_SRC="${ROOT}/tests/vertical-slice/accept/receive_gen_fn_record_stream_break.hew"
+ENUM_PAYLOAD_LOOP_SRC="${ROOT}/tests/vertical-slice/accept/enum_payload_call_loop_release.hew"
 
 # ── Step 3: compile the Hew fixtures ─────────────────────────────────────
 echo ""
@@ -335,6 +358,20 @@ compile_asan_fixture "crash-restart (on_crash real crash)" "${CRASH_RESTART_SRC}
 
 BYTES_COW_BIN="${WORK_DIR}/bytes_cow_retain_s1"
 compile_asan_fixture "bytes COW retain-on-share (A240 S1)" "${BYTES_COW_SRC}" "${BYTES_COW_BIN}"
+
+# ── Step 3e: compile the composite-drop leak-oracle fixtures (#2488) ──────
+# Three already-clean vertical-slice fixtures covering the #2439 composite
+# yield-release and #2462 match-scrutinee enum-payload-release drop shapes so
+# the ASan gate — the only oracle that sees refcount-underflow double-frees on
+# Linux — guards these mechanisms against future regressions.
+ENUM_YIELD_BIN="${WORK_DIR}/receive_gen_fn_owned_enum_yield"
+compile_asan_fixture "composite yield (owned enum)" "${ENUM_YIELD_SRC}" "${ENUM_YIELD_BIN}"
+
+RECORD_STREAM_BREAK_BIN="${WORK_DIR}/receive_gen_fn_record_stream_break"
+compile_asan_fixture "composite yield (record stream break)" "${RECORD_STREAM_BREAK_SRC}" "${RECORD_STREAM_BREAK_BIN}"
+
+ENUM_PAYLOAD_LOOP_BIN="${WORK_DIR}/enum_payload_call_loop_release"
+compile_asan_fixture "match-scrutinee enum payload (call loop)" "${ENUM_PAYLOAD_LOOP_SRC}" "${ENUM_PAYLOAD_LOOP_BIN}"
 
 # ── Step 3c: compile and link the clean probe via the CLI flag path ───────
 # Uses HEW_SANITIZE_ADDRESS=1 hew build (full link, not --emit-obj) to exercise
@@ -409,6 +446,33 @@ fi
 
 # ── Gate 5: bytes retain-on-share mint points MUST be ASan/LSan-clean ─────
 if run_asan_fixture "bytes COW retain-on-share (A240 S1)" "${BYTES_COW_BIN}" 0; then
+  pass=$((pass + 1))
+else
+  fail=$((fail + 1))
+fi
+
+# ── Gate 6–8: composite-drop leak-oracle shapes MUST be ASan/LSan-clean (#2488) ─
+# Each fixture exercises a merged drop mechanism that is otherwise unguarded on
+# Linux: an owned enum payload crossing the generator pump's yield send path
+# (#2439 tag-dispatched in-place drop thunk), the break-edge release of an owned
+# record on a cancelled `for await ... break` stream (#2439), and a match-arm
+# destructured call-result payload released exactly once per loop back-edge
+# (#2462/#2429). A refcount underflow in any of these would double-free a
+# String/Bytes header — invisible to macOS `leaks`, caught here by ASan. All
+# exit 0.
+if run_asan_fixture "composite yield (owned enum)" "${ENUM_YIELD_BIN}" 0; then
+  pass=$((pass + 1))
+else
+  fail=$((fail + 1))
+fi
+
+if run_asan_fixture "composite yield (record stream break)" "${RECORD_STREAM_BREAK_BIN}" 0; then
+  pass=$((pass + 1))
+else
+  fail=$((fail + 1))
+fi
+
+if run_asan_fixture "match-scrutinee enum payload (call loop)" "${ENUM_PAYLOAD_LOOP_BIN}" 0; then
   pass=$((pass + 1))
 else
   fail=$((fail + 1))

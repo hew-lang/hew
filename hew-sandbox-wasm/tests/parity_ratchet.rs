@@ -207,7 +207,8 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "wrapping binary operators",
-        // IS: parity covers non-overflow values; the wraparound boundary is tracked in #2341.
+        // Boundary wraparound parity (`i64::MAX &+ 1` -> `i64::MIN`) is pinned by
+        // the wrapping_binary_operators parity case; this probe covers admission.
         probe: "fn main() {\n    let a = 10;\n    let b = 3;\n    println(a &+ b);\n    println(a &- b);\n    println(a &* b);\n}\n",
         coverage: Coverage::Parity("wrapping_binary_operators"),
     },

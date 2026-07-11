@@ -390,7 +390,8 @@ const PARITY_CASES: &[ParityCase] = &[
         accepted_divergences: &[],
     },
     ParityCase {
-        // IS: parity covers non-overflow values; the wraparound boundary is tracked in #2341.
+        // Wrapping ops at the overflow boundary: the VM truncates `&+`/`&-`/`&*`
+        // to two's-complement 64 bits to match native (#2341).
         test_name: "wrapping_binary_operators",
         source_rel: "examples/sandbox-graduation/wrapping_binary_operators.hew",
         accepted_divergences: &[],

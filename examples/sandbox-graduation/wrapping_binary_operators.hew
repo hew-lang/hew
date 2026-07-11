@@ -1,8 +1,30 @@
-// IS: parity covers non-overflow values; the wraparound boundary is tracked in #2341.
+// Wrapping binary operators (`&+`/`&-`/`&*`) must produce two's-complement
+// 64-bit results in both the native backend and the sandbox VM, including when
+// an operation overflows. This pins the parity fixed in #2341: before the VM
+// applied `asIntN(64)` truncation, an overflowing wrapping op produced a
+// mathematically-unbounded value (e.g. it kept 2^63 instead of wrapping to
+// `i64::MIN`).
+//
+// The overflowing values below are *computed* from safe-range literals via
+// wrapping multiplication, so every literal stays inside the JS safe-integer
+// range while the wrapping ops themselves cross the 64-bit boundary — native
+// (i64) and the VM (BigInt + asIntN(64)) must agree on the wrapped result.
 fn main() {
     let a = 10;
     let b = 3;
     println(f"wadd: {a &+ b}");
     println(f"wsub: {a &- b}");
     println(f"wmul: {a &* b}");
+
+    // 3037000500^2 = 9223372037000250000 > i64::MAX, so the wrapping multiply
+    // overflows and wraps to a two's-complement negative. Non-truncating math
+    // would instead keep the unbounded positive product.
+    let base = 3037000500;
+    let sq = base &* base;
+    println(f"wmul_of: {sq}");
+
+    // Feed the wrapped (large-magnitude) value back through wrapping add/sub so
+    // those opcodes' truncation is exercised on a genuinely 64-bit operand.
+    println(f"wadd_of: {sq &+ sq}");
+    println(f"wsub_of: {sq &- base}");
 }

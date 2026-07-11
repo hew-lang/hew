@@ -26,6 +26,8 @@ export type VmValue =
 
 export const UNIT: VmValue = { kind: "unit" };
 
+const I64_LITERAL_DECIMAL = /^(?:0|-?[1-9]\d*)$/;
+
 export function cloneValue(value: VmValue): VmValue {
   switch (value.kind) {
     case "unit":
@@ -57,6 +59,10 @@ export function cloneValue(value: VmValue): VmValue {
 }
 
 export function valueFromLiteral(value: JsonValue): VmValue {
+  const taggedI64 = taggedI64Literal(value);
+  if (taggedI64 !== null) {
+    return { kind: "i64", value: taggedI64 };
+  }
   if (value === null) {
     return UNIT;
   }
@@ -70,6 +76,22 @@ export function valueFromLiteral(value: JsonValue): VmValue {
     default:
       return { kind: "string", value: canonicalJson(value) };
   }
+}
+
+function taggedI64Literal(value: JsonValue): bigint | null {
+  if (value === null || Array.isArray(value) || typeof value !== "object") {
+    return null;
+  }
+  if (
+    Object.keys(value).length !== 2 ||
+    value.kind !== "i64" ||
+    typeof value.value !== "string" ||
+    !I64_LITERAL_DECIMAL.test(value.value)
+  ) {
+    return null;
+  }
+  const parsed = BigInt(value.value);
+  return BigInt.asIntN(64, parsed) === parsed ? parsed : null;
 }
 
 /// Render an f64 value to a string matching native Hew output.

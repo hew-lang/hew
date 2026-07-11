@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { pathToFileURL, fileURLToPath } from "node:url";
+import { runBytecode } from "../dist/interpreter/index.js";
 import { runProgram } from "../dist/interpreter/run-program.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -30,6 +31,42 @@ test("runProgram hello_world returns stdout and zero exit code", () => {
   assert.equal(result.stdout, "Hello, sandbox!\n");
   assert.equal(result.exit_code, 0);
   assert.deepEqual(result.diagnostics, []);
+});
+
+test("serialized bytecode preserves supervisor child i64 bounds", () => {
+  const compileOutput = globalThis.__hewSandboxCompileToSandboxBytecode(
+    `
+actor Bounds {
+    let max: i64;
+    let min: i64;
+}
+
+supervisor BoundsTree {
+    strategy: one_for_one;
+    intensity: 1 within 60s;
+    child bounds: Bounds(max: 9223372036854775807, min: -9223372036854775808);
+}
+
+fn main() {
+    let tree = spawn BoundsTree;
+}
+`,
+    "sandbox-vm-export"
+  );
+  const compiled = typeof compileOutput === "string" ? JSON.parse(compileOutput) : compileOutput;
+
+  assert.ok(compiled.diagnostics.every((diagnostic) => diagnostic.severity !== "error"), JSON.stringify(compiled.diagnostics));
+  assert.ok(compiled.bytecode, "compiler should emit bytecode");
+  const bytecode = JSON.parse(JSON.stringify(compiled.bytecode));
+  assert.deepEqual(bytecode.layouts.supervisors[0].children[0].start_spec.args, [
+    { kind: "i64", value: "9223372036854775807" },
+    { kind: "i64", value: "-9223372036854775808" }
+  ]);
+
+  const trace = runBytecode(bytecode);
+  const childSpawn = trace.events.find((event) => event.message === "actor.spawn");
+  assert.ok(childSpawn?.text, "supervisor child should spawn");
+  assert.deepEqual(JSON.parse(childSpawn.text).state, ["9223372036854775807", "-9223372036854775808"]);
 });
 
 test("runProgram reads two stdin lines from the page input buffer byte-cleanly", () => {

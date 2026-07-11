@@ -911,6 +911,7 @@ struct ConstEntry {
 #[derive(Debug)]
 struct RecordEntry {
     id: ItemId,
+    owner: RecordRegistryOwner,
     /// Source-declared generic type-parameter names, in order. Empty for
     /// monomorphic record/type declarations.
     type_params: Vec<String>,
@@ -919,6 +920,63 @@ struct RecordEntry {
     /// record-layout registry walks these and substitutes per
     /// instantiation.
     fields: Vec<(String, ResolvedTy)>,
+}
+
+/// Which pre-pass populated a `RecordEntry`.
+///
+/// A root-local entry intentionally overwrites an imported bare entry with the
+/// same name, matching the checker's local-over-import precedence rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecordRegistryOwner {
+    Imported,
+    RootLocal,
+}
+
+/// Resolve a record declaration by source name against `record_registry`,
+/// self-guarding the bare fallback against cross-module bare-name collisions.
+///
+/// #2534: `record_registry` is keyed by BARE `decl.name` at every insert
+/// site (see the type-decl pre-pass), so two same-bare-name records from
+/// different modules collapse to last-writer in the map. An exact
+/// (possibly module-qualified) key hits directly and is unambiguous. Only
+/// the bare fallback is at risk: if the bare name is a known cross-module
+/// collision (`colliding`), returning the last-writer entry would silently
+/// resolve the wrong module's record layout. Fail closed there instead of
+/// relying solely on the upstream checker's ambiguity guard to have fired
+/// first, so a future checker gap cannot leak a wrong-record layout through
+/// the HIR bare fallback. A root-local entry is the exception: root registration
+/// intentionally overwrites imported bare entries and must retain the checker's
+/// local-over-import precedence.
+fn lookup_record_entry_guarded<'a>(
+    record_registry: &'a HashMap<String, RecordEntry>,
+    colliding: &HashSet<String>,
+    type_name: &str,
+) -> Option<&'a RecordEntry> {
+    // A bare (unqualified) name that is a known cross-module collision is
+    // ambiguous no matter how it reaches us: the `record_registry` bare key
+    // holds only the last-writer entry. Fail closed before the direct hit
+    // so we never resolve the wrong module's layout through the bare key.
+    let bare_stem = type_name
+        .rsplit_once('.')
+        .map_or(type_name, |(_, bare)| bare);
+    let is_bare_input = !type_name.contains('.');
+    if let Some(entry) = record_registry.get(type_name) {
+        if !is_bare_input
+            || !colliding.contains(bare_stem)
+            || entry.owner == RecordRegistryOwner::RootLocal
+        {
+            return Some(entry);
+        }
+        return None;
+    }
+    if type_name == bare_stem {
+        // No qualifier to strip; the direct lookup above was the only route.
+        return None;
+    }
+    if colliding.contains(bare_stem) {
+        return None;
+    }
+    record_registry.get(bare_stem)
 }
 
 /// Pre-collected inherent-impl `close` method signature for a `#[resource]`
@@ -2148,6 +2206,7 @@ pub fn lower_program_with_mono_cap(
                                 format!("{module_short}.{}", decl.name),
                                 RecordEntry {
                                     id,
+                                    owner: RecordRegistryOwner::Imported,
                                     type_params: type_params.clone(),
                                     fields: fields.clone(),
                                 },
@@ -2156,6 +2215,7 @@ pub fn lower_program_with_mono_cap(
                                 decl.name.clone(),
                                 RecordEntry {
                                     id,
+                                    owner: RecordRegistryOwner::Imported,
                                     type_params,
                                     fields,
                                 },
@@ -2178,6 +2238,7 @@ pub fn lower_program_with_mono_cap(
                                 format!("{module_short}.{}", decl.name),
                                 RecordEntry {
                                     id,
+                                    owner: RecordRegistryOwner::Imported,
                                     type_params: type_params.clone(),
                                     fields: fields.clone(),
                                 },
@@ -2186,6 +2247,7 @@ pub fn lower_program_with_mono_cap(
                                 decl.name.clone(),
                                 RecordEntry {
                                     id,
+                                    owner: RecordRegistryOwner::Imported,
                                     type_params,
                                     fields,
                                 },
@@ -2310,6 +2372,7 @@ pub fn lower_program_with_mono_cap(
                     decl.name.clone(),
                     RecordEntry {
                         id,
+                        owner: RecordRegistryOwner::RootLocal,
                         type_params,
                         fields,
                     },
@@ -2338,6 +2401,7 @@ pub fn lower_program_with_mono_cap(
                     decl.name.clone(),
                     RecordEntry {
                         id,
+                        owner: RecordRegistryOwner::RootLocal,
                         type_params,
                         fields,
                     },
@@ -11341,12 +11405,23 @@ impl LowerCtx {
 
     /// Finds a record declaration by its source name, accepting the
     /// module-qualified spelling assigned by the type checker for imports.
+    ///
+    /// #2534: the `record_registry` is keyed by BARE `decl.name` at every
+    /// insert site, so two same-bare-name records from different modules
+    /// collapse to last-writer in the map. When the qualified spelling is
+    /// present we resolve it exactly; only the bare fallback is ambiguous.
+    /// Rather than trust the checker's upstream ambiguity guard to have
+    /// fired first, self-guard here: if the bare name is a known
+    /// cross-module collision (`colliding_imported_record_names`), fail
+    /// closed on an imported bare entry instead of silently returning the
+    /// last-writer entry, which may be the wrong module's record. A root-local
+    /// entry intentionally wins over imported collisions.
     fn lookup_record_entry(&self, type_name: &str) -> Option<&RecordEntry> {
-        if let Some(entry) = self.record_registry.get(type_name) {
-            return Some(entry);
-        }
-        let bare = type_name.rsplit_once('.').map(|(_, bare)| bare)?;
-        self.record_registry.get(bare)
+        lookup_record_entry_guarded(
+            &self.record_registry,
+            &self.colliding_imported_record_names,
+            type_name,
+        )
     }
 
     /// Lower a statement, returning zero or more `HirStmt`s.
@@ -31404,6 +31479,82 @@ mod tests {
                  or an unresolved bare name"
             );
         }
+    }
+
+    // ---- #2534: record_registry bare-key collision self-guard ----
+
+    fn record_entry(id: u32) -> RecordEntry {
+        RecordEntry {
+            id: ItemId(id),
+            owner: RecordRegistryOwner::Imported,
+            type_params: Vec::new(),
+            fields: Vec::new(),
+        }
+    }
+
+    /// An exact (module-qualified) key resolves directly regardless of
+    /// whether the bare stem is a known collision — the qualified spelling
+    /// is unambiguous, so the guard must never suppress it.
+    #[test]
+    fn lookup_record_entry_resolves_qualified_key_even_when_bare_collides() {
+        let mut registry: HashMap<String, RecordEntry> = HashMap::new();
+        registry.insert("a.Thing".to_string(), record_entry(1));
+        registry.insert("b.Thing".to_string(), record_entry(2));
+        // Bare last-writer (whichever module lowered last).
+        registry.insert("Thing".to_string(), record_entry(2));
+        let mut colliding: HashSet<String> = HashSet::new();
+        colliding.insert("Thing".to_string());
+
+        assert_eq!(
+            lookup_record_entry_guarded(&registry, &colliding, "a.Thing").map(|e| e.id),
+            Some(ItemId(1)),
+            "qualified key must resolve to its own module's entry"
+        );
+        assert_eq!(
+            lookup_record_entry_guarded(&registry, &colliding, "b.Thing").map(|e| e.id),
+            Some(ItemId(2)),
+        );
+    }
+
+    /// A bare lookup of a known cross-module collision fails closed rather
+    /// than returning the last-writer entry, which may be the wrong
+    /// module's record layout.
+    #[test]
+    fn lookup_record_entry_bare_collision_fails_closed() {
+        let mut registry: HashMap<String, RecordEntry> = HashMap::new();
+        registry.insert("a.Thing".to_string(), record_entry(1));
+        registry.insert("b.Thing".to_string(), record_entry(2));
+        registry.insert("Thing".to_string(), record_entry(2));
+        let mut colliding: HashSet<String> = HashSet::new();
+        colliding.insert("Thing".to_string());
+
+        assert!(
+            lookup_record_entry_guarded(&registry, &colliding, "Thing").is_none(),
+            "bare fallback on a known cross-module collision must fail \
+             closed, not silently resolve the last-writer entry"
+        );
+    }
+
+    /// A bare lookup of a NON-colliding name still resolves through the
+    /// bare fallback — the common single-definition case is unaffected.
+    #[test]
+    fn lookup_record_entry_bare_non_collision_resolves() {
+        let mut registry: HashMap<String, RecordEntry> = HashMap::new();
+        registry.insert("Solo".to_string(), record_entry(7));
+        let colliding: HashSet<String> = HashSet::new();
+
+        assert_eq!(
+            lookup_record_entry_guarded(&registry, &colliding, "Solo").map(|e| e.id),
+            Some(ItemId(7)),
+        );
+        // A qualified spelling whose bare stem is not registered as a
+        // collision still falls back to the bare entry.
+        assert_eq!(
+            lookup_record_entry_guarded(&registry, &colliding, "m.Solo").map(|e| e.id),
+            Some(ItemId(7)),
+            "qualified spelling of a non-colliding name resolves via the \
+             bare fallback"
+        );
     }
 }
 

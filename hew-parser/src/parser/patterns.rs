@@ -8,6 +8,27 @@ use super::*;
 
 impl Parser<'_> {
     // ── Patterns ──
+
+    /// If the next token is a record rest-pattern `..`, emit an honest
+    /// "not yet supported" diagnostic (matching the checker's deferred-feature
+    /// message) instead of letting the generic `expected identifier` error fire,
+    /// then return `true` so the caller can stop the field loop. See #2339.
+    fn reject_record_rest_pattern(&mut self) -> bool {
+        if self.peek() == Some(&Token::DotDot) {
+            let span = self.peek_span();
+            self.error_at_with_hint(
+                "record rest-patterns (`..`) are not yet supported".to_string(),
+                span,
+                "list every field explicitly, or bind the whole value; \
+                 subset destructuring with `..` is not implemented yet",
+            );
+            self.advance(); // consume `..` so recovery does not re-report it
+            true
+        } else {
+            false
+        }
+    }
+
     pub(crate) fn parse_pattern(&mut self) -> Option<Spanned<Pattern>> {
         let _guard = self.enter_recursion()?;
         let mut result = self.parse_base_pattern()?;
@@ -92,6 +113,9 @@ impl Parser<'_> {
                 } else if self.eat(&Token::LeftBrace) {
                     let mut fields = Vec::new();
                     while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                        if self.reject_record_rest_pattern() {
+                            break;
+                        }
                         let field_name = self.expect_ident()?;
                         let pattern = if self.eat(&Token::Colon) {
                             Some(self.parse_pattern()?)
@@ -143,6 +167,9 @@ impl Parser<'_> {
                         // Struct pattern
                         let mut fields = Vec::new();
                         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                            if self.reject_record_rest_pattern() {
+                                break;
+                            }
                             let field_name = self.expect_ident()?;
                             let pattern = if self.eat(&Token::Colon) {
                                 Some(self.parse_pattern()?)
@@ -194,6 +221,9 @@ impl Parser<'_> {
                 self.advance(); // consume '{'
                 let mut fields = Vec::new();
                 while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                    if self.reject_record_rest_pattern() {
+                        break;
+                    }
                     let field_name = self.expect_ident()?;
                     let pattern = if self.eat(&Token::Colon) {
                         Some(self.parse_pattern()?)

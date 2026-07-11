@@ -4773,12 +4773,29 @@ fn parse_duration_ms(raw: &str) -> u64 {
 /// exact 64-bit magnitude. In-range values stay numeric to keep the common-case
 /// bytecode compact and diff-friendly.
 fn i64_literal_operand(value: i64) -> Operand {
-    const SAFE_INT_MAX: i64 = 9_007_199_254_740_991; // 2^53 - 1
-    if value.unsigned_abs() > SAFE_INT_MAX as u64 {
+    if i64_requires_string_encoding(value) {
         Operand::literal(value.to_string())
     } else {
         Operand::literal(value)
     }
+}
+
+/// Build a supervisor child initial-state literal that preserves its i64 type.
+///
+/// Unlike a `const.i64` operand, supervisor initial-state values have no opcode
+/// to provide their type. A bare string therefore denotes a Hew `String`, so an
+/// out-of-safe-range i64 is encoded as the VM's tagged i64 JSON form.
+fn supervisor_i64_literal(value: i64) -> Value {
+    if i64_requires_string_encoding(value) {
+        json!({ "kind": "i64", "value": value.to_string() })
+    } else {
+        Value::from(value)
+    }
+}
+
+fn i64_requires_string_encoding(value: i64) -> bool {
+    const SAFE_INT_MAX: i64 = 9_007_199_254_740_991; // 2^53 - 1
+    value.unsigned_abs() > SAFE_INT_MAX as u64
 }
 
 /// Evaluate a constant literal expression into a JSON value for baking a
@@ -4786,7 +4803,7 @@ fn i64_literal_operand(value: i64) -> Operand {
 /// (which the educational profile does not yet admit in child specs).
 fn literal_json(expr: &Expr) -> Option<Value> {
     match expr {
-        Expr::Literal(Literal::Integer { value, .. }) => Some(Value::from(*value)),
+        Expr::Literal(Literal::Integer { value, .. }) => Some(supervisor_i64_literal(*value)),
         Expr::Literal(Literal::Float(value)) => Some(Value::from(*value)),
         Expr::Literal(Literal::String(value)) => Some(Value::from(value.clone())),
         Expr::Literal(Literal::Bool(value)) => Some(Value::from(*value)),

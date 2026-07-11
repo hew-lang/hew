@@ -1553,6 +1553,52 @@ fn main() {
     }
 
     #[test]
+    fn supervisor_i64_bounds_are_tagged_in_serialized_bytecode() {
+        set_test_hewpath();
+        let source = r"
+actor Bounds {
+    let max: i64;
+    let min: i64;
+}
+
+supervisor BoundsTree {
+    strategy: one_for_one;
+    intensity: 1 within 60s;
+    child bounds: Bounds(max: 9223372036854775807, min: -9223372036854775808);
+}
+
+fn main() {
+    let tree = spawn BoundsTree;
+}
+";
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output.diagnostics.iter().all(|d| d.severity != "error"),
+            "unexpected diagnostics: {:#?}",
+            output.diagnostics
+        );
+        let bytecode = output.bytecode.expect("bytecode should be emitted");
+        let serialized = serde_json::to_string(&bytecode).expect("bytecode should serialize");
+        let decoded: SandboxBytecodePackage =
+            serde_json::from_str(&serialized).expect("serialized bytecode should deserialize");
+        let args = &decoded.layouts.supervisors[0].children[0].start_spec.args;
+        assert_eq!(
+            args,
+            &[
+                serde_json::json!({ "kind": "i64", "value": "9223372036854775807" }),
+                serde_json::json!({ "kind": "i64", "value": "-9223372036854775808" }),
+            ],
+            "supervisor child i64 bounds must retain their tagged decimal form"
+        );
+        assert!(
+            !serialized.contains(":9223372036854775807")
+                && !serialized.contains(":-9223372036854775808"),
+            "supervisor i64 bounds must not be serialized as bare JSON numbers"
+        );
+    }
+
+    #[test]
     fn simple_for_range_lowers_to_bytecode() {
         set_test_hewpath();
         let output = compile_to_sandbox_bytecode(

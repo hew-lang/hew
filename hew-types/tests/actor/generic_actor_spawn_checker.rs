@@ -353,3 +353,55 @@ fn main() {
         output.errors
     );
 }
+
+// ── checker_spawn_substitutes_type_args_into_generic_field_arg ───────────────
+
+/// `spawn Box<i64>(value: 5)` must check the `value` constructor arg against
+/// the SUBSTITUTED field type (`i64`), not the unsubstituted declared generic
+/// `T`.  Regression for #2447: `check_spawn_constructor_args` compared the arg
+/// against the raw declared `T`, yielding a spurious
+///   "type mismatch: expected `T`, found `i64`".
+#[test]
+fn checker_spawn_substitutes_type_args_into_generic_field_arg() {
+    let source = r"
+actor Box<T> {
+    let value: T;
+    receive fn touch() {}
+}
+
+fn main() {
+    let _b = spawn Box<i64>(value: 5);
+}
+";
+    let (_prog, output) = common::parse_and_typecheck_inline(source);
+    assert!(
+        output.errors.is_empty(),
+        "spawn Box<i64>(value: 5) should check clean after type-arg substitution; errors: {:#?}",
+        output.errors
+    );
+}
+
+// ── checker_spawn_generic_field_arg_type_mismatch_still_reported ─────────────
+
+/// The #2447 substitution must not mask a genuine mismatch: `spawn Box<i64>(
+/// value: "x")` supplies a `string` where the instantiated field type is
+/// `i64`, so a type-mismatch error must still fire (against the substituted
+/// `i64`, not the generic `T`).
+#[test]
+fn checker_spawn_generic_field_arg_type_mismatch_still_reported() {
+    let source = r#"
+actor Box<T> {
+    let value: T;
+    receive fn touch() {}
+}
+
+fn main() {
+    let _b = spawn Box<i64>(value: "x");
+}
+"#;
+    let (_prog, output) = common::parse_and_typecheck_inline(source);
+    assert!(
+        !output.errors.is_empty(),
+        "spawn Box<i64>(value: \"x\") should still report a type mismatch against the substituted i64"
+    );
+}

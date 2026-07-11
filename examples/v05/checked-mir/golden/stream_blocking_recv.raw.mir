@@ -73,6 +73,7 @@ fn main() -> () [conv=default]
   bb9:
     call println_str(_15) -> bb10
   bb10:
+    drop _15 ty=string fn=release(hew_string_drop)
     drop _14 ty=bytes fn=release(hew_bytes_drop)
     goto bb4
   bb11:
@@ -103,6 +104,7 @@ fn main() -> () [conv=default]
   bb18:
     call println_str(_25) -> bb19
   bb19:
+    drop _25 ty=string fn=release(hew_string_drop)
     drop _24 ty=bytes fn=release(hew_bytes_drop)
     goto bb13
   bb20:

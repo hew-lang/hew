@@ -209,7 +209,9 @@ impl Checker {
                 // A pool declares a fixed-size fleet; without `count:` the size
                 // is undefined. Fail closed rather than defaulting to a silent 1.
                 self.errors.push(TypeError::new(
-                    TypeErrorKind::InvalidOperation,
+                    TypeErrorKind::SupervisorError {
+                        subkind: SupervisorErrorKind::PoolCountMissing,
+                    },
                     span.clone(),
                     format!(
                         "E_SUPERVISOR_POOL_COUNT_MISSING: supervisor `{}` pool child `{}` is \
@@ -228,7 +230,9 @@ impl Checker {
             let resolved = self.subst.resolve(&count_ty);
             if !resolved.is_integer() && !matches!(resolved, Ty::IntLiteral | Ty::Error) {
                 self.errors.push(TypeError::new(
-                    TypeErrorKind::InvalidOperation,
+                    TypeErrorKind::SupervisorError {
+                        subkind: SupervisorErrorKind::PoolCountType,
+                    },
                     count_expr.1.clone(),
                     format!(
                         "E_SUPERVISOR_POOL_COUNT_TYPE: supervisor `{}` pool child `{}` `count:` \
@@ -252,7 +256,9 @@ impl Checker {
             match super::const_eval::eval_const_expr(count_expr, &const_env) {
                 Ok(0) => {
                     self.errors.push(TypeError::new(
-                        TypeErrorKind::InvalidOperation,
+                        TypeErrorKind::SupervisorError {
+                            subkind: SupervisorErrorKind::PoolCountNonPositive,
+                        },
                         count_expr.1.clone(),
                         format!(
                             "E_SUPERVISOR_POOL_COUNT_NON_POSITIVE: supervisor `{}` pool child \
@@ -263,7 +269,9 @@ impl Checker {
                 }
                 Err(super::const_eval::ConstEvalError::Overflow) => {
                     self.errors.push(TypeError::new(
-                        TypeErrorKind::InvalidOperation,
+                        TypeErrorKind::SupervisorError {
+                            subkind: SupervisorErrorKind::PoolCountNonPositive,
+                        },
                         count_expr.1.clone(),
                         format!(
                             "E_SUPERVISOR_POOL_COUNT_NON_POSITIVE: supervisor `{}` pool child \
@@ -300,7 +308,9 @@ impl Checker {
         for child in &sd.children {
             if let Some(handler) = self.actors_with_periodic_handlers.get(&child.actor_type) {
                 self.errors.push(TypeError::new(
-                    TypeErrorKind::InvalidOperation,
+                    TypeErrorKind::SupervisorError {
+                        subkind: SupervisorErrorKind::PeriodicChild,
+                    },
                     span.clone(),
                     format!(
                         "E_SUPERVISOR_PERIODIC_CHILD: supervisor `{}` child `{}` (actor `{}`) \
@@ -364,7 +374,9 @@ impl Checker {
                 // synthesis pass; this is the param-type gate.
                 if !ty_is_supervisor_init_reproducible(&param.ty) {
                     self.errors.push(TypeError::new(
-                        TypeErrorKind::InvalidOperation,
+                        TypeErrorKind::SupervisorError {
+                            subkind: SupervisorErrorKind::InitArgNonBitcopy,
+                        },
                         param.span.clone(),
                         format!(
                             "E_SUPERVISOR_INIT_ARG_NON_BITCOPY: supervisor `{}` child `{}` \
@@ -399,7 +411,9 @@ impl Checker {
         };
         if intensity.restarts < 0 {
             self.errors.push(TypeError::new(
-                TypeErrorKind::InvalidOperation,
+                TypeErrorKind::SupervisorError {
+                    subkind: SupervisorErrorKind::IntensityRestarts,
+                },
                 span.clone(),
                 format!(
                     "E_SUPERVISOR_INTENSITY_RESTARTS: supervisor `{}` has a negative restart \
@@ -411,7 +425,9 @@ impl Checker {
         match hew_parser::parse_duration_ns(&intensity.window) {
             Some(ns) if ns > 0 => {}
             Some(_) => self.errors.push(TypeError::new(
-                TypeErrorKind::InvalidOperation,
+                TypeErrorKind::SupervisorError {
+                    subkind: SupervisorErrorKind::IntensityWindow,
+                },
                 span.clone(),
                 format!(
                     "E_SUPERVISOR_INTENSITY_WINDOW: supervisor `{}` has a zero-length restart \
@@ -420,7 +436,9 @@ impl Checker {
                 ),
             )),
             None => self.errors.push(TypeError::new(
-                TypeErrorKind::InvalidOperation,
+                TypeErrorKind::SupervisorError {
+                    subkind: SupervisorErrorKind::IntensityWindow,
+                },
                 span.clone(),
                 format!(
                     "E_SUPERVISOR_INTENSITY_WINDOW: supervisor `{}` window `{}` is not a valid \
@@ -505,7 +523,9 @@ impl Checker {
                     continue;
                 }
                 self.errors.push(TypeError::new(
-                    TypeErrorKind::InvalidOperation,
+                    TypeErrorKind::SupervisorError {
+                        subkind: SupervisorErrorKind::PermanentOwnedHeap,
+                    },
                     span.clone(),
                     format!(
                         "E_SUPERVISOR_PERMANENT_OWNED_HEAP: supervisor `{}` child `{}` \
@@ -532,7 +552,9 @@ impl Checker {
                 }
                 std::collections::hash_map::Entry::Occupied(_) => {
                     self.errors.push(TypeError::new(
-                        TypeErrorKind::DuplicateDefinition,
+                        TypeErrorKind::SupervisorError {
+                            subkind: SupervisorErrorKind::DuplicateChild,
+                        },
                         span.clone(),
                         format!(
                             "E_SUPERVISOR_DUPLICATE_CHILD: supervisor `{}` declares child `{}` \
@@ -555,7 +577,9 @@ impl Checker {
             // simple_one_for_one: exactly one pool child, no static children.
             if pool_children.len() != 1 {
                 self.errors.push(TypeError::new(
-                    TypeErrorKind::InvalidOperation,
+                    TypeErrorKind::SupervisorError {
+                        subkind: SupervisorErrorKind::StrategyPoolMismatch,
+                    },
                     span.clone(),
                     format!(
                         "E_SUPERVISOR_STRATEGY_POOL_MISMATCH: supervisor `{}` uses \
@@ -569,7 +593,9 @@ impl Checker {
             if !static_children.is_empty() {
                 let names: Vec<&str> = static_children.iter().map(|c| c.name.as_str()).collect();
                 self.errors.push(TypeError::new(
-                    TypeErrorKind::InvalidOperation,
+                    TypeErrorKind::SupervisorError {
+                        subkind: SupervisorErrorKind::StrategyPoolMismatch,
+                    },
                     span.clone(),
                     format!(
                         "E_SUPERVISOR_STRATEGY_POOL_MISMATCH: supervisor `{}` uses \
@@ -590,7 +616,9 @@ impl Checker {
                 SupervisorStrategy::SimpleOneForOne => unreachable!(),
             });
             self.errors.push(TypeError::new(
-                TypeErrorKind::InvalidOperation,
+                TypeErrorKind::SupervisorError {
+                    subkind: SupervisorErrorKind::StrategyPoolMismatch,
+                },
                 span.clone(),
                 format!(
                     "E_SUPERVISOR_STRATEGY_POOL_MISMATCH: supervisor `{}` uses `{}` strategy \
@@ -621,7 +649,9 @@ impl Checker {
                 // ── Key resolution: sibling must exist ──────────────────────
                 let Some(&sibling_type) = sibling_types.get(sibling_name.as_str()) else {
                     self.errors.push(TypeError::new(
-                        TypeErrorKind::InvalidOperation,
+                        TypeErrorKind::SupervisorError {
+                            subkind: SupervisorErrorKind::WiredToUnknownSibling,
+                        },
                         span.clone(),
                         format!(
                             "E_SUPERVISOR_WIRED_TO_UNKNOWN_SIBLING: in supervisor `{}`, \
@@ -681,7 +711,9 @@ impl Checker {
 
         let Some(param) = params.iter().find(|param| param.name == param_key) else {
             self.errors.push(TypeError::new(
-                TypeErrorKind::InvalidOperation,
+                TypeErrorKind::SupervisorError {
+                    subkind: SupervisorErrorKind::WiredToTypeMismatch,
+                },
                 span.clone(),
                 format!(
                     "E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH: in supervisor `{supervisor_name}`, \
@@ -701,7 +733,9 @@ impl Checker {
 
         if !type_ok {
             self.errors.push(TypeError::new(
-                TypeErrorKind::InvalidOperation,
+                TypeErrorKind::SupervisorError {
+                    subkind: SupervisorErrorKind::WiredToTypeMismatch,
+                },
                 span.clone(),
                 format!(
                     "E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH: in supervisor `{supervisor_name}`, \
@@ -796,7 +830,9 @@ impl Checker {
             let mut sorted_cycle = cycle_nodes.clone();
             sorted_cycle.sort_unstable();
             self.errors.push(TypeError::new(
-                TypeErrorKind::InvalidOperation,
+                TypeErrorKind::SupervisorError {
+                    subkind: SupervisorErrorKind::WiredCycle,
+                },
                 span.clone(),
                 format!(
                     "E_SUPERVISOR_WIRED_CYCLE: supervisor `{}` has a `wired_to` dependency \

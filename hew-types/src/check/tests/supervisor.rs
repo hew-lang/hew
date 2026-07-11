@@ -21,7 +21,10 @@ fn supervisor_permanent_owned_heap_rejects_vec_field() {
 
     assert!(
         output.errors.iter().any(|e| {
-            e.kind == TypeErrorKind::InvalidOperation
+            e.kind
+                == TypeErrorKind::SupervisorError {
+                    subkind: SupervisorErrorKind::PermanentOwnedHeap,
+                }
                 && e.message.contains("E_SUPERVISOR_PERMANENT_OWNED_HEAP")
                 && e.message.contains("worker")
                 && e.message.contains("Counter")
@@ -49,7 +52,10 @@ fn supervisor_permanent_owned_heap_rejects_string_field() {
 
     assert!(
         output.errors.iter().any(|e| {
-            e.kind == TypeErrorKind::InvalidOperation
+            e.kind
+                == TypeErrorKind::SupervisorError {
+                    subkind: SupervisorErrorKind::PermanentOwnedHeap,
+                }
                 && e.message.contains("E_SUPERVISOR_PERMANENT_OWNED_HEAP")
                 && e.message.contains("label")
         }),
@@ -75,7 +81,10 @@ fn supervisor_permanent_owned_heap_rejects_hashmap_field() {
 
     assert!(
         output.errors.iter().any(|e| {
-            e.kind == TypeErrorKind::InvalidOperation
+            e.kind
+                == TypeErrorKind::SupervisorError {
+                    subkind: SupervisorErrorKind::PermanentOwnedHeap,
+                }
                 && e.message.contains("E_SUPERVISOR_PERMANENT_OWNED_HEAP")
                 && e.message.contains("entries")
         }),
@@ -101,7 +110,10 @@ fn supervisor_permanent_owned_heap_rejects_hashset_field() {
 
     assert!(
         output.errors.iter().any(|e| {
-            e.kind == TypeErrorKind::InvalidOperation
+            e.kind
+                == TypeErrorKind::SupervisorError {
+                    subkind: SupervisorErrorKind::PermanentOwnedHeap,
+                }
                 && e.message.contains("E_SUPERVISOR_PERMANENT_OWNED_HEAP")
                 && e.message.contains("seen")
         }),
@@ -127,7 +139,10 @@ fn supervisor_permanent_owned_heap_rejects_bytes_field() {
 
     assert!(
         output.errors.iter().any(|e| {
-            e.kind == TypeErrorKind::InvalidOperation
+            e.kind
+                == TypeErrorKind::SupervisorError {
+                    subkind: SupervisorErrorKind::PermanentOwnedHeap,
+                }
                 && e.message.contains("E_SUPERVISOR_PERMANENT_OWNED_HEAP")
                 && e.message.contains("data")
         }),
@@ -154,7 +169,10 @@ fn supervisor_implicit_permanent_owned_heap_rejects() {
 
     assert!(
         output.errors.iter().any(|e| {
-            e.kind == TypeErrorKind::InvalidOperation
+            e.kind
+                == TypeErrorKind::SupervisorError {
+                    subkind: SupervisorErrorKind::PermanentOwnedHeap,
+                }
                 && e.message.contains("E_SUPERVISOR_PERMANENT_OWNED_HEAP")
                 && e.message.contains("items")
         }),
@@ -182,7 +200,10 @@ fn supervisor_permanent_owned_heap_rejects_nested_vec() {
 
     assert!(
         output.errors.iter().any(|e| {
-            e.kind == TypeErrorKind::InvalidOperation
+            e.kind
+                == TypeErrorKind::SupervisorError {
+                    subkind: SupervisorErrorKind::PermanentOwnedHeap,
+                }
                 && e.message.contains("E_SUPERVISOR_PERMANENT_OWNED_HEAP")
                 && e.message.contains("matrix")
         }),
@@ -959,4 +980,81 @@ fn supervisor_child_no_init_args_string_field_not_flagged_by_bitcopy_wall() {
         "child with no init args must not trigger the bitcopy wall; errors: {:#?}",
         output.errors
     );
+}
+
+// ── Machine-readable kind wiring (issue #2377) ─────────────────────────────
+// The supervisor diagnostics must expose distinct `as_kind_str()` values
+// (JSON `code` / LSP `data.kind`), not the generic `InvalidOperation`. These
+// assert the end-to-end wiring for a real emitted diagnostic, not just the
+// enum table in error.rs.
+
+#[test]
+fn supervisor_permanent_owned_heap_reports_distinct_kind() {
+    let output = check_source(
+        r"
+        actor Counter {
+            let count: Vec<i64>;
+            receive fn inc() {}
+        }
+
+        supervisor App {
+            child worker: Counter restart: permanent;
+        }
+        ",
+    );
+
+    let err = output
+        .errors
+        .iter()
+        .find(|e| e.message.contains("E_SUPERVISOR_PERMANENT_OWNED_HEAP"))
+        .expect("permanent-owned-heap diagnostic must be emitted");
+
+    assert_eq!(
+        err.kind,
+        TypeErrorKind::SupervisorError {
+            subkind: SupervisorErrorKind::PermanentOwnedHeap,
+        }
+    );
+    assert_eq!(err.kind.as_kind_str(), "SupervisorPermanentOwnedHeap");
+    // Regression guard for #2377: must no longer collapse to the generic kind.
+    assert_ne!(err.kind.as_kind_str(), "InvalidOperation");
+}
+
+#[test]
+fn supervisor_wired_cycle_reports_distinct_kind() {
+    let output = check_source(
+        r"
+        actor ActorA {
+            init(dep: LocalPid<ActorB>) {}
+            receive fn ping() {}
+        }
+        actor ActorB {
+            init(dep: LocalPid<ActorA>) {}
+            receive fn ping() {}
+        }
+
+        supervisor CycleApp {
+            strategy: one_for_one
+
+            child a: ActorA wired_to: { dep: b };
+            child b: ActorB wired_to: { dep: a };
+        }
+        ",
+    );
+
+    let err = output
+        .errors
+        .iter()
+        .find(|e| e.message.contains("E_SUPERVISOR_WIRED_CYCLE"))
+        .expect("wired_to cycle a->b->a must emit E_SUPERVISOR_WIRED_CYCLE");
+    assert_eq!(
+        err.kind,
+        TypeErrorKind::SupervisorError {
+            subkind: SupervisorErrorKind::WiredCycle,
+        }
+    );
+    assert_eq!(err.kind.as_kind_str(), "SupervisorWiredCycle");
+    // A different supervisor diagnostic yields a different kind string,
+    // proving the family no longer shares one indistinguishable kind.
+    assert_ne!(err.kind.as_kind_str(), "SupervisorPermanentOwnedHeap");
 }

@@ -1234,7 +1234,10 @@ fn supervisor_wired_to_rejects_remote_pid_by_role() {
 
     assert!(
         output.errors.iter().any(|error| {
-            error.kind == TypeErrorKind::InvalidOperation
+            error.kind
+                == TypeErrorKind::SupervisorError {
+                    subkind: SupervisorErrorKind::WiredToTypeMismatch,
+                }
                 && error
                     .message
                     .contains("E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH")

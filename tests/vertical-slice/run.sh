@@ -4146,6 +4146,29 @@ if "${HEW}" check \
 fi
 grep -q 'can never release a capturing closure' "${reject_output}"
 
+# Reject (CAP-11, forwarded-param leg): an intermediate function cannot
+# launder a capturing closure into a generator through its `fn(..)` parameter.
+# The parameter's env word is unproven at the generator-constructor crossing.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/gen_fn_forwarded_fn_param.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected gen_fn_forwarded_fn_param fixture to fail" >&2
+  exit 1
+fi
+grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
+grep -q 'can never release a capturing closure' "${reject_output}"
+
+# Reject (CAP-11, call-result leg): a fn-valued call result can hide a
+# capturing closure env before it reaches the generator constructor.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/gen_fn_forwarded_fn_call_result.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected gen_fn_forwarded_fn_call_result fixture to fail" >&2
+  exit 1
+fi
+grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
+grep -q 'can never release a capturing closure' "${reject_output}"
+
 # Reject (CAP-11, rebind leg): a `fn(..)`-typed var REASSIGNED a capturing
 # closure is tainted by a whole-body pre-pass — including back-edge
 # assignments that textually follow the generator call — so the launder

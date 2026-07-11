@@ -65,6 +65,9 @@ use crate::ownership::VecElementRelease;
 /// symbol both stable-per-callee and unique-per-distinct-callee.
 type TaskEntryAdapterSymbols = Rc<RefCell<HashMap<String, String>>>;
 
+#[derive(Debug, Clone, Copy)]
+struct GeneratorShellCallGate;
+
 const HEW_CTX_OFFSET_ACTOR_ID: usize = 8;
 const HEW_CTX_OFFSET_PARENT_SUPERVISOR: usize = 16;
 const HEW_CTX_OFFSET_TRACE: usize = 56;
@@ -8258,6 +8261,7 @@ fn lower_function(
         pointer_width,
         current_function_symbol: emit_name.clone(),
         current_function_call_conv: call_conv,
+        generator_shell_call_gate: func.is_generator.then_some(GeneratorShellCallGate),
         task_entry_adapter_symbols,
         ..Builder::default()
     };
@@ -9934,6 +9938,14 @@ struct Builder {
     current_task_scope: Option<Place>,
     current_function_symbol: String,
     current_function_call_conv: crate::model::FunctionCallConv,
+    /// True only on a source generator shell builder. Its fn-typed formal
+    /// parameters are admitted into the shell's generator env because every
+    /// standalone `gen fn` call crosses `lower_direct_call`'s provenance gate
+    /// and every `receive gen fn` call crosses `lower_actor_gen_stream`'s
+    /// equivalent gate. Anonymous `gen {}` blocks in ordinary functions have
+    /// no such call boundary and reject unproven fn-valued captures at env
+    /// materialisation.
+    generator_shell_call_gate: Option<GeneratorShellCallGate>,
     task_entry_adapter_symbols: TaskEntryAdapterSymbols,
     next_closure_id: u32,
     generated_functions: Vec<LoweredFunction>,
@@ -10038,22 +10050,25 @@ struct Builder {
     /// for an `Item`-resolved fn reference RHS and propagated through
     /// rebinds of an already-exempt binding.
     closure_pair_null_env: HashSet<BindingId>,
-    /// Fn-typed (`ty_is_closure_pair`) bindings whose introducing `let` or ANY
-    /// reassignment RHS produces a capturing-closure literal in a
-    /// produced-value position (directly, through block/if/match tails, or
-    /// copied from another binding already in this set). Such a binding's pair
-    /// may carry a NON-NULL heap env word even when its static type is a plain
-    /// `fn(..)` — the closure structurally unified with `fn(..)` and the env
-    /// word rode along ("laundering"). Collected flow-INSENSITIVELY by the
-    /// `collect_vec_owned_element_keys_from_block` pre-pass so a reassignment
-    /// on a loop back-edge taints the binding before any call site lowers.
+    /// Fn-typed (`ty_is_closure_pair`) bindings whose pair may carry a NON-NULL
+    /// heap closure-env word even when its static type is a plain `fn(..)`.
+    /// Sources are:
+    ///   * fn-typed parameters (the caller may pass a capturing closure);
+    ///   * fn-typed call results (the callee may return one);
+    ///   * capturing-closure literals structurally unified with `fn(..)`;
+    ///   * copies/merges/reassignments of any binding already in this set.
     ///
-    /// Consulted ONLY by `generator_arg_laundered_closure` (the
-    /// generator-constructor argument gate). Deliberately NOT a drop ledger
-    /// and NOT consulted by the closure-pair ingress/drop machinery: taint
-    /// answers "may this `fn(..)`-typed value hide a heap env?", never "who
-    /// frees the env box".
-    closure_pair_laundered_bindings: HashSet<BindingId>,
+    /// Let/reassignment provenance is collected flow-INSENSITIVELY by the
+    /// `collect_vec_owned_element_keys_from_block` pre-pass so a loop back-edge
+    /// assignment taints the binding before any call site lowers. Parameters
+    /// are seeded by `lower_params` before that pre-pass runs.
+    ///
+    /// Consulted by generator call-argument gates, anonymous-generator env
+    /// materialisation, and child-builder provenance inheritance. Deliberately
+    /// NOT a drop ledger and NOT consulted by closure-pair ingress/drop
+    /// machinery: taint answers "may this `fn(..)` value hide a heap env?",
+    /// never "who frees the env box".
+    closure_pair_env_may_be_nonnull: HashSet<BindingId>,
     /// Closure-pair bindings whose ownership has already left them via a
     /// rebind (`ClosurePairRhs::TransferFrom`). The dataflow checker flags
     /// any later use of these on its own: the rebind's RHS read carries
@@ -11075,12 +11090,9 @@ impl Builder {
     ///      produced by the compiler has a null env word; and (d) a capturing
     ///      closure that structurally unifies with `fn(..)` (via `unify.rs`)
     ///      is REFUSED at the generator-constructor call boundary
-    ///      (`generator_arg_laundered_closure` in `lower_direct_call`), so a
-    ///      `fn(..)`-typed value reaching this admission is null-env wherever
-    ///      that gate can prove provenance. The gate's documented residual
-    ///      (fn-typed parameters / call results forwarded interprocedurally)
-    ///      can still smuggle a heap env word; that residual leaks the env
-    ///      box — it never double-frees, per (a)-(b).
+    ///      (`generator_arg_laundered_closure` in `lower_direct_call`). That
+    ///      gate tracks local producer provenance and fails closed for fn-typed
+    ///      parameters and call results whose env word is not provably null.
     ///   3. `ResolvedTy::Closure { captures, .. }` where `captures.is_empty()` —
     ///      an empty-capture closure. No heap env box exists to alias. Closures
     ///      with non-empty captures carry a heap-boxed env; flat-copying them would
@@ -11107,9 +11119,8 @@ impl Builder {
         // pointers), PersistentShare no-drop on the body side, and the
         // generator-constructor argument gate (`generator_arg_laundered_closure`)
         // refusing a capturing closure laundered through `fn(..)` at the call
-        // boundary — so the value here is null-env wherever provenance is
-        // provable; the gate's interprocedural residual leaks at worst, never
-        // double-frees.
+        // boundary. Its provenance ledger rejects fn-typed parameters and call
+        // results whose env word is not provably null.
         if matches!(ty, ResolvedTy::Function { .. }) {
             return true;
         }
@@ -11926,15 +11937,13 @@ impl Builder {
             // Record the parameter name for `-g` `DW_TAG_formal_parameter`
             // DIEs (codegen's `create_parameter_variable`).
             self.record_local_name(slot, &param.name);
-            // A fn-typed parameter's closure env is provably heap (the checker
+            // A fn-typed parameter's closure env is provably heap-or-null (the checker
             // `Escapes`-classifies any closure crossing a call boundary as an
             // argument), so it may transfer env ownership into an owning
             // container on store — see `closure_pair_param_owned`. Check the
             // substituted type so a monomorphised type parameter that resolves
             // to a fn type is also admitted.
-            if ty_is_closure_pair(&self.subst_ty(&param.ty)) {
-                self.closure_pair_param_owned.insert(param.id);
-            }
+            self.seed_fn_param_provenance(param);
             // RAII-2 (#1295) callee-side drop: a CONSUME affine `#[resource]`
             // parameter is OWNED by the callee (the caller moved it in and does
             // not drop it), so register it for the scope-exit drop — closing the
@@ -11981,6 +11990,17 @@ impl Builder {
                 // close is idempotent/refcounted (`resource_needs_drop_flag`).
                 self.maybe_alloc_resource_drop_flag(param.id, &owned_ty);
             }
+        }
+    }
+
+    fn seed_fn_param_provenance(&mut self, param: &hew_hir::HirBinding) {
+        if ty_is_closure_pair(&self.subst_ty(&param.ty)) {
+            self.closure_pair_param_owned.insert(param.id);
+            // CAP-11 provenance: the parameter's env word is not provably
+            // null. If it is forwarded into a generator constructor, the
+            // flat-copied env cannot release it, so the call-site gate must
+            // reject that crossing.
+            self.closure_pair_env_may_be_nonnull.insert(param.id);
         }
     }
 
@@ -13442,112 +13462,167 @@ impl Builder {
     /// Recursively walk a block's statements + tail, harvesting owned-Vec
     /// element keys from every expression's type (the `Vec<T>` receiver of an
     /// owned-Vec op carries the type) and every let binding's declared type.
-    /// True when `expr`, read as a produced VALUE, is a capturing-closure
-    /// literal — directly, behind transparent block/scope tails, on either
-    /// branch of an `if`, in any `match` arm body, or copied from a binding
-    /// already tainted as laundered. Feeds `closure_pair_laundered_bindings`
-    /// during the pre-pass (statements are visited in source order, so a
-    /// binding-to-binding copy chain resolves top-down). A capture-FREE
-    /// closure literal answers `false`: its pair's env word is null by
-    /// construction, so nothing can leak or dangle through a flat copy.
-    ///
-    /// Deliberately conservative in the ADMIT direction for producer shapes
-    /// this walk cannot see through (fn-typed call results, fn-typed
-    /// parameters): those stay untainted here and are the documented residual
-    /// of the generator-argument gate (`generator_arg_laundered_closure`).
-    fn rhs_produces_capturing_closure(&self, expr: &HirExpr) -> bool {
+    /// True when `expr`, read as a produced fn VALUE, may carry a non-null heap
+    /// closure environment. A capture-free literal or named-function reference
+    /// answers `false`; parameters, fn-valued call results, capturing literals,
+    /// aggregate/container reads, and merges/copies of those answer `true`.
+    /// Feeds `closure_pair_env_may_be_nonnull` during the pre-pass.
+    fn closure_rhs_may_carry_env(&self, expr: &HirExpr) -> bool {
         match &expr.kind {
             HirExprKind::Closure { captures, .. } => !captures.is_empty(),
             HirExprKind::BindingRef {
                 resolved: ResolvedRef::Binding(id),
                 ..
-            } => self.closure_pair_laundered_bindings.contains(id),
+            } => {
+                ty_is_closure_pair(&self.subst_ty(&expr.ty))
+                    && self.closure_pair_env_may_be_nonnull.contains(id)
+            }
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Item(_),
+                ..
+            } => false,
+            HirExprKind::Call { .. }
+            | HirExprKind::ResolvedImplCall { .. }
+            | HirExprKind::CallTraitMethodStatic { .. }
+            | HirExprKind::CallDynMethod { .. } => ty_is_closure_pair(&self.subst_ty(&expr.ty)),
             HirExprKind::Block(body) | HirExprKind::Scope { body } => body
                 .tail
                 .as_deref()
-                .is_some_and(|tail| self.rhs_produces_capturing_closure(tail)),
+                .is_some_and(|tail| self.closure_rhs_may_carry_env(tail)),
             HirExprKind::If {
                 then_expr,
                 else_expr,
                 ..
             } => {
-                self.rhs_produces_capturing_closure(then_expr)
+                self.closure_rhs_may_carry_env(then_expr)
                     || else_expr
                         .as_deref()
-                        .is_some_and(|eb| self.rhs_produces_capturing_closure(eb))
+                        .is_some_and(|eb| self.closure_rhs_may_carry_env(eb))
             }
             HirExprKind::Match { arms, .. } => arms
                 .iter()
-                .any(|arm| self.rhs_produces_capturing_closure(&arm.body)),
-            _ => false,
+                .any(|arm| self.closure_rhs_may_carry_env(&arm.body)),
+            // Any other fn-valued producer (record/tuple/Vec field read,
+            // projection, indirect value source) is unproven. Owning
+            // containers can legitimately hold a capturing closure, so
+            // admitting an unknown projection would reopen the same env-box
+            // leak behind a different laundering shape.
+            _ => matches!(self.subst_ty(&expr.ty), ResolvedTy::Function { .. }),
+        }
+    }
+
+    fn mark_pattern_bindings_unproven(&mut self, bindings: &[hew_hir::HirMatchArmBinding]) {
+        for binding in bindings {
+            if ty_is_closure_pair(&self.subst_ty(&binding.ty)) {
+                self.closure_pair_env_may_be_nonnull.insert(binding.binding);
+            }
+        }
+    }
+
+    fn mark_nested_pattern_bindings_unproven(
+        &mut self,
+        predicates: &[hew_hir::HirPayloadVariantPredicate],
+    ) {
+        for predicate in predicates {
+            self.mark_pattern_bindings_unproven(&predicate.bindings);
+            self.mark_nested_pattern_bindings_unproven(&predicate.nested);
+        }
+    }
+
+    fn mark_match_predicate_binding_unproven(&mut self, predicate: &hew_hir::HirMatchArmPredicate) {
+        if let hew_hir::HirMatchArmPredicate::Binding { binding_id, ty, .. } = predicate {
+            if ty_is_closure_pair(&self.subst_ty(ty)) {
+                self.closure_pair_env_may_be_nonnull.insert(*binding_id);
+            }
+        }
+    }
+
+    fn collect_vec_owned_element_keys_from_stmt(&mut self, stmt: &hew_hir::HirStmt) {
+        match &stmt.kind {
+            HirStmtKind::Let(binding, value) => {
+                let binding_ty = self.subst_ty(&binding.ty);
+                self.harvest_vec_owned_element_key(&binding_ty);
+                if let Some(v) = value {
+                    // Closure-env provenance: a fn/closure-typed binding
+                    // whose RHS may carry a heap env word must remain
+                    // fail-closed at any later generator crossing.
+                    if ty_is_closure_pair(&binding_ty) && self.closure_rhs_may_carry_env(v) {
+                        self.closure_pair_env_may_be_nonnull.insert(binding.id);
+                    }
+                    // #2418 — a DIRECT consume-rebind initializer
+                    // (`let y = xs;`) is the one consume shape the
+                    // collection drop-flag covers; record the consume
+                    // WITHOUT the non-rebind mark the general walk would
+                    // apply, replicating the walk's other effects on a
+                    // childless `BindingRef` (the type-key harvest).
+                    if let HirExprKind::BindingRef {
+                        resolved: ResolvedRef::Binding(id),
+                        ..
+                    } = &v.kind
+                    {
+                        if v.intent == IntentKind::Consume {
+                            self.prepass_consumed_bindings.insert(*id);
+                            let vty = self.subst_ty(&v.ty);
+                            self.harvest_vec_owned_element_key(&vty);
+                            return;
+                        }
+                    }
+                    self.collect_vec_owned_element_keys_from_expr(v);
+                }
+            }
+            HirStmtKind::LetElse {
+                scrutinee,
+                bindings,
+                success_prelude,
+                payload_variant_predicates,
+                else_body,
+                ..
+            } => {
+                self.collect_vec_owned_element_keys_from_expr(scrutinee);
+                self.mark_pattern_bindings_unproven(bindings);
+                self.mark_nested_pattern_bindings_unproven(payload_variant_predicates);
+                for prelude_stmt in success_prelude {
+                    self.collect_vec_owned_element_keys_from_stmt(prelude_stmt);
+                }
+                self.collect_vec_owned_element_keys_from_block(else_body);
+            }
+            HirStmtKind::Assign { target, value } => {
+                // #2301 -- record a reassigned `var` target so a consumed
+                // binding that is also overwritten gets an overwrite-release
+                // drop-flag (the intersection keeps the common no-consume
+                // overwrite on the zero-churn static gate).
+                if let HirExprKind::BindingRef {
+                    resolved: ResolvedRef::Binding(id),
+                    ..
+                } = &target.kind
+                {
+                    self.prepass_reassigned_bindings.insert(*id);
+                    // Closure-env provenance for reassignments (`var g =
+                    // triple; g = producer();`). The pre-pass runs before
+                    // any call site lowers, so a back-edge reassignment
+                    // taints the binding for the whole function.
+                    if ty_is_closure_pair(&self.subst_ty(&target.ty))
+                        && self.closure_rhs_may_carry_env(value)
+                    {
+                        self.closure_pair_env_may_be_nonnull.insert(*id);
+                    }
+                }
+                self.collect_vec_owned_element_keys_from_expr(target);
+                self.collect_vec_owned_element_keys_from_expr(value);
+            }
+            HirStmtKind::Expr(e) | HirStmtKind::Return(Some(e)) => {
+                self.collect_vec_owned_element_keys_from_expr(e);
+            }
+            HirStmtKind::Defer { body, .. } => {
+                self.collect_vec_owned_element_keys_from_expr(body);
+            }
+            HirStmtKind::Return(None) => {}
         }
     }
 
     fn collect_vec_owned_element_keys_from_block(&mut self, block: &HirBlock) {
         for stmt in &block.statements {
-            match &stmt.kind {
-                HirStmtKind::Let(binding, value) => {
-                    let binding_ty = self.subst_ty(&binding.ty);
-                    self.harvest_vec_owned_element_key(&binding_ty);
-                    if let Some(v) = value {
-                        // Launder taint: a fn/closure-typed binding whose RHS
-                        // produces a capturing-closure literal may hide a heap
-                        // env word behind a `fn(..)` static type — see
-                        // `closure_pair_laundered_bindings`.
-                        if ty_is_closure_pair(&binding_ty) && self.rhs_produces_capturing_closure(v)
-                        {
-                            self.closure_pair_laundered_bindings.insert(binding.id);
-                        }
-                        // #2418 — a DIRECT consume-rebind initializer
-                        // (`let y = xs;`) is the one consume shape the
-                        // collection drop-flag covers; record the consume
-                        // WITHOUT the non-rebind mark the general walk would
-                        // apply, replicating the walk's other effects on a
-                        // childless `BindingRef` (the type-key harvest).
-                        if let HirExprKind::BindingRef {
-                            resolved: ResolvedRef::Binding(id),
-                            ..
-                        } = &v.kind
-                        {
-                            if v.intent == IntentKind::Consume {
-                                self.prepass_consumed_bindings.insert(*id);
-                                let vty = self.subst_ty(&v.ty);
-                                self.harvest_vec_owned_element_key(&vty);
-                                continue;
-                            }
-                        }
-                        self.collect_vec_owned_element_keys_from_expr(v);
-                    }
-                }
-                HirStmtKind::Assign { target, value } => {
-                    // #2301 -- record a reassigned `var` target so a consumed
-                    // binding that is also overwritten gets an overwrite-release
-                    // drop-flag (the intersection keeps the common no-consume
-                    // overwrite on the zero-churn static gate).
-                    if let HirExprKind::BindingRef {
-                        resolved: ResolvedRef::Binding(id),
-                        ..
-                    } = &target.kind
-                    {
-                        self.prepass_reassigned_bindings.insert(*id);
-                        // Launder taint for reassignments (`var g = triple;
-                        // g = |x| x * k;`). The pre-pass runs before any call
-                        // site lowers, so a back-edge reassignment taints the
-                        // binding for the whole function.
-                        if ty_is_closure_pair(&self.subst_ty(&target.ty))
-                            && self.rhs_produces_capturing_closure(value)
-                        {
-                            self.closure_pair_laundered_bindings.insert(*id);
-                        }
-                    }
-                    self.collect_vec_owned_element_keys_from_expr(target);
-                    self.collect_vec_owned_element_keys_from_expr(value);
-                }
-                HirStmtKind::Expr(e) | HirStmtKind::Return(Some(e)) => {
-                    self.collect_vec_owned_element_keys_from_expr(e);
-                }
-                _ => {}
-            }
+            self.collect_vec_owned_element_keys_from_stmt(stmt);
         }
         if let Some(tail) = &block.tail {
             self.collect_vec_owned_element_keys_from_expr(tail);
@@ -13584,12 +13659,18 @@ impl Builder {
     /// `BindingRef`/`Call`/`StructInit` receiver is caught); the recursion
     /// reaches nested blocks (if/match/scope/loop bodies) where an owned-Vec
     /// could be constructed or used.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one structural HIR walk must keep every same-builder child expression \
+                  visible to both ownership-key harvesting and closure-env provenance"
+    )]
     fn collect_vec_owned_element_keys_from_expr(&mut self, expr: &HirExpr) {
         self.prepass_note_nonrebind_consume(expr);
         let ty = self.subst_ty(&expr.ty);
         self.harvest_vec_owned_element_key(&ty);
         match &expr.kind {
-            HirExprKind::Binary { left, right, .. } => {
+            HirExprKind::Binary { left, right, .. }
+            | HirExprKind::IdentityCompare { left, right } => {
                 self.collect_vec_owned_element_keys_from_expr(left);
                 self.collect_vec_owned_element_keys_from_expr(right);
             }
@@ -13598,7 +13679,26 @@ impl Builder {
             }
             HirExprKind::NumericCast { value, .. }
             | HirExprKind::SaturatingWidthCast { value, .. }
-            | HirExprKind::TryWidthCast { value, .. } => {
+            | HirExprKind::TryWidthCast { value, .. }
+            | HirExprKind::CoerceToDynTrait { value, .. }
+            | HirExprKind::WireCodec { operand: value, .. }
+            | HirExprKind::RecordCloneCall { src: value, .. }
+            | HirExprKind::CancellationTokenIsCancelled { receiver: value }
+            | HirExprKind::GeneratorNext {
+                receiver: value, ..
+            }
+            | HirExprKind::MachineStateName {
+                receiver: value, ..
+            }
+            | HirExprKind::AwaitRestart { child: value }
+            | HirExprKind::ConnAwaitRead { conn: value, .. }
+            | HirExprKind::ListenerAwaitAccept {
+                listener: value, ..
+            }
+            | HirExprKind::ChannelRecvAwait {
+                receiver: value, ..
+            }
+            | HirExprKind::StreamRecvAwait { stream: value, .. } => {
                 self.collect_vec_owned_element_keys_from_expr(value);
             }
             HirExprKind::TupleLiteral { elements } => {
@@ -13612,12 +13712,37 @@ impl Builder {
                     self.collect_vec_owned_element_keys_from_expr(a);
                 }
             }
-            HirExprKind::ResolvedImplCall { receiver, args, .. }
-            | HirExprKind::VarSelfMethodCall { receiver, args, .. } => {
+            HirExprKind::Spawn { args, .. } => {
+                for (_, arg) in args {
+                    self.collect_vec_owned_element_keys_from_expr(arg);
+                }
+            }
+            HirExprKind::ActorSend { receiver, args, .. }
+            | HirExprKind::ActorAsk { receiver, args, .. }
+            | HirExprKind::ActorGenStream { receiver, args, .. }
+            | HirExprKind::SpawnedCall {
+                callee: receiver,
+                args,
+                ..
+            }
+            | HirExprKind::ResolvedImplCall { receiver, args, .. }
+            | HirExprKind::VarSelfMethodCall { receiver, args, .. }
+            | HirExprKind::CallDynMethod { receiver, args, .. }
+            | HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
                 self.collect_vec_owned_element_keys_from_expr(receiver);
                 for a in args {
                     self.collect_vec_owned_element_keys_from_expr(a);
                 }
+            }
+            HirExprKind::RemoteActorAsk {
+                receiver,
+                msg,
+                timeout_ms,
+                ..
+            } => {
+                self.collect_vec_owned_element_keys_from_expr(receiver);
+                self.collect_vec_owned_element_keys_from_expr(msg);
+                self.collect_vec_owned_element_keys_from_expr(timeout_ms);
             }
             HirExprKind::StructInit { fields, base, .. } => {
                 for (_, f) in fields {
@@ -13651,10 +13776,87 @@ impl Builder {
             | HirExprKind::Loop { body, .. } => {
                 self.collect_vec_owned_element_keys_from_block(body);
             }
+            HirExprKind::ScopeDeadline { duration, body } => {
+                self.collect_vec_owned_element_keys_from_expr(duration);
+                self.collect_vec_owned_element_keys_from_block(body);
+            }
             HirExprKind::Match { scrutinee, arms } => {
                 self.collect_vec_owned_element_keys_from_expr(scrutinee);
                 for arm in arms {
+                    self.mark_match_predicate_binding_unproven(&arm.predicate);
+                    self.mark_pattern_bindings_unproven(&arm.bindings);
+                    self.mark_nested_pattern_bindings_unproven(&arm.payload_variant_predicates);
+                    if let Some(guard) = &arm.guard {
+                        self.collect_vec_owned_element_keys_from_expr(guard);
+                    }
                     self.collect_vec_owned_element_keys_from_expr(&arm.body);
+                }
+            }
+            HirExprKind::WhileLet {
+                scrutinee,
+                bindings,
+                payload_variant_predicates,
+                body,
+                ..
+            } => {
+                self.collect_vec_owned_element_keys_from_expr(scrutinee);
+                self.mark_pattern_bindings_unproven(bindings);
+                self.mark_nested_pattern_bindings_unproven(payload_variant_predicates);
+                self.collect_vec_owned_element_keys_from_block(body);
+            }
+            HirExprKind::IfLet {
+                scrutinee,
+                bindings,
+                payload_variant_predicates,
+                body,
+                else_body,
+                ..
+            } => {
+                self.collect_vec_owned_element_keys_from_expr(scrutinee);
+                self.mark_pattern_bindings_unproven(bindings);
+                self.mark_nested_pattern_bindings_unproven(payload_variant_predicates);
+                self.collect_vec_owned_element_keys_from_block(body);
+                if let Some(else_body) = else_body {
+                    self.collect_vec_owned_element_keys_from_block(else_body);
+                }
+            }
+            HirExprKind::Select(select) => {
+                for arm in &select.arms {
+                    if let Some(binding) = arm.binding_id {
+                        // The select result type is encoded by the arm source,
+                        // not repeated on the binding. Mark it unproven; later
+                        // consumers consult this set only for fn-typed values.
+                        self.closure_pair_env_may_be_nonnull.insert(binding);
+                    }
+                    match &arm.kind {
+                        hew_hir::HirSelectArmKind::StreamNext { stream } => {
+                            self.collect_vec_owned_element_keys_from_expr(stream);
+                        }
+                        hew_hir::HirSelectArmKind::ActorAsk { actor, args, .. } => {
+                            self.collect_vec_owned_element_keys_from_expr(actor);
+                            for arg in args {
+                                self.collect_vec_owned_element_keys_from_expr(arg);
+                            }
+                        }
+                        hew_hir::HirSelectArmKind::TaskAwait { task } => {
+                            self.collect_vec_owned_element_keys_from_expr(task);
+                        }
+                        hew_hir::HirSelectArmKind::ChannelRecv { receiver } => {
+                            self.collect_vec_owned_element_keys_from_expr(receiver);
+                        }
+                        hew_hir::HirSelectArmKind::AfterTimer { duration } => {
+                            self.collect_vec_owned_element_keys_from_expr(duration);
+                        }
+                    }
+                    self.collect_vec_owned_element_keys_from_expr(&arm.body);
+                }
+            }
+            HirExprKind::Join(join) => {
+                for branch in &join.branches {
+                    self.collect_vec_owned_element_keys_from_expr(&branch.actor);
+                    for arg in &branch.args {
+                        self.collect_vec_owned_element_keys_from_expr(arg);
+                    }
                 }
             }
             HirExprKind::While {
@@ -13675,13 +13877,82 @@ impl Builder {
                 self.collect_vec_owned_element_keys_from_expr(step);
                 self.collect_vec_owned_element_keys_from_block(body);
             }
+            HirExprKind::Yield { value, .. }
+            | HirExprKind::Break { value, .. }
+            | HirExprKind::Return { value } => {
+                if let Some(value) = value {
+                    self.collect_vec_owned_element_keys_from_expr(value);
+                }
+            }
+            HirExprKind::Slice {
+                container,
+                start,
+                end,
+                ..
+            } => {
+                self.collect_vec_owned_element_keys_from_expr(container);
+                if let Some(start) = start {
+                    self.collect_vec_owned_element_keys_from_expr(start);
+                }
+                if let Some(end) = end {
+                    self.collect_vec_owned_element_keys_from_expr(end);
+                }
+            }
+            HirExprKind::NumericMethod { receiver, arg, .. }
+            | HirExprKind::MachineStep {
+                receiver,
+                event: arg,
+                ..
+            }
+            | HirExprKind::MachineTakeEmits {
+                receiver,
+                event: arg,
+                ..
+            } => {
+                self.collect_vec_owned_element_keys_from_expr(receiver);
+                self.collect_vec_owned_element_keys_from_expr(arg);
+            }
+            HirExprKind::MachineEmit { fields, .. }
+            | HirExprKind::MachineVariantCtor {
+                payload: Some(fields),
+                ..
+            } => {
+                for (_, value) in fields {
+                    self.collect_vec_owned_element_keys_from_expr(value);
+                }
+            }
             // Remaining variants either carry no owned-Vec sub-expression in
             // this slice's surface or are leaves; their own `.ty` was already
             // harvested above. Fail-open here is sound: a missed harvest only
             // leaves a value at the W3.029 fail-closed reject (never an
             // over-admit), so the worst case is a still-rejected program, not
-            // an unsound lowering.
+            // an unsound lowering. Closure, lambda-actor, and generator bodies
+            // lower through fresh child builders with dedicated fixed-point
+            // pre-passes.
             _ => {}
+        }
+    }
+
+    /// Run the shared function/body pre-pass until closure-env provenance
+    /// reaches a fixed point. The walk's other outputs are set-valued and
+    /// idempotent, so repeating it is semantically harmless.
+    fn collect_prepass_facts(&mut self, block: &HirBlock) {
+        loop {
+            let provenance_count = self.closure_pair_env_may_be_nonnull.len();
+            self.collect_vec_owned_element_keys_from_block(block);
+            if self.closure_pair_env_may_be_nonnull.len() == provenance_count {
+                break;
+            }
+        }
+    }
+
+    fn collect_expr_prepass_facts(&mut self, expr: &HirExpr) {
+        loop {
+            let provenance_count = self.closure_pair_env_may_be_nonnull.len();
+            self.collect_vec_owned_element_keys_from_expr(expr);
+            if self.closure_pair_env_may_be_nonnull.len() == provenance_count {
+                break;
+            }
         }
     }
 
@@ -13693,7 +13964,12 @@ impl Builder {
         // order-independent. Only owned-Vec element types (which carry
         // synthesizable clone/drop thunks) enter the set, so the W3.029 reject
         // stays fail-closed for every non-owned-Vec record.
-        self.collect_vec_owned_element_keys_from_block(&func.body);
+        // Closure-env provenance is a transitive, flow-insensitive may-fact.
+        // Repeat the shared pre-pass to a fixed point so reverse-order
+        // assignments and nested-block producer chains cannot evade the
+        // generator gate. Every other fact this walk records is set-valued and
+        // idempotent, so repeating it adds no duplicate semantic effects.
+        self.collect_prepass_facts(&func.body);
 
         self.active_scopes.push(func.body.scope);
         for stmt in &func.body.statements {
@@ -15607,6 +15883,10 @@ impl Builder {
                     callee.ty,
                     ResolvedTy::Function { .. } | ResolvedTy::Closure { .. }
                 ) {
+                    let ret_ty = self.subst_ty(&expr.ty);
+                    if ty_is_generator_handle(&ret_ty) {
+                        self.reject_unproven_generator_fn_args(args);
+                    }
                     // Suspendable-callee discriminator: a call to a binding that
                     // holds a closure whose body `await`s across the coroutine
                     // boundary drives the callee coroutine and PROPAGATES its
@@ -15631,7 +15911,6 @@ impl Builder {
                     for arg in args {
                         arg_places.push(self.lower_value(arg)?);
                     }
-                    let ret_ty = self.subst_ty(&expr.ty);
                     let dest = if matches!(ret_ty, ResolvedTy::Unit) {
                         None
                     } else {
@@ -26432,6 +26711,11 @@ impl Builder {
             });
             return None;
         };
+        // Deadline bodies lower later on this same Builder, after the outer
+        // function pre-pass has already completed. Refresh the fixed-point
+        // facts here so body-local fn producers cannot bypass the generator
+        // provenance gate.
+        self.collect_prepass_facts(body);
         let has_body = !body.statements.is_empty() || body.tail.is_some();
 
         // Empty `after(d) {}` keeps the legacy per-deadline-thread cancel on BOTH
@@ -26917,43 +27201,15 @@ impl Builder {
             builtin,
             builtin.map_or("", |f| f.c_symbol()),
         );
-        // CAP-11 fail-closed gate: a generator-constructor call (`gen fn` —
-        // the only direct calls typed `Generator<..>`) flat-copies every
-        // argument its body captures into the generator env
+        // CAP-11 fail-closed gate: a call producing `Generator<..>` may
+        // ultimately flat-copy a fn-valued argument into the generator env
         // (`Terminator::MakeGenerator`'s heap-copy), and the body side never
-        // drops a fn-typed capture. A capturing closure laundered through a
-        // `fn(..)`-typed parameter therefore carries a heap env box NOTHING
-        // can ever release — refuse it here, at the launder crossing, where the
-        // argument's real shape is still visible (the callee's own frame
-        // sees only the null-env-presumptive `fn(..)` type). Named-fn
-        // references and capture-free closures stay admitted: their env
-        // word is null by construction.
+        // drops a fn-typed capture. Refuse a capturing closure or any fn value
+        // whose env provenance is unproven (parameter/call result) at the
+        // crossing. Named-fn references and capture-free closures stay
+        // admitted: their env word is null by construction.
         if ty_is_generator_handle(ret_ty) {
-            for arg in hir_args {
-                if let Some(what) = self.generator_arg_laundered_closure(arg) {
-                    // The diagnostic is fatal on its own; lowering CONTINUES so
-                    // the surrounding statement stream stays coherent (a bare
-                    // `return None` here cascades spurious follow-on errors
-                    // onto bindings the enclosing loop/let still references).
-                    // No binary is ever produced past a fatal diagnostic.
-                    self.diagnostics.push(MirDiagnostic {
-                        kind: MirDiagnosticKind::NotYetImplemented {
-                            construct: "a capturing closure as a generator's `fn(..)` \
-                                        argument"
-                                .to_string(),
-                            site: arg.site,
-                        },
-                        note: format!(
-                            "{what} would cross into the generator's flat-copied env: \
-                             the generator can never release a capturing closure's \
-                             environment box, so every generator constructed from it \
-                             would leak that box. Pass a named function or a \
-                             capture-free closure instead; owned captures need the \
-                             clone-into-env protocol (`genfn-owned-captures`)."
-                        ),
-                    });
-                }
-            }
+            self.reject_unproven_generator_fn_args(hir_args);
         }
         // Lower each argument left-to-right.  If any fails to produce a
         // Place, fail the whole call — argument diagnostics already capture
@@ -30270,6 +30526,11 @@ impl Builder {
             return None;
         }
 
+        // `receive gen fn` calls do not route through `lower_direct_call`, so
+        // enforce the same closure-env provenance boundary here before packing
+        // the start message.
+        self.reject_unproven_generator_fn_args(args);
+
         let actor = self.lower_value(receiver)?;
         let mut lowered: Vec<(Place, ResolvedTy)> = Vec::with_capacity(args.len() + 1);
         for arg in args {
@@ -32331,10 +32592,22 @@ impl Builder {
                     ty: self.subst_ty(&capture.ty),
                 },
             );
+            if self
+                .closure_pair_env_may_be_nonnull
+                .contains(&capture.binding)
+            {
+                builder
+                    .closure_pair_env_may_be_nonnull
+                    .insert(capture.binding);
+            }
+            if self.closure_pair_null_env.contains(&capture.binding) {
+                builder.closure_pair_null_env.insert(capture.binding);
+            }
         }
         for param in params {
             let place = builder.alloc_local(param.ty.clone());
             builder.binding_locals.insert(param.id, place);
+            builder.seed_fn_param_provenance(param);
         }
 
         // #2301 -- run the same owned-Vec-key / consumed-and-reassigned-binding
@@ -32348,7 +32621,7 @@ impl Builder {
         // sibling arm silently leaks its prior value (no guard flag, no
         // release before the overwrite) instead of getting the path-sensitive
         // release a byte-identical top-level function body would.
-        builder.collect_vec_owned_element_keys_from_expr(body);
+        builder.collect_expr_prepass_facts(body);
 
         if let Some(src) = builder.lower_value(body) {
             builder.instructions.push(Instr::Move {
@@ -32981,6 +33254,7 @@ impl Builder {
                 unreachable!("alloc_local returns Place::Local");
             };
             body_builder.binding_locals.insert(param.id, slot);
+            body_builder.seed_fn_param_provenance(param);
             user_param_local_ids.push(slot_id);
         }
 
@@ -33004,6 +33278,17 @@ impl Builder {
                         ty: env_capture_field_tys[idx].clone(),
                     },
                 );
+                if self
+                    .closure_pair_env_may_be_nonnull
+                    .contains(&capture.binding)
+                {
+                    body_builder
+                        .closure_pair_env_may_be_nonnull
+                        .insert(capture.binding);
+                }
+                if self.closure_pair_null_env.contains(&capture.binding) {
+                    body_builder.closure_pair_null_env.insert(capture.binding);
+                }
             }
             body_builder.weak_lambda_capture_bindings = weak_capture_bindings;
         }
@@ -33020,7 +33305,7 @@ impl Builder {
         // on one control-flow arm and overwritten on a sibling arm silently
         // leaks its prior value instead of getting the path-sensitive release
         // a byte-identical top-level function body would.
-        body_builder.collect_vec_owned_element_keys_from_expr(body);
+        body_builder.collect_expr_prepass_facts(body);
         let tail_place = body_builder.lower_value(body);
 
         // Shape-driven return slot wiring:
@@ -33542,15 +33827,30 @@ impl Builder {
                         }
                     }
                 };
+                let fn_env_provenance_unproven = matches!(capture_ty, Some(ResolvedTy::Function { .. }))
+                    && self
+                        .closure_pair_env_may_be_nonnull
+                        .contains(&capture.binding)
+                    // A source `gen fn` shell's own formal parameters are
+                    // checked at every generator-constructor call. No other
+                    // anonymous-gen capture has that external provenance gate.
+                    && !(self.generator_shell_call_gate.is_some()
+                        && self.closure_pair_param_owned.contains(&capture.binding));
                 match (slot, capture_ty) {
-                    (Some(src), Some(ty)) if self.gen_env_capture_admissible(&ty) => {
+                    (Some(src), Some(ty))
+                        if self.gen_env_capture_admissible(&ty) && !fn_env_provenance_unproven =>
+                    {
                         init_fields.push((offset, src));
                         field_tys.push(ty);
                     }
                     (Some(_), Some(ty)) => {
                         // Not admissible to the flat-`memcpy`'d generator env.
-                        // Three fail-closed shapes reach this arm; name the reason
+                        // Four fail-closed shapes reach this arm; name the reason
                         // precisely so the diagnostic is actionable:
+                        //   * `Function` with unproven env provenance — an
+                        //     anonymous gen block captured a parameter/call
+                        //     result/aggregate read without a direct gen-fn call
+                        //     boundary proving the pair's env word null; OR
                         //   * `Closure` with non-empty `captures` — a heap-boxed
                         //     env; flat-copying it shallow-aliases the caller's env
                         //     → double-free / UAF at generator teardown (admitting
@@ -33565,34 +33865,49 @@ impl Builder {
                         // bytes once, at construction, so shallow-copying any of
                         // these would alias the caller's resource → double-free /
                         // UAF at generator teardown.
-                        let reason = match &ty {
-                            ResolvedTy::Closure { captures, .. } if !captures.is_empty() => {
-                                "a closure with a captured environment cannot yet be admitted \
+                        let reason = if fn_env_provenance_unproven {
+                            "its fn value may carry a heap closure environment, and this \
+                             anonymous generator construction has no call-boundary proof \
+                             that the env word is null"
+                        } else {
+                            match &ty {
+                                ResolvedTy::Closure { captures, .. } if !captures.is_empty() => {
+                                    "a closure with a captured environment cannot yet be admitted \
                                  into the generator's flat-copied env; its heap env would be \
                                  shallow-aliased (double-free / UAF at teardown). \
                                  Owned/closure-env captures need the clone-into-env + \
                                  env-field-drop-on-destroy protocol"
-                            }
-                            _ if ValueClass::of_ty(&ty, &self.type_classes)
-                                == ValueClass::BitCopy =>
-                            {
-                                "it transitively contains an `#[opaque]` runtime handle; an \
+                                }
+                                _ if ValueClass::of_ty(&ty, &self.type_classes)
+                                    == ValueClass::BitCopy =>
+                                {
+                                    "it transitively contains an `#[opaque]` runtime handle; an \
                                  opaque handle is a pointer-width value with no clone helper, \
                                  so flat-copying it into the generator's env would alias the \
                                  caller's handle and double-free / use-after-free at teardown"
-                            }
-                            _ => {
-                                "it is an owned / non-BitCopy value; the generator's env is a \
+                                }
+                                _ => {
+                                    "it is an owned / non-BitCopy value; the generator's env is a \
                                  flat heap copy taken once at construction and can carry only \
                                  plain copyable values"
+                                }
                             }
+                        };
+                        let construct = if fn_env_provenance_unproven {
+                            format!(
+                                "the capture of fn value `{}` with unproven env provenance \
+                                 into a generator",
+                                capture.name
+                            )
+                        } else {
+                            format!(
+                                "the capture of opaque/owned value `{}` into a generator",
+                                capture.name
+                            )
                         };
                         self.diagnostics.push(MirDiagnostic {
                             kind: MirDiagnosticKind::NotYetImplemented {
-                                construct: format!(
-                                    "the capture of opaque/owned value `{}` into a generator",
-                                    capture.name
-                                ),
+                                construct,
                                 site: expr.site,
                             },
                             note: format!(
@@ -33764,7 +34079,7 @@ impl Builder {
         // consumed on one control-flow arm and overwritten on a sibling arm
         // silently leaks its prior value instead of getting the path-sensitive
         // release a byte-identical top-level function body would.
-        body_builder.collect_vec_owned_element_keys_from_block(body);
+        body_builder.collect_prepass_facts(body);
 
         // Lower all statements in the gen-block body. Yields inside the body
         // call `lower_yield_expr` which emits `Terminator::Yield` and advances
@@ -35303,36 +35618,56 @@ impl Builder {
         }
     }
 
-    /// `Some(description)` when a generator-constructor call argument is a
-    /// capturing closure (or a binding that may hold one) laundered behind a
-    /// `fn(..)` view — the CAP-11 fail-closed gate. The generator env is a
+    /// Emit the shared fail-closed diagnostic for fn-valued arguments crossing
+    /// into either a standalone or actor `gen fn` constructor. Lowering
+    /// continues after the fatal diagnostic so surrounding bindings remain
+    /// structurally coherent; no binary is emitted while diagnostics exist.
+    fn reject_unproven_generator_fn_args(&mut self, args: &[HirExpr]) {
+        for arg in args {
+            if let Some(what) = self.generator_arg_laundered_closure(arg) {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "a capturing closure as a generator's `fn(..)` argument"
+                            .to_string(),
+                        site: arg.site,
+                    },
+                    note: format!(
+                        "{what} would cross into the generator's flat-copied env: \
+                         the generator can never release a capturing closure's \
+                         environment box, so every generator constructed from it \
+                         would leak that box. Pass a named function or a \
+                         capture-free closure directly to the generator; forwarding \
+                         through a parameter, call result, pattern payload, or aggregate \
+                         remains unavailable until the clone-into-env protocol \
+                         (`genfn-owned-captures`) exists."
+                    ),
+                });
+            }
+        }
+    }
+
+    /// `Some(description)` when a generator-constructor call argument may carry
+    /// a capturing closure behind a `fn(..)` view — the CAP-11 fail-closed
+    /// gate. The generator env is a
     /// flat `memcpy` (`Terminator::MakeGenerator`'s heap-copy) that never
     /// recurses into inner pointers and the body side never drops a fn-typed
     /// capture, so a non-null env word crossing this boundary is an
     /// unreleasable heap box: every constructed generator would leak it.
     /// `None` admits the argument.
     ///
-    /// Admitted (provably or presumptively null-env):
+    /// Admitted (provably null-env):
     ///   * named-fn references (`Item`-resolved — env word null by
     ///     construction);
     ///   * capture-free closure literals (no env box exists);
-    ///   * fn-typed values whose producer this gate cannot see through —
-    ///     fn-typed parameters of the ENCLOSING function and fn-typed call
-    ///     results. TODO(genfn-owned-captures): these two shapes can still
-    ///     smuggle a heap env interprocedurally (`fn wrap(f: fn(i64) -> i64)`
-    ///     forwarding `f` into a generator, called with a capturing closure)
-    ///     and keep the env-box leak. Closing them needs either closure-pair
-    ///     provenance carried on the value/type or the clone-into-env
-    ///     protocol that makes the generator own its captures; until then
-    ///     they stay admitted-and-documented, matching the pre-existing
-    ///     call-argument alias posture (leak, never a double-free).
+    ///   * bindings whose producer chain contains only those null-env shapes.
     ///
     /// Rejected (fail closed):
     ///   * a closure literal with captures;
     ///   * any expression whose resolved type is a capturing `Closure`;
-    ///   * a binding tainted by `closure_pair_laundered_bindings` (its `let`
-    ///     or any reassignment RHS was a capturing closure, so its `fn(..)`
-    ///     static type proves nothing about the env word).
+    ///   * fn-typed parameters and fn-valued call results, whose env provenance
+    ///     is not provably null;
+    ///   * fn-valued aggregate/container reads and other unproven producers;
+    ///   * bindings/merges/reassignments derived from any rejected shape.
     fn generator_arg_laundered_closure(&self, arg: &HirExpr) -> Option<String> {
         if let HirExprKind::Block(body) = &arg.kind {
             return body
@@ -35357,11 +35692,17 @@ impl Builder {
             name,
         } = &arg.kind
         {
-            if self.closure_pair_laundered_bindings.contains(id) {
-                return Some(format!("`{name}` (which holds a capturing closure)"));
+            if ty_is_closure_pair(&self.subst_ty(&arg.ty))
+                && self.closure_pair_env_may_be_nonnull.contains(id)
+            {
+                return Some(format!(
+                    "`{name}` (whose fn value may carry a heap closure environment)"
+                ));
             }
         }
-        None
+        self.closure_rhs_may_carry_env(arg).then(|| {
+            "a fn-valued producer whose closure environment is not provably null".to_string()
+        })
     }
 
     /// Ownership classification for a closure-pair operand entering an

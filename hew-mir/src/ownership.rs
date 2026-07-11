@@ -788,7 +788,9 @@ impl OwnershipDecision {
                 }
             }
 
-            // A closure owns a heap env box iff it captures a heap-owning value.
+            // This type-level decision tracks captured payload ownership. The
+            // env-box ownership of an escaping closure with Copy-only captures is
+            // a construction-site fact handled by closure slot-drop codegen.
             ResolvedTy::Closure { captures, .. } => {
                 if captures.iter().any(|c| ty_owns_heap(c, &layouts)) {
                     OwnershipDecision::OwnsHeap {

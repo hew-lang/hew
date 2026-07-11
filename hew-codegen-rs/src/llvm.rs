@@ -28869,6 +28869,20 @@ fn resolved_ty_contains_heap_leaf(
     hew_mir::ty_owns_heap(ty, &CgHeapLayouts { fn_ctx })
 }
 
+/// True when the address-based slot-drop path can reach a captured closure's
+/// environment box. This is deliberately distinct from [`ty_owns_heap`]:
+/// that type-level predicate tracks whether captures own heap payloads, while
+/// an escaped closure with any capture owns an environment box even when every
+/// capture is `Copy`.
+fn slot_drop_may_release_closure_env(ty: &ResolvedTy) -> bool {
+    match ty {
+        ResolvedTy::Closure { captures, .. } => !captures.is_empty(),
+        ResolvedTy::Tuple(elems) => elems.iter().any(slot_drop_may_release_closure_env),
+        ResolvedTy::Array(elem, _) => slot_drop_may_release_closure_env(elem),
+        _ => false,
+    }
+}
+
 /// Resolve a `ResolvedTy` to its typed [`hew_mir::CowHeapRelease`] protocol, or
 /// `None` when the type is not a single copy-on-write heap leaf. This is the
 /// address-based aggregate walk's per-field picker (`emit_heap_slot_drop`), the
@@ -32200,7 +32214,7 @@ fn generator_coro_companion_ty<'ctx>(
 }
 
 /// Synthesise (or fetch) the per-`Y` typed out-drop thunk for a generator
-/// companion, or `None` when `Y` is `BitCopy` (nothing to drop).
+/// companion, or `None` when the slot-drop path has nothing to release.
 ///
 /// A `yield` is lowered as a MOVE — the body publishes its value into the
 /// companion `out_value` slot and never drops it — so a generator dropped while
@@ -32213,8 +32227,10 @@ fn generator_coro_companion_ty<'ctx>(
 /// scope-exit drop path uses for the same value type).
 ///
 /// Returns:
-/// - `None` when `Y` owns no heap (`BitCopy`: scalars, bitcopy records/enums) —
-///   the companion stores a null thunk and the runtime skips the drop.
+/// - `None` when `Y` neither owns heap nor contains a captured closure whose
+///   environment box needs release (`BitCopy`: scalars, bitcopy records/enums,
+///   and capture-free closures) — the companion stores a null thunk and the
+///   runtime skips the drop.
 /// - `Some(thunk)` for an owned `Y` whose typed drop `emit_heap_slot_drop`
 ///   expresses (`String`, `Vec<_>`, `HashMap`, `HashSet`, owned tuples/arrays).
 /// - Fails closed for an owned `Y` whose typed drop is not yet expressible as a
@@ -32258,8 +32274,13 @@ fn gen_companion_out_drop_thunk<'ctx>(
     if matches!(yield_ty, ResolvedTy::Never) {
         return Ok(None);
     }
-    // BitCopy `Y` owns no heap → no thunk; the runtime skips the drop on null.
-    if !resolved_ty_contains_heap_leaf(fn_ctx, &yield_ty, &mut HashSet::new()) {
+    // A captured closure yielded from a generator has escaped and owns an env
+    // box even when its captures are all Copy. `ty_owns_heap` intentionally
+    // tracks capture payload ownership, so supplement it with the slot-drop
+    // shape that can release such an env box.
+    if !resolved_ty_contains_heap_leaf(fn_ctx, &yield_ty, &mut HashSet::new())
+        && !slot_drop_may_release_closure_env(&yield_ty)
+    {
         return Ok(None);
     }
 
@@ -33748,8 +33769,9 @@ fn lower_terminator<'ctx>(
                 .build_store(started_ptr, fn_ctx.ctx.i8_type().const_zero())
                 .llvm_ctx("gen companion started init")?;
 
-            // ── 2b. Plant the per-`Y` typed out-drop thunk (field 2). Null when
-            // `Y` is `BitCopy` (nothing to drop). The runtime destroy calls it
+            // ── 2b. Plant the per-`Y` typed out-drop thunk (field 2). Null only
+            // when `Y` has neither heap ownership nor a captured closure env box
+            // for the slot-drop path to release. The runtime destroy calls it
             // (passing this companion) IFF `pending != 0`, so a generator dropped
             // while an owned yielded value is still un-consumed releases it
             // exactly once instead of leaking. Fails closed for an owned `Y`
@@ -49076,7 +49098,7 @@ mod tests {
     }
 
     #[test]
-    fn generator_out_drop_thunk_tracks_closure_capture_ownership() {
+    fn generator_out_drop_thunk_tracks_closure_env_box_ownership() {
         let ctx = Context::create();
         let m = ctx.create_module("generator_closure_out_drop_test");
         let harness = build_harness(&ctx, &[], &[]);
@@ -49114,7 +49136,7 @@ mod tests {
             ret: Box::new(ResolvedTy::I64),
             captures: vec![ResolvedTy::I64],
         };
-        alloc_local(&mut fn_ctx, 1, generator_of(copy_closure));
+        alloc_local(&mut fn_ctx, 1, generator_of(copy_closure.clone()));
         let (_, copy_companion) =
             generator_coro_companion_ty(&fn_ctx, Place::Local(1)).expect("copy companion type");
         assert!(
@@ -49125,8 +49147,44 @@ mod tests {
                 copy_companion,
             )
             .expect("copy closure out-drop decision")
+            .is_some(),
+            "a closure capturing only Copy scalars must release its escaped env box"
+        );
+
+        let aggregate_copy_closure = ResolvedTy::Tuple(vec![copy_closure]);
+        alloc_local(&mut fn_ctx, 2, generator_of(aggregate_copy_closure));
+        let (_, aggregate_companion) =
+            generator_coro_companion_ty(&fn_ctx, Place::Local(2)).expect("aggregate companion");
+        assert!(
+            gen_companion_out_drop_thunk(
+                &fn_ctx,
+                Place::Local(2),
+                "aggregate_copy_closure_yield",
+                aggregate_companion,
+            )
+            .expect("aggregate copy closure out-drop decision")
+            .is_some(),
+            "aggregate slot drops must release captured Copy-only closure env boxes"
+        );
+
+        let bare_closure = ResolvedTy::Closure {
+            params: vec![],
+            ret: Box::new(ResolvedTy::I64),
+            captures: vec![],
+        };
+        alloc_local(&mut fn_ctx, 3, generator_of(bare_closure));
+        let (_, bare_companion) =
+            generator_coro_companion_ty(&fn_ctx, Place::Local(3)).expect("bare companion type");
+        assert!(
+            gen_companion_out_drop_thunk(
+                &fn_ctx,
+                Place::Local(3),
+                "bare_closure_yield",
+                bare_companion,
+            )
+            .expect("bare closure out-drop decision")
             .is_none(),
-            "a closure capturing only Copy scalars must keep the null-thunk fast path"
+            "capture-free closures must keep the null-thunk fast path"
         );
 
         finish_test_fn(&fn_ctx);
@@ -49140,8 +49198,16 @@ mod tests {
             "the output-drop thunk must invoke the closure env's in-band free thunk:\n{ir}"
         );
         assert!(
-            !ir.contains("__hew_gen_out_drop_copy_closure_yield"),
-            "Copy-only closure yields must not synthesize an output-drop thunk:\n{ir}"
+            ir.contains("define internal void @__hew_gen_out_drop_copy_closure_yield"),
+            "Copy-only closure yields must synthesize an output-drop thunk:\n{ir}"
+        );
+        assert!(
+            ir.contains("define internal void @__hew_gen_out_drop_aggregate_copy_closure_yield"),
+            "aggregate Copy-only closure yields must synthesize an output-drop thunk:\n{ir}"
+        );
+        assert!(
+            !ir.contains("__hew_gen_out_drop_bare_closure_yield"),
+            "capture-free closure yields must keep the null-thunk fast path:\n{ir}"
         );
         assert!(
             m.verify().is_ok(),

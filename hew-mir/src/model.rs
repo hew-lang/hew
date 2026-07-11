@@ -1668,9 +1668,10 @@ fn ty_owns_heap_inner(
                 ),
             ..
         } => true,
-        // A bare function pair has no owned environment. A closure pair needs
-        // cleanup only when its captured state transitively owns heap; the env
-        // box's in-band free thunk releases both those captures and the box.
+        // A bare function pair has no owned environment. This type-level
+        // predicate tracks a closure's captured payload ownership; whether a
+        // particular escaping closure has an env box is a construction-site fact
+        // handled by the closure slot-drop path.
         ResolvedTy::Closure { captures, .. } => captures
             .iter()
             .any(|capture| ty_owns_heap_inner(capture, layouts, visited)),

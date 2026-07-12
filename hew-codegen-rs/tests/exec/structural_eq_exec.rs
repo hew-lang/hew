@@ -42,18 +42,10 @@ fn hew_command(repo: &Path) -> Command {
 }
 
 fn ensure_hew_runtime_lib(repo: &Path) {
+    let _ = repo;
     static BUILT: OnceLock<()> = OnceLock::new();
     BUILT.get_or_init(|| {
-        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let status = Command::new(cargo)
-            .current_dir(repo)
-            .args(["build", "--quiet", "-p", "hew-lib"])
-            .status()
-            .expect("spawn cargo build -p hew-lib");
-        assert!(
-            status.success(),
-            "cargo build -p hew-lib failed: {status:?}"
-        );
+        hew_testutil::ensure_hew_lib_built().expect("build libhew.a");
     });
 }
 

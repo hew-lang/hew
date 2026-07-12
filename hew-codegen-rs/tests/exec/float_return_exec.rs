@@ -12,20 +12,6 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn target_dir(repo: &Path) -> PathBuf {
-    std::env::var_os("CARGO_TARGET_DIR").map_or_else(
-        || repo.join("target"),
-        |dir| {
-            let path = PathBuf::from(dir);
-            if path.is_absolute() {
-                path
-            } else {
-                repo.join(path)
-            }
-        },
-    )
-}
-
 fn hew_command(repo: &Path) -> Command {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let mut command = Command::new(cargo);
@@ -36,31 +22,10 @@ fn hew_command(repo: &Path) -> Command {
 }
 
 fn ensure_hew_runtime_lib(repo: &Path) {
+    let _ = repo;
     static BUILT: OnceLock<()> = OnceLock::new();
     BUILT.get_or_init(|| {
-        let lib = target_dir(repo).join("debug").join("libhew.a");
-        // Always ask cargo to (re)build libhew.a rather than short-circuiting on
-        // its mere presence. Cargo's own fingerprint makes this a fast no-op when
-        // the archive is current and regenerates it when the toolchain (rustc /
-        // bundled LLVM) or the runtime/stdlib sources changed. A bare
-        // `lib.exists()` early-return reused a stale archive after a toolchain
-        // upgrade, linking a freshly-rebuilt `hew` against old object code and
-        // failing the link.
-        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let status = Command::new(cargo)
-            .current_dir(repo)
-            .args(["build", "--quiet", "-p", "hew-lib"])
-            .status()
-            .expect("spawn cargo build -p hew-lib");
-        assert!(
-            status.success(),
-            "cargo build -p hew-lib failed: {status:?}"
-        );
-        assert!(
-            lib.exists(),
-            "libhew.a missing after build: {}",
-            lib.display()
-        );
+        hew_testutil::ensure_hew_lib_built().expect("build libhew.a");
     });
 }
 

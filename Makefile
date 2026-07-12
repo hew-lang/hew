@@ -231,11 +231,16 @@ sandbox-vm-deps:
 	fi
 
 # Native hew run <-> sandbox VM parity harness. All four VM-dependent test
-# binaries (parity, parity_ratchet, playground, ios_subset) are excluded from
-# the generic nextest default-filter (.config/nextest.toml) on every platform
-# because they spawn the hew-sandbox-vm Node runner; this target is the one
-# place that provisions the npm toolchain and then runs all of them via plain
-# `cargo test`, so no VM-dependent test is silently skipped anywhere.
+# binaries (parity, parity_ratchet, playground, ios_subset) are excluded
+# WHOLE from the generic nextest default-filter (.config/nextest.toml) on
+# every platform, because each contains at least one function that spawns
+# the hew-sandbox-vm Node runner -- this is a binary-level exclusion, not a
+# per-test one, so parity_ratchet's non-VM structural ratchet tests also
+# run only here now (see scripts/check-sandbox-parity-coverage.py for why
+# per-test attribution inside a VM-touching binary is not trusted). This
+# target is the one place that provisions the npm toolchain and then runs
+# every test in all four binaries via plain `cargo test`, so nothing is
+# silently skipped anywhere.
 sandbox-parity: hew stdlib sandbox-vm-deps
 	npm --prefix hew-sandbox-vm run build
 	cargo test -p hew-sandbox-wasm --test parity --test parity_ratchet --test playground --test ios_subset
@@ -1059,21 +1064,24 @@ miri:
 lint: runtime-poison-safe-lint lint-wasm-todo leak-scan verify-ffi hew-fmt-check preflight-parity-selftest sandbox-parity-coverage-check
 	cargo clippy --workspace --tests -- -D warnings
 
-# Assert every VM-dependent hew-sandbox-wasm test (one that spawns the
-# hew-sandbox-vm Node runner, directly or transitively via a local helper
-# function) is both excluded from the generic nextest default-filter
-# (.config/nextest.toml) and run by the provisioned `make sandbox-parity`
-# gate. Catches a new VM-dependent test landing in either state alone --
-# unprovisioned generic runs failing, or provisioned coverage silently
-# never running it.
+# Assert every VM-dependent hew-sandbox-wasm test binary (one containing a
+# function that spawns the hew-sandbox-vm Node runner) is excluded WHOLE
+# from the generic nextest default-filter (.config/nextest.toml,
+# profile.default and profile.ci) and has every one of its tests run by the
+# provisioned `make sandbox-parity` gate. Catches a new VM-dependent binary
+# landing in either state alone -- unprovisioned generic runs failing, or
+# provisioned coverage silently never running it. Classification is
+# binary-level, not per-test: see the script's module docstring for why a
+# same-file call graph cannot safely attribute VM-dependence to individual
+# tests.
 sandbox-parity-coverage-check: test-sandbox-parity-coverage-check
 	python3 scripts/check-sandbox-parity-coverage.py
 
-# Self-test for the checker above: proves its call-graph analysis detects a
-# test that reaches the VM spawn only transitively through helper functions
-# (not just a direct literal call in the test's own body), and that an
-# unattributable marker function trips the conservative binary-level
-# fallback. See scripts/tests/test_check_sandbox_parity_coverage.py.
+# Self-test for the checker above: proves a VM spawn marker anywhere in a
+# test file condemns the whole binary regardless of which test can be
+# statically shown to reach it, and that a test reaching the marker only
+# through untraceable indirection (e.g. a runtime dispatch table) cannot
+# evade classification. See scripts/tests/test_check_sandbox_parity_coverage.py.
 test-sandbox-parity-coverage-check:
 	python3 scripts/tests/test_check_sandbox_parity_coverage.py
 

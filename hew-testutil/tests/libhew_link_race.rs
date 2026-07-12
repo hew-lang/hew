@@ -305,7 +305,7 @@ fn wait_with_deadline(child: &mut Child, deadline: Duration) -> Result<ExitStatu
 /// loop: the wait is a single blocking `fd_lock` acquisition.
 ///
 /// Before declaring readiness, a participant must prove it has actually
-/// engaged the barrier: a non-blocking `try_read` is expected to observe
+/// engaged the barrier: a non-blocking `try_read` is required to observe
 /// the orchestrator's held write-lock (`ErrorKind::WouldBlock`). Writing
 /// the ready marker any earlier would be a lie the orchestrator could act
 /// on -- it could release the barrier before this participant ever
@@ -314,6 +314,14 @@ fn wait_with_deadline(child: &mut Child, deadline: Duration) -> Result<ExitStatu
 /// Only after that observation does this function write the marker and
 /// perform the real blocking acquire, so the marker-to-block gap is a
 /// couple of instructions, not an open-ended scheduling window.
+///
+/// A `try_read` that *succeeds* is a hard test failure, not a tolerated
+/// fallback: the orchestrator always acquires the barrier's write-lock
+/// before spawning any participant and only releases it after every ready
+/// marker is observed, so a successful non-blocking read here means either
+/// this function ran outside that invariant or the barrier itself is
+/// broken -- either way there was nothing to prove contention against, so
+/// silently proceeding would let a false "ready" slip through undetected.
 fn wait_at_barrier(barrier_path: &Path, ready_path: &Path) {
     let file = OpenOptions::new()
         .read(true)
@@ -322,12 +330,11 @@ fn wait_at_barrier(barrier_path: &Path, ready_path: &Path) {
     let lock = RwLock::new(file);
     match lock.try_read() {
         Err(e) if e.kind() == ErrorKind::WouldBlock => {}
-        // The orchestrator's guard was already gone by the time this
-        // participant reached the barrier (legitimate under heavy
-        // scheduling load, though it means there was nothing left to prove
-        // contention against) -- drop the probe's guard and proceed; the
-        // ready marker and the read below still hold correctly.
-        Ok(guard) => drop(guard),
+        Ok(_guard) => panic!(
+            "try_read on barrier unexpectedly succeeded -- the barrier's write-lock was \
+             not held when this participant reached it, so readiness cannot be proven \
+             genuine; the orchestrator must hold the write-lock for the whole spawn window"
+        ),
         Err(e) => panic!("try_read on barrier failed unexpectedly: {e}"),
     }
     fs::write(ready_path, b"ready").expect("write ready marker");
@@ -816,6 +823,71 @@ struct UnlockedArmResult {
     unexpected: u32,
 }
 
+/// RAII-owned background poll thread for the unlocked (pre-fix) arm's
+/// absence-window diagnostic. Spawned before `await_ready` so it can
+/// acknowledge readiness like every other participant; guarantees the
+/// busy-spin loop is always stopped and joined -- even if `await_ready`
+/// panics on a readiness-ack timeout, or a later reap panics, before the
+/// caller's own `stop_and_join` runs -- so this thread can never keep
+/// spinning as an orphan just because an earlier participant failed.
+struct PollerGuard {
+    stop: Arc<AtomicBool>,
+    ready: Arc<AtomicBool>,
+    handle: Option<thread::JoinHandle<u64>>,
+}
+
+impl PollerGuard {
+    fn spawn(artifact: PathBuf) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let ready = Arc::new(AtomicBool::new(false));
+        let thread_stop = Arc::clone(&stop);
+        let thread_ready = Arc::clone(&ready);
+        let handle = thread::spawn(move || {
+            thread_ready.store(true, Ordering::Release);
+            let mut hits = 0u64;
+            while !thread_stop.load(Ordering::Relaxed) {
+                if !artifact.exists() {
+                    hits += 1;
+                }
+                std::hint::spin_loop();
+            }
+            hits
+        });
+        Self {
+            stop,
+            ready,
+            handle: Some(handle),
+        }
+    }
+
+    /// Whether the poll thread has started and acknowledged readiness --
+    /// used as `await_ready`'s poller-readiness predicate.
+    fn is_ready(&self) -> bool {
+        self.ready.load(Ordering::Acquire)
+    }
+
+    /// Signals the poll thread to stop and joins it, returning the
+    /// observed hit count. The expected path; `Drop` is the backstop for
+    /// any panic that happens before this runs.
+    fn stop_and_join(mut self) -> u64 {
+        self.stop.store(true, Ordering::Relaxed);
+        self.handle
+            .take()
+            .expect("poll thread not yet joined")
+            .join()
+            .expect("poll thread should not panic")
+    }
+}
+
+impl Drop for PollerGuard {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
 /// Pre-fix arm: `writer_count` real, unlocked `cargo build -p hew-lib`
 /// processes rebuild the real artifact while a background thread
 /// busy-polls its existence (`std::hint::spin_loop`, no sleep) for as long
@@ -861,28 +933,9 @@ fn run_unlocked_arm(exe: &Path, test_name: &str, scratch: &Path) -> UnlockedArmR
         &mut ready_paths,
     );
 
-    let poll_stop = Arc::new(AtomicBool::new(false));
-    let poll_ready = Arc::new(AtomicBool::new(false));
-    let thread_stop = Arc::clone(&poll_stop);
-    let thread_ready = Arc::clone(&poll_ready);
-    let poll_artifact = artifact.clone();
-    let poller = thread::spawn(move || {
-        thread_ready.store(true, Ordering::Release);
-        let mut hits = 0u64;
-        while !thread_stop.load(Ordering::Relaxed) {
-            if !poll_artifact.exists() {
-                hits += 1;
-            }
-            std::hint::spin_loop();
-        }
-        hits
-    });
+    let poller = PollerGuard::spawn(artifact.clone());
 
-    await_ready(
-        &ready_paths,
-        || poll_ready.load(Ordering::Acquire),
-        READY_ACK_DEADLINE,
-    );
+    await_ready(&ready_paths, || poller.is_ready(), READY_ACK_DEADLINE);
 
     drop(guard); // release the barrier -- every participant starts together
 
@@ -891,8 +944,7 @@ fn run_unlocked_arm(exe: &Path, test_name: &str, scratch: &Path) -> UnlockedArmR
         &writer_batch.reap_all("writer-unlocked child"),
     );
 
-    poll_stop.store(true, Ordering::Relaxed);
-    let poll_hits = poller.join().expect("poll thread should not panic");
+    let poll_hits = poller.stop_and_join();
 
     fs::write(&stop_path, b"").expect("signal readers to stop");
 

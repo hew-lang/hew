@@ -864,77 +864,155 @@ mod tests {
         );
     }
 
-    /// Proves the process-group guarantee `libhew_link_race.rs`'s round-3
-    /// hardening depends on: `own_process_group` must put a grandchild the
-    /// direct child forks into the *same* group, and
-    /// `terminate_process_group` must kill that grandchild too, not just
+    /// Heartbeat interval used by the process-group probe tests below --
+    /// fast enough to observe several beats quickly, slow enough to keep
+    /// the probe's own I/O negligible.
+    const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(20);
+    /// How many heartbeats must be observed before either probe acts,
+    /// proving the grandchild is genuinely alive and pumping repeatedly --
+    /// not a single write that could race the read.
+    const MIN_HEARTBEATS_BEFORE_ACTION: u64 = 3;
+    /// Bounds waiting for the grandchild to start heart-beating at all --
+    /// a hang backstop, not the proof itself.
+    const HEARTBEAT_STARTUP_DEADLINE: Duration = Duration::from_secs(5);
+    /// Fixed, single observation window used after a kill: fifteen
+    /// heartbeat intervals is generous enough that any straggler write
+    /// would clearly show up. The proof is one comparison taken after this
+    /// fixed wait, never a retry loop that treats eventual convergence as
+    /// evidence.
+    const POST_KILL_OBSERVATION_WINDOW: Duration = Duration::from_millis(300);
+
+    /// Spawns a direct child that backgrounds a grandchild shell
+    /// heart-beating (appending one byte to `heartbeat_path` every
+    /// `HEARTBEAT_INTERVAL`) and blocks on `wait` -- mirroring a race
+    /// child that spawns its own long-running `cargo`/`hew` subprocess and
+    /// waits on it. `own_process_group` repositions the direct child into
+    /// a fresh process group before it execs, so the grandchild it forks
+    /// afterward inherits that same group.
+    fn spawn_heartbeat_probe(heartbeat_path: &Path) -> Child {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(format!(
+            "sh -c 'while :; do printf x >> \"{path}\"; sleep {interval}; done' & wait",
+            path = heartbeat_path.display(),
+            interval = HEARTBEAT_INTERVAL.as_secs_f64(),
+        ));
+        own_process_group(&mut command);
+        command.spawn().expect("spawn heartbeat probe child")
+    }
+
+    /// Heartbeat count so far: each beat appends exactly one byte, so the
+    /// file's length is the count directly -- no parsing, and no races
+    /// beyond ordinary single-writer append semantics.
+    fn heartbeat_count(path: &Path) -> u64 {
+        fs::metadata(path).map_or(0, |metadata| metadata.len())
+    }
+
+    /// Bounded wait (a hang backstop, not the proof) for at least `min`
+    /// heartbeats to accumulate.
+    fn await_min_heartbeats(path: &Path, min: u64, deadline: Duration) -> u64 {
+        let start = Instant::now();
+        loop {
+            let count = heartbeat_count(path);
+            if count >= min {
+                return count;
+            }
+            assert!(
+                start.elapsed() < deadline,
+                "heartbeat probe never reached {min} beats before the startup deadline"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Proves the process-group guarantee `libhew_link_race.rs`'s
+    /// hardening depends on with a portable, observable side effect
+    /// instead of PID liveness probing (which is prone to a just-killed
+    /// process briefly remaining a valid `kill(pid, 0)` target as a
+    /// zombie pending reap by its new parent): `own_process_group` must
+    /// put a grandchild the direct child forks into the *same* group, and
+    /// `terminate_process_group` must stop that grandchild too, not just
     /// the direct child -- otherwise a self-fork race child's own
     /// `cargo`/`hew`/linker invocation could outlive a timeout kill and
     /// keep mutating `libhew.a` after the caller believes the process is
     /// gone.
+    ///
+    /// `direct_child_only_kill_leaves_grandchild_heartbeating` below is
+    /// this test's negative control: the identical setup, killed the old
+    /// (direct-child-only) way, keeps heart-beating -- proving this test
+    /// actually discriminates rather than passing regardless of what the
+    /// kill call does.
     #[test]
-    fn terminate_process_group_kills_grandchild_too() {
+    fn terminate_process_group_stops_grandchild_heartbeat() {
         let scratch = tempfile::tempdir().expect("create scratch dir");
-        let pid_file = scratch.path().join("grandchild.pid");
+        let heartbeat_path = scratch.path().join("heartbeat");
+        fs::write(&heartbeat_path, b"").expect("create heartbeat file");
 
-        // The direct child is a non-interactive shell (no job-control
-        // pgid-per-job behavior) that backgrounds a grandchild shell,
-        // which records its own pid and execs into a long sleep, then the
-        // direct child blocks on `wait` -- mirroring a race child that
-        // spawns its own `cargo build -p hew-lib` and waits on it.
-        let mut command = Command::new("sh");
-        command.arg("-c").arg(format!(
-            "sh -c 'echo $$ > \"{path}\"; exec sleep 100' & wait",
-            path = pid_file.display()
-        ));
-        own_process_group(&mut command);
-        let mut child = command.spawn().expect("spawn probe child");
-
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let grandchild_pid: i32 = loop {
-            if let Ok(text) = fs::read_to_string(&pid_file) {
-                if let Ok(pid) = text.trim().parse() {
-                    break pid;
-                }
-            }
-            assert!(
-                Instant::now() < deadline,
-                "grandchild never recorded its pid before the bounded wait expired"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        };
-
-        // SAFETY: signal 0 only probes liveness, it sends nothing.
-        let alive_before_kill = unsafe { libc::kill(grandchild_pid, 0) } == 0;
-        assert!(
-            alive_before_kill,
-            "grandchild should still be alive right before termination"
+        let mut child = spawn_heartbeat_probe(&heartbeat_path);
+        await_min_heartbeats(
+            &heartbeat_path,
+            MIN_HEARTBEATS_BEFORE_ACTION,
+            HEARTBEAT_STARTUP_DEADLINE,
         );
 
-        terminate_process_group(&mut child, "probe")
+        terminate_process_group(&mut child, "heartbeat probe")
             .expect("terminate_process_group should succeed");
+        let count_at_kill = heartbeat_count(&heartbeat_path);
 
-        // SIGKILL is uncatchable and immediate, but a just-killed process
-        // can briefly remain a reapable zombie (still a valid `kill(pid, 0)`
-        // target) until its new parent -- launchd, once the direct child's
-        // death orphans it -- reaps it. That reap happens promptly but
-        // asynchronously, so the absence proof is a short bounded poll for
-        // ESRCH, not a single immediate check: a real leak (the grandchild
-        // never signalled at all) stays permanently "alive" and fails this
-        // bound for a structural reason, not a timing coincidence.
-        let esrch_deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            // SAFETY: signal 0 only probes liveness, it sends nothing.
-            let alive = unsafe { libc::kill(grandchild_pid, 0) } == 0;
-            if !alive {
-                break;
-            }
-            assert!(
-                Instant::now() < esrch_deadline,
-                "grandchild (pid {grandchild_pid}) outlived terminate_process_group -- \
-                 it was not in the killed process group"
-            );
-            std::thread::sleep(Duration::from_millis(5));
+        std::thread::sleep(POST_KILL_OBSERVATION_WINDOW);
+        let count_after_window = heartbeat_count(&heartbeat_path);
+
+        assert_eq!(
+            count_after_window, count_at_kill,
+            "heartbeat grew from {count_at_kill} to {count_after_window} bytes after \
+             terminate_process_group -- the grandchild survived the group kill"
+        );
+    }
+
+    /// Negative control for the test above: killing only the direct child
+    /// (the pre-hardening pattern) must leave the grandchild's process
+    /// group untouched, so its heartbeat keeps growing across the same
+    /// observation window -- proving
+    /// `terminate_process_group_stops_grandchild_heartbeat` actually
+    /// discriminates rather than passing regardless of what the kill call
+    /// does.
+    #[test]
+    fn direct_child_only_kill_leaves_grandchild_heartbeating() {
+        let scratch = tempfile::tempdir().expect("create scratch dir");
+        let heartbeat_path = scratch.path().join("heartbeat");
+        fs::write(&heartbeat_path, b"").expect("create heartbeat file");
+
+        let mut child = spawn_heartbeat_probe(&heartbeat_path);
+        await_min_heartbeats(
+            &heartbeat_path,
+            MIN_HEARTBEATS_BEFORE_ACTION,
+            HEARTBEAT_STARTUP_DEADLINE,
+        );
+
+        // Recorded only for best-effort cleanup below, never for the
+        // proof itself: `own_process_group` made this the whole group's
+        // pgid too, but a direct-child-only kill deliberately never uses
+        // it as a group here.
+        let cleanup_pgid = child.id().cast_signed();
+
+        child.kill().expect("kill direct child only");
+        child.wait().expect("reap direct child");
+        let count_at_kill = heartbeat_count(&heartbeat_path);
+
+        std::thread::sleep(POST_KILL_OBSERVATION_WINDOW);
+        let count_after_window = heartbeat_count(&heartbeat_path);
+
+        assert!(
+            count_after_window > count_at_kill,
+            "heartbeat did not grow ({count_at_kill} -> {count_after_window}) after a \
+             direct-child-only kill; this negative control should show the grandchild \
+             surviving, or the positive test above proves nothing"
+        );
+
+        // Best-effort cleanup of the grandchild this negative control
+        // deliberately leaves running; ESRCH means it is already gone.
+        // SAFETY: signal-only, no memory access.
+        unsafe {
+            libc::killpg(cleanup_pgid, libc::SIGKILL);
         }
     }
 }

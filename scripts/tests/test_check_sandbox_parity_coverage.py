@@ -51,15 +51,29 @@ def run_script(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _remove_binary_exclusion_in_profile(text: str, profile: str, binary: str) -> str:
-    """Return `text` with `binary(<binary>)` dropped from `[profile.<profile>]`'s
-    default-filter only -- other profiles' filters are left untouched."""
+def _profile_section_span(text: str, profile: str) -> tuple[int, int]:
+    """Return the (start, end) byte offsets of `[profile.<profile>]`'s BODY --
+    from just after its own header line up to the next top-level `[...]`
+    header or end-of-file. Mirrors the table boundary a TOML parser enforces,
+    so a mutation built from this span can never bleed into a sibling
+    profile's lines (the exact class of bug this test file exists to catch
+    in the production script's own lookup)."""
     profile_m = re.search(
         rf"^\[profile\.{re.escape(profile)}\]\s*$", text, re.MULTILINE
     )
     assert profile_m, f"[profile.{profile}] not found in nextest.toml"
-    rest = text[profile_m.end() :]
-    filter_m = re.search(r'^default-filter\s*=\s*"([^"]*)"', rest, re.MULTILINE)
+    start = profile_m.end()
+    next_header_m = re.search(r"^\[", text[start:], re.MULTILINE)
+    end = start + next_header_m.start() if next_header_m else len(text)
+    return start, end
+
+
+def _remove_binary_exclusion_in_profile(text: str, profile: str, binary: str) -> str:
+    """Return `text` with `binary(<binary>)` dropped from `[profile.<profile>]`'s
+    default-filter only -- other profiles' filters are left untouched."""
+    start, end = _profile_section_span(text, profile)
+    section = text[start:end]
+    filter_m = re.search(r'^default-filter\s*=\s*"([^"]*)"', section, re.MULTILINE)
     assert filter_m, f"default-filter not found in [profile.{profile}]"
     old_value = filter_m.group(1)
     new_value = old_value.replace(f" - binary({binary})", "", 1)
@@ -68,9 +82,22 @@ def _remove_binary_exclusion_in_profile(text: str, profile: str, binary: str) ->
     )
     old_line = filter_m.group(0)
     new_line = old_line.replace(old_value, new_value, 1)
-    abs_start = profile_m.end() + filter_m.start()
-    abs_end = profile_m.end() + filter_m.end()
-    return text[:abs_start] + new_line + text[abs_end:]
+    new_section = section[: filter_m.start()] + new_line + section[filter_m.end() :]
+    return text[:start] + new_section + text[end:]
+
+
+def _delete_filter_line_in_profile(text: str, profile: str) -> str:
+    """Return `text` with the ENTIRE `default-filter = "..."` line deleted from
+    `[profile.<profile>]` -- bounded strictly to that profile's own section, so
+    other profiles keep their real default-filter untouched. Reproduces the
+    exact reported bug scenario: default_filter_line() must not read past
+    [profile.<profile>]'s own table when its default-filter key is gone."""
+    start, end = _profile_section_span(text, profile)
+    section = text[start:end]
+    filter_m = re.search(r'^default-filter\s*=\s*"[^"]*"\n?', section, re.MULTILINE)
+    assert filter_m, f"default-filter not found in [profile.{profile}]"
+    new_section = section[: filter_m.start()] + section[filter_m.end() :]
+    return text[:start] + new_section + text[end:]
 
 
 @contextlib.contextmanager
@@ -318,6 +345,71 @@ def test_removing_binary_exclusion_from_profile_lane_fails_the_checker() -> None
     assert exit_code_after_restore == 0, output_after_restore
 
 
+def test_deleting_profile_default_filter_line_entirely_fails_default_only() -> None:
+    # Sabotage proof for the reported parser hole: default_filter_line()
+    # previously scanned from [profile.default]'s header to end-of-file for
+    # the next `default-filter = "..."` line. Deleting [profile.default]'s
+    # OWN default-filter line entirely made that unbounded scan fall through
+    # to [profile.ci]'s default-filter instead, so the lookup silently
+    # returned ci's exclusions and the checker reported a FALSE PASS for
+    # profile.default. A proper table-bounded parse (tomllib) cannot do
+    # this: with the key gone, it must return "" for profile.default and
+    # leave profile.ci/profile.lane's real values completely unaffected.
+    real_text = check_sandbox_parity_coverage.NEXTEST_TOML.read_text()
+    sabotaged_text = _delete_filter_line_in_profile(real_text, "default")
+    assert sabotaged_text != real_text
+
+    with _sabotaged_nextest_toml(sabotaged_text):
+        default_filter = check_sandbox_parity_coverage.default_filter_line("default")
+        ci_filter = check_sandbox_parity_coverage.default_filter_line("ci")
+        lane_filter = check_sandbox_parity_coverage.default_filter_line("lane")
+
+        # The bug this guards against: without table-bounded lookup, this
+        # would equal ci's filter value (a non-empty string containing
+        # binary(parity_ratchet)) instead of "".
+        assert default_filter == ""
+        assert (
+            check_sandbox_parity_coverage.excludes_binary(
+                default_filter, "parity_ratchet"
+            )
+            is False
+        )
+
+        # profile.ci and profile.lane must be completely untouched by the
+        # sabotage -- proving the deletion was scoped to profile.default's
+        # own table and did not corrupt or get borrowed by its neighbours.
+        assert "binary(parity_ratchet)" in ci_filter
+        assert "binary(parity_ratchet)" in lane_filter
+        assert (
+            check_sandbox_parity_coverage.excludes_binary(ci_filter, "parity_ratchet")
+            is True
+        )
+        assert (
+            check_sandbox_parity_coverage.excludes_binary(lane_filter, "parity_ratchet")
+            is True
+        )
+
+        exit_code, output = _run_main_capturing_output(["--verbose"])
+
+    assert exit_code == 1
+    # Every VM-dependent binary must be reported as failing under
+    # profile.default specifically (the whole table has no exclusions left).
+    for binary in ("parity", "parity_ratchet", "playground", "ios_subset"):
+        assert (
+            f"FAIL [profile.default] does not exclude VM-dependent binary `{binary}`"
+            in output
+        )
+    # profile.ci and profile.lane must report zero failures -- the sabotage
+    # must not leak a false failure OR a false pass into either of them.
+    assert "FAIL [profile.ci] does not exclude" not in output
+    assert "FAIL [profile.lane] does not exclude" not in output
+
+    exit_code_after_restore, output_after_restore = _run_main_capturing_output(
+        ["--verbose"]
+    )
+    assert exit_code_after_restore == 0, output_after_restore
+
+
 _TESTS = [
     test_direct_marker_call_is_detected,
     test_file_with_no_marker_is_not_flagged,
@@ -329,6 +421,7 @@ _TESTS = [
     test_real_repo_state_passes_the_full_check,
     test_lane_is_a_required_profile,
     test_removing_binary_exclusion_from_profile_lane_fails_the_checker,
+    test_deleting_profile_default_filter_line_entirely_fails_default_only,
 ]
 
 if __name__ == "__main__":

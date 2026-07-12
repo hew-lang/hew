@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -111,18 +112,34 @@ def is_vm_dependent(text: str) -> bool:
 
 
 def default_filter_line(profile: str) -> str:
-    """Return the raw default-filter value for the given [profile.<profile>]."""
-    text = NEXTEST_TOML.read_text()
-    profile_m = re.search(
-        rf"^\[profile\.{re.escape(profile)}\]\s*$", text, re.MULTILINE
-    )
-    if not profile_m:
+    """Return the default-filter value for [profile.<profile>], or "" if that
+    profile has no default-filter key at all.
+
+    Parsed via tomllib against the whole document, then looked up through
+    the parsed `profile.<name>` TABLE -- not a regex scan that starts after
+    the profile's `[profile.<name>]` header line and reads to end-of-file.
+    That regex shape was a real bug: if `[profile.default]`'s own
+    `default-filter` key were ever deleted, the unbounded scan would run
+    past the end of `[profile.default]`'s table and match the NEXT
+    profile's `default-filter` line instead (e.g. `[profile.ci]`'s),
+    silently reporting default's binaries as excluded when they are not --
+    a false pass borrowed from a sibling profile. A proper TOML parse
+    cannot do this: `document["profile"]["default"]` is bounded to exactly
+    that table's own keys, nothing more.
+
+    A profile with no `default-filter` key returns "" (the empty string
+    excludes nothing), which the caller reports as an ordinary FAIL for
+    every VM-dependent binary under that profile -- not a crash, and not a
+    value silently sourced from a different profile.
+    """
+    try:
+        document = tomllib.loads(NEXTEST_TOML.read_text())
+    except tomllib.TOMLDecodeError as exc:
+        raise SystemExit(f"error: failed to parse {NEXTEST_TOML} as TOML: {exc}")
+    profile_table = document.get("profile", {}).get(profile)
+    if profile_table is None:
         raise SystemExit(f"error: [profile.{profile}] not found in {NEXTEST_TOML}")
-    rest = text[profile_m.end() :]
-    filter_m = re.search(r'^default-filter\s*=\s*"([^"]*)"', rest, re.MULTILINE)
-    if not filter_m:
-        raise SystemExit(f"error: default-filter not found in [profile.{profile}]")
-    return filter_m.group(1)
+    return profile_table.get("default-filter", "")
 
 
 def excludes_binary(filter_value: str, binary: str) -> bool:

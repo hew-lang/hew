@@ -1520,6 +1520,9 @@ fn render_diag_kind(kind: &MirDiagnosticKind) -> String {
             ty.user_facing()
         ),
         MirDiagnosticKind::UnknownType { name } => format!("UnknownType {name}"),
+        MirDiagnosticKind::ExternStringOwnershipUnresolved { symbol } => {
+            format!("ExternStringOwnershipUnresolved {symbol}")
+        }
         MirDiagnosticKind::UnsupportedUserRecordValueClass { name, reason } => {
             format!("UnsupportedUserRecordValueClass {name} {reason:?}")
         }

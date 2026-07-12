@@ -3136,30 +3136,55 @@ pub fn lower_hir_module_with_facts(
         })
         .collect();
 
-    let extern_decls: Vec<crate::model::ExternDecl> = module
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            HirItem::ExternFn(ef) => Some(crate::model::ExternDecl {
-                name: ef.name.clone(),
-                abi: ef.abi.clone(),
-                param_tys: ef.param_tys.clone(),
-                return_ty: ef.return_ty.clone(),
-                malloc_string_return: ef.abi == "C"
-                    && matches!(ef.return_ty, ResolvedTy::String)
-                    && !module
-                        .diagnostic_source_modules
-                        .get(&ef.id)
-                        .is_some_and(|source| {
-                            source == "std"
-                                || source.starts_with("std.")
-                                || source.starts_with("std::")
-                        })
-                    && !hew_types::jit_symbols::is_classified_hew_ffi_symbol(&ef.name),
-            }),
-            _ => None,
-        })
-        .collect();
+    // Build one `ExternDecl` per HIR `extern` fn, deriving each C-ABI string
+    // return's ownership from the extern's carried defining-module provenance —
+    // NOT by absence from `diagnostic_source_modules`, which conflates a root
+    // user extern with a std extern whose attribution was lost. A wrong
+    // classification corrupts memory in either direction, so an unresolvable
+    // provenance fails closed with a diagnostic rather than guessing.
+    let mut extern_decls: Vec<crate::model::ExternDecl> = Vec::new();
+    for item in &module.items {
+        let HirItem::ExternFn(ef) = item else {
+            continue;
+        };
+        // Ownership classification only applies to C-ABI `-> string` returns;
+        // every other extern keeps `malloc_string_return = false`.
+        let malloc_string_return = if ef.abi == "C" && matches!(ef.return_ty, ResolvedTy::String) {
+            match crate::model::classify_extern_string_ownership(&ef.provenance, &ef.name) {
+                crate::model::ExternStringOwnership::ForeignAdopt => true,
+                crate::model::ExternStringOwnership::HeaderAware => false,
+                crate::model::ExternStringOwnership::Unresolved => {
+                    // Fail closed: refuse to guess a memory-unsafe adoption
+                    // direction. The diagnostic gates codegen at the CLI, so
+                    // no binary is emitted; the inert `false` here never
+                    // reaches a real call edge.
+                    diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::ExternStringOwnershipUnresolved {
+                            symbol: ef.name.clone(),
+                        },
+                        note: format!(
+                            "extern \"C\" fn `{}` returns a string but its defining-module \
+                                 provenance carries no module identity, so its return ownership \
+                                 (header-aware Hew string vs. adopted foreign C string) cannot be \
+                                 classified; neither direction is memory safe by default",
+                            ef.name
+                        ),
+                    });
+                    false
+                }
+            }
+        } else {
+            false
+        };
+        extern_decls.push(crate::model::ExternDecl {
+            name: ef.name.clone(),
+            abi: ef.abi.clone(),
+            param_tys: ef.param_tys.clone(),
+            return_ty: ef.return_ty.clone(),
+            provenance: ef.provenance.clone(),
+            malloc_string_return,
+        });
+    }
 
     // W3.031 Stage 2 — build the deduplicated `dyn Trait` vtable
     // registry from every `Instr::CoerceToDynTrait` reached by any

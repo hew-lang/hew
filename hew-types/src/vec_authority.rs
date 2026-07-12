@@ -390,6 +390,24 @@ pub fn resolve_runtime_symbol(
 ) -> VecSymbolResolution {
     let spec = method_spec(method);
 
+    // A `Ptr`-token element (a heap-boxed indirect enum node, a `LocalPid`
+    // handle, a closure/function value, ...) never selects the owned Vec
+    // family, even when an upstream owned-admissibility check reports it as
+    // owned. A recursive `indirect enum` element satisfies every shape
+    // `vec_owned_element_admissible` requires (registered record/enum kind,
+    // `RcFree`, no unowned-container field) because that admissibility check
+    // is blind to indirection — but its runtime representation is a bare
+    // pointer slot built by `hew_vec_new_ptr`, not the owned family's
+    // `HewVecElemLayout`-descriptor buffer. Honouring `is_owned` here would
+    // route `push`/`pop`/`get`/... to `hew_vec_*_owned` against a buffer the
+    // constructor built pointer-plain, corrupting the ABI the moment
+    // construction is ever admitted for that element. Pinning the exclusion
+    // at the authority (not as a codegen-side special case) keeps
+    // construction and every element op congruent by construction, mirroring
+    // the existing `LocalPid` precedent
+    // (`BuiltinType::lowers_as_pointer_vec_element`).
+    let is_owned = profile.is_owned && profile.abi != Some(VecElementToken::Ptr);
+
     if profile.is_function_like {
         if method == VecMethod::Get {
             return VecSymbolResolution::Unsupported(VecUnsupported::FunctionGet);
@@ -414,7 +432,7 @@ pub fn resolve_runtime_symbol(
         method,
         VecMethod::Clear | VecMethod::Clone | VecMethod::Append
     ) {
-        if profile.is_owned && method == VecMethod::Clone {
+        if is_owned && method == VecMethod::Clone {
             return available(format!("{}_owned", spec.template.raw));
         }
         if profile.abi == Some(VecElementToken::Layout) {
@@ -433,7 +451,7 @@ pub fn resolve_runtime_symbol(
         return available(spec.template.raw.clone());
     }
 
-    if profile.is_owned {
+    if is_owned {
         let owned = expand_template(&spec.template, "owned");
         if method == VecMethod::Get {
             return available("hew_vec_get_clone".to_string());
@@ -604,6 +622,87 @@ mod tests {
                     VecResolutionContext::MonomorphizedPlaceholder
                 ),
                 VecSymbolResolution::Resolved(expected.to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn ptr_token_element_never_selects_owned_family_even_if_reported_owned() {
+        // Pins the exact latent-bug shape from CAP-01: `vec_owned_element_
+        // admissible` is blind to indirection, so a recursive `indirect enum`
+        // element (e.g. `indirect enum RedisReply { Array(Vec<RedisReply>);
+        // ... }`) can report `is_owned: true` even though `classify_element`
+        // correctly tokens it `Ptr` — its Vec buffer is one heap-boxed
+        // pointer per slot, built by `hew_vec_new_ptr`, never the owned
+        // family's element-layout descriptor. `resolve_runtime_symbol` MUST
+        // ignore `is_owned` for a `Ptr`-token element and stay on the `_ptr`
+        // operation family, matching the constructor codegen already
+        // special-cases for indirect enums.
+        let recursive_indirect_enum_reported_owned = VecElementProfile {
+            abi: Some(VecElementToken::Ptr),
+            is_owned: true,
+            is_copy_layout: false,
+            is_function_like: false,
+            is_abstract: false,
+        };
+        for (method, expected) in [
+            (VecMethod::Push, "hew_vec_push_ptr"),
+            (VecMethod::Pop, "hew_vec_pop_ptr"),
+            (VecMethod::Set, "hew_vec_set_ptr"),
+            (VecMethod::Remove, "hew_vec_remove_at_ptr"),
+            (VecMethod::Get, "hew_vec_get_clone"),
+            (VecMethod::Clone, "hew_vec_clone"),
+        ] {
+            assert_eq!(
+                resolve_runtime_symbol(
+                    method,
+                    recursive_indirect_enum_reported_owned,
+                    VecResolutionContext::CheckerConcrete
+                ),
+                VecSymbolResolution::Resolved(expected.to_string()),
+                "{} must route to the _ptr/base family, never _owned, for a \
+                 Ptr-token element even when (incorrectly) reported owned",
+                method.name()
+            );
+        }
+        // `hew_vec_contains_ptr` has no runtime export (the same catalog gap
+        // every other Ptr-token element hits) — it must stay `Unavailable`,
+        // never silently accept `hew_vec_contains_owned`.
+        assert_eq!(
+            resolve_runtime_symbol(
+                VecMethod::Contains,
+                recursive_indirect_enum_reported_owned,
+                VecResolutionContext::CheckerConcrete
+            ),
+            VecSymbolResolution::Unavailable
+        );
+
+        // Coverage retained: a genuine owned layout record (no `abi` token —
+        // e.g. a heap-owning record with a `string` field) still selects the
+        // owned family across the same method matrix. The `Ptr` exclusion
+        // above must not regress the W5.016 owned-element path it coexists
+        // with.
+        let owned_record = VecElementProfile {
+            abi: None,
+            is_owned: true,
+            is_copy_layout: false,
+            is_function_like: false,
+            is_abstract: false,
+        };
+        for (method, expected) in [
+            (VecMethod::Push, "hew_vec_push_owned"),
+            (VecMethod::Pop, "hew_vec_pop_owned"),
+            (VecMethod::Set, "hew_vec_set_owned"),
+            (VecMethod::Remove, "hew_vec_remove_at_owned"),
+            (VecMethod::Contains, "hew_vec_contains_owned"),
+            (VecMethod::Clone, "hew_vec_clone_owned"),
+            (VecMethod::Get, "hew_vec_get_clone"),
+        ] {
+            assert_eq!(
+                resolve_runtime_symbol(method, owned_record, VecResolutionContext::CheckerConcrete),
+                VecSymbolResolution::Resolved(expected.to_string()),
+                "{} on a genuine owned layout record must stay on the _owned family",
+                method.name()
             );
         }
     }

@@ -422,6 +422,11 @@ pub struct ExternDecl {
     pub abi: String,
     pub param_tys: Vec<ResolvedTy>,
     pub return_ty: ResolvedTy,
+    /// True only for a raw root/package `extern "C" -> string` whose C ABI
+    /// transfers a plain malloc-owned pointer. Standard-library modules and
+    /// classified Hew runtime/stdlib symbols already return header-aware
+    /// strings and keep this false.
+    pub malloc_string_return: bool,
 }
 
 /// One `dyn Trait` vtable instance — see [`IrPipeline::dyn_vtable_registry`].

@@ -4,8 +4,9 @@
 //! result sets are heap handles carried as `i64` inside a `#[repr(C)]`
 //! single-field struct (matching Hew's `type Result { handle: i64; }`),
 //! strings cross the boundary as C strings — `*const c_char` in, malloc'd
-//! `*mut c_char` out (the Hew runtime releases returned strings with
-//! `free`). Handles must be released exactly once via
+//! `*mut c_char` out. Generated callers adopt returned strings into Hew's
+//! refcounted string domain and release the foreign allocation with `free`.
+//! Handles must be released exactly once via
 //! [`hew_testffi_result_free`].
 
 use std::os::raw::{c_char, c_void};

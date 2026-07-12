@@ -16,6 +16,7 @@ pub(crate) mod eq_eligibility;
 pub mod error;
 pub mod extern_symbol;
 pub(crate) mod hash_eligibility;
+pub mod jit_symbols;
 pub mod lang_items;
 pub mod lowering_facts;
 pub mod method_resolution;

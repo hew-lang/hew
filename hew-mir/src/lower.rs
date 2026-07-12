@@ -3145,6 +3145,17 @@ pub fn lower_hir_module_with_facts(
                 abi: ef.abi.clone(),
                 param_tys: ef.param_tys.clone(),
                 return_ty: ef.return_ty.clone(),
+                malloc_string_return: ef.abi == "C"
+                    && matches!(ef.return_ty, ResolvedTy::String)
+                    && !module
+                        .diagnostic_source_modules
+                        .get(&ef.id)
+                        .is_some_and(|source| {
+                            source == "std"
+                                || source.starts_with("std.")
+                                || source.starts_with("std::")
+                        })
+                    && !hew_types::jit_symbols::is_classified_hew_ffi_symbol(&ef.name),
             }),
             _ => None,
         })

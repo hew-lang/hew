@@ -352,9 +352,11 @@ def test_deleting_profile_default_filter_line_entirely_fails_default_only() -> N
     # OWN default-filter line entirely made that unbounded scan fall through
     # to [profile.ci]'s default-filter instead, so the lookup silently
     # returned ci's exclusions and the checker reported a FALSE PASS for
-    # profile.default. A proper table-bounded parse (tomllib) cannot do
-    # this: with the key gone, it must return "" for profile.default and
-    # leave profile.ci/profile.lane's real values completely unaffected.
+    # profile.default. The fix bounds the lookup to `_profile_table_span` --
+    # the text strictly between [profile.default]'s own header and the next
+    # header line of any kind -- so with the key gone it must return "" for
+    # profile.default and leave profile.ci/profile.lane's real values
+    # completely unaffected.
     real_text = check_sandbox_parity_coverage.NEXTEST_TOML.read_text()
     sabotaged_text = _delete_filter_line_in_profile(real_text, "default")
     assert sabotaged_text != real_text
@@ -410,6 +412,48 @@ def test_deleting_profile_default_filter_line_entirely_fails_default_only() -> N
     assert exit_code_after_restore == 0, output_after_restore
 
 
+def test_script_stays_python_3_10_compatible_with_no_new_dependency() -> None:
+    # Regression proof for the reported baseline violation: an earlier fix
+    # for the [profile.default]/[profile.ci] boundary bug used the stdlib
+    # `tomllib` module, which does not exist before Python 3.11 -- silently
+    # raising this project's tooling baseline past the documented Python
+    # 3.10 floor with no dependency-provisioning change to match. The fix
+    # must be a plain, section-bounded regex/text scan (see
+    # `_profile_table_span` in the production script) with no `tomllib`
+    # import and no third-party TOML library, so the checker keeps running
+    # on a bare Python 3.10 interpreter.
+    source = SCRIPT.read_text()
+    assert not re.search(r"^\s*import tomllib\b", source, re.MULTILINE), (
+        "check-sandbox-parity-coverage.py must not import tomllib (or any "
+        "other Python 3.11+-only stdlib module) -- the project's tooling "
+        "baseline is Python 3.10; see _profile_table_span for the "
+        "3.10-compatible section-bounded replacement"
+    )
+    assert not re.search(r"^\s*import (toml|tomli)\b", source, re.MULTILINE), (
+        "check-sandbox-parity-coverage.py must not add a third-party TOML "
+        "parsing dependency"
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            f"compile(open({str(SCRIPT)!r}).read(), {str(SCRIPT)!r}, 'exec')",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    # The section-bounded lookup itself must still work end-to-end against
+    # the real repo file (belt-and-suspenders alongside
+    # test_real_repo_state_passes_the_full_check).
+    for profile in ("default", "ci", "lane"):
+        filter_value = check_sandbox_parity_coverage.default_filter_line(profile)
+        assert "binary(parity_ratchet)" in filter_value
+
+
 _TESTS = [
     test_direct_marker_call_is_detected,
     test_file_with_no_marker_is_not_flagged,
@@ -422,6 +466,7 @@ _TESTS = [
     test_lane_is_a_required_profile,
     test_removing_binary_exclusion_from_profile_lane_fails_the_checker,
     test_deleting_profile_default_filter_line_entirely_fails_default_only,
+    test_script_stays_python_3_10_compatible_with_no_new_dependency,
 ]
 
 if __name__ == "__main__":

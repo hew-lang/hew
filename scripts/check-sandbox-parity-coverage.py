@@ -61,7 +61,6 @@ from __future__ import annotations
 
 import re
 import sys
-import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -111,35 +110,74 @@ def is_vm_dependent(text: str) -> bool:
     return VM_MARKER_STRING in text
 
 
+def _profile_table_span(text: str, profile: str) -> tuple[int, int]:
+    """Return the (start, end) byte offsets of [profile.<profile>]'s OWN
+    direct-key body in `text` -- the text strictly between its
+    `[profile.<profile>]` header line and the next TOML header line of any
+    kind (a sibling profile's `[profile.<other>]`, or that same profile's
+    own `[[profile.<profile>.overrides]]` array-of-tables entries).
+
+    This mirrors real TOML table semantics without needing a TOML parser:
+    once a header line re-opens ANY table (nested or not), the keys that
+    follow no longer belong to the table declared by the PRECEDING header --
+    they belong to whatever the new header just opened. So a table's own
+    direct keys (like `default-filter`) can only ever appear between its own
+    header and the very next header line, full stop. In this repo's
+    .config/nextest.toml, every `default-filter` line for every profile is
+    declared before that profile's first `[[profile.<name>.overrides]]`
+    block, so bounding at "the next header line of any kind" is exactly
+    right and does not require distinguishing top-level headers from nested
+    ones.
+
+    Raises SystemExit if `[profile.<profile>]` is not found at all (an
+    absent profile TABLE is a more severe, out-of-scope error than an absent
+    `default-filter` key within an existing one).
+    """
+    header_re = re.compile(rf"^\[profile\.{re.escape(profile)}\][ \t]*$", re.MULTILINE)
+    header_m = header_re.search(text)
+    if header_m is None:
+        raise SystemExit(f"error: [profile.{profile}] not found in {NEXTEST_TOML}")
+    body_start = header_m.end()
+    next_header_m = re.search(r"^\[", text[body_start:], re.MULTILINE)
+    body_end = body_start + next_header_m.start() if next_header_m else len(text)
+    return body_start, body_end
+
+
 def default_filter_line(profile: str) -> str:
     """Return the default-filter value for [profile.<profile>], or "" if that
     profile has no default-filter key at all.
 
-    Parsed via tomllib against the whole document, then looked up through
-    the parsed `profile.<name>` TABLE -- not a regex scan that starts after
-    the profile's `[profile.<name>]` header line and reads to end-of-file.
-    That regex shape was a real bug: if `[profile.default]`'s own
-    `default-filter` key were ever deleted, the unbounded scan would run
-    past the end of `[profile.default]`'s table and match the NEXT
-    profile's `default-filter` line instead (e.g. `[profile.ci]`'s),
-    silently reporting default's binaries as excluded when they are not --
-    a false pass borrowed from a sibling profile. A proper TOML parse
-    cannot do this: `document["profile"]["default"]` is bounded to exactly
-    that table's own keys, nothing more.
+    Looked up via `_profile_table_span`, which bounds the search to exactly
+    the text between `[profile.<profile>]`'s own header and the next header
+    line of any kind -- NOT a regex scan that starts after the profile's
+    header and reads to end-of-file. That unbounded shape was a real bug:
+    if `[profile.default]`'s own `default-filter` key were ever deleted,
+    the unbounded scan would run past the end of `[profile.default]`'s
+    table and match the NEXT profile's `default-filter` line instead (e.g.
+    `[profile.ci]`'s), silently reporting default's binaries as excluded
+    when they are not -- a false pass borrowed from a sibling profile.
+    Bounding the search to `_profile_table_span`'s (start, end) cannot do
+    this: nothing past the next header line is ever visible to the search,
+    so there is no text left to borrow from a sibling profile.
+
+    This deliberately avoids a full TOML parser (e.g. the stdlib `tomllib`
+    module): `tomllib` requires Python 3.11+, and this repo's tooling
+    baseline is Python 3.10, with no dependency or interpreter-provisioning
+    change in scope here. A section-bounded regex scan is sufficient for
+    this file's shape (flat `default-filter = "..."` string keys, no
+    multi-line strings or nested inline tables holding that key) and keeps
+    the fix within a single self-contained script with no new requirement.
 
     A profile with no `default-filter` key returns "" (the empty string
     excludes nothing), which the caller reports as an ordinary FAIL for
     every VM-dependent binary under that profile -- not a crash, and not a
     value silently sourced from a different profile.
     """
-    try:
-        document = tomllib.loads(NEXTEST_TOML.read_text())
-    except tomllib.TOMLDecodeError as exc:
-        raise SystemExit(f"error: failed to parse {NEXTEST_TOML} as TOML: {exc}")
-    profile_table = document.get("profile", {}).get(profile)
-    if profile_table is None:
-        raise SystemExit(f"error: [profile.{profile}] not found in {NEXTEST_TOML}")
-    return profile_table.get("default-filter", "")
+    text = NEXTEST_TOML.read_text()
+    body_start, body_end = _profile_table_span(text, profile)
+    body = text[body_start:body_end]
+    filter_m = re.search(r'^default-filter\s*=\s*"([^"]*)"', body, re.MULTILINE)
+    return filter_m.group(1) if filter_m else ""
 
 
 def excludes_binary(filter_value: str, binary: str) -> bool:

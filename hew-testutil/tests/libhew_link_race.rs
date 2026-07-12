@@ -29,16 +29,25 @@
 //!    zero of either failure kind.
 //! 3. **A real, acknowledged, bounded barrier -- and a diagnostic, not
 //!    mandatory, negative control.** Every spawned writer/reader/poller
-//!    signals readiness (about to block on the shared barrier) before the
-//!    orchestrator releases it, bounded by a deadline so a child that fails
-//!    to start fails the test loudly instead of hanging forever. Real link
-//!    operations and child reaps are themselves deadline-bounded, and
-//!    cleanup (killing stragglers, signalling any stop file) always runs on
-//!    the way out, including through a panic. The unlocked arm's poll-based
-//!    absence observation is scheduler-timing-dependent, not a structural
-//!    guarantee, so it is reported as a diagnostic rather than asserted;
-//!    the deterministic proof lives entirely in the gated arm's structural
-//!    (lock-exclusion) guarantees.
+//!    proves it is genuinely contending for the shared barrier lock (a
+//!    non-blocking probe observing the orchestrator's held write-lock)
+//!    before signalling readiness, and the orchestrator releases the
+//!    barrier only after every such acknowledgement, bounded by a deadline
+//!    so a child that fails to start fails the test loudly instead of
+//!    hanging forever. Real link operations and child reaps are themselves
+//!    deadline-bounded, and cleanup (killing stragglers, signalling any stop
+//!    file) always runs on the way out, including through a panic. The
+//!    unlocked arm's poll-based absence observation is scheduler-timing-
+//!    dependent, not a structural guarantee, so it is reported as a
+//!    diagnostic rather than asserted; the deterministic proof lives
+//!    entirely in the gated arm's structural (lock-exclusion) guarantees.
+//! 4. **No descendant outlives its process group.** Every self-fork race
+//!    child and every bounded real `cargo`/`hew` invocation runs in its own
+//!    fresh Unix process group (`hew_testutil::own_process_group`); timeout
+//!    or drop-time cleanup kills the whole group
+//!    (`hew_testutil::terminate_process_group`), not just the direct child,
+//!    so a `cargo`/linker grandchild can never keep mutating `libhew.a`
+//!    after the parent or its lock guard is gone.
 //!
 //! None of the above uses a sleep, or a retry-until-pass loop, as proof.
 //! Bounded polling for readiness/deadlines exists only as a hang backstop.
@@ -49,20 +58,21 @@
 //! proving gates that should not gate routine `cargo nextest run`.
 //!
 //! Unix-only: the fixed writer/reader roles shell real `cargo`/`hew`
-//! subprocesses, chmod a spy wrapper, and use `fd_lock`-based barriers
-//! exactly like `ensure_hew_lib_built` itself; Windows uses a different
-//! static-lib name (`hew.lib`) and MSVC link semantics the plan's grounded
-//! evidence (clang's `no such file or directory` signature) does not cover.
-//! This mirrors the existing `#[cfg(unix)]` gate elsewhere in this crate for
-//! the same class of heavy real-process repro.
+//! subprocesses, chmod a spy wrapper, use `fd_lock`-based barriers exactly
+//! like `ensure_hew_lib_built` itself, and rely on `setpgid`/`killpg`
+//! process-group semantics; Windows uses a different static-lib name
+//! (`hew.lib`) and MSVC link semantics the plan's grounded evidence (clang's
+//! `no such file or directory` signature) does not cover. This mirrors the
+//! existing `#[cfg(unix)]` gate elsewhere in this crate for the same class
+//! of heavy real-process repro.
 #![cfg(unix)]
 
 use std::env;
 use std::fs::{self, OpenOptions};
-use std::io::Read;
+use std::io::ErrorKind;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Child, Command, ExitStatus};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -237,63 +247,29 @@ enum Classification {
     Unexpected(String),
 }
 
-/// Runs `cmd` to completion, piping stdout/stderr and returning them
-/// alongside the exit status, but never blocking past `deadline`: a child
-/// that overruns is killed (not left to finish on its own clock) and
-/// reported as an error. This is a hang backstop, not the race's proof --
-/// `LINK_DEADLINE`/`CHILD_WAIT_DEADLINE` are generous multiples of observed
-/// real link/build time.
-fn wait_piped_with_deadline(
-    mut child: Child,
-    deadline: Duration,
-) -> Result<(ExitStatus, String, String), String> {
-    let mut stdout = child.stdout.take().expect("stdout piped");
-    let mut stderr = child.stderr.take().expect("stderr piped");
-    let stdout_thread = thread::spawn(move || {
-        let mut buf = String::new();
-        let _ = stdout.read_to_string(&mut buf);
-        buf
-    });
-    let stderr_thread = thread::spawn(move || {
-        let mut buf = String::new();
-        let _ = stderr.read_to_string(&mut buf);
-        buf
-    });
-    let status = wait_with_deadline(&mut child, deadline)?;
-    let out = stdout_thread
-        .join()
-        .unwrap_or_else(|_| "[stdout reader thread panicked]".to_string());
-    let err = stderr_thread
-        .join()
-        .unwrap_or_else(|_| "[stderr reader thread panicked]".to_string());
-    Ok((status, out, err))
-}
-
 /// A real consumer link: `hew compile` on a trivial fixture. Exercises the
 /// production path (`find_hew_lib` + `link_executable`, clang/cc) that the
 /// plan's grounded evidence's `clang: error: no such file or directory:
-/// '.../libhew.a'` signature comes from. Deadline-bound: a hung linker
-/// fails the attempt instead of hanging the whole test.
+/// '.../libhew.a'` signature comes from. Runs through
+/// `hew_testutil::run_command_bounded` -- the same deadline-bounded,
+/// process-group-killing primitive `ensure_hew_lib_built`'s own callers
+/// rely on -- so a hung or runaway linker (clang/cc, forked by `hew`
+/// itself) is killed as a whole group, not left as an orphaned descendant
+/// of a process this test only thinks it killed.
 fn real_compile_attempt(hew_bin: &Path, src: &Path, emit_dir: &Path) -> Classification {
     let mut cmd = Command::new(hew_bin);
-    cmd.arg("compile")
-        .arg(src)
-        .arg("--emit-dir")
-        .arg(emit_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => return Classification::Unexpected(format!("spawn hew compile: {e}")),
-    };
-    match wait_piped_with_deadline(child, LINK_DEADLINE) {
-        Ok((status, _stdout, stderr)) => {
-            if status.success() {
+    cmd.arg("compile").arg(src).arg("--emit-dir").arg(emit_dir);
+    match hew_testutil::run_command_bounded(&mut cmd, "hew compile", LINK_DEADLINE) {
+        Ok(output) => {
+            if output.status.success() {
                 Classification::Success
-            } else if is_libhew_absence_signature(&stderr) {
-                Classification::Absence(stderr)
             } else {
-                Classification::Unexpected(stderr)
+                let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+                if is_libhew_absence_signature(&stderr) {
+                    Classification::Absence(stderr)
+                } else {
+                    Classification::Unexpected(stderr)
+                }
             }
         }
         Err(e) => Classification::Unexpected(format!("hew compile did not complete: {e}")),
@@ -301,9 +277,12 @@ fn real_compile_attempt(hew_bin: &Path, src: &Path, emit_dir: &Path) -> Classifi
 }
 
 /// Waits (bounded, polling, no sleep-as-proof) for a spawned child to exit.
-/// A child that outlives `deadline` is killed and reaped, never left
-/// running past its test -- this is the hang backstop underlying every
-/// child reap and real link attempt in this file.
+/// A child that outlives `deadline` is killed via its whole process group
+/// (`hew_testutil::terminate_process_group`), not just itself, and reaped --
+/// never left running past its test. Every self-fork race child is put in
+/// its own process group by `own_process_group` at spawn time (see
+/// `spawn_role`), so a `cargo`/`hew`/linker grandchild it forked cannot
+/// outlive this kill.
 fn wait_with_deadline(child: &mut Child, deadline: Duration) -> Result<ExitStatus, String> {
     let start = Instant::now();
     loop {
@@ -311,9 +290,11 @@ fn wait_with_deadline(child: &mut Child, deadline: Duration) -> Result<ExitStatu
             return Ok(status);
         }
         if start.elapsed() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!("child did not exit within {deadline:?}; killed"));
+            hew_testutil::terminate_process_group(child, "race child")
+                .map_err(|e| format!("child did not exit within {deadline:?}: {e}"))?;
+            return Err(format!(
+                "child did not exit within {deadline:?}; process group killed"
+            ));
         }
         thread::sleep(POLL_SLEEP);
     }
@@ -321,19 +302,35 @@ fn wait_with_deadline(child: &mut Child, deadline: Duration) -> Result<ExitStatu
 
 /// Blocks until the orchestrator drops its write guard on `barrier_path` --
 /// every barrier-waiting participant unblocks together. No sleep, no retry
-/// loop: the wait is a single blocking `fd_lock` acquisition. Writes a
-/// readiness marker immediately beforehand so the orchestrator can confirm
-/// (bounded, before releasing) that every participant is at or past this
-/// point -- otherwise a slow-to-spawn child could still be mid-exec when a
-/// fast one races off alone, undermining the "synchronized start" the race
-/// proof depends on.
+/// loop: the wait is a single blocking `fd_lock` acquisition.
+///
+/// Before declaring readiness, a participant must prove it has actually
+/// engaged the barrier: a non-blocking `try_read` is expected to observe
+/// the orchestrator's held write-lock (`ErrorKind::WouldBlock`). Writing
+/// the ready marker any earlier would be a lie the orchestrator could act
+/// on -- it could release the barrier before this participant ever
+/// contends for it, letting a descheduled child start arbitrarily late
+/// while every other participant believes the release was synchronized.
+/// Only after that observation does this function write the marker and
+/// perform the real blocking acquire, so the marker-to-block gap is a
+/// couple of instructions, not an open-ended scheduling window.
 fn wait_at_barrier(barrier_path: &Path, ready_path: &Path) {
-    fs::write(ready_path, b"ready").expect("write ready marker");
     let file = OpenOptions::new()
         .read(true)
         .open(barrier_path)
         .expect("open barrier file");
     let lock = RwLock::new(file);
+    match lock.try_read() {
+        Err(e) if e.kind() == ErrorKind::WouldBlock => {}
+        // The orchestrator's guard was already gone by the time this
+        // participant reached the barrier (legitimate under heavy
+        // scheduling load, though it means there was nothing left to prove
+        // contention against) -- drop the probe's guard and proceed; the
+        // ready marker and the read below still hold correctly.
+        Ok(guard) => drop(guard),
+        Err(e) => panic!("try_read on barrier failed unexpectedly: {e}"),
+    }
+    fs::write(ready_path, b"ready").expect("write ready marker");
     let _guard = lock.read().expect("await barrier release");
 }
 
@@ -491,14 +488,16 @@ struct RaceChild {
 
 /// Owns a batch of already-spawned race children (writers, readers, or
 /// timed builders) for one barrier-synchronized round. Guarantees no child
-/// outlives this batch and that `stop_path` (if any) is always signalled --
-/// even if an assertion earlier in the test panics, a `while
-/// !stop_path.exists()` reader must never spin as an orphan, and a
-/// still-running writer must never survive past its test. `reap_all` is the
-/// expected path (deadline-bounded, records outcomes without panicking so
-/// every child is always fully reaped first); `Drop` is the backstop for
-/// any panic that happens before `reap_all` runs (e.g. a readiness-ack
-/// timeout while other children are still live).
+/// -- or any grandchild it forked (a `cargo`/`hew`/linker invocation running
+/// inside `own_process_group`'s process group) -- outlives this batch, and
+/// that `stop_path` (if any) is always signalled -- even if an assertion
+/// earlier in the test panics, a `while !stop_path.exists()` reader must
+/// never spin as an orphan, and a still-running writer (or its own
+/// in-flight `cargo build -p hew-lib`) must never survive past its test.
+/// `reap_all` is the expected path (deadline-bounded, records outcomes
+/// without panicking so every child is always fully reaped first); `Drop`
+/// is the backstop for any panic that happens before `reap_all` runs (e.g.
+/// a readiness-ack timeout while other children are still live).
 struct ChildBatch {
     children: Vec<RaceChild>,
     stop_path: Option<PathBuf>,
@@ -516,10 +515,11 @@ impl ChildBatch {
         self.children.push(child);
     }
 
-    /// Reaps every child (deadline-bounded, kills stragglers), returning
-    /// each one's outcome. Never panics mid-loop -- every child is fully
-    /// reaped before the caller inspects outcomes and decides whether to
-    /// fail, so a single bad child can never orphan its siblings.
+    /// Reaps every child (deadline-bounded, kills stragglers -- and their
+    /// process groups -- on timeout), returning each one's outcome. Never
+    /// panics mid-loop -- every child is fully reaped before the caller
+    /// inspects outcomes and decides whether to fail, so a single bad
+    /// child can never orphan its siblings.
     fn reap_all(&mut self, label: &str) -> Vec<(PathBuf, Result<String, String>)> {
         let mut outcomes = Vec::new();
         for mut child in self.children.drain(..) {
@@ -542,8 +542,14 @@ impl Drop for ChildBatch {
             let _ = fs::write(stop, b"");
         }
         for mut child in self.children.drain(..) {
-            let _ = child.child.kill();
-            let _ = child.child.wait();
+            // Kills the child's whole process group (see `own_process_group`
+            // in `spawn_role`), not just the direct child, so a
+            // `cargo`/`hew`/linker grandchild it forked cannot survive this
+            // batch.
+            let _ = hew_testutil::terminate_process_group(
+                &mut child.child,
+                "race child (drop cleanup)",
+            );
         }
     }
 }
@@ -595,6 +601,11 @@ fn spawn_role(
     if let Some(cargo) = cargo_override {
         cmd.env("CARGO", cargo);
     }
+    // Every self-fork race child becomes its own process-group leader, so
+    // any grandchild it forks (its own `cargo build -p hew-lib`, or a
+    // `hew`/linker invocation) inherits that same group and cannot outlive
+    // a later `terminate_process_group` kill of this child.
+    hew_testutil::own_process_group(&mut cmd);
     let child = cmd.spawn().expect("spawn race child process");
     RaceChild { child, result_path }
 }
@@ -608,20 +619,28 @@ fn open_write_lock(barrier_path: &Path) -> RwLock<fs::File> {
     RwLock::new(file)
 }
 
+/// Bounded (via `hew_testutil::run_command_bounded`) one-time prebuild of the
+/// `hew` binary itself, run from the orchestrator process directly (not
+/// nested inside any self-fork child), so it needs its own process-group
+/// treatment: a hung `cargo build` (and any `rustc`/linker grandchild it
+/// forks) is killed as a whole group on timeout, not just the immediate
+/// `cargo` process.
 fn ensure_hew_binary_built() {
     let (target_dir, _profile) = target_dir_and_profile();
     let mut cmd = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
     cmd.args(["build", "-q", "-p", "hew-cli", "--bin", "hew"])
         .env("CARGO_TARGET_DIR", &target_dir)
-        .current_dir(repo_root())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let child = cmd.spawn().expect("spawn cargo build -p hew-cli --bin hew");
-    let (status, _stdout, stderr) = wait_piped_with_deadline(child, PREBUILD_DEADLINE)
-        .expect("prebuild of `hew` binary did not complete");
+        .current_dir(repo_root());
+    let output = hew_testutil::run_command_bounded(
+        &mut cmd,
+        "cargo build -p hew-cli --bin hew",
+        PREBUILD_DEADLINE,
+    )
+    .expect("prebuild of `hew` binary did not complete");
     assert!(
-        status.success(),
-        "prebuild of `hew` binary failed: {stderr}"
+        output.status.success(),
+        "prebuild of `hew` binary failed: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 

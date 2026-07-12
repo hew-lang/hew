@@ -230,6 +230,77 @@ fn format_duration(duration: Duration) -> String {
     }
 }
 
+/// Registers a `pre_exec` hook that moves the spawned child into a fresh,
+/// independent process group (`setpgid(0, 0)`) before it execs.
+///
+/// [`run_command_bounded`] applies this internally. Exists as its own public
+/// step for callers that must spawn now and reap later -- e.g. a
+/// barrier-synchronized test harness that spawns several long-lived
+/// children, releases them together, and only then waits -- rather than
+/// `run_command_bounded`'s single spawn-poll-capture-return call. Without
+/// this, killing only the direct child on a later timeout leaves any
+/// grandchild it forked (a `cargo`/linker invocation, say) running and free
+/// to keep mutating a shared artifact after the caller believes the
+/// process is gone.
+///
+/// Must be called before [`Command::spawn`].
+#[cfg(unix)]
+pub fn own_process_group(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+
+    // SAFETY: this runs in the child after fork and before exec. It only
+    // moves the child into a fresh process group so a later group-wide kill
+    // also reaches any grandchild the child itself forks.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+}
+
+/// Kills and reaps every process in `child`'s process group (established
+/// via [`own_process_group`]), not just `child` itself, so a grandchild
+/// process cannot outlive the group leader's termination. Returns
+/// `Ok(true)` if the whole group was killed via `killpg`, `Ok(false)` if
+/// `killpg` failed for a reason other than "already gone" (`ESRCH`) and a
+/// direct child-only kill was used as a fallback.
+///
+/// # Errors
+///
+/// Returns `Err` if neither the group kill nor the child-only fallback
+/// succeeds, or if reaping `child` afterward fails.
+#[cfg(unix)]
+pub fn terminate_process_group(child: &mut Child, label: &str) -> Result<bool, String> {
+    let process_group = child.id().cast_signed();
+    // SAFETY: `own_process_group` put the child in a process group whose
+    // PGID is the child's own PID (the group leader). ESRCH means the group
+    // is already gone.
+    let result = unsafe { libc::killpg(process_group, libc::SIGKILL) };
+    let group_killed = if result != 0 {
+        let group_error = std::io::Error::last_os_error();
+        if group_error.raw_os_error() == Some(libc::ESRCH) {
+            true
+        } else {
+            kill_child_only(child, label).map_err(|kill_error| {
+                format!(
+                    "cannot kill process group {process_group}: {group_error}; fallback child kill failed: {kill_error}"
+                )
+            })?;
+            false
+        }
+    } else {
+        true
+    };
+    child
+        .wait()
+        .map_err(|error| format!("cannot reap child after kill: {error}"))?;
+    Ok(group_killed)
+}
+
 #[derive(Debug)]
 struct BoundedChild {
     child: Child,
@@ -240,20 +311,7 @@ struct BoundedChild {
 impl BoundedChild {
     #[cfg(unix)]
     fn spawn(command: &mut Command, label: &str) -> Result<Self, BoundedExecError> {
-        use std::os::unix::process::CommandExt;
-
-        // SAFETY: this runs in the child after fork and before exec. It only
-        // moves the child into a fresh process group so timeout kills also
-        // close pipe handles inherited by grandchildren.
-        unsafe {
-            command.pre_exec(|| {
-                if libc::setpgid(0, 0) == 0 {
-                    Ok(())
-                } else {
-                    Err(std::io::Error::last_os_error())
-                }
-            });
-        }
+        own_process_group(command);
 
         let child = command.spawn().map_err(|error| {
             BoundedExecError::failed(label, format!("cannot spawn child: {error}"))
@@ -306,34 +364,8 @@ impl BoundedChild {
 
     #[cfg(unix)]
     fn terminate_process_group(&mut self, label: &str) -> Result<bool, BoundedExecError> {
-        let process_group = self.child.id().cast_signed();
-        // SAFETY: the helper put the child in a process group whose PGID is the
-        // root PID. ESRCH means the group is already gone.
-        let result = unsafe { libc::killpg(process_group, libc::SIGKILL) };
-        if result != 0 {
-            let group_error = std::io::Error::last_os_error();
-            if group_error.raw_os_error() != Some(libc::ESRCH) {
-                kill_child_only(&mut self.child, label).map_err(|kill_error| {
-                    BoundedExecError::failed(
-                        label,
-                        format!(
-                            "cannot kill process group {process_group}: {group_error}; fallback child kill failed: {kill_error}"
-                        ),
-                    )
-                })?;
-                self.child.wait().map_err(|error| {
-                    BoundedExecError::failed(
-                        label,
-                        format!("cannot reap child after timeout: {error}"),
-                    )
-                })?;
-                return Ok(false);
-            }
-        }
-        self.child.wait().map_err(|error| {
-            BoundedExecError::failed(label, format!("cannot reap child after timeout: {error}"))
-        })?;
-        Ok(true)
+        terminate_process_group(&mut self.child, label)
+            .map_err(|message| BoundedExecError::failed(label, message))
     }
 
     #[cfg(windows)]
@@ -830,6 +862,80 @@ mod tests {
             MAX_CAPTURED_BYTES + marker.len(),
             "stdout should be capped plus the marker"
         );
+    }
+
+    /// Proves the process-group guarantee `libhew_link_race.rs`'s round-3
+    /// hardening depends on: `own_process_group` must put a grandchild the
+    /// direct child forks into the *same* group, and
+    /// `terminate_process_group` must kill that grandchild too, not just
+    /// the direct child -- otherwise a self-fork race child's own
+    /// `cargo`/`hew`/linker invocation could outlive a timeout kill and
+    /// keep mutating `libhew.a` after the caller believes the process is
+    /// gone.
+    #[test]
+    fn terminate_process_group_kills_grandchild_too() {
+        let scratch = tempfile::tempdir().expect("create scratch dir");
+        let pid_file = scratch.path().join("grandchild.pid");
+
+        // The direct child is a non-interactive shell (no job-control
+        // pgid-per-job behavior) that backgrounds a grandchild shell,
+        // which records its own pid and execs into a long sleep, then the
+        // direct child blocks on `wait` -- mirroring a race child that
+        // spawns its own `cargo build -p hew-lib` and waits on it.
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(format!(
+            "sh -c 'echo $$ > \"{path}\"; exec sleep 100' & wait",
+            path = pid_file.display()
+        ));
+        own_process_group(&mut command);
+        let mut child = command.spawn().expect("spawn probe child");
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let grandchild_pid: i32 = loop {
+            if let Ok(text) = fs::read_to_string(&pid_file) {
+                if let Ok(pid) = text.trim().parse() {
+                    break pid;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "grandchild never recorded its pid before the bounded wait expired"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        };
+
+        // SAFETY: signal 0 only probes liveness, it sends nothing.
+        let alive_before_kill = unsafe { libc::kill(grandchild_pid, 0) } == 0;
+        assert!(
+            alive_before_kill,
+            "grandchild should still be alive right before termination"
+        );
+
+        terminate_process_group(&mut child, "probe")
+            .expect("terminate_process_group should succeed");
+
+        // SIGKILL is uncatchable and immediate, but a just-killed process
+        // can briefly remain a reapable zombie (still a valid `kill(pid, 0)`
+        // target) until its new parent -- launchd, once the direct child's
+        // death orphans it -- reaps it. That reap happens promptly but
+        // asynchronously, so the absence proof is a short bounded poll for
+        // ESRCH, not a single immediate check: a real leak (the grandchild
+        // never signalled at all) stays permanently "alive" and fails this
+        // bound for a structural reason, not a timing coincidence.
+        let esrch_deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            // SAFETY: signal 0 only probes liveness, it sends nothing.
+            let alive = unsafe { libc::kill(grandchild_pid, 0) } == 0;
+            if !alive {
+                break;
+            }
+            assert!(
+                Instant::now() < esrch_deadline,
+                "grandchild (pid {grandchild_pid}) outlived terminate_process_group -- \
+                 it was not in the killed process group"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 }
 

@@ -2887,6 +2887,11 @@ mod tests {
         reason = "test-only FFI: every pointer is a fresh local registration, slot, \
                   actor, poller, or socket with lifecycle asserted in the body"
     )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single linear shutdown-race oracle: per-instance free probes plus \
+                  the ref-count sweep assertions must stay in one body to share state"
+    )]
     fn shutdown_sweep_cancel_wins_inflight_deposit_exactly_once() {
         use std::io::Write;
         const KEY: usize = 0x00C4_11ED;
@@ -2931,7 +2936,7 @@ mod tests {
             crate::await_cancel::install_await_cancel_free_probe_for_test(
                 await_cancel,
                 &await_cancel_free_probe,
-            )
+            );
         };
         unsafe { crate::read_slot::read_slot_retain(slot) }; // registration ref
         inject_resume_registration_for_test(fd, conn, actor_ref, KEY, slot);

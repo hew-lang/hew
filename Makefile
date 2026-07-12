@@ -33,6 +33,7 @@
 #   make playground-manifest-check — verify examples/playground/manifest.json freshness
 #   make sandbox-fixtures          — regenerate sandbox VM bytecode fixtures from main.hew
 #   make sandbox-fixtures-check    — verify sandbox VM bytecode fixtures are fresh
+#   make sandbox-vm-deps           — install hew-sandbox-vm npm deps (hash-stamped, idempotent)
 #   make sandbox-parity            — native hew run ↔ sandbox VM parity harness
 #   make playground-check          — manifest freshness + full hew-wasm test suite + build hew-wasm
 #   make playground-wasi-check     — focused curated manifest WASI runtime preflight
@@ -71,8 +72,8 @@
 #   make clean        — remove build/, target/
 # ============================================================================
 
-.PHONY: all build bootstrap install-hooks hew hew-native adze observe observe-functional-test libhew-link-race-test runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
-.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-real-timing test-lane test-lane-all lane-gates test-fast test-stdlib test-hew test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo leak-scan hew-fmt-check grammar
+.PHONY: all build bootstrap install-hooks hew hew-native adze observe observe-functional-test libhew-link-race-test runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
+.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-real-timing test-lane test-lane-all lane-gates test-fast test-stdlib test-hew test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo leak-scan hew-fmt-check grammar sandbox-parity-coverage-check
 .PHONY: clean install install-check uninstall verify-ffi test-verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -214,7 +215,10 @@ licenses:
 licenses-check:
 	scripts/check-licenses-fresh.sh
 
-sandbox-parity: hew stdlib
+# Install hew-sandbox-vm's npm dependencies, skipping the install when
+# node_modules already matches package-lock.json (hash-stamped). Split out
+# from sandbox-parity as its own reusable prerequisite.
+sandbox-vm-deps:
 	@set -e; \
 	lock_hash=$$(python3 -c 'import hashlib, pathlib; print(hashlib.sha256(pathlib.Path("hew-sandbox-vm/package-lock.json").read_bytes()).hexdigest())'); \
 	stamp=hew-sandbox-vm/node_modules/.package-lock.sha256; \
@@ -225,8 +229,16 @@ sandbox-parity: hew stdlib
 	else \
 		echo "hew-sandbox-vm dependencies are fresh; skipping install"; \
 	fi
+
+# Native hew run <-> sandbox VM parity harness. All four VM-dependent test
+# binaries (parity, parity_ratchet, playground, ios_subset) are excluded from
+# the generic nextest default-filter (.config/nextest.toml) on every platform
+# because they spawn the hew-sandbox-vm Node runner; this target is the one
+# place that provisions the npm toolchain and then runs all of them via plain
+# `cargo test`, so no VM-dependent test is silently skipped anywhere.
+sandbox-parity: hew stdlib sandbox-vm-deps
 	npm --prefix hew-sandbox-vm run build
-	cargo test -p hew-sandbox-wasm --test parity --test parity_ratchet
+	cargo test -p hew-sandbox-wasm --test parity --test parity_ratchet --test playground --test ios_subset
 
 # Repo-local browser/tooling smoke:
 # manifest freshness + full hew-wasm test suite (lib + integration) + analysis-only WASM build.
@@ -1044,8 +1056,17 @@ miri:
 
 # ── Lint ────────────────────────────────────────────────────────────────────
 
-lint: runtime-poison-safe-lint lint-wasm-todo leak-scan verify-ffi hew-fmt-check preflight-parity-selftest
+lint: runtime-poison-safe-lint lint-wasm-todo leak-scan verify-ffi hew-fmt-check preflight-parity-selftest sandbox-parity-coverage-check
 	cargo clippy --workspace --tests -- -D warnings
+
+# Assert every VM-dependent hew-sandbox-wasm test (one that spawns the
+# hew-sandbox-vm Node runner) is both excluded from the generic nextest
+# default-filter (.config/nextest.toml) and run by the provisioned
+# `make sandbox-parity` gate. Catches a new VM-dependent test landing in
+# either state alone -- unprovisioned generic runs failing, or provisioned
+# coverage silently never running it.
+sandbox-parity-coverage-check:
+	python3 scripts/check-sandbox-parity-coverage.py
 
 # Scan tracked source for orchestration-token leaks (lane IDs, Q-tags, .tmp/ paths)
 # and scan commit-message bodies of commits not yet on origin/main for the same tokens.

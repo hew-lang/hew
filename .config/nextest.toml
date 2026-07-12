@@ -33,10 +33,12 @@ real-timing = { max-threads = 1 }
 # binary(parity) is the standalone parity binary; the parity_ratchet binary also
 # holds VM-dependent work — its live_gate test spawns the Node runner and asserts
 # node_modules is installed, so it is excluded by name here while the binary's
-# structural ratchet tests (which need no VM) keep running. make sandbox-parity
-# runs both via plain `cargo test` (no nextest profile), so the live gate stays
-# enforced where the deps are provisioned.
-default-filter = "not package(hew-wasm) - binary(parity) - test(live_gate_matches_declared_coverage)"
+# structural ratchet tests (which need no VM) keep running. binary(playground)
+# and binary(ios_subset) are single-test binaries whose only test each spawns
+# the same Node runner, so the whole binary is excluded, matching binary(parity).
+# make sandbox-parity runs all four via plain `cargo test` (no nextest profile),
+# so every VM-dependent test stays enforced where the deps are provisioned.
+default-filter = "not package(hew-wasm) - binary(parity) - binary(playground) - binary(ios_subset) - test(live_gate_matches_declared_coverage)"
 # Global concurrency cap: defaults to all available cores (num-cpus), which is
 # fine for pure in-process tests.  The subprocess-intensive group above provides
 # the finer-grained cap for tests that spawn child processes.
@@ -61,10 +63,12 @@ test-group = "subprocess-intensive"
 # `make sandbox-parity` step. binary(parity) is the standalone parity binary;
 # the parity_ratchet binary's live_gate test also drives the Node VM and asserts
 # node_modules is present, so it is excluded by name while parity_ratchet's
-# structural ratchet tests (no VM) keep running in this profile. make
-# sandbox-parity runs the live gate via plain `cargo test`, so it stays enforced
-# where the npm deps are provisioned.
-default-filter = "not package(hew-wasm) - binary(test_runner_e2e) - binary(parity) - test(live_gate_matches_declared_coverage)"
+# structural ratchet tests (no VM) keep running in this profile. binary(playground)
+# and binary(ios_subset) are single-test binaries whose only test each drives the
+# same Node VM, so the whole binary is excluded here too. make sandbox-parity
+# runs all four via plain `cargo test`, so every VM-dependent test stays
+# enforced where the npm deps are provisioned.
+default-filter = "not package(hew-wasm) - binary(test_runner_e2e) - binary(parity) - binary(playground) - binary(ios_subset) - test(live_gate_matches_declared_coverage)"
 # Defense-in-depth for tests that bypass the bounded exec helper: nextest kills
 # tests after 3 × 100 s = 300 s without status updates/output.
 slow-timeout = { period = "100s", terminate-after = 3 }
@@ -330,6 +334,8 @@ test-group = "subprocess-intensive"
 #   Excluded by binary(machine_lifecycle) — subprocess; name outside the patterns
 #   Excluded by binary(zeroarg_module_enum_emission) — subprocess; name outside patterns
 #   Excluded by binary(jit_trap_bridge)  — JIT-deferred; name outside the patterns
+#   Excluded by binary(playground), binary(ios_subset) — VM-dependent sandbox
+#     parity binaries, same reason as binary(parity) below
 #   Already excluded from smoke base:    eval_e2e, test_runner_e2e, parity, hew-wasm
 #
 # Matcher semantics (nextest 0.9.132, verified empirically): a bare string in
@@ -337,7 +343,7 @@ test-group = "subprocess-intensive"
 # no binary name.  Substring exclusion therefore needs the contains matcher
 # `~`: binary(~exec).  The exact-name exclusions below are valid bare strings
 # because those binaries exist.
-default-filter = "not package(hew-wasm) - binary(eval_e2e) - binary(test_runner_e2e) - binary(parity) - binary(~exec) - binary(~e2e) - binary(~oracle) - binary(machine_lifecycle) - binary(zeroarg_module_enum_emission) - binary(jit_trap_bridge) - test(bounded_child_timeout_kills_grandchild_process_group) - test(two_process_remote_ask_echo_double_returns_42) - test(remote_ask_two_process_echo_client_helper) - test(remote_ask_two_process_echo_server_helper) - test(two_process_remote_ask_timeout_returns_timeout_under_1500ms) - test(remote_ask_two_process_timeout_client_helper) - test(remote_ask_two_process_timeout_server_helper)"
+default-filter = "not package(hew-wasm) - binary(eval_e2e) - binary(test_runner_e2e) - binary(parity) - binary(playground) - binary(ios_subset) - binary(~exec) - binary(~e2e) - binary(~oracle) - binary(machine_lifecycle) - binary(zeroarg_module_enum_emission) - binary(jit_trap_bridge) - test(bounded_child_timeout_kills_grandchild_process_group) - test(two_process_remote_ask_echo_double_returns_42) - test(remote_ask_two_process_echo_client_helper) - test(remote_ask_two_process_echo_server_helper) - test(two_process_remote_ask_timeout_returns_timeout_under_1500ms) - test(remote_ask_two_process_timeout_client_helper) - test(remote_ask_two_process_timeout_server_helper)"
 test-threads = "num-cpus"
 slow-timeout = { period = "30s", terminate-after = 2 }
 # Suppress the 3800-line passing-test wall; show only failures during the run

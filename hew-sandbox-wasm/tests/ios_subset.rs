@@ -82,6 +82,11 @@ struct IosCase {
     expectation: Expectation,
 }
 
+// Windows parity enforcement is tracked in #1823; Windows runners do not yet
+// provision the hew-sandbox-vm npm toolchain for this harness. Excluded from
+// generic nextest runs on every platform via `binary(ios_subset)` in
+// .config/nextest.toml; `make sandbox-parity` runs it directly on a
+// provisioned Linux CI runner.
 #[cfg_attr(windows, ignore)]
 #[test]
 fn ios_runnable_corpus_is_sandbox_safe() {

@@ -34,6 +34,12 @@ struct Capabilities {
     sandbox: String,
 }
 
+// Windows parity enforcement is tracked in #1823; Windows runners do not yet
+// provision the hew-sandbox-vm npm toolchain for this harness. Excluded from
+// generic nextest runs on every platform via `binary(playground)` in
+// .config/nextest.toml; `make sandbox-parity` runs it directly on a
+// provisioned Linux CI runner.
+#[cfg_attr(windows, ignore)]
 #[test]
 fn playground_manifest_sources_run_at_native_sandbox_parity() {
     set_test_hewpath();

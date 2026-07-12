@@ -42,15 +42,16 @@ use crate::monomorph::{
     MONOMORPHISATION_REGISTRY_CAP,
 };
 use crate::node::{
-    HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn, HirActorStateGuard, HirBinding,
-    HirBlock, HirCaptureKind, HirClosureCapture, HirExpr, HirExprKind, HirField, HirFn,
-    HirGenCapture, HirGenCaptureSource, HirItem, HirJoin, HirJoinBranch, HirLambdaCapture,
-    HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMachineDecl, HirMachineEvent,
-    HirMachineState, HirMachineTransition, HirMatchArm, HirMatchArmBinding, HirMatchArmPredicate,
-    HirModule, HirPayloadPredicate, HirPayloadVariantPredicate, HirRecordDecl, HirRegexLiteral,
-    HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirShutdownDirective, HirStmt,
-    HirStmtKind, HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl,
-    HirVarSelfMethodTarget, HirVariant, HirVariantKind,
+    ExternProvenance, HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn,
+    HirActorStateGuard, HirBinding, HirBlock, HirCaptureKind, HirClosureCapture, HirExpr,
+    HirExprKind, HirField, HirFn, HirGenCapture, HirGenCaptureSource, HirItem, HirJoin,
+    HirJoinBranch, HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral,
+    HirMachineDecl, HirMachineEvent, HirMachineState, HirMachineTransition, HirMatchArm,
+    HirMatchArmBinding, HirMatchArmPredicate, HirModule, HirPayloadPredicate,
+    HirPayloadVariantPredicate, HirRecordDecl, HirRegexLiteral, HirRestartPolicy, HirSelect,
+    HirSelectArm, HirSelectArmKind, HirShutdownDirective, HirStmt, HirStmtKind, HirSupervisorChild,
+    HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl, HirVarSelfMethodTarget, HirVariant,
+    HirVariantKind,
 };
 use crate::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage};
 use crate::{IntentKind, ResourceMarker, ValueClass};
@@ -3542,6 +3543,13 @@ pub fn lower_program_with_mono_cap(
                         param_tys,
                         param_consume,
                         return_ty,
+                        // Defining-module provenance from the SAME current-module
+                        // authority this pass sets per item (line ~3355): `None`
+                        // is the genuine root compilation unit (module index 0),
+                        // `Some(dotted)` a file-import module. Threaded to MIR so
+                        // C-ABI string-return ownership is classified from a proven
+                        // fact, not `diagnostic_source_modules` absence.
+                        provenance: extern_provenance(ctx.current_module_name.as_deref()),
                         span: func.span.clone(),
                     }));
                 }
@@ -3823,6 +3831,16 @@ pub fn lower_program_with_mono_cap(
                                     param_tys,
                                     param_consume,
                                     return_ty,
+                                    // Fourth-pass imported modules always carry a
+                                    // named `current_module_name` (set to the
+                                    // dotted `source_module` at the top of this
+                                    // loop). Same authority as the third-pass site
+                                    // above so a std vs. user/package extern is
+                                    // classified identically regardless of which
+                                    // pass emitted it.
+                                    provenance: extern_provenance(
+                                        ctx.current_module_name.as_deref(),
+                                    ),
                                     span: func.span.clone(),
                                 }));
                             }
@@ -4651,6 +4669,22 @@ fn collect_call_sites_in_block(
     }
     if let Some(tail) = &block.tail {
         collect_call_sites_in_expr(tail, out, trait_out);
+    }
+}
+
+/// Map the HIR lowering context's current-module authority to a total
+/// [`ExternProvenance`] for an `extern` fn declared under it.
+///
+/// `None` is the genuine root compilation unit (module index 0), which lowers
+/// to [`ExternProvenance::Root`]; `Some(dotted)` is a named module (std or
+/// user/package) lowered to [`ExternProvenance::Module`]. This is the ONLY
+/// mapping either construction site uses, so a std and a user extern are
+/// classified from the same authority regardless of which lowering pass emitted
+/// them.
+fn extern_provenance(current_module_name: Option<&str>) -> ExternProvenance {
+    match current_module_name {
+        None => ExternProvenance::Root,
+        Some(name) => ExternProvenance::Module(name.to_string()),
     }
 }
 

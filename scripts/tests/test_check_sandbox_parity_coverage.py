@@ -15,11 +15,21 @@ a platform without `hew-sandbox-vm` set up. This is exactly the
 "dynamically dispatched second test evades classification" failure mode:
 fixed by dropping per-test/call-graph attribution entirely and requiring
 that ANY marker anywhere in a file condemns the WHOLE binary.
+
+Also covers REQUIRED_PROFILES itself: profile.default and profile.ci are
+not the only generic (unprovisioned) nextest entry points -- `make
+test-lane`, `make test-lane-all`, and `make test-fast` all run `cargo
+nextest run --profile lane`, so profile.lane must be checked identically
+or a VM-dependent binary can leak into that tier unnoticed.
 """
 
+import contextlib
 import importlib.util
+import io
+import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -39,6 +49,55 @@ def run_script(*args: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
     )
+
+
+def _remove_binary_exclusion_in_profile(text: str, profile: str, binary: str) -> str:
+    """Return `text` with `binary(<binary>)` dropped from `[profile.<profile>]`'s
+    default-filter only -- other profiles' filters are left untouched."""
+    profile_m = re.search(
+        rf"^\[profile\.{re.escape(profile)}\]\s*$", text, re.MULTILINE
+    )
+    assert profile_m, f"[profile.{profile}] not found in nextest.toml"
+    rest = text[profile_m.end() :]
+    filter_m = re.search(r'^default-filter\s*=\s*"([^"]*)"', rest, re.MULTILINE)
+    assert filter_m, f"default-filter not found in [profile.{profile}]"
+    old_value = filter_m.group(1)
+    new_value = old_value.replace(f" - binary({binary})", "", 1)
+    assert new_value != old_value, (
+        f"binary({binary}) not present in [profile.{profile}]"
+    )
+    old_line = filter_m.group(0)
+    new_line = old_line.replace(old_value, new_value, 1)
+    abs_start = profile_m.end() + filter_m.start()
+    abs_end = profile_m.end() + filter_m.end()
+    return text[:abs_start] + new_line + text[abs_end:]
+
+
+@contextlib.contextmanager
+def _sabotaged_nextest_toml(mutated_text: str):
+    """Point the module's NEXTEST_TOML at `mutated_text` for the duration of
+    the `with` block, then restore the real path."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        sabotaged_path = Path(tmp_dir) / "nextest.toml"
+        sabotaged_path.write_text(mutated_text)
+        original_path = check_sandbox_parity_coverage.NEXTEST_TOML
+        check_sandbox_parity_coverage.NEXTEST_TOML = sabotaged_path
+        try:
+            yield
+        finally:
+            check_sandbox_parity_coverage.NEXTEST_TOML = original_path
+
+
+def _run_main_capturing_output(argv_tail: list[str]) -> tuple[int, str]:
+    original_argv = sys.argv
+    sys.argv = [str(SCRIPT), *argv_tail]
+    buffer = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):
+            exit_code = check_sandbox_parity_coverage.main()
+    finally:
+        sys.argv = original_argv
+    return exit_code, buffer.getvalue()
 
 
 def test_direct_marker_call_is_detected() -> None:
@@ -205,6 +264,60 @@ def test_real_repo_state_passes_the_full_check() -> None:
         assert f"excludes whole binary {binary}" in result.stdout
 
 
+def test_lane_is_a_required_profile() -> None:
+    # make test-lane / make test-lane-all / make test-fast all run generic
+    # `cargo nextest run --profile lane`, so it must be checked exactly like
+    # profile.default and profile.ci -- not just those two.
+    assert "lane" in check_sandbox_parity_coverage.REQUIRED_PROFILES
+
+
+def test_removing_binary_exclusion_from_profile_lane_fails_the_checker() -> None:
+    # Sabotage proof: drop parity_ratchet's `binary(parity_ratchet)` from
+    # [profile.lane]'s default-filter ONLY (profile.default and profile.ci
+    # keep their real exclusions) and confirm the checker fails specifically
+    # on profile.lane -- proving lane is actually enforced, not just listed.
+    real_text = check_sandbox_parity_coverage.NEXTEST_TOML.read_text()
+    sabotaged_text = _remove_binary_exclusion_in_profile(
+        real_text, "lane", "parity_ratchet"
+    )
+
+    with _sabotaged_nextest_toml(sabotaged_text):
+        default_filter = check_sandbox_parity_coverage.default_filter_line("default")
+        ci_filter = check_sandbox_parity_coverage.default_filter_line("ci")
+        lane_filter = check_sandbox_parity_coverage.default_filter_line("lane")
+        assert (
+            check_sandbox_parity_coverage.excludes_binary(
+                default_filter, "parity_ratchet"
+            )
+            is True
+        )
+        assert (
+            check_sandbox_parity_coverage.excludes_binary(ci_filter, "parity_ratchet")
+            is True
+        )
+        assert (
+            check_sandbox_parity_coverage.excludes_binary(lane_filter, "parity_ratchet")
+            is False
+        )
+
+        exit_code, output = _run_main_capturing_output(["--verbose"])
+
+    assert exit_code == 1
+    assert (
+        "FAIL [profile.lane] does not exclude VM-dependent binary `parity_ratchet`"
+        in output
+    )
+    assert "FAIL [profile.default] does not exclude" not in output
+    assert "FAIL [profile.ci] does not exclude" not in output
+
+    # Restoring the real file must make the checker pass again -- confirms
+    # the failure above was caused by the sabotage, not a leaked patch.
+    exit_code_after_restore, output_after_restore = _run_main_capturing_output(
+        ["--verbose"]
+    )
+    assert exit_code_after_restore == 0, output_after_restore
+
+
 _TESTS = [
     test_direct_marker_call_is_detected,
     test_file_with_no_marker_is_not_flagged,
@@ -214,6 +327,8 @@ _TESTS = [
     test_excludes_binary_accepts_whole_binary_exclusion,
     test_real_parity_ratchet_file_is_whole_binary_vm_dependent,
     test_real_repo_state_passes_the_full_check,
+    test_lane_is_a_required_profile,
+    test_removing_binary_exclusion_from_profile_lane_fails_the_checker,
 ]
 
 if __name__ == "__main__":

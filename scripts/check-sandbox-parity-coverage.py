@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 """Assert every VM-dependent hew-sandbox-wasm test is covered coherently.
 
-A test in hew-sandbox-wasm/tests/*.rs is "VM-dependent" if its body calls
-`ensure_parity_runner_built()`, meaning it spawns the hew-sandbox-vm Node/npm
-toolchain (requires `node_modules` to be provisioned). Regression this
-guards against: a new VM-dependent test lands in the crate but
+A test in hew-sandbox-wasm/tests/*.rs is "VM-dependent" if it spawns the
+hew-sandbox-vm Node/npm toolchain (requires `node_modules` to be
+provisioned) -- either directly, or transitively through local helper
+functions it calls. Detection is call-graph based, not a single literal
+string check on the test's own body: a test can reach the VM only through
+a chain of same-file helpers (e.g. `test -> assert_admitted_runs_clean ->
+run_sandbox_inline`, none of which is the test's own body) and must still
+be caught.
+
+Regression this guards against: a new VM-dependent test lands in the crate
+but
 
   1. is NOT excluded from the generic nextest default-filter
      (.config/nextest.toml, profile.default and profile.ci), so plain
@@ -20,6 +27,30 @@ legitimate conventions in nextest.toml. It only asserts that some exclusion
 covers every VM-dependent test in both generic profiles, and that
 `make sandbox-parity` runs every binary that contains at least one.
 
+Detection method
+----------------
+1. Parse every top-level `fn NAME(...) { ... }` in the file (not just
+   `#[test]` ones), each function's full body text (nested braces included).
+2. A function is a VM "marker" if its body contains the literal string
+   `hew-sandbox-vm` -- the Node/npm toolchain directory every real spawn
+   path names (`ensure_parity_runner_built`, `run_sandbox`,
+   `run_sandbox_inline`, ...). This is a broad substring match on purpose:
+   over-detecting a function as a marker is safe (worst case, a harmless
+   function gets swept into the VM-dependent set); under-detecting is the
+   actual bug class this script exists to catch.
+3. Build a same-file call graph (function A "calls" function B if `B(`
+   appears literally in A's body) and compute, for every `#[test]` fn,
+   whether it transitively reaches any marker function.
+4. Safety net: if any marker function in the file is not transitively
+   reached by ANY `#[test]` in the same file, the static call graph above
+   is known-incomplete for this file (e.g. a marker reached only through a
+   function pointer, closure combinator, or trait dispatch this script does
+   not parse). In that case every test in the binary is conservatively
+   treated as VM-dependent and the binary-level exclusion this script
+   requires falls back to needing `binary(<name>)` specifically (a
+   per-test `test(<name>)` exclusion is not accepted, since per-test
+   attribution cannot be trusted for this file).
+
 Usage: python3 scripts/check-sandbox-parity-coverage.py [--verbose]
 """
 
@@ -34,27 +65,110 @@ TESTS_DIR = REPO_ROOT / "hew-sandbox-wasm" / "tests"
 NEXTEST_TOML = REPO_ROOT / ".config" / "nextest.toml"
 MAKEFILE = REPO_ROOT / "Makefile"
 
+VM_MARKER_STRING = "hew-sandbox-vm"
 
-def extract_tests(text: str) -> list[tuple[str, str]]:
-    """Return [(test_name, body_text), ...] for every #[test] fn in text."""
-    tests = []
-    for m in re.finditer(r"#\[test\]", text):
+
+def extract_functions(text: str) -> dict[str, str]:
+    """Return {fn_name: full_body_text} for every top-level `fn NAME(...) {...}`."""
+    functions: dict[str, str] = {}
+    for m in re.finditer(r"\bfn\s+(\w+)\s*(?:<[^>]*>)?\s*\(", text):
+        name = m.group(1)
         rest = text[m.end() :]
-        fn_m = re.search(r"fn\s+(\w+)\s*\(", rest)
-        if not fn_m:
+        brace_idx = rest.find("{")
+        # A `fn` with no `{` before the next `;` is a signature-only
+        # declaration (trait method, extern fn) -- not present in these
+        # test files, but skip defensively rather than mis-parse.
+        semi_idx = rest.find(";")
+        if brace_idx == -1 or (semi_idx != -1 and semi_idx < brace_idx):
             continue
-        name = fn_m.group(1)
-        brace_start = rest.index("{", fn_m.end())
         depth = 1
-        i = brace_start + 1
+        i = brace_idx + 1
         while depth > 0 and i < len(rest):
             if rest[i] == "{":
                 depth += 1
             elif rest[i] == "}":
                 depth -= 1
             i += 1
-        tests.append((name, rest[brace_start:i]))
-    return tests
+        body = rest[brace_idx:i]
+        # A name can appear more than once (e.g. cfg-gated overloads); keep
+        # the first, real duplicate `fn` names are not valid Rust anyway.
+        functions.setdefault(name, body)
+    return functions
+
+
+def find_test_names(text: str, known_functions: dict[str, str]) -> list[str]:
+    """Return the fn names immediately following a `#[test]` attribute."""
+    names = []
+    for m in re.finditer(r"#\[test\]", text):
+        fn_m = re.search(r"fn\s+(\w+)\s*\(", text[m.end() :])
+        if fn_m and fn_m.group(1) in known_functions:
+            names.append(fn_m.group(1))
+    return names
+
+
+def build_call_graph(functions: dict[str, str]) -> dict[str, set[str]]:
+    """Return {fn_name: {names of other known fns called in its body}}."""
+    graph: dict[str, set[str]] = {}
+    names = list(functions.keys())
+    for name, body in functions.items():
+        called = set()
+        for other in names:
+            if other == name:
+                continue
+            if re.search(rf"\b{re.escape(other)}\s*\(", body):
+                called.add(other)
+        graph[name] = called
+    return graph
+
+
+def marker_functions(functions: dict[str, str]) -> set[str]:
+    return {name for name, body in functions.items() if VM_MARKER_STRING in body}
+
+
+def transitive_closure(start: str, graph: dict[str, set[str]]) -> set[str]:
+    """All function names reachable from `start` via the call graph (inclusive)."""
+    seen = {start}
+    stack = [start]
+    while stack:
+        current = stack.pop()
+        for callee in graph.get(current, ()):
+            if callee not in seen:
+                seen.add(callee)
+                stack.append(callee)
+    return seen
+
+
+def analyze_file(path: Path, verbose: bool) -> tuple[list[str], bool]:
+    """Return (vm_dependent_test_names, binary_level_fallback_triggered)."""
+    text = path.read_text()
+    functions = extract_functions(text)
+    test_names = find_test_names(text, functions)
+    markers = marker_functions(functions)
+    graph = build_call_graph(functions)
+
+    reachable_from_tests: set[str] = set()
+    test_reaches: dict[str, set[str]] = {}
+    for test_name in test_names:
+        reached = transitive_closure(test_name, graph)
+        test_reaches[test_name] = reached
+        reachable_from_tests |= reached
+
+    orphaned_markers = markers - reachable_from_tests
+    fallback = bool(orphaned_markers)
+
+    if fallback:
+        if verbose:
+            print(
+                f"  NOTE {path.name}: marker function(s) "
+                f"{sorted(orphaned_markers)} not reachable from any #[test] in "
+                f"this file via the static call graph -- falling back to "
+                f"whole-binary VM-dependent classification for {path.stem}."
+            )
+        vm_tests = list(test_names)
+    else:
+        vm_tests = [name for name in test_names if markers & test_reaches[name]]
+
+    return vm_tests, fallback
 
 
 def default_filter_line(profile: str) -> str:
@@ -72,70 +186,78 @@ def default_filter_line(profile: str) -> str:
     return filter_m.group(1)
 
 
-def is_excluded(filter_value: str, binary: str, test_name: str) -> bool:
-    return f"binary({binary})" in filter_value or f"test({test_name})" in filter_value
+def excludes_binary(filter_value: str, binary: str) -> bool:
+    return f"binary({binary})" in filter_value
+
+
+def excludes_test(filter_value: str, binary: str, test_name: str) -> bool:
+    return excludes_binary(filter_value, binary) or f"test({test_name})" in filter_value
+
+
+def sandbox_parity_test_flags() -> str:
+    makefile_text = MAKEFILE.read_text()
+    m = re.search(
+        r"^sandbox-parity:.*\n(?:.*\n)*?^\tcargo test -p hew-sandbox-wasm(.*)$",
+        makefile_text,
+        re.MULTILINE,
+    )
+    if not m:
+        raise SystemExit(
+            "error: could not find `sandbox-parity`'s `cargo test -p "
+            "hew-sandbox-wasm` recipe line in Makefile."
+        )
+    return m.group(1)
 
 
 def main() -> int:
     verbose = "--verbose" in sys.argv[1:]
 
-    by_binary: dict[str, list[tuple[str, bool]]] = {}
+    vm_dependent_binaries: dict[str, list[str]] = {}
+    fallback_binaries: set[str] = set()
     for path in sorted(TESTS_DIR.glob("*.rs")):
-        binary = path.stem
-        tests = extract_tests(path.read_text())
-        vm_tests = [
-            (name, "ensure_parity_runner_built" in body) for name, body in tests
-        ]
-        by_binary[binary] = vm_tests
-
-    vm_dependent_binaries = {
-        binary: [name for name, is_vm in tests if is_vm]
-        for binary, tests in by_binary.items()
-    }
-    vm_dependent_binaries = {b: t for b, t in vm_dependent_binaries.items() if t}
+        vm_tests, fallback = analyze_file(path, verbose)
+        if vm_tests:
+            vm_dependent_binaries[path.stem] = vm_tests
+        if fallback:
+            fallback_binaries.add(path.stem)
 
     if not vm_dependent_binaries:
         print(
             "error: no VM-dependent tests found under hew-sandbox-wasm/tests/ "
-            "-- extraction likely broke; check extract_tests() against the "
+            "-- extraction likely broke; check analyze_file() against the "
             "current test file shapes.",
             file=sys.stderr,
         )
         return 1
 
     if verbose:
-        print("==> VM-dependent tests (call ensure_parity_runner_built()):")
+        print("==> VM-dependent tests (reach a hew-sandbox-vm spawn transitively):")
         for binary, names in vm_dependent_binaries.items():
+            tag = " [binary-level fallback]" if binary in fallback_binaries else ""
             for name in names:
-                print(f"  - {binary}::{name}")
+                print(f"  - {binary}::{name}{tag}")
         print()
 
     default_filter = default_filter_line("default")
     ci_filter = default_filter_line("ci")
-    makefile_text = MAKEFILE.read_text()
-    sandbox_parity_m = re.search(
-        r"^sandbox-parity:.*\n(?:.*\n)*?^\tcargo test -p hew-sandbox-wasm(.*)$",
-        makefile_text,
-        re.MULTILINE,
-    )
-    if not sandbox_parity_m:
-        print(
-            "error: could not find `sandbox-parity`'s `cargo test -p hew-sandbox-wasm` "
-            "recipe line in Makefile.",
-            file=sys.stderr,
-        )
-        return 1
-    sandbox_parity_cmd = sandbox_parity_m.group(1)
+    sandbox_parity_cmd = sandbox_parity_test_flags()
 
     fail = 0
     pass_count = 0
     for binary, names in vm_dependent_binaries.items():
+        binary_level_required = binary in fallback_binaries
         for name in names:
             for profile, filter_value in (
                 ("default", default_filter),
                 ("ci", ci_filter),
             ):
-                if is_excluded(filter_value, binary, name):
+                if binary_level_required:
+                    ok = excludes_binary(filter_value, binary)
+                    requirement = f"`binary({binary})` (fallback: per-test attribution is not trusted for this file)"
+                else:
+                    ok = excludes_test(filter_value, binary, name)
+                    requirement = f"`binary({binary})` or `test({name})`"
+                if ok:
                     pass_count += 1
                     if verbose:
                         print(f"  ok  [profile.{profile}] excludes {binary}::{name}")
@@ -143,8 +265,8 @@ def main() -> int:
                     fail += 1
                     print(
                         f"  FAIL [profile.{profile}] does not exclude VM-dependent test "
-                        f"{binary}::{name} (need `binary({binary})` or `test({name})` "
-                        f"in .config/nextest.toml's [profile.{profile}] default-filter)",
+                        f"{binary}::{name} (need {requirement} in .config/nextest.toml's "
+                        f"[profile.{profile}] default-filter)",
                         file=sys.stderr,
                     )
 
@@ -164,7 +286,8 @@ def main() -> int:
     print()
     print(
         f"==> sandbox-parity coverage: {pass_count} check(s) passed, {fail} failed, "
-        f"across {len(vm_dependent_binaries)} VM-dependent binary(ies)."
+        f"across {len(vm_dependent_binaries)} VM-dependent binary(ies) "
+        f"({len(fallback_binaries)} via binary-level fallback)."
     )
 
     if fail:

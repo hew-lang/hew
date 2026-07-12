@@ -198,11 +198,13 @@ jobs:
 
       - name: Sandbox parity coverage check
         # Assert every VM-dependent hew-sandbox-wasm test (one that spawns the
-        # hew-sandbox-vm Node runner) is excluded from the generic nextest
-        # default-filter AND run by the provisioned `make sandbox-parity` gate.
-        # Catches a new VM-dependent test landing in only one of those two
-        # states -- failing unprovisioned generic runs on every platform, or
-        # silently never running on a provisioned one.
+        # hew-sandbox-vm Node runner, directly or transitively through a local
+        # helper) is excluded from the generic nextest default-filter AND run
+        # by the provisioned `make sandbox-parity` gate. Catches a new
+        # VM-dependent test landing in only one of those two states --
+        # failing unprovisioned generic runs on every platform, or silently
+        # never running on a provisioned one. Runs the checker's own
+        # call-graph self-test first (test-sandbox-parity-coverage-check).
         run: make sandbox-parity-coverage-check
 
   # ─────────────────────────────────────────────────────────────────────────

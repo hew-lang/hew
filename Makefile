@@ -73,7 +73,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew hew-native adze observe observe-functional-test libhew-link-race-test runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
-.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-real-timing test-lane test-lane-all lane-gates test-fast test-stdlib test-hew test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo leak-scan hew-fmt-check grammar sandbox-parity-coverage-check
+.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-real-timing test-lane test-lane-all lane-gates test-fast test-stdlib test-hew test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo leak-scan hew-fmt-check grammar sandbox-parity-coverage-check test-sandbox-parity-coverage-check
 .PHONY: clean install install-check uninstall verify-ffi test-verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -1060,13 +1060,22 @@ lint: runtime-poison-safe-lint lint-wasm-todo leak-scan verify-ffi hew-fmt-check
 	cargo clippy --workspace --tests -- -D warnings
 
 # Assert every VM-dependent hew-sandbox-wasm test (one that spawns the
-# hew-sandbox-vm Node runner) is both excluded from the generic nextest
-# default-filter (.config/nextest.toml) and run by the provisioned
-# `make sandbox-parity` gate. Catches a new VM-dependent test landing in
-# either state alone -- unprovisioned generic runs failing, or provisioned
-# coverage silently never running it.
-sandbox-parity-coverage-check:
+# hew-sandbox-vm Node runner, directly or transitively via a local helper
+# function) is both excluded from the generic nextest default-filter
+# (.config/nextest.toml) and run by the provisioned `make sandbox-parity`
+# gate. Catches a new VM-dependent test landing in either state alone --
+# unprovisioned generic runs failing, or provisioned coverage silently
+# never running it.
+sandbox-parity-coverage-check: test-sandbox-parity-coverage-check
 	python3 scripts/check-sandbox-parity-coverage.py
+
+# Self-test for the checker above: proves its call-graph analysis detects a
+# test that reaches the VM spawn only transitively through helper functions
+# (not just a direct literal call in the test's own body), and that an
+# unattributable marker function trips the conservative binary-level
+# fallback. See scripts/tests/test_check_sandbox_parity_coverage.py.
+test-sandbox-parity-coverage-check:
+	python3 scripts/tests/test_check_sandbox_parity_coverage.py
 
 # Scan tracked source for orchestration-token leaks (lane IDs, Q-tags, .tmp/ paths)
 # and scan commit-message bodies of commits not yet on origin/main for the same tokens.

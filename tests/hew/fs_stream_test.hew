@@ -335,6 +335,52 @@ fn test_stream_try_to_file_send_close_and_try_from_file() {
     cleanup_file(file_path);
 }
 
+#[test]
+fn test_stream_try_to_file_missing_dir_returns_not_found() {
+    // Regression: try_to_file must classify open failures through the runtime's
+    // canonical error-kind channel (like std/fs), not the raw errno alone.
+    // Creating a file under a directory that does not exist is NotFound on every
+    // platform; before the consumer-side fix this path read only the errno and
+    // would misclassify a Windows access-denied open (raw 5) as Other(5).
+    let missing_target = "tests/hew/_stream_no_such_dir/child.txt";
+    match stream.try_to_file(missing_target) {
+        Ok(_) => panic("expected try_to_file into a missing directory to fail"),
+        Err(err) => match err {
+            IoError::NotFound(_) => {},
+            _ => panic("expected IoError::NotFound"),
+        },
+    }
+}
+
+#[test]
+fn test_io_error_from_kind_is_tag_driven_not_errno_driven() {
+    // Cross-platform proof for the shared classifier that std::stream now routes
+    // through: the canonical kind tag — not the raw errno — selects the variant,
+    // while the raw errno is preserved as the payload. This is exactly the
+    // Windows access-denied case the reviewer cited: raw code 5 with a
+    // PermissionDenied tag must become PermissionDenied(5), not Other(5) (POSIX
+    // errno 5 is EIO). The same raw 5 under different tags proves classification
+    // is tag-driven and host-independent.
+    // Let-bind each call: multiple enum-returning calls matched inline in one
+    // body triggers a codegen hang at 2e6fac15 (see net_error test above).
+    let denied = fs.io_error_from_kind(2, 5);
+    match denied {
+        IoError::PermissionDenied(code) => testing.assert_eq(code, 5),
+        _ => panic("expected PermissionDenied(5) for kind=PermissionDenied, raw 5"),
+    }
+    let missing = fs.io_error_from_kind(1, 5);
+    match missing {
+        IoError::NotFound(code) => testing.assert_eq(code, 5),
+        _ => panic("expected NotFound(5) for kind=NotFound, raw 5"),
+    }
+    // Tag 0 (unclassified) falls back to raw-errno mapping: POSIX 5 = EIO -> Other.
+    let unclassified = fs.io_error_from_kind(0, 5);
+    match unclassified {
+        IoError::Other(code) => testing.assert_eq(code, 5),
+        _ => panic("expected Other(5) for an unclassified kind"),
+    }
+}
+
 // ── NetError variants ─────────────────────────────────────────────────
 #[test]
 fn test_net_error_from_errno_network_variants() {

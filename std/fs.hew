@@ -106,7 +106,11 @@ pub fn io_error_from_errno(errno: i64) -> IoError {
 /// `io_error_from_errno`, which keeps platform detail for kinds without a tag
 /// (e.g. `EISDIR`/`ENOTDIR` -> `Other(raw)`). Keep the tag values in sync with
 /// the `IO_ERROR_KIND_*` constants in `hew-runtime/src/stream_error.rs`.
-fn io_error_from_kind(kind: i64, errno: i64) -> IoError {
+///
+/// Public so sibling wrappers that read the same runtime error channel — e.g.
+/// `std::stream`'s `try_from_file` / `try_to_file` — classify failures through
+/// this one authority rather than re-deriving it from the raw errno.
+pub fn io_error_from_kind(kind: i64, errno: i64) -> IoError {
     if kind == 1 {
         IoError::NotFound(errno)
     } else if kind == 2 {

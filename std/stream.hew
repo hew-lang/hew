@@ -129,9 +129,12 @@ pub fn try_from_file(path: string) -> Result<Stream<string>, fs.IoError> {
         if hew_stream_is_valid(s) {
             Ok(s)
         } else {
+            // Read the canonical kind BEFORE the errno: hew_stream_last_errno
+            // clears the kind tag as errno metadata, so the order matters.
+            let kind = hew_stream_last_error_kind() as i64;
             let errno = hew_stream_last_errno();
             let _ = hew_stream_last_error();
-            Err(fs.io_error_from_errno(errno as i64))
+            Err(fs.io_error_from_kind(kind, errno as i64))
         }
     }
 }
@@ -175,9 +178,12 @@ pub fn try_to_file(path: string) -> Result<Sink<string>, fs.IoError> {
         if hew_sink_is_valid(s) {
             Ok(s)
         } else {
+            // Read the canonical kind BEFORE the errno: hew_stream_last_errno
+            // clears the kind tag as errno metadata, so the order matters.
+            let kind = hew_stream_last_error_kind() as i64;
             let errno = hew_stream_last_errno();
             let _ = hew_stream_last_error();
-            Err(fs.io_error_from_errno(errno as i64))
+            Err(fs.io_error_from_kind(kind, errno as i64))
         }
     }
 }
@@ -217,6 +223,7 @@ extern "C" {
     fn hew_sink_is_valid(sink: Sink<string>) -> bool;
     fn hew_stream_last_error() -> string;
     fn hew_stream_last_errno() -> i32; // INTERNAL-ABI: OS errno from thread-local; 0 when none recorded
+    fn hew_stream_last_error_kind() -> i32; // INTERNAL-ABI: canonical cross-platform error-kind tag; 0 when none
     fn hew_stream_close(stream: Stream<string>);
     fn hew_stream_lines(stream: Stream<string>) -> Stream<string>;
     fn hew_stream_chunks(stream: Stream<string>, size: i64) -> Stream<string>;

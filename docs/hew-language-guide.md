@@ -1845,6 +1845,38 @@ fn main() {
 >
 > Note: `Stack { items: Vec::new() }` *without* a type annotation on the binding also fails — with `cannot infer type for local binding` when `T` is unconstrained, or `E_MIR: unknown type 'T' at the MIR boundary` once usage constrains `T`. Always provide a type annotation when constructing a generic record inline.
 
+### Inherent impl on a generic record
+
+Methods on a generic record need the impl itself to carry the type parameter — `impl<T> Stack<T> { ... }`, not `impl Stack<T> { ... }`. The bare form leaves `T` unbound inside the impl body and every use of `T` fails with `unknown type 'T'`.
+
+```hew
+type Stack<T> { items: Vec<T> }
+
+impl<T> Stack<T> {
+    fn push_item(s: Stack<T>, v: T) -> Stack<T> {
+        let items = s.items;
+        items.push(v);
+        Stack { items: items }
+    }
+    fn len(s: Stack<T>) -> i64 {
+        s.items.len()
+    }
+}
+
+fn new_stack<T>() -> Stack<T> {
+    Stack { items: Vec::new() }
+}
+
+fn main() {
+    let s = new_stack::<i64>();
+    let s2 = s.push_item(1);
+    let s3 = s2.push_item(2);
+    println(s3.len());   // 2
+}
+```
+
+Construct the empty generic record through a turbofish-called constructor function (`new_stack::<i64>()`), the same pattern as the Turbofish section above — a bare `Stack { items: Vec::new() }` binding still needs its own type annotation. `hew fmt` normalizes an explicit `::<T>` call to `<T>` (`new_stack::<i64>()` becomes `new_stack<i64>()`); both spellings type-check and run identically — write whichever you like and let the formatter settle it.
+
 ### Generic functions as values (cross-module)
 
 A generic function exported from another module can be passed as a first-class
@@ -2549,6 +2581,55 @@ fn main() {
 ```
 
 **Memory management:** every `Value` (from `parse`, `get_field`, `array_get`, `from_*`, `object()`, `array()`) must be freed with `.free()` before it goes out of scope. Omitting `.free()` is a resource leak. Values returned by `get_field` and `array_get` are heap-allocated clones — free them independently of the parent.
+
+**Naming the `Value` type** — a plain `import std::encoding::json;` publishes the `json` module alias (`json.parse(...)`, `json.Value` as a qualified type) but does not put the bare `Value` name in scope. Use `Value` unqualified in a function signature (a parameter or return type) by importing it alongside the module in one combined import:
+
+```hew
+import std::encoding::json::{self, Value};
+```
+
+`self` keeps the `json.parse(...)` / `json.object()` module-call style; `Value` lets you write `fn foo(v: Value) -> ...` instead of `fn foo(v: json.Value) -> ...`. Omitting the named import and using bare `Value` in a signature fails with `type Value is not in scope`.
+
+**Nested config with required fields** — `get_field` on a missing key returns a value whose `type_of()` is `-1` (distinct from `0`, the tag for an explicit JSON `null`). Use that to fail closed on a required field instead of silently reading garbage:
+
+```hew
+import std::encoding::json::{self, Value};
+
+fn require_string(config: Value, key: string) -> string {
+    let field = config.get_field(key);
+    if field.type_of() == -1 {
+        panic(f"missing required field: {key}");
+    }
+    let s = field.get_string();
+    field.free();
+    return s;
+}
+
+fn require_int(config: Value, key: string) -> i64 {
+    let field = config.get_field(key);
+    if field.type_of() == -1 {
+        panic(f"missing required field: {key}");
+    }
+    let n = field.get_int();
+    field.free();
+    return n;
+}
+
+fn main() {
+    let raw = "{\"server\": {\"host\": \"localhost\", \"port\": 8080}}";
+    let config = json.parse(raw);
+    let server = config.get_field("server");
+
+    let host = require_string(server, "host");
+    let port = require_int(server, "port");
+    println(f"{host}:{port}");   // localhost:8080
+
+    server.free();
+    config.free();
+}
+```
+
+A config missing `port` traps with `missing required field: port` instead of returning a zero value.
 
 ## Structural equality
 

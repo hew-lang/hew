@@ -291,10 +291,10 @@ fn channel$try_new(i64) -> Result<(Sender, Receiver), string> [conv=default]
   bb16:
     stmt: eval site=SiteId(87) ty=()
     stmt: use BindingId(17) detail site=SiteId(89) ty=string intent=Read
-    stmt: agg_alias BindingId(17) detail site=SiteId(89) ty=string
     stmt: return site=Some(SiteId(88)) ty=Result<(Sender, Receiver), string>
     _26 = const.i64 1
     mtag25 = move _26
+    string.retain _18
     mvar25.1.0 = move _18
     ret = move _25
     return
@@ -509,6 +509,7 @@ fn string::fmt(string) -> string [conv=default]
   bb0:
     stmt: use BindingId(42) val site=SiteId(220) ty=string intent=Read
     stmt: return site=Some(SiteId(220)) ty=string
+    string.retain _0
     ret = move _0
     return
 

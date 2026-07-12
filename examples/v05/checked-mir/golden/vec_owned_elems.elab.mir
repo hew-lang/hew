@@ -30,7 +30,6 @@ fn main -> ()
     use BindingId(4) __hew_for_iter_3 site=SiteId(47) ty=VecIter<string> intent=Modify
     eval site=SiteId(52) ty=()
     use BindingId(6) __hew_iter_value_5 site=SiteId(53) ty=string intent=Read
-    agg_alias BindingId(6) __hew_iter_value_5 site=SiteId(53) ty=string
     eval site=SiteId(63) ty=()
     bind BindingId(7) n site=SiteId(61) ty=string
     use BindingId(7) n site=SiteId(59) ty=string intent=Read
@@ -122,12 +121,14 @@ fn main -> ()
     branch[bb23: bb24/bb25] ->
       (none)
     panic[bb24] ->
+      drop _39 ty=string kind=cow_heap(hew_string_drop)
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
     goto[bb25->bb21] ->
-      (none)
+      drop _39 ty=string kind=cow_heap(hew_string_drop)
     cancel[bb25] ->
+      drop _39 ty=string kind=cow_heap(hew_string_drop)
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)

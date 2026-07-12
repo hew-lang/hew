@@ -274,7 +274,7 @@ unsafe impl Send for ChildLookupResult {}
 /// Parallel to `InternalChildSpec` for static children, but tracks
 /// pool-specific attributes: routing strategy, capacity, and name.
 struct InternalPoolSpec {
-    /// Human-readable pool name (C string, heap-allocated via `libc::strdup`).
+    /// Human-readable pool name (C string, heap-allocated via `cstr_strdup`).
     name: *mut c_char,
     /// Routing strategy recorded for diagnostics; the live strategy is owned
     /// by the parallel `HewActorPool` in `pool_slots`.
@@ -2681,7 +2681,8 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
         ptr::null_mut()
     } else {
         // SAFETY: caller guarantees name is a valid C string.
-        unsafe { libc::strdup(sp.name) }
+        // Portable strdup (libc::strdup unavailable on Windows-MSVC, #2505).
+        unsafe { crate::cabi::cstr_strdup(sp.name) }
     };
 
     s.child_specs.push(InternalChildSpec {
@@ -5200,7 +5201,8 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
         ptr::null_mut()
     } else {
         // SAFETY: caller guarantees name is a valid C string.
-        unsafe { libc::strdup(sp.name) }
+        // Portable strdup (libc::strdup unavailable on Windows-MSVC, #2505).
+        unsafe { crate::cabi::cstr_strdup(sp.name) }
     };
 
     let i = s.child_count;
@@ -6053,7 +6055,8 @@ pub unsafe extern "C" fn hew_supervisor_pool_add_slot(
         ptr::null_mut()
     } else {
         // SAFETY: caller guarantees name is a valid C string.
-        unsafe { libc::strdup(name) }
+        // Portable strdup (libc::strdup unavailable on Windows-MSVC, #2505).
+        unsafe { crate::cabi::cstr_strdup(name) }
     };
 
     // Allocate the pool. hew_pool_new takes a *const c_char that must stay

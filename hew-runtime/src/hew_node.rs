@@ -2111,7 +2111,8 @@ pub unsafe extern "C" fn hew_node_new(node_id: u16, bind_addr: *const c_char) ->
     cabi_guard!(bind_addr.is_null(), ptr::null_mut());
 
     // SAFETY: caller guarantees bind_addr points to a valid C string.
-    let bind_copy = unsafe { libc::strdup(bind_addr) };
+    // Portable strdup: libc::strdup does not link on Windows-MSVC (#2505).
+    let bind_copy = unsafe { crate::cabi::cstr_strdup(bind_addr) };
     if bind_copy.is_null() {
         return ptr::null_mut();
     }
@@ -2555,7 +2556,7 @@ pub unsafe extern "C" fn hew_node_free(node: *mut HewNode) {
     }
 
     if !node.bind_addr_owned.is_null() {
-        // SAFETY: bind_addr_owned was allocated via libc::strdup.
+        // SAFETY: bind_addr_owned was allocated via cstr_strdup (libc::malloc).
         unsafe { libc::free(node.bind_addr_owned.cast::<c_void>()) };
         node.bind_addr_owned = ptr::null_mut();
         node.bind_addr = ptr::null();

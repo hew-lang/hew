@@ -16,6 +16,8 @@ mod d65_vec_release_truth_table;
 mod emit_duplex_pair;
 #[path = "structural/error_enum_cross_crate_parity.rs"]
 mod error_enum_cross_crate_parity;
+#[path = "structural/extern_malloc_string_adoption.rs"]
+mod extern_malloc_string_adoption;
 #[path = "structural/fork_spawn_env_drop.rs"]
 mod fork_spawn_env_drop;
 #[path = "structural/hashmap_layout_ops.rs"]

@@ -33,6 +33,21 @@ fn pipeline_discard_extern(
     param_tys: Vec<ResolvedTy>,
     args: Vec<Place>,
 ) -> IrPipeline {
+    pipeline_discard_extern_owned(fn_name, extern_return_ty, param_tys, args, false)
+}
+
+/// As [`pipeline_discard_extern`], but lets the caller pin
+/// `ExternDecl::malloc_string_return`. A raw malloc-owned string return
+/// discarded in statement position (`dest == None`) must STILL fail closed on
+/// the pointer/aggregate backstop — the adoption edge only runs when a tracked
+/// `dest` is present, so a discard can never silently leak the foreign string.
+fn pipeline_discard_extern_owned(
+    fn_name: &str,
+    extern_return_ty: ResolvedTy,
+    param_tys: Vec<ResolvedTy>,
+    args: Vec<Place>,
+    malloc_string_return: bool,
+) -> IrPipeline {
     let blocks = vec![
         BasicBlock {
             id: 0,
@@ -127,7 +142,8 @@ fn pipeline_discard_extern(
             abi: "C".to_string(),
             param_tys,
             return_ty: extern_return_ty,
-            malloc_string_return: false,
+            provenance: hew_hir::ExternProvenance::Root,
+            malloc_string_return,
         }],
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],
@@ -226,6 +242,46 @@ fn discard_string_extern_in_statement_position_fails_closed() {
         Ok(_) => {
             panic!("string-returning extern discarded with dest=None must fail closed; got Ok(_)")
         }
+    }
+}
+
+/// A discarded `string`-returning extern flagged `malloc_string_return = true`
+/// (a raw foreign C string) with `dest == None` must STILL fail closed on the
+/// pointer/aggregate backstop. The adoption edge only runs for a tracked
+/// `dest`, so a discard can never adopt-and-free — an un-adopted foreign
+/// pointer dropped on the floor is exactly the owned/heap return the backstop
+/// rejects. This pins that `malloc_string_return` never widens the scalar
+/// discard allowance.
+///
+/// LESSONS applied: `boundary-fail-closed` (P0).
+#[test]
+fn discard_malloc_string_extern_in_statement_position_fails_closed() {
+    let pipeline = pipeline_discard_extern_owned(
+        "probe_make_owned_str",
+        ResolvedTy::String,
+        vec![],
+        vec![],
+        true, // malloc_string_return — raw foreign C string
+    );
+    let (options, _tmp) = emit_options("discard_malloc_string");
+    let result = emit_module(&pipeline, &options);
+    match result {
+        Err(CodegenError::FailClosed(msg)) => {
+            assert!(
+                msg.contains("probe_make_owned_str"),
+                "FailClosed message must name the callee; got: {msg}"
+            );
+            assert!(
+                msg.contains("pointer or aggregate"),
+                "FailClosed message must explain the pointer/aggregate rejection; got: {msg}"
+            );
+        }
+        Err(other) => panic!(
+            "expected CodegenError::FailClosed for discarded malloc-string extern, got {other:?}"
+        ),
+        Ok(_) => panic!(
+            "malloc-owned string extern discarded with dest=None must fail closed; got Ok(_)"
+        ),
     }
 }
 

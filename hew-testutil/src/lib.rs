@@ -875,29 +875,104 @@ mod tests {
     /// Bounds waiting for the grandchild to start heart-beating at all --
     /// a hang backstop, not the proof itself.
     const HEARTBEAT_STARTUP_DEADLINE: Duration = Duration::from_secs(5);
-    /// Fixed, single observation window used after a kill: fifteen
-    /// heartbeat intervals is generous enough that any straggler write
-    /// would clearly show up. The proof is one comparison taken after this
-    /// fixed wait, never a retry loop that treats eventual convergence as
-    /// evidence.
-    const POST_KILL_OBSERVATION_WINDOW: Duration = Duration::from_millis(300);
+    /// Post-kill settling window for the positive test: `killpg` is
+    /// immediate, but a write the grandchild had already entered before
+    /// the signal landed can still complete afterward. Waiting this long
+    /// before taking the "final" baseline absorbs that race so a
+    /// straggling in-flight write is never mistaken for survival.
+    const POST_KILL_SETTLE_WINDOW: Duration = Duration::from_millis(200);
+    /// Fixed stability window checked *after* settling: the positive
+    /// test's proof is that the count taken after this wait matches the
+    /// settled baseline exactly, not that it merely stayed below some
+    /// threshold -- so any genuine straggler write still fails it.
+    const POST_KILL_STABILITY_WINDOW: Duration = Duration::from_millis(300);
+    /// Bounds the negative control's wait for the *specific event* of
+    /// further heartbeat growth -- a hang backstop for a deterministic
+    /// bounded poll, not a fixed sleep-then-single-check window: a
+    /// genuinely surviving grandchild grows past the pre-kill count well
+    /// within this bound regardless of scheduler jitter, while a broken
+    /// negative control (grandchild actually died too) hangs until the
+    /// deadline and fails for a structural reason, not timing luck.
+    const POST_KILL_GROWTH_DEADLINE: Duration = Duration::from_secs(5);
 
-    /// Spawns a direct child that backgrounds a grandchild shell
-    /// heart-beating (appending one byte to `heartbeat_path` every
-    /// `HEARTBEAT_INTERVAL`) and blocks on `wait` -- mirroring a race
-    /// child that spawns its own long-running `cargo`/`hew` subprocess and
-    /// waits on it. `own_process_group` repositions the direct child into
-    /// a fresh process group before it execs, so the grandchild it forks
-    /// afterward inherits that same group.
-    fn spawn_heartbeat_probe(heartbeat_path: &Path) -> Child {
-        let mut command = Command::new("sh");
-        command.arg("-c").arg(format!(
-            "sh -c 'while :; do printf x >> \"{path}\"; sleep {interval}; done' & wait",
-            path = heartbeat_path.display(),
-            interval = HEARTBEAT_INTERVAL.as_secs_f64(),
-        ));
-        own_process_group(&mut command);
-        command.spawn().expect("spawn heartbeat probe child")
+    /// Owns the heartbeat probe's direct child and process group from the
+    /// moment it is spawned, so the whole group -- direct child and the
+    /// grandchild it backgrounds -- is always killed and reaped on `Drop`,
+    /// including when a startup wait (`await_min_heartbeats`) or an
+    /// assertion panics before either test method below runs its own
+    /// explicit teardown. `terminate_group`/`kill_direct_child_only` mark
+    /// the direct child as already reaped so `Drop` does not attempt to
+    /// wait on it twice; `Drop` always retries the group-wide `killpg`
+    /// regardless, which is a harmless no-op (`ESRCH`) once the group is
+    /// already gone and is exactly what reclaims the negative control's
+    /// deliberately-orphaned grandchild afterward.
+    struct HeartbeatProbe {
+        child: Child,
+        pgid: i32,
+        reaped: bool,
+    }
+
+    impl HeartbeatProbe {
+        /// Spawns a direct child that backgrounds a grandchild shell
+        /// heart-beating (appending one byte to `heartbeat_path` every
+        /// `HEARTBEAT_INTERVAL`) and blocks on `wait` -- mirroring a race
+        /// child that spawns its own long-running `cargo`/`hew`
+        /// subprocess and waits on it. `own_process_group` repositions
+        /// the direct child into a fresh process group before it execs,
+        /// so the grandchild it forks afterward inherits that same
+        /// group.
+        fn spawn(heartbeat_path: &Path) -> Self {
+            let mut command = Command::new("sh");
+            command.arg("-c").arg(format!(
+                "sh -c 'while :; do printf x >> \"{path}\"; sleep {interval}; done' & wait",
+                path = heartbeat_path.display(),
+                interval = HEARTBEAT_INTERVAL.as_secs_f64(),
+            ));
+            own_process_group(&mut command);
+            let child = command.spawn().expect("spawn heartbeat probe child");
+            let pgid = child.id().cast_signed();
+            HeartbeatProbe {
+                child,
+                pgid,
+                reaped: false,
+            }
+        }
+
+        /// Kills the whole process group (direct child and grandchild)
+        /// and reaps the direct child -- the action the positive test
+        /// proves.
+        fn terminate_group(&mut self) -> Result<bool, String> {
+            let result = terminate_process_group(&mut self.child, "heartbeat probe");
+            self.reaped = true;
+            result
+        }
+
+        /// Kills only the direct child, deliberately leaving the
+        /// grandchild (and thus the process group) running -- the
+        /// negative control's setup step. `Drop` still reclaims the
+        /// orphaned grandchild's group afterward via `killpg`.
+        fn kill_direct_child_only(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+            self.reaped = true;
+        }
+    }
+
+    impl Drop for HeartbeatProbe {
+        fn drop(&mut self) {
+            // Unconditional, best-effort group cleanup: the panic-safety
+            // backstop for a startup/assertion panic (nothing terminated
+            // yet), the reclaim step for the negative control's
+            // deliberately-orphaned grandchild, and a harmless no-op
+            // (ESRCH) after an already-successful `terminate_group`.
+            // SAFETY: signal-only, no memory access.
+            unsafe {
+                libc::killpg(self.pgid, libc::SIGKILL);
+            }
+            if !self.reaped {
+                let _ = self.child.wait();
+            }
+        }
     }
 
     /// Heartbeat count so far: each beat appends exactly one byte, so the
@@ -947,73 +1022,71 @@ mod tests {
         let heartbeat_path = scratch.path().join("heartbeat");
         fs::write(&heartbeat_path, b"").expect("create heartbeat file");
 
-        let mut child = spawn_heartbeat_probe(&heartbeat_path);
+        let mut probe = HeartbeatProbe::spawn(&heartbeat_path);
         await_min_heartbeats(
             &heartbeat_path,
             MIN_HEARTBEATS_BEFORE_ACTION,
             HEARTBEAT_STARTUP_DEADLINE,
         );
 
-        terminate_process_group(&mut child, "heartbeat probe")
+        probe
+            .terminate_group()
             .expect("terminate_process_group should succeed");
-        let count_at_kill = heartbeat_count(&heartbeat_path);
 
-        std::thread::sleep(POST_KILL_OBSERVATION_WINDOW);
-        let count_after_window = heartbeat_count(&heartbeat_path);
+        // Let any write already in flight when the signal landed finish
+        // before treating a reading as the settled baseline.
+        std::thread::sleep(POST_KILL_SETTLE_WINDOW);
+        let settled_baseline = heartbeat_count(&heartbeat_path);
+
+        std::thread::sleep(POST_KILL_STABILITY_WINDOW);
+        let after_stability_window = heartbeat_count(&heartbeat_path);
 
         assert_eq!(
-            count_after_window, count_at_kill,
-            "heartbeat grew from {count_at_kill} to {count_after_window} bytes after \
-             terminate_process_group -- the grandchild survived the group kill"
+            after_stability_window, settled_baseline,
+            "heartbeat grew from {settled_baseline} to {after_stability_window} bytes \
+             after settling -- the grandchild survived terminate_process_group"
         );
     }
 
     /// Negative control for the test above: killing only the direct child
     /// (the pre-hardening pattern) must leave the grandchild's process
-    /// group untouched, so its heartbeat keeps growing across the same
-    /// observation window -- proving
-    /// `terminate_process_group_stops_grandchild_heartbeat` actually
-    /// discriminates rather than passing regardless of what the kill call
-    /// does.
+    /// group untouched, so its heartbeat keeps growing past the pre-kill
+    /// count -- proving `terminate_process_group_stops_grandchild_heartbeat`
+    /// actually discriminates rather than passing regardless of what the
+    /// kill call does. Growth is proven with a bounded poll for that
+    /// specific event, not a fixed sleep-then-single-check window, so it
+    /// cannot false-fail under scheduler contention.
     #[test]
     fn direct_child_only_kill_leaves_grandchild_heartbeating() {
         let scratch = tempfile::tempdir().expect("create scratch dir");
         let heartbeat_path = scratch.path().join("heartbeat");
         fs::write(&heartbeat_path, b"").expect("create heartbeat file");
 
-        let mut child = spawn_heartbeat_probe(&heartbeat_path);
+        let mut probe = HeartbeatProbe::spawn(&heartbeat_path);
         await_min_heartbeats(
             &heartbeat_path,
             MIN_HEARTBEATS_BEFORE_ACTION,
             HEARTBEAT_STARTUP_DEADLINE,
         );
 
-        // Recorded only for best-effort cleanup below, never for the
-        // proof itself: `own_process_group` made this the whole group's
-        // pgid too, but a direct-child-only kill deliberately never uses
-        // it as a group here.
-        let cleanup_pgid = child.id().cast_signed();
-
-        child.kill().expect("kill direct child only");
-        child.wait().expect("reap direct child");
+        probe.kill_direct_child_only();
         let count_at_kill = heartbeat_count(&heartbeat_path);
 
-        std::thread::sleep(POST_KILL_OBSERVATION_WINDOW);
-        let count_after_window = heartbeat_count(&heartbeat_path);
-
-        assert!(
-            count_after_window > count_at_kill,
-            "heartbeat did not grow ({count_at_kill} -> {count_after_window}) after a \
-             direct-child-only kill; this negative control should show the grandchild \
-             surviving, or the positive test above proves nothing"
+        let count_after_growth = await_min_heartbeats(
+            &heartbeat_path,
+            count_at_kill + 1,
+            POST_KILL_GROWTH_DEADLINE,
         );
 
-        // Best-effort cleanup of the grandchild this negative control
-        // deliberately leaves running; ESRCH means it is already gone.
-        // SAFETY: signal-only, no memory access.
-        unsafe {
-            libc::killpg(cleanup_pgid, libc::SIGKILL);
-        }
+        assert!(
+            count_after_growth > count_at_kill,
+            "heartbeat did not grow past {count_at_kill} bytes within the bounded \
+             deadline after a direct-child-only kill; this negative control should show \
+             the grandchild surviving, or the positive test above proves nothing"
+        );
+
+        // `probe`'s Drop reclaims the deliberately-orphaned grandchild's
+        // process group via killpg.
     }
 }
 

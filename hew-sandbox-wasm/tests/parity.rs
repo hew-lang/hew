@@ -628,12 +628,7 @@ fn ensure_native_toolchain() {
                 .args(["build", "-q", "-p", "hew-cli"])
                 .current_dir(repo_root()),
         );
-        run_bootstrap_command(
-            "cargo build -q -p hew-lib",
-            std::process::Command::new("cargo")
-                .args(["build", "-q", "-p", "hew-lib"])
-                .current_dir(repo_root()),
-        );
+        hew_testutil::ensure_hew_lib_built().expect("build libhew.a");
     });
 }
 

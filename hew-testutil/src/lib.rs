@@ -914,10 +914,17 @@ mod tests {
     enum ProbeState {
         /// Nothing has been signaled yet.
         Running,
-        /// `terminate_group` completed successfully: `killpg` (or its
-        /// child-only fallback) succeeded *and* the leader was reaped.
-        /// The group is fully gone; its pgid number is no longer this
-        /// probe's to signal.
+        /// `terminate_group` confirmed the whole group gone (`killpg`
+        /// itself succeeded, or failed with `ESRCH` -- already empty)
+        /// *and* reaped the leader. The group is fully gone; its pgid
+        /// number is no longer this probe's to signal.
+        ///
+        /// This is deliberately never reached by a partial ("leader-only")
+        /// kill: unlike the general-purpose [`terminate_process_group`]
+        /// helper, this probe has no child-only fallback, because a
+        /// fallback kill leaves the grandchild's fate unconfirmed and
+        /// `GroupTerminated` must mean the grandchild is provably gone
+        /// too, not just "we gave up trying to kill the whole group".
         GroupTerminated,
         /// The negative control's setup: the leader was killed directly
         /// but deliberately left unreaped so its PID slot -- and thus the
@@ -934,6 +941,32 @@ mod tests {
     /// without spawning any process.
     fn probe_drop_needs_cleanup(state: ProbeState) -> bool {
         !matches!(state, ProbeState::GroupTerminated)
+    }
+
+    /// Classifies a raw `killpg` result against the one distinction that
+    /// matters for [`HeartbeatProbe::terminate_group`]: did this call
+    /// confirm the group is gone, or might it still be alive? Takes the
+    /// syscall's return value and captured `errno` as plain parameters
+    /// (rather than reading `io::Error::last_os_error()` itself) so the
+    /// decision is a pure function directly testable against an injected
+    /// failure, without depending on global errno state at the moment the
+    /// test runs.
+    ///
+    /// `Ok(())` means confirmed gone (the call succeeded, or failed with
+    /// `ESRCH` because the group was already empty). Any other failure is
+    /// `Err` -- the group, and thus a still-heart-beating grandchild, may
+    /// well be alive, so the caller must not treat this as termination.
+    fn classify_killpg_result(result: i32, pgid: i32, os_error: Option<i32>) -> Result<(), String> {
+        if result == 0 {
+            return Ok(());
+        }
+        if os_error == Some(libc::ESRCH) {
+            Ok(())
+        } else {
+            Err(format!(
+                "cannot kill process group {pgid}: os error {os_error:?}"
+            ))
+        }
     }
 
     /// Owns the heartbeat probe's direct child (the process group leader)
@@ -979,19 +1012,35 @@ mod tests {
         }
 
         /// Kills the whole process group (leader and grandchild) and
-        /// reaps the leader -- the action the positive test proves. Only
-        /// transitions to `GroupTerminated` -- and so only tells `Drop`
-        /// to stand down -- when `terminate_process_group` reports full
-        /// success (group cleaned up *and* leader reaped); on failure the
-        /// state is left at `Running` so `Drop` still attempts its own
-        /// best-effort cleanup rather than trusting an unconfirmed
-        /// teardown.
-        fn terminate_group(&mut self) -> Result<bool, String> {
-            let result = terminate_process_group(&mut self.child, "heartbeat probe");
-            if result.is_ok() {
-                self.state = ProbeState::GroupTerminated;
-            }
-            result
+        /// reaps the leader -- the action the positive test proves.
+        /// Deliberately does not call the crate's general-purpose
+        /// [`terminate_process_group`] helper: that helper falls back to
+        /// a leader-only kill (and still reaps the leader) when `killpg`
+        /// fails for a real reason, which would let this probe declare
+        /// `GroupTerminated` -- and so tell `Drop` to stand down -- while
+        /// the grandchild might still be heart-beating. This probe only
+        /// ever transitions to `GroupTerminated` after
+        /// [`classify_killpg_result`] confirms the group itself is gone
+        /// *and* the leader has been reaped; on any other outcome the
+        /// leader is left unreaped and the state stays `Running`, so
+        /// `Drop` still safely retries -- the group's pgid is still
+        /// this probe's own until that confirmation happens.
+        fn terminate_group(&mut self) -> Result<(), String> {
+            // SAFETY: signal-only, no memory access. `own_process_group`
+            // put the leader in a process group whose pgid is the
+            // leader's own pid.
+            let result = unsafe { libc::killpg(self.pgid, libc::SIGKILL) };
+            let os_error = if result == 0 {
+                None
+            } else {
+                std::io::Error::last_os_error().raw_os_error()
+            };
+            classify_killpg_result(result, self.pgid, os_error)?;
+            self.child.wait().map_err(|error| {
+                format!("cannot reap heartbeat probe leader after kill: {error}")
+            })?;
+            self.state = ProbeState::GroupTerminated;
+            Ok(())
         }
 
         /// Kills only the leader, deliberately *not* reaping it --
@@ -1165,6 +1214,54 @@ mod tests {
             !probe_drop_needs_cleanup(ProbeState::GroupTerminated),
             "the group was already fully killed and reaped -- Drop must NOT re-signal \
              a pgid the kernel may have already recycled for an unrelated process group"
+        );
+    }
+
+    /// `classify_killpg_result` on synthetic inputs: success and `ESRCH`
+    /// both confirm the group gone, and no other `errno` value may be
+    /// mistaken for that -- the exact decision `terminate_group` relies
+    /// on to gate the `GroupTerminated` transition.
+    #[test]
+    fn classify_killpg_result_only_confirms_gone_on_success_or_esrch() {
+        assert!(classify_killpg_result(0, 4242, None).is_ok());
+        assert!(classify_killpg_result(-1, 4242, Some(libc::ESRCH)).is_ok());
+        assert!(classify_killpg_result(-1, 4242, Some(libc::EPERM)).is_err());
+        assert!(classify_killpg_result(-1, 4242, Some(libc::EINVAL)).is_err());
+        assert!(classify_killpg_result(-1, 4242, None).is_err());
+    }
+
+    /// `classify_killpg_result` against a real, injected `killpg` failure
+    /// rather than a synthetic `errno` value: signal `0` delivers nothing
+    /// (a pure permission/existence probe), and process group `1`
+    /// (init/launchd) is a group an unprivileged test process is never
+    /// permitted to signal, so this deterministically produces a genuine
+    /// `EPERM` without ever touching any real process. Proves the
+    /// classifier treats a real "denied" failure as "group might still be
+    /// alive", never as "confirmed gone" -- the distinction that keeps
+    /// `terminate_group` from ever declaring a heart-beating grandchild
+    /// terminated just because the kill attempt was refused.
+    #[test]
+    fn classify_killpg_result_rejects_a_real_injected_permission_failure() {
+        // SAFETY: signal 0 delivers no signal; this only probes whether
+        // the calling process is permitted to signal process group 1.
+        let result = unsafe { libc::killpg(1, 0) };
+        if result == 0 {
+            // Running with a privilege level that can signal init (e.g.
+            // root) -- this environment cannot exercise a real denial, so
+            // there is nothing further to assert here; the synthetic-input
+            // test above already covers the EPERM branch directly.
+            return;
+        }
+        let os_error = std::io::Error::last_os_error().raw_os_error();
+        assert_eq!(
+            os_error,
+            Some(libc::EPERM),
+            "expected a permission-denied failure signaling process group 1, got {os_error:?}"
+        );
+        assert!(
+            classify_killpg_result(result, 1, os_error).is_err(),
+            "a real signal-denied failure must never be classified as the group already \
+             being gone"
         );
     }
 }

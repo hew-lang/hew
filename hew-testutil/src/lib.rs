@@ -895,21 +895,61 @@ mod tests {
     /// deadline and fails for a structural reason, not timing luck.
     const POST_KILL_GROWTH_DEADLINE: Duration = Duration::from_secs(5);
 
-    /// Owns the heartbeat probe's direct child and process group from the
-    /// moment it is spawned, so the whole group -- direct child and the
-    /// grandchild it backgrounds -- is always killed and reaped on `Drop`,
-    /// including when a startup wait (`await_min_heartbeats`) or an
-    /// assertion panics before either test method below runs its own
-    /// explicit teardown. `terminate_group`/`kill_direct_child_only` mark
-    /// the direct child as already reaped so `Drop` does not attempt to
-    /// wait on it twice; `Drop` always retries the group-wide `killpg`
-    /// regardless, which is a harmless no-op (`ESRCH`) once the group is
-    /// already gone and is exactly what reclaims the negative control's
-    /// deliberately-orphaned grandchild afterward.
+    /// Lifecycle state for [`HeartbeatProbe`]'s direct child and process
+    /// group, tracked explicitly so `Drop` never signals a pgid number
+    /// after it could plausibly have been recycled by the kernel for an
+    /// unrelated process group.
+    ///
+    /// A process group's numeric pgid cannot be reassigned to a new
+    /// process while *any* process still references it as its own
+    /// group -- so signaling `pgid` is always safe in `Running` (nothing
+    /// has died) and in `LeaderKilledUnreaped` (the leader is a
+    /// still-unreaped zombie, and/or the grandchild is still alive, both
+    /// of which hold the reservation). It stops being safe the instant
+    /// the group is fully empty: leader reaped *and* grandchild reaped,
+    /// which is exactly the state `GroupTerminated` records -- from that
+    /// point on the kernel is free to recycle the number for a completely
+    /// unrelated process group, so `Drop` must not signal it again.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum ProbeState {
+        /// Nothing has been signaled yet.
+        Running,
+        /// `terminate_group` completed successfully: `killpg` (or its
+        /// child-only fallback) succeeded *and* the leader was reaped.
+        /// The group is fully gone; its pgid number is no longer this
+        /// probe's to signal.
+        GroupTerminated,
+        /// The negative control's setup: the leader was killed directly
+        /// but deliberately left unreaped so its PID slot -- and thus the
+        /// group's pgid, which the grandchild also still references --
+        /// stays reserved while the test observes the grandchild's
+        /// heartbeat.
+        LeaderKilledUnreaped,
+    }
+
+    /// Whether `Drop` still needs to signal the group and reap the
+    /// leader for a given lifecycle state. Pulled out as a pure function
+    /// of the state alone so the invariant -- "signal in every state
+    /// except a confirmed complete termination" -- is directly testable
+    /// without spawning any process.
+    fn probe_drop_needs_cleanup(state: ProbeState) -> bool {
+        !matches!(state, ProbeState::GroupTerminated)
+    }
+
+    /// Owns the heartbeat probe's direct child (the process group leader)
+    /// and process group from the moment it is spawned, so the whole
+    /// group -- leader and the grandchild it backgrounds -- is always
+    /// killed and reaped on `Drop`, including when a startup wait
+    /// (`await_min_heartbeats`) or an assertion panics before either test
+    /// method below runs its own explicit teardown. `Drop` consults
+    /// [`ProbeState`] rather than unconditionally re-signaling, because
+    /// once the group has been confirmed fully torn down its pgid number
+    /// may already have been recycled by the kernel for an unrelated
+    /// process.
     struct HeartbeatProbe {
         child: Child,
         pgid: i32,
-        reaped: bool,
+        state: ProbeState,
     }
 
     impl HeartbeatProbe {
@@ -934,44 +974,52 @@ mod tests {
             HeartbeatProbe {
                 child,
                 pgid,
-                reaped: false,
+                state: ProbeState::Running,
             }
         }
 
-        /// Kills the whole process group (direct child and grandchild)
-        /// and reaps the direct child -- the action the positive test
-        /// proves.
+        /// Kills the whole process group (leader and grandchild) and
+        /// reaps the leader -- the action the positive test proves. Only
+        /// transitions to `GroupTerminated` -- and so only tells `Drop`
+        /// to stand down -- when `terminate_process_group` reports full
+        /// success (group cleaned up *and* leader reaped); on failure the
+        /// state is left at `Running` so `Drop` still attempts its own
+        /// best-effort cleanup rather than trusting an unconfirmed
+        /// teardown.
         fn terminate_group(&mut self) -> Result<bool, String> {
             let result = terminate_process_group(&mut self.child, "heartbeat probe");
-            self.reaped = true;
+            if result.is_ok() {
+                self.state = ProbeState::GroupTerminated;
+            }
             result
         }
 
-        /// Kills only the direct child, deliberately leaving the
-        /// grandchild (and thus the process group) running -- the
-        /// negative control's setup step. `Drop` still reclaims the
-        /// orphaned grandchild's group afterward via `killpg`.
-        fn kill_direct_child_only(&mut self) {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-            self.reaped = true;
+        /// Kills only the leader, deliberately *not* reaping it --
+        /// the negative control's setup step. Leaving the leader a
+        /// zombie (in addition to the grandchild remaining alive) keeps
+        /// this pgid number reserved for the rest of the test; `Drop`
+        /// signals the group and reaps the leader afterward.
+        fn kill_leader_unreaped(&mut self) {
+            self.child.kill().expect("kill leader only");
+            self.state = ProbeState::LeaderKilledUnreaped;
         }
     }
 
     impl Drop for HeartbeatProbe {
         fn drop(&mut self) {
-            // Unconditional, best-effort group cleanup: the panic-safety
-            // backstop for a startup/assertion panic (nothing terminated
-            // yet), the reclaim step for the negative control's
-            // deliberately-orphaned grandchild, and a harmless no-op
-            // (ESRCH) after an already-successful `terminate_group`.
+            if !probe_drop_needs_cleanup(self.state) {
+                return;
+            }
+            // Safe to signal here: in `Running`, nothing has died yet, so
+            // this pgid is still exclusively this probe's; in
+            // `LeaderKilledUnreaped`, the unreaped leader zombie and/or
+            // the still-alive grandchild keep the pgid number reserved,
+            // so it cannot yet have been recycled for an unrelated group.
             // SAFETY: signal-only, no memory access.
             unsafe {
                 libc::killpg(self.pgid, libc::SIGKILL);
             }
-            if !self.reaped {
-                let _ = self.child.wait();
-            }
+            let _ = self.child.wait();
         }
     }
 
@@ -1048,14 +1096,16 @@ mod tests {
         );
     }
 
-    /// Negative control for the test above: killing only the direct child
-    /// (the pre-hardening pattern) must leave the grandchild's process
-    /// group untouched, so its heartbeat keeps growing past the pre-kill
-    /// count -- proving `terminate_process_group_stops_grandchild_heartbeat`
+    /// Negative control for the test above: killing only the leader (the
+    /// pre-hardening pattern) must leave the grandchild's process group
+    /// untouched, so its heartbeat keeps growing past the pre-kill count
+    /// -- proving `terminate_process_group_stops_grandchild_heartbeat`
     /// actually discriminates rather than passing regardless of what the
     /// kill call does. Growth is proven with a bounded poll for that
     /// specific event, not a fixed sleep-then-single-check window, so it
-    /// cannot false-fail under scheduler contention.
+    /// cannot false-fail under scheduler contention. The leader is left
+    /// unreaped (see `ProbeState::LeaderKilledUnreaped`) for the whole
+    /// growth check, then reclaimed by `Drop`.
     #[test]
     fn direct_child_only_kill_leaves_grandchild_heartbeating() {
         let scratch = tempfile::tempdir().expect("create scratch dir");
@@ -1069,7 +1119,7 @@ mod tests {
             HEARTBEAT_STARTUP_DEADLINE,
         );
 
-        probe.kill_direct_child_only();
+        probe.kill_leader_unreaped();
         let count_at_kill = heartbeat_count(&heartbeat_path);
 
         let count_after_growth = await_min_heartbeats(
@@ -1085,8 +1135,37 @@ mod tests {
              the grandchild surviving, or the positive test above proves nothing"
         );
 
-        // `probe`'s Drop reclaims the deliberately-orphaned grandchild's
-        // process group via killpg.
+        // `probe`'s Drop signals the group (still safe: the unreaped
+        // leader zombie and the live grandchild both hold the pgid
+        // reservation) and reaps the leader.
+    }
+
+    /// Lifecycle/PID-state invariant: `Drop` must re-signal the group in
+    /// every state where the pgid could still plausibly be this probe's
+    /// (nothing killed yet, or the leader/grandchild still hold the
+    /// reservation as a zombie/live process), and must NOT re-signal once
+    /// a `terminate_group` call has confirmed the group fully torn down
+    /// -- past that point the pgid number may already belong to an
+    /// unrelated process group recycled by the kernel, and signaling it
+    /// would be a real, high-severity foot-gun. This is a pure function
+    /// of the state alone, so the invariant is checked directly without
+    /// spawning any process or depending on any timing.
+    #[test]
+    fn probe_drop_cleanup_gated_by_confirmed_full_termination() {
+        assert!(
+            probe_drop_needs_cleanup(ProbeState::Running),
+            "nothing has been signaled yet -- Drop must still clean up"
+        );
+        assert!(
+            probe_drop_needs_cleanup(ProbeState::LeaderKilledUnreaped),
+            "the unreaped leader zombie and/or live grandchild still hold this pgid \
+             reserved -- Drop must still signal and reap"
+        );
+        assert!(
+            !probe_drop_needs_cleanup(ProbeState::GroupTerminated),
+            "the group was already fully killed and reaped -- Drop must NOT re-signal \
+             a pgid the kernel may have already recycled for an unrelated process group"
+        );
     }
 }
 

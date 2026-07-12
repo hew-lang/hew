@@ -259,12 +259,13 @@ fn unknown_bytes_param_extern_fails_closed_naming_symbol() {
 /// We test the param side: `hew_sha256_hew(data: bytes) -> bytes`. Because
 /// `hew_sha256_hew` is in `is_bytes_triple_return_producer` (return side) AND
 /// `is_bytes_struct_expansion_consumer` (param side), both guards pass.
-#[test]
-fn known_bytes_extern_does_not_fail_closed() {
-    // hew_sha256_hew takes bytes and returns bytes — both sides are registered.
-    let pipeline =
-        pipeline_with_extern("hew_sha256_hew", ResolvedTy::Bytes, vec![ResolvedTy::Bytes]);
-    let result = emit_module(&pipeline, &emit_options("sha256_known"));
+fn assert_known_bytes_extern_does_not_fail_closed(
+    symbol: &str,
+    return_ty: ResolvedTy,
+    param_tys: Vec<ResolvedTy>,
+) {
+    let pipeline = pipeline_with_extern(symbol, return_ty, param_tys);
+    let result = emit_module(&pipeline, &emit_options(symbol));
     // We do not assert Ok(_) because downstream codegen may still fail on
     // unrelated shape/lowering details; we only assert the gate did NOT fire.
     match result {
@@ -274,11 +275,47 @@ fn known_bytes_extern_does_not_fail_closed() {
                 || msg.contains("is_bytes_struct_expansion_consumer") =>
         {
             panic!(
-                "hew_sha256_hew is a known registered extern; the bytes ABI \
-                 gate must not fire for it. Got FailClosed: {msg}"
+                "{symbol} is a known registered extern; the bytes ABI gate \
+                 must not fire for it. Got FailClosed: {msg}"
             );
         }
         // Any other outcome (Ok or a different error) is acceptable here.
         _ => {}
     }
+}
+
+#[test]
+fn known_bytes_extern_does_not_fail_closed() {
+    // hew_sha256_hew takes bytes and returns bytes — both sides are registered.
+    assert_known_bytes_extern_does_not_fail_closed(
+        "hew_sha256_hew",
+        ResolvedTy::Bytes,
+        vec![ResolvedTy::Bytes],
+    );
+}
+
+#[test]
+fn quic_bytes_externs_do_not_fail_closed() {
+    // QUIC receive wrappers produce BytesTriple, and send wrappers consume a
+    // pointer to the caller's BytesTriple. Every direction must stay registered.
+    assert_known_bytes_extern_does_not_fail_closed(
+        "hew_quic_stream_recv",
+        ResolvedTy::Bytes,
+        vec![ResolvedTy::I64],
+    );
+    assert_known_bytes_extern_does_not_fail_closed(
+        "hew_quic_stream_recv_timeout_hew",
+        ResolvedTy::Bytes,
+        vec![ResolvedTy::I64, ResolvedTy::I32],
+    );
+    assert_known_bytes_extern_does_not_fail_closed(
+        "hew_quic_stream_send",
+        ResolvedTy::I32,
+        vec![ResolvedTy::I64, ResolvedTy::Bytes],
+    );
+    assert_known_bytes_extern_does_not_fail_closed(
+        "hew_quic_stream_send_timeout_hew",
+        ResolvedTy::I32,
+        vec![ResolvedTy::I64, ResolvedTy::Bytes, ResolvedTy::I32],
+    );
 }

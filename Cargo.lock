@@ -2047,7 +2047,9 @@ version = "0.6.0-rc1"
 name = "hew-testutil"
 version = "0.6.0-rc1"
 dependencies = [
+ "fd-lock",
  "libc",
+ "tempfile",
 ]
 
 [[package]]

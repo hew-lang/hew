@@ -1,7 +1,10 @@
 //! Shared integration-test helpers.
 
+use fd_lock::RwLock;
 use std::fmt;
+use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
@@ -573,6 +576,209 @@ fn truncation_marker() -> String {
 
 fn abandoned_capture_marker(name: &str) -> Vec<u8> {
     format!("\n[{name} capture abandoned after timeout]\n").into_bytes()
+}
+
+/// Serialize `cargo build -p hew-lib` across all parallel nextest processes and
+/// return the resolved static-library path (`libhew.a` / `hew.lib`).
+///
+/// One `fd_lock` write-lock plus a `NEXTEST_RUN_ID`-keyed stamp means the first
+/// caller in a nextest run performs the (fast, Cargo-fingerprinted) build and
+/// every later caller — in any crate — takes the stamped fast path. With no
+/// second writer left, Cargo's non-atomic uplift window can no longer race the
+/// linker's `open()` of `libhew.a`.
+///
+/// # Errors
+///
+/// Returns `Err` if the lock file cannot be opened/locked, if
+/// `cargo build -p hew-lib` fails or cannot be spawned, or if the expected
+/// static-library artifact is missing after a successful build.
+pub fn ensure_hew_lib_built() -> Result<PathBuf, String> {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")) // = <repo>/hew-testutil
+        .parent()
+        .ok_or("hew-testutil must live under the workspace root")?
+        .to_path_buf();
+    let (target_dir, profile) = target_dir_and_profile();
+    let lib_path = target_dir.join(&profile).join(hew_lib_name());
+    ensure_built_serialized(&target_dir, &profile, &lib_path, |td, prof| {
+        run_cargo_build_hew_lib(&repo_root, td, prof)
+    })?;
+    Ok(lib_path)
+}
+
+fn hew_lib_name() -> &'static str {
+    if cfg!(windows) {
+        "hew.lib"
+    } else {
+        "libhew.a"
+    }
+}
+
+/// Testable core: `build_fn` is injected so the unit test can stub `cargo`.
+///
+/// The stamp read, the build, the artifact presence check, and the stamp
+/// write all happen inside the `fd_lock` write guard — no TOCTOU window
+/// between "stamp matches" and "build" and "artifact present". The lock is
+/// intentionally held across `build_fn` (that IS the serialization); the
+/// only hazard would be re-entrancy, which is absent here because `build_fn`
+/// either shells `cargo` as a subprocess or (in tests) only touches files.
+fn ensure_built_serialized(
+    target_dir: &Path,
+    profile: &str,
+    artifact: &Path,
+    build_fn: impl FnOnce(&Path, &str) -> Result<(), String>,
+) -> Result<(), String> {
+    fs::create_dir_all(target_dir).map_err(|e| format!("mkdir {}: {e}", target_dir.display()))?;
+    let run_id =
+        std::env::var("NEXTEST_RUN_ID").unwrap_or_else(|_| format!("pid:{}", std::process::id()));
+    let lock_path = target_dir.join("hew-lib-bootstrap.lock");
+    let stamp_path = target_dir.join(format!("hew-lib-bootstrap-{profile}.stamp"));
+    let fresh = || fs::read_to_string(&stamp_path).is_ok_and(|s| s == run_id) && artifact.is_file();
+    if fresh() {
+        return Ok(()); // pre-lock fast path
+    }
+    let lock_file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|e| format!("open lock {}: {e}", lock_path.display()))?;
+    let mut lock = RwLock::new(lock_file);
+    let _guard = lock
+        .write()
+        .map_err(|e| format!("lock {}: {e}", lock_path.display()))?;
+    if fresh() {
+        return Ok(()); // re-check under lock
+    }
+    build_fn(target_dir, profile)?; // build UNDER the lock (by design)
+    if !artifact.is_file() {
+        return Err(format!(
+            "build succeeded but {} was not created",
+            artifact.display()
+        ));
+    }
+    fs::write(&stamp_path, &run_id)
+        .map_err(|e| format!("write stamp {}: {e}", stamp_path.display()))
+}
+
+fn target_dir_and_profile() -> (PathBuf, String) {
+    if let Ok(exe) = std::env::current_exe() {
+        // <target>/<profile>/deps/<bin>
+        if let Some(profile_dir) = exe.parent().and_then(Path::parent) {
+            if let (Some(p), Some(t)) = (
+                profile_dir.file_name().and_then(|s| s.to_str()),
+                profile_dir.parent(),
+            ) {
+                return (t.to_path_buf(), p.to_string());
+            }
+        }
+    }
+    let target = std::env::var_os("CARGO_TARGET_DIR").map_or_else(
+        || {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .join("target")
+        },
+        PathBuf::from,
+    );
+    (
+        target,
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        }
+        .to_string(),
+    )
+}
+
+fn run_cargo_build_hew_lib(
+    repo_root: &Path,
+    target_dir: &Path,
+    profile: &str,
+) -> Result<(), String> {
+    let mut cmd = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+    cmd.args(["build", "-q", "-p", "hew-lib"])
+        .env("CARGO_TARGET_DIR", target_dir)
+        .current_dir(repo_root);
+    match profile {
+        // dev/test both land in target/debug
+        "debug" => {}
+        "release" => {
+            cmd.arg("--release");
+        }
+        other => {
+            cmd.args(["--profile", other]); // e.g. CI release-lib
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // port verbatim from build_codegen_artifacts
+        let dep = std::env::var("MACOSX_DEPLOYMENT_TARGET")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "13.0".to_string());
+        cmd.env("MACOSX_DEPLOYMENT_TARGET", dep);
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| format!("spawn cargo build -p hew-lib: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "cargo build -p hew-lib failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod hew_lib_bootstrap_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// N threads race `ensure_built_serialized` on one tempdir; the injected
+    /// build stub must run exactly once (`fd_lock` serializes the writers, the
+    /// stamp fast-path short-circuits everyone after the first winner).
+    #[test]
+    fn concurrent_callers_build_exactly_once() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let target_dir = dir.path().to_path_buf();
+        let artifact = target_dir.join("libhew-stub.a");
+        let build_count = AtomicUsize::new(0);
+
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| {
+                    let target_dir = &target_dir;
+                    let artifact = &artifact;
+                    let build_count = &build_count;
+                    scope.spawn(move || {
+                        ensure_built_serialized(target_dir, "debug", artifact, |_td, _prof| {
+                            build_count.fetch_add(1, Ordering::SeqCst);
+                            fs::write(artifact, b"stub archive")
+                                .map_err(|e| format!("write stub artifact: {e}"))
+                        })
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle
+                    .join()
+                    .expect("bootstrap thread should not panic")
+                    .expect("bootstrap thread should succeed");
+            }
+        });
+
+        assert_eq!(
+            build_count.load(Ordering::SeqCst),
+            1,
+            "build stub should run exactly once across concurrent callers"
+        );
+        assert!(artifact.is_file(), "stub artifact should be present");
+    }
 }
 
 #[cfg(test)]

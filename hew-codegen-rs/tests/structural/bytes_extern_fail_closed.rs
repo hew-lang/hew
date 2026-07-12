@@ -265,23 +265,8 @@ fn assert_known_bytes_extern_does_not_fail_closed(
     param_tys: Vec<ResolvedTy>,
 ) {
     let pipeline = pipeline_with_extern(symbol, return_ty, param_tys);
-    let result = emit_module(&pipeline, &emit_options(symbol));
-    // We do not assert Ok(_) because downstream codegen may still fail on
-    // unrelated shape/lowering details; we only assert the gate did NOT fire.
-    match result {
-        Err(CodegenError::FailClosed(msg))
-            if msg.contains("is_bytes_triple_return_producer")
-                || msg.contains("is_bytes_by_pointer_consumer")
-                || msg.contains("is_bytes_struct_expansion_consumer") =>
-        {
-            panic!(
-                "{symbol} is a known registered extern; the bytes ABI gate \
-                 must not fire for it. Got FailClosed: {msg}"
-            );
-        }
-        // Any other outcome (Ok or a different error) is acceptable here.
-        _ => {}
-    }
+    emit_module(&pipeline, &emit_options(symbol))
+        .unwrap_or_else(|error| panic!("{symbol} must emit successfully: {error:?}"));
 }
 
 #[test]

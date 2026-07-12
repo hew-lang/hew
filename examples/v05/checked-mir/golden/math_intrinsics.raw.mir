@@ -160,43 +160,82 @@ fn math$clamp(i64, i64, i64) -> i64 [conv=default]
     _2: i64
     _3: ()
     _4: bool
-    _5: ()
-    _6: bool
+    _5: string
+    _6: string
+    _7: string
+    _8: string
+    _9: string
+    _10: string
+    _11: string
+    _12: ()
+    _13: bool
+    _14: ()
+    _15: bool
   bb0:
-    stmt: use BindingId(5) x site=SiteId(84) ty=i64 intent=Read
-    stmt: use BindingId(6) lo site=SiteId(85) ty=i64 intent=Read
-    _4 = icmp.slt _0 _1
+    stmt: use BindingId(6) lo site=SiteId(84) ty=i64 intent=Read
+    stmt: use BindingId(7) hi site=SiteId(85) ty=i64 intent=Read
+    _4 = icmp.sgt _1 _2
     branch _4 ? bb1 : bb2
   bb1:
-    stmt: use BindingId(6) lo site=SiteId(86) ty=i64 intent=Consume
-    stmt: return site=Some(SiteId(86)) ty=i64
-    ret = move _1
-    return
+    stmt: use BindingId(6) lo site=SiteId(89) ty=i64 intent=Read
+    _5 = string_lit "math.clamp: lower bound "
+    _6 = call to_string_i64(_1) -> bb4
   bb2:
     goto bb3
   bb3:
-    stmt: eval site=SiteId(88) ty=()
-    stmt: use BindingId(5) x site=SiteId(90) ty=i64 intent=Read
-    stmt: use BindingId(7) hi site=SiteId(91) ty=i64 intent=Read
-    _6 = icmp.sgt _0 _2
-    branch _6 ? bb5 : bb6
+    stmt: eval site=SiteId(104) ty=()
+    stmt: use BindingId(5) x site=SiteId(106) ty=i64 intent=Read
+    stmt: use BindingId(6) lo site=SiteId(107) ty=i64 intent=Read
+    _13 = icmp.slt _0 _1
+    branch _13 ? bb10 : bb11
   bb4:
-    goto bb3
+    _7 = call string_concat(_5, _6) -> bb5
   bb5:
-    stmt: use BindingId(7) hi site=SiteId(92) ty=i64 intent=Consume
-    stmt: return site=Some(SiteId(92)) ty=i64
+    drop _6 ty=string fn=release(hew_string_drop)
+    _8 = string_lit " exceeds upper bound "
+    _9 = call string_concat(_7, _8) -> bb6
+  bb6:
+    stmt: use BindingId(7) hi site=SiteId(93) ty=i64 intent=Read
+    drop _7 ty=string fn=release(hew_string_drop)
+    _10 = call to_string_i64(_2) -> bb7
+  bb7:
+    _11 = call string_concat(_9, _10) -> bb8
+  bb8:
+    drop _10 ty=string fn=release(hew_string_drop)
+    call panic(_11) -> bb9
+  bb9:
+    stmt: eval site=SiteId(86) ty=!
+    goto bb3
+  bb10:
+    stmt: use BindingId(6) lo site=SiteId(108) ty=i64 intent=Consume
+    stmt: return site=Some(SiteId(108)) ty=i64
+    ret = move _1
+    return
+  bb11:
+    goto bb12
+  bb12:
+    stmt: eval site=SiteId(110) ty=()
+    stmt: use BindingId(5) x site=SiteId(112) ty=i64 intent=Read
+    stmt: use BindingId(7) hi site=SiteId(113) ty=i64 intent=Read
+    _15 = icmp.sgt _0 _2
+    branch _15 ? bb14 : bb15
+  bb13:
+    goto bb12
+  bb14:
+    stmt: use BindingId(7) hi site=SiteId(114) ty=i64 intent=Consume
+    stmt: return site=Some(SiteId(114)) ty=i64
     ret = move _2
     return
-  bb6:
-    goto bb7
-  bb7:
-    stmt: eval site=SiteId(94) ty=()
-    stmt: use BindingId(5) x site=SiteId(95) ty=i64 intent=Read
-    stmt: return site=Some(SiteId(95)) ty=i64
+  bb15:
+    goto bb16
+  bb16:
+    stmt: eval site=SiteId(116) ty=()
+    stmt: use BindingId(5) x site=SiteId(117) ty=i64 intent=Read
+    stmt: return site=Some(SiteId(117)) ty=i64
     ret = move _0
     return
-  bb8:
-    goto bb7
+  bb17:
+    goto bb16
 
 fn math$sign(i64) -> i64 [conv=default]
   locals:
@@ -211,35 +250,35 @@ fn math$sign(i64) -> i64 [conv=default]
     _8: i64
     _9: i64
   bb0:
-    stmt: use BindingId(8) x site=SiteId(97) ty=i64 intent=Read
+    stmt: use BindingId(8) x site=SiteId(119) ty=i64 intent=Read
     _2 = const.i64 0
     _3 = icmp.slt _0 _2
     branch _3 ? bb1 : bb2
   bb1:
-    stmt: return site=Some(SiteId(99)) ty=i64
+    stmt: return site=Some(SiteId(121)) ty=i64
     _4 = const.i64 -1
     ret = move _4
     return
   bb2:
     goto bb3
   bb3:
-    stmt: eval site=SiteId(101) ty=()
-    stmt: use BindingId(8) x site=SiteId(103) ty=i64 intent=Read
+    stmt: eval site=SiteId(123) ty=()
+    stmt: use BindingId(8) x site=SiteId(125) ty=i64 intent=Read
     _6 = const.i64 0
     _7 = icmp.sgt _0 _6
     branch _7 ? bb5 : bb6
   bb4:
     goto bb3
   bb5:
-    stmt: return site=Some(SiteId(105)) ty=i64
+    stmt: return site=Some(SiteId(127)) ty=i64
     _8 = const.i64 1
     ret = move _8
     return
   bb6:
     goto bb7
   bb7:
-    stmt: eval site=SiteId(107) ty=()
-    stmt: return site=Some(SiteId(108)) ty=i64
+    stmt: eval site=SiteId(129) ty=()
+    stmt: return site=Some(SiteId(130)) ty=i64
     _9 = const.i64 0
     ret = move _9
     return
@@ -252,7 +291,7 @@ fn math$pow(f64, f64) -> f64 [conv=default]
     _1: f64
     _2: f64
   bb0:
-    stmt: return site=Some(SiteId(109)) ty=f64
+    stmt: return site=Some(SiteId(131)) ty=f64
     _2 = const.f64 0x0000000000000000
     ret = move _2
     return
@@ -262,7 +301,7 @@ fn math$floor(f64) -> f64 [conv=default]
     _0: f64
     _1: f64
   bb0:
-    stmt: return site=Some(SiteId(110)) ty=f64
+    stmt: return site=Some(SiteId(132)) ty=f64
     _1 = const.f64 0x0000000000000000
     ret = move _1
     return
@@ -272,7 +311,7 @@ fn math$ceil(f64) -> f64 [conv=default]
     _0: f64
     _1: f64
   bb0:
-    stmt: return site=Some(SiteId(111)) ty=f64
+    stmt: return site=Some(SiteId(133)) ty=f64
     _1 = const.f64 0x0000000000000000
     ret = move _1
     return
@@ -282,7 +321,7 @@ fn math$round(f64) -> f64 [conv=default]
     _0: f64
     _1: f64
   bb0:
-    stmt: return site=Some(SiteId(112)) ty=f64
+    stmt: return site=Some(SiteId(134)) ty=f64
     _1 = const.f64 0x0000000000000000
     ret = move _1
     return
@@ -293,11 +332,11 @@ fn i8::fmt(i8) -> string [conv=default]
     _1: i32
     _2: string
   bb0:
-    stmt: use BindingId(27) val site=SiteId(183) ty=i8 intent=Read
+    stmt: use BindingId(27) val site=SiteId(205) ty=i8 intent=Read
     _1 = cast _0 i8 -> i32
     _2 = call to_string_i32(_1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(181)) ty=string
+    stmt: return site=Some(SiteId(203)) ty=string
     ret = move _2
     return
 
@@ -307,11 +346,11 @@ fn i16::fmt(i16) -> string [conv=default]
     _1: i32
     _2: string
   bb0:
-    stmt: use BindingId(28) val site=SiteId(187) ty=i16 intent=Read
+    stmt: use BindingId(28) val site=SiteId(209) ty=i16 intent=Read
     _1 = cast _0 i16 -> i32
     _2 = call to_string_i32(_1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(185)) ty=string
+    stmt: return site=Some(SiteId(207)) ty=string
     ret = move _2
     return
 
@@ -320,10 +359,10 @@ fn i32::fmt(i32) -> string [conv=default]
     _0: i32
     _1: string
   bb0:
-    stmt: use BindingId(29) val site=SiteId(190) ty=i32 intent=Read
+    stmt: use BindingId(29) val site=SiteId(212) ty=i32 intent=Read
     _1 = call to_string_i32(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(189)) ty=string
+    stmt: return site=Some(SiteId(211)) ty=string
     ret = move _1
     return
 
@@ -332,10 +371,10 @@ fn i64::fmt(i64) -> string [conv=default]
     _0: i64
     _1: string
   bb0:
-    stmt: use BindingId(30) val site=SiteId(193) ty=i64 intent=Read
+    stmt: use BindingId(30) val site=SiteId(215) ty=i64 intent=Read
     _1 = call to_string_i64(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(192)) ty=string
+    stmt: return site=Some(SiteId(214)) ty=string
     ret = move _1
     return
 
@@ -344,10 +383,10 @@ fn u8::fmt(u8) -> string [conv=default]
     _0: u8
     _1: string
   bb0:
-    stmt: use BindingId(31) val site=SiteId(196) ty=u8 intent=Read
+    stmt: use BindingId(31) val site=SiteId(218) ty=u8 intent=Read
     _1 = call to_string_u8(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(195)) ty=string
+    stmt: return site=Some(SiteId(217)) ty=string
     ret = move _1
     return
 
@@ -356,10 +395,10 @@ fn u16::fmt(u16) -> string [conv=default]
     _0: u16
     _1: string
   bb0:
-    stmt: use BindingId(32) val site=SiteId(199) ty=u16 intent=Read
+    stmt: use BindingId(32) val site=SiteId(221) ty=u16 intent=Read
     _1 = call to_string_u16(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(198)) ty=string
+    stmt: return site=Some(SiteId(220)) ty=string
     ret = move _1
     return
 
@@ -368,10 +407,10 @@ fn u32::fmt(u32) -> string [conv=default]
     _0: u32
     _1: string
   bb0:
-    stmt: use BindingId(33) val site=SiteId(202) ty=u32 intent=Read
+    stmt: use BindingId(33) val site=SiteId(224) ty=u32 intent=Read
     _1 = call to_string_u32(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(201)) ty=string
+    stmt: return site=Some(SiteId(223)) ty=string
     ret = move _1
     return
 
@@ -380,10 +419,10 @@ fn u64::fmt(u64) -> string [conv=default]
     _0: u64
     _1: string
   bb0:
-    stmt: use BindingId(34) val site=SiteId(205) ty=u64 intent=Read
+    stmt: use BindingId(34) val site=SiteId(227) ty=u64 intent=Read
     _1 = call to_string_u64(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(204)) ty=string
+    stmt: return site=Some(SiteId(226)) ty=string
     ret = move _1
     return
 
@@ -393,11 +432,11 @@ fn isize::fmt(isize) -> string [conv=default]
     _1: i64
     _2: string
   bb0:
-    stmt: use BindingId(35) val site=SiteId(209) ty=isize intent=Read
+    stmt: use BindingId(35) val site=SiteId(231) ty=isize intent=Read
     _1 = cast _0 isize -> i64
     _2 = call to_string_i64(_1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(207)) ty=string
+    stmt: return site=Some(SiteId(229)) ty=string
     ret = move _2
     return
 
@@ -407,11 +446,11 @@ fn usize::fmt(usize) -> string [conv=default]
     _1: u64
     _2: string
   bb0:
-    stmt: use BindingId(36) val site=SiteId(213) ty=usize intent=Read
+    stmt: use BindingId(36) val site=SiteId(235) ty=usize intent=Read
     _1 = cast _0 usize -> u64
     _2 = call to_string_u64(_1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(211)) ty=string
+    stmt: return site=Some(SiteId(233)) ty=string
     ret = move _2
     return
 
@@ -420,10 +459,10 @@ fn bool::fmt(bool) -> string [conv=default]
     _0: bool
     _1: string
   bb0:
-    stmt: use BindingId(37) val site=SiteId(216) ty=bool intent=Read
+    stmt: use BindingId(37) val site=SiteId(238) ty=bool intent=Read
     _1 = call to_string_bool(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(215)) ty=string
+    stmt: return site=Some(SiteId(237)) ty=string
     ret = move _1
     return
 
@@ -432,10 +471,10 @@ fn char::fmt(char) -> string [conv=default]
     _0: char
     _1: string
   bb0:
-    stmt: use BindingId(38) val site=SiteId(219) ty=char intent=Read
+    stmt: use BindingId(38) val site=SiteId(241) ty=char intent=Read
     _1 = call to_string_char(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(218)) ty=string
+    stmt: return site=Some(SiteId(240)) ty=string
     ret = move _1
     return
 
@@ -444,10 +483,10 @@ fn f64::fmt(f64) -> string [conv=default]
     _0: f64
     _1: string
   bb0:
-    stmt: use BindingId(39) val site=SiteId(222) ty=f64 intent=Read
+    stmt: use BindingId(39) val site=SiteId(244) ty=f64 intent=Read
     _1 = call to_string_f64(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(221)) ty=string
+    stmt: return site=Some(SiteId(243)) ty=string
     ret = move _1
     return
 
@@ -457,11 +496,11 @@ fn f32::fmt(f32) -> string [conv=default]
     _1: f64
     _2: string
   bb0:
-    stmt: use BindingId(40) val site=SiteId(226) ty=f32 intent=Read
+    stmt: use BindingId(40) val site=SiteId(248) ty=f32 intent=Read
     _1 = cast _0 f32 -> f64
     _2 = call to_string_f64(_1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(224)) ty=string
+    stmt: return site=Some(SiteId(246)) ty=string
     ret = move _2
     return
 
@@ -469,8 +508,8 @@ fn string::fmt(string) -> string [conv=default]
   locals:
     _0: string
   bb0:
-    stmt: use BindingId(41) val site=SiteId(228) ty=string intent=Read
-    stmt: return site=Some(SiteId(228)) ty=string
+    stmt: use BindingId(41) val site=SiteId(250) ty=string intent=Read
+    stmt: return site=Some(SiteId(250)) ty=string
     ret = move _0
     return
 
@@ -481,14 +520,14 @@ fn duration::from_nanos(i64) -> duration [conv=default]
     _2: duration
     _3: bool
   bb0:
-    stmt: use BindingId(42) n site=SiteId(230) ty=i64 intent=Read
+    stmt: use BindingId(42) n site=SiteId(252) ty=i64 intent=Read
     _1 = const.duration 1ns
     _2 ovf=_3 = mul.checked.s _0 _1
     branch _3 ? bb1 : bb2
   bb1:
     trap(IntegerOverflow)
   bb2:
-    stmt: return site=Some(SiteId(229)) ty=duration
+    stmt: return site=Some(SiteId(251)) ty=duration
     ret = move _2
     return
 
@@ -499,14 +538,14 @@ fn duration::from_micros(i64) -> duration [conv=default]
     _2: duration
     _3: bool
   bb0:
-    stmt: use BindingId(43) n site=SiteId(233) ty=i64 intent=Read
+    stmt: use BindingId(43) n site=SiteId(255) ty=i64 intent=Read
     _1 = const.duration 1000ns
     _2 ovf=_3 = mul.checked.s _0 _1
     branch _3 ? bb1 : bb2
   bb1:
     trap(IntegerOverflow)
   bb2:
-    stmt: return site=Some(SiteId(232)) ty=duration
+    stmt: return site=Some(SiteId(254)) ty=duration
     ret = move _2
     return
 
@@ -517,14 +556,14 @@ fn duration::from_millis(i64) -> duration [conv=default]
     _2: duration
     _3: bool
   bb0:
-    stmt: use BindingId(44) n site=SiteId(236) ty=i64 intent=Read
+    stmt: use BindingId(44) n site=SiteId(258) ty=i64 intent=Read
     _1 = const.duration 1000000ns
     _2 ovf=_3 = mul.checked.s _0 _1
     branch _3 ? bb1 : bb2
   bb1:
     trap(IntegerOverflow)
   bb2:
-    stmt: return site=Some(SiteId(235)) ty=duration
+    stmt: return site=Some(SiteId(257)) ty=duration
     ret = move _2
     return
 
@@ -535,14 +574,14 @@ fn duration::from_secs(i64) -> duration [conv=default]
     _2: duration
     _3: bool
   bb0:
-    stmt: use BindingId(45) n site=SiteId(239) ty=i64 intent=Read
+    stmt: use BindingId(45) n site=SiteId(261) ty=i64 intent=Read
     _1 = const.duration 1000000000ns
     _2 ovf=_3 = mul.checked.s _0 _1
     branch _3 ? bb1 : bb2
   bb1:
     trap(IntegerOverflow)
   bb2:
-    stmt: return site=Some(SiteId(238)) ty=duration
+    stmt: return site=Some(SiteId(260)) ty=duration
     ret = move _2
     return
 
@@ -554,11 +593,11 @@ fn duration::fmt(duration) -> string [conv=default]
     _3: string
     _4: string
   bb0:
-    stmt: use BindingId(46) val site=SiteId(244) ty=duration intent=Read
+    stmt: use BindingId(46) val site=SiteId(266) ty=duration intent=Read
     _1 = call_rt hew_duration_nanos(_0)
     _2 = call to_string_i64(_1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(241)) ty=string
+    stmt: return site=Some(SiteId(263)) ty=string
     _3 = string_lit "ns"
     _4 = call_rt hew_string_concat(_2, _3)
     drop _2 ty=string fn=release(hew_string_drop)

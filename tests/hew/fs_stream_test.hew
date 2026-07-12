@@ -391,6 +391,47 @@ fn test_io_error_message_formats_fs_variants() {
 }
 
 #[test]
+fn test_io_error_from_errno_maps_windows_already_exists() {
+    // Cross-platform regression (host-independent): Windows create_dir on an
+    // existing directory returns ERROR_ALREADY_EXISTS = 183, which is not a
+    // POSIX errno, so io_error_from_errno must classify it as AlreadyExists on
+    // every host — including this macOS/Linux CI runner, which never sees 183
+    // from a real syscall. Before the fix the errno mapping was POSIX-only and
+    // 183 fell through to IoError::Other(183). The raw code is preserved as the
+    // payload.
+    let mapped = fs.io_error_from_errno(183);
+    match mapped {
+        IoError::AlreadyExists(code) => testing.assert_eq(code, 183),
+        _ => panic("expected IoError::AlreadyExists(183) for Windows ERROR_ALREADY_EXISTS"),
+    }
+    // POSIX EEXIST=17 still classifies identically, sharing the variant.
+    let posix = fs.io_error_from_errno(17);
+    match posix {
+        IoError::AlreadyExists(code) => testing.assert_eq(code, 17),
+        _ => panic("expected IoError::AlreadyExists(17) for POSIX EEXIST"),
+    }
+}
+
+#[test]
+fn test_try_mkdir_existing_returns_already_exists() {
+    // End-to-end wiring proof for the canonical error-kind channel: creating a
+    // directory that already exists yields std::io::ErrorKind::AlreadyExists on
+    // every platform, so try_mkdir must surface IoError::AlreadyExists whether
+    // the raw OS code is POSIX EEXIST=17 or Windows ERROR_ALREADY_EXISTS=183.
+    // "tests/hew" always exists (it holds this test), so no fixture/cleanup is
+    // needed and the test cannot leak state. The payload is the platform errno,
+    // which we do not pin here.
+    let result = fs.try_mkdir("tests/hew");
+    match result {
+        Ok(_) => panic("expected mkdir on an existing directory to fail"),
+        Err(err) => match err {
+            IoError::AlreadyExists(_) => {},
+            _ => panic("expected IoError::AlreadyExists for an existing directory"),
+        },
+    }
+}
+
+#[test]
 fn test_net_error_message_formats_net_variants() {
     // Let-bind each call: direct `f(Enum::Variant(...))` on multiple string-
     // returning calls in one function body triggers a codegen hang at 2e6fac15

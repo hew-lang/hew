@@ -59,7 +59,8 @@ use std::sync::{Arc, Mutex};
 // Defining them in hew-cabi avoids pulling the full runtime into stdlib packages.
 
 pub use crate::stream_error::{
-    hew_stream_last_error, set_last_error, set_last_error_with_errno, take_last_error,
+    hew_stream_last_error, io_error_kind_tag, set_last_error, set_last_error_with_errno,
+    set_last_error_with_errno_and_kind, take_last_error,
 };
 pub use hew_cabi::sink::{into_sink_ptr, into_write_sink_ptr, HewSink};
 
@@ -1113,7 +1114,11 @@ pub unsafe extern "C" fn hew_stream_from_file_read(path: *const c_char) -> *mut 
             })
         }
         Err(e) => {
-            set_last_error_with_errno(format!("{e}"), e.raw_os_error().unwrap_or(libc::EIO));
+            set_last_error_with_errno_and_kind(
+                format!("{e}"),
+                e.raw_os_error().unwrap_or(libc::EIO),
+                io_error_kind_tag(e.kind()),
+            );
             ptr::null_mut()
         }
     }
@@ -1139,7 +1144,11 @@ pub unsafe extern "C" fn hew_stream_from_file_write(path: *const c_char) -> *mut
     match fs::File::create(path_str) {
         Ok(f) => into_write_sink_ptr(f),
         Err(e) => {
-            set_last_error_with_errno(format!("{e}"), e.raw_os_error().unwrap_or(0));
+            set_last_error_with_errno_and_kind(
+                format!("{e}"),
+                e.raw_os_error().unwrap_or(0),
+                io_error_kind_tag(e.kind()),
+            );
             ptr::null_mut()
         }
     }

@@ -10,7 +10,10 @@
 )]
 
 use crate::cabi::str_to_malloc;
-use crate::stream_error::{set_last_error_with_errno, take_last_error};
+use crate::stream_error::{
+    io_error_kind_tag, set_last_error_with_errno, set_last_error_with_errno_and_kind,
+    take_last_error,
+};
 use std::ffi::{c_char, CStr, CString};
 
 fn clear_file_io_error() {
@@ -21,7 +24,15 @@ fn clear_file_io_error() {
 fn set_file_io_error(operation: &str, error: &std::io::Error) {
     let message = format!("{operation}: {error}");
     crate::set_last_error(&message);
-    set_last_error_with_errno(message, error.raw_os_error().unwrap_or(libc::EIO));
+    // Carry both the raw OS errno (for the payload) and the portable, canonical
+    // error-kind tag (for classification). The raw errno alone is ambiguous
+    // across platforms — Win32 and POSIX codes diverge and collide — so the
+    // consumer classifies on the kind and keeps the raw code for inspection.
+    set_last_error_with_errno_and_kind(
+        message,
+        error.raw_os_error().unwrap_or(libc::EIO),
+        io_error_kind_tag(error.kind()),
+    );
 }
 
 fn set_file_io_errno(operation: &str, message: impl std::fmt::Display, errno: i32) {
@@ -1315,6 +1326,40 @@ mod tests {
         // SAFETY: p is a valid NUL-terminated C string (dir already exists via test_dir).
         let rc = unsafe { hew_fs_mkdir(p.as_ptr()) };
         assert_eq!(rc, -1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mkdir_already_exists_classifies_as_already_exists_kind() {
+        // Cross-platform regression (host-independent by construction):
+        // creating a directory that already exists yields
+        // std::io::ErrorKind::AlreadyExists on every OS, even though the raw OS
+        // code differs (POSIX EEXIST=17 vs Windows ERROR_ALREADY_EXISTS=183).
+        // set_file_io_error must therefore record the canonical AlreadyExists
+        // tag so std/fs.hew classifies try_mkdir identically everywhere — the
+        // previous Unix-only errno mapping turned Windows 183 into Other(183).
+        use crate::stream_error::{
+            take_last_errno, take_last_error_kind, IO_ERROR_KIND_ALREADY_EXISTS,
+        };
+        let dir = test_dir("mkdir_kind_dup");
+        let p = cpath(&dir);
+        // SAFETY: p is a valid NUL-terminated C string (dir already exists via test_dir).
+        let rc = unsafe { hew_fs_mkdir(p.as_ptr()) };
+        assert_eq!(rc, -1, "mkdir on an existing directory must fail");
+        // Read the kind BEFORE the errno (take_last_errno clears the tag).
+        let kind = take_last_error_kind();
+        let errno = take_last_errno();
+        assert_eq!(
+            kind, IO_ERROR_KIND_ALREADY_EXISTS,
+            "existing-dir mkdir must classify as AlreadyExists on every platform"
+        );
+        // On unix the raw payload is EEXIST; on Windows it would be 183. Either
+        // way it is non-zero and preserved for inspection — we do not pin the
+        // platform-specific value here.
+        assert_ne!(
+            errno, 0,
+            "the raw OS errno must be preserved in the payload"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

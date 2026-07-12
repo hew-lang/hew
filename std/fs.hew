@@ -63,6 +63,15 @@ pub enum IoError {
 /// The i64 payload carried in each variant is the raw OS errno so callers
 /// can inspect the platform value. errno=0 (no OS error) maps to `Other(0)`.
 ///
+/// This is a raw-integer helper: it recognises POSIX errno values plus the few
+/// Windows Win32 codes that do not collide with a POSIX errno (only
+/// `ERROR_ALREADY_EXISTS` = 183 today). Codes that mean *different* things on
+/// each platform — for example 5 (`EIO` on POSIX, `ERROR_ACCESS_DENIED` on
+/// Windows) — cannot be disambiguated from the integer alone; the `try_*`
+/// wrappers classify those correctly through the runtime's canonical error-kind
+/// channel (`hew_stream_last_error_kind`) and only fall back to this function
+/// for kinds without a canonical tag.
+///
 /// Covers file-system errno values. For network errno values use
 /// `net.net_error_from_errno` in `std::net`.
 pub fn io_error_from_errno(errno: i64) -> IoError {
@@ -72,8 +81,9 @@ pub fn io_error_from_errno(errno: i64) -> IoError {
     // EACCES: Linux=13, macOS=13
     } else if errno == 13 {
         IoError::PermissionDenied(errno)
-    // EEXIST: Linux=17, macOS=17
-    } else if errno == 17 {
+    // EEXIST: Linux=17, macOS=17; ERROR_ALREADY_EXISTS: Windows=183.
+    // 183 is not a POSIX errno, so mapping it here is unambiguous.
+    } else if errno == 17 || errno == 183 {
         IoError::AlreadyExists(errno)
     // ETIMEDOUT: Linux=110, macOS=60
     } else if errno == 110 || errno == 60 {
@@ -83,6 +93,30 @@ pub fn io_error_from_errno(errno: i64) -> IoError {
         IoError::Cancelled(errno)
     } else {
         IoError::Other(errno)
+    }
+}
+
+/// Map the runtime's canonical, platform-independent error-kind tag (from
+/// `hew_stream_last_error_kind`) plus the raw OS errno to an `IoError`.
+///
+/// The tag classifies the failure identically on every platform — POSIX and
+/// Windows raw codes diverge and collide, so classification cannot be done from
+/// the errno alone — while the raw errno is preserved as the variant payload.
+/// Tag 0 (`IO_ERROR_KIND_UNCLASSIFIED`) means "no canonical kind": fall back to
+/// `io_error_from_errno`, which keeps platform detail for kinds without a tag
+/// (e.g. `EISDIR`/`ENOTDIR` -> `Other(raw)`). Keep the tag values in sync with
+/// the `IO_ERROR_KIND_*` constants in `hew-runtime/src/stream_error.rs`.
+fn io_error_from_kind(kind: i64, errno: i64) -> IoError {
+    if kind == 1 {
+        IoError::NotFound(errno)
+    } else if kind == 2 {
+        IoError::PermissionDenied(errno)
+    } else if kind == 3 {
+        IoError::AlreadyExists(errno)
+    } else if kind == 4 {
+        IoError::TimedOut(errno)
+    } else {
+        io_error_from_errno(errno)
     }
 }
 
@@ -126,12 +160,15 @@ pub fn io_error_cancelled() -> IoError {
 
 fn last_io_error() -> IoError {
     unsafe {
+        // Read the canonical kind BEFORE the errno: hew_stream_last_errno
+        // clears the kind tag as errno metadata, so the order matters.
+        let kind = hew_stream_last_error_kind() as i64;
         let errno = hew_stream_last_errno() as i64;
         let _ = hew_stream_last_error();
-        if errno == 0 {
+        if errno == 0 && kind == 0 {
             IoError::Other(5)
         } else {
-            io_error_from_errno(errno)
+            io_error_from_kind(kind, errno)
         }
     }
 }
@@ -170,12 +207,13 @@ pub fn try_read(file_path: string) -> Result<string, IoError> {
         let file = hew_stream_from_file_read(file_path);
         if hew_stream_is_valid(file) {
             let contents = hew_stream_collect_string(file);
+            let kind = hew_stream_last_error_kind() as i64;
             let errno = hew_stream_last_errno();
             let _ = hew_stream_last_error();
             if errno == 0 {
                 Ok(contents)
             } else {
-                Err(io_error_from_errno(errno as i64))
+                Err(io_error_from_kind(kind, errno as i64))
             }
         } else {
             Err(last_io_error())
@@ -290,6 +328,7 @@ pub fn read_bytes(path: string) -> bytes {
 pub fn try_read_bytes(file_path: string) -> Result<bytes, IoError> {
     unsafe {
         let data = hew_file_read_bytes(file_path);
+        let kind = hew_stream_last_error_kind() as i64;
         let errno = hew_stream_last_errno();
         if errno != 0 {
             // Drain the thread-local error message on the failure path,
@@ -297,7 +336,7 @@ pub fn try_read_bytes(file_path: string) -> Result<bytes, IoError> {
             // `hew_file_read_bytes: ...` message can't leak into a later,
             // unrelated `hew_last_error()` / `hew_stream_last_error()` read.
             let _ = hew_stream_last_error();
-            Err(io_error_from_errno(errno as i64))
+            Err(io_error_from_kind(kind, errno as i64))
         } else {
             // `data` is the sole owner of the freshly-read buffer and is not
             // used after this point, so move it straight into the result. A
@@ -396,12 +435,13 @@ pub fn list_dir(path: string) -> Vec<string> {
 pub fn try_list_dir(dir_path: string) -> Result<Vec<string>, IoError> {
     unsafe {
         let entries = hew_fs_list_dir(dir_path);
+        let kind = hew_stream_last_error_kind() as i64;
         let errno = hew_stream_last_errno();
         let _ = hew_stream_last_error();
         if errno == 0 {
             Ok(entries)
         } else {
-            Err(io_error_from_errno(errno as i64))
+            Err(io_error_from_kind(kind, errno as i64))
         }
     }
 }
@@ -479,5 +519,6 @@ extern "C" {
     fn hew_stream_is_valid(stream: FileReadStream) -> bool;
     fn hew_stream_last_error() -> string;
     fn hew_stream_last_errno() -> i32; // INTERNAL-ABI: OS errno from thread-local; 0 when none recorded
+    fn hew_stream_last_error_kind() -> i32; // INTERNAL-ABI: canonical cross-platform error-kind tag; 0 when none
     fn hew_stream_collect_string(stream: FileReadStream) -> string;
 }

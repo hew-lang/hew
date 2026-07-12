@@ -3153,7 +3153,7 @@ mod tests {
     #[test]
     fn suspending_unit_task_await_cancel_frees_waiter_and_slot_once() {
         let _guard = crate::runtime_test_guard();
-        crate::read_slot::reset_read_slot_final_free_count_for_test();
+        let slot_free_probe = crate::read_slot::new_read_slot_free_probe_for_test();
         reset_task_await_waiter_final_free_count_for_test();
 
         // SAFETY: the test owns scope/task/slot pointers and drives the exact
@@ -3163,6 +3163,10 @@ mod tests {
             let task = hew_task_new();
             hew_task_scope_spawn(scope, task);
             let slot = crate::read_slot::hew_read_slot_new();
+            // Bind a per-instance final-free probe so the "exactly once" oracle
+            // counts only this slot's free, immune to concurrent parallel-test
+            // slot frees.
+            crate::read_slot::install_read_slot_free_probe_for_test(slot, &slot_free_probe);
 
             assert_eq!(
                 hew_task_await_suspend(scope, task, ptr::null_mut(), slot),
@@ -3172,7 +3176,7 @@ mod tests {
 
             hew_task_detach_await(scope, task, slot);
             assert_eq!(
-                crate::read_slot::read_slot_final_free_count_for_test(),
+                crate::read_slot::read_slot_free_probe_count(&slot_free_probe),
                 0,
                 "detach must release only the creator ref while the observer still owns its ref"
             );
@@ -3182,7 +3186,7 @@ mod tests {
             assert_eq!((*task).error, HewTaskError::Cancelled);
             assert_eq!(task_await_waiter_final_free_count_for_test(), 1);
             assert_eq!(
-                crate::read_slot::read_slot_final_free_count_for_test(),
+                crate::read_slot::read_slot_free_probe_count(&slot_free_probe),
                 1,
                 "cancelled task completion must release the observer ref and free the read slot exactly once"
             );
@@ -3194,7 +3198,7 @@ mod tests {
     #[test]
     fn suspending_unit_task_await_normal_completion_frees_waiter_and_slot_once() {
         let _guard = crate::runtime_test_guard();
-        crate::read_slot::reset_read_slot_final_free_count_for_test();
+        let slot_free_probe = crate::read_slot::new_read_slot_free_probe_for_test();
         reset_task_await_waiter_final_free_count_for_test();
 
         // SAFETY: the test owns scope/task/slot pointers and simulates the codegen
@@ -3204,6 +3208,10 @@ mod tests {
             let task = hew_task_new();
             hew_task_scope_spawn(scope, task);
             let slot = crate::read_slot::hew_read_slot_new();
+            // Bind a per-instance final-free probe so the "exactly once" oracle
+            // counts only this slot's free, immune to concurrent parallel-test
+            // slot frees.
+            crate::read_slot::install_read_slot_free_probe_for_test(slot, &slot_free_probe);
 
             assert_eq!(
                 hew_task_await_suspend(scope, task, ptr::null_mut(), slot),
@@ -3213,14 +3221,14 @@ mod tests {
 
             assert_eq!(task_await_waiter_final_free_count_for_test(), 1);
             assert_eq!(
-                crate::read_slot::read_slot_final_free_count_for_test(),
+                crate::read_slot::read_slot_free_probe_count(&slot_free_probe),
                 0,
                 "observer completion must leave the creator ref for the bind edge"
             );
 
             crate::read_slot::hew_read_slot_free(slot);
             assert_eq!(
-                crate::read_slot::read_slot_final_free_count_for_test(),
+                crate::read_slot::read_slot_free_probe_count(&slot_free_probe),
                 1,
                 "bind edge must free the read slot exactly once"
             );
@@ -3232,21 +3240,24 @@ mod tests {
     #[test]
     fn suspending_sleep_cancel_and_completion_free_deadline_registration_once() {
         use crate::await_cancel::{
-            await_cancel_final_free_count_for_test, hew_await_cancel_cancel,
-            hew_await_cancel_complete, hew_await_cancel_free, hew_await_cancel_new,
-            hew_await_cancel_schedule_deadline_ms, reset_await_cancel_final_free_count_for_test,
+            await_cancel_free_probe_count, hew_await_cancel_cancel, hew_await_cancel_complete,
+            hew_await_cancel_free, hew_await_cancel_new, hew_await_cancel_schedule_deadline_ms,
+            install_await_cancel_free_probe_for_test, new_await_cancel_free_probe_for_test,
             AwaitCancelStatus,
         };
         use crate::timer_wheel::{hew_timer_wheel_free, hew_timer_wheel_new, hew_timer_wheel_tick};
         use std::time::Duration;
 
         let _guard = crate::runtime_test_guard();
-        reset_await_cancel_final_free_count_for_test();
+        let cancel_free_probe = new_await_cancel_free_probe_for_test();
         // SAFETY: the registration and wheel are owned by this test; cancellation
         // wins before the wheel fires, mirroring suspending sleep abandon.
         unsafe {
             let tw = hew_timer_wheel_new();
             let reg = hew_await_cancel_new(ptr::null_mut(), None, ptr::null_mut());
+            // Bind a per-instance final-free probe so the "exactly once" oracle
+            // counts only this registration's free.
+            install_await_cancel_free_probe_for_test(reg, &cancel_free_probe);
             assert_eq!(hew_await_cancel_schedule_deadline_ms(reg, tw, 1_000), 0);
             assert_eq!(
                 hew_await_cancel_cancel(reg, AwaitCancelStatus::Cancelled as i32, 0),
@@ -3254,26 +3265,27 @@ mod tests {
             );
             hew_await_cancel_free(reg);
             assert_eq!(
-                await_cancel_final_free_count_for_test(),
+                await_cancel_free_probe_count(&cancel_free_probe),
                 1,
                 "sleep cancel must free the deadline registration exactly once"
             );
             hew_timer_wheel_free(tw);
         }
 
-        reset_await_cancel_final_free_count_for_test();
+        let cancel_free_probe = new_await_cancel_free_probe_for_test();
         // SAFETY: the test manually ticks the wheel so the timer callback wins,
         // then releases the creator ref as the sleep bind edge does.
         unsafe {
             let tw = hew_timer_wheel_new();
             let reg = hew_await_cancel_new(ptr::null_mut(), None, ptr::null_mut());
+            install_await_cancel_free_probe_for_test(reg, &cancel_free_probe);
             assert_eq!(hew_await_cancel_schedule_deadline_ms(reg, tw, 1), 0);
             std::thread::sleep(Duration::from_millis(2));
             assert_eq!(hew_timer_wheel_tick(tw), 1);
             assert_eq!(hew_await_cancel_complete(reg), 0);
             hew_await_cancel_free(reg);
             assert_eq!(
-                await_cancel_final_free_count_for_test(),
+                await_cancel_free_probe_count(&cancel_free_probe),
                 1,
                 "sleep completion must free the deadline registration exactly once"
             );

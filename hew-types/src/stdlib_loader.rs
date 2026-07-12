@@ -873,6 +873,53 @@ fn extract_handle_forwarding_target(body: &Block, ctx: &WrapperForward) -> Optio
     None
 }
 
+/// Recognise a fielded resource-wrapper forward guarded by one early return.
+///
+/// A validation guard makes the method non-trivial, so it must not be collapsed
+/// into a direct handle-method rewrite: the real impl body has to run the guard.
+/// This accepts only `if condition { return ...; }` or
+/// `if condition { panic(...); }` followed by the same validated
+/// `self.<field>` extern forward that
+/// [`extract_handle_forwarding_target`] accepts. Any additional guard statement,
+/// else branch, or non-forwarding tail remains unregistered.
+fn extract_guarded_handle_forwarding_target(
+    body: &Block,
+    ctx: &WrapperForward,
+) -> Option<(String, usize)> {
+    let [(
+        Stmt::If {
+            then_block,
+            else_block: None,
+            ..
+        },
+        _,
+    )] = body.stmts.as_slice()
+    else {
+        return None;
+    };
+    if !is_immediate_terminating_guard(then_block) {
+        return None;
+    }
+    let trailing = body.trailing_expr.as_ref()?;
+    handle_forwarding_call_from_expr(&trailing.0, ctx)
+}
+
+/// True when a guard block has one terminating statement and cannot fall through
+/// to the extern forward. `panic` is the only non-returning call accepted here;
+/// broadening this to arbitrary calls would hide non-trivial wrapper bodies.
+fn is_immediate_terminating_guard(block: &Block) -> bool {
+    if block.trailing_expr.is_some() {
+        return false;
+    }
+    match block.stmts.as_slice() {
+        [(Stmt::Return(_), _)] => true,
+        [(Stmt::Expression((Expr::Call { function, .. }, _)), _)] => {
+            matches!(&function.0, Expr::Identifier(name) if name == "panic")
+        }
+        _ => false,
+    }
+}
+
 /// Find a handle-forwarding extern call in a wrapper method's tail expression,
 /// peeling `unsafe`/block/cast wrappers and the wrapper-constructing clone
 /// literal. A call qualifies when the callee is one of the module's extern
@@ -1091,6 +1138,18 @@ fn extract_handle_methods(
                     field_names,
                     extern_fn_names,
                 };
+                extract_guarded_handle_forwarding_target(&method.body, &ctx)
+                    .map(|target| (target, true))
+            })
+            .or_else(|| {
+                let field_names = wrapper_field_names?;
+                let receiver = method.params.first()?.name.as_str();
+                let ctx = WrapperForward {
+                    receiver,
+                    wrapper_simple_name,
+                    field_names,
+                    extern_fn_names,
+                };
                 extract_handle_forwarding_target(&method.body, &ctx).map(|target| (target, true))
             })
             // Authoritative extern gate for BOTH extraction paths: a handle
@@ -1286,21 +1345,28 @@ mod tests {
 
     #[test]
     fn load_http_module_registers_handle_methods_through_abi_width_casts() {
-        // `impl RequestMethods for Request` wraps `status: int` in `status as i32`
-        // before calling the C shim. Those casts are pure ABI-width narrowing and
-        // must not prevent the method from registering as a handle pass-through —
-        // otherwise the type checker reports `no method respond on http.Request`.
+        // `impl RequestMethods for Request` validates the status before forwarding
+        // it through an i32 ABI cast. The loader must retain the imported method
+        // signatures, but the guard means each call must dispatch through the
+        // real impl body rather than bypassing validation with a direct extern
+        // rewrite.
         let info =
             load_module("std::net::http", &test_root()).expect("should load std::net::http module");
 
         for method in ["respond", "respond_text", "respond_json", "respond_stream"] {
-            let found = info
+            let handle_method = info
                 .handle_methods
                 .iter()
-                .any(|m| m.type_name == "http.Request" && m.method_name == method);
+                .find(|m| m.type_name == "http.Request" && m.method_name == method);
             assert!(
-                found,
-                "http.Request.{method} should register as a handle method even when its C shim uses `status as i32`"
+                handle_method.is_some(),
+                "http.Request.{method} should retain its imported method signature \
+                 after adding a status-validation guard"
+            );
+            assert!(
+                handle_method.is_some_and(|m| m.dispatch_through_impl),
+                "http.Request.{method} must dispatch through its impl body so its \
+                 status-validation guard cannot be bypassed"
             );
         }
     }
@@ -1986,6 +2052,50 @@ mod tests {
         assert!(
             !handle_method_registered(&info, "m.Wrap", "bad"),
             "forwarding to a non-extern Hew helper must not register, got: {:?}",
+            info.handle_methods
+        );
+    }
+
+    #[test]
+    fn guarded_wrapper_forward_requires_single_early_return_guard() {
+        let result = parse(
+            "#[resource]\n\
+             pub type Wrap { handle: i64; }\n\
+             impl Wrap {\n\
+             \x20   fn good(w: Wrap, status: i64) -> i64 {\n\
+             \x20       if status < 0 { return -1; }\n\
+             \x20       unsafe { c_use(w.handle, status) }\n\
+             \x20   }\n\
+             \x20   fn bad(w: Wrap, status: i64) -> i64 {\n\
+             \x20       if status < 0 { c_touch(w.handle); return -1; }\n\
+             \x20       unsafe { c_use(w.handle, status) }\n\
+             \x20   }\n\
+             }\n\
+             extern \"C\" {\n\
+             \x20   fn c_use(h: i64, status: i64) -> i64;\n\
+             \x20   fn c_touch(h: i64);\n\
+             }\n",
+        );
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let info = extract_module_info(&result.program, "m");
+
+        let good = info
+            .handle_methods
+            .iter()
+            .find(|m| m.type_name == "m.Wrap" && m.method_name == "good");
+        assert!(
+            good.is_some_and(|m| m.dispatch_through_impl),
+            "a single early-return guard plus a field forward should register for \
+             impl-body dispatch, got: {:?}",
+            info.handle_methods
+        );
+        assert!(
+            !handle_method_registered(&info, "m.Wrap", "bad"),
+            "a guard with extra work must not register as a thin forwarding method, got: {:?}",
             info.handle_methods
         );
     }

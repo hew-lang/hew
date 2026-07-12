@@ -268,7 +268,14 @@ impl StreamBacking for FileReadStream {
                 buf.truncate(n);
                 Some(buf)
             }
-            _ => None,
+            Ok(_) => None,
+            Err(error) => {
+                set_last_error_with_errno(
+                    format!("file stream read failed: {error}"),
+                    error.raw_os_error().unwrap_or(libc::EIO),
+                );
+                None
+            }
         }
     }
 
@@ -1098,12 +1105,15 @@ pub unsafe extern "C" fn hew_stream_from_file_read(path: *const c_char) -> *mut 
         return ptr::null_mut();
     };
     match fs::File::open(path_str) {
-        Ok(f) => into_stream_ptr(FileReadStream {
-            reader: BufReader::new(f),
-            chunk_size: 4096,
-        }),
+        Ok(f) => {
+            let _ = take_last_error();
+            into_stream_ptr(FileReadStream {
+                reader: BufReader::new(f),
+                chunk_size: 4096,
+            })
+        }
         Err(e) => {
-            set_last_error_with_errno(format!("{e}"), e.raw_os_error().unwrap_or(0));
+            set_last_error_with_errno(format!("{e}"), e.raw_os_error().unwrap_or(libc::EIO));
             ptr::null_mut()
         }
     }

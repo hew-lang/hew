@@ -39,6 +39,17 @@ fn test_try_read_missing_returns_not_found() {
 }
 
 #[test]
+fn test_try_read_directory_returns_eisdir() {
+    match fs.try_read("/") {
+        Ok(_) => panic("expected directory read error"),
+        Err(err) => match err {
+            IoError::Other(errno) => testing.assert_eq(errno, 21),
+            _ => panic("expected IoError::Other(EISDIR)"),
+        },
+    }
+}
+
+#[test]
 fn test_try_read_bytes_missing_returns_not_found() {
     let file_path = "tests/hew/_fs_stream_bytes_missing.bin";
     cleanup_file(file_path);
@@ -254,6 +265,36 @@ fn test_try_list_dir_handles_success_and_missing_paths() {
             _ => panic("expected IoError::NotFound"),
         },
     }
+}
+
+#[test]
+fn test_try_list_dir_regular_file_returns_enotdir() {
+    let file_path = "tests/hew/_fs_stream_not_directory.txt";
+    cleanup_file(file_path);
+    let _ = fs.write(file_path, "not a directory");
+    match fs.try_list_dir(file_path) {
+        Ok(_) => panic("expected regular-file listing error"),
+        Err(err) => match err {
+            IoError::Other(errno) => testing.assert_eq(errno, 20),
+            _ => panic("expected IoError::Other(ENOTDIR)"),
+        },
+    }
+    cleanup_file(file_path);
+}
+
+#[test]
+fn test_try_write_reports_enotdir_errno() {
+    let file_path = "tests/hew/_fs_stream_write_parent.txt";
+    cleanup_file(file_path);
+    let _ = fs.write(file_path, "not a directory");
+    match fs.try_write(file_path + "/child", "content") {
+        Ok(_) => panic("expected write through regular file to fail"),
+        Err(err) => match err {
+            IoError::Other(errno) => testing.assert_eq(errno, 20),
+            _ => panic("expected IoError::Other(ENOTDIR)"),
+        },
+    }
+    cleanup_file(file_path);
 }
 
 #[test]

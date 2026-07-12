@@ -10,8 +10,25 @@
 )]
 
 use crate::cabi::str_to_malloc;
-use crate::stream_error::set_last_error_with_errno;
+use crate::stream_error::{set_last_error_with_errno, take_last_error};
 use std::ffi::{c_char, CStr, CString};
+
+fn clear_file_io_error() {
+    crate::hew_clear_error();
+    let _ = take_last_error();
+}
+
+fn set_file_io_error(operation: &str, error: &std::io::Error) {
+    let message = format!("{operation}: {error}");
+    crate::set_last_error(&message);
+    set_last_error_with_errno(message, error.raw_os_error().unwrap_or(libc::EIO));
+}
+
+fn set_file_io_errno(operation: &str, message: impl std::fmt::Display, errno: i32) {
+    let message = format!("{operation}: {message}");
+    crate::set_last_error(&message);
+    set_last_error_with_errno(message, errno);
+}
 
 /// Read an entire file and return a `malloc`-allocated, NUL-terminated C string.
 ///
@@ -44,8 +61,7 @@ pub unsafe extern "C" fn hew_file_read(path: *const c_char) -> *mut c_char {
     let contents = match std::fs::read_to_string(rust_path) {
         Ok(contents) => contents,
         Err(error) => {
-            let msg = format!("hew_file_read: {error}");
-            set_last_error_with_errno(msg, error.raw_os_error().unwrap_or(22));
+            set_file_io_error("hew_file_read", &error);
             return std::ptr::null_mut();
         }
     };
@@ -56,8 +72,7 @@ pub unsafe extern "C" fn hew_file_read(path: *const c_char) -> *mut c_char {
         set_last_error_with_errno(msg.into(), 22);
         return std::ptr::null_mut();
     }
-    crate::hew_clear_error();
-    let _ = crate::stream_error::take_last_error();
+    clear_file_io_error();
     str_to_malloc(&contents)
 }
 
@@ -78,10 +93,15 @@ pub unsafe extern "C" fn hew_file_write(path: *const c_char, content: *const c_c
     let (Ok(rust_path), Ok(rust_content)) = (c_path.to_str(), c_content.to_str()) else {
         return -1;
     };
-    if std::fs::write(rust_path, rust_content).is_ok() {
-        0
-    } else {
-        -1
+    match std::fs::write(rust_path, rust_content) {
+        Ok(()) => {
+            clear_file_io_error();
+            0
+        }
+        Err(error) => {
+            set_file_io_error("hew_file_write", &error);
+            -1
+        }
     }
 }
 
@@ -104,17 +124,26 @@ pub unsafe extern "C" fn hew_file_append(path: *const c_char, content: *const c_
     let (Ok(rust_path), Ok(rust_content)) = (c_path.to_str(), c_content.to_str()) else {
         return -1;
     };
-    let Ok(mut file) = std::fs::OpenOptions::new()
+    let mut file = match std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(rust_path)
-    else {
-        return -1;
+    {
+        Ok(file) => file,
+        Err(error) => {
+            set_file_io_error("hew_file_append", &error);
+            return -1;
+        }
     };
-    if file.write_all(rust_content.as_bytes()).is_ok() {
-        0
-    } else {
-        -1
+    match file.write_all(rust_content.as_bytes()) {
+        Ok(()) => {
+            clear_file_io_error();
+            0
+        }
+        Err(error) => {
+            set_file_io_error("hew_file_append", &error);
+            -1
+        }
     }
 }
 
@@ -168,10 +197,15 @@ pub unsafe extern "C" fn hew_file_delete(path: *const c_char) -> i32 {
     let Ok(rust_path) = c_path.to_str() else {
         return -1;
     };
-    if std::fs::remove_file(rust_path).is_ok() {
-        0
-    } else {
-        -1
+    match std::fs::remove_file(rust_path) {
+        Ok(()) => {
+            clear_file_io_error();
+            0
+        }
+        Err(error) => {
+            set_file_io_error("hew_file_delete", &error);
+            -1
+        }
     }
 }
 
@@ -275,16 +309,13 @@ pub unsafe extern "C" fn hew_file_read_bytes(path: *const c_char) -> crate::byte
             // so that stale messages and errno from a prior failed call are not
             // visible to callers that inspect hew_last_error() or
             // hew_stream_last_error() after a successful read.
-            crate::hew_clear_error();
-            let _ = crate::stream_error::take_last_error();
+            clear_file_io_error();
             let len = u32::try_from(data.len()).unwrap_or(u32::MAX);
             // SAFETY: data is a valid Vec<u8>; len <= data.len().
             unsafe { crate::bytes::hew_bytes_from_static(data.as_ptr(), len) }
         }
         Err(error) => {
-            let msg = format!("hew_file_read_bytes: {error}");
-            crate::set_last_error(&msg);
-            set_last_error_with_errno(msg, error.raw_os_error().unwrap_or(0));
+            set_file_io_error("hew_file_read_bytes", &error);
             crate::bytes::BytesTriple {
                 ptr: std::ptr::null_mut(),
                 offset: 0,
@@ -349,10 +380,15 @@ pub unsafe extern "C" fn hew_file_write_bytes(
             std::slice::from_raw_parts(triple.ptr.add(triple.offset as usize), triple.len as usize)
         }
     };
-    if std::fs::write(rust_path, slice).is_ok() {
-        0
-    } else {
-        -1
+    match std::fs::write(rust_path, slice) {
+        Ok(()) => {
+            clear_file_io_error();
+            0
+        }
+        Err(error) => {
+            set_file_io_error("hew_file_write_bytes", &error);
+            -1
+        }
     }
 }
 
@@ -377,10 +413,15 @@ pub unsafe extern "C" fn hew_fs_mkdir(path: *const c_char) -> i32 {
     let Ok(rust_path) = c_path.to_str() else {
         return -1;
     };
-    if std::fs::create_dir(rust_path).is_ok() {
-        0
-    } else {
-        -1
+    match std::fs::create_dir(rust_path) {
+        Ok(()) => {
+            clear_file_io_error();
+            0
+        }
+        Err(error) => {
+            set_file_io_error("hew_fs_mkdir", &error);
+            -1
+        }
     }
 }
 
@@ -401,47 +442,78 @@ pub unsafe extern "C" fn hew_fs_mkdir_all(path: *const c_char) -> i32 {
     let Ok(rust_path) = c_path.to_str() else {
         return -1;
     };
-    if std::fs::create_dir_all(rust_path).is_ok() {
-        0
-    } else {
-        -1
+    match std::fs::create_dir_all(rust_path) {
+        Ok(()) => {
+            clear_file_io_error();
+            0
+        }
+        Err(error) => {
+            set_file_io_error("hew_fs_mkdir_all", &error);
+            -1
+        }
     }
 }
 
 /// List entries in a directory.
 ///
 /// Returns a `HewVec` of entry names (not full paths). Caller must free with
-/// `hew_vec_free`. Returns an empty vec on error.
+/// `hew_vec_free`. Returns an empty vec and records the failure on error.
 ///
 /// # Safety
 ///
 /// `path` must be a valid, NUL-terminated C string.
+///
+/// # Panics
+///
+/// Panics if an entry name contains a NUL byte, which cannot occur for
+/// real filesystem entry names on supported platforms.
 #[no_mangle]
 pub unsafe extern "C" fn hew_fs_list_dir(path: *const c_char) -> *mut crate::vec::HewVec {
     // SAFETY: hew_vec_new_str allocates a valid empty HewVec<String>.
     let v = unsafe { crate::vec::hew_vec_new_str() };
     if path.is_null() {
+        set_file_io_errno("hew_fs_list_dir", "invalid path string", libc::EINVAL);
         return v;
     }
     // SAFETY: caller guarantees `path` is a valid NUL-terminated C string.
     let c_path = unsafe { CStr::from_ptr(path) };
     let Ok(rust_path) = c_path.to_str() else {
+        set_file_io_errno("hew_fs_list_dir", "invalid path string", libc::EINVAL);
         return v;
     };
-    let Ok(entries) = std::fs::read_dir(rust_path) else {
-        return v;
+    let entries = match std::fs::read_dir(rust_path) {
+        Ok(entries) => entries,
+        Err(error) => {
+            set_file_io_error("hew_fs_list_dir", &error);
+            return v;
+        }
     };
-    for entry in entries.flatten() {
+    let mut names = Vec::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                set_file_io_error("hew_fs_list_dir", &error);
+                return v;
+            }
+        };
         let name = entry.file_name();
         let Ok(name_str) = name.into_string() else {
-            continue;
+            set_file_io_errno(
+                "hew_fs_list_dir",
+                "entry name is not valid UTF-8",
+                libc::EILSEQ,
+            );
+            return v;
         };
-        let Ok(c_name) = CString::new(name_str) else {
-            continue;
-        };
+        names.push(name_str);
+    }
+    for name in names {
+        let c_name = CString::new(name).expect("file names cannot contain NUL");
         // SAFETY: v is a valid HewVec; c_name is a valid NUL-terminated C string.
         unsafe { crate::vec::hew_vec_push_str(v, c_name.as_ptr()) };
     }
+    clear_file_io_error();
     v
 }
 
@@ -465,10 +537,15 @@ pub unsafe extern "C" fn hew_fs_rename(from: *const c_char, to: *const c_char) -
     let Ok(to_str) = (unsafe { CStr::from_ptr(to) }).to_str() else {
         return -1;
     };
-    if std::fs::rename(from_str, to_str).is_ok() {
-        0
-    } else {
-        -1
+    match std::fs::rename(from_str, to_str) {
+        Ok(()) => {
+            clear_file_io_error();
+            0
+        }
+        Err(error) => {
+            set_file_io_error("hew_fs_rename", &error);
+            -1
+        }
     }
 }
 
@@ -492,10 +569,15 @@ pub unsafe extern "C" fn hew_fs_copy(from: *const c_char, to: *const c_char) -> 
     let Ok(to_str) = (unsafe { CStr::from_ptr(to) }).to_str() else {
         return -1;
     };
-    if std::fs::copy(from_str, to_str).is_ok() {
-        0
-    } else {
-        -1
+    match std::fs::copy(from_str, to_str) {
+        Ok(_) => {
+            clear_file_io_error();
+            0
+        }
+        Err(error) => {
+            set_file_io_error("hew_fs_copy", &error);
+            -1
+        }
     }
 }
 

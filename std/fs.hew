@@ -124,85 +124,15 @@ pub fn io_error_cancelled() -> IoError {
     IoError::Cancelled(0)
 }
 
-fn missing_parent(target: string) -> bool {
-    let parent = dirname(target);
-    parent != "" && !exists(parent)
-}
-
-fn dirname(p: string) -> string {
-    let s = strip_trailing_slash(p);
-    let pos = last_slash_pos(s);
-    if pos < 0 {
-        return "";
-    }
-    if pos == 0 {
-        return "/";
-    }
-    s.slice(0, pos)
-}
-
-fn strip_trailing_slash(p: string) -> string {
-    if p == "/" {
-        return "" + p;
-    }
-    if p.len() > 1 && p.ends_with("/") {
-        return p.slice(0, p.len() - 1);
-    }
-    "" + p
-}
-
-fn last_slash_pos(s: string) -> i64 {
-    let first = match s.find("/") {
-        Some(i) => i,
-        None => return -1,
-    };
-    var last = first;
-    var search_from = first + 1;
-    while search_from < s.len() {
-        let rest = s.slice(search_from, s.len());
-        let next = match rest.find("/") {
-            Some(i) => i,
-            None => return last,
-        };
-        last = search_from + next;
-        search_from = last + 1;
-    }
-    last
-}
-
-fn write_error(target: string) -> IoError {
-    if missing_parent(target) {
-        IoError::NotFound(0)
-    } else {
-        IoError::Other(0)
-    }
-}
-
-fn missing_path_error(target: string) -> IoError {
-    if exists(target) {
-        IoError::Other(0)
-    } else {
-        IoError::NotFound(0)
-    }
-}
-
-fn mkdir_error(target: string) -> IoError {
-    if exists(target) {
-        IoError::AlreadyExists(0)
-    } else if missing_parent(target) {
-        IoError::NotFound(0)
-    } else {
-        IoError::Other(0)
-    }
-}
-
-fn move_copy_error(source: string, target: string) -> IoError {
-    if !exists(source) {
-        IoError::NotFound(0)
-    } else if missing_parent(target) {
-        IoError::NotFound(0)
-    } else {
-        IoError::Other(0)
+fn last_io_error() -> IoError {
+    unsafe {
+        let errno = hew_stream_last_errno() as i64;
+        let _ = hew_stream_last_error();
+        if errno == 0 {
+            IoError::Other(5)
+        } else {
+            io_error_from_errno(errno)
+        }
     }
 }
 
@@ -239,11 +169,16 @@ pub fn try_read(file_path: string) -> Result<string, IoError> {
     unsafe {
         let file = hew_stream_from_file_read(file_path);
         if hew_stream_is_valid(file) {
-            Ok(hew_stream_collect_string(file))
-        } else {
+            let contents = hew_stream_collect_string(file);
             let errno = hew_stream_last_errno();
             let _ = hew_stream_last_error();
-            Err(io_error_from_errno(errno as i64))
+            if errno == 0 {
+                Ok(contents)
+            } else {
+                Err(io_error_from_errno(errno as i64))
+            }
+        } else {
+            Err(last_io_error())
         }
     }
 }
@@ -266,7 +201,7 @@ pub fn try_write(file_path: string, content: string) -> Result<i64, IoError> {
         hew_file_write(file_path, content)
     } {
         0 => Ok(0),
-        _ => Err(write_error(file_path)),
+        _ => Err(last_io_error()),
     }
 }
 
@@ -288,7 +223,7 @@ pub fn try_append(file_path: string, content: string) -> Result<i64, IoError> {
         hew_file_append(file_path, content)
     } {
         0 => Ok(0),
-        _ => Err(write_error(file_path)),
+        _ => Err(last_io_error()),
     }
 }
 
@@ -321,7 +256,7 @@ pub fn try_delete(file_path: string) -> Result<i64, IoError> {
         hew_file_delete(file_path)
     } {
         0 => Ok(0),
-        _ => Err(missing_path_error(file_path)),
+        _ => Err(last_io_error()),
     }
 }
 
@@ -390,7 +325,7 @@ pub fn try_write_bytes(file_path: string, data: bytes) -> Result<i64, IoError> {
         hew_file_write_bytes(file_path, data)
     } {
         0 => Ok(0),
-        _ => Err(write_error(file_path)),
+        _ => Err(last_io_error()),
     }
 }
 
@@ -411,7 +346,7 @@ pub fn try_mkdir(dir_path: string) -> Result<i64, IoError> {
         hew_fs_mkdir(dir_path)
     } {
         0 => Ok(0),
-        _ => Err(mkdir_error(dir_path)),
+        _ => Err(last_io_error()),
     }
 }
 
@@ -432,13 +367,7 @@ pub fn try_mkdir_all(dir_path: string) -> Result<i64, IoError> {
         hew_fs_mkdir_all(dir_path)
     } {
         0 => Ok(0),
-        _ => {
-            if exists(dir_path) {
-                Err(IoError::AlreadyExists(0))
-            } else {
-                Err(IoError::Other(0))
-            }
-        },
+        _ => Err(last_io_error()),
     }
 }
 
@@ -463,17 +392,18 @@ pub fn list_dir(path: string) -> Vec<string> {
 
 /// List the entries in a directory.
 ///
-/// Distinguishes missing and non-directory paths from a successful listing.
+/// Returns an error for every directory-read failure.
 pub fn try_list_dir(dir_path: string) -> Result<Vec<string>, IoError> {
-    if !exists(dir_path) {
-        return Err(IoError::NotFound(0));
+    unsafe {
+        let entries = hew_fs_list_dir(dir_path);
+        let errno = hew_stream_last_errno();
+        let _ = hew_stream_last_error();
+        if errno == 0 {
+            Ok(entries)
+        } else {
+            Err(io_error_from_errno(errno as i64))
+        }
     }
-    if !is_dir(dir_path) {
-        return Err(IoError::Other(0));
-    }
-    Ok(unsafe {
-        hew_fs_list_dir(dir_path)
-    })
 }
 
 /// Rename or move a file or directory.
@@ -493,7 +423,7 @@ pub fn try_rename(from: string, to: string) -> Result<i64, IoError> {
         hew_fs_rename(from, to)
     } {
         0 => Ok(0),
-        _ => Err(move_copy_error(from, to)),
+        _ => Err(last_io_error()),
     }
 }
 
@@ -514,7 +444,7 @@ pub fn try_copy(from: string, to: string) -> Result<i64, IoError> {
         hew_fs_copy(from, to)
     } {
         0 => Ok(0),
-        _ => Err(move_copy_error(from, to)),
+        _ => Err(last_io_error()),
     }
 }
 

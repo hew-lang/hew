@@ -33,6 +33,10 @@ fn string_to_malloc(s: &str) -> *mut c_char {
     unsafe { malloc_cstring(s.as_ptr(), s.len()) }
 }
 
+fn is_valid_env_key(key: &str) -> bool {
+    !key.is_empty() && !key.contains('=')
+}
+
 // ---------------------------------------------------------------------------
 // Environment variables
 // ---------------------------------------------------------------------------
@@ -63,44 +67,56 @@ pub unsafe extern "C" fn hew_env_get(key: *const c_char) -> *mut c_char {
 
 /// Set an environment variable.
 ///
+/// Returns 0 on success and -1 when the key is invalid.
+///
 /// # Safety
 ///
 /// Both `key` and `val` must be valid NUL-terminated C strings.
 #[no_mangle]
-pub unsafe extern "C" fn hew_env_set(key: *const c_char, val: *const c_char) {
+pub unsafe extern "C" fn hew_env_set(key: *const c_char, val: *const c_char) -> i32 {
     if key.is_null() || val.is_null() {
-        return;
+        return -1;
     }
     // SAFETY: caller guarantees both pointers are valid NUL-terminated C strings.
     let Ok(key_str) = (unsafe { CStr::from_ptr(key) }).to_str() else {
-        return;
+        return -1;
     };
     // SAFETY: caller guarantees val is a valid NUL-terminated C string.
     let Ok(val_str) = (unsafe { CStr::from_ptr(val) }).to_str() else {
-        return;
+        return -1;
     };
+    if !is_valid_env_key(key_str) {
+        return -1;
+    }
     // SAFETY: ENV_LOCK synchronizes access to the process-global environ array;
     // set_var is safe when protected by exclusive write access.
     ENV_LOCK.access(|()| unsafe { std::env::set_var(key_str, val_str) });
+    0
 }
 
 /// Remove an environment variable.
+///
+/// Returns 0 on success and -1 when the key is invalid.
 ///
 /// # Safety
 ///
 /// `key` must be a valid NUL-terminated C string.
 #[no_mangle]
-pub unsafe extern "C" fn hew_env_remove(key: *const c_char) {
+pub unsafe extern "C" fn hew_env_remove(key: *const c_char) -> i32 {
     if key.is_null() {
-        return;
+        return -1;
     }
     // SAFETY: caller guarantees `key` is a valid NUL-terminated C string.
     let Ok(key_str) = (unsafe { CStr::from_ptr(key) }).to_str() else {
-        return;
+        return -1;
     };
+    if !is_valid_env_key(key_str) {
+        return -1;
+    }
     // SAFETY: ENV_LOCK synchronizes access to the process-global environ array;
     // remove_var is safe when protected by exclusive write access.
     ENV_LOCK.access(|()| unsafe { std::env::remove_var(key_str) });
+    0
 }
 
 /// Check if an environment variable exists. Returns 1 if set, 0 otherwise.
@@ -645,7 +661,7 @@ mod tests {
             assert!(hew_env_get(key.as_ptr()).is_null());
 
             // Set and verify.
-            hew_env_set(key.as_ptr(), val.as_ptr());
+            assert_eq!(hew_env_set(key.as_ptr(), val.as_ptr()), 0);
             assert_eq!(hew_env_has(key.as_ptr()), 1);
 
             let got = hew_env_get(key.as_ptr());
@@ -653,8 +669,23 @@ mod tests {
             assert_eq!(text, "hello_hew");
 
             // Remove and verify.
-            hew_env_remove(key.as_ptr());
+            assert_eq!(hew_env_remove(key.as_ptr()), 0);
             assert_eq!(hew_env_has(key.as_ptr()), 0);
+        }
+    }
+
+    #[test]
+    fn test_env_set_and_remove_reject_invalid_keys() {
+        let empty = CString::new("").unwrap();
+        let equals = CString::new("HEW=INVALID").unwrap();
+        let value = CString::new("value").unwrap();
+
+        // SAFETY: all strings are valid NUL-terminated C strings.
+        unsafe {
+            assert_eq!(hew_env_set(empty.as_ptr(), value.as_ptr()), -1);
+            assert_eq!(hew_env_set(equals.as_ptr(), value.as_ptr()), -1);
+            assert_eq!(hew_env_remove(empty.as_ptr()), -1);
+            assert_eq!(hew_env_remove(equals.as_ptr()), -1);
         }
     }
 
@@ -943,9 +974,13 @@ mod tests {
         // Restore original TMPDIR.
         match orig_value {
             // SAFETY: both key and val are valid NUL-terminated C strings.
-            Some(val) => unsafe { hew_env_set(key.as_ptr(), val.as_ptr()) },
+            Some(val) => unsafe {
+                hew_env_set(key.as_ptr(), val.as_ptr());
+            },
             // SAFETY: key is a valid NUL-terminated C string.
-            None => unsafe { hew_env_remove(key.as_ptr()) },
+            None => unsafe {
+                hew_env_remove(key.as_ptr());
+            },
         }
     }
 }

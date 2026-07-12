@@ -339,38 +339,27 @@ pub trait IntoIterator {
 impl<T> Vec<T> {
     #[extern_symbol("hew_vec_push_{T}")]
     fn push(v: Vec<T>, value: T) {}
-
     #[extern_symbol("hew_vec_pop_{T}")]
     fn pop(v: Vec<T>) -> T {}
-
-    #[extern_symbol("hew_vec_len")]
+    #[extern_symbol(hew_vec_len)]
     fn len(v: Vec<T>) -> i64 {}
-
     #[extern_symbol("hew_vec_get_{T}")]
     fn get(v: Vec<T>, index: i64) -> Option<T> {}
-
     #[extern_symbol("hew_vec_set_{T}")]
     fn set(v: Vec<T>, index: i64, value: T) {}
-
     #[extern_symbol("hew_vec_remove_at_{T}")]
     fn remove(v: Vec<T>, index: i64) -> T {}
-
     #[extern_symbol("hew_vec_contains_{T}")]
     fn contains(v: Vec<T>, value: T) -> bool {}
-
-    #[extern_symbol("hew_vec_is_empty")]
+    #[extern_symbol(hew_vec_is_empty)]
     fn is_empty(v: Vec<T>) -> bool {}
-
-    #[extern_symbol("hew_vec_clear")]
+    #[extern_symbol(hew_vec_clear)]
     fn clear(v: Vec<T>) {}
-
-    #[extern_symbol("hew_vec_clone")]
+    #[extern_symbol(hew_vec_clone)]
     fn clone(v: Vec<T>) -> Vec<T> {}
-
-    #[extern_symbol("hew_vec_append")]
+    #[extern_symbol(hew_vec_append)]
     fn append(v: Vec<T>, other: Vec<T>) {}
-
-    #[extern_symbol("hew_vec_join_str")]
+    #[extern_symbol(hew_vec_join_str)]
     fn join(v: Vec<T>, separator: string) -> string {}
 }
 

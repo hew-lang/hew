@@ -2140,11 +2140,55 @@ pub fn lower_hir_module_with_facts(
                 .get(&key)
                 .map_or(&[], Vec::as_slice);
 
-            // Only build the complete field plan when the actor layout is known
-            // and has state fields.  Missing actor layout → silently empty (codegen
-            // will fail-closed for stateful actors via its existing gate).
+            // Validate every explicit init-arg NAME against the actor's
+            // accepted field/init surface BEFORE any missing-field planning.
+            // This must run first: the field-plan loop below walks every
+            // state field unconditionally and reports a field as "missing"
+            // whenever no explicit arg matches its name, which is exactly
+            // what happens when the arg that WAS meant to supply it has a
+            // typo'd name. Running name validation first and skipping the
+            // field plan entirely on an invalid name keeps a bad name to
+            // exactly one diagnostic (InvalidActorSpawnArgument) instead of
+            // that plus a misleading MissingActorSpawnArgument for the field
+            // the bad name was presumably meant to supply.
+            let mut has_invalid_arg_name = false;
             if let Some(actor_layout) = al {
-                if !actor_layout.state_field_names.is_empty() {
+                let explicit_init = actor_layout.init_symbol.is_some();
+                for (arg_name, arg_expr) in explicit_hir_args {
+                    let is_valid = if explicit_init {
+                        actor_layout.init_param_names.iter().any(|n| n == arg_name)
+                            || actor_layout.state_field_names.iter().any(|n| n == arg_name)
+                    } else {
+                        actor_layout.state_field_names.iter().any(|n| n == arg_name)
+                    };
+                    if !is_valid {
+                        let note = Builder::invalid_spawn_arg_note(
+                            &child.actor_name,
+                            arg_name,
+                            explicit_init,
+                            &actor_layout.init_param_names,
+                            &actor_layout.state_field_names,
+                        );
+                        diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::InvalidActorSpawnArgument {
+                                actor: child.actor_name.clone(),
+                                argument: arg_name.clone(),
+                                site: arg_expr.site,
+                            },
+                            note,
+                        });
+                        has_invalid_arg_name = true;
+                        break;
+                    }
+                }
+            }
+
+            // Only build the complete field plan when the actor layout is known,
+            // has state fields, and every explicit arg name was valid.  Missing
+            // actor layout → silently empty (codegen will fail-closed for
+            // stateful actors via its existing gate).
+            if let Some(actor_layout) = al {
+                if !has_invalid_arg_name && !actor_layout.state_field_names.is_empty() {
                     // Index explicit args by field name for O(1) lookup.
                     let explicit_by_name: HashMap<&str, &HirExpr> = explicit_hir_args
                         .iter()
@@ -5439,49 +5483,28 @@ fn lower_supervisor_bootstrap(
             continue;
         }
 
-        // Validate every explicit init-arg NAME against the actor's accepted
-        // field/init surface, for EVERY child — including a config-backed one
-        // that is about to be skipped below. Without this, an unknown field
-        // name on a config-backed child's args got zero validation: the
-        // config-skip `continue` below runs before the synthesized spawn
-        // (further down, the only other place a name was checked) ever sees
-        // it. This is the single authoritative name-validation path for
-        // supervisor children; a bad name here means the diagnostic already
-        // fired, so the child is skipped rather than also flowing into the
-        // synthesized spawn's own (now-redundant) name check.
+        // Determine whether any explicit init-arg NAME is invalid against the
+        // actor's accepted field/init surface — WITHOUT emitting a
+        // diagnostic here. The authoritative InvalidActorSpawnArgument for a
+        // bad name is emitted earlier in the pipeline, in the post-loop
+        // supervisor-layout pass in `lower_hir_module_with_facts` (S3), which
+        // runs before this synthetic-body lowering and also skips its own
+        // missing-field planning for the same child once a bad name is
+        // found. Re-emitting here would duplicate that diagnostic; this
+        // check exists solely so the spawn statement for an invalid child is
+        // still skipped (never routed through the synthesized-body lowering
+        // that assumes every arg name resolved).
         if let Some(actor_layout) = actor_layouts.get(&child.ty) {
             let explicit_init = actor_layout.init_symbol.is_some();
-            let mut has_invalid_arg = false;
-            for (arg_name, arg_expr) in &child.init_args {
+            let has_invalid_arg = child.init_args.iter().any(|(arg_name, _)| {
                 let is_valid = if explicit_init {
                     actor_layout.init_param_names.iter().any(|n| n == arg_name)
                         || actor_layout.state_field_names.iter().any(|n| n == arg_name)
                 } else {
                     actor_layout.state_field_names.iter().any(|n| n == arg_name)
                 };
-                if !is_valid {
-                    let note = Builder::invalid_spawn_arg_note(
-                        &child.ty,
-                        arg_name,
-                        explicit_init,
-                        &actor_layout.init_param_names,
-                        &actor_layout.state_field_names,
-                    );
-                    diagnostics.push(MirDiagnostic {
-                        kind: MirDiagnosticKind::InvalidActorSpawnArgument {
-                            actor: child.ty.clone(),
-                            argument: arg_name.clone(),
-                            // Real per-arg site from the child's own
-                            // declaration — never a sentinel, never a
-                            // fresh_site() counter local to this function.
-                            site: arg_expr.site,
-                        },
-                        note,
-                    });
-                    has_invalid_arg = true;
-                    break;
-                }
-            }
+                !is_valid
+            });
             if has_invalid_arg {
                 continue;
             }

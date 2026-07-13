@@ -696,6 +696,59 @@ fn owned_collection_config_field_init_arg_is_walled_at_checker() {
     );
 }
 
+/// A supervisor `child` init arg naming a field the actor does not declare
+/// reports exactly one `InvalidActorSpawnArgument` for the bad field — the
+/// fail-open guard for the S4 delete: removing the supervisor-loop's redundant
+/// unknown-field check must not drop the only diagnostic for this mistake, and
+/// the correct `InvalidActorSpawnArgument` (already fired by the direct-spawn
+/// validator the synthesized child spawn routes through) must remain the sole
+/// report.
+#[test]
+fn supervisor_child_unknown_field_reports_exactly_one_invalid_actor_spawn_argument() {
+    let pipeline = lower_module_from_source(
+        r"
+        actor Worker {
+            let id: i64;
+            receive fn work(x: i64) -> i64 { x }
+        }
+
+        supervisor WorkerPool {
+            strategy: one_for_one;
+            intensity: 5 within 10s;
+            child w1: Worker(idx: 1)
+        }
+        ",
+    );
+
+    let invalid_matches: Vec<_> = pipeline
+        .diagnostics
+        .iter()
+        .filter(|diag| {
+            matches!(
+                &diag.kind,
+                MirDiagnosticKind::InvalidActorSpawnArgument { actor, argument, .. }
+                    if actor == "Worker" && argument == "idx"
+            )
+        })
+        .collect();
+    assert_eq!(
+        invalid_matches.len(),
+        1,
+        "supervisor child unknown field must report exactly one \
+         InvalidActorSpawnArgument for the bad field; diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+    assert!(
+        !pipeline
+            .diagnostics
+            .iter()
+            .any(|diag| matches!(&diag.kind, MirDiagnosticKind::NotYetImplemented { .. })),
+        "an unknown supervisor child init-arg field name is a fully-understood user error and \
+         must never surface as NotYetImplemented; diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
 /// A supervisor `child` missing a required actor state field (no init block,
 /// no declared default) reports `MissingActorSpawnArgument` — a user error the
 /// compiler fully understands — never `NotYetImplemented`.

@@ -2140,27 +2140,6 @@ pub fn lower_hir_module_with_facts(
                 .get(&key)
                 .map_or(&[], Vec::as_slice);
 
-            // Validate that every explicitly-supplied field name exists on the actor.
-            for (field_name, hir_expr) in explicit_hir_args {
-                let field_known =
-                    al.is_some_and(|al| al.state_field_names.iter().any(|n| n == field_name));
-                if !field_known {
-                    diagnostics.push(MirDiagnostic {
-                        kind: MirDiagnosticKind::NotYetImplemented {
-                            construct: format!(
-                                "supervisor `{}` child `{}` init arg `{field_name}` is \
-                                 not a declared state field on actor `{}`",
-                                sup_layout.name, child.name, child.actor_name
-                            ),
-                            site: hir_expr.site,
-                        },
-                        note: "child init arg field names must match actor state field \
-                               declarations"
-                            .to_string(),
-                    });
-                }
-            }
-
             // Only build the complete field plan when the actor layout is known
             // and has state fields.  Missing actor layout → silently empty (codegen
             // will fail-closed for stateful actors via its existing gate).

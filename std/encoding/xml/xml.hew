@@ -107,9 +107,39 @@ impl Node {
 
 // ── Module-level functions ────────────────────────────────────────────
 /// Parse an XML string into a `Node` tree.
+///
+/// Panics with the parser's reason if `s` is not well-formed XML.
+///
+/// A non-panicking `try_parse` counterpart returning `Result<Node, string>`
+/// is not offered: `Node` is `#[resource]`-wrapped around an `#[opaque]`
+/// handle, and constructing any enum (`Result` or user-defined) that pairs
+/// that payload with a second, heap-owning variant (e.g. `string`) hits an
+/// unrelated codegen limitation (`OpaqueHandle` has no dup/clone helper,
+/// which today's enum-construction path requires unconditionally for every
+/// variant, not just the active one). Confirmed with minimal repros: a
+/// plain scalar second variant (`i64`) compiles, but any heap-owning
+/// second variant (`string`, or a record wrapping `string`) does not.
+/// Callers that must not panic can guard with `xml.is_wellformed(s)` first.
 pub fn parse(s: string) -> Node {
     unsafe {
-        Node { handle: hew_xml_parse(s) }
+        let handle = hew_xml_parse(s);
+        if hew_xml_is_element(handle) < 0 { // -1 ⟺ null ⟺ parse failed
+            panic(f"xml.parse: {hew_xml_last_error()}");
+        }
+        Node { handle: handle }
+    }
+}
+
+/// Report whether `s` is well-formed XML, without constructing a `Node`.
+///
+/// Use this to guard a call to `parse(s)` when the input's well-formedness
+/// is not already known, avoiding the panic.
+pub fn is_wellformed(s: string) -> bool {
+    unsafe {
+        let handle = hew_xml_parse(s);
+        let ok = hew_xml_is_element(handle) >= 0;
+        hew_xml_free(handle);
+        ok
     }
 }
 
@@ -137,6 +167,7 @@ pub fn get_text(node: Node) -> string {
 // ── FFI bindings (implementation detail) ──────────────────────────────
 extern "C" {
     fn hew_xml_parse(xml_str: string) -> NodeHandle;
+    fn hew_xml_last_error() -> string;
     fn hew_xml_to_string(node: NodeHandle) -> string;
     fn hew_xml_get_tag(node: NodeHandle) -> string;
     fn hew_xml_get_attribute(node: NodeHandle, name: string) -> string;

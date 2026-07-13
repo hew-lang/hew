@@ -70,3 +70,20 @@ fn test_get_child_rejects_index_that_would_wrap_to_zero() {
     let root = xml.parse("<root><child/></root>");
     root.get_child(4294967296);
 }
+
+// ── Malformed input ───────────────────────────────────────────────────
+#[test]
+#[should_panic]
+fn test_parse_panics_on_malformed() {
+    xml.parse("<unclosed>no closing tag here");
+}
+
+#[test]
+fn test_is_wellformed_true_for_valid_xml() {
+    testing.assert_true(xml.is_wellformed("<a>text</a>"));
+}
+
+#[test]
+fn test_is_wellformed_false_for_malformed_xml() {
+    testing.assert_false(xml.is_wellformed("<unclosed"));
+}

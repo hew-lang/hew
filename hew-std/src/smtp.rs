@@ -131,10 +131,14 @@ pub unsafe extern "C" fn hew_smtp_connect(
     pass: *const c_char,
 ) -> *mut HewSmtpConn {
     let Some(port) = normalize_port(port) else {
+        set_smtp_last_error(format!(
+            "SMTP connect failed: port {port} out of range (must be 0..=65535)"
+        ));
         return std::ptr::null_mut();
     };
     // SAFETY: host is a valid NUL-terminated C string per caller contract.
     let Some(host_str) = (unsafe { cstr_to_str(host) }) else {
+        set_smtp_last_error("SMTP connect failed: host is null or invalid UTF-8");
         return std::ptr::null_mut();
     };
     // SAFETY: user is a valid NUL-terminated C string (or null) per caller contract.
@@ -143,6 +147,9 @@ pub unsafe extern "C" fn hew_smtp_connect(
     let pass_str = unsafe { cstr_to_str(pass) };
 
     let Ok(builder) = SmtpTransport::starttls_relay(host_str) else {
+        set_smtp_last_error(format!(
+            "SMTP connect failed: could not initialize relay for host `{host_str}`"
+        ));
         return std::ptr::null_mut();
     };
 
@@ -168,10 +175,14 @@ pub unsafe extern "C" fn hew_smtp_connect_tls(
     pass: *const c_char,
 ) -> *mut HewSmtpConn {
     let Some(port) = normalize_port(port) else {
+        set_smtp_last_error(format!(
+            "SMTP connect failed: port {port} out of range (must be 0..=65535)"
+        ));
         return std::ptr::null_mut();
     };
     // SAFETY: host is a valid NUL-terminated C string per caller contract.
     let Some(host_str) = (unsafe { cstr_to_str(host) }) else {
+        set_smtp_last_error("SMTP connect failed: host is null or invalid UTF-8");
         return std::ptr::null_mut();
     };
     // SAFETY: user is a valid NUL-terminated C string (or null) per caller contract.
@@ -180,6 +191,9 @@ pub unsafe extern "C" fn hew_smtp_connect_tls(
     let pass_str = unsafe { cstr_to_str(pass) };
 
     let Ok(builder) = SmtpTransport::relay(host_str) else {
+        set_smtp_last_error(format!(
+            "SMTP connect failed: could not initialize relay for host `{host_str}`"
+        ));
         return std::ptr::null_mut();
     };
 

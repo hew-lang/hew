@@ -63,7 +63,7 @@ impl ConnMethods for Conn {
             hew_smtp_send(conn, from, to, subject, body)
         };
         if n < 0 {
-            Err("smtp send failed")
+            Err(smtp_err("smtp send failed"))
         } else {
             Ok(())
         }
@@ -80,7 +80,7 @@ impl ConnMethods for Conn {
             hew_smtp_send_html(conn, from, to, subject, html)
         };
         if n < 0 {
-            Err("smtp send_html failed")
+            Err(smtp_err("smtp send_html failed"))
         } else {
             Ok(())
         }
@@ -94,6 +94,29 @@ impl ConnMethods for Conn {
 }
 
 // ── Module-level functions ────────────────────────────────────────────
+/// Return the last SMTP client error observed on this thread.
+///
+/// Failed `connect()`/`connect_tls()`/`send()` calls update this string.
+/// Successful sends clear it. Call immediately after a failed
+/// `connect`/`send` for the precise reason.
+pub fn last_error() -> string {
+    unsafe {
+        hew_smtp_last_error()
+    }
+}
+
+/// Read `last_error()` and fall back to `fallback` when the FFI reports
+/// nothing specific (should not happen once every failure path is wired,
+/// but keeps the contract fail-safe).
+fn smtp_err(fallback: string) -> string {
+    let detail = unsafe { hew_smtp_last_error() };
+    if detail.len() > 0 {
+        detail
+    } else {
+        fallback
+    }
+}
+
 /// Connect to an SMTP server using STARTTLS.
 ///
 /// # Examples
@@ -138,7 +161,7 @@ pub fn try_send(host: string, port: i64, username: string, password: string, fro
         hew_smtp_send_once(host, port as i32, username, password, from, to, subject, body)
     };
     if n < 0 {
-        Err("smtp send failed")
+        Err(smtp_err("smtp send failed"))
     } else {
         Ok(())
     }
@@ -162,7 +185,7 @@ pub fn try_send_html(host: string, port: i64, username: string, password: string
         hew_smtp_send_html_once(host, port as i32, username, password, from, to, subject, html)
     };
     if n < 0 {
-        Err("smtp send_html failed")
+        Err(smtp_err("smtp send_html failed"))
     } else {
         Ok(())
     }
@@ -172,6 +195,7 @@ pub fn try_send_html(host: string, port: i64, username: string, password: string
 extern "C" {
     fn hew_smtp_connect(host: string, port: i32, username: string, password: string) -> Conn;
     fn hew_smtp_connect_tls(host: string, port: i32, username: string, password: string) -> Conn;
+    fn hew_smtp_last_error() -> string;
     fn hew_smtp_send(conn: Conn, from: string, to: string, subject: string, body: string) -> i32;
     fn hew_smtp_send_html(conn: Conn, from: string, to: string, subject: string, html: string) -> i32;
     fn hew_smtp_send_once(host: string, port: i32, username: string, password: string, from: string, to: string, subject: string, body: string) -> i32;

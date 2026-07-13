@@ -1,0 +1,41 @@
+//! Tests for std::net::smtp error surfacing.
+//!
+//! All cases here fail before any socket work happens (bad port, empty
+//! message body, unparsable address), so they run offline and
+//! deterministically. A live SMTP round-trip cannot be exercised without a
+//! real server; the success clear-path is covered by
+//! hew-std/src/smtp.rs's `#[cfg(test)]` unit tests.
+
+import std::net::smtp;
+import std::testing;
+
+#[test]
+fn test_module_try_send_bad_port_surfaces_reason() {
+    let result = smtp.try_send("localhost", 999999, "u", "p", "a@example.com", "b@example.com", "s", "b");
+    match result {
+        Ok(_) => panic("expected an out-of-range port to fail"),
+        Err(msg) => testing.assert_true(msg.contains("out of range")),
+    }
+}
+
+#[test]
+fn test_conn_try_send_empty_subject_body_surfaces_reason() {
+    let conn = smtp.connect("localhost", 25, "u", "p");
+    let result = conn.try_send("a@example.com", "b@example.com", "", "");
+    match result {
+        Ok(_) => panic("expected empty subject and body to fail"),
+        Err(msg) => testing.assert_true(msg.contains("subject and body cannot both be empty")),
+    }
+    conn.close();
+}
+
+#[test]
+fn test_conn_try_send_bad_from_surfaces_reason() {
+    let conn = smtp.connect("localhost", 25, "u", "p");
+    let result = conn.try_send("not-an-email", "b@example.com", "s", "b");
+    match result {
+        Ok(_) => panic("expected an unparsable from address to fail"),
+        Err(msg) => testing.assert_true(msg.contains("could not parse from address")),
+    }
+    conn.close();
+}

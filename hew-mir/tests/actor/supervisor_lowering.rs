@@ -781,6 +781,25 @@ fn supervisor_child_missing_required_field_reports_missing_actor_spawn_argument(
          MissingActorSpawnArgument; diagnostics: {:#?}",
         pipeline.diagnostics
     );
+    let missing_matches: Vec<_> = pipeline
+        .diagnostics
+        .iter()
+        .filter(|diag| {
+            matches!(
+                &diag.kind,
+                MirDiagnosticKind::MissingActorSpawnArgument { actor, field, .. }
+                    if actor == "Worker" && field == "id"
+            )
+        })
+        .collect();
+    assert_eq!(
+        missing_matches.len(),
+        1,
+        "supervisor child missing a required state field must report exactly one \
+         MissingActorSpawnArgument — the post-loop layout pass and the synthesized \
+         spawn used to both independently diagnose the same field; diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
     assert!(
         !pipeline
             .diagnostics
@@ -788,6 +807,66 @@ fn supervisor_child_missing_required_field_reports_missing_actor_spawn_argument(
             .any(|diag| matches!(&diag.kind, MirDiagnosticKind::NotYetImplemented { .. })),
         "a missing supervisor child field is a fully-understood user error and must never \
          surface as NotYetImplemented; diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+/// A config-backed supervisor child (any init arg reads `config.field`) is
+/// entirely skipped by the synthesized-spawn machinery — the codegen init
+/// thunk builds its real spawn from `SupervisorChildLayout` instead. Before
+/// this fix, that skip ran BEFORE any field-name validation, so an unknown
+/// field name on such a child passed silently: the (now-deleted)
+/// supervisor-loop guard used to catch it, and the synthesized spawn never
+/// even ran on a config-backed child to catch it either. This is the
+/// fail-open regression the S4 delete introduced for config children
+/// specifically.
+#[test]
+fn supervisor_config_child_unknown_field_reports_invalid_actor_spawn_argument() {
+    let pipeline = lower_module_from_source(
+        r"
+        record AppConfig { size: i64 }
+
+        actor Cache {
+            var capacity: i64;
+            init(capacity: i64) {
+                capacity = capacity;
+            }
+            receive fn get_cap() -> i64 { capacity }
+        }
+
+        supervisor App(config: AppConfig) {
+            strategy: one_for_one;
+            child cache: Cache(bogus: config.size)
+        }
+        ",
+    );
+
+    let invalid_matches: Vec<_> = pipeline
+        .diagnostics
+        .iter()
+        .filter(|diag| {
+            matches!(
+                &diag.kind,
+                MirDiagnosticKind::InvalidActorSpawnArgument { actor, argument, .. }
+                    if actor == "Cache" && argument == "bogus"
+            )
+        })
+        .collect();
+    assert_eq!(
+        invalid_matches.len(),
+        1,
+        "an unknown field name on a config-backed supervisor child must report exactly \
+         one InvalidActorSpawnArgument — the config-init skip previously bypassed all \
+         field-name validation for such children; diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+    assert!(
+        !pipeline
+            .diagnostics
+            .iter()
+            .any(|diag| matches!(&diag.kind, MirDiagnosticKind::NotYetImplemented { .. })),
+        "an unknown field name is a fully-understood user error and must never surface as \
+         NotYetImplemented; diagnostics: {:#?}",
         pipeline.diagnostics
     );
 }

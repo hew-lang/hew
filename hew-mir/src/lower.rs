@@ -2172,12 +2172,16 @@ pub fn lower_hir_module_with_facts(
                                 default_expr
                             } else {
                                 // Required field not supplied and no declared default →
-                                // fail-closed diagnostic.
+                                // fail-closed diagnostic. `child.site` is the real
+                                // per-child-declaration site registered in
+                                // `hew_hir::verify::collect_site_spans` — never a
+                                // sentinel — so the rendered caret lands on the
+                                // child declaration.
                                 diagnostics.push(MirDiagnostic {
                                     kind: MirDiagnosticKind::MissingActorSpawnArgument {
                                         actor: child.actor_name.clone(),
                                         field: field_name.clone(),
-                                        site: SiteId(0),
+                                        site: child.site,
                                     },
                                     note: format!(
                                         "supply a value: `child {}: {}({field_name}: <value>)`",
@@ -2901,7 +2905,22 @@ pub fn lower_hir_module_with_facts(
                         &mut record_layouts,
                         &mut emitted_named_fn_shims,
                     );
-                    diagnostics.extend(lowered.diagnostics);
+                    // `lowered.diagnostics` carries the synthetic body's own
+                    // Builder-accumulated diagnostics (from lowering the
+                    // per-child `spawn ChildActor(...)` statements). A
+                    // missing required field on a NON-config child is
+                    // authoritatively diagnosed once already, above, by the
+                    // post-loop pass that builds `init_state_fields` (it
+                    // walks every state field unconditionally, so it always
+                    // fires first for the identical (actor, field) pair the
+                    // synthetic spawn would also flag). Strip the redundant
+                    // copy here rather than teaching the shared
+                    // `lower_spawn_actor_state_arg` helper about a
+                    // supervisor-synthetic-body special case that would also
+                    // suppress the diagnostic real direct-spawn users need.
+                    diagnostics.extend(lowered.diagnostics.into_iter().filter(|d| {
+                        !matches!(d.kind, MirDiagnosticKind::MissingActorSpawnArgument { .. })
+                    }));
                 }
             }
             HirItem::Record(_)
@@ -5199,6 +5218,7 @@ fn build_supervisor_layout(
             // Threading it here would require a HewChildSpec ABI field the
             // runtime would ignore, which would fake enforcement. When the
             // deadline wheel lands, read child.shutdown here and emit it.
+            site: child.site,
         })
         .collect();
 
@@ -5419,6 +5439,54 @@ fn lower_supervisor_bootstrap(
             continue;
         }
 
+        // Validate every explicit init-arg NAME against the actor's accepted
+        // field/init surface, for EVERY child — including a config-backed one
+        // that is about to be skipped below. Without this, an unknown field
+        // name on a config-backed child's args got zero validation: the
+        // config-skip `continue` below runs before the synthesized spawn
+        // (further down, the only other place a name was checked) ever sees
+        // it. This is the single authoritative name-validation path for
+        // supervisor children; a bad name here means the diagnostic already
+        // fired, so the child is skipped rather than also flowing into the
+        // synthesized spawn's own (now-redundant) name check.
+        if let Some(actor_layout) = actor_layouts.get(&child.ty) {
+            let explicit_init = actor_layout.init_symbol.is_some();
+            let mut has_invalid_arg = false;
+            for (arg_name, arg_expr) in &child.init_args {
+                let is_valid = if explicit_init {
+                    actor_layout.init_param_names.iter().any(|n| n == arg_name)
+                        || actor_layout.state_field_names.iter().any(|n| n == arg_name)
+                } else {
+                    actor_layout.state_field_names.iter().any(|n| n == arg_name)
+                };
+                if !is_valid {
+                    let note = Builder::invalid_spawn_arg_note(
+                        &child.ty,
+                        arg_name,
+                        explicit_init,
+                        &actor_layout.init_param_names,
+                        &actor_layout.state_field_names,
+                    );
+                    diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::InvalidActorSpawnArgument {
+                            actor: child.ty.clone(),
+                            argument: arg_name.clone(),
+                            // Real per-arg site from the child's own
+                            // declaration — never a sentinel, never a
+                            // fresh_site() counter local to this function.
+                            site: arg_expr.site,
+                        },
+                        note,
+                    });
+                    has_invalid_arg = true;
+                    break;
+                }
+            }
+            if has_invalid_arg {
+                continue;
+            }
+        }
+
         // A config-init child (any init arg reads `config.field`) is produced
         // entirely by the codegen init thunk, which emits the whole bootstrap
         // body from `SupervisorChildLayout` and DISCARDS this synthetic body.
@@ -5427,7 +5495,8 @@ fn lower_supervisor_bootstrap(
         // BindingRef the synthetic body's dataflow can't resolve — tripping a
         // spurious "read before initialised" on an owned config field. Skip the
         // spawn statement for such a child entirely (like a nested supervisor),
-        // leaving the synthetic body a valid signature carrier.
+        // leaving the synthetic body a valid signature carrier. Name validity
+        // was already checked above, so nothing is lost by skipping.
         if child
             .init_args
             .iter()

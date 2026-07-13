@@ -1105,7 +1105,7 @@ mod tests {
         // SAFETY: `ch` is a live, retained sender-side channel reference.
         unsafe {
             let original = std::ffi::CString::new(payload).unwrap();
-            let embedded: *mut libc::c_char = libc::strdup(original.as_ptr());
+            let embedded: *mut libc::c_char = crate::cabi::cstr_strdup(original.as_ptr());
             assert!(!embedded.is_null(), "strdup must succeed");
             let mut reply_value: *mut libc::c_char = embedded;
             let delivered = hew_reply(
@@ -1224,7 +1224,7 @@ mod tests {
             hew_reply_channel_retain(ch); // sender's reference
 
             let original = std::ffi::CString::new("cancel-before-delivery").unwrap();
-            let embedded: *mut libc::c_char = libc::strdup(original.as_ptr());
+            let embedded: *mut libc::c_char = crate::cabi::cstr_strdup(original.as_ptr());
             assert!(!embedded.is_null(), "strdup must succeed");
 
             hew_reply_channel_cancel(ch); // waiter abandons BEFORE the reply
@@ -1274,7 +1274,7 @@ mod tests {
             hew_reply_channel_retain(ch); // sender's reference
 
             let original = std::ffi::CString::new("oom-before-delivery").unwrap();
-            let embedded: *mut libc::c_char = libc::strdup(original.as_ptr());
+            let embedded: *mut libc::c_char = crate::cabi::cstr_strdup(original.as_ptr());
             assert!(!embedded.is_null(), "strdup must succeed");
 
             FORCE_REPLY_ALLOC_FAILURE.store(1, Ordering::Release);

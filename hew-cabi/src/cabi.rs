@@ -64,6 +64,43 @@ pub fn malloc_bytes(src: &[u8]) -> *mut u8 {
     ptr
 }
 
+/// Duplicate a NUL-terminated C string into a fresh `libc::malloc` buffer,
+/// portably. This is a drop-in replacement for `libc::strdup` that links on
+/// every target: Windows UCRT only exports `_strdup` (not `strdup`) for the
+/// MSVC toolchain, so a bare `libc::strdup` reference fails to link any binary
+/// that actually reaches the call site (see hew-lang/hew#2505). The returned
+/// pointer owns a bare-`malloc` allocation with a trailing NUL and MUST be
+/// released with `libc::free` (NOT `free_cstring`, which is header-aware).
+///
+/// Returns null if `src` is null or on allocation failure, matching the
+/// `strdup` contract (null in → null out). Null handling is the caller's
+/// responsibility.
+///
+/// # Safety
+///
+/// If non-null, `src` must point to a valid NUL-terminated C string.
+#[must_use]
+pub unsafe fn cstr_strdup(src: *const c_char) -> *mut c_char {
+    if src.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: caller guarantees src is a valid NUL-terminated C string.
+    let len = unsafe { CStr::from_ptr(src) }.to_bytes().len();
+    // Allocate len + 1 for the trailing NUL. len can be 0 (empty string), and
+    // len + 1 >= 1, so malloc(0) implementation-defined behaviour is avoided
+    // and the pointer is always freeable by libc::free.
+    // SAFETY: We request len + 1 bytes from malloc; it returns a valid pointer
+    // or null.
+    let dst = unsafe { libc::malloc(len + 1) }.cast::<c_char>(); // ALLOCATOR-PAIRING: libc
+    if dst.is_null() {
+        return dst;
+    }
+    // SAFETY: src points to len + 1 bytes (payload + NUL); dst is freshly
+    // allocated with len + 1 bytes; the regions are non-overlapping.
+    unsafe { std::ptr::copy_nonoverlapping(src, dst, len + 1) };
+    dst
+}
+
 /// Allocate a 1-byte sentinel via `libc::malloc`. Use this when a zero-length
 /// allocation is needed but a non-null, freeable pointer is required (e.g. an
 /// empty body buffer). Returns null on allocation failure.
@@ -1198,5 +1235,45 @@ mod tests {
             String::from_utf8_lossy(&status.stdout),
             String::from_utf8_lossy(&status.stderr),
         );
+    }
+
+    #[test]
+    fn cstr_strdup_copies_and_is_free_independent() {
+        use std::ffi::CString;
+        let src = CString::new("bind-addr:9000").unwrap();
+        // SAFETY: src is a valid NUL-terminated C string.
+        let dup = unsafe { cstr_strdup(src.as_ptr()) };
+        assert!(!dup.is_null(), "strdup of a non-empty string must succeed");
+        // SAFETY: dup is a valid NUL-terminated C string returned by cstr_strdup.
+        let round = unsafe { CStr::from_ptr(dup) };
+        assert_eq!(round.to_bytes(), src.as_bytes(), "payload copied verbatim");
+        assert_ne!(
+            dup.cast_const(),
+            src.as_ptr(),
+            "the duplicate must be a distinct allocation"
+        );
+        // SAFETY: dup was allocated via libc::malloc, so libc::free owns it.
+        unsafe { libc::free(dup.cast::<std::os::raw::c_void>()) };
+    }
+
+    #[test]
+    fn cstr_strdup_handles_empty_and_null() {
+        use std::ffi::CString;
+        let empty = CString::new("").unwrap();
+        // SAFETY: empty is a valid NUL-terminated C string.
+        let dup = unsafe { cstr_strdup(empty.as_ptr()) };
+        assert!(
+            !dup.is_null(),
+            "strdup of an empty string is still freeable"
+        );
+        // SAFETY: dup is a valid NUL-terminated C string.
+        assert_eq!(unsafe { CStr::from_ptr(dup) }.to_bytes().len(), 0);
+        // SAFETY: dup was allocated via libc::malloc.
+        unsafe { libc::free(dup.cast::<std::os::raw::c_void>()) };
+
+        // Null in -> null out, matching the strdup contract.
+        // SAFETY: null is an accepted input.
+        let null_dup = unsafe { cstr_strdup(std::ptr::null()) };
+        assert!(null_dup.is_null(), "null input must propagate as null");
     }
 }

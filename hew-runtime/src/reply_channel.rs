@@ -1786,7 +1786,7 @@ mod tests {
         // either pass to hew_reply (success → waiter frees) or free on the
         // `delivered=false` cancel path.
         unsafe {
-            let cloned: *mut libc::c_char = libc::strdup(original.as_ptr());
+            let cloned: *mut libc::c_char = crate::cabi::cstr_strdup(original.as_ptr());
             assert!(!cloned.is_null(), "strdup must succeed");
 
             hew_reply_channel_retain(ch); // sender's reference
@@ -1831,7 +1831,7 @@ mod tests {
         // SAFETY: cloned is libc-allocated; we either hand it off via
         // hew_reply (success path) or free it on the alloc-fail path.
         unsafe {
-            let cloned: *mut libc::c_char = libc::strdup(original.as_ptr());
+            let cloned: *mut libc::c_char = crate::cabi::cstr_strdup(original.as_ptr());
             assert!(!cloned.is_null(), "strdup must succeed");
 
             hew_reply_channel_retain(ch);
@@ -1897,7 +1897,7 @@ mod tests {
         // SAFETY: `ch` is a live, retained sender-side channel reference.
         unsafe {
             let original = std::ffi::CString::new(payload).unwrap();
-            let embedded: *mut libc::c_char = libc::strdup(original.as_ptr());
+            let embedded: *mut libc::c_char = crate::cabi::cstr_strdup(original.as_ptr());
             assert!(!embedded.is_null(), "strdup must succeed");
             let mut reply_value: *mut libc::c_char = embedded;
             let delivered = hew_reply(
@@ -2044,7 +2044,7 @@ mod tests {
             hew_reply_channel_retain(ch); // sender's reference
 
             let original = std::ffi::CString::new("cancel-before-delivery").unwrap();
-            let embedded: *mut libc::c_char = libc::strdup(original.as_ptr());
+            let embedded: *mut libc::c_char = crate::cabi::cstr_strdup(original.as_ptr());
             assert!(!embedded.is_null(), "strdup must succeed");
 
             hew_reply_channel_cancel(ch); // waiter abandons BEFORE the reply
@@ -2101,7 +2101,7 @@ mod tests {
             hew_reply_channel_retain(ch); // sender's reference
 
             let original = std::ffi::CString::new("oom-before-delivery").unwrap();
-            let embedded: *mut libc::c_char = libc::strdup(original.as_ptr());
+            let embedded: *mut libc::c_char = crate::cabi::cstr_strdup(original.as_ptr());
             assert!(!embedded.is_null(), "strdup must succeed");
 
             FORCE_REPLY_ALLOC_FAILURE.store(true, Ordering::Release);

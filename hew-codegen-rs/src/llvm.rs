@@ -9161,13 +9161,26 @@ fn emit_child_init_thunk<'ctx>(
 /// `ty_is_supervisor_init_reproducible` rejects collection init args before
 /// codegen, so this is a defence-in-depth backstop that converts that panic
 /// into a coherent fail-closed error if the wall ever regresses.
-fn owned_config_field_is_unsupported_collection(kind: &StateFieldCloneKind) -> bool {
-    matches!(
+fn owned_config_field_clone_support(
+    kind: &StateFieldCloneKind,
+    child_name: &str,
+    field_ty: &ResolvedTy,
+) -> Result<(), CodegenError> {
+    if matches!(
         kind,
         StateFieldCloneKind::Vec { .. }
             | StateFieldCloneKind::HashMap { .. }
             | StateFieldCloneKind::HashSet { .. }
-    )
+    ) {
+        return Err(CodegenError::FailClosed(format!(
+            "init thunk owned config field for child `{child_name}`: field type {field_ty:?} is an owned \
+             collection; the owned-config init thunk has no collection clone path (collection \
+             clone symbols are owned by the layout witness, not consulted here) and the checker \
+             wall admits only scalars + `string`/`bytes` for supervised init args — this arm is a \
+             fail-closed backstop, not a supported lowering"
+        )));
+    }
+    Ok(())
 }
 
 /// Deep-clone an owned config field (`string`/`Vec`/…) from the config buffer
@@ -9205,16 +9218,7 @@ fn emit_owned_config_field_clone<'ctx>(
     )?;
     // #2238 item 1: intercept owned collection kinds before the panic arm in
     // `clone_helper_for_kind` and fail closed coherently (see the helper doc).
-    if owned_config_field_is_unsupported_collection(&kind) {
-        return Err(CodegenError::FailClosed(format!(
-            "init thunk owned config field for child `{}`: field type {field_ty:?} is an owned \
-             collection; the owned-config init thunk has no collection clone path (collection \
-             clone symbols are owned by the layout witness, not consulted here) and the checker \
-             wall admits only scalars + `string`/`bytes` for supervised init args — this arm is a \
-             fail-closed backstop, not a supported lowering",
-            child.name
-        )));
-    }
+    owned_config_field_clone_support(&kind, &child.name, field_ty)?;
     match clone_helper_for_kind(&kind)? {
         Some(CloneHelper::Allocating { name }) => {
             // Allocating clone: helper takes the SOURCE owned pointer (loaded
@@ -46259,14 +46263,10 @@ mod tests {
 
     #[test]
     fn owned_config_field_collections_are_fail_closed_backstop() {
-        // #2238 item 1: owned collection kinds reaching the supervised
-        // owned-config init thunk must be intercepted as a coherent
-        // fail-closed error, NOT reach `clone_helper_for_kind`'s
-        // `unreachable!()` collection arm. This is a defence-in-depth backstop
-        // behind the checker wall `ty_is_supervisor_init_reproducible` (which
-        // admits only scalars + `string`/`bytes`). Load-bearing: if the
-        // interception is removed, the real emit path would panic on these
-        // kinds instead of returning `Err`.
+        // #2238 item 1: collection kinds must take the same typed error path
+        // used by the init thunk, rather than reaching clone_helper_for_kind's
+        // unreachable collection arm. The checker rejects these before codegen,
+        // so this is the defence-in-depth decision boundary.
         let scalar = StateFieldCloneKind::BitCopy { size_bytes: 8 };
         for kind in [
             StateFieldCloneKind::Vec {
@@ -46280,27 +46280,33 @@ mod tests {
                 val: Box::new(scalar.clone()),
             },
         ] {
+            let err = owned_config_field_clone_support(&kind, "worker", &ResolvedTy::String)
+                .expect_err("owned collection must fail closed before clone-helper dispatch");
             assert!(
-                owned_config_field_is_unsupported_collection(&kind),
-                "{kind:?} is an owned collection and must be fail-closed by the init thunk"
+                matches!(err, CodegenError::FailClosed(ref message) if message.contains("child `worker`")
+                    && message.contains("owned collection")),
+                "expected the init-thunk collection fail-closed diagnostic, got {err:?}"
             );
         }
     }
 
     #[test]
-    fn owned_config_field_string_bytes_are_not_collection_backstop() {
-        // The two admitted owned kinds (`string`/`bytes`) must NOT be caught by
-        // the collection backstop — they have real clone symbols and take the
-        // supported owned-clone path.
-        assert!(!owned_config_field_is_unsupported_collection(
-            &StateFieldCloneKind::String
-        ));
-        assert!(!owned_config_field_is_unsupported_collection(
-            &StateFieldCloneKind::Bytes
-        ));
-        assert!(!owned_config_field_is_unsupported_collection(
-            &StateFieldCloneKind::BitCopy { size_bytes: 8 }
-        ));
+    fn owned_config_field_supported_kinds_pass_clone_support_boundary() {
+        // The admitted owned kinds and scalar copies must proceed to their
+        // existing clone/copy paths rather than being over-rejected.
+        for (kind, ty) in [
+            (StateFieldCloneKind::String, ResolvedTy::String),
+            (StateFieldCloneKind::Bytes, ResolvedTy::Bytes),
+            (
+                StateFieldCloneKind::BitCopy { size_bytes: 8 },
+                ResolvedTy::I64,
+            ),
+        ] {
+            assert!(
+                owned_config_field_clone_support(&kind, "worker", &ty).is_ok(),
+                "{kind:?} must retain its supported init-thunk clone/copy path"
+            );
+        }
     }
 
     #[test]

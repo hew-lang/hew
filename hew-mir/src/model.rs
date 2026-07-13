@@ -6292,6 +6292,14 @@ pub enum MirDiagnosticKind {
         argument: String,
         site: SiteId,
     },
+    /// A required actor state field was not supplied at a spawn/child site and
+    /// has no declared default. The compiler understands the fact — this is a
+    /// user error, NOT a lowering limitation (sibling of `InvalidActorSpawnArgument`).
+    MissingActorSpawnArgument {
+        actor: String,
+        field: String,
+        site: SiteId,
+    },
     /// Two actor receive handlers, or a handler and an existing function symbol,
     /// resolved to the same emitted MIR symbol.
     ActorHandlerSymbolCollision {

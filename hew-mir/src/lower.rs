@@ -2195,13 +2195,9 @@ pub fn lower_hir_module_with_facts(
                                 // Required field not supplied and no declared default →
                                 // fail-closed diagnostic.
                                 diagnostics.push(MirDiagnostic {
-                                    kind: MirDiagnosticKind::NotYetImplemented {
-                                        construct: format!(
-                                            "supervisor `{}` child `{}` is missing a value \
-                                             for required state field `{field_name}` on actor \
-                                             `{}` (field has no declared default)",
-                                            sup_layout.name, child.name, child.actor_name
-                                        ),
+                                    kind: MirDiagnosticKind::MissingActorSpawnArgument {
+                                        actor: child.actor_name.clone(),
+                                        field: field_name.clone(),
                                         site: SiteId(0),
                                     },
                                     note: format!(
@@ -32272,8 +32268,9 @@ impl Builder {
     ) -> Option<Place> {
         let Some(arg) = explicit.get(field_name) else {
             self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: format!("spawn `{actor_name}` missing field `{field_name}`"),
+                kind: MirDiagnosticKind::MissingActorSpawnArgument {
+                    actor: actor_name.to_string(),
+                    field: field_name.to_string(),
                     site: expr.site,
                 },
                 note: "actor spawn without an init block requires every state field by declaration name"

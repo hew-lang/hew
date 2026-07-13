@@ -109,11 +109,68 @@ fn missing_non_defaulted_actor_state_field_still_requires_spawn_arg() {
         pipeline.diagnostics.iter().any(|diag| {
             matches!(
                 &diag.kind,
-                MirDiagnosticKind::NotYetImplemented { construct, .. }
-                    if construct.contains("spawn `Pair` missing field `m`")
+                MirDiagnosticKind::MissingActorSpawnArgument { actor, field, .. }
+                    if actor == "Pair" && field == "m"
             )
         }),
-        "missing non-defaulted field should remain required; diagnostics: {:#?}",
+        "missing non-defaulted field should remain required, reported as a user error \
+         (MissingActorSpawnArgument), not a lowering limitation; diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+    assert!(
+        !pipeline
+            .diagnostics
+            .iter()
+            .any(|diag| matches!(&diag.kind, MirDiagnosticKind::NotYetImplemented { .. })),
+        "a missing spawn argument is a fully-understood user error and must never surface as \
+         NotYetImplemented; diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+/// Direct `spawn Actor()` missing a required state field reports exactly one
+/// `MissingActorSpawnArgument` — a user error the compiler fully understands,
+/// not a `NotYetImplemented` compiler-limitation signal.
+#[test]
+fn direct_spawn_missing_required_field_reports_single_missing_actor_spawn_argument() {
+    let pipeline = lower_module_from_source(
+        r"
+        actor Worker {
+            let id: i64;
+            receive fn work(x: i64) -> i64 { x }
+        }
+
+        fn main() -> i64 {
+            spawn Worker();
+            0
+        }
+        ",
+    );
+
+    let missing_matches: Vec<_> = pipeline
+        .diagnostics
+        .iter()
+        .filter(|diag| {
+            matches!(
+                &diag.kind,
+                MirDiagnosticKind::MissingActorSpawnArgument { actor, field, .. }
+                    if actor == "Worker" && field == "id"
+            )
+        })
+        .collect();
+    assert_eq!(
+        missing_matches.len(),
+        1,
+        "direct spawn missing a required field must report exactly one \
+         MissingActorSpawnArgument; diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+    assert!(
+        !pipeline
+            .diagnostics
+            .iter()
+            .any(|diag| matches!(&diag.kind, MirDiagnosticKind::NotYetImplemented { .. })),
+        "diagnostics: {:#?}",
         pipeline.diagnostics
     );
 }

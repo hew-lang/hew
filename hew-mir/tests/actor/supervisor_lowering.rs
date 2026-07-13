@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 
 use hew_hir::{lower_program, HirDiagnosticKind, ResolutionCtx};
-use hew_mir::{lower_hir_module, FunctionCallConv, Instr, Place, Terminator};
+use hew_mir::{lower_hir_module, FunctionCallConv, Instr, MirDiagnosticKind, Place, Terminator};
 use hew_types::{module_registry::ModuleRegistry, BuiltinType, Checker, ResolvedTy};
 
 /// Lower a Hew source program to MIR, asserting no parse or HIR diagnostics.
@@ -693,5 +693,48 @@ fn owned_collection_config_field_init_arg_is_walled_at_checker() {
         "an owned `Vec` config init arg must stay walled until its clone-in-thunk codegen lands; \
          errors: {:#?}",
         tc_output.errors
+    );
+}
+
+/// A supervisor `child` missing a required actor state field (no init block,
+/// no declared default) reports `MissingActorSpawnArgument` — a user error the
+/// compiler fully understands — never `NotYetImplemented`.
+#[test]
+fn supervisor_child_missing_required_field_reports_missing_actor_spawn_argument() {
+    let pipeline = lower_module_from_source(
+        r"
+        actor Worker {
+            let id: i64;
+            receive fn work(x: i64) -> i64 { x }
+        }
+
+        supervisor WorkerPool {
+            strategy: one_for_one;
+            intensity: 5 within 10s;
+            child w1: Worker()
+        }
+        ",
+    );
+
+    assert!(
+        pipeline.diagnostics.iter().any(|diag| {
+            matches!(
+                &diag.kind,
+                MirDiagnosticKind::MissingActorSpawnArgument { actor, field, .. }
+                    if actor == "Worker" && field == "id"
+            )
+        }),
+        "supervisor child missing a required state field must report \
+         MissingActorSpawnArgument; diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+    assert!(
+        !pipeline
+            .diagnostics
+            .iter()
+            .any(|diag| matches!(&diag.kind, MirDiagnosticKind::NotYetImplemented { .. })),
+        "a missing supervisor child field is a fully-understood user error and must never \
+         surface as NotYetImplemented; diagnostics: {:#?}",
+        pipeline.diagnostics
     );
 }

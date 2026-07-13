@@ -11466,13 +11466,9 @@ impl LowerCtx {
                 let element_tys: Vec<ResolvedTy> = if let ResolvedTy::Tuple(elems) = &tuple_ty {
                     if elems.len() != element_patterns.len() {
                         self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::NotYetImplemented {
-                                construct: format!(
-                                    "tuple pattern with {} elements for tuple with {} elements",
-                                    element_patterns.len(),
-                                    elems.len()
-                                ),
-                                owning_pass: "type-checker".to_string(),
+                            HirDiagnosticKind::TuplePatternArityMismatch {
+                                expected: elems.len(),
+                                actual: element_patterns.len(),
                             },
                             span.clone(),
                             "tuple pattern element count does not match tuple value arity",
@@ -11492,10 +11488,7 @@ impl LowerCtx {
                     vec![ResolvedTy::Unit; element_patterns.len()]
                 } else {
                     self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::NotYetImplemented {
-                            construct: "tuple pattern on non-tuple value".to_string(),
-                            owning_pass: "type-checker".to_string(),
-                        },
+                        HirDiagnosticKind::TuplePatternNonTupleValue,
                         span.clone(),
                         "tuple-let pattern requires the right-hand side to have a tuple type",
                     ));
@@ -11815,13 +11808,9 @@ impl LowerCtx {
             ResolvedTy::Tuple(elems) if elems.len() == elements.len() => elems.clone(),
             ResolvedTy::Tuple(elems) => {
                 self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::NotYetImplemented {
-                        construct: format!(
-                            "nested tuple pattern with {} elements for tuple with {} elements",
-                            elements.len(),
-                            elems.len()
-                        ),
-                        owning_pass: "type-checker".to_string(),
+                    HirDiagnosticKind::TuplePatternArityMismatch {
+                        expected: elems.len(),
+                        actual: elements.len(),
                     },
                     span.clone(),
                     "nested tuple pattern element count does not match tuple value arity",
@@ -11830,10 +11819,7 @@ impl LowerCtx {
             }
             _ => {
                 self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::NotYetImplemented {
-                        construct: "nested tuple pattern on non-tuple value".into(),
-                        owning_pass: "pattern-lowering".into(),
-                    },
+                    HirDiagnosticKind::TuplePatternNonTupleValue,
                     span.clone(),
                     "nested tuple pattern requires a tuple-typed value",
                 ));
@@ -14040,11 +14026,8 @@ impl LowerCtx {
                         // downstream diagnostics still surface.
                         HirVariantKind::Unit | HirVariantKind::Tuple(_) => {
                             self.diagnostics.push(HirDiagnostic::new(
-                                HirDiagnosticKind::NotYetImplemented {
-                                    construct: format!(
-                                        "variant `{name}` initialised with struct-literal syntax"
-                                    ),
-                                    owning_pass: "variant ctor shape".to_string(),
+                                HirDiagnosticKind::EnumVariantConstructorShapeMismatch {
+                                    variant: name.clone(),
                                 },
                                 span.clone(),
                                 "this variant has no named fields; use the matching call or identifier form",
@@ -14086,11 +14069,9 @@ impl LowerCtx {
                             ));
                         } else {
                             self.diagnostics.push(HirDiagnostic::new(
-                                HirDiagnosticKind::NotYetImplemented {
-                                    construct: format!(
-                                        "variant `{name}` missing field `{field_name}`"
-                                    ),
-                                    owning_pass: "variant ctor field coverage".to_string(),
+                                HirDiagnosticKind::EnumVariantConstructorMissingField {
+                                    variant: name.clone(),
+                                    field: field_name.clone(),
                                 },
                                 span.clone(),
                                 "enum struct-variant constructor must initialise every declared field",
@@ -14106,9 +14087,9 @@ impl LowerCtx {
                             // we discard it.
                             let _ = self.lower_expr(src_expr, IntentKind::Read);
                             self.diagnostics.push(HirDiagnostic::new(
-                                HirDiagnosticKind::NotYetImplemented {
-                                    construct: format!("variant `{name}` has no field `{fname}`"),
-                                    owning_pass: "variant ctor field coverage".to_string(),
+                                HirDiagnosticKind::EnumVariantConstructorUnknownField {
+                                    variant: name.clone(),
+                                    field: fname.clone(),
                                 },
                                 span.clone(),
                                 "extra field in enum struct-variant constructor",
@@ -23008,12 +22989,10 @@ impl LowerCtx {
         let variant_idx_owned = variant_idx;
         if args.len() != field_count {
             self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::NotYetImplemented {
-                    construct: format!(
-                        "variant ctor `{name}` arity mismatch: expected {field_count}, got {}",
-                        args.len()
-                    ),
-                    owning_pass: "variant ctor arity".to_string(),
+                HirDiagnosticKind::EnumVariantConstructorArityMismatch {
+                    variant: name.to_string(),
+                    expected: field_count,
+                    actual: args.len(),
                 },
                 span.clone(),
                 "tuple-variant constructor called with the wrong number of arguments",
@@ -23093,9 +23072,8 @@ impl LowerCtx {
         match kind {
             HirVariantKind::Unit => {
                 self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::NotYetImplemented {
-                        construct: format!("unit variant `{name}` called as a function"),
-                        owning_pass: "variant ctor arity".to_string(),
+                    HirDiagnosticKind::EnumVariantConstructorShapeMismatch {
+                        variant: name.to_string(),
                     },
                     span.clone(),
                     "unit-variant constructors are referenced as identifiers, not called",
@@ -23103,9 +23081,8 @@ impl LowerCtx {
             }
             HirVariantKind::Struct(_) => {
                 self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::NotYetImplemented {
-                        construct: format!("struct variant `{name}` called positionally"),
-                        owning_pass: "variant ctor arity".to_string(),
+                    HirDiagnosticKind::EnumVariantConstructorShapeMismatch {
+                        variant: name.to_string(),
                     },
                     span.clone(),
                     "struct-variant constructors require named-field syntax (e.g. `Shape::Box { w: ..., h: ... }`)",

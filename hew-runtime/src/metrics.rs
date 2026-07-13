@@ -612,7 +612,14 @@ pub fn resolve_series(base_handle: i64, label_values: &[String]) -> i64 {
 /// Increment a counter or gauge by one.
 pub fn inc(handle: i64) {
     with_slot(handle, |slot| {
-        slot.fetch_add(1, Ordering::Relaxed);
+        if slot
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                value.checked_add(1)
+            })
+            .is_err()
+        {
+            metrics_state().invalid_ops.fetch_add(1, Ordering::Relaxed);
+        }
     });
 }
 
@@ -624,7 +631,14 @@ pub fn counter_add(handle: i64, n: i64) {
         return;
     }
     with_slot(handle, |slot| {
-        slot.fetch_add(n, Ordering::Relaxed);
+        if slot
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                value.checked_add(n)
+            })
+            .is_err()
+        {
+            metrics_state().invalid_ops.fetch_add(1, Ordering::Relaxed);
+        }
     });
 }
 
@@ -1556,6 +1570,24 @@ mod tests {
         inc(999_999);
         gauge_set(-5, 3);
         assert!(self_metrics().invalid_ops >= 2);
+    }
+
+    #[test]
+    fn counter_overflow_is_rejected_without_wrapping() {
+        let _g = guard();
+        let h = register_counter("app.counter_overflow");
+        with_slot(h, |slot| slot.store(i64::MAX, Ordering::Relaxed));
+        let invalid_before = self_metrics().invalid_ops;
+
+        inc(h);
+        counter_add(h, 1);
+
+        assert_eq!(
+            with_slot(h, |slot| slot.load(Ordering::Relaxed)),
+            Some(i64::MAX),
+            "overflow must preserve the monotonic counter value"
+        );
+        assert_eq!(self_metrics().invalid_ops, invalid_before + 2);
     }
 
     #[test]

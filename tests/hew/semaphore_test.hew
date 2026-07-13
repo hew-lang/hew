@@ -1,0 +1,17 @@
+//! Tests for std::semaphore permit-count validation.
+
+import std::semaphore;
+import std::testing;
+
+#[test]
+fn test_new_preserves_valid_permit_count() {
+    let sem = semaphore.new(3);
+    testing.assert_eq(sem.count(), 3);
+    sem.close();
+}
+
+#[test]
+#[should_panic]
+fn test_new_rejects_count_above_i32_max() {
+    semaphore.new(2147483648);
+}

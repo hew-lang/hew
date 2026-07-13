@@ -32,21 +32,51 @@ pub fn now_secs() -> i64 {
 
 /// Format an epoch-millisecond timestamp using a strftime-style format string.
 ///
+/// Panics when the epoch or format string is invalid. Use `try_format` to
+/// recover the native error as a `Result`.
+///
 /// # Examples
 ///
 /// ```
 /// let s = datetime.format(now, "%Y-%m-%d");
 /// ```
 pub fn format(epoch_ms: i64, fmt: string) -> string {
-    unsafe {
-        hew_datetime_format(epoch_ms as i64, fmt)
+    match try_format(epoch_ms, fmt) {
+        Ok(value) => value,
+        Err(err) => {
+            panic(f"datetime.format failed: {err}");
+            ""
+        },
     }
 }
 
-fn parse_error_message() -> string {
+/// Format an epoch-millisecond timestamp using a strftime-style format string.
+///
+/// Returns `Err(string)` when the epoch or format string is invalid.
+pub fn try_format(epoch_ms: i64, fmt: string) -> Result<string, string> {
+    let formatted = unsafe {
+        hew_datetime_format(epoch_ms as i64, fmt)
+    };
+    let err = datetime_error_message();
+    if err.len() == 0 {
+        Ok(formatted)
+    } else {
+        Err(err)
+    }
+}
+
+fn datetime_error_message() -> string {
     unsafe {
         hew_datetime_last_error()
     }
+}
+
+fn component_or_panic(value: i64) -> i64 {
+    let err = datetime_error_message();
+    if err.len() != 0 {
+        panic(f"datetime component extraction failed: {err}");
+    }
+    value
 }
 
 /// Parse a datetime string using the given format and return epoch milliseconds.
@@ -72,7 +102,7 @@ pub fn try_parse(s: string, fmt: string) -> Result<i64, string> {
     let epoch_ms = unsafe {
         hew_datetime_parse(s, fmt) as i64
     };
-    let err = parse_error_message();
+    let err = datetime_error_message();
     if err.len() == 0 {
         Ok(epoch_ms)
     } else {
@@ -82,51 +112,51 @@ pub fn try_parse(s: string, fmt: string) -> Result<i64, string> {
 
 /// Extract the year component from an epoch-millisecond timestamp.
 pub fn year(epoch_ms: i64) -> i64 {
-    unsafe {
+    component_or_panic(unsafe {
         hew_datetime_year(epoch_ms as i64)
-    }
+    })
 }
 
 /// Extract the month (1–12) from an epoch-millisecond timestamp.
 pub fn month(epoch_ms: i64) -> i64 {
-    unsafe {
+    component_or_panic(unsafe {
         hew_datetime_month(epoch_ms as i64)
-    }
+    })
 }
 
 /// Extract the day of the month (1–31) from an epoch-millisecond timestamp.
 pub fn day(epoch_ms: i64) -> i64 {
-    unsafe {
+    component_or_panic(unsafe {
         hew_datetime_day(epoch_ms as i64)
-    }
+    })
 }
 
 /// Extract the hour (0–23) from an epoch-millisecond timestamp.
 pub fn hour(epoch_ms: i64) -> i64 {
-    unsafe {
+    component_or_panic(unsafe {
         hew_datetime_hour(epoch_ms as i64)
-    }
+    })
 }
 
 /// Extract the minute (0–59) from an epoch-millisecond timestamp.
 pub fn minute(epoch_ms: i64) -> i64 {
-    unsafe {
+    component_or_panic(unsafe {
         hew_datetime_minute(epoch_ms as i64)
-    }
+    })
 }
 
 /// Extract the second (0–59) from an epoch-millisecond timestamp.
 pub fn second(epoch_ms: i64) -> i64 {
-    unsafe {
+    component_or_panic(unsafe {
         hew_datetime_second(epoch_ms as i64)
-    }
+    })
 }
 
 /// Return the day of the week (0 = Monday, 6 = Sunday).
 pub fn weekday(epoch_ms: i64) -> i64 {
-    unsafe {
+    component_or_panic(unsafe {
         hew_datetime_weekday(epoch_ms as i64)
-    }
+    })
 }
 
 /// Add a number of days to an epoch-millisecond timestamp.

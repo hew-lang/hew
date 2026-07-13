@@ -103,6 +103,9 @@ impl Semaphore {
 /// let sem = semaphore.new(5);
 /// ```
 pub fn new(count: i64) -> Semaphore {
+    if count < 0 || count > 2147483647 {
+        panic(f"semaphore.new: permit count {count} is outside the supported range");
+    }
     unsafe {
         Semaphore { handle: hew_semaphore_new(count as i32) }
     } // INTERNAL-ABI: C ABI takes i32 initial count

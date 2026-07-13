@@ -63,9 +63,13 @@ pub fn is_private(addr: string) -> bool {
 /// ipnet.cidr_contains("10.0.0.0/8", "172.16.0.1") // false
 /// ```
 pub fn cidr_contains(cidr: string, ip: string) -> bool {
-    unsafe {
+    let contains = unsafe {
         hew_cidr_contains(cidr, ip)
-    } == 1
+    };
+    if contains < 0 {
+        panic("ipnet.cidr_contains: invalid CIDR or IP address");
+    }
+    contains == 1
 }
 
 /// Return the network address of a CIDR block.
@@ -102,9 +106,13 @@ pub fn cidr_broadcast(cidr: string) -> string {
 /// ipnet.cidr_hosts("192.168.1.0/24")  // 254
 /// ```
 pub fn cidr_hosts(cidr: string) -> i64 {
-    unsafe {
+    let hosts = unsafe {
         hew_cidr_hosts(cidr)
+    };
+    if hosts < 0 {
+        panic("ipnet.cidr_hosts: invalid CIDR or host count exceeds i64");
     }
+    hosts
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────

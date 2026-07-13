@@ -77,6 +77,9 @@ impl NodeMethods for Node {
         }
     }
     fn get_child(node: Node, index: i64) -> Node {
+        if index < 0 || index > 2147483647 {
+            panic(f"xml.Node.get_child: index {index} is outside the supported range");
+        }
         unsafe {
             Node { handle: hew_xml_get_child(node.handle, index as i32) }
         }

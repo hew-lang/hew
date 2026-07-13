@@ -49,6 +49,9 @@ pub fn max<T: Num>(a: T, b: T) -> T {}
 // ── Integer operations ────────────────────────────────────────────────
 /// Clamp `x` to the range [`lo`, `hi`].
 pub fn clamp(x: i64, lo: i64, hi: i64) -> i64 {
+    if lo > hi {
+        panic(f"math.clamp: lower bound {lo} exceeds upper bound {hi}");
+    }
     if x < lo {
         return lo;
     }

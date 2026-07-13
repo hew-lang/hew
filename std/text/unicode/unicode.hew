@@ -72,6 +72,9 @@ pub fn is_valid_rune(cp: i64) -> bool {
 /// unicode.is_upper(201)  // true  ('É', U+00C9)
 /// ```
 pub fn is_upper(cp: i64) -> bool {
+    if !is_valid_rune(cp) {
+        return false;
+    }
     unsafe {
         hew_unicode_is_upper(cp as i32)
     }
@@ -89,6 +92,9 @@ pub fn is_upper(cp: i64) -> bool {
 /// unicode.is_lower(233)  // true  ('é', U+00E9)
 /// ```
 pub fn is_lower(cp: i64) -> bool {
+    if !is_valid_rune(cp) {
+        return false;
+    }
     unsafe {
         hew_unicode_is_lower(cp as i32)
     }
@@ -107,6 +113,9 @@ pub fn is_lower(cp: i64) -> bool {
 /// unicode.is_digit(65)  // false ('A')
 /// ```
 pub fn is_digit(cp: i64) -> bool {
+    if !is_valid_rune(cp) {
+        return false;
+    }
     unsafe {
         hew_unicode_is_digit(cp as i32)
     }
@@ -125,6 +134,9 @@ pub fn is_digit(cp: i64) -> bool {
 /// unicode.is_space(65)  // false ('A')
 /// ```
 pub fn is_space(cp: i64) -> bool {
+    if !is_valid_rune(cp) {
+        return false;
+    }
     unsafe {
         hew_unicode_is_space(cp as i32)
     }
@@ -143,6 +155,9 @@ pub fn is_space(cp: i64) -> bool {
 /// unicode.is_letter(48)      // false ('0')
 /// ```
 pub fn is_letter(cp: i64) -> bool {
+    if !is_valid_rune(cp) {
+        return false;
+    }
     unsafe {
         hew_unicode_is_letter(cp as i32)
     }
@@ -161,6 +176,9 @@ pub fn is_letter(cp: i64) -> bool {
 /// unicode.is_alnum(32)   // false (space)
 /// ```
 pub fn is_alnum(cp: i64) -> bool {
+    if !is_valid_rune(cp) {
+        return false;
+    }
     unsafe {
         hew_unicode_is_alnum(cp as i32)
     }
@@ -176,6 +194,9 @@ pub fn is_alnum(cp: i64) -> bool {
 /// unicode.is_punct(65)      // false ('A')
 /// ```
 pub fn is_punct(cp: i64) -> bool {
+    if !is_valid_rune(cp) {
+        return false;
+    }
     match cp {
         x if x >= 33 && x <= 47 => true,
         x if x >= 58 && x <= 64 => true,
@@ -217,6 +238,9 @@ pub fn is_punct(cp: i64) -> bool {
 /// unicode.to_upper(233)  // 201  ('é' -> 'É')
 /// ```
 pub fn to_upper(cp: i64) -> i64 {
+    if !is_valid_rune(cp) {
+        return cp;
+    }
     unsafe {
         hew_unicode_to_upper(cp as i32) as i64
     }
@@ -236,6 +260,9 @@ pub fn to_upper(cp: i64) -> i64 {
 /// unicode.to_lower(201)  // 233  ('É' -> 'é')
 /// ```
 pub fn to_lower(cp: i64) -> i64 {
+    if !is_valid_rune(cp) {
+        return cp;
+    }
     unsafe {
         hew_unicode_to_lower(cp as i32) as i64
     }

@@ -8,11 +8,22 @@
 use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
 use std::ffi::c_char;
 
+use chrono::format::{Item, StrftimeItems};
 use chrono::{DateTime, Datelike, NaiveDateTime, Timelike, Utc, Weekday};
 
 /// Convert epoch milliseconds to a `DateTime<Utc>`, returning `None` if out of range.
 fn epoch_ms_to_utc(epoch_ms: i64) -> Option<DateTime<Utc>> {
     DateTime::<Utc>::from_timestamp_millis(epoch_ms)
+}
+
+fn epoch_ms_component(epoch_ms: i64, component: impl FnOnce(DateTime<Utc>) -> i64) -> i64 {
+    if let Some(dt) = epoch_ms_to_utc(epoch_ms) {
+        clear_datetime_last_error();
+        component(dt)
+    } else {
+        set_datetime_last_error("datetime epoch is out of range");
+        -1
+    }
 }
 
 fn set_datetime_last_error(msg: impl Into<String>) {
@@ -62,11 +73,18 @@ pub unsafe extern "C" fn hew_datetime_now_ms() -> i64 {
 pub unsafe extern "C" fn hew_datetime_format(epoch_ms: i64, fmt: *const c_char) -> *mut c_char {
     // SAFETY: caller guarantees fmt is a valid NUL-terminated C string.
     let Some(fmt_str) = (unsafe { cstr_to_str(fmt) }) else {
+        set_datetime_last_error("invalid datetime format: null pointer or invalid UTF-8");
         return std::ptr::null_mut();
     };
+    if StrftimeItems::new(fmt_str).any(|item| matches!(item, Item::Error)) {
+        set_datetime_last_error("invalid datetime format directive");
+        return std::ptr::null_mut();
+    }
     let Some(dt) = epoch_ms_to_utc(epoch_ms) else {
+        set_datetime_last_error("datetime epoch is out of range");
         return std::ptr::null_mut();
     };
+    clear_datetime_last_error();
     let formatted = dt.format(fmt_str).to_string();
     str_to_malloc(&formatted)
 }
@@ -121,14 +139,15 @@ pub extern "C" fn hew_datetime_last_error() -> *mut c_char {
 // Component extraction
 // ---------------------------------------------------------------------------
 
-/// Extract the year from epoch milliseconds. Returns -1 if out of range.
+/// Extract the year from epoch milliseconds. Returns -1 if out of range and
+/// records an error retrievable through [`hew_datetime_last_error`].
 ///
 /// # Safety
 ///
 /// No preconditions — pure computation.
 #[no_mangle]
 pub unsafe extern "C" fn hew_datetime_year(epoch_ms: i64) -> i64 {
-    epoch_ms_to_utc(epoch_ms).map_or(-1, |dt| i64::from(dt.year()))
+    epoch_ms_component(epoch_ms, |dt| i64::from(dt.year()))
 }
 
 /// Extract the month (1–12) from epoch milliseconds. Returns -1 if out of range.
@@ -138,7 +157,7 @@ pub unsafe extern "C" fn hew_datetime_year(epoch_ms: i64) -> i64 {
 /// No preconditions — pure computation.
 #[no_mangle]
 pub unsafe extern "C" fn hew_datetime_month(epoch_ms: i64) -> i64 {
-    epoch_ms_to_utc(epoch_ms).map_or(-1, |dt| i64::from(dt.month()))
+    epoch_ms_component(epoch_ms, |dt| i64::from(dt.month()))
 }
 
 /// Extract the day (1–31) from epoch milliseconds. Returns -1 if out of range.
@@ -148,7 +167,7 @@ pub unsafe extern "C" fn hew_datetime_month(epoch_ms: i64) -> i64 {
 /// No preconditions — pure computation.
 #[no_mangle]
 pub unsafe extern "C" fn hew_datetime_day(epoch_ms: i64) -> i64 {
-    epoch_ms_to_utc(epoch_ms).map_or(-1, |dt| i64::from(dt.day()))
+    epoch_ms_component(epoch_ms, |dt| i64::from(dt.day()))
 }
 
 /// Extract the hour (0–23) from epoch milliseconds. Returns -1 if out of range.
@@ -158,7 +177,7 @@ pub unsafe extern "C" fn hew_datetime_day(epoch_ms: i64) -> i64 {
 /// No preconditions — pure computation.
 #[no_mangle]
 pub unsafe extern "C" fn hew_datetime_hour(epoch_ms: i64) -> i64 {
-    epoch_ms_to_utc(epoch_ms).map_or(-1, |dt| i64::from(dt.hour()))
+    epoch_ms_component(epoch_ms, |dt| i64::from(dt.hour()))
 }
 
 /// Extract the minute (0–59) from epoch milliseconds. Returns -1 if out of range.
@@ -168,7 +187,7 @@ pub unsafe extern "C" fn hew_datetime_hour(epoch_ms: i64) -> i64 {
 /// No preconditions — pure computation.
 #[no_mangle]
 pub unsafe extern "C" fn hew_datetime_minute(epoch_ms: i64) -> i64 {
-    epoch_ms_to_utc(epoch_ms).map_or(-1, |dt| i64::from(dt.minute()))
+    epoch_ms_component(epoch_ms, |dt| i64::from(dt.minute()))
 }
 
 /// Extract the second (0–59) from epoch milliseconds. Returns -1 if out of range.
@@ -178,7 +197,7 @@ pub unsafe extern "C" fn hew_datetime_minute(epoch_ms: i64) -> i64 {
 /// No preconditions — pure computation.
 #[no_mangle]
 pub unsafe extern "C" fn hew_datetime_second(epoch_ms: i64) -> i64 {
-    epoch_ms_to_utc(epoch_ms).map_or(-1, |dt| i64::from(dt.second()))
+    epoch_ms_component(epoch_ms, |dt| i64::from(dt.second()))
 }
 
 /// Return the day of the week (0=Mon, 6=Sun) from epoch milliseconds.
@@ -189,7 +208,7 @@ pub unsafe extern "C" fn hew_datetime_second(epoch_ms: i64) -> i64 {
 /// No preconditions — pure computation.
 #[no_mangle]
 pub unsafe extern "C" fn hew_datetime_weekday(epoch_ms: i64) -> i64 {
-    epoch_ms_to_utc(epoch_ms).map_or(-1, |dt| {
+    epoch_ms_component(epoch_ms, |dt| {
         i64::from(match dt.weekday() {
             Weekday::Mon => 0,
             Weekday::Tue => 1,

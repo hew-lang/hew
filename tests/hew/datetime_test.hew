@@ -31,6 +31,20 @@ fn test_try_parse_invalid_timestamp_returns_err() {
 }
 
 #[test]
+fn test_try_format_rejects_invalid_directive_with_error() {
+    match datetime.try_format(0, "%Q") {
+        Ok(_) => testing.assert_true(false),
+        Err(message) => testing.assert_eq_str(message, "invalid datetime format directive"),
+    }
+}
+
+#[test]
+#[should_panic]
+fn test_year_rejects_out_of_range_epoch() {
+    datetime.year(9223372036854775807);
+}
+
+#[test]
 fn test_add_days_and_add_hours_shift_fixed_timestamp() {
     let base = assert_parse_ok(datetime.try_parse("2025-07-10T00:00:00Z", "%Y-%m-%dT%H:%M:%SZ"));
     let plus_two_days = datetime.add_days(base, 2);

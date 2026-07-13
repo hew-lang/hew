@@ -339,3 +339,10 @@ fn test_string_value_get_string_round_trip() {
     testing.assert_eq_str(val.get_string(), "hello");
     val.free();
 }
+
+#[test]
+#[should_panic]
+fn test_array_get_rejects_index_that_would_wrap_to_zero() {
+    let arr = json.array();
+    arr.array_get(4294967296);
+}

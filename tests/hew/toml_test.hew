@@ -307,3 +307,10 @@ fn test_try_parse_duplicate_key_returns_err() {
         Err(ParseError::Invalid(_)) => {},
     }
 }
+
+#[test]
+#[should_panic]
+fn test_array_get_rejects_index_that_would_wrap_to_zero() {
+    let arr = toml.array();
+    arr.array_get(4294967296);
+}

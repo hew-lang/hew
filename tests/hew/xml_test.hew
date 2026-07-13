@@ -63,3 +63,10 @@ fn test_missing_attribute_returns_empty() {
     testing.assert_eq_str(root.get_attribute("missing"), "");
     root.close();
 }
+
+#[test]
+#[should_panic]
+fn test_get_child_rejects_index_that_would_wrap_to_zero() {
+    let root = xml.parse("<root><child/></root>");
+    root.get_child(4294967296);
+}

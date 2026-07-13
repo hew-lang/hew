@@ -64,6 +64,14 @@ const ROOT_SOURCE_CONTEXT_UNAVAILABLE: &str =
 pub(crate) fn hir_diagnostic_prefix(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
     match kind {
         hew_hir::HirDiagnosticKind::NotYetImplemented { .. } => "E_NOT_YET_IMPLEMENTED",
+        hew_hir::HirDiagnosticKind::TuplePatternArityMismatch { .. }
+        | hew_hir::HirDiagnosticKind::TuplePatternNonTupleValue => "E_TUPLE_PATTERN_MISMATCH",
+        hew_hir::HirDiagnosticKind::EnumVariantConstructorShapeMismatch { .. }
+        | hew_hir::HirDiagnosticKind::EnumVariantConstructorMissingField { .. }
+        | hew_hir::HirDiagnosticKind::EnumVariantConstructorUnknownField { .. }
+        | hew_hir::HirDiagnosticKind::EnumVariantConstructorArityMismatch { .. } => {
+            "E_ENUM_VARIANT_CONSTRUCTOR"
+        }
         _ => "E_HIR",
     }
 }
@@ -1432,6 +1440,52 @@ mod tests {
         assert!(captured.contains("dep.hew:1:1: error: E_HIR: primary"));
         assert!(captured.contains("dep.hew:2:1: note: secondary uses primary source module"));
         assert!(captured.contains("efgh"));
+    }
+
+    #[test]
+    fn user_syntax_hir_diagnostics_have_specific_codes() {
+        let tuple = hew_hir::HirDiagnostic::new(
+            hew_hir::HirDiagnosticKind::TuplePatternArityMismatch {
+                expected: 2,
+                actual: 1,
+            },
+            0..1,
+            "tuple pattern element count does not match tuple value arity",
+        );
+        let constructor = hew_hir::HirDiagnostic::new(
+            hew_hir::HirDiagnosticKind::EnumVariantConstructorArityMismatch {
+                variant: "Pair".to_string(),
+                expected: 2,
+                actual: 1,
+            },
+            0..1,
+            "tuple-variant constructor called with the wrong number of arguments",
+        );
+
+        assert_eq!(
+            hir_diagnostic_prefix(&tuple.kind),
+            "E_TUPLE_PATTERN_MISMATCH"
+        );
+        assert_eq!(
+            hir_diagnostic_prefix(&constructor.kind),
+            "E_ENUM_VARIANT_CONSTRUCTOR"
+        );
+        assert_eq!(
+            hir_diagnostic_kind_string(&tuple.kind),
+            "TuplePatternArityMismatch"
+        );
+        assert_eq!(
+            hir_diagnostic_kind_string(&constructor.kind),
+            "EnumVariantConstructorArityMismatch"
+        );
+        assert_eq!(
+            hir_diagnostic_message(&tuple),
+            "E_TUPLE_PATTERN_MISMATCH: tuple pattern element count does not match tuple value arity"
+        );
+        assert_eq!(
+            hir_diagnostic_message(&constructor),
+            "E_ENUM_VARIANT_CONSTRUCTOR: tuple-variant constructor called with the wrong number of arguments"
+        );
     }
 
     #[test]

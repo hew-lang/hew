@@ -186,23 +186,22 @@ pub unsafe extern "C" fn hew_cidr_broadcast(cidr: *const c_char) -> *mut c_char 
 
 /// Get the number of host addresses in a CIDR block.
 ///
-/// Returns 0 on parse error or null input.
+/// Returns -1 on parse error, null input, or a host count that does not fit i64.
 ///
 /// # Safety
 ///
 /// `cidr` must be a valid NUL-terminated C string, or null.
 #[no_mangle]
-pub unsafe extern "C" fn hew_cidr_hosts(cidr: *const c_char) -> u64 {
+pub unsafe extern "C" fn hew_cidr_hosts(cidr: *const c_char) -> i64 {
     // SAFETY: forwarding to cstr_to_str with same contract.
     let Some(cidr_str) = (unsafe { cstr_to_str(cidr) }) else {
-        return 0;
+        return -1;
     };
     let Ok(net) = cidr_str.parse::<IpNet>() else {
-        return 0;
+        return -1;
     };
     let total: u128 = net.hosts().count() as u128;
-    // Saturate to u64::MAX for very large IPv6 ranges.
-    u64::try_from(total).unwrap_or(u64::MAX)
+    i64::try_from(total).unwrap_or(-1)
 }
 
 /// Free a string previously returned by [`hew_cidr_network`] or
@@ -326,6 +325,13 @@ mod tests {
             // IPv6 broadcast returns null.
             assert!(hew_cidr_broadcast(v6_cidr.as_ptr()).is_null());
         }
+    }
+
+    #[test]
+    fn cidr_hosts_rejects_counts_outside_the_hew_i64_abi() {
+        let too_large = CString::new("::/65").unwrap();
+        // SAFETY: too_large is a valid NUL-terminated CIDR string.
+        assert_eq!(unsafe { hew_cidr_hosts(too_large.as_ptr()) }, -1);
     }
 
     #[test]

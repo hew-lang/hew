@@ -38,6 +38,10 @@ pub fn decode(s: string) -> bytes {
     if slen == 0 {
         return out;
     }
+    let has_padding = s.slice(slen - 1, slen) == "=";
+    if has_padding && slen % 4 != 0 {
+        return bytes::new();
+    }
     // Strip trailing '=' padding
     var data_len = slen;
     if data_len > 0 && s.slice(data_len - 1, data_len) == "=" {
@@ -71,6 +75,9 @@ pub fn decode(s: string) -> bytes {
     }
     // Handle remaining values (from stripped padding)
     let remaining = nvals - i;
+    if remaining == 1 {
+        return bytes::new();
+    }
     if remaining == 2 {
         let a = vals[i];
         let b = vals[i + 1];

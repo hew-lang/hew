@@ -1,0 +1,28 @@
+//! Tests for std::random weighted-choice validation.
+
+import std::random;
+import std::testing;
+
+#[test]
+fn test_choices_returns_an_index_for_valid_cumulative_weights() {
+    let weights: Vec<f64> = Vec::new();
+    weights.push(1.0);
+    weights.push(3.0);
+    let chosen = random.choices(weights, 3.0, 1);
+    testing.assert_true(chosen == 0 || chosen == 1);
+}
+
+#[test]
+#[should_panic]
+fn test_choices_rejects_empty_weights() {
+    let weights: Vec<f64> = Vec::new();
+    random.choices(weights, 0.0, 1);
+}
+
+#[test]
+#[should_panic]
+fn test_choices_rejects_total_that_does_not_match_final_weight() {
+    let weights: Vec<f64> = Vec::new();
+    weights.push(1.0);
+    random.choices(weights, 2.0, 1);
+}

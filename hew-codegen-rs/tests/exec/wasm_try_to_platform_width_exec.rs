@@ -3,21 +3,37 @@
 //! The `try_to_X()` conversion family's execution fixtures otherwise run on the
 //! native (64-bit) target only. The `isize`/`usize` legs are width-generic in
 //! codegen — their bounds derive from `get_bit_width()` — so 32-bit behaviour is
-//! *likely* correct by construction but was previously unproven. This compiles a
-//! source fixture that exercises the platform-width MAX boundary rows, links it
-//! against the real wasm runtime archive, runs it under wasmtime (where `isize`
-//! and `usize` are 32-bit), and asserts the width-correct outcome:
+//! *likely* correct by construction but was previously unproven.
 //!
-//!   * `isize::MAX` on wasm32 == 2147483647, which fits `i32` exactly — so
-//!     `(2147483647 as isize).try_to_i32()` must be `Some(2147483647)`. On the
-//!     native 64-bit target the *same* boundary would be `9223372036854775807`
-//!     and reject, so this row genuinely distinguishes the two widths.
-//!   * `usize::MAX` on wasm32 == 4294967295, which does NOT fit `i32` but DOES
-//!     fit `u64` — so `try_to_i32()` is `None` while `try_to_u64()` is `Some`.
+//! [`HEW_SOURCE`] derives its boundary values instead of hard-coding them:
+//! `(-1) as usize` is `usize::MAX` at whatever bit width the compiler actually
+//! assigned `usize`, and clearing that pattern's sign bit with a logical shift
+//! gives the matching `isize::MAX`. A fixed literal like `2147483647 as isize`
+//! would carry the same numeric value regardless of the emitted width, so it
+//! cannot tell a correct 32-bit emission from a regression that (mis)emits
+//! `isize`/`usize` as 64-bit on wasm32 — the literal is exact either way. The
+//! derivation is what makes the boundary itself width-sensitive.
 //!
-//! This reuses the same self-contained link/run scaffolding as
-//! `wasm_generator_exec.rs`; it skips cleanly when wasm-ld / wasmtime / the
-//! wasm32-wasip1 runtime archive / the rustup self-contained libc are absent.
+//! Two tests share [`HEW_SOURCE`] and assert opposite stdout:
+//!
+//!   * [`wasm_try_to_platform_width_boundaries_are_width_correct`] compiles it
+//!     for wasm32, links against the real wasm runtime archive, and runs it
+//!     under wasmtime (where `isize`/`usize` are genuinely 32-bit): `usize::MAX`
+//!     is `4294967295`, which does not fit `i32` but does fit `u64`, and
+//!     `isize::MAX` is `2147483647`, which fits `i32` exactly.
+//!   * [`native_run_of_the_same_source_diverges_from_the_wasm32_result`] is the
+//!     negative control: it runs the identical source natively (host is
+//!     64-bit), where the same derivation instead produces a 64-bit
+//!     `isize::MAX` that does *not* fit `i32`, and a 64-bit `usize::MAX` that
+//!     does not equal the 32-bit literal the wasm leg checks against. The two
+//!     tests assert genuinely different stdout for the same source — proving
+//!     the fixture pair actually distinguishes platform width rather than
+//!     passing coincidentally on both.
+//!
+//! The wasm leg reuses the same self-contained link/run scaffolding as
+//! `wasm_generator_exec.rs`; both tests skip cleanly when their respective
+//! toolchain (wasm-ld / wasmtime / the wasm32-wasip1 runtime archive / the
+//! rustup self-contained libc, or `libhew.a`) is unavailable.
 
 #![cfg(not(target_arch = "wasm32"))]
 #![cfg(unix)]
@@ -26,6 +42,41 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 use std::time::Duration;
+
+/// Platform-width `try_to_X()` boundary probe, shared by the wasm32 leg and
+/// its native negative control. Every boundary value is derived from the
+/// compiler's actual `isize`/`usize` bit width, not hard-coded, so a width
+/// regression changes the printed result instead of leaving it unchanged.
+const HEW_SOURCE: &str = r#"fn main() {
+    // usize::MAX at whatever bit width the compiler assigned usize: all-ones,
+    // derived (not typed as a literal) via unsigned negation. On wasm32 this
+    // is 4294967295; on a 64-bit target it is 18446744073709551615.
+    let all_ones: usize = (-1) as usize;
+
+    // isize::MAX at the same bit width: clear the sign bit of all_ones with a
+    // logical (unsigned) shift. On wasm32 this is 2147483647; on a 64-bit
+    // target it is 9223372036854775807.
+    let smax: isize = (all_ones >> 1) as isize;
+
+    match smax.try_to_i32() {
+        Some(v) => {
+            if v == 2147483647 { println("smax_i32=ok") } else { println("smax_i32=wrong") }
+        }
+        None => println("smax_i32=none"),
+    }
+
+    match all_ones.try_to_i32() {
+        Some(_) => println("umax_i32=some"),
+        None => println("umax_i32=none"),
+    }
+    match all_ones.try_to_u64() {
+        Some(v) => {
+            if v == 4294967295 as u64 { println("umax_u64=ok") } else { println("umax_u64=wrong") }
+        }
+        None => println("umax_u64=none"),
+    }
+}
+"#;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -119,6 +170,19 @@ fn hew_command(repo: &Path) -> Command {
     command
 }
 
+fn ensure_hew_runtime_lib(repo: &Path) -> bool {
+    static BUILT: OnceLock<bool> = OnceLock::new();
+    *BUILT.get_or_init(|| {
+        let lib = target_dir(repo).join("debug").join("libhew.a");
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        let status = Command::new(cargo)
+            .current_dir(repo)
+            .args(["build", "--quiet", "-p", "hew-lib"])
+            .status();
+        matches!(status, Ok(s) if s.success()) && lib.exists()
+    })
+}
+
 #[test]
 fn wasm_try_to_platform_width_boundaries_are_width_correct() {
     let Some(wasm_ld) = which("wasm-ld") else {
@@ -141,37 +205,7 @@ fn wasm_try_to_platform_width_boundaries_are_width_correct() {
 
     let dir = tempfile::tempdir().expect("tempdir");
     let source_path = dir.path().join("try_to_platform_width.hew");
-    std::fs::write(
-        &source_path,
-        r#"fn main() {
-    // On wasm32 `isize` is 32-bit, so isize::MAX == 2147483647, which fits i32
-    // exactly. On a 64-bit target the same boundary would be far larger and
-    // reject, so this row proves the width-generic bound tracks get_bit_width().
-    let smax: isize = 2147483647 as isize;
-    match smax.try_to_i32() {
-        Some(v) => {
-            if v == 2147483647 { println("smax_i32=ok") } else { println("smax_i32=wrong") }
-        }
-        None => println("smax_i32=none"),
-    }
-
-    // On wasm32 `usize` is 32-bit, so usize::MAX == 4294967295: does NOT fit i32
-    // but DOES fit u64.
-    let umax: usize = 4294967295 as usize;
-    match umax.try_to_i32() {
-        Some(_) => println("umax_i32=some"),
-        None => println("umax_i32=none"),
-    }
-    match umax.try_to_u64() {
-        Some(v) => {
-            if v == 4294967295 as u64 { println("umax_u64=ok") } else { println("umax_u64=wrong") }
-        }
-        None => println("umax_u64=none"),
-    }
-}
-"#,
-    )
-    .expect("write Hew source");
+    std::fs::write(&source_path, HEW_SOURCE).expect("write Hew source");
 
     let mut compile = hew_command(&repo);
     compile
@@ -225,5 +259,48 @@ fn wasm_try_to_platform_width_boundaries_are_width_correct() {
     assert_eq!(
         String::from_utf8(run.stdout).expect("stdout utf8"),
         "smax_i32=ok\numax_i32=none\numax_u64=ok\n"
+    );
+}
+
+/// Negative control: the identical source run on the native (64-bit) target
+/// must NOT reproduce the wasm32-correct stdout above. `isize`/`usize::MAX`
+/// derive to their 64-bit values here, so `smax.try_to_i32()` rejects (the
+/// 64-bit signed max does not fit `i32`) and `all_ones.try_to_u64()` no longer
+/// equals the 32-bit literal the wasm leg checks — printing `umax_u64=wrong`.
+/// If this ever printed the wasm32-shaped line, the derivation above would not
+/// actually be tracking the compiler's real bit width, and neither test would
+/// be proving anything about platform width.
+#[test]
+fn native_run_of_the_same_source_diverges_from_the_wasm32_result() {
+    let repo = repo_root();
+    if !ensure_hew_runtime_lib(&repo) {
+        eprintln!("skip: libhew.a unavailable");
+        return;
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let source_path = dir.path().join("try_to_platform_width_native.hew");
+    std::fs::write(&source_path, HEW_SOURCE).expect("write Hew source");
+
+    let mut run = hew_command(&repo);
+    run.arg("run").arg(&source_path);
+    let output = hew_testutil::run_command_bounded(
+        &mut run,
+        "hew run try_to platform width (native negative control)",
+        Duration::from_secs(60),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        output.status.success(),
+        "hew run failed (status={:?}); stderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    assert_eq!(stdout, "smax_i32=none\numax_i32=none\numax_u64=wrong\n");
+    assert_ne!(
+        stdout, "smax_i32=ok\numax_i32=none\numax_u64=ok\n",
+        "native run must diverge from the wasm32-correct stdout, or the \
+         boundary values are not actually tracking platform width"
     );
 }

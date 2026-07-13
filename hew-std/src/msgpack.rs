@@ -176,6 +176,8 @@ fn check_depth(slice: &[u8]) -> Result<(), String> {
 /// `malloc`-allocated buffer. The length is written to `out_len`. Returns null
 /// on parse error or serialization failure.
 ///
+/// Call [`hew_msgpack_last_error`] to retrieve this actor's failure reason.
+///
 /// # Safety
 ///
 /// `json_str` must be a valid NUL-terminated C string.
@@ -186,20 +188,28 @@ pub unsafe extern "C" fn hew_msgpack_from_json(
     out_len: *mut usize,
 ) -> *mut u8 {
     if json_str.is_null() || out_len.is_null() {
+        set_msgpack_last_error("msgpack: null JSON input");
         return std::ptr::null_mut();
     }
     // SAFETY: json_str is a valid NUL-terminated C string per caller contract.
     let Some(s) = (unsafe { cstr_to_str(json_str) }) else {
+        set_msgpack_last_error("msgpack: JSON input was not valid UTF-8");
         return std::ptr::null_mut();
     };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(s) else {
-        return std::ptr::null_mut();
+    let value = match serde_json::from_str::<serde_json::Value>(s) {
+        Ok(value) => value,
+        Err(err) => {
+            set_msgpack_last_error(format!("msgpack: failed to parse JSON input: {err}"));
+            return std::ptr::null_mut();
+        }
     };
     let Ok(bytes) = rmp_serde::to_vec(&value) else {
+        set_msgpack_last_error("msgpack: failed to serialize to MessagePack");
         return std::ptr::null_mut();
     };
     // SAFETY: out_len is a valid pointer per caller contract.
     unsafe { *out_len = bytes.len() };
+    clear_msgpack_last_error();
     malloc_bytes(&bytes)
 }
 
@@ -471,6 +481,7 @@ pub unsafe extern "C" fn hew_msgpack_to_json_hew(v: *const BytesTriple) -> *mut 
     let bytes = unsafe { bytes_slice_from_triple(v) };
     if bytes.is_empty() {
         // Null/empty input → empty string (the C layer rejects len == 0).
+        set_msgpack_last_error("msgpack: invalid input buffer");
         return str_to_malloc("");
     }
     // SAFETY: bytes slice is valid for its length.

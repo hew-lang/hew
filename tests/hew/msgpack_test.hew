@@ -48,6 +48,60 @@ fn test_from_json_invalid_returns_empty() {
     testing.assert_eq(packed.len(), 0);
 }
 
+#[test]
+fn test_try_from_json_invalid_surfaces_reason() {
+    let result = msgpack.try_from_json("{not valid json!!!");
+    match result {
+        Ok(_) => panic("expected invalid JSON to fail"),
+        Err(msg) => {
+            testing.assert_true(msg.contains("msgpack:"));
+            testing.assert_true(msg.contains("parse JSON"));
+        },
+    }
+}
+
+#[test]
+fn test_try_to_json_empty_surfaces_reason() {
+    // from_json("{not json}") yields empty bytes (the documented sentinel);
+    // try_to_json of that empty buffer must surface the specific reason.
+    let empty = msgpack.from_json("{not json}");
+    let result = msgpack.try_to_json(empty);
+    match result {
+        Ok(_) => panic("expected empty input to fail"),
+        Err(msg) => testing.assert_true(msg.contains("invalid input buffer")),
+    }
+}
+
+#[test]
+fn test_try_from_json_valid_ok() {
+    let result = msgpack.try_from_json("{\"n\": 42}");
+    match result {
+        Ok(data) => testing.assert_true(data.len() > 0),
+        Err(_) => panic("expected valid JSON to succeed"),
+    }
+}
+
+#[test]
+fn test_try_to_json_valid_ok() {
+    let packed = msgpack.from_json("{\"n\": 42}");
+    let result = msgpack.try_to_json(packed);
+    match result {
+        Ok(recovered) => {
+            let r = json.try_parse(recovered);
+            match r {
+                Ok(val) => {
+                    let field = val.get_field("n");
+                    testing.assert_eq(field.get_int(), 42);
+                    field.free();
+                    val.free();
+                },
+                Err(_) => panic("try_to_json round-trip produced unparseable JSON"),
+            }
+        },
+        Err(_) => panic("expected valid msgpack bytes to succeed"),
+    }
+}
+
 // ── string root round-trip ────────────────────────────────────────────
 
 #[test]

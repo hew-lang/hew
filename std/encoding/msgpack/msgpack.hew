@@ -27,12 +27,47 @@ pub fn from_json(json: string) -> bytes {
     }
 }
 
+/// Encode a JSON string to MessagePack binary.
+///
+/// Returns `Err(reason)` on invalid JSON or serialization failure.
+pub fn try_from_json(json: string) -> Result<bytes, string> {
+    let data = unsafe { hew_msgpack_from_json_hew(json) };
+    if data.len() == 0 {
+        Err(msgpack_err("msgpack: from_json failed"))
+    } else {
+        Ok(data)
+    }
+}
+
 /// Decode a MessagePack `bytes` buffer to a JSON string.
 ///
 /// Returns an empty string on error.
 pub fn to_json(data: bytes) -> string {
     unsafe {
         hew_msgpack_to_json_hew(data)
+    }
+}
+
+/// Decode a MessagePack `bytes` buffer to a JSON string.
+///
+/// Returns `Err(reason)` on invalid input or deserialization failure.
+pub fn try_to_json(data: bytes) -> Result<string, string> {
+    let json = unsafe { hew_msgpack_to_json_hew(data) };
+    if json.len() == 0 {
+        Err(msgpack_err("msgpack: to_json failed"))
+    } else {
+        Ok(json)
+    }
+}
+
+/// Read `last_error()` and fall back to `fallback` when the FFI reports
+/// nothing specific.
+fn msgpack_err(fallback: string) -> string {
+    let detail = unsafe { hew_msgpack_last_error() };
+    if detail.len() > 0 {
+        detail
+    } else {
+        fallback
     }
 }
 
@@ -61,6 +96,7 @@ pub fn encode_bytes(data: bytes) -> bytes {
 extern "C" {
     fn hew_msgpack_from_json_hew(json: string) -> bytes;
     fn hew_msgpack_to_json_hew(data: bytes) -> string;
+    fn hew_msgpack_last_error() -> string;
     fn hew_msgpack_encode_int_hew(val: i64) -> bytes;
     fn hew_msgpack_encode_string_hew(s: string) -> bytes;
     fn hew_msgpack_encode_bytes_hew(data: bytes) -> bytes;

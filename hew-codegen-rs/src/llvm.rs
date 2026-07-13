@@ -9152,6 +9152,37 @@ fn emit_child_init_thunk<'ctx>(
     Ok(thunk)
 }
 
+/// #2238 item 1: classify whether a `StateFieldCloneKind` is an owned
+/// collection (`Vec`/`HashMap`/`HashSet`) reaching the supervised owned-config
+/// init thunk. Those kinds derive their clone symbol from
+/// `collection_layout_witness`, which this init-thunk path does NOT consult
+/// (unlike the actor state-clone caller `emit_field_clone_step`), so they hit a
+/// `panic!`/`unreachable!()` arm in `clone_helper_for_kind`. The checker wall
+/// `ty_is_supervisor_init_reproducible` rejects collection init args before
+/// codegen, so this is a defence-in-depth backstop that converts that panic
+/// into a coherent fail-closed error if the wall ever regresses.
+fn owned_config_field_clone_support(
+    kind: &StateFieldCloneKind,
+    child_name: &str,
+    field_ty: &ResolvedTy,
+) -> Result<(), CodegenError> {
+    if matches!(
+        kind,
+        StateFieldCloneKind::Vec { .. }
+            | StateFieldCloneKind::HashMap { .. }
+            | StateFieldCloneKind::HashSet { .. }
+    ) {
+        return Err(CodegenError::FailClosed(format!(
+            "init thunk owned config field for child `{child_name}`: field type {field_ty:?} is an owned \
+             collection; the owned-config init thunk has no collection clone path (collection \
+             clone symbols are owned by the layout witness, not consulted here) and the checker \
+             wall admits only scalars + `string`/`bytes` for supervised init args — this arm is a \
+             fail-closed backstop, not a supported lowering"
+        )));
+    }
+    Ok(())
+}
+
 /// Deep-clone an owned config field (`string`/`Vec`/…) from the config buffer
 /// into the fresh actor state, producing a value with no aliasing to the config
 /// buffer (S3). The cloned value is a NEW allocation the actor's `state_drop_fn`
@@ -9185,6 +9216,9 @@ fn emit_owned_config_field_clone<'ctx>(
             ))
         },
     )?;
+    // #2238 item 1: intercept owned collection kinds before the panic arm in
+    // `clone_helper_for_kind` and fail closed coherently (see the helper doc).
+    owned_config_field_clone_support(&kind, &child.name, field_ty)?;
     match clone_helper_for_kind(&kind)? {
         Some(CloneHelper::Allocating { name }) => {
             // Allocating clone: helper takes the SOURCE owned pointer (loaded
@@ -46226,6 +46260,54 @@ fn link_wasm_module(obj: &Path, out: &Path) -> CodegenResult<()> {
 mod tests {
     use super::*;
     use hew_mir::{BasicBlock, DecisionFact, IrPipeline};
+
+    #[test]
+    fn owned_config_field_collections_are_fail_closed_backstop() {
+        // #2238 item 1: collection kinds must take the same typed error path
+        // used by the init thunk, rather than reaching clone_helper_for_kind's
+        // unreachable collection arm. The checker rejects these before codegen,
+        // so this is the defence-in-depth decision boundary.
+        let scalar = StateFieldCloneKind::BitCopy { size_bytes: 8 };
+        for kind in [
+            StateFieldCloneKind::Vec {
+                elem: Box::new(scalar.clone()),
+            },
+            StateFieldCloneKind::HashSet {
+                elem: Box::new(scalar.clone()),
+            },
+            StateFieldCloneKind::HashMap {
+                key: Box::new(scalar.clone()),
+                val: Box::new(scalar.clone()),
+            },
+        ] {
+            let err = owned_config_field_clone_support(&kind, "worker", &ResolvedTy::String)
+                .expect_err("owned collection must fail closed before clone-helper dispatch");
+            assert!(
+                matches!(err, CodegenError::FailClosed(ref message) if message.contains("child `worker`")
+                    && message.contains("owned collection")),
+                "expected the init-thunk collection fail-closed diagnostic, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn owned_config_field_supported_kinds_pass_clone_support_boundary() {
+        // The admitted owned kinds and scalar copies must proceed to their
+        // existing clone/copy paths rather than being over-rejected.
+        for (kind, ty) in [
+            (StateFieldCloneKind::String, ResolvedTy::String),
+            (StateFieldCloneKind::Bytes, ResolvedTy::Bytes),
+            (
+                StateFieldCloneKind::BitCopy { size_bytes: 8 },
+                ResolvedTy::I64,
+            ),
+        ] {
+            assert!(
+                owned_config_field_clone_support(&kind, "worker", &ty).is_ok(),
+                "{kind:?} must retain its supported init-thunk clone/copy path"
+            );
+        }
+    }
 
     #[test]
     fn runtime_size_ty_is_i32_on_wasm32() {

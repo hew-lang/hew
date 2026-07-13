@@ -31,7 +31,9 @@ pub fn from_json(json: string) -> bytes {
 ///
 /// Returns `Err(reason)` on invalid JSON or serialization failure.
 pub fn try_from_json(json: string) -> Result<bytes, string> {
-    let data = unsafe { hew_msgpack_from_json_hew(json) };
+    let data = unsafe {
+        hew_msgpack_from_json_hew(json)
+    };
     if data.len() == 0 {
         Err(msgpack_err("msgpack: from_json failed"))
     } else {
@@ -52,7 +54,9 @@ pub fn to_json(data: bytes) -> string {
 ///
 /// Returns `Err(reason)` on invalid input or deserialization failure.
 pub fn try_to_json(data: bytes) -> Result<string, string> {
-    let json = unsafe { hew_msgpack_to_json_hew(data) };
+    let json = unsafe {
+        hew_msgpack_to_json_hew(data)
+    };
     if json.len() == 0 {
         Err(msgpack_err("msgpack: to_json failed"))
     } else {
@@ -63,7 +67,9 @@ pub fn try_to_json(data: bytes) -> Result<string, string> {
 /// Read `last_error()` and fall back to `fallback` when the FFI reports
 /// nothing specific.
 fn msgpack_err(fallback: string) -> string {
-    let detail = unsafe { hew_msgpack_last_error() };
+    let detail = unsafe {
+        hew_msgpack_last_error()
+    };
     if detail.len() > 0 {
         detail
     } else {

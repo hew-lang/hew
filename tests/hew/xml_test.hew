@@ -72,7 +72,6 @@ fn test_get_child_rejects_index_that_would_wrap_to_zero() {
 }
 
 // ── Malformed input ───────────────────────────────────────────────────
-
 #[test]
 #[should_panic]
 fn test_parse_panics_on_malformed() {

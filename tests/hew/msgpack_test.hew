@@ -1,11 +1,12 @@
 //! Behavioural tests for std::encoding::msgpack.
 
 import std::encoding::msgpack;
+
 import std::encoding::json;
+
 import std::testing;
 
 // ── from_json / to_json round-trip ────────────────────────────────────
-
 #[test]
 fn test_from_json_to_json_round_trip_int_field() {
     // Encode JSON with an integer field → MessagePack bytes → JSON string
@@ -27,7 +28,6 @@ fn test_from_json_to_json_round_trip_int_field() {
 }
 
 // ── encode_int / encode_string ────────────────────────────────────────
-
 #[test]
 fn test_encode_int_produces_nonempty_bytes() {
     let encoded = msgpack.encode_int(7);
@@ -41,7 +41,6 @@ fn test_encode_string_produces_nonempty_bytes() {
 }
 
 // ── Error boundary ────────────────────────────────────────────────────
-
 #[test]
 fn test_from_json_invalid_returns_empty() {
     let packed = msgpack.from_json("{not json}");
@@ -103,7 +102,6 @@ fn test_try_to_json_valid_ok() {
 }
 
 // ── string root round-trip ────────────────────────────────────────────
-
 #[test]
 fn test_string_root_round_trip() {
     // from_json of a JSON string (not an object) → to_json → try_parse →
@@ -122,7 +120,6 @@ fn test_string_root_round_trip() {
 }
 
 // ── Array round-trip ──────────────────────────────────────────────────
-
 #[test]
 fn test_array_round_trip_length() {
     // from_json("[1, 2, 3]") → to_json → try_parse → array_len() == 3
@@ -160,7 +157,6 @@ fn test_array_round_trip_elements() {
 }
 
 // ── Nested object round-trip ──────────────────────────────────────────
-
 #[test]
 fn test_nested_object_round_trip() {
     // from_json("{\"a\": {\"b\": 7}}") → to_json → try_parse → walk a → b.
@@ -183,7 +179,6 @@ fn test_nested_object_round_trip() {
 }
 
 // ── Unicode string round-trip ─────────────────────────────────────────
-
 #[test]
 fn test_unicode_string_field_round_trip() {
     // Multi-byte UTF-8 value survives msgpack encode → decode → JSON parse.
@@ -220,7 +215,6 @@ fn test_unicode_string_field_round_trip() {
 }
 
 // ── encode_int boundary cases ─────────────────────────────────────────
-
 #[test]
 fn test_encode_int_zero_produces_nonempty_bytes() {
     // msgpack positive fixint for 0 is the single byte 0x00.
@@ -259,7 +253,6 @@ fn test_encode_int_zero_round_trip() {
 }
 
 // ── encode_string boundary ────────────────────────────────────────────
-
 #[test]
 fn test_encode_string_empty_produces_nonempty_bytes() {
     // msgpack empty-string marker is the single byte 0xa0, so encode_string("")
@@ -269,7 +262,6 @@ fn test_encode_string_empty_produces_nonempty_bytes() {
 }
 
 // ── to_json error boundary ────────────────────────────────────────────
-
 #[test]
 fn test_to_json_empty_bytes_returns_empty_string() {
     // The C implementation rejects len==0 and returns null, which the Hew

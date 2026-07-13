@@ -7,6 +7,7 @@
 //! hew-std/src/smtp.rs's `#[cfg(test)]` unit tests.
 
 import std::net::smtp;
+
 import std::testing;
 
 #[test]
@@ -48,7 +49,6 @@ fn test_conn_try_send_bad_from_surfaces_reason() {
 // port instead of rejecting the out-of-range value. Every case here must
 // fail fast with an explicit out-of-range message, never a real send/connect
 // attempt on port 587 (or any other wrapped value).
-
 #[test]
 fn test_module_try_send_oversized_i64_port_does_not_wrap() {
     let result = smtp.try_send("localhost", 4294967883, "u", "p", "a@example.com", "b@example.com", "s", "b");

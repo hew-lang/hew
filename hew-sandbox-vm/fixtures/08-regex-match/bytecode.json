@@ -141,19 +141,19 @@
               ],
               "dst": null,
               "op": "regex.free",
-              "span": "span:108-117"
+              "span": "span:108-118"
             },
             {
               "args": [],
               "dst": "local:main.8",
               "op": "const.unit",
-              "span": "span:108-117"
+              "span": "span:108-118"
             },
             {
               "args": [],
               "dst": "local:main.9",
               "op": "const.unit",
-              "span": "span:26-120"
+              "span": "span:26-121"
             }
           ],
           "params": [],
@@ -166,7 +166,7 @@
               }
             ],
             "op": "return",
-            "span": "span:26-120"
+            "span": "span:26-121"
           }
         }
       ],
@@ -232,14 +232,14 @@
           "id": "local:main.8",
           "mutable": false,
           "name": null,
-          "span": "span:108-117",
+          "span": "span:108-118",
           "type": "type:unit"
         },
         {
           "id": "local:main.9",
           "mutable": false,
           "name": null,
-          "span": "span:26-120",
+          "span": "span:26-121",
           "type": "type:unit"
         }
       ],
@@ -247,7 +247,7 @@
       "name": "main",
       "params": [],
       "result": "type:unit",
-      "span": "span:26-120"
+      "span": "span:26-121"
     }
   ],
   "hew_version": "0.6.0-rc1",
@@ -374,13 +374,13 @@
       }
     ]
   },
-  "package_id": "pkg:04eb9de4e0f917a9",
+  "package_id": "pkg:0e2dd1d35b3efcdd",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {
     "sources": [
       {
-        "content_sha256": "afe800e889db7b9645606b853ea32a910d9c4c07f26fbbfb7442499173c875a1",
+        "content_sha256": "7a9d3acaf42e2da7316f52c45e2c5f707f5085968564a3559ba5a25194653f6a",
         "id": "src:main",
         "path": "main.hew"
       }
@@ -388,11 +388,11 @@
     "spans": [
       {
         "end": {
-          "byte_offset": 120,
+          "byte_offset": 121,
           "column": 2,
           "line": 7
         },
-        "id": "span:26-120",
+        "id": "span:26-121",
         "source_id": "src:main",
         "start": {
           "byte_offset": 26,
@@ -514,11 +514,11 @@
       },
       {
         "end": {
-          "byte_offset": 117,
-          "column": 14,
+          "byte_offset": 118,
+          "column": 15,
           "line": 6
         },
-        "id": "span:108-117",
+        "id": "span:108-118",
         "source_id": "src:main",
         "start": {
           "byte_offset": 108,

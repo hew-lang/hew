@@ -2387,6 +2387,34 @@ pub fn lower_hir_module_with_facts(
                                     };
                                     let config_ty_name = config_ty_name.clone();
                                     let owned = child_init_field_is_owned(&source_expr.ty);
+                                    // #2238 item 2: keep the MIR self-consistent
+                                    // with the checker wall
+                                    // (`ty_is_supervisor_init_reproducible`) and
+                                    // the codegen init thunk
+                                    // (`emit_owned_config_field_clone`). The
+                                    // checker admits owned supervised init args
+                                    // for `string`/`bytes` ONLY (the two types
+                                    // the thunk has a clone symbol for); owned
+                                    // collections are rejected before MIR. An
+                                    // owned `ConfigField` that is neither
+                                    // `String` nor `Bytes` means the checker wall
+                                    // regressed and codegen would fail closed —
+                                    // assert the invariant here so a wall
+                                    // regression is a named MIR failure rather
+                                    // than an ordering-dependent codegen error.
+                                    debug_assert!(
+                                        !owned
+                                            || matches!(
+                                                &source_expr.ty,
+                                                ResolvedTy::String | ResolvedTy::Bytes
+                                            ),
+                                        "supervisor `{}` child `{}` owned config-init field \
+                                         `{field_name}` has type {:?}; the checker wall admits \
+                                         owned supervised init args for `string`/`bytes` only",
+                                        sup_layout.name,
+                                        child.name,
+                                        source_expr.ty
+                                    );
                                     // Owned config-field init (`string`/`Vec`/…)
                                     // lowers to a `ConfigField { owned: true }`:
                                     // the codegen init thunk deep-clones the

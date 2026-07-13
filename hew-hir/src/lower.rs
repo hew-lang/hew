@@ -10270,6 +10270,12 @@ impl LowerCtx {
                         ShutdownDirective::BrutalKill => HirShutdownDirective::BrutalKill,
                         ShutdownDirective::Infinity => HirShutdownDirective::Infinity,
                     }),
+                    // Real site for this child declaration, registered below
+                    // by `verify.rs` so MIR diagnostics with no specific
+                    // argument to blame (a missing required field) carry a
+                    // caret at the declaration instead of a sentinel.
+                    site: self.ids.site(),
+                    span: child.span.clone(),
                 }
             })
             .collect();

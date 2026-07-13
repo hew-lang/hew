@@ -19,7 +19,7 @@
 //! LESSONS: boundary-fail-closed (P0) — the bootstrap is a fail-closed
 //! seam against the runtime supervisor ABI.
 
-use hew_hir::HirSupervisorStrategy;
+use hew_hir::{HirSupervisorStrategy, SiteId};
 use hew_mir::{
     ActorLayout, BasicBlock, ChildInitArg, FunctionCallConv, IrPipeline, RawMirFunction,
     RecordLayout, SupervisorChildLayout, SupervisorLayout, Terminator,
@@ -174,6 +174,7 @@ fn supervisor_pipeline() -> IrPipeline {
             init_state_fields: vec![("value".to_string(), ChildInitArg::I64(42))],
             nested_bootstrap_symbol: None,
             pool_count: None,
+            site: SiteId(0),
         }],
     };
 
@@ -494,6 +495,7 @@ fn on_crash_pipeline() -> IrPipeline {
             init_state_fields: vec![],
             nested_bootstrap_symbol: None,
             pool_count: None,
+            site: SiteId(0),
         }],
     };
 
@@ -785,6 +787,7 @@ fn nested_supervisor_pipeline() -> IrPipeline {
             init_state_fields: vec![],
             nested_bootstrap_symbol: None,
             pool_count: None,
+            site: SiteId(0),
         }],
     };
 
@@ -813,6 +816,7 @@ fn nested_supervisor_pipeline() -> IrPipeline {
                 init_state_fields: vec![],
                 nested_bootstrap_symbol: None,
                 pool_count: None,
+                site: SiteId(0),
             },
             SupervisorChildLayout {
                 name: "sub".to_string(),
@@ -831,6 +835,7 @@ fn nested_supervisor_pipeline() -> IrPipeline {
                 init_state_fields: vec![],
                 nested_bootstrap_symbol: Some(inner_bootstrap.clone()),
                 pool_count: None,
+                site: SiteId(0),
             },
         ],
     };
@@ -1014,6 +1019,7 @@ fn pool_then_static_pipeline() -> IrPipeline {
                 init_state_fields: vec![],
                 nested_bootstrap_symbol: None,
                 pool_count: Some(hew_mir::PoolCount::Literal(2)),
+                site: SiteId(0),
             },
             // Static actor child AFTER the pool. The pool's 2 members occupy
             // static slots 0 and 1 (they ARE static children), so this `monitor`
@@ -1036,6 +1042,7 @@ fn pool_then_static_pipeline() -> IrPipeline {
                 init_state_fields: vec![],
                 nested_bootstrap_symbol: None,
                 pool_count: None,
+                site: SiteId(0),
             },
         ],
     };

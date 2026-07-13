@@ -1181,6 +1181,7 @@ impl Parser<'_> {
                     }
                 }
                 Some(Token::Child | Token::Pool) => {
+                    let child_start = self.peek_span().start;
                     let is_pool = matches!(self.peek(), Some(Token::Pool));
                     self.advance();
                     let child_name = self.expect_ident()?;
@@ -1400,6 +1401,7 @@ impl Parser<'_> {
                         wired_to,
                         is_pool,
                         shutdown,
+                        span: child_start..self.last_token_end,
                     });
                 }
                 _ => {

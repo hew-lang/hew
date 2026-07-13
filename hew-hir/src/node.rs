@@ -818,6 +818,17 @@ pub struct HirSupervisorChild {
     /// Per-child graceful-stop directive from the `shutdown:` clause.
     /// `None` means the supervisor default applies.
     pub shutdown: Option<HirShutdownDirective>,
+    /// Real, verifier-registered site for this child declaration, minted from
+    /// the same monotonic allocator as every other HIR site
+    /// (`self.ids.site()`). MIR diagnostics that have no specific
+    /// argument expression to blame (a missing required field) use this
+    /// site rather than a sentinel, so the rendered caret always lands on
+    /// the child declaration and never collides with an unrelated site.
+    pub site: SiteId,
+    /// Byte span of the child declaration (`child`/`pool` keyword through the
+    /// clause's terminator), registered against `site` by
+    /// `hew_hir::verify::collect_site_spans` so CLI rendering can resolve it.
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1409,6 +1409,13 @@ pub struct ChildSpec {
     /// brutal_kill | infinity`.  `None` means the supervisor default applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shutdown: Option<ShutdownDirective>,
+    /// Byte span of the whole child declaration, from the `child`/`pool`
+    /// keyword through the clause's terminating `;`/`,`. HIR lowering mints a
+    /// real `SiteId` registered against this span so MIR diagnostics that have
+    /// no specific argument expression to point at (a missing required field)
+    /// still carry a caret at the child declaration rather than a sentinel.
+    #[serde(default)]
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

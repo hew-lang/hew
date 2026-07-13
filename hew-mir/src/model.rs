@@ -1073,6 +1073,13 @@ pub struct SupervisorChildLayout {
     /// registered as a static child and bound into the pool via
     /// `hew_supervisor_pool_member_add_static`.
     pub pool_count: Option<PoolCount>,
+    /// Real HIR site of this child's declaration
+    /// (`HirSupervisorChild.site`, registered in
+    /// `hew_hir::verify::collect_site_spans`). MIR diagnostics that have no
+    /// specific argument expression to blame (a missing required field) use
+    /// this site so the rendered caret lands on the child declaration
+    /// instead of an unregistered sentinel.
+    pub site: SiteId,
 }
 
 impl SupervisorChildLayout {

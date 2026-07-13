@@ -18,17 +18,47 @@ use crate::task_scope::{hew_cancel_token_release, hew_cancel_token_retain, HewCa
 use crate::timer_wheel::{hew_timer_wheel_cancel, hew_timer_wheel_schedule_handle};
 use crate::timer_wheel::{HewTimerEntry, HewTimerWheel};
 
+/// Test-only per-instance final-free probe. Replaces the former process-global
+/// `AWAIT_CANCEL_FINAL_FREE_COUNT` counter, whose delta assertions were
+/// corrupted under parallel test execution by unrelated registrations freed in
+/// other modules' tests (same contamination class as the runtime-drop counter
+/// de-globalized in #2574). Each "reclaimed exactly once" oracle binds a fresh
+/// counter to the single registration it owns via
+/// [`install_await_cancel_free_probe_for_test`], so it counts only *that
+/// registration's* final free.
 #[cfg(test)]
-static AWAIT_CANCEL_FINAL_FREE_COUNT: AtomicUsize = AtomicUsize::new(0);
+pub(crate) type AwaitCancelFreeProbe = std::sync::Arc<AtomicUsize>;
 
 #[cfg(test)]
-pub(crate) fn reset_await_cancel_final_free_count_for_test() {
-    AWAIT_CANCEL_FINAL_FREE_COUNT.store(0, Ordering::Release);
+pub(crate) fn new_await_cancel_free_probe_for_test() -> AwaitCancelFreeProbe {
+    std::sync::Arc::new(AtomicUsize::new(0))
+}
+
+/// Bind a per-instance final-free probe to a single live registration the test
+/// owns. The registration's final [`hew_await_cancel_free`] bumps this probe, so
+/// the count is immune to concurrent frees of other registrations in parallel
+/// tests.
+///
+/// # Safety
+///
+/// `reg` must be a valid live `HewAwaitCancel` the caller holds a ref to.
+#[cfg(test)]
+pub(crate) unsafe fn install_await_cancel_free_probe_for_test(
+    reg: *mut HewAwaitCancel,
+    probe: &AwaitCancelFreeProbe,
+) {
+    // SAFETY: caller holds a ref, so the box is live; `final_free_probe` uses
+    // interior mutability (a `Mutex`) so a shared reference may set it.
+    let inner = unsafe { &*reg };
+    *inner
+        .final_free_probe
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(std::sync::Arc::clone(probe));
 }
 
 #[cfg(test)]
-pub(crate) fn await_cancel_final_free_count_for_test() -> usize {
-    AWAIT_CANCEL_FINAL_FREE_COUNT.load(Ordering::Acquire)
+pub(crate) fn await_cancel_free_probe_count(probe: &AwaitCancelFreeProbe) -> usize {
+    probe.load(Ordering::Acquire)
 }
 
 /// Terminal state for an internal suspended await registration.
@@ -70,6 +100,13 @@ pub struct HewAwaitCancel {
     actor: AtomicPtr<HewActor>,
     cleanup: HewAwaitCleanup,
     source: *mut c_void,
+    /// Test-only per-instance final-free probe. When a test binds one via
+    /// [`install_await_cancel_free_probe_for_test`], the registration's final
+    /// [`hew_await_cancel_free`] bumps it, so an "exactly once" oracle observes
+    /// only this registration's free rather than a process-global count
+    /// contaminated by concurrent parallel-test frees.
+    #[cfg(test)]
+    final_free_probe: std::sync::Mutex<Option<AwaitCancelFreeProbe>>,
 }
 
 // SAFETY: shared mutable state is atomic; raw pointers are retained or source-
@@ -235,6 +272,8 @@ pub unsafe extern "C" fn hew_await_cancel_new(
         actor: AtomicPtr::new(actor),
         cleanup,
         source,
+        #[cfg(test)]
+        final_free_probe: std::sync::Mutex::new(None),
     }))
 }
 
@@ -267,7 +306,15 @@ pub unsafe extern "C" fn hew_await_cancel_free(reg: *mut HewAwaitCancel) {
         return;
     }
     #[cfg(test)]
-    AWAIT_CANCEL_FINAL_FREE_COUNT.fetch_add(1, Ordering::AcqRel);
+    // SAFETY: refs reached 0, so we own the box exclusively; read the optional
+    // per-instance probe before the box is consumed below and bump it.
+    unsafe {
+        if let Ok(mut guard) = (*reg).final_free_probe.lock() {
+            if let Some(probe) = guard.take() {
+                probe.fetch_add(1, Ordering::AcqRel);
+            }
+        }
+    }
     // SAFETY: last ref; no timer ref can still be held or refs would exceed 1.
     let boxed = unsafe { Box::from_raw(reg) };
     // SAFETY: this registration retained the token at creation.

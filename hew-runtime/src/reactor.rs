@@ -2887,6 +2887,11 @@ mod tests {
         reason = "test-only FFI: every pointer is a fresh local registration, slot, \
                   actor, poller, or socket with lifecycle asserted in the body"
     )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single linear shutdown-race oracle: per-instance free probes plus \
+                  the ref-count sweep assertions must stay in one body to share state"
+    )]
     fn shutdown_sweep_cancel_wins_inflight_deposit_exactly_once() {
         use std::io::Write;
         const KEY: usize = 0x00C4_11ED;
@@ -2896,8 +2901,8 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         reset_reactor();
-        crate::await_cancel::reset_await_cancel_final_free_count_for_test();
-        crate::read_slot::reset_read_slot_final_free_count_for_test();
+        let await_cancel_free_probe = crate::await_cancel::new_await_cancel_free_probe_for_test();
+        let slot_free_probe = crate::read_slot::new_read_slot_free_probe_for_test();
 
         let poller = unsafe { hew_io_poller_new() };
         assert!(!poller.is_null());
@@ -2912,6 +2917,10 @@ mod tests {
         let actor = spawn_full_reject_actor();
         let actor_ref = unsafe { crate::transport::hew_actor_ref_local(actor) };
         let slot = crate::read_slot::hew_read_slot_new();
+        // SAFETY: fresh slot with a live creator ref; bind a per-instance
+        // final-free probe so the "reclaimed exactly once" oracle counts only
+        // this slot's free, immune to concurrent parallel-test slot frees.
+        unsafe { crate::read_slot::install_read_slot_free_probe_for_test(slot, &slot_free_probe) };
         let await_cancel = unsafe {
             crate::await_cancel::hew_await_cancel_new(
                 std::ptr::null_mut(),
@@ -2920,6 +2929,15 @@ mod tests {
             )
         };
         unsafe { crate::read_slot::hew_read_slot_set_await_cancel(slot, await_cancel) };
+        // SAFETY: fresh registration with a live creator ref; bind a per-instance
+        // final-free probe so the "reclaimed exactly once" oracle counts only
+        // this registration's free, immune to concurrent parallel-test frees.
+        unsafe {
+            crate::await_cancel::install_await_cancel_free_probe_for_test(
+                await_cancel,
+                &await_cancel_free_probe,
+            );
+        };
         unsafe { crate::read_slot::read_slot_retain(slot) }; // registration ref
         inject_resume_registration_for_test(fd, conn, actor_ref, KEY, slot);
 
@@ -2980,12 +2998,12 @@ mod tests {
         unsafe { crate::read_slot::hew_read_slot_free(slot) };
         unsafe { crate::await_cancel::hew_await_cancel_free(await_cancel) };
         assert_eq!(
-            crate::read_slot::read_slot_final_free_count_for_test(),
+            crate::read_slot::read_slot_free_probe_count(&slot_free_probe),
             1,
             "slot must be reclaimed exactly once"
         );
         assert_eq!(
-            crate::await_cancel::await_cancel_final_free_count_for_test(),
+            crate::await_cancel::await_cancel_free_probe_count(&await_cancel_free_probe),
             1,
             "deadline arbiter must be reclaimed exactly once"
         );

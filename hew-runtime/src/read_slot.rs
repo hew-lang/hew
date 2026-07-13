@@ -33,17 +33,46 @@ use crate::await_cancel::{
 use crate::await_cancel::{AwaitCancelStatus, HewAwaitCancel};
 use crate::bytes::BytesTriple;
 
+/// Test-only per-instance final-free probe. Replaces the former process-global
+/// `READ_SLOT_FINAL_FREE_COUNT` counter, whose delta assertions were corrupted
+/// under parallel test execution by unrelated slots freed in other modules'
+/// tests (same contamination class as the runtime-drop counter de-globalized in
+/// #2574). Each "freed exactly once" oracle binds a fresh counter to the single
+/// slot it owns via [`install_read_slot_free_probe_for_test`], so it counts only
+/// *that slot's* final free.
 #[cfg(test)]
-static READ_SLOT_FINAL_FREE_COUNT: AtomicUsize = AtomicUsize::new(0);
+pub(crate) type ReadSlotFreeProbe = std::sync::Arc<AtomicUsize>;
 
 #[cfg(test)]
-pub(crate) fn reset_read_slot_final_free_count_for_test() {
-    READ_SLOT_FINAL_FREE_COUNT.store(0, Ordering::Release);
+pub(crate) fn new_read_slot_free_probe_for_test() -> ReadSlotFreeProbe {
+    std::sync::Arc::new(AtomicUsize::new(0))
+}
+
+/// Bind a per-instance final-free probe to a single live slot the test owns. The
+/// slot's final [`hew_read_slot_free`] bumps this probe (in addition to no
+/// process-global state), so the count is immune to concurrent frees of other
+/// slots in parallel tests.
+///
+/// # Safety
+///
+/// `slot` must be a valid live `HewReadSlot` the caller holds a ref to.
+#[cfg(test)]
+pub(crate) unsafe fn install_read_slot_free_probe_for_test(
+    slot: *mut HewReadSlot,
+    probe: &ReadSlotFreeProbe,
+) {
+    // SAFETY: caller holds a ref, so the box is live; `final_free_probe` uses
+    // interior mutability (a `Mutex`) so a shared reference may set it.
+    let inner = unsafe { &*slot };
+    *inner
+        .final_free_probe
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(std::sync::Arc::clone(probe));
 }
 
 #[cfg(test)]
-pub(crate) fn read_slot_final_free_count_for_test() -> usize {
-    READ_SLOT_FINAL_FREE_COUNT.load(Ordering::Acquire)
+pub(crate) fn read_slot_free_probe_count(probe: &ReadSlotFreeProbe) -> usize {
+    probe.load(Ordering::Acquire)
 }
 
 /// The sentinel an accept slot carries until a handle is deposited, and the
@@ -141,6 +170,13 @@ pub struct HewReadSlot {
     handle: AtomicI64,
     /// Optional common cancellation/deadline record attached to this wait.
     await_cancel: AtomicPtr<HewAwaitCancel>,
+    /// Test-only per-instance final-free probe. When a test binds one via
+    /// [`install_read_slot_free_probe_for_test`], the slot's final
+    /// [`hew_read_slot_free`] bumps it, so an "exactly once" oracle observes only
+    /// this slot's free rather than a process-global count contaminated by
+    /// concurrent parallel-test frees.
+    #[cfg(test)]
+    final_free_probe: std::sync::Mutex<Option<ReadSlotFreeProbe>>,
 }
 
 // SAFETY: `HewReadSlot` is designed for cross-thread use. `status` is the
@@ -169,6 +205,8 @@ pub extern "C" fn hew_read_slot_new() -> *mut HewReadSlot {
         },
         handle: AtomicI64::new(INVALID_CONNECTION_HANDLE),
         await_cancel: AtomicPtr::new(std::ptr::null_mut()),
+        #[cfg(test)]
+        final_free_probe: std::sync::Mutex::new(None),
     }))
 }
 
@@ -220,7 +258,15 @@ pub unsafe extern "C" fn hew_read_slot_free(slot: *mut HewReadSlot) {
         return;
     }
     #[cfg(test)]
-    READ_SLOT_FINAL_FREE_COUNT.fetch_add(1, Ordering::AcqRel);
+    // SAFETY: refs reached 0, so we own the box exclusively; read the optional
+    // per-instance probe before the box is consumed below and bump it.
+    unsafe {
+        if let Ok(mut guard) = (*slot).final_free_probe.lock() {
+            if let Some(probe) = guard.take() {
+                probe.fetch_add(1, Ordering::AcqRel);
+            }
+        }
+    }
     // Last ref — reclaim the box. SAFETY: refs reached 0, so no other thread
     // holds a live reference; we own the box exclusively.
     let boxed = unsafe { Box::from_raw(slot) };

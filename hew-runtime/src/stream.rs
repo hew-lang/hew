@@ -59,7 +59,8 @@ use std::sync::{Arc, Mutex};
 // Defining them in hew-cabi avoids pulling the full runtime into stdlib packages.
 
 pub use crate::stream_error::{
-    hew_stream_last_error, set_last_error, set_last_error_with_errno, take_last_error,
+    hew_stream_last_error, io_error_kind_tag, set_last_error, set_last_error_with_errno,
+    set_last_error_with_errno_and_kind, take_last_error,
 };
 pub use hew_cabi::sink::{into_sink_ptr, into_write_sink_ptr, HewSink};
 
@@ -268,7 +269,14 @@ impl StreamBacking for FileReadStream {
                 buf.truncate(n);
                 Some(buf)
             }
-            _ => None,
+            Ok(_) => None,
+            Err(error) => {
+                set_last_error_with_errno(
+                    format!("file stream read failed: {error}"),
+                    error.raw_os_error().unwrap_or(libc::EIO),
+                );
+                None
+            }
         }
     }
 
@@ -1098,12 +1106,19 @@ pub unsafe extern "C" fn hew_stream_from_file_read(path: *const c_char) -> *mut 
         return ptr::null_mut();
     };
     match fs::File::open(path_str) {
-        Ok(f) => into_stream_ptr(FileReadStream {
-            reader: BufReader::new(f),
-            chunk_size: 4096,
-        }),
+        Ok(f) => {
+            let _ = take_last_error();
+            into_stream_ptr(FileReadStream {
+                reader: BufReader::new(f),
+                chunk_size: 4096,
+            })
+        }
         Err(e) => {
-            set_last_error_with_errno(format!("{e}"), e.raw_os_error().unwrap_or(0));
+            set_last_error_with_errno_and_kind(
+                format!("{e}"),
+                e.raw_os_error().unwrap_or(libc::EIO),
+                io_error_kind_tag(e.kind()),
+            );
             ptr::null_mut()
         }
     }
@@ -1129,7 +1144,11 @@ pub unsafe extern "C" fn hew_stream_from_file_write(path: *const c_char) -> *mut
     match fs::File::create(path_str) {
         Ok(f) => into_write_sink_ptr(f),
         Err(e) => {
-            set_last_error_with_errno(format!("{e}"), e.raw_os_error().unwrap_or(0));
+            set_last_error_with_errno_and_kind(
+                format!("{e}"),
+                e.raw_os_error().unwrap_or(0),
+                io_error_kind_tag(e.kind()),
+            );
             ptr::null_mut()
         }
     }
@@ -4142,6 +4161,61 @@ mod tests {
             hew_stream_close(stream);
         }
         let _ = std::fs::remove_file(&path);
+    }
+
+    // ── File-open error classification (canonical kind channel) ──────────
+
+    #[test]
+    fn from_file_read_missing_sets_not_found_kind() {
+        // Cross-platform regression (host-independent by construction): opening
+        // a missing file for read yields std::io::ErrorKind::NotFound on every
+        // OS, so hew_stream_from_file_read must record the canonical NotFound
+        // tag. std::stream's try_from_file reads that tag before the raw errno,
+        // so on Windows an access-denied open (raw 5) classifies as
+        // PermissionDenied instead of the old Other(5). Here we pin the NotFound
+        // wiring, which is reproducible without a Windows host.
+        use crate::stream_error::{take_last_errno, take_last_error_kind, IO_ERROR_KIND_NOT_FOUND};
+        let c_path = CString::new("/tmp/hew_stream_missing_open_read.txt").unwrap();
+        // SAFETY: c_path is a valid NUL-terminated C string.
+        let s = unsafe { hew_stream_from_file_read(c_path.as_ptr()) };
+        assert!(s.is_null(), "opening a missing file for read must fail");
+        // Read the kind BEFORE the errno (take_last_errno clears the tag).
+        let kind = take_last_error_kind();
+        let errno = take_last_errno();
+        assert_eq!(
+            kind, IO_ERROR_KIND_NOT_FOUND,
+            "a missing-file open must classify as NotFound on every platform"
+        );
+        assert_ne!(
+            errno, 0,
+            "the raw OS errno must be preserved in the payload"
+        );
+    }
+
+    #[test]
+    fn from_file_write_into_missing_dir_sets_not_found_kind() {
+        // Symmetric proof for the write/sink open path used by try_to_file:
+        // creating a file under a directory that does not exist is NotFound on
+        // every OS, and the sink-open path must tag it so try_to_file classifies
+        // through the canonical kind rather than the raw errno.
+        use crate::stream_error::{take_last_errno, take_last_error_kind, IO_ERROR_KIND_NOT_FOUND};
+        let c_path = CString::new("/tmp/hew_stream_missing_dir_open/child.txt").unwrap();
+        // SAFETY: c_path is a valid NUL-terminated C string.
+        let s = unsafe { hew_stream_from_file_write(c_path.as_ptr()) };
+        assert!(
+            s.is_null(),
+            "opening a file under a missing directory for write must fail"
+        );
+        let kind = take_last_error_kind();
+        let errno = take_last_errno();
+        assert_eq!(
+            kind, IO_ERROR_KIND_NOT_FOUND,
+            "a missing-parent open must classify as NotFound on every platform"
+        );
+        assert_ne!(
+            errno, 0,
+            "the raw OS errno must be preserved in the payload"
+        );
     }
 
     // ── Threaded channel ────────────────────────────────────────────────

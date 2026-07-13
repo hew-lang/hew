@@ -1,0 +1,25 @@
+//! Tests for std::os environment-variable validation.
+
+import std::os;
+
+import std::testing;
+
+#[test]
+fn test_set_env_rejects_empty_name() {
+    match os.set_env("", "value") {
+        Ok(_) => panic("expected empty environment name rejection"),
+        Err(err) => match err {
+            EnvError::InvalidName(name) => testing.assert_eq_str(name, ""),
+        },
+    }
+}
+
+#[test]
+fn test_remove_env_rejects_equals_in_name() {
+    match os.remove_env("HEW=INVALID") {
+        Ok(_) => panic("expected invalid environment name rejection"),
+        Err(err) => match err {
+            EnvError::InvalidName(name) => testing.assert_eq_str(name, "HEW=INVALID"),
+        },
+    }
+}

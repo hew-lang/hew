@@ -58,18 +58,41 @@ pub fn env(name: string) -> string {
     }
 }
 
+/// Invalid environment-variable name.
+pub enum EnvError {
+    InvalidName(string);
+}
+
 /// Set an environment variable for the current process.
-pub fn set_env(name: string, value: string) {
+///
+/// Environment names must be non-empty and cannot contain `=`.
+pub fn set_env(name: string, value: string) -> Result<i64, EnvError> {
+    if name == "" || name.contains("=") {
+        return Err(EnvError::InvalidName(name));
+    }
     unsafe {
-        hew_env_set(name, value)
-    };
+        if hew_env_set(name, value) == 0 {
+            Ok(0)
+        } else {
+            Err(EnvError::InvalidName(name))
+        }
+    }
 }
 
 /// Remove an environment variable.
-pub fn remove_env(name: string) {
+///
+/// Environment names must be non-empty and cannot contain `=`.
+pub fn remove_env(name: string) -> Result<i64, EnvError> {
+    if name == "" || name.contains("=") {
+        return Err(EnvError::InvalidName(name));
+    }
     unsafe {
-        hew_env_remove(name)
-    };
+        if hew_env_remove(name) == 0 {
+            Ok(0)
+        } else {
+            Err(EnvError::InvalidName(name))
+        }
+    }
 }
 
 /// Check whether an environment variable is set.
@@ -129,8 +152,8 @@ extern "C" {
     fn hew_args_count() -> i32;
     fn hew_args_get(index: i32) -> string;
     fn hew_env_get(name: string) -> string;
-    fn hew_env_set(name: string, value: string);
-    fn hew_env_remove(name: string);
+    fn hew_env_set(name: string, value: string) -> i32;
+    fn hew_env_remove(name: string) -> i32;
     fn hew_env_has(name: string) -> bool;
     fn hew_cwd() -> string;
     fn hew_home_dir() -> string;

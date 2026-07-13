@@ -30,6 +30,57 @@ thread_local! {
     static LAST_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
     /// OS errno associated with the last error, or 0 when not set.
     static LAST_ERRNO: RefCell<i32> = const { RefCell::new(0) };
+    /// Canonical, platform-independent error-kind tag for the last error, or
+    /// 0 (`IO_ERROR_KIND_UNCLASSIFIED`) when not set. See [`io_error_kind_tag`].
+    static LAST_ERROR_KIND: RefCell<i32> = const { RefCell::new(0) };
+}
+
+// ── Canonical error-kind tags ─────────────────────────────────────────────────
+//
+// POSIX errno and Windows Win32 error codes diverge — "already exists" is
+// `EEXIST` = 17 on unix but `ERROR_ALREADY_EXISTS` = 183 on Windows, and
+// "access denied" is `EACCES` = 13 vs `ERROR_ACCESS_DENIED` = 5 — and worse,
+// some codes *collide* with different meanings across the two spaces (Win32 5 =
+// access-denied, POSIX 5 = `EIO`). A classifier that sees only the raw integer
+// therefore cannot be correct on both platforms at once.
+//
+// `std::io::ErrorKind` is the portable authority, but it only exists runtime
+// side where the `io::Error` is in scope. These tags carry that classification
+// across the C ABI so `std/fs.hew` picks the right `IoError` variant identically
+// on every platform, while the variant payload still surfaces the raw OS errno
+// for platform-specific inspection.
+//
+// Tag 0 means "unclassified": the consumer falls back to mapping the raw errno,
+// which preserves platform detail for kinds without a canonical tag (for
+// example `EISDIR`/`ENOTDIR` -> `IoError::Other(raw)`). Keep the tag values in
+// sync with `io_error_from_kind` in `std/fs.hew`.
+
+/// No canonical classification; the consumer falls back to raw-errno mapping.
+pub const IO_ERROR_KIND_UNCLASSIFIED: i32 = 0;
+/// Portable `std::io::ErrorKind::NotFound`.
+pub const IO_ERROR_KIND_NOT_FOUND: i32 = 1;
+/// Portable `std::io::ErrorKind::PermissionDenied`.
+pub const IO_ERROR_KIND_PERMISSION_DENIED: i32 = 2;
+/// Portable `std::io::ErrorKind::AlreadyExists`.
+pub const IO_ERROR_KIND_ALREADY_EXISTS: i32 = 3;
+/// Portable `std::io::ErrorKind::TimedOut`.
+pub const IO_ERROR_KIND_TIMED_OUT: i32 = 4;
+
+/// Map a portable [`std::io::ErrorKind`] to its canonical cross-platform tag.
+///
+/// Returns [`IO_ERROR_KIND_UNCLASSIFIED`] for kinds without a stable
+/// user-facing `IoError` variant, so the consumer keeps the raw errno detail
+/// rather than flattening it to a wrong classification.
+#[must_use]
+pub fn io_error_kind_tag(kind: std::io::ErrorKind) -> i32 {
+    use std::io::ErrorKind;
+    match kind {
+        ErrorKind::NotFound => IO_ERROR_KIND_NOT_FOUND,
+        ErrorKind::PermissionDenied => IO_ERROR_KIND_PERMISSION_DENIED,
+        ErrorKind::AlreadyExists => IO_ERROR_KIND_ALREADY_EXISTS,
+        ErrorKind::TimedOut => IO_ERROR_KIND_TIMED_OUT,
+        _ => IO_ERROR_KIND_UNCLASSIFIED,
+    }
 }
 
 // ── In-crate Rust helpers ─────────────────────────────────────────────────────
@@ -39,32 +90,73 @@ thread_local! {
 // `hew_cabi::sink` wrappers.
 
 /// Store an error message for the current thread. Retrievable via
-/// [`hew_stream_last_error`]. The associated errno is cleared to 0.
+/// [`hew_stream_last_error`]. The associated errno and error-kind are cleared.
 pub fn set_last_error(msg: String) {
     LAST_ERROR.with(|e| *e.borrow_mut() = Some(msg));
     LAST_ERRNO.with(|e| *e.borrow_mut() = 0);
+    LAST_ERROR_KIND.with(|k| *k.borrow_mut() = 0);
 }
 
 /// Store an error message together with its OS errno for the current thread.
 /// Both are retrievable via [`hew_stream_last_error`] and [`hew_stream_last_errno`].
+///
+/// The canonical error-kind is reset to unclassified: callers on this path do
+/// not have a Rust `io::Error` in scope, so the consumer maps the raw errno.
 pub fn set_last_error_with_errno(msg: String, errno: i32) {
     LAST_ERROR.with(|e| *e.borrow_mut() = Some(msg));
     LAST_ERRNO.with(|e| *e.borrow_mut() = errno);
+    LAST_ERROR_KIND.with(|k| *k.borrow_mut() = 0);
 }
 
-/// Take and clear the last error, if any. Also clears the associated errno.
+/// Store an error message together with its OS errno *and* its canonical,
+/// platform-independent error-kind tag for the current thread. Retrievable via
+/// [`hew_stream_last_error`], [`hew_stream_last_errno`], and
+/// [`hew_stream_last_error_kind`].
+///
+/// Use this at call sites where a Rust [`std::io::Error`] is in scope, passing
+/// `errno = error.raw_os_error()` and `kind = io_error_kind_tag(error.kind())`,
+/// so the raw platform code is preserved while classification stays correct
+/// across platforms whose errno spaces diverge.
+pub fn set_last_error_with_errno_and_kind(msg: String, errno: i32, kind: i32) {
+    LAST_ERROR.with(|e| *e.borrow_mut() = Some(msg));
+    LAST_ERRNO.with(|e| *e.borrow_mut() = errno);
+    LAST_ERROR_KIND.with(|k| *k.borrow_mut() = kind);
+}
+
+/// Take and clear the last error, if any. Also clears the associated errno and
+/// error-kind.
 #[must_use]
 pub fn take_last_error() -> Option<String> {
     LAST_ERRNO.with(|e| *e.borrow_mut() = 0);
+    LAST_ERROR_KIND.with(|k| *k.borrow_mut() = 0);
     LAST_ERROR.with(|e| e.borrow_mut().take())
 }
 
 /// Take and clear the last errno, if any. Returns 0 when none was set.
+///
+/// The canonical error-kind is metadata of the errno, so it is cleared here
+/// too: a caller that reads only the errno cannot leave a stale classification
+/// parked for an unrelated later read.
 #[must_use]
 pub fn take_last_errno() -> i32 {
+    LAST_ERROR_KIND.with(|k| *k.borrow_mut() = 0);
     LAST_ERRNO.with(|e| {
         let v = *e.borrow();
         *e.borrow_mut() = 0;
+        v
+    })
+}
+
+/// Take and clear the canonical error-kind tag, if any. Returns
+/// [`IO_ERROR_KIND_UNCLASSIFIED`] when none was set.
+///
+/// Consumers MUST read this before [`take_last_errno`] / [`hew_stream_last_errno`],
+/// which clear the tag as errno metadata.
+#[must_use]
+pub fn take_last_error_kind() -> i32 {
+    LAST_ERROR_KIND.with(|k| {
+        let v = *k.borrow();
+        *k.borrow_mut() = 0;
         v
     })
 }
@@ -162,6 +254,25 @@ pub extern "C" fn hew_stream_last_error() -> *mut c_char {
 #[no_mangle]
 pub extern "C" fn hew_stream_last_errno() -> i32 {
     take_last_errno()
+}
+
+/// Return the canonical, platform-independent error-kind tag associated with
+/// the last stream/sink error, or 0 (`IO_ERROR_KIND_UNCLASSIFIED`) if none.
+///
+/// Clears the tag after reading. Consumers MUST read this *before*
+/// [`hew_stream_last_errno`], which also clears the tag as errno metadata. See
+/// the `IO_ERROR_KIND_*` constants and [`io_error_kind_tag`] for the mapping;
+/// `std/fs.hew` uses this to classify I/O failures identically across platforms
+/// whose raw errno spaces diverge (POSIX `EEXIST` = 17 vs Win32
+/// `ERROR_ALREADY_EXISTS` = 183, etc.) while still surfacing the raw errno in
+/// the `IoError` payload.
+///
+/// INTERNAL-ABI: populated by `set_last_error_with_errno_and_kind` at runtime
+/// call sites where a Rust `io::Error` is in scope. Error paths without a Rust
+/// error kind leave this as 0.
+#[no_mangle]
+pub extern "C" fn hew_stream_last_error_kind() -> i32 {
+    take_last_error_kind()
 }
 
 #[cfg(test)]
@@ -336,6 +447,96 @@ mod tests {
         let msg = take_last_error();
         assert_eq!(msg.as_deref(), Some("disk full"));
         // After take_last_error the errno path is also cleared.
+        assert_eq!(take_last_errno(), 0);
+    }
+
+    // ── canonical error-kind tag (cross-platform classification) ─────────
+
+    #[test]
+    fn io_error_kind_tag_maps_portable_kinds() {
+        use std::io::ErrorKind;
+        // These portable kinds are what Rust's std maps the divergent raw OS
+        // codes to (e.g. Windows ERROR_ALREADY_EXISTS=183 and POSIX EEXIST=17
+        // both become ErrorKind::AlreadyExists), so tagging on the kind is
+        // correct on every platform without seeing the raw integer.
+        assert_eq!(
+            io_error_kind_tag(ErrorKind::NotFound),
+            IO_ERROR_KIND_NOT_FOUND
+        );
+        assert_eq!(
+            io_error_kind_tag(ErrorKind::PermissionDenied),
+            IO_ERROR_KIND_PERMISSION_DENIED
+        );
+        assert_eq!(
+            io_error_kind_tag(ErrorKind::AlreadyExists),
+            IO_ERROR_KIND_ALREADY_EXISTS
+        );
+        assert_eq!(
+            io_error_kind_tag(ErrorKind::TimedOut),
+            IO_ERROR_KIND_TIMED_OUT
+        );
+        // Kinds without a canonical IoError variant stay unclassified so the
+        // consumer keeps the raw errno (e.g. EISDIR/ENOTDIR -> Other(raw)).
+        assert_eq!(
+            io_error_kind_tag(ErrorKind::WouldBlock),
+            IO_ERROR_KIND_UNCLASSIFIED
+        );
+        assert_eq!(
+            io_error_kind_tag(ErrorKind::Other),
+            IO_ERROR_KIND_UNCLASSIFIED
+        );
+    }
+
+    #[test]
+    fn set_last_error_with_errno_and_kind_roundtrip() {
+        let _ = take_last_error();
+        set_last_error_with_errno_and_kind(
+            "hew_fs_mkdir: File exists".to_string(),
+            17,
+            IO_ERROR_KIND_ALREADY_EXISTS,
+        );
+        // Read kind before errno (documented ordering).
+        assert_eq!(hew_stream_last_error_kind(), IO_ERROR_KIND_ALREADY_EXISTS);
+        assert_eq!(hew_stream_last_errno(), 17);
+        // Kind is consumed after reading.
+        assert_eq!(hew_stream_last_error_kind(), IO_ERROR_KIND_UNCLASSIFIED);
+        let _ = take_last_error();
+    }
+
+    #[test]
+    fn take_last_errno_clears_kind_metadata() {
+        set_last_error_with_errno_and_kind("boom".to_string(), 13, IO_ERROR_KIND_PERMISSION_DENIED);
+        // A consumer that reads only the errno must not leave a stale kind
+        // parked for an unrelated later read.
+        assert_eq!(take_last_errno(), 13);
+        assert_eq!(take_last_error_kind(), IO_ERROR_KIND_UNCLASSIFIED);
+        let _ = take_last_error();
+    }
+
+    #[test]
+    fn plain_and_errno_setters_reset_kind() {
+        // A stale AlreadyExists kind must not survive into a later error set
+        // through a path that has no Rust error kind in scope.
+        set_last_error_with_errno_and_kind("old".to_string(), 17, IO_ERROR_KIND_ALREADY_EXISTS);
+        set_last_error_with_errno("new-errno-only".to_string(), 2);
+        assert_eq!(take_last_error_kind(), IO_ERROR_KIND_UNCLASSIFIED);
+
+        set_last_error_with_errno_and_kind("old2".to_string(), 17, IO_ERROR_KIND_ALREADY_EXISTS);
+        set_last_error("new-message-only".to_string());
+        assert_eq!(take_last_error_kind(), IO_ERROR_KIND_UNCLASSIFIED);
+        let _ = take_last_error();
+    }
+
+    #[test]
+    fn take_last_error_message_clears_kind() {
+        set_last_error_with_errno_and_kind(
+            "drain me".to_string(),
+            17,
+            IO_ERROR_KIND_ALREADY_EXISTS,
+        );
+        // Draining the message also drops the classification.
+        let _ = take_last_error();
+        assert_eq!(take_last_error_kind(), IO_ERROR_KIND_UNCLASSIFIED);
         assert_eq!(take_last_errno(), 0);
     }
 

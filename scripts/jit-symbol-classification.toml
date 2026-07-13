@@ -538,6 +538,7 @@ stable = [
   "hew_stream_is_valid",
   "hew_stream_last_errno",
   "hew_stream_last_error",
+  "hew_stream_last_error_kind",
   "hew_stream_lines",
   "hew_stream_map_bytes",
   "hew_stream_map_string",

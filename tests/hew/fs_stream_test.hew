@@ -39,6 +39,17 @@ fn test_try_read_missing_returns_not_found() {
 }
 
 #[test]
+fn test_try_read_directory_returns_eisdir() {
+    match fs.try_read("/") {
+        Ok(_) => panic("expected directory read error"),
+        Err(err) => match err {
+            IoError::Other(errno) => testing.assert_eq(errno, 21),
+            _ => panic("expected IoError::Other(EISDIR)"),
+        },
+    }
+}
+
+#[test]
 fn test_try_read_bytes_missing_returns_not_found() {
     let file_path = "tests/hew/_fs_stream_bytes_missing.bin";
     cleanup_file(file_path);
@@ -257,6 +268,36 @@ fn test_try_list_dir_handles_success_and_missing_paths() {
 }
 
 #[test]
+fn test_try_list_dir_regular_file_returns_enotdir() {
+    let file_path = "tests/hew/_fs_stream_not_directory.txt";
+    cleanup_file(file_path);
+    let _ = fs.write(file_path, "not a directory");
+    match fs.try_list_dir(file_path) {
+        Ok(_) => panic("expected regular-file listing error"),
+        Err(err) => match err {
+            IoError::Other(errno) => testing.assert_eq(errno, 20),
+            _ => panic("expected IoError::Other(ENOTDIR)"),
+        },
+    }
+    cleanup_file(file_path);
+}
+
+#[test]
+fn test_try_write_reports_enotdir_errno() {
+    let file_path = "tests/hew/_fs_stream_write_parent.txt";
+    cleanup_file(file_path);
+    let _ = fs.write(file_path, "not a directory");
+    match fs.try_write(file_path + "/child", "content") {
+        Ok(_) => panic("expected write through regular file to fail"),
+        Err(err) => match err {
+            IoError::Other(errno) => testing.assert_eq(errno, 20),
+            _ => panic("expected IoError::Other(ENOTDIR)"),
+        },
+    }
+    cleanup_file(file_path);
+}
+
+#[test]
 fn test_stream_try_from_file_missing_returns_not_found() {
     // try_from_file on a missing path returns IoError::NotFound.
     let missing_path = "tests/hew/_stream_missing.txt";
@@ -292,6 +333,52 @@ fn test_stream_try_to_file_send_close_and_try_from_file() {
         Err(_) => panic("expected try_from_file to succeed on the written file"),
     }
     cleanup_file(file_path);
+}
+
+#[test]
+fn test_stream_try_to_file_missing_dir_returns_not_found() {
+    // Regression: try_to_file must classify open failures through the runtime's
+    // canonical error-kind channel (like std/fs), not the raw errno alone.
+    // Creating a file under a directory that does not exist is NotFound on every
+    // platform; before the consumer-side fix this path read only the errno and
+    // would misclassify a Windows access-denied open (raw 5) as Other(5).
+    let missing_target = "tests/hew/_stream_no_such_dir/child.txt";
+    match stream.try_to_file(missing_target) {
+        Ok(_) => panic("expected try_to_file into a missing directory to fail"),
+        Err(err) => match err {
+            IoError::NotFound(_) => {},
+            _ => panic("expected IoError::NotFound"),
+        },
+    }
+}
+
+#[test]
+fn test_io_error_from_kind_is_tag_driven_not_errno_driven() {
+    // Cross-platform proof for the shared classifier that std::stream now routes
+    // through: the canonical kind tag — not the raw errno — selects the variant,
+    // while the raw errno is preserved as the payload. This is exactly the
+    // Windows access-denied case the reviewer cited: raw code 5 with a
+    // PermissionDenied tag must become PermissionDenied(5), not Other(5) (POSIX
+    // errno 5 is EIO). The same raw 5 under different tags proves classification
+    // is tag-driven and host-independent.
+    // Let-bind each call: multiple enum-returning calls matched inline in one
+    // body triggers a codegen hang at 2e6fac15 (see net_error test above).
+    let denied = fs.io_error_from_kind(2, 5);
+    match denied {
+        IoError::PermissionDenied(code) => testing.assert_eq(code, 5),
+        _ => panic("expected PermissionDenied(5) for kind=PermissionDenied, raw 5"),
+    }
+    let missing = fs.io_error_from_kind(1, 5);
+    match missing {
+        IoError::NotFound(code) => testing.assert_eq(code, 5),
+        _ => panic("expected NotFound(5) for kind=NotFound, raw 5"),
+    }
+    // Tag 0 (unclassified) falls back to raw-errno mapping: POSIX 5 = EIO -> Other.
+    let unclassified = fs.io_error_from_kind(0, 5);
+    match unclassified {
+        IoError::Other(code) => testing.assert_eq(code, 5),
+        _ => panic("expected Other(5) for an unclassified kind"),
+    }
 }
 
 // ── NetError variants ─────────────────────────────────────────────────
@@ -347,6 +434,47 @@ fn test_io_error_message_formats_fs_variants() {
     testing.assert_eq_str(m4, "TimedOut(110)");
     let m5 = fs.io_error_message(IoError::Other(0));
     testing.assert_eq_str(m5, "Other(0)");
+}
+
+#[test]
+fn test_io_error_from_errno_maps_windows_already_exists() {
+    // Cross-platform regression (host-independent): Windows create_dir on an
+    // existing directory returns ERROR_ALREADY_EXISTS = 183, which is not a
+    // POSIX errno, so io_error_from_errno must classify it as AlreadyExists on
+    // every host — including this macOS/Linux CI runner, which never sees 183
+    // from a real syscall. Before the fix the errno mapping was POSIX-only and
+    // 183 fell through to IoError::Other(183). The raw code is preserved as the
+    // payload.
+    let mapped = fs.io_error_from_errno(183);
+    match mapped {
+        IoError::AlreadyExists(code) => testing.assert_eq(code, 183),
+        _ => panic("expected IoError::AlreadyExists(183) for Windows ERROR_ALREADY_EXISTS"),
+    }
+    // POSIX EEXIST=17 still classifies identically, sharing the variant.
+    let posix = fs.io_error_from_errno(17);
+    match posix {
+        IoError::AlreadyExists(code) => testing.assert_eq(code, 17),
+        _ => panic("expected IoError::AlreadyExists(17) for POSIX EEXIST"),
+    }
+}
+
+#[test]
+fn test_try_mkdir_existing_returns_already_exists() {
+    // End-to-end wiring proof for the canonical error-kind channel: creating a
+    // directory that already exists yields std::io::ErrorKind::AlreadyExists on
+    // every platform, so try_mkdir must surface IoError::AlreadyExists whether
+    // the raw OS code is POSIX EEXIST=17 or Windows ERROR_ALREADY_EXISTS=183.
+    // "tests/hew" always exists (it holds this test), so no fixture/cleanup is
+    // needed and the test cannot leak state. The payload is the platform errno,
+    // which we do not pin here.
+    let result = fs.try_mkdir("tests/hew");
+    match result {
+        Ok(_) => panic("expected mkdir on an existing directory to fail"),
+        Err(err) => match err {
+            IoError::AlreadyExists(_) => {},
+            _ => panic("expected IoError::AlreadyExists for an existing directory"),
+        },
+    }
 }
 
 #[test]

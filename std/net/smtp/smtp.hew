@@ -126,7 +126,7 @@ fn smtp_err(fallback: string) -> string {
 /// ```
 pub fn connect(host: string, port: i64, username: string, password: string) -> Conn {
     unsafe {
-        hew_smtp_connect(host, port as i32, username, password)
+        hew_smtp_connect(host, port, username, password)
     }
 }
 
@@ -139,7 +139,7 @@ pub fn connect(host: string, port: i64, username: string, password: string) -> C
 /// ```
 pub fn connect_tls(host: string, port: i64, username: string, password: string) -> Conn {
     unsafe {
-        hew_smtp_connect_tls(host, port as i32, username, password)
+        hew_smtp_connect_tls(host, port, username, password)
     }
 }
 
@@ -150,15 +150,15 @@ pub fn connect_tls(host: string, port: i64, username: string, password: string) 
 /// to reuse a connection for multiple messages.
 pub fn send(host: string, port: i64, username: string, password: string, from: string, to: string, subject: string, body: string) -> i64 {
     unsafe {
-        hew_smtp_send_once(host, port as i32, username, password, from, to, subject, body)
-    } as i64 // INTERNAL-ABI: FFI returns i32; C ABI takes i32 port
+        hew_smtp_send_once(host, port, username, password, from, to, subject, body)
+    } as i64 // INTERNAL-ABI: FFI returns i32
 }
 
 /// Connect with the same STARTTLS path as `connect(...)`, send one plain-text
 /// email, and close the connection.
 pub fn try_send(host: string, port: i64, username: string, password: string, from: string, to: string, subject: string, body: string) -> Result<(), string> {
     let n: i32 = unsafe {
-        hew_smtp_send_once(host, port as i32, username, password, from, to, subject, body)
+        hew_smtp_send_once(host, port, username, password, from, to, subject, body)
     };
     if n < 0 {
         Err(smtp_err("smtp send failed"))
@@ -174,15 +174,15 @@ pub fn try_send(host: string, port: i64, username: string, password: string, fro
 /// want to reuse a connection for multiple messages.
 pub fn send_html(host: string, port: i64, username: string, password: string, from: string, to: string, subject: string, html: string) -> i64 {
     unsafe {
-        hew_smtp_send_html_once(host, port as i32, username, password, from, to, subject, html)
-    } as i64 // INTERNAL-ABI: FFI returns i32; C ABI takes i32 port
+        hew_smtp_send_html_once(host, port, username, password, from, to, subject, html)
+    } as i64 // INTERNAL-ABI: FFI returns i32
 }
 
 /// Connect with the same STARTTLS path as `connect(...)`, send one HTML email,
 /// and close the connection.
 pub fn try_send_html(host: string, port: i64, username: string, password: string, from: string, to: string, subject: string, html: string) -> Result<(), string> {
     let n: i32 = unsafe {
-        hew_smtp_send_html_once(host, port as i32, username, password, from, to, subject, html)
+        hew_smtp_send_html_once(host, port, username, password, from, to, subject, html)
     };
     if n < 0 {
         Err(smtp_err("smtp send_html failed"))
@@ -193,12 +193,12 @@ pub fn try_send_html(host: string, port: i64, username: string, password: string
 
 // ── FFI bindings (implementation detail) ──────────────────────────────
 extern "C" {
-    fn hew_smtp_connect(host: string, port: i32, username: string, password: string) -> Conn;
-    fn hew_smtp_connect_tls(host: string, port: i32, username: string, password: string) -> Conn;
+    fn hew_smtp_connect(host: string, port: i64, username: string, password: string) -> Conn;
+    fn hew_smtp_connect_tls(host: string, port: i64, username: string, password: string) -> Conn;
     fn hew_smtp_last_error() -> string;
     fn hew_smtp_send(conn: Conn, from: string, to: string, subject: string, body: string) -> i32;
     fn hew_smtp_send_html(conn: Conn, from: string, to: string, subject: string, html: string) -> i32;
-    fn hew_smtp_send_once(host: string, port: i32, username: string, password: string, from: string, to: string, subject: string, body: string) -> i32;
-    fn hew_smtp_send_html_once(host: string, port: i32, username: string, password: string, from: string, to: string, subject: string, html: string) -> i32;
+    fn hew_smtp_send_once(host: string, port: i64, username: string, password: string, from: string, to: string, subject: string, body: string) -> i32;
+    fn hew_smtp_send_html_once(host: string, port: i64, username: string, password: string, from: string, to: string, subject: string, html: string) -> i32;
     fn hew_smtp_close(conn: Conn);
 }

@@ -39,3 +39,64 @@ fn test_conn_try_send_bad_from_surfaces_reason() {
     }
     conn.close();
 }
+
+// The following cases prove that an oversized i64 port does not silently
+// wrap into an unintended valid port before Rust validates it. Before the
+// FFI port parameter was widened from i32 to i64, `4294967883_i64 as i32`
+// truncated (two's-complement) down to 587 -- a "valid-looking" port -- and
+// the connection would proceed to attempt an SMTP handshake on the wrapped
+// port instead of rejecting the out-of-range value. Every case here must
+// fail fast with an explicit out-of-range message, never a real send/connect
+// attempt on port 587 (or any other wrapped value).
+
+#[test]
+fn test_module_try_send_oversized_i64_port_does_not_wrap() {
+    let result = smtp.try_send("localhost", 4294967883, "u", "p", "a@example.com", "b@example.com", "s", "b");
+    match result {
+        Ok(_) => panic("expected an oversized i64 port to fail, not wrap into a valid port"),
+        Err(msg) => testing.assert_true(msg.contains("out of range")),
+    }
+}
+
+#[test]
+fn test_module_try_send_html_oversized_i64_port_does_not_wrap() {
+    let result = smtp.try_send_html("localhost", 4294967883, "u", "p", "a@example.com", "b@example.com", "s", "<b>b</b>");
+    match result {
+        Ok(_) => panic("expected an oversized i64 port to fail, not wrap into a valid port"),
+        Err(msg) => testing.assert_true(msg.contains("out of range")),
+    }
+}
+
+#[test]
+fn test_module_send_oversized_i64_port_returns_nonzero() {
+    let rc = smtp.send("localhost", 4294967883, "u", "p", "a@example.com", "b@example.com", "s", "b");
+    testing.assert_true(rc != 0);
+    testing.assert_true(smtp.last_error().contains("out of range"));
+}
+
+#[test]
+fn test_conn_connect_oversized_i64_port_rejects_before_relay_init() {
+    // connect() has no Result contract, so an oversized port yields an
+    // unusable Conn; the failure is still visible via last_error() and via
+    // any subsequent send attempt refusing to proceed.
+    let conn = smtp.connect("localhost", 4294967883, "u", "p");
+    testing.assert_true(smtp.last_error().contains("out of range"));
+    let result = conn.try_send("a@example.com", "b@example.com", "s", "b");
+    match result {
+        Ok(_) => panic("expected connect() with an oversized port to leave an unusable conn"),
+        Err(_) => {},
+    }
+    conn.close();
+}
+
+#[test]
+fn test_conn_connect_tls_oversized_i64_port_rejects_before_relay_init() {
+    let conn = smtp.connect_tls("localhost", 4294967883, "u", "p");
+    testing.assert_true(smtp.last_error().contains("out of range"));
+    let result = conn.try_send("a@example.com", "b@example.com", "s", "b");
+    match result {
+        Ok(_) => panic("expected connect_tls() with an oversized port to leave an unusable conn"),
+        Err(_) => {},
+    }
+    conn.close();
+}

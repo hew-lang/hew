@@ -109,14 +109,16 @@ fn configure_builder(
     builder.build()
 }
 
-fn normalize_port(port: i32) -> Option<u16> {
+fn normalize_port(port: i64) -> Option<u16> {
     u16::try_from(port).ok()
 }
 
 /// Connect to an SMTP server using STARTTLS.
 ///
 /// Returns a heap-allocated [`HewSmtpConn`] on success, or null on error.
-/// `user` and `pass` may be null for unauthenticated connections.
+/// `user` and `pass` may be null for unauthenticated connections. `port` is
+/// `i64` (not `i32`) so a caller-supplied out-of-range value is rejected by
+/// `normalize_port` directly instead of being narrowed by a lossy cast first.
 /// The caller must close the connection with [`hew_smtp_close`].
 ///
 /// # Safety
@@ -126,7 +128,7 @@ fn normalize_port(port: i32) -> Option<u16> {
 #[no_mangle]
 pub unsafe extern "C" fn hew_smtp_connect(
     host: *const c_char,
-    port: i32,
+    port: i64,
     user: *const c_char,
     pass: *const c_char,
 ) -> *mut HewSmtpConn {
@@ -160,7 +162,8 @@ pub unsafe extern "C" fn hew_smtp_connect(
 /// Connect to an SMTP server using implicit TLS (typically port 465).
 ///
 /// Returns a heap-allocated [`HewSmtpConn`] on success, or null on error.
-/// `user` and `pass` may be null for unauthenticated connections.
+/// `user` and `pass` may be null for unauthenticated connections. `port` is
+/// `i64` for the same lossless-validation reason as [`hew_smtp_connect`].
 /// The caller must close the connection with [`hew_smtp_close`].
 ///
 /// # Safety
@@ -170,7 +173,7 @@ pub unsafe extern "C" fn hew_smtp_connect(
 #[no_mangle]
 pub unsafe extern "C" fn hew_smtp_connect_tls(
     host: *const c_char,
-    port: i32,
+    port: i64,
     user: *const c_char,
     pass: *const c_char,
 ) -> *mut HewSmtpConn {
@@ -350,7 +353,7 @@ pub unsafe extern "C" fn hew_smtp_send_html(
 
 unsafe fn connect_send_close(
     host: *const c_char,
-    port: i32,
+    port: i64,
     user: *const c_char,
     pass: *const c_char,
     send: impl FnOnce(*mut HewSmtpConn) -> i32,
@@ -371,7 +374,8 @@ unsafe fn connect_send_close(
 
 /// Connect using STARTTLS, send one plain-text email, and close the connection.
 ///
-/// Returns 0 on success, -1 on connection or send error.
+/// Returns 0 on success, -1 on connection or send error. `port` is `i64` for
+/// the same lossless-validation reason as [`hew_smtp_connect`].
 ///
 /// # Safety
 ///
@@ -381,7 +385,7 @@ unsafe fn connect_send_close(
 #[no_mangle]
 pub unsafe extern "C" fn hew_smtp_send_once(
     host: *const c_char,
-    port: i32,
+    port: i64,
     user: *const c_char,
     pass: *const c_char,
     from: *const c_char,
@@ -399,7 +403,8 @@ pub unsafe extern "C" fn hew_smtp_send_once(
 
 /// Connect using STARTTLS, send one HTML email, and close the connection.
 ///
-/// Returns 0 on success, -1 on connection or send error.
+/// Returns 0 on success, -1 on connection or send error. `port` is `i64` for
+/// the same lossless-validation reason as [`hew_smtp_connect`].
 ///
 /// # Safety
 ///
@@ -409,7 +414,7 @@ pub unsafe extern "C" fn hew_smtp_send_once(
 #[no_mangle]
 pub unsafe extern "C" fn hew_smtp_send_html_once(
     host: *const c_char,
-    port: i32,
+    port: i64,
     user: *const c_char,
     pass: *const c_char,
     from: *const c_char,
@@ -471,6 +476,16 @@ mod tests {
         assert_eq!(normalize_port(65_535), Some(65_535));
         assert_eq!(normalize_port(-1), None);
         assert_eq!(normalize_port(65_536), None);
+    }
+
+    #[test]
+    fn normalize_port_rejects_oversized_i64_without_wrapping_into_a_valid_port() {
+        // 4_294_967_883 == 587 + 2^32. A lossy i64->i32 truncation before this
+        // check would wrap it down to the "valid" port 587; normalize_port
+        // takes the full i64 directly, so it must reject the value outright.
+        assert_eq!(normalize_port(4_294_967_883), None);
+        assert_eq!(normalize_port(i64::MAX), None);
+        assert_eq!(normalize_port(i64::MIN), None);
     }
 
     #[test]

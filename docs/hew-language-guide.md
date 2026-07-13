@@ -1827,23 +1827,28 @@ fn main() {
 }
 ```
 
-> **Note:** Generic constructor functions called *without* turbofish fail — the error depends on context: if `T` is entirely unconstrained (no usage to narrow it), the type-checker reports `cannot infer type for local binding`; once usage constrains `T`, the call emits `E_NOT_YET_IMPLEMENTED: MIR lowering for function call is not implemented yet`. Annotating the binding without turbofish (`let s: Stack<i64> = new_empty()`) does not help — it still emits `E_NOT_YET_IMPLEMENTED`. Two workarounds:
->
-> ```hew
-> type Stack<T> { items: Vec<T>; }
->
-> fn new_empty<T>() -> Stack<T> { Stack { items: Vec::new() } }
->
-> fn main() {
->     // Option A — turbofish on the call (preferred when using a ctor fn)
->     let s = new_empty::<i64>();
->
->     // Option B — construct inline with a type annotation on the binding
->     let s2: Stack<i64> = Stack { items: Vec::new() };
-> }
-> ```
->
-> Note: `Stack { items: Vec::new() }` *without* a type annotation on the binding also fails — with `cannot infer type for local binding` when `T` is unconstrained, or `E_MIR: unknown type 'T' at the MIR boundary` once usage constrains `T`. Always provide a type annotation when constructing a generic record inline.
+**Turbofish is one way to pin a generic constructor's type argument, not the only one.** The checker also resolves `T` from the **expected return type** at the call site — a `let` binding's declared type, a function's declared return type, or an argument position — with no turbofish needed:
+
+```hew
+type Stack<T> { items: Vec<T>; }
+
+fn new_empty<T>() -> Stack<T> { Stack { items: Vec::new() } }
+
+fn make_i64_stack() -> Stack<i64> {
+    new_empty()                    // return-position inference — no turbofish
+}
+
+fn main() {
+    let s: Stack<i64> = new_empty();      // let-annotation inference — no turbofish
+    let s2 = new_empty::<i64>();          // turbofish — still supported, use when nothing else pins T
+    let s3 = make_i64_stack();
+    println(s.items.len());
+    println(s2.items.len());
+    println(s3.items.len());
+}
+```
+
+Only a **genuinely unconstrained** call — no turbofish, no annotation, no usage that pins `T` — fails, and it fails with the same clean `cannot infer type for local binding` / `consider adding a type annotation` diagnostic as any other unconstrained generic call. There is no separate NYI/MIR-lowering error for this pattern; add a turbofish or a type annotation to resolve it.
 
 ### Inherent impl on a generic record
 
@@ -1875,7 +1880,7 @@ fn main() {
 }
 ```
 
-Construct the empty generic record through a turbofish-called constructor function (`new_stack::<i64>()`), the same pattern as the Turbofish section above — a bare `Stack { items: Vec::new() }` binding still needs its own type annotation. `hew fmt` normalizes an explicit `::<T>` call to `<T>` (`new_stack::<i64>()` becomes `new_stack<i64>()`); both spellings type-check and run identically — write whichever you like and let the formatter settle it.
+Construct the empty generic record through the constructor function `new_stack`, either with turbofish (`new_stack::<i64>()`) or a `let` type annotation and no turbofish at all (`let s: Stack<i64> = new_stack();`) — both resolve `T` from the call site and lower identically, the same return-type-driven inference covered in the Turbofish section above. `hew fmt` normalizes an explicit `::<T>` call to `<T>` (`new_stack::<i64>()` becomes `new_stack<i64>()`); every one of these spellings type-checks and runs identically — write whichever you like and let the formatter settle it. A bare `Stack { items: Vec::new() }` construction with no surrounding annotation is still ambiguous and needs one.
 
 ### Generic functions as values (cross-module)
 

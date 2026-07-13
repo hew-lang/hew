@@ -388,28 +388,74 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    unsafe extern "C" fn increment(arg: *mut c_void) {
-        // SAFETY: caller passes an Arc::into_raw'd AtomicU32 pointer.
-        let c = unsafe { Arc::from_raw(arg as *const AtomicU32) };
-        c.fetch_add(1, Ordering::Relaxed);
+    /// A count paired with a Mutex+Condvar "done" latch so the submitting
+    /// thread can wait for the worker to actually finish, rather than racing
+    /// a fixed sleep against pool scheduling under load.
+    struct SignalingCounter {
+        count: AtomicU32,
+        done: Mutex<bool>,
+        ready: Condvar,
+    }
+
+    unsafe extern "C" fn increment_and_signal(arg: *mut c_void) {
+        // SAFETY: caller passes an Arc::into_raw'd SignalingCounter pointer.
+        let c = unsafe { Arc::from_raw(arg as *const SignalingCounter) };
+        c.count.fetch_add(1, Ordering::Relaxed);
+        let mut done = c.done.lock_or_recover();
+        *done = true;
+        c.ready.notify_one();
     }
 
     unsafe extern "C" fn noop(_: *mut c_void) {}
 
     /// Normal pool round-trip: submit, execute, stop.
+    ///
+    /// Waits on a completion latch (Mutex+Condvar owned by the test) instead
+    /// of sleeping a fixed duration, so the assertion only fires once the
+    /// worker has actually run the task. The wait is bounded so a genuinely
+    /// deadlocked worker still fails the test loudly instead of hanging.
     #[test]
     fn normal_submit_and_stop() {
         // SAFETY: test-only — we control the pool lifetime and task pointer.
         unsafe {
             let pool = hew_blocking_pool_new();
 
-            let counter = Arc::new(AtomicU32::new(0));
-            let c = Arc::clone(&counter);
+            let signal = Arc::new(SignalingCounter {
+                count: AtomicU32::new(0),
+                done: Mutex::new(false),
+                ready: Condvar::new(),
+            });
+            let c = Arc::clone(&signal);
             let c_ptr = Arc::into_raw(c) as *mut c_void;
 
-            assert_eq!(hew_blocking_pool_submit(pool, increment, c_ptr), 0);
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            assert_eq!(counter.load(Ordering::Relaxed), 1);
+            assert_eq!(
+                hew_blocking_pool_submit(pool, increment_and_signal, c_ptr),
+                0
+            );
+
+            let wait_budget = Duration::from_secs(5);
+            let start = std::time::Instant::now();
+            let mut done = signal.done.lock_or_recover();
+            while !*done {
+                let elapsed = start.elapsed();
+                let Some(remaining) = wait_budget.checked_sub(elapsed) else {
+                    panic!(
+                        "blocking pool worker did not complete the submitted task \
+                         within {wait_budget:?}; worker likely deadlocked"
+                    );
+                };
+                let (next_done, wait_result) =
+                    signal.ready.wait_timeout_or_recover(done, remaining);
+                done = next_done;
+                assert!(
+                    !wait_result.timed_out() || *done,
+                    "blocking pool worker did not complete the submitted task \
+                     within {wait_budget:?}; worker likely deadlocked"
+                );
+            }
+            drop(done);
+
+            assert_eq!(signal.count.load(Ordering::Relaxed), 1);
 
             hew_blocking_pool_stop(pool);
         }

@@ -7,8 +7,14 @@ authors.workspace = true
 description = "Shared integration-test utilities for Hew"
 publish = false
 
+[dependencies]
+fd-lock = "4"
+
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

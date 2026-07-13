@@ -1919,6 +1919,7 @@ dependencies = [
  "clap",
  "crossterm",
  "hew-runtime",
+ "hew-testutil",
  "libc",
  "ratatui",
  "reqwest",
@@ -1990,6 +1991,7 @@ version = "0.6.0-rc1"
 dependencies = [
  "assert_cmd",
  "hew-parser",
+ "hew-testutil",
  "hew-types",
  "serde",
  "serde_json",
@@ -2047,7 +2049,9 @@ version = "0.6.0-rc1"
 name = "hew-testutil"
 version = "0.6.0-rc1"
 dependencies = [
+ "fd-lock",
  "libc",
+ "tempfile",
 ]
 
 [[package]]

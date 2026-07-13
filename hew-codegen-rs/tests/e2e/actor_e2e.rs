@@ -289,42 +289,30 @@ fn hew_bin(repo: &Path) -> PathBuf {
         .join(format!("hew{}", std::env::consts::EXE_SUFFIX))
 }
 
-fn hew_lib(repo: &Path) -> PathBuf {
-    let lib_name = if cfg!(windows) { "hew.lib" } else { "libhew.a" };
-    target_dir(repo).join("debug").join(lib_name)
-}
-
 fn ensure_codegen_artifacts(repo: &Path) {
     static BUILT: OnceLock<()> = OnceLock::new();
     BUILT.get_or_init(|| {
         let hew = hew_bin(repo);
-        let lib = hew_lib(repo);
-        if hew.is_file() && lib.is_file() {
-            return;
+        if !hew.is_file() {
+            let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+            let output = Command::new(cargo)
+                .current_dir(repo)
+                .args(["build", "--quiet", "-p", "hew-cli"])
+                .output()
+                .expect("spawn cargo build -p hew-cli");
+            assert!(
+                output.status.success(),
+                "cargo build -p hew-cli failed\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                hew.is_file(),
+                "codegen bootstrap succeeded but hew binary was not created at {}",
+                hew.display()
+            );
         }
-
-        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let output = Command::new(cargo)
-            .current_dir(repo)
-            .args(["build", "--quiet", "-p", "hew-cli", "-p", "hew-lib"])
-            .output()
-            .expect("spawn cargo build -p hew-cli -p hew-lib");
-        assert!(
-            output.status.success(),
-            "cargo build -p hew-cli -p hew-lib failed\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(
-            hew.is_file(),
-            "codegen bootstrap succeeded but hew binary was not created at {}",
-            hew.display()
-        );
-        assert!(
-            lib.is_file(),
-            "codegen bootstrap succeeded but Hew library was not created at {}",
-            lib.display()
-        );
+        hew_testutil::ensure_hew_lib_built().expect("build libhew.a");
     });
 }
 

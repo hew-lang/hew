@@ -24,6 +24,7 @@
 #   make adze         — just the package manager
 #   make observe      — just the TUI observer (hew-observe)
 #   make observe-functional-test — HTTP-backed functional observe harness
+#   make libhew-link-race-test   — real multi-process libhew.a bootstrap-race proof
 #   make runtime      — just libhew_runtime.a
 #   make stdlib       — all stdlib packages + combine into libhew.a
 #   make wasm-runtime — WASM runtime + wire JSON/YAML/TOML archives
@@ -70,7 +71,7 @@
 #   make clean        — remove build/, target/
 # ============================================================================
 
-.PHONY: all build bootstrap install-hooks hew hew-native adze observe observe-functional-test runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
+.PHONY: all build bootstrap install-hooks hew hew-native adze observe observe-functional-test libhew-link-race-test runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
 .PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-real-timing test-lane test-lane-all lane-gates test-fast test-stdlib test-hew test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo leak-scan hew-fmt-check grammar
 .PHONY: clean install install-check uninstall verify-ffi test-verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
@@ -159,6 +160,16 @@ observe:
 
 observe-functional-test: hew-native observe
 	cargo test -p hew-observe --test functional -- --ignored --nocapture
+
+# Real multi-process proof that `hew_testutil::ensure_hew_lib_built` closes
+# the `libhew.a` uplift race: real `cargo build -p hew-lib` writers, a real
+# `hew compile` link, and a real shared NEXTEST_RUN_ID across OS processes.
+# Excluded from routine `cargo nextest run` (see the #[ignore] reasons in
+# hew-testutil/tests/libhew_link_race.rs) because it repeatedly shells real
+# cargo/hew subprocesses; run explicitly here instead, same convention as
+# observe-functional-test above.
+libhew-link-race-test: hew-native
+	cargo test -p hew-testutil --test libhew_link_race -- --ignored --nocapture --test-threads=1
 
 # Build the runtime static library (debug)
 runtime:

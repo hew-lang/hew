@@ -27,6 +27,7 @@ serde_json.workspace = true
 hew-runtime = { path = "../hew-runtime", default-features = false, features = [
   "profiler",
 ] }
+hew-testutil = { path = "../hew-testutil" }
 tempfile.workspace = true
 
 [lints]

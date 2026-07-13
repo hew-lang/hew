@@ -182,31 +182,30 @@ fn build_fixture_binary() -> BuiltFixture {
 
 fn ensure_compiler_artifacts() {
     let hew = hew_binary_path();
-    if hew.is_file() {
-        return;
+    if !hew.is_file() {
+        let mut command = Command::new("cargo");
+        command
+            .args(["build", "-p", "hew-cli"])
+            .current_dir(repo_root());
+        if !cfg!(debug_assertions) {
+            command.arg("--release");
+        }
+        let output = command
+            .output()
+            .expect("failed to run cargo build for hew compiler artifacts");
+        assert!(
+            output.status.success(),
+            "failed to bootstrap hew compiler artifacts\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            hew.is_file(),
+            "cargo build succeeded but {} was not created",
+            hew.display()
+        );
     }
-
-    let mut command = Command::new("cargo");
-    command
-        .args(["build", "-p", "hew-cli", "-p", "hew-lib"])
-        .current_dir(repo_root());
-    if !cfg!(debug_assertions) {
-        command.arg("--release");
-    }
-    let output = command
-        .output()
-        .expect("failed to run cargo build for hew compiler artifacts");
-    assert!(
-        output.status.success(),
-        "failed to bootstrap hew compiler artifacts\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        hew.is_file(),
-        "cargo build succeeded but {} was not created",
-        hew.display()
-    );
+    hew_testutil::ensure_hew_lib_built().expect("build libhew.a");
 }
 
 fn repo_root() -> &'static Path {

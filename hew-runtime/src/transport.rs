@@ -940,8 +940,63 @@ pub extern "C" fn hew_tcp_listener_local_port(listener: c_int) -> c_int {
 }
 
 pub(crate) fn tcp_clone_stream(handle: c_int) -> Option<TcpStream> {
-    TCP_API_STATE.access(|state| state.streams.get(&handle)?.try_clone().ok())
+    TCP_API_STATE.access(|state| {
+        let stream = state.streams.get(&handle)?;
+        // Deterministic test-only injection: after confirming a live table
+        // entry exists (so we exercise the valid-handle-clone-failed path, not
+        // the missing-entry path), fail this clone if the current thread armed
+        // it. Production builds never compile this branch.
+        #[cfg(any(test, feature = "clone-failure-test"))]
+        if clone_failure_hook::take_should_fail() {
+            return None;
+        }
+        stream.try_clone().ok()
+    })
 }
+
+/// Deterministic clone-failure injection seam for the consumed-connection
+/// ownership tests (#2650). See the `clone-failure-test` feature.
+#[cfg(any(test, feature = "clone-failure-test"))]
+pub(crate) mod clone_failure_hook {
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
+
+    thread_local! {
+        /// Pending forced-failure decisions for upcoming `tcp_clone_stream`
+        /// calls on this thread, in call order. `true` = fail the clone.
+        static FORCE: RefCell<VecDeque<bool>> = const { RefCell::new(VecDeque::new()) };
+    }
+
+    /// Test-only: arm deterministic failure of the next one/two
+    /// `tcp_clone_stream` calls on the CURRENT thread. `first` decides clone #1
+    /// (the read fd), `second` decides clone #2 (the write fd). Replaces any
+    /// previously-armed decisions. A clone that is never attempted — because an
+    /// earlier one failed and `hew_tcp_stream_from_conn` returned early — simply
+    /// leaves its arm unconsumed until the next `force_next_clone_failures`
+    /// clears it, so re-arming per loop iteration is safe.
+    pub fn force_next_clone_failures(first: bool, second: bool) {
+        FORCE.with(|f| {
+            let mut q = f.borrow_mut();
+            q.clear();
+            q.push_back(first);
+            q.push_back(second);
+        });
+    }
+
+    /// Clear any armed decisions on the current thread.
+    pub fn clear_clone_failures() {
+        FORCE.with(|f| f.borrow_mut().clear());
+    }
+
+    /// Consume the next armed decision (unarmed ⇒ `false`/succeed). Called by
+    /// `tcp_clone_stream` only after a live table entry is confirmed.
+    pub(crate) fn take_should_fail() -> bool {
+        FORCE.with(|f| f.borrow_mut().pop_front().unwrap_or(false))
+    }
+}
+
+#[cfg(any(test, feature = "clone-failure-test"))]
+pub use clone_failure_hook::{clear_clone_failures, force_next_clone_failures};
 
 /// Remove a TCP connection handle from the table WITHOUT calling `shutdown`.
 ///
@@ -1034,8 +1089,8 @@ pub(crate) fn tcp_listener_with_pending_conn_for_test() -> (c_int, TcpStream) {
 /// live streams table. Checks a specific token rather than the global count,
 /// so concurrent transport tests adding/removing their own handles do not cause
 /// false positives or false negatives.
-#[cfg(test)]
-pub(crate) fn tcp_streams_has_handle_for_test(handle: c_int) -> bool {
+#[cfg(any(test, feature = "clone-failure-test"))]
+pub fn tcp_streams_has_handle_for_test(handle: c_int) -> bool {
     TCP_API_STATE.access(|state| state.streams.contains_key(&handle))
 }
 

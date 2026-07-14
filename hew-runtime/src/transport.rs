@@ -939,18 +939,50 @@ pub extern "C" fn hew_tcp_listener_local_port(listener: c_int) -> c_int {
     tcp_listener_local_port(listener).map_or(-1, c_int::from)
 }
 
+/// Outcome of a stream-clone attempt for the TCP bridge.
+///
+/// Distinguishes "no such connection handle" (a genuine EBADF) from "the
+/// handle is live but `try_clone`/`dup(2)` failed" (e.g. EMFILE/ENFILE under fd
+/// pressure), so `hew_tcp_stream_from_conn` can report the real errno instead
+/// of mislabeling a resource-exhaustion failure as an invalid handle.
+pub(crate) enum CloneOutcome {
+    /// The handle was live and the clone succeeded.
+    Cloned(TcpStream),
+    /// No connection with this handle is registered (genuine EBADF).
+    NoEntry,
+    /// The handle was live but the clone/dup failed with this OS error.
+    Failed(std::io::Error),
+}
+
 pub(crate) fn tcp_clone_stream(handle: c_int) -> Option<TcpStream> {
+    match tcp_clone_stream_outcome(handle) {
+        CloneOutcome::Cloned(stream) => Some(stream),
+        CloneOutcome::NoEntry | CloneOutcome::Failed(_) => None,
+    }
+}
+
+/// Clone a connection's socket, distinguishing "no such handle" from "handle
+/// live but clone failed" so the stream bridge can report the real errno. The
+/// `Option`-returning [`tcp_clone_stream`] delegates here for callers that only
+/// need success/failure.
+pub(crate) fn tcp_clone_stream_outcome(handle: c_int) -> CloneOutcome {
     TCP_API_STATE.access(|state| {
-        let stream = state.streams.get(&handle)?;
-        // Deterministic test-only injection: after confirming a live table
-        // entry exists (so we exercise the valid-handle-clone-failed path, not
-        // the missing-entry path), fail this clone if the current thread armed
-        // it. Production builds never compile this branch.
+        let Some(stream) = state.streams.get(&handle) else {
+            return CloneOutcome::NoEntry;
+        };
+        // Deterministic test-only injection: with a live table entry confirmed,
+        // fail this clone if the current thread armed it (the valid-handle-
+        // clone-failed path). Production builds never compile this branch.
         #[cfg(any(test, feature = "clone-failure-test"))]
         if clone_failure_hook::take_should_fail() {
-            return None;
+            return CloneOutcome::Failed(std::io::Error::from_raw_os_error(
+                clone_failure_hook::INJECTED_CLONE_ERRNO,
+            ));
         }
-        stream.try_clone().ok()
+        match stream.try_clone() {
+            Ok(clone) => CloneOutcome::Cloned(clone),
+            Err(err) => CloneOutcome::Failed(err),
+        }
     })
 }
 
@@ -960,6 +992,12 @@ pub(crate) fn tcp_clone_stream(handle: c_int) -> Option<TcpStream> {
 pub(crate) mod clone_failure_hook {
     use std::cell::RefCell;
     use std::collections::VecDeque;
+
+    /// OS errno the injected clone failure reports. `EMFILE` ("too many open
+    /// files") is the realistic `dup(2)` failure this lane exists to surface,
+    /// and is deliberately distinct from `EBADF` (9, the genuine-invalid-handle
+    /// code) so the diagnostic test can prove the two are no longer conflated.
+    pub const INJECTED_CLONE_ERRNO: i32 = libc::EMFILE;
 
     thread_local! {
         /// Pending forced-failure decisions for upcoming `tcp_clone_stream`
@@ -996,7 +1034,9 @@ pub(crate) mod clone_failure_hook {
 }
 
 #[cfg(any(test, feature = "clone-failure-test"))]
-pub use clone_failure_hook::{clear_clone_failures, force_next_clone_failures};
+pub use clone_failure_hook::{
+    clear_clone_failures, force_next_clone_failures, INJECTED_CLONE_ERRNO,
+};
 
 /// Remove a TCP connection handle from the table WITHOUT calling `shutdown`.
 ///

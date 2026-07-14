@@ -952,8 +952,14 @@ fn channel_sink_close(core: &mut Arc<crate::channel_core::ChannelCore>) {
 /// stream and sink with `hew_stream_pair_stream_bytes` /
 /// `hew_stream_pair_sink_bytes`, then free with `hew_stream_pair_free`.
 ///
-/// Returns `null` with the last-error set to EBADF (errno 9) if `conn` is
-/// not a registered TCP connection handle.
+/// The `conn` handle is **consumed on every return path**: success *and*
+/// clone failure.  On either clone failure the original connection is fully
+/// closed and released from the table before the null pair is returned — the
+/// source-level `Connection` is dead-by-move regardless, so the runtime is the
+/// sole releaser and no fd/table slot can leak (#2650).  The last-error errno
+/// distinguishes the cause: **EBADF (9)** when `conn` is not a registered
+/// handle, otherwise the **real `dup(2)` errno** (e.g. `EMFILE`/`ENFILE` under
+/// fd pressure) so a resource-exhaustion failure is not mislabeled.
 ///
 /// # Safety
 ///
@@ -969,35 +975,78 @@ fn channel_sink_close(core: &mut Arc<crate::channel_core::ChannelCore>) {
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_tcp_stream_from_conn(conn: c_int) -> *mut HewStreamPair {
-    use crate::transport::{tcp_clone_stream, tcp_full_close_conn, tcp_release_conn};
+    use crate::transport::{
+        tcp_clone_stream_outcome, tcp_full_close_conn, tcp_release_conn, CloneOutcome,
+    };
 
     // Clone the read fd.
-    let Some(read_stream) = tcp_clone_stream(conn) else {
-        // Consumed-on-call contract: `conn` is dead-by-move at the source level
-        // on every return path, so the runtime is its sole releaser. No clone
-        // survives here — fully close and release the original entry (removes
-        // the table slot and closes the fd) before returning the null pair.
-        // Without this the socket + table slot leak on an ordinary failure.
-        tcp_full_close_conn(conn);
-        set_last_error_with_errno(
-            format!("hew_tcp_stream_from_conn: invalid connection handle {conn}"),
-            9, // EBADF
-        );
-        return ptr::null_mut();
+    let read_stream = match tcp_clone_stream_outcome(conn) {
+        CloneOutcome::Cloned(stream) => stream,
+        CloneOutcome::NoEntry => {
+            // Genuinely unknown handle: nothing is registered, so there is
+            // nothing to release. Report EBADF (the real "invalid handle").
+            set_last_error_with_errno(
+                format!("hew_tcp_stream_from_conn: invalid connection handle {conn}"),
+                9, // EBADF
+            );
+            return ptr::null_mut();
+        }
+        CloneOutcome::Failed(err) => {
+            // Valid handle, but the clone/dup(2) failed (e.g. EMFILE/ENFILE
+            // under fd pressure). Consumed-on-call contract: `conn` is
+            // dead-by-move at the source level on every return path, so the
+            // runtime is its sole releaser. No clone survives here — fully
+            // close and release the original entry (removes the table slot and
+            // closes the fd) before returning the null pair. Surface the *real*
+            // errno so the failure is distinguishable from a bad handle.
+            tcp_full_close_conn(conn);
+            let errno = err.raw_os_error().unwrap_or(libc::EIO);
+            set_last_error_with_errno_and_kind(
+                format!(
+                    "hew_tcp_stream_from_conn: could not clone read fd for handle {conn}: {err}"
+                ),
+                errno,
+                io_error_kind_tag(err.kind()),
+            );
+            return ptr::null_mut();
+        }
     };
 
     // Clone the write fd.
-    let Some(write_stream) = tcp_clone_stream(conn) else {
-        // `read_stream` is a live dup of the socket and RAII-drops on return
-        // (closing its own dup fd). Full-close the original table entry: a
-        // distinct fd, so no double-close. Both fds are released and the table
-        // slot is freed — the consumed connection is not stranded.
-        tcp_full_close_conn(conn);
-        set_last_error_with_errno(
-            format!("hew_tcp_stream_from_conn: could not clone write fd for handle {conn}"),
-            9, // EBADF
-        );
-        return ptr::null_mut();
+    let write_stream = match tcp_clone_stream_outcome(conn) {
+        CloneOutcome::Cloned(stream) => stream,
+        outcome => {
+            // `read_stream` is a live dup of the socket and RAII-drops on
+            // return (closing its own dup fd). Full-close the original table
+            // entry: a distinct fd, so no double-close. Both fds are released
+            // and the table slot is freed — the consumed connection is not
+            // stranded.
+            tcp_full_close_conn(conn);
+            match outcome {
+                CloneOutcome::Failed(err) => {
+                    let errno = err.raw_os_error().unwrap_or(libc::EIO);
+                    set_last_error_with_errno_and_kind(
+                        format!(
+                            "hew_tcp_stream_from_conn: could not clone write fd for handle {conn}: {err}"
+                        ),
+                        errno,
+                        io_error_kind_tag(err.kind()),
+                    );
+                }
+                // NoEntry after a successful first clone means the entry was
+                // removed out from under us (not reachable on the single-owner
+                // bridge path); report EBADF for completeness.
+                _ => {
+                    set_last_error_with_errno(
+                        format!(
+                            "hew_tcp_stream_from_conn: could not clone write fd for handle {conn}"
+                        ),
+                        9, // EBADF
+                    );
+                }
+            }
+            return ptr::null_mut();
+        }
     };
 
     // Release the original handle from the connection table WITHOUT calling

@@ -24,13 +24,14 @@ use std::ffi::CString;
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 
+use hew_cabi::sink::hew_stream_last_errno;
 use hew_runtime::stream::{
     hew_stream_next_sized, hew_stream_pair_free, hew_stream_pair_stream_bytes,
     hew_tcp_stream_from_conn,
 };
 use hew_runtime::transport::{
     clear_clone_failures, force_next_clone_failures, hew_tcp_close, hew_tcp_connect,
-    tcp_streams_has_handle_for_test,
+    tcp_streams_has_handle_for_test, INJECTED_CLONE_ERRNO,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -59,7 +60,7 @@ fn open_fd_count() -> usize {
     } else {
         "/dev/fd"
     };
-    std::fs::read_dir(dir).map(|it| it.count()).unwrap_or(0)
+    std::fs::read_dir(dir).map_or(0, std::iter::Iterator::count)
 }
 
 /// Drain all items from a `HewStream` into a flat `Vec<u8>`, freeing each
@@ -155,7 +156,7 @@ fn second_clone_failure_releases_table_entry() {
 // ── Shape 3: descriptor-leak slope ─────────────────────────────────────────────
 
 /// Repeated clone failures must not grow the process fd table (flat slope).
-/// This is the DoS guard: before the fix each failed conversion leaked the
+/// This is the `DoS` guard: before the fix each failed conversion leaked the
 /// original socket fd, so the slope grew with N. Peers are dropped each
 /// iteration so only the *runtime-side* accounting is under test.
 #[test]
@@ -241,4 +242,42 @@ fn success_path_releases_entry_without_breaking_roundtrip() {
 
     // SAFETY: pair is valid; stream slot already extracted.
     unsafe { hew_stream_pair_free(pair) };
+}
+
+// ── Shape 5: secondary diagnostic (rides along) ────────────────────────────────
+
+/// A clone/dup failure on a *valid* handle surfaces the real errno (the
+/// injected `EMFILE`), while a genuinely-unknown handle still reports EBADF (9).
+/// Distinguishes `NoEntry` from `CloneFailed` — a resource-exhaustion failure
+/// is no longer mislabeled as an invalid handle.
+#[test]
+fn clone_failure_errno_distinguishes_bad_handle_from_dup_failure() {
+    // Case 1: valid handle, forced clone/dup failure ⇒ the real (injected) errno.
+    let (conn, _peer) = make_bridge_pair();
+    let _ = hew_stream_last_errno(); // clear
+    force_next_clone_failures(true, false);
+    // SAFETY: conn is valid; forced first-clone failure.
+    let pair = unsafe { hew_tcp_stream_from_conn(conn) };
+    clear_clone_failures();
+    assert!(pair.is_null());
+    assert_eq!(
+        hew_stream_last_errno(),
+        INJECTED_CLONE_ERRNO,
+        "a dup(2) failure on a live handle must surface the real errno, not EBADF"
+    );
+    assert_ne!(
+        INJECTED_CLONE_ERRNO, 9,
+        "the injected clone errno must be distinct from EBADF for the test to have teeth"
+    );
+
+    // Case 2: genuinely-unknown handle ⇒ EBADF (9), unchanged.
+    let _ = hew_stream_last_errno();
+    // SAFETY: a large unregistered value is never a valid handle.
+    let pair = unsafe { hew_tcp_stream_from_conn(999_999) };
+    assert!(pair.is_null());
+    assert_eq!(
+        hew_stream_last_errno(),
+        9, // EBADF
+        "an unregistered handle must still report EBADF"
+    );
 }

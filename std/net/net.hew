@@ -366,8 +366,12 @@ trait ConnectionMethods {
     /// After this call, the original `conn` binding is statically unusable
     /// (move discipline: the `Connection` is consumed, matching `Closable::close`).
     /// The original handle is released from the TCP connection table as part
-    /// of the bridge call — the returned stream and sink each own an independent
-    /// socket clone.
+    /// of the bridge call — on **every** return path, success or failure. On
+    /// success the returned stream and sink each own an independent socket
+    /// clone; on clone failure the consumed connection is fully closed and
+    /// released before the null pair is returned, so no descriptor or table
+    /// slot leaks (the source handle is dead-by-move regardless, so the runtime
+    /// is its sole releaser).
     ///
     /// The returned pair composes with `stream.chunks()`, `stream.take(n)`,
     /// and `for await` loops.  Once `select{}` stream-next arms land, TCP
@@ -377,9 +381,10 @@ trait ConnectionMethods {
     /// stream will be used inside `select{}`: the park thread cannot interrupt
     /// a blocked `TcpStream::read` without a timeout.
     ///
-    /// If the factory returns a null pair (invalid fd), the extracted stream and
-    /// sink are also null.  Check with `stream.is_valid(s)` / `sink.is_valid(k)`
-    /// before use.
+    /// If the factory returns a null pair (clone failure), the extracted stream
+    /// and sink are also null; the consumed connection has already been fully
+    /// closed and released, so there is nothing for the caller to clean up.
+    /// Check with `stream.is_valid(s)` / `sink.is_valid(k)` before use.
     ///
     /// On `wasm32` targets this method is unavailable; the type checker rejects
     /// calls to `Connection` methods with `WasmUnsupportedFeature::TcpNetworking`
@@ -690,10 +695,13 @@ extern "C" {
     fn hew_connection_is_valid(conn: Connection) -> bool;
     fn hew_stream_last_error() -> string;
     fn hew_stream_last_errno() -> i32; // INTERNAL-ABI: OS errno from thread-local; 0 when none recorded
-    // TCP-to-Stream/Sink bridge.  Consumes the connection handle; returns a
-    // StreamPair whose halves are extracted with the pair extractor functions
-    // below.  Returns a null StreamPair on invalid fd (check with is_valid).
-    // Not available on wasm32; WASM-TODO(#1451).
+    // TCP-to-Stream/Sink bridge.  Consumes the connection handle on every
+    // return path; returns a StreamPair whose halves are extracted with the
+    // pair extractor functions below.  On clone failure the consumed
+    // connection is fully closed and released and a null StreamPair is returned
+    // (check with is_valid); the last-error errno is EBADF for an unknown
+    // handle, otherwise the real dup(2) errno.  Not available on wasm32;
+    // WASM-TODO(#1451).
     fn hew_tcp_stream_from_conn(conn: Connection) -> StreamPair;
     fn hew_stream_pair_stream_bytes(pair: StreamPair) -> Stream<bytes>;
     fn hew_stream_pair_sink_bytes(pair: StreamPair) -> Sink<bytes>;

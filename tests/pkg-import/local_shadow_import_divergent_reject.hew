@@ -1,0 +1,31 @@
+// Reject fixture: root-local type conflated with a divergent-layout import
+// (issue #2651 headline). A root-local `type Widget { v: i64 }` shadows the bare
+// name; the package `hew::widgeti8` exports a DISTINCT `Widget { v: i8 }`. These
+// are two different definitions that merely share a final segment.
+//
+// Passing a root-local `Widget` value where `widgeti8.Widget` is required must
+// be REJECTED at the type boundary with a nominal type-mismatch diagnostic.
+// Before the fix, the context-free bare/qualified suffix compare in unification
+// accepted the pairing (both spell `Widget`), so the i64-wide local value flowed
+// into an i8 layout and the mismatch surfaced only downstream as an
+// `E_CODEGEN_FRONT` LLVM-verify fail-closed (`Call parameter type mismatch`).
+// The owner-qualified identity gate rejects it cleanly at check time: a
+// root-local declaration keeps its bare identity and is distinct from any
+// imported `owner.Widget`.
+//
+// Harness verb: hew check (expected to FAIL). Asserts a nominal type-mismatch
+// diagnostic AND the absence of any `E_CODEGEN_FRONT` / `D10` fall-through.
+import hew::widgeti8;
+
+type Widget {
+    v: i64;
+}
+
+fn take_imported(w: widgeti8.Widget) -> i8 {
+    w.v
+}
+
+fn main() {
+    let local = Widget { v: 1000 };
+    println(f"{take_imported(local)}");
+}

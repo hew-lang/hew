@@ -1,0 +1,33 @@
+// Legal bare/qualified alias of the SAME imported definition (issue #2651
+// accept side). A single package `hew::widgeti8` publishes `Widget { v: i8 }`.
+// With no local shadow, the bare name `Widget` and the qualified spelling
+// `widgeti8.Widget` denote the SAME definition, so a value of one must satisfy a
+// parameter typed with the other in EITHER direction.
+//
+// The nominal-identity gate at the type boundary must ACCEPT both crossings:
+// `canonical_nominal_name("Widget")` resolves the single-publisher bare name to
+// `widgeti8.Widget`, which is owner-identical to the qualified spelling, so the
+// gate does not fire and unification proceeds. A gate that keyed on the bare
+// spelling alone would wrongly reject this legal alias.
+//
+// Harness verb: hew run
+// Expected: bare=7 then qual=7 — the same `Widget` value read through a bare and
+// a qualified parameter type.
+import hew::widgeti8::{ Widget };
+
+// Bare parameter type: the single-publisher bare `Widget` binds to the imported
+// `widgeti8.Widget`.
+fn read_bare(w: Widget) -> i8 {
+    w.v
+}
+
+// Qualified parameter type: the explicit owner spelling of the same definition.
+fn read_qualified(w: widgeti8.Widget) -> i8 {
+    w.v
+}
+
+fn main() {
+    let w: widgeti8.Widget = Widget { v: 7 };
+    println(f"bare={read_bare(w)}");
+    println(f"qual={read_qualified(w)}");
+}

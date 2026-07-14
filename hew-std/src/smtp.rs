@@ -4,27 +4,26 @@
 //! All returned strings and connection handles are allocated with `libc::malloc`
 //! / `Box` so callers can free them with the corresponding free function.
 use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
-use std::cell::RefCell;
 use std::os::raw::c_char;
 
 use lettre::message::{header::ContentType, Mailbox};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
 
-std::thread_local! {
-    static LAST_SMTP_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
-}
-
 fn set_smtp_last_error(msg: impl Into<String>) {
-    LAST_SMTP_ERROR.with(|error| *error.borrow_mut() = Some(msg.into()));
+    hew_runtime::parse_error_slot::set_error(
+        hew_runtime::parse_error_slot::ErrorSlotKind::Smtp,
+        msg,
+    );
 }
 
 fn clear_smtp_last_error() {
-    LAST_SMTP_ERROR.with(|error| *error.borrow_mut() = None);
+    hew_runtime::parse_error_slot::clear_error(hew_runtime::parse_error_slot::ErrorSlotKind::Smtp);
 }
 
 fn get_smtp_last_error() -> String {
-    LAST_SMTP_ERROR.with(|error| error.borrow().clone().unwrap_or_default())
+    hew_runtime::parse_error_slot::get_error(hew_runtime::parse_error_slot::ErrorSlotKind::Smtp)
+        .unwrap_or_default()
 }
 
 fn smtp_error_result(msg: impl Into<String>) -> i32 {
@@ -449,6 +448,7 @@ pub unsafe extern "C" fn hew_smtp_close(conn: *mut HewSmtpConn) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
     use std::ffi::{CStr, CString};
     use std::ptr;
     use std::rc::Rc;
@@ -794,5 +794,59 @@ mod tests {
         );
         assert_eq!(rc, -1);
         assert!(events.borrow().is_empty());
+    }
+
+    /// An SMTP error recorded for a given actor ID on one OS thread must
+    /// remain readable for that same actor ID on a different OS thread — the
+    /// scenario when an actor is parked mid-send and resumed on another
+    /// scheduler worker.
+    ///
+    /// Drives the actor-keyed slot directly via the `__*_for_actor` test
+    /// helpers (the same internal path `set_smtp_last_error` takes when
+    /// `hew_actor_current_id()` returns this actor ID), since a unit test
+    /// cannot inject actor context without a running scheduler.
+    ///
+    /// With the predecessor `thread_local!` this would have been empty on
+    /// thread B; with the actor-keyed slot it is not.
+    ///
+    /// Run 3× to satisfy the flake gate.
+    #[test]
+    fn smtp_error_visible_across_worker_threads_regression_2659() {
+        for run in 0..3_u32 {
+            const ACTOR_ID: u64 = 779_001;
+
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let barrier2 = barrier.clone();
+
+            let handle = std::thread::spawn(move || {
+                // Simulate: actor ACTOR_ID resumes on thread B.
+                barrier2.wait();
+                hew_runtime::parse_error_slot::__get_error_for_actor(
+                    ACTOR_ID,
+                    hew_runtime::parse_error_slot::ErrorSlotKind::Smtp,
+                )
+            });
+
+            // Thread A: write an SMTP error as if actor ACTOR_ID hit a failed
+            // send.
+            hew_runtime::parse_error_slot::__set_error_for_actor(
+                ACTOR_ID,
+                hew_runtime::parse_error_slot::ErrorSlotKind::Smtp,
+                "smtp send: actor-migration regression",
+            );
+            barrier.wait();
+
+            let result = handle.join().expect("thread B panicked");
+            assert_eq!(
+                result.as_deref(),
+                Some("smtp send: actor-migration regression"),
+                "run {run}: SMTP error written on thread A must be visible on thread B for same actor"
+            );
+
+            hew_runtime::parse_error_slot::__clear_error_for_actor(
+                ACTOR_ID,
+                hew_runtime::parse_error_slot::ErrorSlotKind::Smtp,
+            );
+        }
     }
 }

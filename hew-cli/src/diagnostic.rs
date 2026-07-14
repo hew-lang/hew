@@ -118,6 +118,7 @@ pub(crate) fn hir_diagnostic_user_message(diagnostic: &hew_hir::HirDiagnostic) -
 pub(crate) fn mir_diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
     match kind {
         hew_mir::MirDiagnosticKind::UseAfterConsume { .. }
+        | hew_mir::MirDiagnosticKind::ProjectedPayloadMoveFromReadablePlace { .. }
         | hew_mir::MirDiagnosticKind::InitialisedBeforeUse { .. }
         | hew_mir::MirDiagnosticKind::DecisionMapTotal { .. }
         | hew_mir::MirDiagnosticKind::MustConsume { .. }
@@ -545,6 +546,9 @@ pub(crate) fn build_module_source_map(program: &hew_parser::ast::Program) -> Mod
 fn mir_kind_name(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
     match kind {
         hew_mir::MirDiagnosticKind::UseAfterConsume { .. } => "UseAfterConsume",
+        hew_mir::MirDiagnosticKind::ProjectedPayloadMoveFromReadablePlace { .. } => {
+            "ProjectedPayloadMoveFromReadablePlace"
+        }
         hew_mir::MirDiagnosticKind::InitialisedBeforeUse { .. } => "InitialisedBeforeUse",
         hew_mir::MirDiagnosticKind::DecisionMapTotal { .. } => "DecisionMapTotal",
         hew_mir::MirDiagnosticKind::MustConsume { .. } => "MustConsume",
@@ -630,6 +634,9 @@ fn mir_place_label(place: &hew_mir::Place) -> String {
 fn mir_primary_site(kind: &hew_mir::MirDiagnosticKind) -> Option<hew_hir::SiteId> {
     match kind {
         hew_mir::MirDiagnosticKind::UseAfterConsume { used_at, .. } => Some(*used_at),
+        hew_mir::MirDiagnosticKind::ProjectedPayloadMoveFromReadablePlace { site, .. } => {
+            Some(*site)
+        }
         hew_mir::MirDiagnosticKind::InitialisedBeforeUse { use_site, .. } => Some(*use_site),
         hew_mir::MirDiagnosticKind::DecisionMapTotal { offending_sites } => {
             offending_sites.first().copied()
@@ -672,6 +679,23 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
     let message = match &diagnostic.kind {
         hew_mir::MirDiagnosticKind::UseAfterConsume { name, .. } => {
             format!("binding `{name}` is used after it was consumed")
+        }
+        hew_mir::MirDiagnosticKind::ProjectedPayloadMoveFromReadablePlace { name, reason, .. } => {
+            let source = match reason {
+                hew_mir::ProjectedPayloadRejectReason::ReadablePlace => {
+                    "a `match` on a re-readable place"
+                }
+                hew_mir::ProjectedPayloadRejectReason::CapturedBinding => {
+                    "a `match` on a closure-captured binding"
+                }
+                hew_mir::ProjectedPayloadRejectReason::NestedDestructure => {
+                    "a nested `match` pattern"
+                }
+                hew_mir::ProjectedPayloadRejectReason::GuardedConsume => {
+                    "a `match`-arm guard that can fall through"
+                }
+            };
+            format!("cannot move the heap-owning payload `{name}` out of {source}")
         }
         hew_mir::MirDiagnosticKind::InitialisedBeforeUse { name, .. } => {
             format!("binding `{name}` may be read before it is initialized")
@@ -860,6 +884,12 @@ fn mir_context_notes(diagnostic: &hew_mir::MirDiagnostic) -> Vec<String> {
             notes.push(format!("binding id: {binding}"));
             notes.push(format!("consumed at site: {consumed_at}"));
             notes.push(format!("used at site: {used_at}"));
+        }
+        hew_mir::MirDiagnosticKind::ProjectedPayloadMoveFromReadablePlace {
+            binding, site, ..
+        } => {
+            notes.push(format!("binding id: {binding}"));
+            notes.push(format!("moved at site: {site}"));
         }
         hew_mir::MirDiagnosticKind::InitialisedBeforeUse {
             binding, use_site, ..

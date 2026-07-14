@@ -17233,7 +17233,7 @@ impl LowerCtx {
             } => Some("hew_vec_push_layout"),
             // Closure-pair elements ride the pointer convention: codegen's
             // push marshalling boxes the 16-byte pair behind a heap handle
-            // (same authority as `vec_element_runtime_suffix`'s fn arm).
+            // (same pointer ABI classified by `vec_authority`).
             ResolvedTy::Function { .. } | ResolvedTy::Closure { .. } => Some("hew_vec_push_ptr"),
             ResolvedTy::Named { .. } => match ValueClass::of_ty(elem_ty, &self.type_classes) {
                 ValueClass::CowValue

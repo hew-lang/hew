@@ -15,5 +15,3 @@ mod declarative_monomorphic_ffi_differential;
 mod declarative_option_result_ffi_differential;
 #[path = "ffi_differential/declarative_string_bytes_ffi_differential.rs"]
 mod declarative_string_bytes_ffi_differential;
-#[path = "ffi_differential/declarative_vec_ffi_differential.rs"]
-mod declarative_vec_ffi_differential;

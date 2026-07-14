@@ -8374,7 +8374,7 @@ fn lower_function(
         hew_hir::dispatch::TraitImplMethodEntry,
     >,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
-    vec_generic_element_abi: Option<&HashMap<hew_types::Ty, hew_types::stdlib::VecElementToken>>,
+    vec_generic_element_abi: Option<&HashMap<hew_types::Ty, hew_types::VecElementToken>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     pool_accessor_sites: &HashMap<hew_hir::SiteId, hew_types::PoolAccessor>,
     actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
@@ -10089,7 +10089,7 @@ struct Builder {
     /// element is looked up here per monomorphisation and `(method, token)` is
     /// mapped to the concrete runtime symbol. Empty for lowering contexts that
     /// never observe a polymorphic element (the placeholder then fails closed).
-    vec_generic_element_abi: HashMap<hew_types::Ty, hew_types::stdlib::VecElementToken>,
+    vec_generic_element_abi: HashMap<hew_types::Ty, hew_types::VecElementToken>,
     /// Per-`FieldAccess` site-id → `ChildSlot` side-table, populated by HIR
     /// lowering from the checker's `supervisor_child_slots`. The `FieldAccess`
     /// arm checks this map BEFORE the `record_field_orders` lookup so that
@@ -13472,8 +13472,8 @@ impl Builder {
     ///
     /// Substitutes the receiver `Vec<T>` to its concrete `Vec<E>` for this
     /// monomorphisation, then resolves the symbol from the substituted element
-    /// `E` through the SAME two authorities the concrete element-typed path
-    /// consults, in the concrete path's own precedence:
+    /// `E` through the same `hew_types::vec_authority` resolver used by the
+    /// concrete checker path:
     ///
     ///  1. **Owned (non-`Copy`) element** (record/enum/tuple/nested-collection
     ///     that owns heap, per [`Self::is_owned_vec_element`]): route to the
@@ -13489,10 +13489,8 @@ impl Builder {
     ///     exactly (`dedup-semantic-boundary`).
     ///  2. Otherwise look `E` up in the checker-exported
     ///     [`vec_generic_element_abi`] verdict table (scalar / `string` / `ptr`
-    ///     / Copy value-record `layout`) and map `(method, token)` to the symbol
-    ///     through the single [`hew_types::stdlib::vec_element_op_symbol`]
-    ///     authority — the same `(method, token)` table the concrete constructor
-    ///     path resolves through.
+    ///     / Copy value-record `layout`) and pass the token to the shared
+    ///     source-derived symbol resolver.
     ///
     /// Returns `None` (fail closed) when the call is not an element-typed Vec
     /// op, the receiver is not a substituted `Vec`, or the element is neither
@@ -13502,26 +13500,11 @@ impl Builder {
     fn resolve_polymorphic_vec_element_symbol(
         &self,
         target_family: hew_types::MethodTargetFamily,
-        method_name: &str,
         receiver_ty: &ResolvedTy,
     ) -> Option<String> {
-        // Only the element-typed ops are re-resolved here; monomorphic Vec
-        // methods never carry the placeholder.
         let hew_types::MethodTargetFamily::Vec(vec_method) = target_family else {
             return None;
         };
-        if !matches!(
-            vec_method,
-            hew_types::VecMethod::Push
-                | hew_types::VecMethod::Get
-                | hew_types::VecMethod::Set
-                | hew_types::VecMethod::Pop
-                | hew_types::VecMethod::Remove
-                | hew_types::VecMethod::Contains
-                | hew_types::VecMethod::Clone
-        ) {
-            return None;
-        }
         let ResolvedTy::Named {
             args,
             builtin: Some(hew_types::BuiltinType::Vec),
@@ -13531,86 +13514,28 @@ impl Builder {
             return None;
         };
         let elem = args.first()?;
-        // `Clone` has its own arm: unlike push/get/set/pop/remove/contains it
-        // has no entry at all in `vec_element_op_symbol`'s shared
-        // `(method, token)` table (that table only covers the ops whose
-        // owned/non-owned symbol pair the concrete path resolves through it;
-        // `resolve_vec_method`'s own `"clone"` arm never consults it either —
-        // see `hew-types/src/stdlib.rs`). Route it directly: an owned element
-        // clones deep via `hew_vec_clone_owned` (arity matches the call site's
-        // receiver-only `arg_places`, same as `push`/`get`/etc.); a BitCopy
-        // scalar/string/pointer element clones via the legacy element-agnostic
-        // `hew_vec_clone` (also receiver-only arity) — this is the concrete
-        // path's own `_ => Some("hew_vec_clone")` default for every non-Copy,
-        // non-owned, non-layout element. A concrete (non-abstract) BitCopy
-        // *value-record*/tuple element under a type param resolves to the
-        // `Layout` token here, but its clone needs `hew_vec_clone_layout`,
-        // which is NOT receiver-only (it also takes a layout-descriptor
-        // pointer the `_FAMILY` call site never lowers as an operand) — fail
-        // closed on that token rather than emit an arity-mismatched call.
-        if vec_method == hew_types::VecMethod::Clone {
-            if self.is_owned_vec_element(elem) {
-                return Some("hew_vec_clone_owned".to_string());
-            }
-            let elem_ty = elem.to_ty();
-            return match self.vec_generic_element_abi.get(&elem_ty).copied() {
-                Some(hew_types::stdlib::VecElementToken::Layout) => None,
-                _ => Some("hew_vec_clone".to_string()),
-            };
-        }
-        // #1929 Stage 2: an owned (non-`Copy`) element resolves to the owned
-        // descriptor family — the same symbol the concrete owned path picks
-        // (`Builder` get-symbol routing `_ if owned_elem => "hew_vec_get_owned"`
-        // and the push owned-upgrade at the `_FAMILY` consumer). The owned
-        // authority subsumes the verdict table here, mirroring the concrete
-        // path's precedence (owned-ness wins over the value-class token).
-        let per_element = if self.is_owned_vec_element(elem) {
-            // The element ops are the only `vec_method` values that reach
-            // here (guarded by the `matches!` above); the remaining variants
-            // are monomorphic and never carry the `_FAMILY` placeholder.
-            let owned_symbol = match vec_method {
-                hew_types::VecMethod::Push => "hew_vec_push_owned",
-                hew_types::VecMethod::Get => "hew_vec_get_owned",
-                hew_types::VecMethod::Set => "hew_vec_set_owned",
-                hew_types::VecMethod::Pop => "hew_vec_pop_owned",
-                hew_types::VecMethod::Remove => "hew_vec_remove_at_owned",
-                hew_types::VecMethod::Contains => "hew_vec_contains_owned",
-                other => unreachable!(
-                    "resolve_polymorphic_vec_element_symbol reached the owned arm \
-                     for non-element Vec method {other:?}; the `matches!` guard \
-                     above admits only push/get/set/pop/remove/contains (Clone \
-                     returns earlier above)"
-                ),
-            };
-            Some(owned_symbol.to_string())
-        } else {
-            let elem_ty = elem.to_ty();
-            self.vec_generic_element_abi
-                .get(&elem_ty)
-                .copied()
-                .and_then(|token| {
-                    hew_types::stdlib::vec_element_op_symbol(method_name, token).map(str::to_string)
-                })
+        let elem_ty = elem.to_ty();
+        let abi = self.vec_generic_element_abi.get(&elem_ty).copied();
+        let profile = hew_types::vec_authority::VecElementProfile {
+            abi,
+            is_owned: self.is_owned_vec_element(elem),
+            is_copy_layout: abi == Some(hew_types::VecElementToken::Layout),
+            is_function_like: matches!(
+                elem,
+                ResolvedTy::Function { .. } | ResolvedTy::Closure { .. }
+            ),
+            is_abstract: false,
         };
-        // `get` is the element-agnostic, drop-safe accessor: under the Index
-        // trait model EVERY admissible element class resolves to the SINGLE
-        // runtime choke point `hew_vec_get_clone`, which dispatches on the
-        // element descriptor at runtime and writes a FRESH OWNER into the
-        // `Option<T>` payload (`by-value-heap-params-are-borrows` P0). This
-        // mirrors the checker's concrete-path override in
-        // `resolve_vec_runtime_symbol`: the per-element resolution above is run
-        // ONLY as the admissibility gate for `get` (an element neither the
-        // owned authority nor the verdict table admits keeps failing closed —
-        // `None`), and the resolved symbol is then OVERRIDDEN to the choke
-        // point. Without this, a generic `Vec<T>.get` would re-resolve to the
-        // legacy per-element borrow getter (`hew_vec_get_i64` / the owned
-        // borrowing `hew_vec_get_owned`) that returns a bare `T`, mismatching
-        // the `Option<T>` dest the checker recorded and aliasing a borrowed
-        // slot into a `Some` (the GAP-2 owned drop-safety hole).
-        if matches!(vec_method, hew_types::VecMethod::Get) {
-            return per_element.map(|_| "hew_vec_get_clone".to_string());
+        match hew_types::vec_authority::resolve_runtime_symbol(
+            vec_method,
+            profile,
+            hew_types::vec_authority::VecResolutionContext::MonomorphizedPlaceholder,
+        ) {
+            hew_types::vec_authority::VecSymbolResolution::Resolved(symbol) => Some(symbol),
+            hew_types::vec_authority::VecSymbolResolution::Deferred
+            | hew_types::vec_authority::VecSymbolResolution::Unavailable
+            | hew_types::vec_authority::VecSymbolResolution::Unsupported(_) => None,
         }
-        per_element
     }
 
     /// User-facing rendering of a `Vec<T>` receiver's substituted element type,
@@ -17511,22 +17436,19 @@ impl Builder {
                     // type parameter, so the per-ABI symbol could not be chosen
                     // at check time. Re-resolve it now from the element this
                     // monomorphisation substituted in. The resolver consults the
-                    // same two authorities the concrete element-typed path uses,
-                    // in its precedence: the owned-element authority
+                    // same source-derived authority as the concrete path, with
+                    // owned-element precedence
                     // (`is_owned_vec_element` -> the `hew_vec_*_owned` family) for
                     // non-`Copy` records/enums, heap-owning tuples, and nested
                     // collections (#1929 Stage 2), then the checker's exported
-                    // element->ABI verdict (`vec_generic_element_abi`) mapped
-                    // through the single `(method, token)` symbol authority
-                    // (`vec_element_op_symbol`) for scalar / string / pointer /
+                    // element->ABI verdict (`vec_generic_element_abi`) for
+                    // scalar / string / pointer /
                     // Copy value-record elements. An element neither authority
                     // resolves fails closed here rather than calling an undeclared
                     // symbol.
-                    let Some(sym) = self.resolve_polymorphic_vec_element_symbol(
-                        *target_family,
-                        method_name,
-                        &receiver.ty,
-                    ) else {
+                    let Some(sym) =
+                        self.resolve_polymorphic_vec_element_symbol(*target_family, &receiver.ty)
+                    else {
                         let elem = self.vec_element_user_facing(&receiver.ty);
                         self.diagnostics.push(MirDiagnostic {
                             kind: MirDiagnosticKind::NotYetImplemented {

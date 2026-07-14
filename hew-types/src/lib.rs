@@ -10,7 +10,6 @@ pub mod builtin_names;
 pub mod builtin_type;
 pub mod check;
 pub mod cycle;
-pub mod declarative_vec_ffi;
 pub(crate) mod eligibility_walker;
 pub mod env;
 pub(crate) mod eq_eligibility;
@@ -30,6 +29,7 @@ pub mod traits;
 pub mod ty;
 pub mod type_descriptor;
 pub mod unify;
+pub mod vec_authority;
 
 pub use actor_protocol::{
     compute_default_msg_id, qualified_handler_name, ActorHandlerDescriptor, ActorHandlerSpec,
@@ -74,6 +74,7 @@ pub use runtime_call::{
 pub use runtime_calling_convention::RuntimeCallingConvention;
 pub use ty::{TraitObjectBound, Ty};
 pub use type_descriptor::TypeDescriptor;
+pub use vec_authority::VecElementToken;
 
 /// Native-only stdlib module short-names that are rejected on the wasm32 target
 /// and in the browser sandbox.

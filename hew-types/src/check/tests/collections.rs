@@ -881,6 +881,72 @@ fn vec_self_recursive_enum_fails_closed_with_accurate_diagnostic() {
 }
 
 #[test]
+fn vec_indirect_enum_heap_payload_push_routes_to_pointer_abi() {
+    // CAP-01 regression: an `indirect enum` element with a heap-owning
+    // payload (a `string` variant here) satisfies every shape
+    // `vec_owned_element_admissible` checks — registered `Enum` kind,
+    // `RcFree` (no `Rc` payload), and no `Vec`/`HashMap`/`HashSet` field to
+    // trip the unowned-container guard — so it is reported `is_owned: true`.
+    // But `classify_element` correctly tokens an indirect enum `Ptr` (its
+    // `Vec` buffer is one heap-boxed pointer per slot, built by codegen's
+    // explicit `hew_vec_new_ptr` constructor arm for indirect enums), and
+    // `vec_owned_element_admissible` is blind to indirection: it never
+    // checks `TypeDef.is_indirect`. Before the vec-authority fix,
+    // `resolve_runtime_symbol` honoured the (wrong) `is_owned: true` and
+    // routed `push`/`pop`/`get`/... to `hew_vec_*_owned` — a construct/
+    // operate ABI split (pointer-plain buffer, owned-descriptor ops) that
+    // would corrupt the runtime the moment this element shape is used. The
+    // fix pins every `Ptr`-token element to the `_ptr`/base family
+    // regardless of `is_owned`, so this must type-check clean AND resolve
+    // every method to its pointer-ABI symbol.
+    let output = check_source(
+        r#"
+        indirect enum StrNode {
+            Str(string);
+            Empty;
+        }
+
+        fn main() {
+            let nodes: Vec<StrNode> = Vec::new();
+            nodes.push(StrNode::Str("a"));
+            nodes.push(StrNode::Empty);
+            let _ = nodes.get(0);
+            let _ = nodes.pop();
+            let _ = nodes.len();
+        }
+        "#,
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "Vec<StrNode> (heap-payload indirect enum) must type-check clean: {:#?}",
+        output.errors
+    );
+    for (method, expected_symbol) in [
+        ("push", "hew_vec_push_ptr"),
+        ("pop", "hew_vec_pop_ptr"),
+        ("get", "hew_vec_get_clone"),
+    ] {
+        assert!(
+            output.resolved_calls.values().any(|call| {
+                call.method_name == method && call.target.symbol_name == expected_symbol
+            }),
+            "Vec<StrNode>::{method} must route to {expected_symbol} via resolved_calls, \
+             never an `_owned` family symbol: {:#?}",
+            output.resolved_calls
+        );
+        assert!(
+            !output.resolved_calls.values().any(|call| {
+                call.method_name == method && call.target.symbol_name.ends_with("_owned")
+            }),
+            "Vec<StrNode>::{method} must never resolve to an `_owned` family symbol \
+             (construct/operate ABI split): {:#?}",
+            output.resolved_calls
+        );
+    }
+}
+
+#[test]
 fn local_pid_actor_dispatch_uses_builtin_discriminator() {
     let output = check_source(
         r"

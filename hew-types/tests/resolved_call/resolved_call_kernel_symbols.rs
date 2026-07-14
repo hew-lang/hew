@@ -273,11 +273,8 @@ fn every_stage_b_method_target_symbol_is_link_resolved() {
         for (method_name, target) in &def.methods {
             let symbol = target.symbol_name.as_str();
             if def.trait_name == "Seq" && symbol.ends_with("_FAMILY") {
-                // Vec keeps per-element scalar/layout symbol selection in
-                // `resolve_vec_runtime_symbol`; the registry row is only the
-                // resolved-call admission substrate until that duality is
-                // collapsed. Placeholder family roots are intentionally not
-                // runtime exports.
+                // Vec placeholders are resolved per call site by the shared
+                // source-derived authority; family roots are not runtime exports.
                 continue;
             }
             checked.insert(symbol.to_string());
@@ -328,9 +325,9 @@ fn every_stage_b_symbol_uses_canonical_kernel_suffix() {
     for (_impl_id, def) in registry.iter() {
         for (method_name, target) in &def.methods {
             if def.trait_name == "Seq" && target.symbol_name.ends_with("_FAMILY") {
-                // Vec placeholder roots are overwritten per call site by
-                // `resolve_vec_runtime_symbol`; only concrete HashMap/HashSet
-                // kernel symbols participate in this suffix invariant.
+                // Vec placeholder roots are overwritten per call site by the
+                // shared authority; only concrete HashMap/HashSet kernel symbols
+                // participate in this suffix invariant.
                 continue;
             }
             if !target.symbol_name.ends_with("_layout") {

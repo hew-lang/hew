@@ -24512,8 +24512,8 @@ pub(crate) fn layout_vec_element_needs_descriptor<'ctx>(
         ResolvedTy::Named { name, args, .. } => {
             // An indirect enum is heap-allocated: every element slot holds an
             // 8-byte pointer, so it rides the pointer ABI (`hew_vec_*_ptr`) —
-            // the same routing the checker (`vec_element_runtime_suffix` →
-            // `"ptr"`) and the MIR getter (`lower_vec_index`'s `!is_indirect`
+            // the same routing the checker (`vec_authority` pointer ABI) and
+            // the MIR getter (`lower_vec_index`'s `!is_indirect`
             // gate) already use. It must NOT take a layout descriptor: its
             // tagged-union struct is registered in `record_layouts` (every enum
             // is), so without this gate the `contains_key` check below would
@@ -24707,7 +24707,7 @@ fn lower_vec_constructor_call(
         ResolvedTy::Function { .. } | ResolvedTy::Closure { .. } => VecCtor::ClosurePair,
         // Indirect-enum elements are heap-allocated pointer handles: each slot
         // holds an 8-byte pointer, the same convention the checker
-        // (`vec_element_runtime_suffix` → `"ptr"`) and the MIR getter
+        // (`vec_authority` pointer ABI) and the MIR getter
         // (`lower_vec_index`'s `!is_indirect` gate) route through. Selected
         // explicitly because `resolve_ty` returns the registered tagged-union
         // STRUCT for an indirect enum (struct-layout-first), so the generic

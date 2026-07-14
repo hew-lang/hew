@@ -500,8 +500,8 @@ impl Checker {
                 self.record_type(span, &Ty::Error);
                 return Some(Ty::Error);
             }
-            if crate::stdlib::vec_element_runtime_suffix(&elem_ty, &self.type_defs)
-                == Some("layout")
+            if crate::vec_authority::classify_element(&elem_ty, &self.type_defs)
+                == Some(crate::vec_authority::VecElementToken::Layout)
                 && matches!(elem_ty, Ty::Named { .. })
             {
                 let is_copy = self.vec_element_has_copy_layout(&elem_ty);
@@ -1005,8 +1005,8 @@ impl Checker {
                 let elem_ty = lowered.remove(0);
                 let resolved_elem = self.subst.resolve(&elem_ty);
                 // Inherit the layout+Copy guard from check_call_against_expected_constructor.
-                if crate::stdlib::vec_element_runtime_suffix(&resolved_elem, &self.type_defs)
-                    == Some("layout")
+                if crate::vec_authority::classify_element(&resolved_elem, &self.type_defs)
+                    == Some(crate::vec_authority::VecElementToken::Layout)
                     && matches!(resolved_elem, Ty::Named { .. })
                 {
                     let is_copy = self.vec_element_has_copy_layout(&resolved_elem);

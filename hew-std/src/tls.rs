@@ -4,7 +4,6 @@
 //! All `extern "C"` functions are designed to be called from compiled Hew
 //! programs via FFI. Any string returned by [`hew_tls_last_error`] is allocated
 //! with `libc::malloc`; callers must free it with `libc::free`.
-use std::cell::RefCell;
 use std::ffi::c_void;
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
@@ -26,10 +25,6 @@ const TLS_STATUS_SUCCESS: c_int = 0;
 const TLS_STATUS_RETRYABLE: c_int = 1;
 const TLS_STATUS_TLS_ERROR: c_int = 2;
 const TLS_STATUS_IO_ERROR: c_int = 3;
-
-std::thread_local! {
-    static LAST_TLS_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
-}
 
 // ── Opaque handle ─────────────────────────────────────────────────────────────
 
@@ -171,15 +166,19 @@ fn connect_tls(host: &str, port: u16) -> Result<HewTlsStream, BoxError> {
 }
 
 fn set_tls_last_error(msg: impl Into<String>) {
-    LAST_TLS_ERROR.with(|error| *error.borrow_mut() = Some(msg.into()));
+    hew_runtime::parse_error_slot::set_error(
+        hew_runtime::parse_error_slot::ErrorSlotKind::Tls,
+        msg,
+    );
 }
 
 fn clear_tls_last_error() {
-    LAST_TLS_ERROR.with(|error| *error.borrow_mut() = None);
+    hew_runtime::parse_error_slot::clear_error(hew_runtime::parse_error_slot::ErrorSlotKind::Tls);
 }
 
 fn get_tls_last_error() -> String {
-    LAST_TLS_ERROR.with(|error| error.borrow().as_ref().cloned().unwrap_or_else(String::new))
+    hew_runtime::parse_error_slot::get_error(hew_runtime::parse_error_slot::ErrorSlotKind::Tls)
+        .unwrap_or_default()
 }
 
 /// An empty, non-owning `BytesTriple` — the TLS read EOF/error sentinel.
@@ -1881,6 +1880,60 @@ mod tests {
             assert_eq!(
                 parsed, *expected,
                 "tls.hew `{name}` = {parsed} must match Rust `{name}` = {expected}"
+            );
+        }
+    }
+
+    /// A TLS error recorded for a given actor ID on one OS thread must remain
+    /// readable for that same actor ID on a different OS thread — the exact
+    /// scenario when an actor is parked mid-connect and resumed on another
+    /// scheduler worker.
+    ///
+    /// We drive the actor-keyed slot directly via the `__*_for_actor` test
+    /// helpers (the same internal path `set_tls_last_error` takes when
+    /// `hew_actor_current_id()` returns this actor ID), because a unit test
+    /// cannot inject actor context without a running scheduler.
+    ///
+    /// With the predecessor `thread_local!` this would have been empty on
+    /// thread B; with the actor-keyed slot it is not.
+    ///
+    /// Run 3× to satisfy the flake gate.
+    #[test]
+    fn tls_error_visible_across_worker_threads_regression_2659() {
+        for run in 0..3_u32 {
+            const ACTOR_ID: u64 = 778_001;
+
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let barrier2 = barrier.clone();
+
+            let handle = thread::spawn(move || {
+                // Simulate: actor ACTOR_ID resumes on thread B.
+                barrier2.wait();
+                hew_runtime::parse_error_slot::__get_error_for_actor(
+                    ACTOR_ID,
+                    hew_runtime::parse_error_slot::ErrorSlotKind::Tls,
+                )
+            });
+
+            // Thread A: write a TLS error as if actor ACTOR_ID hit a failed
+            // hew_tls_connect.
+            hew_runtime::parse_error_slot::__set_error_for_actor(
+                ACTOR_ID,
+                hew_runtime::parse_error_slot::ErrorSlotKind::Tls,
+                "hew_tls_connect: actor-migration regression",
+            );
+            barrier.wait();
+
+            let result = handle.join().expect("thread B panicked");
+            assert_eq!(
+                result.as_deref(),
+                Some("hew_tls_connect: actor-migration regression"),
+                "run {run}: TLS error written on thread A must be visible on thread B for same actor"
+            );
+
+            hew_runtime::parse_error_slot::__clear_error_for_actor(
+                ACTOR_ID,
+                hew_runtime::parse_error_slot::ErrorSlotKind::Tls,
             );
         }
     }

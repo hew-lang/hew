@@ -994,8 +994,8 @@ pub(crate) mod clone_failure_hook {
     use std::collections::VecDeque;
 
     /// OS errno the injected clone failure reports. `EMFILE` ("too many open
-    /// files") is the realistic `dup(2)` failure this lane exists to surface,
-    /// and is deliberately distinct from `EBADF` (9, the genuine-invalid-handle
+    /// files") is the realistic `dup(2)` failure the bridge must surface, and
+    /// is deliberately distinct from `EBADF` (9, the genuine-invalid-handle
     /// code) so the diagnostic test can prove the two are no longer conflated.
     pub const INJECTED_CLONE_ERRNO: i32 = libc::EMFILE;
 

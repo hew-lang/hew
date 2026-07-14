@@ -449,7 +449,7 @@ pub unsafe extern "C" fn hew_smtp_close(conn: *mut HewSmtpConn) {
 mod tests {
     use super::*;
     use std::cell::RefCell;
-    use std::ffi::{CStr, CString};
+    use std::ffi::{c_void, CStr, CString};
     use std::ptr;
     use std::rc::Rc;
 
@@ -796,57 +796,149 @@ mod tests {
         assert!(events.borrow().is_empty());
     }
 
-    /// An SMTP error recorded for a given actor ID on one OS thread must
-    /// remain readable for that same actor ID on a different OS thread — the
-    /// scenario when an actor is parked mid-send and resumed on another
-    /// scheduler worker.
+    /// Spawn a minimal, never-scheduled actor solely to obtain a stable,
+    /// dereferenceable actor identity for `hew_actor_current_id()`. The
+    /// dispatch stub is never invoked — this actor receives no messages.
+    fn spawn_error_slot_test_actor() -> *mut hew_runtime::actor::HewActor {
+        unsafe extern "C-unwind" fn noop_dispatch(
+            _ctx: *mut hew_runtime::HewExecutionContext,
+            _state: *mut c_void,
+            _msg_type: i32,
+            _data: *mut c_void,
+            _data_size: usize,
+            _borrow_mode: i32,
+        ) -> *mut c_void {
+            std::ptr::null_mut()
+        }
+
+        // SAFETY: null state / size 0 is a documented no-state spawn.
+        unsafe { hew_runtime::actor::hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) }
+    }
+
+    /// Install `actor` as the current dispatch's actor for the duration of
+    /// `f`, restoring whatever was previously installed afterward — the same
+    /// install/restore bracket codegen places around every real dispatch
+    /// (`hew_context_install`/`hew_context_restore`), so
+    /// `hew_actor_current_id()` resolves to `actor`'s id inside `f` exactly
+    /// as it would mid-dispatch.
+    fn with_actor_context<R>(actor: *mut hew_runtime::actor::HewActor, f: impl FnOnce() -> R) -> R {
+        let mut ctx = hew_runtime::HewExecutionContext {
+            actor,
+            ..Default::default()
+        };
+        let prev = hew_runtime::set_current_context(&raw mut ctx);
+        let result = f();
+        let _ = hew_runtime::set_current_context(prev);
+        result
+    }
+
+    static SMTP_RUNTIME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct SmtpRuntimeGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl SmtpRuntimeGuard {
+        fn new() -> Self {
+            // The scheduler is process-global: repeated init is a no-op, but
+            // cleanup frees every tracked actor. Hold exclusive ownership for
+            // the full test so no other test can reclaim this actor.
+            let lock = SMTP_RUNTIME_TEST_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert_eq!(hew_runtime::scheduler::hew_sched_init(), 0);
+            Self { _lock: lock }
+        }
+    }
+
+    impl Drop for SmtpRuntimeGuard {
+        fn drop(&mut self) {
+            hew_runtime::scheduler::hew_sched_shutdown();
+            hew_runtime::scheduler::hew_runtime_cleanup();
+        }
+    }
+
+    /// An SMTP error recorded by the REAL `hew_smtp_send` failure path —
+    /// while a given actor is the installed dispatch context on OS thread A —
+    /// must be readable through the REAL public `hew_smtp_last_error`
+    /// accessor when that SAME actor is the installed dispatch context on a
+    /// DIFFERENT OS thread B.
     ///
-    /// Drives the actor-keyed slot directly via the `__*_for_actor` test
-    /// helpers (the same internal path `set_smtp_last_error` takes when
-    /// `hew_actor_current_id()` returns this actor ID), since a unit test
-    /// cannot inject actor context without a running scheduler.
-    ///
-    /// With the predecessor `thread_local!` this would have been empty on
-    /// thread B; with the actor-keyed slot it is not.
+    /// This is the actual #2659 regression: an actor parked mid-send and
+    /// resumed on another scheduler worker must not lose its recorded error.
+    /// Driving the module's own producer (`hew_smtp_send`) and public
+    /// accessor (`hew_smtp_last_error`) — rather than poking the shared
+    /// `parse_error_slot` map directly — means this test is RED against the
+    /// predecessor `thread_local!` implementation: a plain `thread_local!`
+    /// slot is intrinsically per-OS-thread storage, so thread B's slot would
+    /// stay empty no matter which actor either thread believes is
+    /// dispatching. It is GREEN only because `set_/get_smtp_last_error` now
+    /// key on actor identity via `parse_error_slot`.
     ///
     /// Run 3× to satisfy the flake gate.
     #[test]
     fn smtp_error_visible_across_worker_threads_regression_2659() {
+        // hew_actor_spawn requires an installed runtime authority.
+        let _runtime = SmtpRuntimeGuard::new();
+
         for run in 0..3_u32 {
-            const ACTOR_ID: u64 = 779_001;
+            let test_actor = spawn_error_slot_test_actor();
+            assert!(!test_actor.is_null(), "test actor should spawn");
+            let actor_addr = test_actor as usize;
+
+            let conn = make_test_conn();
+            let from = CString::new("not-an-email").unwrap();
+            let to = CString::new("recipient@example.com").unwrap();
+            let subject = CString::new("Hello").unwrap();
+            let body = CString::new("Body").unwrap();
 
             let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
             let barrier2 = barrier.clone();
 
             let handle = std::thread::spawn(move || {
-                // Simulate: actor ACTOR_ID resumes on thread B.
+                // Simulate: the actor resumes on thread B, a different OS
+                // thread than the one that recorded the error.
                 barrier2.wait();
-                hew_runtime::parse_error_slot::__get_error_for_actor(
-                    ACTOR_ID,
-                    hew_runtime::parse_error_slot::ErrorSlotKind::Smtp,
-                )
+                let actor_ptr = actor_addr as *mut hew_runtime::actor::HewActor;
+                with_actor_context(actor_ptr, last_error_text)
             });
 
-            // Thread A: write an SMTP error as if actor ACTOR_ID hit a failed
-            // send.
-            hew_runtime::parse_error_slot::__set_error_for_actor(
-                ACTOR_ID,
-                hew_runtime::parse_error_slot::ErrorSlotKind::Smtp,
-                "smtp send: actor-migration regression",
-            );
+            // Thread A: install the SAME actor as the dispatch context and
+            // drive the real hew_smtp_send failure path — the actual
+            // producer, not a direct slot poke.
+            with_actor_context(test_actor, || {
+                // SAFETY: `conn` is a valid test connection and the strings
+                // are valid C strings; the malformed `from` address is the
+                // documented failure path.
+                let rc = unsafe {
+                    hew_smtp_send(
+                        conn,
+                        from.as_ptr(),
+                        to.as_ptr(),
+                        subject.as_ptr(),
+                        body.as_ptr(),
+                    )
+                };
+                assert_eq!(rc, -1);
+            });
             barrier.wait();
 
             let result = handle.join().expect("thread B panicked");
-            assert_eq!(
-                result.as_deref(),
-                Some("smtp send: actor-migration regression"),
-                "run {run}: SMTP error written on thread A must be visible on thread B for same actor"
+            assert!(
+                result.contains("parse") || result.contains("address"),
+                "run {run}: SMTP error recorded on thread A must be visible on thread B for the same actor, got {result:?}"
             );
 
-            hew_runtime::parse_error_slot::__clear_error_for_actor(
-                ACTOR_ID,
-                hew_runtime::parse_error_slot::ErrorSlotKind::Smtp,
-            );
+            // SAFETY: `conn` came from `make_test_conn` and has not been freed yet.
+            unsafe { hew_smtp_close(conn) };
+            // SAFETY: test_actor was spawned above and not yet stopped/freed.
+            unsafe { hew_runtime::actor::hew_actor_stop(test_actor) };
+            // hew_actor_free reaps every parse_error_slot entry for this
+            // actor via parse_error_slot::clear_all_for_actor — no manual
+            // clear needed.
+            // SAFETY: test_actor is stopped immediately above; free reclaims
+            // it exactly once.
+            assert_eq!(unsafe { hew_runtime::actor::hew_actor_free(test_actor) }, 0);
         }
     }
 }

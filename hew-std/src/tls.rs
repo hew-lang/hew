@@ -1884,57 +1884,106 @@ mod tests {
         }
     }
 
-    /// A TLS error recorded for a given actor ID on one OS thread must remain
-    /// readable for that same actor ID on a different OS thread — the exact
-    /// scenario when an actor is parked mid-connect and resumed on another
-    /// scheduler worker.
+    /// Spawn a minimal, never-scheduled actor solely to obtain a stable,
+    /// dereferenceable actor identity for `hew_actor_current_id()`. The
+    /// dispatch stub is never invoked — this actor receives no messages.
+    fn spawn_error_slot_test_actor() -> *mut hew_runtime::actor::HewActor {
+        unsafe extern "C-unwind" fn noop_dispatch(
+            _ctx: *mut hew_runtime::HewExecutionContext,
+            _state: *mut c_void,
+            _msg_type: i32,
+            _data: *mut c_void,
+            _data_size: usize,
+            _borrow_mode: i32,
+        ) -> *mut c_void {
+            std::ptr::null_mut()
+        }
+
+        // SAFETY: null state / size 0 is a documented no-state spawn.
+        unsafe { actor::hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) }
+    }
+
+    /// Install `actor` as the current dispatch's actor for the duration of
+    /// `f`, restoring whatever was previously installed afterward — the same
+    /// install/restore bracket codegen places around every real dispatch
+    /// (`hew_context_install`/`hew_context_restore`), so
+    /// `hew_actor_current_id()` resolves to `actor`'s id inside `f` exactly
+    /// as it would mid-dispatch.
+    fn with_actor_context<R>(actor: *mut hew_runtime::actor::HewActor, f: impl FnOnce() -> R) -> R {
+        let mut ctx = hew_runtime::HewExecutionContext {
+            actor,
+            ..Default::default()
+        };
+        let prev = hew_runtime::set_current_context(&raw mut ctx);
+        let result = f();
+        let _ = hew_runtime::set_current_context(prev);
+        result
+    }
+
+    /// A TLS error recorded by the REAL `hew_tls_connect` failure path —
+    /// while a given actor is the installed dispatch context on OS thread A —
+    /// must be readable through the REAL public `hew_tls_last_error`
+    /// accessor when that SAME actor is the installed dispatch context on a
+    /// DIFFERENT OS thread B.
     ///
-    /// We drive the actor-keyed slot directly via the `__*_for_actor` test
-    /// helpers (the same internal path `set_tls_last_error` takes when
-    /// `hew_actor_current_id()` returns this actor ID), because a unit test
-    /// cannot inject actor context without a running scheduler.
-    ///
-    /// With the predecessor `thread_local!` this would have been empty on
-    /// thread B; with the actor-keyed slot it is not.
+    /// This is the actual #2659 regression: an actor parked mid-connect and
+    /// resumed on another scheduler worker must not lose its recorded error.
+    /// Driving the module's own producer (`hew_tls_connect`) and public
+    /// accessor (`hew_tls_last_error`) — rather than poking the shared
+    /// `parse_error_slot` map directly — means this test is RED against the
+    /// predecessor `thread_local!` implementation: a plain `thread_local!`
+    /// slot is intrinsically per-OS-thread storage, so thread B's slot would
+    /// stay empty no matter which actor either thread believes is
+    /// dispatching. It is GREEN only because `set_/get_tls_last_error` now
+    /// key on actor identity via `parse_error_slot`.
     ///
     /// Run 3× to satisfy the flake gate.
     #[test]
     fn tls_error_visible_across_worker_threads_regression_2659() {
+        // hew_actor_spawn requires an installed runtime authority; reuse the
+        // same scheduler guard the attach/close tests above use.
+        let _runtime = TlsRuntimeGuard::new();
+
         for run in 0..3_u32 {
-            const ACTOR_ID: u64 = 778_001;
+            let test_actor = spawn_error_slot_test_actor();
+            assert!(!test_actor.is_null(), "test actor should spawn");
+            let actor_addr = test_actor as usize;
 
             let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
             let barrier2 = barrier.clone();
 
             let handle = thread::spawn(move || {
-                // Simulate: actor ACTOR_ID resumes on thread B.
+                // Simulate: the actor resumes on thread B, a different OS
+                // thread than the one that recorded the error.
                 barrier2.wait();
-                hew_runtime::parse_error_slot::__get_error_for_actor(
-                    ACTOR_ID,
-                    hew_runtime::parse_error_slot::ErrorSlotKind::Tls,
-                )
+                let actor_ptr = actor_addr as *mut hew_runtime::actor::HewActor;
+                with_actor_context(actor_ptr, last_error_string)
             });
 
-            // Thread A: write a TLS error as if actor ACTOR_ID hit a failed
-            // hew_tls_connect.
-            hew_runtime::parse_error_slot::__set_error_for_actor(
-                ACTOR_ID,
-                hew_runtime::parse_error_slot::ErrorSlotKind::Tls,
-                "hew_tls_connect: actor-migration regression",
-            );
+            // Thread A: install the SAME actor as the dispatch context and
+            // drive the real hew_tls_connect failure path — the actual
+            // producer, not a direct slot poke.
+            with_actor_context(test_actor, || {
+                // SAFETY: passing null is the documented failure path.
+                let ptr = unsafe { hew_tls_connect(std::ptr::null(), 443) };
+                assert!(ptr.is_null());
+            });
             barrier.wait();
 
             let result = handle.join().expect("thread B panicked");
             assert_eq!(
-                result.as_deref(),
-                Some("hew_tls_connect: actor-migration regression"),
-                "run {run}: TLS error written on thread A must be visible on thread B for same actor"
+                result, "hew_tls_connect: invalid host string",
+                "run {run}: TLS error recorded on thread A must be visible on thread B for the same actor"
             );
 
-            hew_runtime::parse_error_slot::__clear_error_for_actor(
-                ACTOR_ID,
-                hew_runtime::parse_error_slot::ErrorSlotKind::Tls,
-            );
+            // SAFETY: test_actor was spawned above and not yet stopped/freed.
+            unsafe { actor::hew_actor_stop(test_actor) };
+            // hew_actor_free reaps every parse_error_slot entry for this
+            // actor via parse_error_slot::clear_all_for_actor — no manual
+            // clear needed.
+            // SAFETY: test_actor is stopped immediately above; free reclaims
+            // it exactly once.
+            assert_eq!(unsafe { actor::hew_actor_free(test_actor) }, 0);
         }
     }
 }

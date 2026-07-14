@@ -30,14 +30,15 @@ use hew_types::{
 
 use crate::dataflow;
 use crate::model::{
-    ActorHandlerLayout, ActorLayout, ActorStateLoadMode, BasicBlock, BlockKind, CheckedMirFunction,
-    ClosureEnvAllocation, ClosureEnvFieldInit, ClosureEnvFieldOwnership, CmpPred, CoalesceKeyEntry,
-    CoalesceKeyKind, CoalesceKeyPlan, DecisionFact, DropKind, DropPlan, ElabBlock, ElabDrop,
-    ElaboratedMirFunction, ExitPath, FieldOffset, FloatWidth, Instr, IntArithOp, IntSignedness,
-    IrPipeline, JoinBranch, LambdaCapture, MirCheck, MirConst, MirConstValue, MirDiagnostic,
-    MirDiagnosticKind, MirStatement, Place, PointerWidth, ProjectedPayloadRejectReason,
-    RawMirFunction, SelectArm, SelectArmKind, SourceOrigin, SpawnEnvFieldOwnership, Strategy,
-    SuspendKind, Terminator, ThirFunction, TraitObjectStorage, TrapKind,
+    ActorHandlerLayout, ActorLayout, ActorStateLoadMode, AggregateOwner, BasicBlock, BlockKind,
+    CheckedMirFunction, ClosureEnvAllocation, ClosureEnvFieldInit, ClosureEnvFieldOwnership,
+    CmpPred, CoalesceKeyEntry, CoalesceKeyKind, CoalesceKeyPlan, DecisionFact, DropKind, DropPlan,
+    ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, FieldOffset, FloatWidth, Instr,
+    IntArithOp, IntSignedness, IrPipeline, JoinBranch, LambdaCapture, MirCheck, MirConst,
+    MirConstValue, MirDiagnostic, MirDiagnosticKind, MirStatement, Place, PointerWidth,
+    ProjectedPayloadRejectReason, RawMirFunction, SelectArm, SelectArmKind, SourceOrigin,
+    SpawnEnvFieldOwnership, Strategy, SuspendKind, Terminator, ThirFunction, TraitObjectStorage,
+    TrapKind,
 };
 use crate::ownership::FailClosedReason;
 use crate::ownership::LayoutClass;
@@ -36679,12 +36680,14 @@ fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
             name,
             handle_ty,
             overwrite,
+            owner,
             ..
         } => Some(MirDiagnostic {
             kind: MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported {
                 name: name.clone(),
                 handle_ty: handle_ty.clone(),
                 overwrite: *overwrite,
+                owner: *owner,
             },
             note: "the drop analysis could not prove this owned handle is freed \
                    exactly once after aggregate extraction; the compiler refuses \
@@ -47343,6 +47346,7 @@ fn detect_unproven_aggregate_handle_double_free(
             name,
             handle_ty: render_owned_handle_ty(&ty),
             overwrite: false,
+            owner: AggregateOwner::Record,
         });
     }
     findings
@@ -47465,6 +47469,7 @@ fn detect_opaque_resource_field_misuse(
                         name,
                         handle_ty: render_owned_handle_ty(ty),
                         overwrite: false,
+                        owner: AggregateOwner::Record,
                     });
                 }
                 // Overwriting the resource leaf IN PLACE within the record.
@@ -47489,6 +47494,7 @@ fn detect_opaque_resource_field_misuse(
                         name,
                         handle_ty: render_owned_handle_ty(ty),
                         overwrite: true,
+                        owner: AggregateOwner::Record,
                     });
                 }
                 _ => {}

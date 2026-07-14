@@ -666,6 +666,92 @@ fn spawn_reconnect_worker(mgr: *mut HewConnMgr, conn_id: c_int, plan: ReconnectP
     }
 }
 
+/// Outcome of a single [`reconnect_attempt`].
+#[derive(Debug, PartialEq, Eq)]
+enum ReconnectAttemptOutcome {
+    /// The reconnected connection was installed and reconnect was re-armed.
+    Installed,
+    /// The attempt reached `hew_connmgr_expect_peer`/`hew_connmgr_add` and
+    /// was rejected there (e.g. a pinned-identity mismatch). The specific
+    /// reason is already in `hew_last_error` — set by whichever of those two
+    /// calls rejected the attempt.
+    Rejected,
+    /// The attempt failed before reaching the identity gate (invalid
+    /// address, transport connect failure).
+    TransportError,
+}
+
+/// Runs one reconnect attempt: connect, replay the pinned peer identity
+/// (`plan.expected_node_id`) if any, install via `hew_connmgr_add`, and
+/// re-arm reconnect on success.
+///
+/// Extracted from the retry loop so both the worker and tests can drive the
+/// exact install sequence deterministically and same-thread. Bare-address
+/// reconnects (`plan.expected_node_id.is_none()`) skip straight to
+/// `hew_connmgr_add`, unchanged from before this pin was threaded through.
+fn reconnect_attempt(
+    mgr_ptr: *mut HewConnMgr,
+    plan: &ReconnectPlan,
+    dropped_conn_id: c_int,
+    attempt: u32,
+) -> ReconnectAttemptOutcome {
+    let Ok(target_addr) = std::ffi::CString::new(plan.target_addr.as_str()) else {
+        set_last_error(format!(
+            "hew_connmgr_reconnect: invalid reconnect address for dropped conn {dropped_conn_id}"
+        ));
+        return ReconnectAttemptOutcome::TransportError;
+    };
+    // SAFETY: mgr_ptr was checked non-null and remains valid for the connection lifetime.
+    let new_conn_id = match unsafe { connect_addr(mgr_ptr, &target_addr) } {
+        Ok(new_conn_id) => new_conn_id,
+        Err(err) => {
+            set_last_error(format!(
+                "hew_connmgr_reconnect: attempt {attempt}/{} failed for dropped conn {dropped_conn_id}, addr={}: {err}",
+                plan.max_retries, plan.target_addr
+            ));
+            return ReconnectAttemptOutcome::TransportError;
+        }
+    };
+
+    if let Some(expected) = plan.expected_node_id {
+        // SAFETY: mgr_ptr is valid (connect_addr above already dereferenced
+        // it), and new_conn_id was just returned by this manager's transport
+        // and is not yet tracked by the manager.
+        if unsafe { hew_connmgr_expect_peer(mgr_ptr, new_conn_id, expected) } != 0 {
+            // hew_connmgr_expect_peer does not take ownership on failure, and
+            // hew_connmgr_add is never reached on this path, so this call
+            // owns closing the transport connection.
+            // SAFETY: mgr_ptr is valid; new_conn_id is not yet installed, so
+            // no reader thread is racing this close.
+            unsafe { close_transport_conn((&*mgr_ptr).transport, new_conn_id) };
+            return ReconnectAttemptOutcome::Rejected;
+        }
+    }
+
+    // SAFETY: manager pointer is valid until shutdown and join in free.
+    if unsafe { hew_connmgr_add(mgr_ptr, new_conn_id) } != 0 {
+        // hew_connmgr_add owns conn_id cleanup on failure (closes the
+        // transport connection on all failure paths, including a
+        // pinned-identity mismatch) and has already recorded the specific
+        // rejection reason via set_last_error.
+        return ReconnectAttemptOutcome::Rejected;
+    }
+
+    let retries = i32::try_from(plan.max_retries).unwrap_or(i32::MAX);
+    // SAFETY: manager and conn_id are valid after successful add.
+    let _ = unsafe {
+        hew_connmgr_configure_reconnect(
+            mgr_ptr,
+            new_conn_id,
+            target_addr.as_ptr(),
+            1,
+            retries,
+            plan.expected_node_id.map_or(0, i32::from),
+        )
+    };
+    ReconnectAttemptOutcome::Installed
+}
+
 #[expect(
     clippy::needless_pass_by_value,
     reason = "FFI callback signature requires owned values"
@@ -691,45 +777,10 @@ fn reconnect_worker_loop(
             return;
         }
 
-        let Ok(target_addr) = std::ffi::CString::new(plan.target_addr.as_str()) else {
-            set_last_error(format!(
-                "hew_connmgr_reconnect: invalid reconnect address for dropped conn {dropped_conn_id}"
-            ));
+        if reconnect_attempt(mgr_ptr, &plan, dropped_conn_id, attempt)
+            == ReconnectAttemptOutcome::Installed
+        {
             return;
-        };
-        // SAFETY: mgr_ptr was checked non-null and remains valid for the connection lifetime.
-        let connect_result = unsafe { connect_addr(mgr_ptr, &target_addr) };
-        match connect_result {
-            Ok(new_conn_id) => {
-                // SAFETY: manager pointer is valid until shutdown and join in free.
-                if unsafe { hew_connmgr_add(mgr_ptr, new_conn_id) } == 0 {
-                    let retries = i32::try_from(plan.max_retries).unwrap_or(i32::MAX);
-                    // SAFETY: manager and conn_id are valid after successful add.
-                    let _ = unsafe {
-                        hew_connmgr_configure_reconnect(
-                            mgr_ptr,
-                            new_conn_id,
-                            target_addr.as_ptr(),
-                            1,
-                            retries,
-                            plan.expected_node_id.map_or(0, i32::from),
-                        )
-                    };
-                    return;
-                }
-                // hew_connmgr_add owns conn_id cleanup on failure (closes the
-                // transport connection on all failure paths), so no close here.
-                set_last_error(format!(
-                    "hew_connmgr_reconnect: failed to install reconnected conn on attempt {attempt}/{}, addr={}",
-                    plan.max_retries, plan.target_addr
-                ));
-            }
-            Err(err) => {
-                set_last_error(format!(
-                    "hew_connmgr_reconnect: attempt {attempt}/{} failed for dropped conn {dropped_conn_id}, addr={}: {err}",
-                    plan.max_retries, plan.target_addr
-                ));
-            }
         }
 
         base_backoff_ms = base_backoff_ms
